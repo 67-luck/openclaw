@@ -27,6 +27,12 @@ type StartWebLoginWithQr = typeof import("../login-qr-runtime.js").startWebLogin
 type WaitForWebLogin = typeof import("../login-qr-runtime.js").waitForWebLogin;
 type WhatsAppSetupWizard = typeof import("./setup-surface.js").whatsappSetupWizard;
 
+export function loginWebWithPhoneCode(
+  ...args: Parameters<LoginWebWithPhoneCode>
+): ReturnType<LoginWebWithPhoneCode> {
+  return loginWebWithPhoneCodeImpl(...args);
+}
+
 export async function startWebLoginWithQr(
   ...args: Parameters<StartWebLoginWithQr>
 ): ReturnType<StartWebLoginWithQr> {
