@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { readQaScenarioById } from "../../extensions/qa-lab/src/scenario-catalog.ts";
 import { resolveFrozenTelegramScenarioOmissions } from "../../scripts/e2e/lib/npm-telegram-live/resolve-target-scenarios.mts";
 import { testing } from "../../scripts/e2e/npm-telegram-live-runner.ts";
 import { privateLocalOnlyPluginSdkEntrypoints } from "../../scripts/lib/plugin-sdk-entries.mts";
@@ -588,15 +589,60 @@ for (const subpath of ${JSON.stringify(privateQaSubpaths)}) {
 
     expect(probe).toMatchObject({
       scenarioId: "channel-canary",
+      input: { conversation: { id: "telegram-rtt-room", kind: "group" } },
+    });
+  });
+
+  it("rejects unknown explicit RTT scenario ids through canonical selection", () => {
+    expect(() =>
+      testing.resolvePackageTelegramScenarios(
+        {
+          OPENCLAW_NPM_TELEGRAM_RTT_CHECKS: "telegram-unknown-rtt-check",
+        },
+        (scenarioIds) => {
+          throw new Error(`unknown QA scenario id(s): ${scenarioIds.join(", ")}`);
+        },
+      ),
+    ).toThrow("unknown QA scenario id(s): telegram-unknown-rtt-check");
+  });
+
+  it.each([
+    {
+      name: "default canary group",
+      env: {},
+      scenarioId: "channel-canary",
+      policy: { requireGroupMention: true },
+      conversation: { id: "qa-routing-primary", kind: "group" },
+    },
+    {
+      name: "selected exact-marker direct message",
+      env: { OPENCLAW_NPM_TELEGRAM_RTT_CHECKS: "telegram-reply-chain-exact-marker" },
+      scenarioId: "telegram-reply-chain-exact-marker",
+      policy: { directMessageOnly: true },
+      conversation: { id: "telegram-reply-chain-dm", kind: "direct" },
+    },
+  ] as const)("builds the $name RTT route", ({ env, scenarioId, policy, conversation }) => {
+    const probe = testing.createRoundTripProbe(testing.resolveRttOptions(env), {
+      id: scenarioId,
+      execution: { transportPolicy: policy, config: { conversationId: conversation.id } },
+    });
+    expect(probe).toMatchObject({
+      scenarioId,
       count: 20,
       timeoutMs: 30_000,
       markerPrefix: "QA-TELEGRAM-RTT",
       textPrefix: "@openclaw Telegram RTT check. Reply exactly: ",
       chainReplies: true,
-      input: {
-        conversation: { id: "telegram-rtt-room", kind: "group" },
-      },
+      input: { conversation },
     });
+  });
+
+  it("preserves the generic route for a valid unannotated RTT scenario", () => {
+    const env = { OPENCLAW_NPM_TELEGRAM_RTT_CHECKS: "telegram-status-command" };
+    const scenario = readQaScenarioById("telegram-status-command");
+    const probe = testing.createRoundTripProbe(testing.resolveRttOptions(env), scenario);
+
+    expect(probe?.input.conversation).toEqual({ id: "telegram-rtt-room", kind: "group" });
   });
 
   it.each([

@@ -146,7 +146,9 @@ inside every shard.
     fail immediately, while unknown or inapplicable ids fail canonical scenario
     validation. The package runner promotes the selected RTT scenario once to
     the first position before the remaining taxonomy-backed fail-fast release
-    scenarios.
+    scenarios. Repeated probes use a scenario's declared conversation and
+    transport policy when present; selections without a declared route retain
+    the generic RTT conversation.
   - Uses the same Convex-leased Test Server userbot credentials as
     `pnpm openclaw qa telegram`. Set `OPENCLAW_QA_CONVEX_SITE_URL` and the
     secret for the selected role. The Docker wrapper selects Convex by default.
