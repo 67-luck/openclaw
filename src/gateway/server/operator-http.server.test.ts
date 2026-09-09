@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
@@ -28,7 +29,10 @@ import { createGatewayHttpServer } from "../server-http.js";
 import * as lazyHandlers from "../server-methods/lazy-core-handlers.js";
 import type { GatewayRequestHandler } from "../server-methods/types.js";
 import {
+  gatewayReplyMock,
   installGatewayTestHooks,
+  mockGetReplyFromConfigOnce,
+  prepareGatewayReplyRuntimeForTest,
   rpcReq,
   startConnectedServerWithClient,
 } from "../test-helpers.js";
@@ -165,6 +169,13 @@ describe("paired operator HTTP transport", () => {
       clientId: client.id,
       clientMode: client.mode,
     });
+    return connectPaired(paired, scopes);
+  }
+
+  async function connectPaired(
+    paired: Awaited<ReturnType<typeof issueOperatorToken>>,
+    scopes: string[],
+  ) {
     const connection = await begin();
     let clientSeq = 0;
     let ack = 0;
@@ -223,6 +234,9 @@ describe("paired operator HTTP transport", () => {
       get ack() {
         return ack;
       },
+      get nextClientSeq() {
+        return clientSeq + 1;
+      },
     };
   }
 
@@ -237,6 +251,292 @@ describe("paired operator HTTP transport", () => {
     });
     expect(await operator.call("device.pair.list")).toMatchObject({ ok: false });
     expect((await rpcReq(started.ws, "health")).ok).toBe(true);
+  });
+
+  test("enforces canonical chat and approval effects across scope upgrade and established revocation", async () => {
+    const operator = await open("scope-effects", ["operator.read", "operator.talk"]);
+    const approvalIds = new Set<string>();
+    const runIds = new Set<string>();
+    let sessionKey: string | undefined;
+    let pendingUpgradeId: string | undefined;
+    const failures: Error[] = [];
+    const phaseResults: string[] = [];
+    const bodyStartedAt = performance.now();
+    let bodyPassed = false;
+    const cleanupPhase = async (phase: string, run: () => Promise<void>) => {
+      const startedAt = performance.now();
+      let passed = false;
+      try {
+        await run();
+        passed = true;
+      } catch (cause) {
+        failures.push(new Error(phase, { cause }));
+      } finally {
+        phaseResults.push(
+          `${phase}: ${passed ? "passed" : "failed"} (${Math.round(performance.now() - startedAt)}ms)`,
+        );
+      }
+    };
+    try {
+      const created = await rpcReq(started.ws, "sessions.create", {
+        agentId: "main",
+        key: `agent:main:http-scope-effects:${randomUUID()}`,
+      });
+      expect(created.ok).toBe(true);
+      sessionKey = z.object({ key: z.string().min(1) }).parse(created.payload).key;
+      const history = async () => {
+        const result = await rpcReq(started.ws, "chat.history", { sessionKey });
+        expect(result.ok).toBe(true);
+        return z.object({ messages: z.array(z.unknown()) }).parse(result.payload).messages;
+      };
+      const pendingApproval = async () => {
+        const id = randomUUID();
+        approvalIds.add(id);
+        expect(
+          await rpcReq(started.ws, "exec.approval.request", {
+            id,
+            command: "printf scope-effects",
+            sessionKey,
+            twoPhase: true,
+            suppressDelivery: true,
+            requireDeliveryRoute: false,
+          }),
+        ).toMatchObject({
+          ok: true,
+          payload: { id, status: "accepted", deliveryRoute: "none" },
+        });
+        expect(await rpcReq(started.ws, "approval.get", { id })).toMatchObject({
+          ok: true,
+          payload: { approval: { id, presentation: { kind: "exec" }, status: "pending" } },
+        });
+        return id;
+      };
+      const firstApproval = await pendingApproval();
+      const emptyHistory = await history();
+      expect(emptyHistory).toEqual([]);
+      const forbiddenRunId = randomUUID();
+      runIds.add(forbiddenRunId);
+      expect(
+        await operator.call("chat.send", {
+          sessionKey,
+          message: "read-only chat must not persist",
+          idempotencyKey: forbiddenRunId,
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: { code: "FORBIDDEN", details: { missingScope: "operator.write" } },
+      });
+      expect(
+        await operator.call("approval.resolve", {
+          id: firstApproval,
+          kind: "exec",
+          decision: "deny",
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: { code: "FORBIDDEN", details: { missingScope: "operator.approvals" } },
+      });
+      expect(await history()).toEqual(emptyHistory);
+      expect(await rpcReq(started.ws, "approval.get", { id: firstApproval })).toMatchObject({
+        ok: true,
+        payload: { approval: { id: firstApproval, status: "pending" } },
+      });
+
+      const scopes = ["operator.read", "operator.talk", "operator.write", "operator.approvals"];
+      const registration = await operator.call("device.scopes.requestUpgrade", { scopes });
+      expect(registration.ok).toBe(true);
+      const { requestId } = z.object({ requestId: z.string() }).parse(registration.payload);
+      pendingUpgradeId = requestId;
+      await operator.post({
+        type: "req",
+        id: "scope-effects-upgrade",
+        method: "device.scopes.waitUpgrade",
+        params: { requestId },
+      });
+      expect((await rpcReq(started.ws, "device.pair.approve", { requestId })).ok).toBe(true);
+      pendingUpgradeId = undefined;
+      const result = await operator.receive("scope-effects-upgrade");
+      expect(result.ok).toBe(true);
+      const grant = z
+        .object({
+          status: z.literal("approved"),
+          deviceToken: z.string().min(1),
+          scopes: z.array(z.string()),
+        })
+        .parse(result.payload);
+      expect(grant.deviceToken).not.toBe(operator.paired.token);
+      expect(grant.scopes.toSorted()).toEqual(scopes.toSorted());
+      expect((await exchange(operator.connection, "", undefined, "DELETE")).status).toBe(204);
+      connections.delete(operator.connection);
+      const upgraded = await connectPaired(
+        { ...operator.paired, token: grant.deviceToken },
+        grant.scopes,
+      );
+
+      // HTTP bypasses rpcReq's reply-runtime preparation, not the real chat dispatcher.
+      await prepareGatewayReplyRuntimeForTest();
+      const userText = "authorized HTTP user turn";
+      const assistantText = "authorized HTTP assistant reply";
+      mockGetReplyFromConfigOnce(async () => ({ text: assistantText }));
+      const runId = randomUUID();
+      runIds.add(runId);
+      expect(
+        await upgraded.call("chat.send", { sessionKey, message: userText, idempotencyKey: runId }),
+      ).toMatchObject({ ok: true, payload: { runId, status: "started" } });
+      expect(await upgraded.call("agent.wait", { runId, timeoutMs: 1000 })).toMatchObject({
+        ok: true,
+        payload: { runId, status: "ok" },
+      });
+      const writtenHistory = await history();
+      expect(writtenHistory).toMatchObject([
+        { role: "user", content: userText },
+        { role: "assistant", content: [{ type: "text", text: assistantText }] },
+      ]);
+      expect(
+        await upgraded.call("approval.resolve", {
+          id: firstApproval,
+          kind: "exec",
+          decision: "deny",
+        }),
+      ).toMatchObject({
+        ok: true,
+        payload: {
+          applied: true,
+          approval: {
+            id: firstApproval,
+            presentation: { kind: "exec" },
+            status: "denied",
+            resolver: { kind: "device", id: operator.paired.deviceId },
+          },
+        },
+      });
+      expect(await rpcReq(started.ws, "approval.get", { id: firstApproval })).toMatchObject({
+        ok: true,
+        payload: {
+          approval: {
+            id: firstApproval,
+            status: "denied",
+            resolver: { kind: "device", id: operator.paired.deviceId },
+          },
+        },
+      });
+
+      const secondApproval = await pendingApproval();
+      const beforeRevocation = await history();
+      expect(beforeRevocation).toEqual(writtenHistory);
+      const revoked = await rpcReq(started.ws, "device.token.revoke", {
+        deviceId: operator.paired.deviceId,
+        role: "operator",
+      });
+      expect(revoked).toMatchObject({
+        ok: true,
+        payload: {
+          deviceId: operator.paired.deviceId,
+          role: "operator",
+          revokedAtMs: expect.any(Number),
+        },
+      });
+      const revokedRunId = randomUUID();
+      runIds.add(revokedRunId);
+      const nextClientSeq = upgraded.nextClientSeq;
+      for (const frame of [
+        {
+          type: "req",
+          id: "revoked-chat",
+          method: "chat.send",
+          params: {
+            sessionKey,
+            message: "revoked chat must not persist",
+            idempotencyKey: revokedRunId,
+          },
+        },
+        {
+          type: "req",
+          id: "revoked-approval",
+          method: "approval.resolve",
+          params: { id: secondApproval, kind: "exec", decision: "deny" },
+        },
+      ] satisfies RequestFrame[]) {
+        const rejected = await exchange(upgraded.connection, "/frames", {
+          clientSeq: nextClientSeq,
+          ack: upgraded.ack,
+          frame,
+        });
+        expect(rejected.status).toBe(410);
+        expect(await rejected.json()).toEqual({
+          error: {
+            code: "connection_closed",
+            message: "Connection closed; reconnect",
+            resyncRequired: true,
+          },
+        });
+        expect(await upgraded.poll()).toMatchObject({
+          acceptedClientSeq: nextClientSeq - 1,
+          frames: [],
+          closed: { resyncRequired: true },
+        });
+      }
+      expect(await history()).toEqual(beforeRevocation);
+      expect(await rpcReq(started.ws, "approval.get", { id: secondApproval })).toMatchObject({
+        ok: true,
+        payload: { approval: { id: secondApproval, status: "pending" } },
+      });
+      bodyPassed = true;
+    } catch (cause) {
+      failures.push(new Error("body", { cause }));
+    } finally {
+      phaseResults.push(
+        `body: ${bodyPassed ? "passed" : "failed"} (${Math.round(performance.now() - bodyStartedAt)}ms)`,
+      );
+      try {
+        await cleanupPhase("fixture settlement", async () => {
+          const cleanup = await Promise.allSettled([
+            ...(pendingUpgradeId
+              ? [
+                  rpcReq(started.ws, "device.pair.reject", { requestId: pendingUpgradeId }).then(
+                    (result) => expect(result.ok).toBe(true),
+                  ),
+                ]
+              : []),
+            ...[...approvalIds].map(async (id) => {
+              expect(
+                (
+                  await rpcReq(started.ws, "approval.resolve", {
+                    id,
+                    kind: "exec",
+                    decision: "deny",
+                  })
+                ).ok,
+              ).toBe(true);
+            }),
+            ...[...runIds].map(async (runId) => {
+              expect((await rpcReq(started.ws, "chat.abort", { sessionKey, runId })).ok).toBe(true);
+            }),
+          ]);
+          expect(cleanup.filter((settled) => settled.status === "rejected")).toEqual([]);
+        });
+        await cleanupPhase("root drain", async () => {
+          await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+        });
+        if (sessionKey) {
+          await cleanupPhase("session deletion", async () => {
+            expect((await rpcReq(started.ws, "sessions.delete", { key: sessionKey })).ok).toBe(
+              true,
+            );
+          });
+        } else {
+          phaseResults.push("session deletion: not-attempted (no session key)");
+        }
+      } finally {
+        gatewayReplyMock.mockReset();
+        gatewayReplyMock.mockResolvedValue(undefined);
+      }
+    }
+    if (failures.length > 0) {
+      throw new Error(phaseResults.join("; "), {
+        cause: new AggregateError(failures, "scope/effect matrix failures"),
+      });
+    }
   });
 
   test.each(["operator.admin", "operator.pairing"])(
