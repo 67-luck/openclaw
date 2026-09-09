@@ -153,10 +153,12 @@ final class GatewayOperatorHTTPFixture: @unchecked Sendable {
 final class GatewayOperatorHTTPExchange: @unchecked Sendable {
     let request: URLRequest
     let body: Data
-    private let transport: GatewayOperatorHTTPURLProtocol
+    private let sendResponse: @Sendable (Int, Data) -> Void
+    private let sendFailure: @Sendable (URLError) -> Void
 
     fileprivate init(_ transport: GatewayOperatorHTTPURLProtocol) throws {
-        self.transport = transport
+        self.sendResponse = { transport.respond(status: $0, body: $1) }
+        self.sendFailure = { transport.client?.urlProtocol(transport, didFailWithError: $0) }
         self.request = transport.request
         if let body = self.request.httpBody {
             self.body = body
@@ -177,6 +179,18 @@ final class GatewayOperatorHTTPExchange: @unchecked Sendable {
         }
     }
 
+    init(
+        request: URLRequest,
+        body: Data,
+        respond: @escaping @Sendable (Int, Data) -> Void,
+        fail: @escaping @Sendable (URLError) -> Void)
+    {
+        self.request = request
+        self.body = body
+        self.sendResponse = respond
+        self.sendFailure = fail
+    }
+
     var object: [String: Any] {
         get throws { try JSONSerialization.jsonObject(with: self.body) as? [String: Any] ?? [:] }
     }
@@ -189,7 +203,7 @@ final class GatewayOperatorHTTPExchange: @unchecked Sendable {
     }
 
     func respond(status: Int = 200, body: Data) {
-        self.transport.respond(status: status, body: body)
+        self.sendResponse(status, body)
     }
 
     func accept(_ sequence: Int) {
@@ -197,7 +211,7 @@ final class GatewayOperatorHTTPExchange: @unchecked Sendable {
     }
 
     func fail(_ error: URLError) {
-        self.transport.client?.urlProtocol(self.transport, didFailWithError: error)
+        self.sendFailure(error)
     }
 }
 

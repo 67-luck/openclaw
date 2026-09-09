@@ -14,12 +14,13 @@ struct WatchGatewayControllerTests {
                 setupCode: #"{"url":"wss://gateway.example.invalid/team","bootstrapToken":"one-time-setup"}"#,
                 sentAtMs: Int64(Date().timeIntervalSince1970 * 1000))
             let configuration = try #require(controller.configuration, "Direct setup: \(controller.statusText)")
-            let fixture = try GatewayOperatorHTTPFixture(gatewayID: configuration.gatewayID)
+            let fixture = try await WatchGatewayOperatorHTTPFixture.start(gatewayID: configuration.gatewayID)
             do {
                 let response = try JSONDecoder().decode(WatchNodeConnectResponse.self, from: Data(
                     #"{"sessionToken":"node-session","deviceToken":"node-fixture"}"#.utf8))
                 try await controller.acceptNodeHandshake(
                     response, configuration: configuration, identity: fixture.identity, usedBootstrap: false)
+                try Self.requireOperatorSetup(controller, fixture: fixture)
                 controller.setEnabled(false)
                 controller.connectForForeground()
                 controller.setEnabled(true)
@@ -29,21 +30,21 @@ struct WatchGatewayControllerTests {
                 conversations.appear()
                 let refresh = Task { await conversations.refresh() }
                 let repeatedRefresh = Task { await conversations.refresh() }
-                let begin = try await fixture.next()
+                let begin = try await fixture.next("begin")
                 #expect(begin.request.url?.lastPathComponent == "connections")
                 try begin.respond(status: 201, body: GatewayOperatorHTTPFixture.beginBody())
-                let connect = try await fixture.next()
+                let connect = try await fixture.next("connect frame")
                 #expect(try connect.frame.method == "connect")
                 connect.accept(1)
-                let hello = try await fixture.next()
+                let hello = try await fixture.next("hello poll")
                 try hello.respond(body: GatewayOperatorHTTPFixture.hello(requestID: connect.frame.id))
-                var request = try await fixture.next()
+                var request = try await fixture.next("agents.list frame or idle poll")
                 if request.request.url?.lastPathComponent == "poll" {
-                    request = try await fixture.next()
+                    request = try await fixture.next("agents.list frame")
                 }
                 #expect(try request.frame.method == "agents.list")
                 request.accept(2)
-                let poll = try await fixture.next()
+                let poll = try await fixture.next("agents.list result poll")
                 try poll.respond(body: JSONSerialization.data(withJSONObject: [
                     "acceptedClientSeq": 2,
                     "frames": [[
@@ -134,7 +135,7 @@ struct WatchGatewayControllerTests {
             }
             let unsubscribe = try await Self.nextFrame(fixture, method: "sessions.messages.unsubscribe")
             unsubscribe.accept(6)
-            let poll = try await fixture.next()
+            let poll = try await fixture.next("unsubscribe result poll")
             #expect(poll.request.url?.lastPathComponent == "poll")
             try await Self.replaceSetup(controller)
             await selection.value
@@ -191,7 +192,7 @@ struct WatchGatewayControllerTests {
             }
             let held = try await Self.nextFrame(fixture, method: method)
             held.accept(sequence)
-            let poll = try await fixture.next()
+            let poll = try await fixture.next("\(method) held result poll")
             #expect(poll.request.url?.lastPathComponent == "poll")
             if kind == "send" {
                 controller.disconnectForBackground()
@@ -232,7 +233,7 @@ struct WatchGatewayControllerTests {
                     await controller.forget()
                 }
             }
-            let deletion = try await fixture.next()
+            let deletion = try await fixture.next("setup teardown DELETE")
             try #require(deletion.request.httpMethod == "DELETE")
             let installed = try #require(controller.configuration, "Direct setup: \(controller.statusText)")
             #expect(controller.isEnabled && controller.isForeground)
@@ -276,7 +277,7 @@ struct WatchGatewayControllerTests {
             let request = try await Self.nextFrame(fixture, method: "sessions.create")
             #expect(conversations.deliveryStatus == "Creating conversation...")
             request.accept(4)
-            let poll = try await fixture.next()
+            let poll = try await fixture.next("sessions.create result poll")
             if outcome == "uncertain" {
                 try poll.respond(status: 409, body: JSONSerialization.data(withJSONObject: [
                     "error": ["code": "ingress_changed", "message": "Ingress changed", "resyncRequired": true],
@@ -335,12 +336,48 @@ struct WatchGatewayControllerTests {
                 gatewayID: configuration.gatewayID, profile: .primary))
 
             let databaseURL = stateDirectory.appendingPathComponent("state/openclaw.sqlite")
+            // The native owner already created both canonical tables and indexes.
+            // Match DeviceIdentityStoreTests' versioned global database fixture:
+            // a foreign trigger is deliberately forbidden in a native v0 store.
+            try Self.execute(databaseURL, """
+            CREATE TABLE schema_meta (
+              meta_key TEXT NOT NULL PRIMARY KEY,
+              role TEXT NOT NULL,
+              schema_version INTEGER NOT NULL,
+              agent_id TEXT,
+              app_version TEXT,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL
+            ) STRICT;
+            INSERT INTO schema_meta (
+              meta_key, role, schema_version, agent_id, app_version, created_at, updated_at
+            ) VALUES ('primary', 'global', 4, NULL, NULL, 1800000000000, 1800000000000);
+            PRAGMA user_version = 4;
+            """)
             // Fail only the second durable handoff, using the real store's write boundary.
             try Self.execute(databaseURL, """
             CREATE TRIGGER reject_operator_grant BEFORE INSERT ON device_auth_tokens
             WHEN NEW.token = 'rejected-operator'
             BEGIN SELECT RAISE(ABORT, 'simulated operator write failure'); END;
             """)
+            try #require(DeviceAuthStore.storeTokenPersisted(
+                deviceId: identity.deviceId,
+                role: "node",
+                token: "node-write-control",
+                gatewayID: configuration.gatewayID,
+                profile: .primary))
+            try #require(DeviceAuthStore.loadToken(
+                deviceId: identity.deviceId,
+                role: "node",
+                gatewayID: configuration.gatewayID,
+                profile: .primary)?.token == "node-write-control")
+            try #require(!DeviceAuthStore.storeTokenPersisted(
+                deviceId: identity.deviceId,
+                role: "operator",
+                token: "rejected-operator",
+                scopes: GatewayOperatorHTTPFixture.scopes,
+                gatewayID: configuration.gatewayID,
+                profile: .primary))
             let response = try JSONDecoder().decode(WatchNodeConnectResponse.self, from: Data(
                 #"""
                 {"sessionToken":"node-session","deviceToken":"redeemed-node","deviceTokens":[
@@ -466,7 +503,7 @@ struct WatchGatewayControllerTests {
 
     private static func withConnectedConversations(
         scopes: [String] = GatewayOperatorHTTPFixture.scopes,
-        operation: @MainActor (WatchGatewayController, WatchDirectConversations, GatewayOperatorHTTPFixture)
+        operation: @MainActor (WatchGatewayController, WatchDirectConversations, WatchGatewayOperatorHTTPFixture)
         async throws -> Void) async throws
     {
         try await self.withUnconfiguredWatch { controller, _ in
@@ -474,12 +511,14 @@ struct WatchGatewayControllerTests {
                 setupCode: #"{"url":"wss://gateway.example.invalid/team","bootstrapToken":"one-time-setup"}"#,
                 sentAtMs: Int64(Date().timeIntervalSince1970 * 1000))
             let configuration = try #require(controller.configuration, "Direct setup: \(controller.statusText)")
-            let fixture = try GatewayOperatorHTTPFixture(gatewayID: configuration.gatewayID, scopes: scopes)
+            let fixture = try await WatchGatewayOperatorHTTPFixture.start(
+                gatewayID: configuration.gatewayID, scopes: scopes)
             do {
                 let response = try JSONDecoder().decode(WatchNodeConnectResponse.self, from: Data(
                     #"{"sessionToken":"node-session","deviceToken":"node-fixture"}"#.utf8))
                 try await controller.acceptNodeHandshake(
                     response, configuration: configuration, identity: fixture.identity, usedBootstrap: false)
+                try Self.requireOperatorSetup(controller, fixture: fixture, scopes: scopes)
                 let conversations = WatchDirectConversations(gateway: controller) { _, _ in fixture.session }
                 controller.conversations = conversations
                 controller.setEnabled(false)
@@ -488,12 +527,12 @@ struct WatchGatewayControllerTests {
                 controller.node.disconnectForBackground()
                 conversations.appear()
                 let connecting = Task { await conversations.refresh() }
-                let begin = try await fixture.next()
+                let begin = try await fixture.next("begin")
                 #expect(begin.request.url?.lastPathComponent == "connections")
                 try begin.respond(status: 201, body: GatewayOperatorHTTPFixture.beginBody())
                 let connect = try await Self.nextFrame(fixture, method: "connect")
                 connect.accept(1)
-                let poll = try await fixture.next()
+                let poll = try await fixture.next("hello poll")
                 try poll.respond(body: GatewayOperatorHTTPFixture.hello(requestID: connect.frame.id, scopes: scopes))
                 try await Self.reply(
                     fixture, method: "agents.list", sequence: 2, cursor: 2, payload: AnyCodable([
@@ -515,12 +554,32 @@ struct WatchGatewayControllerTests {
         }
     }
 
-    private static func nextFrame(_ fixture: GatewayOperatorHTTPFixture, method: String)
+    private static func requireOperatorSetup(
+        _ controller: WatchGatewayController,
+        fixture: WatchGatewayOperatorHTTPFixture,
+        scopes: [String] = GatewayOperatorHTTPFixture.scopes) throws
+    {
+        let configuration = try #require(controller.configuration)
+        try #require(controller.isInstalled(configuration))
+        try #require(!controller.setupIncomplete && !controller.recoveryRequired, "\(controller.statusText)")
+        let identity = try #require(DeviceIdentityStore.loadOrCreatePersisted(profile: .primary))
+        try #require(identity.deviceId == fixture.identity.deviceId)
+        let grant = try #require(DeviceAuthStore.loadToken(
+            deviceId: identity.deviceId,
+            role: "operator",
+            gatewayID: configuration.gatewayID,
+            profile: .primary))
+        try #require(grant.token == GatewayOperatorHTTPFixture.token)
+        try #require(Set(grant.scopes) == Set(scopes))
+        try #require(Set(controller.storedOperatorScopes()) == Set(scopes))
+    }
+
+    private static func nextFrame(_ fixture: WatchGatewayOperatorHTTPFixture, method: String)
         async throws -> GatewayOperatorHTTPExchange
     {
-        var exchange = try await fixture.next()
+        var exchange = try await fixture.next("\(method) frame or idle poll")
         while exchange.request.url?.lastPathComponent == "poll" {
-            exchange = try await fixture.next()
+            exchange = try await fixture.next("\(method) frame after idle poll")
         }
         try #require(exchange.request.url?.lastPathComponent == "frames")
         try #require(exchange.frame.method == method)
@@ -528,12 +587,12 @@ struct WatchGatewayControllerTests {
     }
 
     private static func reply(
-        _ fixture: GatewayOperatorHTTPFixture, method: String, sequence: Int, cursor: Int, payload: AnyCodable)
+        _ fixture: WatchGatewayOperatorHTTPFixture, method: String, sequence: Int, cursor: Int, payload: AnyCodable)
         async throws
     {
         let frame = try await Self.nextFrame(fixture, method: method)
         frame.accept(sequence)
-        let poll = try await fixture.next()
+        let poll = try await fixture.next("\(method) result poll")
         try #require(poll.request.url?.lastPathComponent == "poll")
         try poll.respond(body: GatewayOperatorHTTPFixture.delivery(
             requestID: frame.frame.id, payload: payload, cursor: cursor, accepted: sequence))
