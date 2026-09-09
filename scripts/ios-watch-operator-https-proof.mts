@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID, X509Certificate } from "node:crypto";
 import { channel } from "node:diagnostics_channel";
 import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
@@ -21,6 +22,7 @@ type CommandOptions = {
   cleanup?: boolean;
   allowFailure?: boolean;
   compilerDiagnostics?: boolean;
+  signal?: AbortSignal;
 };
 type CommandLabel =
   | "swift-build"
@@ -34,7 +36,9 @@ type CommandLabel =
   | "certificate-sign"
   | "trust-install"
   | "trust-remove"
+  | "trust-diagnostic"
   | "certificate-remove";
+type TrustRemovalSample = { available: boolean; exitCode?: number | null; symbols: string[] };
 type CommandEvent = {
   label: CommandLabel;
   id: number;
@@ -92,7 +96,12 @@ type SwiftCommand = {
 };
 
 async function command(
-  context: { label: CommandLabel; id: number; observe: (event: CommandEvent) => void },
+  context: {
+    label: CommandLabel;
+    id: number;
+    observe: (event: CommandEvent) => void;
+    sample?: (result: TrustRemovalSample) => void;
+  },
   tool: string,
   args: string[],
   options: CommandOptions = {},
@@ -119,15 +128,26 @@ async function command(
   let bytes = 0;
   let overflow = false;
   let removeObservers = () => {};
+  const errors: unknown[] = [];
+  let result: CommandResult | undefined;
+  const sampleCancellation = new AbortController();
+  let sampleTimer: ReturnType<typeof setTimeout> | undefined;
+  let sampling = Promise.resolve();
+  const stopSampling = () => {
+    clearTimeout(sampleTimer);
+    sampleCancellation.abort();
+  };
   try {
     const code = await runManagedCommand({
       bin: tool,
       args,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
-      signal: options.cleanup
-        ? overflowCancellation.signal
-        : AbortSignal.any([cancelled.signal, overflowCancellation.signal]),
+      signal: AbortSignal.any([
+        overflowCancellation.signal,
+        ...(options.cleanup ? [] : [cancelled.signal]),
+        ...(options.signal ? [options.signal] : []),
+      ]),
       timeoutMs: options.timeout ?? 30000,
       requireProcessTreeExit: true,
       timeoutForceKillOnLeaderExit: true,
@@ -148,8 +168,10 @@ async function command(
         };
         const captureOutput = (chunk: Buffer) => capture(chunk, true);
         const captureError = (chunk: Buffer) => capture(chunk, false);
-        const exited = (exitCode: number | null, signal: NodeJS.Signals | null) =>
+        const exited = (exitCode: number | null, signal: NodeJS.Signals | null) => {
+          stopSampling();
           observe("exit", exitCode, signal);
+        };
         const closed = (exitCode: number | null, signal: NodeJS.Signals | null) =>
           observe("close", exitCode, signal);
         output.on("data", captureOutput);
@@ -164,13 +186,22 @@ async function command(
         };
         stdin.on("error", () => {});
         stdin.end(options.input);
+        if (context.label === "trust-remove") {
+          sampleTimer = setTimeout(() => {
+            sampling = sampleTrustRemoval(child, sampleCancellation.signal, context.sample).catch(
+              (error: unknown) => {
+                errors.push(error);
+              },
+            );
+          }, 5000);
+        }
       },
     });
     assert(
       !overflow && (options.allowFailure || code === 0),
       `${path.basename(tool)} failed (${code})`,
     );
-    return { code, stdout };
+    result = { code, stdout };
   } catch (error) {
     if (options.compilerDiagnostics) {
       // These commands run before identity/token/CA provisioning. Runtime stderr
@@ -181,10 +212,112 @@ async function command(
           .replace(/\/(?:Users|private|var|tmp|Volumes)\/[^\s:)"']+/g, "<path>"),
       );
     }
-    // Keep nested processTreeState/cause evidence for the private-state owner.
-    throw error;
+    errors.push(error);
   } finally {
+    stopSampling();
     removeObservers();
+    await sampling;
+  }
+  // Preserve both owners' failures so unjoined diagnostics fence certificate/private cleanup.
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "Command and diagnostic cleanup failed");
+  }
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  assert(result);
+  return result;
+}
+
+async function sampleTrustRemoval(
+  owner: ChildProcess,
+  signal: AbortSignal,
+  observe?: (result: TrustRemovalSample) => void,
+): Promise<void> {
+  const result: TrustRemovalSample = { available: false, symbols: [] };
+  try {
+    const run = (tool: string, args: string[], sample = false) =>
+      command(
+        {
+          label: "trust-diagnostic",
+          id: 0,
+          observe: (event) => {
+            if (sample && event.event === "exit") {
+              result.exitCode = event.code;
+            }
+          },
+        },
+        tool,
+        args,
+        { cleanup: true, allowFailure: true, signal, timeout: 5000 },
+      );
+    const requireLiveOwner = () => {
+      signal.throwIfAborted();
+      assert(owner.pid && owner.exitCode === null && owner.signalCode === null, "Owner exited");
+    };
+    const ancestry = async () => {
+      requireLiveOwner();
+      const { code, stdout } = await run("/bin/ps", ["-ww", "-axo", "pid=,ppid=,lstart=,comm="]);
+      requireLiveOwner();
+      assert.equal(code, 0);
+      const rows = stdout.split(/\r?\n/u).flatMap((line) => {
+        const match =
+          /^\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+?)\s*$/u.exec(
+            line,
+          );
+        return match
+          ? [{ pid: Number(match[1]), ppid: Number(match[2]), start: match[3], comm: match[4] }]
+          : [];
+      });
+      const byPID = new Map(rows.map((row) => [row.pid, row]));
+      const root = byPID.get(owner.pid!);
+      assert(root?.ppid === process.pid, "Owner ancestry unavailable");
+      const matches = rows
+        .filter((row) => row.comm === "/usr/bin/security")
+        .flatMap((row) => {
+          const chain: typeof rows = [];
+          let current: (typeof rows)[number] | undefined = row;
+          while (current && !chain.includes(current)) {
+            chain.push(current);
+            if (current === root) {
+              return [chain];
+            }
+            current = byPID.get(current.ppid);
+            if (current?.comm !== "/usr/bin/sudo") {
+              break;
+            }
+          }
+          return [];
+        });
+      assert.equal(matches.length, 1, "Security ancestry is missing or ambiguous");
+      return matches[0]!;
+    };
+    const before = await ancestry();
+    requireLiveOwner();
+    // Sampling briefly suspends the target; symbols locate a stage, not proof of a prompt.
+    const sampled = await run(
+      "/usr/bin/sudo",
+      ["-n", "/usr/bin/sample", String(before[0]!.pid), "1", "1", "-file", "/dev/stdout"],
+      true,
+    );
+    const after = await ancestry();
+    requireLiveOwner();
+    assert(JSON.stringify(before) === JSON.stringify(after), "Security owner changed");
+    assert(
+      sampled.code === 0 && result.exitCode === 0 && /^Call graph:\s*$/mu.test(sampled.stdout),
+    );
+    result.symbols = [
+      "AuthorizationCopyRights",
+      "SecTrustSettingsXPCWrite",
+      "SecTrustStoreSetTrustSettings",
+    ].filter((symbol) => new RegExp(`\\b${symbol}\\b`, "u").test(sampled.stdout));
+    result.available = true;
+  } catch (error) {
+    if (hasUnjoinedWork(error)) {
+      throw error;
+    }
+  } finally {
+    observe?.(result);
   }
 }
 
@@ -358,6 +491,11 @@ async function main(): Promise<void> {
         observe: (event) => {
           report.child = event;
           console.log(JSON.stringify(event));
+          void writeReceipt().catch(() => {});
+        },
+        sample: (result) => {
+          report.trustRemovalSample = result;
+          console.log(JSON.stringify({ trustRemovalSample: result }));
           void writeReceipt().catch(() => {});
         },
       },
