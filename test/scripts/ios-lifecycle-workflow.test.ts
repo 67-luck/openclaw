@@ -92,6 +92,10 @@ import path from "node:path";
 const [tool, ...args] = process.argv.slice(2);
 const root = process.env.WATCH_FIXTURE_ROOT;
 const mode = process.env.WATCH_FIXTURE_MODE;
+const productPath = path.join(root, "project derived data", "Watch Product.app");
+const targetTempDir = path.join(root, "project intermediates", "Watch Product.build");
+const generatedPath = path.join(targetTempDir, "Watch Product.app-Simulated.xcent");
+const applicationID = (mode === "mixed-case-prefix" ? "SeedFix123" : "SEEDFIX123") + ".org.example.watch";
 appendFileSync(path.join(root, "commands.jsonl"), JSON.stringify({
   tool, args, destination: process.env.IOS_DEST,
   settings: process.env.XCODE_XCCONFIG_FILE ? readFileSync(process.env.XCODE_XCCONFIG_FILE, "utf8") : undefined,
@@ -114,7 +118,9 @@ if (tool === "installer") {
     if (mode === "missing-section") process.exit(26);
     const entitlements = mode === "missing-application-id" ? {} : {
       "application-identifier": mode === "wrong-application-id" ?
-        "SEEDFIX123.org.example.other" : "SEEDFIX123.org.example.watch"
+        "SEEDFIX123.org.example.other" : mode === "wrong-compiled-seed" ?
+        "TEAMFIX123.org.example.watch" : mode === "compiled-seed-case-mismatch" ?
+        "seedfix123.org.example.watch" : applicationID
     };
     if (mode === "explicit-private-group") {
       entitlements["keychain-access-groups"] = ["SEEDFIX123.org.example.watch"];
@@ -140,7 +146,7 @@ if (tool === "installer") {
   }
 } else if (args.includes("-showBuildSettings")) {
   const signing = {
-    DEVELOPMENT_TEAM: "TEAMFIX123",
+    DEVELOPMENT_TEAM: mode === "missing-app-team" ? "" : "TEAMFIX123",
     CODE_SIGN_STYLE: "Manual",
     CODE_SIGN_ENTITLEMENTS: "Fixture/Watch.entitlements",
     CODE_SIGNING_ALLOWED: "NO",
@@ -153,16 +159,18 @@ if (tool === "installer") {
     buildSettings: {
       ...signing,
       TARGET_BUILD_DIR: mode === "relative-product" ? "relative" : path.join(root, "project derived data"),
+      TARGET_TEMP_DIR: targetTempDir,
       FULL_PRODUCT_NAME: "Watch Product.app",
       EXECUTABLE_NAME: "OpenClawWatchApp",
-      PRODUCT_BUNDLE_IDENTIFIER: "org.example.watch",
-      AppIdentifierPrefix: "SEEDFIX123."
+      PRODUCT_BUNDLE_IDENTIFIER: mode === "missing-bundle-id" ? "" : "org.example.watch"
     }
   };
   const tests = {
     target: "OpenClawWatchTests",
     buildSettings: {
       ...signing,
+      DEVELOPMENT_TEAM: mode === "team-mismatch" ? "OTHERTEAM1" :
+        mode === "missing-test-team" ? "" : signing.DEVELOPMENT_TEAM,
       CODE_SIGN_ENTITLEMENTS: "Fixture/WatchTests.entitlements",
       TARGET_BUILD_DIR: path.join(root, "project derived data", "Watch Product.app", "PlugIns"),
       FULL_PRODUCT_NAME: "Watch Tests.xctest",
@@ -187,14 +195,29 @@ if (tool === "installer") {
     console.log(JSON.stringify({ "get-task-allow": true }));
   }
 } else if (tool === "plutil") {
-  const entitlements = JSON.parse(readFileSync(args.at(-1) === "-" ? 0 : args.at(-1), "utf8"));
-  if (mode === "cleanup-failed") {
+  const input = args.at(-1);
+  const plist = JSON.parse(readFileSync(input === "-" ? 0 : input, "utf8"));
+  if (mode === "cleanup-failed" && path.basename(input) === "entitlements.plist" &&
+      path.dirname(path.dirname(input)) === process.env.TMPDIR) {
     chmodSync(process.env.TMPDIR, 0o500);
   }
-  console.log(JSON.stringify(entitlements));
+  console.log(JSON.stringify(plist));
 } else if (args.some((arg) => arg === "test" || arg === "test-without-building") && mode === "voice-tests-failed") {
   process.exit(25);
 } else if (args.includes("build-for-testing")) {
+  mkdirSync(targetTempDir, { recursive: true });
+  if (mode !== "missing-generated") {
+    const generated = mode === "missing-generated-id" ? {} : {
+      "application-identifier": mode === "unresolved-generated-id" ?
+        "$(AppIdentifierPrefix)org.example.watch" : mode === "invalid-generated-prefix" ?
+        "BAD_PREFIX.org.example.watch" : mode === "wrong-generated-bundle" ?
+        "SEEDFIX123.org.example.other" : applicationID
+    };
+    writeFileSync(generatedPath, mode === "malformed-generated" ? "not a plist" : JSON.stringify(generated));
+  }
+  writeFileSync(path.join(productPath, "Info.plist"), JSON.stringify({
+    CFBundleIdentifier: mode === "built-bundle-mismatch" ? "org.example.other" : "org.example.watch"
+  }));
   const derivedIndex = args.indexOf("-derivedDataPath");
   if (derivedIndex >= 0) {
     mkdirSync(path.join(args[derivedIndex + 1], "Build/Products/Debug-watchsimulator/OpenClawWatchApp.app"), { recursive: true });
@@ -335,7 +358,7 @@ describe.skipIf(process.platform === "win32")("SimSlim workflow admission", () =
 
 describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => {
   it("reuses project build products and installs the exact Watch target before running its tests", () => {
-    const { result, commands, product, testProduct, temporaryRoot } = runWatchStep();
+    const { result, commands, product, testProduct, root, temporaryRoot } = runWatchStep();
     expect(result.status, result.stderr).toBe(0);
     const xcodeCommands = commands.filter((command) => command.tool === "xcodebuild");
     for (const command of xcodeCommands) {
@@ -418,6 +441,22 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
     expect(plistPath).not.toBe("-");
     expect(path.dirname(path.dirname(plistPath))).toBe(temporaryRoot);
     expect(commands.slice(0, installIndex).filter((command) => command.tool === "plutil")).toEqual([
+      { tool: "plutil", args: ["-convert", "json", "-o", "-", path.join(product, "Info.plist")] },
+      {
+        tool: "plutil",
+        args: [
+          "-convert",
+          "json",
+          "-o",
+          "-",
+          path.join(
+            root,
+            "project intermediates",
+            "Watch Product.build",
+            "Watch Product.app-Simulated.xcent",
+          ),
+        ],
+      },
       { tool: "plutil", args: ["-convert", "json", "-o", "-", plistPath] },
     ]);
     expect(readdirSync(temporaryRoot)).toEqual([]);
@@ -425,6 +464,7 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
       '{"watchBuildSettings":{"OpenClawWatchApp":1,"OpenClawWatchTests":1}}',
     );
     expect(result.stderr).toContain('"team":"TEAMFIX123"');
+    expect(result.stderr).toContain('"applicationID":"SEEDFIX123.org.example.watch"');
     expect(result.stderr).toContain('"style":"Manual"');
     expect(result.stderr).toContain('"entitlementsFile":"Fixture/Watch.entitlements"');
     expect(result.stderr).toContain('"entitlementsSource":"__TEXT,__entitlements"');
@@ -447,6 +487,19 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
     "malformed-section",
     "missing-application-id",
     "wrong-application-id",
+    "wrong-compiled-seed",
+    "compiled-seed-case-mismatch",
+    "missing-generated",
+    "malformed-generated",
+    "missing-generated-id",
+    "unresolved-generated-id",
+    "invalid-generated-prefix",
+    "wrong-generated-bundle",
+    "missing-app-team",
+    "missing-test-team",
+    "team-mismatch",
+    "missing-bundle-id",
+    "built-bundle-mismatch",
     "malformed-keychain-groups",
   ])("rejects %s settings before simulator installation or test execution", (mode) => {
     const { result, commands, temporaryRoot } = runWatchStep(mode);
@@ -468,6 +521,41 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
         `Expected one OpenClawWatchTests target from Xcode, got ${testCount}`,
       );
     }
+    if (mode === "missing-app-team") {
+      expect(result.stderr).toContain("Missing configured Watch app development team");
+    } else if (mode === "team-mismatch" || mode === "missing-test-team") {
+      expect(result.stderr).toContain("Configured Watch test team does not match the app team");
+    } else if (mode === "missing-bundle-id") {
+      expect(result.stderr).toContain("Missing configured Watch app bundle identifier");
+    } else if (mode === "built-bundle-mismatch") {
+      expect(result.stderr).toContain(
+        "Built Watch bundle identifier does not match its configuration",
+      );
+    } else if (
+      [
+        "missing-generated-id",
+        "unresolved-generated-id",
+        "invalid-generated-prefix",
+        "wrong-generated-bundle",
+      ].includes(mode)
+    ) {
+      expect(result.stderr).toContain(
+        "Expected a fully evaluated generated Watch application identifier for the configured bundle",
+      );
+    } else if (mode === "wrong-compiled-seed" || mode === "compiled-seed-case-mismatch") {
+      expect(result.stderr).toContain(
+        "Simulated Watch host application identifier does not match its build identity",
+      );
+    }
+    if (mode === "missing-generated" || mode === "malformed-generated") {
+      expect(
+        commands.some(
+          (command) =>
+            command.tool === "plutil" && command.args.at(-1)?.endsWith("-Simulated.xcent"),
+        ),
+      ).toBe(true);
+      expect(commands.some((command) => command.args[0] === "segedit")).toBe(false);
+    }
     expect(result.stderr).not.toContain("OtherTarget");
     expect(result.stderr).not.toContain("/wrong");
     expect(commands.some((command) => command.args.includes("install"))).toBe(false);
@@ -480,6 +568,12 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/EACCES|EPERM/);
     expect(commands.some((command) => command.tool === "plutil")).toBe(true);
+    expect(
+      commands.some(
+        (command) =>
+          command.tool === "plutil" && command.args.at(-1)?.endsWith("/entitlements.plist"),
+      ),
+    ).toBe(true);
     expect(commands.some((command) => command.args.includes("install"))).toBe(false);
     expect(commands.some((command) => command.args.includes("test-without-building"))).toBe(false);
     expect(readdirSync(temporaryRoot)).toHaveLength(1);
@@ -489,6 +583,14 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
     const { result, commands } = runWatchStep("explicit-private-group");
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toContain('"keychainAccessGroups":["SEEDFIX123.org.example.watch"]');
+    expect(commands.some((command) => command.args.includes("test-without-building"))).toBe(true);
+  });
+
+  it("preserves a mixed-case generated App ID prefix independently of the configured team", () => {
+    const { result, commands } = runWatchStep("mixed-case-prefix");
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('"team":"TEAMFIX123"');
+    expect(result.stderr).toContain('"applicationID":"SeedFix123.org.example.watch"');
     expect(commands.some((command) => command.args.includes("test-without-building"))).toBe(true);
   });
 

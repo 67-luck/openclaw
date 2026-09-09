@@ -75,9 +75,14 @@ app_path="$(
       if (!app.EXECUTABLE_NAME || tests.TEST_HOST !== path.join(appPath, app.EXECUTABLE_NAME)) {
         throw new Error("Watch tests must run in the verified Watch app host");
       }
-      if (!app.DEVELOPMENT_TEAM || tests.DEVELOPMENT_TEAM !== app.DEVELOPMENT_TEAM ||
-          !app.AppIdentifierPrefix || !app.PRODUCT_BUNDLE_IDENTIFIER) {
-        throw new Error("Expected configured Watch signing identity and team");
+      if (!app.DEVELOPMENT_TEAM) {
+        throw new Error("Missing configured Watch app development team");
+      }
+      if (tests.DEVELOPMENT_TEAM !== app.DEVELOPMENT_TEAM) {
+        throw new Error("Configured Watch test team does not match the app team");
+      }
+      if (!app.PRODUCT_BUNDLE_IDENTIFIER) {
+        throw new Error("Missing configured Watch app bundle identifier");
       }
       for (const target of [app, tests]) {
         if (target.CODE_SIGNING_ALLOWED !== "YES" || target.CODE_SIGN_IDENTITY !== "-" ||
@@ -88,6 +93,23 @@ app_path="$(
       for (const bundle of [appPath, testsPath]) {
         execFileSync("codesign", ["--verify", "--strict", bundle], { stdio: "pipe" });
       }
+      const readPlist = (filePath) => JSON.parse(execFileSync(
+        "plutil", ["-convert", "json", "-o", "-", filePath], { encoding: "utf8" }));
+      if (readPlist(path.join(appPath, "Info.plist")).CFBundleIdentifier !== app.PRODUCT_BUNDLE_IDENTIFIER) {
+        throw new Error("Built Watch bundle identifier does not match its configuration");
+      }
+      if (!app.TARGET_TEMP_DIR || !path.isAbsolute(app.TARGET_TEMP_DIR)) {
+        throw new Error("Expected an absolute Watch target intermediate directory from Xcode");
+      }
+      // The query may omit provisioning-derived AppIdentifierPrefix. Read the
+      // generated linker input for this target instead of deriving a seed from its team.
+      const generatedPath = path.join(app.TARGET_TEMP_DIR, app.FULL_PRODUCT_NAME + "-Simulated.xcent");
+      const expectedApplicationID = readPlist(generatedPath)["application-identifier"];
+      if (typeof expectedApplicationID !== "string" ||
+          !/^[A-Za-z0-9]{10}\.[A-Za-z0-9.-]+$/.test(expectedApplicationID) ||
+          expectedApplicationID.slice(11) !== app.PRODUCT_BUNDLE_IDENTIFIER) {
+        throw new Error("Expected a fully evaluated generated Watch application identifier for the configured bundle");
+      }
       const extractionDirectory = mkdtempSync(path.join(tmpdir(), "openclaw-watch-entitlements-"));
       try {
         // Simulator identity lives in the executable section, not its code signature.
@@ -96,10 +118,9 @@ app_path="$(
         execFileSync("xcrun", [
           "segedit", tests.TEST_HOST, "-extract", "__TEXT", "__entitlements", plistPath,
         ], { stdio: "pipe" });
-        const entitlements = JSON.parse(execFileSync(
-          "plutil", ["-convert", "json", "-o", "-", plistPath], { encoding: "utf8" }));
+        const entitlements = readPlist(plistPath);
         const applicationID = entitlements["application-identifier"];
-        if (applicationID !== `${app.AppIdentifierPrefix}${app.PRODUCT_BUNDLE_IDENTIFIER}`) {
+        if (applicationID !== expectedApplicationID) {
           throw new Error("Simulated Watch host application identifier does not match its build identity");
         }
         // The application identifier supplies the private Keychain group when no
