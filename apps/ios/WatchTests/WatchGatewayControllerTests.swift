@@ -314,8 +314,9 @@ struct WatchGatewayControllerTests {
                 #expect(status.contains("unknown") || status.contains("uncertain"))
                 #expect(!conversations.connected)
             }
-            let creates = try fixture.snapshot.filter {
-                $0.request.url?.lastPathComponent == "frames" && $0.frame.method == "sessions.create"
+            let creates = try fixture.snapshot.filter { exchange in
+                guard exchange.request.url?.lastPathComponent == "frames" else { return false }
+                return try exchange.frame.method == "sessions.create"
             }
             #expect(creates.count == 1)
         }
