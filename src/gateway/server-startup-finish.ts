@@ -23,6 +23,7 @@ import {
   reconcileClientPluginNodeCapabilities,
 } from "./plugin-node-capability.js";
 import { collectGatewayProcessMemoryUsageMb, finishGatewayRestartTrace } from "./restart-trace.js";
+import { createGatewayOperatorHttpRuntime } from "./operator-http.js";
 import { activateGatewayAgentDatabaseStartup } from "./server-agent-database-startup.js";
 import type { GatewayKernelRuntime } from "./server-kernel-request-runtime.js";
 import { clearGatewayMaintenanceHandles } from "./server-maintenance-lifecycle.js";
@@ -32,6 +33,7 @@ import { assertGatewayRuntimeSecurityConfig } from "./server-runtime-config.js";
 import { logGatewayReady } from "./server-startup-readiness.js";
 import { startGatewayTlsRenewal } from "./server-tls-renewal.js";
 import type { GatewayHttpTransport } from "./server-transport-bridge.js";
+import type { GatewayConnectionOptions } from "./server/connection.js";
 import { collectGatewayWorkerPoolMetrics } from "./server/process-vitals.js";
 import { disconnectDisallowedGatewayPolicyClients } from "./server/ws-origin-policy.js";
 import { DEFAULT_TERMINAL_DETACH_SECONDS } from "./terminal/session-limits.js";
@@ -153,16 +155,10 @@ export async function finishGatewayStartup(params: {
     "gateway.ws-imports",
     () => import("./server/ws-connection.js"),
   );
-  await startupTrace.measure("gateway.ws-attach", () =>
-    attachGatewayWsConnectionHandler({
-      wss,
+  const connectionOptions: GatewayConnectionOptions = {
       clients,
       connectionWork: runtime.connectionWork,
       bootId,
-      preauthConnectionBudget,
-      port,
-      gatewayHost: bindHost ?? undefined,
-      pluginSurfaceScheme: gatewayTls.enabled ? "https" : "http",
       getPluginNodeCapabilities,
       getResolvedAuth,
       getRequiredSharedGatewaySessionGeneration: sharedGatewaySessionGenerationState.reader,
@@ -179,12 +175,28 @@ export async function finishGatewayStartup(params: {
       logWsControl,
       extraHandlers: attachedGatewayExtraHandlers,
       getMethodRegistry: () => getAttachedGatewayMethodRegistry(),
-      ...(workerEnvironmentService ? { workerConnectionService: workerEnvironmentService } : {}),
       broadcast,
       refreshHealthSnapshot: gatewayRequestContext.refreshHealthSnapshot,
       buildRequestContext: () => gatewayRequestContext,
+  };
+  await startupTrace.measure("gateway.ws-attach", () =>
+    attachGatewayWsConnectionHandler({
+      ...connectionOptions,
+      wss,
+      preauthConnectionBudget,
+      port,
+      gatewayHost: bindHost ?? undefined,
+      pluginSurfaceScheme: gatewayTls.enabled ? "https" : "http",
+      ...(workerEnvironmentService ? { workerConnectionService: workerEnvironmentService } : {}),
     }),
   );
+  const operatorHttp = createGatewayOperatorHttpRuntime({
+    ...connectionOptions,
+    basePath: runtime.controlUiBasePath,
+    preauthConnectionBudget,
+  });
+  runtime.operatorHttpRequestHandler.current = operatorHttp.handleRequest;
+  registerGatewayLifetimeSidecars({ stop: operatorHttp.close });
   await startupTrace.measure("http.listen", () => startListening());
   kernel.setDispatchReady(true);
   startupTrace.mark("http.bound");
