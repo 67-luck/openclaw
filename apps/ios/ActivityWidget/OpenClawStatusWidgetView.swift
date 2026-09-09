@@ -18,7 +18,10 @@ struct OpenClawStatusWidgetContent: View {
         Group {
             switch self.family {
             case .accessoryInline:
-                self.statusLine
+                ViewThatFits(in: .vertical) {
+                    self.statusLine()
+                    self.statusLine(compact: true)
+                }
             case .accessoryCircular:
                 ZStack {
                     AccessoryWidgetBackground()
@@ -27,7 +30,7 @@ struct OpenClawStatusWidgetContent: View {
             case .accessoryRectangular:
                 ViewThatFits(in: .vertical) {
                     self.summary(labelLineLimit: 1)
-                    self.statusLine
+                    self.statusLine()
                 }
             case .systemSmall, .systemMedium, .systemLarge, .systemExtraLarge:
                 ViewThatFits(in: .vertical) {
@@ -37,11 +40,12 @@ struct OpenClawStatusWidgetContent: View {
                             .foregroundStyle(.secondary)
                         self.summary(labelLineLimit: 2)
                     }
-                    self.statusLine
+                    self.summary(labelLineLimit: 1)
+                    self.statusLine()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             @unknown default:
-                self.statusLine
+                self.statusLine()
             }
         }
         .privacySensitive()
@@ -57,7 +61,7 @@ struct OpenClawStatusWidgetContent: View {
                     .lineLimit(labelLineLimit)
                     .minimumScaleFactor(0.8)
             }
-            self.statusLine
+            self.statusLine()
             if !self.presentation.contextText.isEmpty {
                 Text(verbatim: self.presentation.contextText)
                     .font(OpenClawActivityType.caption)
@@ -68,10 +72,10 @@ struct OpenClawStatusWidgetContent: View {
         }
     }
 
-    private var statusLine: some View {
+    private func statusLine(compact: Bool = false) -> some View {
         Label {
             Text(verbatim: self.presentation.statusText)
-                .font(OpenClawActivityType.caption)
+                .font(compact ? OpenClawActivityType.caption2 : OpenClawActivityType.caption)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         } icon: {

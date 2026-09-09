@@ -17,6 +17,10 @@ enum OpenClawActivityType {
         body(size: 12)
     }
 
+    static var caption2: Font {
+        .custom("Inter-Regular", size: 10, relativeTo: .caption2)
+    }
+
     static func symbol(size: CGFloat, weight: Font.Weight) -> Font {
         .system(size: size, weight: weight)
     }
