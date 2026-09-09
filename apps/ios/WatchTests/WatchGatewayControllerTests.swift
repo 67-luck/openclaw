@@ -715,15 +715,17 @@ struct WatchGatewayControllerTests {
         scopes: [String] = GatewayOperatorHTTPFixture.scopes,
         token: String = GatewayOperatorHTTPFixture.token) async throws
     {
-        let connecting = Task {
-            guard !Task.isCancelled else { return }
-            await conversations.refresh()
-        }
+        var connecting: Task<Void, Never>?
         do {
             var begin = try await fixture.next("begin or retired connection output")
             while begin.request.url?.lastPathComponent != "connections" {
                 try #require(begin.request.httpMethod == "DELETE" || begin.request.url?.lastPathComponent == "poll")
                 begin = try await fixture.next("begin after retired connection output")
+            }
+            // Join the initiated connection; an earlier refresh can supersede claimed upgrade cleanup.
+            connecting = Task {
+                guard !Task.isCancelled else { return }
+                await conversations.refresh()
             }
             try begin.respond(status: 201, body: GatewayOperatorHTTPFixture.beginBody())
             let connect = try await Self.nextFrame(fixture, method: "connect")
@@ -740,12 +742,12 @@ struct WatchGatewayControllerTests {
             try await Self.reply(
                 fixture, method: "sessions.list", sequence: 3, cursor: 3,
                 payload: AnyCodable(["sessions": [["key": "session-one"], ["key": "session-two"]]]))
-            await connecting.value
+            await connecting?.value
             #expect(conversations.connected)
         } catch {
-            connecting.cancel()
+            connecting?.cancel()
             await conversations.disconnect(clear: true)
-            await connecting.value
+            await connecting?.value
             throw error
         }
     }
