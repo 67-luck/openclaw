@@ -183,12 +183,14 @@ final class OpenClawWidgetVisualProofTests: XCTestCase {
         container.view.backgroundColor = .systemBackground
         let window = UIWindow(frame: CGRect(origin: .zero, size: canvas))
         defer {
-            window.resignKey()
-            window.isHidden = true
-            window.rootViewController = nil
+            container.beginAppearanceTransition(false, animated: false)
+            container.endAppearanceTransition()
             hosting.willMove(toParent: nil)
             hosting.view.removeFromSuperview()
             hosting.removeFromParent()
+            window.resignKey()
+            window.isHidden = true
+            window.rootViewController = nil
         }
         window.rootViewController = container
         container.addChild(hosting)
@@ -196,7 +198,9 @@ final class OpenClawWidgetVisualProofTests: XCTestCase {
         hosting.view.backgroundColor = .clear
         hosting.view.frame = contentFrame
         hosting.didMove(toParent: container)
+        container.beginAppearanceTransition(true, animated: false)
         window.makeKeyAndVisible()
+        container.endAppearanceTransition()
         container.view.frame = window.bounds
         container.view.setNeedsLayout()
         container.view.layoutIfNeeded()
@@ -207,15 +211,14 @@ final class OpenClawWidgetVisualProofTests: XCTestCase {
         format.scale = 1
         format.opaque = true
         format.preferredRange = .standard
-        var rendered = false
-        let image = UIGraphicsImageRenderer(size: canvas, format: format).image { _ in
-            rendered = container.view.drawHierarchy(in: container.view.bounds, afterScreenUpdates: true)
+        let image = UIGraphicsImageRenderer(size: canvas, format: format).image { context in
+            // Hostless tests have no onscreen render-server hierarchy; capture the native layer tree.
+            container.view.layer.render(in: context.cgContext)
         }
         let attachment = XCTAttachment(image: image)
         attachment.name = name
         attachment.lifetime = .keepAlways
         self.add(attachment)
-        XCTAssertTrue(rendered, name)
         XCTAssertEqual(image.size, canvas, name)
         XCTAssertEqual(image.scale, 1, name)
         let pixels = try Pixels(image: image)
