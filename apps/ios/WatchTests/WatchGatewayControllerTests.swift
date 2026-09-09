@@ -264,6 +264,63 @@ struct WatchGatewayControllerTests {
         }
     }
 
+    @Test(arguments: ["rejected", "uncertain", "created"])
+    func `creating the first conversation records an outcome without an existing route`(_ outcome: String)
+        async throws
+    {
+        try await Self.withConnectedConversations(
+            scopes: ["operator.read", "operator.talk", "operator.write", "operator.approvals"])
+        { _, conversations, fixture in
+            #expect(conversations.route == nil)
+            let create = Task { await conversations.createSession() }
+            let request = try await Self.nextFrame(fixture, method: "sessions.create")
+            #expect(conversations.deliveryStatus == "Creating conversation...")
+            request.accept(4)
+            let poll = try await fixture.next()
+            if outcome == "uncertain" {
+                try poll.respond(status: 409, body: JSONSerialization.data(withJSONObject: [
+                    "error": ["code": "ingress_changed", "message": "Ingress changed", "resyncRequired": true],
+                ]))
+            } else if outcome == "rejected" {
+                try poll.respond(body: JSONSerialization.data(withJSONObject: [
+                    "acceptedClientSeq": 4,
+                    "frames": [[
+                        "cursor": 4,
+                        "frame": [
+                            "type": "res", "id": request.frame.id, "ok": false,
+                            "error": ["code": "UNAVAILABLE", "message": "Conversation could not be created"],
+                        ],
+                    ]],
+                ]))
+            } else {
+                try poll.respond(body: GatewayOperatorHTTPFixture.delivery(
+                    requestID: request.frame.id,
+                    payload: AnyCodable(["ok": true, "key": "new-session"]),
+                    cursor: 4, accepted: 4))
+                // A concurrent list update can omit the new session; success must still be visible.
+                try await Self.reply(
+                    fixture, method: "sessions.list", sequence: 5, cursor: 5,
+                    payload: AnyCodable(["sessions": [String]()]))
+            }
+            await create.value
+            #expect(!conversations.busy)
+            #expect(conversations.route == nil)
+            let status = try #require(conversations.deliveryStatus)
+            if outcome == "rejected" {
+                #expect(status == "Conversation could not be created")
+            } else if outcome == "created" {
+                #expect(status == "Conversation created")
+            } else {
+                #expect(status.contains("unknown") || status.contains("uncertain"))
+                #expect(!conversations.connected)
+            }
+            let creates = try fixture.snapshot.filter {
+                $0.request.url?.lastPathComponent == "frames" && $0.frame.method == "sessions.create"
+            }
+            #expect(creates.count == 1)
+        }
+    }
+
     @Test func `operator write failure preserves redeemed node and leaves fallback setup incomplete`() async throws {
         try await Self.withUnconfiguredWatch { controller, stateDirectory in
             let sentAtMs = Int64(Date().timeIntervalSince1970 * 1000)

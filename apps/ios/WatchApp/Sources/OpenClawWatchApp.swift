@@ -23,6 +23,15 @@ enum WatchScreenshotMode {
         || ProcessInfo.processInfo.environment["OPENCLAW_WATCH_SCREENSHOT_MODE"] == "1"
         || UserDefaults.standard.bool(forKey: WatchScreenshotMode.defaultsKey)
         || WatchScreenshotMode.approvals
+        || Self.directProofEnabled
+
+    private static var directProofEnabled: Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        WatchDirectScreenshot.current != nil
+        #else
+        false
+        #endif
+    }
 }
 
 enum WatchDestination: Hashable {
@@ -119,6 +128,11 @@ struct OpenClawWatchApp: App {
                     self.refreshExecApprovalReview()
                     self.receiver?.replayChatDelivery()
                 }
+                #if DEBUG && targetEnvironment(simulator)
+                .sheet(item: .constant(WatchDirectScreenshot.current)) { scenario in
+                    WatchDirectScreenshotView(scenario: scenario)
+                }
+                #endif
         }
         .onChange(of: self.scenePhase) { _, newPhase in
             switch newPhase {

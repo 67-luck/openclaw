@@ -112,13 +112,126 @@ struct WatchDirectApproval: Identifiable, Sendable {
     }
 
     var detail: String {
+        self.review.detail
+    }
+
+    /// The generated protocol leaves nullable strings and some enums as AnyCodable.
+    /// Render and authorize from one projection so unsupported context cannot enable an allow.
+    private var review: (detail: String, decisions: [ApprovalDecision]) {
+        var unsupported: [String] = []
+        func read(
+            _ value: OpenClawProtocol.AnyCodable?,
+            field: String,
+            nullable: Bool = true,
+            nonempty: Bool = false,
+            choices: [String]? = nil) -> String?
+        {
+            guard let value else { return nil }
+            if nullable, value.value is NSNull { return nil }
+            guard let text = value.stringValue,
+                  !nonempty || !text.isEmpty,
+                  choices?.contains(text) != false
+            else {
+                unsupported.append(field)
+                return nil
+            }
+            return text
+        }
+        let text: [String?]
+        let context: [(String, String?)]
+        let scope: ApprovalScope?
+        let decisions: [ApprovalDecision]
         switch self.presentation {
         case let .exec(value):
-            [value.commandtext, value.warningtext?.stringValue].compactMap(\.self).joined(separator: "\n")
+            text = [
+                read(value.commandpreview, field: String(localized: "Command preview")),
+                value.commandtext,
+                read(value.warningtext, field: String(localized: "Warning")),
+            ]
+            context = [
+                (String(localized: "Host"), read(value.host, field: String(localized: "Host"))),
+                (String(localized: "Node"), read(value.nodeid, field: String(localized: "Node"), nonempty: true)),
+                (String(localized: "Agent"), read(value.agentid, field: String(localized: "Agent"), nonempty: true)),
+            ]
+            scope = value.scope
+            decisions = value.alloweddecisions
         case let .plugin(value):
-            [value.description, value.detail].compactMap(\.self).joined(separator: "\n")
-        case let .systemAgent(value): value.description
+            text = [value.description, value.detail, value.externalresolution?.label]
+            context = [
+                (String(localized: "Severity"), value.severity.rawValue),
+                (String(localized: "Plugin"), read(value.pluginid, field: String(localized: "Plugin"), nonempty: true)),
+                (String(localized: "Tool"), read(value.toolname, field: String(localized: "Tool"), nonempty: true)),
+                (String(localized: "Agent"), read(value.agentid, field: String(localized: "Agent"), nonempty: true)),
+            ]
+            scope = value.scope
+            decisions = value.alloweddecisions
+        case let .systemAgent(value):
+            text = [value.description]
+            context = [
+                (String(localized: "Agent"), read(value.agentid, field: String(localized: "Agent"), nonempty: true)),
+                (String(localized: "Proposal"), value.proposalhash),
+            ]
+            scope = nil
+            decisions = value.alloweddecisions.compactMap {
+                read($0, field: String(localized: "Decision"), nullable: false, choices: ["allow-once", "deny"])
+                    .flatMap(ApprovalDecision.init(rawValue:))
+            }
         }
+        let metadata = context.compactMap { label, value in value.map { "\(label): \($0)" } }
+        var lines = text.compactMap(\.self) + metadata
+        switch scope {
+        case let .messageSend(value):
+            lines += [
+                String(localized: "Target: \(value.target)"),
+                String(localized: "Recipients: \(value.recipientcount)"),
+            ]
+            if let audience = read(
+                value.audience,
+                field: String(localized: "Audience"),
+                nullable: false,
+                choices: ["internal", "external"])
+            {
+                lines.append(String(localized: "Audience: \(audience)"))
+            }
+            let recipients = value.recipients ?? []
+            lines.append(contentsOf: recipients)
+            if value.recipientcount > recipients.count {
+                lines.append(String(localized: "\(value.recipientcount - recipients.count) more recipients"))
+            }
+        case let .payment(value):
+            lines += [
+                String(localized: "Amount: \(value.amount) \(value.currency)"),
+                String(localized: "Pay to: \(value.target)"),
+            ]
+        case let .externalPost(value):
+            lines.append(String(localized: "Post to: \(value.target)"))
+            if let visibility = read(
+                value.visibility,
+                field: String(localized: "Visibility"),
+                nullable: false,
+                choices: ["public", "restricted"])
+            {
+                lines.append(String(localized: "Visibility: \(visibility)"))
+            }
+        case let .standingGrant(value):
+            lines += [
+                String(localized: "Automation: \(value.automation)"),
+                String(localized: "Always allow runs this exact command without asking:"),
+                value.command,
+                value.expiresindays.map { String(localized: "Expires in \($0) days; revocable") }
+                    ?? String(localized: "Until revoked or the automation changes"),
+            ]
+        case nil:
+            break
+        }
+        if !unsupported.isEmpty {
+            let fields = unsupported.joined(separator: ", ")
+            lines
+                .append(
+                    String(
+                        localized: "Unsupported approval context: \(fields). Review on the Gateway before allowing."))
+        }
+        return (lines.joined(separator: "\n"), unsupported.isEmpty ? decisions : decisions.filter { $0 == .deny })
     }
 
     var decisions: [ApprovalDecision] {
@@ -126,12 +239,7 @@ struct WatchDirectApproval: Identifiable, Sendable {
               pending.expiresatms > Int(Date().timeIntervalSince1970 * 1000),
               !self.needsReadback, !self.resolving
         else { return [] }
-        switch self.presentation {
-        case let .exec(value): return value.alloweddecisions
-        case let .plugin(value): return value.alloweddecisions
-        case let .systemAgent(value):
-            return value.alloweddecisions.compactMap { $0.stringValue.flatMap(ApprovalDecision.init(rawValue:)) }
-        }
+        return self.review.decisions
     }
 
     var status: String {

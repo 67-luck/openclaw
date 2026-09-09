@@ -400,6 +400,7 @@ final class WatchDirectConversations {
         let generation = self.generation
         let selection = self.selection
         self.busy = true
+        self.deliveryStatus = String(localized: "Creating conversation...")
         defer {
             if self.owns(generation, selection: selection) { self.busy = false }
         }

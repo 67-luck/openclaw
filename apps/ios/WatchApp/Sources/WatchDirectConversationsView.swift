@@ -15,6 +15,7 @@ struct WatchDirectConversationsView: View {
                 Text(self.model.status)
                     .font(WatchClawType.body(size: 12))
                     .foregroundStyle(.secondary)
+                WatchDirectDeliveryStatus(status: self.model.deliveryStatus)
                 if self.gateway.setupIncomplete || self.gateway.recoveryRequired || !self.gateway.isConfigured {
                     NavigationLink(value: WatchDestination.pairWatch) {
                         self.label("Pair Watch", symbol: "key")
@@ -75,25 +76,13 @@ struct WatchDirectConversationsView: View {
                 self.label(self.selectedAgentName, symbol: "person.crop.circle")
             }
             NavigationLink {
-                List {
-                    Button {
-                        Task { await self.model.createSession() }
-                    } label: {
-                        self.label("New conversation", symbol: "plus")
-                    }
-                    .disabled(!self.model.canWrite)
-                    ForEach(self.model.sessions) { session in
-                        Button {
-                            Task { await self.model.selectSession(session) }
-                        } label: {
-                            Text(session.title)
-                                .font(WatchClawType.body(size: 13))
-                                .lineLimit(3)
-                        }
-                        .disabled(self.model.busy || self.model.upgrading)
-                    }
-                }
-                .navigationTitle("Conversations")
+                WatchDirectSessionChooser(
+                    sessions: self.model.sessions,
+                    deliveryStatus: self.model.deliveryStatus,
+                    canWrite: self.model.canWrite,
+                    busy: self.model.busy || self.model.upgrading,
+                    onCreate: { Task { await self.model.createSession() } },
+                    onSelect: { session in Task { await self.model.selectSession(session) } })
             } label: {
                 self.label(self.selectedSessionName, symbol: "text.bubble")
             }
@@ -118,11 +107,6 @@ struct WatchDirectConversationsView: View {
                 Text("Showing recent messages")
                     .font(WatchClawType.body(size: 11))
                     .foregroundStyle(.secondary)
-            }
-            if let status = self.model.deliveryStatus {
-                Text(status)
-                    .font(WatchClawType.body(size: 12))
-                    .fixedSize(horizontal: false, vertical: true)
             }
             HStack {
                 Button {
@@ -159,24 +143,8 @@ struct WatchDirectConversationsView: View {
                         .font(WatchClawType.body(size: 13))
                 }
                 ForEach(self.model.approvals) { approval in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(approval.title)
-                            .font(WatchClawType.title(size: 15))
-                        Text(approval.detail)
-                            .font(WatchClawType.body(size: 12))
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text(approval.status)
-                            .font(WatchClawType.label(size: 11, weight: .semibold))
-                        ForEach(approval.decisions, id: \.rawValue) { decision in
-                            Button {
-                                Task { await self.model.resolve(approval, decision: decision) }
-                            } label: {
-                                self.label(
-                                    self.decisionTitle(decision),
-                                    symbol: decision == .deny ? "xmark" : "checkmark")
-                            }
-                            .disabled(!self.model.canApprove)
-                        }
+                    WatchDirectApprovalReview(approval: approval, canApprove: self.model.canApprove) { decision in
+                        Task { await self.model.resolve(approval, decision: decision) }
                     }
                     Divider()
                 }
@@ -215,6 +183,82 @@ struct WatchDirectConversationsView: View {
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {
             Image(systemName: symbol)
+        }
+    }
+}
+
+struct WatchDirectDeliveryStatus: View {
+    let status: String?
+
+    var body: some View {
+        if let status {
+            Text(status)
+                .font(WatchClawType.body(size: 12))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("watch-direct-delivery-status")
+        }
+    }
+}
+
+struct WatchDirectSessionChooser: View {
+    let sessions: [WatchDirectSession]
+    let deliveryStatus: String?
+    let canWrite: Bool
+    let busy: Bool
+    let onCreate: () -> Void
+    let onSelect: (WatchDirectSession) -> Void
+
+    var body: some View {
+        List {
+            WatchDirectDeliveryStatus(status: self.deliveryStatus)
+            Button(action: self.onCreate) {
+                Label {
+                    Text("New conversation")
+                        .font(WatchClawType.body(size: 13, weight: .semibold))
+                } icon: {
+                    Image(systemName: "plus")
+                }
+            }
+            .disabled(!self.canWrite)
+            ForEach(self.sessions) { session in
+                Button { self.onSelect(session) } label: {
+                    Text(session.title)
+                        .font(WatchClawType.body(size: 13))
+                        .lineLimit(3)
+                }
+                .disabled(self.busy)
+            }
+        }
+        .navigationTitle("Conversations")
+    }
+}
+
+struct WatchDirectApprovalReview: View {
+    let approval: WatchDirectApproval
+    let canApprove: Bool
+    let onDecision: (ApprovalDecision) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(self.approval.title)
+                .font(WatchClawType.title(size: 15))
+            Text(self.approval.detail)
+                .font(WatchClawType.body(size: 12))
+                .fixedSize(horizontal: false, vertical: true)
+            Text(self.approval.status)
+                .font(WatchClawType.label(size: 11, weight: .semibold))
+            ForEach(self.approval.decisions, id: \.rawValue) { decision in
+                Button { self.onDecision(decision) } label: {
+                    Label {
+                        Text(self.decisionTitle(decision))
+                            .font(WatchClawType.body(size: 13, weight: .semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: decision == .deny ? "xmark" : "checkmark")
+                    }
+                }
+                .disabled(!self.canApprove)
+            }
         }
     }
 
