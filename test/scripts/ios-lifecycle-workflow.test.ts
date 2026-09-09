@@ -364,7 +364,24 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
     );
     expect(artifact?.if).toContain("always()");
     expect(artifact?.with?.["if-no-files-found"]).toBe("error");
-    expect(artifact?.with?.path).toBe("${{ runner.temp }}/watch-qualification");
+    expect(String(artifact?.with?.path).trim().split("\n")).toEqual([
+      "${{ runner.temp }}/watch-qualification/source-head.txt",
+      "${{ runner.temp }}/watch-qualification/xcode-version.txt",
+      "${{ runner.temp }}/watch-qualification/shared-tests.log",
+      "${{ runner.temp }}/watch-qualification/watch-tests.log",
+      "${{ runner.temp }}/watch-qualification/WatchOperationTests.xcresult",
+      "${{ runner.temp }}/watch-qualification/ui-fixtures",
+      "${{ runner.temp }}/watch-qualification/operator-https.json",
+    ]);
+    const liveHTTPS = qualificationSteps.find(
+      (step) => step.name === "Prove Foundation operator HTTPS against a real Gateway",
+    );
+    expect(liveHTTPS?.if).toContain(
+      "github.event_name == 'workflow_dispatch' && inputs.watch_qualification",
+    );
+    expect(liveHTTPS?.run).toBe(
+      "node --import ./scripts/tsx.mjs scripts/ios-watch-operator-https-proof.mts",
+    );
     const shared = qualificationSteps.find(
       (step) => step.name === "Run focused shared Watch transport tests",
     );
