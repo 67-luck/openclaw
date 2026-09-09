@@ -38,7 +38,7 @@ test_args=(
 )
 xcodebuild "${xcodebuild_args[@]}" "${test_args[@]}" build-for-testing
 app_path="$(
-  xcodebuild "${xcodebuild_args[@]}" -showBuildSettings -json |
+  xcodebuild "${xcodebuild_args[@]}" "${test_args[@]}" -showBuildSettings -json build-for-testing |
     node --input-type=module -e '
       import { execFileSync } from "node:child_process";
       import { mkdtempSync, rmSync } from "node:fs";
@@ -47,9 +47,19 @@ app_path="$(
       const chunks = [];
       for await (const chunk of process.stdin) chunks.push(chunk);
       const targets = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const targetMatches = Object.fromEntries(
+        ["OpenClawWatchApp", "OpenClawWatchTests"].map((name) => [
+          name, targets.filter((target) => target.target === name),
+        ]),
+      );
+      console.error(JSON.stringify({
+        watchBuildSettings: Object.fromEntries(
+          Object.entries(targetMatches).map(([name, matches]) => [name, matches.length]),
+        ),
+      }));
       const settings = (name) => {
-        const matches = targets.filter((target) => target.target === name);
-        if (matches.length !== 1) throw new Error(`Expected one ${name} target from Xcode`);
+        const matches = targetMatches[name];
+        if (matches.length !== 1) throw new Error(`Expected one ${name} target from Xcode, got ${matches.length}`);
         return matches[0].buildSettings;
       };
       const app = settings("OpenClawWatchApp");

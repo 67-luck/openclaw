@@ -172,8 +172,10 @@ if (tool === "installer") {
     }
   };
   const other = { target: "OtherTarget", buildSettings: { TARGET_BUILD_DIR: "/wrong", FULL_PRODUCT_NAME: "Wrong.app" } };
-  console.log(JSON.stringify(mode === "missing-product" ? [other, tests] :
+  console.log(JSON.stringify(!args.includes("build-for-testing") ? [other, product] :
+    mode === "missing-product" ? [other, tests] :
     mode === "ambiguous-product" ? [product, product, tests] :
+    mode === "duplicate-test-target" ? [other, product, tests, tests] :
     mode === "missing-test-product" ? [other, product] : [other, product, tests]));
 } else if (tool === "codesign") {
   if (args.includes("--verify")) {
@@ -338,6 +340,8 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
     const xcodeCommands = commands.filter((command) => command.tool === "xcodebuild");
     for (const command of xcodeCommands) {
       expect(command.args).not.toContain("-derivedDataPath");
+      expect(command.args).not.toContain("-target");
+      expect(command.args).not.toContain("-alltargets");
     }
     expect(
       commands
@@ -356,6 +360,13 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
         ),
       ),
     ).toEqual(["build-for-testing", "-showBuildSettings", "test-without-building"]);
+    const build = xcodeCommands.find((command) => !command.args.includes("-showBuildSettings"));
+    const settingsQuery = xcodeCommands.find((command) =>
+      command.args.includes("-showBuildSettings"),
+    );
+    expect(
+      settingsQuery?.args.filter((arg) => arg !== "-showBuildSettings" && arg !== "-json"),
+    ).toEqual(build?.args);
     for (const command of xcodeCommands.filter(
       (entry) =>
         entry.args.includes("build-for-testing") || entry.args.includes("test-without-building"),
@@ -410,6 +421,9 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
       { tool: "plutil", args: ["-convert", "json", "-o", "-", plistPath] },
     ]);
     expect(readdirSync(temporaryRoot)).toEqual([]);
+    expect(result.stderr.split("\n")[0]).toBe(
+      '{"watchBuildSettings":{"OpenClawWatchApp":1,"OpenClawWatchTests":1}}',
+    );
     expect(result.stderr).toContain('"team":"TEAMFIX123"');
     expect(result.stderr).toContain('"style":"Manual"');
     expect(result.stderr).toContain('"entitlementsFile":"Fixture/Watch.entitlements"');
@@ -425,6 +439,7 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
     "ambiguous-product",
     "relative-product",
     "missing-test-product",
+    "duplicate-test-target",
     "wrong-test-host",
     "invalid-signature",
     "invalid-test-signature",
@@ -436,6 +451,25 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
   ])("rejects %s settings before simulator installation or test execution", (mode) => {
     const { result, commands, temporaryRoot } = runWatchStep(mode);
     expect(result.status).not.toBe(0);
+    const appCount = mode === "missing-product" ? 0 : mode === "ambiguous-product" ? 2 : 1;
+    const testCount =
+      mode === "missing-test-product" ? 0 : mode === "duplicate-test-target" ? 2 : 1;
+    expect(result.stderr.split("\n")[0]).toBe(
+      JSON.stringify({
+        watchBuildSettings: { OpenClawWatchApp: appCount, OpenClawWatchTests: testCount },
+      }),
+    );
+    if (appCount !== 1) {
+      expect(result.stderr).toContain(
+        `Expected one OpenClawWatchApp target from Xcode, got ${appCount}`,
+      );
+    } else if (testCount !== 1) {
+      expect(result.stderr).toContain(
+        `Expected one OpenClawWatchTests target from Xcode, got ${testCount}`,
+      );
+    }
+    expect(result.stderr).not.toContain("OtherTarget");
+    expect(result.stderr).not.toContain("/wrong");
     expect(commands.some((command) => command.args.includes("install"))).toBe(false);
     expect(commands.some((command) => command.args.includes("test-without-building"))).toBe(false);
     expect(readdirSync(temporaryRoot)).toEqual([]);
