@@ -13,7 +13,7 @@ struct WatchGatewayControllerTests {
             await controller.configure(
                 setupCode: #"{"url":"wss://gateway.example.invalid/team","bootstrapToken":"one-time-setup"}"#,
                 sentAtMs: Int64(Date().timeIntervalSince1970 * 1000))
-            let configuration = try #require(controller.configuration)
+            let configuration = try #require(controller.configuration, "Direct setup: \(controller.statusText)")
             let fixture = try GatewayOperatorHTTPFixture(gatewayID: configuration.gatewayID)
             do {
                 let response = try JSONDecoder().decode(WatchNodeConnectResponse.self, from: Data(
@@ -75,7 +75,7 @@ struct WatchGatewayControllerTests {
             await controller.configure(
                 setupCode: #"{"url":"wss://gateway.example.invalid/team","bootstrapToken":"one-time-setup"}"#,
                 sentAtMs: Int64(Date().timeIntervalSince1970 * 1000))
-            let configuration = try #require(controller.configuration)
+            let configuration = try #require(controller.configuration, "Direct setup: \(controller.statusText)")
             let identity = try #require(DeviceIdentityStore.loadOrCreatePersisted(profile: .primary))
             let response = try JSONDecoder().decode(WatchNodeConnectResponse.self, from: Data(
                 #"""
@@ -234,7 +234,7 @@ struct WatchGatewayControllerTests {
             }
             let deletion = try await fixture.next()
             try #require(deletion.request.httpMethod == "DELETE")
-            let installed = try #require(controller.configuration)
+            let installed = try #require(controller.configuration, "Direct setup: \(controller.statusText)")
             #expect(controller.isEnabled && controller.isForeground)
             #expect(!controller.setupIncomplete && !controller.recoveryRequired)
             #expect(!controller.isInstalled(installed))
@@ -328,7 +328,7 @@ struct WatchGatewayControllerTests {
             await controller.configure(
                 setupCode: #"{"url":"wss://gateway.example.invalid/team","bootstrapToken":"one-time-setup"}"#,
                 sentAtMs: sentAtMs)
-            let configuration = try #require(controller.configuration)
+            let configuration = try #require(controller.configuration, "Direct setup: \(controller.statusText)")
             let identity = try #require(DeviceIdentityStore.loadOrCreatePersisted(profile: .primary))
             #expect(DeviceAuthStore.storeTokenPersisted(
                 deviceId: identity.deviceId, role: "node", token: "previous-node",
@@ -383,7 +383,7 @@ struct WatchGatewayControllerTests {
             let code = #"{"url":"wss://gateway.example.invalid/team","bootstrapToken":"one-time-setup"}"#
             let sentAtMs = Int64(Date().timeIntervalSince1970 * 1000)
             await controller.configure(setupCode: code, sentAtMs: sentAtMs)
-            let original = try #require(controller.configuration)
+            let original = try #require(controller.configuration, "Direct setup: \(controller.statusText)")
             let identity = try #require(DeviceIdentityStore.loadOrCreatePersisted(profile: .primary))
             for gatewayID in [original.gatewayID, "phone-snapshot-gateway"] {
                 #expect(DeviceAuthStore.storeTokenPersisted(
@@ -436,6 +436,23 @@ struct WatchGatewayControllerTests {
             defaults.removeObject(forKey: key)
         }
         try await DeviceIdentityStore.withStateDirectory(directory) {
+            _ = try DeviceIdentityStore.loadOrCreatePersistedOrThrow(profile: .primary)
+            do {
+                let probeAccount = "prerequisite-\(UUID().uuidString)"
+                let probeValue = "watch-keychain-prerequisite"
+                defer {
+                    if case let .failure(error) = GenericPasswordKeychainStore.deleteResult(
+                        service: service, account: probeAccount)
+                    {
+                        Issue.record(error)
+                    }
+                }
+                try GenericPasswordKeychainStore.saveStringResult(
+                    probeValue, service: service, account: probeAccount).get()
+                try #require(
+                    GenericPasswordKeychainStore.loadString(service: service, account: probeAccount) == probeValue,
+                    "Watch Keychain prerequisite did not round-trip")
+            }
             let controller = WatchGatewayController()
             do {
                 try await operation(controller, directory)
@@ -456,7 +473,7 @@ struct WatchGatewayControllerTests {
             await controller.configure(
                 setupCode: #"{"url":"wss://gateway.example.invalid/team","bootstrapToken":"one-time-setup"}"#,
                 sentAtMs: Int64(Date().timeIntervalSince1970 * 1000))
-            let configuration = try #require(controller.configuration)
+            let configuration = try #require(controller.configuration, "Direct setup: \(controller.statusText)")
             let fixture = try GatewayOperatorHTTPFixture(gatewayID: configuration.gatewayID, scopes: scopes)
             do {
                 let response = try JSONDecoder().decode(WatchNodeConnectResponse.self, from: Data(

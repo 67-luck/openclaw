@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID, X509Certificate } from "node:crypto";
 import { channel } from "node:diagnostics_channel";
-import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:net";
 import path from "node:path";
@@ -15,6 +15,60 @@ const proofSource = "test/fixtures/ios-watch-operator-https.swift";
 const cancelled = new AbortController();
 
 type CommandResult = { code: number | null; stdout: string };
+type CommandOptions = {
+  input?: string;
+  timeout?: number;
+  cleanup?: boolean;
+  allowFailure?: boolean;
+  compilerDiagnostics?: boolean;
+};
+type CommandLabel =
+  | "swift-build"
+  | "swift-bin-path"
+  | "swift-link"
+  | "driver-identity"
+  | "driver-negative"
+  | "driver-positive"
+  | "certificate-ca"
+  | "certificate-request"
+  | "certificate-sign"
+  | "trust-install"
+  | "trust-remove"
+  | "certificate-remove";
+type CommandEvent = {
+  label: CommandLabel;
+  id: number;
+  event: "start" | "exit" | "close";
+  elapsedMs: number;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+};
+type RunCommand = (
+  label: CommandLabel,
+  tool: string,
+  args: string[],
+  options?: CommandOptions,
+) => Promise<CommandResult>;
+type Stage =
+  | "initialize"
+  | "compile-production-driver"
+  | "driver-identity"
+  | "generate-localhost-certificate"
+  | "gateway-configuration"
+  | "pairing-import"
+  | "pairing-approval-import"
+  | "pairing-request"
+  | "pairing-approval"
+  | "pairing-readback"
+  | "gateway-import"
+  | "gateway-start"
+  | "gateway-startup-settled"
+  | "negative-system-trust"
+  | "install-hosted-localhost-trust"
+  | "positive-system-trust"
+  | "gateway-close"
+  | "trust-removal"
+  | "private-state-removal";
 type DriverResult = {
   ok: boolean;
   stage?: string;
@@ -38,17 +92,27 @@ type SwiftCommand = {
 };
 
 async function command(
+  context: { label: CommandLabel; id: number; observe: (event: CommandEvent) => void },
   tool: string,
   args: string[],
-  options: {
-    input?: string;
-    timeout?: number;
-    cleanup?: boolean;
-    allowFailure?: boolean;
-    compilerDiagnostics?: boolean;
-  } = {},
+  options: CommandOptions = {},
 ): Promise<CommandResult> {
   assert(!options.compilerDiagnostics || (["swift", "swiftc"].includes(tool) && !options.input));
+  const started = performance.now();
+  const observe = (
+    event: CommandEvent["event"],
+    code: number | null = null,
+    signal: NodeJS.Signals | null = null,
+  ) =>
+    context.observe({
+      label: context.label,
+      id: context.id,
+      event,
+      elapsedMs: Math.round(performance.now() - started),
+      code,
+      signal,
+    });
+  observe("start");
   const child = spawn(tool, args, {
     stdio: ["pipe", "pipe", "pipe"],
     signal: options.cleanup ? undefined : cancelled.signal,
@@ -79,8 +143,12 @@ async function command(
   child.on("error", () => {
     spawnFailed = true;
   });
+  child.once("exit", (code, signal) => observe("exit", code, signal));
   const code = await new Promise<number | null>((resolve) => {
-    child.once("close", resolve);
+    child.once("close", (exitCode, signal) => {
+      observe("close", exitCode, signal);
+      resolve(exitCode);
+    });
   });
   if (options.compilerDiagnostics && (code !== 0 || spawnFailed || overflow)) {
     // These commands run before identity/token/CA provisioning. Runtime stderr is
@@ -98,8 +166,13 @@ async function command(
   return { code, stdout };
 }
 
-async function compileDriver(scratch: string, executable: string): Promise<void> {
-  await command(
+async function compileDriver(
+  scratch: string,
+  executable: string,
+  runCommand: RunCommand,
+): Promise<void> {
+  await runCommand(
+    "swift-build",
     "swift",
     [
       "build",
@@ -114,7 +187,7 @@ async function compileDriver(scratch: string, executable: string): Promise<void>
     ],
     { timeout: 300000, compilerDiagnostics: true },
   );
-  const { stdout } = await command("swift", [
+  const { stdout } = await runCommand("swift-bin-path", "swift", [
     "build",
     "--package-path",
     packagePath,
@@ -162,7 +235,8 @@ async function compileDriver(scratch: string, executable: string): Promise<void>
     assert(value && root.otherArguments.includes(flag), `Missing SwiftPM ${flag}`);
     compilerArgs.push(flag, value);
   }
-  await command(
+  await runCommand(
+    "swift-link",
     "swiftc",
     [...compilerArgs, proofSource, ...objects, "-lsqlite3", "-o", executable],
     {
@@ -194,6 +268,8 @@ async function main(): Promise<void> {
       process.env.GITHUB_EVENT_NAME === "workflow_dispatch",
     "This proof changes certificate trust only on a disposable GitHub-hosted macOS runner",
   );
+  const started = performance.now();
+  console.log(JSON.stringify({ stage: "initialize", phase: "before", elapsedMs: 0 }));
   const runnerTemp = await realpath(process.env.RUNNER_TEMP ?? "");
   const output = path.join(runnerTemp, "watch-qualification");
   const privateRoot = path.join(runnerTemp, `watch-https-private-${randomUUID()}`);
@@ -221,8 +297,52 @@ async function main(): Promise<void> {
     OPENCLAW_CONFIG_PATH: path.join(gatewayState, "openclaw.json"),
   });
   const report: Record<string, unknown> = { ok: false, node: process.version, stages: [] };
-  const stages: string[] = [];
+  const stages: Stage[] = ["initialize"];
   report.stages = stages;
+  const receiptPath = path.join(output, "operator-https.json");
+  const receiptTemporaryPath = path.join(output, ".operator-https.json.tmp");
+  let receiptWrites: Promise<void> = Promise.resolve();
+  let receiptWriteFailed = false;
+  const writeReceipt = (): Promise<void> => {
+    // Snapshot on admission; queued writes must not observe later stage mutations.
+    const snapshot = `${JSON.stringify(report, null, 2)}\n`;
+    const write = receiptWrites.then(async () => {
+      await writeFile(receiptTemporaryPath, snapshot, { mode: 0o600 });
+      await rename(receiptTemporaryPath, receiptPath);
+    });
+    receiptWrites = write.catch(() => {
+      if (!receiptWriteFailed) {
+        console.error("Operator HTTPS receipt write failed");
+      }
+      receiptWriteFailed = true;
+    });
+    return write;
+  };
+  const checkpoint = async (stage: Stage, phase: "before" | "after"): Promise<void> => {
+    if (phase === "before") {
+      stages.push(stage);
+    }
+    const event = { stage, phase, elapsedMs: Math.round(performance.now() - started) };
+    report.progress = event;
+    console.log(JSON.stringify(event));
+    await writeReceipt();
+  };
+  let commandID = 0;
+  const runCommand: RunCommand = (label, tool, args, options) =>
+    command(
+      {
+        label,
+        id: ++commandID,
+        observe: (event) => {
+          report.child = event;
+          console.log(JSON.stringify(event));
+          void writeReceipt().catch(() => {});
+        },
+      },
+      tool,
+      args,
+      options,
+    );
   const deliveries: Delivery[] = [];
   let overflow = false;
   let gateway:
@@ -264,12 +384,15 @@ async function main(): Promise<void> {
   process.once("SIGINT", interrupt);
   process.once("SIGTERM", interrupt);
   let failure = false;
+  let failureStage: Stage | undefined;
   try {
-    stages.push("compile-production-driver");
+    await checkpoint("initialize", "after");
+    await checkpoint("compile-production-driver", "before");
     const executable = path.join(privateRoot, "operator-https");
-    await compileDriver(scratch, executable);
-    const driver = async (mode: string, input?: object) => {
-      const result = await command(executable, [mode, swiftState], {
+    await compileDriver(scratch, executable, runCommand);
+    await checkpoint("compile-production-driver", "after");
+    const driver = async (mode: "identity" | "negative" | "positive", input?: object) => {
+      const result = await runCommand(`driver-${mode}`, executable, [mode, swiftState], {
         input: input ? JSON.stringify(input) : undefined,
         timeout: 90000,
         allowFailure: true,
@@ -283,15 +406,17 @@ async function main(): Promise<void> {
       }
       return value;
     };
+    await checkpoint("driver-identity", "before");
     const identity = await driver("identity");
     assert(identity.deviceID && identity.publicKey && identity.platform && identity.deviceFamily);
-    stages.push("generate-localhost-certificate");
+    await checkpoint("driver-identity", "after");
+    await checkpoint("generate-localhost-certificate", "before");
     const caKey = path.join(privateRoot, "ca.key");
     const leafKey = path.join(privateRoot, "leaf.key");
     const csr = path.join(privateRoot, "leaf.csr");
     const cert = path.join(privateRoot, "leaf.pem");
     const ext = path.join(privateRoot, "leaf.ext");
-    await command("openssl", [
+    await runCommand("certificate-ca", "openssl", [
       "req",
       "-x509",
       "-newkey",
@@ -312,7 +437,7 @@ async function main(): Promise<void> {
       ca,
     ]);
     fingerprint = new X509Certificate(await readFile(ca)).fingerprint256.replaceAll(":", "");
-    await command("openssl", [
+    await runCommand("certificate-request", "openssl", [
       "req",
       "-newkey",
       "rsa:2048",
@@ -335,7 +460,7 @@ async function main(): Promise<void> {
         "",
       ].join("\n"),
     );
-    await command("openssl", [
+    await runCommand("certificate-sign", "openssl", [
       "x509",
       "-req",
       "-in",
@@ -353,6 +478,8 @@ async function main(): Promise<void> {
       "-out",
       cert,
     ]);
+    await checkpoint("generate-localhost-certificate", "after");
+    await checkpoint("gateway-configuration", "before");
     port = await reservePort();
     await writeFile(
       process.env.OPENCLAW_CONFIG_PATH!,
@@ -374,10 +501,15 @@ async function main(): Promise<void> {
         },
       }),
     );
-    stages.push("canonical-owner-pairing");
+    await checkpoint("gateway-configuration", "after");
+    await checkpoint("pairing-import", "before");
     const { requestDevicePairing, getPairedDevice } =
       await import("../src/infra/device-pairing.js");
+    await checkpoint("pairing-import", "after");
+    await checkpoint("pairing-approval-import", "before");
     const { approveDevicePairing } = await import("../src/infra/device-pairing-approval.js");
+    await checkpoint("pairing-approval-import", "after");
+    await checkpoint("pairing-request", "before");
     const request = await requestDevicePairing(
       {
         deviceId: identity.deviceID,
@@ -391,6 +523,8 @@ async function main(): Promise<void> {
       },
       gatewayState,
     );
+    await checkpoint("pairing-request", "after");
+    await checkpoint("pairing-approval", "before");
     const approved = await approveDevicePairing(
       request.request.requestId,
       {
@@ -403,31 +537,40 @@ async function main(): Promise<void> {
     const grant = approved.device.tokens?.operator;
     assert(grant && grant.token && grant.role === "operator");
     assert.deepEqual(grant.scopes, scopes);
+    await checkpoint("pairing-approval", "after");
+    await checkpoint("pairing-readback", "before");
     const paired = await getPairedDevice(identity.deviceID, gatewayState);
     assert.equal(paired?.approvedVia, "owner");
     assert.equal(paired?.tokens?.operator?.token, grant.token);
+    await checkpoint("pairing-readback", "after");
     const input = {
       endpoint: `https://localhost:${port}`,
       gatewayID: `watch-direct:https://localhost:${port}`,
       deviceID: identity.deviceID,
       token: grant.token,
     };
-    stages.push("real-gateway-startup");
+    await checkpoint("gateway-import", "before");
     const { startGatewayServer } = await import("../src/gateway/server.js");
+    await checkpoint("gateway-import", "after");
+    await checkpoint("gateway-start", "before");
     gateway = await startGatewayServer(port, { host: "127.0.0.1", updateCanary: true });
+    await checkpoint("gateway-start", "after");
+    await checkpoint("gateway-startup-settled", "before");
     await gateway.startupSettled;
+    await checkpoint("gateway-startup-settled", "after");
     responseFinish.subscribe(observe);
     subscribed = true;
-    stages.push("negative-system-trust");
+    await checkpoint("negative-system-trust", "before");
     const negative = await driver("negative", input);
     assert.equal(negative.stage, "untrusted-certificate-rejected");
     assert.equal(negative.persistedAuth, true);
     assert.equal(deliveries.length, 0, "Operator HTTP reached Gateway before CA trust");
     report.negative = { persistedAuth: true, errors: negative.errors, operatorResponses: 0 };
+    await checkpoint("negative-system-trust", "after");
 
-    stages.push("install-hosted-localhost-trust");
+    await checkpoint("install-hosted-localhost-trust", "before");
     trustAttempted = true;
-    await command("sudo", [
+    await runCommand("trust-install", "sudo", [
       "/usr/bin/security",
       "add-trusted-cert",
       "-d",
@@ -441,7 +584,8 @@ async function main(): Promise<void> {
       systemKeychain,
       ca,
     ]);
-    stages.push("positive-system-trust");
+    await checkpoint("install-hosted-localhost-trust", "after");
+    await checkpoint("positive-system-trust", "before");
     const positive = await driver("positive", input);
     assert.equal(positive.tokenlessHello, true);
     assert.equal(positive.unchangedStoredGrant, true);
@@ -469,44 +613,69 @@ async function main(): Promise<void> {
       methods: positive.methods,
       responses: deliveries.map(({ route, status, tls }) => ({ route, status, tls })),
     };
+    await checkpoint("positive-system-trust", "after");
   } catch {
     failure = true;
+    failureStage = stages.at(-1);
+    report.failureStage = failureStage;
   } finally {
     const cleanupFailures: string[] = [];
-    if (gateway) {
-      await gateway
-        .close({ reason: "qualification complete", drainTimeoutMs: 1000 })
-        .catch(() => cleanupFailures.push("gateway-close"));
-    }
+    report.cleanupFailures = cleanupFailures;
     if (subscribed) {
       responseFinish.unsubscribe(observe);
     }
-    if (trustAttempted) {
-      for (const args of [
-        ["/usr/bin/security", "remove-trusted-cert", "-d", ca],
-        ["/usr/bin/security", "delete-certificate", "-Z", fingerprint, systemKeychain],
-      ]) {
-        await command("sudo", args, { cleanup: true }).catch(() =>
-          cleanupFailures.push(args[1] ?? "trust-cleanup"),
-        );
+    const cleanup = async (stage: Stage, operation: () => Promise<unknown>): Promise<void> => {
+      // Evidence failure must not stop either resource owner from beginning cleanup.
+      const before = checkpoint(stage, "before").catch(() => {});
+      try {
+        await operation();
+      } catch {
+        cleanupFailures.push(stage);
       }
+      await before;
+      await checkpoint(stage, "after").catch(() => {});
+    };
+    const closingGateway = gateway;
+    const gatewayClose = closingGateway
+      ? cleanup("gateway-close", () =>
+          closingGateway.close({ reason: "qualification complete", drainTimeoutMs: 1000 }),
+        )
+      : Promise.resolve();
+    const trustRemoval = trustAttempted
+      ? cleanup("trust-removal", async () => {
+          const commands: [CommandLabel, string[]][] = [
+            ["trust-remove", ["/usr/bin/security", "remove-trusted-cert", "-d", ca]],
+            [
+              "certificate-remove",
+              ["/usr/bin/security", "delete-certificate", "-Z", fingerprint, systemKeychain],
+            ],
+          ];
+          for (const [label, args] of commands) {
+            await runCommand(label, "sudo", args, { cleanup: true }).catch(() =>
+              cleanupFailures.push(label),
+            );
+          }
+        })
+      : Promise.resolve();
+    const settled = await Promise.allSettled([gatewayClose, trustRemoval]);
+    if (settled.some((result) => result.status === "rejected")) {
+      cleanupFailures.push("cleanup-join");
     }
     process.removeListener("SIGINT", interrupt);
     process.removeListener("SIGTERM", interrupt);
-    await rm(privateRoot, { recursive: true, force: true }).catch(() =>
-      cleanupFailures.push("private-state-cleanup"),
-    );
-    report.cleanupFailures = cleanupFailures;
-    report.ok = !failure && !cancelled.signal.aborted && cleanupFailures.length === 0;
-    await writeFile(
-      path.join(output, "operator-https.json"),
-      `${JSON.stringify(report, null, 2)}\n`,
-    );
+    await cleanup("private-state-removal", () => rm(privateRoot, { recursive: true, force: true }));
+    // Every child has closed and both cleanup owners have settled. Drain their
+    // receipts before the terminal snapshot so no older write can replace it.
+    await receiptWrites;
+    report.receiptWriteFailed = receiptWriteFailed;
+    report.ok =
+      !failure && !cancelled.signal.aborted && !receiptWriteFailed && cleanupFailures.length === 0;
+    await writeReceipt();
   }
   assert.equal(
     report.ok,
     true,
-    `Operator HTTPS qualification failed at ${stages.at(-1)}; see operator-https.json`,
+    `Operator HTTPS qualification failed at ${failureStage ?? stages.at(-1)}; see operator-https.json`,
   );
 }
 
