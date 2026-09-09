@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { randomBytes, randomUUID, X509Certificate } from "node:crypto";
 import { channel } from "node:diagnostics_channel";
 import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
@@ -7,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:net";
 import path from "node:path";
 import { TLSSocket } from "node:tls";
+import { hasUnjoinedWork, runManagedCommand } from "./lib/managed-child-process.mts";
 
 const scopes = ["operator.read", "operator.talk"];
 const systemKeychain = "/Library/Keychains/System.keychain";
@@ -113,57 +113,79 @@ async function command(
       signal,
     });
   observe("start");
-  const child = spawn(tool, args, {
-    stdio: ["pipe", "pipe", "pipe"],
-    signal: options.cleanup ? undefined : cancelled.signal,
-    timeout: options.timeout ?? 30000,
-    killSignal: "SIGKILL",
-  });
+  const overflowCancellation = new AbortController();
   let stdout = "";
   let diagnostics = "";
   let bytes = 0;
   let overflow = false;
-  for (const stream of [child.stdout, child.stderr]) {
-    stream.on("data", (chunk: Buffer) => {
-      bytes += chunk.length;
-      if (options.compilerDiagnostics && diagnostics.length < 65536) {
-        diagnostics += chunk.toString("utf8").slice(0, 65536 - diagnostics.length);
-      }
-      if (bytes > 4 * 1024 * 1024) {
-        overflow = true;
-        child.kill("SIGKILL");
-      } else if (stream === child.stdout) {
-        stdout += chunk.toString("utf8");
-      }
+  let removeObservers = () => {};
+  try {
+    const code = await runManagedCommand({
+      bin: tool,
+      args,
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+      signal: options.cleanup
+        ? overflowCancellation.signal
+        : AbortSignal.any([cancelled.signal, overflowCancellation.signal]),
+      timeoutMs: options.timeout ?? 30000,
+      requireProcessTreeExit: true,
+      timeoutForceKillOnLeaderExit: true,
+      onReady: (child) => {
+        const { stdin, stdout: output, stderr } = child;
+        assert(stdin && output && stderr, "Expected piped command streams");
+        const capture = (chunk: Buffer, isOutput: boolean) => {
+          bytes += chunk.length;
+          if (options.compilerDiagnostics && diagnostics.length < 65536) {
+            diagnostics += chunk.toString("utf8").slice(0, 65536 - diagnostics.length);
+          }
+          if (bytes > 4 * 1024 * 1024) {
+            overflow = true;
+            overflowCancellation.abort();
+          } else if (isOutput) {
+            stdout += chunk.toString("utf8");
+          }
+        };
+        const captureOutput = (chunk: Buffer) => capture(chunk, true);
+        const captureError = (chunk: Buffer) => capture(chunk, false);
+        const exited = (exitCode: number | null, signal: NodeJS.Signals | null) =>
+          observe("exit", exitCode, signal);
+        const closed = (exitCode: number | null, signal: NodeJS.Signals | null) =>
+          observe("close", exitCode, signal);
+        output.on("data", captureOutput);
+        stderr.on("data", captureError);
+        child.once("exit", exited);
+        child.once("close", closed);
+        removeObservers = () => {
+          output.off("data", captureOutput);
+          stderr.off("data", captureError);
+          child.off("exit", exited);
+          child.off("close", closed);
+        };
+        stdin.on("error", () => {});
+        stdin.end(options.input);
+      },
     });
-  }
-  child.stdin.on("error", () => {});
-  child.stdin.end(options.input);
-  let spawnFailed = false;
-  child.on("error", () => {
-    spawnFailed = true;
-  });
-  child.once("exit", (code, signal) => observe("exit", code, signal));
-  const code = await new Promise<number | null>((resolve) => {
-    child.once("close", (exitCode, signal) => {
-      observe("close", exitCode, signal);
-      resolve(exitCode);
-    });
-  });
-  if (options.compilerDiagnostics && (code !== 0 || spawnFailed || overflow)) {
-    // These commands run before identity/token/CA provisioning. Runtime stderr is
-    // never included; retain bounded source diagnostics without runner paths.
-    console.error(
-      diagnostics
-        .replaceAll(process.cwd(), "<checkout>")
-        .replace(/\/(?:Users|private|var|tmp|Volumes)\/[^\s:)"']+/g, "<path>"),
+    assert(
+      !overflow && (options.allowFailure || code === 0),
+      `${path.basename(tool)} failed (${code})`,
     );
+    return { code, stdout };
+  } catch (error) {
+    if (options.compilerDiagnostics) {
+      // These commands run before identity/token/CA provisioning. Runtime stderr
+      // is never included; retain bounded source diagnostics without runner paths.
+      console.error(
+        diagnostics
+          .replaceAll(process.cwd(), "<checkout>")
+          .replace(/\/(?:Users|private|var|tmp|Volumes)\/[^\s:)"']+/g, "<path>"),
+      );
+    }
+    // Keep nested processTreeState/cause evidence for the private-state owner.
+    throw error;
+  } finally {
+    removeObservers();
   }
-  assert(
-    !spawnFailed && !overflow && (options.allowFailure || code === 0),
-    `${path.basename(tool)} failed (${code})`,
-  );
-  return { code, stdout };
 }
 
 async function compileDriver(
@@ -385,6 +407,7 @@ async function main(): Promise<void> {
   process.once("SIGTERM", interrupt);
   let failure = false;
   let failureStage: Stage | undefined;
+  const errors: unknown[] = [];
   try {
     await checkpoint("initialize", "after");
     await checkpoint("compile-production-driver", "before");
@@ -614,7 +637,8 @@ async function main(): Promise<void> {
       responses: deliveries.map(({ route, status, tls }) => ({ route, status, tls })),
     };
     await checkpoint("positive-system-trust", "after");
-  } catch {
+  } catch (error) {
+    errors.push(error);
     failure = true;
     failureStage = stages.at(-1);
     report.failureStage = failureStage;
@@ -629,7 +653,8 @@ async function main(): Promise<void> {
       const before = checkpoint(stage, "before").catch(() => {});
       try {
         await operation();
-      } catch {
+      } catch (error) {
+        errors.push(error);
         cleanupFailures.push(stage);
       }
       await before;
@@ -651,25 +676,48 @@ async function main(): Promise<void> {
             ],
           ];
           for (const [label, args] of commands) {
-            await runCommand(label, "sudo", args, { cleanup: true }).catch(() =>
-              cleanupFailures.push(label),
-            );
+            // A still-running privileged command owns these certificate inputs.
+            // Do not race it with another trust mutation, including after timeout.
+            if (errors.some(hasUnjoinedWork)) {
+              break;
+            }
+            try {
+              await runCommand(label, "sudo", args, { cleanup: true });
+            } catch (error) {
+              errors.push(error);
+              cleanupFailures.push(label);
+            }
           }
         })
       : Promise.resolve();
     const settled = await Promise.allSettled([gatewayClose, trustRemoval]);
-    if (settled.some((result) => result.status === "rejected")) {
-      cleanupFailures.push("cleanup-join");
+    for (const result of settled) {
+      if (result.status === "rejected") {
+        errors.push(result.reason);
+        cleanupFailures.push("cleanup-join");
+      }
     }
     process.removeListener("SIGINT", interrupt);
     process.removeListener("SIGTERM", interrupt);
-    await cleanup("private-state-removal", () => rm(privateRoot, { recursive: true, force: true }));
-    // Every child has closed and both cleanup owners have settled. Drain their
-    // receipts before the terminal snapshot so no older write can replace it.
+    const unjoined = errors.some(hasUnjoinedWork);
+    report.unjoined = unjoined;
+    report.privateStateRetained = true;
+    if (!unjoined) {
+      await cleanup("private-state-removal", async () => {
+        await rm(privateRoot, { recursive: true, force: true });
+        report.privateStateRetained = false;
+      });
+    }
+    // Command observers are detached and cleanup attempts have settled. Drain
+    // their receipts before the terminal snapshot, including an unjoined failure.
     await receiptWrites;
     report.receiptWriteFailed = receiptWriteFailed;
     report.ok =
-      !failure && !cancelled.signal.aborted && !receiptWriteFailed && cleanupFailures.length === 0;
+      !failure &&
+      !unjoined &&
+      !cancelled.signal.aborted &&
+      !receiptWriteFailed &&
+      cleanupFailures.length === 0;
     await writeReceipt();
   }
   assert.equal(

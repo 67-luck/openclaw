@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -68,12 +69,15 @@ function runSimulatorStep(mode = "ready", steps = [watchStep], env: Record<strin
   const root = tempDirs.make("openclaw-watch-workflow-");
   const bin = path.join(root, "bin");
   const harnessLib = path.join(root, ".ci-harness", "scripts", "lib");
+  const temporaryRoot = path.join(root, "temporary");
   const product = path.join(root, "project derived data", "Watch Product.app");
+  const testProduct = path.join(product, "PlugIns", "Watch Tests.xctest");
   mkdirSync(bin, { recursive: true });
   mkdirSync(harnessLib, { recursive: true });
   copyFileSync("scripts/lib/swift-toolchain.sh", path.join(harnessLib, "swift-toolchain.sh"));
   copyFileSync("scripts/lib/ci-ios-smoke-plan.mjs", path.join(harnessLib, "ci-ios-smoke-plan.mjs"));
-  mkdirSync(product, { recursive: true });
+  mkdirSync(temporaryRoot);
+  mkdirSync(testProduct, { recursive: true });
   mkdirSync(path.join(root, "scripts"), { recursive: true });
   writeFileSync(
     path.join(root, "scripts/ios-watch-operation-tests.sh"),
@@ -83,7 +87,7 @@ function runSimulatorStep(mode = "ready", steps = [watchStep], env: Record<strin
   writeFileSync(
     runner,
     String.raw`
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 const [tool, ...args] = process.argv.slice(2);
 const root = process.env.WATCH_FIXTURE_ROOT;
@@ -101,7 +105,24 @@ if (tool === "installer") {
 } else if (tool === "uname") {
   console.log("arm64");
 } else if (tool === "xcrun") {
-  if (args[1] === "list" && args[2] === "pairs") {
+  if (args[0] === "segedit") {
+    const output = args[5];
+    if (output === "-" || !path.isAbsolute(output) ||
+        (statSync(path.dirname(output)).mode & 0o777) !== 0o700) {
+      throw new Error("Expected a private extraction directory and real output file");
+    }
+    if (mode === "missing-section") process.exit(26);
+    const entitlements = mode === "missing-application-id" ? {} : {
+      "application-identifier": mode === "wrong-application-id" ?
+        "SEEDFIX123.org.example.other" : "SEEDFIX123.org.example.watch"
+    };
+    if (mode === "explicit-private-group") {
+      entitlements["keychain-access-groups"] = ["SEEDFIX123.org.example.watch"];
+    } else if (mode === "malformed-keychain-groups") {
+      entitlements["keychain-access-groups"] = "not-an-array";
+    }
+    writeFileSync(output, mode === "malformed-section" ? "not a plist" : JSON.stringify(entitlements));
+  } else if (args[1] === "list" && args[2] === "pairs") {
     console.log(JSON.stringify({ pairs: mode === "unpaired" ? {} : {
       unrelated: { watch: { udid: "other-watch" }, phone: { udid: "other-phone" } },
       selected: { watch: { udid: "watch-fixture" }, phone: { udid: "companion-fixture" } }
@@ -118,16 +139,57 @@ if (tool === "installer") {
     process.exit(24);
   }
 } else if (args.includes("-showBuildSettings")) {
+  const signing = {
+    DEVELOPMENT_TEAM: "TEAMFIX123",
+    CODE_SIGN_STYLE: "Manual",
+    CODE_SIGN_ENTITLEMENTS: "Fixture/Watch.entitlements",
+    CODE_SIGNING_ALLOWED: "NO",
+    CODE_SIGN_IDENTITY: "Apple Development",
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS: "NO",
+    ...Object.fromEntries(args.filter((arg) => arg.startsWith("CODE_SIGN")).map((arg) => arg.split("=")))
+  };
   const product = {
     target: "OpenClawWatchApp",
     buildSettings: {
+      ...signing,
       TARGET_BUILD_DIR: mode === "relative-product" ? "relative" : path.join(root, "project derived data"),
-      FULL_PRODUCT_NAME: "Watch Product.app"
+      FULL_PRODUCT_NAME: "Watch Product.app",
+      EXECUTABLE_NAME: "OpenClawWatchApp",
+      PRODUCT_BUNDLE_IDENTIFIER: "org.example.watch",
+      AppIdentifierPrefix: "SEEDFIX123."
+    }
+  };
+  const tests = {
+    target: "OpenClawWatchTests",
+    buildSettings: {
+      ...signing,
+      CODE_SIGN_ENTITLEMENTS: "Fixture/WatchTests.entitlements",
+      TARGET_BUILD_DIR: path.join(root, "project derived data", "Watch Product.app", "PlugIns"),
+      FULL_PRODUCT_NAME: "Watch Tests.xctest",
+      PRODUCT_BUNDLE_IDENTIFIER: "org.example.watch.tests",
+      TEST_HOST: path.join(root, "project derived data", "Watch Product.app",
+        mode === "wrong-test-host" ? "OtherHost" : "OpenClawWatchApp")
     }
   };
   const other = { target: "OtherTarget", buildSettings: { TARGET_BUILD_DIR: "/wrong", FULL_PRODUCT_NAME: "Wrong.app" } };
-  console.log(JSON.stringify(mode === "missing-product" ? [other] :
-    mode === "ambiguous-product" ? [product, product] : [other, product]));
+  console.log(JSON.stringify(mode === "missing-product" ? [other, tests] :
+    mode === "ambiguous-product" ? [product, product, tests] :
+    mode === "missing-test-product" ? [other, product] : [other, product, tests]));
+} else if (tool === "codesign") {
+  if (args.includes("--verify")) {
+    if ((mode === "invalid-signature" && args.at(-1).endsWith(".app")) ||
+        (mode === "invalid-test-signature" && args.at(-1).endsWith(".xctest"))) {
+      process.exit(25);
+    }
+  } else {
+    console.log(JSON.stringify({ "get-task-allow": true }));
+  }
+} else if (tool === "plutil") {
+  const entitlements = JSON.parse(readFileSync(args.at(-1) === "-" ? 0 : args.at(-1), "utf8"));
+  if (mode === "cleanup-failed") {
+    chmodSync(process.env.TMPDIR, 0o500);
+  }
+  console.log(JSON.stringify(entitlements));
 } else if (args.some((arg) => arg === "test" || arg === "test-without-building") && mode === "voice-tests-failed") {
   process.exit(25);
 } else if (args.includes("build-for-testing")) {
@@ -138,7 +200,7 @@ if (tool === "installer") {
 }
 `,
   );
-  for (const tool of ["xcrun", "xcodebuild", "pnpm", "uname", "installer", "simslim"]) {
+  for (const tool of ["xcrun", "xcodebuild", "codesign", "plutil", "pnpm", "uname", "installer", "simslim"]) {
     const executable = path.join(bin, tool);
     writeFileSync(executable, `#!/bin/sh\nexec '${process.execPath}' '${runner}' '${tool}' "$@"\n`);
     chmodSync(executable, 0o755);
@@ -168,13 +230,18 @@ if (tool === "installer") {
       return `${step.run}\nset -a\nsource "$GITHUB_ENV"\nset +a`;
     })
     .join("\n");
-  const result = spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", script], {
+  let result;
+  try {
+    result = spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", script], {
     cwd: root,
     encoding: "utf8",
     env: {
       ...process.env,
       PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
       RUNNER_TEMP: root,
+      TMPDIR: temporaryRoot,
+      TMP: temporaryRoot,
+      TEMP: temporaryRoot,
       CI: "true",
       OPENCLAW_CI_SIMSLIM_BINARY: "",
       WATCH_FIXTURE_ROOT: root,
@@ -190,6 +257,9 @@ if (tool === "installer") {
       ...env,
     },
   });
+  } finally {
+    chmodSync(temporaryRoot, 0o700);
+  }
   const trace = path.join(root, "commands.jsonl");
   const commands: Command[] = existsSync(trace)
     ? readFileSync(trace, "utf8")
@@ -201,6 +271,8 @@ if (tool === "installer") {
     result,
     commands,
     product,
+    testProduct,
+    temporaryRoot,
     root,
     summary: readFileSync(summaryFile, "utf8"),
   };
@@ -260,74 +332,134 @@ describe.skipIf(process.platform === "win32")("SimSlim workflow admission", () =
 });
 
 describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => {
-  it.each(["ready", "unpaired"])(
-    "prepares the %s Watch destination before running its tests",
-    (mode) => {
-      const { result, commands, product } = runSimulatorStep(mode, [watchStep], {
-        OPENCLAW_CI_SIMSLIM_BINARY: "/must-not-run-simslim",
-      });
-      expect(result.status, result.stderr).toBe(0);
-      const xcodeCommands = commands.filter((command) => command.tool === "xcodebuild");
-      for (const command of xcodeCommands) {
-        expect(command.args).not.toContain("-derivedDataPath");
-      }
+  it("reuses project build products and installs the exact Watch target before running its tests", () => {
+    const { result, commands, product, testProduct, temporaryRoot } = runWatchStep();
+    expect(result.status, result.stderr).toBe(0);
+    const xcodeCommands = commands.filter((command) => command.tool === "xcodebuild");
+    for (const command of xcodeCommands) {
+      expect(command.args).not.toContain("-derivedDataPath");
+    }
+    expect(
+      commands
+        .filter((command) => command.tool === "xcrun" && command.args[0] === "simctl")
+        .map((command) => command.args),
+    ).toEqual([
+      ["simctl", "list", "devices", "available", "--json"],
+      ["simctl", "boot", "watch-fixture"],
+      ["simctl", "bootstatus", "watch-fixture", "-b"],
+      ["simctl", "install", "watch-fixture", product],
+    ]);
+    expect(
+      xcodeCommands.map((command) =>
+        command.args.find((arg) =>
+          ["build-for-testing", "-showBuildSettings", "test-without-building"].includes(arg),
+        ),
+      ),
+    ).toEqual(["build-for-testing", "-showBuildSettings", "test-without-building"]);
+    for (const command of xcodeCommands.filter(
+      (entry) =>
+        entry.args.includes("build-for-testing") || entry.args.includes("test-without-building"),
+    )) {
+      expect(command.args).toEqual(
+        expect.arrayContaining([
+          "OpenClawWatchApp",
+          "Debug",
+          "platform=watchOS Simulator,id=watch-fixture",
+          "-parallel-testing-enabled",
+          "NO",
+          "-only-testing:OpenClawWatchTests/WatchInboxStoreOperationTests",
+          "-only-testing:OpenClawWatchTests/WatchRealtimeMediaTests",
+          "-only-testing:OpenClawWatchTests/WatchGatewayConfigurationTests",
+          "-only-testing:OpenClawWatchTests/WatchDirectConversationTests",
+          "-only-testing:OpenClawWatchTests/WatchGatewayControllerTests",
+          "CODE_SIGNING_ALLOWED=YES",
+          "CODE_SIGN_IDENTITY=-",
+          "CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES",
+        ]),
+      );
       expect(
-        commands.filter((command) => command.tool === "xcrun").map((command) => command.args),
-      ).toEqual([
-        ["simctl", "list", "devices", "available", "--json"],
-        ["simctl", "list", "pairs", "--json"],
-        ...(mode === "unpaired" ? [] : [["simctl", "bootstatus", "companion-fixture", "-b"]]),
-        ["simctl", "boot", "watch-fixture"],
-        ["simctl", "bootstatus", "watch-fixture", "-b"],
-        ["simctl", "install", "watch-fixture", product],
-      ]);
-      expect(
-        xcodeCommands.map((command) =>
-          command.args.find((arg) =>
-            ["build-for-testing", "-showBuildSettings", "test-without-building"].includes(arg),
+        command.args.some((arg) =>
+          /^(DEVELOPMENT_TEAM|CODE_SIGN_STYLE|CODE_SIGN_ENTITLEMENTS|PROVISIONING_PROFILE_SPECIFIER)=/.test(
+            arg,
           ),
         ),
-      ).toEqual(["build-for-testing", "-showBuildSettings", "test-without-building"]);
-      for (const command of xcodeCommands.filter(
-        (entry) =>
-          entry.args.includes("build-for-testing") || entry.args.includes("test-without-building"),
-      )) {
-        expect(command.args).toEqual(
-          expect.arrayContaining([
-            "OpenClawWatchApp",
-            "Debug",
-            "platform=watchOS Simulator,id=watch-fixture",
-            "-parallel-testing-enabled",
-            "NO",
-            "-only-testing:OpenClawWatchTests/WatchInboxStoreOperationTests",
-            "-only-testing:OpenClawWatchTests/WatchRealtimeMediaTests",
-            "-only-testing:OpenClawWatchTests/WatchGatewayConfigurationTests",
-            "-only-testing:OpenClawWatchTests/WatchDirectConversationTests",
-            "-only-testing:OpenClawWatchTests/WatchGatewayControllerTests",
-            "CODE_SIGNING_ALLOWED=NO",
-          ]),
-        );
-      }
-      expect(
-        xcodeCommands.find((command) => command.args.includes("test-without-building"))?.args,
-      ).toContain("apps/ios/build/LifecycleTestResults/OpenClawWatchOperationTests.xcresult");
-    },
-  );
+      ).toBe(false);
+    }
+    const installIndex = commands.findIndex((command) => command.args.includes("install"));
+    expect(
+      commands.slice(0, installIndex).filter((command) => command.tool === "codesign"),
+    ).toEqual([
+      { tool: "codesign", args: ["--verify", "--strict", product] },
+      { tool: "codesign", args: ["--verify", "--strict", testProduct] },
+    ]);
+    const extraction = commands.find(
+      (command) => command.tool === "xcrun" && command.args[0] === "segedit",
+    );
+    expect(extraction?.args.slice(0, 5)).toEqual([
+      "segedit",
+      path.join(product, "OpenClawWatchApp"),
+      "-extract",
+      "__TEXT",
+      "__entitlements",
+    ]);
+    const plistPath = extraction?.args[5];
+    assert(plistPath, "Expected an extracted entitlement plist");
+    expect(plistPath).not.toBe("-");
+    expect(path.dirname(path.dirname(plistPath))).toBe(temporaryRoot);
+    expect(commands.slice(0, installIndex).filter((command) => command.tool === "plutil")).toEqual([
+      { tool: "plutil", args: ["-convert", "json", "-o", "-", plistPath] },
+    ]);
+    expect(readdirSync(temporaryRoot)).toEqual([]);
+    expect(result.stderr).toContain('"team":"TEAMFIX123"');
+    expect(result.stderr).toContain('"style":"Manual"');
+    expect(result.stderr).toContain('"entitlementsFile":"Fixture/Watch.entitlements"');
+    expect(result.stderr).toContain('"entitlementsSource":"__TEXT,__entitlements"');
+    expect(result.stderr).toContain('"keychainAccessGroups":null');
+    expect(
+      xcodeCommands.find((command) => command.args.includes("test-without-building"))?.args,
+    ).toContain("apps/ios/build/LifecycleTestResults/OpenClawWatchOperationTests.xcresult");
+  });
 
-  it.each(["missing-product", "ambiguous-product", "relative-product"])(
-    "rejects %s settings before simulator installation or test execution",
-    (mode) => {
-      const { result, commands } = runSimulatorStep(mode);
-      expect(result.status).not.toBe(0);
-      expect(commands.some((command) => command.args.includes("install"))).toBe(false);
-      expect(commands.some((command) => command.args.includes("test-without-building"))).toBe(
-        false,
-      );
-    },
-  );
+  it.each([
+    "missing-product",
+    "ambiguous-product",
+    "relative-product",
+    "missing-test-product",
+    "wrong-test-host",
+    "invalid-signature",
+    "invalid-test-signature",
+    "missing-section",
+    "malformed-section",
+    "missing-application-id",
+    "wrong-application-id",
+    "malformed-keychain-groups",
+  ])("rejects %s settings before simulator installation or test execution", (mode) => {
+    const { result, commands, temporaryRoot } = runWatchStep(mode);
+    expect(result.status).not.toBe(0);
+    expect(commands.some((command) => command.args.includes("install"))).toBe(false);
+    expect(commands.some((command) => command.args.includes("test-without-building"))).toBe(false);
+    expect(readdirSync(temporaryRoot)).toEqual([]);
+  });
+
+  it("stops before installation and test execution when extraction cleanup fails", () => {
+    const { result, commands, temporaryRoot } = runWatchStep("cleanup-failed");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/EACCES|EPERM/);
+    expect(commands.some((command) => command.tool === "plutil")).toBe(true);
+    expect(commands.some((command) => command.args.includes("install"))).toBe(false);
+    expect(commands.some((command) => command.args.includes("test-without-building"))).toBe(false);
+    expect(readdirSync(temporaryRoot)).toHaveLength(1);
+  });
+
+  it("accepts an explicitly provided private Keychain group without changing signing configuration", () => {
+    const { result, commands } = runWatchStep("explicit-private-group");
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('"keychainAccessGroups":["SEEDFIX123.org.example.watch"]');
+    expect(commands.some((command) => command.args.includes("test-without-building"))).toBe(true);
+  });
 
   it("preserves simulator readiness failure without installing or running tests", () => {
-    const { result, commands } = runSimulatorStep("boot-failed");
+    const { result, commands } = runWatchStep("boot-failed");
     expect(result.status).toBe(23);
     expect(commands.some((command) => command.args.includes("install"))).toBe(false);
     expect(commands.some((command) => command.args.includes("test-without-building"))).toBe(false);

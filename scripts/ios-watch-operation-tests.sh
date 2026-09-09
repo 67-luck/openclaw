@@ -23,7 +23,9 @@ xcodebuild_args=(
   -scheme OpenClawWatchApp
   -configuration Debug
   -destination "platform=watchOS Simulator,id=${simulator_id}"
-  CODE_SIGNING_ALLOWED=NO
+  CODE_SIGNING_ALLOWED=YES
+  CODE_SIGN_IDENTITY=-
+  CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES
 )
 test_args=(
   -parallel-testing-enabled NO
@@ -38,17 +40,82 @@ xcodebuild "${xcodebuild_args[@]}" "${test_args[@]}" build-for-testing
 app_path="$(
   xcodebuild "${xcodebuild_args[@]}" -showBuildSettings -json |
     node --input-type=module -e '
+      import { execFileSync } from "node:child_process";
+      import { mkdtempSync, rmSync } from "node:fs";
+      import { tmpdir } from "node:os";
       import path from "node:path";
       const chunks = [];
       for await (const chunk of process.stdin) chunks.push(chunk);
-      const targets = JSON.parse(Buffer.concat(chunks).toString("utf8"))
-        .filter((target) => target.target === "OpenClawWatchApp");
-      if (targets.length !== 1) throw new Error("Expected one Watch app target from Xcode");
-      const { TARGET_BUILD_DIR, FULL_PRODUCT_NAME } = targets[0].buildSettings;
-      if (!path.isAbsolute(TARGET_BUILD_DIR) || !FULL_PRODUCT_NAME) {
-        throw new Error("Expected an absolute Watch app product from Xcode");
+      const targets = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const settings = (name) => {
+        const matches = targets.filter((target) => target.target === name);
+        if (matches.length !== 1) throw new Error(`Expected one ${name} target from Xcode`);
+        return matches[0].buildSettings;
+      };
+      const app = settings("OpenClawWatchApp");
+      const tests = settings("OpenClawWatchTests");
+      const product = (target) => {
+        if (!path.isAbsolute(target.TARGET_BUILD_DIR) || !target.FULL_PRODUCT_NAME) {
+          throw new Error("Expected an absolute Watch product from Xcode");
+        }
+        return path.join(target.TARGET_BUILD_DIR, target.FULL_PRODUCT_NAME);
+      };
+      const appPath = product(app);
+      const testsPath = product(tests);
+      if (!app.EXECUTABLE_NAME || tests.TEST_HOST !== path.join(appPath, app.EXECUTABLE_NAME)) {
+        throw new Error("Watch tests must run in the verified Watch app host");
       }
-      process.stdout.write(path.join(TARGET_BUILD_DIR, FULL_PRODUCT_NAME));
+      if (!app.DEVELOPMENT_TEAM || tests.DEVELOPMENT_TEAM !== app.DEVELOPMENT_TEAM ||
+          !app.AppIdentifierPrefix || !app.PRODUCT_BUNDLE_IDENTIFIER) {
+        throw new Error("Expected configured Watch signing identity and team");
+      }
+      for (const target of [app, tests]) {
+        if (target.CODE_SIGNING_ALLOWED !== "YES" || target.CODE_SIGN_IDENTITY !== "-" ||
+            target.CODE_SIGN_INJECT_BASE_ENTITLEMENTS !== "YES") {
+          throw new Error("Expected ad-hoc simulator signing with platform entitlements");
+        }
+      }
+      for (const bundle of [appPath, testsPath]) {
+        execFileSync("codesign", ["--verify", "--strict", bundle], { stdio: "pipe" });
+      }
+      const extractionDirectory = mkdtempSync(path.join(tmpdir(), "openclaw-watch-entitlements-"));
+      try {
+        // Simulator identity lives in the executable section, not its code signature.
+        // Use a real file: segedit stdout formats a C string instead of exact section bytes.
+        const plistPath = path.join(extractionDirectory, "entitlements.plist");
+        execFileSync("xcrun", [
+          "segedit", tests.TEST_HOST, "-extract", "__TEXT", "__entitlements", plistPath,
+        ], { stdio: "pipe" });
+        const entitlements = JSON.parse(execFileSync(
+          "plutil", ["-convert", "json", "-o", "-", plistPath], { encoding: "utf8" }));
+        const applicationID = entitlements["application-identifier"];
+        if (applicationID !== `${app.AppIdentifierPrefix}${app.PRODUCT_BUNDLE_IDENTIFIER}`) {
+          throw new Error("Simulated Watch host application identifier does not match its build identity");
+        }
+        // The application identifier supplies the private Keychain group when no
+        // explicit groups are present. Never manufacture a sharing entitlement.
+        const groups = entitlements["keychain-access-groups"];
+        if (groups !== undefined &&
+            (!Array.isArray(groups) || groups.some((group) => typeof group !== "string" || !group))) {
+          throw new Error("Malformed Watch host Keychain access groups");
+        }
+        console.error(JSON.stringify({
+          watchSigning: {
+            team: app.DEVELOPMENT_TEAM,
+            style: app.CODE_SIGN_STYLE,
+            entitlementsFile: app.CODE_SIGN_ENTITLEMENTS ?? null,
+            entitlementsSource: "__TEXT,__entitlements",
+            applicationID,
+            keychainAccessGroups: groups ?? null,
+            testBundle: tests.PRODUCT_BUNDLE_IDENTIFIER,
+            testStyle: tests.CODE_SIGN_STYLE,
+            testEntitlementsFile: tests.CODE_SIGN_ENTITLEMENTS ?? null,
+          },
+        }));
+      } finally {
+        rmSync(extractionDirectory, { recursive: true, force: true });
+      }
+      process.stdout.write(appPath);
     '
 )"
 xcrun simctl boot "$simulator_id" 2>/dev/null || true
