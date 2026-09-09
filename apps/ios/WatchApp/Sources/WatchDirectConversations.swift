@@ -10,6 +10,7 @@ final class WatchDirectConversations {
     private var session: GatewayOperatorHTTPSession?
     private var connectionConfiguration: WatchGatewayConfiguration?
     private var connectionTask: Task<Void, Never>?
+    private var pendingSessionCleanup: Task<Void, Never>?
     private var generation = UUID()
     private var selection = UUID()
     private var visible = false
@@ -83,24 +84,40 @@ final class WatchDirectConversations {
 
     func resume() {
         guard self.available, self.connectionTask == nil, self.session == nil else { return }
-        _ = self.retire(clear: false)
+        self.retire(clear: false)
+        let cleanup = self.takeSessionCleanup()
         let generation = self.generation
         self.connectionTask = Task { [weak self] in
+            await cleanup?.value
+            guard !Task.isCancelled else { return }
             await self?.connect(generation: generation)
         }
     }
 
     func suspend() {
-        let session = self.retire(clear: false)
-        Task { await session?.disconnect() }
+        self.retire(clear: false)
     }
 
     func disconnect(clear: Bool) async {
-        let session = self.retire(clear: clear)
-        await session?.disconnect()
+        self.retire(clear: clear)
+        let cleanup = self.takeSessionCleanup()
+        await cleanup?.value
     }
 
-    private func retire(clear: Bool) -> GatewayOperatorHTTPSession? {
+    private func retireSession() {
+        guard let session = self.session else { return }
+        self.session = nil
+        self.pendingSessionCleanup = Task { await session.disconnect() }
+    }
+
+    private func takeSessionCleanup() -> Task<Void, Never>? {
+        // Transfer before awaiting: later setup must not inherit an obsolete
+        // action's claimed cleanup, but repeated suspension must not lose it.
+        defer { self.pendingSessionCleanup = nil }
+        return self.pendingSessionCleanup
+    }
+
+    private func retire(clear: Bool) {
         // Retirement owns the outcome because old task catches lose authority here.
         if !clear, self.busy {
             self.deliveryStatus = String(
@@ -114,8 +131,7 @@ final class WatchDirectConversations {
         self.refreshTask?.cancel()
         self.refreshTask = nil
         self.refreshAgain = false
-        let session = self.session
-        self.session = nil
+        self.retireSession()
         self.connectionConfiguration = nil
         self.connected = false
         self.scopes = []
@@ -135,7 +151,6 @@ final class WatchDirectConversations {
             self.deliveryStatus = nil
             self.activeRunID = nil
         }
-        return session
     }
 
     private func connect(generation: UUID) async {
@@ -203,9 +218,9 @@ final class WatchDirectConversations {
             if let route = self.route { try await self.restore(route) }
         } catch {
             guard self.generation == generation else { return }
-            let session = self.session
             self.closed(error, generation: generation)
-            await session?.disconnect()
+            let cleanup = self.takeSessionCleanup()
+            await cleanup?.value
         }
     }
 
@@ -223,7 +238,7 @@ final class WatchDirectConversations {
     private func closed(_ error: any Error, generation: UUID) {
         guard self.generation == generation else { return }
         self.connected = false
-        self.session = nil
+        self.retireSession()
         self.status = error.localizedDescription
         for index in self.approvals.indices {
             self.approvals[index].needsReadback = true
@@ -552,9 +567,10 @@ final class WatchDirectConversations {
             }
             guard self.isCurrent(generation) else { return }
             self.upgrading = false
-            let session = self.retire(clear: false)
+            self.retire(clear: false)
+            let cleanup = self.takeSessionCleanup()
             let reconnectGeneration = self.generation
-            await session?.disconnect()
+            await cleanup?.value
             guard self.owns(reconnectGeneration), self.available, gateway.isInstalled(configuration) else { return }
             self.resume()
             let connectionTask = self.connectionTask

@@ -1,13 +1,181 @@
 import Foundation
+import Observation
 import OpenClawProtocol
 import SQLite3
 import Testing
+import XCTest
 @testable import OpenClawKit
 @testable import OpenClawWatchApp
 
 @MainActor
 @Suite(.serialized)
 struct WatchGatewayControllerTests {
+    @Test(arguments: [1, 2])
+    func `disconnect joins unclaimed cleanup after synchronous suspension`(_ repetitions: Int) async throws {
+        try await Self.withConnectedConversations { _, conversations, fixture in
+            for _ in 0..<repetitions {
+                conversations.suspend()
+            }
+            await conversations.disconnect(clear: true)
+            // No fixture wait may start or join the suspended cleanup before this assertion.
+            #expect(fixture.snapshot.filter { $0.request.httpMethod == "DELETE" }.count == 1)
+            #expect(!conversations.connected)
+            #expect(conversations.route == nil)
+        }
+    }
+
+    @Test func `disconnect joins unexpected closure without changing its presentation`() async throws {
+        try await Self.withConnectedConversations { controller, conversations, fixture in
+            let poll = try await fixture.next("idle poll before external closure")
+            try #require(poll.request.url?.lastPathComponent == "poll")
+            let closed = XCTestExpectation(description: "The owner presents the external closure")
+            withObservationTracking {
+                _ = conversations.status
+            } onChange: {
+                closed.fulfill()
+            }
+            try poll.respond(status: 409, body: JSONSerialization.data(withJSONObject: [
+                "error": ["code": "ingress_changed", "message": "Ingress changed", "resyncRequired": true],
+            ]))
+            let result = await XCTWaiter.fulfillment(of: [closed], timeout: 3)
+            try #require(result == .completed)
+            #expect(!conversations.connected)
+            let status = conversations.status
+            await conversations.disconnect(clear: false)
+            #expect(fixture.snapshot.filter { $0.request.httpMethod == "DELETE" }.count == 1)
+            #expect(conversations.status == status)
+            #expect(!controller.recoveryRequired)
+        }
+    }
+
+    @Test func `resume claims suspended cleanup before admitting another connection`() async throws {
+        var admissionDeletes: [Int] = []
+        try await Self.withConnectedConversations(
+            onAdmission: { fixture in
+                admissionDeletes.append(fixture.snapshot.filter { $0.request.httpMethod == "DELETE" }.count)
+            },
+            operation: { controller, conversations, fixture in
+                let consumer = GatewayOperatorHTTPGate()
+                defer { consumer.release() }
+                let read = Task {
+                    try await fixture.session.request(method: "chat.history") { _, _ in await consumer.wait() }
+                }
+                var resuming: Task<Void, Never>?
+                do {
+                    try await Self.reply(
+                        fixture,
+                        method: "chat.history",
+                        sequence: 4,
+                        cursor: 4,
+                        payload: AnyCodable(["messages": [String]()]))
+                    try await consumer.waitUntilEntered()
+                    conversations.suspend()
+                    conversations.suspend()
+                    conversations.resume()
+                    resuming = Task {
+                        guard !Task.isCancelled else { return }
+                        await conversations.refresh()
+                    }
+                    let deletion = try await fixture.next("resume cleanup DELETE")
+                    try #require(deletion.request.httpMethod == "DELETE")
+                    #expect(admissionDeletes == [0])
+                    consumer.release()
+                    try await Self.finishConnection(conversations, fixture: fixture)
+                    await resuming?.value
+                    await #expect(throws: GatewayOperatorHTTPError.self) { try await read.value }
+                    #expect(admissionDeletes == [0, 1])
+                    #expect(conversations.connected)
+                    try Self.requireOperatorSetup(controller, fixture: fixture)
+                } catch {
+                    consumer.release()
+                    read.cancel()
+                    resuming?.cancel()
+                    await conversations.disconnect(clear: true)
+                    _ = try? await read.value
+                    await resuming?.value
+                    throw error
+                }
+            })
+    }
+
+    @Test func `approved upgrade commits its grant before acknowledgement and reconnects after cleanup`() async throws {
+        let scopes = ["operator.approvals", "operator.read", "operator.talk", "operator.write"]
+        let token = "upgraded-operator-fixture"
+        var admissionDeletes: [Int] = []
+        try await Self.withConnectedConversations(
+            onAdmission: { fixture in
+                admissionDeletes.append(fixture.snapshot.filter { $0.request.httpMethod == "DELETE" }.count)
+            },
+            operation: { controller, conversations, fixture in
+                let configuration = try #require(controller.configuration)
+                let upgrade = Task { await conversations.requestUpgrade() }
+                do {
+                    let request = try await Self.nextFrame(fixture, method: "device.scopes.requestUpgrade")
+                    #expect(try request.frame.params?.dictionaryValue?["scopes"]?.arrayValue?
+                        .compactMap(\.stringValue) == scopes)
+                    request.accept(4)
+                    let registration = try await fixture.next("upgrade registration poll")
+                    try #require(registration.request.url?.lastPathComponent == "poll")
+                    try registration.respond(body: GatewayOperatorHTTPFixture.delivery(
+                        requestID: request.frame.id,
+                        payload: AnyCodable(["requestId": "upgrade-one"]),
+                        cursor: 4,
+                        accepted: 4))
+                    let wait = try await Self.nextFrame(fixture, method: "device.scopes.waitUpgrade")
+                    #expect(try wait.frame.params?.dictionaryValue?["requestId"]?.stringValue == "upgrade-one")
+                    wait.accept(5)
+                    let result = try await fixture.next("approved upgrade result poll")
+                    try #require(result.request.url?.lastPathComponent == "poll")
+                    let committed = XCTestExpectation(description: "Upgrade consumer durably installs the grant")
+                    // This presentation change occurs inside the real RPC consumer,
+                    // after storage but before it returns authority to the HTTP actor.
+                    withObservationTracking {
+                        _ = conversations.status
+                    } onChange: {
+                        MainActor.assumeIsolated {
+                            let grant = DeviceAuthStore.loadToken(
+                                deviceId: fixture.identity.deviceId,
+                                role: "operator",
+                                gatewayID: configuration.gatewayID,
+                                profile: .primary)
+                            #expect(grant?.token == token)
+                            #expect(Set(grant?.scopes ?? []) == Set(scopes))
+                            for exchange in fixture.snapshot where exchange.request.httpMethod == "POST" {
+                                #expect(((try? exchange.object["ack"] as? Int) ?? 0) < 5)
+                            }
+                            committed.fulfill()
+                        }
+                    }
+                    try result.respond(body: GatewayOperatorHTTPFixture.delivery(
+                        requestID: wait.frame.id,
+                        payload: AnyCodable([
+                            "status": "approved", "requestId": "upgrade-one", "deviceToken": token, "scopes": scopes,
+                        ]),
+                        cursor: 5,
+                        accepted: 5))
+                    let commitResult = await XCTWaiter.fulfillment(of: [committed], timeout: 3)
+                    try #require(commitResult == .completed)
+                    try await Self.finishConnection(conversations, fixture: fixture, scopes: scopes, token: token)
+                    await upgrade.value
+                    #expect(admissionDeletes == [0, 1])
+                    #expect(conversations.canWrite && conversations.canApprove)
+                    #expect(!controller.recoveryRequired)
+                    let grant = DeviceAuthStore.loadToken(
+                        deviceId: fixture.identity.deviceId,
+                        role: "operator",
+                        gatewayID: configuration.gatewayID,
+                        profile: .primary)
+                    #expect(grant?.token == token)
+                    #expect(Set(grant?.scopes ?? []) == Set(scopes))
+                } catch {
+                    upgrade.cancel()
+                    await conversations.disconnect(clear: true)
+                    await upgrade.value
+                    throw error
+                }
+            })
+    }
+
     @Test func `ordinary RPC failure after hello joins the operator connection cleanup`() async throws {
         try await Self.withUnconfiguredWatch { controller, _ in
             await controller.configure(
@@ -503,6 +671,7 @@ struct WatchGatewayControllerTests {
 
     private static func withConnectedConversations(
         scopes: [String] = GatewayOperatorHTTPFixture.scopes,
+        onAdmission: @escaping @MainActor (WatchGatewayOperatorHTTPFixture) -> Void = { _ in },
         operation: @MainActor (WatchGatewayController, WatchDirectConversations, WatchGatewayOperatorHTTPFixture)
         async throws -> Void) async throws
     {
@@ -519,31 +688,17 @@ struct WatchGatewayControllerTests {
                 try await controller.acceptNodeHandshake(
                     response, configuration: configuration, identity: fixture.identity, usedBootstrap: false)
                 try Self.requireOperatorSetup(controller, fixture: fixture, scopes: scopes)
-                let conversations = WatchDirectConversations(gateway: controller) { _, _ in fixture.session }
+                let conversations = WatchDirectConversations(gateway: controller) { _, _ in
+                    onAdmission(fixture)
+                    return fixture.session
+                }
                 controller.conversations = conversations
                 controller.setEnabled(false)
                 controller.connectForForeground()
                 controller.setEnabled(true)
                 controller.node.disconnectForBackground()
                 conversations.appear()
-                let connecting = Task { await conversations.refresh() }
-                let begin = try await fixture.next("begin")
-                #expect(begin.request.url?.lastPathComponent == "connections")
-                try begin.respond(status: 201, body: GatewayOperatorHTTPFixture.beginBody())
-                let connect = try await Self.nextFrame(fixture, method: "connect")
-                connect.accept(1)
-                let poll = try await fixture.next("hello poll")
-                try poll.respond(body: GatewayOperatorHTTPFixture.hello(requestID: connect.frame.id, scopes: scopes))
-                try await Self.reply(
-                    fixture, method: "agents.list", sequence: 2, cursor: 2, payload: AnyCodable([
-                        "defaultId": "first-agent", "mainKey": "main", "scope": "per-sender",
-                        "agents": [["id": "first-agent"], ["id": "second-agent"]],
-                    ]))
-                try await Self.reply(
-                    fixture, method: "sessions.list", sequence: 3, cursor: 3,
-                    payload: AnyCodable(["sessions": [["key": "session-one"], ["key": "session-two"]]]))
-                await connecting.value
-                #expect(conversations.connected)
+                try await Self.finishConnection(conversations, fixture: fixture, scopes: scopes)
                 try await operation(controller, conversations, fixture)
                 await conversations.disconnect(clear: true)
             } catch {
@@ -551,6 +706,47 @@ struct WatchGatewayControllerTests {
                 throw error
             }
             await fixture.stop()
+        }
+    }
+
+    private static func finishConnection(
+        _ conversations: WatchDirectConversations,
+        fixture: WatchGatewayOperatorHTTPFixture,
+        scopes: [String] = GatewayOperatorHTTPFixture.scopes,
+        token: String = GatewayOperatorHTTPFixture.token) async throws
+    {
+        let connecting = Task {
+            guard !Task.isCancelled else { return }
+            await conversations.refresh()
+        }
+        do {
+            var begin = try await fixture.next("begin or retired connection output")
+            while begin.request.url?.lastPathComponent != "connections" {
+                try #require(begin.request.httpMethod == "DELETE" || begin.request.url?.lastPathComponent == "poll")
+                begin = try await fixture.next("begin after retired connection output")
+            }
+            try begin.respond(status: 201, body: GatewayOperatorHTTPFixture.beginBody())
+            let connect = try await Self.nextFrame(fixture, method: "connect")
+            #expect(try connect.frame.params?.dictionaryValue?["auth"]?.dictionaryValue?["deviceToken"]?
+                .stringValue == token)
+            connect.accept(1)
+            let poll = try await fixture.next("hello poll")
+            try poll.respond(body: GatewayOperatorHTTPFixture.hello(requestID: connect.frame.id, scopes: scopes))
+            try await Self.reply(
+                fixture, method: "agents.list", sequence: 2, cursor: 2, payload: AnyCodable([
+                    "defaultId": "first-agent", "mainKey": "main", "scope": "per-sender",
+                    "agents": [["id": "first-agent"], ["id": "second-agent"]],
+                ]))
+            try await Self.reply(
+                fixture, method: "sessions.list", sequence: 3, cursor: 3,
+                payload: AnyCodable(["sessions": [["key": "session-one"], ["key": "session-two"]]]))
+            await connecting.value
+            #expect(conversations.connected)
+        } catch {
+            connecting.cancel()
+            await conversations.disconnect(clear: true)
+            await connecting.value
+            throw error
         }
     }
 
