@@ -164,8 +164,7 @@ final class OpenClawWidgetVisualProofTests: XCTestCase {
     {
         try self.registerFonts()
         let name = try self.attachmentName(scenario: scenario, family: family, scheme: scheme, typeSize: typeSize)
-        let root = OpenClawStatusWidgetView(presentation: presentation)
-            .environment(\.widgetFamily, family.value)
+        let root = OpenClawStatusWidgetContent(presentation: presentation, family: family.value)
             .environment(\.colorScheme, scheme)
             .environment(\.dynamicTypeSize, typeSize)
             .environment(\.locale, Locale(identifier: "en_US"))

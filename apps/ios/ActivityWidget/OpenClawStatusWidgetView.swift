@@ -6,6 +6,15 @@ struct OpenClawStatusWidgetView: View {
     @Environment(\.widgetFamily) private var family
 
     var body: some View {
+        OpenClawStatusWidgetContent(presentation: self.presentation, family: self.family)
+    }
+}
+
+struct OpenClawStatusWidgetContent: View {
+    let presentation: OpenClawWidgetPresentation
+    let family: WidgetFamily
+
+    var body: some View {
         Group {
             switch self.family {
             case .accessoryInline:
