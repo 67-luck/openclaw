@@ -731,7 +731,7 @@ async function main(): Promise<void> {
 
     await checkpoint("install-hosted-localhost-trust", "before");
     trustAttempted = true;
-    await runCommand("trust-install", "sudo", [
+    await runCommand("trust-install", "/usr/bin/sudo", [
       "/usr/bin/security",
       "add-trusted-cert",
       "-d",
@@ -820,7 +820,7 @@ async function main(): Promise<void> {
               break;
             }
             try {
-              await runCommand(label, "sudo", args, { cleanup: true });
+              await runCommand(label, "/usr/bin/sudo", args, { cleanup: true });
             } catch (error) {
               errors.push(error);
               cleanupFailures.push(label);
