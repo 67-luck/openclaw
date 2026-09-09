@@ -1,5 +1,4 @@
 import CoreText
-import OpenClawKit
 import SwiftUI
 import UIKit
 import WidgetKit
@@ -7,67 +6,35 @@ import XCTest
 
 @MainActor
 final class OpenClawWidgetVisualProofTests: XCTestCase {
-    private struct Family {
-        let name: String
-        let value: WidgetFamily
-        let size: CGSize
-    }
-
-    /// Fixed content canvases, not claims about the OS widget gallery's geometry.
-    private static let families: [Family] = [
-        Family(name: "small", value: .systemSmall, size: CGSize(width: 170, height: 170)),
-        Family(name: "medium", value: .systemMedium, size: CGSize(width: 364, height: 170)),
-        Family(name: "large", value: .systemLarge, size: CGSize(width: 364, height: 382)),
-        Family(name: "extra-large", value: .systemExtraLarge, size: CGSize(width: 715, height: 342)),
-        Family(name: "inline", value: .accessoryInline, size: CGSize(width: 234, height: 32)),
-        Family(name: "circular", value: .accessoryCircular, size: CGSize(width: 76, height: 76)),
-        Family(name: "rectangular", value: .accessoryRectangular, size: CGSize(width: 172, height: 76)),
-    ]
-
-    private let now = Date(timeIntervalSince1970: 100_000)
+    private typealias Fixtures = OpenClawWidgetProofFixtures
 
     func testHomeAndLockFamiliesWithLongLabelsAndDynamicType() throws {
-        let presentation = self.presentation(
-            label: String(repeating: "Long selected conversation label ", count: 5))
-        for family in Self.families {
-            for scheme in [ColorScheme.light, .dark] {
-                for typeSize in [DynamicTypeSize.large, .accessibility5] {
-                    try self.capture(
-                        presentation, family: family, scheme: scheme, typeSize: typeSize, scenario: "long-label")
-                }
-            }
+        let revision = try self.revision()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let attachment = try XCTAttachment(
+            data: encoder.encode(Fixtures.catalog(revision: revision)), uniformTypeIdentifier: "public.json")
+        attachment.name = "widget-catalog-\(revision)"
+        attachment.lifetime = .keepAlways
+        self.add(attachment)
+        for fixture in Fixtures.all where fixture.group == .longLabel {
+            try self.capture(fixture)
         }
     }
 
     func testCompactOfflineAndFactAgeRemainIndependentlyVisible() throws {
-        for family in Self.families.suffix(3) {
-            for scheme in [ColorScheme.light, .dark] {
-                let offline = try self.capture(
-                    self.presentation(availability: .offline),
-                    family: family,
-                    scheme: scheme,
-                    scenario: "offline-recent")
-                let stale = try self.capture(
-                    self.presentation(age: 600),
-                    family: family,
-                    scheme: scheme,
-                    scenario: "online-stale")
-                let both = try self.capture(
-                    self.presentation(age: 600, availability: .offline),
-                    family: family,
-                    scheme: scheme,
-                    scenario: "offline-stale")
-                let unknown = try self.capture(
-                    self.presentation(age: nil, availability: .offline),
-                    family: family,
-                    scheme: scheme,
-                    scenario: "offline-age-unknown")
-                try self.capture(
-                    self.presentation(age: nil),
-                    family: family,
-                    scheme: scheme,
-                    scenario: "online-age-unknown")
-
+        for family in Fixtures.Family.allCases.suffix(3) {
+            for appearance in Fixtures.Appearance.allCases {
+                var captures: [String: Pixels] = [:]
+                for fixture in Fixtures.all where fixture.group == .compact &&
+                    fixture.family == family && fixture.appearance == appearance
+                {
+                    captures[fixture.scenario] = try self.capture(fixture)
+                }
+                let offline = try XCTUnwrap(captures["offline-recent"])
+                let stale = try XCTUnwrap(captures["online-stale"])
+                let both = try XCTUnwrap(captures["offline-stale"])
+                let unknown = try XCTUnwrap(captures["offline-age-unknown"])
                 let staleDifference = both.differenceBounds(from: offline)
                 let offlineDifference = both.differenceBounds(from: stale)
                 let unknownDifference = unknown.differenceBounds(from: offline)
@@ -86,87 +53,31 @@ final class OpenClawWidgetVisualProofTests: XCTestCase {
     }
 
     func testRecoveryAndPrivacyAreExposedWithoutSelectedDetails() throws {
-        let cases: [(String, OpenClawWidgetPresentation, String)] = [
-            ("unconfigured", self.presentation(configured: false), "Edit widget to select. No selection"),
-            ("unavailable", self.presentation(availability: .unavailable), "Open OpenClaw. Unavailable"),
-            (
-                "permission",
-                self.presentation(availability: .permissionDenied),
-                "Authorize in OpenClaw. Access required"),
-            ("expired", self.presentation(age: 86400), "Check in OpenClaw. Status expired"),
-            ("locked", self.presentation(privacy: .locked), "Unlock to view"),
-            ("hidden", self.presentation(privacy: .hidden), "Details hidden"),
-        ]
-        for family in Self.families.suffix(3) {
-            for (scenario, presentation, accessibility) in cases {
-                let pixels = try self.capture(
-                    presentation,
-                    family: family,
-                    scheme: .dark,
-                    scenario: scenario,
-                    expectedAccessibility: accessibility)
-                if scenario == "locked" || scenario == "hidden" {
-                    let alternative = self.presentation(
-                        label: "Another private label",
-                        outcome: .failed,
-                        privacy: scenario == "locked" ? .locked : .hidden)
-                    let alternativePixels = try self.capture(
-                        alternative,
-                        family: family,
-                        scheme: .dark,
-                        scenario: "\(scenario)-other-selection",
-                        expectedAccessibility: accessibility)
-                    XCTAssertTrue(
-                        pixels.differenceBounds(from: alternativePixels).isNull,
-                        "Private labels and outcomes must not affect rendered pixels")
-                }
+        for family in Fixtures.Family.allCases.suffix(3) {
+            var captures: [String: Pixels] = [:]
+            for fixture in Fixtures.all where fixture.group == .recovery && fixture.family == family {
+                captures[fixture.scenario] = try self.capture(fixture)
+            }
+            for scenario in ["locked", "hidden"] {
+                let pixels = try XCTUnwrap(captures[scenario])
+                let alternativePixels = try XCTUnwrap(captures["\(scenario)-other-selection"])
+                XCTAssertTrue(
+                    pixels.differenceBounds(from: alternativePixels).isNull,
+                    "Private labels and outcomes must not affect rendered pixels")
             }
         }
     }
 
-    private func presentation(
-        label: String = "Private selected conversation",
-        outcome: OpenClawWidgetSnapshot.TerminalOutcome = .completed,
-        age: TimeInterval? = 0,
-        privacy: OpenClawWidgetPresentation.Privacy = .visible,
-        availability: OpenClawWidgetPresentation.Availability = .connected,
-        configured: Bool = true) -> OpenClawWidgetPresentation
-    {
-        let session = OpenClawNativeSessionRef(
-            owner: OpenClawNativeOwnerRef(gatewayID: "proof-gateway", profileID: "proof-profile"),
-            agentID: "proof-agent",
-            sessionKey: "proof-session")
-        let snapshot = OpenClawWidgetSnapshot(
-            subject: .run(
-                OpenClawNativeRunRef(session: session, runID: "proof-run"),
-                sessionID: "proof-generation",
-                outcome: outcome),
-            label: label,
-            sourceRecordedAt: age.map { self.now.addingTimeInterval(-$0) },
-            queryObservedAt: self.now)
-        return OpenClawWidgetPresentation.resolve(
-            snapshot: configured ? snapshot : nil,
-            now: self.now,
-            staleAfter: 300,
-            expiresAfter: 86400,
-            privacy: privacy,
-            availability: availability)
-    }
-
     @discardableResult
-    private func capture(
-        _ presentation: OpenClawWidgetPresentation,
-        family: Family,
-        scheme: ColorScheme,
-        typeSize: DynamicTypeSize = .large,
-        scenario: String,
-        expectedAccessibility: String? = nil) throws -> Pixels
-    {
+    private func capture(_ fixture: Fixtures.Fixture) throws -> Pixels {
         try self.registerFonts()
-        let name = try self.attachmentName(scenario: scenario, family: family, scheme: scheme, typeSize: typeSize)
-        let root = OpenClawStatusWidgetContent(presentation: presentation, family: family.value)
+        let family = fixture.family
+        let scheme = fixture.appearance.scheme
+        let name = try XCTUnwrap(Fixtures.catalog(revision: self.revision())
+            .cases.first { $0.id == fixture.id }).name
+        let root = OpenClawStatusWidgetContent(presentation: fixture.presentation, family: family.value)
             .environment(\.colorScheme, scheme)
-            .environment(\.dynamicTypeSize, typeSize)
+            .environment(\.dynamicTypeSize, fixture.textSize.value)
             .environment(\.locale, Locale(identifier: "en_US"))
         let hosting = UIHostingController(rootView: root)
         hosting.safeAreaRegions = []
@@ -226,9 +137,6 @@ final class OpenClawWidgetVisualProofTests: XCTestCase {
         XCTAssertEqual(pixels.height, Int(canvas.height), name)
         self.checkInk(pixels, contentFrame: contentFrame, name: name)
 
-        var visited = Set<ObjectIdentifier>()
-        let labels = self.accessibilityLabels(in: hosting.view, visited: &visited)
-        XCTAssertEqual(labels, [expectedAccessibility ?? presentation.accessibilityLabel], name)
         return pixels
     }
 
@@ -244,39 +152,11 @@ final class OpenClawWidgetVisualProofTests: XCTestCase {
         }
     }
 
-    private func attachmentName(
-        scenario: String, family: Family, scheme: ColorScheme, typeSize: DynamicTypeSize) throws -> String
-    {
+    private func revision() throws -> String {
         let revision = try XCTUnwrap(Bundle(for: Self.self)
             .object(forInfoDictionaryKey: "OpenClawGitCommit") as? String)
         XCTAssertNotNil(revision.range(of: "^[0-9a-f]{40}$", options: .regularExpression))
-        #if targetEnvironment(simulator)
-        let platform = "ios-simulator"
-        #else
-        let platform = "ios-device"
-        #endif
-        let idiom = UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone"
-        let appearance = scheme == .dark ? "dark" : "light"
-        let type = typeSize == .accessibility5 ? "accessibility5" : "large"
-        return "widget-\(scenario)-\(family.name)-\(appearance)-\(type)-\(revision)-" +
-            "\(platform)-\(idiom)-\(UIDevice.current.systemVersion)"
-    }
-
-    private func accessibilityLabels(in object: NSObject, visited: inout Set<ObjectIdentifier>) -> [String] {
-        guard visited.insert(ObjectIdentifier(object)).inserted, !object.accessibilityElementsHidden else { return [] }
-        if object.isAccessibilityElement {
-            return [object.accessibilityLabel].compactMap(\.self).filter { !$0.isEmpty }
-        }
-        var children = object.accessibilityElements?.compactMap { $0 as? NSObject } ?? []
-        if children.isEmpty {
-            let count = object.accessibilityElementCount()
-            if count != NSNotFound, count > 0 {
-                children = (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject }
-            } else if let view = object as? UIView {
-                children = view.subviews
-            }
-        }
-        return children.flatMap { self.accessibilityLabels(in: $0, visited: &visited) }
+        return revision
     }
 
     private func checkInk(_ pixels: Pixels, contentFrame: CGRect, name: String) {

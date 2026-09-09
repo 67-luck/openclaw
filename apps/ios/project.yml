@@ -46,6 +46,25 @@ schemes:
     test:
       targets:
         - OpenClawUITests
+  OpenClawWidgetProof:
+    shared: true
+    build:
+      targets:
+        OpenClawLogicTests: all
+        OpenClawWidgetProofHost: all
+        OpenClawWidgetAccessibilityTests: all
+    test:
+      targets:
+        - name: OpenClawLogicTests
+          parallelizable: false
+          selectedTests:
+            - OpenClawWidgetVisualProofTests/testHomeAndLockFamiliesWithLongLabelsAndDynamicType
+            - OpenClawWidgetVisualProofTests/testCompactOfflineAndFactAgeRemainIndependentlyVisible
+            - OpenClawWidgetVisualProofTests/testRecoveryAndPrivacyAreExposedWithoutSelectedDetails
+        - name: OpenClawWidgetAccessibilityTests
+          parallelizable: false
+          selectedTests:
+            - OpenClawWidgetAccessibilityTests/testWidgetAccessibilityCatalog
   OpenClawWatchApp:
     shared: true
     build:
@@ -423,6 +442,7 @@ targets:
       - path: Tests
         excludes:
           - Logic
+          - WidgetProof
       - path: ../macos/Tests/OpenClawIPCTests/GatewayWebSocketTestSupport.swift
         group: Tests
       - path: ../shared/OpenClawKit/Tests/OpenClawKitTests/NativeGatewayWebSocketFixture.swift
@@ -469,6 +489,7 @@ targets:
       Release: Signing.xcconfig
     sources:
       - path: Tests/Logic
+      - path: Tests/WidgetProof/Fixtures.swift
       - path: Sources/Widgets/OpenClawWidgetSnapshot.swift
       - path: ActivityWidget/OpenClawStatusWidgetView.swift
         group: ActivityWidget
@@ -522,6 +543,78 @@ targets:
       path: build/OpenClawLogicTests-Info.plist
       properties:
         CFBundleDisplayName: "$(PRODUCT_NAME)"
+        CFBundleShortVersionString: "$(OPENCLAW_MARKETING_VERSION)"
+        CFBundleVersion: "$(OPENCLAW_BUILD_VERSION)"
+        OpenClawGitCommit: "$(OPENCLAW_GIT_COMMIT)"
+
+  OpenClawWidgetProofHost:
+    type: application
+    platform: iOS
+    configFiles:
+      Debug: Signing.xcconfig
+      Release: Signing.xcconfig
+    sources:
+      - path: Tests/WidgetProof/Host/OpenClawWidgetProofApp.swift
+      - path: Tests/WidgetProof/Fixtures.swift
+      - path: Sources/Widgets/OpenClawWidgetSnapshot.swift
+      - path: ActivityWidget/OpenClawStatusWidgetView.swift
+      - path: ActivityWidget/OpenClawActivityTypography.swift
+      - path: Sources/Fonts/Inter[opsz,wght].ttf
+        buildPhase: resources
+      - path: Sources/Fonts/RedHatDisplay[wght].ttf
+        buildPhase: resources
+    dependencies:
+      - package: OpenClawKit
+      - sdk: WidgetKit.framework
+      - sdk: UIKit.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.openclawfoundation.widget-proof-host
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_STRICT_CONCURRENCY: complete
+    info:
+      path: build/OpenClawWidgetProofHost-Info.plist
+      properties:
+        CFBundleDisplayName: Widget Proof
+        CFBundleShortVersionString: "$(OPENCLAW_MARKETING_VERSION)"
+        CFBundleVersion: "$(OPENCLAW_BUILD_VERSION)"
+        OpenClawGitCommit: "$(OPENCLAW_GIT_COMMIT)"
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIAppFonts:
+          - Inter[opsz,wght].ttf
+          - RedHatDisplay[wght].ttf
+
+  OpenClawWidgetAccessibilityTests:
+    type: bundle.ui-testing
+    platform: iOS
+    configFiles:
+      Debug: Signing.xcconfig
+      Release: Signing.xcconfig
+    sources:
+      - path: Tests/WidgetProof/UITests/OpenClawWidgetAccessibilityTests.swift
+      - path: Tests/WidgetProof/Fixtures.swift
+      - path: Sources/Widgets/OpenClawWidgetSnapshot.swift
+    dependencies:
+      - target: OpenClawWidgetProofHost
+      - package: OpenClawKit
+      - sdk: WidgetKit.framework
+      - sdk: UIKit.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.openclawfoundation.widget-proof-ui-tests
+        TARGETED_DEVICE_FAMILY: "1,2"
+        TEST_TARGET_NAME: OpenClawWidgetProofHost
+        SWIFT_STRICT_CONCURRENCY: complete
+    info:
+      path: build/OpenClawWidgetAccessibilityTests-Info.plist
+      properties:
+        CFBundleDisplayName: Widget Accessibility Tests
         CFBundleShortVersionString: "$(OPENCLAW_MARKETING_VERSION)"
         CFBundleVersion: "$(OPENCLAW_BUILD_VERSION)"
         OpenClawGitCommit: "$(OPENCLAW_GIT_COMMIT)"
