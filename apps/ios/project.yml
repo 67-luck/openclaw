@@ -559,6 +559,8 @@ targets:
       Release: Config/Signing.xcconfig
     sources:
       - path: WatchTests
+      - path: ../shared/OpenClawKit/Tests/OpenClawKitTests/GatewayOperatorHTTPFixture.swift
+        group: Tests
     dependencies:
       - target: OpenClawWatchApp
     settings:

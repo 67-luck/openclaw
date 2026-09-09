@@ -280,6 +280,8 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
             "-only-testing:OpenClawWatchTests/WatchInboxStoreOperationTests",
             "-only-testing:OpenClawWatchTests/WatchRealtimeMediaTests",
             "-only-testing:OpenClawWatchTests/WatchGatewayConfigurationTests",
+            "-only-testing:OpenClawWatchTests/WatchDirectConversationTests",
+            "-only-testing:OpenClawWatchTests/WatchGatewayControllerTests",
             "CODE_SIGNING_ALLOWED=NO",
           ]),
         );
