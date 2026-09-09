@@ -470,6 +470,14 @@ targets:
     sources:
       - path: Tests/Logic
       - path: Sources/Widgets/OpenClawWidgetSnapshot.swift
+      - path: ActivityWidget/OpenClawStatusWidgetView.swift
+        group: ActivityWidget
+      - path: ActivityWidget/OpenClawActivityTypography.swift
+        group: ActivityWidget
+      - path: Sources/Fonts/Inter[opsz,wght].ttf
+        buildPhase: resources
+      - path: Sources/Fonts/RedHatDisplay[wght].ttf
+        buildPhase: resources
       - path: ShareExtension/ShareDraftComposer.swift
         group: ShareExtension
       - path: ShareExtension/ShareContentExtractor.swift
@@ -496,6 +504,8 @@ targets:
         group: Sources/Services
     dependencies:
       - package: OpenClawKit
+      - sdk: WidgetKit.framework
+      - sdk: UIKit.framework
     settings:
       base:
         CODE_SIGN_IDENTITY: "$(OPENCLAW_CODE_SIGN_IDENTITY)"
@@ -509,11 +519,12 @@ targets:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: "$(OPENCLAW_DEBUG_APP_BUNDLE_ID).logic-tests"
     info:
-      path: Tests/Info.plist
+      path: build/OpenClawLogicTests-Info.plist
       properties:
         CFBundleDisplayName: "$(PRODUCT_NAME)"
         CFBundleShortVersionString: "$(OPENCLAW_MARKETING_VERSION)"
         CFBundleVersion: "$(OPENCLAW_BUILD_VERSION)"
+        OpenClawGitCommit: "$(OPENCLAW_GIT_COMMIT)"
 
   OpenClawUITests:
     type: bundle.ui-testing
