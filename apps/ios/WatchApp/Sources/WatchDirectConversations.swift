@@ -159,17 +159,26 @@ final class WatchDirectConversations {
             let scopes = Set(gateway.storedOperatorScopes()).intersection(GatewayOperatorHTTPSession.allowedScopes)
                 .sorted()
             let options = GatewayConnectOptions(
-                role: "operator", scopes: scopes, scopesAreExplicit: true, caps: [], commands: [],
-                permissions: [:], clientId: "openclaw-watchos", clientMode: "node",
-                clientDisplayName: "OpenClaw Watch", deviceIdentityProfile: .primary,
+                role: "operator",
+                scopes: scopes,
+                scopesAreExplicit: true,
+                caps: [],
+                commands: [],
+                permissions: [:],
+                clientId: "openclaw-watchos",
+                clientMode: "node",
+                clientDisplayName: "OpenClaw Watch",
+                deviceIdentityProfile: .primary,
                 deviceAuthGatewayID: configuration.gatewayID)
             _ = try await session.connect(
                 options: options,
                 consumeHello: { [weak self] hello, isCurrent in
                     guard let self else { throw CancellationError() }
                     try await self.acceptHello(
-                        hello, configuration: configuration,
-                        generation: generation, isCurrent: isCurrent)
+                        hello,
+                        configuration: configuration,
+                        generation: generation,
+                        isCurrent: isCurrent)
                 },
                 consumeEvent: { [weak self] event, isCurrent in
                     guard let self else { throw CancellationError() }
@@ -201,8 +210,10 @@ final class WatchDirectConversations {
     }
 
     private func acceptHello(
-        _ hello: HelloOk, configuration: WatchGatewayConfiguration,
-        generation: UUID, isCurrent: @Sendable () -> Bool) throws
+        _ hello: HelloOk,
+        configuration: WatchGatewayConfiguration,
+        generation: UUID,
+        isCurrent: @Sendable () -> Bool) throws
     {
         guard self.isCurrent(generation), isCurrent(), let gateway else { throw CancellationError() }
         guard gateway.isInstalled(configuration) else { throw CancellationError() }
@@ -288,8 +299,10 @@ final class WatchDirectConversations {
               self.sessions.contains(where: { $0.key.utf8.elementsEqual(session.key.utf8) })
         else { return }
         let route = WatchDirectRoute(
-            gatewayID: configuration.gatewayID, setupSentAtMs: configuration.setupSentAtMs,
-            agentID: agentID, sessionKey: session.key)
+            gatewayID: configuration.gatewayID,
+            setupSentAtMs: configuration.setupSentAtMs,
+            agentID: agentID,
+            sessionKey: session.key)
         self.route = route
         do { try await self.restore(route) } catch {
             if self.owns(generation, selection: selection) { self.status = error.localizedDescription }
@@ -365,8 +378,11 @@ final class WatchDirectConversations {
         _ = try await self.rpc(
             "chat.history",
             params: ChatHistoryParams(
-                sessionkey: route.sessionKey, agentid: route.agentID, limit: 100,
-                maxbytes: 256 * 1024, maxchars: 20000),
+                sessionkey: route.sessionKey,
+                agentid: route.agentID,
+                limit: 100,
+                maxbytes: 256 * 1024,
+                maxchars: 20000),
             as: WatchDirectHistory.self)
         { value, _ in
             guard self.isCurrent(generation, selection: selection), self.route == route,
@@ -431,8 +447,10 @@ final class WatchDirectConversations {
             _ = try await self.rpc(
                 "chat.send",
                 params: ChatSendParams(
-                    sessionkey: route.sessionKey, agentid: route.agentID,
-                    message: text, idempotencykey: idempotencyKey),
+                    sessionkey: route.sessionKey,
+                    agentid: route.agentID,
+                    message: text,
+                    idempotencykey: idempotencyKey),
                 as: OpenClawProtocol.AnyCodable.self)
             { value, _ in
                 guard self.isCurrent(generation, selection: selection), self.activeSendID == sendID,
@@ -447,7 +465,8 @@ final class WatchDirectConversations {
             guard self.isCurrent(generation, selection: selection), self.activeSendID == sendID else { return }
             if let runID {
                 _ = try await self.rpc(
-                    "agent.wait", params: AgentWaitParams(runid: runID, timeoutms: 20000),
+                    "agent.wait",
+                    params: AgentWaitParams(runid: runID, timeoutms: 20000),
                     as: OpenClawProtocol.AnyCodable.self)
                 { value, _ in
                     guard self.isCurrent(generation, selection: selection), self.activeSendID == sendID,
@@ -475,7 +494,8 @@ final class WatchDirectConversations {
         let selection = self.selection
         do {
             _ = try await self.rpc(
-                "chat.abort", params: ChatAbortParams(
+                "chat.abort",
+                params: ChatAbortParams(
                     sessionkey: route.sessionKey, agentid: route.agentID, runid: runID),
                 as: OpenClawProtocol.AnyCodable.self)
             { _, _ in
@@ -500,13 +520,16 @@ final class WatchDirectConversations {
         let requested = self.scopes.union(["operator.write", "operator.approvals"]).sorted()
         do {
             let registration = try await self.rpc(
-                "device.scopes.requestUpgrade", params: ScopeUpgradeRequest(scopes: requested),
+                "device.scopes.requestUpgrade",
+                params: ScopeUpgradeRequest(scopes: requested),
                 as: ScopeUpgradeRegistration.self)
             { _, _ in self.status = String(localized: "Waiting for Gateway administrator approval...") }
             guard self.isCurrent(generation) else { return }
             _ = try await self.rpc(
-                "device.scopes.waitUpgrade", params: ScopeUpgradeWait(requestid: registration.requestid),
-                as: ScopeUpgradeResult.self, timeoutMs: 120_000)
+                "device.scopes.waitUpgrade",
+                params: ScopeUpgradeWait(requestid: registration.requestid),
+                as: ScopeUpgradeResult.self,
+                timeoutMs: 120_000)
             { result, isCurrent in
                 switch result {
                 case let .approved(value):
@@ -514,8 +537,10 @@ final class WatchDirectConversations {
                           Set(value.scopes) == Set(requested)
                     else { throw GatewayOperatorHTTPError.invalidContract }
                     try await gateway.installOperatorGrant(
-                        token: value.devicetoken, scopes: value.scopes,
-                        configuration: configuration, isCurrent: isCurrent)
+                        token: value.devicetoken,
+                        scopes: value.scopes,
+                        configuration: configuration,
+                        isCurrent: isCurrent)
                     guard self.isCurrent(generation), isCurrent() else { throw CancellationError() }
                     self.status = String(localized: "Access upgraded")
                 case .rejected:
@@ -652,7 +677,10 @@ final class WatchDirectConversations {
     }
 
     private func rpc<T: Decodable & Sendable>(
-        _ method: String, params: some Encodable & Sendable, as type: T.Type, timeoutMs: Int = 30000,
+        _ method: String,
+        params: some Encodable & Sendable,
+        as type: T.Type,
+        timeoutMs: Int = 30000,
         consume: @escaping @MainActor @Sendable (T, @Sendable () -> Bool) async throws -> Void) async throws -> T
     {
         guard self.isCurrent(self.generation), let session else { throw GatewayOperatorHTTPError.disconnected }
@@ -671,7 +699,9 @@ final class WatchDirectConversations {
     }
 
     private func commit<T: Sendable>(
-        _ value: T, generation: UUID, isCurrent: @Sendable () -> Bool,
+        _ value: T,
+        generation: UUID,
+        isCurrent: @Sendable () -> Bool,
         consume: @escaping @MainActor @Sendable (T, @Sendable () -> Bool) async throws -> Void) async throws
     {
         guard self.isCurrent(generation), isCurrent() else { throw CancellationError() }

@@ -723,8 +723,10 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
         allowsStoredCredentials: Bool = true)
     {
         self.init(
-            configuration: nil, params: params,
-            allowsRedirects: allowsRedirects, allowsStoredCredentials: allowsStoredCredentials)
+            configuration: nil,
+            params: params,
+            allowsRedirects: allowsRedirects,
+            allowsStoredCredentials: allowsStoredCredentials)
     }
 
     init(

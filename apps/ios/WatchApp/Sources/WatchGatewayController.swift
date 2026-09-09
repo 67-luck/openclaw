@@ -186,12 +186,18 @@ final class WatchGatewayController {
         // Preserve the redeemed node credential if the later operator write fails.
         // The bootstrap token is removed only after both durable handoffs finish.
         guard DeviceAuthStore.storeTokenPersisted(
-            deviceId: identity.deviceId, role: "node", token: response.deviceToken, scopes: [],
-            gatewayID: configuration.gatewayID, profile: .primary)
+            deviceId: identity.deviceId,
+            role: "node",
+            token: response.deviceToken,
+            scopes: [],
+            gatewayID: configuration.gatewayID,
+            profile: .primary)
         else { throw GatewayOperatorHTTPError.pairingRequired }
         if let voice = response.voiceCredential {
             try await self.installOperatorGrant(
-                token: voice.deviceToken, scopes: voice.scopes, configuration: configuration,
+                token: voice.deviceToken,
+                scopes: voice.scopes,
+                configuration: configuration,
                 isCurrent: { true })
         }
         guard self.isInstalled(configuration) else { throw CancellationError() }
@@ -240,8 +246,12 @@ final class WatchGatewayController {
             throw CancellationError()
         }
         guard DeviceAuthStore.storeTokenPersisted(
-            deviceId: identity.deviceId, role: "operator", token: token, scopes: scopes,
-            gatewayID: configuration.gatewayID, profile: .primary)
+            deviceId: identity.deviceId,
+            role: "operator",
+            token: token,
+            scopes: scopes,
+            gatewayID: configuration.gatewayID,
+            profile: .primary)
         else {
             self.requireSetupRecovery()
             throw GatewayOperatorHTTPError.pairingRequired

@@ -106,6 +106,7 @@ public actor GatewayOperatorHTTPSession {
     }
 
     private struct Pending {
+        let requestID: String
         let frame: Data
         let method: String
         let consume: ResponseConsumer
@@ -148,7 +149,8 @@ public actor GatewayOperatorHTTPSession {
     }
 
     init(
-        endpoint: URL, gatewayID: String,
+        endpoint: URL,
+        gatewayID: String,
         makeHTTP: @escaping @Sendable () -> GatewayTLSPinningSession) throws
     {
         guard endpoint.scheme == "https", endpoint.host?.isEmpty == false,
@@ -184,8 +186,13 @@ public actor GatewayOperatorHTTPSession {
         let url = self.endpoint.appendingPathComponent("api/operator/connections")
         let beginTask = Task {
             let data = try await Self.exchange(
-                http: http, url: url, method: "POST", key: nil, body: Data("{}".utf8),
-                expectedStatus: 201, timeout: 10, maximumBytes: 16384)
+                http: http,
+                url: url,
+                method: "POST",
+                key: nil,
+                body: Data("{}".utf8),
+                expectedResponse: (status: 201, maximumBytes: 16384),
+                timeout: 10)
             return try JSONDecoder().decode(Begin.self, from: data)
         }
         self.beginTask = beginTask
@@ -210,8 +217,10 @@ public actor GatewayOperatorHTTPSession {
                   begin.limits.maxPollWaitMs > 0
             else { throw GatewayOperatorHTTPError.invalidContract }
             let connection = Connection(
-                generation: generation, begin: begin,
-                url: url.appendingPathComponent(begin.connectionId), http: http,
+                generation: generation,
+                begin: begin,
+                url: url.appendingPathComponent(begin.connectionId),
+                http: http,
                 cancellation: GatewayRequestCancellationGate())
             self.connection = connection
             self.consumeEvent = consumeEvent
@@ -226,22 +235,33 @@ public actor GatewayOperatorHTTPSession {
             let fields = GatewayDeviceAuthPayload.Fields(
                 deviceId: identity.deviceId,
                 client: .init(id: options.clientId, mode: options.clientMode),
-                role: "operator", scopes: options.scopes,
-                signedAtMs: begin.challenge.ts, token: stored.token, nonce: begin.challenge.nonce)
+                role: "operator",
+                scopes: options.scopes,
+                signedAtMs: begin.challenge.ts,
+                token: stored.token,
+                nonce: begin.challenge.nonce)
             let signaturePayload = GatewayDeviceAuthPayload.buildV3(
                 fields: fields,
                 platform: InstanceIdentity.platformString,
                 deviceFamily: InstanceIdentity.deviceFamily)
             guard let device = GatewayDeviceAuthPayload.signedDeviceDictionary(
-                payload: signaturePayload, identity: identity,
-                signedAtMs: begin.challenge.ts, nonce: begin.challenge.nonce)
+                payload: signaturePayload,
+                identity: identity,
+                signedAtMs: begin.challenge.ts,
+                nonce: begin.challenge.nonce)
             else { throw GatewayOperatorHTTPError.pairingRequired }
             let params = ConnectParams(
-                minprotocol: GATEWAY_PROTOCOL_VERSION, maxprotocol: GATEWAY_PROTOCOL_VERSION,
-                client: client, caps: [], role: "operator", scopes: options.scopes, device: device,
+                minprotocol: GATEWAY_PROTOCOL_VERSION,
+                maxprotocol: GATEWAY_PROTOCOL_VERSION,
+                client: client,
+                caps: [],
+                role: "operator",
+                scopes: options.scopes,
+                device: device,
                 auth: ["deviceToken": AnyCodable(stored.token)])
             let response = try await self.enqueue(
-                method: "connect", params: Self.codableValue(params),
+                method: "connect",
+                params: Self.codableValue(params),
                 timeoutMs: Int(min(30000, begin.handshakeExpiresAtMs - begin.challenge.ts)))
             { response, isCurrent in
                 guard response.ok else { return }
@@ -325,8 +345,13 @@ public actor GatewayOperatorHTTPSession {
                     } catch {}
                 }
                 self.pending[key] = Pending(
-                    frame: frame, method: method, consume: consume, continuation: continuation,
-                    timeout: timeout, cancellation: cancellation)
+                    requestID: id,
+                    frame: frame,
+                    method: method,
+                    consume: consume,
+                    continuation: continuation,
+                    timeout: timeout,
+                    cancellation: cancellation)
                 self.pendingBytes += frame.count
                 self.outgoing.append(key)
                 // Interrupt only the read. The pump joins it before changing ACK or sending a frame.
@@ -349,7 +374,7 @@ public actor GatewayOperatorHTTPSession {
         request.cancellation.cancel()
         if request.submitted {
             self.retire(GatewayOperatorHTTPError.resultUnknown(
-                method: request.method, requestID: String(decoding: key, as: UTF8.self)))
+                method: request.method, requestID: request.requestID))
         } else {
             self.outgoing.removeAll { $0 == key }
             self.removePending(key)?.continuation.resume(throwing: CancellationError())
@@ -393,8 +418,11 @@ public actor GatewayOperatorHTTPSession {
                 let pollTask = Task {
                     let body = Data("{\"ack\":\(ack),\"waitMs\":\(waitMs)}".utf8)
                     let data = try await Self.retryExchange(
-                        connection: connection, suffix: "poll", body: body,
-                        expectedStatus: 200, timeout: Double(waitMs) / 1000 + 5)
+                        connection: connection,
+                        suffix: "poll",
+                        body: body,
+                        expectedStatus: 200,
+                        timeout: Double(waitMs) / 1000 + 5)
                     return try JSONDecoder().decode(Poll.self, from: data)
                 }
                 self.pollTask = pollTask
@@ -483,11 +511,11 @@ public actor GatewayOperatorHTTPSession {
         self.pollInterrupted = false
         self.pumpTask?.cancel()
         self.pumpTask = nil
-        for (key, request) in self.pending {
+        for request in self.pending.values {
             request.timeout.cancel()
             request.continuation.resume(throwing: request.submitted
                 ? GatewayOperatorHTTPError.resultUnknown(
-                    method: request.method, requestID: String(decoding: key, as: UTF8.self))
+                    method: request.method, requestID: request.requestID)
                 : error)
         }
         self.pending.removeAll()
@@ -499,9 +527,13 @@ public actor GatewayOperatorHTTPSession {
             self.cleanupTask = Task {
                 await previous?.value
                 _ = try? await Self.exchange(
-                    http: connection.http, url: connection.url, method: "DELETE",
-                    key: connection.begin.connectionKey, body: nil, expectedStatus: 204,
-                    timeout: 5, maximumBytes: 16384)
+                    http: connection.http,
+                    url: connection.url,
+                    method: "DELETE",
+                    key: connection.begin.connectionKey,
+                    body: nil,
+                    expectedResponse: (status: 204, maximumBytes: 16384),
+                    timeout: 5)
                 connection.http.finishTasksAndInvalidate()
             }
         }
@@ -519,9 +551,13 @@ public actor GatewayOperatorHTTPSession {
         for attempt in 0..<3 {
             do {
                 return try await self.exchange(
-                    http: connection.http, url: connection.url.appendingPathComponent(suffix), method: "POST",
-                    key: connection.begin.connectionKey, body: body, expectedStatus: expectedStatus,
-                    timeout: timeout, maximumBytes: self.maximumResponseBytes)
+                    http: connection.http,
+                    url: connection.url.appendingPathComponent(suffix),
+                    method: "POST",
+                    key: connection.begin.connectionKey,
+                    body: body,
+                    expectedResponse: (status: expectedStatus, maximumBytes: self.maximumResponseBytes),
+                    timeout: timeout)
             } catch {
                 try Task.checkCancellation()
                 let networkFailure = (error as? URLError).map {
@@ -543,19 +579,24 @@ public actor GatewayOperatorHTTPSession {
     }
 
     private static func exchange(
-        http: GatewayTLSPinningSession, url: URL, method: String, key: String?, body: Data?,
-        expectedStatus: Int, timeout: Double, maximumBytes: Int) async throws -> Data
+        http: GatewayTLSPinningSession,
+        url: URL,
+        method: String,
+        key: String?,
+        body: Data?,
+        expectedResponse: (status: Int, maximumBytes: Int),
+        timeout: Double) async throws -> Data
     {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.httpMethod = method
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let key { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
-        let (data, response) = try await http.data(for: request, maximumBytes: maximumBytes)
+        let (data, response) = try await http.data(for: request, maximumBytes: expectedResponse.maximumBytes)
         guard let response = response as? HTTPURLResponse, response.url == url else {
             throw GatewayOperatorHTTPError.invalidContract
         }
-        guard response.statusCode == expectedStatus else {
+        guard response.statusCode == expectedResponse.status else {
             if let rejection = try? JSONDecoder().decode(Rejection.self, from: data) {
                 throw GatewayOperatorHTTPError.remote(
                     code: rejection.error.code, message: rejection.error.message)
