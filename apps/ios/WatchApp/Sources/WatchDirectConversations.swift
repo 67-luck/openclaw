@@ -672,7 +672,7 @@ final class WatchDirectConversations {
 
     private func commit<T: Sendable>(
         _ value: T, generation: UUID, isCurrent: @Sendable () -> Bool,
-        consume: @MainActor @Sendable (T, @Sendable () -> Bool) async throws -> Void) async throws
+        consume: @escaping @MainActor @Sendable (T, @Sendable () -> Bool) async throws -> Void) async throws
     {
         guard self.isCurrent(generation), isCurrent() else { throw CancellationError() }
         try await consume(value, isCurrent)
