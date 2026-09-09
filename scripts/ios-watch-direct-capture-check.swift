@@ -5,17 +5,28 @@ import Vision
 enum Anchor {
     case text(String)
     case line(String)
+    case decision(String)
 
     var value: String {
         switch self {
-        case let .text(value), let .line(value): value
+        case let .text(value), let .line(value), let .decision(value): value
         }
     }
 
     func matches(_ lines: [String]) -> Bool {
         switch self {
-        case let .text(value): lines.joined(separator: " ").contains(value)
-        case let .line(value): lines.contains(value)
+        case let .text(value): return lines.joined(separator: " ").contains(value)
+        case let .line(value): return lines.contains(value)
+        case let .decision(value):
+            // Vision can include the review button's checkmark/xmark in its primary line.
+            // Accept only these observed whole labels, never arbitrary prefixes or prose.
+            let icon: String
+            switch value {
+            case "Allow once", "Always allow": icon = "V"
+            case "Deny": icon = "X"
+            default: return false
+            }
+            return lines.contains(value) || lines.contains("\(icon) \(value)")
         }
     }
 }
@@ -36,14 +47,14 @@ enum Scenario: String {
         case .payment, .standingGrant:
             [.text("Approvals"), .text("Review request"), .text("Confirm the terms below.")]
         case .paymentTerms:
-            [.line("Pending"), .line("Allow once"), .line("Deny")]
+            [.line("Pending"), .decision("Allow once"), .decision("Deny")]
         case .standingGrantTerms:
-            [.line("Pending"), .line("Always allow"), .line("Deny")]
+            [.line("Pending"), .decision("Always allow"), .decision("Deny")]
         case .unsupportedContext:
             [
                 .text("Unsupported approval context: Visibility."),
                 .text("Review on the Gateway before allowing."),
-                .line("Pending"), .line("Deny"),
+                .line("Pending"), .decision("Deny"),
             ]
         case .creationFailed:
             [.text("Conversations"), .text(Self.failed), .text("New conversation")]
@@ -89,6 +100,7 @@ enum Scenario: String {
 struct ImageEvidence: Encodable {
     let scenario: String
     let sha256: String
+    let recognizedLines: [String]
     let missingVisibleAnchors: [String]
     let unexpectedDecisions: [String]
 }
@@ -117,12 +129,13 @@ func recognize(_ path: String, scenario: Scenario) throws -> (ImageEvidence, [St
     let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
         .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
     let unexpected = scenario == .unsupportedContext
-        ? ["Allow once", "Always allow"].filter { lines.contains($0) }
+        ? ["Allow once", "Always allow"].filter { Anchor.decision($0).matches(lines) }
         : []
     return (
         ImageEvidence(
             scenario: scenario.rawValue,
             sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+            recognizedLines: lines,
             missingVisibleAnchors: scenario.visible.filter { !$0.matches(lines) }.map(\.value),
             unexpectedDecisions: unexpected),
         lines)
