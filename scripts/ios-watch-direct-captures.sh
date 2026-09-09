@@ -181,14 +181,7 @@ for scenario in payment payment-terms standing-grant standing-grant-terms unsupp
     fi
     sleep 0.1
   done
-  previous=""
-  while true; do
-    run_for "$((deadline - SECONDS))" xcrun simctl io "$simulator_id" screenshot "$output_dir/$scenario.png"
-    digest="$(shasum -a 256 "$output_dir/$scenario.png" | awk '{print $1}')"
-    if [ "$digest" = "$previous" ]; then break; fi
-    previous="$digest"
-    sleep 0.2
-  done
+  run_for "$((deadline - SECONDS))" xcrun simctl io "$simulator_id" screenshot "$output_dir/$scenario.png"
   check_args=("$scenario" "$output_dir/$scenario.png")
   case "$scenario" in
     payment-terms) check_args+=("$output_dir/payment.png") ;;
