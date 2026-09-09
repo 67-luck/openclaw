@@ -518,6 +518,7 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
       (step) => step.name === "Run focused shared Watch transport tests",
     );
     expect(shared?.run).toContain("GatewayOperatorHTTPSessionTests");
+    expect(shared?.run).toContain("GatewayOperatorHTTPWireTests");
     expect(shared?.run).toContain("--no-parallel");
   });
 });

@@ -291,7 +291,7 @@ jobs:
           swift test --package-path apps/shared/OpenClawKit \
             --scratch-path "$RUNNER_TEMP/watch-qualification-swift" \
             --jobs 4 --no-parallel \
-            --filter 'GatewayOperatorHTTPSessionTests|GatewayNativeTransportDeviceAuthTests|GatewayNodeSessionTests|DeviceAuthStoreTests|GatewayTLSPinningTests' \
+            --filter 'GatewayOperatorHTTPSessionTests|GatewayOperatorHTTPWireTests|GatewayNativeTransportDeviceAuthTests|GatewayNodeSessionTests|DeviceAuthStoreTests|GatewayTLSPinningTests' \
             2>&1 | tee "$output_dir/shared-tests.log"
 
       - name: Run focused Apple Watch operation simulator tests
