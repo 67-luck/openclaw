@@ -35,6 +35,13 @@ struct OpenClawWidgetSnapshot: Sendable {
             case let .session(_, _, .terminal(outcome)), let .run(_, _, outcome?): .terminal(outcome)
             }
         }
+
+        fileprivate var kind: OpenClawWidgetPresentation.Kind {
+            switch self {
+            case .session: .conversation
+            case .run: .run
+            }
+        }
     }
 
     let subject: Subject
@@ -65,6 +72,17 @@ struct OpenClawWidgetSnapshot: Sendable {
 }
 
 struct OpenClawWidgetPresentation: Equatable, Sendable {
+    enum Kind: Sendable {
+        case conversation, run
+
+        var text: String {
+            switch self {
+            case .conversation: String(localized: "Conversation")
+            case .run: String(localized: "Run")
+            }
+        }
+    }
+
     enum State: Equatable, Sendable {
         case unknown, queued, running, terminal(OpenClawWidgetSnapshot.TerminalOutcome)
         case unconfigured, unavailable, permissionRequired, locked, hidden, expired
@@ -102,7 +120,9 @@ struct OpenClawWidgetPresentation: Equatable, Sendable {
 
     let state: State
     let freshness: Freshness
+    let kind: Kind?
     let label: String?
+    let recordedAt: Date?
     let isOffline: Bool
     let contextText: String
     let openRequest: OpenClawNativeOpenRequest?
@@ -128,7 +148,27 @@ struct OpenClawWidgetPresentation: Equatable, Sendable {
     }
 
     var accessibilityLabel: String {
-        [self.label, self.statusText, self.contextText]
+        self.accessibilityLabel(locale: .current, timeZone: .current)
+    }
+
+    var title: String? {
+        self.label ?? self.kind?.text
+    }
+
+    func recordedTimeText(locale: Locale, timeZone: TimeZone) -> String? {
+        guard let recordedAt = self.recordedAt else { return nil }
+        let format = Date.FormatStyle(date: .abbreviated, time: .shortened, locale: locale, timeZone: timeZone)
+        return String(localized: "Recorded \(recordedAt.formatted(format))", locale: locale)
+    }
+
+    func accessibilityLabel(locale: Locale, timeZone: TimeZone) -> String {
+        [
+            self.kind?.text,
+            self.label,
+            self.statusText,
+            self.contextText,
+            self.recordedTimeText(locale: locale, timeZone: timeZone),
+        ]
             .compactMap(\.self)
             .filter { !$0.isEmpty }
             .joined(separator: ". ")
@@ -169,14 +209,16 @@ struct OpenClawWidgetPresentation: Equatable, Sendable {
         let context = if state == .unknown {
             String(localized: "No recorded status")
         } else if freshness == .recent, !isOffline {
-            String(localized: "Recorded status")
+            ""
         } else {
             String(localized: "Last known")
         }
         return Self(
             state: state,
             freshness: freshness,
+            kind: snapshot.subject.kind,
             label: snapshot.label.isEmpty ? nil : snapshot.label,
+            recordedAt: freshness == .recent || freshness == .stale ? snapshot.sourceRecordedAt : nil,
             isOffline: isOffline,
             contextText: context,
             openRequest: snapshot.subject.openRequest)
@@ -188,7 +230,14 @@ struct OpenClawWidgetPresentation: Equatable, Sendable {
         default: ""
         }
         return Self(
-            state: state, freshness: freshness, label: nil, isOffline: false, contextText: context, openRequest: nil)
+            state: state,
+            freshness: freshness,
+            kind: nil,
+            label: nil,
+            recordedAt: nil,
+            isOffline: false,
+            contextText: context,
+            openRequest: nil)
     }
 
     private static func freshness(

@@ -7,11 +7,11 @@ import WidgetKit
 enum OpenClawWidgetProofFixtures {
     enum Group: String, CaseIterable {
         case longLabel = "long-label"
-        case compact, recovery
+        case context, compact, recovery
 
         var testIdentifier: String {
             let method = switch self {
-            case .longLabel: "testHomeAndLockFamiliesWithLongLabelsAndDynamicType"
+            case .context, .longLabel: "testHomeAndLockFamiliesWithLongLabelsAndDynamicType"
             case .compact: "testCompactOfflineAndFactAgeRemainIndependentlyVisible"
             case .recovery: "testRecoveryAndPrivacyAreExposedWithoutSelectedDetails"
             }
@@ -74,11 +74,12 @@ enum OpenClawWidgetProofFixtures {
         }
 
         var presentation: OpenClawWidgetPresentation {
-            let now = Date(timeIntervalSince1970: 100_000)
+            let now = OpenClawWidgetProofFixtures.now
             let session = OpenClawNativeSessionRef(
                 owner: OpenClawNativeOwnerRef(gatewayID: "proof-gateway", profileID: "proof-profile"),
                 agentID: "proof-agent",
-                sessionKey: "proof-session")
+                sessionKey: self.scenario == "conversation-running-other-selection"
+                    ? "incident-follow-up" : "release-readiness")
             let age: TimeInterval? = switch self.scenario {
             case "online-stale", "offline-stale": 600
             case "offline-age-unknown", "online-age-unknown": nil
@@ -96,11 +97,19 @@ enum OpenClawWidgetProofFixtures {
             case "offline-recent", "offline-stale", "offline-age-unknown": .offline
             default: .connected
             }
-            let snapshot = OpenClawWidgetSnapshot(
-                subject: .run(
+            let subject: OpenClawWidgetSnapshot.Subject = switch self.scenario {
+            case "conversation-queued":
+                .session(session, sessionID: "release-generation", state: .queued)
+            case "conversation-running", "conversation-running-other-selection", "long-label":
+                .session(session, sessionID: "release-generation", state: .running)
+            default:
+                .run(
                     OpenClawNativeRunRef(session: session, runID: "proof-run"),
-                    sessionID: "proof-generation",
-                    outcome: self.scenario.hasSuffix("-other-selection") ? .failed : .completed),
+                    sessionID: "release-generation",
+                    outcome: self.outcome)
+            }
+            let snapshot = OpenClawWidgetSnapshot(
+                subject: subject,
                 label: self.selectionLabel,
                 sourceRecordedAt: age.map { now.addingTimeInterval(-$0) },
                 queryObservedAt: now)
@@ -114,9 +123,22 @@ enum OpenClawWidgetProofFixtures {
         }
 
         private var selectionLabel: String {
-            if self.group == .longLabel { return String(repeating: "Long selected conversation label ", count: 5) }
-            return self.scenario.hasSuffix("-other-selection")
-                ? "Another private label" : "Private selected conversation"
+            if self.group == .longLabel {
+                return "Release readiness: review the iOS build, accessibility findings, "
+                    + "and remaining validation before publishing"
+            }
+            if self.scenario.hasSuffix("-other-selection") { return "Incident follow-up" }
+            return "Release readiness"
+        }
+
+        private var outcome: OpenClawWidgetSnapshot.TerminalOutcome? {
+            switch self.scenario {
+            case "run-unknown": nil
+            case "run-cancelled": .cancelled
+            case "run-timed-out": .timedOut
+            case "run-failed", "locked-other-selection", "hidden-other-selection": .failed
+            default: .completed
+            }
         }
 
         /// Independent expectations; never feed these strings into the rendered accessibility tree.
@@ -133,19 +155,69 @@ enum OpenClawWidgetProofFixtures {
             case "offline-stale": "Offline, stale: Completed. Last known"
             case "offline-age-unknown": "Offline, age unknown: Completed. Last known"
             case "online-age-unknown": "Age unknown: Completed. Last known"
-            default: "Completed. Recorded status"
+            case "conversation-queued": "Queued"
+            case "conversation-running", "conversation-running-other-selection", "long-label":
+                "Running"
+            case "run-failed": "Failed"
+            case "run-cancelled": "Cancelled"
+            case "run-timed-out": "Timed out"
+            case "run-unknown": "Unknown. No recorded status"
+            default: "Completed"
             }
-            return self.group == .recovery ? status : "\(self.selectionLabel.prefix(96)). \(status)"
+            guard self.group != .recovery else { return status }
+            let kind = self.scenario.hasPrefix("conversation-") || self.group == .longLabel ? "Conversation" : "Run"
+            let age: TimeInterval? = switch self.scenario {
+            case "online-stale", "offline-stale": 600
+            case "offline-age-unknown", "online-age-unknown", "run-unknown": nil
+            default: 0
+            }
+            let format = Date.FormatStyle(
+                date: .abbreviated,
+                time: .shortened,
+                locale: OpenClawWidgetProofFixtures.locale,
+                timeZone: OpenClawWidgetProofFixtures.timeZone)
+            let time = age.map {
+                "Recorded \(OpenClawWidgetProofFixtures.now.addingTimeInterval(-$0).formatted(format))"
+            }
+            return [kind, String(self.selectionLabel.prefix(96)), status, time].compactMap(\.self)
+                .joined(separator: ". ")
         }
 
         var forbiddenLabels: [String] {
             self.group == .recovery
-                ? ["Private selected conversation", "Another private label", "Completed", "Failed"] : []
+                ? [
+                    "Release readiness",
+                    "Incident follow-up",
+                    "Completed",
+                    "Failed",
+                    "Conversation",
+                    "Run",
+                    "Recorded",
+                ] :
+                []
         }
     }
 
+    // Synthetic facts at 2026-09-09 16:00:00 UTC; polling never advances this clock.
+    static let now = Date(timeIntervalSince1970: 1_788_969_600)
+    static let locale = Locale(identifier: "en_US")
+    static let timeZone = TimeZone.gmt
+
     static let all: [Fixture] = {
         var fixtures: [Fixture] = []
+        for scenario in [
+            "conversation-queued", "conversation-running", "run-completed", "run-failed",
+            "run-cancelled", "run-timed-out", "run-unknown",
+        ] {
+            fixtures.append(Fixture(
+                group: .context, scenario: scenario, family: .medium, appearance: .light, textSize: .large))
+        }
+        for family in Family.allCases.suffix(3) {
+            for scenario in ["conversation-running", "conversation-running-other-selection"] {
+                fixtures.append(Fixture(
+                    group: .context, scenario: scenario, family: family, appearance: .light, textSize: .large))
+            }
+        }
         for family in Family.allCases {
             for appearance in Appearance.allCases {
                 for textSize in TextSize.allCases {

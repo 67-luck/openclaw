@@ -20,6 +20,8 @@ struct OpenClawWidgetSnapshotTests {
 
         #expect(self.resolve(sessionSnapshot).openRequest == .session(selected))
         #expect(self.resolve(runSnapshot).openRequest == .inspect(run))
+        #expect(self.resolve(sessionSnapshot).kind == .conversation)
+        #expect(self.resolve(runSnapshot).kind == .run)
         #expect(runSnapshot.subject.sessionID == "generation-two")
         #expect(self.resolve(runSnapshot).openRequest?.session.owner != OpenClawNativeOwnerRef(
             gatewayID: "gateway-\u{e9}",
@@ -85,6 +87,8 @@ struct OpenClawWidgetSnapshotTests {
         #expect(queued.state == .queued)
         #expect(selected.state == .unknown)
         #expect(selected.freshness == .unknown)
+        #expect(selected.kind == .run)
+        #expect(selected.recordedAt == nil)
         #expect(selected.openRequest == .inspect(run))
     }
 
@@ -104,7 +108,9 @@ struct OpenClawWidgetSnapshotTests {
         if expected == .expired {
             #expect(result.state == .expired)
             #expect(result.statusText.hasPrefix("Check in OpenClaw"))
+            #expect(result.kind == nil)
             #expect(result.label == nil)
+            #expect(result.recordedAt == nil)
             #expect(result.openRequest == nil)
             #expect(!result.accessibilityLabel.contains("Chosen conversation"))
         } else {
@@ -129,6 +135,11 @@ struct OpenClawWidgetSnapshotTests {
 
         #expect(self.resolve(previous) == self.resolve(polled))
         #expect(self.resolve(polled).freshness == .stale)
+        #expect(self.resolve(polled).recordedAt == recordedAt)
+        let locale = Locale(identifier: "en_US")
+        let format = Date.FormatStyle(date: .abbreviated, time: .shortened, locale: locale, timeZone: .gmt)
+        #expect(self.resolve(polled).recordedTimeText(locale: locale, timeZone: .gmt) ==
+            "Recorded \(recordedAt.formatted(format))")
     }
 
     @Test(arguments: [
@@ -143,6 +154,8 @@ struct OpenClawWidgetSnapshotTests {
             queryObservedAt: self.now)
         let result = self.resolve(snapshot)
         #expect(result.freshness == .unknown)
+        #expect(result.recordedAt == nil)
+        #expect(result.recordedTimeText(locale: Locale(identifier: "en_US"), timeZone: .gmt) == nil)
         #expect(result.state == .terminal(.completed))
         #expect(result.statusText.hasPrefix("Age unknown: "))
     }
@@ -156,7 +169,10 @@ struct OpenClawWidgetSnapshotTests {
             privacy: privacy,
             availability: .offline)
         #expect(result.state == (privacy == .locked ? .locked : .hidden))
+        #expect(result.kind == nil)
         #expect(result.label == nil)
+        #expect(result.recordedAt == nil)
+        #expect(result.recordedTimeText(locale: Locale(identifier: "en_US"), timeZone: .gmt) == nil)
         #expect(result.openRequest == nil)
         #expect(result.freshness == .unknown)
         #expect(!result.isOffline)
@@ -176,7 +192,9 @@ struct OpenClawWidgetSnapshotTests {
         #expect(result.state == (availability == .permissionDenied ? .permissionRequired : .unavailable))
         let recovery = availability == .permissionDenied ? "Authorize in OpenClaw" : "Open OpenClaw"
         #expect(result.statusText.hasPrefix(recovery))
+        #expect(result.kind == nil)
         #expect(result.label == nil)
+        #expect(result.recordedAt == nil)
         #expect(result.openRequest == nil)
         #expect(result.accessibilityLabel.components(separatedBy: recovery).count == 2)
         #expect(!result.accessibilityLabel.contains("Chosen conversation"))

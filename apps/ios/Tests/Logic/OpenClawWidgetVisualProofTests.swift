@@ -17,8 +17,20 @@ final class OpenClawWidgetVisualProofTests: XCTestCase {
         attachment.name = "widget-catalog-\(revision)"
         attachment.lifetime = .keepAlways
         self.add(attachment)
-        for fixture in Fixtures.all where fixture.group == .longLabel {
-            try self.capture(fixture)
+        var contextCaptures: [String: Pixels] = [:]
+        for fixture in Fixtures.all where fixture.group == .longLabel || fixture.group == .context {
+            let pixels = try self.capture(fixture)
+            if fixture.group == .context {
+                contextCaptures[fixture.id] = pixels
+            }
+        }
+        for family in Fixtures.Family.allCases.suffix(3) {
+            let release = try XCTUnwrap(contextCaptures["conversation-running-\(family.rawValue)-light-large"])
+            let incident = try XCTUnwrap(
+                contextCaptures["conversation-running-other-selection-\(family.rawValue)-light-large"])
+            XCTAssertFalse(
+                release.differenceBounds(from: incident).isNull,
+                "Different named conversations must not collapse to the same status symbol")
         }
     }
 
@@ -41,13 +53,6 @@ final class OpenClawWidgetVisualProofTests: XCTestCase {
                 XCTAssertFalse(staleDifference.isNull, "Staleness must remain visible while offline")
                 XCTAssertFalse(offlineDifference.isNull, "Offline must remain visible while stale")
                 XCTAssertFalse(unknownDifference.isNull, "Unknown-age facts must not look recent")
-                if family.value == .accessoryCircular {
-                    XCTAssertLessThan(offlineDifference.maxX, staleDifference.minX)
-                    XCTAssertLessThan(offlineDifference.maxX, unknownDifference.minX)
-                    XCTAssertLessThanOrEqual(staleDifference.height, 12)
-                    XCTAssertLessThanOrEqual(offlineDifference.height, 12)
-                    XCTAssertLessThanOrEqual(unknownDifference.height, 12)
-                }
             }
         }
     }
@@ -56,6 +61,9 @@ final class OpenClawWidgetVisualProofTests: XCTestCase {
         for family in Fixtures.Family.allCases.suffix(3) {
             var captures: [String: Pixels] = [:]
             for fixture in Fixtures.all where fixture.group == .recovery && fixture.family == family {
+                XCTAssertNil(fixture.presentation.kind)
+                XCTAssertNil(fixture.presentation.label)
+                XCTAssertNil(fixture.presentation.recordedAt)
                 captures[fixture.scenario] = try self.capture(fixture)
             }
             for scenario in ["locked", "hidden"] {
@@ -78,7 +86,8 @@ final class OpenClawWidgetVisualProofTests: XCTestCase {
         let root = OpenClawStatusWidgetContent(presentation: fixture.presentation, family: family.value)
             .environment(\.colorScheme, scheme)
             .environment(\.dynamicTypeSize, fixture.textSize.value)
-            .environment(\.locale, Locale(identifier: "en_US"))
+            .environment(\.locale, Fixtures.locale)
+            .environment(\.timeZone, Fixtures.timeZone)
         let hosting = UIHostingController(rootView: root)
         hosting.safeAreaRegions = []
         let fitted = hosting.sizeThatFits(in: family.size)

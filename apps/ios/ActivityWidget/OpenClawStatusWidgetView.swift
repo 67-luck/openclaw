@@ -13,57 +13,74 @@ struct OpenClawStatusWidgetView: View {
 struct OpenClawStatusWidgetContent: View {
     let presentation: OpenClawWidgetPresentation
     let family: WidgetFamily
+    @Environment(\.locale) private var locale
+    @Environment(\.timeZone) private var timeZone
 
     var body: some View {
         Group {
             switch self.family {
             case .accessoryInline:
                 ViewThatFits(in: .vertical) {
-                    self.statusLine()
-                    self.statusLine(compact: true)
+                    self.compactContext()
+                    self.compactContext(small: true)
                 }
             case .accessoryCircular:
                 ZStack {
                     AccessoryWidgetBackground()
-                    self.circularStatusSymbol
+                    ViewThatFits(in: .vertical) {
+                        self.circularContext(lineLimit: 2)
+                        self.circularContext(lineLimit: 1)
+                        self.circularContext(lineLimit: 1, small: true)
+                    }
                 }
             case .accessoryRectangular:
                 ViewThatFits(in: .vertical) {
-                    self.summary(labelLineLimit: 1)
-                    self.statusLine()
+                    self.summary(labelLineLimit: 1, showTime: false)
+                    self.compactContext()
+                    self.compactContext(small: true)
                 }
             case .systemSmall, .systemMedium, .systemLarge, .systemExtraLarge:
                 ViewThatFits(in: .vertical) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("OpenClaw")
-                            .font(OpenClawActivityType.caption)
-                            .foregroundStyle(.secondary)
-                        self.summary(labelLineLimit: 2)
-                    }
-                    self.summary(labelLineLimit: 1)
-                    self.statusLine()
+                    self.summary(labelLineLimit: 3, showTime: true)
+                    self.summary(labelLineLimit: 2, showTime: false)
+                    self.compactContext()
+                    self.compactContext(small: true)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             @unknown default:
-                self.statusLine()
+                self.compactContext(small: true)
             }
         }
         .privacySensitive()
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(verbatim: self.presentation.accessibilityLabel))
+        .accessibilityLabel(Text(verbatim: self.presentation.accessibilityLabel(
+            locale: self.locale,
+            timeZone: self.timeZone)))
     }
 
-    private func summary(labelLineLimit: Int) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            if let label = self.presentation.label {
-                Text(verbatim: label)
+    private func summary(labelLineLimit: Int, showTime: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let kind = self.presentation.kind {
+                Text(verbatim: kind.text)
+                    .font(OpenClawActivityType.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            if let title = self.presentation.title {
+                Text(verbatim: title)
                     .font(OpenClawActivityType.subheadSemiBold)
                     .lineLimit(labelLineLimit)
                     .minimumScaleFactor(0.8)
             }
-            self.statusLine()
-            if !self.presentation.contextText.isEmpty {
-                Text(verbatim: self.presentation.contextText)
+            HStack(spacing: 4) {
+                self.statusSymbol
+                Text(verbatim: self.presentation.statusText)
+                    .font(OpenClawActivityType.caption)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
+            }
+            if showTime, let time = self.presentation.recordedTimeText(locale: self.locale, timeZone: self.timeZone) {
+                Text(verbatim: time)
                     .font(OpenClawActivityType.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -72,25 +89,37 @@ struct OpenClawStatusWidgetContent: View {
         }
     }
 
-    private func statusLine(compact: Bool = false) -> some View {
+    private func circularContext(lineLimit: Int, small: Bool = false) -> some View {
+        VStack(spacing: 3) {
+            Text(verbatim: self.presentation.title ?? self.presentation.statusText)
+                .font(small ? OpenClawActivityType.eyebrow : OpenClawActivityType.caption)
+                .lineLimit(lineLimit)
+                .minimumScaleFactor(0.8)
+            self.statusIndicators
+        }
+    }
+
+    private func compactContext(small: Bool = false) -> some View {
         HStack(alignment: .center, spacing: 4) {
-            self.statusSymbol
-            Text(verbatim: self.presentation.statusText)
-                .font(compact ? OpenClawActivityType.eyebrow : OpenClawActivityType.caption)
+            // Keep the selected name when space is scarce; qualifiers retain their own fixed slots.
+            Text(verbatim: self.presentation.title ?? self.presentation.statusText)
+                .font(small ? OpenClawActivityType.eyebrow : OpenClawActivityType.caption)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            self.statusIndicators
         }
     }
 
     private var statusSymbol: some View {
         Image(systemName: self.symbol)
-            .font(OpenClawActivityType.symbol(size: 16, weight: .semibold))
+            .font(OpenClawActivityType.symbol(size: 12, weight: .semibold))
             .foregroundStyle(.primary)
-            .frame(width: 28, height: 28)
+            .frame(width: 14, height: 14)
     }
 
-    private var circularStatusSymbol: some View {
-        VStack(spacing: 2) {
+    private var statusIndicators: some View {
+        HStack(spacing: 3) {
             self.statusSymbol
             // Separate fixed slots keep offline and fact age independently visible.
             HStack(spacing: 4) {
@@ -112,7 +141,7 @@ struct OpenClawStatusWidgetContent: View {
             .font(OpenClawActivityType.symbol(size: 9, weight: .bold))
             .foregroundStyle(.secondary)
         }
-        .frame(width: 28, height: 42)
+        .fixedSize()
     }
 
     private var symbol: String {

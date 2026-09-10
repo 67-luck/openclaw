@@ -34,7 +34,8 @@ final class OpenClawWidgetAccessibilityTests: XCTestCase {
         XCTAssertNotNil(revision.range(of: "^[0-9a-f]{40}$", options: .regularExpression))
         let catalog = OpenClawWidgetProofFixtures.catalog(revision: revision)
         try self.attach(catalog, name: "widget-catalog-\(revision)")
-        XCTAssertEqual(catalog.cases.count, 82)
+        XCTAssertFalse(catalog.cases.isEmpty)
+        XCTAssertEqual(Set(catalog.cases.map(\.id)).count, catalog.cases.count)
         let app = XCUIApplication()
         let orientation = XCUIDevice.shared.orientation
         var observations: [Observation] = []
@@ -98,7 +99,7 @@ final class OpenClawWidgetAccessibilityTests: XCTestCase {
                 next.tap()
             }
         }
-        XCTAssertEqual(observations.count, 82)
+        XCTAssertEqual(observations.count, catalog.cases.count)
     }
 
     private func attach(_ value: some Encodable, name: String) throws {
