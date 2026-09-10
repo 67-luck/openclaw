@@ -21,7 +21,7 @@ struct OpenClawWidgetProofApp: App {
                 .accessibilityIdentifier("widget-proof-viewport")
                 HStack {
                     Text(verbatim: Bundle.main.object(forInfoDictionaryKey: "OpenClawGitCommit") as? String ?? "")
-                        .font(OpenClawActivityType.caption2)
+                        .font(OpenClawActivityType.caption)
                         .accessibilityIdentifier("widget-proof-revision")
                     Spacer()
                     Button {
