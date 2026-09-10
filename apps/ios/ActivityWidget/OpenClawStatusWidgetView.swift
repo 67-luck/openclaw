@@ -73,13 +73,12 @@ struct OpenClawStatusWidgetContent: View {
     }
 
     private func statusLine(compact: Bool = false) -> some View {
-        Label {
+        HStack(alignment: .center, spacing: 4) {
+            self.statusSymbol
             Text(verbatim: self.presentation.statusText)
                 .font(compact ? OpenClawActivityType.caption2 : OpenClawActivityType.caption)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
-        } icon: {
-            self.statusSymbol
         }
     }
 
