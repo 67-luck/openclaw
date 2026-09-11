@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import OpenClawKit
+import OpenClawNativeActions
 import OpenClawNativeState
 
 enum OpenClawWidgetCache {

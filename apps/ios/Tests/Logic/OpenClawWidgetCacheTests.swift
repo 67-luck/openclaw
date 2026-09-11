@@ -1,5 +1,5 @@
 import Foundation
-import OpenClawKit
+import OpenClawNativeActions
 import OpenClawNativeState
 import SQLite3
 import Testing

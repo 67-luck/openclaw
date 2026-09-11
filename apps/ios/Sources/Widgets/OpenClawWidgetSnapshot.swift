@@ -1,5 +1,5 @@
 import Foundation
-import OpenClawKit
+import OpenClawNativeActions
 
 struct OpenClawWidgetSnapshot: Sendable {
     enum TerminalOutcome: Equatable, Sendable {

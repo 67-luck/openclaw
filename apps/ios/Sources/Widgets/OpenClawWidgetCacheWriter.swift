@@ -1,5 +1,5 @@
 import Foundation
-import OpenClawKit
+import OpenClawNativeActions
 import OpenClawNativeState
 
 /// App-only ownership. A permit fences publication, not Gateway authentication.

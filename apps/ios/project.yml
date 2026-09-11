@@ -102,6 +102,8 @@ targets:
       - package: OpenClawKit
         product: OpenClawChatUI
       - package: OpenClawKit
+        product: OpenClawNativeActions
+      - package: OpenClawKit
         product: OpenClawProtocol
       - package: OpenClawKit
         product: OpenClawNativeState
@@ -120,7 +122,7 @@ targets:
           export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
           "$SRCROOT/../../scripts/check-swift-tools.sh" swiftformat
           swiftformat --lint --config "$SRCROOT/../../config/swiftformat" \
-            --unexclude "$SRCROOT/Sources,$SRCROOT/ShareExtension,$SRCROOT/ActivityWidget,$SRCROOT/WatchApp,$SRCROOT/../shared/OpenClawKit/Sources/OpenClawChatUI,$SRCROOT/../shared/OpenClawKit/Sources/OpenClawKit,$SRCROOT/../shared/OpenClawKit/Sources/OpenClawNativeState,$SRCROOT/../shared/OpenClawKit/Sources/OpenClawProtocol,$SRCROOT/../swabble/Sources/SwabbleKit" \
+            --unexclude "$SRCROOT/Sources,$SRCROOT/ShareExtension,$SRCROOT/ActivityWidget,$SRCROOT/WatchApp,$SRCROOT/../shared/OpenClawKit/Sources/OpenClawChatUI,$SRCROOT/../shared/OpenClawKit/Sources/OpenClawKit,$SRCROOT/../shared/OpenClawKit/Sources/OpenClawNativeActions,$SRCROOT/../shared/OpenClawKit/Sources/OpenClawNativeState,$SRCROOT/../shared/OpenClawKit/Sources/OpenClawProtocol,$SRCROOT/../swabble/Sources/SwabbleKit" \
             --filelist "$SRCROOT/SwiftSources.input.xcfilelist"
       - name: SwiftLint
         basedOnDependencyAnalysis: false
@@ -304,6 +306,7 @@ targets:
       - sdk: WidgetKit.framework
       - sdk: ActivityKit.framework
       - package: OpenClawKit
+        product: OpenClawNativeActions
       - package: OpenClawKit
         product: OpenClawNativeState
     settings:
@@ -470,6 +473,8 @@ targets:
         group: WatchApp/Sources
     dependencies:
       - target: OpenClaw
+      - package: OpenClawKit
+        product: OpenClawNativeActions
       - package: Swabble
         product: SwabbleKit
       - sdk: AppIntents.framework
@@ -542,6 +547,8 @@ targets:
     dependencies:
       - package: OpenClawKit
       - package: OpenClawKit
+        product: OpenClawNativeActions
+      - package: OpenClawKit
         product: OpenClawNativeState
       - sdk: WidgetKit.framework
       - sdk: UIKit.framework
@@ -583,6 +590,7 @@ targets:
         buildPhase: resources
     dependencies:
       - package: OpenClawKit
+        product: OpenClawNativeActions
       - sdk: WidgetKit.framework
       - sdk: UIKit.framework
     settings:
@@ -621,6 +629,7 @@ targets:
     dependencies:
       - target: OpenClawWidgetProofHost
       - package: OpenClawKit
+        product: OpenClawNativeActions
       - sdk: WidgetKit.framework
       - sdk: UIKit.framework
     settings:
