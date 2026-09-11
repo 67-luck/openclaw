@@ -48,11 +48,15 @@ struct OpenClawWidgetSnapshotTests {
     }
 
     @Test(arguments: [
-        (600.0 as TimeInterval?, "Offline, stale: "),
-        (nil, "Offline, age unknown: "),
+        (600.0 as TimeInterval?, OpenClawWidgetPresentation.Availability.offline, "Offline, stale: "),
+        (nil, .offline, "Offline, age unknown: "),
+        (0.0, .offline, "Offline: "),
+        (600.0, .connected, "Stale: "),
+        (nil, .connected, "Age unknown: "),
     ])
-    func `compact status preserves offline and freshness before the outcome`(
+    func `compact status preserves qualifiers before the outcome`(
         age: TimeInterval?,
+        availability: OpenClawWidgetPresentation.Availability,
         prefix: String)
     {
         for state in [
@@ -63,11 +67,11 @@ struct OpenClawWidgetSnapshotTests {
                 label: "Chosen conversation",
                 sourceRecordedAt: age.map { self.now.addingTimeInterval(-$0) },
                 queryObservedAt: self.now)
-            let result = self.resolve(snapshot, availability: .offline)
+            let result = self.resolve(snapshot, availability: availability)
 
-            #expect(result.statusText.hasPrefix(prefix))
-            #expect(result.statusText.hasSuffix(result.state.text))
-            #expect(result.accessibilityLabel.components(separatedBy: "Offline").count == 2)
+            #expect(result.statusText == prefix + result.state.text)
+            #expect(result.accessibilityLabel.components(separatedBy: "Offline").count ==
+                (availability == .offline ? 2 : 1))
             #expect(result.accessibilityLabel.components(separatedBy: prefix).count == 2)
             #expect(!result.contextText.localizedCaseInsensitiveContains("stale"))
             #expect(!result.contextText.localizedCaseInsensitiveContains("unknown"))
@@ -121,7 +125,11 @@ struct OpenClawWidgetSnapshotTests {
         }
     }
 
-    @Test func `observation-only updates cannot renew recorded fact freshness`() {
+    @Test(arguments: [("en_US", "GMT"), ("fr_FR", "Europe/Paris")])
+    func `observation-only updates cannot renew recorded fact freshness`(
+        localeIdentifier: String,
+        timeZoneIdentifier: String) throws
+    {
         let subject = OpenClawWidgetSnapshot.Subject.session(
             self.session, sessionID: "generation-two", state: .terminal(.completed))
         let recordedAt = self.now.addingTimeInterval(-600)
@@ -136,9 +144,10 @@ struct OpenClawWidgetSnapshotTests {
         #expect(self.resolve(previous) == self.resolve(polled))
         #expect(self.resolve(polled).freshness == .stale)
         #expect(self.resolve(polled).recordedAt == recordedAt)
-        let locale = Locale(identifier: "en_US")
-        let format = Date.FormatStyle(date: .abbreviated, time: .shortened, locale: locale, timeZone: .gmt)
-        #expect(self.resolve(polled).recordedTimeText(locale: locale, timeZone: .gmt) ==
+        let locale = Locale(identifier: localeIdentifier)
+        let timeZone = try #require(TimeZone(identifier: timeZoneIdentifier))
+        let format = Date.FormatStyle(date: .abbreviated, time: .shortened, locale: locale, timeZone: timeZone)
+        #expect(self.resolve(polled).recordedTimeText(locale: locale, timeZone: timeZone) ==
             "Recorded \(recordedAt.formatted(format))")
     }
 

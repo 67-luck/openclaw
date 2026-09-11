@@ -136,13 +136,16 @@ struct OpenClawWidgetPresentation: Equatable, Sendable {
         case (.permissionRequired, _, _): String(localized: "Authorize in OpenClaw")
         case (.expired, _, _): String(localized: "Check in OpenClaw")
         case (.locked, _, _), (.hidden, _, _): self.state.text
-        case (_, true, .stale): String(localized: "Offline, stale: \(self.state.text)")
+        case (_, true, .stale):
+            String(format: String(localized: "Offline, stale: %@"), self.state.text)
         case (_, true, .unknown) where self.state != .unknown:
-            String(localized: "Offline, age unknown: \(self.state.text)")
-        case (_, true, _): String(localized: "Offline: \(self.state.text)")
-        case (_, false, .stale): String(localized: "Stale: \(self.state.text)")
+            String(format: String(localized: "Offline, age unknown: %@"), self.state.text)
+        case (_, true, _):
+            String(format: String(localized: "Offline: %@"), self.state.text)
+        case (_, false, .stale):
+            String(format: String(localized: "Stale: %@"), self.state.text)
         case (_, false, .unknown) where self.state != .unknown:
-            String(localized: "Age unknown: \(self.state.text)")
+            String(format: String(localized: "Age unknown: %@"), self.state.text)
         default: self.state.text
         }
     }
@@ -158,7 +161,10 @@ struct OpenClawWidgetPresentation: Equatable, Sendable {
     func recordedTimeText(locale: Locale, timeZone: TimeZone) -> String? {
         guard let recordedAt = self.recordedAt else { return nil }
         let format = Date.FormatStyle(date: .abbreviated, time: .shortened, locale: locale, timeZone: timeZone)
-        return String(localized: "Recorded \(recordedAt.formatted(format))", locale: locale)
+        return String(
+            format: String(localized: "Recorded %@", locale: locale),
+            locale: locale,
+            recordedAt.formatted(format))
     }
 
     func accessibilityLabel(locale: Locale, timeZone: TimeZone) -> String {
