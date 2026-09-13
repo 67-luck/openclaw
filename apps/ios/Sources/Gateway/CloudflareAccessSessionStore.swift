@@ -59,7 +59,7 @@ final class CloudflareAccessSessionStore {
     @ObservationIgnored private var retirements: [CloudflareAccessOrigin: Retirement] = [:]
     @ObservationIgnored private let persistence: Persistence
     @ObservationIgnored private let authenticate: Authenticate
-    @ObservationIgnored private let retireTransports: (CloudflareAccessOrigin) async -> Void
+    @ObservationIgnored private let retireTransports: @MainActor (CloudflareAccessOrigin) async -> Void
     @ObservationIgnored private let now: () -> Date
 
     init(
@@ -68,7 +68,7 @@ final class CloudflareAccessSessionStore {
             try await CloudflareAccessTransfer().signIn(application: application, openBrowser: browser)
         },
         now: @escaping () -> Date = Date.init,
-        retireTransports: @escaping (CloudflareAccessOrigin) async -> Void)
+        retireTransports: @escaping @MainActor (CloudflareAccessOrigin) async -> Void)
     {
         self.persistence = persistence
         self.authenticate = authenticate

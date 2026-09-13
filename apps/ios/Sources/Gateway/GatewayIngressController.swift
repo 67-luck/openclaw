@@ -55,30 +55,8 @@ final class GatewayIngressController {
     @ObservationIgnored private let saveProfileOrigin: (String, CloudflareAccessOrigin?) -> Bool
     @ObservationIgnored private let customHeaders: (String) -> [String: String]
     @ObservationIgnored private let now: () -> Date
-    @ObservationIgnored private let retireTransports: (CloudflareAccessOrigin) async -> Void
-    @ObservationIgnored private lazy var sessions = CloudflareAccessSessionStore(
-        persistence: self.persistence,
-        authenticate: { [weak self] application, openBrowser in
-            guard let self, let intent = self.foregroundIntent, intent.origin == application.origin
-            else { throw CancellationError() }
-            let route = intent.route
-            if let authenticate = self.authenticate {
-                return try await authenticate(application, openBrowser)
-            }
-            return try await CloudflareAccessTransfer(client: self.client(for: route))
-                .signIn(application: application, openBrowser: openBrowser)
-        },
-        now: self.now,
-        retireTransports: { [weak self] origin in
-            guard let self else { return }
-            self.expiryTasks.removeValue(forKey: origin)?.cancel()
-            let requests = self.mediaRequests.removeValue(forKey: origin) ?? [:]
-            requests.values.forEach { $0.task.cancel() }
-            for request in requests.values {
-                _ = await request.task.result
-            }
-            await self.retireTransports(origin)
-        })
+    @ObservationIgnored private let retireTransports: @MainActor (CloudflareAccessOrigin) async -> Void
+    @ObservationIgnored private lazy var sessions = self.makeSessionStore()
 
     init(
         persistence: CloudflareAccessSessionStore.Persistence = .keychain,
@@ -96,7 +74,7 @@ final class GatewayIngressController {
             GatewaySettingsStore.saveGatewayAccessOrigin(stableID: $0, origin: $1)
         },
         now: @escaping () -> Date = Date.init,
-        retireTransports: @escaping (CloudflareAccessOrigin) async -> Void)
+        retireTransports: @escaping @MainActor (CloudflareAccessOrigin) async -> Void)
     {
         self.persistence = persistence
         self.browser = browser
@@ -107,6 +85,32 @@ final class GatewayIngressController {
         self.saveProfileOrigin = saveProfileOrigin
         self.now = now
         self.retireTransports = retireTransports
+    }
+
+    private func makeSessionStore() -> CloudflareAccessSessionStore {
+        CloudflareAccessSessionStore(
+            persistence: self.persistence,
+            authenticate: { [weak self] application, openBrowser in
+                guard let self, let intent = self.foregroundIntent, intent.origin == application.origin
+                else { throw CancellationError() }
+                let route = intent.route
+                if let authenticate = self.authenticate {
+                    return try await authenticate(application, openBrowser)
+                }
+                return try await CloudflareAccessTransfer(client: self.client(for: route))
+                    .signIn(application: application, openBrowser: openBrowser)
+            },
+            now: self.now,
+            retireTransports: { [weak self] origin in
+                guard let self else { return }
+                self.expiryTasks.removeValue(forKey: origin)?.cancel()
+                let requests = self.mediaRequests.removeValue(forKey: origin) ?? [:]
+                requests.values.forEach { $0.task.cancel() }
+                for request in requests.values {
+                    _ = await request.task.result
+                }
+                await self.retireTransports(origin)
+            })
     }
 
     func admissionCheckpoint() -> UInt64 {
