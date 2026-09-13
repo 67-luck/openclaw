@@ -1219,7 +1219,7 @@ extension GatewayConnectionController {
         appModel.setGatewayConnectionProgress(reconnecting: false)
         let task = Task { [weak self, weak appModel] in
             guard let self, let appModel else { return }
-            func isCurrent() -> Bool {
+            @MainActor func isCurrent() -> Bool {
                 !Task.isCancelled && generation == appModel.gatewayConnectGeneration &&
                     !self.hasPendingForgetCleanup(stableID: gatewayStableID)
             }
