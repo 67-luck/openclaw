@@ -231,8 +231,7 @@ final class GatewayIngressController {
         if self.foregroundIntent?.origin == origin {
             self.cancelSignIn()
         }
-        let route = self.routes[GatewayStableIdentifier.Key(stableID)]?.route ??
-            Route(url: origin.url, stableID: stableID, tls: nil)
+        let route = Route(url: origin.url, stableID: stableID, tls: nil)
         do {
             try await self.sessions.forget(origin).value
             self.showAttention(
@@ -287,10 +286,15 @@ final class GatewayIngressController {
 
     private func origin(stableID: String) -> CloudflareAccessOrigin? {
         let key = GatewayStableIdentifier.Key(stableID)
+        // A replacement route cannot take ownership until the saved grant is retired.
+        // Keep lookup and Sign out on that durable origin when retirement fails or suspends.
+        if let saved = self.profiles().first(where: { $0.id == key })?.accessOrigin {
+            return saved
+        }
         if let route = routes[key]?.route {
             return try? CloudflareAccessOrigin(route.url)
         }
-        return self.profiles().first { $0.id == key }?.accessOrigin
+        return nil
     }
 
     private func checkRegistration(_ registration: Registration) throws {

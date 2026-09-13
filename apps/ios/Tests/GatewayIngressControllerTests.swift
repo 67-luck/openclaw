@@ -49,6 +49,31 @@ final class IngressTestGate {
 }
 
 @MainActor
+private final class IngressOriginStorage {
+    var values: [CloudflareAccessOrigin: String] = [:]
+    var deletionSucceeds = true
+    var deleted: [CloudflareAccessOrigin] = []
+
+    var persistence: CloudflareAccessSessionStore.Persistence {
+        .init(
+            load: { self.values[$0] },
+            save: { self.values[$0] = $1
+                return true
+            },
+            delete: {
+                self.deleted.append($0)
+                guard self.deletionSucceeds else { return false }
+                self.values.removeValue(forKey: $0)
+                return true
+            })
+    }
+
+    func save(_ session: CloudflareAccessSession) throws {
+        self.values[session.origin] = try #require(String(data: JSONEncoder().encode(session), encoding: .utf8))
+    }
+}
+
+@MainActor
 final class IngressTestHarness {
     let browser = IngressTestBrowser()
     let tokens: CloudflareAccessTestTokens
@@ -471,6 +496,117 @@ struct GatewayIngressControllerTests {
         #expect(fixture.profileRows[0].accessOrigin == nil)
         #expect((fixture.persisted != nil) == shared)
         #expect(fixture.retirements == (shared ? 0 : 1))
+        #expect(fixture.browser.presented.isEmpty)
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func `saved origin owns session lookup and sign out while route replacement waits for media`(
+        replacementHasGrant: Bool) async throws
+    {
+        let fixture = try IngressTestHarness()
+        let storage = IngressOriginStorage()
+        try storage.save(fixture.nextSession)
+        fixture.profileRows[0].accessOrigin = fixture.application.origin
+        let replacementOrigin = try CloudflareAccessOrigin(#require(URL(string: "https://replacement.example.test")))
+        let replacementApplication = CloudflareAccessApplication(
+            origin: replacementOrigin, issuer: fixture.application.issuer, audience: fixture.application.audience)
+        if replacementHasGrant {
+            try storage.save(CloudflareAccessSession(
+                application: replacementApplication,
+                subject: fixture.nextSession.subject,
+                token: #require(fixture.nextSession.authorizationHeader(for: fixture.route.url)),
+                expiresAt: fixture.nextSession.expiresAt))
+        }
+        let replacementBytes = storage.values[replacementOrigin]
+        let ingress = fixture.controller(persistence: storage.persistence)
+        let prepared = try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+        let authorization = try #require(prepared)
+        let media = IngressTestGate()
+        let response = try #require(HTTPURLResponse(
+            url: fixture.route.url,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil))
+        let download = Task {
+            try await authorization.load(URLRequest(url: fixture.route.url)) { _ in
+                await media.wait()
+                return (Data([1]), response)
+            }
+        }
+        defer { media.release()
+            download.cancel()
+        }
+        try await waitForIngress { media.started }
+        fixture.preauthenticated = true
+        let replacement = Task {
+            try await ingress.prepare(
+                route: .init(url: replacementOrigin.url, stableID: fixture.stableID, tls: nil),
+                userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+        }
+        defer { replacement.cancel() }
+        try await waitForIngress { !authorization.isCurrent() }
+        // Registration already points to P; its media drain still precedes revocation of O.
+        #expect(ingress.hasSession(stableID: fixture.stableID))
+        await ingress.signOut(stableID: fixture.stableID)
+        #expect(storage.values[fixture.application.origin] == nil)
+        #expect(storage.values[replacementOrigin] == replacementBytes)
+        #expect(storage.deleted == [fixture.application.origin])
+        #expect(ingress.attention?.origin == fixture.application.origin)
+        #expect(!ingress.hasSession(stableID: fixture.stableID))
+        media.release()
+        if case .success = await download.result { Issue.record("Retired media returned a result") }
+        #expect(try await replacement.value == nil)
+        #expect(storage.values[replacementOrigin] == replacementBytes)
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func `failed old origin deletion remains owned for retry and cold sign out`(cold: Bool) async throws {
+        let fixture = try IngressTestHarness()
+        let storage = IngressOriginStorage()
+        try storage.save(fixture.nextSession)
+        fixture.profileRows[0].accessOrigin = fixture.application.origin
+        let replacementOrigin = try CloudflareAccessOrigin(#require(URL(string: "https://replacement.example.test")))
+        let replacementApplication = CloudflareAccessApplication(
+            origin: replacementOrigin, issuer: fixture.application.issuer, audience: fixture.application.audience)
+        try storage.save(CloudflareAccessSession(
+            application: replacementApplication,
+            subject: fixture.nextSession.subject,
+            token: #require(fixture.nextSession.authorizationHeader(for: fixture.route.url)),
+            expiresAt: fixture.nextSession.expiresAt))
+        let before = storage.values
+        storage.deletionSucceeds = false
+        fixture.preauthenticated = true
+        let ingress = fixture.controller(persistence: storage.persistence)
+        await #expect(throws: CloudflareAccessError.self) {
+            try await ingress.prepare(
+                route: .init(url: replacementOrigin.url, stableID: fixture.stableID, tls: nil),
+                userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+        }
+        #expect(storage.values == before)
+        #expect(fixture.profileRows[0].accessOrigin == fixture.application.origin)
+        #expect(fixture.requests.isEmpty)
+        #expect(!ingress.hasSession(stableID: fixture.stableID))
+        await ingress.signOut(stableID: fixture.stableID)
+        let attention = try #require(ingress.attention)
+        #expect(attention.origin == fixture.application.origin)
+        #expect(storage.values == before)
+        #expect(storage.deleted == [fixture.application.origin, fixture.application.origin])
+        storage.deletionSucceeds = true
+        if cold {
+            let restarted = fixture.controller(persistence: storage.persistence)
+            #expect(restarted.hasSession(stableID: fixture.stableID))
+            await restarted.signOut(stableID: fixture.stableID)
+            #expect(restarted.attention?.origin == fixture.application.origin)
+            #expect(!restarted.hasSession(stableID: fixture.stableID))
+        } else {
+            try await ingress.signIn(for: attention, admissionCheckpoint: ingress.admissionCheckpoint())
+            #expect(fixture.profileRows[0].accessOrigin == nil)
+            #expect(ingress.attention == nil)
+        }
+        #expect(storage.values[fixture.application.origin] == nil)
+        #expect(storage.values[replacementOrigin] == before[replacementOrigin])
+        #expect(storage.deleted.allSatisfy { $0 == fixture.application.origin })
         #expect(fixture.browser.presented.isEmpty)
     }
 
