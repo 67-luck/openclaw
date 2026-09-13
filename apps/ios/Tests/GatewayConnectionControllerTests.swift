@@ -179,6 +179,23 @@ private func waitUntil(
     }
 }
 
+@MainActor
+private func pendingHandoffDiagnostic(
+    _ controller: GatewayConnectionController,
+    model: NodeAppModel,
+    expectedGeneration: UInt64) -> Comment
+{
+    let pending = controller._test_pendingAutoConnectState()
+    return """
+    handoff: expectedGeneration=\(expectedGeneration), currentGeneration=\(model.gatewayConnectGeneration), \
+    pendingGeneration=\(pending.generation.map { String($0) } ?? "nil"), \
+    phase=\(pending.phase), pending=\(pending.pending), \
+    hasConfig=\(model.activeGatewayConnectConfig != nil), resetInFlight=\(model.hasGatewaySessionResetInFlight), \
+    suppressed=\(controller._test_isAutoConnectSuppressed()), \
+    problemKind=\(model.lastGatewayProblem?.kind.rawValue ?? "none")
+    """
+}
+
 @Suite(.serialized) struct GatewayReconnectErrorRetentionTests {
     @Test @MainActor func `retained display problem does not control next retry`() {
         let appModel = NodeAppModel()
@@ -1068,9 +1085,12 @@ private func waitUntil(
             port: link.port,
             useTLS: link.tls,
             authOverride: setupAuth.manualAuthOverride)
+        let expectedGeneration = appModel.gatewayConnectGeneration
         await waitUntil { appModel.activeGatewayConnectConfig != nil }
 
-        #expect(appModel.activeGatewayConnectConfig != nil)
+        #expect(
+            appModel.activeGatewayConnectConfig != nil,
+            pendingHandoffDiagnostic(controller, model: appModel, expectedGeneration: expectedGeneration))
         #expect(appModel.activeGatewayConnectConfig?.token == nil)
         #expect(appModel.activeGatewayConnectConfig?.bootstrapToken == nil)
         #expect(appModel.activeGatewayConnectConfig?.password == nil)
@@ -1113,9 +1133,12 @@ private func waitUntil(
             useTLS: link.tls,
             contextPath: link.contextPath,
             authOverride: setupAuth.manualAuthOverride)
+        let setupGeneration = appModel.gatewayConnectGeneration
         await waitUntil { appModel.activeGatewayConnectConfig != nil }
 
-        #expect(percentEncodedPath(of: appModel.activeGatewayConnectConfig?.url) == "/openclaw%2Fgateway")
+        #expect(
+            percentEncodedPath(of: appModel.activeGatewayConnectConfig?.url) == "/openclaw%2Fgateway",
+            pendingHandoffDiagnostic(controller, model: appModel, expectedGeneration: setupGeneration))
         #expect(appModel.activeGatewayConnectConfig?.effectiveStableID == setupAuth.targetStableID)
         let stored = try #require(GatewaySettingsStore.activeGatewayEntry())
         #expect(stored.contextPath == "/openclaw%2Fgateway")
@@ -1129,12 +1152,8 @@ private func waitUntil(
         #expect(
             percentEncodedPath(of: appModel.activeGatewayConnectConfig?.url) == "/openclaw%2Fgateway",
             """
-            context handoff: expectedGeneration=\(expectedGeneration), currentGeneration=\(appModel.gatewayConnectGeneration), \
-            activeStableID=\(appModel.activeGatewayConnectConfig?.stableID ?? "nil"), \
-            resetInFlight=\(appModel.hasGatewaySessionResetInFlight), resetEntered=\(resetEntered), resetCompleted=\(resetCompleted), \
-            suppressed=\(controller._test_isAutoConnectSuppressed()), \
-            problemKind=\(appModel.lastGatewayProblem?.kind.rawValue ?? "none"), \
-            problemMessage=\(appModel.lastGatewayProblem?.message.prefix(160) ?? "none")
+            \(pendingHandoffDiagnostic(controller, model: appModel, expectedGeneration: expectedGeneration).rawValue), \
+            resetEntered=\(resetEntered), resetCompleted=\(resetCompleted)
             """)
         #expect(appModel.activeGatewayConnectConfig?.effectiveStableID == stored.stableID)
     }
@@ -1784,12 +1803,15 @@ private func waitUntil(
         #expect(await controller.connectWithDiagnostics(gateway) == nil)
         #expect(controller.pendingTrustPrompt?.fingerprintSha256 == "exact-owner-fingerprint")
         await controller.acceptPendingTrustPrompt(controller.pendingTrustPrompt)
+        let expectedGeneration = appModel.gatewayConnectGeneration
         await waitUntil(timeout: .seconds(1)) { appModel.activeGatewayConnectConfig != nil }
 
         #expect(appModel.activeGatewayConnectConfig?.tls?.expectedFingerprint == "exact-owner-fingerprint")
         #expect(appModel.activeGatewayConnectConfig?.tls?.allowTOFU == false)
         #expect(persistedOwnerBytes.withLock { $0 } == Array(stableID.utf8))
-        #expect(appModel.activeGatewayConnectConfig.map { Array($0.stableID.utf8) } == Array(stableID.utf8))
+        #expect(
+            appModel.activeGatewayConnectConfig.map { Array($0.stableID.utf8) } == Array(stableID.utf8),
+            pendingHandoffDiagnostic(controller, model: appModel, expectedGeneration: expectedGeneration))
         #expect(appModel.activeGatewayConnectConfig
             .flatMap(\.nodeOptions.deviceAuthGatewayID)
             .map { Array($0.utf8) } == Array(stableID.utf8))
@@ -1965,6 +1987,7 @@ private func waitUntil(
         await waitUntil(timeout: .seconds(10)) { resetStarted }
         #expect(resetStarted)
         await controller.connectManual(host: "192.168.1.40", port: 18789, useTLS: false)
+        let expectedGeneration = appModel.gatewayConnectGeneration
 
         #expect(appModel.activeGatewayConnectConfig?.hasSameConnectionInputs(as: currentConfig) == true)
         #expect(!appModel._test_hasGatewayLoopTasks().node)
@@ -1974,7 +1997,9 @@ private func waitUntil(
         let replacementStableID = "manual|192.168.1.40|18789"
         await waitUntil { appModel.activeGatewayConnectConfig?.stableID == replacementStableID }
 
-        #expect(appModel.activeGatewayConnectConfig?.stableID == replacementStableID)
+        #expect(
+            appModel.activeGatewayConnectConfig?.stableID == replacementStableID,
+            pendingHandoffDiagnostic(controller, model: appModel, expectedGeneration: expectedGeneration))
         #expect(appModel._test_hasGatewayLoopTasks().node)
     }
 
@@ -2242,9 +2267,12 @@ private func waitUntil(
                 ingress: makeOrdinaryIngress())
 
             controller._test_triggerAutoConnect()
+            let expectedGeneration = appModel.gatewayConnectGeneration
             #expect(controller._test_didAutoConnect())
             await waitUntil { appModel.activeGatewayConnectConfig?.effectiveStableID == stableID }
-            #expect(appModel.activeGatewayConnectConfig?.effectiveStableID == stableID)
+            #expect(
+                appModel.activeGatewayConnectConfig?.effectiveStableID == stableID,
+                pendingHandoffDiagnostic(controller, model: appModel, expectedGeneration: expectedGeneration))
             #expect(appModel.activeGatewayConnectConfig?.tls?.expectedFingerprint == nil)
         }
     }
