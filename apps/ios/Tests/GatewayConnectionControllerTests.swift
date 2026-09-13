@@ -1984,6 +1984,7 @@ private func waitUntil(
         let resetRelease = AsyncStream<Void>.makeStream()
         let appModel = NodeAppModel()
         defer {
+            resetRelease.continuation.finish()
             appModel._test_setGatewaySessionResetTask(nil)
             appModel.disconnectGateway()
         }
@@ -2002,17 +2003,27 @@ private func waitUntil(
             startDiscovery: false,
             ingress: makeOrdinaryIngress())
 
-        await controller.connectManual(host: "192.168.1.41", port: 18789, useTLS: false)
+        #expect(await controller.connectManual(host: "192.168.1.41", port: 18789, useTLS: false) == .accepted)
+        let expectedGeneration = appModel.gatewayConnectGeneration
         await Task.yield()
 
         #expect(appModel.activeGatewayConnectConfig?.hasSameConnectionInputs(as: currentConfig) == true)
 
         resetRelease.continuation.yield()
         resetRelease.continuation.finish()
+        await appModel.waitForGatewaySessionResetIfNeeded()
         let replacementStableID = "manual|192.168.1.41|18789"
         await waitUntil { appModel.activeGatewayConnectConfig?.stableID == replacementStableID }
 
-        #expect(appModel.activeGatewayConnectConfig?.stableID == replacementStableID)
+        #expect(
+            appModel.activeGatewayConnectConfig?.stableID == replacementStableID,
+            """
+            reset barrier handoff: expectedGeneration=\(expectedGeneration), currentGeneration=\(appModel.gatewayConnectGeneration), \
+            resetInFlight=\(appModel.hasGatewaySessionResetInFlight), suppressed=\(controller._test_isAutoConnectSuppressed()), \
+            hasOriginalConfig=\(appModel.activeGatewayConnectConfig?.hasSameConnectionInputs(as: currentConfig) == true), \
+            hasReplacementConfig=\(appModel.activeGatewayConnectConfig?.stableID == replacementStableID), \
+            problemKind=\(appModel.lastGatewayProblem?.kind.rawValue ?? "none")
+            """)
     }
 
     enum HeldResetOutcome: CaseIterable, Sendable {
@@ -2821,7 +2832,8 @@ private func waitUntil(
             UserDefaults.standard.set(true, forKey: "gateway.autoconnect")
 
             let explicitStableID = "manual|192.168.1.41|18789"
-            await controller.connectManual(host: "192.168.1.41", port: 18789, useTLS: false)
+            #expect(await controller.connectManual(host: "192.168.1.41", port: 18789, useTLS: false) == .accepted)
+            let expectedGeneration = appModel.gatewayConnectGeneration
             #expect(appModel.activeGatewayConnectConfig == nil)
 
             controller._test_triggerAutoReconnect()
@@ -2833,9 +2845,18 @@ private func waitUntil(
 
             resetRelease.continuation.yield()
             resetRelease.continuation.finish()
+            await appModel.waitForGatewaySessionResetIfNeeded()
             await waitUntil { appModel.activeGatewayConnectConfig?.stableID == explicitStableID }
 
-            #expect(appModel.activeGatewayConnectConfig?.stableID == explicitStableID)
+            #expect(
+                appModel.activeGatewayConnectConfig?.stableID == explicitStableID,
+                """
+                foreground handoff: expectedGeneration=\(expectedGeneration), currentGeneration=\(appModel.gatewayConnectGeneration), \
+                resetInFlight=\(appModel.hasGatewaySessionResetInFlight), suppressed=\(controller._test_isAutoConnectSuppressed()), \
+                hasActiveConfig=\(appModel.activeGatewayConnectConfig != nil), \
+                hasReplacementConfig=\(appModel.activeGatewayConnectConfig?.stableID == explicitStableID), \
+                problemKind=\(appModel.lastGatewayProblem?.kind.rawValue ?? "none")
+                """)
             controller._test_triggerAutoConnect()
             #expect(controller._test_didAutoConnect())
             #expect(appModel.activeGatewayConnectConfig?.stableID == explicitStableID)
