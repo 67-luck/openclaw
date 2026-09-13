@@ -153,11 +153,11 @@ extension GatewayIngressControllerTests {
         let ingress = fixture.controller(useSavedProfiles: true)
         let gate = IngressTestGate()
         let discovery = GatewayDiscoveryModel()
-        discovery.gateways = [.init(
+        let discoveredGateway = GatewayDiscoveryModel.DiscoveredGateway(
             name: "Background gateway",
             endpoint: .service(name: "Background", type: "_openclaw-gw._tcp", domain: "local.", interface: nil),
             stableID: fixture.stableID, debugID: "background", lanHost: nil, tailnetDns: nil,
-            gatewayPort: nil, tlsEnabled: true, tlsFingerprintSha256: nil, cliPath: nil)]
+            gatewayPort: nil, tlsEnabled: true, tlsFingerprintSha256: nil, cliPath: nil)
         let model = NodeAppModel()
         defer { model.disconnectGateway() }
         let controller = GatewayConnectionController(
@@ -170,8 +170,10 @@ extension GatewayIngressControllerTests {
             controller.setScenePhase(.background)
         }
         controller.setScenePhase(.active)
-        let reconcile = controller.operatorFleetReconcileTask
+        discovery.gateways = [discoveredGateway]
+        try await waitForIngress { controller.gateways == [discoveredGateway] }
         try await waitForIngress { gate.started }
+        let reconcile = controller.operatorFleetReconcileTask
         #expect(fixture.requests.isEmpty)
         await ingress.signOut(stableID: siblingID)
         gate.release()
@@ -347,7 +349,12 @@ extension GatewayIngressControllerTests {
             userInitiated: false,
             admissionCheckpoint: ingress.admissionCheckpoint())
         let old = try #require(admitted)
+        let activeProbes = AsyncStream<Void>.makeStream()
+        fixture.probeStableID = fixture.stableID
+        fixture.probeGate = activeProbes.stream
+        defer { activeProbes.continuation.finish() }
         try model.applyGatewayConnectConfig(fixture.config(old))
+        try await waitForIngress { fixture.pendingProbes == 2 }
         fixture.revoked = true
         await #expect(throws: GatewayExternalAuthorizationError.self) {
             try await ingress.prepare(
@@ -356,6 +363,9 @@ extension GatewayIngressControllerTests {
         }
         #expect(model.activeGatewayConnectConfig == nil)
         #expect(ingress.attention?.stableID == backgroundID)
+        #expect(fixture.pendingProbes == 0)
+        fixture.probeGate = nil
+        activeProbes.continuation.finish()
         fixture.revoked = false
         let retry = Task { await controller.retryGatewayConnection() }
         defer { fixture.release.continuation.finish()
@@ -790,7 +800,7 @@ extension GatewayIngressControllerTests {
         }
         try await waitForIngress { mediaGate.started }
         let discovery = GatewayDiscoveryModel()
-        discovery.gateways = [.init(
+        let discoveredGateway = GatewayDiscoveryModel.DiscoveredGateway(
             name: "Forgotten gateway",
             endpoint: .service(name: "Forgotten", type: "_openclaw-gw._tcp", domain: "local.", interface: nil),
             stableID: fixture.stableID,
@@ -800,7 +810,7 @@ extension GatewayIngressControllerTests {
             gatewayPort: nil,
             tlsEnabled: true,
             tlsFingerprintSha256: nil,
-            cliPath: nil)]
+            cliPath: nil)
         let model = NodeAppModel()
         if !cleanupSucceeds {
             model.testStageChatOfflineDataRemovalHandler = { _ in false }
@@ -820,8 +830,10 @@ extension GatewayIngressControllerTests {
         var captured: Task<Void, Never>?
         if capturedBeforeForget {
             controller.setScenePhase(.active)
-            captured = controller.operatorFleetReconcileTask
+            discovery.gateways = [discoveredGateway]
+            try await waitForIngress { controller.gateways == [discoveredGateway] }
             try await waitForIngress { resolverGate.started }
+            captured = controller.operatorFleetReconcileTask
         }
         let forgotten = Task { await controller.forgetGateway(stableID: fixture.stableID) }
         defer { forgotten.cancel() }
@@ -830,6 +842,8 @@ extension GatewayIngressControllerTests {
         let priorRequests = fixture.requestRoutes.filter { $0.stableID == fixture.stableID }.count
         controller.setScenePhase(.active)
         controller.restartDiscovery()
+        discovery.gateways = [discoveredGateway]
+        try await waitForIngress { controller.gateways == [discoveredGateway] }
         await controller.operatorFleetReconcileTask?.value
         resolverGate.release()
         await captured?.value
@@ -852,6 +866,8 @@ extension GatewayIngressControllerTests {
         #expect(!firstAuthorization.isCurrent())
         #expect(siblingAuthorization.isCurrent())
         controller.restartDiscovery()
+        discovery.gateways = [discoveredGateway]
+        try await waitForIngress { controller.gateways == [discoveredGateway] }
         await controller.operatorFleetReconcileTask?.value
         #expect(controller.operatorFleet._test_runtimeStableIDs().isEmpty)
         #expect(fixture.requestRoutes.filter { $0.stableID == fixture.stableID }.count == priorRequests)
