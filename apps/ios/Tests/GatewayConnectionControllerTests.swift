@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import Network
 import Observation
@@ -189,7 +190,7 @@ private func pendingHandoffDiagnostic(
     return """
     handoff: expectedGeneration=\(expectedGeneration), currentGeneration=\(model.gatewayConnectGeneration), \
     pendingGeneration=\(pending.generation.map { String($0) } ?? "nil"), \
-    phase=\(pending.phase), pending=\(pending.pending), \
+    pending=\(pending.pending), \
     hasConfig=\(model.activeGatewayConnectConfig != nil), resetInFlight=\(model.hasGatewaySessionResetInFlight), \
     suppressed=\(controller._test_isAutoConnectSuppressed()), \
     problemKind=\(model.lastGatewayProblem?.kind.rawValue ?? "none")
@@ -380,19 +381,31 @@ private func pendingHandoffDiagnostic(
         }
     }
 
-    @Test @MainActor func `location permission requires global services and app authorization`() {
-        #expect(GatewayConnectionController._test_isLocationAvailable(
-            servicesEnabled: true,
-            status: .authorizedWhenInUse))
-        #expect(GatewayConnectionController._test_isLocationAvailable(
-            servicesEnabled: true,
-            status: .authorizedAlways))
-        #expect(!GatewayConnectionController._test_isLocationAvailable(
-            servicesEnabled: false,
-            status: .authorizedAlways))
-        #expect(!GatewayConnectionController._test_isLocationAvailable(
-            servicesEnabled: true,
-            status: .denied))
+    @Test(arguments: [CLAuthorizationStatus.notDetermined, .denied, .restricted])
+    @MainActor func `location permission without app authorization skips global services`(
+        status: CLAuthorizationStatus) async
+    {
+        var calls = 0
+        let available = await GatewayConnectionController._test_isLocationAvailable(status: status) {
+            calls += 1
+            return true
+        }
+        #expect(!available)
+        #expect(calls == 0)
+    }
+
+    @Test(arguments: [CLAuthorizationStatus.authorizedAlways, .authorizedWhenInUse], [false, true])
+    @MainActor func `authorized location permission respects global services`(
+        status: CLAuthorizationStatus,
+        servicesEnabled: Bool) async
+    {
+        var calls = 0
+        let available = await GatewayConnectionController._test_isLocationAvailable(status: status) {
+            calls += 1
+            return servicesEnabled
+        }
+        #expect(available == servicesEnabled)
+        #expect(calls == 1)
     }
 
     @Test @MainActor func `registration permissions exclude watch availability`() async {

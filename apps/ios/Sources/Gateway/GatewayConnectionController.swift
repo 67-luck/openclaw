@@ -67,21 +67,6 @@ final class GatewayConnectionController {
     @ObservationIgnored private var pendingAutoConnectTask: Task<Void, Never>?
     @ObservationIgnored var operatorFleetReconcileTask: Task<Void, Never>?
     private var pendingAutoConnectGeneration: UInt64?
-    #if DEBUG
-    private enum PendingAutoConnectPhase: String {
-        case queuedReservation
-        case queuedHandoff
-        case previousTask
-        case initialModelReset
-        case ingressPrepare
-        case forceReconnectReset
-        case makeConnectOptions
-        case finalModelReset
-        case applyingConfig
-    }
-
-    @ObservationIgnored private var pendingAutoConnectPhase: PendingAutoConnectPhase?
-    #endif
     @ObservationIgnored private var pendingAutoConnectSuppressionGeneration: UInt64?
     @ObservationIgnored private var pendingGatewayRestoration: GatewayRestoration?
     @ObservationIgnored private var pendingForgetCleanups: [
@@ -1227,9 +1212,6 @@ extension GatewayConnectionController {
             }
         }
         self.pendingAutoConnectGeneration = generation
-        #if DEBUG
-        self.recordPendingAutoConnectPhase(.queuedHandoff, generation: generation)
-        #endif
         self.pendingConnectionStableID = gatewayStableID
         // An explicit target owns suppression until its queued handoff exits. Otherwise a
         // foreground reconnect can replace it while reset or permission work is suspended.
@@ -1243,9 +1225,6 @@ extension GatewayConnectionController {
             }
             defer {
                 if self.pendingAutoConnectGeneration == generation {
-                    #if DEBUG
-                    self.recordPendingAutoConnectPhase(nil, generation: generation)
-                    #endif
                     self.pendingAutoConnectTask = nil
                     self.pendingAutoConnectGeneration = nil
                     self.pendingAutoConnectSuppressionGeneration = nil
@@ -1259,19 +1238,10 @@ extension GatewayConnectionController {
                     self.clearAutoConnectSuppression(generation: suppressionGeneration)
                 }
             }
-            #if DEBUG
-            self.recordPendingAutoConnectPhase(.previousTask, generation: generation)
-            #endif
             await previousTask?.value
-            #if DEBUG
-            self.recordPendingAutoConnectPhase(.initialModelReset, generation: generation)
-            #endif
             await appModel.waitForGatewaySessionResetIfNeeded()
             guard isCurrent() else { return }
             do {
-                #if DEBUG
-                self.recordPendingAutoConnectPhase(.ingressPrepare, generation: generation)
-                #endif
                 let ingressAuthorization = try await self.ingress.prepare(
                     route: .init(url: url, stableID: gatewayStableID, tls: tls),
                     userInitiated: userInitiated,
@@ -1280,23 +1250,14 @@ extension GatewayConnectionController {
                 guard self.admitSetupLifetime(authOverride, stableID: gatewayStableID, generation: generation)
                 else { return }
                 if forceReconnect {
-                    #if DEBUG
-                    self.recordPendingAutoConnectPhase(.forceReconnectReset, generation: generation)
-                    #endif
                     await self.forceReconnectReset(appModel)
                     guard isCurrent() else { return }
                 }
-                #if DEBUG
-                self.recordPendingAutoConnectPhase(.makeConnectOptions, generation: generation)
-                #endif
                 let nodeOptions = await self.makeConnectOptions(
                     deviceAuthGatewayID: GatewaySettingsStore.authenticationOwnerID(routeStableID: gatewayStableID),
                     allowStoredDeviceAuth: allowStoredDeviceAuth)
                 // Permission reads above can suspend long enough for a model-owned reconnect reset
                 // to start, so close the reset barrier again immediately before the synchronous apply.
-                #if DEBUG
-                self.recordPendingAutoConnectPhase(.finalModelReset, generation: generation)
-                #endif
                 await appModel.waitForGatewaySessionResetIfNeeded()
                 guard isCurrent() else { return }
                 guard self.admitSetupLifetime(authOverride, stableID: gatewayStableID, generation: generation)
@@ -1316,9 +1277,6 @@ extension GatewayConnectionController {
                 authOverride?.markHandedOff()
                 self.preconnectRetryContext = nil
                 self.pendingGatewayRestoration = nil
-                #if DEBUG
-                self.recordPendingAutoConnectPhase(.applyingConfig, generation: generation)
-                #endif
                 appModel.applyGatewayConnectConfig(
                     cfg,
                     forceReconnect: forceReconnect,
@@ -1447,29 +1405,17 @@ extension GatewayConnectionController {
         }
         self.pendingAutoConnectSuppressionGeneration = nil
         self.pendingAutoConnectGeneration = generation
-        #if DEBUG
-        self.recordPendingAutoConnectPhase(.queuedReservation, generation: generation)
-        #endif
         // The barrier owns any superseded teardown until it finishes. If the replacement never
         // reaches handoff, restore the still-current route after that teardown completes.
         let barrier = Task { [weak self, weak appModel] in
             guard let self, let appModel else { return }
             defer {
                 if self.pendingAutoConnectGeneration == generation {
-                    #if DEBUG
-                    self.recordPendingAutoConnectPhase(nil, generation: generation)
-                    #endif
                     self.pendingAutoConnectTask = nil
                     self.pendingAutoConnectGeneration = nil
                 }
             }
-            #if DEBUG
-            self.recordPendingAutoConnectPhase(.previousTask, generation: generation)
-            #endif
             await previousTask?.value
-            #if DEBUG
-            self.recordPendingAutoConnectPhase(.initialModelReset, generation: generation)
-            #endif
             await appModel.waitForGatewaySessionResetIfNeeded()
             guard !Task.isCancelled,
                   generation == appModel.gatewayConnectGeneration,
@@ -1490,9 +1436,6 @@ extension GatewayConnectionController {
                   appModel.lastGatewayProblem?.pauseReconnect != true
             else { return }
             self.pendingGatewayRestoration = nil
-            #if DEBUG
-            self.recordPendingAutoConnectPhase(.applyingConfig, generation: generation)
-            #endif
             appModel.applyGatewayConnectConfig(restoration.config, expectedGeneration: generation)
         }
         self.pendingAutoConnectTask = barrier
@@ -1610,17 +1553,8 @@ extension GatewayConnectionController {
 
 #if DEBUG
 extension GatewayConnectionController {
-    private func recordPendingAutoConnectPhase(_ phase: PendingAutoConnectPhase?, generation: UInt64) {
-        // Superseded tasks can resume after a new owner queues; their diagnostics must not replace or clear its phase.
-        guard self.pendingAutoConnectGeneration == generation else { return }
-        self.pendingAutoConnectPhase = phase
-    }
-
-    func _test_pendingAutoConnectState() -> (phase: String, generation: UInt64?, pending: Bool) {
-        (
-            self.pendingAutoConnectPhase?.rawValue ?? "none",
-            self.pendingAutoConnectGeneration,
-            self.pendingAutoConnectTask != nil)
+    func _test_pendingAutoConnectState() -> (generation: UInt64?, pending: Bool) {
+        (self.pendingAutoConnectGeneration, self.pendingAutoConnectTask != nil)
     }
 
     func _test_setGateways(_ gateways: [GatewayDiscoveryModel.DiscoveredGateway]) {
@@ -1652,6 +1586,3 @@ extension GatewayConnectionController {
     }
 }
 #endif
-
-// DEBUG handoff diagnostics; remove this allowance after the suspended phase is attributed.
-// swiftlint:disable:this file_length
