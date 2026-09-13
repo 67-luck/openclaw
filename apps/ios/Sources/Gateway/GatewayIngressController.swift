@@ -65,7 +65,7 @@ final class GatewayIngressController {
             if let authenticate = self.authenticate {
                 return try await authenticate(application, openBrowser)
             }
-            return try await CloudflareAccessTransfer(request: self.requestFactory(route))
+            return try await CloudflareAccessTransfer(client: self.client(for: route))
                 .signIn(application: application, openBrowser: openBrowser)
         },
         now: self.now,
@@ -84,7 +84,8 @@ final class GatewayIngressController {
         persistence: CloudflareAccessSessionStore.Persistence = .keychain,
         browser: any CloudflareAccessBrowserPresenting = CloudflareAccessBrowserPresenter(),
         authenticate: CloudflareAccessSessionStore.Authenticate? = nil,
-        requestFactory: @escaping @Sendable (Route) -> CloudflareAccessClient.Request = Self.request,
+        requestFactory: @escaping @Sendable (Route) -> CloudflareAccessClient.Request = GatewayIngressController
+            .request,
         customHeaders: @escaping (String) -> [String: String] = {
             GatewaySettingsStore.loadGatewayCustomHeaders(gatewayStableID: $0)
         },
