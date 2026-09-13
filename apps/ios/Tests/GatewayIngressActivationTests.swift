@@ -93,7 +93,7 @@ extension GatewayIngressControllerTests {
         let controller = GatewayConnectionController(
             appModel: model, startDiscovery: false,
             tcpReachabilityProbe: { _, _, _, _ in true },
-            tlsFingerprintProbe: { _ in .systemTrusted(String(repeating: "ab", count: 32)) },
+            tlsFingerprintProbe: { _ in .systemTrusted(fingerprint: String(repeating: "ab", count: 32)) },
             ingress: ingress)
         let auth = GatewayConnectionController.ManualAuthOverride.explicit(
             token: nil, bootstrapToken: "setup-placeholder", password: nil,
@@ -202,7 +202,7 @@ extension GatewayIngressControllerTests {
                 }
                 return true
             },
-            tlsFingerprintProbe: { _ in .systemTrusted(fingerprint) },
+            tlsFingerprintProbe: { _ in .systemTrusted(fingerprint: fingerprint) },
             persistTLSFingerprint: { _, _ in true }, ingress: ingress)
         let deadline = Int64(fixture.now.addingTimeInterval(60).timeIntervalSince1970 * 1000)
         let link = GatewayConnectDeepLink(
