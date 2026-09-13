@@ -338,12 +338,39 @@ extension GatewayIngressControllerTests {
         let ingress = fixture.controller(useSavedProfiles: true) { origin in
             await model.retireGatewayIngress(for: origin)
         }
+        var resetEntered = 0
+        var resetCompleted = 0
         let controller = GatewayConnectionController(
             appModel: model,
             startDiscovery: false,
             tcpReachabilityProbe: { _, _, _, _ in true },
             tlsFingerprintProbe: { _ in .fingerprint(fingerprint) },
+            forceReconnectReset: { model in
+                resetEntered += 1
+                await model.resetGatewaySessionsForForcedReconnect()
+                resetCompleted += 1
+            },
             ingress: ingress)
+        @MainActor func handoffDiagnostic(expectedGeneration: UInt64) -> Comment {
+            let problem = model.lastGatewayProblem
+            var message = problem?.message ?? "none"
+            for credential in [
+                "gateway-token",
+                "gateway-password",
+                fixture.nextSession.authorizationHeader(for: fixture.route.url, now: fixture.now),
+            ]
+                .compactMap(\.self).filter({ !$0.isEmpty })
+            {
+                message = message.replacingOccurrences(of: credential, with: "<redacted>")
+            }
+            return """
+            \(action) handoff: expectedGeneration=\(expectedGeneration), currentGeneration=\(model.gatewayConnectGeneration), \
+            activeStableID=\(model.activeGatewayConnectConfig?.stableID ?? "nil"), \
+            resetInFlight=\(model.hasGatewaySessionResetInFlight), resetEntered=\(resetEntered), resetCompleted=\(resetCompleted), \
+            suppressed=\(controller._test_isAutoConnectSuppressed()), pendingProbes=\(fixture.pendingProbes), \
+            problemKind=\(problem?.kind.rawValue ?? "none"), problemMessage=\(message.prefix(160))
+            """
+        }
         let admitted = try await ingress.prepare(
             route: fixture.route,
             userInitiated: false,
@@ -385,13 +412,19 @@ extension GatewayIngressControllerTests {
                 useTLS: false,
                 lastConnectedAtMs: nil)))
             #expect(await controller.switchToGateway(stableID: otherID) == .accepted)
-            try await waitForIngress { model.activeGatewayConnectConfig?.stableID == otherID }
+            let switchGeneration = model.gatewayConnectGeneration
+            try await waitForIngress(handoffDiagnostic(expectedGeneration: switchGeneration)) {
+                model.activeGatewayConnectConfig?.stableID == otherID
+            }
         }
         fixture.release.continuation.yield()
         let outcome = await retry.value
         if action == "renew" {
             #expect(outcome == .accepted)
-            try await waitForIngress { model.activeGatewayConnectConfig?.stableID == fixture.stableID }
+            let retryGeneration = model.gatewayConnectGeneration
+            try await waitForIngress(handoffDiagnostic(expectedGeneration: retryGeneration)) {
+                model.activeGatewayConnectConfig?.stableID == fixture.stableID
+            }
             let config = try #require(model.activeGatewayConnectConfig)
             #expect(config.ingressAuthorization?.revision != old.revision)
             #expect(config.token == "gateway-token")

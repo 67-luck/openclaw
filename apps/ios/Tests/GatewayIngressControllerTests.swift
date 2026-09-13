@@ -434,10 +434,17 @@ private struct IngressNativeFixture {
 }
 
 @MainActor
-func waitForIngress(_ condition: () -> Bool) async throws {
+func waitForIngress(
+    _ diagnostic: @autoclosure () -> Comment? = nil,
+    sourceLocation: SourceLocation = #_sourceLocation,
+    _ condition: () -> Bool) async throws
+{
     let deadline = ContinuousClock.now + .seconds(3)
     while !condition() {
-        guard ContinuousClock.now < deadline else { throw URLError(.timedOut) }
+        try #require(
+            ContinuousClock.now < deadline,
+            diagnostic() ?? "Timed out waiting for gateway ingress state",
+            sourceLocation: sourceLocation)
         await Task.yield()
     }
 }

@@ -1095,9 +1095,16 @@ private func waitUntil(
         let setupAuth = GatewayConnectionController.ManualAuthOverride.setupAuth(from: link)
         let appModel = NodeAppModel()
         defer { appModel.disconnectGateway() }
+        var resetEntered = 0
+        var resetCompleted = 0
         let controller = GatewayConnectionController(
             appModel: appModel,
             startDiscovery: false,
+            forceReconnectReset: { model in
+                resetEntered += 1
+                await model.resetGatewaySessionsForForcedReconnect()
+                resetCompleted += 1
+            },
             ingress: makeOrdinaryIngress())
 
         await controller.connectManual(
@@ -1114,10 +1121,21 @@ private func waitUntil(
         #expect(stored.contextPath == "/openclaw%2Fgateway")
 
         appModel.disconnectGateway()
-        await controller.connectActiveGateway()
+        await appModel.waitForGatewaySessionResetIfNeeded()
+        #expect(await controller.connectActiveGateway() == .accepted)
+        let expectedGeneration = appModel.gatewayConnectGeneration
         await waitUntil { appModel.activeGatewayConnectConfig != nil }
 
-        #expect(percentEncodedPath(of: appModel.activeGatewayConnectConfig?.url) == "/openclaw%2Fgateway")
+        #expect(
+            percentEncodedPath(of: appModel.activeGatewayConnectConfig?.url) == "/openclaw%2Fgateway",
+            """
+            context handoff: expectedGeneration=\(expectedGeneration), currentGeneration=\(appModel.gatewayConnectGeneration), \
+            activeStableID=\(appModel.activeGatewayConnectConfig?.stableID ?? "nil"), \
+            resetInFlight=\(appModel.hasGatewaySessionResetInFlight), resetEntered=\(resetEntered), resetCompleted=\(resetCompleted), \
+            suppressed=\(controller._test_isAutoConnectSuppressed()), \
+            problemKind=\(appModel.lastGatewayProblem?.kind.rawValue ?? "none"), \
+            problemMessage=\(appModel.lastGatewayProblem?.message.prefix(160) ?? "none")
+            """)
         #expect(appModel.activeGatewayConnectConfig?.effectiveStableID == stored.stableID)
     }
 
