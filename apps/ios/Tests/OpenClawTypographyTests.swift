@@ -44,6 +44,16 @@ struct OpenClawTypographyTests {
         #expect(!source.contains(".font(."))
     }
 
+    @Test func `Access actions use native branded controls`() throws {
+        let settings = try String(contentsOf: Self.sourceURL("Design/SettingsProTabSections.swift"), encoding: .utf8)
+        for label in ["Cancel sign-in", "Sign in to Cloudflare Access", "Sign out of Cloudflare Access"] {
+            #expect(settings.contains("Text(\"\(label)\").font(OpenClawType.body)"))
+        }
+        let dashboard = try String(contentsOf: Self.sourceURL("Settings/DashboardPageScreen.swift"), encoding: .utf8)
+        #expect(dashboard.contains("Text(\"Open Gateway settings\")"))
+        #expect(dashboard.contains(".font(OpenClawType.body)"))
+    }
+
     @Test func `thread controls use branded typography`() throws {
         let support = try String(
             contentsOf: Self.sourceURL("Design/CommandCenterSupport.swift"),

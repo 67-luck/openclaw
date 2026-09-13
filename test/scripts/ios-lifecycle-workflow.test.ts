@@ -460,6 +460,9 @@ describe.skipIf(process.platform === "win32")("iOS Access simulator workflow", (
       "-only-testing:OpenClawTests/GatewayConnectionControllerTests",
       "-only-testing:OpenClawTests/GatewayConnectionSecurityTests",
       "-only-testing:OpenClawTests/GatewaySettingsStoreTests",
+      "-only-testing:OpenClawTests/GatewayOperatorFleetTests",
+      "-only-testing:OpenClawTests/IOSMediaArtifactLoaderTests",
+      "-only-testing:OpenClawTests/OpenClawTypographyTests",
     ];
     for (const name of authClasses) {
       expect(readFileSync(`apps/ios/Tests/${name}.swift`, "utf8")).toContain(`struct ${name}`);

@@ -140,6 +140,38 @@ Snooze only hides a session from active lists. It never stops a run, prevents
 messages, or disables automations. The Gateway stores the wake time, so it is
 shared across connected clients; an open conversation stays open.
 
+## Cloudflare Access sign-in
+
+When a Gateway URL or setup code reaches a Cloudflare Access sign-in challenge,
+tap **Connect** to open the system browser inside OpenClaw. Complete the Access
+sign-in and approval. The browser closes after the app verifies the returned
+session, then normal Gateway pairing continues. Existing Gateway credentials,
+service headers, and WARP connections continue to work without an extra prompt
+when the connection check already succeeds.
+
+This browser has its own app session. Signing in with Safari does not guarantee
+that you are already signed in here. Tap **Cancel** to stop; use **Sign in** in the
+native Gateway settings to try again. Returning from the background never starts
+a browser automatically.
+
+If Access expires or is revoked, connections pause and Gateway settings asks you
+to sign in again. Your Gateway pairing and device keys remain saved. Signing out
+of Access removes the shared grant for that host and closes connections using
+that Access session. Gateways using their own service headers stay connected.
+The browser may retain your identity-provider session; this does not sign you
+out of that provider. **Forget Gateway** removes
+one profile and its active work. Other profiles on the same host keep their
+Access session; forgetting the last profile also removes that grant. If a setup code
+expires while you are signing in, scan a fresh code. An
+invalid or used setup code is a Gateway pairing error and does not require a new
+Access login.
+
+Native pairing, chat, and authenticated media use the Access session. Embedded
+Dashboard pages and widgets display an explanation with native Gateway settings
+available; browser-session support for those surfaces is separate. The share
+extension asks you to send from OpenClaw for an Access-protected Gateway. Access
+credentials are not exported to Apple Watch or cloud workers.
+
 ## Session colors
 
 Long-press a session in the sidebar or Sessions screen to open its session actions, then choose **Color**. Select red, blue, green, yellow, purple, orange, pink, or cyan. **Default** clears the color.

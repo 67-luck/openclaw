@@ -16,6 +16,30 @@ struct GatewayManualTransportPresentation: Equatable {
 }
 
 extension GatewayConnectionController {
+    /// Rebuild connect options from current local settings (caps/commands/permissions)
+    /// and re-apply the active gateway config so capability changes take effect immediately.
+    func refreshActiveGatewayRegistrationFromSettings() {
+        Task { [weak self] in
+            await self?.refreshActiveGatewayRegistrationFromSettingsAsync()
+        }
+    }
+
+    func refreshActiveGatewayRegistrationFromSettingsAsync() async {
+        guard let appModel else { return }
+        guard let cfg = appModel.activeGatewayConnectConfig else { return }
+        guard appModel.gatewayAutoReconnectEnabled else { return }
+        let generation = appModel.gatewayConnectGeneration
+
+        var refreshedConfig = cfg
+        refreshedConfig.nodeOptions = await makeConnectOptions(
+            deviceAuthGatewayID: cfg.nodeOptions.deviceAuthGatewayID,
+            allowStoredDeviceAuth: cfg.nodeOptions.allowStoredDeviceAuth)
+        guard !Task.isCancelled,
+              !hasPendingForgetCleanup(stableID: cfg.stableID),
+              cfg.ingressAuthorization?.isCurrent() != false else { return }
+        appModel.applyGatewayConnectConfig(refreshedConfig, expectedGeneration: generation)
+    }
+
     func buildGatewayURL(
         host: String,
         port: Int,
