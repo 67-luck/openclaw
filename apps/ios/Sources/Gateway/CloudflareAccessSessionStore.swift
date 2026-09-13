@@ -36,6 +36,11 @@ final class CloudflareAccessSessionStore {
     typealias Authenticate = @MainActor (CloudflareAccessApplication, @escaping Browser) async throws
         -> CloudflareAccessSession
 
+    private struct Lifecycle {
+        var phase: State = .signedOut
+        var admissionRevokedAt: UInt64 = 0
+    }
+
     private struct Attempt {
         let id: UUID
         let application: CloudflareAccessApplication
@@ -49,7 +54,7 @@ final class CloudflareAccessSessionStore {
 
     private(set) var revision: UInt64 = 0
     @ObservationIgnored private var sessions: [CloudflareAccessOrigin: Snapshot] = [:]
-    @ObservationIgnored private var states: [CloudflareAccessOrigin: State] = [:]
+    @ObservationIgnored private var states: [CloudflareAccessOrigin: Lifecycle] = [:]
     @ObservationIgnored private var attempts: [CloudflareAccessOrigin: Attempt] = [:]
     @ObservationIgnored private var retirements: [CloudflareAccessOrigin: Retirement] = [:]
     @ObservationIgnored private let persistence: Persistence
@@ -73,10 +78,11 @@ final class CloudflareAccessSessionStore {
 
     func state(for origin: CloudflareAccessOrigin) -> State {
         _ = self.revision
-        return self.states[origin] ?? .signedOut
+        return self.states[origin]?.phase ?? .signedOut
     }
 
-    func snapshot(for origin: CloudflareAccessOrigin, now: Date = Date()) -> Snapshot? {
+    func snapshot(for origin: CloudflareAccessOrigin, now: Date? = nil) -> Snapshot? {
+        let now = now ?? self.now()
         _ = self.revision
         if self.states[origin] == nil {
             if let encoded = self.persistence.load(origin),
@@ -85,15 +91,15 @@ final class CloudflareAccessSessionStore {
             {
                 self.revision &+= 1
                 self.sessions[origin] = Snapshot(session: session, revision: self.revision)
-                self.states[origin] = .authenticated
+                self.setState(.authenticated, for: origin)
             } else {
-                self.states[origin] = .signedOut
+                self.setState(.signedOut, for: origin)
             }
         }
         guard let snapshot = self.sessions[origin] else { return nil }
         guard snapshot.session.authorizationHeader(for: origin.url, now: now) != nil else {
             self.sessions.removeValue(forKey: origin)
-            self.states[origin] = .reauthenticationRequired
+            self.setState(.reauthenticationRequired, for: origin)
             self.revision &+= 1
             _ = self.queueRetirement(origin)
             return nil
@@ -134,20 +140,20 @@ final class CloudflareAccessSessionStore {
                 self.revision &+= 1
                 let snapshot = Snapshot(session: session, revision: self.revision)
                 self.sessions[origin] = snapshot
-                self.states[origin] = .authenticated
+                self.setState(.authenticated, for: origin)
                 self.attempts.removeValue(forKey: origin)
                 return snapshot
             } catch {
                 if self.attempts[origin]?.id == id {
                     self.attempts.removeValue(forKey: origin)
-                    self.states[origin] = .reauthenticationRequired
+                    self.setState(.reauthenticationRequired, for: origin)
                     self.revision &+= 1
                 }
                 throw error
             }
         }
         self.attempts[origin] = Attempt(id: id, application: application, task: task)
-        self.states[origin] = .signingIn
+        self.setState(.signingIn, for: origin)
         self.revision &+= 1
         return task
     }
@@ -155,25 +161,49 @@ final class CloudflareAccessSessionStore {
     func cancelSignIn(for origin: CloudflareAccessOrigin) {
         guard let attempt = self.attempts.removeValue(forKey: origin) else { return }
         attempt.task.cancel()
-        self.states[origin] = .reauthenticationRequired
+        self.setState(.reauthenticationRequired, for: origin)
         self.revision &+= 1
+    }
+
+    func currentRevision(for origin: CloudflareAccessOrigin) -> UInt64 {
+        self.sessions[origin]?.revision ?? 0
+    }
+
+    func waitForRetirement(of origin: CloudflareAccessOrigin) async throws {
+        try await self.retirements[origin]?.task.value
     }
 
     func requireReauthentication(for origin: CloudflareAccessOrigin, revision: UInt64) async throws {
         // A failure from an old socket must not invalidate a newer browser grant.
         guard self.sessions[origin]?.revision == revision else { return }
         self.sessions.removeValue(forKey: origin)
-        self.states[origin] = .reauthenticationRequired
+        self.setState(.reauthenticationRequired, for: origin)
         self.revision &+= 1
         try await self.queueRetirement(origin).value
     }
 
-    func forget(_ origin: CloudflareAccessOrigin) async throws {
+    /// Capture before endpoint/QR resolution; a later resolved origin can reject only
+    /// its own retired Access intent without canceling ordinary or unrelated gateways.
+    func admissionCheckpoint() -> UInt64 {
+        self.revision
+    }
+
+    func admits(_ checkpoint: UInt64, for origin: CloudflareAccessOrigin) -> Bool {
+        (self.states[origin]?.admissionRevokedAt ?? 0) <= checkpoint
+    }
+
+    func forget(_ origin: CloudflareAccessOrigin) -> Task<Void, Error> {
         self.cancelSignIn(for: origin)
         self.sessions.removeValue(forKey: origin)
-        self.states[origin] = .signedOut
+        self.setState(.signedOut, for: origin)
         self.revision &+= 1
-        try await self.queueRetirement(origin).value
+        self.states[origin, default: Lifecycle()].admissionRevokedAt = self.revision
+        return self.queueRetirement(origin)
+    }
+
+    private func setState(_ phase: State, for origin: CloudflareAccessOrigin) {
+        // Phase changes and replacement grants must not revive an old admission.
+        self.states[origin, default: Lifecycle()].phase = phase
     }
 
     private func queueRetirement(_ origin: CloudflareAccessOrigin) -> Task<Void, Error> {

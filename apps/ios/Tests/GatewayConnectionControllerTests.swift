@@ -67,7 +67,7 @@ struct GatewayRegistryTestIsolation {
     }
 }
 
-private struct TemporaryOpenClawState {
+struct TemporaryOpenClawState {
     private let previousStateDirectory: String?
     private let previousInstanceID: Any?
     private let instanceID: String?

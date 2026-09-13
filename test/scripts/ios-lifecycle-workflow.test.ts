@@ -454,6 +454,7 @@ describe.skipIf(process.platform === "win32")("iOS Access simulator workflow", (
     expect(tests[0]?.args).toContain("platform=iOS Simulator,id=watch-fixture");
     const authSelectors = [
       ...authClasses.map((name) => `-only-testing:OpenClawTests/${name}`),
+      "-only-testing:OpenClawTests/GatewayIngressControllerTests",
       "-only-testing:OpenClawTests/ChatTypingFocusTests",
       "-only-testing:OpenClawTests/ChatSendHydrationTests",
     ];
