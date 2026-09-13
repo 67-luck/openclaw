@@ -9,7 +9,7 @@ protocol CloudflareAccessBrowserPresenting: AnyObject {
 
 /// The browser only presents authentication. The encrypted transfer independently proves success.
 @MainActor
-final class CloudflareAccessBrowserPresenter: NSObject, SFSafariViewControllerDelegate,
+final class CloudflareAccessBrowserPresenter: NSObject, @MainActor SFSafariViewControllerDelegate,
     UIAdaptivePresentationControllerDelegate, CloudflareAccessBrowserPresenting
 {
     private var browser: SFSafariViewController?
@@ -22,8 +22,8 @@ final class CloudflareAccessBrowserPresenter: NSObject, SFSafariViewControllerDe
     private let dismissBrowser: (SFSafariViewController) async -> Void
 
     init(
-        present: @escaping (SFSafariViewController) async throws -> Void = Self.present,
-        dismiss: @escaping (SFSafariViewController) async -> Void = Self.dismiss)
+        present: @escaping (SFSafariViewController) async throws -> Void = CloudflareAccessBrowserPresenter.present,
+        dismiss: @escaping (SFSafariViewController) async -> Void = CloudflareAccessBrowserPresenter.dismiss)
     {
         self.presentBrowser = present
         self.dismissBrowser = dismiss
