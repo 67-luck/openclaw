@@ -540,10 +540,12 @@ export async function runWatchPhase(
     flag: "wx",
   });
   const failures: unknown[] = [];
-  const original = diagnostics
+  const originalHome = diagnostics ? await realpath(diagnostics.home).catch(() => null) : null;
+  const beforeExecution = diagnostics
     ? {
         directory: await bridgeDirectory(nonce, "directory", directory),
         home: await bridgeDirectory(nonce, "home", diagnostics.home),
+        ...(await bridgePresence(directory)),
       }
     : undefined;
   let output: PhaseOutput | undefined;
@@ -607,10 +609,20 @@ export async function runWatchPhase(
     const bridge: Record<string, unknown> = {
       phase,
       native: bridgeRecords(output, bridgeFingerprint(nonce, "phase", [run.toLowerCase(), phase])),
-      original: { ...original, ...(await bridgePresence(directory)) },
+      original: {
+        beforeExecution,
+        afterAdmission: executionJoined
+          ? {
+              directory: await bridgeDirectory(nonce, "directory", directory),
+              home: await bridgeDirectory(nonce, "home", diagnostics.home),
+              ...(await bridgePresence(directory)),
+            }
+          : null,
+      },
       bundle: bridgeFingerprint(nonce, "bundle", [diagnostics.bundleID]),
       query: executionJoined ? "failed" : "not-joined",
       current: null,
+      sameCanonicalHome: null,
     };
     if (executionJoined) {
       try {
@@ -624,6 +636,9 @@ export async function runWatchPhase(
             home: await bridgeDirectory(nonce, "home", home),
             ...(await bridgePresence(current)),
           };
+          const currentHome = await realpath(home).catch(() => null);
+          bridge.sameCanonicalHome =
+            originalHome !== null && currentHome !== null ? originalHome === currentHome : null;
           bridge.query = "ok";
         }
       } catch (error) {

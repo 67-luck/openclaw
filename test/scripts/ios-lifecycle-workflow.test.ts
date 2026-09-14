@@ -11,6 +11,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -1872,6 +1873,7 @@ describe("Watch qualification phase admission", () => {
     "same",
     "alias",
     "moved",
+    "renamed",
     "missing-after-write",
     "stale",
     "duplicate",
@@ -1957,7 +1959,7 @@ describe("Watch qualification phase admission", () => {
           { mode: 0o600 },
         );
       }
-      return ["alias", "moved"].includes(mode) ? current : original;
+      return ["alias", "moved", "renamed"].includes(mode) ? current : original;
     });
     const outcome = await runWatchPhase(
       "identity",
@@ -1968,7 +1970,13 @@ describe("Watch qualification phase admission", () => {
         if (mode !== "input-consumption") {
           rmSync(path.join(directory, "input.json"));
         }
-        const target = mode === "moved" ? current : original;
+        if (mode === "renamed") {
+          const before = statSync(directory, { bigint: true });
+          renameSync(original, current);
+          const after = statSync(path.join(current, suffix), { bigint: true });
+          expect([after.dev, after.ino]).toEqual([before.dev, before.ino]);
+        }
+        const target = ["moved", "renamed"].includes(mode) ? current : original;
         const resultFile = path.join(target, suffix, "result.json");
         const result = {
           ...input,
@@ -1990,6 +1998,7 @@ describe("Watch qualification phase admission", () => {
             "same",
             "alias",
             "moved",
+            "renamed",
             "run-mismatch",
             "phase-mismatch",
             "nonce-mismatch",
@@ -2081,8 +2090,27 @@ describe("Watch qualification phase admission", () => {
       "unterminated",
       "overflow",
     ].includes(mode);
+    if (mode === "renamed") {
+      expect(report.phaseBridge).toMatchObject({ sameCanonicalHome: false });
+    }
     expect(report.phaseBridge).toMatchObject({
       phase: "identity",
+      original: {
+        beforeExecution: {
+          directory: expect.any(String),
+          home: expect.any(String),
+          input: "present",
+          result: "absent",
+        },
+      },
+      sameCanonicalHome: [
+        "unjoined",
+        "post-query-failure",
+        "post-query-success",
+        "query-unjoined",
+      ].includes(mode)
+        ? null
+        : !["moved", "renamed"].includes(mode),
       native: {
         state: ambiguous
           ? "ambiguous"
@@ -2097,16 +2125,43 @@ describe("Watch qualification phase admission", () => {
             ? "failed"
             : "ok",
     });
-    if (["same", "alias", "moved", "missing-after-write"].includes(mode)) {
+    if (mode === "unjoined") {
+      expect(report.phaseBridge).toMatchObject({ original: { afterAdmission: null } });
+    }
+    if (["same", "alias", "moved", "renamed", "missing-after-write"].includes(mode)) {
       const bridge = report.phaseBridge as {
-        original: { directory: string };
+        original: {
+          beforeExecution: { directory: string };
+          afterAdmission: { directory: string | null; home: string | null; result: string };
+        };
         current: { directory: string; result: string };
         native: { consumed: { directory: string }; written: { directory: string } };
       };
-      expect(bridge.current.directory === bridge.original.directory).toBe(mode !== "moved");
+      expect(bridge.current.directory === bridge.original.beforeExecution.directory).toBe(
+        mode !== "moved",
+      );
+      if (mode === "renamed") {
+        expect(bridge.original.afterAdmission).toEqual({
+          directory: null,
+          home: null,
+          input: "absent",
+          result: "absent",
+        });
+      } else {
+        expect(bridge.original.afterAdmission.directory).toBe(
+          bridge.original.beforeExecution.directory,
+        );
+      }
       expect(bridge.native.consumed.directory).toBe(bridge.current.directory);
       expect(bridge.native.written.directory).toBe(bridge.current.directory);
       expect(bridge.current.result).toBe(mode === "missing-after-write" ? "absent" : "present");
+    }
+    if (mode === "post-query-late-result") {
+      expect(report.phaseBridge).toMatchObject({
+        original: { afterAdmission: { result: "absent" } },
+        current: { result: "present" },
+        sameCanonicalHome: true,
+      });
     }
     if (mode === "attributes-unavailable") {
       expect(report.phaseBridge).toMatchObject({
