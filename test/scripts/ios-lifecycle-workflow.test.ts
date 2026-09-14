@@ -1869,6 +1869,115 @@ child.once("message", () => {
 describe("Watch qualification phase admission", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  function phaseOwner(home = tempDirs.make("watch-phase-")): Parameters<typeof runWatchPhase>[2] {
+    const directory = path.join(home, "Library", "Caches", "OpenClawQualification");
+    mkdirSync(directory, { recursive: true });
+    return {
+      current: { home, directory },
+      bundleID: "private.fixture.bundle",
+      evidenceDirectory: tempDirs.make("watch-phase-evidence-"),
+      resolveContainer: async () => home,
+      report: {},
+    };
+  }
+
+  it("carries the resolved container through consecutive phases and private capture", async () => {
+    const root = tempDirs.make("watch-location-");
+    const suffix = path.join("Library", "Caches", "OpenClawQualification");
+    const evidenceDirectory = path.join(root, "evidence");
+    mkdirSync(evidenceDirectory);
+    const original = path.join(root, "original");
+    mkdirSync(path.join(original, suffix), { recursive: true });
+    let nativeHome = original;
+    const resolveContainer = vi.fn(async () => nativeHome);
+    const owner = {
+      current: { home: original, directory: path.join(original, suffix) } as {
+        home: string;
+        directory: string;
+      } | null,
+      bundleID: "private.fixture.bundle",
+      evidenceDirectory,
+      resolveContainer,
+      report: {},
+    };
+    const run = randomUUID();
+    for (const [index, phase] of (["identity", "negative"] as const).entries()) {
+      const before = owner.current!;
+      const result = await runWatchPhase(phase, run, owner, async () => {
+        expect(owner.current).toBeNull();
+        expect(resolveContainer).toHaveBeenCalledTimes(index);
+        const input = JSON.parse(readFileSync(path.join(before.directory, "input.json"), "utf8"));
+        const identity = statSync(before.directory, { bigint: true });
+        nativeHome = path.join(root, `relocated-${index}`);
+        renameSync(before.home, nativeHome);
+        const directory = path.join(nativeHome, suffix);
+        const relocated = statSync(directory, { bigint: true });
+        expect([relocated.dev, relocated.ino]).toEqual([identity.dev, identity.ino]);
+        rmSync(path.join(directory, "input.json"));
+        writeFileSync(
+          path.join(directory, "result.json"),
+          JSON.stringify({ ...input, ok: true, ownersJoined: true }),
+          { mode: 0o600 },
+        );
+      });
+      expect(result).toMatchObject({ run, phase, ok: true, ownersJoined: true });
+      expect(owner.current).toEqual({
+        home: realpathSync(nativeHome),
+        directory: path.join(realpathSync(nativeHome), suffix),
+      });
+      expect(resolveContainer).toHaveBeenCalledTimes(index + 1);
+      const captured = path.join(evidenceDirectory, `${phase}-result.json`);
+      expect(JSON.parse(readFileSync(captured, "utf8"))).toEqual(result);
+      expect(statSync(captured).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it.each(["failed", "relative", "file", "unjoined"])(
+    "does not admit or privately capture a valid old result after %s location resolution",
+    async (mode) => {
+      const root = tempDirs.make("watch-location-failure-");
+      const directory = path.join(root, "Library", "Caches", "OpenClawQualification");
+      const evidenceDirectory = path.join(root, "evidence");
+      mkdirSync(directory, { recursive: true });
+      mkdirSync(evidenceDirectory);
+      const file = path.join(root, "not-a-directory");
+      writeFileSync(file, "");
+      const owner = {
+        current: { home: root, directory } as { home: string; directory: string } | null,
+        bundleID: "private.fixture.bundle",
+        evidenceDirectory,
+        report: {},
+        resolveContainer: vi.fn(async () => {
+          if (mode === "failed") {
+            throw new Error("private-query-failure");
+          }
+          if (mode === "unjoined") {
+            throw Object.assign(new Error("private-query-child"), {
+              processTreeState: "indeterminate",
+            });
+          }
+          return mode === "relative" ? "relative-container" : file;
+        }),
+      };
+      const outcome = await runWatchPhase("identity", randomUUID(), owner, async () => {
+        const input = JSON.parse(readFileSync(path.join(directory, "input.json"), "utf8"));
+        rmSync(path.join(directory, "input.json"));
+        writeFileSync(
+          path.join(directory, "result.json"),
+          JSON.stringify({ ...input, ok: true, ownersJoined: true }),
+          { mode: 0o600 },
+        );
+      }).catch((error: unknown) => error);
+      expect(outcome).toBeInstanceOf(AggregateError);
+      expect(outcome).toMatchObject({ phaseFailure: { ownersJoined: false } });
+      expect(hasUnjoinedWork(outcome)).toBe(true);
+      expect(owner.current).toBeNull();
+      expect(existsSync(path.join(evidenceDirectory, "identity-result.json"))).toBe(false);
+      expect(owner.resolveContainer).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(owner.report)).not.toContain(root);
+    },
+  );
+
   it.each([
     "same",
     "alias",
@@ -1882,7 +1991,7 @@ describe("Watch qualification phase admission", () => {
     "oversized",
     "unforwarded",
     "post-query-failure",
-    "post-query-late-result",
+    "late-after-admission",
     "unjoined",
     "unterminated",
     "attributes-unavailable",
@@ -1947,92 +2056,79 @@ describe("Watch qualification phase admission", () => {
           processTreeState: "indeterminate",
         });
       }
-      if (mode === "post-query-late-result") {
-        // A diagnostic query must not run early enough to rescue the original admission.
-        writeFileSync(
-          path.join(directory, "result.json"),
-          JSON.stringify({
-            ...input,
-            ok: true,
-            ownersJoined: true,
-          }),
-          { mode: 0o600 },
-        );
-      }
       return ["alias", "moved", "renamed"].includes(mode) ? current : original;
     });
-    const outcome = await runWatchPhase(
-      "identity",
-      randomUUID(),
-      directory,
-      async () => {
-        input = JSON.parse(readFileSync(path.join(directory, "input.json"), "utf8"));
-        if (mode !== "input-consumption") {
-          rmSync(path.join(directory, "input.json"));
-        }
-        if (mode === "renamed") {
-          const before = statSync(directory, { bigint: true });
-          renameSync(original, current);
-          const after = statSync(path.join(current, suffix), { bigint: true });
-          expect([after.dev, after.ino]).toEqual([before.dev, before.ino]);
-        }
-        const target = ["moved", "renamed"].includes(mode) ? current : original;
-        const resultFile = path.join(target, suffix, "result.json");
-        const result = {
-          ...input,
-          ok: mode !== "native-not-ok",
-          ownersJoined: mode !== "owner-acknowledgement",
-        };
-        if (mode === "run-mismatch") {
-          result.run = randomUUID();
-        }
-        if (mode === "phase-mismatch") {
-          result.phase = "negative";
-        }
-        if (mode === "nonce-mismatch") {
-          result.nonce = randomUUID();
-        }
-        writeFileSync(resultFile, JSON.stringify(result), { mode: 0o600 });
-        if (
-          ![
-            "same",
-            "alias",
-            "moved",
-            "renamed",
-            "run-mismatch",
-            "phase-mismatch",
-            "nonce-mismatch",
-            "owner-acknowledgement",
-            "input-consumption",
-            "native-not-ok",
-            "post-query-success",
-            "query-unjoined",
-          ].includes(mode)
-        ) {
-          rmSync(resultFile);
-        }
-        if (mode === "unjoined") {
-          throw Object.assign(new Error("private-child"), { processTreeState: "indeterminate" });
-        }
-        let stdout = record("consumed", target) + record("written", target);
-        if (mode === "duplicate") {
-          stdout += record("written", target);
-        } else if (mode === "malformed") {
-          stdout += "OPENCLAW_WATCH_BRIDGE\tprivate-token /Users/private-person\n";
-        } else if (mode === "oversized") {
-          stdout += "OPENCLAW_WATCH_BRIDGE\t" + "private-token".repeat(100) + "\n";
-        } else if (mode === "unforwarded") {
-          stdout = "native output unavailable\n";
-        } else if (mode === "unterminated") {
-          stdout = stdout.trimEnd();
-        }
-        if (["split-streams", "overflow"].includes(mode)) {
-          return watchProof.runWatchQualificationCommand(
-            "watch-identity",
-            process.execPath,
-            [
-              "-e",
-              `
+    const owner = phaseOwner(original);
+    owner.resolveContainer = resolveContainer;
+    owner.report = report;
+    const outcome = await runWatchPhase("identity", randomUUID(), owner, async () => {
+      input = JSON.parse(readFileSync(path.join(directory, "input.json"), "utf8"));
+      if (mode !== "input-consumption") {
+        rmSync(path.join(directory, "input.json"));
+      }
+      if (mode === "renamed") {
+        const before = statSync(directory, { bigint: true });
+        renameSync(original, current);
+        const after = statSync(path.join(current, suffix), { bigint: true });
+        expect([after.dev, after.ino]).toEqual([before.dev, before.ino]);
+      }
+      const target = ["moved", "renamed"].includes(mode) ? current : original;
+      const resultFile = path.join(target, suffix, "result.json");
+      const result = {
+        ...input,
+        ok: mode !== "native-not-ok",
+        ownersJoined: mode !== "owner-acknowledgement",
+      };
+      if (mode === "run-mismatch") {
+        result.run = randomUUID();
+      }
+      if (mode === "phase-mismatch") {
+        result.phase = "negative";
+      }
+      if (mode === "nonce-mismatch") {
+        result.nonce = randomUUID();
+      }
+      writeFileSync(resultFile, JSON.stringify(result), { mode: 0o600 });
+      if (
+        ![
+          "same",
+          "alias",
+          "moved",
+          "renamed",
+          "run-mismatch",
+          "phase-mismatch",
+          "nonce-mismatch",
+          "owner-acknowledgement",
+          "input-consumption",
+          "native-not-ok",
+          "post-query-success",
+          "query-unjoined",
+        ].includes(mode)
+      ) {
+        rmSync(resultFile);
+      }
+      if (mode === "unjoined") {
+        throw Object.assign(new Error("private-child"), { processTreeState: "indeterminate" });
+      }
+      let stdout = record("consumed", target) + record("written", target);
+      if (mode === "duplicate") {
+        stdout += record("written", target);
+      } else if (mode === "malformed") {
+        stdout += "OPENCLAW_WATCH_BRIDGE\tprivate-token /Users/private-person\n";
+      } else if (mode === "oversized") {
+        stdout += "OPENCLAW_WATCH_BRIDGE\t" + "private-token".repeat(100) + "\n";
+      } else if (mode === "unforwarded") {
+        stdout = "native output unavailable\n";
+      } else if (mode === "unterminated") {
+        stdout = stdout.trimEnd();
+      }
+      if (["split-streams", "overflow"].includes(mode)) {
+        return watchProof.runWatchQualificationCommand(
+          "watch-identity",
+          process.execPath,
+          [
+            "-e",
+            `
           (async () => {
             const output = Buffer.from(${JSON.stringify(record("consumed", target))});
             for (let offset = 0; offset < output.length; offset += 2) {
@@ -2042,20 +2138,17 @@ describe("Watch qualification phase admission", () => {
             process.stderr.write(${mode === "overflow" ? "Buffer.alloc(4 * 1024 * 1024 + 1, 120)" : JSON.stringify("\u001b[32mprivate-\u00e9-input\u001b[0m\n")});
           })();
         `,
-            ],
-            { environment: process.env, report: {}, save: async () => {}, timeout: 2000 },
-          );
-        }
-        return {
-          stdout,
-          stderr: "private-person@example.invalid\n",
-          truncated: mode === "truncated",
-        };
-      },
-      {},
-      { home: original, bundleID, resolveContainer, report },
-    ).catch((error: unknown) => error);
-    const good = ["same", "alias", "post-query-success"].includes(mode);
+          ],
+          { environment: process.env, report: {}, save: async () => {}, timeout: 2000 },
+        );
+      }
+      return {
+        stdout,
+        stderr: "private-person@example.invalid\n",
+        truncated: mode === "truncated",
+      };
+    }).catch((error: unknown) => error);
+    const good = ["same", "alias", "moved", "renamed"].includes(mode);
     if (good) {
       expect(outcome).toMatchObject({ ok: true, ownersJoined: true });
     } else {
@@ -2069,13 +2162,13 @@ describe("Watch qualification phase admission", () => {
         "native-not-ok",
       ].includes(mode)
         ? mode
-        : mode === "query-unjoined"
+        : ["unjoined", "post-query-failure", "post-query-success", "query-unjoined"].includes(mode)
           ? null
           : "result-missing";
       expect(outcome).toMatchObject({
         phaseFailure: {
           admissionFailure,
-          ownersJoined: ["native-not-ok", "query-unjoined"].includes(mode),
+          ownersJoined: mode === "native-not-ok",
         },
       });
       expect(hasUnjoinedWork(outcome)).toBe(mode !== "native-not-ok");
@@ -2156,12 +2249,19 @@ describe("Watch qualification phase admission", () => {
       expect(bridge.native.written.directory).toBe(bridge.current.directory);
       expect(bridge.current.result).toBe(mode === "missing-after-write" ? "absent" : "present");
     }
-    if (mode === "post-query-late-result") {
+    if (mode === "late-after-admission") {
+      writeFileSync(
+        path.join(directory, "result.json"),
+        JSON.stringify({ ...input, ok: true, ownersJoined: true }),
+        { mode: 0o600 },
+      );
       expect(report.phaseBridge).toMatchObject({
         original: { afterAdmission: { result: "absent" } },
-        current: { result: "present" },
+        current: { result: "absent" },
         sameCanonicalHome: true,
       });
+      expect(existsSync(path.join(owner.evidenceDirectory, "identity-result.json"))).toBe(false);
+      expect(resolveContainer).toHaveBeenCalledTimes(1);
     }
     if (mode === "attributes-unavailable") {
       expect(report.phaseBridge).toMatchObject({
@@ -2181,8 +2281,9 @@ describe("Watch qualification phase admission", () => {
   it.each(["helper", "native", "unjoined", "malformed", "stale", "missing"])(
     "preserves only bounded public diagnostics for %s failure",
     async (mode) => {
-      const directory = tempDirs.make("watch-phase-diagnostic-");
-      const failure = await runWatchPhase("negative", randomUUID(), directory, async () => {
+      const owner = phaseOwner();
+      const directory = owner.current!.directory;
+      const failure = await runWatchPhase("negative", randomUUID(), owner, async () => {
         const file = path.join(directory, "input.json");
         const input = JSON.parse(readFileSync(file, "utf8"));
         rmSync(file);
@@ -2273,17 +2374,30 @@ describe("Watch qualification phase admission", () => {
     ["multiple", "run-mismatch"],
     ["owner and native", "owner-acknowledgement"],
   ] as const)(
-    "records the first %s admission failure even when the tool reports success",
+    "records the first current %s admission failure despite a valid old result",
     async ([mode, admissionFailure], context) => {
       if (mode === "unreadable" && (process.platform === "win32" || process.getuid?.() === 0)) {
         context.skip();
       }
-      const directory = tempDirs.make("watch-phase-");
+      const owner = phaseOwner();
+      const oldDirectory = owner.current!.directory;
+      const currentHome = tempDirs.make("watch-current-");
+      const directory = path.join(currentHome, "Library", "Caches", "OpenClawQualification");
+      mkdirSync(directory, { recursive: true });
+      owner.resolveContainer = vi.fn(async () => currentHome);
       let failure: AggregateError & { phaseFailure: unknown };
       try {
-        failure = await runWatchPhase("negative", randomUUID(), directory, async () => {
+        failure = await runWatchPhase("negative", randomUUID(), owner, async () => {
+          const oldInput = path.join(oldDirectory, "input.json");
+          const input = JSON.parse(readFileSync(oldInput, "utf8"));
+          rmSync(oldInput);
+          writeFileSync(
+            path.join(oldDirectory, "result.json"),
+            JSON.stringify({ ...input, ok: true, ownersJoined: true }),
+            { mode: 0o600 },
+          );
           const file = path.join(directory, "input.json");
-          const input = JSON.parse(readFileSync(file, "utf8"));
+          writeFileSync(file, JSON.stringify(input), { mode: 0o600 });
           if (mode === "missing") {
             rmSync(file);
             return;
@@ -2340,6 +2454,15 @@ describe("Watch qualification phase admission", () => {
         ownersJoined: mode === "failed",
       });
       expect(hasUnjoinedWork(failure)).toBe(mode !== "failed");
+      expect(owner.current).toBeNull();
+      expect(owner.resolveContainer).toHaveBeenCalledTimes(1);
+      if (mode === "failed") {
+        expect(
+          JSON.parse(
+            readFileSync(path.join(owner.evidenceDirectory, "negative-result.json"), "utf8"),
+          ),
+        ).toMatchObject({ ok: false, ownersJoined: true });
+      }
       if (mode === "owner and native") {
         expect(failure.errors).toHaveLength(2);
       }
@@ -2352,9 +2475,10 @@ describe("Watch qualification phase admission", () => {
     async (mode) => {
       const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
       try {
-        const directory = tempDirs.make("watch-phase-output-");
+        const owner = phaseOwner();
+        const directory = owner.current!.directory;
         const report: Record<string, unknown> = {};
-        const failure = await runWatchPhase("identity", randomUUID(), directory, async () => {
+        const failure = await runWatchPhase("identity", randomUUID(), owner, async () => {
           await watchProof.runWatchQualificationCommand(
             "watch-identity",
             process.execPath,
@@ -2396,9 +2520,10 @@ describe("Watch qualification phase admission", () => {
   );
 
   it("accepts only a consumed request and matching current result", async () => {
-    const directory = tempDirs.make("watch-phase-");
+    const owner = phaseOwner();
+    const directory = owner.current!.directory;
     const run = randomUUID();
-    const result = await runWatchPhase("identity", run, directory, async () => {
+    const result = await runWatchPhase("identity", run, owner, async () => {
       const file = path.join(directory, "input.json");
       const input = JSON.parse(readFileSync(file, "utf8"));
       rmSync(file);

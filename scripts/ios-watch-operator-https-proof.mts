@@ -516,20 +516,27 @@ function bridgeRecords(output: PhaseOutput | undefined, correlation: string) {
     : { state: records.consumed && records.written ? "complete" : "unavailable", ...records };
 }
 
+type WatchPhaseOwner = {
+  current: { home: string; directory: string } | null;
+  bundleID: string;
+  evidenceDirectory: string;
+  resolveContainer: () => Promise<string>;
+  report: Record<string, unknown>;
+};
+
 // Successful xcodebuild alone cannot certify a phase; admission belongs to the consumed app-container request.
 export async function runWatchPhase(
   phase: Phase,
   run: string,
-  directory: string,
+  owner: WatchPhaseOwner,
   execute: () => Promise<void | PhaseOutput>,
   input: object = {},
-  diagnostics?: {
-    home: string;
-    bundleID: string;
-    resolveContainer: () => Promise<string>;
-    report: Record<string, unknown>;
-  },
 ): Promise<PhaseResult> {
+  const original = owner.current;
+  assert(original, "Watch phase has no current container");
+  // Execution may relocate the container. The old locator is input/diagnostic context only.
+  owner.current = null;
+  const { directory } = original;
   const nonce = randomUUID();
   const request = { ...input, run, phase, nonce, expiresAt: Date.now() / 1000 + 150 };
   assert(Buffer.byteLength(JSON.stringify(request)) <= 16384, "Phase input exceeds bound");
@@ -540,14 +547,12 @@ export async function runWatchPhase(
     flag: "wx",
   });
   const failures: unknown[] = [];
-  const originalHome = diagnostics ? await realpath(diagnostics.home).catch(() => null) : null;
-  const beforeExecution = diagnostics
-    ? {
-        directory: await bridgeDirectory(nonce, "directory", directory),
-        home: await bridgeDirectory(nonce, "home", diagnostics.home),
-        ...(await bridgePresence(directory)),
-      }
-    : undefined;
+  const originalHome = await realpath(original.home).catch(() => null);
+  const beforeExecution = {
+    directory: await bridgeDirectory(nonce, "directory", directory),
+    home: await bridgeDirectory(nonce, "home", original.home),
+    ...(await bridgePresence(directory)),
+  };
   let output: PhaseOutput | undefined;
   let executionJoined = true;
   try {
@@ -561,40 +566,62 @@ export async function runWatchPhase(
         : undefined;
   }
   const helperExecutionFailed = failures.length > 0;
+  let query = executionJoined ? "failed" : "not-joined";
+  if (executionJoined) {
+    try {
+      const home = await owner.resolveContainer();
+      query = "invalid-container";
+      assert(path.isAbsolute(home), "Expected absolute Watch container");
+      const canonical = await realpath(home);
+      assert((await fsStat(canonical, { bigint: true })).isDirectory(), "Invalid Watch container");
+      owner.current = {
+        home: canonical,
+        directory: path.join(canonical, "Library", "Caches", "OpenClawQualification"),
+      };
+      query = "ok";
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  const current = owner.current;
   let result: PhaseResult | undefined;
-  let ownershipUnverified = false;
+  let ownershipUnverified = current === null;
   let admissionFailure: PhaseFailure["admissionFailure"] = null;
   let admissionCheck: PhaseFailure["admissionFailure"] = "result-invalid";
-  try {
-    const candidate = (await readPrivateJSON(resultFile)) as PhaseResult;
-    assert(candidate && typeof candidate === "object" && !Array.isArray(candidate));
-    admissionCheck = "run-mismatch";
-    assert.equal(candidate.run, run, "Wrong qualification run");
-    admissionCheck = "phase-mismatch";
-    assert.equal(candidate.phase, phase, "Wrong qualification phase");
-    admissionCheck = "nonce-mismatch";
-    assert.equal(candidate.nonce, nonce, "Stale qualification result");
-    result = candidate;
-    admissionCheck = "owner-acknowledgement";
-    assert.equal(result.ownersJoined, true, "Watch async owners did not acknowledge cleanup");
-    admissionCheck = "input-consumption";
-    await assert.rejects(
-      lstat(path.join(directory, "input.json")),
-      { code: "ENOENT" },
-      "Watch phase did not consume its input",
-    );
-  } catch (error) {
-    // xcodebuild is not the Watch app's process owner. Missing/stale acknowledgements
-    // retain the simulator/private inputs even after the managed child tree has exited.
-    failures.push(error);
-    ownershipUnverified = true;
-    const code = (error as NodeJS.ErrnoException).code;
-    admissionFailure =
-      admissionCheck === "result-invalid" && code && code !== "ERR_ASSERTION"
-        ? code === "ENOENT"
-          ? "result-missing"
-          : "result-unreadable"
-        : admissionCheck;
+  if (current) {
+    try {
+      const candidate = (await readPrivateJSON(
+        path.join(current.directory, "result.json"),
+      )) as PhaseResult;
+      assert(candidate && typeof candidate === "object" && !Array.isArray(candidate));
+      admissionCheck = "run-mismatch";
+      assert.equal(candidate.run, run, "Wrong qualification run");
+      admissionCheck = "phase-mismatch";
+      assert.equal(candidate.phase, phase, "Wrong qualification phase");
+      admissionCheck = "nonce-mismatch";
+      assert.equal(candidate.nonce, nonce, "Stale qualification result");
+      result = candidate;
+      admissionCheck = "owner-acknowledgement";
+      assert.equal(result.ownersJoined, true, "Watch async owners did not acknowledge cleanup");
+      admissionCheck = "input-consumption";
+      await assert.rejects(
+        lstat(path.join(current.directory, "input.json")),
+        { code: "ENOENT" },
+        "Watch phase did not consume its input",
+      );
+    } catch (error) {
+      // xcodebuild is not the Watch app's process owner. Missing/stale acknowledgements
+      // retain the simulator/private inputs even after the managed child tree has exited.
+      failures.push(error);
+      ownershipUnverified = true;
+      const code = (error as NodeJS.ErrnoException).code;
+      admissionFailure =
+        admissionCheck === "result-invalid" && code && code !== "ERR_ASSERTION"
+          ? code === "ENOENT"
+            ? "result-missing"
+            : "result-unreadable"
+          : admissionCheck;
+    }
   }
   if (result) {
     try {
@@ -604,53 +631,48 @@ export async function runWatchPhase(
       admissionFailure ??= "native-not-ok";
     }
   }
-  if (diagnostics) {
-    // Admission above uses only the original directory. This observation cannot rescue it.
-    const bridge: Record<string, unknown> = {
-      phase,
-      native: bridgeRecords(output, bridgeFingerprint(nonce, "phase", [run.toLowerCase(), phase])),
-      original: {
-        beforeExecution,
-        afterAdmission: executionJoined
-          ? {
-              directory: await bridgeDirectory(nonce, "directory", directory),
-              home: await bridgeDirectory(nonce, "home", diagnostics.home),
-              ...(await bridgePresence(directory)),
-            }
-          : null,
-      },
-      bundle: bridgeFingerprint(nonce, "bundle", [diagnostics.bundleID]),
-      query: executionJoined ? "failed" : "not-joined",
-      current: null,
-      sameCanonicalHome: null,
-    };
-    if (executionJoined) {
-      try {
-        const home = await diagnostics.resolveContainer();
-        if (!path.isAbsolute(home) || !(await fsStat(home, { bigint: true })).isDirectory()) {
-          bridge.query = "invalid-container";
-        } else {
-          const current = path.join(home, "Library", "Caches", "OpenClawQualification");
-          bridge.current = {
-            directory: await bridgeDirectory(nonce, "directory", current),
-            home: await bridgeDirectory(nonce, "home", home),
-            ...(await bridgePresence(current)),
-          };
-          const currentHome = await realpath(home).catch(() => null);
-          bridge.sameCanonicalHome =
-            originalHome !== null && currentHome !== null ? originalHome === currentHome : null;
-          bridge.query = "ok";
+  // Observe the frozen result location after admission; diagnostics never select another reader.
+  owner.report.phaseBridge = {
+    phase,
+    native: bridgeRecords(output, bridgeFingerprint(nonce, "phase", [run.toLowerCase(), phase])),
+    original: {
+      beforeExecution,
+      afterAdmission: executionJoined
+        ? {
+            directory: await bridgeDirectory(nonce, "directory", directory),
+            home: await bridgeDirectory(nonce, "home", original.home),
+            ...(await bridgePresence(directory)),
+          }
+        : null,
+    },
+    bundle: bridgeFingerprint(nonce, "bundle", [owner.bundleID]),
+    query,
+    current: current
+      ? {
+          directory: await bridgeDirectory(nonce, "directory", current.directory),
+          home: await bridgeDirectory(nonce, "home", current.home),
+          ...(await bridgePresence(current.directory)),
         }
-      } catch (error) {
-        // A joined query failure is diagnostic only; an unjoined new child still owns resources.
-        if (hasUnjoinedWork(error)) {
-          failures.push(error);
-        }
+      : null,
+    sameCanonicalHome:
+      originalHome !== null && current !== null ? originalHome === current.home : null,
+  };
+  if (current) {
+    try {
+      const evidence = await readPrivateJSON(path.join(current.directory, "result.json"));
+      await writeFile(
+        path.join(owner.evidenceDirectory, `${phase}-result.json`),
+        JSON.stringify(evidence),
+        { mode: 0o600 },
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        failures.push(error);
       }
     }
-    diagnostics.report.phaseBridge = bridge;
   }
   if (failures.length) {
+    owner.current = null;
     // Only current, bounded results may contribute native codes to the public receipt.
     // Raw result fields and helper descriptions remain private even when cleanup is unverified.
     const phaseFailure: PhaseFailure = {
@@ -1172,65 +1194,48 @@ async function main(): Promise<void> {
       "OpenClawQualification",
     );
     await mkdir(directory, { mode: 0o700 });
+    const phaseOwner: WatchPhaseOwner = {
+      current: { home: container, directory },
+      bundleID: build.bundleID,
+      evidenceDirectory: privateRoot,
+      report,
+      resolveContainer: async () => {
+        // Same owned device and verified bundle, once, after the phase child joins.
+        const observed = await runWatchQualificationCommand(
+          "watch-container-post",
+          "xcrun",
+          ["simctl", "get_app_container", simulator!, build.bundleID, "data"],
+          {
+            environment: nativeEnvironment,
+            signal: cancelled.signal,
+            report: {},
+            save: async () => {},
+            diagnostic: true,
+          },
+        );
+        return observed.stdout.trim();
+      },
+    };
     const phase = async (value: Phase, input?: object) => {
-      let result: PhaseResult | undefined;
-      const failures: unknown[] = [];
       try {
-        result = await runWatchPhase(
+        return await runWatchPhase(
           value,
           run,
-          directory,
+          phaseOwner,
           async () => {
             const commandResult = await helper(value);
             assert.equal(commandResult.code, 0);
             return commandResult;
           },
           input,
-          {
-            home: container,
-            bundleID: build.bundleID,
-            report,
-            resolveContainer: async () => {
-              // Same owned device and verified bundle, once, after the original admission.
-              const observed = await runWatchQualificationCommand(
-                "watch-container-post",
-                "xcrun",
-                ["simctl", "get_app_container", simulator!, build.bundleID, "data"],
-                {
-                  environment: nativeEnvironment,
-                  signal: cancelled.signal,
-                  report: {},
-                  save: async () => {},
-                  diagnostic: true,
-                },
-              );
-              return observed.stdout.trim();
-            },
-          },
         );
       } catch (error) {
-        failures.push(error);
         const diagnostic = (error as { phaseFailure?: PhaseFailure }).phaseFailure;
         if (diagnostic) {
           report.phaseFailure = diagnostic;
         }
+        throw error;
       }
-      // Preserve both the original failure and receipt failure, never overwrite either in finally.
-      try {
-        const evidence = await readPrivateJSON(path.join(directory, "result.json"));
-        await writeFile(path.join(privateRoot, `${value}-result.json`), JSON.stringify(evidence), {
-          mode: 0o600,
-        });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          failures.push(error);
-        }
-      }
-      if (failures.length) {
-        throw new AggregateError(failures, "Watch phase failed");
-      }
-      assert(result);
-      return result;
     };
     const identity = await phase("identity");
     assert(identity.deviceID && identity.publicKey && identity.platform && identity.deviceFamily);
