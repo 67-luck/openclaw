@@ -769,11 +769,12 @@ if format == 2:
 if format != 0:
     document["__xctestrun_metadata__"] = {"FormatVersion": format}
 (products / "OpenClaw_iphonesimulator.xctestrun").write_bytes(plistlib.dumps(document))
-commands, runs = [], []
+commands, runs, boot_timeouts = [], [], []
 phase = None
+booted = True
 source = "a" * 40
-def run(args, capture=False, env=None):
-    global phase
+def run(args, capture=False, env=None, timeout=None):
+    global phase, booted
     commands.append(args)
     if args[0] == "git":
         return source
@@ -782,6 +783,7 @@ def run(args, capture=False, env=None):
             "BUILD_DIR": str(products), "TARGET_BUILD_DIR": str(app.parent), "FULL_PRODUCT_NAME": app.name}}])
     if "test-without-building" in args:
         phase = env["TEST_RUNNER_OPENCLAW_ACCESS_RESTART_PHASE"]
+        booted = mode == "already-booted"
         config = plistlib.loads(pathlib.Path(args[args.index("-xctestrun") + 1]).read_bytes())
         runs.append({"phase": phase, "config": config})
         if phase == "seed" and mode != "missing-handoff":
@@ -802,7 +804,15 @@ def run(args, capture=False, env=None):
         name = phase.title()
         identifier = "WrongCase" if mode == "wrong-case" else f"GatewayAccessRestart{name}Tests/{phase} acknowledged sign out()"
         return json.dumps({"testNodes": [{"nodeType": "Test Case", "nodeIdentifier": identifier, "result": "Passed"}]})
+    if "bootstatus" in args:
+        assert args == ["xcrun", "simctl", "bootstatus", "simulator-fixture", "-b"]
+        boot_timeouts.append(timeout)
+        if mode == f"boot-failed-{phase}":
+            raise RuntimeError(f"{phase} simulator boot failed")
+        booted = True
     if "get_app_container" in args:
+        if not booted:
+            raise RuntimeError("Unable to lookup in current state: Shutdown")
         return str(app if args[-1] == "app" else data)
     return ""
 proof.run = run
@@ -815,7 +825,7 @@ with contextlib.redirect_stdout(io.StringIO()):
         proof.main("simulator-fixture")
     except Exception as failure:
         error = str(failure)
-print(json.dumps({"error": error, "commands": commands, "runs": runs}))
+print(json.dumps({"error": error, "commands": commands, "runs": runs, "bootTimeouts": boot_timeouts}))
 `,
       path.resolve("scripts/ios-access-restart-proof.py"),
       root,
@@ -828,6 +838,7 @@ print(json.dumps({"error": error, "commands": commands, "runs": runs}))
   return JSON.parse(result.stdout) as {
     error: string | null;
     commands: string[][];
+    bootTimeouts: number[];
     runs: {
       phase: string;
       config: {
@@ -844,9 +855,14 @@ describe("iOS Access process restart proof", () => {
   it.each([0, 1, 2])(
     "preserves format %s and verifies destination artifacts without another install",
     (format) => {
-      const { error, commands, runs } = runRestartProof("ready", format);
+      const { error, commands, runs, bootTimeouts } = runRestartProof("ready", format);
       expect(error).toBeNull();
       expect(runs.map((run) => run.phase)).toEqual(["seed", "verify"]);
+      expect(bootTimeouts).toEqual([120, 120]);
+      expect(commands.filter((args) => args.includes("bootstatus"))).toEqual([
+        ["xcrun", "simctl", "bootstatus", "simulator-fixture", "-b"],
+        ["xcrun", "simctl", "bootstatus", "simulator-fixture", "-b"],
+      ]);
       const targets = (config: (typeof runs)[number]["config"]) =>
         format === 2 ? config.TestConfigurations![0]!.TestTargets : [config.OpenClawTests!];
       const seed = targets(runs[0]!.config);
@@ -888,6 +904,20 @@ describe("iOS Access process restart proof", () => {
       );
     },
   );
+
+  it("accepts a destination that remains booted after both phases", () => {
+    const { error, runs, bootTimeouts } = runRestartProof("already-booted");
+    expect(error).toBeNull();
+    expect(runs.map((run) => run.phase)).toEqual(["seed", "verify"]);
+    expect(bootTimeouts).toEqual([120, 120]);
+  });
+
+  it.each(["seed", "verify"])("stops before container inspection if %s boot fails", (phase) => {
+    const { error, runs, commands } = runRestartProof(`boot-failed-${phase}`);
+    expect(error).toBe(`${phase} simulator boot failed`);
+    expect(runs.map((run) => run.phase)).toEqual(phase === "seed" ? ["seed"] : ["seed", "verify"]);
+    expect(commands.at(-1)).toEqual(["xcrun", "simctl", "bootstatus", "simulator-fixture", "-b"]);
+  });
 
   it("rejects an unknown generated format before either process starts", () => {
     const { error, runs } = runRestartProof("ready", 3);

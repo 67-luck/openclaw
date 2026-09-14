@@ -18,10 +18,10 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def run(arguments, capture=False, env=None):
+def run(arguments, capture=False, env=None, timeout=None):
     return subprocess.run(
         arguments, check=True, text=True, stdout=subprocess.PIPE if capture else None,
-        env=env,
+        env=env, timeout=timeout,
     ).stdout
 
 
@@ -146,6 +146,8 @@ def main(simulator):
              "-parallel-testing-enabled", "NO", f"-only-testing:OpenClawTests/{suite}",
              "-resultBundlePath", str(result), "test-without-building"], env=environment)
         verify_result(result, suite, method)
+        # Xcode may shut down this destination after testing; container inspection needs it booted.
+        run(["xcrun", "simctl", "bootstatus", simulator, "-b"], timeout=120)
 
     phase("seed", "GatewayAccessRestartSeedTests", "seed acknowledged sign out", document)
 
