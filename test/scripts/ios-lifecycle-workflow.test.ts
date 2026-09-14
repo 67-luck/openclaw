@@ -784,7 +784,7 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
   });
 
   it("builds an owned qualification host once, then uses only that simulator without fixture phases in normal suites", () => {
-    const { result, commands } = runWatchStep("ready", false, [
+    const { result, commands, product, root } = runWatchStep("ready", false, [
       "build",
       "identity",
       "negative",
@@ -804,6 +804,19 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
       4,
     );
     for (const command of xcode) {
+      expect(command.args).not.toContain("-derivedDataPath");
+      for (const [option, value] of [
+        ["-project", "apps/ios/OpenClaw.xcodeproj"],
+        ["-scheme", "OpenClawWatchApp"],
+        ["-configuration", "Debug"],
+      ] as const) {
+        expect(command.args[command.args.indexOf(option) + 1]).toBe(value);
+      }
+      expect(command.args.filter((arg) => arg.startsWith("CODE_SIGN"))).toEqual([
+        "CODE_SIGNING_ALLOWED=YES",
+        "CODE_SIGN_IDENTITY=-",
+        "CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES",
+      ]);
       expect(command.args).toContain(
         "platform=watchOS Simulator,id=11111111-1111-4111-8111-111111111111",
       );
@@ -811,9 +824,19 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
         "-only-testing:OpenClawWatchTests/WatchOperatorHTTPSQualificationTests",
       ]);
     }
+    const build = xcode.find((command) => !command.args.includes("-showBuildSettings"));
+    const settingsQuery = xcode.find((command) => command.args.includes("-showBuildSettings"));
     expect(
-      commands.filter((command) => command.args[0] === "simctl").map((command) => command.args[1]),
-    ).toEqual(["install"]);
+      settingsQuery?.args.filter((arg) => arg !== "-showBuildSettings" && arg !== "-json"),
+    ).toEqual(build?.args);
+    expect(JSON.parse(readFileSync(path.join(root, "owned-build", "build.json"), "utf8"))).toEqual({
+      simulator: "11111111-1111-4111-8111-111111111111",
+      appPath: product,
+      bundleID: "org.example.watch",
+    });
+    expect(
+      commands.filter((command) => command.args[0] === "simctl").map((command) => command.args),
+    ).toEqual([["simctl", "install", "11111111-1111-4111-8111-111111111111", product]]);
   });
 
   it.each([

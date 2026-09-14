@@ -50,9 +50,6 @@ xcodebuild_args=(
   CODE_SIGN_IDENTITY=-
   CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES
 )
-if [ "$phase" != "suites" ]; then
-  xcodebuild_args+=(-derivedDataPath "$state_dir/derived")
-fi
 test_args=(
   -parallel-testing-enabled NO
   -only-testing:OpenClawWatchTests/WatchInboxStoreOperationTests
