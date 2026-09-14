@@ -1654,6 +1654,212 @@ child.once("message", () => {
     expect(JSON.stringify([privateReport, consoleLog.mock.calls])).not.toContain(
       "private-phase-token",
     );
+    expect(privateReport).not.toHaveProperty("identityOutput");
+  });
+
+  it.each(["passed", "failed", "skipped"] as const)(
+    "records only attributed identity scalars across split UTF8 and ANSI: %s",
+    async (outcome) => {
+      const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+      const report: Record<string, unknown> = {};
+      const saved: unknown[] = [];
+      const text = [
+        "\u001b[32m\u25c7 Suite WatchOperatorHTTPSQualificationTests started.\u001b[0m",
+        ...(outcome === "skipped" ? [] : ["\u25c7 Test qualification() started."]),
+        outcome === "skipped"
+          ? '\u21b7 Test qualification() skipped: "/Users/private person/input.json private-token"'
+          : `\u2714 Test qualification() ${outcome} after 0.001 seconds${outcome === "failed" ? " with 1 issue" : ""}.`,
+        `\u2714 Suite WatchOperatorHTTPSQualificationTests ${outcome === "failed" ? "failed" : "passed"} after 0.002 seconds${outcome === "failed" ? " with 1 issue" : ""}.`,
+        `\u2714 Test run with 1 test in 1 suite ${outcome === "failed" ? "failed" : "passed"} after 0.003 seconds${outcome === "failed" ? " with 1 issue" : ""}.`,
+        "private-person@example.invalid https://private.internal/path 192.168.4.5",
+        "11111111-1111-4111-8111-111111111111 private-identity private-input",
+        "",
+      ].join("\n");
+      const source = `
+        (async () => {
+          const bytes = Buffer.from(${JSON.stringify(text)});
+          for (let offset = 0; offset < bytes.length; offset += 2) {
+            await new Promise(resolve => process.stderr.write(bytes.subarray(offset, offset + 2), resolve));
+            await new Promise(resolve => setImmediate(resolve));
+          }
+          process.exitCode = ${outcome === "failed" ? 1 : 0};
+        })();
+      `;
+      const result = command(source, report, 2000, "watch-identity", saved);
+      if (outcome === "failed") {
+        await expect(result).rejects.toThrow();
+      } else {
+        await result;
+      }
+      const diagnostic = {
+        reportedCount: 1,
+        summaryOutcome: outcome === "failed" ? "failed" : "passed",
+        attribution: "expected-suite",
+        expectedQualificationStart: outcome !== "skipped",
+        expectedQualificationPass: outcome === "passed",
+        expectedQualificationFail: outcome === "failed",
+        expectedQualificationSkip: outcome === "skipped",
+        truncated: false,
+      };
+      expect(report.identityOutput).toEqual(diagnostic);
+      expect(saved.at(-1)).toMatchObject({ identityOutput: diagnostic });
+      expect(Buffer.byteLength(JSON.stringify(diagnostic))).toBeLessThan(512);
+      expect(JSON.stringify([report, saved, consoleLog.mock.calls])).not.toMatch(
+        /private|Users|input\.json|192\.168|11111111-|https:|skipped:/,
+      );
+    },
+  );
+
+  it.each([
+    ["missing suite", "", "unavailable"],
+    ["wrong suite", "\u25c7 Suite OtherTests started.\n", "ambiguous"],
+    [
+      "conflicting suites",
+      "\u25c7 Suite WatchOperatorHTTPSQualificationTests started.\n\u25c7 Suite OtherTests started.\n",
+      "ambiguous",
+    ],
+    [
+      "lookalike suite",
+      "\u25c7 Suite WatchOperatorHTTPSQualificationTestsExtra started.\n",
+      "ambiguous",
+    ],
+    ["missing output", "", "unavailable"],
+    [
+      "conflicting outcomes",
+      "\u25c7 Suite WatchOperatorHTTPSQualificationTests started.\n",
+      "ambiguous",
+    ],
+    [
+      "cross-stream suite",
+      "\u25c7 Suite WatchOperatorHTTPSQualificationTests started.\n",
+      "ambiguous",
+    ],
+  ])("keeps identity attribution conservative for %s", async (mode, suite, attribution) => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const report: Record<string, unknown> = {};
+    const events =
+      mode === "missing output"
+        ? ""
+        : "\u25c7 Test qualification() started.\n\u2714 Test qualification() passed after 0.001 seconds.\n" +
+          (mode === "conflicting outcomes" ? "\u21b7 Test qualification() skipped.\n" : "");
+    await command(
+      mode === "cross-stream suite"
+        ? `process.stdout.write(${JSON.stringify(suite)}); process.stderr.write(${JSON.stringify(events)});`
+        : `process.stdout.write(${JSON.stringify(suite + events)});`,
+      report,
+      2000,
+      "watch-identity",
+    );
+    expect(report.identityOutput).toMatchObject({
+      reportedCount: null,
+      summaryOutcome: "unavailable",
+      attribution,
+      expectedQualificationStart: null,
+      expectedQualificationPass: null,
+      expectedQualificationFail: null,
+      expectedQualificationSkip: null,
+    });
+  });
+
+  it.each(["0", "-1", "1.5", "NaN", "9007199254740992", "1 private-token", "conflict"])(
+    "does not manufacture an identity execution verdict from summary count %s",
+    async (count) => {
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const report: Record<string, unknown> = {};
+      const text =
+        count === "conflict"
+          ? "\u2714 Test run with 1 test in 1 suite passed after 0.001 seconds.\n\u2718 Test run with 2 tests in 1 suite failed after 0.001 seconds.\n"
+          : `\u2714 Test run with ${count} tests in 0 suites passed after 0.001 seconds.\n`;
+      await command(
+        `process.stdout.write(${JSON.stringify(text)});`,
+        report,
+        2000,
+        "watch-identity",
+      );
+      expect(report.identityOutput).toMatchObject({
+        reportedCount: count === "0" ? 0 : null,
+        summaryOutcome:
+          count === "0" ? "passed" : count === "conflict" ? "ambiguous" : "unavailable",
+        attribution: "unavailable",
+        expectedQualificationPass: null,
+      });
+      expect(JSON.stringify(report)).not.toContain("private-token");
+    },
+  );
+
+  it("retains scalar-only identity diagnostics on combined-stream overflow", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const report: Record<string, unknown> = {};
+    await expect(
+      command(
+        `process.stdout.write("\\u25c7 Suite WatchOperatorHTTPSQualificationTests started.\\n");
+         process.stderr.write(Buffer.alloc(4 * 1024 * 1024 + 1, 120));`,
+        report,
+        2000,
+        "watch-identity",
+      ),
+    ).rejects.toThrow();
+    expect(report.failedChild).toMatchObject({ errorCode: "ABORT_ERR", unjoined: false });
+    expect(report.identityOutput).toEqual({
+      reportedCount: null,
+      summaryOutcome: "ambiguous",
+      attribution: "ambiguous",
+      expectedQualificationStart: null,
+      expectedQualificationPass: null,
+      expectedQualificationFail: null,
+      expectedQualificationSkip: null,
+      truncated: true,
+    });
+    expect(JSON.stringify([report, consoleLog.mock.calls])).not.toContain("xxxx");
+  });
+
+  it.each([
+    ["suite-start", "Suite WatchOperatorHTTPSQualificationTests started.secret"],
+    ["suite-end", "Suite WatchOperatorHTTPSQualificationTests passed after private-token"],
+    ["test-start", "Test qualification() started.secret"],
+    ["test-end", "Test qualification() passed after /Users/private person/input.json"],
+    ["test-end", "Test qualification() passed after 0.001 seconds. private-token"],
+    ["test-end", "Test qualification() failed after NaN seconds."],
+    ["test-end", "Test qualification() failed after 0.001 seconds with 1 issues."],
+    ["test-end", "Test qualification() failed after 0.001 seconds with 2 issue."],
+    ["test-end", 'Test qualification() skipped: "private-token" trailing'],
+    ["summary", "Test run with 1 test in 1 suite passed after private-token"],
+    ["summary", "Test run with 1 test in 1 suite passed after 0.001 seconds. trailing"],
+    ["summary", "Test run with 1 test in 1 suite passed after 0.001 seconds with private-token."],
+  ])("leaves malformed identity %s message unavailable: %s", async (part, malformed) => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const report: Record<string, unknown> = {};
+    const lines = {
+      "suite-start": "Suite WatchOperatorHTTPSQualificationTests started.",
+      "test-start": "Test qualification() started.",
+      "test-end": "Test qualification() passed after 0.001 seconds.",
+      "suite-end": "Suite WatchOperatorHTTPSQualificationTests passed after 0.002 seconds.",
+      summary: "Test run with 1 test in 1 suite passed after 0.003 seconds.",
+    };
+    await command(
+      `process.stdout.write(${JSON.stringify(
+        Object.entries(lines)
+          .map(([key, line]) => (key === part ? malformed : line))
+          .join("\n") + "\n",
+      )});`,
+      report,
+      2000,
+      "watch-identity",
+    );
+    expect(report.identityOutput).toMatchObject(
+      part === "summary"
+        ? { reportedCount: null, summaryOutcome: "unavailable" }
+        : {
+            attribution: "unavailable",
+            expectedQualificationStart: null,
+            expectedQualificationPass: null,
+            expectedQualificationFail: null,
+            expectedQualificationSkip: null,
+          },
+    );
+    expect(JSON.stringify([report, consoleLog.mock.calls])).not.toMatch(
+      /private|Users|secret|trailing/,
+    );
   });
 });
 
@@ -1711,6 +1917,17 @@ describe("Watch qualification phase admission", () => {
       expect(failure.phaseFailure).toEqual({
         phase: "negative",
         ownersJoined: !unverified,
+        helperExecutionFailed: mode === "helper",
+        admissionFailure:
+          mode === "missing"
+            ? "result-missing"
+            : mode === "stale"
+              ? "nonce-mismatch"
+              : mode === "unjoined"
+                ? "owner-acknowledgement"
+                : mode === "helper"
+                  ? null
+                  : "native-not-ok",
         errors: ["stale", "missing"].includes(mode)
           ? []
           : mode === "malformed"
@@ -1727,19 +1944,37 @@ describe("Watch qualification phase admission", () => {
     },
   );
 
-  it.each(["run", "phase", "nonce", "failed", "missing", "skipped", "oversized", "unjoined"])(
-    "rejects %s evidence even when the tool reports success",
-    async (mode) => {
+  it.for([
+    ["run", "run-mismatch"],
+    ["phase", "phase-mismatch"],
+    ["nonce", "nonce-mismatch"],
+    ["failed", "native-not-ok"],
+    ["missing", "result-missing"],
+    ["skipped", "input-consumption"],
+    ["oversized", "result-invalid"],
+    ["mode", "result-invalid"],
+    ["json", "result-invalid"],
+    ["unreadable", "result-unreadable"],
+    ["unjoined", "owner-acknowledgement"],
+    ["multiple", "run-mismatch"],
+    ["owner and native", "owner-acknowledgement"],
+  ] as const)(
+    "records the first %s admission failure even when the tool reports success",
+    async ([mode, admissionFailure], context) => {
+      if (mode === "unreadable" && (process.platform === "win32" || process.getuid?.() === 0)) {
+        context.skip();
+      }
       const directory = tempDirs.make("watch-phase-");
-      await expect(
-        runWatchPhase("negative", randomUUID(), directory, async () => {
+      let failure: AggregateError & { phaseFailure: unknown };
+      try {
+        failure = await runWatchPhase("negative", randomUUID(), directory, async () => {
           const file = path.join(directory, "input.json");
           const input = JSON.parse(readFileSync(file, "utf8"));
           if (mode === "missing") {
             rmSync(file);
             return;
           }
-          if (mode !== "skipped") {
+          if (!["skipped", "multiple", "owner and native"].includes(mode)) {
             rmSync(file);
           }
           const result = { ...input, ok: true, ownersJoined: true };
@@ -1752,14 +1987,97 @@ describe("Watch qualification phase admission", () => {
           if (mode === "oversized") {
             result.extra = "x".repeat(16384);
           }
-          if (mode === "unjoined") {
+          if (["unjoined", "multiple", "owner and native"].includes(mode)) {
             result.ownersJoined = false;
           }
-          writeFileSync(path.join(directory, "result.json"), JSON.stringify(result), {
-            mode: 0o600,
-          });
-        }),
-      ).rejects.toThrow();
+          if (["multiple", "owner and native"].includes(mode)) {
+            result.ok = false;
+          }
+          if (mode === "multiple") {
+            result.run = result.phase = result.nonce = "private-stale";
+          }
+          writeFileSync(
+            path.join(directory, "result.json"),
+            mode === "json" ? "{" : JSON.stringify(result),
+            {
+              mode: mode === "mode" ? 0o644 : 0o600,
+            },
+          );
+          if (mode === "mode") {
+            chmodSync(path.join(directory, "result.json"), 0o644);
+          }
+          if (mode === "unreadable") {
+            chmodSync(directory, 0o000);
+          }
+        }).then(
+          () => {
+            throw new Error("Expected phase failure");
+          },
+          (error: unknown) => error as AggregateError & { phaseFailure: unknown },
+        );
+      } finally {
+        chmodSync(directory, 0o700);
+      }
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect(failure.phaseFailure).toMatchObject({
+        phase: "negative",
+        helperExecutionFailed: false,
+        admissionFailure,
+        ownersJoined: mode === "failed",
+      });
+      expect(hasUnjoinedWork(failure)).toBe(mode !== "failed");
+      if (mode === "owner and native") {
+        expect(failure.errors).toHaveLength(2);
+      }
+      expect(JSON.stringify(failure.phaseFailure)).not.toMatch(/private|watch-phase-/);
+    },
+  );
+
+  it.each(["missing", "nonce", "unjoined", "skipped"])(
+    "keeps favorable identity console output separate from %s admission failure",
+    async (mode) => {
+      const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const directory = tempDirs.make("watch-phase-output-");
+        const report: Record<string, unknown> = {};
+        const failure = await runWatchPhase("identity", randomUUID(), directory, async () => {
+          await watchProof.runWatchQualificationCommand(
+            "watch-identity",
+            process.execPath,
+            [
+              "-e",
+              'console.log("\\u25c7 Suite WatchOperatorHTTPSQualificationTests started.\\n\\u25c7 Test qualification() started.\\n\\u2714 Test qualification() passed after 0.001 seconds.\\n\\u2714 Test run with 1 test in 1 suite passed after 0.001 seconds.");',
+            ],
+            { environment: process.env, report, save: async () => {} },
+          );
+          const file = path.join(directory, "input.json");
+          const input = JSON.parse(readFileSync(file, "utf8"));
+          if (mode !== "skipped") {
+            rmSync(file);
+          }
+          if (mode !== "missing") {
+            writeFileSync(
+              path.join(directory, "result.json"),
+              JSON.stringify({
+                ...input,
+                nonce: mode === "nonce" ? randomUUID() : input.nonce,
+                ownersJoined: mode !== "unjoined",
+                ok: true,
+              }),
+              { mode: 0o600 },
+            );
+          }
+        }).catch((error: unknown) => error);
+        expect(report.identityOutput).toMatchObject({
+          reportedCount: 1,
+          summaryOutcome: "passed",
+          expectedQualificationPass: true,
+        });
+        expect(failure).toBeInstanceOf(AggregateError);
+        expect(hasUnjoinedWork(failure)).toBe(true);
+      } finally {
+        consoleLog.mockRestore();
+      }
     },
   );
 

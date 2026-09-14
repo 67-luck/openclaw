@@ -57,6 +57,142 @@ function publicBuildOutput(text: string): string {
   );
 }
 
+function identityOutput(stdout: string, stderr: string, truncated: boolean) {
+  type Observation = "unavailable" | "ambiguous" | "expected-suite";
+  const diagnostic = {
+    reportedCount: null as number | null,
+    summaryOutcome: (truncated ? "ambiguous" : "unavailable") as
+      | "unavailable"
+      | "ambiguous"
+      | "passed"
+      | "failed",
+    attribution: (truncated ? "ambiguous" : "unavailable") as Observation,
+    expectedQualificationStart: null as boolean | null,
+    expectedQualificationPass: null as boolean | null,
+    expectedQualificationFail: null as boolean | null,
+    expectedQualificationSkip: null as boolean | null,
+    truncated,
+  };
+  if (truncated) {
+    return diagnostic;
+  }
+  // Console text is unstable and skipped tests count in its summary. These scalars
+  // never admit a phase; stream-local suite context cannot cross stdout/stderr.
+  const seconds = String.raw`(?:0|[1-9]\d*)(?:\.\d+)? seconds`;
+  const completion = String.raw`(?:passed after ${seconds}|failed after ${seconds} with (?:1 issue|(?:[2-9]|[1-9]\d+) issues))\.`;
+  const ending = String.raw`(?:started\.|${completion}|skipped(?:\.|: "[^"\r\n]*"))`;
+  const suitePattern = new RegExp(`^Suite (.+) (${ending})$`);
+  const testPattern = new RegExp(String.raw`^Test qualification\(\) (${ending})$`);
+  const summaryPattern = new RegExp(
+    String.raw`^Test run with (0|[1-9]\d*) (tests?) in (0|[1-9]\d*) (suites?) (${completion})$`,
+  );
+  const streams = [stdout, stderr].map((text) => {
+    const events = { started: 0, passed: 0, failed: 0, skipped: 0 };
+    let suiteSeen = false,
+      active = false,
+      starts = 0,
+      conflict = false,
+      unattributed = false,
+      unknownFormat = false;
+    const summaries: { count: number; outcome: "passed" | "failed" }[] = [];
+    let summaryLines = 0;
+    for (const raw of stripVTControlCharacters(text).split(/\r?\n/).slice(0, -1)) {
+      const line = raw.replace(/^[\s\u200b]*[\u25c7\u2714\u2718\u21b7]?[\t ]*/, "");
+      const suite = suitePattern.exec(line);
+      unknownFormat ||= line.startsWith("Suite ") && !suite;
+      if (suite) {
+        suiteSeen = true;
+        const expected = suite[1] === "WatchOperatorHTTPSQualificationTests";
+        conflict ||= !expected;
+        active = expected && suite[2] === "started.";
+        if (active) {
+          starts++;
+        }
+      }
+      const event = testPattern.exec(line);
+      unknownFormat ||= line.startsWith("Test qualification() ") && !event;
+      if (event) {
+        unattributed ||= !active;
+        if (event[1] === "started.") {
+          events.started++;
+        } else if (event[1]?.startsWith("passed after ")) {
+          events.passed++;
+        } else if (event[1]?.startsWith("failed after ")) {
+          events.failed++;
+        } else {
+          events.skipped++;
+        }
+      }
+      if (line.startsWith("Test run with ")) {
+        summaryLines++;
+        const summary = summaryPattern.exec(line);
+        if (
+          summary &&
+          summaries.length < 2 &&
+          Number.isSafeInteger(Number(summary[1])) &&
+          Number.isSafeInteger(Number(summary[3])) &&
+          summary[2] === (Number(summary[1]) === 1 ? "test" : "tests") &&
+          summary[4] === (Number(summary[3]) === 1 ? "suite" : "suites")
+        ) {
+          summaries.push({
+            count: Number(summary[1]),
+            outcome: summary[5]?.startsWith("passed ") ? "passed" : "failed",
+          });
+        }
+      }
+    }
+    return {
+      events,
+      suiteSeen,
+      starts,
+      conflict,
+      unattributed,
+      unknownFormat,
+      summaries,
+      summaryLines,
+    };
+  });
+  const summaryLines = streams.reduce((total, stream) => total + stream.summaryLines, 0);
+  const summaries = streams.flatMap((stream) => stream.summaries);
+  if (summaryLines > 1) {
+    diagnostic.summaryOutcome = "ambiguous";
+  } else if (summaryLines === 1 && summaries[0]) {
+    diagnostic.reportedCount = summaries[0].count;
+    diagnostic.summaryOutcome = summaries[0].outcome;
+  }
+  const relevant = streams.filter(
+    (stream) =>
+      stream.suiteSeen || stream.unknownFormat || Object.values(stream.events).some(Boolean),
+  );
+  const stream = relevant[0];
+  if (
+    !stream ||
+    relevant.some((value) => value.unknownFormat) ||
+    !relevant.some((value) => value.suiteSeen)
+  ) {
+    return diagnostic;
+  }
+  const { started, passed, failed, skipped } = stream.events;
+  if (
+    relevant.length !== 1 ||
+    stream.conflict ||
+    stream.unattributed ||
+    stream.starts > 1 ||
+    Object.values(stream.events).some((count) => count > 1) ||
+    passed + failed + skipped > 1 ||
+    (started && skipped)
+  ) {
+    diagnostic.attribution = "ambiguous";
+  } else if (stream.starts === 1 && started + passed + failed + skipped > 0) {
+    diagnostic.attribution = "expected-suite";
+    diagnostic.expectedQualificationStart = started === 1;
+    diagnostic.expectedQualificationPass = passed === 1;
+    diagnostic.expectedQualificationFail = failed === 1;
+    diagnostic.expectedQualificationSkip = skipped === 1;
+  }
+  return diagnostic;
+}
+
 export async function runWatchQualificationCommand(
   label: string,
   bin: string,
@@ -111,8 +247,11 @@ export async function runWatchQualificationCommand(
               overflow.abort();
             } else if (capture) {
               stdout += stdoutDecoder.write(chunk);
-            } else if (label === "watch-build") {
+            } else if (label === "watch-build" || label === "watch-identity") {
               stderr += stderrDecoder.write(chunk);
+              if (label === "watch-identity") {
+                return;
+              }
               for (
                 let end = stderr.indexOf("\n", parsedStderr);
                 end >= 0;
@@ -199,6 +338,12 @@ export async function runWatchQualificationCommand(
       await save().catch(() => {});
     }
     throw error;
+  } finally {
+    if (label === "watch-identity") {
+      report.identityOutput = identityOutput(stdout, stderr, overflow.signal.aborted);
+      console.log(JSON.stringify({ identityOutput: report.identityOutput }));
+      await save().catch(() => {});
+    }
   }
 }
 type Delivery = { route: string; status: number; tls: string | null; connectionID?: string };
@@ -230,6 +375,18 @@ type PhaseResult = {
 type PhaseFailure = {
   phase: Phase;
   ownersJoined: boolean;
+  helperExecutionFailed: boolean;
+  admissionFailure:
+    | "result-missing"
+    | "result-unreadable"
+    | "result-invalid"
+    | "run-mismatch"
+    | "phase-mismatch"
+    | "nonce-mismatch"
+    | "owner-acknowledgement"
+    | "input-consumption"
+    | "native-not-ok"
+    | null;
   errors: { domain: string; code: number }[];
 };
 
@@ -289,15 +446,24 @@ export async function runWatchPhase(
   } catch (error) {
     failures.push(error);
   }
+  const helperExecutionFailed = failures.length > 0;
   let result: PhaseResult | undefined;
   let ownershipUnverified = false;
+  let admissionFailure: PhaseFailure["admissionFailure"] = null;
+  let admissionCheck: PhaseFailure["admissionFailure"] = "result-invalid";
   try {
     const candidate = (await readPrivateJSON(resultFile)) as PhaseResult;
+    assert(candidate && typeof candidate === "object" && !Array.isArray(candidate));
+    admissionCheck = "run-mismatch";
     assert.equal(candidate.run, run, "Wrong qualification run");
+    admissionCheck = "phase-mismatch";
     assert.equal(candidate.phase, phase, "Wrong qualification phase");
+    admissionCheck = "nonce-mismatch";
     assert.equal(candidate.nonce, nonce, "Stale qualification result");
     result = candidate;
+    admissionCheck = "owner-acknowledgement";
     assert.equal(result.ownersJoined, true, "Watch async owners did not acknowledge cleanup");
+    admissionCheck = "input-consumption";
     await assert.rejects(
       lstat(path.join(directory, "input.json")),
       { code: "ENOENT" },
@@ -308,12 +474,20 @@ export async function runWatchPhase(
     // retain the simulator/private inputs even after the managed child tree has exited.
     failures.push(error);
     ownershipUnverified = true;
+    const code = (error as NodeJS.ErrnoException).code;
+    admissionFailure =
+      admissionCheck === "result-invalid" && code && code !== "ERR_ASSERTION"
+        ? code === "ENOENT"
+          ? "result-missing"
+          : "result-unreadable"
+        : admissionCheck;
   }
   if (result) {
     try {
       assert.equal(result.ok, true, "Watch phase failed; private result retained");
     } catch (error) {
       failures.push(error);
+      admissionFailure ??= "native-not-ok";
     }
   }
   if (failures.length) {
@@ -322,6 +496,8 @@ export async function runWatchPhase(
     const phaseFailure: PhaseFailure = {
       phase,
       ownersJoined: !ownershipUnverified,
+      helperExecutionFailed,
+      admissionFailure,
       errors: (Array.isArray(result?.errors) ? result.errors : [])
         .slice(0, 8)
         .flatMap((failure: unknown) => {
