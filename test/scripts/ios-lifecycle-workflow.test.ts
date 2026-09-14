@@ -741,7 +741,7 @@ function runRestartProof(mode = "ready", format = 1) {
       "-B",
       "-c",
       String.raw`
-import contextlib, datetime, importlib.util, io, json, os, pathlib, plistlib, sys
+import contextlib, datetime, importlib.util, io, json, os, pathlib, plistlib, subprocess, sys
 helper, root, mode, format = sys.argv[1:]
 format = int(format)
 root = pathlib.Path(root)
@@ -810,43 +810,56 @@ def run(args, capture=False, env=None, timeout=None):
             replacement = tests / "replacement"
             replacement.write_bytes(executable.read_bytes())
             replacement.replace(executable)
+        if mode == "xcodebuild-failed": raise subprocess.CalledProcessError(65, args)
     if "xcresulttool" in args:
+        device = {"deviceId": "simulator-fixture", "deviceName": "iPhone"}
+        configuration = {"configurationId": "1", "configurationName": "Default"}
         if "summary" in args:
             count = 0 if mode == "zero-tests" else (2 if mode == "execution-count" else 1)
+            device_run = {"device": {**device}, "testPlanConfiguration": {**configuration},
+                "passedTests": 2, "failedTests": 0, "skippedTests": 0, "expectedFailures": 0}
+            if mode == "wrong-summary-device": device_run["device"]["deviceId"] = "foreign"
+            if mode == "wrong-summary-configuration": device_run["testPlanConfiguration"]["configurationId"] = "foreign"
             return json.dumps({"result": "Passed", "totalTestCount": count, "passedTests": count,
                 "failedTests": 0, "skippedTests": 1 if mode == "skipped" else 0,
-                "expectedFailures": 0, "testFailures": []})
-        identifier = "GatewayAccessRestartTests/acknowledgedSignOutSurvivesProcessRestart()"
+                "expectedFailures": 0, "testFailures": [],
+                "devicesAndConfigurations": [device_run] * (2 if mode == "extra-summary-device" else 1)})
+        identifier = "GatewayAccessRestartTests/testAcknowledgedSignOutSurvivesProcessRestart()"
+        repetitions = [{"nodeType": "Repetition", "nodeIdentifier": str(index),
+            "name": f"Repetition {index}", "result": "Passed"} for index in (1, 2)]
+        if mode == "one-repetition": repetitions.pop()
+        if mode == "extra-repetition": repetitions.append({**repetitions[0], "nodeIdentifier": "3", "name": "Repetition 3"})
+        if mode == "duplicate-repetition": repetitions[1] = repetitions[0]
+        if mode == "missing-repetition-id": repetitions[1].pop("nodeIdentifier")
+        if mode == "failed-repetition": repetitions[1]["result"] = "Failed"
+        if mode == "skipped-repetition": repetitions[1]["result"] = "Skipped"
+        if mode == "unknown-result-shape": repetitions = []
+        if mode in ("explicit-case-runs", "extra-case-run"):
+            for repetition in repetitions:
+                repetition["children"] = [{"nodeType": "Test Case Run", "name": "Execution", "result": "Passed"}]
+        if mode == "extra-case-run": repetitions[1]["children"].append(repetitions[1]["children"][0])
+        if mode == "unscoped-execution": repetitions.append({"nodeType": "Test Case Run", "name": "Extra", "result": "Passed"})
+        if mode == "wrapped-repetition": repetitions = [{"nodeType": "Device", "nodeIdentifier": device["deviceId"],
+            "children": [{"nodeType": "Test Plan Configuration", "nodeIdentifier": "1", "children": repetitions}]}]
+        if mode == "nested-repetition": repetitions[0]["children"] = [{**repetitions[1]}]
         if "test-details" in args:
             assert args[-2:] == ["--test-id", identifier]
-            repetitions = [{"nodeType": "Repetition", "name": f"Repetition {index}", "result": "Passed"}
-                for index in (1, 2)]
-            if mode == "one-repetition": repetitions.pop()
-            if mode == "extra-repetition": repetitions.append({**repetitions[0], "name": "Repetition 3"})
-            if mode == "duplicate-repetition": repetitions[1] = repetitions[0]
-            if mode == "failed-repetition": repetitions[1]["result"] = "Failed"
-            if mode == "skipped-repetition": repetitions[1]["result"] = "Skipped"
-            if mode == "unknown-result-shape": repetitions = []
-            if mode in ("explicit-case-runs", "extra-case-run"):
-                for repetition in repetitions:
-                    repetition["children"] = [{"nodeType": "Test Case Run", "name": "Execution", "result": "Passed"}]
-            if mode == "extra-case-run": repetitions[1]["children"].append(repetitions[1]["children"][0])
-            if mode == "unscoped-execution": repetitions.append({"nodeType": "Test Case Run", "name": "Extra", "result": "Passed"})
-            configuration_run = {"nodeType": "Test Plan Configuration", "name": "Default",
-                "nodeIdentifier": "foreign" if mode == "wrong-execution-configuration" else "1", "children": repetitions}
-            test_runs = [{"nodeType": "Device", "name": "iPhone",
-                "nodeIdentifier": "foreign" if mode == "wrong-execution-device" else "simulator-fixture",
-                "children": [configuration_run]}]
-            if mode == "root-repetition": test_runs.append(repetitions.pop())
-            if mode == "wrapped-repetition":
-                configuration_run["children"] = [{"nodeType": "Unknown", "name": "Wrapper", "children": repetitions}]
-            return json.dumps({"testIdentifier": identifier, "testResult": "Passed",
-                "devices": [{"deviceId": "another-device" if mode == "wrong-device" else "simulator-fixture", "deviceName": "iPhone"}],
-                "testPlanConfigurations": [{"configurationId": "1", "configurationName": "Default"}] * (2 if mode == "extra-configuration" else 1),
-                "testRuns": test_runs})
+            if mode == "wrong-device": device["deviceId"] = "another-device"
+            if mode == "wrong-configuration": configuration["configurationId"] = "foreign"
+            return json.dumps({"testIdentifier": "WrongCase" if mode == "wrong-details-case" else identifier,
+                "testResult": "Passed", "arguments": ["unexpected"] if mode == "parameterized-case" else [],
+                "devices": [device], "testPlanConfigurations": [configuration] * (2 if mode == "extra-configuration" else 1),
+                "testRuns": repetitions})
         identifier = "WrongCase" if mode == "wrong-case" else identifier
-        case = {"nodeType": "Test Case", "nodeIdentifier": identifier, "result": "Passed"}
-        return json.dumps({"testNodes": [case] * (2 if mode == "extra-case" else 1)})
+        if mode == "tree-repetition-mismatch": repetitions[1]["nodeIdentifier"] = "foreign"
+        case = {"nodeType": "Test Case", "nodeIdentifier": identifier, "result": "Passed", "children": repetitions}
+        bundle = {"nodeType": "Unit test bundle", "name": "WrongBundle" if mode == "wrong-bundle" else "OpenClawTests",
+            "children": [{"nodeType": "Test Suite", "name": "GatewayAccessRestartTests",
+                "children": [case] * (2 if mode == "extra-case" else 1)}]}
+        if mode == "wrong-tree-device": device["deviceId"] = "foreign"
+        if mode == "wrong-tree-configuration": configuration["configurationId"] = "foreign"
+        return json.dumps({"testNodes": [{"nodeType": "Test Plan", "name": "OpenClaw", "children": [bundle]}],
+            "devices": [device], "testPlanConfigurations": [configuration]})
     if "bootstatus" in args:
         assert args == ["xcrun", "simctl", "bootstatus", "simulator-fixture", "-b"]
         boot_timeouts.append(timeout)
@@ -932,7 +945,7 @@ describe("iOS Access process restart proof", () => {
         "-parallel-testing-enabled",
         "NO",
         "platform=iOS Simulator,id=simulator-fixture",
-        "-only-testing:OpenClawTests/GatewayAccessRestartTests",
+        "-only-testing:OpenClawTests/GatewayAccessRestartTests/testAcknowledgedSignOutSurvivesProcessRestart",
       ]),
     );
     expect(commands.filter((args) => args.includes("build-for-testing"))).toHaveLength(1);
@@ -948,7 +961,7 @@ describe("iOS Access process restart proof", () => {
     }
   });
 
-  it.each(["already-booted", "execution-count", "explicit-case-runs"])(
+  it.each(["already-booted", "execution-count"])(
     "accepts %s with two explicit passing repetitions and a verified handoff",
     (mode) => {
       const { error, bootTimeouts, receiptRetained } = runRestartProof(mode);
@@ -957,6 +970,14 @@ describe("iOS Access process restart proof", () => {
       expect(receiptRetained).toBe(false);
     },
   );
+
+  it("rejects xcodebuild failure even when the result records and final receipt would pass", () => {
+    const { error, commands, receiptRetained } = runRestartProof("xcodebuild-failed");
+    expect(error).toContain("exit status 65");
+    expect(commands.some((args) => args.includes("xcresulttool"))).toBe(false);
+    expect(commands.some((args) => args.includes("get_app_container"))).toBe(false);
+    expect(receiptRetained).toBe(true);
+  });
 
   it("stops before container inspection if readiness fails", () => {
     const { error, commands, receiptRetained } = runRestartProof("boot-failed");
@@ -978,8 +999,15 @@ describe("iOS Access process restart proof", () => {
     "extra-case",
     "wrong-device",
     "extra-configuration",
-    "wrong-execution-device",
-    "wrong-execution-configuration",
+    "wrong-details-case",
+    "parameterized-case",
+    "wrong-bundle",
+    "wrong-summary-device",
+    "wrong-summary-configuration",
+    "extra-summary-device",
+    "wrong-tree-device",
+    "wrong-tree-configuration",
+    "wrong-configuration",
     "one-repetition",
     "extra-repetition",
     "duplicate-repetition",
@@ -988,7 +1016,10 @@ describe("iOS Access process restart proof", () => {
     "unknown-result-shape",
     "extra-case-run",
     "unscoped-execution",
-    "root-repetition",
+    "explicit-case-runs",
+    "nested-repetition",
+    "missing-repetition-id",
+    "tree-repetition-mismatch",
     "wrapped-repetition",
     "missing-handoff",
     "seed-only",

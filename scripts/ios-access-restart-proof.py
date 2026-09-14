@@ -97,37 +97,42 @@ def verify_result(result, simulator):
             for child in value:
                 yield from nodes(child)
 
+    bundles = [node for node in nodes(tree.get("testNodes", [])) if node.get("nodeType") == "Unit test bundle"]
+    require(len(bundles) == 1 and bundles[0].get("name") == "OpenClawTests", "Wrong restart test bundle")
     cases = [node for node in nodes(tree.get("testNodes", [])) if node.get("nodeType") == "Test Case"]
-    require(len(cases) == 1, "Missing or duplicate restart test case")
-    identifier = "GatewayAccessRestartTests/acknowledgedSignOutSurvivesProcessRestart()"
+    require(len(cases) == 1 and cases[0] in list(nodes(bundles[0])), "Missing or duplicate restart test case")
+    identifier = "GatewayAccessRestartTests/testAcknowledgedSignOutSurvivesProcessRestart()"
     require(cases[0].get("nodeIdentifier") == identifier and cases[0].get("result") == "Passed",
             "Wrong restart test executed")
     details = json.loads(run(prefix + ["test-details", "--path", str(result), "--test-id", identifier], capture=True))
     require(details.get("testIdentifier") == identifier and details.get("testResult") == "Passed"
             and not details.get("arguments"), "Wrong restart test details")
-    devices, configurations = details.get("devices", []), details.get("testPlanConfigurations", [])
-    require(len(devices) == 1 and devices[0].get("deviceId") == simulator,
-            "Restart repetitions used an unexpected device")
-    require(len(configurations) == 1 and configurations[0].get("configurationId"),
-            "Restart repetitions used multiple or missing configurations")
-    runs = details.get("testRuns", [])
-    require(len(runs) == 1 and runs[0].get("nodeType") == "Device"
-            and runs[0].get("nodeIdentifier") == simulator, "Restart execution device mismatch")
-    configuration_runs = runs[0].get("children", [])
-    require(len(configuration_runs) == 1 and configuration_runs[0].get("nodeType") == "Test Plan Configuration"
-            and configuration_runs[0].get("nodeIdentifier") == configurations[0]["configurationId"],
-            "Restart execution configuration mismatch")
-    repetitions = configuration_runs[0].get("children", [])
-    # Aggregate counts can count the case, not executions. Only this device/configuration owns its repetitions.
-    require(len(repetitions) == 2 and all(node.get("nodeType") == "Repetition"
-            and node.get("result") == "Passed" and node.get("name") for node in repetitions)
-            and len({node["name"] for node in repetitions}) == 2,
-            "Expected two distinct passing restart repetitions; unsupported or incomplete result shape")
-    for repetition in repetitions:
-        executions = repetition.get("children", [])
-        require(len(executions) <= 1 and all(node.get("nodeType") == "Test Case Run"
-                and node.get("result") == "Passed" and not node.get("children") for node in executions),
-                "Extra, failing, or unsupported restart execution")
+    summary_runs = summary.get("devicesAndConfigurations", [])
+    require(len(summary_runs) == 1 and summary_runs[0].get("device", {}).get("deviceId") == simulator,
+            "Restart summary used an unexpected device or configuration")
+    configuration = summary_runs[0].get("testPlanConfiguration", {}).get("configurationId")
+    require(isinstance(configuration, str) and configuration, "Missing restart configuration")
+    for document in [tree, details]:
+        devices, configurations = document.get("devices", []), document.get("testPlanConfigurations", [])
+        require(len(devices) == 1 and devices[0].get("deviceId") == simulator,
+                "Restart repetitions used an unexpected device")
+        require(len(configurations) == 1 and configurations[0].get("configurationId") == configuration,
+                "Restart repetitions used an unexpected configuration")
+
+    def repetition_ids(repetitions):
+        # xcresult reports case counts separately; the selected case owns two direct execution records.
+        require(len(repetitions) == 2 and all(node.get("nodeType") == "Repetition"
+                and node.get("result") == "Passed" and not node.get("children")
+                and isinstance(node.get("nodeIdentifier"), str) and node["nodeIdentifier"]
+                and node.get("name") for node in repetitions),
+                "Expected two passing leaf restart repetitions; unsupported or incomplete result shape")
+        identifiers = {node["nodeIdentifier"] for node in repetitions}
+        require(len(identifiers) == 2 and len({node["name"] for node in repetitions}) == 2,
+                "Duplicate restart repetition")
+        return identifiers
+
+    require(repetition_ids(details.get("testRuns", [])) == repetition_ids(cases[0].get("children", [])),
+            "Restart repetition identities differ between result records")
 
 
 def file_identity(path):
@@ -187,7 +192,7 @@ def main(simulator):
         environment[f"TEST_RUNNER_OPENCLAW_ACCESS_RESTART_{key}"] = value
     run(["xcodebuild", "-xctestrun", str(run_file), "-destination", destination,
          "-parallel-testing-enabled", "NO", "-test-iterations", "2", "-test-repetition-relaunch-enabled", "YES",
-         "-only-testing:OpenClawTests/GatewayAccessRestartTests", "-resultBundlePath", str(result),
+         "-only-testing:OpenClawTests/GatewayAccessRestartTests/testAcknowledgedSignOutSurvivesProcessRestart", "-resultBundlePath", str(result),
          "test-without-building"], env=environment)
     verify_result(result, simulator)
     # Xcode may shut down this destination after testing; container inspection needs it booted.
