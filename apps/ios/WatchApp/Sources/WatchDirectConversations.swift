@@ -472,7 +472,9 @@ final class WatchDirectConversations {
                 guard self.isCurrent(generation, selection: selection), self.activeSendID == sendID,
                       self.route == route else { return }
                 self.activeRunID = value.dictionaryValue?["runId"]?.stringValue
-                self.deliveryStatus = String(localized: "Accepted by Gateway")
+                self.deliveryStatus = value.dictionaryValue?["status"]?.stringValue == "timeout"
+                    ? String(localized: "This run ended or was cancelled. Check history before sending again.")
+                    : String(localized: "Accepted by Gateway")
             }
             guard self.isCurrent(generation, selection: selection), self.activeSendID == sendID else { return }
             let runID = self.activeRunID

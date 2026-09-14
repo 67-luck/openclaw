@@ -18,7 +18,7 @@ struct WatchDirectConversationsView: View {
                 WatchDirectDeliveryStatus(status: self.model.deliveryStatus)
                 if self.gateway.setupIncomplete || self.gateway.recoveryRequired || !self.gateway.isConfigured {
                     NavigationLink(value: WatchDestination.pairWatch) {
-                        self.label("Pair Watch", symbol: "key")
+                        self.label(String(localized: "Pair Watch"), symbol: "key")
                     }
                 } else {
                     self.selection
@@ -26,7 +26,7 @@ struct WatchDirectConversationsView: View {
                         Button {
                             Task { await self.model.requestUpgrade() }
                         } label: {
-                            self.label("Request chat access", symbol: "lock.open")
+                            self.label(String(localized: "Request chat access"), symbol: "lock.open")
                         }
                         .disabled(!self.model.connected || self.model.upgrading)
                     }
@@ -115,7 +115,7 @@ struct WatchDirectConversationsView: View {
                         Task { await self.model.send(text, route: route) }
                     }
                 } label: {
-                    self.label("Message", symbol: "square.and.pencil")
+                    self.label(String(localized: "Message"), symbol: "square.and.pencil")
                 }
                 .disabled(!self.model.canWrite)
                 Button {
@@ -129,7 +129,7 @@ struct WatchDirectConversationsView: View {
             NavigationLink {
                 self.approvals
             } label: {
-                self.label("Approvals", symbol: "checkmark.shield")
+                self.label(String(localized: "Approvals"), symbol: "checkmark.shield")
             }
             .disabled(!self.model.canApprove)
         }
@@ -156,7 +156,7 @@ struct WatchDirectConversationsView: View {
                 Button {
                     Task { await self.model.refresh() }
                 } label: {
-                    self.label("Refresh", symbol: "arrow.clockwise")
+                    self.label(String(localized: "Refresh"), symbol: "arrow.clockwise")
                 }
             }
             .padding(.horizontal, 8)
@@ -178,7 +178,7 @@ struct WatchDirectConversationsView: View {
 
     private func label(_ title: String, symbol: String) -> some View {
         Label {
-            Text(title)
+            Text(verbatim: title)
                 .font(WatchClawType.body(size: 13, weight: .semibold))
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {

@@ -59,6 +59,9 @@ struct WatchDirectConversationTests {
         (
             #"{"kind":"payment","amount":"149.95","currency":"USD","target":"Example Supplier"}"#,
             ["149.95", "USD", "Example Supplier"]),
+        (
+            #"{"kind":"payment","amount":"149.95%","currency":"EUR","target":"Supplier %1$@ e\u0301"}"#,
+            ["Amount: 149.95% EUR", "Pay to: Supplier %1$@ e\u{301}"]),
         (#"""
         {"kind":"message-send","target":"team-channel","recipientCount":3,
          "recipients":["Reviewer One","Reviewer Two"],"audience":"external"}
@@ -94,7 +97,7 @@ struct WatchDirectConversationTests {
                 id: "scope-approval", urlpath: "/approval/scope-approval", createdatms: 0,
                 expiresatms: Int.max, presentation: presentation, status: "pending")))
             for term in required + ["agent-one"] {
-                #expect(approval.detail.contains(term))
+                #expect(Data(approval.detail.utf8).range(of: Data(term.utf8)) != nil)
             }
             switch presentation {
             case .exec:

@@ -182,8 +182,8 @@ struct WatchDirectApproval: Identifiable, Sendable {
         switch scope {
         case let .messageSend(value):
             lines += [
-                String(localized: "Target: \(value.target)"),
-                String(localized: "Recipients: \(value.recipientcount)"),
+                String(format: String(localized: "Target: %@"), value.target),
+                String(format: String(localized: "Recipients: %lld"), Int64(value.recipientcount)),
             ]
             if let audience = read(
                 value.audience,
@@ -191,34 +191,38 @@ struct WatchDirectApproval: Identifiable, Sendable {
                 nullable: false,
                 choices: ["internal", "external"])
             {
-                lines.append(String(localized: "Audience: \(audience)"))
+                lines.append(String(format: String(localized: "Audience: %@"), audience))
             }
             let recipients = value.recipients ?? []
             lines.append(contentsOf: recipients)
             if value.recipientcount > recipients.count {
-                lines.append(String(localized: "\(value.recipientcount - recipients.count) more recipients"))
+                lines.append(String(
+                    format: String(localized: "%lld more recipients"),
+                    Int64(value.recipientcount - recipients.count)))
             }
         case let .payment(value):
             lines += [
-                String(localized: "Amount: \(value.amount) \(value.currency)"),
-                String(localized: "Pay to: \(value.target)"),
+                String(format: String(localized: "Amount: %@ %@"), value.amount, value.currency),
+                String(format: String(localized: "Pay to: %@"), value.target),
             ]
         case let .externalPost(value):
-            lines.append(String(localized: "Post to: \(value.target)"))
+            lines.append(String(format: String(localized: "Post to: %@"), value.target))
             if let visibility = read(
                 value.visibility,
                 field: String(localized: "Visibility"),
                 nullable: false,
                 choices: ["public", "restricted"])
             {
-                lines.append(String(localized: "Visibility: \(visibility)"))
+                lines.append(String(format: String(localized: "Visibility: %@"), visibility))
             }
         case let .standingGrant(value):
             lines += [
-                String(localized: "Automation: \(value.automation)"),
+                String(format: String(localized: "Automation: %@"), value.automation),
                 String(localized: "Always allow runs this exact command without asking:"),
                 value.command,
-                value.expiresindays.map { String(localized: "Expires in \($0) days; revocable") }
+                value.expiresindays.map {
+                    String(format: String(localized: "Expires in %lld days; revocable"), Int64($0))
+                }
                     ?? String(localized: "Until revoked or the automation changes"),
             ]
         case nil:
@@ -226,10 +230,9 @@ struct WatchDirectApproval: Identifiable, Sendable {
         }
         if !unsupported.isEmpty {
             let fields = unsupported.joined(separator: ", ")
-            lines
-                .append(
-                    String(
-                        localized: "Unsupported approval context: \(fields). Review on the Gateway before allowing."))
+            lines.append(String(
+                format: String(localized: "Unsupported approval context: %@. Review on the Gateway before allowing."),
+                fields))
         }
         return (lines.joined(separator: "\n"), unsupported.isEmpty ? decisions : decisions.filter { $0 == .deny })
     }
