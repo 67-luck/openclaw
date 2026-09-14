@@ -10,6 +10,215 @@ import XCTest
 @MainActor
 @Suite(.serialized)
 struct WatchGatewayControllerTests {
+    @Test(arguments: ["timeout", "started", "rejected", "wait-timeout"])
+    func `chat send distinguishes a terminal acknowledgement from rejection and wait timeout`(_ outcome: String)
+        async throws
+    {
+        try await Self.withConnectedConversations(scopes: ["operator.read", "operator.talk", "operator.write"]) {
+            _, conversations, fixture in
+            let history = AnyCodable(["messages": [
+                ["id": "existing-message", "role": "assistant", "content": "Existing history"],
+            ]])
+            let route = try await Self.selectFirstConversation(conversations, fixture: fixture, history: history)
+            let messageIDs = conversations.messages.map(\.id)
+            let sending = Task { await conversations.send("One message", route: route) }
+            var held: [GatewayOperatorHTTPExchange] = []
+            do {
+                let request = try await Self.nextFrame(fixture, method: "chat.send")
+                let requestFrame = try request.frame
+                let params = try #require(requestFrame.params?.dictionaryValue)
+                let runID = try #require(params["idempotencyKey"]?.stringValue)
+                #expect(!runID.isEmpty)
+                #expect(params["message"]?.stringValue == "One message")
+                #expect(params["sessionKey"]?.stringValue == route.sessionKey)
+                #expect(params["agentId"]?.stringValue == route.agentID)
+                request.accept(6)
+                let acknowledgement = try await fixture.next("chat.send acknowledgement")
+                held.append(acknowledgement)
+                try #require(acknowledgement.request.url?.lastPathComponent == "poll")
+                if outcome == "rejected" {
+                    try acknowledgement.respond(body: JSONSerialization.data(withJSONObject: [
+                        "acceptedClientSeq": 6,
+                        "frames": [[
+                            "cursor": 6,
+                            "frame": [
+                                "type": "res", "id": requestFrame.id, "ok": false,
+                                "payload": ["runId": runID, "status": "error", "summary": "Send rejected"],
+                                "error": ["code": "UNAVAILABLE", "message": "Send rejected"],
+                            ],
+                        ]],
+                    ]))
+                } else {
+                    // Match buildAbortedChatSendPayload, including its successful outer RPC envelope.
+                    let payload: AnyCodable = outcome == "timeout"
+                        ? AnyCodable([
+                            "runId": runID, "status": "timeout", "summary": "aborted",
+                            "stopReason": "rpc", "endedAt": 123,
+                        ])
+                        : AnyCodable(["runId": runID, "status": "started"])
+                    try acknowledgement.respond(body: GatewayOperatorHTTPFixture.delivery(
+                        requestID: requestFrame.id, payload: payload, cursor: 6, accepted: 6))
+                    let readback = try await Self.nextFrame(fixture, method: "chat.history")
+                    let expected = outcome == "timeout"
+                        ? "This run ended or was cancelled. Check history before sending again."
+                        : "Accepted by Gateway"
+                    #expect(conversations.deliveryStatus == expected)
+                    #expect(conversations.messages.map(\.id) == messageIDs)
+                    readback.accept(7)
+                    let readbackPoll = try await fixture.next("first send history")
+                    held.append(readbackPoll)
+                    try #require(readbackPoll.request.url?.lastPathComponent == "poll")
+                    try readbackPoll.respond(body: GatewayOperatorHTTPFixture.delivery(
+                        requestID: readback.frame.id, payload: history, cursor: 7, accepted: 7))
+                    let wait = try await Self.nextFrame(fixture, method: "agent.wait")
+                    #expect(try wait.frame.params?.dictionaryValue?["runId"]?.stringValue == runID)
+                    #expect(conversations.deliveryStatus == expected)
+                    wait.accept(8)
+                    let waitPoll = try await fixture.next("send wait result")
+                    held.append(waitPoll)
+                    try #require(waitPoll.request.url?.lastPathComponent == "poll")
+                    let waitPayload: AnyCodable = outcome == "wait-timeout"
+                        ? AnyCodable(["runId": runID, "status": "timeout"])
+                        : AnyCodable([
+                            "runId": runID, "status": outcome == "timeout" ? "timeout" : "ok",
+                            "endedAt": 123,
+                        ])
+                    try waitPoll.respond(body: GatewayOperatorHTTPFixture.delivery(
+                        requestID: wait.frame.id, payload: waitPayload, cursor: 8, accepted: 8))
+                    try await Self.reply(
+                        fixture, method: "chat.history", sequence: 9, cursor: 9, payload: history)
+                    await sending.value
+                    #expect(conversations.deliveryStatus == expected)
+                    if outcome == "wait-timeout" {
+                        #expect(conversations.canAbort)
+                    }
+                }
+                await sending.value
+                if outcome == "rejected" {
+                    #expect(conversations.deliveryStatus == "Send rejected")
+                }
+                #expect(!conversations.busy)
+                #expect(conversations.messages.map(\.id) == messageIDs)
+                #expect(conversations.messages.map(\.text) == ["Existing history"])
+                let frames = try fixture.snapshot.compactMap { exchange -> RequestFrame? in
+                    guard exchange.request.url?.lastPathComponent == "frames" else { return nil }
+                    return try exchange.frame
+                }
+                let sends = frames.filter { $0.method == "chat.send" }
+                #expect(sends.count == 1)
+                #expect(sends.first?.id == requestFrame.id)
+                #expect(sends.first?.params?.dictionaryValue?["idempotencyKey"]?.stringValue == runID)
+                #expect(frames.filter { $0.method == "agent.wait" }.count == (outcome == "rejected" ? 0 : 1))
+                #expect(frames.filter { $0.method == "chat.history" }.count == (outcome == "rejected" ? 1 : 3))
+            } catch {
+                held.forEach { $0.fail(URLError(.cancelled)) }
+                sending.cancel()
+                await conversations.disconnect(clear: true)
+                await sending.value
+                throw error
+            }
+        }
+    }
+
+    @Test func `late readback from an earlier send cannot overwrite a newer send or history`() async throws {
+        try await Self.withConnectedConversations(scopes: ["operator.read", "operator.talk", "operator.write"]) {
+            _, conversations, fixture in
+            let originalHistory = AnyCodable(["messages": [
+                ["id": "existing-message", "role": "assistant", "content": "Existing history"],
+            ]])
+            let newerHistory = AnyCodable(["messages": [
+                ["id": "newer-message", "role": "assistant", "content": "Newer B history"],
+            ]])
+            let route = try await Self.selectFirstConversation(
+                conversations, fixture: fixture, history: originalHistory)
+            let first = Task { await conversations.send("Message A", route: route) }
+            var second: Task<Void, Never>?
+            var held: [GatewayOperatorHTTPExchange] = []
+            do {
+                let sendA = try await Self.nextFrame(fixture, method: "chat.send")
+                let frameA = try sendA.frame
+                let runA = try #require(frameA.params?.dictionaryValue?["idempotencyKey"]?.stringValue)
+                sendA.accept(6)
+                let ackA = try await fixture.next("send A acknowledgement")
+                held.append(ackA)
+                try #require(ackA.request.url?.lastPathComponent == "poll")
+                try ackA.respond(body: GatewayOperatorHTTPFixture.delivery(
+                    requestID: frameA.id,
+                    payload: AnyCodable([
+                        "runId": runA, "status": "timeout", "summary": "aborted",
+                        "stopReason": "rpc", "endedAt": 123,
+                    ]),
+                    cursor: 6, accepted: 6))
+                let historyA = try await Self.nextFrame(fixture, method: "chat.history")
+                historyA.accept(7)
+                let heldHistory = try await fixture.next("held send A history")
+                held.append(heldHistory)
+                try #require(heldHistory.request.url?.lastPathComponent == "poll")
+                // Send releases busy after its ACK. A newer send is reachable while A's readback is pending.
+                try #require(conversations.canWrite)
+                second = Task { await conversations.send("Message B", route: route) }
+                let sendB = try await Self.nextFrame(fixture, method: "chat.send")
+                let frameB = try sendB.frame
+                let runB = try #require(frameB.params?.dictionaryValue?["idempotencyKey"]?.stringValue)
+                #expect(runB != runA)
+                sendB.accept(8)
+                let ackB = try await fixture.next("send B acknowledgement")
+                held.append(ackB)
+                try #require(ackB.request.url?.lastPathComponent == "poll")
+                try ackB.respond(body: GatewayOperatorHTTPFixture.delivery(
+                    requestID: frameB.id,
+                    payload: AnyCodable(["runId": runB, "status": "started"]),
+                    cursor: 7, accepted: 8))
+                try await Self.reply(
+                    fixture, method: "chat.history", sequence: 9, cursor: 8, payload: newerHistory)
+                let waitB = try await Self.nextFrame(fixture, method: "agent.wait")
+                #expect(try waitB.frame.params?.dictionaryValue?["runId"]?.stringValue == runB)
+                #expect(conversations.messages.map(\.text) == ["Newer B history"])
+                #expect(conversations.deliveryStatus == "Accepted by Gateway")
+                waitB.accept(10)
+                let delayedA = try await fixture.next("late send A readback")
+                held.append(delayedA)
+                try #require(delayedA.request.url?.lastPathComponent == "poll")
+                // New outgoing frames cancel old polls; deliver A on the current poll, not its canceled HTTP request.
+                try delayedA.respond(body: GatewayOperatorHTTPFixture.delivery(
+                    requestID: historyA.frame.id, payload: originalHistory, cursor: 9, accepted: 10))
+                await first.value
+                #expect(conversations.messages.map(\.text) == ["Newer B history"])
+                #expect(conversations.deliveryStatus == "Accepted by Gateway")
+                #expect(conversations.canAbort)
+                let completedB = try await fixture.next("send B wait completion")
+                held.append(completedB)
+                try #require(completedB.request.url?.lastPathComponent == "poll")
+                try completedB.respond(body: GatewayOperatorHTTPFixture.delivery(
+                    requestID: waitB.frame.id,
+                    payload: AnyCodable(["runId": runB, "status": "ok", "endedAt": 124]),
+                    cursor: 10, accepted: 10))
+                try await Self.reply(
+                    fixture, method: "chat.history", sequence: 11, cursor: 11, payload: newerHistory)
+                await second?.value
+                #expect(conversations.messages.map(\.text) == ["Newer B history"])
+                #expect(conversations.deliveryStatus == "Accepted by Gateway")
+                #expect(!conversations.busy && !conversations.canAbort)
+                let frames = try fixture.snapshot.compactMap { exchange -> RequestFrame? in
+                    guard exchange.request.url?.lastPathComponent == "frames" else { return nil }
+                    return try exchange.frame
+                }
+                let sends = frames.filter { $0.method == "chat.send" }
+                #expect(sends.map(\.id) == [frameA.id, frameB.id])
+                #expect(sends.compactMap { $0.params?.dictionaryValue?["idempotencyKey"]?.stringValue } == [runA, runB])
+                #expect(frames.filter { $0.method == "agent.wait" }.count == 1)
+            } catch {
+                held.forEach { $0.fail(URLError(.cancelled)) }
+                first.cancel()
+                second?.cancel()
+                await conversations.disconnect(clear: true)
+                await first.value
+                await second?.value
+                throw error
+            }
+        }
+    }
+
     @Test(arguments: [1, 2])
     func `disconnect joins unclaimed cleanup after synchronous suspension`(_ repetitions: Int) async throws {
         try await Self.withConnectedConversations { _, conversations, fixture in
@@ -706,6 +915,28 @@ struct WatchGatewayControllerTests {
                 throw error
             }
             await fixture.stop()
+        }
+    }
+
+    private static func selectFirstConversation(
+        _ conversations: WatchDirectConversations,
+        fixture: WatchGatewayOperatorHTTPFixture,
+        history: AnyCodable) async throws -> WatchDirectRoute
+    {
+        let session = try #require(conversations.sessions.first)
+        let selecting = Task { await conversations.selectSession(session) }
+        do {
+            try await Self.reply(
+                fixture, method: "sessions.messages.subscribe", sequence: 4, cursor: 4,
+                payload: AnyCodable(["subscribed": true, "key": session.key]))
+            try await Self.reply(fixture, method: "chat.history", sequence: 5, cursor: 5, payload: history)
+            await selecting.value
+            return try #require(conversations.route)
+        } catch {
+            selecting.cancel()
+            await conversations.disconnect(clear: true)
+            await selecting.value
+            throw error
         }
     }
 

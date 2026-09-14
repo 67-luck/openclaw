@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { channel } from "node:diagnostics_channel";
-import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat as fsStat,
+  writeFile,
+} from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer as createHTTPSServer } from "node:https";
 import { createServer, type Socket } from "node:net";
@@ -18,13 +27,14 @@ const scopes = ["operator.read", "operator.talk"];
 const developerDirectory = "/Applications/Xcode_26.6.app/Contents/Developer";
 const cancelled = new AbortController();
 type Phase = "identity" | "negative" | "positive" | "voice";
-type CommandOptions = { timeout?: number; cleanup?: boolean };
+type CommandOptions = { timeout?: number; cleanup?: boolean; diagnostic?: boolean };
+type PhaseOutput = { stdout: string; stderr?: string; truncated?: boolean };
 type RunCommand = (
   label: string,
   tool: string,
   args: string[],
   options?: CommandOptions,
-) => Promise<{ code: number; stdout: string }>;
+) => Promise<{ code: number } & PhaseOutput>;
 type BuildStep = { event: string; label: string; code?: number };
 
 function publicBuildOutput(text: string): string {
@@ -203,7 +213,7 @@ export async function runWatchQualificationCommand(
     save: () => Promise<void>;
     signal?: AbortSignal;
   },
-): Promise<{ code: number; stdout: string }> {
+): Promise<{ code: number } & PhaseOutput> {
   const started = performance.now();
   const { report, save } = options;
   const stdoutDecoder = new StringDecoder("utf8");
@@ -247,9 +257,12 @@ export async function runWatchQualificationCommand(
               overflow.abort();
             } else if (capture) {
               stdout += stdoutDecoder.write(chunk);
-            } else if (label === "watch-build" || label === "watch-identity") {
+            } else if (
+              label === "watch-build" ||
+              /^watch-(identity|negative|positive|voice)$/.test(label)
+            ) {
               stderr += stderrDecoder.write(chunk);
-              if (label === "watch-identity") {
+              if (label !== "watch-build") {
                 return;
               }
               for (
@@ -292,14 +305,19 @@ export async function runWatchQualificationCommand(
           stderr += stderrDecoder.end();
           childStatus = { label, code: exit, signal, outputBytes: bytes };
           report.child = childStatus;
-          console.log(JSON.stringify(childStatus));
+          if (!options.diagnostic) {
+            console.log(JSON.stringify(childStatus));
+          }
           void save().catch(() => {});
         });
       },
     });
     assert(!overflow.signal.aborted && code === 0, `Command failed: ${label}`);
-    return { code, stdout };
+    return { code, stdout, stderr, truncated: overflow.signal.aborted };
   } catch (error) {
+    if (error instanceof Error && /^watch-(identity|negative|positive|voice)$/.test(label)) {
+      Object.assign(error, { phaseOutput: { stdout, stderr, truncated: overflow.signal.aborted } });
+    }
     // Preserve the first command failure before cleanup changes report.child.
     if (report.failedChild === undefined) {
       const errorCode = (error as NodeJS.ErrnoException).code;
@@ -334,7 +352,9 @@ export async function runWatchQualificationCommand(
             }
           : {}),
       };
-      console.log(JSON.stringify({ failedChild: report.failedChild }));
+      if (!options.diagnostic) {
+        console.log(JSON.stringify({ failedChild: report.failedChild }));
+      }
       await save().catch(() => {});
     }
     throw error;
@@ -423,13 +443,92 @@ async function readPrivateJSON(file: string): Promise<unknown> {
   return JSON.parse(bytes.toString("utf8"));
 }
 
+function bridgeFingerprint(nonce: string, domain: string, values: string[]): string {
+  // Shared with Swift: UTF-8, NUL-terminated fields, exact decimal dev/ino strings.
+  return createHash("sha256")
+    .update(["openclaw.watch.bridge.v1", nonce.toLowerCase(), domain, ...values].join("\0") + "\0")
+    .digest("hex");
+}
+
+async function bridgeDirectory(nonce: string, domain: string, directory: string) {
+  try {
+    // stat follows aliases; inode/device values must never pass through a JS number.
+    const value = await fsStat(directory, { bigint: true });
+    return value.isDirectory()
+      ? bridgeFingerprint(nonce, domain, [value.dev.toString(), value.ino.toString()])
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function bridgePresence(directory: string) {
+  const presence = async (name: string) => {
+    try {
+      return (await lstat(path.join(directory, name))).isFile() ? "present" : "other";
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unavailable";
+    }
+  };
+  return { input: await presence("input.json"), result: await presence("result.json") };
+}
+
+function bridgeRecords(output: PhaseOutput | undefined, correlation: string) {
+  type Record = { directory: string | null; home: string | null; bundle: string | null };
+  const records: { consumed: Record | null; written: Record | null } = {
+    consumed: null,
+    written: null,
+  };
+  let ambiguous = output?.truncated === true;
+  const pattern =
+    /^OPENCLAW_WATCH_BRIDGE\t1\t(consumed|written)\t([a-f0-9]{64})\t([a-f0-9]{64}|unavailable)\t([a-f0-9]{64}|unavailable)\t([a-f0-9]{64}|unavailable)$/;
+  // Recognize complete records per stream. Never invent stdout/stderr event ordering.
+  for (const text of [output?.stdout ?? "", output?.stderr ?? ""]) {
+    const lines = text.split("\n");
+    for (const [index, raw] of lines.entries()) {
+      if (!raw.startsWith("OPENCLAW_WATCH_BRIDGE")) {
+        continue;
+      }
+      const match = pattern.exec(raw.replace(/\r$/, ""));
+      if (
+        index === lines.length - 1 ||
+        Buffer.byteLength(raw) + 1 > 1024 ||
+        !match ||
+        match[2] !== correlation
+      ) {
+        ambiguous = true;
+        continue;
+      }
+      const event = match[1] as "consumed" | "written";
+      if (records[event]) {
+        ambiguous = true;
+      }
+      const value = (token: string | undefined) => (token === "unavailable" ? null : token!);
+      records[event] = {
+        directory: value(match[3]),
+        home: value(match[4]),
+        bundle: value(match[5]),
+      };
+    }
+  }
+  return ambiguous
+    ? { state: "ambiguous", consumed: null, written: null }
+    : { state: records.consumed && records.written ? "complete" : "unavailable", ...records };
+}
+
 // Successful xcodebuild alone cannot certify a phase; admission belongs to the consumed app-container request.
 export async function runWatchPhase(
   phase: Phase,
   run: string,
   directory: string,
-  execute: () => Promise<void>,
+  execute: () => Promise<void | PhaseOutput>,
   input: object = {},
+  diagnostics?: {
+    home: string;
+    bundleID: string;
+    resolveContainer: () => Promise<string>;
+    report: Record<string, unknown>;
+  },
 ): Promise<PhaseResult> {
   const nonce = randomUUID();
   const request = { ...input, run, phase, nonce, expiresAt: Date.now() / 1000 + 150 };
@@ -441,10 +540,23 @@ export async function runWatchPhase(
     flag: "wx",
   });
   const failures: unknown[] = [];
+  const original = diagnostics
+    ? {
+        directory: await bridgeDirectory(nonce, "directory", directory),
+        home: await bridgeDirectory(nonce, "home", diagnostics.home),
+      }
+    : undefined;
+  let output: PhaseOutput | undefined;
+  let executionJoined = true;
   try {
-    await execute();
+    output = (await execute()) || undefined;
   } catch (error) {
     failures.push(error);
+    executionJoined = !hasUnjoinedWork(error);
+    output =
+      error instanceof Error
+        ? (error as Error & { phaseOutput?: PhaseOutput }).phaseOutput
+        : undefined;
   }
   const helperExecutionFailed = failures.length > 0;
   let result: PhaseResult | undefined;
@@ -489,6 +601,39 @@ export async function runWatchPhase(
       failures.push(error);
       admissionFailure ??= "native-not-ok";
     }
+  }
+  if (diagnostics) {
+    // Admission above uses only the original directory. This observation cannot rescue it.
+    const bridge: Record<string, unknown> = {
+      phase,
+      native: bridgeRecords(output, bridgeFingerprint(nonce, "phase", [run.toLowerCase(), phase])),
+      original: { ...original, ...(await bridgePresence(directory)) },
+      bundle: bridgeFingerprint(nonce, "bundle", [diagnostics.bundleID]),
+      query: executionJoined ? "failed" : "not-joined",
+      current: null,
+    };
+    if (executionJoined) {
+      try {
+        const home = await diagnostics.resolveContainer();
+        if (!path.isAbsolute(home) || !(await fsStat(home, { bigint: true })).isDirectory()) {
+          bridge.query = "invalid-container";
+        } else {
+          const current = path.join(home, "Library", "Caches", "OpenClawQualification");
+          bridge.current = {
+            directory: await bridgeDirectory(nonce, "directory", current),
+            home: await bridgeDirectory(nonce, "home", home),
+            ...(await bridgePresence(current)),
+          };
+          bridge.query = "ok";
+        }
+      } catch (error) {
+        // A joined query failure is diagnostic only; an unjoined new child still owns resources.
+        if (hasUnjoinedWork(error)) {
+          failures.push(error);
+        }
+      }
+    }
+    diagnostics.report.phaseBridge = bridge;
   }
   if (failures.length) {
     // Only current, bounded results may contribute native codes to the public receipt.
@@ -1023,8 +1168,30 @@ async function main(): Promise<void> {
           async () => {
             const commandResult = await helper(value);
             assert.equal(commandResult.code, 0);
+            return commandResult;
           },
           input,
+          {
+            home: container,
+            bundleID: build.bundleID,
+            report,
+            resolveContainer: async () => {
+              // Same owned device and verified bundle, once, after the original admission.
+              const observed = await runWatchQualificationCommand(
+                "watch-container-post",
+                "xcrun",
+                ["simctl", "get_app_container", simulator!, build.bundleID, "data"],
+                {
+                  environment: nativeEnvironment,
+                  signal: cancelled.signal,
+                  report: {},
+                  save: async () => {},
+                  diagnostic: true,
+                },
+              );
+              return observed.stdout.trim();
+            },
+          },
         );
       } catch (error) {
         failures.push(error);

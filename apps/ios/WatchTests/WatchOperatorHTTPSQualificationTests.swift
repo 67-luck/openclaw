@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import OpenClawProtocol
 import Testing
@@ -71,6 +72,7 @@ struct WatchOperatorHTTPSQualificationTests {
         else { throw QualificationError.input }
         // Consume before any side effect. A stale test invocation cannot replay a phase.
         try FileManager.default.removeItem(at: file)
+        Self.diagnostic("consumed", input: input)
         let state = Self.directory.appendingPathComponent(input.run, isDirectory: true)
         try FileManager.default.createDirectory(
             at: state,
@@ -85,13 +87,46 @@ struct WatchOperatorHTTPSQualificationTests {
             result["ok"] = true
             result["ownersJoined"] = true
             try Self.writeResult(result)
+            Self.diagnostic("written", input: input)
         } catch {
             // Never emit descriptions, userInfo, paths, credentials, or raw request/response bodies.
             result["errors"] = Self.failures(error)
             result["ownersJoined"] = true
             try Self.writeResult(result)
+            Self.diagnostic("written", input: input)
             throw QualificationError.result
         }
+    }
+
+    private static func diagnostic(_ event: String, input: QualificationInput) {
+        /// Shared with Node: UTF-8 NUL-terminated fields; NSNumber decimal strings retain all inode bits.
+        func fingerprint(_ domain: String, _ values: [String]) -> String {
+            let fields = ["openclaw.watch.bridge.v1", input.nonce.lowercased(), domain] + values
+            let bytes = Data((fields.joined(separator: "\0") + "\0").utf8)
+            return SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        }
+        func directory(_ url: URL, domain: String) -> String {
+            guard let attributes = try? FileManager.default.attributesOfItem(
+                atPath: url.resolvingSymlinksInPath().path),
+                attributes[.type] as? FileAttributeType == .typeDirectory,
+                let device = attributes[.systemNumber] as? NSNumber,
+                let inode = attributes[.systemFileNumber] as? NSNumber,
+                let deviceValue = UInt64(device.stringValue), let inodeValue = UInt64(inode.stringValue),
+                String(deviceValue) == device.stringValue, String(inodeValue) == inode.stringValue
+            else { return "unavailable" }
+            return fingerprint(domain, [device.stringValue, inode.stringValue])
+        }
+        let fields = [
+            "OPENCLAW_WATCH_BRIDGE", "1", event,
+            fingerprint("phase", [input.run.lowercased(), input.phase]),
+            directory(Self.directory, domain: "directory"),
+            directory(FileManager.default.homeDirectoryForCurrentUser, domain: "home"),
+            Bundle.main.bundleIdentifier.map { fingerprint("bundle", [$0]) } ?? "unavailable",
+        ]
+        let bytes = Data((fields.joined(separator: "\t") + "\n").utf8)
+        guard bytes.count <= 1024 else { return }
+        // At most consumed + written. Missing forwarding is unavailable, never owner acknowledgement.
+        try? FileHandle.standardOutput.write(contentsOf: bytes)
     }
 
     private static func execute(_ input: QualificationInput) async throws -> [String: Any] {

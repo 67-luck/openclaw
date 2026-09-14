@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
   chmodSync,
@@ -12,6 +12,8 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { request as httpsRequest } from "node:https";
@@ -1864,6 +1866,263 @@ child.once("message", () => {
 });
 
 describe("Watch qualification phase admission", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    "same",
+    "alias",
+    "moved",
+    "missing-after-write",
+    "stale",
+    "duplicate",
+    "truncated",
+    "malformed",
+    "oversized",
+    "unforwarded",
+    "post-query-failure",
+    "post-query-late-result",
+    "unjoined",
+    "unterminated",
+    "attributes-unavailable",
+    "split-streams",
+    "overflow",
+    "run-mismatch",
+    "phase-mismatch",
+    "nonce-mismatch",
+    "owner-acknowledgement",
+    "input-consumption",
+    "native-not-ok",
+    "post-query-success",
+    "query-unjoined",
+  ])("keeps the diagnostic bridge separate from admission: %s", async (mode) => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const root = tempDirs.make("watch-bridge-");
+    const original = path.join(root, "original");
+    const current = path.join(root, "current");
+    const suffix = path.join("Library", "Caches", "OpenClawQualification");
+    const directory = path.join(original, suffix);
+    mkdirSync(directory, { recursive: true });
+    if (mode === "alias") {
+      symlinkSync(original, current, "dir");
+    } else if (mode === "moved") {
+      mkdirSync(path.join(current, suffix), { recursive: true });
+    }
+    const bundleID = "private.fixture.bundle";
+    const report: Record<string, unknown> = {};
+    let input!: { run: string; phase: string; nonce: string };
+    const fingerprint = (domain: string, values: string[], nonce = input.nonce) =>
+      createHash("sha256")
+        .update(
+          ["openclaw.watch.bridge.v1", nonce.toLowerCase(), domain, ...values].join("\0") + "\0",
+        )
+        .digest("hex");
+    const identity = (target: string, domain: string) => {
+      const info = statSync(target, { bigint: true });
+      return fingerprint(domain, [info.dev.toString(), info.ino.toString()]);
+    };
+    const record = (event: string, target: string) =>
+      [
+        "OPENCLAW_WATCH_BRIDGE",
+        "1",
+        event,
+        fingerprint(
+          "phase",
+          [input.run.toLowerCase(), input.phase],
+          mode === "stale" ? randomUUID() : input.nonce,
+        ),
+        mode === "attributes-unavailable"
+          ? "unavailable"
+          : identity(path.join(target, suffix), "directory"),
+        mode === "attributes-unavailable" ? "unavailable" : identity(target, "home"),
+        mode === "attributes-unavailable" ? "unavailable" : fingerprint("bundle", [bundleID]),
+      ].join("\t") + "\n";
+    const resolveContainer = vi.fn(async () => {
+      if (["post-query-failure", "post-query-success"].includes(mode)) {
+        throw new Error("/Users/private-person private-query-description");
+      }
+      if (mode === "query-unjoined") {
+        throw Object.assign(new Error("private-query-child"), {
+          processTreeState: "indeterminate",
+        });
+      }
+      if (mode === "post-query-late-result") {
+        // A diagnostic query must not run early enough to rescue the original admission.
+        writeFileSync(
+          path.join(directory, "result.json"),
+          JSON.stringify({
+            ...input,
+            ok: true,
+            ownersJoined: true,
+          }),
+          { mode: 0o600 },
+        );
+      }
+      return ["alias", "moved"].includes(mode) ? current : original;
+    });
+    const outcome = await runWatchPhase(
+      "identity",
+      randomUUID(),
+      directory,
+      async () => {
+        input = JSON.parse(readFileSync(path.join(directory, "input.json"), "utf8"));
+        if (mode !== "input-consumption") {
+          rmSync(path.join(directory, "input.json"));
+        }
+        const target = mode === "moved" ? current : original;
+        const resultFile = path.join(target, suffix, "result.json");
+        const result = {
+          ...input,
+          ok: mode !== "native-not-ok",
+          ownersJoined: mode !== "owner-acknowledgement",
+        };
+        if (mode === "run-mismatch") {
+          result.run = randomUUID();
+        }
+        if (mode === "phase-mismatch") {
+          result.phase = "negative";
+        }
+        if (mode === "nonce-mismatch") {
+          result.nonce = randomUUID();
+        }
+        writeFileSync(resultFile, JSON.stringify(result), { mode: 0o600 });
+        if (
+          ![
+            "same",
+            "alias",
+            "moved",
+            "run-mismatch",
+            "phase-mismatch",
+            "nonce-mismatch",
+            "owner-acknowledgement",
+            "input-consumption",
+            "native-not-ok",
+            "post-query-success",
+            "query-unjoined",
+          ].includes(mode)
+        ) {
+          rmSync(resultFile);
+        }
+        if (mode === "unjoined") {
+          throw Object.assign(new Error("private-child"), { processTreeState: "indeterminate" });
+        }
+        let stdout = record("consumed", target) + record("written", target);
+        if (mode === "duplicate") {
+          stdout += record("written", target);
+        } else if (mode === "malformed") {
+          stdout += "OPENCLAW_WATCH_BRIDGE\tprivate-token /Users/private-person\n";
+        } else if (mode === "oversized") {
+          stdout += "OPENCLAW_WATCH_BRIDGE\t" + "private-token".repeat(100) + "\n";
+        } else if (mode === "unforwarded") {
+          stdout = "native output unavailable\n";
+        } else if (mode === "unterminated") {
+          stdout = stdout.trimEnd();
+        }
+        if (["split-streams", "overflow"].includes(mode)) {
+          return watchProof.runWatchQualificationCommand(
+            "watch-identity",
+            process.execPath,
+            [
+              "-e",
+              `
+          (async () => {
+            const output = Buffer.from(${JSON.stringify(record("consumed", target))});
+            for (let offset = 0; offset < output.length; offset += 2) {
+              await new Promise(resolve => process.stdout.write(output.subarray(offset, offset + 2), resolve));
+            }
+            process.stderr.write(${JSON.stringify(record("written", target))});
+            process.stderr.write(${mode === "overflow" ? "Buffer.alloc(4 * 1024 * 1024 + 1, 120)" : JSON.stringify("\u001b[32mprivate-\u00e9-input\u001b[0m\n")});
+          })();
+        `,
+            ],
+            { environment: process.env, report: {}, save: async () => {}, timeout: 2000 },
+          );
+        }
+        return {
+          stdout,
+          stderr: "private-person@example.invalid\n",
+          truncated: mode === "truncated",
+        };
+      },
+      {},
+      { home: original, bundleID, resolveContainer, report },
+    ).catch((error: unknown) => error);
+    const good = ["same", "alias", "post-query-success"].includes(mode);
+    if (good) {
+      expect(outcome).toMatchObject({ ok: true, ownersJoined: true });
+    } else {
+      expect(outcome).toBeInstanceOf(AggregateError);
+      const admissionFailure = [
+        "run-mismatch",
+        "phase-mismatch",
+        "nonce-mismatch",
+        "owner-acknowledgement",
+        "input-consumption",
+        "native-not-ok",
+      ].includes(mode)
+        ? mode
+        : mode === "query-unjoined"
+          ? null
+          : "result-missing";
+      expect(outcome).toMatchObject({
+        phaseFailure: {
+          admissionFailure,
+          ownersJoined: ["native-not-ok", "query-unjoined"].includes(mode),
+        },
+      });
+      expect(hasUnjoinedWork(outcome)).toBe(mode !== "native-not-ok");
+    }
+    expect(resolveContainer).toHaveBeenCalledTimes(mode === "unjoined" ? 0 : 1);
+    const ambiguous = [
+      "stale",
+      "duplicate",
+      "truncated",
+      "malformed",
+      "oversized",
+      "unterminated",
+      "overflow",
+    ].includes(mode);
+    expect(report.phaseBridge).toMatchObject({
+      phase: "identity",
+      native: {
+        state: ambiguous
+          ? "ambiguous"
+          : ["unforwarded", "unjoined"].includes(mode)
+            ? "unavailable"
+            : "complete",
+      },
+      query:
+        mode === "unjoined"
+          ? "not-joined"
+          : ["post-query-failure", "post-query-success", "query-unjoined"].includes(mode)
+            ? "failed"
+            : "ok",
+    });
+    if (["same", "alias", "moved", "missing-after-write"].includes(mode)) {
+      const bridge = report.phaseBridge as {
+        original: { directory: string };
+        current: { directory: string; result: string };
+        native: { consumed: { directory: string }; written: { directory: string } };
+      };
+      expect(bridge.current.directory === bridge.original.directory).toBe(mode !== "moved");
+      expect(bridge.native.consumed.directory).toBe(bridge.current.directory);
+      expect(bridge.native.written.directory).toBe(bridge.current.directory);
+      expect(bridge.current.result).toBe(mode === "missing-after-write" ? "absent" : "present");
+    }
+    if (mode === "attributes-unavailable") {
+      expect(report.phaseBridge).toMatchObject({
+        native: {
+          consumed: { directory: null, home: null, bundle: null },
+          written: { directory: null, home: null, bundle: null },
+        },
+      });
+    }
+    expect(JSON.stringify([report, consoleLog.mock.calls])).not.toMatch(
+      /private-|Users|watch-bridge-|fixture\.bundle/,
+    );
+    expect(JSON.stringify(report)).not.toContain(input!.nonce);
+    expect(JSON.stringify(report)).not.toContain(input!.run);
+  });
+
   it.each(["helper", "native", "unjoined", "malformed", "stale", "missing"])(
     "preserves only bounded public diagnostics for %s failure",
     async (mode) => {
