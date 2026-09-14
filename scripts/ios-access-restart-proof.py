@@ -3,13 +3,13 @@
 
 import copy
 import hashlib
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import plistlib
 import subprocess
 import sys
-import time
 import uuid
 
 
@@ -76,33 +76,76 @@ def selected_run(products):
     return selected
 
 
-def verify_result(result, suite, method):
+def verify_result(result, simulator):
     prefix = ["xcrun", "xcresulttool", "get", "test-results"]
     summary = json.loads(run(prefix + ["summary", "--path", str(result)], capture=True))
     require(
-        summary.get("result") == "Passed" and summary.get("totalTestCount") == 1
-        and summary.get("passedTests") == 1 and summary.get("failedTests") == 0
-        and summary.get("skippedTests") == 0 and summary.get("expectedFailures") == 0
-        and summary.get("testFailures") == [],
-        "Restart phase must execute exactly one passing test with no skips",
+        summary.get("result") == "Passed" and summary.get("totalTestCount", 0) > 0
+        and summary.get("passedTests") == summary.get("totalTestCount")
+        and summary.get("failedTests") == 0 and summary.get("skippedTests") == 0
+        and summary.get("expectedFailures") == 0 and summary.get("testFailures") == [],
+        "Restart repetitions must pass with no failures or skips",
     )
     tree = json.loads(run(prefix + ["tests", "--path", str(result)], capture=True))
-    cases = []
 
-    def visit(node):
-        if isinstance(node, dict):
-            if node.get("nodeType") == "Test Case":
-                cases.append(node)
-            for value in node.values():
-                visit(value)
-        elif isinstance(node, list):
-            for value in node:
-                visit(value)
+    def nodes(value):
+        if isinstance(value, dict):
+            yield value
+            for child in value.get("children", []):
+                yield from nodes(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from nodes(child)
 
-    visit(tree)
+    cases = [node for node in nodes(tree.get("testNodes", [])) if node.get("nodeType") == "Test Case"]
     require(len(cases) == 1, "Missing or duplicate restart test case")
-    identifier = cases[0].get("nodeIdentifier", "")
-    require(suite in identifier and method in identifier and cases[0].get("result") == "Passed", "Wrong restart test executed")
+    identifier = "GatewayAccessRestartTests/acknowledgedSignOutSurvivesProcessRestart()"
+    require(cases[0].get("nodeIdentifier") == identifier and cases[0].get("result") == "Passed",
+            "Wrong restart test executed")
+    details = json.loads(run(prefix + ["test-details", "--path", str(result), "--test-id", identifier], capture=True))
+    require(details.get("testIdentifier") == identifier and details.get("testResult") == "Passed"
+            and not details.get("arguments"), "Wrong restart test details")
+    devices, configurations = details.get("devices", []), details.get("testPlanConfigurations", [])
+    require(len(devices) == 1 and devices[0].get("deviceId") == simulator,
+            "Restart repetitions used an unexpected device")
+    require(len(configurations) == 1 and configurations[0].get("configurationId"),
+            "Restart repetitions used multiple or missing configurations")
+    runs = details.get("testRuns", [])
+    require(len(runs) == 1 and runs[0].get("nodeType") == "Device"
+            and runs[0].get("nodeIdentifier") == simulator, "Restart execution device mismatch")
+    configuration_runs = runs[0].get("children", [])
+    require(len(configuration_runs) == 1 and configuration_runs[0].get("nodeType") == "Test Plan Configuration"
+            and configuration_runs[0].get("nodeIdentifier") == configurations[0]["configurationId"],
+            "Restart execution configuration mismatch")
+    repetitions = configuration_runs[0].get("children", [])
+    # Aggregate counts can count the case, not executions. Only this device/configuration owns its repetitions.
+    require(len(repetitions) == 2 and all(node.get("nodeType") == "Repetition"
+            and node.get("result") == "Passed" and node.get("name") for node in repetitions)
+            and len({node["name"] for node in repetitions}) == 2,
+            "Expected two distinct passing restart repetitions; unsupported or incomplete result shape")
+    for repetition in repetitions:
+        executions = repetition.get("children", [])
+        require(len(executions) <= 1 and all(node.get("nodeType") == "Test Case Run"
+                and node.get("result") == "Passed" and not node.get("children") for node in executions),
+                "Extra, failing, or unsupported restart execution")
+
+
+def file_identity(path):
+    path = path.resolve(strict=True)
+    metadata = path.stat()
+    return {"path": str(path), "device": metadata.st_dev, "inode": metadata.st_ino}
+
+
+def installation_identity(app, tests, data):
+    app_id, app_digest = bundle_identity(app)
+    test_id, test_digest = bundle_identity(tests)
+    return {
+        "bundleID": app_id, "testBundleID": test_id,
+        "app": file_identity(app), "testBundle": file_identity(tests),
+        "executable": file_identity(app / read_plist(app / "Info.plist")["CFBundleExecutable"]),
+        "testExecutable": file_identity(tests / read_plist(tests / "Info.plist")["CFBundleExecutable"]),
+        "container": file_identity(data), "executableSHA256": app_digest, "testExecutableSHA256": test_digest,
+    }
 
 
 def process_exists(pid):
@@ -133,61 +176,48 @@ def main(simulator):
     results = Path("apps/ios/build/LifecycleTestResults")
     results.mkdir(parents=True, exist_ok=True)
 
-    def phase(name, suite, method, configuration):
-        # Keep __TESTROOT__ unchanged when copying the generated run configuration.
-        run_file = products / f"OpenClawAccessRestart{name.title()}.xctestrun"
-        with run_file.open("wb") as handle:
-            plistlib.dump(configuration, handle)
-        result = results / f"AccessRestart{name.title()}.xcresult"
-        environment = dict(os.environ)
-        for key, value in {"NONCE": nonce, "SOURCE": source, "PHASE": name}.items():
-            environment[f"TEST_RUNNER_OPENCLAW_ACCESS_RESTART_{key}"] = value
-        run(["xcodebuild", "-xctestrun", str(run_file), "-destination", destination,
-             "-parallel-testing-enabled", "NO", f"-only-testing:OpenClawTests/{suite}",
-             "-resultBundlePath", str(result), "test-without-building"], env=environment)
-        verify_result(result, suite, method)
-        # Xcode may shut down this destination after testing; container inspection needs it booted.
-        run(["xcrun", "simctl", "bootstatus", simulator, "-b"], timeout=120)
-
-    phase("seed", "GatewayAccessRestartSeedTests", "seed acknowledged sign out", document)
+    # Keep __TESTROOT__ and the generated host/bundle paths unchanged. Simulator repetition
+    # relaunches the test process; the nonce receipt independently proves artifact and state continuity.
+    run_file = products / "OpenClawAccessRestart.xctestrun"
+    with run_file.open("wb") as handle:
+        plistlib.dump(document, handle)
+    result = results / "AccessRestart.xcresult"
+    environment = dict(os.environ)
+    for key, value in {"NONCE": nonce, "SOURCE": source, "DEVICE": simulator}.items():
+        environment[f"TEST_RUNNER_OPENCLAW_ACCESS_RESTART_{key}"] = value
+    run(["xcodebuild", "-xctestrun", str(run_file), "-destination", destination,
+         "-parallel-testing-enabled", "NO", "-test-iterations", "2", "-test-repetition-relaunch-enabled", "YES",
+         "-only-testing:OpenClawTests/GatewayAccessRestartTests", "-resultBundlePath", str(result),
+         "test-without-building"], env=environment)
+    verify_result(result, simulator)
+    # Xcode may shut down this destination after testing; container inspection needs it booted.
+    run(["xcrun", "simctl", "bootstatus", simulator, "-b"], timeout=120)
 
     def container(kind):
         return Path(run(["xcrun", "simctl", "get_app_container", simulator, bundle_id, kind], capture=True).strip()).resolve(strict=True)
 
     app, data = container("app"), container("data")
-    require(bundle_identity(app) == (bundle_id, built_digest), "Installed app differs from the seed build")
+    require(bundle_identity(app) == (bundle_id, built_digest), "Installed app differs from the build")
     test_bundles = list((app / "PlugIns").glob("OpenClawTests.xctest"))
     require(len(test_bundles) == 1, "Expected one installed hosted test bundle")
-    test_bundle = test_bundles[0]
-    test_identity = bundle_identity(test_bundle)
-    receipt = read_plist(data / "Library/Application Support" / f"access-restart-{nonce}.plist")
-    require(receipt["nonce"] == nonce and receipt["source"] == source and receipt["bundleID"] == bundle_id,
-            "Seed handoff identity mismatch")
-    require(Path(receipt["container"]).resolve() == data and receipt["executableSHA256"] == built_digest,
-            "Seed handoff storage or binary mismatch")
-    pid = receipt["processID"]
-    require(type(pid) is int and pid > 1, "Missing seed process identity")
-    if process_exists(pid):
-        # Only the exact app on this simulator may be terminated, never a host PID.
-        run(["xcrun", "simctl", "terminate", simulator, bundle_id])
-    deadline = time.monotonic() + 5
-    while process_exists(pid) and time.monotonic() < deadline:
-        time.sleep(0.1)
-    require(not process_exists(pid), "Seed app process did not exit")
-
-    installed_run = copy.deepcopy(document)
-    target = selected_target(installed_run)
-    target["UseDestinationArtifacts"] = True
-    target["TestHostBundleIdentifier"] = bundle_id
-    target["TestBundleDestinationRelativePath"] = "__TESTHOST__/" + test_bundle.relative_to(app).as_posix()
-    for key in ["TestHostPath", "TestBundlePath", "UITargetAppPath"]:
-        target.pop(key, None)
-    # Xcode's destination-artifact mode forbids reinstalling between the two processes.
-    phase("verify", "GatewayAccessRestartVerifyTests", "verify acknowledged sign out", installed_run)
-    require(container("app") == app and container("data") == data, "App or data container changed across restart")
-    require(bundle_identity(app) == (bundle_id, built_digest) and bundle_identity(test_bundle) == test_identity,
-            "Installed app or test executable changed across restart")
-    print(f"ACCESS_RESTART passed source={source} seed_pid={pid} app_sha256={built_digest} test_sha256={test_identity[1]}")
+    receipt_file = data / "Library/Application Support" / f"access-restart-{nonce}.plist"
+    receipt = read_plist(receipt_file)
+    require(receipt["phase"] == "verified" and receipt["seedProcessExited"] is True,
+            "Missing completed restart handoff")
+    require(receipt["nonce"] == nonce and receipt["source"] == source and receipt["simulator"] == simulator,
+            "Restart handoff identity mismatch")
+    require(receipt["installation"] == installation_identity(app, test_bundles[0], data),
+            "Installed artifacts or storage changed across restart")
+    seed_pid, verify_pid = receipt["seedPID"], receipt["verifyPID"]
+    require(type(seed_pid) is int and type(verify_pid) is int and min(seed_pid, verify_pid) > 1
+            and seed_pid != verify_pid, "Missing distinct restart process identities")
+    require(not process_exists(seed_pid), "Seed app process did not exit")
+    require(isinstance(receipt["expiresAt"], datetime)
+            and receipt["expiresAt"] > datetime.now(timezone.utc).replace(tzinfo=None),
+            "Retained control session expired")
+    receipt_file.unlink()
+    print(f"ACCESS_RESTART passed source={source} seed_pid={seed_pid} verify_pid={verify_pid} "
+          f"app_sha256={built_digest} test_sha256={receipt['installation']['testExecutableSHA256']}")
 
 
 if __name__ == "__main__":

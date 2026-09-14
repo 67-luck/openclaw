@@ -1,18 +1,63 @@
 import CryptoKit
+import Darwin
 import Foundation
 import OpenClawKit
 import Testing
 @testable import OpenClaw
 
+private final class AccessRestartBundleMarker: NSObject {}
+
 @MainActor
 private enum AccessRestartProof {
+    struct FileIdentity: Codable, Equatable {
+        let path: String
+        let device: UInt64
+        let inode: UInt64
+
+        init(_ url: URL) throws {
+            self.path = url.resolvingSymlinksInPath().path
+            let attributes = try FileManager.default.attributesOfItem(atPath: self.path)
+            self.device = try #require(attributes[.systemNumber] as? NSNumber).uint64Value
+            self.inode = try #require(attributes[.systemFileNumber] as? NSNumber).uint64Value
+        }
+    }
+
+    struct Installation: Codable, Equatable {
+        let bundleID: String
+        let testBundleID: String
+        let app: FileIdentity
+        let testBundle: FileIdentity
+        let executable: FileIdentity
+        let testExecutable: FileIdentity
+        let container: FileIdentity
+        let executableSHA256: String
+        let testExecutableSHA256: String
+
+        init() throws {
+            let tests = Bundle(for: AccessRestartBundleMarker.self)
+            let executable = try #require(Bundle.main.executableURL)
+            let testExecutable = try #require(tests.executableURL)
+            self.bundleID = try #require(Bundle.main.bundleIdentifier)
+            self.testBundleID = try #require(tests.bundleIdentifier)
+            self.app = try FileIdentity(Bundle.main.bundleURL)
+            self.testBundle = try FileIdentity(tests.bundleURL)
+            self.executable = try FileIdentity(executable)
+            self.testExecutable = try FileIdentity(testExecutable)
+            self.container = try FileIdentity(URL(fileURLWithPath: NSHomeDirectory()))
+            self.executableSHA256 = try AccessRestartProof.digest(executable)
+            self.testExecutableSHA256 = try AccessRestartProof.digest(testExecutable)
+        }
+    }
+
     struct Receipt: Codable {
+        var phase: String
         let nonce: String
         let source: String
-        let processID: Int32
-        let bundleID: String
-        let container: String
-        let executableSHA256: String
+        let simulator: String
+        let seedPID: Int32
+        var verifyPID: Int32?
+        var seedProcessExited: Bool
+        let installation: Installation
         let expiresAt: Date
     }
 
@@ -41,9 +86,17 @@ private enum AccessRestartProof {
         return try directory.appendingPathComponent("access-restart-\(self.nonce()).plist")
     }
 
-    static func executableDigest() throws -> String {
-        let executable = try #require(Bundle.main.executableURL)
-        return try SHA256.hash(data: Data(contentsOf: executable)).map { String(format: "%02x", $0) }.joined()
+    nonisolated static func digest(_ executable: URL) throws -> String {
+        try SHA256.hash(data: Data(contentsOf: executable)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func seedProcessExists(_ pid: Int32) throws -> Bool {
+        if Darwin.kill(pid, 0) == 0 {
+            return true
+        }
+        let error = errno
+        try #require(error == ESRCH, "Could not determine whether the seed process exited")
+        return false
     }
 
     static func session(control: Bool, expires: Date) throws -> CloudflareAccessSession {
@@ -63,33 +116,44 @@ private enum AccessRestartProof {
     static func checkPairingAndProfile() throws {
         let id = try self.stableID()
         let entry = try #require(GatewaySettingsStore.loadGatewayRegistry().entries.first { $0.stableID == id })
-        #expect(try entry.accessOrigin == (self.origin()))
-        #expect(entry.useTLS && entry.port == 443 && entry.name == "Access restart fixture")
-        #expect(entry.lastConnectedAtMs == 1_700_000_000_123)
+        try #require(try entry.accessOrigin == (self.origin()))
+        try #require(entry.useTLS && entry.port == 443 && entry.name == "Access restart fixture")
+        try #require(entry.lastConnectedAtMs == 1_700_000_000_123)
         let credentials = try GatewaySettingsStore.loadGatewayCredentials(instanceId: self.nonce(), gatewayStableID: id)
-        #expect(credentials.token == "restart-pairing-token")
-        #expect(credentials.password == "restart-pairing-password")
-        #expect(credentials.bootstrapToken == nil && credentials.suppressStoredDeviceAuth)
-        #expect(GatewaySettingsStore
+        try #require(credentials.token == "restart-pairing-token")
+        try #require(credentials.password == "restart-pairing-password")
+        try #require(credentials.bootstrapToken == nil && credentials.suppressStoredDeviceAuth)
+        try #require(GatewaySettingsStore
             .loadGatewayCustomHeaders(gatewayStableID: id) == ["X-Existing-Ingress": "preserved"])
     }
 
     static func cleanup() throws {
         let persistence = CloudflareAccessSessionStore.Persistence.keychain
-        #expect(try persistence.delete(self.origin()))
-        #expect(try persistence.delete(self.origin(control: true)))
+        try #require(try persistence.delete(self.origin()))
+        try #require(try persistence.delete(self.origin(control: true)))
         let id = try self.stableID()
         _ = GatewaySettingsStore.saveGatewayCustomHeaders([:], gatewayStableID: id)
         try GatewaySettingsStore.deleteGatewayCredentials(instanceId: self.nonce(), stableID: id)
         _ = GatewaySettingsStore.removeGatewayRegistryEntry(stableID: id)
-        try FileManager.default.removeItem(at: self.receiptURL())
     }
 }
 
 @Suite(.serialized)
-struct GatewayAccessRestartSeedTests {
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["OPENCLAW_ACCESS_RESTART_PHASE"] == "seed"))
-    @MainActor func `seed acknowledged sign out`() async throws {
+struct GatewayAccessRestartTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["OPENCLAW_ACCESS_RESTART_NONCE"] != nil))
+    @MainActor func acknowledgedSignOutSurvivesProcessRestart() async throws {
+        let simulator = try #require(ProcessInfo.processInfo.environment["SIMULATOR_UDID"])
+        try #require(simulator == AccessRestartProof.environment("DEVICE"))
+        let url = try AccessRestartProof.receiptURL()
+        // Fixed repetitions relaunch the host. A final receipt is terminal, never another seed.
+        if FileManager.default.fileExists(atPath: url.path) {
+            try await self.verify(url: url, simulator: simulator)
+        } else {
+            try await self.seed(url: url, simulator: simulator)
+        }
+    }
+
+    @MainActor private func seed(url: URL, simulator: String) async throws {
         let nonce = try AccessRestartProof.nonce()
         let origin = try AccessRestartProof.origin()
         let control = try AccessRestartProof.origin(control: true)
@@ -137,50 +201,53 @@ struct GatewayAccessRestartSeedTests {
         try #require(persistence.load(control) != nil)
         try AccessRestartProof.checkPairingAndProfile()
         let receipt = try AccessRestartProof.Receipt(
+            phase: "seeded",
             nonce: nonce,
             source: AccessRestartProof.environment("SOURCE"),
-            processID: ProcessInfo.processInfo.processIdentifier,
-            bundleID: #require(Bundle.main.bundleIdentifier),
-            container: NSHomeDirectory(),
-            executableSHA256: AccessRestartProof.executableDigest(),
+            simulator: simulator,
+            seedPID: ProcessInfo.processInfo.processIdentifier,
+            verifyPID: nil,
+            seedProcessExited: false,
+            installation: AccessRestartProof.Installation(),
             expiresAt: expires)
-        let url = try AccessRestartProof.receiptURL()
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try PropertyListEncoder().encode(receipt).write(to: url, options: .atomic)
         // Deliberately retain only this nonce's fixture until the separate process verifies it.
         // No state override or cleanup may turn process restart into object reconstruction.
         print(
-            "ACCESS_RESTART seed pid=\(receipt.processID) source=\(receipt.source) sha256=\(receipt.executableSHA256)")
+            "ACCESS_RESTART seed pid=\(receipt.seedPID) source=\(receipt.source) " +
+                "sha256=\(receipt.installation.executableSHA256)")
     }
-}
 
-@Suite(.serialized)
-struct GatewayAccessRestartVerifyTests {
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["OPENCLAW_ACCESS_RESTART_PHASE"] == "verify"))
-    @MainActor func `verify acknowledged sign out`() throws {
-        let receipt = try PropertyListDecoder().decode(
-            AccessRestartProof.Receipt.self, from: Data(contentsOf: AccessRestartProof.receiptURL()))
-        defer {
-            do { try AccessRestartProof.cleanup() } catch { Issue.record(error) }
+    @MainActor private func verify(url: URL, simulator: String) async throws {
+        // Read before any fixture writes: reseeding or cleanup must not manufacture persistence proof.
+        var receipt = try PropertyListDecoder().decode(AccessRestartProof.Receipt.self, from: Data(contentsOf: url))
+        try #require(receipt.phase == "seeded" && receipt.verifyPID == nil && !receipt.seedProcessExited)
+        try #require(receipt.nonce == AccessRestartProof.nonce())
+        try #require(receipt.source == AccessRestartProof.environment("SOURCE") && receipt.simulator == simulator)
+        let pid = ProcessInfo.processInfo.processIdentifier
+        try #require(receipt.seedPID > 1 && receipt.seedPID != pid)
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while try AccessRestartProof.seedProcessExists(receipt.seedPID), clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(100))
         }
-        let nonce = try AccessRestartProof.nonce()
-        let source = try AccessRestartProof.environment("SOURCE")
-        let executableDigest = try AccessRestartProof.executableDigest()
-        try #require(receipt.nonce == nonce)
-        try #require(receipt.source == source)
-        try #require(receipt.processID != ProcessInfo.processInfo.processIdentifier)
-        try #require(receipt.bundleID == Bundle.main.bundleIdentifier && receipt.container == NSHomeDirectory())
-        try #require(receipt.executableSHA256 == executableDigest)
+        try #require(!AccessRestartProof.seedProcessExists(receipt.seedPID))
+        try #require(receipt.installation == AccessRestartProof.Installation())
         let persistence = CloudflareAccessSessionStore.Persistence.keychain
         let origin = try AccessRestartProof.origin()
         try #require(persistence.load(origin) == nil)
         let store = CloudflareAccessSessionStore(retireTransports: { _ in })
-        #expect(store.snapshot(for: origin) == nil)
+        try #require(store.snapshot(for: origin) == nil)
         let control = try #require(store.snapshot(for: AccessRestartProof.origin(control: true)))
-        #expect(control.session.subject == "untouched-control" && control.session.expiresAt == receipt.expiresAt)
+        try #require(control.session.subject == "untouched-control" && control.session.expiresAt == receipt.expiresAt)
         try AccessRestartProof.checkPairingAndProfile()
-        print(
-            "ACCESS_RESTART verify pid=\(ProcessInfo.processInfo.processIdentifier) " +
-                "prior=\(receipt.processID) source=\(receipt.source)")
+        receipt.phase = "verified"
+        receipt.verifyPID = pid
+        receipt.seedProcessExited = true
+        try PropertyListEncoder().encode(receipt).write(to: url, options: .atomic)
+        try AccessRestartProof.cleanup()
+        // Keep the final receipt for host verification and reject an unexpected third repetition.
+        print("ACCESS_RESTART verify pid=\(pid) prior=\(receipt.seedPID) source=\(receipt.source)")
     }
 }
