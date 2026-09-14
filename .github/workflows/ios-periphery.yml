@@ -107,6 +107,8 @@ jobs:
           submodules: false
 
       - name: Verify Xcode
+        env:
+          WATCH_QUALIFICATION: ${{ github.event_name == 'workflow_dispatch' && inputs.watch_qualification }}
         run: |
           set -euo pipefail
           source scripts/lib/swift-toolchain.sh
@@ -304,12 +306,14 @@ jobs:
           /bin/bash scripts/ios-watch-operation-tests.sh "$output_dir/WatchOperationTests.xcresult" \
             2>&1 | tee "$output_dir/watch-tests.log"
 
-      - name: Prove Foundation operator HTTPS against a real Gateway
+      - name: Prove Watch operator HTTPS and native voice retirement
+        id: watch_https
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.watch_qualification && !cancelled() }}
+        timeout-minutes: 15
         run: node --import ./scripts/tsx.mjs scripts/ios-watch-operator-https-proof.mts
 
       - name: Capture direct Watch review surfaces
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.watch_qualification && steps.watch_tests.outcome == 'success' && !cancelled() }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.watch_qualification && steps.watch_tests.outcome == 'success' && steps.watch_https.outcome == 'success' && !cancelled() }}
         run: /bin/bash scripts/ios-watch-direct-captures.sh "$RUNNER_TEMP/watch-qualification/ui-fixtures"
 
       - name: Upload Watch qualification evidence

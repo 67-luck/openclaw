@@ -1,404 +1,449 @@
 import assert from "node:assert/strict";
-import type { ChildProcess } from "node:child_process";
-import { randomBytes, randomUUID, X509Certificate } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { channel } from "node:diagnostics_channel";
-import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createServer } from "node:net";
+import { createServer as createHTTPSServer } from "node:https";
+import { createServer, type Socket } from "node:net";
 import path from "node:path";
 import { TLSSocket } from "node:tls";
+import { pathToFileURL } from "node:url";
+import { WebSocket, WebSocketServer } from "ws";
 import { hasUnjoinedWork, runManagedCommand } from "./lib/managed-child-process.mts";
 
 const scopes = ["operator.read", "operator.talk"];
-const systemKeychain = "/Library/Keychains/System.keychain";
-const packagePath = "apps/shared/OpenClawKit";
-const proofSource = "test/fixtures/ios-watch-operator-https.swift";
+const developerDirectory = "/Applications/Xcode_26.6.app/Contents/Developer";
 const cancelled = new AbortController();
-
-type CommandResult = { code: number | null; stdout: string };
-type CommandOptions = {
-  input?: string;
-  timeout?: number;
-  cleanup?: boolean;
-  allowFailure?: boolean;
-  compilerDiagnostics?: boolean;
-  signal?: AbortSignal;
-};
-type CommandLabel =
-  | "swift-build"
-  | "swift-bin-path"
-  | "swift-link"
-  | "driver-identity"
-  | "driver-negative"
-  | "driver-positive"
-  | "certificate-ca"
-  | "certificate-request"
-  | "certificate-sign"
-  | "trust-install"
-  | "trust-remove"
-  | "trust-diagnostic"
-  | "certificate-remove";
-type TrustRemovalSample = { available: boolean; exitCode?: number | null; symbols: string[] };
-type CommandEvent = {
-  label: CommandLabel;
-  id: number;
-  event: "start" | "exit" | "close";
-  elapsedMs: number;
-  code: number | null;
-  signal: NodeJS.Signals | null;
-};
+type Phase = "identity" | "negative" | "positive" | "voice";
+type CommandOptions = { timeout?: number; cleanup?: boolean };
 type RunCommand = (
-  label: CommandLabel,
+  label: string,
   tool: string,
   args: string[],
   options?: CommandOptions,
-) => Promise<CommandResult>;
-type Stage =
-  | "initialize"
-  | "compile-production-driver"
-  | "driver-identity"
-  | "generate-localhost-certificate"
-  | "gateway-configuration"
-  | "pairing-import"
-  | "pairing-approval-import"
-  | "pairing-request"
-  | "pairing-approval"
-  | "pairing-readback"
-  | "gateway-import"
-  | "gateway-start"
-  | "gateway-startup-settled"
-  | "negative-system-trust"
-  | "install-hosted-localhost-trust"
-  | "positive-system-trust"
-  | "gateway-close"
-  | "trust-removal"
-  | "private-state-removal";
-type DriverResult = {
+) => Promise<{ code: number; stdout: string }>;
+type Delivery = { route: string; status: number; tls: string | null; connectionID?: string };
+type PhaseResult = {
+  run: string;
+  phase: Phase;
+  nonce: string;
   ok: boolean;
-  stage?: string;
+  ownersJoined: boolean;
   deviceID?: string;
   publicKey?: string;
   platform?: string;
   deviceFamily?: string;
   connectionID?: string;
-  persistedAuth?: boolean;
   tokenlessHello?: boolean;
   unchangedStoredGrant?: boolean;
+  untrustedCertificateRejected?: boolean;
   methods?: string[];
-  errors?: { domain: string; code: number }[];
+  voiceQualified?: boolean;
+  oldConnectObserved?: boolean;
+  retirementJoined?: boolean;
+  freshRetirementJoined?: boolean;
+  durableReplacement?: boolean;
+  freshAuthenticated?: boolean;
+  oldHelloOutcome?: string;
+  startupOutcome?: string;
+  errors?: unknown;
 };
-type Delivery = { route: string; status: number; tls: string | null; connectionID?: string };
-type SwiftCommand = {
-  moduleName: string;
-  objects: string[];
-  importPath: string;
-  otherArguments: string[];
+type PhaseFailure = {
+  phase: Phase;
+  ownersJoined: boolean;
+  errors: { domain: string; code: number }[];
 };
 
-async function command(
-  context: {
-    label: CommandLabel;
-    id: number;
-    observe: (event: CommandEvent) => void;
-    sample?: (result: TrustRemovalSample) => void;
-  },
-  tool: string,
-  args: string[],
-  options: CommandOptions = {},
-): Promise<CommandResult> {
-  assert(!options.compilerDiagnostics || (["swift", "swiftc"].includes(tool) && !options.input));
-  const started = performance.now();
-  const observe = (
-    event: CommandEvent["event"],
-    code: number | null = null,
-    signal: NodeJS.Signals | null = null,
-  ) =>
-    context.observe({
-      label: context.label,
-      id: context.id,
-      event,
-      elapsedMs: Math.round(performance.now() - started),
-      code,
-      signal,
-    });
-  observe("start");
-  const overflowCancellation = new AbortController();
-  let stdout = "";
-  let diagnostics = "";
-  let bytes = 0;
-  let overflow = false;
-  let removeObservers = () => {};
-  const errors: unknown[] = [];
-  let result: CommandResult | undefined;
-  const sampleCancellation = new AbortController();
-  let sampleTimer: ReturnType<typeof setTimeout> | undefined;
-  let sampling = Promise.resolve();
-  const stopSampling = () => {
-    clearTimeout(sampleTimer);
-    sampleCancellation.abort();
-  };
+async function bounded<T>(operation: Promise<T>, milliseconds = 30000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const code = await runManagedCommand({
-      bin: tool,
-      args,
-      shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
-      signal: AbortSignal.any([
-        overflowCancellation.signal,
-        ...(options.cleanup ? [] : [cancelled.signal]),
-        ...(options.signal ? [options.signal] : []),
-      ]),
-      timeoutMs: options.timeout ?? 30000,
-      requireProcessTreeExit: true,
-      timeoutForceKillOnLeaderExit: true,
-      onReady: (child) => {
-        const { stdin, stdout: output, stderr } = child;
-        assert(stdin && output && stderr, "Expected piped command streams");
-        const capture = (chunk: Buffer, isOutput: boolean) => {
-          bytes += chunk.length;
-          if (options.compilerDiagnostics && diagnostics.length < 65536) {
-            diagnostics += chunk.toString("utf8").slice(0, 65536 - diagnostics.length);
-          }
-          if (bytes > 4 * 1024 * 1024) {
-            overflow = true;
-            overflowCancellation.abort();
-          } else if (isOutput) {
-            stdout += chunk.toString("utf8");
-          }
-        };
-        const captureOutput = (chunk: Buffer) => capture(chunk, true);
-        const captureError = (chunk: Buffer) => capture(chunk, false);
-        const exited = (exitCode: number | null, signal: NodeJS.Signals | null) => {
-          stopSampling();
-          observe("exit", exitCode, signal);
-        };
-        const closed = (exitCode: number | null, signal: NodeJS.Signals | null) =>
-          observe("close", exitCode, signal);
-        output.on("data", captureOutput);
-        stderr.on("data", captureError);
-        child.once("exit", exited);
-        child.once("close", closed);
-        removeObservers = () => {
-          output.off("data", captureOutput);
-          stderr.off("data", captureError);
-          child.off("exit", exited);
-          child.off("close", closed);
-        };
-        stdin.on("error", () => {});
-        stdin.end(options.input);
-        if (context.label === "trust-remove") {
-          sampleTimer = setTimeout(() => {
-            sampling = sampleTrustRemoval(child, sampleCancellation.signal, context.sample).catch(
-              (error: unknown) => {
-                errors.push(error);
-              },
-            );
-          }, 5000);
-        }
-      },
-    });
-    assert(
-      !overflow && (options.allowFailure || code === 0),
-      `${path.basename(tool)} failed (${code})`,
-    );
-    result = { code, stdout };
-  } catch (error) {
-    if (options.compilerDiagnostics) {
-      // These commands run before identity/token/CA provisioning. Runtime stderr
-      // is never included; retain bounded source diagnostics without runner paths.
-      console.error(
-        diagnostics
-          .replaceAll(process.cwd(), "<checkout>")
-          .replace(/\/(?:Users|private|var|tmp|Volumes)\/[^\s:)"']+/g, "<path>"),
-      );
-    }
-    errors.push(error);
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              Object.assign(new Error("Owner did not join before deadline"), {
+                processTreeState: "indeterminate",
+              }),
+            ),
+          milliseconds,
+        );
+      }),
+    ]);
   } finally {
-    stopSampling();
-    removeObservers();
-    await sampling;
+    clearTimeout(timer);
   }
-  // Preserve both owners' failures so unjoined diagnostics fence certificate/private cleanup.
-  if (errors.length > 1) {
-    throw new AggregateError(errors, "Command and diagnostic cleanup failed");
+}
+
+async function readPrivateJSON(file: string): Promise<unknown> {
+  const stat = await lstat(file);
+  assert(
+    stat.isFile() && !stat.isSymbolicLink() && stat.size <= 16384 && (stat.mode & 0o777) === 0o600,
+    "Expected bounded private regular file",
+  );
+  const bytes = await readFile(file);
+  assert(bytes.length <= 16384);
+  return JSON.parse(bytes.toString("utf8"));
+}
+
+// Successful xcodebuild alone cannot certify a phase; admission belongs to the consumed app-container request.
+export async function runWatchPhase(
+  phase: Phase,
+  run: string,
+  directory: string,
+  execute: () => Promise<void>,
+  input: object = {},
+): Promise<PhaseResult> {
+  const nonce = randomUUID();
+  const request = { ...input, run, phase, nonce, expiresAt: Date.now() / 1000 + 150 };
+  assert(Buffer.byteLength(JSON.stringify(request)) <= 16384, "Phase input exceeds bound");
+  const resultFile = path.join(directory, "result.json");
+  await rm(resultFile, { force: true });
+  await writeFile(path.join(directory, "input.json"), JSON.stringify(request), {
+    mode: 0o600,
+    flag: "wx",
+  });
+  const failures: unknown[] = [];
+  try {
+    await execute();
+  } catch (error) {
+    failures.push(error);
   }
-  if (errors.length === 1) {
-    throw errors[0];
+  let result: PhaseResult | undefined;
+  let ownershipUnverified = false;
+  try {
+    const candidate = (await readPrivateJSON(resultFile)) as PhaseResult;
+    assert.equal(candidate.run, run, "Wrong qualification run");
+    assert.equal(candidate.phase, phase, "Wrong qualification phase");
+    assert.equal(candidate.nonce, nonce, "Stale qualification result");
+    result = candidate;
+    assert.equal(result.ownersJoined, true, "Watch async owners did not acknowledge cleanup");
+    await assert.rejects(
+      lstat(path.join(directory, "input.json")),
+      { code: "ENOENT" },
+      "Watch phase did not consume its input",
+    );
+  } catch (error) {
+    // xcodebuild is not the Watch app's process owner. Missing/stale acknowledgements
+    // retain the simulator/private inputs even after the managed child tree has exited.
+    failures.push(error);
+    ownershipUnverified = true;
+  }
+  if (result) {
+    try {
+      assert.equal(result.ok, true, "Watch phase failed; private result retained");
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length) {
+    // Only current, bounded results may contribute native codes to the public receipt.
+    // Raw result fields and helper descriptions remain private even when cleanup is unverified.
+    const phaseFailure: PhaseFailure = {
+      phase,
+      ownersJoined: !ownershipUnverified,
+      errors: (Array.isArray(result?.errors) ? result.errors : [])
+        .slice(0, 8)
+        .flatMap((failure: unknown) => {
+          if (typeof failure !== "object" || failure === null) {
+            return [];
+          }
+          const { domain, code } = failure as { domain?: unknown; code?: unknown };
+          return typeof domain === "string" &&
+            ["NSURLErrorDomain", "NSOSStatusErrorDomain", "other"].includes(domain) &&
+            typeof code === "number" &&
+            Number.isSafeInteger(code)
+            ? [{ domain, code }]
+            : [];
+        }),
+    };
+    throw Object.assign(new AggregateError(failures, "Watch phase failed"), {
+      phaseFailure,
+      ...(ownershipUnverified ? { processTreeState: "indeterminate" } : {}),
+    });
   }
   assert(result);
   return result;
 }
 
-async function sampleTrustRemoval(
-  owner: ChildProcess,
-  signal: AbortSignal,
-  observe?: (result: TrustRemovalSample) => void,
-): Promise<void> {
-  const result: TrustRemovalSample = { available: false, symbols: [] };
-  try {
-    const run = (tool: string, args: string[], sample = false) =>
-      command(
-        {
-          label: "trust-diagnostic",
-          id: 0,
-          observe: (event) => {
-            if (sample && event.event === "exit") {
-              result.exitCode = event.code;
-            }
-          },
+export function createVoiceFixture(options: {
+  cert: Buffer;
+  key: Buffer;
+  controlToken: string;
+  oldToken: string;
+  replacementToken: string;
+  deviceID: string;
+}) {
+  const sockets = new Set<Socket>();
+  const errors: unknown[] = [];
+  const waiting = new Set<() => void>();
+  const pending = new Set<Promise<void>>();
+  const track = (operation: Promise<void>) => {
+    const joined = operation.catch((error: unknown) => {
+      errors.push(error);
+    });
+    pending.add(joined);
+    void joined.then(() => {
+      pending.delete(joined);
+    });
+  };
+  const send = (socket: WebSocket, payload: string) => {
+    track(
+      new Promise<void>((resolve, reject) => {
+        socket.send(payload, (error) => (error ? reject(error) : resolve()));
+      }),
+    );
+  };
+  let old: { socket: WebSocket; id: string } | undefined;
+  let oldConnectObserved = false;
+  let released = false;
+  let freshAuthenticated = false;
+  let freshSocket: WebSocket | undefined;
+  let oldHelloOutcome: "held" | "sent" | "closed" = "held";
+  let closing = false;
+  const hello = (id: string, token?: string) =>
+    JSON.stringify({
+      type: "res",
+      id,
+      ok: true,
+      payload: {
+        type: "hello-ok",
+        protocol: 4,
+        server: { version: "qualification", connId: randomUUID() },
+        features: { methods: ["agents.list"], events: [] },
+        snapshot: {
+          presence: [],
+          health: {},
+          stateVersion: { presence: 0, health: 0 },
+          uptimeMs: 0,
         },
-        tool,
-        args,
-        { cleanup: true, allowFailure: true, signal, timeout: 5000 },
-      );
-    const requireLiveOwner = () => {
-      signal.throwIfAborted();
-      assert(owner.pid && owner.exitCode === null && owner.signalCode === null, "Owner exited");
-    };
-    const ancestry = async () => {
-      requireLiveOwner();
-      const { code, stdout } = await run("/bin/ps", ["-ww", "-axo", "pid=,ppid=,lstart=,comm="]);
-      requireLiveOwner();
-      assert.equal(code, 0);
-      const rows = stdout.split(/\r?\n/u).flatMap((line) => {
-        const match =
-          /^\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+?)\s*$/u.exec(
-            line,
-          );
-        return match
-          ? [{ pid: Number(match[1]), ppid: Number(match[2]), start: match[3], comm: match[4] }]
-          : [];
-      });
-      const byPID = new Map(rows.map((row) => [row.pid, row]));
-      const root = byPID.get(owner.pid!);
-      assert(root?.ppid === process.pid, "Owner ancestry unavailable");
-      const matches = rows
-        .filter((row) => row.comm === "/usr/bin/security")
-        .flatMap((row) => {
-          const chain: typeof rows = [];
-          let current: (typeof rows)[number] | undefined = row;
-          while (current && !chain.includes(current)) {
-            chain.push(current);
-            if (current === root) {
-              return [chain];
-            }
-            current = byPID.get(current.ppid);
-            if (current?.comm !== "/usr/bin/sudo") {
-              break;
-            }
+        policy: { maxPayload: 65536, maxBufferedBytes: 65536, tickIntervalMs: 30000 },
+        auth: { role: "operator", scopes, ...(token ? { deviceToken: token } : {}) },
+      },
+    });
+  const server = createHTTPSServer(
+    { cert: options.cert, key: options.key, minVersion: "TLSv1.3" },
+    (request, response) => {
+      if (
+        closing ||
+        request.method !== "GET" ||
+        request.headers.authorization !== `Bearer ${options.controlToken}`
+      ) {
+        response.writeHead(403).end();
+        return;
+      }
+      const reply = (value: object) =>
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(value));
+      if (request.url === "/connected" || request.url === "/fresh") {
+        const isFresh = request.url === "/fresh";
+        const complete = () => {
+          if (!closing && !(isFresh ? freshAuthenticated : oldConnectObserved) && !expired) {
+            return;
           }
-          return [];
+          clearTimeout(timer);
+          waiting.delete(complete);
+          if (!response.destroyed) {
+            reply(isFresh ? { freshAuthenticated } : { oldConnectObserved });
+          }
+        };
+        let expired = false;
+        const timer = setTimeout(() => {
+          expired = true;
+          complete();
+        }, 20000);
+        waiting.add(complete);
+        response.once("close", () => {
+          clearTimeout(timer);
+          waiting.delete(complete);
         });
-      assert.equal(matches.length, 1, "Security ancestry is missing or ambiguous");
-      return matches[0]!;
-    };
-    const before = await ancestry();
-    requireLiveOwner();
-    // Sampling briefly suspends the target; symbols locate a stage, not proof of a prompt.
-    const sampled = await run(
-      "/usr/bin/sudo",
-      ["-n", "/usr/bin/sample", String(before[0]!.pid), "1", "1", "-file", "/dev/stdout"],
-      true,
-    );
-    const after = await ancestry();
-    requireLiveOwner();
-    assert(JSON.stringify(before) === JSON.stringify(after), "Security owner changed");
-    assert(
-      sampled.code === 0 && result.exitCode === 0 && /^Call graph:\s*$/mu.test(sampled.stdout),
-    );
-    result.symbols = [
-      "AuthorizationCopyRights",
-      "SecTrustSettingsXPCWrite",
-      "SecTrustStoreSetTrustSettings",
-    ].filter((symbol) => new RegExp(`\\b${symbol}\\b`, "u").test(sampled.stdout));
-    result.available = true;
-  } catch (error) {
-    if (hasUnjoinedWork(error)) {
-      throw error;
-    }
-  } finally {
-    observe?.(result);
-  }
-}
-
-async function compileDriver(
-  scratch: string,
-  executable: string,
-  runCommand: RunCommand,
-): Promise<void> {
-  await runCommand(
-    "swift-build",
-    "swift",
-    [
-      "build",
-      "--package-path",
-      packagePath,
-      "--scratch-path",
-      scratch,
-      "--target",
-      "OpenClawKit",
-      "--jobs",
-      "4",
-    ],
-    { timeout: 300000, compilerDiagnostics: true },
-  );
-  const { stdout } = await runCommand("swift-bin-path", "swift", [
-    "build",
-    "--package-path",
-    packagePath,
-    "--scratch-path",
-    scratch,
-    "--show-bin-path",
-  ]);
-  const bin = await realpath(stdout.trim());
-  const description: {
-    swiftCommands: Record<string, SwiftCommand>;
-    targetDependencyMap: Record<string, string[]>;
-  } = JSON.parse(await readFile(path.join(bin, "description.json"), "utf8"));
-  // Use SwiftPM's actual production dependency closure, never test objects or a filesystem glob.
-  const modules = new Set(["OpenClawKit"]);
-  for (const name of modules) {
-    assert(!name.includes("Test"), "Test target in production link closure");
-    for (const dependency of description.targetDependencyMap[name] ?? []) {
-      modules.add(dependency);
-    }
-  }
-  const objects: string[] = [];
-  let root: SwiftCommand | undefined;
-  for (const name of modules) {
-    const matches = Object.values(description.swiftCommands).filter(
-      (entry) => entry.moduleName === name,
-    );
-    assert.equal(matches.length, 1, `Missing or ambiguous production module: ${name}`);
-    const entry = matches[0];
-    assert(entry && entry.objects.length > 0);
-    if (name === "OpenClawKit") {
-      root = entry;
-    }
-    for (const object of entry.objects) {
-      assert(
-        object.startsWith(`${bin}${path.sep}`) && object.endsWith(".o"),
-        "Object outside build manifest",
-      );
-      objects.push(object);
-    }
-  }
-  assert(root);
-  const compilerArgs = ["-swift-version", "6", "-parse-as-library", "-I", root.importPath];
-  for (const flag of ["-target", "-sdk"]) {
-    const value: string | undefined = root.otherArguments[root.otherArguments.indexOf(flag) + 1];
-    assert(value && root.otherArguments.includes(flag), `Missing SwiftPM ${flag}`);
-    compilerArgs.push(flag, value);
-  }
-  await runCommand(
-    "swift-link",
-    "swiftc",
-    [...compilerArgs, proofSource, ...objects, "-lsqlite3", "-o", executable],
-    {
-      timeout: 120000,
-      compilerDiagnostics: true,
+        complete();
+      } else if (request.url === "/release" && old && !released) {
+        released = true;
+        if (old.socket.readyState === WebSocket.OPEN) {
+          track(
+            new Promise<void>((resolve) => {
+              old!.socket.send(hello(old!.id, options.oldToken), (error) => {
+                if (error) {
+                  errors.push(error);
+                  response.writeHead(500).end();
+                } else {
+                  oldHelloOutcome = "sent";
+                  reply({ oldHelloOutcome });
+                }
+                resolve();
+              });
+            }),
+          );
+        } else {
+          const closed =
+            old.socket.readyState === WebSocket.CLOSED
+              ? Promise.resolve()
+              : new Promise<void>((resolve) => {
+                  old!.socket.once("close", resolve);
+                });
+          track(
+            bounded(closed)
+              .then(() => {
+                oldHelloOutcome = "closed";
+                reply({ oldHelloOutcome });
+              })
+              .catch((error: unknown) => {
+                errors.push(error);
+                response.writeHead(500).end();
+              }),
+          );
+        }
+      } else if (request.url === "/status") {
+        reply({ freshAuthenticated, oldHelloOutcome });
+      } else {
+        response.writeHead(409).end();
+      }
     },
   );
+  server.requestTimeout = 25000;
+  server.headersTimeout = 10000;
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+    socket.on("error", () => {});
+  });
+  server.on("error", (error) => errors.push(error));
+  const wss = new WebSocketServer({ server, maxPayload: 16384, perMessageDeflate: false });
+  wss.on("error", (error) => errors.push(error));
+  wss.on("connection", (socket, request) => {
+    if (closing || request.url !== "/" || wss.clients.size > 2) {
+      socket.terminate();
+      return;
+    }
+    socket.on("error", (error) => errors.push(error));
+    send(
+      socket,
+      JSON.stringify({
+        type: "event",
+        event: "connect.challenge",
+        payload: { nonce: randomUUID(), ts: Date.now() },
+      }),
+    );
+    socket.on("message", (bytes, binary) => {
+      if (closing) {
+        socket.terminate();
+        return;
+      }
+      try {
+        assert(!binary);
+        const data = Buffer.isBuffer(bytes)
+          ? bytes
+          : Array.isArray(bytes)
+            ? Buffer.concat(bytes)
+            : Buffer.from(bytes);
+        const frame = JSON.parse(data.toString("utf8"));
+        assert.equal(frame.type, "req");
+        if (socket === freshSocket) {
+          assert.equal(frame.method, "agents.list");
+          assert(!freshAuthenticated);
+          freshAuthenticated = true;
+          for (const complete of waiting) {
+            complete();
+          }
+          return;
+        }
+        assert.equal(frame.method, "connect");
+        assert.equal(typeof frame.id, "string");
+        assert.equal(frame.params.device.id, options.deviceID);
+        assert.equal(frame.params.role, "operator");
+        assert(frame.params.minProtocol <= 4 && frame.params.maxProtocol >= 4);
+        assert.deepEqual(frame.params.scopes, scopes);
+        const token = frame.params.auth?.deviceToken ?? frame.params.auth?.token;
+        if (!old) {
+          assert.equal(token, options.oldToken);
+          old = { socket, id: frame.id };
+          oldConnectObserved = true;
+          for (const complete of waiting) {
+            complete();
+          }
+        } else {
+          assert(released && socket !== old.socket && !freshSocket);
+          assert.equal(token, options.replacementToken);
+          freshSocket = socket;
+          // Tokenless fresh hello must not rewrite the replacement grant.
+          send(socket, hello(frame.id));
+        }
+      } catch {
+        errors.push(new Error("Unexpected voice fixture frame"));
+        socket.terminate();
+      }
+    });
+  });
+  return {
+    async listen() {
+      await bounded(
+        new Promise<void>((resolve, reject) => {
+          server.once("error", reject);
+          server.listen(0, "127.0.0.1", () => {
+            server.off("error", reject);
+            resolve();
+          });
+        }),
+      );
+      const address = server.address();
+      assert(address && typeof address !== "string");
+      return `https://localhost:${address.port}`;
+    },
+    snapshot() {
+      return { oldConnectObserved, oldHelloOutcome, freshAuthenticated };
+    },
+    async close() {
+      closing = true;
+      for (const complete of waiting) {
+        complete();
+      }
+      const failures: unknown[] = [];
+      // ws does not close an externally supplied HTTPS server. Join both owners,
+      // including accepted non-WebSocket sockets, before releasing private inputs.
+      try {
+        const joined = new Promise<void>((resolve, reject) => {
+          wss.close((error) => (error ? reject(error) : resolve()));
+        });
+        for (const client of wss.clients) {
+          client.terminate();
+        }
+        await bounded(joined);
+        assert.equal(wss.clients.size, 0);
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        const joined = new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
+        const closed = [...sockets].map(
+          (socket) =>
+            new Promise<void>((resolve) => {
+              socket.once("close", resolve);
+            }),
+        );
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        await bounded(Promise.all([joined, ...closed]));
+        assert.equal(sockets.size, 0);
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await bounded(Promise.all(pending));
+        assert.equal(pending.size, 0);
+        assert.equal(waiting.size, 0);
+      } catch (error) {
+        failures.push(error);
+      }
+      failures.push(...errors);
+      if (failures.length) {
+        throw new AggregateError(failures, "Voice fixture cleanup failed");
+      }
+    },
+  };
 }
 
 async function reservePort(): Promise<number> {
@@ -421,98 +466,118 @@ async function main(): Promise<void> {
       process.env.GITHUB_ACTIONS === "true" &&
       process.env.RUNNER_ENVIRONMENT === "github-hosted" &&
       process.env.GITHUB_EVENT_NAME === "workflow_dispatch",
-    "This proof changes certificate trust only on a disposable GitHub-hosted macOS runner",
+    "Watch qualification requires a disposable GitHub-hosted macOS workflow_dispatch runner",
   );
-  const started = performance.now();
-  console.log(JSON.stringify({ stage: "initialize", phase: "before", elapsedMs: 0 }));
-  const runnerTemp = await realpath(process.env.RUNNER_TEMP ?? "");
+  assert((await lstat(developerDirectory)).isDirectory(), "Approved Xcode is absent");
+  process.umask(0o077);
+  const run = randomUUID();
+  const runnerTemp = await realpath(process.env.RUNNER_TEMP!);
   const output = path.join(runnerTemp, "watch-qualification");
-  const privateRoot = path.join(runnerTemp, `watch-https-private-${randomUUID()}`);
-  const scratch = path.join(runnerTemp, "watch-qualification-swift");
+  const privateRoot = path.join(runnerTemp, `watch-https-private-${run}`);
+  const buildState = path.join(privateRoot, "build");
+  const gatewayState = path.join(privateRoot, "gateway");
+  const home = path.join(privateRoot, "home");
   await mkdir(output, { recursive: true });
   await mkdir(privateRoot, { mode: 0o700 });
-  process.umask(0o077);
-  const gatewayState = path.join(privateRoot, "gateway");
-  const swiftState = path.join(privateRoot, "swift");
-  const home = path.join(privateRoot, "home");
-  await Promise.all([gatewayState, swiftState, home].map((dir) => mkdir(dir, { mode: 0o700 })));
-
-  // Select isolation before importing any runtime module that can capture a state/config root.
-  const inherited = new Set(["PATH", "TMPDIR", "DEVELOPER_DIR", "SDKROOT", "LANG", "LC_ALL"]);
+  await Promise.all([buildState, gatewayState, home].map((dir) => mkdir(dir, { mode: 0o700 })));
+  const nativeEnvironment = Object.fromEntries(
+    ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"].flatMap((key) =>
+      process.env[key] ? [[key, process.env[key]]] : [],
+    ),
+  );
+  nativeEnvironment.DEVELOPER_DIR = developerDirectory;
+  // Gateway state is isolated before runtime imports. Native tools keep their actual
+  // simulator-service HOME; neither environment inherits credentials or proxy settings.
   for (const key of Object.keys(process.env)) {
-    if (!inherited.has(key)) {
-      delete process.env[key];
-    }
+    delete process.env[key];
   }
   Object.assign(process.env, {
+    PATH: nativeEnvironment.PATH,
+    TMPDIR: nativeEnvironment.TMPDIR,
     HOME: home,
     XDG_CONFIG_HOME: path.join(home, "config"),
     XDG_CACHE_HOME: path.join(home, "cache"),
     OPENCLAW_STATE_DIR: gatewayState,
     OPENCLAW_CONFIG_PATH: path.join(gatewayState, "openclaw.json"),
   });
-  const report: Record<string, unknown> = { ok: false, node: process.version, stages: [] };
-  const stages: Stage[] = ["initialize"];
-  report.stages = stages;
-  const receiptPath = path.join(output, "operator-https.json");
-  const receiptTemporaryPath = path.join(output, ".operator-https.json.tmp");
-  let receiptWrites: Promise<void> = Promise.resolve();
-  let receiptWriteFailed = false;
-  const writeReceipt = (): Promise<void> => {
-    // Snapshot on admission; queued writes must not observe later stage mutations.
-    const snapshot = `${JSON.stringify(report, null, 2)}\n`;
-    const write = receiptWrites.then(async () => {
-      await writeFile(receiptTemporaryPath, snapshot, { mode: 0o600 });
-      await rename(receiptTemporaryPath, receiptPath);
+  const started = performance.now();
+  const report: Record<string, unknown> = { ok: false, https: { ok: false }, voice: { ok: false } };
+  const receipt = path.join(output, "operator-https.json");
+  let writes = Promise.resolve();
+  let receiptFailed = false;
+  const save = () => {
+    const snapshot = JSON.stringify(report, null, 2) + "\n";
+    const pending = writes.then(async () => {
+      await writeFile(`${receipt}.tmp`, snapshot, { mode: 0o600 });
+      await rename(`${receipt}.tmp`, receipt);
     });
-    receiptWrites = write.catch(() => {
-      if (!receiptWriteFailed) {
-        console.error("Operator HTTPS receipt write failed");
-      }
-      receiptWriteFailed = true;
+    writes = pending.catch(() => {
+      receiptFailed = true;
     });
-    return write;
+    return pending;
   };
-  const checkpoint = async (stage: Stage, phase: "before" | "after"): Promise<void> => {
-    if (phase === "before") {
-      stages.push(stage);
+  let stage = "initialize";
+  const checkpoint = async (next: string) => {
+    stage = next;
+    report.progress = { stage, elapsedMs: Math.round(performance.now() - started) };
+    console.log(JSON.stringify(report.progress));
+    await save();
+  };
+  const errors: unknown[] = [];
+  const runCommand: RunCommand = async (label, bin, args, options = {}) => {
+    if (options.cleanup) {
+      await checkpoint(label).catch(() => {});
+    } else {
+      await checkpoint(label);
     }
-    const event = { stage, phase, elapsedMs: Math.round(performance.now() - started) };
-    report.progress = event;
-    console.log(JSON.stringify(event));
-    await writeReceipt();
-  };
-  let commandID = 0;
-  const runCommand: RunCommand = (label, tool, args, options) =>
-    command(
-      {
-        label,
-        id: ++commandID,
-        observe: (event) => {
-          report.child = event;
-          console.log(JSON.stringify(event));
-          void writeReceipt().catch(() => {});
-        },
-        sample: (result) => {
-          report.trustRemovalSample = result;
-          console.log(JSON.stringify({ trustRemovalSample: result }));
-          void writeReceipt().catch(() => {});
-        },
-      },
-      tool,
+    let stdout = "";
+    let bytes = 0;
+    const overflow = new AbortController();
+    const code = await runManagedCommand({
+      bin,
       args,
-      options,
-    );
-  const deliveries: Delivery[] = [];
-  let overflow = false;
+      env: nativeEnvironment,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeoutMs: options.timeout ?? 30000,
+      timeoutForceKillOnLeaderExit: true,
+      requireProcessTreeExit: true,
+      signal: options.cleanup
+        ? overflow.signal
+        : AbortSignal.any([cancelled.signal, overflow.signal]),
+      onReady(child) {
+        for (const [stream, capture] of [
+          [child.stdout, true],
+          [child.stderr, false],
+        ] as const) {
+          assert(stream);
+          stream.on("data", (chunk: Buffer) => {
+            bytes += chunk.length;
+            if (bytes > 4 * 1024 * 1024) {
+              overflow.abort();
+            } else if (capture) {
+              stdout += chunk.toString("utf8");
+            }
+          });
+        }
+        child.once("close", (exit, signal) => {
+          report.child = { label, code: exit, signal, outputBytes: bytes };
+          console.log(JSON.stringify(report.child));
+          void save().catch(() => {});
+        });
+      },
+    });
+    assert(!overflow.signal.aborted && code === 0, `Command failed: ${label}`);
+    return { code, stdout };
+  };
+  let simulator: string | undefined;
   let gateway:
     | Awaited<ReturnType<typeof import("../src/gateway/server.js").startGatewayServer>>
     | undefined;
-  let trustAttempted = false;
-  let fingerprint = "";
-  let subscribed = false;
+  let voice: ReturnType<typeof createVoiceFixture> | undefined;
   let port = 0;
-  const ca = path.join(privateRoot, "ca.pem");
+  const deliveries: Delivery[] = [];
+  let deliveryOverflow = false;
   const responseFinish = channel("http.server.response.finish");
   const observe = (message: unknown) => {
     const { request, response, socket } = message as {
@@ -530,7 +595,7 @@ async function main(): Promise<void> {
       return;
     }
     if (deliveries.length >= 128) {
-      overflow = true;
+      deliveryOverflow = true;
       return;
     }
     deliveries.push({
@@ -543,37 +608,130 @@ async function main(): Promise<void> {
   const interrupt = () => cancelled.abort();
   process.once("SIGINT", interrupt);
   process.once("SIGTERM", interrupt);
-  let failure = false;
-  let failureStage: Stage | undefined;
-  const errors: unknown[] = [];
+  let httpsPassed = false;
+  let voicePassed = false;
   try {
-    await checkpoint("initialize", "after");
-    await checkpoint("compile-production-driver", "before");
-    const executable = path.join(privateRoot, "operator-https");
-    await compileDriver(scratch, executable, runCommand);
-    await checkpoint("compile-production-driver", "after");
-    const driver = async (mode: "identity" | "negative" | "positive", input?: object) => {
-      const result = await runCommand(`driver-${mode}`, executable, [mode, swiftState], {
-        input: input ? JSON.stringify(input) : undefined,
-        timeout: 90000,
-        allowFailure: true,
-      });
-      assert(Buffer.byteLength(result.stdout) <= 16384, "Driver output exceeds bound");
-      const value: DriverResult = JSON.parse(result.stdout);
-      if (result.code !== 0 || !value.ok) {
-        // The driver emits only allowlisted stages and numeric error metadata.
-        report.driverFailure = { stage: value.stage, errors: value.errors };
-        throw new Error("Foundation driver failed");
-      }
-      return value;
+    const runtimes = JSON.parse(
+      (await runCommand("watch-runtimes", "xcrun", ["simctl", "list", "runtimes", "--json"]))
+        .stdout,
+    ).runtimes as { identifier: string; isAvailable: boolean; version: string }[];
+    const runtime = runtimes.find(
+      (value) =>
+        value.isAvailable &&
+        value.version === "26.5" &&
+        value.identifier.startsWith("com.apple.CoreSimulator.SimRuntime.watchOS-"),
+    );
+    assert(runtime, "Approved available watchOS 26.5 runtime is absent");
+    const types = JSON.parse(
+      (await runCommand("watch-device-types", "xcrun", ["simctl", "list", "devicetypes", "--json"]))
+        .stdout,
+    ).devicetypes as {
+      identifier: string;
+      productFamily: string;
+      minRuntimeVersion: number;
+      maxRuntimeVersion: number;
+    }[];
+    const version = 26 * 65536 + 5 * 256;
+    const device = types.find(
+      (value) =>
+        value.productFamily === "Apple Watch" &&
+        value.minRuntimeVersion <= version &&
+        value.maxRuntimeVersion >= version,
+    );
+    assert(device, "No compatible Watch device type");
+    const created = await runCommand("watch-create", "xcrun", [
+      "simctl",
+      "create",
+      `OpenClaw qualification ${run}`,
+      device.identifier,
+      runtime.identifier,
+    ]);
+    simulator = created.stdout.trim();
+    assert(/^[0-9a-f-]{36}$/i.test(simulator), "Missing owned simulator identity");
+    await runCommand("watch-boot", "xcrun", ["simctl", "boot", simulator]);
+    await runCommand("watch-ready", "xcrun", ["simctl", "bootstatus", simulator, "-b"], {
+      timeout: 120000,
+    });
+    const helper = (phase: string) =>
+      runCommand(
+        `watch-${phase}`,
+        "/bin/bash",
+        [
+          "scripts/ios-watch-operation-tests.sh",
+          path.join(privateRoot, `${phase}.xcresult`),
+          simulator!,
+          phase,
+          buildState,
+        ],
+        { timeout: phase === "build" ? 300000 : 90000 },
+      );
+    await helper("build");
+    const build = (await readPrivateJSON(path.join(buildState, "build.json"))) as {
+      simulator: string;
+      bundleID: string;
     };
-    await checkpoint("driver-identity", "before");
-    const identity = await driver("identity");
+    assert.equal(build.simulator, simulator);
+    assert(typeof build.bundleID === "string" && /^[A-Za-z0-9.-]+$/.test(build.bundleID));
+    const container = (
+      await runCommand("watch-container", "xcrun", [
+        "simctl",
+        "get_app_container",
+        simulator,
+        build.bundleID,
+        "data",
+      ])
+    ).stdout.trim();
+    assert(path.isAbsolute(container) && (await lstat(container)).isDirectory());
+    const directory = path.join(
+      await realpath(container),
+      "Library",
+      "Caches",
+      "OpenClawQualification",
+    );
+    await mkdir(directory, { mode: 0o700 });
+    const phase = async (value: Phase, input?: object) => {
+      let result: PhaseResult | undefined;
+      const failures: unknown[] = [];
+      try {
+        result = await runWatchPhase(
+          value,
+          run,
+          directory,
+          async () => {
+            const commandResult = await helper(value);
+            assert.equal(commandResult.code, 0);
+          },
+          input,
+        );
+      } catch (error) {
+        failures.push(error);
+        const diagnostic = (error as { phaseFailure?: PhaseFailure }).phaseFailure;
+        if (diagnostic) {
+          report.phaseFailure = diagnostic;
+        }
+      }
+      // Preserve both the original failure and receipt failure, never overwrite either in finally.
+      try {
+        const evidence = await readPrivateJSON(path.join(directory, "result.json"));
+        await writeFile(path.join(privateRoot, `${value}-result.json`), JSON.stringify(evidence), {
+          mode: 0o600,
+        });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          failures.push(error);
+        }
+      }
+      if (failures.length) {
+        throw new AggregateError(failures, "Watch phase failed");
+      }
+      assert(result);
+      return result;
+    };
+    const identity = await phase("identity");
     assert(identity.deviceID && identity.publicKey && identity.platform && identity.deviceFamily);
-    await checkpoint("driver-identity", "after");
-    await checkpoint("generate-localhost-certificate", "before");
+    const ca = path.join(privateRoot, "ca.pem");
     const caKey = path.join(privateRoot, "ca.key");
-    const leafKey = path.join(privateRoot, "leaf.key");
+    const key = path.join(privateRoot, "leaf.key");
     const csr = path.join(privateRoot, "leaf.csr");
     const cert = path.join(privateRoot, "leaf.pem");
     const ext = path.join(privateRoot, "leaf.ext");
@@ -587,7 +745,7 @@ async function main(): Promise<void> {
       "-days",
       "1",
       "-subj",
-      `/CN=OpenClaw HTTPS proof ${randomUUID()}`,
+      "/CN=OpenClaw Watch qualification",
       "-addext",
       "basicConstraints=critical,CA:TRUE",
       "-addext",
@@ -597,7 +755,6 @@ async function main(): Promise<void> {
       "-out",
       ca,
     ]);
-    fingerprint = new X509Certificate(await readFile(ca)).fingerprint256.replaceAll(":", "");
     await runCommand("certificate-request", "openssl", [
       "req",
       "-newkey",
@@ -607,19 +764,14 @@ async function main(): Promise<void> {
       "-subj",
       "/CN=localhost",
       "-keyout",
-      leafKey,
+      key,
       "-out",
       csr,
     ]);
     await writeFile(
       ext,
-      [
-        "basicConstraints=critical,CA:FALSE",
-        "subjectAltName=DNS:localhost,IP:127.0.0.1",
-        "keyUsage=critical,digitalSignature,keyEncipherment",
-        "extendedKeyUsage=serverAuth",
-        "",
-      ].join("\n"),
+      "basicConstraints=critical,CA:FALSE\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n" +
+        "keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n",
     );
     await runCommand("certificate-sign", "openssl", [
       "x509",
@@ -639,8 +791,6 @@ async function main(): Promise<void> {
       "-out",
       cert,
     ]);
-    await checkpoint("generate-localhost-certificate", "after");
-    await checkpoint("gateway-configuration", "before");
     port = await reservePort();
     await writeFile(
       process.env.OPENCLAW_CONFIG_PATH!,
@@ -652,7 +802,7 @@ async function main(): Promise<void> {
           auth: { mode: "token", token: randomBytes(32).toString("base64url") },
           tailscale: { mode: "off" },
           controlUi: { enabled: false },
-          tls: { enabled: true, autoGenerate: false, certPath: cert, keyPath: leafKey, caPath: ca },
+          tls: { enabled: true, autoGenerate: false, certPath: cert, keyPath: key, caPath: ca },
         },
         agents: { list: [{ id: "proof", workspace: path.join(privateRoot, "workspace") }] },
         logging: {
@@ -662,15 +812,10 @@ async function main(): Promise<void> {
         },
       }),
     );
-    await checkpoint("gateway-configuration", "after");
-    await checkpoint("pairing-import", "before");
+    await checkpoint("gateway-pairing");
     const { requestDevicePairing, getPairedDevice } =
       await import("../src/infra/device-pairing.js");
-    await checkpoint("pairing-import", "after");
-    await checkpoint("pairing-approval-import", "before");
     const { approveDevicePairing } = await import("../src/infra/device-pairing-approval.js");
-    await checkpoint("pairing-approval-import", "after");
-    await checkpoint("pairing-request", "before");
     const request = await requestDevicePairing(
       {
         deviceId: identity.deviceID,
@@ -684,74 +829,51 @@ async function main(): Promise<void> {
       },
       gatewayState,
     );
-    await checkpoint("pairing-request", "after");
-    await checkpoint("pairing-approval", "before");
     const approved = await approveDevicePairing(
       request.request.requestId,
-      {
-        callerScopes: scopes,
-        approvedVia: "owner",
-      },
+      { callerScopes: scopes, approvedVia: "owner" },
       gatewayState,
     );
     assert(approved?.status === "approved");
     const grant = approved.device.tokens?.operator;
-    assert(grant && grant.token && grant.role === "operator");
+    assert(grant?.token && grant.role === "operator");
     assert.deepEqual(grant.scopes, scopes);
-    await checkpoint("pairing-approval", "after");
-    await checkpoint("pairing-readback", "before");
     const paired = await getPairedDevice(identity.deviceID, gatewayState);
     assert.equal(paired?.approvedVia, "owner");
     assert.equal(paired?.tokens?.operator?.token, grant.token);
-    await checkpoint("pairing-readback", "after");
+    await checkpoint("gateway-start");
+    const { startGatewayServer } = await import("../src/gateway/server.js");
+    gateway = await bounded(startGatewayServer(port, { host: "127.0.0.1", updateCanary: true }));
+    await bounded(gateway.startupSettled);
+    responseFinish.subscribe(observe);
     const input = {
       endpoint: `https://localhost:${port}`,
       gatewayID: `watch-direct:https://localhost:${port}`,
       deviceID: identity.deviceID,
       token: grant.token,
     };
-    await checkpoint("gateway-import", "before");
-    const { startGatewayServer } = await import("../src/gateway/server.js");
-    await checkpoint("gateway-import", "after");
-    await checkpoint("gateway-start", "before");
-    gateway = await startGatewayServer(port, { host: "127.0.0.1", updateCanary: true });
-    await checkpoint("gateway-start", "after");
-    await checkpoint("gateway-startup-settled", "before");
-    await gateway.startupSettled;
-    await checkpoint("gateway-startup-settled", "after");
-    responseFinish.subscribe(observe);
-    subscribed = true;
-    await checkpoint("negative-system-trust", "before");
-    const negative = await driver("negative", input);
-    assert.equal(negative.stage, "untrusted-certificate-rejected");
-    assert.equal(negative.persistedAuth, true);
-    assert.equal(deliveries.length, 0, "Operator HTTP reached Gateway before CA trust");
-    report.negative = { persistedAuth: true, errors: negative.errors, operatorResponses: 0 };
-    await checkpoint("negative-system-trust", "after");
-
-    await checkpoint("install-hosted-localhost-trust", "before");
-    trustAttempted = true;
-    await runCommand("trust-install", "/usr/bin/sudo", [
-      "/usr/bin/security",
-      "add-trusted-cert",
-      "-d",
-      "-r",
-      "trustRoot",
-      "-p",
-      "ssl",
-      "-s",
-      "localhost",
-      "-k",
-      systemKeychain,
+    const negative = await phase("negative", input);
+    assert.equal(negative.untrustedCertificateRejected, true);
+    assert.equal(negative.unchangedStoredGrant, true);
+    assert.equal(deliveries.length, 0, "Operator HTTP reached Gateway before simulator trust");
+    report.negative = {
+      untrustedCertificateRejected: true,
+      unchangedStoredGrant: true,
+      operatorResponses: 0,
+    };
+    await save();
+    await runCommand("watch-trust-install", "xcrun", [
+      "simctl",
+      "keychain",
+      simulator,
+      "add-root-cert",
       ca,
     ]);
-    await checkpoint("install-hosted-localhost-trust", "after");
-    await checkpoint("positive-system-trust", "before");
-    const positive = await driver("positive", input);
+    const positive = await phase("positive", input);
     assert.equal(positive.tokenlessHello, true);
     assert.equal(positive.unchangedStoredGrant, true);
     assert.deepEqual(positive.methods, ["agents.list", "sessions.list"]);
-    assert(positive.connectionID && !overflow);
+    assert(positive.connectionID && !deliveryOverflow);
     assert.equal(
       deliveries.filter((event) => event.route === "begin" && event.status === 201).length,
       1,
@@ -766,103 +888,156 @@ async function main(): Promise<void> {
           event.status === 204 &&
           event.connectionID === positive.connectionID,
       ),
-      "No completed DELETE 204 for the actor connection",
+      "No completed DELETE for the Watch actor connection",
     );
-    report.positive = {
+    httpsPassed = true;
+    report.https = {
+      ok: true,
       tokenlessHello: true,
       unchangedStoredGrant: true,
       methods: positive.methods,
       responses: deliveries.map(({ route, status, tls }) => ({ route, status, tls })),
     };
-    await checkpoint("positive-system-trust", "after");
+    await save();
+    const voiceInput = {
+      controlToken: randomBytes(32).toString("base64url"),
+      oldToken: randomBytes(32).toString("base64url"),
+      replacementToken: randomBytes(32).toString("base64url"),
+      deviceID: identity.deviceID,
+    };
+    voice = createVoiceFixture({
+      ...voiceInput,
+      cert: await readFile(cert),
+      key: await readFile(key),
+    });
+    const endpoint = await voice.listen();
+    // Permission provisioning is not proof of successful audio activation.
+    await runCommand("watch-microphone-permission", "xcrun", [
+      "simctl",
+      "privacy",
+      simulator,
+      "grant",
+      "microphone",
+      build.bundleID,
+    ]);
+    const result = await phase("voice", {
+      ...voiceInput,
+      endpoint,
+      gatewayID: `watch-direct:${endpoint}`,
+      token: voiceInput.oldToken,
+    });
+    const observedVoice = voice.snapshot();
+    if (result.voiceQualified) {
+      assert.equal(result.oldHelloOutcome, observedVoice.oldHelloOutcome);
+      assert(["sent", "closed"].includes(observedVoice.oldHelloOutcome));
+    }
+    voicePassed =
+      result.voiceQualified === true &&
+      result.retirementJoined === true &&
+      result.freshRetirementJoined === true &&
+      result.durableReplacement === true &&
+      result.freshAuthenticated === true &&
+      observedVoice.freshAuthenticated;
+    report.voice = {
+      ok: voicePassed,
+      ...observedVoice,
+      retirementJoined: result.retirementJoined === true,
+      freshRetirementJoined: result.freshRetirementJoined === true,
+      durableReplacement: result.durableReplacement === true,
+      startupOutcome: result.startupOutcome ?? null,
+    };
+    await save();
   } catch (error) {
     errors.push(error);
-    failure = true;
-    failureStage = stages.at(-1);
-    report.failureStage = failureStage;
+    report.failureStage = stage;
   } finally {
     const cleanupFailures: string[] = [];
-    report.cleanupFailures = cleanupFailures;
-    if (subscribed) {
-      responseFinish.unsubscribe(observe);
-    }
-    const cleanup = async (stage: Stage, operation: () => Promise<unknown>): Promise<void> => {
-      // Evidence failure must not stop either resource owner from beginning cleanup.
-      const before = checkpoint(stage, "before").catch(() => {});
+    const cleanup = async (name: string, operation: () => Promise<unknown>) => {
+      await checkpoint(name).catch(() => {});
       try {
         await operation();
       } catch (error) {
         errors.push(error);
-        cleanupFailures.push(stage);
+        cleanupFailures.push(name);
       }
-      await before;
-      await checkpoint(stage, "after").catch(() => {});
     };
-    const closingGateway = gateway;
-    const gatewayClose = closingGateway
-      ? cleanup("gateway-close", () =>
-          closingGateway.close({ reason: "qualification complete", drainTimeoutMs: 1000 }),
-        )
-      : Promise.resolve();
-    const trustRemoval = trustAttempted
-      ? cleanup("trust-removal", async () => {
-          const commands: [CommandLabel, string[]][] = [
-            ["trust-remove", ["/usr/bin/security", "remove-trusted-cert", "-d", ca]],
-            [
-              "certificate-remove",
-              ["/usr/bin/security", "delete-certificate", "-Z", fingerprint, systemKeychain],
-            ],
-          ];
-          for (const [label, args] of commands) {
-            // A still-running privileged command owns these certificate inputs.
-            // Do not race it with another trust mutation, including after timeout.
-            if (errors.some(hasUnjoinedWork)) {
-              break;
-            }
-            try {
-              await runCommand(label, "/usr/bin/sudo", args, { cleanup: true });
-            } catch (error) {
-              errors.push(error);
-              cleanupFailures.push(label);
-            }
-          }
-        })
-      : Promise.resolve();
-    const settled = await Promise.allSettled([gatewayClose, trustRemoval]);
-    for (const result of settled) {
-      if (result.status === "rejected") {
-        errors.push(result.reason);
-        cleanupFailures.push("cleanup-join");
+    if (voice) {
+      await cleanup("voice-fixture-close", () => voice!.close());
+    }
+    if (gateway) {
+      await cleanup("gateway-close", () =>
+        bounded(
+          gateway!.close({
+            reason: "qualification complete",
+            drainTimeoutMs: 1000,
+          }),
+        ),
+      );
+    }
+    responseFinish.unsubscribe(observe);
+    // A failed child/socket owner still holds its simulator and private inputs.
+    // Never use global shutdown/reset or delete devices not returned by this run's create.
+    if (simulator && !errors.some(hasUnjoinedWork)) {
+      await cleanup("watch-shutdown", () =>
+        runCommand("watch-shutdown", "xcrun", ["simctl", "shutdown", simulator!], {
+          cleanup: true,
+        }),
+      );
+      if (cleanupFailures.length === 0) {
+        await cleanup("watch-delete", async () => {
+          await runCommand("watch-delete", "xcrun", ["simctl", "delete", simulator!], {
+            cleanup: true,
+          });
+          const devices = JSON.parse(
+            (
+              await runCommand(
+                "watch-delete-verify",
+                "xcrun",
+                ["simctl", "list", "devices", "--json"],
+                { cleanup: true },
+              )
+            ).stdout,
+          ).devices as Record<string, { udid: string }[]>;
+          assert(
+            !Object.values(devices)
+              .flat()
+              .some((device) => device.udid === simulator),
+          );
+          report.simulatorDeleted = true;
+        });
       }
     }
-    process.removeListener("SIGINT", interrupt);
-    process.removeListener("SIGTERM", interrupt);
-    const unjoined = errors.some(hasUnjoinedWork);
-    report.unjoined = unjoined;
+    report.unjoined = errors.some(hasUnjoinedWork);
     report.privateStateRetained = true;
-    if (!unjoined) {
+    await writes;
+    if (
+      errors.length === 0 &&
+      !receiptFailed &&
+      httpsPassed &&
+      voicePassed &&
+      !cancelled.signal.aborted
+    ) {
       await cleanup("private-state-removal", async () => {
-        await rm(privateRoot, { recursive: true, force: true });
+        await rm(privateRoot, { recursive: true });
         report.privateStateRetained = false;
       });
     }
-    // Command observers are detached and cleanup attempts have settled. Drain
-    // their receipts before the terminal snapshot, including an unjoined failure.
-    await receiptWrites;
-    report.receiptWriteFailed = receiptWriteFailed;
+    process.removeListener("SIGINT", interrupt);
+    process.removeListener("SIGTERM", interrupt);
+    await writes;
+    report.cleanupFailures = cleanupFailures;
+    report.receiptWriteFailed = receiptFailed;
     report.ok =
-      !failure &&
-      !unjoined &&
-      !cancelled.signal.aborted &&
-      !receiptWriteFailed &&
-      cleanupFailures.length === 0;
-    await writeReceipt();
+      httpsPassed &&
+      voicePassed &&
+      errors.length === 0 &&
+      !receiptFailed &&
+      !cancelled.signal.aborted;
+    await save();
   }
-  assert.equal(
-    report.ok,
-    true,
-    `Operator HTTPS qualification failed at ${failureStage ?? stages.at(-1)}; see operator-https.json`,
-  );
+  assert.equal(report.ok, true, "Watch qualification incomplete; see operator-https.json");
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}

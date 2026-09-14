@@ -1,16 +1,23 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import {
   chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
+  readdirSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
+import { request as httpsRequest } from "node:https";
+import { connect } from "node:net";
 import path from "node:path";
+import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it } from "vitest";
+import { WebSocket } from "ws";
 import { parse } from "yaml";
 import {
   formatIosSimulatorSelectionSummary,
@@ -19,6 +26,12 @@ import {
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { runCiManifestFixture } from "./ci-workflow-manifest.test-support.js";
 import { evaluateWorkflowExpression } from "./ci-workflow.test-support.js";
+import {
+  createVoiceFixture,
+  runWatchPhase,
+} from "../../scripts/ios-watch-operator-https-proof.mts";
+import { hasUnjoinedWork } from "../../scripts/lib/managed-child-process.mts";
+import { TEST_TLS_CERT_PEM, TEST_TLS_KEY_PEM } from "../helpers/tls-fixture.js";
 
 type Command = { tool: string; args: string[]; destination?: string; settings?: string };
 
@@ -58,6 +71,7 @@ const configureStep = workflow.jobs["ios-build"]?.steps?.find(
 );
 const qualification = parse(readFileSync(".github/workflows/ios-periphery.yml", "utf8"));
 const qualificationSteps: {
+  id?: string;
   name: string;
   run?: string;
   if?: string;
@@ -65,7 +79,61 @@ const qualificationSteps: {
 }[] = qualification.jobs.scan.steps;
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-function runSimulatorStep(mode = "ready", steps = [watchStep], env: Record<string, string> = {}) {
+function runXcodeSelection(qualificationMode: boolean, present = true, version = "26.6") {
+  const root = tempDirs.make("watch-xcode-selection-");
+  const envFile = path.join(root, "github-env");
+  const commandsFile = path.join(root, "commands");
+  const step = qualificationSteps.find((entry) => entry.name === "Verify Xcode");
+  assert(step?.run);
+  // Execute the actual workflow shell; only filesystem and native commands are fixtures.
+  const prelude = String.raw`
+function test {
+  if [[ "$1" == "-d" ]]; then
+    [[ "$2" == "/Applications/Xcode_26.6.app/Contents/Developer" && "$XCODE_PRESENT" == "true" ]]
+  else builtin test "$@"; fi
+}
+function [ {
+  if [[ "$1" == "-d" ]]; then test -d "$2"; else builtin [ "$@"; fi
+}
+function sudo { printf 'sudo:%s\n' "$*" >> "$XCODE_COMMANDS"; }
+function xcodebuild {
+  local selected="$DEVELOPER_DIR"
+  if [[ -z "$selected" ]]; then selected=unset; fi
+  printf 'xcodebuild:%s\n' "$selected" >> "$XCODE_COMMANDS"
+  printf 'Xcode %s\nBuild version fixture\n' "$XCODE_VERSION"
+}
+function swift {
+  local selected="$DEVELOPER_DIR"
+  if [[ -z "$selected" ]]; then selected=unset; fi
+  printf 'swift:%s\n' "$selected" >> "$XCODE_COMMANDS"
+}
+`;
+  const result = spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", prelude + step.run], {
+    encoding: "utf8",
+    timeout: 5000,
+    env: {
+      ...process.env,
+      DEVELOPER_DIR: "",
+      WATCH_QUALIFICATION: String(qualificationMode),
+      XCODE_PRESENT: String(present),
+      XCODE_VERSION: version,
+      XCODE_COMMANDS: commandsFile,
+      GITHUB_ENV: envFile,
+    },
+  });
+  return {
+    result,
+    commands: existsSync(commandsFile) ? readFileSync(commandsFile, "utf8").trim().split("\n") : [],
+    environment: existsSync(envFile) ? readFileSync(envFile, "utf8") : "",
+  };
+}
+
+function runSimulatorStep(
+  mode = "ready",
+  steps = [watchStep],
+  env: Record<string, string> = {},
+  phases?: string[],
+) {
   const root = tempDirs.make("openclaw-watch-workflow-");
   const bin = path.join(root, "bin");
   const harnessLib = path.join(root, ".ci-harness", "scripts", "lib");
@@ -257,9 +325,9 @@ if (tool === "installer") {
     .join("\n");
   let result;
   try {
-    result = spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", script], {
+    const options = {
     cwd: root,
-    encoding: "utf8",
+    encoding: "utf8" as const,
     env: {
       ...process.env,
       PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
@@ -281,10 +349,40 @@ if (tool === "installer") {
       XCODE_XCCONFIG_FILE: "",
       ...env,
     },
-  });
+    };
+    if (phases) {
+      const state = path.join(root, "owned-build");
+      mkdirSync(state, { mode: 0o700 });
+      for (const phase of phases) {
+        if (mode === "wrong-owned-device" && phase !== "build") {
+          const file = path.join(state, "build.json");
+          writeFileSync(
+            file,
+            JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), simulator: randomUUID() }),
+          );
+        }
+        result = spawnSync(
+          "/bin/bash",
+          [
+            "scripts/ios-watch-operation-tests.sh",
+            path.join(root, `${phase}.xcresult`),
+            "11111111-1111-4111-8111-111111111111",
+            phase,
+            state,
+          ],
+          options,
+        );
+        if (result.status !== 0) {
+          break;
+        }
+      }
+    } else {
+      result = spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", script], options);
+    }
   } finally {
     chmodSync(temporaryRoot, 0o700);
   }
+  assert(result);
   const trace = path.join(root, "commands.jsonl");
   const commands: Command[] = existsSync(trace)
     ? readFileSync(trace, "utf8")
@@ -303,13 +401,13 @@ if (tool === "installer") {
   };
 }
 
-function runWatchStep(mode = "ready", qualificationMode = false) {
+function runWatchStep(mode = "ready", qualificationMode = false, phases?: string[]) {
   const step = qualificationMode
     ? qualificationSteps.find(
         (entry) => entry.name === "Run focused Apple Watch operation simulator tests",
       )
     : watchStep;
-  return runSimulatorStep(mode, [step]);
+  return runSimulatorStep(mode, [step], {}, phases);
 }
 
 describe.skipIf(process.platform === "win32")("SimSlim workflow admission", () => {
@@ -357,6 +455,63 @@ describe.skipIf(process.platform === "win32")("SimSlim workflow admission", () =
 });
 
 describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => {
+  it("exports the fixed qualification Xcode without changing global selection", () => {
+    const { result, commands, environment } = runXcodeSelection(true);
+    expect(result.status, result.stderr).toBe(0);
+    expect(commands).toEqual([
+      "xcodebuild:/Applications/Xcode_26.6.app/Contents/Developer",
+      "xcodebuild:/Applications/Xcode_26.6.app/Contents/Developer",
+      "swift:/Applications/Xcode_26.6.app/Contents/Developer",
+    ]);
+    expect(environment).toBe("DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer\n");
+  });
+
+  it.each([
+    ["absent", false, "26.6"],
+    ["wrong-version", true, "26.5"],
+  ] as const)(
+    "fails qualification for %s Xcode without global selection or fallback",
+    (_, present, version) => {
+      const { result, commands } = runXcodeSelection(true, present, version);
+      expect(result.status).not.toBe(0);
+      expect(commands.some((command) => command.startsWith("sudo:"))).toBe(false);
+      expect(commands.some((command) => command.startsWith("swift:"))).toBe(false);
+    },
+  );
+
+  it("preserves ordinary Periphery Xcode selection", () => {
+    const { result, commands, environment } = runXcodeSelection(false);
+    expect(result.status, result.stderr).toBe(0);
+    expect(commands).toEqual([
+      "sudo:xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer",
+      "xcodebuild:unset",
+      "xcodebuild:unset",
+      "swift:unset",
+    ]);
+    expect(environment).toBe("");
+  });
+
+  it.each(["success", "failure", "cancelled", "skipped"])(
+    "runs subsequent captures only after successful HTTPS/voice qualification: %s",
+    (outcome) => {
+      const live = qualificationSteps.find((step) => step.id === "watch_https");
+      const captures = qualificationSteps.find(
+        (step) => step.name === "Capture direct Watch review surfaces",
+      );
+      const condition = captures?.if;
+      assert(live && condition);
+      assert(condition.startsWith("${{") && condition.endsWith("}}"));
+      // This workflow condition uses the JS-compatible &&/==/! expression subset.
+      const admitted = runInNewContext(condition.slice(3, -2), {
+        github: { event_name: "workflow_dispatch" },
+        inputs: { watch_qualification: true },
+        steps: { watch_tests: { outcome: "success" }, watch_https: { outcome } },
+        cancelled: () => false,
+      });
+      expect(admitted).toBe(outcome === "success");
+    },
+  );
+
   it("reuses project build products and installs the exact Watch target before running its tests", () => {
     const { result, commands, product, testProduct, root, temporaryRoot } = runWatchStep();
     expect(result.status, result.stderr).toBe(0);
@@ -615,6 +770,54 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
     ).toContain(path.join(focused.root, "watch-qualification/WatchOperationTests.xcresult"));
   });
 
+  it("builds an owned qualification host once, then uses only that simulator without fixture phases in normal suites", () => {
+    const { result, commands } = runWatchStep("ready", false, [
+      "build",
+      "identity",
+      "negative",
+      "positive",
+      "voice",
+    ]);
+    expect(result.status, result.stderr).toBe(0);
+    const xcode = commands.filter((command) => command.tool === "xcodebuild");
+    expect(
+      xcode.filter(
+        (command) =>
+          command.args.includes("build-for-testing") &&
+          !command.args.includes("-showBuildSettings"),
+      ),
+    ).toHaveLength(1);
+    expect(xcode.filter((command) => command.args.includes("test-without-building"))).toHaveLength(
+      4,
+    );
+    for (const command of xcode) {
+      expect(command.args).toContain(
+        "platform=watchOS Simulator,id=11111111-1111-4111-8111-111111111111",
+      );
+      expect(command.args.filter((arg) => arg.startsWith("-only-testing:"))).toEqual([
+        "-only-testing:OpenClawWatchTests/WatchOperatorHTTPSQualificationTests",
+      ]);
+    }
+    expect(
+      commands.filter((command) => command.args[0] === "simctl").map((command) => command.args[1]),
+    ).toEqual(["install"]);
+  });
+
+  it.each(["unknown-phase", "wrong-owned-device"])(
+    "rejects %s before native phase execution",
+    (mode) => {
+      const { result, commands } = runWatchStep(
+        mode,
+        false,
+        mode === "unknown-phase" ? ["unrecognized"] : ["build", "positive"],
+      );
+      expect(result.status).not.toBe(0);
+      expect(commands.some((command) => command.args.includes("test-without-building"))).toBe(
+        false,
+      );
+    },
+  );
+
   it("keeps qualification opt-in and separates test evidence from Periphery reports", () => {
     expect(qualification.on.workflow_dispatch.inputs.watch_qualification.default).toBe(false);
     for (const name of [
@@ -642,7 +845,7 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
       "${{ runner.temp }}/watch-qualification/operator-https.json",
     ]);
     const liveHTTPS = qualificationSteps.find(
-      (step) => step.name === "Prove Foundation operator HTTPS against a real Gateway",
+      (step) => step.name === "Prove Watch operator HTTPS and native voice retirement",
     );
     expect(liveHTTPS?.if).toContain(
       "github.event_name == 'workflow_dispatch' && inputs.watch_qualification",
@@ -1084,3 +1287,227 @@ it.each([
     );
   },
 );
+describe("Watch qualification phase admission", () => {
+  it.each(["helper", "native", "unjoined", "malformed", "stale", "missing"])(
+    "preserves only bounded public diagnostics for %s failure",
+    async (mode) => {
+      const directory = tempDirs.make("watch-phase-diagnostic-");
+      const failure = await runWatchPhase("negative", randomUUID(), directory, async () => {
+        const file = path.join(directory, "input.json");
+        const input = JSON.parse(readFileSync(file, "utf8"));
+        rmSync(file);
+        if (mode !== "missing") {
+          const errors =
+            mode === "malformed"
+              ? [
+                  null,
+                  "private-description",
+                  { domain: "private-domain", code: 1 },
+                  { domain: "NSURLErrorDomain", code: "private-code" },
+                  { domain: "other", code: 1.5 },
+                  { domain: "other", code: Number.MAX_SAFE_INTEGER + 1 },
+                  { domain: "NSOSStatusErrorDomain", code: -50, description: "private-detail" },
+                ]
+              : Array.from({ length: 10 }, (_, index) => ({
+                  domain: "NSURLErrorDomain",
+                  code: -1200 - index,
+                  description: "private-detail",
+                }));
+          writeFileSync(
+            path.join(directory, "result.json"),
+            JSON.stringify({
+              ...input,
+              nonce: mode === "stale" ? randomUUID() : input.nonce,
+              ok: mode === "helper",
+              ownersJoined: mode !== "unjoined",
+              errors,
+              token: "private-token",
+              deviceID: "private-identity",
+              path: "/private/fixture/result",
+            }),
+            { mode: 0o600 },
+          );
+        }
+        if (mode === "helper") {
+          throw new Error("private-helper-description");
+        }
+      }).then(
+        () => {
+          throw new Error("Expected phase failure");
+        },
+        (error: unknown) => error as AggregateError & { phaseFailure: unknown },
+      );
+      const unverified = ["unjoined", "stale", "missing"].includes(mode);
+      expect(failure.phaseFailure).toEqual({
+        phase: "negative",
+        ownersJoined: !unverified,
+        errors: ["stale", "missing"].includes(mode)
+          ? []
+          : mode === "malformed"
+            ? [{ domain: "NSOSStatusErrorDomain", code: -50 }]
+            : Array.from({ length: 8 }, (_, index) => ({
+                domain: "NSURLErrorDomain",
+                code: -1200 - index,
+              })),
+      });
+      expect(hasUnjoinedWork(new AggregateError([failure], "outer phase failure"))).toBe(
+        unverified,
+      );
+      expect(JSON.stringify(failure.phaseFailure)).not.toContain("private");
+    },
+  );
+
+  it.each(["run", "phase", "nonce", "failed", "missing", "skipped", "oversized", "unjoined"])(
+    "rejects %s evidence even when the tool reports success",
+    async (mode) => {
+      const directory = tempDirs.make("watch-phase-");
+      await expect(
+        runWatchPhase("negative", randomUUID(), directory, async () => {
+          const file = path.join(directory, "input.json");
+          const input = JSON.parse(readFileSync(file, "utf8"));
+          if (mode === "missing") {
+            rmSync(file);
+            return;
+          }
+          if (mode !== "skipped") {
+            rmSync(file);
+          }
+          const result = { ...input, ok: true, ownersJoined: true };
+          if (["run", "phase", "nonce"].includes(mode)) {
+            result[mode] = "stale";
+          }
+          if (mode === "failed") {
+            result.ok = false;
+          }
+          if (mode === "oversized") {
+            result.extra = "x".repeat(16384);
+          }
+          if (mode === "unjoined") {
+            result.ownersJoined = false;
+          }
+          writeFileSync(path.join(directory, "result.json"), JSON.stringify(result), {
+            mode: 0o600,
+          });
+        }),
+      ).rejects.toThrow();
+    },
+  );
+
+  it("accepts only a consumed request and matching current result", async () => {
+    const directory = tempDirs.make("watch-phase-");
+    const run = randomUUID();
+    const result = await runWatchPhase("identity", run, directory, async () => {
+      const file = path.join(directory, "input.json");
+      const input = JSON.parse(readFileSync(file, "utf8"));
+      rmSync(file);
+      writeFileSync(
+        path.join(directory, "result.json"),
+        JSON.stringify({ ...input, ok: true, ownersJoined: true }),
+        {
+          mode: 0o600,
+        },
+      );
+    });
+    expect(result).toMatchObject({ run, phase: "identity", ok: true });
+  });
+});
+
+describe("Watch voice fixture lifecycle", () => {
+  it.each(["sent", "closed"])(
+    "reports old hello %s and joins callbacks plus both socket owners",
+    async (outcome) => {
+      const fixture = createVoiceFixture({
+        cert: Buffer.from(TEST_TLS_CERT_PEM),
+        key: Buffer.from(TEST_TLS_KEY_PEM),
+        controlToken: "control-fixture",
+        oldToken: "old-fixture",
+        replacementToken: "new-fixture",
+        deviceID: "fixture-device",
+      });
+      const endpoint = await fixture.listen();
+      const clients: WebSocket[] = [];
+      const raw = connect(Number(new URL(endpoint).port), "127.0.0.1");
+      const rawClosed = once(raw, "close");
+      const control = (action: string) =>
+        new Promise<Record<string, unknown>>((resolve, reject) => {
+          // This local fixture certificate is deliberately not a system-trust qualification.
+          const request = httpsRequest(
+            `${endpoint}/${action}`,
+            {
+              rejectUnauthorized: false,
+              agent: false,
+              headers: { Authorization: "Bearer control-fixture" },
+            },
+            (response) => {
+              let text = "";
+              response.on("data", (chunk) => {
+                text += chunk;
+              });
+              response.on("end", () => {
+                try {
+                  assert.equal(response.statusCode, 200);
+                  resolve(JSON.parse(text));
+                } catch (error) {
+                  reject(error instanceof Error ? error : new Error("Invalid fixture response"));
+                }
+              });
+            },
+          );
+          request.on("error", reject);
+          request.end();
+        });
+      const open = async (token: string) => {
+        const socket = new WebSocket(endpoint.replace("https:", "wss:"), {
+          rejectUnauthorized: false,
+        });
+        clients.push(socket);
+        const challenge = once(socket, "message");
+        await once(socket, "open");
+        await challenge;
+        socket.send(
+          JSON.stringify({
+            type: "req",
+            id: randomUUID(),
+            method: "connect",
+            params: {
+              minProtocol: 4,
+              maxProtocol: 4,
+              device: { id: "fixture-device" },
+              role: "operator",
+              scopes: ["operator.read", "operator.talk"],
+              auth: { deviceToken: token },
+            },
+          }),
+        );
+        return socket;
+      };
+      try {
+        await once(raw, "connect");
+        const old = await open("old-fixture");
+        expect(await control("connected")).toEqual({ oldConnectObserved: true });
+        if (outcome === "closed") {
+          const closed = once(old, "close");
+          old.close();
+          await closed;
+        }
+        const oldHello = outcome === "sent" ? once(old, "message") : Promise.resolve();
+        expect(await control("release")).toEqual({ oldHelloOutcome: outcome });
+        await oldHello;
+        const fresh = await open("new-fixture");
+        await once(fresh, "message");
+        fresh.send(JSON.stringify({ type: "req", id: randomUUID(), method: "agents.list" }));
+        expect(await control("fresh")).toEqual({ freshAuthenticated: true });
+        expect(await control("status")).toEqual({
+          freshAuthenticated: true,
+          oldHelloOutcome: outcome,
+        });
+      } finally {
+        const closed = clients
+          .filter((client) => client.readyState !== WebSocket.CLOSED)
+          .map((client) => once(client, "close"));
+        await fixture.close();
+        await Promise.all([rawClosed, ...closed]);
+      }
+    },
+  );
+});

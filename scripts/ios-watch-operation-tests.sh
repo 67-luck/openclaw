@@ -2,7 +2,17 @@
 set -euo pipefail
 
 result_bundle="${1:-apps/ios/build/LifecycleTestResults/OpenClawWatchOperationTests.xcresult}"
-simulator_id="$(
+phase="${3:-suites}"
+state_dir="${4:-}"
+if [ "$#" -gt 1 ]; then
+  if [ "$#" -ne 4 ] || [[ ! "$2" =~ ^[A-Fa-f0-9-]{36}$ ]] || [[ "$state_dir" != /* ]]; then
+    echo "Expected result bundle, owned simulator UUID, phase, and private state directory" >&2
+    exit 1
+  fi
+  case "$phase" in build|identity|negative|positive|voice) ;; *) exit 1 ;; esac
+  simulator_id="$2"
+else
+  simulator_id="$(
   xcrun simctl list devices available --json | node --input-type=module -e '
     const chunks = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
@@ -17,6 +27,7 @@ simulator_id="$(
     process.stdout.write(simulator.udid);
   '
 )"
+fi
 # Reuse existing products and resolve the selected target from Xcode, not DerivedData naming.
 xcodebuild_args=(
   -project apps/ios/OpenClaw.xcodeproj
@@ -27,6 +38,9 @@ xcodebuild_args=(
   CODE_SIGN_IDENTITY=-
   CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES
 )
+if [ "$phase" != "suites" ]; then
+  xcodebuild_args+=(-derivedDataPath "$state_dir/derived")
+fi
 test_args=(
   -parallel-testing-enabled NO
   -only-testing:OpenClawWatchTests/WatchInboxStoreOperationTests
@@ -36,12 +50,16 @@ test_args=(
   -only-testing:OpenClawWatchTests/WatchDirectConversationTests
   -only-testing:OpenClawWatchTests/WatchGatewayControllerTests
 )
+if [ "$phase" != "suites" ]; then
+  test_args=(-parallel-testing-enabled NO -only-testing:OpenClawWatchTests/WatchOperatorHTTPSQualificationTests)
+fi
+if [ "$phase" = "suites" ] || [ "$phase" = "build" ]; then
 xcodebuild "${xcodebuild_args[@]}" "${test_args[@]}" build-for-testing
 app_path="$(
   xcodebuild "${xcodebuild_args[@]}" "${test_args[@]}" -showBuildSettings -json build-for-testing |
-    node --input-type=module -e '
+    WATCH_QUALIFICATION_STATE="$state_dir" WATCH_QUALIFICATION_SIMULATOR="$simulator_id" node --input-type=module -e '
       import { execFileSync } from "node:child_process";
-      import { mkdtempSync, rmSync } from "node:fs";
+      import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
       import { tmpdir } from "node:os";
       import path from "node:path";
       const chunks = [];
@@ -146,12 +164,34 @@ app_path="$(
       } finally {
         rmSync(extractionDirectory, { recursive: true, force: true });
       }
+      if (process.env.WATCH_QUALIFICATION_STATE) {
+        writeFileSync(path.join(process.env.WATCH_QUALIFICATION_STATE, "build.json"),
+          JSON.stringify({ simulator: process.env.WATCH_QUALIFICATION_SIMULATOR,
+            appPath, bundleID: app.PRODUCT_BUNDLE_IDENTIFIER }), { mode: 0o600, flag: "wx" });
+      }
       process.stdout.write(appPath);
     '
 )"
+if [ "$phase" = "suites" ]; then
 xcrun simctl boot "$simulator_id" 2>/dev/null || true
 xcrun simctl bootstatus "$simulator_id" -b
+fi
 xcrun simctl install "$simulator_id" "$app_path"
+if [ "$phase" = "build" ]; then exit 0; fi
+else
+  # Only the coordinator's verified build may feed a phase; never rebuild or pick another device.
+  node --input-type=module -e '
+    import assert from "node:assert/strict";
+    import { readFileSync, lstatSync } from "node:fs";
+    import path from "node:path";
+    const [state, simulator] = process.argv.slice(1);
+    const file = path.join(state, "build.json");
+    assert(lstatSync(file).isFile() && !lstatSync(file).isSymbolicLink());
+    const build = JSON.parse(readFileSync(file, "utf8"));
+    assert.equal(build.simulator, simulator);
+    assert(path.isAbsolute(build.appPath) && typeof build.bundleID === "string");
+  ' "$state_dir" "$simulator_id"
+fi
 xcodebuild "${xcodebuild_args[@]}" "${test_args[@]}" \
   -resultBundlePath "$result_bundle" \
   test-without-building
