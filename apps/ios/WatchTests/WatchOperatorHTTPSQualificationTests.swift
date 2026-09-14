@@ -120,7 +120,7 @@ struct WatchOperatorHTTPSQualificationTests {
             "OPENCLAW_WATCH_BRIDGE", "1", event,
             fingerprint("phase", [input.run.lowercased(), input.phase]),
             directory(Self.directory, domain: "directory"),
-            directory(FileManager.default.homeDirectoryForCurrentUser, domain: "home"),
+            directory(URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true), domain: "home"),
             Bundle.main.bundleIdentifier.map { fingerprint("bundle", [$0]) } ?? "unavailable",
         ]
         let bytes = Data((fields.joined(separator: "\t") + "\n").utf8)
