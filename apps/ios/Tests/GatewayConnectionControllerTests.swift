@@ -2359,6 +2359,28 @@ private func pendingHandoffDiagnostic(
         }
     }
 
+    @Test(arguments: [nil, false, true] as [Bool?]) @MainActor
+    func `share relay preserves the foreground sign in flag including legacy absence`(requiresSignIn: Bool?) async throws {
+        let isolation = await GatewayRegistryTestIsolation()
+        defer { isolation.restore() }
+        let config = ShareGatewayRelayConfig(
+            gatewayURLString: "wss://share-flags.example.test",
+            gatewayStableID: "manual|share-flags.example.test|443",
+            token: requiresSignIn == true ? nil : "share-token",
+            password: requiresSignIn == true ? nil : "share-password",
+            sessionKey: "main",
+            requiresForegroundSignIn: requiresSignIn)
+        #expect(ShareGatewayRelaySettings.saveConfig(config))
+        let defaults = try #require(UserDefaults(suiteName: OpenClawAppGroup.identifier))
+        let data = try #require(defaults.data(forKey: "share.gatewayRelay.config.v1"))
+        let metadata = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(metadata["requiresForegroundSignIn"] as? Bool == requiresSignIn)
+        #expect(metadata["token"] == nil)
+        #expect(metadata["password"] == nil)
+        let loaded = try #require(ShareGatewayRelaySettings.loadConfigDiscardingUnscopedDeviceAuth())
+        #expect(loaded == config)
+    }
+
     @Test @MainActor func `share relay keeps credentials out of app group defaults`() async throws {
         let registryIsolation = await GatewayRegistryTestIsolation()
         defer { registryIsolation.restore() }

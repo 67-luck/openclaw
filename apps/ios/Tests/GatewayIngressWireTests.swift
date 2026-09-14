@@ -224,6 +224,94 @@ private func expectRetiredIngress(_ result: Result<some Any, Error>) {
 
 extension GatewayIngressControllerTests {
     @Test @MainActor
+    func `managed to ordinary native reconnect restores Share metadata without sharing Access auth`() async throws {
+        let isolation = GatewayRegistryTestIsolation()
+        defer { isolation.restore() }
+        let state = try TemporaryOpenClawState(instanceID: "share-ingress-\(UUID().uuidString)")
+        defer { state.restore() }
+        let server = try await NativeGatewayWebSocketFixture.start(issuedDeviceTokens: [], tls: true)
+        defer { server.stop() }
+        let fixture = try IngressWireFixture(server: server)
+        let previousAgent = GatewaySettingsStore.loadGatewaySelectedAgentId(stableID: fixture.stableID)
+        defer { GatewaySettingsStore.saveGatewaySelectedAgentId(stableID: fixture.stableID, agentId: previousAgent) }
+        let model = NodeAppModel()
+        let ingress = fixture.controller { origin in await model.retireGatewayIngress(for: origin) }
+        let defaults = try #require(UserDefaults(suiteName: OpenClawAppGroup.identifier))
+        do {
+            let authorization = try #require(await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+            var options = fixture.config(authorization).nodeOptions
+            options.deviceAuthGatewayID = fixture.stableID
+            func config(_ authorization: GatewayIngressAuthorization?) -> GatewayConnectConfig {
+                GatewayConnectConfig(
+                    url: server.url(),
+                    stableID: fixture.stableID,
+                    tls: fixture.tls,
+                    token: "share-pairing-token",
+                    bootstrapToken: nil,
+                    password: "share-pairing-password",
+                    nodeOptions: options,
+                    ingressAuthorization: authorization)
+            }
+            model.applyGatewayConnectConfig(config(authorization))
+            try await waitForIngress {
+                model.gatewayConnected && ShareGatewayRelaySettings.loadConfig()?.requiresForegroundSignIn == true
+            }
+            let managed = try #require(ShareGatewayRelaySettings.loadConfigDiscardingUnscopedDeviceAuth())
+            #expect(managed.gatewayStableID == fixture.stableID)
+            #expect(managed.token == nil)
+            #expect(managed.password == nil)
+            #expect(server.roles.contains("node"))
+            #expect(server.requests
+                .contains { $0.isWebSocket && $0.headers["cf-access-token"] == fixture.acceptedToken })
+            #expect(GenericPasswordKeychainStore.loadString(
+                service: "ai.openclawfoundation.app.share-gateway-relay",
+                account: "credentials.v1",
+                accessGroup: OpenClawAppGroup.identifier) == nil)
+            let managedMetadata = try #require(defaults.data(forKey: "share.gatewayRelay.config.v1"))
+            for secret in [fixture.acceptedToken, "share-pairing-token", "share-pairing-password"] {
+                #expect(managedMetadata.range(of: Data(secret.utf8)) == nil)
+            }
+            model.setSelectedAgentId("share-agent-\(UUID().uuidString.lowercased())")
+            let selected = try #require(ShareGatewayRelaySettings.loadConfig())
+            #expect(selected.sessionKey != managed.sessionKey)
+            #expect(selected.sessionKey == model.mainSessionKey)
+            #expect(selected.requiresForegroundSignIn == true)
+            #expect(selected.token == nil)
+            #expect(selected.password == nil)
+
+            model.disconnectGateway()
+            await model.waitForGatewaySessionResetIfNeeded()
+            // The same host now admits ordinary requests, such as through existing service headers or WARP.
+            server.httpResponse = { _ in .init() }
+            let ordinary = try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+            #expect(ordinary == nil)
+            let before = server.requests.count
+            model.applyGatewayConnectConfig(config(ordinary))
+            try await waitForIngress {
+                model.gatewayConnected && ShareGatewayRelaySettings.loadConfig()?.requiresForegroundSignIn == false
+            }
+            let restored = try #require(ShareGatewayRelaySettings.loadConfigDiscardingUnscopedDeviceAuth())
+            #expect(restored.gatewayStableID == fixture.stableID)
+            #expect(restored.gatewayURLString == server.url().absoluteString)
+            #expect(restored.token == "share-pairing-token")
+            #expect(restored.password == "share-pairing-password")
+            let upgrades = server.requests.dropFirst(before).filter(\.isWebSocket)
+            #expect(!upgrades.isEmpty)
+            #expect(upgrades.allSatisfy { $0.headers["cf-access-token"] == nil })
+            let metadata = try #require(defaults.data(forKey: "share.gatewayRelay.config.v1"))
+            for secret in [fixture.acceptedToken, "share-pairing-token", "share-pairing-password"] {
+                #expect(metadata.range(of: Data(secret.utf8)) == nil)
+            }
+        } catch {
+            await fixture.close(ingress, model: model)
+            throw error
+        }
+        await fixture.close(ingress, model: model)
+    }
+
+    @Test @MainActor
     func `pinned native sockets and media use the live grant and sign out joins a held response`() async throws {
         let isolation = GatewayRegistryTestIsolation()
         defer { isolation.restore() }
