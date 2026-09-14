@@ -127,7 +127,7 @@ if (tool === "installer") {
 }
 `,
   );
-  for (const tool of ["xcrun", "xcodebuild", "pnpm", "uname", "sysctl", "installer", "simslim"]) {
+  for (const tool of ["xcrun", "xcodebuild", "pnpm", "uname", "sysctl", "installer", "simslim", "python3"]) {
     const executable = path.join(bin, tool);
     writeFileSync(executable, `#!/bin/sh\nexec '${process.execPath}' '${runner}' '${tool}' "$@"\n`);
     chmodSync(executable, 0o755);
@@ -452,6 +452,12 @@ describe.skipIf(process.platform === "win32")("iOS Access simulator workflow", (
     const tests = commands.filter(isTestCommand);
     expect(tests).toHaveLength(phase === "smoke" ? 1 : 2);
     expect(tests[0]?.args).toContain("platform=iOS Simulator,id=watch-fixture");
+    const restart = commands.findIndex((command) => command.tool === "python3");
+    expect(commands[restart]?.args).toEqual(["scripts/ios-access-restart-proof.py", "watch-fixture"]);
+    expect(restart).toBeGreaterThan(commands.indexOf(tests[0]!));
+    if (phase === "tests") {
+      expect(restart).toBeLessThan(commands.indexOf(tests[1]!));
+    }
     const authSelectors = [
       ...authClasses.map((name) => `-only-testing:OpenClawTests/${name}`),
       "-only-testing:OpenClawTests/ChatTypingFocusTests",
@@ -726,3 +732,190 @@ it.each([
     );
   },
 );
+
+function runRestartProof(mode = "ready", format = 1) {
+  const root = tempDirs.make("openclaw-access-restart-");
+  const result = spawnSync(
+    "python3",
+    [
+      "-B",
+      "-c",
+      String.raw`
+import contextlib, hashlib, importlib.util, io, json, os, pathlib, plistlib, sys
+helper, root, mode, format = sys.argv[1:]
+format = int(format)
+root = pathlib.Path(root)
+os.chdir(root)
+spec = importlib.util.spec_from_file_location("restart_proof", helper)
+proof = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(proof)
+products = root / "Build Products"
+app = products / "Debug-iphonesimulator/OpenClaw.app"
+tests = app / "PlugIns/OpenClawTests.xctest"
+data = root / "app data"
+data.mkdir()
+for bundle, identifier in [(app, "test.openclaw.app"), (tests, "test.openclaw.tests")]:
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "fixture").write_bytes(b"unchanged executable")
+    (bundle / "Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "fixture", "CFBundleIdentifier": identifier}))
+target = {"BlueprintName": "OpenClawTests", "TestHostPath": "__TESTROOT__/Debug-iphonesimulator/OpenClaw.app",
+     "TestBundlePath": "__TESTHOST__/PlugIns/OpenClawTests.xctest", "UITargetAppPath": "unused",
+     "OnlyTestIdentifiers": ["OldSelection"], "SkipTestIdentifiers": ["AnotherSelection"],
+     "TestingEnvironmentVariables": {"DYLD_FRAMEWORK_PATH": "__TESTROOT__/Debug-iphonesimulator"}}
+document = {"OpenClawTests": target, "OpenClawLogicTests": {"BlueprintName": "OpenClawLogicTests"}}
+if format == 2:
+    document = {"TestConfigurations": [{"Name": "Default", "IsEnabled": True, "TestTargets": [
+        {"BlueprintName": "OpenClawLogicTests"}, target]}]}
+if format != 0:
+    document["__xctestrun_metadata__"] = {"FormatVersion": format}
+(products / "OpenClaw_iphonesimulator.xctestrun").write_bytes(plistlib.dumps(document))
+commands, runs = [], []
+phase = None
+source = "a" * 40
+def run(args, capture=False, env=None):
+    global phase
+    commands.append(args)
+    if args[0] == "git":
+        return source
+    if "-showBuildSettings" in args:
+        return json.dumps([{"target": "OpenClaw", "buildSettings": {
+            "BUILD_DIR": str(products), "TARGET_BUILD_DIR": str(app.parent), "FULL_PRODUCT_NAME": app.name}}])
+    if "test-without-building" in args:
+        phase = env["TEST_RUNNER_OPENCLAW_ACCESS_RESTART_PHASE"]
+        config = plistlib.loads(pathlib.Path(args[args.index("-xctestrun") + 1]).read_bytes())
+        runs.append({"phase": phase, "config": config})
+        if phase == "seed" and mode != "missing-handoff":
+            nonce = env["TEST_RUNNER_OPENCLAW_ACCESS_RESTART_NONCE"]
+            receipt = data / "Library/Application Support" / ("access-restart-" + nonce + ".plist")
+            receipt.parent.mkdir(parents=True)
+            receipt.write_bytes(plistlib.dumps({"nonce": nonce, "source": source, "bundleID": "test.openclaw.app",
+                "container": str(data), "executableSHA256": hashlib.sha256((app / "fixture").read_bytes()).hexdigest(),
+                "processID": 2147483647}))
+        if phase == "verify" and mode == "changed-binary":
+            (app / "fixture").write_bytes(b"replacement executable")
+    if "xcresulttool" in args:
+        if "summary" in args:
+            count = 0 if mode == "zero-tests" else 1
+            return json.dumps({"result": "Passed", "totalTestCount": count, "passedTests": count,
+                "failedTests": 0, "skippedTests": 1 if mode == "skipped" else 0,
+                "expectedFailures": 0, "testFailures": []})
+        name = phase.title()
+        identifier = "WrongCase" if mode == "wrong-case" else f"GatewayAccessRestart{name}Tests/{phase} acknowledged sign out()"
+        return json.dumps({"testNodes": [{"nodeType": "Test Case", "nodeIdentifier": identifier, "result": "Passed"}]})
+    if "get_app_container" in args:
+        return str(app if args[-1] == "app" else data)
+    return ""
+proof.run = run
+proof.process_exists = lambda pid: mode == "live-seed"
+ticks = iter([0, 10])
+proof.time.monotonic = lambda: next(ticks)
+error = None
+with contextlib.redirect_stdout(io.StringIO()):
+    try:
+        proof.main("simulator-fixture")
+    except Exception as failure:
+        error = str(failure)
+print(json.dumps({"error": error, "commands": commands, "runs": runs}))
+`,
+      path.resolve("scripts/ios-access-restart-proof.py"),
+      root,
+      mode,
+      String(format),
+    ],
+    { encoding: "utf8", timeout: 5_000 },
+  );
+  expect(result.status, result.stderr).toBe(0);
+  return JSON.parse(result.stdout) as {
+    error: string | null;
+    commands: string[][];
+    runs: {
+      phase: string;
+      config: {
+        OpenClawTests?: Record<string, unknown>;
+        OpenClawLogicTests?: Record<string, unknown>;
+        TestConfigurations?: { TestTargets: Record<string, unknown>[] }[];
+        __xctestrun_metadata__?: { FormatVersion: number };
+      };
+    }[];
+  };
+}
+
+describe("iOS Access process restart proof", () => {
+  it.each([0, 1, 2])(
+    "preserves format %s and verifies destination artifacts without another install",
+    (format) => {
+      const { error, commands, runs } = runRestartProof("ready", format);
+      expect(error).toBeNull();
+      expect(runs.map((run) => run.phase)).toEqual(["seed", "verify"]);
+      const targets = (config: (typeof runs)[number]["config"]) =>
+        format === 2 ? config.TestConfigurations![0]!.TestTargets : [config.OpenClawTests!];
+      const seed = targets(runs[0]!.config);
+      const verify = targets(runs[1]!.config);
+      for (const { config } of runs) {
+        expect(config.__xctestrun_metadata__?.FormatVersion).toBe(format || undefined);
+        expect(config).not.toHaveProperty("OpenClawLogicTests");
+        if (format !== 2) {
+          expect(config).not.toHaveProperty("TestConfigurations");
+        }
+      }
+      expect(seed).toHaveLength(1);
+      expect(verify).toHaveLength(1);
+      expect(verify[0]).toMatchObject({
+        BlueprintName: "OpenClawTests",
+        UseDestinationArtifacts: true,
+        TestHostBundleIdentifier: "test.openclaw.app",
+        TestBundleDestinationRelativePath: "__TESTHOST__/PlugIns/OpenClawTests.xctest",
+        TestingEnvironmentVariables: seed[0]!.TestingEnvironmentVariables,
+      });
+      for (const key of ["OnlyTestIdentifiers", "SkipTestIdentifiers"]) {
+        expect(seed[0]).not.toHaveProperty(key);
+        expect(verify[0]).not.toHaveProperty(key);
+      }
+      for (const key of ["TestHostPath", "TestBundlePath", "UITargetAppPath"]) {
+        expect(verify[0]).not.toHaveProperty(key);
+      }
+      const phases = commands.filter((args) => args.includes("test-without-building"));
+      expect(phases.map((args) => args.find((arg) => arg.startsWith("-only-testing:")))).toEqual([
+        "-only-testing:OpenClawTests/GatewayAccessRestartSeedTests",
+        "-only-testing:OpenClawTests/GatewayAccessRestartVerifyTests",
+      ]);
+      for (const args of phases) {
+        expect(args).toContain("platform=iOS Simulator,id=simulator-fixture");
+      }
+      expect(commands.filter((args) => args.includes("build-for-testing"))).toHaveLength(1);
+      expect(commands.some((args) => args.includes("install") || args.includes("uninstall"))).toBe(
+        false,
+      );
+    },
+  );
+
+  it("rejects an unknown generated format before either process starts", () => {
+    const { error, runs } = runRestartProof("ready", 3);
+    expect(error).toBe("Unsupported generated test run format");
+    expect(runs).toEqual([]);
+  });
+
+  it.each([
+    "zero-tests",
+    "skipped",
+    "wrong-case",
+    "missing-handoff",
+    "changed-binary",
+    "live-seed",
+  ])("rejects %s without claiming restart proof", (mode) => {
+    const { error, runs, commands } = runRestartProof(mode);
+    expect(error).toBeTruthy();
+    expect(runs.map((run) => run.phase)).toEqual(
+      mode === "changed-binary" ? ["seed", "verify"] : ["seed"],
+    );
+    if (mode === "live-seed") {
+      expect(commands).toContainEqual([
+        "xcrun",
+        "simctl",
+        "terminate",
+        "simulator-fixture",
+        "test.openclaw.app",
+      ]);
+    }
+  });
+});
