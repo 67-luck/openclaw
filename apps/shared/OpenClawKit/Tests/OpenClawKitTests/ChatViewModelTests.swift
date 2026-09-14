@@ -12735,6 +12735,9 @@ struct ChatViewModelTests {
             onVerboseLevelChanged: { callbacks.values.append($0) })
 
         try await loadAndWaitBootstrap(vm: vm, sessionId: "sess-main")
+        try await waitUntil("main session finishes bootstrap") {
+            await MainActor.run { !vm.isLoading }
+        }
         await MainActor.run { vm.selectVerboseLevel("on") }
         await patchCount.wait { $0 >= 1 }
         #expect(await patchCount.current() == 1)
@@ -12744,6 +12747,7 @@ struct ChatViewModelTests {
         await MainActor.run { vm.selectVerboseLevel("full") }
         await vm.waitForPendingSessionSettings(in: "other")
         #expect(await patchCount.current() == 2)
+        #expect(await MainActor.run { vm.preferredVerboseLevel } == "full")
 
         await firstPatchGate.open()
         await vm.waitForPendingSessionSettings(in: "main")
