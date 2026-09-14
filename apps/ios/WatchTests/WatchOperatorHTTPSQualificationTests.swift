@@ -53,7 +53,7 @@ private final class QualificationControlDelegate: NSObject, URLSessionDelegate {
 @Suite(.serialized)
 @MainActor
 struct WatchOperatorHTTPSQualificationTests {
-    private static let scopes = ["operator.read", "operator.talk"]
+    private nonisolated static let scopes = ["operator.read", "operator.talk"]
     private static var directory: URL {
         URL.cachesDirectory.appendingPathComponent("OpenClawQualification", isDirectory: true)
     }
