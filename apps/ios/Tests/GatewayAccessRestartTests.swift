@@ -143,7 +143,7 @@ struct GatewayAccessRestartTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["OPENCLAW_ACCESS_RESTART_NONCE"] != nil))
     @MainActor func acknowledgedSignOutSurvivesProcessRestart() async throws {
         let simulator = try #require(ProcessInfo.processInfo.environment["SIMULATOR_UDID"])
-        try #require(simulator == AccessRestartProof.environment("DEVICE"))
+        try #require(try simulator == AccessRestartProof.environment("DEVICE"))
         let url = try AccessRestartProof.receiptURL()
         // Fixed repetitions relaunch the host. A final receipt is terminal, never another seed.
         if FileManager.default.fileExists(atPath: url.path) {
@@ -223,7 +223,7 @@ struct GatewayAccessRestartTests {
         // Read before any fixture writes: reseeding or cleanup must not manufacture persistence proof.
         var receipt = try PropertyListDecoder().decode(AccessRestartProof.Receipt.self, from: Data(contentsOf: url))
         try #require(receipt.phase == "seeded" && receipt.verifyPID == nil && !receipt.seedProcessExited)
-        try #require(receipt.nonce == AccessRestartProof.nonce())
+        try #require(try receipt.nonce == AccessRestartProof.nonce())
         try #require(receipt.source == AccessRestartProof.environment("SOURCE") && receipt.simulator == simulator)
         let pid = ProcessInfo.processInfo.processIdentifier
         try #require(receipt.seedPID > 1 && receipt.seedPID != pid)
@@ -232,8 +232,8 @@ struct GatewayAccessRestartTests {
         while try AccessRestartProof.seedProcessExists(receipt.seedPID), clock.now < deadline {
             try await Task.sleep(for: .milliseconds(100))
         }
-        try #require(!AccessRestartProof.seedProcessExists(receipt.seedPID))
-        try #require(receipt.installation == AccessRestartProof.Installation())
+        try #require(try !AccessRestartProof.seedProcessExists(receipt.seedPID))
+        try #require(try receipt.installation == AccessRestartProof.Installation())
         let persistence = CloudflareAccessSessionStore.Persistence.keychain
         let origin = try AccessRestartProof.origin()
         try #require(persistence.load(origin) == nil)
