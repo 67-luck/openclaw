@@ -7,16 +7,19 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import { connect } from "node:net";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { runInNewContext } from "node:vm";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { parse } from "yaml";
 import {
@@ -30,7 +33,11 @@ import {
   createVoiceFixture,
   runWatchPhase,
 } from "../../scripts/ios-watch-operator-https-proof.mts";
+import * as watchProof from "../../scripts/ios-watch-operator-https-proof.mts";
 import { hasUnjoinedWork } from "../../scripts/lib/managed-child-process.mts";
+import { createVitestResourceOwner } from "../../scripts/lib/vitest-resource-ownership.mts";
+import { waitForDead, waitForFile, waitForPidFile } from "../helpers/process-wait.js";
+import { runQaGatewayFixture } from "../helpers/qa-gateway-cleanup.js";
 import { TEST_TLS_CERT_PEM, TEST_TLS_KEY_PEM } from "../helpers/tls-fixture.js";
 
 type Command = { tool: string; args: string[]; destination?: string; settings?: string };
@@ -160,6 +167,12 @@ import path from "node:path";
 const [tool, ...args] = process.argv.slice(2);
 const root = process.env.WATCH_FIXTURE_ROOT;
 const mode = process.env.WATCH_FIXTURE_MODE;
+if ((tool === "xcodebuild" && args.includes("-showBuildSettings") && mode === "settings-command-failed") ||
+    (tool === "xcodebuild" && !args.includes("-showBuildSettings") && mode === "build-command-failed") ||
+    (tool === "xcrun" && args[1] === "install" && mode === "install-command-failed")) {
+  console.error("error: fixture command failed");
+  process.exit(27);
+}
 const productPath = path.join(root, "project derived data", "Watch Product.app");
 const targetTempDir = path.join(root, "project intermediates", "Watch Product.build");
 const generatedPath = path.join(targetTempDir, "Watch Product.app-Simulated.xcent");
@@ -803,6 +816,28 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
     ).toEqual(["install"]);
   });
 
+  it.each([
+    ["ready", 0, "install"],
+    ["build-command-failed", 27, "build-for-testing"],
+    ["settings-command-failed", 27, "build-settings"],
+    ["invalid-signature", 1, "host-validation"],
+    ["install-command-failed", 27, "install"],
+  ])("retains ordered build diagnostics for %s without pipeline ambiguity", (mode, exit, last) => {
+    const { result } = runWatchStep(mode, false, ["build"]);
+    expect(result.status).toBe(exit);
+    const markers = result.stderr
+      .split("\n")
+      .filter((line) => line.startsWith("OPENCLAW_WATCH_BUILD\t"));
+    const labels = ["build-for-testing", "build-settings", "host-validation", "install"];
+    const reached = labels.slice(0, labels.indexOf(last) + 1);
+    expect(markers).toEqual(
+      reached.flatMap((label) => [
+        `OPENCLAW_WATCH_BUILD\tstart\t${label}`,
+        `OPENCLAW_WATCH_BUILD\tend\t${label}\t${label === last ? exit : 0}`,
+      ]),
+    );
+  });
+
   it.each(["unknown-phase", "wrong-owned-device"])(
     "rejects %s before native phase execution",
     (mode) => {
@@ -1287,6 +1322,318 @@ it.each([
     );
   },
 );
+describe("Watch build command diagnostics", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  async function command(
+    source: string,
+    report: Record<string, unknown>,
+    timeout = 2000,
+    label = "watch-build",
+    saved?: unknown[],
+  ) {
+    return watchProof.runWatchQualificationCommand(label, process.execPath, ["-e", source], {
+      environment: process.env,
+      report,
+      save: async () => {
+        saved?.push(structuredClone(report));
+      },
+      timeout,
+    });
+  }
+
+  it("retains sanitized build output and the first failure after successful and failed cleanup", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const report: Record<string, unknown> = {};
+    const saved: unknown[] = [];
+    await expect(
+      command(
+        String.raw`
+      (async () => {
+        process.stderr.write("OPENCLAW_WATCH_");
+        await new Promise(resolve => setTimeout(resolve, 10));
+        process.stderr.write("BUILD\tstart\tbuild-settings\n");
+        process.stderr.write("OPENCLAW_WATCH_BUILD\tstart\tprivate-label\n");
+        process.stderr.write("OPENCLAW_WATCH_BUILD\tstart\tinstall\tprivate-argument\n");
+        process.stderr.write("error: Authorization: Bear");
+        await new Promise(resolve => setTimeout(resolve, 10));
+        process.stderr.write("er private-fixture-credential\n");
+        for (const part of [
+          "error: /Users/private-", "person/project/file.swift failed\n",
+          "Authorization: Bear", "er private-fixture-credential\n",
+          "error: https://private.internal/path?token=private-fixture-credential\n",
+          "error: private-person@example.invalid 192.168.4.5 11111111-1111-4111-8111-111111111111\n",
+          "-----BEGIN PRIVATE KEY-----\nprivate-key-material\n-----END PRIVATE KEY-----\n"
+        ]) {
+          process.stdout.write(part);
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        process.stderr.write("error: fixture failure\n");
+        process.stderr.write("OPENCLAW_WATCH_BUILD\tend\tbuild-settings\t27\n");
+        process.exitCode = 27;
+      })();
+    `,
+        report,
+        2000,
+        "watch-build",
+        saved,
+      ),
+    ).rejects.toThrow();
+    const failed = structuredClone(report.failedChild);
+    expect(failed).toMatchObject({
+      label: "watch-build",
+      outcome: "exit",
+      code: 27,
+      signal: null,
+      build: {
+        steps: [
+          { event: "start", label: "build-settings" },
+          { event: "end", label: "build-settings", code: 27 },
+        ],
+        stderr: expect.stringContaining("error: fixture failure"),
+      },
+    });
+    expect(saved.at(-1)).toMatchObject({ failedChild: failed });
+    await command("", report, 2000, "watch-shutdown", saved);
+    await expect(
+      command("process.exitCode = 9", report, 2000, "watch-delete", saved),
+    ).rejects.toThrow();
+    expect(report.failedChild).toEqual(failed);
+    expect(report.child).toMatchObject({ label: "watch-delete", code: 9 });
+    const published = JSON.stringify([report, saved, consoleLog.mock.calls]);
+    for (const privateValue of [
+      "private-person",
+      "private-fixture-credential",
+      "private.internal",
+      "192.168.4.5",
+      "11111111-",
+      "private-key-material",
+      "private-label",
+      "private-argument",
+    ]) {
+      expect(published).not.toContain(privateValue);
+    }
+    expect(published).not.toContain("-e");
+  });
+
+  it.each(["private-person/project", "private person/private project"])(
+    "preserves located compiler errors without publishing the path: %s",
+    async (directory) => {
+      const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+      const report: Record<string, unknown> = {};
+      const saved: unknown[] = [];
+      const message =
+        "error: main actor-isolated static property 'scopes' cannot be accessed from outside of the actor";
+      const diagnostic = `/Users/${directory}/WatchOperatorHTTPSQualificationTests.swift:142:95: ${message}\n`;
+      await expect(
+        command(
+          `process.stdout.write(${JSON.stringify(diagnostic)}); process.stderr.write(${JSON.stringify(diagnostic)}); process.exitCode = 1;`,
+          report,
+          2000,
+          "watch-build",
+          saved,
+        ),
+      ).rejects.toThrow();
+      expect(report.failedChild).toMatchObject({
+        build: {
+          stdout: `[path]:142:95: ${message}`,
+          stderr: `[path]:142:95: ${message}`,
+        },
+      });
+      expect(JSON.stringify([report, saved, consoleLog.mock.calls])).not.toMatch(
+        /Users|private.person|private project|WatchOperatorHTTPSQualificationTests/,
+      );
+    },
+  );
+
+  it("does not publish ambiguous progress paths or their private suffix words", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const report: Record<string, unknown> = {};
+    const saved: unknown[] = [];
+    const diagnostic =
+      "SwiftCompile /Users/private person/private project/Watch.swift normal arm64 private-note\n";
+    await expect(
+      command(
+        `process.stdout.write(${JSON.stringify(diagnostic)}); process.stderr.write(${JSON.stringify(diagnostic)}); process.exitCode = 1;`,
+        report,
+        2000,
+        "watch-build",
+        saved,
+      ),
+    ).rejects.toThrow();
+    expect(report.failedChild).toMatchObject({ build: { stdout: "", stderr: "" } });
+    expect(JSON.stringify([report, saved, consoleLog.mock.calls])).not.toMatch(
+      /Users|private|person|project|Watch|SwiftCompile/,
+    );
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "retains leader exit facts when held output rejects before close",
+    { timeout: 20000 },
+    async () => {
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      // This fixture owns the deliberate failed join and releases its held pipes afterward.
+      const directory = mkdtempSync(path.join(realpathSync(tmpdir()), "watch-held-output-"));
+      const owner = createVitestResourceOwner(directory);
+      const file = (name: string) => path.join(directory, name);
+      const output = "error: held output fixture\n";
+      const leaf = `
+const fs = require("node:fs");
+const timer = setInterval(() => {
+  if (fs.existsSync(${JSON.stringify(file("release"))})) clearInterval(timer);
+}, 5);
+fs.writeFileSync(${JSON.stringify(file("leaf.pid"))}, String(process.pid));
+process.send("ready");
+process.disconnect();
+`;
+      const leader = `
+const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(file("leader.pid"))}, String(process.pid));
+const child = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(leaf)}], {
+  detached: true, stdio: ["ignore", "inherit", "inherit", "ipc"],
+});
+child.once("message", () => {
+  fs.writeSync(1, ${JSON.stringify(output)});
+  process.exit(7);
+});
+`;
+      const report: Record<string, unknown> = {};
+      const completion = watchProof
+        .runWatchQualificationCommand("watch-build", process.execPath, ["-e", leader], {
+          environment: { ...process.env, TMPDIR: directory, TMP: directory, TEMP: directory },
+          report,
+          save: async () => {
+            if (report.child) {
+              writeFileSync(file("closed"), "closed");
+            }
+          },
+          timeout: 15000,
+        })
+        .catch((error: unknown) => error);
+      await runQaGatewayFixture(
+        async () => {
+          const failure = await completion;
+          expect(failure).toMatchObject({ code: "EPROCESSGROUP_CLEANUP_FAILED" });
+          expect(hasUnjoinedWork(failure)).toBe(true);
+          expect(report.child).toBeUndefined();
+          expect(report.failedChild).toMatchObject({
+            code: 7,
+            signal: null,
+            outputBytes: Buffer.byteLength(output),
+            outcome: "rejected",
+            errorCode: "EPROCESSGROUP_CLEANUP_FAILED",
+            unjoined: true,
+          });
+          const firstFailure = structuredClone(report.failedChild);
+          expect(() => owner.assertReleased()).toThrow("Unreleased Vitest resource claim");
+          writeFileSync(file("release"), "release");
+          await waitForFile(file("closed"), 2000);
+          expect(report.child).toMatchObject({ code: 7, outputBytes: Buffer.byteLength(output) });
+          await command("", report, 2000, "watch-delete");
+          expect(report.failedChild).toEqual(firstFailure);
+        },
+        async () => {
+          writeFileSync(file("release"), "release");
+          await completion;
+          for (const name of ["leader.pid", "leaf.pid"]) {
+            if (existsSync(file(name))) {
+              await waitForDead(await waitForPidFile(file(name), 2000), 2000);
+            }
+          }
+          rmSync(directory, { recursive: true, force: true });
+        },
+      );
+    },
+  );
+
+  it.each(["timeout", "signal", "spawn"])(
+    "classifies %s without inferring timeout from SIGTERM",
+    async (kind) => {
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const report: Record<string, unknown> = {};
+      const run =
+        kind === "spawn"
+          ? watchProof.runWatchQualificationCommand(
+              "watch-build",
+              "/missing-watch-fixture-tool",
+              [],
+              {
+                environment: process.env,
+                report,
+                save: async () => {},
+              },
+            )
+          : command(
+              kind === "timeout"
+                ? "setInterval(() => {}, 1000)"
+                : "process.kill(process.pid, 'SIGTERM')",
+              report,
+              kind === "timeout" ? 350 : 2000,
+            );
+      await expect(run).rejects.toThrow();
+      expect(report.failedChild).toMatchObject({
+        outcome: kind === "signal" ? "signal" : "rejected",
+        errorCode: kind === "timeout" ? "ETIMEDOUT" : kind === "spawn" ? "ENOENT" : null,
+        elapsedMs: expect.any(Number),
+      });
+    },
+  );
+
+  it("keeps the four MiB combined output cutoff and joins its rejected child", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const report: Record<string, unknown> = {};
+    const failure = await command(
+      `
+      process.stdout.write("error: fixture start\\n");
+      process.stderr.write(Buffer.alloc(4 * 1024 * 1024 + 1, 120));
+    `,
+      report,
+    ).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "ABORT_ERR" });
+    expect(hasUnjoinedWork(failure)).toBe(false);
+    expect(report.failedChild).toMatchObject({
+      outcome: "rejected",
+      errorCode: "ABORT_ERR",
+      unjoined: false,
+      build: { truncated: true },
+    });
+    expect((report.failedChild as { outputBytes: number }).outputBytes).toBeGreaterThan(
+      4 * 1024 * 1024,
+    );
+  });
+
+  it("bounds both build streams and does not expose output after identity admission", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const report: Record<string, unknown> = {};
+    await expect(
+      command(
+        `
+      process.stdout.write(("error: bounded fixture\\n").repeat(10000));
+      process.stderr.write(("error: bounded fixture\\n").repeat(10000));
+      process.exitCode = 1;
+    `,
+        report,
+      ),
+    ).rejects.toThrow();
+    const failed = report.failedChild as { build: { stdout: string; stderr: string } };
+    expect(Buffer.byteLength(failed.build.stdout)).toBeLessThanOrEqual(4096);
+    expect(Buffer.byteLength(failed.build.stderr)).toBeLessThanOrEqual(4096);
+    const privateReport: Record<string, unknown> = {};
+    await expect(
+      command(
+        "console.error('private-phase-token'); process.exitCode = 1",
+        privateReport,
+        2000,
+        "watch-positive",
+      ),
+    ).rejects.toThrow();
+    expect(privateReport.failedChild).not.toHaveProperty("build");
+    expect(JSON.stringify([privateReport, consoleLog.mock.calls])).not.toContain(
+      "private-phase-token",
+    );
+  });
+});
+
 describe("Watch qualification phase admission", () => {
   it.each(["helper", "native", "unjoined", "malformed", "stale", "missing"])(
     "preserves only bounded public diagnostics for %s failure",

@@ -4,6 +4,18 @@ set -euo pipefail
 result_bundle="${1:-apps/ios/build/LifecycleTestResults/OpenClawWatchOperationTests.xcresult}"
 phase="${3:-suites}"
 state_dir="${4:-}"
+run_build_step() {
+  local label="$1" status=0
+  shift
+  if [ "$phase" != "build" ]; then
+    "$@"
+    return
+  fi
+  printf 'OPENCLAW_WATCH_BUILD\tstart\t%s\n' "$label" >&2
+  "$@" || status=$?
+  printf 'OPENCLAW_WATCH_BUILD\tend\t%s\t%s\n' "$label" "$status" >&2
+  return "$status"
+}
 if [ "$#" -gt 1 ]; then
   if [ "$#" -ne 4 ] || [[ ! "$2" =~ ^[A-Fa-f0-9-]{36}$ ]] || [[ "$state_dir" != /* ]]; then
     echo "Expected result bundle, owned simulator UUID, phase, and private state directory" >&2
@@ -54,10 +66,12 @@ if [ "$phase" != "suites" ]; then
   test_args=(-parallel-testing-enabled NO -only-testing:OpenClawWatchTests/WatchOperatorHTTPSQualificationTests)
 fi
 if [ "$phase" = "suites" ] || [ "$phase" = "build" ]; then
-xcodebuild "${xcodebuild_args[@]}" "${test_args[@]}" build-for-testing
+run_build_step build-for-testing xcodebuild "${xcodebuild_args[@]}" "${test_args[@]}" build-for-testing
+# Finish the query before validation so a failed query cannot become a JSON-parser failure.
+build_settings="$(run_build_step build-settings xcodebuild "${xcodebuild_args[@]}" "${test_args[@]}" -showBuildSettings -json build-for-testing)"
 app_path="$(
-  xcodebuild "${xcodebuild_args[@]}" "${test_args[@]}" -showBuildSettings -json build-for-testing |
-    WATCH_QUALIFICATION_STATE="$state_dir" WATCH_QUALIFICATION_SIMULATOR="$simulator_id" node --input-type=module -e '
+  printf '%s\n' "$build_settings" |
+    WATCH_QUALIFICATION_STATE="$state_dir" WATCH_QUALIFICATION_SIMULATOR="$simulator_id" run_build_step host-validation node --input-type=module -e '
       import { execFileSync } from "node:child_process";
       import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
       import { tmpdir } from "node:os";
@@ -176,7 +190,7 @@ if [ "$phase" = "suites" ]; then
 xcrun simctl boot "$simulator_id" 2>/dev/null || true
 xcrun simctl bootstatus "$simulator_id" -b
 fi
-xcrun simctl install "$simulator_id" "$app_path"
+run_build_step install xcrun simctl install "$simulator_id" "$app_path"
 if [ "$phase" = "build" ]; then exit 0; fi
 else
   # Only the coordinator's verified build may feed a phase; never rebuild or pick another device.

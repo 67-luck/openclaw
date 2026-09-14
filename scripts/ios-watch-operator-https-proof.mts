@@ -6,9 +6,12 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer as createHTTPSServer } from "node:https";
 import { createServer, type Socket } from "node:net";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { TLSSocket } from "node:tls";
 import { pathToFileURL } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { WebSocket, WebSocketServer } from "ws";
+import { redactForDevToolLog } from "./lib/dev-tooling-safety.js";
 import { hasUnjoinedWork, runManagedCommand } from "./lib/managed-child-process.mts";
 
 const scopes = ["operator.read", "operator.talk"];
@@ -22,6 +25,182 @@ type RunCommand = (
   args: string[],
   options?: CommandOptions,
 ) => Promise<{ code: number; stdout: string }>;
+type BuildStep = { event: string; label: string; code?: number };
+
+function publicBuildOutput(text: string): string {
+  // Redact whole streams before selecting a tail: secrets and paths can span pipe chunks.
+  const located = stripVTControlCharacters(text).replace(
+    /^[\t ]*\/[^\r\n]+?:(\d+):(\d+): (?=(?:error|warning|fatal error)\b)/gm,
+    "[path]:$1:$2: ",
+  );
+  const redacted = redactForDevToolLog(located)
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[url]")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[email]")
+    .replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi, "[id]")
+    .replace(/\b(?:[a-z0-9-]+\.)+[a-z0-9-]+\b/gi, "[identifier]")
+    .replace(/\b(?:[0-9a-f]{0,4}:){2,}[0-9a-f:]{0,39}\b/gi, "[address]");
+  return (
+    redacted
+      .split(/\r?\n/)
+      // Other path-bearing lines have no unambiguous boundary when paths contain spaces.
+      .filter(
+        (line) =>
+          !line.includes("/") &&
+          /^(?:.*:\d+:\d+: )?(?:error|warning|fatal error)\b|^\s*(?:Compiling|Checking|Downloading|Downloaded|Finished|SwiftCompile|CompileSwift|CompileC|CodeSign|Resolve Package Graph|Fetching|Creating working copy|Checking out|\*\* (?:TEST )?BUILD )/.test(
+            line,
+          ),
+      )
+      .map((line) => (/…|\*\*\*|PRIVATE KEY/.test(line) ? "[redacted sensitive output]" : line))
+      .join("\n")
+      .replace(/[^\x20-\x7e\n\t]/g, "?")
+      .slice(-4096)
+  );
+}
+
+export async function runWatchQualificationCommand(
+  label: string,
+  bin: string,
+  args: string[],
+  options: CommandOptions & {
+    environment: NodeJS.ProcessEnv;
+    report: Record<string, unknown>;
+    save: () => Promise<void>;
+    signal?: AbortSignal;
+  },
+): Promise<{ code: number; stdout: string }> {
+  const started = performance.now();
+  const { report, save } = options;
+  const stdoutDecoder = new StringDecoder("utf8");
+  const stderrDecoder = new StringDecoder("utf8");
+  let stdout = "";
+  let stderr = "";
+  let bytes = 0;
+  let parsedStderr = 0;
+  let code: number | undefined;
+  let childStatus: {
+    label: string;
+    code: number | null;
+    signal: NodeJS.Signals | null;
+    outputBytes: number;
+  } = { label, code: null, signal: null, outputBytes: 0 };
+  const steps: BuildStep[] = [];
+  const overflow = new AbortController();
+  try {
+    code = await runManagedCommand({
+      bin,
+      args,
+      env: options.environment,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeoutMs: options.timeout ?? 30000,
+      timeoutForceKillOnLeaderExit: true,
+      requireProcessTreeExit: true,
+      signal:
+        options.cleanup || !options.signal
+          ? overflow.signal
+          : AbortSignal.any([options.signal, overflow.signal]),
+      onReady(child) {
+        for (const [stream, capture] of [
+          [child.stdout, true],
+          [child.stderr, false],
+        ] as const) {
+          assert(stream);
+          stream.on("data", (chunk: Buffer) => {
+            bytes += chunk.length;
+            if (bytes > 4 * 1024 * 1024) {
+              overflow.abort();
+            } else if (capture) {
+              stdout += stdoutDecoder.write(chunk);
+            } else if (label === "watch-build") {
+              stderr += stderrDecoder.write(chunk);
+              for (
+                let end = stderr.indexOf("\n", parsedStderr);
+                end >= 0;
+                end = stderr.indexOf("\n", parsedStderr)
+              ) {
+                const line = stderr.slice(parsedStderr, end);
+                parsedStderr = end + 1;
+                const match =
+                  /^OPENCLAW_WATCH_BUILD\t(start|end)\t(build-for-testing|build-settings|host-validation|install)(?:\t(\d{1,3}))?$/.exec(
+                    line,
+                  );
+                if (
+                  !match ||
+                  !match[1] ||
+                  !match[2] ||
+                  steps.length >= 8 ||
+                  (match[1] === "start") !== (match[3] === undefined) ||
+                  Number(match[3] ?? 0) > 255
+                ) {
+                  continue;
+                }
+                const step = {
+                  event: match[1],
+                  label: match[2],
+                  ...(match[3] === undefined ? {} : { code: Number(match[3]) }),
+                };
+                steps.push(step);
+                console.log(JSON.stringify({ watchBuildStep: step }));
+              }
+            }
+          });
+        }
+        child.once("exit", (exit, signal) => {
+          childStatus = { label, code: exit, signal, outputBytes: bytes };
+        });
+        child.once("close", (exit, signal) => {
+          stdout += stdoutDecoder.end();
+          stderr += stderrDecoder.end();
+          childStatus = { label, code: exit, signal, outputBytes: bytes };
+          report.child = childStatus;
+          console.log(JSON.stringify(childStatus));
+          void save().catch(() => {});
+        });
+      },
+    });
+    assert(!overflow.signal.aborted && code === 0, `Command failed: ${label}`);
+    return { code, stdout };
+  } catch (error) {
+    // Preserve the first command failure before cleanup changes report.child.
+    if (report.failedChild === undefined) {
+      const errorCode = (error as NodeJS.ErrnoException).code;
+      report.failedChild = {
+        ...childStatus,
+        outputBytes: bytes,
+        outcome: code === undefined ? "rejected" : childStatus.signal ? "signal" : "exit",
+        errorCode: [
+          "ETIMEDOUT",
+          "ABORT_ERR",
+          "ENOENT",
+          "EACCES",
+          "EPERM",
+          "EPROCESSGROUP_CLEANUP_FAILED",
+        ].includes(errorCode ?? "")
+          ? errorCode
+          : null,
+        elapsedMs: Math.round(performance.now() - started),
+        unjoined: hasUnjoinedWork(error),
+        ...(label === "watch-build"
+          ? {
+              build: {
+                steps: [...steps],
+                stdout: publicBuildOutput(
+                  overflow.signal.aborted ? stdout.slice(0, stdout.lastIndexOf("\n") + 1) : stdout,
+                ),
+                stderr: publicBuildOutput(
+                  overflow.signal.aborted ? stderr.slice(0, stderr.lastIndexOf("\n") + 1) : stderr,
+                ),
+                truncated: overflow.signal.aborted || stdout.length > 4096 || stderr.length > 4096,
+              },
+            }
+          : {}),
+      };
+      console.log(JSON.stringify({ failedChild: report.failedChild }));
+      await save().catch(() => {});
+    }
+    throw error;
+  }
+}
 type Delivery = { route: string; status: number; tls: string | null; connectionID?: string };
 type PhaseResult = {
   run: string;
@@ -530,45 +709,13 @@ async function main(): Promise<void> {
     } else {
       await checkpoint(label);
     }
-    let stdout = "";
-    let bytes = 0;
-    const overflow = new AbortController();
-    const code = await runManagedCommand({
-      bin,
-      args,
-      env: nativeEnvironment,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-      timeoutMs: options.timeout ?? 30000,
-      timeoutForceKillOnLeaderExit: true,
-      requireProcessTreeExit: true,
-      signal: options.cleanup
-        ? overflow.signal
-        : AbortSignal.any([cancelled.signal, overflow.signal]),
-      onReady(child) {
-        for (const [stream, capture] of [
-          [child.stdout, true],
-          [child.stderr, false],
-        ] as const) {
-          assert(stream);
-          stream.on("data", (chunk: Buffer) => {
-            bytes += chunk.length;
-            if (bytes > 4 * 1024 * 1024) {
-              overflow.abort();
-            } else if (capture) {
-              stdout += chunk.toString("utf8");
-            }
-          });
-        }
-        child.once("close", (exit, signal) => {
-          report.child = { label, code: exit, signal, outputBytes: bytes };
-          console.log(JSON.stringify(report.child));
-          void save().catch(() => {});
-        });
-      },
+    return runWatchQualificationCommand(label, bin, args, {
+      ...options,
+      environment: nativeEnvironment,
+      signal: cancelled.signal,
+      report,
+      save,
     });
-    assert(!overflow.signal.aborted && code === 0, `Command failed: ${label}`);
-    return { code, stdout };
   };
   let simulator: string | undefined;
   let gateway:
