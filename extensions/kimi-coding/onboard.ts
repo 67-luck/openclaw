@@ -1,4 +1,5 @@
 // Kimi Coding setup module handles plugin onboarding behavior.
+import { findNormalizedProviderValue } from "openclaw/plugin-sdk/provider-auth";
 import {
   createDefaultModelsPresetAppliers,
   type OpenClawConfig,
@@ -12,7 +13,7 @@ import {
 export const KIMI_MODEL_REF = `kimi/${KIMI_CODING_DEFAULT_MODEL_ID}`;
 export const KIMI_CODING_MODEL_REF = KIMI_MODEL_REF;
 
-export const { applyConfig: applyKimiCodeConfig } = createDefaultModelsPresetAppliers({
+const kimiCodingPresetAppliers = createDefaultModelsPresetAppliers({
   primaryModelRef: KIMI_MODEL_REF,
   resolveParams: (cfg: OpenClawConfig) => {
     const defaultModel = buildKimiCodingProvider().models.find(
@@ -31,3 +32,16 @@ export const { applyConfig: applyKimiCodeConfig } = createDefaultModelsPresetApp
     };
   },
 });
+
+export const applyKimiCodeConfig = kimiCodingPresetAppliers.applyConfig;
+
+export function applyKimiProviderConnectionConfig(cfg: OpenClawConfig): OpenClawConfig {
+  const existing = findNormalizedProviderValue(cfg.models?.providers, "kimi");
+  const next = kimiCodingPresetAppliers.applyProviderConfig(cfg);
+  const connection = next.models?.providers?.kimi;
+  if (existing && connection) {
+    connection.baseUrl = existing.baseUrl;
+    connection.api = existing.api ?? connection.api;
+  }
+  return next;
+}
