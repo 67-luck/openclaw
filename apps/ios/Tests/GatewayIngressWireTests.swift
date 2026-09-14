@@ -33,15 +33,16 @@ private final class IngressWireFixture {
             "iat": Date().timeIntervalSince1970,
         ])
         self.stableID = "manual|127.0.0.1|\(server.port)"
+        let expiresAt = Date().addingTimeInterval(3600)
         self.acceptedToken = try self.tokens.token([
             "iss": self.application.issuer.absoluteString, "aud": [self.application.audience],
-            "type": "app", "sub": "wire-first", "exp": Date().addingTimeInterval(3600).timeIntervalSince1970,
+            "type": "app", "sub": "wire-first", "exp": expiresAt.timeIntervalSince1970,
         ])
         self.session = CloudflareAccessSession(
             application: self.application,
             subject: "wire-first",
             token: self.acceptedToken,
-            expiresAt: Date().addingTimeInterval(3600))
+            expiresAt: expiresAt)
         self.stored = try String(
             data: JSONEncoder().encode(self.session),
             encoding: .utf8)
@@ -145,15 +146,16 @@ private final class IngressWireFixture {
     }
 
     func replaceAccount() throws {
+        let expiresAt = Date().addingTimeInterval(3600)
         self.acceptedToken = try self.tokens.token([
             "iss": self.application.issuer.absoluteString, "aud": [self.application.audience],
-            "type": "app", "sub": "wire-replacement", "exp": Date().addingTimeInterval(3600).timeIntervalSince1970,
+            "type": "app", "sub": "wire-replacement", "exp": expiresAt.timeIntervalSince1970,
         ])
         self.session = CloudflareAccessSession(
             application: self.application,
             subject: "wire-replacement",
             token: self.acceptedToken,
-            expiresAt: Date().addingTimeInterval(3600))
+            expiresAt: expiresAt)
     }
 
     private func respond(_ request: NativeGatewayWebSocketFixture.Request)
