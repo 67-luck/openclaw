@@ -131,7 +131,6 @@ describe("whatsapp setup wizard", () => {
   });
 
   it("skips interactive linking when the client defers device linking", async () => {
-    hoisted.readWebAuthState.mockResolvedValue("linked");
     const harness = createSeparatePhoneHarness({
       selectValues: ["separate", "disabled"],
     });

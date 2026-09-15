@@ -128,6 +128,7 @@ function readLastSocketOptions(): {
   fireInitQueries?: boolean;
   keepAliveIntervalMs?: number;
   printQRInTerminal?: boolean;
+  qrTimeout?: number;
   waWebSocketUrl?: string | URL;
   logger?: { level?: string; trace?: unknown };
   browser?: [string, string, string];
@@ -204,7 +205,7 @@ describe("web session", () => {
     expect(passed.keepAliveIntervalMs).toBe(DEFAULT_WHATSAPP_SOCKET_TIMING.keepAliveIntervalMs);
     expect(passed.connectTimeoutMs).toBe(DEFAULT_WHATSAPP_SOCKET_TIMING.connectTimeoutMs);
     expect(passed.defaultQueryTimeoutMs).toBe(DEFAULT_WHATSAPP_SOCKET_TIMING.defaultQueryTimeoutMs);
-    expect(passed.browser).toEqual(["openclaw", "Chrome", expect.any(String)]);
+    expect(passed.browser).toEqual(["openclaw", "cli", expect.any(String)]);
     const passedLogger = (passed as { logger?: { level?: string; trace?: unknown } }).logger;
     expect(passedLogger?.level).toBe("silent");
     if (typeof passedLogger?.trace !== "function") {
@@ -391,12 +392,16 @@ describe("web session", () => {
       keepAliveIntervalMs: 10_000,
       connectTimeoutMs: 90_000,
       defaultQueryTimeoutMs: 120_000,
+      qrTimeoutMs: 300_000,
+      browser: ["openclaw", "Chrome", "test"],
     });
 
     const passed = readLastSocketOptions();
     expect(passed.keepAliveIntervalMs).toBe(10_000);
     expect(passed.connectTimeoutMs).toBe(90_000);
     expect(passed.defaultQueryTimeoutMs).toBe(120_000);
+    expect(passed.qrTimeout).toBe(300_000);
+    expect(passed.browser).toEqual(["openclaw", "Chrome", "test"]);
   });
 
   it("passes explicit Baileys WebSocket URL overrides", async () => {

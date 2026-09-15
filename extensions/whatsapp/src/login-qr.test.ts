@@ -299,10 +299,13 @@ describe("login-qr", () => {
       message: refreshedQrMessage,
       qrDataUrl: encodedQr("qr-after-logout"),
     });
-    expect(logoutWebMock).toHaveBeenCalledOnce();
-    expect(logoutWebMock).toHaveBeenCalledWith(
-      expect.objectContaining({ beforeCredentialPersistence: expect.any(Function) }),
-    );
+    expect(prepareWebAuthForLoginMock).toHaveBeenLastCalledWith({
+      authDir: expect.stringContaining(accountId),
+      isLegacyAuthDir: false,
+      mode: "clear-existing",
+      runtime: expect.anything(),
+      beforeCredentialPersistence: expect.any(Function),
+    });
   });
 
   it("keeps the linked shortcut when existing auth has an active listener", async () => {
@@ -384,39 +387,36 @@ describe("login-qr", () => {
     await expect(operationGuard?.()).rejects.toThrow("WhatsApp login is no longer active");
   });
 
-  it("revalidates authority after auth inspection and before forced credential cleanup", async () => {
+  it("revalidates authority before forced credential cleanup", async () => {
     const accountId = "revoked-force-fresh-qr";
-    let resolveAuthState: ((value: { outcome: "stable"; exists: true }) => void) | undefined;
-    const authState = new Promise<{ outcome: "stable"; exists: true }>((resolve) => {
-      resolveAuthState = resolve;
-    });
-    let active = true;
     const beforeCredentialPersistence = vi.fn(async () => {
-      if (!active) {
-        throw new Error("plugin tool host authority is no longer active");
-      }
+      throw new Error("plugin tool host authority is no longer active");
     });
-    readWebAuthExistsForDecisionMock.mockReturnValueOnce(authState);
-    logoutWebMock.mockImplementationOnce(async (options) => {
+    prepareWebAuthForLoginMock.mockImplementationOnce(async (options) => {
       await options.beforeCredentialPersistence?.();
-      return true;
+      return "cleared";
     });
 
-    const resultPromise = startWebLoginWithQr({
-      timeoutMs: 5000,
-      accountId,
-      force: true,
-      beforeCredentialPersistence,
-    });
-    await vi.waitFor(() => expect(readWebAuthExistsForDecisionMock).toHaveBeenCalledOnce());
-    active = false;
-    resolveAuthState?.({ outcome: "stable", exists: true });
-
-    await expect(resultPromise).resolves.toEqual({
+    await expect(
+      startWebLoginWithQr({
+        timeoutMs: 5000,
+        accountId,
+        force: true,
+        beforeCredentialPersistence,
+      }),
+    ).resolves.toEqual({
       message:
         "WhatsApp login failed: formatted:Error: plugin tool host authority is no longer active",
     });
+    expect(prepareWebAuthForLoginMock).toHaveBeenCalledWith({
+      authDir: expect.stringContaining(accountId),
+      isLegacyAuthDir: false,
+      mode: "clear-existing",
+      runtime: expect.anything(),
+      beforeCredentialPersistence,
+    });
     expect(beforeCredentialPersistence).toHaveBeenCalledOnce();
+    expect(readWebAuthExistsForDecisionMock).not.toHaveBeenCalled();
     expect(createWaSocketMock).not.toHaveBeenCalled();
   });
 
@@ -479,14 +479,13 @@ describe("login-qr", () => {
     const result = await startWebLoginWithQr({ timeoutMs: 5000, accountId });
 
     expectScanQrResult(result, "qr-after-restart-logout");
-    expect(logoutWebMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authDir: expect.stringContaining(accountId),
-        isLegacyAuthDir: false,
-        runtime: expect.anything(),
-        beforeCredentialPersistence: expect.any(Function),
-      }),
-    );
+    expect(prepareWebAuthForLoginMock).toHaveBeenLastCalledWith({
+      authDir: expect.stringContaining(accountId),
+      isLegacyAuthDir: false,
+      mode: "clear-existing",
+      runtime: expect.anything(),
+      beforeCredentialPersistence: expect.any(Function),
+    });
     expect(createWaSocketMock).toHaveBeenCalledTimes(2);
   });
 
