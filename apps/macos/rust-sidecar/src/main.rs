@@ -28,6 +28,7 @@ const MAX_IN_FLIGHT: u16 = 64;
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 type Failure = Box<dyn Error + Send + Sync>;
+type RequestResult = (Option<String>, Result<(), mpsc::error::SendError<Value>>);
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
@@ -304,6 +305,10 @@ async fn run_gateway(
                 }
             }
             message = async { incoming.lock().await.recv().await } => {
+                // Completed tasks still occupy JoinSet capacity until joined.
+                while let Some(completed) = requests.try_join_next() {
+                    finish_request(completed, &mut request_handles)?;
+                }
                 match message {
                     Some(SupervisorMessage::Frame { frame, caller_owns_lifetime }) if frame.kind == "req" && frame.method != "connect" => {
                         if frame.method == "node.invoke.result" {
@@ -336,7 +341,17 @@ async fn run_gateway(
                         request_handles.insert(id, handle);
                     }
                     Some(SupervisorMessage::CancelRequest { id }) => {
-                        if let Some(handle) = request_handles.get(&id) { handle.abort(); }
+                        if let Some(handle) = request_handles.get(&id) {
+                            handle.abort();
+                            // Retire the actual RPC future before admitting a replacement;
+                            // removing its identity alone would leave its request permit alive.
+                            while request_handles.contains_key(&id) {
+                                finish_request(
+                                    requests.join_next().await.ok_or("missing request task")?,
+                                    &mut request_handles,
+                                )?;
+                            }
+                        }
                     }
                     Some(SupervisorMessage::Ping { id }) => {
                         // Ping stays a WebSocket control operation, never a Gateway RPC.
@@ -356,14 +371,7 @@ async fn run_gateway(
                 }
             }
             Some(completed) = requests.join_next(), if !requests.is_empty() => {
-                match completed {
-                    Ok((id, result)) => {
-                        if let Some(id) = id { request_handles.remove(&id); }
-                        result?;
-                    }
-                    Err(error) if error.is_cancelled() => request_handles.retain(|_, handle| handle.id() != error.id()),
-                    Err(error) => return Err(error.into()),
-                }
+                finish_request(completed, &mut request_handles)?;
             }
             completed = &mut runtime_task => {
                 completed??;
@@ -375,6 +383,25 @@ async fn run_gateway(
     requests.abort_all();
     session.close().await;
     runtime_task.abort();
+    Ok(())
+}
+
+fn finish_request(
+    completed: Result<RequestResult, tokio::task::JoinError>,
+    handles: &mut HashMap<String, tokio::task::AbortHandle>,
+) -> Result<(), Failure> {
+    match completed {
+        Ok((id, result)) => {
+            if let Some(id) = id {
+                handles.remove(&id);
+            }
+            result?;
+        }
+        Err(error) if error.is_cancelled() => {
+            handles.retain(|_, handle| handle.id() != error.id());
+        }
+        Err(error) => return Err(error.into()),
+    }
     Ok(())
 }
 
