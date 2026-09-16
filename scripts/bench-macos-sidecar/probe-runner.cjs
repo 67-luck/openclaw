@@ -150,7 +150,7 @@ async function run(pinMode) {
   try {
     const ended = await Promise.race([
       exit,
-      delay(kind === "tls" ? 15000 : 45000).then(() => null),
+      delay(kind === "tls" ? 15000 : 75000).then(() => null),
     ]);
     if (!ended) throw Error("probe deadline expired");
     const rows = stdout

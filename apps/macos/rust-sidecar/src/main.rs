@@ -287,6 +287,7 @@ async fn run_gateway(
     let mut runtime_task = tokio::spawn(async move { runtime.run(runtime_session).await });
     let _runtime_lifetime = AbortTaskOnDrop(runtime_task.abort_handle());
     let mut requests = JoinSet::new();
+    let mut controls = JoinSet::new();
     let mut request_handles = HashMap::<String, tokio::task::AbortHandle>::new();
     loop {
         tokio::select! {
@@ -307,6 +308,9 @@ async fn run_gateway(
             message = async { incoming.lock().await.recv().await } => {
                 // Completed tasks still occupy JoinSet capacity until joined.
                 while let Some(completed) = requests.try_join_next() {
+                    finish_request(completed, &mut request_handles)?;
+                }
+                while let Some(completed) = controls.try_join_next() {
                     finish_request(completed, &mut request_handles)?;
                 }
                 match message {
@@ -354,11 +358,15 @@ async fn run_gateway(
                         }
                     }
                     Some(SupervisorMessage::Ping { id }) => {
-                        // Ping stays a WebSocket control operation, never a Gateway RPC.
-                        if requests.len() >= usize::from(max_in_flight) { return Err("request capacity exceeded".into()); }
+                        // Keepalive has its own bounded task and session capacity. It must
+                        // remain available while every application RPC slot is occupied.
+                        if !controls.is_empty() {
+                            outgoing.send(json!({"type":"pong","id":id,"ok":false})).await?;
+                            continue;
+                        }
                         let session = session.clone();
                         let outgoing = outgoing.clone();
-                        requests.spawn(async move {
+                        controls.spawn(async move {
                             let result = session.ping().await;
                             (None, outgoing.send(json!({"type":"pong","id":id,"ok":result.is_ok()})).await)
                         });
@@ -373,6 +381,9 @@ async fn run_gateway(
             Some(completed) = requests.join_next(), if !requests.is_empty() => {
                 finish_request(completed, &mut request_handles)?;
             }
+            Some(completed) = controls.join_next(), if !controls.is_empty() => {
+                finish_request(completed, &mut request_handles)?;
+            }
             completed = &mut runtime_task => {
                 completed??;
                 break;
@@ -381,6 +392,7 @@ async fn run_gateway(
         }
     }
     requests.abort_all();
+    controls.abort_all();
     session.close().await;
     runtime_task.abort();
     Ok(())

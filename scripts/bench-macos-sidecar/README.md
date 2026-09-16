@@ -48,7 +48,7 @@ python3 run-paired.py
 
 Before execution, validate the included sandbox with `sandbox-probe`: it must deny operator file access, Keychain, preference, TCC, and WindowServer services. The validator supplies `BENCH_ROOT=<resolved output path>` and `BENCH_ENDPOINT=localhost:<fixture port>` through `sandbox-exec -D`. The selected listener must work and a different live loopback listener must fail with `EPERM`. The profile does not grant general loopback access, home-directory access, or TOFU/pin persistence. The runner supplies a fresh environment to every native process. TLS uses source-defined test certificates and explicit fingerprints.
 
-The baseline is extracted from `4e9753fa26d5a4d3264a4f300e7dcbc5659f22b5`, the stack tip before macOS adoption. Candidate sources come from the selected checkout. Build metadata records all source and executable SHA-256 hashes. Keep the helper hash paired with the source snapshot that produced it; the build script cannot independently prove provenance of a supplied binary.
+The baseline is extracted from `73d99565248df43a0c972402ccc5bf034b34fe91`, the refreshed sidecar stack tip before macOS adoption. Candidate sources come from the selected checkout. Build metadata records all source and executable SHA-256 hashes. Keep the helper hash paired with the source snapshot that produced it; the build script cannot independently prove provenance of a supplied binary.
 
 ## Measurements
 

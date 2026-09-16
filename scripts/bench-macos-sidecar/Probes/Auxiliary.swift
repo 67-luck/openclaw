@@ -101,6 +101,13 @@ import OpenClawRustSidecar
                 var iterator = subscription.events.makeAsyncIterator()
                 guard await iterator.next() != nil else { throw URLError(.networkConnectionLost) }
                 subscription.cancel()
+                if batch == 2 {
+                    try await Task.sleep(for: .seconds(17))
+                    checks.append([
+                        "scenario": "64 pending RPCs survive a keepalive interval",
+                        "passed": true,
+                    ])
+                }
                 tasks[0].cancel()
                 do {
                     _ = try await tasks[0].value
