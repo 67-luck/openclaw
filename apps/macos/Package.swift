@@ -11,6 +11,7 @@ let package = Package(
     products: [
         .library(name: "OpenClawIPC", targets: ["OpenClawIPC"]),
         .library(name: "OpenClawDiscovery", targets: ["OpenClawDiscovery"]),
+        .library(name: "OpenClawRustSidecar", targets: ["OpenClawRustSidecar"]),
         .executable(name: "OpenClaw", targets: ["OpenClaw"]),
         .executable(name: "openclaw-mac", targets: ["OpenClawMacCLI"]),
     ],
@@ -26,6 +27,12 @@ let package = Package(
         .package(path: "../swabble"),
     ],
     targets: [
+        .target(
+            name: "OpenClawRustSidecar",
+            dependencies: [.product(name: "OpenClawKit", package: "OpenClawKit")]),
+        .testTarget(
+            name: "OpenClawRustSidecarTests",
+            dependencies: ["OpenClawRustSidecar"]),
         .target(
             name: "OpenClawCameraPTZNative",
             path: "Sources/OpenClawCameraPTZNative",
@@ -55,6 +62,7 @@ let package = Package(
             dependencies: [
                 "OpenClawIPC",
                 "OpenClawDiscovery",
+                "OpenClawRustSidecar",
                 "OpenClawCameraPTZNative",
                 .product(name: "OpenClawNativeState", package: "OpenClawKit"),
                 .product(name: "OpenClawKit", package: "OpenClawKit"),
