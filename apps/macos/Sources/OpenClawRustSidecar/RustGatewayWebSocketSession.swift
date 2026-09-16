@@ -456,7 +456,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
             return true
         }
         guard accepted else {
-            let error = self.lock.withLock { self.failure } ?? URLError(.dataLengthExceedsMaximum)
+            let error: any Error = self.lock.withLock { self.failure ?? URLError(.dataLengthExceedsMaximum) }
             self.finish(error)
             continuation?.resume(throwing: error)
             return
