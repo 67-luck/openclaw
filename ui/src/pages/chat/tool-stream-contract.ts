@@ -76,6 +76,8 @@ export type WaitingApprovalStatus = {
   approvalId: string;
   toolCallId: string | null;
   runId: string;
+  /** The approval has appeared in a queue snapshot, so a later absence is authoritative. */
+  observedInSnapshot?: true;
 };
 
 export type ToolStreamHost = {
