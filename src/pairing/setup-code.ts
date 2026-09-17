@@ -101,12 +101,14 @@ type PairingSetupResolution =
   | {
       ok: false;
       error: string;
+      reason?: "loopback";
     };
 
 type ResolveUrlResult = {
   url?: string;
   source?: string;
   error?: string;
+  reason?: "loopback";
 };
 
 function describeSecureMobilePairingFix(source?: string): string {
@@ -397,7 +399,7 @@ export async function resolvePairingGatewayUrl(
     return bindResult;
   }
 
-  return publicOriginResult ?? { error: PAIRING_GATEWAY_LOOPBACK_ERROR };
+  return publicOriginResult ?? { reason: "loopback", error: PAIRING_GATEWAY_LOOPBACK_ERROR };
 }
 
 export function encodePairingSetupCode(payload: PairingSetupPayload): string {
@@ -511,7 +513,11 @@ export async function resolvePairingSetupFromConfig(
   });
 
   if (!urlResult.url) {
-    return { ok: false, error: urlResult.error ?? "Gateway URL unavailable." };
+    return {
+      ok: false,
+      error: urlResult.error ?? "Gateway URL unavailable.",
+      ...(urlResult.reason ? { reason: urlResult.reason } : {}),
+    };
   }
   const mobilePairingUrlError = validateMobilePairingUrl(urlResult.url, urlResult.source);
   if (mobilePairingUrlError) {
