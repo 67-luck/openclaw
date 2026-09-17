@@ -1283,8 +1283,8 @@ struct MacNodeModeCoordinatorTests {
             configuredFingerprint: "sha256:configured",
             storedFingerprint: "stored"))
 
-        let first = cache.sessionBox(url: url, params: route.params)
-        let second = cache.sessionBox(url: url, params: route.params)
+        let first = try #require(cache.sessionBox(url: url, params: route.params))
+        let second = try #require(cache.sessionBox(url: url, params: route.params))
 
         #expect(ObjectIdentifier(first.session) == ObjectIdentifier(second.session))
     }
@@ -1303,8 +1303,8 @@ struct MacNodeModeCoordinatorTests {
             configuredFingerprint: "sha256:rotated",
             storedFingerprint: "stored"))
 
-        let first = cache.sessionBox(url: url, params: firstRoute.params)
-        let second = cache.sessionBox(url: url, params: secondRoute.params)
+        let first = try #require(cache.sessionBox(url: url, params: firstRoute.params))
+        let second = try #require(cache.sessionBox(url: url, params: secondRoute.params))
 
         #expect(ObjectIdentifier(first.session) != ObjectIdentifier(second.session))
     }
