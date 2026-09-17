@@ -10,7 +10,10 @@ const root = process.env.RFC54_BENCH_ROOT || __dirname;
 const kind = process.argv[2] || "aux";
 const mode = process.argv[3] || root + "/bin/openclaw-mac-node-sidecar";
 const label = process.argv[4] || kind + "-probe";
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+const delay = (ms) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 const fixtureDir = root + "/tls-fixtures";
 function descendantPIDs(pid) {
   const rows = execFileSync("/bin/ps", ["-axo", "pid=,ppid="], { encoding: "utf8" })
@@ -18,7 +21,13 @@ function descendantPIDs(pid) {
     .split("\n")
     .map((x) => x.trim().split(/\s+/).map(Number));
   const ids = new Set([pid]);
-  for (let i = 0; i < 5; i++) for (const [id, parent] of rows) if (ids.has(parent)) ids.add(id);
+  for (let i = 0; i < 5; i++) {
+    for (const [id, parent] of rows) {
+      if (ids.has(parent)) {
+        ids.add(id);
+      }
+    }
+  }
   return [...ids];
 }
 async function run(pinMode) {
@@ -52,7 +61,9 @@ async function run(pinMode) {
       ? { server: httpServer, perMessageDeflate: false }
       : { host: "127.0.0.1", port: 0, perMessageDeflate: false },
   );
-  if (!httpServer) await once(server, "listening");
+  if (!httpServer) {
+    await once(server, "listening");
+  }
   const port = (httpServer || server).address().port;
   server.on("connection", (ws) => {
     ws.send(
@@ -65,8 +76,9 @@ async function run(pinMode) {
     ws.on("message", (raw) => {
       const f = JSON.parse(raw);
       const reply = (payload) => {
-        if (ws.readyState === 1)
+        if (ws.readyState === 1) {
           ws.send(JSON.stringify({ type: "res", id: f.id, ok: true, payload }));
+        }
       };
       if (f.method === "connect") {
         connectCount++;
@@ -88,20 +100,23 @@ async function run(pinMode) {
           policy: { maxPayload: 16777216, maxBufferedBytes: 16777216, tickIntervalMs: 30000 },
           auth: { role: "node", scopes: [] },
         });
-      } else if (f.method === "benchmark.delay")
+      } else if (f.method === "benchmark.delay") {
         timers.push(setTimeout(() => reply({ delayed: true }), f.params.delayMs));
-      else if (f.method === "benchmark.never") {
+      } else if (f.method === "benchmark.never") {
         if (f.params?.batch !== undefined) {
           const batch = f.params.batch;
           const count = (batchCounts.get(batch) || 0) + 1;
           batchCounts.set(batch, count);
-          if (count === 64)
+          if (count === 64) {
             ws.send(
               JSON.stringify({ type: "event", event: "benchmark.batch-ready", payload: { batch } }),
             );
+          }
         }
       } else {
-        if (f.method === "benchmark.echo") echoedBatches.push(f.params?.batch);
+        if (f.method === "benchmark.echo") {
+          echoedBatches.push(f.params?.batch);
+        }
         reply(f.params || {});
       }
     });
@@ -143,31 +158,40 @@ async function run(pinMode) {
   child.stdout.on("data", (d) => (stdout += d));
   child.stderr.on("data", (d) => (stderr += d));
   const monitor = setInterval(() => {
-    for (const pid of descendantPIDs(child.pid)) owned.add(pid);
+    for (const pid of descendantPIDs(child.pid)) {
+      owned.add(pid);
+    }
   }, 250);
   const exit = once(child, "exit");
   let result;
+  let cleanupError;
   try {
     const ended = await Promise.race([
       exit,
       delay(kind === "tls" ? 15000 : 75000).then(() => null),
     ]);
-    if (!ended) throw Error("probe deadline expired");
+    if (!ended) {
+      throw new Error("probe deadline expired");
+    }
     const rows = stdout
       .trim()
       .split("\n")
       .filter(Boolean)
       .map((x) => JSON.parse(x));
     result = rows.at(-1);
-    if (!result) throw Error("no result: " + stderr);
-    if (kind === "aux" && (!result.passed || connectCount !== 1))
-      throw Error("auxiliary probe failed: " + JSON.stringify(result));
+    if (!result) {
+      throw new Error("no result: " + stderr);
+    }
+    if (kind === "aux" && (!result.passed || connectCount !== 1)) {
+      throw new Error("auxiliary probe failed: " + JSON.stringify(result));
+    }
     if (
       kind === "tls" &&
       pinMode === "match" &&
       (!result.connected || result.effectiveFingerprint !== observedPin || connectCount !== 1)
-    )
-      throw Error("matching-pin connection failed: " + JSON.stringify(result));
+    ) {
+      throw new Error("matching-pin connection failed: " + JSON.stringify(result));
+    }
     if (
       kind === "tls" &&
       pinMode === "mismatch" &&
@@ -178,17 +202,20 @@ async function run(pinMode) {
         result.systemTrustOk !== false ||
         upgradeCount !== 0 ||
         connectCount !== 0)
-    )
-      throw Error(
+    ) {
+      throw new Error(
         "mismatched-pin isolation failed: " +
           JSON.stringify({ result, upgradeCount, connectCount }),
       );
+    }
   } catch (error) {
-    result = { ...(result || {}), probeFailure: error.message };
+    result = { ...result, probeFailure: error.message };
     throw error;
   } finally {
     clearInterval(monitor);
-    for (const pid of descendantPIDs(child.pid)) owned.add(pid);
+    for (const pid of descendantPIDs(child.pid)) {
+      owned.add(pid);
+    }
     const live = (pid) => {
       try {
         process.kill(pid, 0);
@@ -207,16 +234,50 @@ async function run(pinMode) {
       forced.push(pid);
       try {
         process.kill(pid, "SIGKILL");
-      } catch {}
+      } catch (error) {
+        if (error.code !== "ESRCH" && !cleanupError) {
+          cleanupError = error;
+        }
+      }
     }
     for (let i = 0; i < 40 && remaining.length; i++) {
       await delay(25);
       remaining = remaining.filter(live);
     }
-    for (const t of timers) clearTimeout(t);
-    for (const ws of server.clients) ws.terminate();
-    await new Promise((resolve) => server.close(resolve));
-    if (httpServer) await new Promise((resolve) => httpServer.close(resolve));
+    for (const t of timers) {
+      clearTimeout(t);
+    }
+    for (const ws of server.clients) {
+      ws.terminate();
+    }
+    await new Promise((resolve) => {
+      server.close(resolve);
+    });
+    if (httpServer) {
+      await new Promise((resolve) => {
+        httpServer.close(resolve);
+      });
+    }
+    if (remaining.length && !cleanupError) {
+      cleanupError = new Error(
+        "owned processes did not exit cleanly: " +
+          JSON.stringify({
+            observedPIDs: [...owned],
+            forcedPIDs: forced,
+            remainingPIDs: remaining,
+          }),
+      );
+    }
+    if (forced.length && !cleanupError) {
+      cleanupError = new Error(
+        "owned processes did not exit cleanly: " +
+          JSON.stringify({
+            observedPIDs: [...owned],
+            forcedPIDs: forced,
+            remainingPIDs: remaining,
+          }),
+      );
+    }
     result = {
       ...result,
       pinMode,
@@ -229,11 +290,15 @@ async function run(pinMode) {
     };
     fs.writeFileSync(root + "/" + label + "-" + pinMode + ".json", JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result));
-    if (forced.length || remaining.length) throw Error("owned processes did not exit cleanly");
+  }
+  if (cleanupError) {
+    throw cleanupError;
   }
 }
 (async () => {
-  for (const scenario of kind === "tls" ? ["match", "mismatch"] : ["aux"]) await run(scenario);
+  for (const scenario of kind === "tls" ? ["match", "mismatch"] : ["aux"]) {
+    await run(scenario);
+  }
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

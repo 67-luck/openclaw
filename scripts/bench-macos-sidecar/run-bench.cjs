@@ -13,13 +13,16 @@ const repetitions = Number(process.argv[4] || 5);
 const count = Number(process.argv[5] || 2000);
 const warmup = 100;
 const extraArgs = JSON.parse(process.env.RFC54_BENCH_EXTRA_ARGS || "[]");
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const output = path.join(root, `${label}-results.json`);
+const delay = (ms) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+const resultsPath = path.join(root, `${label}-results.json`);
 const now = () => Number(process.hrtime.bigint()) / 1e6;
 const quantile = (v, q) =>
-  [...v].sort((a, b) => a - b)[Math.min(v.length - 1, Math.ceil(v.length * q) - 1)];
-function parseUsage(pid, output) {
-  const rows = output
+  v.toSorted((a, b) => a - b)[Math.min(v.length - 1, Math.ceil(v.length * q) - 1)];
+function parseUsage(pid, psOutput) {
+  const rows = psOutput
     .trim()
     .split("\n")
     .map((line) => {
@@ -36,11 +39,12 @@ function parseUsage(pid, output) {
   let changed = true;
   while (changed) {
     changed = false;
-    for (const row of rows)
+    for (const row of rows) {
       if (ids.has(row.ppid) && !ids.has(row.pid)) {
         ids.add(row.pid);
         changed = true;
       }
+    }
   }
   const selected = rows.filter((row) => ids.has(row.pid));
   return {
@@ -70,10 +74,14 @@ async function run(repetition, bytes, concurrency) {
   let stdout = "";
   const payload = { data: "x".repeat(bytes - 11) };
   const paramsJSON = JSON.stringify(payload);
-  if (Buffer.byteLength(paramsJSON) !== bytes) throw Error("payload byte mismatch");
+  if (Buffer.byteLength(paramsJSON) !== bytes) {
+    throw new Error("payload byte mismatch");
+  }
   const handshake = {};
   server.on("connection", (ws) => {
-    if (socket) throw Error("unexpected reconnect");
+    if (socket) {
+      throw new Error("unexpected reconnect");
+    }
     socket = ws;
     handshake.webSocketConnectedAt = now();
     ws.send(
@@ -86,11 +94,15 @@ async function run(repetition, bytes, concurrency) {
     ws.on("message", (raw) => {
       try {
         const frame = JSON.parse(raw);
-        if (frame.type !== "req") throw Error("unexpected Gateway frame");
+        if (frame.type !== "req") {
+          throw new Error("unexpected Gateway frame");
+        }
         if (frame.method === "connect") {
           handshake.connectRequestAt = now();
           handshake.connectProtocol = frame.params.maxProtocol;
-          if (frame.params.auth?.token !== "benchmark-token") throw Error("missing test token");
+          if (frame.params.auth?.token !== "benchmark-token") {
+            throw new Error("missing test token");
+          }
           ws.send(
             JSON.stringify({
               type: "res",
@@ -118,21 +130,32 @@ async function run(repetition, bytes, concurrency) {
           );
           return;
         }
-        if (frame.method !== "node.invoke.result") throw Error(`unexpected method ${frame.method}`);
+        if (frame.method !== "node.invoke.result") {
+          throw new Error(`unexpected method ${frame.method}`);
+        }
         const result = frame.params;
-        if (!result.ok) throw Error("invocation failed: " + JSON.stringify(result.error));
+        if (!result.ok) {
+          throw new Error("invocation failed: " + JSON.stringify(result.error));
+        }
         const received =
           result.payloadJSON === undefined ? result.payload : JSON.parse(result.payloadJSON);
-        if (JSON.stringify(received) !== paramsJSON) throw Error("echo payload corrupted");
+        if (JSON.stringify(received) !== paramsJSON) {
+          throw new Error("echo payload corrupted");
+        }
         const started = phase?.pending.get(result.id);
-        if (started === undefined) throw Error("uncorrelated or duplicate result " + result.id);
+        if (started === undefined) {
+          throw new Error("uncorrelated or duplicate result " + result.id);
+        }
         phase.pending.delete(result.id);
         phase.latencies.push(now() - started);
         ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: {} }));
         phase.completed++;
-        if (phase.sent < phase.total) phase.sendOne();
-        if (phase.completed === phase.total)
+        if (phase.sent < phase.total) {
+          phase.sendOne();
+        }
+        if (phase.completed === phase.total) {
           phase.resolve({ latenciesMs: phase.latencies, elapsedMs: now() - phase.start });
+        }
       } catch (error) {
         rejectPhase?.(error);
         child.kill();
@@ -171,33 +194,44 @@ async function run(repetition, bytes, concurrency) {
   const observed = new Set([child.pid]);
   const observe = () => {
     const value = usage(child.pid);
-    for (const row of value.processes) observed.add(row.pid);
+    for (const row of value.processes) {
+      observed.add(row.pid);
+    }
     return value;
   };
   let observerBusy = false;
   const startupObserver = setInterval(() => {
-    if (observerBusy) return;
+    if (observerBusy) {
+      return;
+    }
     observerBusy = true;
     execFile(
       "/bin/ps",
       ["-axo", "pid=,ppid=,time=,rss="],
       { encoding: "utf8" },
-      (error, output) => {
+      (error, psOutput) => {
         observerBusy = false;
-        if (error) return;
-        for (const row of parseUsage(child.pid, output).processes) observed.add(row.pid);
+        if (error) {
+          return;
+        }
+        for (const row of parseUsage(child.pid, psOutput).processes) {
+          observed.add(row.pid);
+        }
       },
     );
   }, 50);
   const childExited = once(child, "exit");
+  let cleanupError;
   try {
     ready = await new Promise((resolve, reject) => {
-      const deadline = setTimeout(() => reject(Error("startup timed out; " + stderr)), 15000);
+      const deadline = setTimeout(() => reject(new Error("startup timed out; " + stderr)), 15000);
       deadline.unref();
       child.on("error", reject);
       child.on("exit", (code, signal) => {
         clearTimeout(deadline);
-        if (!stdout.includes("\n")) reject(Error(`exited ${code}/${signal}: ${stderr}`));
+        if (!stdout.includes("\n")) {
+          reject(new Error(`exited ${code}/${signal}: ${stderr}`));
+        }
       });
       child.stdout.on("data", (data) => {
         stdout += data;
@@ -222,7 +256,7 @@ async function run(repetition, bytes, concurrency) {
     }
     async function invoke(total, prefix) {
       return await new Promise((resolve, reject) => {
-        const deadline = setTimeout(() => reject(Error("invoke phase timed out")), 30000);
+        const deadline = setTimeout(() => reject(new Error("invoke phase timed out")), 30000);
         rejectPhase = reject;
         phase = {
           total,
@@ -254,7 +288,9 @@ async function run(repetition, bytes, concurrency) {
           phase.pending.set(id, now());
           socket.send(wire);
         };
-        for (let i = 0; i < Math.min(concurrency, total); i++) phase.sendOne();
+        for (let i = 0; i < Math.min(concurrency, total); i++) {
+          phase.sendOne();
+        }
       });
     }
     await invoke(warmup, "warmup");
@@ -285,7 +321,6 @@ async function run(repetition, bytes, concurrency) {
       latenciesMs: measured.latenciesMs,
       stderr,
     };
-    return result;
   } finally {
     clearInterval(startupObserver);
     observe();
@@ -296,9 +331,12 @@ async function run(repetition, bytes, concurrency) {
       try {
         process.kill(pid, 0);
         return true;
-      } catch (e) {
-        if (e.code === "ESRCH") return false;
-        throw e;
+      } catch (error) {
+        if (error.code === "ESRCH") {
+          return false;
+        }
+        cleanupError ||= error;
+        return false;
       }
     };
     if (child.exitCode === null && child.signalCode === null) {
@@ -315,8 +353,10 @@ async function run(repetition, bytes, concurrency) {
       forced.push(pid);
       try {
         process.kill(pid, "SIGKILL");
-      } catch (e) {
-        if (e.code !== "ESRCH") throw e;
+      } catch (error) {
+        if (error.code !== "ESRCH" && !cleanupError) {
+          cleanupError = error;
+        }
       }
     }
     for (let i = 0; remaining.length && i < 40; i++) {
@@ -324,7 +364,9 @@ async function run(repetition, bytes, concurrency) {
       remaining = remaining.filter(live);
     }
     const cleanup = { observedPIDs: [...observed], forcedPIDs: forced, remainingPIDs: remaining };
-    if (result) result.cleanup = cleanup;
+    if (result) {
+      result.cleanup = cleanup;
+    }
     fs.appendFileSync(
       path.join(root, `${label}-cleanup.jsonl`),
       JSON.stringify({
@@ -335,24 +377,33 @@ async function run(repetition, bytes, concurrency) {
         ...cleanup,
       }) + "\n",
     );
-    for (const ws of server.clients) ws.terminate();
-    await new Promise((resolve) => server.close(resolve));
-    if (remaining.length)
-      throw Error("Owned process cleanup could not be verified: " + JSON.stringify(cleanup));
-    if (forced.length)
-      throw Error("Harness had to kill owned processes: " + JSON.stringify(cleanup));
+    for (const ws of server.clients) {
+      ws.terminate();
+    }
+    await new Promise((resolve) => {
+      server.close(resolve);
+    });
+    if ((remaining.length || forced.length) && !cleanupError) {
+      cleanupError = new Error(
+        "Owned process cleanup could not be verified: " + JSON.stringify(cleanup),
+      );
+    }
   }
+  if (cleanupError) {
+    throw cleanupError;
+  }
+  return result;
 }
 (async () => {
   const results = [];
-  for (let r = 0; r < repetitions; r++)
-    for (const bytes of [256, 4096])
+  for (let r = 0; r < repetitions; r++) {
+    for (const bytes of [256, 4096]) {
       for (const concurrency of [1, 8]) {
         const result = await run(r, bytes, concurrency);
         results.push(result);
         console.log(JSON.stringify({ ...result, latenciesMs: undefined, stderr: undefined }));
         fs.writeFileSync(
-          output,
+          resultsPath,
           JSON.stringify(
             {
               label,
@@ -384,6 +435,8 @@ async function run(repetition, bytes, concurrency) {
           ),
         );
       }
+    }
+  }
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

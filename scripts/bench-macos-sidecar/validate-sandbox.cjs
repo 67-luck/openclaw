@@ -35,7 +35,9 @@ const { once } = require("node:events");
   blocked.close();
   fs.writeFileSync(root + "/sandbox-proof.log", output);
   process.stdout.write(output);
-  if (code !== 0) throw Error("Sandbox isolation validation failed");
+  if (code !== 0) {
+    throw new Error("Sandbox isolation validation failed");
+  }
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;
