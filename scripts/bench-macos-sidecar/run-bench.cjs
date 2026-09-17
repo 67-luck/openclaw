@@ -221,6 +221,7 @@ async function run(repetition, bytes, concurrency) {
     );
   }, 50);
   const childExited = once(child, "exit");
+  /** @type {Error | undefined} */
   let cleanupError;
   try {
     ready = await new Promise((resolve, reject) => {
@@ -240,8 +241,8 @@ async function run(repetition, bytes, concurrency) {
           clearTimeout(deadline);
           try {
             resolve({ ...JSON.parse(line), processReadyMs: now() - spawnedAt });
-          } catch (e) {
-            reject(e);
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error(String(error)));
           }
         }
       });
@@ -438,7 +439,7 @@ async function run(repetition, bytes, concurrency) {
       }
     }
   }
-})().catch((error) => {
+})().catch((/** @type {unknown} */ error) => {
   console.error(error);
   process.exitCode = 1;
 });

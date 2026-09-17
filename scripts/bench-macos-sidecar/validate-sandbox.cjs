@@ -38,7 +38,7 @@ const { once } = require("node:events");
   if (code !== 0) {
     throw new Error("Sandbox isolation validation failed");
   }
-})().catch((error) => {
+})().catch((/** @type {unknown} */ error) => {
   console.error(error);
   process.exitCode = 1;
 });

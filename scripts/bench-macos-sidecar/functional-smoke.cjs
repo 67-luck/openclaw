@@ -182,6 +182,7 @@ function deadline(p, deadlineLabel) {
     );
   const payload = (result) =>
     result.payloadJSON === undefined ? result.payload : JSON.parse(result.payloadJSON);
+  /** @type {Error | undefined} */
   let cleanupError;
   try {
     await deadline(ready, "startup");
@@ -366,7 +367,7 @@ function deadline(p, deadlineLabel) {
   if (cleanupError) {
     throw cleanupError;
   }
-})().catch((error) => {
+})().catch((/** @type {unknown} */ error) => {
   console.error(error);
   process.exitCode = 1;
 });

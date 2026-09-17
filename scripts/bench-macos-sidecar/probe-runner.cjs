@@ -164,6 +164,7 @@ async function run(pinMode) {
   }, 250);
   const exit = once(child, "exit");
   let result;
+  /** @type {Error | undefined} */
   let cleanupError;
   try {
     const ended = await Promise.race([
@@ -299,7 +300,7 @@ async function run(pinMode) {
   for (const scenario of kind === "tls" ? ["match", "mismatch"] : ["aux"]) {
     await run(scenario);
   }
-})().catch((error) => {
+})().catch((/** @type {unknown} */ error) => {
   console.error(error);
   process.exitCode = 1;
 });
