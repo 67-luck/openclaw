@@ -379,6 +379,210 @@ describe("EmbeddedBlockChunker", () => {
     const chunks: string[] = [];
     const sources: string[] = [];
     chunker.append(source);
+  it("keeps a streamed over-budget Markdown link target intact", () => {
+    const target =
+      `https://outlook.office365.com/owa/?itemid=${"A".repeat(120)}` +
+      "%3D%3D&exvsurl=1&path=/calendar/item";
+    const link = `[invite](${target})`;
+    const prefix = "Purpose: customer context. ";
+    const text = `${prefix}${link}\n\nWhat matters`;
+    const chunker = new EmbeddedBlockChunker({
+      minChars: prefix.length + 1,
+      maxChars: text.indexOf("itemid="),
+      breakPreference: "paragraph",
+    });
+    const chunks: string[] = [];
+
+    for (const character of text) {
+      chunker.append(character);
+      chunker.drain({ force: false, emit: (chunk) => chunks.push(chunk) });
+    }
+    chunker.drain({ force: true, emit: (chunk) => chunks.push(chunk) });
+
+    expect(chunks.some((chunk) => chunk.includes(link))).toBe(true);
+    expect(chunks.join("")).toBe(text);
+  });
+
+  it.each([
+    ["Markdown link", `[invite](https://example.com/${"a".repeat(80)})`],
+    ["Markdown image", `![chart](https://example.com/${"a".repeat(80)}.png)`],
+    ["relative Markdown link", `[event](/calendar/item?id=(${"a".repeat(80)}))`],
+    ["absolute link with title", `[event](https://example.com/${"a".repeat(80)} "Invite")`],
+    ["relative link with title", `[event](/calendar/${"a".repeat(80)} 'Invite')`],
+    ["nested label", `[outer [inner]](/calendar/${"a".repeat(80)})`],
+    ["escaped label bracket", `[outer \\[inner\\]](/calendar/${"a".repeat(80)})`],
+  ])("waits for a streamed over-budget %s to close", (_name, protectedText) => {
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 10,
+      maxChars: 30,
+      breakPreference: "paragraph",
+    });
+    const chunks: string[] = [];
+    const emit = (chunk: string) => chunks.push(chunk);
+
+    for (const character of protectedText.slice(0, -1)) {
+      chunker.append(character);
+      chunker.drain({ force: false, emit });
+    }
+    expect(chunks).toStrictEqual([]);
+
+    chunker.append(protectedText.at(-1) ?? "");
+    chunker.drain({ force: false, emit });
+    expect(chunks).toEqual([protectedText]);
+
+    chunker.append(" Tail");
+    chunker.drain({ force: true, emit });
+    expect(chunks).toEqual([protectedText, " Tail"]);
+  });
+
+  it("waits for a streamed over-budget bare URL to end", () => {
+    const protectedText = `https://example.com/${"a".repeat(80)}`;
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 10,
+      maxChars: 30,
+      breakPreference: "paragraph",
+    });
+    const chunks: string[] = [];
+    const emit = (chunk: string) => chunks.push(chunk);
+
+    for (const character of protectedText) {
+      chunker.append(character);
+      chunker.drain({ force: false, emit });
+    }
+    expect(chunks).toStrictEqual([]);
+
+    chunker.append(" Tail");
+    chunker.drain({ force: false, emit });
+    chunker.drain({ force: true, emit });
+    expect(chunks).toEqual([protectedText, "Tail"]);
+  });
+
+  it.each([
+    ["angle-bracket autolink", "x".repeat(29), `<https://example.com/${"a".repeat(80)}>`, " Tail"],
+    ["bare URL", `${"x".repeat(28)} `, `https://example.com/${"a".repeat(80)}`, "Tail"],
+  ])("keeps a streamed %s intact when its opener starts at the cap", (_name, prefix, url, tail) => {
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 1,
+      maxChars: 30,
+      breakPreference: "paragraph",
+    });
+    const chunks: string[] = [];
+    const emit = (chunk: string) => chunks.push(chunk);
+
+    for (const character of `${prefix}${url} Tail`) {
+      chunker.append(character);
+      chunker.drain({ force: false, emit });
+    }
+    chunker.drain({ force: true, emit });
+
+    expect(chunks).toEqual([prefix.trimEnd(), url, tail]);
+  });
+
+  it("breaks before a protected link that fits in its own bounded chunk", () => {
+    const prefix = `${"x".repeat(25)} `;
+    const link = "[go](https://x.co/a)";
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 26,
+      maxChars: 40,
+      breakPreference: "paragraph",
+    });
+
+    chunker.append(`${prefix}${link} Tail`);
+    const chunks = drainChunks(chunker, true);
+
+    expect(chunks).toEqual([prefix.trimEnd(), `${link} Tail`]);
+    expectChunksWithinLength(chunks, 40);
+  });
+
+  it("keeps a streamed Markdown label intact when its opener starts at the cap", () => {
+    const prefix = "x".repeat(29);
+    const link = `[invite](https://example.com/${"a".repeat(80)})`;
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 1,
+      maxChars: 30,
+      breakPreference: "paragraph",
+    });
+    const chunks: string[] = [];
+    const emit = (chunk: string) => chunks.push(chunk);
+
+    for (const character of `${prefix}${link} Tail`) {
+      chunker.append(character);
+      chunker.drain({ force: false, emit });
+    }
+    chunker.drain({ force: true, emit });
+
+    expect(chunks).toEqual([prefix, link, " Tail"]);
+  });
+
+  it("force flushes an unfinished over-budget URL without stalling", () => {
+    const text = `https://example.com/${"a".repeat(80)}`;
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 10,
+      maxChars: 30,
+      breakPreference: "paragraph",
+    });
+
+    chunker.append(text);
+
+    expect(drainChunks(chunker)).toStrictEqual([]);
+    expect(drainChunks(chunker, true)).toEqual([text]);
+    expect(chunker.bufferedText).toBe("");
+  });
+
+  it("keeps links intact after degrading an oversized fence language hint", () => {
+    const link = `[invite](https://example.com/${"a".repeat(80)})`;
+    const text = `\`\`\`${"language".repeat(8)}\ncode\n\`\`\`\nSee ${link} now.`;
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 10,
+      maxChars: 30,
+      breakPreference: "paragraph",
+    });
+    const chunks: string[] = [];
+
+    chunker.append(text);
+    chunker.drain({ force: true, emit: (chunk) => chunks.push(chunk) });
+
+    expect(chunks.some((chunk) => chunk.includes(link))).toBe(true);
+  });
+
+  it("does not treat a word-final URL opener character as a partial URL", () => {
+    const prefix = "x".repeat(29);
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 1,
+      maxChars: 30,
+      breakPreference: "paragraph",
+    });
+
+    chunker.append(`${prefix}h ordinary prose`);
+
+    expect(drainChunks(chunker)).toEqual([`${prefix}h`]);
+  });
+
+  it.each([
+    ["inline code", `Use \`[items](key ${"x".repeat(80)}\` in this example.`],
+    ["inline-code URL", `Use \`https://example.com/${"x".repeat(80)}\` in this example.`],
+    ["escaped Markdown", `Use \\[items\\](key ${"x".repeat(80)} in this example.`],
+    ["malformed multiline link", `See [notes](draft\n\n${"Later paragraph. ".repeat(10)}`],
+    ["malformed spaced link", `See [notes](draft ${"later paragraph. ".repeat(10)}`],
+  ])("does not defer ordinary streamed %s containing link delimiters", (_name, text) => {
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 10,
+      maxChars: 30,
+      breakPreference: "paragraph",
+    });
+    const chunks: string[] = [];
+
+    chunker.append(text);
+    chunker.drain({ force: false, emit: (chunk) => chunks.push(chunk) });
+
+    expect(chunks.length).toBeGreaterThan(0);
+    expectChunksWithinLength(chunks, 30);
+  });
+
+  it("reports original source across synthetic wrappers and a consumed closing fence", () => {
+    const chunker = new EmbeddedBlockChunker({ minChars: 1, maxChars: 20 });
+    const delivered: Array<{ text: string; sourceText?: string }> = [];
+    chunker.append("```txt\nabcdefghijklmnopqr\n```\n\nTail");
     chunker.drain({
       force: true,
       emit: (text, options) => {
