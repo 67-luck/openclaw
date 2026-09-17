@@ -248,79 +248,80 @@ async function run(repetition, bytes, concurrency) {
     });
     clearInterval(startupObserver);
     observe();
-    if (process.env.RFC54_BENCH_FORCE_SUPERVISOR_EXIT === "1") {
+    const forceSupervisorExit = process.env.RFC54_BENCH_FORCE_SUPERVISOR_EXIT === "1";
+    if (forceSupervisorExit) {
       result = { scenario: "supervisor-killed-after-ready", ready };
       child.kill("SIGKILL");
       await childExited;
-      return result;
-    }
-    async function invoke(total, prefix) {
-      return await new Promise((resolve, reject) => {
-        const deadline = setTimeout(() => reject(new Error("invoke phase timed out")), 30000);
-        rejectPhase = reject;
-        phase = {
-          total,
-          sent: 0,
-          completed: 0,
-          pending: new Map(),
-          latencies: [],
-          start: now(),
-          resolve: (r) => {
-            clearTimeout(deadline);
-            resolve(r);
-          },
-        };
-        phase.sendOne = () => {
-          const id = `${prefix}-${phase.sent++}`;
-          const frame = {
-            type: "event",
-            event: "node.invoke.request",
-            payload: {
-              id,
-              nodeId: "benchmark-node",
-              command: "benchmark.echo",
-              paramsJSON,
-              timeoutMs: 30000,
-              idempotencyKey: id,
+    } else {
+      async function invoke(total, prefix) {
+        return await new Promise((resolve, reject) => {
+          const deadline = setTimeout(() => reject(new Error("invoke phase timed out")), 30000);
+          rejectPhase = reject;
+          phase = {
+            total,
+            sent: 0,
+            completed: 0,
+            pending: new Map(),
+            latencies: [],
+            start: now(),
+            resolve: (r) => {
+              clearTimeout(deadline);
+              resolve(r);
             },
           };
-          const wire = JSON.stringify(frame);
-          phase.pending.set(id, now());
-          socket.send(wire);
-        };
-        for (let i = 0; i < Math.min(concurrency, total); i++) {
-          phase.sendOne();
-        }
-      });
+          phase.sendOne = () => {
+            const id = `${prefix}-${phase.sent++}`;
+            const frame = {
+              type: "event",
+              event: "node.invoke.request",
+              payload: {
+                id,
+                nodeId: "benchmark-node",
+                command: "benchmark.echo",
+                paramsJSON,
+                timeoutMs: 30000,
+                idempotencyKey: id,
+              },
+            };
+            const wire = JSON.stringify(frame);
+            phase.pending.set(id, now());
+            socket.send(wire);
+          };
+          for (let i = 0; i < Math.min(concurrency, total); i++) {
+            phase.sendOne();
+          }
+        });
+      }
+      await invoke(warmup, "warmup");
+      const before = observe();
+      const measured = await invoke(count, "measured");
+      const after = observe();
+      result = {
+        repetition,
+        payloadBytes: bytes,
+        concurrency,
+        count,
+        warmup,
+        ready,
+        handshake: {
+          challengeToConnectRequestMs: handshake.connectRequestAt - handshake.webSocketConnectedAt,
+          protocol: handshake.connectProtocol,
+        },
+        p50Ms: quantile(measured.latenciesMs, 0.5),
+        p95Ms: quantile(measured.latenciesMs, 0.95),
+        p99Ms: quantile(measured.latenciesMs, 0.99),
+        throughputPerSecond: count / (measured.elapsedMs / 1000),
+        elapsedMs: measured.elapsedMs,
+        cpuSeconds: Math.max(0, after.cpuSeconds - before.cpuSeconds),
+        rssBeforeKiB: before.rssKiB,
+        rssAfterKiB: after.rssKiB,
+        processesBefore: before.processes,
+        processesAfter: after.processes,
+        latenciesMs: measured.latenciesMs,
+        stderr,
+      };
     }
-    await invoke(warmup, "warmup");
-    const before = observe();
-    const measured = await invoke(count, "measured");
-    const after = observe();
-    result = {
-      repetition,
-      payloadBytes: bytes,
-      concurrency,
-      count,
-      warmup,
-      ready,
-      handshake: {
-        challengeToConnectRequestMs: handshake.connectRequestAt - handshake.webSocketConnectedAt,
-        protocol: handshake.connectProtocol,
-      },
-      p50Ms: quantile(measured.latenciesMs, 0.5),
-      p95Ms: quantile(measured.latenciesMs, 0.95),
-      p99Ms: quantile(measured.latenciesMs, 0.99),
-      throughputPerSecond: count / (measured.elapsedMs / 1000),
-      elapsedMs: measured.elapsedMs,
-      cpuSeconds: Math.max(0, after.cpuSeconds - before.cpuSeconds),
-      rssBeforeKiB: before.rssKiB,
-      rssAfterKiB: after.rssKiB,
-      processesBefore: before.processes,
-      processesAfter: after.processes,
-      latenciesMs: measured.latenciesMs,
-      stderr,
-    };
   } finally {
     clearInterval(startupObserver);
     observe();
