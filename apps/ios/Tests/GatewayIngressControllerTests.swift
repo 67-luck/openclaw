@@ -84,6 +84,7 @@ final class IngressTestHarness {
     var requests: [URLRequest] = []
     var requestRoutes: [GatewayIngressController.Route] = []
     var profileRows: [GatewaySettingsStore.GatewayRegistryEntry] = []
+    var savedOrigins: [CloudflareAccessOrigin?] = []
     var probeStableID: String?
     var probeGate: AsyncStream<Void>?
     var probeRequiresManagedGrant = false
@@ -175,6 +176,7 @@ final class IngressTestHarness {
             customHeaders: { _ in ["X-Existing-Ingress": "preserved"] },
             profiles: { useSavedProfiles ? GatewaySettingsStore.loadGatewayRegistry().entries : self.profileRows },
             saveProfileOrigin: { stableID, origin in
+                self.savedOrigins.append(origin)
                 if useSavedProfiles {
                     return GatewaySettingsStore.saveGatewayAccessOrigin(
                         stableID: stableID,
@@ -1067,5 +1069,285 @@ struct GatewayIngressControllerTests {
         let relaunched = fixture.controller()
         try await relaunched.forget(stableID: fixture.stableID)
         #expect(fixture.persisted == nil)
+    }
+
+    @Test(arguments: [-1, 0, 1]) @MainActor
+    func `coalesced callers share authentication and dismissal despite caller cancellation`(
+        canceledCaller: Int) async throws
+    {
+        let fixture = try IngressTestHarness()
+        var sibling = try #require(fixture.profileRows.first)
+        sibling.stableID = "coalesced-sibling"
+        fixture.profileRows.append(sibling)
+        let ingress = fixture.controller()
+        let dismissal = AsyncStream<Void>.makeStream()
+        fixture.browser.dismissalGate = dismissal.stream
+        let first = Task { try await ingress.prepare(
+            route: fixture.route, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        try await waitForIngress { fixture.browser.presented.count == 1 }
+        let secondRoute = GatewayIngressController.Route(
+            url: fixture.route.url, stableID: sibling.stableID, tls: nil)
+        let second = Task { try await ingress.prepare(
+            route: secondRoute, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        defer {
+            first.cancel()
+            second.cancel()
+            fixture.release.continuation.finish()
+            dismissal.continuation.finish()
+        }
+        try await waitForIngress { fixture.requestRoutes.filter { $0.stableID == sibling.stableID }.count >= 3 }
+        if canceledCaller == 0 {
+            first.cancel()
+        }
+        if canceledCaller == 1 {
+            second.cancel()
+        }
+        fixture.release.continuation.finish()
+        try await waitForIngress { !fixture.browser.dismissed.isEmpty }
+        #expect(ingress.signingIn)
+        #expect(fixture.browser.presented.count == 1)
+        #expect(fixture.browser.dismissed.count == 1)
+        dismissal.continuation.finish()
+        for (index, task) in [first, second].enumerated() {
+            if index == canceledCaller {
+                await #expect(throws: CancellationError.self) { try await task.value }
+            } else {
+                let authorization = try #require(try await task.value)
+                #expect(authorization.isCurrent())
+            }
+        }
+        #expect(!ingress.signingIn)
+        #expect(fixture.browser.dismissed.count == 1)
+        #expect(fixture.persisted != nil)
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func `already canceled preparation preserves active and cold saved ownership`(cold: Bool) async throws {
+        let fixture = try IngressTestHarness()
+        fixture.persisted = try String(data: JSONEncoder().encode(fixture.nextSession), encoding: .utf8)
+        fixture.profileRows[0].accessOrigin = fixture.application.origin
+        let ingress = fixture.controller()
+        let authorization = cold ? nil : try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+        let original = fixture.persisted
+        let requests = fixture.requests.count
+        let writes = fixture.savedOrigins.count
+        let replacement = try GatewayIngressController.Route(
+            url: #require(URL(string: "https://replacement.example.test/")),
+            stableID: fixture.stableID, tls: nil)
+        let canceled = Task { try await ingress.prepare(
+            route: replacement, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        // This test still owns MainActor: cancellation precedes the new task's entry.
+        canceled.cancel()
+        await #expect(throws: CancellationError.self) { try await canceled.value }
+        #expect(fixture.persisted == original)
+        #expect(fixture.profileRows[0].accessOrigin == fixture.application.origin)
+        #expect(fixture.savedOrigins.count == writes)
+        #expect(fixture.requests.count == requests)
+        #expect(fixture.retirements == 0)
+        #expect(authorization?.isCurrent() == (cold ? nil : true))
+    }
+
+    @Test @MainActor
+    func `cleartext replacement retires its capability and media while retaining a sibling grant`() async throws {
+        let fixture = try IngressTestHarness()
+        var sibling = try #require(fixture.profileRows.first)
+        sibling.stableID = "managed-sibling"
+        fixture.profileRows.append(sibling)
+        fixture.persisted = try String(data: JSONEncoder().encode(fixture.nextSession), encoding: .utf8)
+        let ingress = fixture.controller()
+        let first = try #require(try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        let siblingRoute = GatewayIngressController.Route(url: fixture.route.url, stableID: sibling.stableID, tls: nil)
+        let second = try #require(try await ingress.prepare(
+            route: siblingRoute, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        let started = AsyncStream<Void>.makeStream()
+        let download = Task { try await first.load(URLRequest(url: fixture.route.url)) { _ in
+            started.continuation.yield()
+            try await Task.sleep(for: .seconds(300))
+            throw URLError(.timedOut)
+        } }
+        defer { download.cancel() }
+        for await _ in started.stream {
+            break
+        }
+        let cleartext = try GatewayIngressController.Route(
+            url: #require(URL(string: "ws://gateway.example.test:8443/")),
+            stableID: fixture.stableID, tls: nil)
+        #expect(try await ingress.prepare(
+            route: cleartext, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()) == nil)
+        await #expect(throws: CancellationError.self) { try await download.value }
+        #expect(!first.isCurrent())
+        #expect(second.isCurrent())
+        #expect(fixture.profileRows[0].accessOrigin == nil)
+        #expect(fixture.profileRows[1].accessOrigin == fixture.application.origin)
+        #expect(fixture.persisted != nil)
+        #expect(fixture.retirements == 0)
+        #expect(fixture.browser.presented.isEmpty)
+        #expect(ingress.attention == nil)
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func `forgotten profile cleanup cannot mutate a replacement after the media drain`(
+        replacementFails: Bool) async throws
+    {
+        let fixture = try IngressTestHarness()
+        var sibling = try #require(fixture.profileRows.first)
+        sibling.stableID = "retained-sibling"
+        fixture.profileRows.append(sibling)
+        fixture.persisted = try String(data: JSONEncoder().encode(fixture.nextSession), encoding: .utf8)
+        let ingress = fixture.controller()
+        let first = try #require(try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        _ = try await ingress.prepare(
+            route: .init(url: fixture.route.url, stableID: sibling.stableID, tls: nil),
+            userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+        let media = IngressTestGate()
+        let download = Task { try await first.load(URLRequest(url: fixture.route.url)) { _ in
+            await media.wait()
+            throw CancellationError()
+        } }
+        try await waitForIngress { media.started }
+        let forgetting = Task { try await ingress.forget(stableID: fixture.stableID) }
+        defer { media.release()
+            download.cancel()
+            forgetting.cancel()
+        }
+        try await waitForIngress { !first.isCurrent() }
+        let replacement = try GatewayIngressController.Route(
+            url: replacementFails ? #require(URL(string: "https://replacement.example.test/")) : fixture.route.url,
+            stableID: fixture.stableID, tls: nil)
+        fixture.probeFailure = replacementFails ? URLError(.cannotConnectToHost) : nil
+        var renewed: GatewayIngressAuthorization?
+        if replacementFails {
+            await #expect(throws: URLError.self) {
+                try await ingress.prepare(
+                    route: replacement, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+            }
+        } else {
+            renewed = try await ingress.prepare(
+                route: replacement, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+            #expect(renewed?.isCurrent() == true)
+        }
+        let writes = fixture.savedOrigins.count
+        let saved = fixture.profileRows[0].accessOrigin
+        media.release()
+        try await forgetting.value
+        await #expect(throws: CancellationError.self) { try await download.value }
+        #expect(fixture.savedOrigins.count == writes)
+        #expect(fixture.profileRows[0].accessOrigin == saved)
+        if !replacementFails {
+            #expect(renewed?.isCurrent() == true)
+        }
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func `expiry attention belongs only to a currently managed profile`(formerlyManaged: Bool) async throws {
+        let fixture = try IngressTestHarness()
+        var ordinary = try #require(fixture.profileRows.first)
+        ordinary.stableID = "a-ordinary-sibling"
+        fixture.profileRows.append(ordinary)
+        fixture.persisted = try String(data: JSONEncoder().encode(fixture.nextSession), encoding: .utf8)
+        let ingress = fixture.controller()
+        let ordinaryRoute = GatewayIngressController.Route(
+            url: fixture.route.url,
+            stableID: ordinary.stableID,
+            tls: nil)
+        var old: GatewayIngressAuthorization?
+        if formerlyManaged {
+            old = try await ingress.prepare(
+                route: ordinaryRoute, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+        }
+        fixture.preauthenticatedStableIDs.insert(ordinary.stableID)
+        #expect(try await ingress.prepare(
+            route: ordinaryRoute, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()) == nil)
+        if formerlyManaged {
+            #expect(old?.isCurrent() == false)
+            // Durable last-owner metadata survives ordinary admission; it is not live grant use.
+            #expect(fixture.profileRows[1].accessOrigin == fixture.application.origin)
+        }
+        let managed = try #require(try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        fixture.now = fixture.nextSession.expiresAt
+        ingress.foregrounded()
+        #expect(!managed.isCurrent())
+        #expect(ingress.attention?.stableID == fixture.stableID)
+        let attentionID = ingress.attention?.id
+        ingress.foregrounded()
+        #expect(ingress.attention?.id == attentionID)
+        #expect(fixture.browser.presented.isEmpty)
+    }
+
+    @Test @MainActor
+    func `a canceled completion cannot clear a newer sign in while browser dismissal drains`() async throws {
+        let fixture = try IngressTestHarness()
+        let ingress = fixture.controller()
+        let dismissal = AsyncStream<Void>.makeStream()
+        fixture.browser.dismissalGate = dismissal.stream
+        fixture.release.continuation.finish()
+        let first = Task { try await ingress.prepare(
+            route: fixture.route, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        defer { dismissal.continuation.finish()
+            first.cancel()
+        }
+        try await waitForIngress { fixture.browser.dismissed.count == 1 }
+        ingress.cancelSignIn()
+        fixture.revoked = true
+        let second = Task { try await ingress.prepare(
+            route: fixture.route, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        defer { second.cancel() }
+        try await waitForIngress { fixture.browser.presented.count == 2 }
+        #expect(ingress.signingIn)
+        dismissal.continuation.finish()
+        await #expect(throws: CancellationError.self) { try await first.value }
+        let authorization = try #require(try await second.value)
+        #expect(authorization.isCurrent())
+        #expect(!ingress.signingIn)
+        #expect(ingress.attention == nil)
+    }
+
+    @Test @MainActor
+    func `expiry cannot target a replacement whose ordinary probe is still pending`() async throws {
+        let fixture = try IngressTestHarness()
+        fixture.persisted = try String(data: JSONEncoder().encode(fixture.nextSession), encoding: .utf8)
+        let ingress = fixture.controller()
+        let old = try #require(try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        let probe = AsyncStream<Void>.makeStream()
+        fixture.probeGate = probe.stream
+        fixture.preauthenticated = true
+        let replacement = GatewayIngressController.Route(
+            url: fixture.route.url.appendingPathComponent("replacement"), stableID: fixture.stableID, tls: nil)
+        let pending = Task { try await ingress.prepare(
+            route: replacement, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        defer { probe.continuation.finish()
+            pending.cancel()
+        }
+        try await waitForIngress { fixture.probeStarted }
+        fixture.now = fixture.nextSession.expiresAt
+        ingress.foregrounded()
+        #expect(!old.isCurrent())
+        #expect(ingress.attention == nil)
+        probe.continuation.finish()
+        #expect(try await pending.value == nil)
+        #expect(ingress.attention == nil)
+    }
+
+    @Test @MainActor
+    func `already canceled browser presentation cannot dismiss the current owner`() async throws {
+        let url = try #require(URL(string: "https://gateway.example.test/"))
+        var presented: [SFSafariViewController] = []
+        var dismissed = 0
+        let presenter = CloudflareAccessBrowserPresenter(
+            present: { presented.append($0) }, dismiss: { _ in dismissed += 1 })
+        let currentID = UUID()
+        try await presenter.open(url, intentID: currentID) {}
+        let canceled = Task { try await presenter.open(url, intentID: UUID()) {} }
+        canceled.cancel()
+        await #expect(throws: CancellationError.self) { try await canceled.value }
+        #expect(presented.count == 1)
+        #expect(dismissed == 0)
+        await presenter.dismiss(intentID: currentID)
+        #expect(dismissed == 1)
     }
 }

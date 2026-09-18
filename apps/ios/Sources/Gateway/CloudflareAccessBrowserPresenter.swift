@@ -31,10 +31,13 @@ final class CloudflareAccessBrowserPresenter: NSObject, @MainActor SFSafariViewC
     }
 
     func open(_ url: URL, intentID: UUID, onCancel: @escaping () -> Void) async throws {
+        try Task.checkCancellation()
         self.requestedIntentID = intentID
         if let dismissal {
             await dismissal.task.value
         }
+        try Task.checkCancellation()
+        guard self.requestedIntentID == intentID else { throw CancellationError() }
         if let previous = self.intentID {
             await self.dismiss(intentID: previous)
         }

@@ -32,6 +32,14 @@ final class GatewayIngressController {
     private struct Registration: Sendable {
         let id = UUID()
         let route: Route
+        var managedRevision: UInt64?
+    }
+
+    private struct ForegroundIntent {
+        let id: UUID
+        let origin: CloudflareAccessOrigin
+        let route: Route
+        let completion: Task<CloudflareAccessSessionStore.Snapshot, Error>
     }
 
     private struct MediaRequest {
@@ -46,7 +54,7 @@ final class GatewayIngressController {
     @ObservationIgnored private var blockedRevisions: [CloudflareAccessOrigin: UInt64] = [:]
     @ObservationIgnored private var mediaRequests: [CloudflareAccessOrigin: [UUID: MediaRequest]] =
         [:]
-    @ObservationIgnored private var foregroundIntent: (id: UUID, origin: CloudflareAccessOrigin, route: Route)?
+    @ObservationIgnored private var foregroundIntent: ForegroundIntent?
     @ObservationIgnored private let browser: any CloudflareAccessBrowserPresenting
     @ObservationIgnored private let persistence: CloudflareAccessSessionStore.Persistence
     @ObservationIgnored private let authenticate: CloudflareAccessSessionStore.Authenticate?
@@ -122,7 +130,11 @@ final class GatewayIngressController {
         userInitiated: Bool,
         admissionCheckpoint: UInt64) async throws -> GatewayIngressAuthorization?
     {
-        guard let origin = try? CloudflareAccessOrigin(route.url) else { return nil }
+        try Task.checkCancellation()
+        guard let origin = try? CloudflareAccessOrigin(route.url) else {
+            try await self.forget(stableID: route.stableID)
+            return nil
+        }
         let key = GatewayStableIdentifier.Key(route.stableID)
         let registration = self.routes[key].flatMap { $0.route == route ? $0 : nil } ?? Registration(route: route)
         let changedRoute = self.routes[key].map { $0.id != registration.id } ?? false
@@ -132,6 +144,9 @@ final class GatewayIngressController {
             guard self.sessions.admits(admissionCheckpoint, for: origin) else { throw CancellationError() }
         }
         if changedRoute {
+            if GatewayStableIdentifier.matches(self.foregroundIntent?.route.stableID, route.stableID) {
+                self.cancelSignIn()
+            }
             await self.retireMedia(profileID: key)
             try self.checkRegistration(registration)
         }
@@ -152,6 +167,7 @@ final class GatewayIngressController {
             customHeaders: self.customHeaders(route.stableID))
         try self.checkRegistration(registration)
         guard let ordinaryChallenge else {
+            self.routes[key]?.managedRevision = nil
             if GatewayStableIdentifier.matches(self.attention?.stableID, route.stableID) {
                 self.attention = nil
             }
@@ -205,6 +221,7 @@ final class GatewayIngressController {
             throw GatewayExternalAuthorizationError()
         }
         self.blockedRevisions.removeValue(forKey: origin)
+        self.routes[key]?.managedRevision = snapshot.revision
         self.scheduleExpiry(snapshot)
         if GatewayStableIdentifier.matches(self.attention?.stableID, route.stableID) {
             self.attention = nil
@@ -228,6 +245,7 @@ final class GatewayIngressController {
 
     func signOut(stableID: String) async {
         guard let origin = origin(stableID: stableID) else { return }
+        _ = self.retireManagedAdmissions(origin: origin, revision: self.sessions.currentRevision(for: origin))
         if self.foregroundIntent?.origin == origin {
             self.cancelSignIn()
         }
@@ -244,6 +262,7 @@ final class GatewayIngressController {
     }
 
     func forget(stableID: String) async throws {
+        try Task.checkCancellation()
         let key = GatewayStableIdentifier.Key(stableID)
         let registration = self.routes.removeValue(forKey: key)
         let saved = self.profiles().first { $0.id == key }?.accessOrigin
@@ -258,8 +277,12 @@ final class GatewayIngressController {
             !self.profiles().contains(where: { $0.id != key && $0.accessOrigin == origin })
         }.map { origin in (origin, self.sessions.forget(origin)) }
         await self.retireMedia(profileID: key)
+        // Removal committed before the drain. Any registration now present belongs
+        // to a newer prepare, even when it uses the same origin.
+        guard self.routes[key] == nil else { return }
         for (origin, retirement) in retirements {
             try await retirement.value
+            guard self.routes[key] == nil else { return }
             self.blockedRevisions.removeValue(forKey: origin)
         }
         if saved != nil, !self.saveProfileOrigin(stableID, nil) {
@@ -307,8 +330,11 @@ final class GatewayIngressController {
     func cancelSignIn() {
         guard let intent = foregroundIntent else { return }
         self.foregroundIntent = nil
+        intent.completion.cancel()
         self.sessions.cancelSignIn(for: intent.origin)
+        let wasSigningIn = self.signingIn
         self.signingIn = false
+        guard wasSigningIn else { return }
         self.showAttention(intent.route, message: "Sign-in was canceled. Choose Sign in to try again.")
         Task { await self.browser.dismiss(intentID: intent.id) }
     }
@@ -327,13 +353,20 @@ final class GatewayIngressController {
 
     func foregrounded() {
         // Timers may have been suspended by iOS; reading the store expires grants at this boundary.
-        for registration in self.routes.values {
+        for registration in self.routes.values.sorted(by: { $0.route.stableID < $1.route.stableID }) {
             let route = registration.route
-            guard let origin = try? CloudflareAccessOrigin(route.url) else { continue }
-            if let snapshot = sessions.snapshot(for: origin) {
+            guard let revision = registration.managedRevision,
+                  routes[GatewayStableIdentifier.Key(route.stableID)]?.managedRevision == revision,
+                  let origin = try? CloudflareAccessOrigin(route.url)
+            else { continue }
+            let snapshot = self.sessions.snapshot(for: origin)
+            if let snapshot, snapshot.revision == revision {
                 self.scheduleExpiry(snapshot)
-            } else if self.sessions.state(for: origin) == .reauthenticationRequired {
-                self.showAttention(route, message: "Cloudflare Access expired. Sign in again to reconnect.")
+            } else {
+                let retired = self.retireManagedAdmissions(origin: origin, revision: revision)
+                if snapshot == nil, self.sessions.state(for: origin) == .reauthenticationRequired, let retired {
+                    self.showAttention(retired, message: "Cloudflare Access expired. Sign in again to reconnect.")
+                }
             }
         }
     }
@@ -343,46 +376,56 @@ final class GatewayIngressController {
         route: Route) async throws -> CloudflareAccessSessionStore
         .Snapshot
     {
-        if self.foregroundIntent?.origin != application.origin {
+        if self.foregroundIntent?.origin != application.origin ||
+            (!self.signingIn && self.sessions.currentRevision(for: application.origin) == 0)
+        {
             self.cancelSignIn()
         }
-        let intentID = self.foregroundIntent?.id ?? UUID()
         if self.foregroundIntent == nil {
-            self.foregroundIntent = (intentID, application.origin, route)
-        }
-        self.signingIn = true
-        let task = self.sessions.signIn(application: application) { [weak self] url in
-            guard let self, self.foregroundIntent?.id == intentID else { throw CancellationError() }
-            try await self.browser.open(url, intentID: intentID) { [weak self] in
-                guard self?.foregroundIntent?.id == intentID else { return }
-                self?.cancelSignIn()
-            }
-        }
-        do {
-            let snapshot = try await withTaskCancellationHandler {
-                try await task.value
-            } onCancel: {
-                Task { @MainActor [weak self] in
-                    guard self?.foregroundIntent?.id == intentID else { return }
-                    self?.cancelSignIn()
+            let intentID = UUID()
+            let completion = Task { [weak self] in
+                guard let self else { throw CancellationError() }
+                try Task.checkCancellation()
+                let task = self.sessions.signIn(application: application) { [weak self] url in
+                    guard let self, self.foregroundIntent?.id == intentID else { throw CancellationError() }
+                    try await self.browser.open(url, intentID: intentID) { [weak self] in
+                        guard self?.foregroundIntent?.id == intentID else { return }
+                        self?.cancelSignIn()
+                    }
+                }
+                do {
+                    let snapshot = try await task.value
+                    try Task.checkCancellation()
+                    guard self.foregroundIntent?.id == intentID else { throw CancellationError() }
+                    self.blockedRevisions.removeValue(forKey: application.origin)
+                    await self.browser.dismiss(intentID: intentID)
+                    try Task.checkCancellation()
+                    guard self.foregroundIntent?.id == intentID else { throw CancellationError() }
+                    self.signingIn = false
+                    return snapshot
+                } catch {
+                    if self.foregroundIntent?.id == intentID {
+                        self.showAttention(route, message: error.localizedDescription)
+                        await self.browser.dismiss(intentID: intentID)
+                        if self.foregroundIntent?.id == intentID {
+                            self.foregroundIntent = nil
+                            self.signingIn = false
+                        }
+                    }
+                    throw error
                 }
             }
-            try Task.checkCancellation()
-            guard self.foregroundIntent?.id == intentID else { throw CancellationError() }
-            self.foregroundIntent = nil
-            self.signingIn = false
-            self.blockedRevisions.removeValue(forKey: application.origin)
-            await self.browser.dismiss(intentID: intentID)
-            return snapshot
-        } catch {
-            if self.foregroundIntent?.id == intentID {
-                self.foregroundIntent = nil
-                self.signingIn = false
-                self.showAttention(route, message: error.localizedDescription)
-                await self.browser.dismiss(intentID: intentID)
-            }
-            throw error
+            // Publish before suspending. All callers share the store task and its
+            // browser drain; canceling one caller never cancels another admission.
+            self.foregroundIntent = ForegroundIntent(
+                id: intentID, origin: application.origin, route: route, completion: completion)
+            self.signingIn = true
         }
+        guard let intent = foregroundIntent else { throw CancellationError() }
+        let snapshot = try await intent.completion.value
+        try Task.checkCancellation()
+        guard !intent.completion.isCancelled else { throw CancellationError() }
+        return snapshot
     }
 
     private func authorization(
@@ -445,6 +488,7 @@ final class GatewayIngressController {
 
     private func isCurrent(registration: Registration, origin: CloudflareAccessOrigin, revision: UInt64) -> Bool {
         self.routes[GatewayStableIdentifier.Key(registration.route.stableID)]?.id == registration.id &&
+            self.routes[GatewayStableIdentifier.Key(registration.route.stableID)]?.managedRevision == revision &&
             self.isCurrent(origin: origin, revision: revision)
     }
 
@@ -504,9 +548,8 @@ final class GatewayIngressController {
               self.blockedRevisions[origin] != revision
         else { return }
         self.blockedRevisions[origin] = revision
-        if let route = route ?? routes.values.map(\.route).sorted(by: { $0.stableID < $1.stableID })
-            .first(where: { origin.contains($0.url) })
-        {
+        let managedRoute = self.retireManagedAdmissions(origin: origin, revision: revision)
+        if let route = route ?? managedRoute {
             self.showAttention(
                 route,
                 message: "Cloudflare Access needs sign-in again. Open Gateway settings to continue.")
@@ -516,6 +559,14 @@ final class GatewayIngressController {
             guard let self else { return }
             try? await self.sessions.requireReauthentication(for: origin, revision: revision)
         }
+    }
+
+    private func retireManagedAdmissions(origin: CloudflareAccessOrigin, revision: UInt64) -> Route? {
+        let owners = self.routes.filter { $0.value.managedRevision == revision && origin.contains($0.value.route.url) }
+        for key in owners.keys {
+            self.routes[key]?.managedRevision = nil
+        }
+        return owners.values.map(\.route).min(by: { $0.stableID < $1.stableID })
     }
 
     private func scheduleExpiry(_ snapshot: CloudflareAccessSessionStore.Snapshot) {
