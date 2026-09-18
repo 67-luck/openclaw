@@ -315,7 +315,7 @@ final class GatewayIngressController {
             var renewed = false
             for origin in origins where !hasSibling(origin) {
                 if let retirement = retirements[origin], self.sessions.isCurrent(retirement) { continue }
-                retirements[origin] = self.sessions.forget(origin)
+                retirements[origin] = self.sessions.reconcileForget(origin)
                 renewed = true
             }
             if renewed { continue }

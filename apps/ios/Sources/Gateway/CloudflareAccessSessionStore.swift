@@ -40,6 +40,7 @@ final class CloudflareAccessSessionStore {
         var phase: State = .signedOut
         var admissionRevokedAt: UInt64 = 0
         var transitionRevision: UInt64 = 0
+        var retirement: Retirement?
     }
 
     private struct Attempt {
@@ -196,6 +197,17 @@ final class CloudflareAccessSessionStore {
         return self.queueRetirement(origin)
     }
 
+    /// Cleanup waiters follow the latest explicit revocation, including its failure.
+    /// A newer authentication/session transition instead requires a fresh retirement.
+    func reconcileForget(_ origin: CloudflareAccessOrigin) -> Retirement {
+        if let lifecycle = self.states[origin], lifecycle.phase == .signedOut,
+           let retirement = lifecycle.retirement
+        {
+            return retirement
+        }
+        return self.forget(origin)
+    }
+
     func isCurrent(_ retirement: Retirement) -> Bool {
         self.states[retirement.origin]?.transitionRevision == retirement.transitionRevision
     }
@@ -204,6 +216,7 @@ final class CloudflareAccessSessionStore {
         // Phase changes and replacement grants must not revive an old admission.
         self.revision &+= 1
         self.states[origin, default: Lifecycle()].phase = phase
+        self.states[origin, default: Lifecycle()].retirement = nil
         self.states[origin, default: Lifecycle()].transitionRevision = self.revision
     }
 
@@ -224,6 +237,7 @@ final class CloudflareAccessSessionStore {
         // until a later transition for this origin, even after the queue entry is gone.
         let retirement = Retirement(id: id, origin: origin, transitionRevision: self.revision, task: task)
         self.retirements[origin] = retirement
+        self.states[origin, default: Lifecycle()].retirement = retirement
         return retirement
     }
 

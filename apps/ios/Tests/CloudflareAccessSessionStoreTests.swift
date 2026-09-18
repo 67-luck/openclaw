@@ -294,6 +294,46 @@ struct CloudflareAccessSessionStoreTests {
         #expect(memory.values[application.origin] == nil)
     }
 
+    @Test(arguments: [false, true])
+    func `passive cleanup retains the current successful or failed receipt until a session transition`(
+        succeeds: Bool) async throws
+    {
+        let memory = MemoryStore()
+        memory.canDelete = succeeds
+        let application = try CloudflareAccessTestTokens.application()
+        let session = try CloudflareAccessTestTokens().session()
+        let other = try CloudflareAccessOrigin(#require(URL(string: "https://other.example.test")))
+        let store = CloudflareAccessSessionStore(
+            persistence: memory.persistence, authenticate: { _, _ in session }, retireTransports: { _ in })
+        let first = store.forget(application.origin)
+        if succeeds {
+            try await first.task.value
+        } else {
+            await #expect(throws: CloudflareAccessError.self) { try await first.task.value }
+        }
+        let shared = store.reconcileForget(application.origin)
+        #expect(shared.id == first.id)
+        if succeeds {
+            try await shared.task.value
+        } else {
+            await #expect(throws: CloudflareAccessError.self) { try await shared.task.value }
+        }
+        #expect(memory.events == ["delete"])
+        memory.canDelete = true
+        try await store.forget(other).task.value
+        #expect(store.reconcileForget(application.origin).id == first.id)
+        let explicit = store.forget(application.origin)
+        #expect(explicit.id != first.id)
+        try await explicit.task.value
+        #expect(store.reconcileForget(application.origin).id == explicit.id)
+        _ = try await store.signIn(application: application, openBrowser: { _ in }).value
+        let afterRenewal = store.reconcileForget(application.origin)
+        #expect(afterRenewal.id != explicit.id)
+        #expect(memory.values[application.origin] != nil)
+        try await afterRenewal.task.value
+        #expect(memory.values[application.origin] == nil)
+    }
+
     @Test func `expiry while teardown is suspended cannot publish or persist authentication`() async throws {
         let memory = MemoryStore()
         let retirement = LoginGate()

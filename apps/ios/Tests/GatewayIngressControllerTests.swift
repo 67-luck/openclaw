@@ -288,7 +288,7 @@ struct GatewayIngressControllerTests {
         _ = try await store.signIn(application: fixture.application, openBrowser: { _ in }).value
         let restarted = CloudflareAccessSessionStore(persistence: persistence, retireTransports: { _ in })
         #expect(restarted.snapshot(for: fixture.application.origin)?.session.subject == fixture.nextSession.subject)
-        try await restarted.forget(fixture.application.origin).value
+        try await restarted.forget(fixture.application.origin).task.value
         #expect(persistence.load(fixture.application.origin) == nil)
         let credentials = GatewaySettingsStore.loadGatewayCredentials(
             instanceId: instanceID,
@@ -1245,6 +1245,66 @@ struct GatewayIngressControllerTests {
         #expect(ingress.attention == nil)
         #expect(fixture.profileRows[1].accessOrigin == fixture.application.origin)
         #expect(fixture.browser.presented.isEmpty)
+    }
+
+    @Test(arguments: ["forget", "cleartext"]) @MainActor
+    func `overlapping departures share the latest explicit retirement outcome`(mode: String) async throws {
+        for succeeds in [false, true] {
+            let fixture = try IngressTestHarness()
+            let storage = IngressOriginStorage()
+            try storage.save(fixture.nextSession)
+            storage.deletionSucceeds = succeeds
+            let retirement = IngressTestGate()
+            let ingress = fixture.controller(persistence: storage.persistence, retirement: { _ in
+                if fixture.retirements == 1 { await retirement.wait() }
+            })
+            _ = try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+            let cleartext = try GatewayIngressController.Route(
+                url: #require(URL(string: "ws://gateway.example.test:8443/")),
+                stableID: fixture.stableID, tls: nil)
+            func depart() async throws -> GatewayIngressAuthorization? {
+                if mode == "forget" {
+                    try await ingress.forget(stableID: fixture.stableID)
+                    return nil
+                }
+                return try await ingress.prepare(
+                    route: cleartext, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+            }
+            let first = Task { try await depart() }
+            defer { retirement.release()
+                first.cancel()
+            }
+            try await waitForIngress { retirement.started }
+            let checkpoint = ingress.admissionCheckpoint()
+            let second = Task { try await depart() }
+            defer { second.cancel() }
+            // R2 is reserved while R1 is held; both callers still own the same
+            // saved association. Their passive completion must not reserve R3/R4.
+            try await waitForIngress { ingress.admissionCheckpoint() > checkpoint }
+            retirement.release()
+            if succeeds {
+                #expect(try await first.value == nil)
+                #expect(try await second.value == nil)
+                #expect(fixture.profileRows[0].accessOrigin == nil)
+                #expect(storage.values[fixture.application.origin] == nil)
+            } else {
+                await #expect(throws: CloudflareAccessError.self) { try await first.value }
+                await #expect(throws: CloudflareAccessError.self) { try await second.value }
+                #expect(fixture.profileRows[0].accessOrigin == fixture.application.origin)
+                #expect(storage.values[fixture.application.origin] != nil)
+            }
+            #expect(fixture.retirements == 2)
+            #expect(storage.deleted.count == 2)
+            if !succeeds {
+                storage.deletionSucceeds = true
+                try await ingress.forget(stableID: fixture.stableID)
+                #expect(fixture.profileRows[0].accessOrigin == nil)
+                #expect(storage.values[fixture.application.origin] == nil)
+            }
+            #expect(fixture.browser.presented.isEmpty)
+            #expect(ingress.attention == nil)
+        }
     }
 
     @Test(arguments: ["forget", "cleartext"]) @MainActor
