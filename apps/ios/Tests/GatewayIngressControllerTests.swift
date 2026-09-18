@@ -1247,6 +1247,126 @@ struct GatewayIngressControllerTests {
         #expect(fixture.browser.presented.isEmpty)
     }
 
+    @Test(arguments: ["forget", "cleartext"]) @MainActor
+    func `last profile departure reconciles a grant renewed while its media drain is held`(
+        mode: String) async throws
+    {
+        for outcome in ["leaves", "stays", "delete-fails"] {
+            let fixture = try IngressTestHarness()
+            var sibling = try #require(fixture.profileRows.first)
+            sibling.stableID = "renewing-sibling"
+            fixture.profileRows.append(sibling)
+            let storage = IngressOriginStorage()
+            try storage.save(fixture.nextSession)
+            let ingress = fixture.controller(persistence: storage.persistence)
+            let first = try #require(try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+            let media = IngressTestGate()
+            let download = Task { try await first.load(URLRequest(url: fixture.route.url)) { _ in
+                await media.wait()
+                throw CancellationError()
+            } }
+            defer { media.release()
+                download.cancel()
+            }
+            try await waitForIngress { media.started }
+            let cleartext = try GatewayIngressController.Route(
+                url: #require(URL(string: "ws://gateway.example.test:8443/")),
+                stableID: fixture.stableID, tls: nil)
+            let pending = Task<GatewayIngressAuthorization?, Error> {
+                if mode == "forget" {
+                    try await ingress.forget(stableID: fixture.stableID)
+                    return nil
+                }
+                return try await ingress.prepare(
+                    route: cleartext, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+            }
+            defer { pending.cancel() }
+            // R1 has actually deleted the old grant, but A still owns its durable
+            // association while its independently canceled media task is held.
+            try await waitForIngress { storage.deleted.count == 1 }
+            #expect(storage.values[fixture.application.origin] == nil)
+            #expect(fixture.profileRows[0].accessOrigin == fixture.application.origin)
+            #expect(!first.isCurrent())
+            fixture.nextSession = try fixture.tokens.session(subject: "renewed-sibling")
+            fixture.release.continuation.finish()
+            let peer = try #require(try await ingress.prepare(
+                route: .init(url: fixture.route.url, stableID: sibling.stableID, tls: nil),
+                userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()))
+            let renewedBytes = try #require(storage.values[fixture.application.origin])
+            let deletedBeforeRelease = storage.deleted.count
+            #expect(peer.isCurrent())
+            #expect(fixture.profileRows[1].accessOrigin == fixture.application.origin)
+            if outcome != "stays" {
+                try await ingress.forget(stableID: sibling.stableID)
+                #expect(fixture.profileRows[1].accessOrigin == nil)
+                #expect(storage.values[fixture.application.origin] == renewedBytes)
+            }
+            storage.deletionSucceeds = outcome != "delete-fails"
+            media.release()
+            if outcome == "delete-fails" {
+                do {
+                    _ = try await pending.value
+                    Issue.record("Last-owner deletion failure was hidden")
+                } catch CloudflareAccessError.storageFailed {
+                    #expect(fixture.profileRows[0].accessOrigin == fixture.application.origin)
+                    #expect(storage.values[fixture.application.origin] == renewedBytes)
+                }
+                storage.deletionSucceeds = true
+                try await ingress.forget(stableID: fixture.stableID)
+                #expect(storage.values[fixture.application.origin] == nil)
+            } else {
+                #expect(try await pending.value == nil)
+            }
+            await #expect(throws: CancellationError.self) { try await download.value }
+            #expect(fixture.profileRows[0].accessOrigin == nil)
+            if outcome == "stays" {
+                #expect(storage.deleted.count == deletedBeforeRelease)
+                #expect(storage.values[fixture.application.origin] == renewedBytes)
+                #expect(peer.isCurrent())
+                #expect(fixture.profileRows[1].accessOrigin == fixture.application.origin)
+            } else {
+                #expect(storage.deleted.count > deletedBeforeRelease)
+                #expect(storage.values[fixture.application.origin] == nil)
+                #expect(!peer.isCurrent())
+            }
+        }
+    }
+
+    @Test @MainActor
+    func `canceled changed origin admission retains the old association before its retirement`() async throws {
+        let fixture = try IngressTestHarness()
+        let storage = IngressOriginStorage()
+        try storage.save(fixture.nextSession)
+        let ingress = fixture.controller(persistence: storage.persistence)
+        let first = try #require(try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        let media = IngressTestGate()
+        let download = Task { try await first.load(URLRequest(url: fixture.route.url)) { _ in
+            await media.wait()
+            throw CancellationError()
+        } }
+        defer { media.release()
+            download.cancel()
+        }
+        try await waitForIngress { media.started }
+        let replacement = try GatewayIngressController.Route(
+            url: #require(URL(string: "https://replacement.example.test/")),
+            stableID: fixture.stableID, tls: nil)
+        let pending = Task { try await ingress.prepare(
+            route: replacement, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        defer { pending.cancel() }
+        try await waitForIngress { !first.isCurrent() }
+        pending.cancel()
+        media.release()
+        await #expect(throws: CancellationError.self) { try await pending.value }
+        await #expect(throws: CancellationError.self) { try await download.value }
+        #expect(fixture.profileRows[0].accessOrigin == fixture.application.origin)
+        #expect(storage.values[fixture.application.origin] != nil)
+        #expect(storage.deleted.isEmpty)
+        #expect(fixture.browser.presented.isEmpty)
+    }
+
     @Test(arguments: [false, true]) @MainActor
     func `cleartext preparation rejects cancellation and profile replacement during the drain`(
         replaceProfile: Bool) async throws

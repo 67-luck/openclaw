@@ -155,13 +155,9 @@ final class GatewayIngressController {
             try self.checkRegistration(registration)
         }
         if let previous = profiles().first(where: { $0.id == key })?.accessOrigin, previous != origin {
-            // A changed route releases its previous grant only when no sibling
-            // profile still owns that origin. Never move a token between origins.
-            if !self.profiles().contains(where: { $0.id != key && $0.accessOrigin == previous }) {
-                try await self.sessions.forget(previous).value
-            }
-            try self.checkRegistration(registration)
-            guard self.saveProfileOrigin(route.stableID, nil) else { throw CloudflareAccessError.storageFailed }
+            guard try await self.depart(
+                stableID: route.stableID, savedOrigin: previous, origins: [previous],
+                registrationID: registration.id) else { throw CancellationError() }
         }
         let client = self.client(for: route)
         // A cached host grant must not make an independently admitted profile depend
@@ -202,7 +198,7 @@ final class GatewayIngressController {
         // dismissal can suspend or be canceled after commit; cold Forget must still find it.
         guard self.saveProfileOrigin(route.stableID, origin) else {
             if !self.profiles().contains(where: { $0.accessOrigin == origin }) {
-                try await self.sessions.forget(origin).value
+                try await self.sessions.forget(origin).task.value
             }
             throw CloudflareAccessError.storageFailed
         }
@@ -255,7 +251,7 @@ final class GatewayIngressController {
         }
         let route = Route(url: origin.url, stableID: stableID, tls: nil)
         do {
-            try await self.sessions.forget(origin).value
+            try await self.sessions.forget(origin).task.value
             self.showAttention(
                 route,
                 message: "Cloudflare Access is signed out for this host. " +
@@ -275,25 +271,62 @@ final class GatewayIngressController {
         if GatewayStableIdentifier.matches(self.foregroundIntent?.route.stableID, stableID) {
             self.cancelSignIn()
         }
-        // Fence this profile and last-owner admissions before either drain. Siblings
-        // retain their capabilities when they still own the shared origin.
-        let retirements = origins.filter { origin in
-            !self.profiles().contains(where: { $0.id != key && $0.accessOrigin == origin })
-        }.map { origin in (origin, self.sessions.forget(origin)) }
-        await self.retireMedia(profileID: key)
-        // Removal committed before the drain. Any registration now present belongs
-        // to a newer prepare, even when it uses the same origin.
-        guard self.routes[key] == nil else { return }
-        for (origin, retirement) in retirements {
-            try await retirement.value
-            guard self.routes[key] == nil else { return }
-            self.blockedRevisions.removeValue(forKey: origin)
-        }
-        if saved != nil, !self.saveProfileOrigin(stableID, nil) {
-            throw CloudflareAccessError.storageFailed
-        }
+        guard try await self.depart(stableID: stableID, savedOrigin: saved, origins: origins, registrationID: nil)
+        else { return }
         if GatewayStableIdentifier.matches(self.attention?.stableID, stableID) {
             self.attention = nil
+        }
+    }
+
+    private func depart(
+        stableID: String,
+        savedOrigin: CloudflareAccessOrigin?,
+        origins: Set<CloudflareAccessOrigin>,
+        registrationID: UUID?) async throws -> Bool
+    {
+        let key = GatewayStableIdentifier.Key(stableID)
+        func isCurrent() throws -> Bool {
+            // Forget completes admitted cleanup; a changed-route caller still owns
+            // an admission that cancellation must fence before publishing its change.
+            if registrationID != nil { try Task.checkCancellation() }
+            return self.routes[key]?.id == registrationID &&
+                self.profiles().first(where: { $0.id == key })?.accessOrigin == savedOrigin
+        }
+        func hasSibling(_ origin: CloudflareAccessOrigin) -> Bool {
+            self.profiles().contains { $0.id != key && $0.accessOrigin == origin }
+        }
+        try Task.checkCancellation()
+        guard try isCurrent() else { return false }
+        var retirements: [CloudflareAccessOrigin: CloudflareAccessSessionStore.Retirement] = [:]
+        // Revoke last-owner admissions before draining this profile. Keep its durable
+        // association until acknowledged deletion so failure remains recoverable.
+        for origin in origins where !hasSibling(origin) {
+            retirements[origin] = self.sessions.forget(origin)
+        }
+        if registrationID == nil { await self.retireMedia(profileID: key) }
+        while true {
+            guard try isCurrent() else { return false }
+            for retirement in retirements.values {
+                try await retirement.task.value
+                guard try isCurrent() else { return false }
+            }
+            // A sibling may renew and then leave while our continuation is suspended.
+            // Reconcile the last departure against that origin's current acknowledgement.
+            var renewed = false
+            for origin in origins where !hasSibling(origin) {
+                if let retirement = retirements[origin], self.sessions.isCurrent(retirement) { continue }
+                retirements[origin] = self.sessions.forget(origin)
+                renewed = true
+            }
+            if renewed { continue }
+            // No suspension between final ownership/receipt checks and the durable clear.
+            if savedOrigin != nil, !self.saveProfileOrigin(stableID, nil) {
+                throw CloudflareAccessError.storageFailed
+            }
+            for (origin, retirement) in retirements where self.sessions.isCurrent(retirement) {
+                self.blockedRevisions.removeValue(forKey: origin)
+            }
+            return true
         }
     }
 
@@ -348,7 +381,7 @@ final class GatewayIngressController {
             self.cancelSignIn()
         }
         self.routes = self.routes.filter { (try? CloudflareAccessOrigin($0.value.route.url)) != origin }
-        try await self.sessions.forget(origin).value
+        try await self.sessions.forget(origin).task.value
         self.blockedRevisions.removeValue(forKey: origin)
         if self.attention?.origin == origin {
             self.attention = nil
