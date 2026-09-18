@@ -44,6 +44,8 @@ final class GatewayIngressController {
 
     private struct MediaRequest {
         let profileID: GatewayStableIdentifier.Key
+        let registrationID: UUID
+        let revision: UInt64
         let task: Task<(Data, URLResponse), Error>
     }
 
@@ -112,7 +114,7 @@ final class GatewayIngressController {
             retireTransports: { [weak self] origin in
                 guard let self else { return }
                 self.expiryTasks.removeValue(forKey: origin)?.cancel()
-                let requests = self.mediaRequests.removeValue(forKey: origin) ?? [:]
+                let requests = self.mediaRequests[origin] ?? [:]
                 requests.values.forEach { $0.task.cancel() }
                 for request in requests.values {
                     _ = await request.task.result
@@ -151,9 +153,9 @@ final class GatewayIngressController {
             if GatewayStableIdentifier.matches(self.foregroundIntent?.route.stableID, route.stableID) {
                 self.cancelSignIn()
             }
-            await self.retireMedia(profileID: key)
-            try self.checkRegistration(registration)
         }
+        await self.retireMedia(profileID: key)
+        try self.checkRegistration(registration)
         if let previous = profiles().first(where: { $0.id == key })?.accessOrigin, previous != origin {
             guard try await self.depart(
                 stableID: route.stableID, savedOrigin: previous, origins: [previous],
@@ -168,6 +170,8 @@ final class GatewayIngressController {
         try self.checkRegistration(registration)
         guard let ordinaryChallenge else {
             self.routes[key]?.managedRevision = nil
+            await self.retireMedia(profileID: key)
+            try self.checkRegistration(registration)
             if GatewayStableIdentifier.matches(self.attention?.stableID, route.stableID) {
                 self.attention = nil
             }
@@ -331,10 +335,14 @@ final class GatewayIngressController {
     }
 
     private func retireMedia(profileID: GatewayStableIdentifier.Key) async {
+        let registration = self.routes[profileID]
         var pending: [Task<(Data, URLResponse), Error>] = []
-        for (origin, requests) in self.mediaRequests {
-            for (id, request) in requests where request.profileID == profileID {
-                self.mediaRequests[origin]?.removeValue(forKey: id)
+        // Retain draining requests until load settles so overlapping admissions join
+        // the same work. Caller cancellation alone does not retire a current owner.
+        for requests in self.mediaRequests.values {
+            for request in requests.values where request.profileID == profileID &&
+                (request.registrationID != registration?.id || request.revision != registration?.managedRevision)
+            {
                 request.task.cancel()
                 pending.append(request.task)
             }
@@ -512,8 +520,15 @@ final class GatewayIngressController {
         let task = Task { try await operation(request) }
         self.mediaRequests[origin, default: [:]][id] = MediaRequest(
             profileID: GatewayStableIdentifier.Key(registration.route.stableID),
+            registrationID: registration.id,
+            revision: revision,
             task: task)
-        defer { self.mediaRequests[origin]?.removeValue(forKey: id) }
+        defer {
+            self.mediaRequests[origin]?.removeValue(forKey: id)
+            if self.mediaRequests[origin]?.isEmpty == true {
+                self.mediaRequests.removeValue(forKey: origin)
+            }
+        }
         let result = try await withTaskCancellationHandler {
             try await task.value
         } onCancel: { task.cancel() }
