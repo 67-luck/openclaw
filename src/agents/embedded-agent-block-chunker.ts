@@ -23,9 +23,11 @@ import {
 } from "./embedded-agent-link-spans.js";
 
 export type BlockReplyChunking = {
+  /** Preferred minimum chunk size; clamped to the absolute ceiling when provided. */
   minChars: number;
+  /** Preferred maximum chunk size; protected links may exceed it up to hardMaxChars. */
   maxChars: number;
-  /** Absolute transport ceiling; links may exceed maxChars but never this limit. */
+  /** Absolute transport ceiling. Defaults to maxChars for legacy callers. */
   hardMaxChars?: number;
   breakPreference?: "paragraph" | "newline" | "sentence";
   /** When true, prefer \n\n paragraph boundaries once minChars has been satisfied. */
@@ -42,6 +44,22 @@ type BreakResult = {
   index: number;
   fenceSplit?: FenceSplit;
 };
+
+function normalizeChunkLimits(params: {
+  minChars: number;
+  maxChars: number;
+  hardMaxChars?: number;
+}): { minChars: number; maxChars: number; hardMaxChars: number } {
+  const requestedMinChars = Math.max(1, Math.floor(params.minChars));
+  const requestedMaxChars = Math.max(requestedMinChars, Math.floor(params.maxChars));
+  const hardMaxChars = Math.max(1, Math.floor(params.hardMaxChars ?? requestedMaxChars));
+  const maxChars = Math.min(requestedMaxChars, hardMaxChars);
+  return {
+    minChars: Math.min(requestedMinChars, maxChars),
+    maxChars,
+    hardMaxChars,
+  };
+}
 
 type ParagraphBreak = {
   index: number;
@@ -333,9 +351,11 @@ export class EmbeddedBlockChunker {
       this.#codeContext = "";
       return;
     }
-    const minChars = Math.max(1, Math.floor(chunking?.minChars ?? 1));
-    const maxChars = Math.max(minChars, Math.floor(chunking?.maxChars ?? Infinity));
-    const hardMaxChars = Math.max(maxChars, Math.floor(chunking?.hardMaxChars ?? maxChars));
+    const { minChars, maxChars, hardMaxChars } = normalizeChunkLimits({
+      minChars: chunking?.minChars ?? 1,
+      maxChars: chunking?.maxChars ?? Infinity,
+      hardMaxChars: chunking?.hardMaxChars,
+    });
     const force = params.force || availableLength >= maxChars;
     const originalSource = this.bufferedText;
     if (originalSource.length < minChars && !force) {
@@ -688,12 +708,11 @@ export class EmbeddedBlockChunker {
     hardMaxCharsOverride?: number,
     openFence?: FenceSpan,
   ): BreakResult {
-    const minChars = Math.max(1, Math.floor(minCharsOverride ?? chunking.minChars));
-    const maxChars = Math.max(1, Math.floor(maxCharsOverride ?? chunking.maxChars));
-    const hardMaxChars = Math.max(
-      maxChars,
-      Math.floor(hardMaxCharsOverride ?? chunking.hardMaxChars ?? maxChars),
-    );
+    const { minChars, maxChars, hardMaxChars } = normalizeChunkLimits({
+      minChars: minCharsOverride ?? chunking.minChars,
+      maxChars: maxCharsOverride ?? chunking.maxChars,
+      hardMaxChars: hardMaxCharsOverride ?? chunking.hardMaxChars,
+    });
     if (buffer.length < minChars) {
       return { index: -1 };
     }
