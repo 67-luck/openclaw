@@ -1187,6 +1187,66 @@ struct GatewayIngressControllerTests {
         #expect(ingress.attention == nil)
     }
 
+    @Test @MainActor
+    func `cleartext cleanup preserves a distinct profile signing out from the same origin`() async throws {
+        let fixture = try IngressTestHarness()
+        var sibling = try #require(fixture.profileRows.first)
+        sibling.stableID = "independent-sibling"
+        fixture.profileRows.append(sibling)
+        fixture.preauthenticatedStableIDs.insert(sibling.stableID)
+        fixture.persisted = try String(data: JSONEncoder().encode(fixture.nextSession), encoding: .utf8)
+        let retirement = IngressTestGate()
+        let ingress = fixture.controller(retirement: { _ in
+            if fixture.retirements == 1 {
+                await retirement.wait()
+            }
+        })
+        let first = try #require(try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        let siblingRoute = GatewayIngressController.Route(url: fixture.route.url, stableID: sibling.stableID, tls: nil)
+        #expect(try await ingress.prepare(
+            route: siblingRoute, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()) == nil)
+        let media = IngressTestGate()
+        let download = Task { try await first.load(URLRequest(url: fixture.route.url)) { _ in
+            await media.wait()
+            throw CancellationError()
+        } }
+        defer { media.release()
+            retirement.release()
+            download.cancel()
+        }
+        try await waitForIngress { media.started }
+        let cleartext = try GatewayIngressController.Route(
+            url: #require(URL(string: "ws://gateway.example.test:8443/")),
+            stableID: fixture.stableID, tls: nil)
+        let pending = Task { try await ingress.prepare(
+            route: cleartext, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        defer { pending.cancel() }
+        try await waitForIngress { !first.isCurrent() && retirement.started }
+        // The other profile becomes a durable owner after the first retirement was
+        // reserved. Its later origin transition must not veto profile-local cleanup.
+        fixture.profileRows[1].accessOrigin = fixture.application.origin
+        let checkpoint = ingress.admissionCheckpoint()
+        let signedOut = Task { await ingress.signOut(stableID: sibling.stableID) }
+        defer { signedOut.cancel() }
+        try await waitForIngress { ingress.admissionCheckpoint() > checkpoint }
+        media.release()
+        retirement.release()
+        #expect(try await pending.value == nil)
+        await signedOut.value
+        await #expect(throws: CancellationError.self) { try await download.value }
+        #expect(fixture.profileRows[0].accessOrigin == nil)
+        #expect(fixture.profileRows[1].accessOrigin == fixture.application.origin)
+        #expect(fixture.retirements == 2)
+        let attention = try #require(ingress.attention)
+        #expect(attention.stableID == sibling.stableID)
+        // Reusing the attention also proves that cleanup retained the sibling's route.
+        try await ingress.signIn(for: attention, admissionCheckpoint: ingress.admissionCheckpoint())
+        #expect(ingress.attention == nil)
+        #expect(fixture.profileRows[1].accessOrigin == fixture.application.origin)
+        #expect(fixture.browser.presented.isEmpty)
+    }
+
     @Test(arguments: [false, true]) @MainActor
     func `cleartext preparation rejects cancellation and profile replacement during the drain`(
         replaceProfile: Bool) async throws
