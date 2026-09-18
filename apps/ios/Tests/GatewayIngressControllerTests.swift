@@ -1188,6 +1188,62 @@ struct GatewayIngressControllerTests {
     }
 
     @Test(arguments: [false, true]) @MainActor
+    func `cleartext preparation rejects cancellation and profile replacement during the drain`(
+        replaceProfile: Bool) async throws
+    {
+        let fixture = try IngressTestHarness()
+        var sibling = try #require(fixture.profileRows.first)
+        sibling.stableID = "retained-sibling"
+        fixture.profileRows.append(sibling)
+        fixture.persisted = try String(data: JSONEncoder().encode(fixture.nextSession), encoding: .utf8)
+        let ingress = fixture.controller()
+        let first = try #require(try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        let second = try #require(try await ingress.prepare(
+            route: .init(url: fixture.route.url, stableID: sibling.stableID, tls: nil),
+            userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        let media = IngressTestGate()
+        let download = Task { try await first.load(URLRequest(url: fixture.route.url)) { _ in
+            await media.wait()
+            throw CancellationError()
+        } }
+        try await waitForIngress { media.started }
+        let cleartext = try GatewayIngressController.Route(
+            url: #require(URL(string: "ws://gateway.example.test:8443/")),
+            stableID: fixture.stableID, tls: nil)
+        let pending = Task { try await ingress.prepare(
+            route: cleartext, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        defer { media.release()
+            download.cancel()
+            pending.cancel()
+        }
+        try await waitForIngress { !first.isCurrent() }
+        var renewed: GatewayIngressAuthorization?
+        if replaceProfile {
+            renewed = try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+            #expect(renewed?.isCurrent() == true)
+        } else {
+            // The caller already entered prepare and is suspended in the media drain.
+            pending.cancel()
+        }
+        let writes = fixture.savedOrigins.count
+        let saved = fixture.profileRows[0].accessOrigin
+        media.release()
+        await #expect(throws: CancellationError.self) { try await pending.value }
+        await #expect(throws: CancellationError.self) { try await download.value }
+        #expect(second.isCurrent())
+        if replaceProfile {
+            #expect(renewed?.isCurrent() == true)
+            #expect(fixture.savedOrigins.count == writes)
+            #expect(fixture.profileRows[0].accessOrigin == saved)
+        } else {
+            #expect(fixture.profileRows[0].accessOrigin == nil)
+        }
+        #expect(fixture.browser.presented.isEmpty)
+    }
+
+    @Test(arguments: [false, true]) @MainActor
     func `forgotten profile cleanup cannot mutate a replacement after the media drain`(
         replacementFails: Bool) async throws
     {

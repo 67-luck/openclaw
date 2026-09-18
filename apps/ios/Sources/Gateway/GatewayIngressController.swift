@@ -131,11 +131,15 @@ final class GatewayIngressController {
         admissionCheckpoint: UInt64) async throws -> GatewayIngressAuthorization?
     {
         try Task.checkCancellation()
+        let key = GatewayStableIdentifier.Key(route.stableID)
         guard let origin = try? CloudflareAccessOrigin(route.url) else {
             try await self.forget(stableID: route.stableID)
+            try Task.checkCancellation()
+            // A superseded Forget is a valid no-op, not ordinary admission for
+            // the caller whose route was replaced while cleanup drained.
+            guard self.routes[key] == nil else { throw CancellationError() }
             return nil
         }
-        let key = GatewayStableIdentifier.Key(route.stableID)
         let registration = self.routes[key].flatMap { $0.route == route ? $0 : nil } ?? Registration(route: route)
         let changedRoute = self.routes[key].map { $0.id != registration.id } ?? false
         self.routes[key] = registration
