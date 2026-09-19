@@ -41,6 +41,7 @@ export type UiCommandDetail = UiCommandParams;
 export type TerminalPanelToggleDetail = {
   agentId?: string | null;
   dock?: "bottom" | "right";
+  expanded?: boolean;
   newSession?: boolean;
   open?: boolean;
   terminalSessionId?: string;
@@ -49,6 +50,7 @@ export type TerminalPanelToggleDetail = {
 
 export type BrowserPanelToggleDetail = {
   dock?: "bottom" | "right";
+  expanded?: boolean;
   newTab?: boolean;
   open?: boolean;
   /** Existing tab to focus when the panel opens (browser-tab chat cards). */
@@ -60,12 +62,14 @@ export type BrowserPanelToggleDetail = {
 
 export type DesktopPanelToggleDetail = {
   dock?: "bottom" | "right";
+  expanded?: boolean;
   open?: boolean;
   environmentId?: string;
 };
 
 export type PortalPanelToggleDetail = {
   dock?: "bottom" | "right";
+  expanded?: boolean;
   open?: boolean;
   portalId?: string;
   environmentId?: string;

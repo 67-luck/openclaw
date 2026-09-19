@@ -23,7 +23,13 @@ import {
 import { areUiSessionKeysEquivalent } from "../../lib/sessions/session-key.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { resolveChatAgentId } from "./chat-state-route.ts";
-import { closeSlot, openSlot, setSidebarDock } from "./sidebar-layout.ts";
+import {
+  closeSlot,
+  openSlot,
+  setSidebarDock,
+  setSidebarExpanded,
+  toggleSidebarPanelExpanded,
+} from "./sidebar-layout.ts";
 
 interface ActivePanelOwner {
   renderRoot: ParentNode;
@@ -167,6 +173,12 @@ export class ChatPaneSessionPanelToggleController {
     } else if (panel && slot === "portal" && typeof detail?.environmentId === "string") {
       panel.environmentId = detail.environmentId;
       delete panel.portalId;
+    }
+    if (panel && typeof detail?.expanded === "boolean") {
+      layout =
+        detail.expanded && panel.id !== layout.mainPanelId
+          ? toggleSidebarPanelExpanded(layout, panel.id)
+          : setSidebarExpanded(layout, detail.expanded);
     }
     if (slot === "terminal") {
       const intent = terminalToggleIntent(event, resolveChatAgentId(owner.state));
