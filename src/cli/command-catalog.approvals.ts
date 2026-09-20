@@ -1,6 +1,4 @@
-import type { CliCommandCatalogEntry } from "./command-catalog.js";
-
-export const approvalsCommandPolicies: readonly CliCommandCatalogEntry[] = [
+export const approvalsCommandPolicies = [
   { commandPath: ["approvals"], policy: { networkProxy: "bypass" } },
   { commandPath: ["exec-approvals"], policy: { networkProxy: "bypass" } },
   {
@@ -19,4 +17,4 @@ export const approvalsCommandPolicies: readonly CliCommandCatalogEntry[] = [
       networkProxy: "bypass",
     } as const,
   })),
-];
+] as const;
