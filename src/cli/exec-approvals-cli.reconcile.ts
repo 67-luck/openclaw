@@ -28,9 +28,13 @@ export function registerExecApprovalsReconcileCli(
             defaultRuntime.writeJson(inspection, 0);
           } else {
             defaultRuntime.log(JSON.stringify(inspection, null, 2));
-            if (inspection.pending) {
+            if (inspection.pending && inspection.current?.valid) {
               defaultRuntime.log(
                 "To preserve current SQLite policy, stop the Gateway and node hosts, then run `openclaw approvals reconcile --keep-current` in this same profile. The legacy file will be archived. No policy is changed.",
+              );
+            } else if (inspection.pending) {
+              defaultRuntime.log(
+                "No valid current SQLite policy is available to preserve. Keep the legacy file and run `openclaw doctor --fix` in this same profile to diagnose migration before choosing a policy.",
               );
             }
           }

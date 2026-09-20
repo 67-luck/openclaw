@@ -1,4 +1,3 @@
-import "./exec-approvals-cli.test-support.js";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -67,6 +66,19 @@ describe("local approvals reconciliation", () => {
       .readdirSync(stateDir)
       .find((name) => name.startsWith("exec-approvals.json.migrated."));
     expect(fs.readFileSync(path.join(stateDir, archive!), "utf8")).toBe(legacy);
+  });
+
+  it("does not recommend keeping a missing current policy", async () => {
+    const stateDir = tempDirs.make("approvals-reconcile-no-current-");
+    setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
+    const sourcePath = path.join(stateDir, "exec-approvals.json");
+    const legacy = JSON.stringify({ version: 1, defaults: { security: "deny" } });
+    fs.writeFileSync(sourcePath, legacy);
+    await runApprovalsCommand(["approvals", "reconcile"]);
+    expect(loggedOutput()).toContain("No valid current SQLite policy");
+    expect(loggedOutput()).not.toContain("reconcile --keep-current");
+    expect(fs.readFileSync(sourcePath, "utf8")).toBe(legacy);
+    expect(fs.existsSync(path.join(stateDir, "state"))).toBe(false);
   });
 
   it("does not bootstrap SQLite when no legacy policy exists", async () => {
