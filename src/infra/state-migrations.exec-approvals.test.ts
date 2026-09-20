@@ -28,6 +28,7 @@ import { acquireGatewayLock } from "./gateway-lock.js";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "./kysely-sync.js";
 import {
   detectLegacyExecApprovals,
+  inspectLegacyExecApprovals,
   migrateLegacyExecApprovals,
 } from "./state-migrations.exec-approvals.js";
 
@@ -69,6 +70,7 @@ describe("legacy exec approvals migration", () => {
       beforeClaim?: () => void;
       beforeVerify?: () => void;
       removeSource?: (sourcePath: string) => Promise<void> | void;
+      keepCanonical?: boolean;
     } = {},
   ) {
     return await migrateLegacyExecApprovals({
@@ -456,6 +458,85 @@ describe("legacy exec approvals migration", () => {
     );
     expect(receipt()).toMatchObject({ removed_source: 0 });
   });
+
+  it("previews a conflict without revealing credentials, patterns, or changing policy", async () => {
+    const canonical = { version: 1 as const, defaults: { security: "deny" as const }, agents: {} };
+    writeExecApprovalsConfigRow({ db: database(), file: canonical });
+    await writeLegacy(sourcePath, {
+      version: 1,
+      defaults: { security: "full" },
+      socket: { token: "synthetic-private-token" },
+      agents: {
+        "synthetic-private-agent": { allowlist: [{ pattern: "synthetic-private-command" }] },
+      },
+    });
+    const original = await fsp.readFile(sourcePath);
+    const inspection = await inspectLegacyExecApprovals({ env, stateDir });
+    expect(inspection).toMatchObject({
+      pending: true,
+      policyMatches: false,
+      socketMatches: false,
+      current: { valid: true, defaults: { security: "deny" }, agentCount: 0 },
+      legacy: { valid: true, defaults: { security: "full" }, agentCount: 1, allowlistCount: 1 },
+    });
+    expect(JSON.stringify(inspection)).not.toContain("synthetic-private");
+    expect(await fsp.readFile(sourcePath)).toEqual(original);
+    expect(readExecApprovalsConfigRow(database())?.raw_json).toBe(
+      serializeExecApprovals(canonical),
+    );
+    expect(receipt()).toBeUndefined();
+  });
+
+  it("explicitly archives conflicting legacy bytes while preserving the exact current row", async () => {
+    const canonical = { version: 1 as const, defaults: { security: "deny" as const }, agents: {} };
+    writeExecApprovalsConfigRow({ db: database(), file: canonical });
+    await writeLegacy(sourcePath, { version: 1, defaults: { security: "full" }, agents: {} });
+    const original = await fsp.readFile(sourcePath);
+    const result = await migrate({ keepCanonical: true });
+    expect(result.warnings).toEqual([]);
+    expect(result.changes).toEqual([
+      "Preserved current SQLite exec approvals and archived the legacy file.",
+    ]);
+    expect(fs.existsSync(sourcePath)).toBe(false);
+    expect(readExecApprovalsConfigRow(database())?.raw_json).toBe(
+      serializeExecApprovals(canonical),
+    );
+    const archive = (await fsp.readdir(stateDir)).find((name) =>
+      name.startsWith("exec-approvals.json.migrated."),
+    );
+    expect(archive).toBeDefined();
+    expect(await fsp.readFile(path.join(stateDir, archive!))).toEqual(original);
+    if (process.platform !== "win32") {
+      expect((await fsp.stat(path.join(stateDir, archive!))).mode & 0o777).toBe(0o600);
+    }
+    expect(receipt()).toMatchObject({ removed_source: 1 });
+    await expect(migrate({ keepCanonical: true })).resolves.toEqual({
+      changes: [],
+      warnings: [],
+    });
+  });
+
+  it.each(["missing", "invalid"])(
+    "refuses to keep %s canonical policy without importing legacy",
+    async (kind) => {
+      if (kind === "invalid") {
+        writeExecApprovalsConfigRow({ db: database(), file: { version: 1 }, raw: "{invalid" });
+      }
+      const before = readExecApprovalsConfigRow(database());
+      await writeLegacy(sourcePath, { version: 1, defaults: { security: "full" }, agents: {} });
+      const original = await fsp.readFile(sourcePath);
+      const result = await migrate({ keepCanonical: true });
+      expect(result.warnings.join(" ")).toContain("valid canonical SQLite policy is required");
+      expect(
+        (await fsp.readdir(stateDir)).filter((name) =>
+          name.startsWith("exec-approvals.json.migrated."),
+        ),
+      ).toEqual([]);
+      expect(await fsp.readFile(sourcePath)).toEqual(original);
+      expect(readExecApprovalsConfigRow(database())).toEqual(before);
+      expect(receipt()).toBeUndefined();
+    },
+  );
 
   it("repairs an invalid canonical row from validated legacy policy", async () => {
     const db = database();
