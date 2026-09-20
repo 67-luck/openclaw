@@ -487,6 +487,32 @@ describe("legacy exec approvals migration", () => {
     expect(receipt()).toBeUndefined();
   });
 
+  it("compares matching ID-less allowlists deterministically without changing their source", async () => {
+    const { env, stateDir, sourcePath } = useStateDir();
+    const policy = { version: 1, agents: { main: { allowlist: ["/usr/bin/true"] } } };
+    await writeLegacy(sourcePath, policy);
+    const db = database(env);
+    writeExecApprovalsConfigRow({
+      db,
+      file: { version: 1, agents: { main: { allowlist: [{ pattern: "/usr/bin/true" }] } } },
+    });
+    const original = readExecApprovalsConfigRow(db);
+    expect(await inspectLegacyExecApprovals({ env, stateDir })).toMatchObject({
+      policyMatches: true,
+    });
+    expect(await inspectLegacyExecApprovals({ env, stateDir })).toMatchObject({
+      policyMatches: true,
+    });
+    expect(readExecApprovalsConfigRow(db)).toEqual(original);
+    await writeLegacy(sourcePath, {
+      version: 1,
+      agents: { main: { allowlist: ["/usr/bin/false"] } },
+    });
+    expect(await inspectLegacyExecApprovals({ env, stateDir })).toMatchObject({
+      policyMatches: false,
+    });
+  });
+
   it("explicitly archives conflicting legacy bytes while preserving the exact current row", async () => {
     const canonical = { version: 1 as const, defaults: { security: "deny" as const }, agents: {} };
     writeExecApprovalsConfigRow({ db: database(), file: canonical });

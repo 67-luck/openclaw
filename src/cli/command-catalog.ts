@@ -1,5 +1,6 @@
 // Declarative CLI command catalog for startup policy and fast-path routing.
 import { hasFlag } from "./argv.js";
+import { approvalsCommandPolicies } from "./command-catalog.approvals.js";
 import { PASSIVE_STARTUP_POLICY } from "./command-catalog-policies.js";
 import type { CliCommandCatalogEntry } from "./command-catalog-types.js";
 import { updateCommandCatalog } from "./command-catalog-update.js";
@@ -331,12 +332,7 @@ export const cliCommandCatalog: readonly CliCommandCatalogEntry[] = [
     exact: true,
     policy: { ownsProtocolStdout: true },
   },
-  { commandPath: ["approvals"], policy: { networkProxy: "bypass" } },
-  {
-    commandPath: ["approvals", "pending"],
-    exact: true,
-    policy: { configGuard: "skip", loadPlugins: "never", networkProxy: "bypass" },
-  },
+  ...approvalsCommandPolicies,
   // automations is a commander alias for cron; argv-derived command paths keep the typed token.
   {
     commandPath: ["automations"],
@@ -377,7 +373,6 @@ export const cliCommandCatalog: readonly CliCommandCatalogEntry[] = [
     commandPath: ["triage"],
     policy: { configGuard: "skip", loadPlugins: "never" },
   },
-  { commandPath: ["exec-approvals"], policy: { networkProxy: "bypass" } },
   { commandPath: ["exec-policy"], policy: { networkProxy: "bypass" } },
   { commandPath: ["hooks"], policy: { networkProxy: "bypass" } },
   ...[["hooks"], ["hooks", "list"], ["hooks", "info"], ["hooks", "check"]].map(
