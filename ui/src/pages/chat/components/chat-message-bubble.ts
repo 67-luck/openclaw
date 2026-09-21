@@ -706,7 +706,7 @@ export function renderGroupedMessage(
           : nothing
       }
       ${
-        duplicateCount > 1 && (!markdown || jsonResult)
+        duplicateCount > 1 && (diagnostic || !markdown || jsonResult)
           ? html`<div
               class="chat-duplicate-count"
               aria-label=${t("chat.messages.duplicatesCollapsed", {
