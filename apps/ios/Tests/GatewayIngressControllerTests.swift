@@ -105,6 +105,7 @@ final class IngressTestHarness {
     var pendingProbes = 0
     var probeFailure: URLError?
     var preauthenticated = false
+    var loginRedirect = false
     var preauthenticatedStableIDs = Set<String>()
     var applicationsByStableID: [String: CloudflareAccessApplication] = [:]
     var revoked = false
@@ -257,9 +258,13 @@ final class IngressTestHarness {
                   self.revoked || request.value(forHTTPHeaderField: "Cf-Access-Token") == nil
         {
             status = 302
-            fields["WWW-Authenticate"] =
-                "Cloudflare-Access resource_metadata=\"\(application.origin.url.absoluteString)" +
-                "/.well-known/cloudflare-access-protected-resource/\""
+            if self.loginRedirect {
+                fields["Location"] = "https://login.example.test/cdn-cgi/access/login?opaque=ignored"
+            } else {
+                fields["WWW-Authenticate"] =
+                    "Cloudflare-Access resource_metadata=\"\(application.origin.url.absoluteString)" +
+                    "/.well-known/cloudflare-access-protected-resource/\""
+            }
         }
         return try (
             data,
@@ -278,6 +283,71 @@ func waitForIngress(_ condition: () -> Bool) async throws {
 
 @Suite(.serialized)
 struct GatewayIngressControllerTests {
+    @Test(arguments: ["prepare", "headers", "response"]) @MainActor
+    func `headerless login redirects preserve admission and make rejected grants actionable`(
+        rejection: String) async throws
+    {
+        let fixture = try IngressTestHarness()
+        fixture.loginRedirect = true
+        fixture.preauthenticated = true
+        let ingress = fixture.controller()
+        #expect(try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()) == nil)
+        #expect(fixture.requests.count == 1)
+        #expect(fixture.browser.presented.isEmpty)
+        #expect(ingress.attention == nil)
+
+        fixture.preauthenticated = false
+        await #expect(throws: GatewayExternalAuthorizationError.self) {
+            try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+        }
+        let action = try #require(ingress.attention)
+        #expect(action.stableID == fixture.stableID)
+        #expect(action.canSignIn)
+        #expect(fixture.browser.presented.isEmpty)
+        fixture.release.continuation.finish()
+        try await ingress.signIn(for: action, admissionCheckpoint: ingress.admissionCheckpoint())
+        let current = try #require(try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        #expect(current.isCurrent())
+        #expect(fixture.persisted != nil)
+        #expect(fixture.browser.presented.count == 1)
+        #expect(ingress.attention == nil)
+        #expect(try await current.headers(for: fixture.route.url)["Cf-Access-Token"] == fixture.nextSession.token)
+        #expect(fixture.requests.allSatisfy {
+            $0.url?.host == fixture.application.origin.url.host || $0.url?.host == fixture.application.issuer.host
+        })
+        for request in fixture.requests
+            where request.httpMethod == "HEAD" || request.url?.host == fixture.application.issuer.host
+        {
+            #expect(request.value(forHTTPHeaderField: "Cf-Access-Token") == nil)
+            #expect(request.value(forHTTPHeaderField: "Cookie") == nil)
+        }
+
+        fixture.revoked = true
+        await #expect(throws: GatewayExternalAuthorizationError.self) {
+            switch rejection {
+            case "prepare":
+                _ = try await ingress.prepare(
+                    route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+            case "headers":
+                _ = try await current.headers(for: fixture.route.url)
+            default:
+                let response = try #require(HTTPURLResponse(
+                    url: fixture.route.url, statusCode: 302, httpVersion: nil,
+                    headerFields: ["Location": "https://login.example.test/cdn-cgi/access/login?opaque=ignored"]))
+                try await current.checkResponse(response)
+            }
+        }
+        #expect(!current.isCurrent())
+        #expect(ingress.attention?.stableID == fixture.stableID)
+        #expect(ingress.attention?.canSignIn == true)
+        #expect(fixture.browser.presented.count == 1)
+        try await ingress.forget(origin: fixture.application.origin)
+        #expect(fixture.persisted == nil)
+    }
+
     @Test @MainActor
     func `real Keychain ingress persistence survives restart and forget preserves Gateway credentials`() async throws {
         let isolation = GatewayRegistryTestIsolation()
