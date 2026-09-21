@@ -1993,7 +1993,7 @@ struct GatewayIngressControllerTests {
             .authorizationHeader(for: peerRoute.url, now: fixture.now))
         #expect(fixture.profileRows[1].accessOrigin == fixture.application.origin)
         #expect(fixture.persisted != nil)
-        #expect(fixture.retirements == 0)
+        #expect(fixture.retirements == 1)
         #expect(fixture.browser.presented.count == 1)
         #expect(fixture.browser.dismissed.count == 1)
         #expect(ingress.attention == nil)
@@ -2171,7 +2171,7 @@ struct GatewayIngressControllerTests {
         let current = try #require(try await managed?.value)
         #expect(current.isCurrent())
         #expect(fixture.persisted != nil)
-        #expect(fixture.retirements == 0)
+        #expect(fixture.retirements == 1)
         #expect(ingress.attention == nil)
     }
 
@@ -2307,7 +2307,7 @@ struct GatewayIngressControllerTests {
         #expect(fixture.browser.presented.count == 1)
         #expect(fixture.browser.dismissed.count == 1)
         #expect(ingress.attention == nil)
-        #expect(fixture.retirements == 0)
+        #expect(fixture.retirements == 1)
     }
 
     @Test(arguments: [false, true]) @MainActor
