@@ -2740,6 +2740,104 @@ struct GatewayIngressControllerTests {
         #expect(ingress.attention == nil)
     }
 
+    @Test(arguments: [false, true], [false, true]) @MainActor
+    func `forget retains withdrawn authentication custody while preserving a live coalesced peer`(
+        hasLivePeer: Bool, ordinary: Bool) async throws
+    {
+        let fixture = try IngressTestHarness()
+        fixture.profileRows[0].accessOrigin = fixture.application.origin
+        var sibling = try #require(fixture.profileRows.first)
+        sibling.stableID = "withdrawn-owner-peer"
+        fixture.profileRows.append(sibling)
+        let siblingRoute = GatewayIngressController.Route(
+            url: fixture.route.url, stableID: sibling.stableID, tls: nil)
+        let authentication = IngressTestGate()
+        let canceled = OSAllocatedUnfairLock(initialState: false)
+        var prompts = 0
+        let ingress = fixture.controller(authenticate: { application, browser in
+            prompts += 1
+            try await browser(application.origin.url.appendingPathComponent("cdn-cgi/access/cli"))
+            return await withTaskCancellationHandler {
+                await authentication.wait()
+                return fixture.nextSession
+            } onCancel: { canceled.withLock { $0 = true } }
+        })
+        var caller: Task<GatewayIngressAuthorization?, Error>?
+        var peer: Task<GatewayIngressAuthorization?, Error>?
+        func drainCallers() async {
+            authentication.release()
+            ingress.cancelSignIn()
+            caller?.cancel()
+            peer?.cancel()
+            _ = try? await caller?.value
+            _ = try? await peer?.value
+        }
+        do {
+            if hasLivePeer {
+                peer = Task { try await ingress.prepare(
+                    route: siblingRoute, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+                try await waitForIngress { authentication.started }
+            }
+            caller = Task { try await ingress.prepare(
+                route: fixture.route, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+            try await waitForIngress { authentication.started && ingress.attention?.stableID == fixture.stableID }
+            #expect(prompts == 1)
+            #expect(fixture.browser.presented.count == 1)
+            caller?.cancel()
+            if hasLivePeer {
+                // Retargeting the caller's prompt proves withdrawal completed before explicit departure.
+                try await waitForIngress { ingress.attention?.stableID == sibling.stableID }
+            } else {
+                try await waitForIngress { !fixture.browser.dismissed.isEmpty }
+                #expect(ingress.attention == nil)
+            }
+            #expect(!canceled.withLock { $0 })
+            #expect(fixture.persisted == nil)
+            if ordinary {
+                fixture.preauthenticatedStableIDs.insert(fixture.stableID)
+                let admission = try await ingress.prepare(
+                    route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+                #expect(admission == nil)
+                #expect(!canceled.withLock { $0 })
+            }
+            try await ingress.forget(stableID: fixture.stableID)
+            #expect(canceled.withLock { $0 } == !hasLivePeer)
+            #expect(fixture.profileRows.first { $0.stableID == fixture.stableID }?.accessOrigin == nil)
+            #expect(fixture.profileRows.first { $0.stableID == sibling.stableID }?.accessOrigin == fixture.application
+                .origin)
+            #expect(fixture.persisted == nil)
+            #expect(fixture.retirements == 0)
+            if hasLivePeer {
+                #expect(ingress.signingIn)
+                #expect(ingress.attention?.stableID == sibling.stableID)
+            } else {
+                #expect(!ingress.signingIn)
+                #expect(ingress.attention == nil)
+            }
+            // A cancellation-ignoring transfer cannot repersist after its exact owner was forgotten.
+            authentication.release()
+            let departed = try #require(caller)
+            await #expect(throws: CancellationError.self) { try await departed.value }
+            if hasLivePeer {
+                let authorization = try #require(try await peer?.value)
+                #expect(authorization.isCurrent())
+                #expect(try await authorization.headers(siblingRoute.url)["Cf-Access-Token"] == fixture.nextSession
+                    .authorizationHeader(for: siblingRoute.url))
+                #expect(fixture.persisted != nil)
+                #expect(fixture.retirements == 1)
+            } else {
+                #expect(fixture.persisted == nil)
+                #expect(fixture.retirements == 0)
+            }
+            #expect(authentication.settled)
+            #expect(prompts == 1)
+        } catch {
+            await drainCallers()
+            throw error
+        }
+        await drainCallers()
+    }
+
     @Test @MainActor
     func `a new browser caller replaces an intent after its final participant withdraws`() async throws {
         let fixture = try IngressTestHarness()

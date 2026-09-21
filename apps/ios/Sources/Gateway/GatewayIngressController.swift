@@ -55,6 +55,8 @@ final class GatewayIngressController {
         let route: Route
         let completion: Task<CloudflareAccessSessionStore.Snapshot, Error>
         var participants: [BrowserParticipant] = []
+        // Withdrawal ends browser eligibility; pending authentication still belongs to its joined registrations.
+        var registrationIDs: Set<UUID> = []
         var attentionID: UUID?
     }
 
@@ -385,6 +387,10 @@ final class GatewayIngressController {
         ordinary.managedRevision = nil
         ordinary.ordinaryAdmission = true
         self.routes[key] = ordinary
+        // Transfer explicit-departure custody without reviving the old browser participants.
+        if self.foregroundIntent?.registrationIDs.remove(registration.id) != nil {
+            self.foregroundIntent?.registrationIDs.insert(ordinary.id)
+        }
         let attentionID = self.attention?.id
         let pending = self.cancelObsoleteRequests(profileID: key)
         if let intent = self.foregroundIntent {
@@ -512,6 +518,11 @@ final class GatewayIngressController {
             let intentID = UUID()
             let completion = Task { [weak self] in
                 guard let self else { throw CancellationError() }
+                defer {
+                    if self.foregroundIntent?.id == intentID {
+                        self.foregroundIntent?.registrationIDs.removeAll()
+                    }
+                }
                 try Task.checkCancellation()
                 let task = self.sessions.signIn(application: application) { [weak self] url in
                     guard let self, let intent = self.foregroundIntent, intent.id == intentID,
@@ -555,10 +566,12 @@ final class GatewayIngressController {
                 route: registration.route,
                 completion: completion,
                 participants: [participant],
+                registrationIDs: [registration.id],
                 attentionID: self.attention?.id == attentionID ? attentionID : nil)
             self.signingIn = true
         } else {
             self.foregroundIntent?.participants.append(participant)
+            if self.signingIn { self.foregroundIntent?.registrationIDs.insert(registration.id) }
             if self.attention?.id == attentionID { self.foregroundIntent?.attentionID = attentionID }
         }
         guard let intent = foregroundIntent, intent.participants.contains(where: { $0.id == participant.id })
@@ -587,7 +600,9 @@ final class GatewayIngressController {
 
     private func retireBrowserParticipation(for registration: Registration) {
         guard let intent = foregroundIntent,
+              intent.registrationIDs.contains(registration.id) ||
               intent.participants.contains(where: { $0.registration.id == registration.id }) else { return }
+        self.foregroundIntent?.registrationIDs.remove(registration.id)
         self.foregroundIntent?.participants.removeAll { $0.registration.id == registration.id }
         // Profile removal retires only its waiters. A coalesced peer still owns the
         // same Store task and presentation, including completion awaiting dismissal.
