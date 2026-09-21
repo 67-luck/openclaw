@@ -121,6 +121,7 @@ final class IngressTestHarness {
     var requests: [URLRequest] = []
     var requestRoutes: [GatewayIngressController.Route] = []
     var profileRows: [GatewaySettingsStore.GatewayRegistryEntry] = []
+    var nextProfilesRead: (() -> Void)?
     var savedOrigins: [CloudflareAccessOrigin?] = []
     var probeStableID: String?
     var probeGate: AsyncStream<Void>?
@@ -218,7 +219,12 @@ final class IngressTestHarness {
             },
             requestDeadline: requestDeadline,
             customHeaders: { _ in ["X-Existing-Ingress": "preserved"] },
-            profiles: { useSavedProfiles ? GatewaySettingsStore.loadGatewayRegistry().entries : self.profileRows },
+            profiles: {
+                let didRead = self.nextProfilesRead
+                self.nextProfilesRead = nil
+                didRead?()
+                return useSavedProfiles ? GatewaySettingsStore.loadGatewayRegistry().entries : self.profileRows
+            },
             saveProfileOrigin: { stableID, origin in
                 self.savedOrigins.append(origin)
                 if useSavedProfiles {
@@ -534,66 +540,99 @@ struct GatewayIngressControllerTests {
         let ordinaryStarted = AsyncStream<Void>.makeStream()
         let ordinaryGate = AsyncStream<Void>.makeStream()
         var old: Task<GatewayIngressAuthorization?, Error>?
-        if stage != "probe" {
-            _ = try #require(try await ingress.prepare(
-                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
-            fixture.beforeManagedProbe = { _ in
-                try await withTaskCancellationHandler {
-                    await beforeSend.wait()
-                    try Task.checkCancellation()
-                } onCancel: { canceled.continuation.finish() }
-            }
-            old = Task { try await ingress.prepare(
-                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()) }
-            await beforeSend.waitUntilStarted()
-            fixture.beforeManagedProbe = nil
-            fixture.preauthenticated = true
-        } else {
-            fixture.probeGate = ordinaryGate.stream
-            fixture.probeDidStart = { ordinaryStarted.continuation.finish() }
-        }
-        defer { beforeSend.release()
+        var pendingOrdinary: Task<GatewayIngressAuthorization?, Error>?
+        var departure: Task<Void, Error>?
+        @MainActor func cleanUp() async {
+            fixture.nextProfilesRead = nil
+            beforeSend.release()
             ordinaryGate.continuation.finish()
             old?.cancel()
+            pendingOrdinary?.cancel()
+            departure?.cancel()
+            _ = await old?.result
+            _ = await pendingOrdinary?.result
+            _ = await departure?.result
         }
-        var returnedOrdinary = false
-        let ordinary = Task {
-            let result = try await ingress.prepare(
-                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
-            returnedOrdinary = true
-            return result
+        do {
+            if stage != "probe" {
+                _ = try #require(try await ingress.prepare(
+                    route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+                fixture.beforeManagedProbe = { _ in
+                    try await withTaskCancellationHandler {
+                        await beforeSend.wait()
+                        try Task.checkCancellation()
+                    } onCancel: { canceled.continuation.finish() }
+                }
+                old = Task { try await ingress.prepare(
+                    route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()) }
+                await beforeSend.waitUntilStarted()
+                fixture.beforeManagedProbe = nil
+                fixture.preauthenticated = true
+            } else {
+                fixture.probeGate = ordinaryGate.stream
+                fixture.probeDidStart = { ordinaryStarted.continuation.finish() }
+            }
+            var returnedOrdinary = false
+            let ordinary = Task {
+                let result = try await ingress.prepare(
+                    route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+                returnedOrdinary = true
+                return result
+            }
+            pendingOrdinary = ordinary
+            if stage == "probe" {
+                for await _ in ordinaryStarted.stream {}
+                fixture.probeGate = nil
+                fixture.probeDidStart = nil
+            } else {
+                for await _ in canceled.stream {}
+            }
+            fixture.preauthenticated = false
+            var current: GatewayIngressAuthorization?
+            if stage == "drain" {
+                var sibling = try #require(fixture.profileRows.first)
+                sibling.stableID = "ordinary-drain-sibling"
+                sibling.accessOrigin = fixture.application.origin
+                fixture.profileRows.append(sibling)
+                let removed = AsyncStream<Void>.makeStream()
+                // Forget removes the ordinary registration before its first profile read.
+                // Arm only after cancellation proves ordinary admission owns the old request drain.
+                fixture.nextProfilesRead = { removed.continuation.finish() }
+                departure = Task { try await ingress.forget(stableID: fixture.stableID) }
+                for await _ in removed.stream {}
+                #expect(!ordinary.isCancelled)
+            } else if stage == "caller" {
+                ordinary.cancel()
+            } else {
+                current = try #require(try await ingress.prepare(
+                    route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+                #expect(current?.isCurrent() == true)
+            }
+            if stage == "probe" {
+                fixture.preauthenticated = true
+                ordinaryGate.continuation.yield()
+            } else {
+                #expect(!beforeSend.settled)
+                beforeSend.release()
+            }
+            await #expect(throws: CancellationError.self) { try await ordinary.value }
+            if let old { await #expect(throws: CancellationError.self) { try await old.value } }
+            if let departure {
+                try await departure.value
+                #expect(!ordinary.isCancelled)
+                current = try #require(try await ingress.prepare(
+                    route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+            }
+            #expect(!returnedOrdinary)
+            if stage != "caller" { #expect(current?.isCurrent() == true) }
+            #expect(fixture.persisted != nil)
+            #expect(fixture.retirements == 0)
+            #expect(fixture.browser.presented.isEmpty)
+        } catch {
+            await cleanUp()
+            throw error
         }
-        defer { ordinary.cancel() }
-        if stage == "probe" {
-            for await _ in ordinaryStarted.stream {}
-            fixture.probeGate = nil
-            fixture.probeDidStart = nil
-        } else {
-            for await _ in canceled.stream {}
-        }
-        fixture.preauthenticated = false
-        var current: GatewayIngressAuthorization?
-        if stage == "caller" {
-            ordinary.cancel()
-        } else {
-            current = try #require(try await ingress.prepare(
-                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
-            #expect(current?.isCurrent() == true)
-        }
-        if stage == "probe" {
-            fixture.preauthenticated = true
-            ordinaryGate.continuation.yield()
-        } else {
-            #expect(!beforeSend.settled)
-            beforeSend.release()
-        }
-        await #expect(throws: CancellationError.self) { try await ordinary.value }
-        if let old { await #expect(throws: CancellationError.self) { try await old.value } }
-        #expect(!returnedOrdinary)
-        if stage != "caller" { #expect(current?.isCurrent() == true) }
-        #expect(fixture.persisted != nil)
-        #expect(fixture.retirements == 0)
-        #expect(fixture.browser.presented.isEmpty)
+        await cleanUp()
     }
 
     @Test(arguments: ["timeout", "caller"]) @MainActor
