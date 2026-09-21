@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OpenClawKit
+import os
 
 struct GatewayIngressAuthorization: Sendable {
     typealias Request = @Sendable (URLRequest) async throws -> (Data, URLResponse)
@@ -38,6 +39,14 @@ final class GatewayIngressController {
         let id = UUID()
         let route: Route
         var managedRevision: UInt64?
+        /// nil is unclassified; false is a verified managed challenge, including pending sign-in.
+        var ordinaryAdmission: Bool?
+    }
+
+    private struct BrowserParticipant: Sendable {
+        let id = UUID()
+        let registration: Registration
+        let canceled = OSAllocatedUnfairLock(initialState: false)
     }
 
     private struct ForegroundIntent {
@@ -45,6 +54,8 @@ final class GatewayIngressController {
         let application: CloudflareAccessApplication
         let route: Route
         let completion: Task<CloudflareAccessSessionStore.Snapshot, Error>
+        var participants: [BrowserParticipant] = []
+        var attentionID: UUID?
     }
 
     private struct DiscoveryOwner: Sendable {
@@ -164,20 +175,21 @@ final class GatewayIngressController {
             try self.checkRegistration(registration)
             guard self.sessions.admits(admissionCheckpoint, for: origin) else { throw CancellationError() }
         }
-        if changedRoute {
-            if GatewayStableIdentifier.matches(self.foregroundIntent?.route.stableID, route.stableID) {
-                self.cancelSignIn()
-            }
+        if changedRoute, GatewayStableIdentifier.matches(self.foregroundIntent?.route.stableID, route.stableID) {
+            self.cancelSignIn()
         }
         await self.retireRequests(profileID: key)
         try self.checkRegistration(registration)
         if let previous = profiles().first(where: { $0.id == key })?.accessOrigin, previous != origin {
             guard try await self.depart(
-                stableID: route.stableID, savedOrigin: previous, origins: [previous],
+                stableID: route.stableID,
+                savedOrigin: previous,
+                origins: [previous],
                 registrationID: registration.id) else { throw CancellationError() }
         }
         let client = self.client(for: route)
         let preCommitRevision = self.routes[key]?.managedRevision
+        let preCommitOrdinary = self.routes[key]?.ordinaryAdmission
         // A cached host grant must not make an independently admitted profile depend
         // on browser sign-out or expiry. Existing service headers and WARP go first.
         let ordinaryChallenge = try await client.discover(
@@ -185,16 +197,13 @@ final class GatewayIngressController {
             customHeaders: self.customHeaders(route.stableID))
         try self.checkRegistration(registration)
         guard let ordinaryChallenge else {
-            guard self.routes[key]?.managedRevision == preCommitRevision else { throw CancellationError() }
-            self.routes[key]?.managedRevision = nil
-            await self.retireRequests(profileID: key, ordinary: true)
-            try self.checkRegistration(registration)
-            guard self.routes[key]?.managedRevision == nil else { throw CancellationError() }
-            if GatewayStableIdentifier.matches(self.attention?.stableID, route.stableID) {
-                self.attention = nil
-            }
+            try await self.admitOrdinary(
+                registration,
+                previousRevision: preCommitRevision,
+                previousOrdinary: preCommitOrdinary)
             return nil
         }
+        self.routes[key]?.ordinaryAdmission = false
         try checkManagedAdmission()
         var snapshot = self.sessions.snapshot(for: origin)
         try await self.sessions.waitForRetirement(of: origin)
@@ -226,7 +235,8 @@ final class GatewayIngressController {
             throw CloudflareAccessError.storageFailed
         }
         if let application {
-            self.showAttention(route, message: "Sign in to Cloudflare Access to connect this gateway.")
+            let attentionID = UUID()
+            self.showAttention(route, message: "Sign in to Cloudflare Access to connect this gateway.", id: attentionID)
             if let snapshot {
                 self.blockedRevisions[origin] = snapshot.revision
                 // prepare runs before physical connection ownership, so it can await the drain.
@@ -235,7 +245,7 @@ final class GatewayIngressController {
             }
             guard userInitiated else { throw GatewayExternalAuthorizationError() }
             try checkManagedAdmission()
-            snapshot = try await self.signIn(application, route: route)
+            snapshot = try await self.signIn(application, registration: registration, attentionID: attentionID)
             try checkManagedAdmission()
         }
         // A managed admission must still own its exact revision after browser dismissal.
@@ -361,22 +371,59 @@ final class GatewayIngressController {
         }
     }
 
-    private func retireRequests(profileID: GatewayStableIdentifier.Key, ordinary: Bool = false) async {
+    private func admitOrdinary(
+        _ registration: Registration,
+        previousRevision: UInt64?,
+        previousOrdinary: Bool?) async throws
+    {
+        try self.checkRegistration(registration)
+        let key = GatewayStableIdentifier.Key(registration.route.stableID)
+        guard self.routes[key]?.managedRevision == previousRevision,
+              self.routes[key]?.ordinaryAdmission == previousOrdinary else { throw CancellationError() }
+        // Identity rotation retires even completed browser waiters that have not resumed.
+        // An already ordinary profile retains its owner through repeated probes.
+        var ordinary = self.routes[key]?
+            .ordinaryAdmission == true ? registration : Registration(route: registration.route)
+        ordinary.managedRevision = nil
+        ordinary.ordinaryAdmission = true
+        self.routes[key] = ordinary
+        let attentionID = self.attention?.id
+        let pending = self.cancelObsoleteRequests(profileID: key)
+        if let intent = self.foregroundIntent {
+            self.reconcileBrowser(intentID: intent.id)
+        }
+        if self.attention?.id == attentionID,
+           GatewayStableIdentifier.matches(self.attention?.stableID, registration.route.stableID)
+        {
+            self.attention = nil
+        }
+        for task in pending {
+            _ = await task.result
+        }
+        try self.checkRegistration(ordinary)
+        guard self.routes[key]?.ordinaryAdmission == true else { throw CancellationError() }
+    }
+
+    private func retireRequests(profileID: GatewayStableIdentifier.Key) async {
+        for task in self.cancelObsoleteRequests(profileID: profileID) {
+            _ = await task.result
+        }
+    }
+
+    private func cancelObsoleteRequests(profileID: GatewayStableIdentifier.Key) -> [Task<(Data, URLResponse), Error>] {
         let registration = self.routes[profileID]
         // Discovery can precede managed admission. Keep its registration/revision
         // custody until actual settlement, including after a caller deadline returns.
         let pending = self.managedRequests.values.flatMap { requests in
             requests.values.filter { request in
                 request.profileID == profileID &&
-                    (ordinary || request.registrationID != registration?.id ||
+                    (request.registrationID != registration?.id ||
                         (request.requiresManagedAdmission && request.revision != registration?.managedRevision))
             }.map(\.task)
         }
-        // Cancellation handlers may reenter. Only this captured obsolete set is retired.
+        // Capture before cancellation or presentation can publish a successor.
         pending.forEach { $0.cancel() }
-        for task in pending {
-            _ = await task.result
-        }
+        return pending
     }
 
     private func origin(stableID: String) -> CloudflareAccessOrigin? {
@@ -401,14 +448,17 @@ final class GatewayIngressController {
 
     func cancelSignIn(preserving attentionID: UUID? = nil) {
         guard let intent = foregroundIntent else { return }
+        let participant = self.liveParticipant(in: intent)
         self.foregroundIntent = nil
         intent.completion.cancel()
         self.sessions.cancelSignIn(for: intent.application.origin)
         let wasSigningIn = self.signingIn
         self.signingIn = false
         guard wasSigningIn else { return }
-        if attentionID == nil || self.attention?.id != attentionID {
-            self.showAttention(intent.route, message: "Sign-in was canceled. Choose Sign in to try again.")
+        if let participant, attentionID == nil || self.attention?.id != attentionID {
+            self.showAttention(
+                participant.registration.route,
+                message: "Sign-in was canceled. Choose Sign in to try again.")
         }
         Task { await self.browser.dismiss(intentID: intent.id) }
     }
@@ -448,26 +498,30 @@ final class GatewayIngressController {
 
     private func signIn(
         _ application: CloudflareAccessApplication,
-        route: Route) async throws -> CloudflareAccessSessionStore
-        .Snapshot
+        registration: Registration,
+        attentionID: UUID) async throws -> CloudflareAccessSessionStore.Snapshot
     {
         if self.foregroundIntent?.application != application ||
+            self.foregroundIntent.map({ self.liveParticipant(in: $0) == nil }) == true ||
             (!self.signingIn && self.sessions.currentRevision(for: application.origin) == 0)
         {
             // prepare already published this application's prompt. Retiring the old
             // browser must not replace that exact action, even for the same profile.
-            self.cancelSignIn(preserving: self.attention?.id)
+            self.cancelSignIn(preserving: attentionID)
         }
+        let participant = BrowserParticipant(registration: registration)
         if self.foregroundIntent == nil {
             let intentID = UUID()
             let completion = Task { [weak self] in
                 guard let self else { throw CancellationError() }
                 try Task.checkCancellation()
                 let task = self.sessions.signIn(application: application) { [weak self] url in
-                    guard let self, self.foregroundIntent?.id == intentID else { throw CancellationError() }
+                    guard let self, let intent = self.foregroundIntent, intent.id == intentID,
+                          self.liveParticipant(in: intent) != nil else { throw CancellationError() }
                     try await self.browser.open(url, intentID: intentID) { [weak self] in
-                        guard self?.foregroundIntent?.id == intentID else { return }
-                        self?.cancelSignIn()
+                        guard let self, let intent = self.foregroundIntent, intent.id == intentID,
+                              self.liveParticipant(in: intent) != nil else { return }
+                        self.cancelSignIn()
                     }
                 }
                 do {
@@ -481,8 +535,12 @@ final class GatewayIngressController {
                     self.signingIn = false
                     return snapshot
                 } catch {
-                    if self.foregroundIntent?.id == intentID {
-                        self.showAttention(route, message: error.localizedDescription)
+                    if let intent = self.foregroundIntent, intent.id == intentID {
+                        if let participant = self.liveParticipant(in: intent),
+                           self.attention?.id == intent.attentionID
+                        {
+                            self.showAttention(participant.registration.route, message: error.localizedDescription)
+                        }
                         await self.browser.dismiss(intentID: intentID)
                         if self.foregroundIntent?.id == intentID {
                             self.foregroundIntent = nil
@@ -492,17 +550,68 @@ final class GatewayIngressController {
                     throw error
                 }
             }
-            // Publish before suspending. All callers share the store task and its
-            // browser drain; canceling one caller never cancels another admission.
+            // Attach before exposing signingIn to synchronous observation callbacks.
             self.foregroundIntent = ForegroundIntent(
-                id: intentID, application: application, route: route, completion: completion)
+                id: intentID,
+                application: application,
+                route: registration.route,
+                completion: completion,
+                participants: [participant],
+                attentionID: self.attention?.id == attentionID ? attentionID : nil)
             self.signingIn = true
+        } else {
+            self.foregroundIntent?.participants.append(participant)
+            if self.attention?.id == attentionID { self.foregroundIntent?.attentionID = attentionID }
         }
-        guard let intent = foregroundIntent else { throw CancellationError() }
-        let snapshot = try await intent.completion.value
-        try Task.checkCancellation()
-        guard !intent.completion.isCancelled else { throw CancellationError() }
-        return snapshot
+        guard let intent = foregroundIntent, intent.participants.contains(where: { $0.id == participant.id })
+        else { throw CancellationError() }
+        defer { self.withdraw(participant, intentID: intent.id) }
+        // Canceling a caller withdraws browser eligibility immediately, but Store
+        // retains the shared authentication task until an explicit owner retires it.
+        return try await withTaskCancellationHandler {
+            let snapshot = try await intent.completion.value
+            try self.checkRegistration(registration)
+            guard !intent.completion.isCancelled else { throw CancellationError() }
+            return snapshot
+        } onCancel: {
+            participant.canceled.withLock { $0 = true }
+            Task { @MainActor [weak self] in self?.withdraw(participant, intentID: intent.id) }
+        }
+    }
+
+    private func liveParticipant(in intent: ForegroundIntent) -> BrowserParticipant? {
+        intent.participants.first { participant in
+            let current = self.routes[GatewayStableIdentifier.Key(participant.registration.route.stableID)]
+            return !participant.canceled.withLock { $0 } && current?.id == participant.registration.id &&
+                current?.ordinaryAdmission == false
+        }
+    }
+
+    private func withdraw(_ participant: BrowserParticipant, intentID: UUID) {
+        guard self.foregroundIntent?.id == intentID else { return }
+        self.foregroundIntent?.participants.removeAll { $0.id == participant.id }
+        self.reconcileBrowser(intentID: intentID)
+    }
+
+    private func reconcileBrowser(intentID: UUID) {
+        guard let intent = self.foregroundIntent, intent.id == intentID else { return }
+        let participant = self.liveParticipant(in: intent)
+        if let attention = self.attention, attention.id == intent.attentionID {
+            if let participant {
+                if !GatewayStableIdentifier.matches(attention.stableID, participant.registration.route.stableID) {
+                    self.showAttention(
+                        participant.registration.route,
+                        message: attention.message,
+                        id: attention.id,
+                        canSignIn: attention.canSignIn)
+                }
+            } else {
+                self.attention = nil
+            }
+        }
+        if participant == nil, self.signingIn {
+            Task { await self.browser.dismiss(intentID: intentID) }
+        }
     }
 
     private func authorization(
@@ -549,8 +658,12 @@ final class GatewayIngressController {
             revision: revision)
         else { throw GatewayExternalAuthorizationError() }
         let task = try self.beginRequest(
-            request, operation: operation, registration: registration, origin: origin,
-            revision: revision, requiresManagedAdmission: true)
+            request,
+            operation: operation,
+            registration: registration,
+            origin: origin,
+            revision: revision,
+            requiresManagedAdmission: true)
         let result = try await withTaskCancellationHandler {
             try await task.value
         } onCancel: { task.cancel() }
@@ -585,7 +698,11 @@ final class GatewayIngressController {
                 }
             }
             try requireCurrent()
-            return try await operation(request)
+            let result = try await operation(request)
+            // Raw work can ignore cancellation. Retired requests must not publish
+            // success that restores managed admission over an ordinary successor.
+            try Task.checkCancellation()
+            return result
         }
         self.managedRequests[origin, default: [:]][id] = ManagedRequest(
             profileID: GatewayStableIdentifier.Key(registration.route.stableID),
@@ -720,9 +837,12 @@ final class GatewayIngressController {
         owner: DiscoveryOwner) async throws -> (Data, HTTPURLResponse)
     {
         let task = try self.beginRequest(
-            request, operation: { try await raw($0, maximumBytes) },
-            registration: owner.registration, origin: owner.snapshot.session.origin,
-            revision: owner.snapshot.revision, requiresManagedAdmission: owner.requiresManagedAdmission)
+            request,
+            operation: { try await raw($0, maximumBytes) },
+            registration: owner.registration,
+            origin: owner.snapshot.session.origin,
+            revision: owner.snapshot.revision,
+            requiresManagedAdmission: owner.requiresManagedAdmission)
         // A deadline cancels without joining. The raw task retains the session and
         // registry entry until settlement; explicit retirement joins that same task.
         defer { task.cancel() }
