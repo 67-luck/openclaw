@@ -168,15 +168,15 @@ final class GatewayIngressController {
             guard self.routes[key] == nil else { throw CancellationError() }
             return nil
         }
-        let registration = self.routes[key].flatMap { $0.route == route ? $0 : nil } ?? Registration(route: route)
-        let changedRoute = self.routes[key].map { $0.id != registration.id } ?? false
+        let previous = self.routes[key]
+        let registration = previous.flatMap { $0.route == route ? $0 : nil } ?? Registration(route: route)
         self.routes[key] = registration
         func checkManagedAdmission() throws {
             try self.checkRegistration(registration)
             guard self.sessions.admits(admissionCheckpoint, for: origin) else { throw CancellationError() }
         }
-        if changedRoute, GatewayStableIdentifier.matches(self.foregroundIntent?.route.stableID, route.stableID) {
-            self.cancelSignIn()
+        if let previous, previous.id != registration.id {
+            self.retireBrowserParticipation(for: previous)
         }
         await self.retireRequests(profileID: key)
         try self.checkRegistration(registration)
@@ -308,9 +308,7 @@ final class GatewayIngressController {
         let saved = self.profiles().first { $0.id == key }?.accessOrigin
         let origins = Set([registration.flatMap { try? CloudflareAccessOrigin($0.route.url) }, saved]
             .compactMap(\.self))
-        if GatewayStableIdentifier.matches(self.foregroundIntent?.route.stableID, stableID) {
-            self.cancelSignIn()
-        }
+        if let registration { self.retireBrowserParticipation(for: registration) }
         let attentionID = self.attention?.id
         guard try await self.depart(stableID: stableID, savedOrigin: saved, origins: origins, registrationID: nil)
         else { return }
@@ -584,6 +582,22 @@ final class GatewayIngressController {
             let current = self.routes[GatewayStableIdentifier.Key(participant.registration.route.stableID)]
             return !participant.canceled.withLock { $0 } && current?.id == participant.registration.id &&
                 current?.ordinaryAdmission == false
+        }
+    }
+
+    private func retireBrowserParticipation(for registration: Registration) {
+        guard let intent = foregroundIntent,
+              intent.participants.contains(where: { $0.registration.id == registration.id }) else { return }
+        self.foregroundIntent?.participants.removeAll { $0.registration.id == registration.id }
+        // Profile removal retires only its waiters. A coalesced peer still owns the
+        // same Store task and presentation, including completion awaiting dismissal.
+        if let current = foregroundIntent, liveParticipant(in: current) != nil {
+            self.reconcileBrowser(intentID: intent.id)
+        } else {
+            if self.attention?.id == intent.attentionID {
+                self.attention = nil
+            }
+            self.cancelSignIn()
         }
     }
 

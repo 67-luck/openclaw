@@ -1863,6 +1863,227 @@ struct GatewayIngressControllerTests {
         #expect(fixture.persisted == nil)
     }
 
+    @Test(arguments: ["forget", "replacement"], ["before-browser", "queued-browser", "committed"]) @MainActor
+    func `creator departure preserves a coalesced browser and its terminal waiters`(
+        departure: String, stage: String) async throws
+    {
+        let fixture = try IngressTestHarness()
+        var sibling = try #require(fixture.profileRows.first)
+        sibling.stableID = "surviving-browser-profile"
+        fixture.profileRows.append(sibling)
+        let peerRoute = GatewayIngressController.Route(url: fixture.route.url, stableID: sibling.stableID, tls: nil)
+        let opening = IngressTestGate()
+        let authentication = IngressTestGate()
+        let dismissal = AsyncStream<Void>.makeStream()
+        let dismissing = AsyncStream<Void>.makeStream()
+        let probe = AsyncStream<Void>.makeStream()
+        let probeEntered = AsyncStream<Void>.makeStream()
+        let canceled = OSAllocatedUnfairLock(initialState: false)
+        var prompts = 0
+        let ingress = fixture.controller(authenticate: { application, browser in
+            prompts += 1
+            return try await withTaskCancellationHandler {
+                await opening.wait()
+                try await browser(application.origin.url.appendingPathComponent("cdn-cgi/access/cli"))
+                await authentication.wait()
+                try Task.checkCancellation()
+                return fixture.nextSession
+            } onCancel: { canceled.withLock { $0 = true } }
+        })
+        if stage != "before-browser" {
+            opening.release()
+        }
+        if stage == "committed" {
+            fixture.browser.dismissalGate = dismissal.stream
+            fixture.browser.onDismiss = { dismissing.continuation.finish() }
+        }
+        let first = Task { try await ingress.prepare(
+            route: fixture.route, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        var peer: Task<GatewayIngressAuthorization?, Error>?
+        var replacement: Task<GatewayIngressAuthorization?, Error>?
+        defer {
+            opening.release()
+            authentication.release()
+            dismissal.continuation.finish()
+            probe.continuation.finish()
+            first.cancel()
+            peer?.cancel()
+            replacement?.cancel()
+        }
+        await opening.waitUntilStarted()
+        if stage != "before-browser" {
+            await authentication.waitUntilStarted()
+        }
+        let joined = AsyncStream<Void>.makeStream()
+        withObservationTracking { _ = ingress.attention } onChange: { joined.continuation.finish() }
+        peer = Task { try await ingress.prepare(
+            route: peerRoute, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        for await _ in joined.stream {}
+        let attentionID = try #require(ingress.attention?.id)
+        if stage == "committed" {
+            authentication.release()
+            for await _ in dismissing.stream {}
+            #expect(fixture.persisted != nil)
+        }
+        if departure == "forget" {
+            try await ingress.forget(stableID: fixture.stableID)
+        } else {
+            fixture.probeStableID = fixture.stableID
+            fixture.probeGate = probe.stream
+            fixture.probeDidStart = { probeEntered.continuation.finish() }
+            let route = GatewayIngressController.Route(
+                url: fixture.route.url.appendingPathComponent("replacement"), stableID: fixture.stableID, tls: nil)
+            replacement = Task { try await ingress.prepare(
+                route: route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()) }
+            for await _ in probeEntered.stream {}
+        }
+        #expect(!canceled.withLock { $0 })
+        #expect(ingress.signingIn)
+        #expect(ingress.attention?.id == attentionID)
+        #expect(ingress.attention?.stableID == sibling.stableID)
+        #expect(fixture.browser.dismissed.count == (stage == "committed" ? 1 : 0))
+        #expect(prompts == 1)
+        opening.release()
+        await authentication.waitUntilStarted()
+        authentication.release()
+        dismissal.continuation.finish()
+        await #expect(throws: CancellationError.self) { try await first.value }
+        let survivor = try #require(try await peer?.value)
+        #expect(survivor.isCurrent())
+        #expect(try await survivor.headers(peerRoute.url)["Cf-Access-Token"] == fixture.nextSession
+            .authorizationHeader(for: peerRoute.url, now: fixture.now))
+        #expect(fixture.profileRows[1].accessOrigin == fixture.application.origin)
+        #expect(fixture.persisted != nil)
+        #expect(fixture.retirements == 0)
+        #expect(fixture.browser.presented.count == 1)
+        #expect(fixture.browser.dismissed.count == 1)
+        #expect(ingress.attention == nil)
+        if let replacement {
+            replacement.cancel()
+            probe.continuation.finish()
+            await #expect(throws: CancellationError.self) { try await replacement.value }
+        }
+        #expect(survivor.isCurrent())
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func `explicit profile departure cancels its sole browser attempt`(replace: Bool) async throws {
+        let fixture = try IngressTestHarness()
+        let authentication = IngressTestGate()
+        let dismissed = AsyncStream<Void>.makeStream()
+        let canceled = OSAllocatedUnfairLock(initialState: false)
+        fixture.browser.onDismiss = { dismissed.continuation.finish() }
+        let ingress = fixture.controller(authenticate: { application, browser in
+            try await browser(application.origin.url.appendingPathComponent("cdn-cgi/access/cli"))
+            return await withTaskCancellationHandler {
+                await authentication.wait()
+                return fixture.nextSession
+            } onCancel: { canceled.withLock { $0 = true } }
+        })
+        let pending = Task { try await ingress.prepare(
+            route: fixture.route, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        defer {
+            authentication.release()
+            pending.cancel()
+        }
+        await authentication.waitUntilStarted()
+        if replace {
+            fixture.preauthenticated = true
+            let route = GatewayIngressController.Route(
+                url: fixture.route.url.appendingPathComponent("ordinary"), stableID: fixture.stableID, tls: nil)
+            #expect(try await ingress.prepare(
+                route: route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()) == nil)
+        } else {
+            try await ingress.forget(stableID: fixture.stableID)
+        }
+        #expect(canceled.withLock { $0 })
+        for await _ in dismissed.stream {}
+        #expect(!ingress.signingIn)
+        #expect(ingress.attention == nil)
+        authentication.release()
+        await #expect(throws: CancellationError.self) { try await pending.value }
+        #expect(fixture.persisted == nil)
+        #expect(fixture.browser.presented.count == 1)
+        #expect(fixture.browser.dismissed.count == 1)
+    }
+
+    @Test @MainActor
+    func `passive route replacement preserves a peer until a different application requests sign-in`() async throws {
+        let fixture = try IngressTestHarness()
+        var sibling = try #require(fixture.profileRows.first)
+        sibling.stableID = "previous-application-peer"
+        fixture.profileRows.append(sibling)
+        let peerRoute = GatewayIngressController.Route(url: fixture.route.url, stableID: sibling.stableID, tls: nil)
+        let other = CloudflareAccessApplication(
+            origin: fixture.application.origin, issuer: fixture.application.issuer, audience: "replacement-audience")
+        let replacementSession = try fixture.session(for: other, subject: "replacement-owner")
+        let oldAuthentication = IngressTestGate()
+        let newAuthentication = IngressTestGate()
+        let probe = AsyncStream<Void>.makeStream()
+        let probeEntered = AsyncStream<Void>.makeStream()
+        let canceled = OSAllocatedUnfairLock(initialState: false)
+        var applications: [CloudflareAccessApplication] = []
+        let ingress = fixture.controller(authenticate: { application, browser in
+            applications.append(application)
+            try await browser(application.origin.url.appendingPathComponent("cdn-cgi/access/cli"))
+            if application == fixture.application {
+                return await withTaskCancellationHandler {
+                    await oldAuthentication.wait()
+                    return fixture.nextSession
+                } onCancel: { canceled.withLock { $0 = true } }
+            }
+            await newAuthentication.wait()
+            try Task.checkCancellation()
+            return replacementSession
+        })
+        let first = Task { try await ingress.prepare(
+            route: fixture.route, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        var peer: Task<GatewayIngressAuthorization?, Error>?
+        var replacement: Task<GatewayIngressAuthorization?, Error>?
+        defer {
+            oldAuthentication.release()
+            newAuthentication.release()
+            probe.continuation.finish()
+            first.cancel()
+            peer?.cancel()
+            replacement?.cancel()
+        }
+        await oldAuthentication.waitUntilStarted()
+        let joined = AsyncStream<Void>.makeStream()
+        withObservationTracking { _ = ingress.attention } onChange: { joined.continuation.finish() }
+        peer = Task { try await ingress.prepare(
+            route: peerRoute, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        for await _ in joined.stream {}
+        fixture.applicationsByStableID[fixture.stableID] = other
+        fixture.probeStableID = fixture.stableID
+        fixture.probeGate = probe.stream
+        fixture.probeDidStart = { probeEntered.continuation.finish() }
+        let route = GatewayIngressController.Route(
+            url: fixture.route.url.appendingPathComponent("other-application"), stableID: fixture.stableID, tls: nil)
+        replacement = Task { try await ingress.prepare(
+            route: route, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        for await _ in probeEntered.stream {}
+        #expect(!canceled.withLock { $0 })
+        #expect(applications == [fixture.application])
+        #expect(fixture.browser.dismissed.isEmpty)
+        #expect(ingress.attention?.stableID == sibling.stableID)
+        probe.continuation.finish()
+        await newAuthentication.waitUntilStarted()
+        #expect(canceled.withLock { $0 })
+        #expect(applications == [fixture.application, other])
+        #expect(ingress.attention?.stableID == fixture.stableID)
+        oldAuthentication.release()
+        await #expect(throws: CancellationError.self) { try await first.value }
+        await #expect(throws: CancellationError.self) { try await peer?.value }
+        newAuthentication.release()
+        let current = try #require(try await replacement?.value)
+        #expect(current.isCurrent())
+        #expect(try JSONDecoder().decode(CloudflareAccessSession.self, from: Data(#require(fixture.persisted).utf8))
+            .subject == "replacement-owner")
+        #expect(ingress.attention == nil)
+        #expect(fixture.browser.presented.count == 2)
+    }
+
     @Test(arguments: [false, true]) @MainActor
     func `an older ordinary probe cannot replace a newly classified managed browser`(
         alreadyOrdinary: Bool) async throws
