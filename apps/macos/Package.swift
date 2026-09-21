@@ -11,7 +11,6 @@ let package = Package(
     products: [
         .library(name: "OpenClawIPC", targets: ["OpenClawIPC"]),
         .library(name: "OpenClawDiscovery", targets: ["OpenClawDiscovery"]),
-        .library(name: "OpenClawRustSidecar", targets: ["OpenClawRustSidecar"]),
         .executable(name: "OpenClaw", targets: ["OpenClaw"]),
         .executable(name: "openclaw-mac", targets: ["OpenClawMacCLI"]),
     ],

@@ -22,6 +22,34 @@ def git(repo, *arguments):
     return subprocess.check_output(["git", *arguments], cwd=repo)
 
 
+def ensure_clean_repo(repo):
+    status = git(repo, "status", "--porcelain", "--untracked-files=all").decode().strip()
+    if status:
+        raise ValueError("Candidate checkout must be clean before recording exact-head probe evidence")
+
+
+def build_helper(repo, root):
+    target_dir = root / "cargo-target"
+    command = [
+        "cargo",
+        "build",
+        "--locked",
+        "--release",
+        "--manifest-path",
+        str(repo / "crates/Cargo.toml"),
+        "--target-dir",
+        str(target_dir),
+        "-p",
+        "openclaw-mac-node-sidecar",
+    ]
+    subprocess.run(command, check=True)
+    helper = target_dir / "release/openclaw-mac-node-sidecar"
+    if not helper.is_file():
+        raise FileNotFoundError("Cargo did not produce the macOS sidecar helper")
+    shutil.copy2(helper, root / "bin/openclaw-mac-node-sidecar")
+    return command
+
+
 def build_variant(repo, root, scripts, base, variant):
     package = root / (variant + "-build")
     sources = package / "Sources"
@@ -95,10 +123,6 @@ def main():
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--base", default=BASE_COMMIT)
-    parser.add_argument(
-        "--helper", type=Path, required=True,
-        help="Release helper built from the candidate being measured",
-    )
     args = parser.parse_args()
     repo = args.repo.resolve()
     root = args.output.resolve()
@@ -112,9 +136,12 @@ def main():
     for name in ["bin", "home", "tmp", "tls-fixtures"]:
         (root / name).mkdir()
     shutil.copy2(scripts / "sandbox.sb", root / "sandbox.sb")
+    ensure_clean_repo(repo)
+    helper_command = build_helper(repo, root)
     metadata = {
         "baseline": args.base,
         "candidateHead": git(repo, "rev-parse", "HEAD").decode().strip(),
+        "helperBuildCommand": helper_command,
         "swift": subprocess.check_output(["swift", "--version"], text=True).strip(),
         "machine": subprocess.check_output(
             ["sysctl", "-n", "hw.model", "hw.ncpu", "hw.memsize"], text=True
@@ -124,7 +151,6 @@ def main():
     }
     for variant in ["baseline", "candidate"]:
         metadata["sources"][variant] = build_variant(repo, root, scripts, args.base, variant)
-    shutil.copy2(args.helper, root / "bin/openclaw-mac-node-sidecar")
     source = (repo / "crates/openclaw-gateway-client/tests/tls_policy.rs").read_text()
     for name, destination in [("CERTIFICATE", "localhost.der"), ("KEY", "localhost-key.der")]:
         match = re.search(r"const " + name + r": &\[u8\] = &\[(.*?)\];", source, re.S)

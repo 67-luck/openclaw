@@ -4,18 +4,13 @@ This measures the real shared Swift Gateway/node owners against the same owners 
 
 ## Reproduce
 
-Use a reviewed candidate checkout, macOS with Swift 6.3+, Rust 1.93.0, and installed repository Node dependencies. Build the helper in release mode from that candidate, with an external Cargo target directory if sharing a checkout. Never launch the app or full native test suite on an operator desktop.
+Use a clean reviewed candidate checkout, macOS with Swift 6.3+, Rust 1.93.0, and installed repository Node dependencies. The probe builder compiles the helper in release mode from that exact checkout and writes Cargo output under the fresh proof root. Never launch the app or full native test suite on an operator desktop.
 
 ```sh
-# Build the candidate helper in an isolated output directory.
-cargo build --locked --release --manifest-path <repo>/crates/Cargo.toml \
-  --target-dir <cargo-output> -p openclaw-mac-node-sidecar
-# <helper> below is <cargo-output>/release/openclaw-mac-node-sidecar.
-
 # Run these commands from scripts/bench-macos-sidecar.
-# <repo> and <helper> are explicit local paths.
+# <repo> is an explicit local path.
 # <output> must be a fresh, absent directory directly under /tmp.
-python3 build-probes.py --repo <repo> --output <output> --helper <helper>
+python3 build-probes.py --repo <repo> --output <output>
 export RFC54_BENCH_ROOT=<output>
 export OPENCLAW_BENCH_REPO=<repo>
 
@@ -48,7 +43,7 @@ python3 run-paired.py
 
 Before execution, validate the included sandbox with `sandbox-probe`: it must deny operator file access, Keychain, preference, TCC, and WindowServer services. The validator supplies `BENCH_ROOT=<resolved output path>` and `BENCH_ENDPOINT=localhost:<fixture port>` through `sandbox-exec -D`. The selected listener must work and a different live loopback listener must fail with `EPERM`. The profile does not grant general loopback access, home-directory access, or TOFU/pin persistence. The runner supplies a fresh environment to every native process. TLS uses source-defined test certificates and explicit fingerprints.
 
-The baseline is extracted from `73d99565248df43a0c972402ccc5bf034b34fe91`, the refreshed sidecar stack tip before macOS adoption. Candidate sources come from the selected checkout. Build metadata records all source and executable SHA-256 hashes. Keep the helper hash paired with the source snapshot that produced it; the build script cannot independently prove provenance of a supplied binary.
+The baseline is extracted from `73d99565248df43a0c972402ccc5bf034b34fe91`, the refreshed sidecar stack tip before macOS adoption. Candidate sources and the helper binary come from the selected clean checkout. Build metadata records the exact candidate head, helper build command, source hashes, and executable SHA-256 hashes.
 
 ## Measurements
 

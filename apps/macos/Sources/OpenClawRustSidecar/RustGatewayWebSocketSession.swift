@@ -5,40 +5,40 @@ import OpenClawKit
 import Security
 
 /// A product-owned process transport. Gateway credentials still come from the native auth owner.
-public final class RustGatewayWebSocketSession: WebSocketSessioning, GatewayTLSRouteMetadataProviding,
+package final class RustGatewayWebSocketSession: WebSocketSessioning, GatewayTLSRouteMetadataProviding,
 GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Sendable {
     private let executableURL: URL
     private let fingerprint: String?
     private let trustOwner: GatewayTLSPinningSession
 
-    public static var bundledExecutableURL: URL {
+    package static var bundledExecutableURL: URL {
         Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/openclaw-mac-node-sidecar")
     }
 
-    public init(executableURL: URL, fingerprint: String? = nil, tlsParams: GatewayTLSParams? = nil) {
+    package init(executableURL: URL, fingerprint: String? = nil, tlsParams: GatewayTLSParams? = nil) {
         self.executableURL = executableURL
         self.fingerprint = fingerprint
         self.trustOwner = GatewayTLSPinningSession(params: tlsParams ?? GatewayTLSParams(
             required: true, expectedFingerprint: fingerprint, allowTOFU: false, storeKey: nil))
     }
 
-    public var effectiveTLSFingerprintSHA256: String? {
+    package var effectiveTLSFingerprintSHA256: String? {
         self.trustOwner.effectiveTLSFingerprintSHA256
     }
 
-    public var allowsDeviceTokenRetryAuth: Bool {
+    package var allowsDeviceTokenRetryAuth: Bool {
         self.trustOwner.allowsDeviceTokenRetryAuth
     }
 
-    public func consumeLastTLSFailure() -> GatewayTLSValidationFailure? {
+    package func consumeLastTLSFailure() -> GatewayTLSValidationFailure? {
         self.trustOwner.consumeLastTLSFailure()
     }
 
-    public func makeWebSocketTask(url: URL) -> WebSocketTaskBox {
+    package func makeWebSocketTask(url: URL) -> WebSocketTaskBox {
         self.makeWebSocketTask(request: URLRequest(url: url))
     }
 
-    public func makeWebSocketTask(request: URLRequest) -> WebSocketTaskBox {
+    package func makeWebSocketTask(request: URLRequest) -> WebSocketTaskBox {
         WebSocketTaskBox(task: RustGatewayWebSocketTask(
             executableURL: self.executableURL,
             request: request,
@@ -186,7 +186,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
 
     private func run() throws {
         if self.executableURL == RustGatewayWebSocketSession.bundledExecutableURL {
-            try Self.bundledArtifact.get()
+            try Self.verifyBundledArtifact()
         }
         let child = Process()
         let stdinPipe = Pipe()
@@ -368,9 +368,8 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         return message
     }
 
-    /// The bundle seal covers this exact helper; verify before handing it session keys.
-    /// This immutable artifact decision is shared across reconnects of one app process.
-    private static let bundledArtifact: Result<Void, Error> = Result {
+    /// The bundle seal covers this exact helper; verify immediately before handing it session keys.
+    private static func verifyBundledArtifact() throws {
         let flags = SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckAllArchitectures | kSecCSCheckNestedCode)
         for url in [Bundle.main.bundleURL, RustGatewayWebSocketSession.bundledExecutableURL] {
             var code: SecStaticCode?
