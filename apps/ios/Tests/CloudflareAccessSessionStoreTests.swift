@@ -195,6 +195,61 @@ struct CloudflareAccessSessionStoreTests {
         #expect(memory.values.isEmpty)
     }
 
+    @Test func `reauthentication revokes completed shared grants before retirement can suspend`() async throws {
+        let memory = MemoryStore()
+        let application = try CloudflareAccessTestTokens.application()
+        let session = try CloudflareAccessTestTokens().session()
+        let retirement = AsyncStream<Void>.makeStream()
+        let retiring = AsyncStream<Void>.makeStream()
+        var holdRetirement = false
+        let store = CloudflareAccessSessionStore(
+            persistence: memory.persistence,
+            authenticate: { _, _ in session },
+            retireTransports: { _ in
+                if holdRetirement {
+                    retiring.continuation.finish()
+                    for await _ in retirement.stream {}
+                }
+            })
+        let first = store.signIn(application: application, openBrowser: { _ in })
+        let peer = store.signIn(application: application, openBrowser: { _ in })
+        var receipt: CloudflareAccessSessionStore.Retirement?
+        func drain() async {
+            retirement.continuation.finish()
+            first.cancel()
+            peer.cancel()
+            _ = await first.result
+            _ = await peer.result
+            _ = await receipt?.task.result
+        }
+        do {
+            let admitted = try await first.value
+            holdRetirement = true
+            receipt = try #require(store.beginReauthentication(
+                for: application.origin, revision: admitted.revision))
+            // No await separates revocation from these admission checks.
+            #expect(store.snapshot(for: application.origin) == nil)
+            #expect(store.currentRevision(for: application.origin) == 0)
+            #expect(store.state(for: application.origin) == .reauthenticationRequired)
+            #expect(store.beginReauthentication(for: application.origin, revision: admitted.revision) == nil)
+            #expect(memory.values[application.origin] != nil)
+
+            let stale = try await peer.value
+            #expect(stale.revision == admitted.revision)
+            #expect(store.snapshot(for: application.origin) == nil)
+            for await _ in retiring.stream {}
+            #expect(memory.values[application.origin] != nil)
+            retirement.continuation.finish()
+            try await receipt?.task.value
+            #expect(memory.values[application.origin] == nil)
+            #expect(store.state(for: application.origin) == .reauthenticationRequired)
+        } catch {
+            await drain()
+            throw error
+        }
+        await drain()
+    }
+
     @Test func `restart loads only a valid session for its exact authority`() throws {
         let memory = MemoryStore()
         let session = try CloudflareAccessTestTokens().session()

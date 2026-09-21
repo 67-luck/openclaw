@@ -2607,6 +2607,103 @@ struct GatewayIngressControllerTests {
         #expect(fixture.retirements == 1)
     }
 
+    @Test @MainActor
+    func `queued browser grants cannot readmit after synchronous rejection`() async throws {
+        let fixture = try IngressTestHarness()
+        let authentication = IngressTestGate()
+        let retirement = IngressTestGate()
+        let dismissal = AsyncStream<Void>.makeStream()
+        fixture.browser.dismissalGate = dismissal.stream
+        var holdRetirement = false
+        let ingress = fixture.controller(authenticate: { application, browser in
+            try await browser(application.origin.url.appendingPathComponent("cdn-cgi/access/cli"))
+            await authentication.wait()
+            try Task.checkCancellation()
+            return fixture.nextSession
+        }, retirement: { _ in
+            if holdRetirement { await retirement.wait() }
+        })
+        var firstCompleted = false
+        var peerCompleted = false
+        let first = Task {
+            defer { firstCompleted = true }
+            return try await ingress.prepare(
+                route: fixture.route, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint())
+        }
+        var peer: Task<GatewayIngressAuthorization?, Error>?
+        func drain() async {
+            authentication.release()
+            dismissal.continuation.finish()
+            retirement.release()
+            first.cancel()
+            peer?.cancel()
+            _ = await first.result
+            _ = await peer?.result
+            let cleanup = Task { try? await ingress.forget(origin: fixture.application.origin) }
+            await cleanup.value
+        }
+        do {
+            try await waitForIngress { authentication.started }
+            let firstAttention = try #require(ingress.attention)
+            peer = Task {
+                defer { peerCompleted = true }
+                return try await ingress.prepare(
+                    route: fixture.route, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint())
+            }
+            // Prompt replacement and participant attachment share one MainActor turn.
+            try await waitForIngress { ingress.attention?.id != firstAttention.id }
+            #expect(fixture.persisted == nil)
+            authentication.release()
+            try await waitForIngress { fixture.browser.dismissed.count == 1 }
+            #expect(fixture.persisted != nil)
+            #expect(!firstCompleted && !peerCompleted)
+            #expect(fixture.retirements == 1)
+
+            // The cached probe admits G1 without a second browser. Both original
+            // callers still hold G1 behind the shared dismissal barrier.
+            let current = try #require(try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+            #expect(current.isCurrent())
+            #expect(fixture.browser.presented.count == 1)
+            let challenge = try #require(HTTPURLResponse(
+                url: fixture.route.url, statusCode: 302, httpVersion: nil,
+                headerFields: ["Location": "/cdn-cgi/access/login/fixture"]))
+            holdRetirement = true
+            await #expect(throws: GatewayExternalAuthorizationError.self) { try await current.checkResponse(challenge) }
+            let rejection = try #require(ingress.attention)
+            #expect(rejection.canSignIn)
+            #expect(rejection.stableID == fixture.stableID)
+            #expect(!current.isCurrent())
+            #expect(!ingress.hasSession(stableID: fixture.stableID))
+            try await waitForIngress { retirement.started }
+            #expect(!retirement.settled)
+            #expect(fixture.persisted != nil)
+
+            dismissal.continuation.finish()
+            try await waitForIngress { firstCompleted && peerCompleted }
+            await #expect(throws: GatewayExternalAuthorizationError.self) { try await first.value }
+            await #expect(throws: GatewayExternalAuthorizationError.self) { try await peer?.value }
+            #expect(!current.isCurrent())
+            #expect(!ingress.hasSession(stableID: fixture.stableID))
+            #expect(ingress.attention?.id == rejection.id)
+            let requestCount = fixture.requests.count
+            await #expect(throws: GatewayExternalAuthorizationError.self) {
+                try await current.headers(fixture.route.url)
+            }
+            #expect(fixture.requests.count == requestCount)
+            #expect(!retirement.settled)
+            #expect(fixture.retirements == 2)
+            retirement.release()
+            try await waitForIngress { fixture.persisted == nil }
+            #expect(ingress.attention?.id == rejection.id)
+            #expect(fixture.browser.presented.count == 1)
+        } catch {
+            await drain()
+            throw error
+        }
+        await drain()
+    }
+
     @Test(arguments: [false, true]) @MainActor
     func `canceling a browser caller preserves another caller on the same registration`(cancelFirst: Bool) async throws {
         let fixture = try IngressTestHarness()

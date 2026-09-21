@@ -172,11 +172,16 @@ final class CloudflareAccessSessionStore {
     }
 
     func requireReauthentication(for origin: CloudflareAccessOrigin, revision: UInt64) async throws {
-        // A failure from an old socket must not invalidate a newer browser grant.
-        guard self.sessions[origin]?.revision == revision else { return }
+        try await self.beginReauthentication(for: origin, revision: revision)?.task.value
+    }
+
+    func beginReauthentication(for origin: CloudflareAccessOrigin, revision: UInt64) -> Retirement? {
+        // Revoke before yielding: a completed browser task can still have queued
+        // admission waiters. An old socket must not invalidate a newer grant.
+        guard self.sessions[origin]?.revision == revision else { return nil }
         self.sessions.removeValue(forKey: origin)
         self.setState(.reauthenticationRequired, for: origin)
-        try await self.queueRetirement(origin).task.value
+        return self.queueRetirement(origin)
     }
 
     /// Capture before endpoint/QR resolution; a later resolved origin can reject only

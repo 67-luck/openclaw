@@ -240,7 +240,7 @@ final class GatewayIngressController {
             if let snapshot {
                 self.blockedRevisions[origin] = snapshot.revision
                 // prepare runs before physical connection ownership, so it can await the drain.
-                // Upgrade/media rejection instead schedules invalidation to avoid joining itself.
+                // Upgrade/media rejection revokes synchronously and queues teardown to avoid joining itself.
                 try await self.sessions.requireReauthentication(for: origin, revision: snapshot.revision)
             }
             guard userInitiated else { throw GatewayExternalAuthorizationError() }
@@ -250,7 +250,7 @@ final class GatewayIngressController {
         }
         // A managed admission must still own its exact revision after browser dismissal.
         guard let snapshot else { throw GatewayExternalAuthorizationError() }
-        guard self.sessions.snapshot(for: origin)?.revision == snapshot.revision else {
+        guard self.isCurrent(origin: origin, revision: snapshot.revision) else {
             throw GatewayExternalAuthorizationError()
         }
         self.blockedRevisions.removeValue(forKey: origin)
@@ -789,17 +789,15 @@ final class GatewayIngressController {
         guard self.sessions.currentRevision(for: origin) == revision,
               self.blockedRevisions[origin] != revision
         else { return }
+        // Remove Store currentness in this actor turn. Teardown remains queued
+        // because an upgrade/media task must never join its own retirement.
+        _ = self.sessions.beginReauthentication(for: origin, revision: revision)
         self.blockedRevisions[origin] = revision
         let managedRoute = self.retireManagedAdmissions(origin: origin, revision: revision)
         if let route = route ?? managedRoute {
             self.showAttention(
                 route,
                 message: "Cloudflare Access needs sign-in again. Open Gateway settings to continue.")
-        }
-        // Never await teardown from an upgrade/media task: retirement joins those same tasks.
-        Task { [weak self] in
-            guard let self else { return }
-            try? await self.sessions.requireReauthentication(for: origin, revision: revision)
         }
     }
 
