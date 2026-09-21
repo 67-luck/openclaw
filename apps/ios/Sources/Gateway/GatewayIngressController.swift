@@ -27,6 +27,7 @@ final class GatewayIngressController {
         let origin: CloudflareAccessOrigin
         let stableID: String
         let message: String
+        let canSignIn: Bool
     }
 
     private struct Registration: Sendable {
@@ -37,7 +38,7 @@ final class GatewayIngressController {
 
     private struct ForegroundIntent {
         let id: UUID
-        let origin: CloudflareAccessOrigin
+        let application: CloudflareAccessApplication
         let route: Route
         let completion: Task<CloudflareAccessSessionStore.Snapshot, Error>
     }
@@ -101,7 +102,7 @@ final class GatewayIngressController {
         CloudflareAccessSessionStore(
             persistence: self.persistence,
             authenticate: { [weak self] application, openBrowser in
-                guard let self, let intent = self.foregroundIntent, intent.origin == application.origin
+                guard let self, let intent = self.foregroundIntent, intent.application == application
                 else { throw CancellationError() }
                 let route = intent.route
                 if let authenticate = self.authenticate {
@@ -234,8 +235,8 @@ final class GatewayIngressController {
     }
 
     func signIn(for attention: Attention, admissionCheckpoint: UInt64) async throws {
-        guard self.attention?.id == attention.id,
-              let route = routes[GatewayStableIdentifier.Key(attention.stableID)]?.route
+        guard let current = self.attention, current.id == attention.id, current.canSignIn,
+              let route = routes[GatewayStableIdentifier.Key(current.stableID)]?.route
         else {
             throw CancellationError()
         }
@@ -250,19 +251,26 @@ final class GatewayIngressController {
     func signOut(stableID: String) async {
         guard let origin = origin(stableID: stableID) else { return }
         _ = self.retireManagedAdmissions(origin: origin, revision: self.sessions.currentRevision(for: origin))
-        if self.foregroundIntent?.origin == origin {
+        if self.foregroundIntent?.application.origin == origin {
             self.cancelSignIn()
         }
         let route = Route(url: origin.url, stableID: stableID, tls: nil)
+        let retirement = self.sessions.forget(origin)
+        let operationID = UUID()
+        self.showAttention(
+            route, message: "Signing out of Cloudflare Access…", id: operationID, canSignIn: false)
+        let message: String
         do {
-            try await self.sessions.forget(origin).task.value
-            self.showAttention(
-                route,
-                message: "Cloudflare Access is signed out for this host. " +
-                    "Sign in to reconnect gateways using this Access session.")
+            try await retirement.task.value
+            message = "Cloudflare Access is signed out for this host. " +
+                "Sign in to reconnect gateways using this Access session."
         } catch {
-            self.showAttention(route, message: error.localizedDescription)
+            message = error.localizedDescription
         }
+        // Cleanup owns its result even after caller cancellation, but a newer prompt
+        // owns the action slot. Publish only for this operation's pending attention.
+        guard self.attention?.id == operationID else { return }
+        self.showAttention(route, message: message, id: operationID)
     }
 
     func forget(stableID: String) async throws {
@@ -275,9 +283,10 @@ final class GatewayIngressController {
         if GatewayStableIdentifier.matches(self.foregroundIntent?.route.stableID, stableID) {
             self.cancelSignIn()
         }
+        let attentionID = self.attention?.id
         guard try await self.depart(stableID: stableID, savedOrigin: saved, origins: origins, registrationID: nil)
         else { return }
-        if GatewayStableIdentifier.matches(self.attention?.stableID, stableID) {
+        if self.attention?.id == attentionID, GatewayStableIdentifier.matches(self.attention?.stableID, stableID) {
             self.attention = nil
         }
     }
@@ -372,26 +381,29 @@ final class GatewayIngressController {
         else { throw CancellationError() }
     }
 
-    func cancelSignIn() {
+    func cancelSignIn(preserving attentionID: UUID? = nil) {
         guard let intent = foregroundIntent else { return }
         self.foregroundIntent = nil
         intent.completion.cancel()
-        self.sessions.cancelSignIn(for: intent.origin)
+        self.sessions.cancelSignIn(for: intent.application.origin)
         let wasSigningIn = self.signingIn
         self.signingIn = false
         guard wasSigningIn else { return }
-        self.showAttention(intent.route, message: "Sign-in was canceled. Choose Sign in to try again.")
+        if attentionID == nil || self.attention?.id != attentionID {
+            self.showAttention(intent.route, message: "Sign-in was canceled. Choose Sign in to try again.")
+        }
         Task { await self.browser.dismiss(intentID: intent.id) }
     }
 
     func forget(origin: CloudflareAccessOrigin) async throws {
-        if self.foregroundIntent?.origin == origin {
+        if self.foregroundIntent?.application.origin == origin {
             self.cancelSignIn()
         }
+        let attentionID = self.attention?.id
         self.routes = self.routes.filter { (try? CloudflareAccessOrigin($0.value.route.url)) != origin }
         try await self.sessions.forget(origin).task.value
         self.blockedRevisions.removeValue(forKey: origin)
-        if self.attention?.origin == origin {
+        if self.attention?.id == attentionID, self.attention?.origin == origin {
             self.attention = nil
         }
     }
@@ -421,10 +433,12 @@ final class GatewayIngressController {
         route: Route) async throws -> CloudflareAccessSessionStore
         .Snapshot
     {
-        if self.foregroundIntent?.origin != application.origin ||
+        if self.foregroundIntent?.application != application ||
             (!self.signingIn && self.sessions.currentRevision(for: application.origin) == 0)
         {
-            self.cancelSignIn()
+            // prepare already published this application's prompt. Retiring the old
+            // browser must not replace that exact action, even for the same profile.
+            self.cancelSignIn(preserving: self.attention?.id)
         }
         if self.foregroundIntent == nil {
             let intentID = UUID()
@@ -463,7 +477,7 @@ final class GatewayIngressController {
             // Publish before suspending. All callers share the store task and its
             // browser drain; canceling one caller never cancels another admission.
             self.foregroundIntent = ForegroundIntent(
-                id: intentID, origin: application.origin, route: route, completion: completion)
+                id: intentID, application: application, route: route, completion: completion)
             self.signingIn = true
         }
         guard let intent = foregroundIntent else { throw CancellationError() }
@@ -634,9 +648,10 @@ final class GatewayIngressController {
         }
     }
 
-    private func showAttention(_ route: Route, message: String) {
+    private func showAttention(_ route: Route, message: String, id: UUID = UUID(), canSignIn: Bool = true) {
         guard let origin = try? CloudflareAccessOrigin(route.url) else { return }
-        self.attention = Attention(id: UUID(), origin: origin, stableID: route.stableID, message: message)
+        self.attention = Attention(
+            id: id, origin: origin, stableID: route.stableID, message: message, canSignIn: canSignIn)
     }
 
     private func client(for route: Route) -> CloudflareAccessClient {

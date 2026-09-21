@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Observation
 import OpenClawChatUI
 import OpenClawKit
 import OpenClawProtocol
@@ -33,19 +34,28 @@ final class IngressTestBrowser: CloudflareAccessBrowserPresenting {
 @MainActor
 final class IngressTestGate {
     private var continuation: CheckedContinuation<Void, Never>?
+    private let start = AsyncStream<Void>.makeStream()
+    private var released = false
     private(set) var started = false
     private(set) var settled = false
     var cancellationObserved = false
 
     func wait() async {
         await withCheckedContinuation { continuation in
-            self.continuation = continuation
+            if self.released { continuation.resume() }
+            else { self.continuation = continuation }
             self.started = true
+            self.start.continuation.finish()
         }
         self.settled = true
     }
 
+    func waitUntilStarted() async {
+        for await _ in self.start.stream {}
+    }
+
     func release() {
+        self.released = true
         self.continuation?.resume()
         self.continuation = nil
     }
@@ -96,6 +106,7 @@ final class IngressTestHarness {
     var probeFailure: URLError?
     var preauthenticated = false
     var preauthenticatedStableIDs = Set<String>()
+    var applicationsByStableID: [String: CloudflareAccessApplication] = [:]
     var revoked = false
     var retirements = 0
     var release = AsyncStream<Void>.makeStream()
@@ -149,6 +160,7 @@ final class IngressTestHarness {
     func controller(
         useSavedProfiles: Bool = false,
         persistence: CloudflareAccessSessionStore.Persistence? = nil,
+        authenticate: CloudflareAccessSessionStore.Authenticate? = nil,
         retirement: ((CloudflareAccessOrigin) async -> Void)? = nil) -> GatewayIngressController
     {
         GatewayIngressController(
@@ -162,7 +174,7 @@ final class IngressTestHarness {
                     return true
                 }),
             browser: self.browser,
-            authenticate: { application, browser in
+            authenticate: authenticate ?? { application, browser in
                 try await browser(application.origin.url.appendingPathComponent("cdn-cgi/access/cli"))
                 for await _ in self.release.stream {
                     break
@@ -199,6 +211,15 @@ final class IngressTestHarness {
             })
     }
 
+    func session(for application: CloudflareAccessApplication, subject: String) throws -> CloudflareAccessSession {
+        let expires = self.nextSession.expiresAt
+        let token = try self.tokens.token([
+            "iss": application.issuer.absoluteString, "aud": [application.audience],
+            "type": "app", "sub": subject, "exp": expires.timeIntervalSince1970,
+        ])
+        return CloudflareAccessSession(application: application, subject: subject, token: token, expiresAt: expires)
+    }
+
     func record(_ route: GatewayIngressController.Route) {
         self.requestRoutes.append(route)
     }
@@ -209,7 +230,8 @@ final class IngressTestHarness {
             throw probeFailure
         }
         let url = try #require(request.url)
-        if let gate = probeGate, request.httpMethod != "HEAD", url.host == self.application.origin.url.host,
+        let application = self.applicationsByStableID[stableID] ?? self.application
+        if let gate = probeGate, request.httpMethod != "HEAD", url.host == application.origin.url.host,
            !probeRequiresManagedGrant || request.value(forHTTPHeaderField: "Cf-Access-Token") != nil,
            probeStableID == nil || GatewayStableIdentifier.matches(probeStableID, stableID)
         {
@@ -223,12 +245,12 @@ final class IngressTestHarness {
         var fields: [String: String] = [:]
         var status = 200
         var data = Data()
-        if url.host == self.application.issuer.host {
+        if url.host == application.issuer.host {
             data = self.tokens.jwks
         } else if request.httpMethod == "HEAD" {
             fields["Cf-Access-Metadata"] = try self.tokens.token([
-                "type": "match", "hostname": self.application.origin.url.host!,
-                "auth_domain": self.application.issuer.host!, "aud": self.application.audience,
+                "type": "match", "hostname": application.origin.url.host!,
+                "auth_domain": application.issuer.host!, "aud": application.audience,
                 "iat": Date().timeIntervalSince1970,
             ])
         } else if !self.preauthenticated, !self.preauthenticatedStableIDs.contains(stableID),
@@ -236,7 +258,7 @@ final class IngressTestHarness {
         {
             status = 302
             fields["WWW-Authenticate"] =
-                "Cloudflare-Access resource_metadata=\"\(self.application.origin.url.absoluteString)" +
+                "Cloudflare-Access resource_metadata=\"\(application.origin.url.absoluteString)" +
                 "/.well-known/cloudflare-access-protected-resource/\""
         }
         return try (
@@ -400,6 +422,322 @@ struct GatewayIngressControllerTests {
         #expect(second?.isCurrent() == false)
         #expect(!ingress.hasSession(stableID: fixture.stableID))
         #expect(!ingress.hasSession(stableID: sibling.stableID))
+    }
+
+    @Test(arguments: [false, true], [false, true]) @MainActor
+    func `different signed applications on one host replace the browser attempt`(
+        differentIssuer: Bool, sameProfile: Bool) async throws
+    {
+        let fixture = try IngressTestHarness()
+        var sibling = fixture.profileRows[0]
+        sibling.stableID = sameProfile ? fixture.stableID : "other-path"
+        if !sameProfile { fixture.profileRows.append(sibling) }
+        let application = try CloudflareAccessApplication(
+            origin: fixture.application.origin,
+            issuer: differentIssuer ? #require(URL(string: "https://other.cloudflareaccess.com")) :
+                fixture.application.issuer,
+            audience: differentIssuer ? fixture.application.audience : "other-audience")
+        let firstRoute = GatewayIngressController.Route(
+            url: fixture.route.url.appendingPathComponent("first/socket"), stableID: fixture.stableID, tls: nil)
+        let secondRoute = GatewayIngressController.Route(
+            url: sameProfile ? firstRoute.url : fixture.route.url.appendingPathComponent("second/socket"),
+            stableID: sibling.stableID, tls: nil)
+        let firstGate = IngressTestGate()
+        let secondGate = IngressTestGate()
+        let replacement = try fixture.session(for: application, subject: "replacement")
+        var authenticated: [CloudflareAccessApplication] = []
+        var firstWasCanceled = false
+        let ingress = fixture.controller(authenticate: { requested, browser in
+            authenticated.append(requested)
+            try await browser(requested.origin.url.appendingPathComponent("cdn-cgi/access/cli"))
+            if requested == fixture.application {
+                // Deliberately return late despite cancellation: Store and intent ownership
+                // must prevent the superseded grant from persisting or settling the new UI.
+                await firstGate.wait()
+                firstWasCanceled = Task.isCancelled
+                return fixture.nextSession
+            }
+            await secondGate.wait()
+            return replacement
+        })
+        let first = Task { try await ingress.prepare(
+            route: firstRoute, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        defer { firstGate.release()
+            first.cancel()
+        }
+        await firstGate.waitUntilStarted()
+        let firstID = try #require(fixture.browser.presented.first)
+        let staleCancel = fixture.browser.cancel
+        let firstAttentionID = ingress.attention?.id
+        fixture.applicationsByStableID[sibling.stableID] = application
+        let second = Task { try await ingress.prepare(
+            route: secondRoute, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        defer { secondGate.release()
+            second.cancel()
+        }
+        await secondGate.waitUntilStarted()
+        #expect(authenticated == [fixture.application, application])
+        #expect(fixture.browser.presented.count == 2)
+        #expect(fixture.browser.presented.last != firstID)
+        let currentAttention = try #require(ingress.attention)
+        #expect(currentAttention.id != firstAttentionID)
+        #expect(currentAttention.message == "Sign in to Cloudflare Access to connect this gateway.")
+        staleCancel?()
+        #expect(ingress.signingIn)
+        #expect(ingress.attention?.id == currentAttention.id)
+        #expect(currentAttention.stableID == secondRoute.stableID)
+        secondGate.release()
+        let authorization = try #require(try await second.value)
+        let bytes = try #require(fixture.persisted)
+        let persisted = try JSONDecoder().decode(CloudflareAccessSession.self, from: Data(bytes.utf8))
+        #expect(persisted.issuer == application.issuer)
+        #expect(persisted.audience == application.audience)
+        #expect(persisted.subject == "replacement")
+        firstGate.release()
+        await #expect(throws: CancellationError.self) { try await first.value }
+        #expect(firstWasCanceled)
+        #expect(fixture.persisted == bytes)
+        #expect(authorization.isCurrent())
+        #expect(!ingress.signingIn)
+        #expect(ingress.attention == nil)
+        #expect(fixture.requests.filter { $0.httpMethod == "HEAD" }.map(\.url) == [firstRoute.url, secondRoute.url])
+        try await ingress.forget(origin: application.origin)
+    }
+
+    @Test @MainActor
+    func `a different path application can accept a cached grant through its actual policy probe`() async throws {
+        let fixture = try IngressTestHarness()
+        fixture.persisted = try String(data: JSONEncoder().encode(fixture.nextSession), encoding: .utf8)
+        fixture.applicationsByStableID[fixture.stableID] = CloudflareAccessApplication(
+            origin: fixture.application.origin, issuer: fixture.application.issuer, audience: "linked-audience")
+        let route = GatewayIngressController.Route(
+            url: fixture.route.url.appendingPathComponent("linked/socket"), stableID: fixture.stableID, tls: nil)
+        let ingress = fixture.controller()
+        let authorization = try #require(try await ingress.prepare(
+            route: route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        #expect(authorization.isCurrent())
+        #expect(fixture.requests.first?.url == route.url)
+        #expect(fixture.requests.first?.value(forHTTPHeaderField: "Cf-Access-Token") == nil)
+        #expect(fixture.requests.filter { $0.httpMethod == "HEAD" }.map(\.url) == [route.url])
+        #expect(fixture.requests.last?.url == route.url)
+        #expect(fixture.requests.last?.value(forHTTPHeaderField: "Cf-Access-Token") != nil)
+        #expect(fixture.browser.presented.isEmpty)
+        try await ingress.forget(origin: fixture.application.origin)
+    }
+
+    @Test(arguments: [false, true], [false, true]) @MainActor
+    func `pending sign out rejects actions and publishes its actual terminal result`(
+        deletionFails: Bool, cancelCaller: Bool) async throws
+    {
+        let fixture = try IngressTestHarness()
+        let storage = IngressOriginStorage()
+        try storage.save(fixture.nextSession)
+        let retirement = IngressTestGate()
+        let ingress = fixture.controller(persistence: storage.persistence, retirement: { _ in
+            if fixture.retirements == 1 { await retirement.wait() }
+        })
+        _ = try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+        storage.deletionSucceeds = !deletionFails
+        let pending = Task { await ingress.signOut(stableID: fixture.stableID) }
+        defer { retirement.release()
+            pending.cancel()
+        }
+        await retirement.waitUntilStarted()
+        let attention = try #require(ingress.attention)
+        #expect(attention.message == "Signing out of Cloudflare Access…")
+        #expect(!attention.canSignIn)
+        #expect(!ingress.hasSession(stableID: fixture.stableID))
+        // The live capability is authoritative, even if a caller carries an actionable copy.
+        let actionableCopy = GatewayIngressController.Attention(
+            id: attention.id, origin: attention.origin, stableID: attention.stableID,
+            message: attention.message, canSignIn: true)
+        let requests = fixture.requests.count
+        await #expect(throws: CancellationError.self) {
+            try await ingress.signIn(for: actionableCopy, admissionCheckpoint: ingress.admissionCheckpoint())
+        }
+        #expect(fixture.requests.count == requests)
+        #expect(fixture.browser.presented.isEmpty)
+        if cancelCaller { pending.cancel() }
+        retirement.release()
+        await pending.value
+        let terminal = try #require(ingress.attention)
+        #expect(terminal.id == attention.id)
+        #expect(terminal.canSignIn)
+        #expect((storage.values[fixture.application.origin] != nil) == deletionFails)
+        #expect(storage.deleted == [fixture.application.origin])
+        if deletionFails {
+            #expect(terminal.message == CloudflareAccessError.storageFailed.localizedDescription)
+        } else {
+            #expect(terminal.message.contains("is signed out"))
+        }
+        storage.deletionSucceeds = true
+        fixture.release.continuation.finish()
+        // A captured pending copy may act only after the live operation becomes actionable.
+        try await ingress.signIn(for: attention, admissionCheckpoint: ingress.admissionCheckpoint())
+        #expect(fixture.browser.presented.count == 1)
+        #expect(ingress.hasSession(stableID: fixture.stableID))
+        try await ingress.forget(origin: fixture.application.origin)
+    }
+
+    @Test(arguments: ["success", "failure", "cleared", "canceled"]) @MainActor
+    func `retired sign out cannot replace or revive a newer gateway action`(outcome: String) async throws {
+        let fixture = try IngressTestHarness()
+        let storage = IngressOriginStorage()
+        try storage.save(fixture.nextSession)
+        let application = try CloudflareAccessApplication(
+            origin: CloudflareAccessOrigin(#require(URL(string: "https://other.example.test"))),
+            issuer: fixture.application.issuer, audience: "other-audience")
+        var sibling = fixture.profileRows[0]
+        sibling.stableID = "other-gateway"
+        sibling.host = application.origin.url.host
+        fixture.profileRows.append(sibling)
+        fixture.applicationsByStableID[sibling.stableID] = application
+        let route = GatewayIngressController.Route(url: application.origin.url, stableID: sibling.stableID, tls: nil)
+        let retirement = IngressTestGate()
+        let ingress = fixture.controller(persistence: storage.persistence, retirement: { origin in
+            if origin == fixture.application.origin { await retirement.wait() }
+        })
+        _ = try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+        storage.deletionSucceeds = outcome != "failure"
+        let pending = Task { await ingress.signOut(stableID: fixture.stableID) }
+        defer { retirement.release()
+            pending.cancel()
+        }
+        await retirement.waitUntilStarted()
+        await #expect(throws: GatewayExternalAuthorizationError.self) {
+            try await ingress.prepare(
+                route: route,
+                userInitiated: false,
+                admissionCheckpoint: ingress.admissionCheckpoint())
+        }
+        let attention = try #require(ingress.attention)
+        #expect(attention.stableID == sibling.stableID)
+        #expect(attention.canSignIn)
+        if outcome == "cleared" {
+            fixture.preauthenticatedStableIDs.insert(sibling.stableID)
+            try await ingress.signIn(for: attention, admissionCheckpoint: ingress.admissionCheckpoint())
+            #expect(ingress.attention == nil)
+        }
+        if outcome == "canceled" { pending.cancel() }
+        retirement.release()
+        await pending.value
+        #expect((storage.values[fixture.application.origin] != nil) == (outcome == "failure"))
+        #expect(storage.deleted == [fixture.application.origin])
+        if outcome == "cleared" {
+            #expect(ingress.attention == nil)
+        } else {
+            let current = try #require(ingress.attention)
+            #expect(current.id == attention.id)
+            #expect(current.origin == attention.origin)
+            #expect(current.stableID == attention.stableID)
+            #expect(current.message == attention.message)
+            #expect(current.canSignIn == attention.canSignIn)
+            storage.deletionSucceeds = true
+            fixture.nextSession = try fixture.session(for: application, subject: "other-subject")
+            fixture.release.continuation.finish()
+            try await ingress.signIn(for: attention, admissionCheckpoint: ingress.admissionCheckpoint())
+            #expect(ingress.hasSession(stableID: sibling.stableID))
+            try await ingress.forget(origin: application.origin)
+        }
+    }
+
+    @Test @MainActor
+    func `overlapping sign outs keep the newer pending action through the first completion`() async throws {
+        let fixture = try IngressTestHarness()
+        let firstGate = IngressTestGate()
+        let secondGate = IngressTestGate()
+        let ingress = fixture.controller(retirement: { _ in
+            if fixture.retirements == 1 { await firstGate.wait() }
+            if fixture.retirements == 2 { await secondGate.wait() }
+        })
+        fixture.profileRows[0].accessOrigin = fixture.application.origin
+        let first = Task { await ingress.signOut(stableID: fixture.stableID) }
+        defer { firstGate.release()
+            first.cancel()
+        }
+        await firstGate.waitUntilStarted()
+        let firstAttention = try #require(ingress.attention)
+        let changed = AsyncStream<Void>.makeStream()
+        withObservationTracking { _ = ingress.attention } onChange: { changed.continuation.finish() }
+        let second = Task { await ingress.signOut(stableID: fixture.stableID) }
+        defer { secondGate.release()
+            second.cancel()
+        }
+        for await _ in changed.stream {}
+        let secondAttention = try #require(ingress.attention)
+        #expect(secondAttention.id != firstAttention.id)
+        #expect(!secondAttention.canSignIn)
+        firstGate.release()
+        await secondGate.waitUntilStarted()
+        await first.value
+        #expect(ingress.attention?.id == secondAttention.id)
+        #expect(ingress.attention?.canSignIn == false)
+        secondGate.release()
+        await second.value
+        #expect(ingress.attention?.id == secondAttention.id)
+        #expect(ingress.attention?.canSignIn == true)
+        #expect(fixture.retirements == 2)
+    }
+
+    @Test(arguments: ["origin", "profile"]) @MainActor
+    func `forget preserves a later matching sign out action`(scope: String) async throws {
+        let fixture = try IngressTestHarness()
+        fixture.profileRows[0].accessOrigin = fixture.application.origin
+        let firstGate = IngressTestGate()
+        let secondGate = IngressTestGate()
+        let ingress = fixture.controller(retirement: { _ in
+            if fixture.retirements == 1 { await firstGate.wait() }
+            if fixture.retirements == 2 { await secondGate.wait() }
+        })
+        let forgetting = Task {
+            if scope == "origin" {
+                try await ingress.forget(origin: fixture.application.origin)
+            } else {
+                try await ingress.forget(stableID: fixture.stableID)
+            }
+        }
+        defer { firstGate.release()
+            forgetting.cancel()
+        }
+        await firstGate.waitUntilStarted()
+        let changed = AsyncStream<Void>.makeStream()
+        withObservationTracking { _ = ingress.attention } onChange: { changed.continuation.finish() }
+        let signingOut = Task { await ingress.signOut(stableID: fixture.stableID) }
+        defer { secondGate.release()
+            signingOut.cancel()
+        }
+        for await _ in changed.stream {}
+        let attention = try #require(ingress.attention)
+        #expect(!attention.canSignIn)
+        firstGate.release()
+        await secondGate.waitUntilStarted()
+        if scope == "origin" {
+            try await forgetting.value
+            #expect(ingress.attention?.id == attention.id)
+            #expect(ingress.attention?.canSignIn == false)
+        }
+        secondGate.release()
+        await signingOut.value
+        try await forgetting.value
+        #expect(ingress.attention?.id == attention.id)
+        #expect(ingress.attention?.canSignIn == true)
+        #expect(fixture.retirements == 2)
+    }
+
+    @Test(arguments: ["origin", "profile"]) @MainActor
+    func `forget clears its unchanged captured attention`(scope: String) async throws {
+        let fixture = try IngressTestHarness()
+        let ingress = fixture.controller()
+        await #expect(throws: GatewayExternalAuthorizationError.self) {
+            try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+        }
+        #expect(ingress.attention != nil)
+        if scope == "origin" { try await ingress.forget(origin: fixture.application.origin) }
+        else { try await ingress.forget(stableID: fixture.stableID) }
+        #expect(ingress.attention == nil)
     }
 
     @Test(arguments: [false, true]) @MainActor
