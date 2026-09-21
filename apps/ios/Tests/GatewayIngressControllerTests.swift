@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Network
 import Observation
@@ -6,6 +7,7 @@ import OpenClawKit
 import OpenClawProtocol
 import os
 import SafariServices
+import Security
 import Testing
 @testable import OpenClaw
 
@@ -189,6 +191,7 @@ final class IngressTestHarness {
         useSavedProfiles: Bool = false,
         persistence: CloudflareAccessSessionStore.Persistence? = nil,
         authenticate: CloudflareAccessSessionStore.Authenticate? = nil,
+        requestFactory: (@Sendable (GatewayIngressController.Route) -> CloudflareAccessClient.Request)? = nil,
         requestDeadline: @escaping GatewayIngressController.RequestDeadline = { _, operation in try await operation() },
         retirement: ((CloudflareAccessOrigin) async -> Void)? = nil) -> GatewayIngressController
     {
@@ -211,7 +214,7 @@ final class IngressTestHarness {
                 try Task.checkCancellation()
                 return self.nextSession
             },
-            requestFactory: { route in
+            requestFactory: requestFactory ?? { route in
                 { request, _ in
                     await self.record(route)
                     return try await self.respond(to: request, stableID: route.stableID)
@@ -311,6 +314,126 @@ final class IngressTestHarness {
 }
 
 @MainActor
+private final class IngressNativeTraffic {
+    let gate = IngressTestGate()
+    var holdNext = false
+    var replaceFirst = false
+    var firstToken = ""
+    var metadata = ""
+    var requests: [String] = []
+
+    static func header(_ name: String, in request: String) -> String? {
+        request.components(separatedBy: "\r\n").first {
+            $0.lowercased().hasPrefix(name.lowercased() + ":")
+        }?.split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces)
+    }
+
+    func respond(_ request: String) -> DashboardHTTPFixture.RawResponse {
+        self.requests.append(request)
+        let token = Self.header("Cf-Access-Token", in: request)
+        let metadata = request.hasPrefix("HEAD ")
+        // Only the sibling path challenges G1. The held original request would
+        // still return 200 after replacement, so a late-success bug cannot hide behind a 302.
+        let challenge = !metadata && (token == nil ||
+            (self.replaceFirst && request.hasPrefix("GET /replacement ") && token == self.firstToken))
+        let fields = metadata ? "Cf-Access-Metadata: \(self.metadata)\r\n" :
+            challenge ? "Location: /cdn-cgi/access/login/fixture\r\n" : ""
+        let body = metadata || challenge ? "" : "native gateway body"
+        return .init(data: Data(("HTTP/1.1 \(challenge ? "302 Found" : "200 OK")\r\n" + fields +
+                "Content-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n" + body).utf8))
+    }
+}
+
+@MainActor
+private struct IngressNativeFixture {
+    let harness: IngressTestHarness
+    let traffic: IngressNativeTraffic
+    let server: DashboardHTTPFixture
+    let identity: sec_identity_t
+    let application: CloudflareAccessApplication
+    let route: GatewayIngressController.Route
+    let next: CloudflareAccessSession
+
+    init() async throws {
+        let resource = try #require(Bundle(for: IngressTestBrowser.self)
+            .url(forResource: "GatewayIngressIdentity", withExtension: "p12"))
+        var items: CFArray?
+        try #require(try SecPKCS12Import(Data(contentsOf: resource) as CFData, [
+            kSecImportExportPassphrase as String: "fixture",
+            kSecImportToMemoryOnly as String: true,
+        ] as CFDictionary, &items) == errSecSuccess)
+        let imported = try #require((items as? [[String: Any]])?.first?[kSecImportItemIdentity as String])
+        // Security guarantees a SecIdentity at this key; the import never touches Keychain.
+        let identity = imported as! SecIdentity
+        self.identity = try #require(sec_identity_create(identity))
+        var certificate: SecCertificate?
+        try #require(SecIdentityCopyCertificate(identity, &certificate) == errSecSuccess)
+        let bytes = try SecCertificateCopyData(#require(certificate)) as Data
+        let pin = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let harness = try IngressTestHarness()
+        self.harness = harness
+        let traffic = IngressNativeTraffic()
+        self.traffic = traffic
+        let server = try await DashboardHTTPFixture.start(beforeResponse: {
+            if traffic.holdNext { traffic.holdNext = false
+                await traffic.gate.wait()
+            }
+        }, tlsIdentity: self.identity, rawResponseHandler: { traffic.respond($0) })
+        self.server = server
+        do {
+            self.application = try CloudflareAccessApplication(
+                origin: CloudflareAccessOrigin(server.url()), issuer: harness.application.issuer,
+                audience: harness.application.audience)
+            self.route = .init(url: server.url(), stableID: "native-main", tls: .init(
+                required: true, expectedFingerprint: pin, allowTOFU: false, storeKey: nil))
+            let first = try harness.session(for: self.application, subject: "native-first")
+            self.next = try harness.session(for: self.application, subject: "native-next")
+            harness.nextSession = self.next
+            harness.persisted = try String(data: JSONEncoder().encode(first), encoding: .utf8)
+            traffic.firstToken = try #require(first.authorizationHeader(for: server.url(), now: harness.now))
+            traffic.metadata = try harness.tokens.token([
+                "type": "match", "hostname": "127.0.0.1", "auth_domain": self.application.issuer.host!,
+                "aud": self.application.audience, "iat": harness.now.timeIntervalSince1970,
+            ])
+            harness.profileRows = ["native-main", "native-peer"].map { .init(
+                stableID: $0, kind: .manual, name: "Native fixture", host: "127.0.0.1",
+                port: Int(server.port), useTLS: true, lastConnectedAtMs: nil) }
+        } catch { server.stop()
+            throw error
+        }
+    }
+
+    func controller() -> GatewayIngressController {
+        let origin = self.application.origin
+        let keys = self.application.issuer.appendingPathComponent("cdn-cgi/access/certs")
+        let jwks = self.harness.tokens.jwks
+        return self.harness.controller(requestFactory: { route in
+            let native = GatewayIngressController.request(for: route)
+            return { request, maximumBytes in
+                if let url = request.url, origin.contains(url) { return try await native(request, maximumBytes) }
+                guard request.url == keys, request.httpMethod == "GET", (request.allHTTPHeaderFields ?? [:]).isEmpty
+                else { throw CloudflareAccessError.invalidApplication }
+                return try (jwks, #require(HTTPURLResponse(
+                    url: keys, statusCode: 200, httpVersion: nil, headerFields: nil)))
+            }
+        }, requestDeadline: GatewayIngressController.withRequestDeadline)
+    }
+
+    func close(_ ingress: GatewayIngressController) async {
+        self.traffic.gate.release()
+        self.harness.release.continuation.finish()
+        // Test cancellation must not skip the controller's explicit retirement.
+        let cleanup = Task {
+            for profile in self.harness.profileRows {
+                try? await ingress.forget(stableID: profile.stableID)
+            }
+            self.server.stop()
+        }
+        await cleanup.value
+    }
+}
+
+@MainActor
 func waitForIngress(_ condition: () -> Bool) async throws {
     let deadline = ContinuousClock.now + .seconds(3)
     while !condition() {
@@ -321,6 +444,141 @@ func waitForIngress(_ condition: () -> Bool) async throws {
 
 @Suite(.serialized)
 struct GatewayIngressControllerTests {
+    @Test @MainActor
+    func `real managed authorization guards the native pinned HTTPS adapter`() async throws {
+        let fixture = try await IngressNativeFixture()
+        let ingress = fixture.controller()
+        var foreignRequests: [String] = []
+        var foreign: DashboardHTTPFixture?
+        do {
+            let other = try await DashboardHTTPFixture.start(tlsIdentity: fixture.identity, rawResponseHandler: {
+                foreignRequests.append($0)
+                return .init(data: Data("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".utf8))
+            })
+            foreign = other
+            let old = try #require(try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+            let native = GatewayIngressController.request(for: fixture.route)
+            var request = URLRequest(url: fixture.server.url("/media"), timeoutInterval: 5)
+            request.allHTTPHeaderFields = try await old.headers(#require(request.url))
+            let (data, response) = try await old.load(request) { try await native($0, 1024) }
+            #expect((response as? HTTPURLResponse)?.statusCode == 200)
+            #expect(data == Data("native gateway body".utf8))
+            let sent = try #require(fixture.traffic.requests.last)
+            #expect(IngressNativeTraffic.header("Cf-Access-Token", in: sent) == fixture.traffic.firstToken)
+            #expect(IngressNativeTraffic.header("X-Existing-Ingress", in: sent) == "preserved")
+            #expect(IngressNativeTraffic.header("Cookie", in: sent) == nil)
+            #expect(IngressNativeTraffic.header("Authorization", in: sent) == nil)
+            let before = fixture.traffic.requests.count
+            let foreignNative = GatewayIngressController.request(for: .init(
+                url: other.url(), stableID: "native-foreign", tls: fixture.route.tls))
+            var wrong = request
+            wrong.url = other.url()
+            #expect(old.isCurrent())
+            await #expect(throws: GatewayExternalAuthorizationError.self) {
+                try await old.load(wrong) { try await foreignNative($0, 1024) }
+            }
+            #expect(foreignRequests.isEmpty)
+            try await ingress.forget(stableID: fixture.route.stableID)
+            #expect(!old.isCurrent())
+            #expect(fixture.harness.persisted == nil)
+            await #expect(throws: GatewayExternalAuthorizationError.self) {
+                try await old.load(request) { try await native($0, 1024) }
+            }
+            #expect(fixture.traffic.requests.count == before)
+            // The rejected authority is healthy with the same explicit pin, without any grant.
+            let (_, healthy) = try await foreignNative(URLRequest(url: other.url(), timeoutInterval: 5), 1024)
+            #expect(healthy.statusCode == 200)
+            #expect(foreignRequests.count == 1)
+            for field in ["Cf-Access-Token", "Cookie", "Authorization"] {
+                #expect(IngressNativeTraffic.header(field, in: foreignRequests[0]) == nil)
+            }
+        } catch {
+            await fixture.close(ingress)
+            foreign?.stop()
+            throw error
+        }
+        await fixture.close(ingress)
+        foreign?.stop()
+    }
+
+    @Test(arguments: ["revoke", "replace"]) @MainActor
+    func `native discovery cancellation cannot admit a retired grant`(transition: String) async throws {
+        let fixture = try await IngressNativeFixture()
+        let ingress = fixture.controller()
+        var pending: Task<[String: String], Error>?
+        var changing: Task<GatewayIngressAuthorization?, Error>?
+        func drain() async {
+            fixture.traffic.gate.release()
+            fixture.harness.release.continuation.finish()
+            pending?.cancel()
+            changing?.cancel()
+            _ = await pending?.result
+            _ = await changing?.result
+            await fixture.close(ingress)
+        }
+        do {
+            let old = try #require(try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+            fixture.traffic.holdNext = true
+            let held = Task { try await old.headers(fixture.route.url) }
+            pending = held
+            try await waitForIngress { fixture.traffic.gate.started }
+            fixture.traffic.replaceFirst = true
+            fixture.harness.release.continuation.finish()
+            var changed = false
+            let replacement = GatewayIngressController.Route(
+                url: fixture.server.url("/replacement"), stableID: "native-peer", tls: fixture.route.tls)
+            let change = Task {
+                defer { changed = true }
+                if transition == "revoke" {
+                    await ingress.signOut(stableID: fixture.route.stableID)
+                    return nil as GatewayIngressAuthorization?
+                }
+                return try await ingress.prepare(
+                    route: replacement, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint())
+            }
+            changing = change
+            try await waitForIngress { changed }
+            let admitted = try await change.value
+            #expect(!old.isCurrent())
+            #expect(fixture.harness.retirements > 0)
+            // Native cancellation settles without this server release. Injected raw-task
+            // tests separately prove strict retirement custody; peer closure is not that fact.
+            fixture.traffic.gate.release()
+            switch await held.result {
+            case .success: Issue.record("Retired discovery returned authorization headers")
+            case let .failure(error):
+                #expect(error is CancellationError || (error as? URLError)?.code == .cancelled)
+            }
+            if transition == "revoke" {
+                #expect(admitted == nil)
+                #expect(fixture.harness.persisted == nil)
+            } else {
+                #expect(try #require(admitted).isCurrent())
+                let stored = try #require(fixture.harness.persisted?.data(using: .utf8))
+                let session = try JSONDecoder().decode(CloudflareAccessSession.self, from: stored)
+                #expect(session.subject == fixture.next.subject)
+                #expect(session.origin == fixture.application.origin)
+                #expect(session.issuer == fixture.application.issuer)
+                #expect(session.audience == fixture.application.audience)
+            }
+            let current = try #require(try await ingress.prepare(
+                route: fixture.route, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()))
+            let headers = try await current.headers(fixture.route.url)
+            let expected = fixture.next.authorizationHeader(for: fixture.route.url, now: fixture.harness.now)
+            #expect(headers["Cf-Access-Token"] == expected)
+            #expect(expected != fixture.traffic.firstToken)
+            #expect(try IngressNativeTraffic
+                .header("Cf-Access-Token", in: #require(fixture.traffic.requests.last)) == expected)
+            #expect(fixture.harness.browser.presented.count == 1)
+        } catch {
+            await drain()
+            throw error
+        }
+        await drain()
+    }
+
     @Test(arguments: ["prepare", "headers"], ["sign-out", "profile", "origin", "expiry"]) @MainActor
     func `retirement owns cached discovery until cancellation settles`(
         callsite: String,
