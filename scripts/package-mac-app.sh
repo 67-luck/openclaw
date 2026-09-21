@@ -407,8 +407,14 @@ chmod +x "$APP_ROOT/Contents/MacOS/OpenClaw"
 # SwiftPM outputs ad-hoc signed binaries; strip the signature before install_name_tool to avoid warnings.
 /usr/bin/codesign --remove-signature "$APP_ROOT/Contents/MacOS/OpenClaw" 2>/dev/null || true
 
-# The native node connection always uses its matching Rust runtime. Build the
-# same architecture set as the app; packaging must never ship a missing helper.
+PACKAGE_RUST_NODE_SIDECAR="${OPENCLAW_PACKAGE_RUST_NODE_SIDECAR:-0}"
+case "$PACKAGE_RUST_NODE_SIDECAR" in
+  0 | 1) ;;
+  *) echo "ERROR: OPENCLAW_PACKAGE_RUST_NODE_SIDECAR must be 0 or 1." >&2; exit 1 ;;
+esac
+if [[ "$PACKAGE_RUST_NODE_SIDECAR" == "1" ]]; then
+  # Adopter validation only: build a signed helper without making macOS node
+  # packaging or selection depend on Rust by default.
 RUST_SIDECAR_INPUTS=()
 command -v cargo >/dev/null || { echo "ERROR: Rust 1.93+ is required to package the macOS node sidecar; install Rust using rustup." >&2; exit 1; }
 RUST_SIDECAR_PROFILE="$BUILD_CONFIG"
@@ -437,6 +443,7 @@ else
 fi
 chmod +x "$RUST_SIDECAR_DEST"
 /usr/bin/codesign --remove-signature "$RUST_SIDECAR_DEST" 2>/dev/null || true
+fi
 
 echo "🚚 Copying macOS control CLI"
 cp "$(mac_cli_bin_for_arch "$PRIMARY_ARCH")" "$APP_ROOT/Contents/MacOS/openclaw-mac"

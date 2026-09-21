@@ -514,6 +514,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         guard self.failure == nil else { self.lock.unlock()
             return
         }
+        let shouldDropBuffered = (error as? URLError)?.code == .cancelled
         self.failure = error
         self.taskState = .completed
         self.admitted = false
@@ -528,8 +529,10 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         let pings = self.pings.values
         self.receivers.removeAll()
         self.pings.removeAll()
-        self.buffered.removeAll()
-        self.bufferedBytes = 0
+        if shouldDropBuffered {
+            self.buffered.removeAll()
+            self.bufferedBytes = 0
+        }
         self.lock.unlock()
         // Closing the owned pipe retires the Rust connection before any replacement process starts.
         // Closing on the writer queue prevents a reused descriptor from reaching a late write.

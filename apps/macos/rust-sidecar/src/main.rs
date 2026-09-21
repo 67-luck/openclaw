@@ -2,7 +2,7 @@
 //! The shared crates own Gateway sessions, invocation scheduling, and authenticated IPC framing.
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use openclaw_gateway_client::{tls_trust, GatewayClientConfig};
+use openclaw_gateway_client::{tls_trust, Event, GatewayClientConfig};
 use openclaw_gateway_client::{TlsCertificatePolicy, TlsPeerCertificate};
 use openclaw_node_host::{
     read_sidecar_frame, write_sidecar_frame, AuthenticatedSidecarChannel, ClientError,
@@ -294,9 +294,7 @@ async fn run_gateway(
             event = events.recv() => {
                 match event {
                     Ok(event) if !matches!(event.event.as_str(), "node.invoke.request" | "node.invoke.input" | "node.invoke.cancel") => {
-                        outgoing.send(json!({"type":"frame","frame":{
-                            "type":"event","event":event.event,"payload":event.payload
-                        }})).await?;
+                        outgoing.send(json!({"type":"frame","frame":event_frame(event)})).await?;
                     }
                     Ok(_) => {}
                     Err(error) => {
@@ -632,4 +630,41 @@ fn response_error(id: &str, error: ClientError) -> Value {
         error => json!({"code":"UNAVAILABLE","message":error.to_string()}),
     };
     json!({"type":"res","id":id,"ok":false,"error":shape})
+}
+
+fn event_frame(event: Event) -> Value {
+    let mut frame = json!({"type":"event","event":event.event,"payload":event.payload});
+    if let (Some(seq), Value::Object(fields)) = (event.seq, &mut frame) {
+        fields.insert("seq".into(), json!(seq));
+    }
+    frame
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_forwarding_preserves_sequence_numbers() {
+        assert_eq!(
+            event_frame(Event {
+                event: "gateway.status".into(),
+                payload: json!({"ready": true}),
+                seq: Some(42),
+            }),
+            json!({"type":"event","event":"gateway.status","payload":{"ready":true},"seq":42})
+        );
+    }
+
+    #[test]
+    fn event_forwarding_omits_absent_sequence_numbers() {
+        assert_eq!(
+            event_frame(Event {
+                event: "gateway.status".into(),
+                payload: json!({"ready": true}),
+                seq: None,
+            }),
+            json!({"type":"event","event":"gateway.status","payload":{"ready":true}})
+        );
+    }
 }

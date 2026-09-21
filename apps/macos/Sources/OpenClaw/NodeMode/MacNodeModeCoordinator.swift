@@ -3,37 +3,34 @@ import Foundation
 import OpenClawIPC
 import OpenClawKit
 import OpenClawProtocol
-import OpenClawRustSidecar
 import OSLog
 
 struct MacNodeGatewayTLSSessionCache {
     private struct Key: Equatable {
         let url: URL
-        let required: Bool?
+        let required: Bool
         let expectedFingerprint: String?
-        let allowTOFU: Bool?
+        let allowTOFU: Bool
         let storeKey: String?
 
-        init(url: URL, params: GatewayTLSParams?) {
+        init(url: URL, params: GatewayTLSParams) {
             self.url = url
-            self.required = params?.required
-            self.expectedFingerprint = params?.expectedFingerprint
-            self.allowTOFU = params?.allowTOFU
-            self.storeKey = params?.storeKey
+            self.required = params.required
+            self.expectedFingerprint = params.expectedFingerprint
+            self.allowTOFU = params.allowTOFU
+            self.storeKey = params.storeKey
         }
     }
 
     private var cachedKey: Key?
     private var cachedBox: WebSocketSessionBox?
 
-    mutating func sessionBox(url: URL, params: GatewayTLSParams?) -> WebSocketSessionBox {
+    mutating func sessionBox(url: URL, params: GatewayTLSParams) -> WebSocketSessionBox {
         let key = Key(url: url, params: params)
         if let cachedKey = self.cachedKey, cachedKey == key, let cachedBox = self.cachedBox {
             return cachedBox
         }
-        let box = WebSocketSessionBox(session: RustGatewayWebSocketSession(
-            executableURL: RustGatewayWebSocketSession.bundledExecutableURL,
-            tlsParams: params))
+        let box = WebSocketSessionBox(session: GatewayTLSPinningSession(params: params))
         self.cachedKey = key
         self.cachedBox = box
         return box
@@ -1133,7 +1130,11 @@ extension MacNodeModeCoordinator {
     }
 
     private func buildSessionBox(url: URL, tls: GatewayTLSRoute?) -> WebSocketSessionBox? {
-        self.tlsSessionCache.sessionBox(url: url, params: tls?.params)
+        guard let tls else {
+            self.tlsSessionCache.invalidate()
+            return nil
+        }
+        return self.tlsSessionCache.sessionBox(url: url, params: tls.params)
     }
 }
 
