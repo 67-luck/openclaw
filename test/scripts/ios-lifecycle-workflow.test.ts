@@ -455,6 +455,9 @@ describe.skipIf(process.platform === "win32")("iOS Access simulator workflow", (
     const authSelectors = [
       ...authClasses.map((name) => `-only-testing:OpenClawTests/${name}`),
       "-only-testing:OpenClawTests/GatewayIngressControllerTests",
+      "-only-testing:OpenClawTests/GatewayConnectionControllerTests",
+      "-only-testing:OpenClawTests/GatewayConnectionSecurityTests",
+      "-only-testing:OpenClawTests/GatewaySettingsStoreTests",
       "-only-testing:OpenClawTests/ChatTypingFocusTests",
       "-only-testing:OpenClawTests/ChatSendHydrationTests",
     ];

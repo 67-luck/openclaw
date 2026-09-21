@@ -5423,6 +5423,9 @@ jobs:
             -only-testing:OpenClawTests/CloudflareAccessTransferTests
             -only-testing:OpenClawTests/CloudflareAccessSessionStoreTests
             -only-testing:OpenClawTests/GatewayIngressControllerTests
+            -only-testing:OpenClawTests/GatewayConnectionControllerTests
+            -only-testing:OpenClawTests/GatewayConnectionSecurityTests
+            -only-testing:OpenClawTests/GatewaySettingsStoreTests
             -only-testing:OpenClawTests/ChatTypingFocusTests
             -only-testing:OpenClawTests/ChatSendHydrationTests
           )

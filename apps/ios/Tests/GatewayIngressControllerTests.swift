@@ -445,6 +445,45 @@ func waitForIngress(_ condition: () -> Bool) async throws {
 @Suite(.serialized)
 struct GatewayIngressControllerTests {
     @Test @MainActor
+    func `registry isolation suspends waiters until snapshots are restored`() async {
+        let defaults = UserDefaults.standard
+        let key = "gateway.last.host"
+        await GatewayPersistenceTestGate.shared.acquire()
+        let previous = defaults.object(forKey: key)
+        defaults.set("restored.example.com", forKey: key)
+        GatewayPersistenceTestGate.shared.release()
+
+        let holder = await GatewayRegistryTestIsolation()
+        defaults.set("held.example.com", forKey: key)
+        let attempting = IngressTestGate()
+        var entered = false
+        let contender = Task { @MainActor in
+            attempting.release()
+            let isolation = await GatewayRegistryTestIsolation()
+            defer { isolation.restore() }
+            entered = true
+            #expect(defaults.object(forKey: key) == nil)
+        }
+
+        // The contender queues its acquisition before this actor can resume the suspended holder.
+        await attempting.wait()
+        #expect(!entered)
+        #expect(defaults.string(forKey: key) == "held.example.com")
+        holder.restore()
+        await contender.value
+
+        await GatewayPersistenceTestGate.shared.acquire()
+        defer {
+            defaults.removeObject(forKey: key)
+            if let previous { defaults.set(previous, forKey: key) }
+            GatewayPersistenceTestGate.shared.release()
+        }
+        #expect(entered)
+        // The contender must snapshot the holder's restored value, never its temporary mutation.
+        #expect(defaults.string(forKey: key) == "restored.example.com")
+    }
+
+    @Test @MainActor
     func `real managed authorization guards the native pinned HTTPS adapter`() async throws {
         let fixture = try await IngressNativeFixture()
         let ingress = fixture.controller()
@@ -1023,7 +1062,7 @@ struct GatewayIngressControllerTests {
 
     @Test @MainActor
     func `real Keychain ingress persistence survives restart and forget preserves Gateway credentials`() async throws {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let instanceID = "access-keychain-\(UUID().uuidString)"
         let state = try TemporaryOpenClawState(instanceID: instanceID)
@@ -1069,7 +1108,7 @@ struct GatewayIngressControllerTests {
 
     @Test(arguments: ["manual", "discovered"]) @MainActor
     func `saved admission can be forgotten after cold relaunch before preparation`(kind: String) async throws {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let fixture = try IngressTestHarness()
         let persistence = CloudflareAccessSessionStore.Persistence.keychain
@@ -1487,7 +1526,7 @@ struct GatewayIngressControllerTests {
     func `committed grant remains discoverable when browser dismissal is canceled or superseded`(
         replace: Bool) async throws
     {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let fixture = try IngressTestHarness()
         let persistence = CloudflareAccessSessionStore.Persistence.keychain
