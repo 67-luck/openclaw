@@ -62,6 +62,27 @@ final class IngressTestGate {
 }
 
 @MainActor
+private final class IngressTestDeadline {
+    let beforeSend = IngressTestGate()
+    var expires = false
+    private(set) var limits: [TimeInterval] = []
+
+    func run(
+        seconds: TimeInterval,
+        operation: @escaping @Sendable () async throws -> (Data, HTTPURLResponse)) async throws
+        -> (Data, HTTPURLResponse)
+    {
+        self.limits.append(seconds)
+        if self.expires {
+            await self.beforeSend.waitUntilStarted()
+            throw CloudflareAccessError.connectionFailed
+        }
+        return try await AsyncTimeout.withTimeout(
+            seconds: 0, onTimeout: { CloudflareAccessError.connectionFailed }, operation: operation)
+    }
+}
+
+@MainActor
 private final class IngressOriginStorage {
     var values: [CloudflareAccessOrigin: String] = [:]
     var deletionSucceeds = true
@@ -102,12 +123,14 @@ final class IngressTestHarness {
     var probeGate: AsyncStream<Void>?
     var probeRequiresManagedGrant = false
     var probeStarted = false
+    var probeDidStart: (() -> Void)?
     var pendingProbes = 0
     var probeFailure: URLError?
     var preauthenticated = false
     var loginRedirect = false
     var preauthenticatedStableIDs = Set<String>()
     var applicationsByStableID: [String: CloudflareAccessApplication] = [:]
+    var beforeManagedProbe: ((URLRequest) async throws -> Void)?
     var revoked = false
     var retirements = 0
     var release = AsyncStream<Void>.makeStream()
@@ -162,6 +185,7 @@ final class IngressTestHarness {
         useSavedProfiles: Bool = false,
         persistence: CloudflareAccessSessionStore.Persistence? = nil,
         authenticate: CloudflareAccessSessionStore.Authenticate? = nil,
+        requestDeadline: @escaping GatewayIngressController.RequestDeadline = { _, operation in try await operation() },
         retirement: ((CloudflareAccessOrigin) async -> Void)? = nil) -> GatewayIngressController
     {
         GatewayIngressController(
@@ -189,6 +213,7 @@ final class IngressTestHarness {
                     return try await self.respond(to: request, stableID: route.stableID)
                 }
             },
+            requestDeadline: requestDeadline,
             customHeaders: { _ in ["X-Existing-Ingress": "preserved"] },
             profiles: { useSavedProfiles ? GatewaySettingsStore.loadGatewayRegistry().entries : self.profileRows },
             saveProfileOrigin: { stableID, origin in
@@ -226,6 +251,9 @@ final class IngressTestHarness {
     }
 
     func respond(to request: URLRequest, stableID: String) async throws -> (Data, HTTPURLResponse) {
+        if request.value(forHTTPHeaderField: "Cf-Access-Token") != nil {
+            try await self.beforeManagedProbe?(request)
+        }
         self.requests.append(request)
         if let probeFailure {
             throw probeFailure
@@ -238,6 +266,7 @@ final class IngressTestHarness {
         {
             self.probeStarted = true
             self.pendingProbes += 1
+            self.probeDidStart?()
             defer { self.pendingProbes -= 1 }
             for await _ in gate {
                 break
@@ -283,6 +312,289 @@ func waitForIngress(_ condition: () -> Bool) async throws {
 
 @Suite(.serialized)
 struct GatewayIngressControllerTests {
+    @Test(arguments: ["prepare", "headers"], ["sign-out", "profile", "origin", "expiry"]) @MainActor
+    func `retirement owns cached discovery until cancellation settles`(
+        callsite: String,
+        retirement: String) async throws
+    {
+        let fixture = try IngressTestHarness()
+        fixture.persisted = try #require(String(data: JSONEncoder().encode(fixture.nextSession), encoding: .utf8))
+        let events = AsyncStream<String>.makeStream()
+        let ingress = fixture.controller(retirement: { _ in events.continuation.yield("retired") })
+        let authorization = try #require(try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        let beforeSend = IngressTestGate()
+        fixture.beforeManagedProbe = { _ in
+            try await withTaskCancellationHandler {
+                await beforeSend.wait()
+                try Task.checkCancellation()
+            } onCancel: { events.continuation.yield("canceled") }
+        }
+        let sentBefore = fixture.requests.filter { $0.value(forHTTPHeaderField: "Cf-Access-Token") != nil }.count
+        let pending = Task {
+            if callsite == "headers" {
+                _ = try await authorization.headers(fixture.route.url)
+            } else {
+                _ = try await ingress.prepare(
+                    route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+            }
+        }
+        defer { beforeSend.release()
+            pending.cancel()
+            events.continuation.finish()
+        }
+        await beforeSend.waitUntilStarted()
+        var acknowledged = false
+        let cleanup = Task {
+            switch retirement {
+            case "sign-out": await ingress.signOut(stableID: fixture.stableID)
+            case "profile": try await ingress.forget(stableID: fixture.stableID)
+            case "origin": try await ingress.forget(origin: fixture.application.origin)
+            default:
+                fixture.now = fixture.nextSession.expiresAt.addingTimeInterval(1)
+                ingress.foregrounded()
+            }
+            if retirement != "expiry" { acknowledged = true }
+        }
+        defer { cleanup.cancel() }
+        var iterator = events.stream.makeAsyncIterator()
+        #expect(await iterator.next() == "canceled")
+        #expect(!acknowledged)
+        #expect(fixture.retirements == 0)
+        #expect(fixture.persisted != nil)
+        #expect(!beforeSend.settled)
+        beforeSend.release()
+        try await cleanup.value
+        await #expect(throws: CancellationError.self) { try await pending.value }
+        fixture.beforeManagedProbe = nil
+        // A new admission joins any expiry retirement before it can inspect a grant.
+        await #expect(throws: GatewayExternalAuthorizationError.self) {
+            try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+        }
+        #expect(fixture.persisted == nil)
+        #expect(fixture.retirements == 1)
+        #expect(fixture.requests.filter { $0.value(forHTTPHeaderField: "Cf-Access-Token") != nil }.count == sentBefore)
+        #expect(fixture.browser.presented.isEmpty)
+        #expect(!authorization.isCurrent())
+    }
+
+    @Test(arguments: ["forget", "replace", "ordinary"]) @MainActor
+    func `profile discovery retirement preserves sibling and replacement grants`(transition: String) async throws {
+        let fixture = try IngressTestHarness()
+        var sibling = try #require(fixture.profileRows.first)
+        sibling.stableID = "discovery-sibling"
+        fixture.profileRows.append(sibling)
+        fixture.persisted = try #require(String(data: JSONEncoder().encode(fixture.nextSession), encoding: .utf8))
+        let ingress = fixture.controller()
+        let original = try #require(try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        let siblingRoute = GatewayIngressController.Route(url: fixture.route.url, stableID: sibling.stableID, tls: nil)
+        let siblingAuthorization = try #require(try await ingress.prepare(
+            route: siblingRoute, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        let beforeSend = IngressTestGate()
+        let canceled = AsyncStream<Void>.makeStream()
+        fixture.beforeManagedProbe = { _ in
+            try await withTaskCancellationHandler {
+                await beforeSend.wait()
+                try Task.checkCancellation()
+            } onCancel: { canceled.continuation.finish() }
+        }
+        let pending = Task { try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()) }
+        defer { beforeSend.release()
+            pending.cancel()
+        }
+        await beforeSend.waitUntilStarted()
+        fixture.beforeManagedProbe = nil
+        let nextRoute = GatewayIngressController.Route(
+            url: fixture.route.url.appendingPathComponent("replacement"), stableID: fixture.stableID, tls: nil)
+        var finished = false
+        let cleanup = Task<GatewayIngressAuthorization?, Error> {
+            defer { finished = true }
+            switch transition {
+            case "forget":
+                try await ingress.forget(stableID: fixture.stableID)
+                return nil
+            case "ordinary":
+                fixture.preauthenticatedStableIDs.insert(fixture.stableID)
+                return try await ingress.prepare(
+                    route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+            default:
+                return try await ingress.prepare(
+                    route: nextRoute, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+            }
+        }
+        defer { cleanup.cancel() }
+        for await _ in canceled.stream {}
+        #expect(!finished)
+        #expect(!original.isCurrent())
+        #expect(siblingAuthorization.isCurrent())
+        #expect(fixture.retirements == 0)
+        #expect(fixture.persisted != nil)
+        var replacement: Task<GatewayIngressAuthorization?, Error>?
+        if transition == "forget" {
+            let started = AsyncStream<Void>.makeStream()
+            replacement = Task {
+                started.continuation.finish()
+                return try await ingress.prepare(
+                    route: nextRoute, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+            }
+            for await _ in started.stream {}
+        }
+        defer { replacement?.cancel() }
+        beforeSend.release()
+        let result = try await cleanup.value
+        await #expect(throws: CancellationError.self) { try await pending.value }
+        if let replacement {
+            let current = try #require(try await replacement.value)
+            #expect(current.isCurrent())
+            #expect(fixture.profileRows.first?.accessOrigin == fixture.application.origin)
+        } else if transition == "replace" {
+            #expect(result?.isCurrent() == true)
+        } else {
+            #expect(result == nil)
+        }
+        #expect(siblingAuthorization.isCurrent())
+        #expect(fixture.persisted != nil)
+        #expect(fixture.retirements == 0)
+        #expect(fixture.browser.presented.isEmpty)
+    }
+
+    @Test(arguments: ["probe", "drain", "caller"]) @MainActor
+    func `ordinary discovery completion respects current admission and caller`(stage: String) async throws {
+        let fixture = try IngressTestHarness()
+        fixture.persisted = try #require(String(data: JSONEncoder().encode(fixture.nextSession), encoding: .utf8))
+        let ingress = fixture.controller()
+        let beforeSend = IngressTestGate()
+        let canceled = AsyncStream<Void>.makeStream()
+        let ordinaryStarted = AsyncStream<Void>.makeStream()
+        let ordinaryGate = AsyncStream<Void>.makeStream()
+        var old: Task<GatewayIngressAuthorization?, Error>?
+        if stage != "probe" {
+            _ = try #require(try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+            fixture.beforeManagedProbe = { _ in
+                try await withTaskCancellationHandler {
+                    await beforeSend.wait()
+                    try Task.checkCancellation()
+                } onCancel: { canceled.continuation.finish() }
+            }
+            old = Task { try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()) }
+            await beforeSend.waitUntilStarted()
+            fixture.beforeManagedProbe = nil
+            fixture.preauthenticated = true
+        } else {
+            fixture.probeGate = ordinaryGate.stream
+            fixture.probeDidStart = { ordinaryStarted.continuation.finish() }
+        }
+        defer { beforeSend.release()
+            ordinaryGate.continuation.finish()
+            old?.cancel()
+        }
+        var returnedOrdinary = false
+        let ordinary = Task {
+            let result = try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint())
+            returnedOrdinary = true
+            return result
+        }
+        defer { ordinary.cancel() }
+        if stage == "probe" {
+            for await _ in ordinaryStarted.stream {}
+            fixture.probeGate = nil
+            fixture.probeDidStart = nil
+        } else {
+            for await _ in canceled.stream {}
+        }
+        fixture.preauthenticated = false
+        var current: GatewayIngressAuthorization?
+        if stage == "caller" {
+            ordinary.cancel()
+        } else {
+            current = try #require(try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+            #expect(current?.isCurrent() == true)
+        }
+        if stage == "probe" {
+            fixture.preauthenticated = true
+            ordinaryGate.continuation.yield()
+        } else {
+            #expect(!beforeSend.settled)
+            beforeSend.release()
+        }
+        await #expect(throws: CancellationError.self) { try await ordinary.value }
+        if let old { await #expect(throws: CancellationError.self) { try await old.value } }
+        #expect(!returnedOrdinary)
+        if stage != "caller" { #expect(current?.isCurrent() == true) }
+        #expect(fixture.persisted != nil)
+        #expect(fixture.retirements == 0)
+        #expect(fixture.browser.presented.isEmpty)
+    }
+
+    @Test(arguments: ["timeout", "caller"]) @MainActor
+    func `discovery deadline returns while retirement retains cancellation custody`(cause: String) async throws {
+        let fixture = try IngressTestHarness()
+        fixture.persisted = try #require(String(data: JSONEncoder().encode(fixture.nextSession), encoding: .utf8))
+        let deadline = IngressTestDeadline()
+        let ingress = fixture.controller(requestDeadline: { seconds, operation in
+            try await deadline.run(seconds: seconds, operation: operation)
+        })
+        let authorization = try #require(try await ingress.prepare(
+            route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+        let canceled = AsyncStream<Void>.makeStream()
+        fixture.beforeManagedProbe = { _ in
+            try await withTaskCancellationHandler {
+                await deadline.beforeSend.wait()
+                try Task.checkCancellation()
+            } onCancel: { canceled.continuation.finish() }
+        }
+        let sentBefore = fixture.requests.filter { $0.value(forHTTPHeaderField: "Cf-Access-Token") != nil }.count
+        deadline.expires = cause == "timeout"
+        let pending = Task { try await authorization.headers(fixture.route.url) }
+        defer { deadline.beforeSend.release()
+            pending.cancel()
+        }
+        if cause == "caller" {
+            await deadline.beforeSend.waitUntilStarted()
+            pending.cancel()
+        }
+        do {
+            _ = try await pending.value
+            Issue.record("The controlled request deadline must return its failure")
+        } catch CloudflareAccessError.connectionFailed {
+            #expect(cause == "timeout")
+        } catch is CancellationError {
+            #expect(cause == "caller")
+        } catch {
+            Issue.record("Unexpected request deadline failure: \(error)")
+        }
+        for await _ in canceled.stream {}
+        #expect(deadline.limits.last == 15)
+        #expect(!deadline.beforeSend.settled)
+        #expect(fixture.persisted != nil)
+        let changed = AsyncStream<Void>.makeStream()
+        withObservationTracking { _ = ingress.attention } onChange: { changed.continuation.finish() }
+        var acknowledged = false
+        let signingOut = Task {
+            await ingress.signOut(stableID: fixture.stableID)
+            acknowledged = true
+        }
+        defer { signingOut.cancel() }
+        for await _ in changed.stream {}
+        #expect(ingress.attention?.canSignIn == false)
+        #expect(!acknowledged)
+        #expect(fixture.retirements == 0)
+        deadline.beforeSend.release()
+        await signingOut.value
+        #expect(acknowledged)
+        #expect(fixture.retirements == 1)
+        #expect(fixture.persisted == nil)
+        #expect(fixture.requests.filter { $0.value(forHTTPHeaderField: "Cf-Access-Token") != nil }.count == sentBefore)
+        #expect(fixture.browser.presented.isEmpty)
+    }
+
     @Test(arguments: ["prepare", "headers", "response"]) @MainActor
     func `headerless login redirects preserve admission and make rejected grants actionable`(
         rejection: String) async throws

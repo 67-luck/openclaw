@@ -16,6 +16,10 @@ struct GatewayIngressAuthorization: Sendable {
 @MainActor
 @Observable
 final class GatewayIngressController {
+    typealias RequestDeadline = @Sendable (
+        TimeInterval, @escaping @Sendable () async throws -> (Data, HTTPURLResponse)) async throws
+        -> (Data, HTTPURLResponse)
+
     struct Route: Equatable, Sendable {
         let url: URL
         let stableID: String
@@ -43,10 +47,17 @@ final class GatewayIngressController {
         let completion: Task<CloudflareAccessSessionStore.Snapshot, Error>
     }
 
-    private struct MediaRequest {
+    private struct DiscoveryOwner: Sendable {
+        let registration: Registration
+        let snapshot: CloudflareAccessSessionStore.Snapshot
+        let requiresManagedAdmission: Bool
+    }
+
+    private struct ManagedRequest {
         let profileID: GatewayStableIdentifier.Key
         let registrationID: UUID
         let revision: UInt64
+        let requiresManagedAdmission: Bool
         let task: Task<(Data, URLResponse), Error>
     }
 
@@ -55,13 +66,14 @@ final class GatewayIngressController {
     @ObservationIgnored private var routes: [GatewayStableIdentifier.Key: Registration] = [:]
     @ObservationIgnored private var expiryTasks: [CloudflareAccessOrigin: Task<Void, Never>] = [:]
     @ObservationIgnored private var blockedRevisions: [CloudflareAccessOrigin: UInt64] = [:]
-    @ObservationIgnored private var mediaRequests: [CloudflareAccessOrigin: [UUID: MediaRequest]] =
+    @ObservationIgnored private var managedRequests: [CloudflareAccessOrigin: [UUID: ManagedRequest]] =
         [:]
     @ObservationIgnored private var foregroundIntent: ForegroundIntent?
     @ObservationIgnored private let browser: any CloudflareAccessBrowserPresenting
     @ObservationIgnored private let persistence: CloudflareAccessSessionStore.Persistence
     @ObservationIgnored private let authenticate: CloudflareAccessSessionStore.Authenticate?
     @ObservationIgnored private let requestFactory: @Sendable (Route) -> CloudflareAccessClient.Request
+    @ObservationIgnored private let requestDeadline: RequestDeadline
     @ObservationIgnored private let profiles: () -> [GatewaySettingsStore.GatewayRegistryEntry]
     @ObservationIgnored private let saveProfileOrigin: (String, CloudflareAccessOrigin?) -> Bool
     @ObservationIgnored private let customHeaders: (String) -> [String: String]
@@ -75,6 +87,7 @@ final class GatewayIngressController {
         authenticate: CloudflareAccessSessionStore.Authenticate? = nil,
         requestFactory: @escaping @Sendable (Route) -> CloudflareAccessClient.Request = GatewayIngressController
             .request,
+        requestDeadline: @escaping RequestDeadline = GatewayIngressController.withRequestDeadline,
         customHeaders: @escaping (String) -> [String: String] = {
             GatewaySettingsStore.loadGatewayCustomHeaders(gatewayStableID: $0)
         },
@@ -91,6 +104,7 @@ final class GatewayIngressController {
         self.browser = browser
         self.authenticate = authenticate
         self.requestFactory = requestFactory
+        self.requestDeadline = requestDeadline
         self.customHeaders = customHeaders
         self.profiles = profiles
         self.saveProfileOrigin = saveProfileOrigin
@@ -115,7 +129,7 @@ final class GatewayIngressController {
             retireTransports: { [weak self] origin in
                 guard let self else { return }
                 self.expiryTasks.removeValue(forKey: origin)?.cancel()
-                let requests = self.mediaRequests[origin] ?? [:]
+                let requests = self.managedRequests[origin] ?? [:]
                 requests.values.forEach { $0.task.cancel() }
                 for request in requests.values {
                     _ = await request.task.result
@@ -155,7 +169,7 @@ final class GatewayIngressController {
                 self.cancelSignIn()
             }
         }
-        await self.retireMedia(profileID: key)
+        await self.retireRequests(profileID: key)
         try self.checkRegistration(registration)
         if let previous = profiles().first(where: { $0.id == key })?.accessOrigin, previous != origin {
             guard try await self.depart(
@@ -163,6 +177,7 @@ final class GatewayIngressController {
                 registrationID: registration.id) else { throw CancellationError() }
         }
         let client = self.client(for: route)
+        let preCommitRevision = self.routes[key]?.managedRevision
         // A cached host grant must not make an independently admitted profile depend
         // on browser sign-out or expiry. Existing service headers and WARP go first.
         let ordinaryChallenge = try await client.discover(
@@ -170,9 +185,11 @@ final class GatewayIngressController {
             customHeaders: self.customHeaders(route.stableID))
         try self.checkRegistration(registration)
         guard let ordinaryChallenge else {
+            guard self.routes[key]?.managedRevision == preCommitRevision else { throw CancellationError() }
             self.routes[key]?.managedRevision = nil
-            await self.retireMedia(profileID: key)
+            await self.retireRequests(profileID: key, ordinary: true)
             try self.checkRegistration(registration)
+            guard self.routes[key]?.managedRevision == nil else { throw CancellationError() }
             if GatewayStableIdentifier.matches(self.attention?.stableID, route.stableID) {
                 self.attention = nil
             }
@@ -187,7 +204,8 @@ final class GatewayIngressController {
         }
         var application: CloudflareAccessApplication? = ordinaryChallenge
         if let snapshot {
-            application = try await client.discover(
+            application = try await self.client(for: route, owner: DiscoveryOwner(
+                registration: registration, snapshot: snapshot, requiresManagedAdmission: false)).discover(
                 gatewayURL: route.url,
                 session: snapshot.session,
                 customHeaders: self.customHeaders(route.stableID))
@@ -316,7 +334,7 @@ final class GatewayIngressController {
         for origin in origins where !hasSibling(origin) {
             retirements[origin] = self.sessions.forget(origin)
         }
-        if registrationID == nil { await self.retireMedia(profileID: key) }
+        if registrationID == nil { await self.retireRequests(profileID: key) }
         while true {
             guard try isCurrent() else { return false }
             for retirement in retirements.values {
@@ -343,19 +361,19 @@ final class GatewayIngressController {
         }
     }
 
-    private func retireMedia(profileID: GatewayStableIdentifier.Key) async {
+    private func retireRequests(profileID: GatewayStableIdentifier.Key, ordinary: Bool = false) async {
         let registration = self.routes[profileID]
-        var pending: [Task<(Data, URLResponse), Error>] = []
-        // Retain draining requests until load settles so overlapping admissions join
-        // the same work. Caller cancellation alone does not retire a current owner.
-        for requests in self.mediaRequests.values {
-            for request in requests.values where request.profileID == profileID &&
-                (request.registrationID != registration?.id || request.revision != registration?.managedRevision)
-            {
-                request.task.cancel()
-                pending.append(request.task)
-            }
+        // Discovery can precede managed admission. Keep its registration/revision
+        // custody until actual settlement, including after a caller deadline returns.
+        let pending = self.managedRequests.values.flatMap { requests in
+            requests.values.filter { request in
+                request.profileID == profileID &&
+                    (ordinary || request.registrationID != registration?.id ||
+                        (request.requiresManagedAdmission && request.revision != registration?.managedRevision))
+            }.map(\.task)
         }
+        // Cancellation handlers may reenter. Only this captured obsolete set is retired.
+        pending.forEach { $0.cancel() }
         for task in pending {
             _ = await task.result
         }
@@ -530,19 +548,9 @@ final class GatewayIngressController {
             origin: origin,
             revision: revision)
         else { throw GatewayExternalAuthorizationError() }
-        let id = UUID()
-        let task = Task { try await operation(request) }
-        self.mediaRequests[origin, default: [:]][id] = MediaRequest(
-            profileID: GatewayStableIdentifier.Key(registration.route.stableID),
-            registrationID: registration.id,
-            revision: revision,
-            task: task)
-        defer {
-            self.mediaRequests[origin]?.removeValue(forKey: id)
-            if self.mediaRequests[origin]?.isEmpty == true {
-                self.mediaRequests.removeValue(forKey: origin)
-            }
-        }
+        let task = try self.beginRequest(
+            request, operation: operation, registration: registration, origin: origin,
+            revision: revision, requiresManagedAdmission: true)
         let result = try await withTaskCancellationHandler {
             try await task.value
         } onCancel: { task.cancel() }
@@ -550,6 +558,42 @@ final class GatewayIngressController {
         guard self.isCurrent(registration: registration, origin: origin, revision: revision)
         else { throw GatewayExternalAuthorizationError() }
         return result
+    }
+
+    private func beginRequest(
+        _ request: URLRequest,
+        operation: @escaping GatewayIngressAuthorization.Request,
+        registration: Registration,
+        origin: CloudflareAccessOrigin,
+        revision: UInt64,
+        requiresManagedAdmission: Bool) throws -> Task<(Data, URLResponse), Error>
+    {
+        func requireCurrent() throws {
+            try self.checkRegistration(registration)
+            guard self.isCurrent(origin: origin, revision: revision),
+                  !requiresManagedAdmission || self.isCurrent(
+                      registration: registration, origin: origin, revision: revision)
+            else { throw GatewayExternalAuthorizationError() }
+        }
+        try requireCurrent()
+        let id = UUID()
+        let task = Task {
+            defer {
+                self.managedRequests[origin]?.removeValue(forKey: id)
+                if self.managedRequests[origin]?.isEmpty == true {
+                    self.managedRequests.removeValue(forKey: origin)
+                }
+            }
+            try requireCurrent()
+            return try await operation(request)
+        }
+        self.managedRequests[origin, default: [:]][id] = ManagedRequest(
+            profileID: GatewayStableIdentifier.Key(registration.route.stableID),
+            registrationID: registration.id,
+            revision: revision,
+            requiresManagedAdmission: requiresManagedAdmission,
+            task: task)
+        return task
     }
 
     private func isCurrent(registration: Registration, origin: CloudflareAccessOrigin, revision: UInt64) -> Bool {
@@ -572,12 +616,13 @@ final class GatewayIngressController {
         guard origin.contains(url) else { throw CloudflareAccessError.invalidGateway }
         guard self.isCurrent(registration: registration, origin: origin, revision: revision)
         else { throw GatewayExternalAuthorizationError() }
-        let snapshot = self.sessions.snapshot(for: origin)
+        guard let snapshot = self.sessions.snapshot(for: origin) else { throw GatewayExternalAuthorizationError() }
         let route = registration.route
         let custom = self.customHeaders(route.stableID)
-        let application = try await client(for: route).discover(
+        let application = try await self.client(for: route, owner: DiscoveryOwner(
+            registration: registration, snapshot: snapshot, requiresManagedAdmission: true)).discover(
             gatewayURL: route.url,
-            session: snapshot?.session,
+            session: snapshot.session,
             customHeaders: custom)
         try Task.checkCancellation()
         guard self.isCurrent(registration: registration, origin: origin, revision: revision) else {
@@ -588,7 +633,7 @@ final class GatewayIngressController {
             throw GatewayExternalAuthorizationError()
         }
         var headers = GatewayCustomHeaders.sanitized(custom)
-        if let token = snapshot?.session.authorizationHeader(for: url, now: now()) {
+        if let token = snapshot.session.authorizationHeader(for: url, now: now()) {
             headers = headers.filter { $0.key.caseInsensitiveCompare("Cf-Access-Token") != .orderedSame }
             headers["Cf-Access-Token"] = token
         }
@@ -654,8 +699,51 @@ final class GatewayIngressController {
             id: id, origin: origin, stableID: route.stableID, message: message, canSignIn: canSignIn)
     }
 
-    private func client(for route: Route) -> CloudflareAccessClient {
-        CloudflareAccessClient(request: self.requestFactory(route))
+    private func client(for route: Route, owner: DiscoveryOwner? = nil) -> CloudflareAccessClient {
+        let raw = self.requestFactory(route)
+        let deadline = self.requestDeadline
+        return CloudflareAccessClient { [weak self] request, maximumBytes in
+            guard let url = request.url, let origin = try? CloudflareAccessOrigin(route.url), origin.contains(url)
+            else { return try await raw(request, maximumBytes) }
+            if let owner {
+                guard let self else { throw CancellationError() }
+                return try await self.discoveryRequest(request, maximumBytes: maximumBytes, raw: raw, owner: owner)
+            }
+            return try await deadline(min(15, request.timeoutInterval)) { try await raw(request, maximumBytes) }
+        }
+    }
+
+    private func discoveryRequest(
+        _ request: URLRequest,
+        maximumBytes: Int,
+        raw: @escaping CloudflareAccessClient.Request,
+        owner: DiscoveryOwner) async throws -> (Data, HTTPURLResponse)
+    {
+        let task = try self.beginRequest(
+            request, operation: { try await raw($0, maximumBytes) },
+            registration: owner.registration, origin: owner.snapshot.session.origin,
+            revision: owner.snapshot.revision, requiresManagedAdmission: owner.requiresManagedAdmission)
+        // A deadline cancels without joining. The raw task retains the session and
+        // registry entry until settlement; explicit retirement joins that same task.
+        defer { task.cancel() }
+        return try await withTaskCancellationHandler {
+            try await self.requestDeadline(min(15, request.timeoutInterval)) {
+                try await withTaskCancellationHandler {
+                    let (data, response) = try await task.value
+                    guard let http = response as? HTTPURLResponse else { throw CloudflareAccessError.connectionFailed }
+                    return (data, http)
+                } onCancel: { task.cancel() }
+            }
+        } onCancel: { task.cancel() }
+    }
+
+    nonisolated static func withRequestDeadline(
+        seconds: TimeInterval,
+        operation: @escaping @Sendable () async throws -> (Data, HTTPURLResponse)) async throws
+        -> (Data, HTTPURLResponse)
+    {
+        try await AsyncTimeout.withTimeout(
+            seconds: seconds, onTimeout: { CloudflareAccessError.connectionFailed }, operation: operation)
     }
 
     nonisolated static func request(for route: Route) -> CloudflareAccessClient.Request {
@@ -672,15 +760,12 @@ final class GatewayIngressController {
                 storeKey: nil)
             let session = GatewayTLSPinningSession(params: tls, allowsRedirects: false, allowsStoredCredentials: false)
             defer { session.finishTasksAndInvalidate() }
-            let (data, response) = try await AsyncTimeout.withTimeout(
-                seconds: min(15, request.timeoutInterval),
-                onTimeout: { CloudflareAccessError.connectionFailed },
-                operation: {
-                    if maximumBytes == 0 {
-                        return try await (Data(), session.response(for: request))
-                    }
-                    return try await session.data(for: request, maximumBytes: maximumBytes)
-                })
+            let (data, response): (Data, URLResponse)
+            if maximumBytes == 0 {
+                (data, response) = try await (Data(), session.response(for: request))
+            } else {
+                (data, response) = try await session.data(for: request, maximumBytes: maximumBytes)
+            }
             guard let http = response as? HTTPURLResponse,
                   http.url == request.url else { throw CloudflareAccessError.connectionFailed }
             return (data, http)
