@@ -2417,41 +2417,54 @@ struct GatewayIngressControllerTests {
         fixture.browser.dismissalGate = dismissal.stream
         let first = Task { try await ingress.prepare(
             route: fixture.route, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
-        try await waitForIngress { fixture.browser.presented.count == 1 }
-        let secondRoute = GatewayIngressController.Route(
-            url: fixture.route.url, stableID: sibling.stableID, tls: nil)
-        let second = Task { try await ingress.prepare(
-            route: secondRoute, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
-        defer {
-            first.cancel()
-            second.cancel()
+        var second: Task<GatewayIngressAuthorization?, Error>?
+        func drainCallers() async {
             fixture.release.continuation.finish()
             dismissal.continuation.finish()
-        }
-        try await waitForIngress { fixture.requestRoutes.filter { $0.stableID == sibling.stableID }.count >= 3 }
-        if canceledCaller == 0 {
             first.cancel()
+            second?.cancel()
+            _ = try? await first.value
+            _ = try? await second?.value
         }
-        if canceledCaller == 1 {
-            second.cancel()
-        }
-        fixture.release.continuation.finish()
-        try await waitForIngress { !fixture.browser.dismissed.isEmpty }
-        #expect(ingress.signingIn)
-        #expect(fixture.browser.presented.count == 1)
-        #expect(fixture.browser.dismissed.count == 1)
-        dismissal.continuation.finish()
-        for (index, task) in [first, second].enumerated() {
-            if index == canceledCaller {
-                await #expect(throws: CancellationError.self) { try await task.value }
-            } else {
-                let authorization = try #require(try await task.value)
-                #expect(authorization.isCurrent())
+        do {
+            try await waitForIngress { fixture.browser.presented.count == 1 }
+            let secondRoute = GatewayIngressController.Route(
+                url: fixture.route.url, stableID: sibling.stableID, tls: nil)
+            second = Task { try await ingress.prepare(
+                route: secondRoute, userInitiated: true, admissionCheckpoint: ingress.admissionCheckpoint()) }
+            // Prompt publication and participant attachment share one MainActor segment.
+            // Discovery request entry alone does not establish a surviving browser caller.
+            try await waitForIngress { ingress.attention?.stableID == sibling.stableID }
+            #expect(ingress.attention?.stableID == sibling.stableID)
+            #expect(fixture.persisted == nil)
+            if canceledCaller == 0 {
+                first.cancel()
             }
+            if canceledCaller == 1 {
+                second?.cancel()
+            }
+            fixture.release.continuation.finish()
+            try await waitForIngress { !fixture.browser.dismissed.isEmpty }
+            #expect(ingress.signingIn)
+            #expect(fixture.browser.presented.count == 1)
+            #expect(fixture.browser.dismissed.count == 1)
+            dismissal.continuation.finish()
+            for (index, task) in try [first, #require(second)].enumerated() {
+                if index == canceledCaller {
+                    await #expect(throws: CancellationError.self) { try await task.value }
+                } else {
+                    let authorization = try #require(try await task.value)
+                    #expect(authorization.isCurrent())
+                }
+            }
+            #expect(!ingress.signingIn)
+            #expect(fixture.browser.dismissed.count == 1)
+            #expect(fixture.persisted != nil)
+        } catch {
+            await drainCallers()
+            throw error
         }
-        #expect(!ingress.signingIn)
-        #expect(fixture.browser.dismissed.count == 1)
-        #expect(fixture.persisted != nil)
+        await drainCallers()
     }
 
     @Test(arguments: [false, true]) @MainActor
