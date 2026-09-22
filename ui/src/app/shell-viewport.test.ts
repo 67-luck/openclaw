@@ -27,6 +27,7 @@ beforeEach(() => {
   frames = new Map();
   vi.stubGlobal("visualViewport", viewport);
   vi.stubGlobal("innerHeight", 844);
+  vi.stubGlobal("CSS", { supports: () => true });
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
     frames.set(++nextFrame, callback);
     return nextFrame;
@@ -42,15 +43,37 @@ afterEach(() => {
 });
 
 describe("shell visual viewport", () => {
+  it.each([true, false])(
+    "keeps unobscured resizes CSS-driven before frame callbacks (dvh: %s)",
+    (dvh) => {
+      vi.stubGlobal("CSS", { supports: () => dvh });
+      disconnect = connectShellViewport(host);
+      const unit = dvh ? "100dvh" : "100vh";
+      expect(height()).toBe(unit);
+      for (const nextHeight of [1440, 900, 844]) {
+        vi.stubGlobal("innerHeight", nextHeight);
+        Object.assign(viewport, { height: nextHeight });
+        window.dispatchEvent(new Event("resize"));
+        // CSS already follows the layout viewport; no old pixel budget survives
+        // until this owner's queued frame or a later visual viewport event.
+        expect(height()).toBe(unit);
+        flush();
+        expect(height()).toBe(unit);
+      }
+      resize({ height: 843.9999 });
+      expect(height()).toBe(unit);
+    },
+  );
+
   it("tracks keyboard open/close, viewport pan, rotation, and content-resizing browsers", () => {
     disconnect = connectShellViewport(host);
-    expect(height()).toBe("844px");
+    expect(height()).toBe("100dvh");
     resize({ height: 480 });
     expect(height()).toBe("480px");
     resize({ height: 440, offsetTop: 70 }, "scroll");
     expect(height()).toBe("510px");
     resize({ height: 844, offsetTop: 0 });
-    expect(height()).toBe("844px");
+    expect(height()).toBe("100dvh");
     Object.assign(viewport, { height: 250 });
     window.dispatchEvent(new Event("resize"));
     flush();
@@ -62,7 +85,7 @@ describe("shell visual viewport", () => {
   it("leaves pinch zoom to the browser and resumes at native scale", () => {
     disconnect = connectShellViewport(host);
     resize({ height: 422, scale: 2, offsetTop: 50 });
-    expect(height()).toBe("844px");
+    expect(height()).toBe("100dvh");
     resize({ height: 480, scale: 1, offsetTop: 0 });
     expect(height()).toBe("480px");
   });
@@ -71,12 +94,12 @@ describe("shell visual viewport", () => {
     document.body.style.paddingTop = "47px";
     document.body.style.paddingBottom = "34px";
     disconnect = connectShellViewport(host);
-    expect(height()).toBe("763px");
+    expect(height()).toBe("max(0px, calc(100dvh - 81px))");
     resize({ height: 480 });
     expect(height()).toBe("399px");
     resize({ height: 844 });
     resize({ height: 422, scale: 2, offsetTop: 50 });
-    expect(height()).toBe("763px");
+    expect(height()).toBe("max(0px, calc(100dvh - 81px))");
   });
 
   it("coalesces events and cancels queued updates and listeners on disconnect", () => {
