@@ -179,6 +179,20 @@ describe("EmbeddedBlockChunker", () => {
     expect(chunker.consumedLength).toBe(deltas.join("").length);
   });
 
+  it("keeps indented Unicode source intact when a fenced projection cannot fit", () => {
+    const source = "    😀abc";
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 1,
+      maxChars: 9,
+      hardMaxChars: 40,
+      breakPreference: "paragraph",
+    });
+
+    chunker.append(source);
+
+    expect(drainChunks(chunker, true)).toEqual([source]);
+  });
+
   it.each([
     { force: false, body: `${"A".repeat(56)} TAIL_153587` },
     { force: true, body: `${"A".repeat(56)} TAIL_153587` },

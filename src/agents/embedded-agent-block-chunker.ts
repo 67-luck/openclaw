@@ -277,12 +277,7 @@ export class EmbeddedBlockChunker {
     if (originalSource.length < minChars && !force) {
       return;
     }
-    const indentedCode = prepareIndentedCode(
-      originalSource,
-      this.#codeContext,
-      force,
-      hardMaxChars,
-    );
+    const indentedCode = prepareIndentedCode(originalSource, this.#codeContext, force, maxChars);
     let source = indentedCode.text;
     const startsAtLineStart =
       Boolean(this.#reopenPrefix) || indentedCode.startsWithCode || this.#bufferStartsAtLineStart;

@@ -33,7 +33,10 @@ export function findSafeSentenceBreakIndex(
       continue;
     }
     const candidate = at + 1;
-    if (offset + candidate !== openFence?.end && isSafeFenceBreak(unsafeSpans, offset + candidate)) {
+    if (
+      offset + candidate !== openFence?.end &&
+      isSafeFenceBreak(unsafeSpans, offset + candidate)
+    ) {
       sentenceIdx = candidate;
     }
   }
