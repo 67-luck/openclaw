@@ -43,14 +43,15 @@ actor InputInbox {
             clientDisplayName: "RFC54 functional probe",
             includeDeviceIdentity: false,
             allowStoredDeviceAuth: false)
-        try await session.connect(
-            url: url,
-            token: "benchmark-token",
-            connectOptions: options,
-            sessionBox: WebSocketSessionBox(session: transport),
-            onConnected: {},
-            onDisconnected: { _ in },
-            onInvoke: { req in
+        do {
+            try await session.connect(
+                url: url,
+                token: "benchmark-token",
+                connectOptions: options,
+                sessionBox: WebSocketSessionBox(session: transport),
+                onConnected: {},
+                onDisconnected: { _ in },
+                onInvoke: { req in
                 if req.id == "retire-during-delivery" {
                     print("{\"nativeEntered\":\"\(req.id)\"}")
                     fflush(stdout)
@@ -58,12 +59,15 @@ actor InputInbox {
                         .appendingPathComponent("retirement-release-\(req.id)")
                     while !FileManager.default.fileExists(atPath: release.path) {
                         // Ignore cancellation until the harness releases the handoff so the
-                        // explicit final-effect fence, rather than sleep, proves rejection.
+                        // production notification boundary, rather than sleep, proves rejection.
                         try? await Task.sleep(for: .milliseconds(5))
                     }
                     do {
-                        try Task.checkCancellation()
-                    } catch {
+                        try NotificationDeliveryFence.perform {
+                            print("{\"nativeEffect\":\"\(req.id)\"}")
+                            fflush(stdout)
+                        }
+                    } catch is CancellationError {
                         print("{\"nativeRejectedBeforeEffect\":\"\(req.id)\"}")
                         fflush(stdout)
                         return BridgeInvokeResponse(
@@ -73,8 +77,6 @@ actor InputInbox {
                                 code: .unavailable,
                                 message: "native operation retired before effect"))
                     }
-                    print("{\"nativeEffect\":\"\(req.id)\"}")
-                    fflush(stdout)
                     return BridgeInvokeResponse(id: req.id, ok: true, payloadJSON: "{}")
                 }
                 if req.command == "benchmark.duplex" || req.command == "system.notify" {
@@ -107,16 +109,26 @@ actor InputInbox {
                     ok: true,
                     payload: AnyCodable(["present": req.paramsJSON != nil, "raw": req.paramsJSON ?? "missing"])) }
                 return BridgeInvokeResponse(id: req.id, ok: true, payloadJSON: req.paramsJSON)
-            },
-            onInvokeInput: { event in await inbox.deliver(event) },
-            onInvokeCancel: { id in
-                print("{\"nativeCancelEvent\":\"\(id)\"}")
-                fflush(stdout)
-            },
-            onRouteInvalidated: {
-                print("{\"nativeRouteRetired\":true}")
-                fflush(stdout)
-            })
+                },
+                onInvokeInput: { event in await inbox.deliver(event) },
+                onInvokeCancel: { id in
+                    print("{\"nativeCancelEvent\":\"\(id)\"}")
+                    fflush(stdout)
+                },
+                onRouteInvalidated: {
+                    print("{\"nativeRouteRetired\":true}")
+                    fflush(stdout)
+                })
+        } catch {
+            let failure = error as NSError
+            let record: [String: Any] = [
+                "startupFailure": ["domain": failure.domain, "code": failure.code],
+            ]
+            let data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+            print(String(decoding: data, as: UTF8.self))
+            fflush(stdout)
+            throw error
+        }
         print("{\"ready\":true,\"pid\":\(ProcessInfo.processInfo.processIdentifier)}")
         fflush(stdout)
         while readLine() != nil {}

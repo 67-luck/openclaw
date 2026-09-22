@@ -100,6 +100,13 @@ async function run(pinMode) {
           policy: { maxPayload: 16777216, maxBufferedBytes: 16777216, tickIntervalMs: 30000 },
           auth: { role: "node", scopes: [] },
         });
+        ws.send(
+          JSON.stringify({
+            type: "event",
+            event: "benchmark.post-hello",
+            payload: { immediate: true },
+          }),
+        );
       } else if (f.method === "benchmark.delay") {
         timers.push(setTimeout(() => reply({ delayed: true }), f.params.delayMs));
       } else if (f.method === "benchmark.never") {

@@ -22,6 +22,20 @@ GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Se
     package static func _testRejectsDeliveryAfterFinish(_ data: Data) -> Bool {
         RustGatewayWebSocketTask._testRejectsDeliveryAfterFinish(data)
     }
+
+    package static func _testConnectMetadata(_ data: Data) -> (id: String?, commands: Set<String>)? {
+        guard let frame = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        return self.connectMetadata(frame)
+    }
+
+    fileprivate static func connectMetadata(_ frame: Any) -> (id: String?, commands: Set<String>)? {
+        guard let request = frame as? [String: Any], request["method"] as? String == "connect" else {
+            return nil
+        }
+        let params = request["params"] as? [String: Any]
+        return (request["id"] as? String, Set(params?["commands"] as? [String] ?? []))
+    }
+
     package init(executableURL: URL, fingerprint: String? = nil, tlsParams: GatewayTLSParams? = nil) {
         self.executableURL = executableURL
         self.fingerprint = fingerprint
@@ -133,13 +147,10 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         @unknown default: throw URLError(.unknown)
         }
         let frame = try JSONSerialization.jsonObject(with: data)
-        if let request = frame as? [String: Any], request["method"] as? String == "connect",
-           let params = request["params"] as? [String: Any],
-           let commands = params["commands"] as? [String]
-        {
+        if let metadata = RustGatewayWebSocketSession.connectMetadata(frame) {
             self.lock.withLock {
-                self.declaredCommands = Set(commands)
-                self.connectID = request["id"] as? String
+                self.declaredCommands = metadata.commands
+                self.connectID = metadata.id
             }
         }
         let payload = try JSONSerialization.data(withJSONObject: [
@@ -204,6 +215,9 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
     }
 
     private func run() throws {
+        guard FileManager.default.isExecutableFile(atPath: self.executableURL.path) else {
+            throw Self.startupError(3, "The macOS node runtime helper is missing or not executable.")
+        }
         if self.executableURL == RustGatewayWebSocketSession.bundledExecutableURL {
             try Self.verifyBundledArtifact()
         }
@@ -265,7 +279,12 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
             ],
         ]
         try self.writeNow(["type": "offer", "offer": offer])
-        let acceptance = try self.readMessage(stdoutPipe.fileHandleForReading, bootstrap: true)
+        let acceptance: [String: Any]
+        do {
+            acceptance = try self.readMessage(stdoutPipe.fileHandleForReading, bootstrap: true)
+        } catch {
+            throw Self.startupError(4, "The macOS node runtime helper protocol is incompatible.")
+        }
         guard acceptance["type"] as? String == "accept",
               let remote = acceptance["offer"] as? [String: Any],
               let peer = remote["peer"] as? [String: Any], peer["role"] as? String == "runtime",
@@ -282,7 +301,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
               (selectedLimits["maxInFlight"] ?? 0) > 0,
               (selectedLimits["bootstrapTimeoutMs"] ?? 0) > 0,
               let frameLimit = selectedLimits["maxFrameBytes"]
-        else { throw URLError(.cannotParseResponse) }
+        else { throw Self.startupError(4, "The macOS node runtime helper protocol is incompatible.") }
         try self.lock.withLock {
             try channel.lowerFrameLimit(frameLimit)
             channel.lockFrameLimit()
@@ -401,6 +420,12 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
                 ])
             }
         }
+    }
+
+    private static func startupError(_ code: Int, _ description: String) -> NSError {
+        NSError(domain: "OpenClawRustSidecarStartup", code: code, userInfo: [
+            NSLocalizedDescriptionKey: description,
+        ])
     }
 
     private static func waitForPipe(_ descriptor: Int32, events: Int16, deadline: UInt64?) throws {

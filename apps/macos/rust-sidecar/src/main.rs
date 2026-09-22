@@ -72,7 +72,7 @@ struct Request {
     params: Value,
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     // Stderr is deliberately generic: Gateway errors can contain endpoint or auth data.
     if run().await.is_err() {
@@ -220,14 +220,17 @@ async fn run_gateway(
         Ok(frame.params)
     })
     .await;
-    let session = match connection {
+    let (session, mut events) = match connection {
         Ok(session) => {
+            // The current-thread executor guarantees the Gateway reader cannot advance
+            // the retained event tail between connect returning and this subscription.
+            let events = session.subscribe();
             outgoing
                 .send(json!({"type":"frame", "frame": {
                     "type":"res","id":connect_id,"ok":true,"payload":session.hello()
                 }}))
                 .await?;
-            session
+            (session, events)
         }
         Err(error) => {
             if connect_id.is_empty() {
@@ -282,7 +285,6 @@ async fn run_gateway(
         }
     }
     let runtime = builder.build()?;
-    let mut events = session.subscribe();
     let runtime_session = session.clone();
     let mut runtime_task = tokio::spawn(async move { runtime.run(runtime_session).await });
     let _runtime_lifetime = AbortTaskOnDrop(runtime_task.abort_handle());

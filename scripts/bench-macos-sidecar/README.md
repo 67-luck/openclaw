@@ -40,8 +40,9 @@ RFC54_BENCH_EXTRA_ARGS='["<output>/bin/absent-helper"]' \
   node run-bench.cjs "$RFC54_BENCH_ROOT/bin/candidate-swift" missing-helper 1 1
 
 # On a disposable Mac, package an opt-in ad-hoc signed app and prove fresh
-# install, upgrade, rollback, missing/incompatible helper, bundled signature
-# verification, and recovery behavior.
+# bundle execution, replacement with predecessor-shaped/malformed bundles,
+# missing/incompatible helper rejection, valid/tampered signature behavior,
+# and replacement recovery. This does not exercise a production updater.
 OPENCLAW_PACKAGE_RUST_NODE_SIDECAR=1 OPENCLAW_SKIP_MLX_TTS=1 \
   ALLOW_ADHOC_SIGNING=1 SIGN_IDENTITY=- SKIP_TEAM_ID_CHECK=1 \
   BUILD_CONFIG=debug BUILD_ARCHS="$(uname -m)" \

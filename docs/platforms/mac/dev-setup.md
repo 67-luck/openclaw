@@ -17,8 +17,6 @@ the Xcode requirements below.
 - **Xcode 26.4+** (Swift 6.3 toolchain), on the latest macOS available in
   Software Update.
 - **Node.js 24.16+ or 26.1+ & pnpm** for the gateway, CLI, and packaging scripts.
-- **Rust 1.93+ and Cargo**, installed with [rustup](https://rustup.rs/), only
-  when running the optional Rust sidecar validation path.
 
 macOS shell tooling uses the system `/bin/bash` (3.2); Homebrew Bash is not
 required. Run scripts directly or with `/bin/bash`. Bash 5.3+ can stall on a
@@ -34,26 +32,13 @@ the documented install commands need no change.
 pnpm install
 ```
 
-Install the Rust targets only when you opt into the Rust sidecar validation
-helper. Universal validation builds require both targets:
-
-```bash
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
-```
-
 ## 2. Build and package the app
 
 ```bash
 ./scripts/package-mac-app.sh
 ```
 
-Outputs `dist/OpenClaw.app`. The Rust node sidecar remains an adopter
-validation path, not the default macOS node runtime. To build and sign the
-helper inside the bundle for proof, run with `OPENCLAW_PACKAGE_RUST_NODE_SIDECAR=1`;
-Swift still owns UI, native tools, device identity, permissions, TLS trust, and
-runtime selection.
-
-Packaging requires a real signing identity by
+Outputs `dist/OpenClaw.app`. Packaging requires a real signing identity by
 default and fails if none is available. Ad-hoc signing is an explicit opt-in;
 it does not preserve TCC permissions. See [macOS signing](/platforms/mac/signing).
 

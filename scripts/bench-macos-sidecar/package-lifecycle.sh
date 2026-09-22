@@ -65,10 +65,25 @@ install_bundle() {
   codesign --verify --deep --strict "$INSTALLED_APP"
 }
 
-expect_helper_failure() {
+prepare_bundled_probe() {
   local label="$1"
-  local helper="$2"
+  local source_app="$2"
+  PROBE_APP="$INSTALL_ROOT/$label-probe/OpenClaw.app"
+  PROBE_EXECUTABLE="$PROBE_APP/Contents/MacOS/OpenClaw"
+  mkdir -p "$(dirname "$PROBE_APP")"
+  /usr/bin/ditto --noqtn "$source_app" "$PROBE_APP"
+  cp "$PROOF_ROOT/bin/functional-probe" "$PROBE_EXECUTABLE"
+  chmod 0755 "$PROBE_EXECUTABLE"
+  SIGN_IDENTITY=- ALLOW_ADHOC_SIGNING=1 CODESIGN_TIMESTAMP=off SKIP_TEAM_ID_CHECK=1 \
+    "$ROOT_DIR/scripts/codesign-mac-app.sh" "$PROBE_APP"
+}
+
+expect_bundled_helper_failure() {
+  local label="$1"
+  local source_app="$2"
   local expected="$3"
+  prepare_bundled_probe "$label" "$source_app"
+  local helper="$PROBE_APP/Contents/MacOS/openclaw-mac-node-sidecar"
   case "$expected" in
     missing) [[ ! -e "$helper" ]] || { echo "ERROR: missing-helper fixture exists" >&2; exit 1; } ;;
     incompatible)
@@ -80,10 +95,19 @@ expect_helper_failure() {
         exit 1
       }
       ;;
+    signature)
+      [[ -x "$helper" ]] || { echo "ERROR: signature fixture helper is not executable" >&2; exit 1; }
+      printf '\0' >> "$helper"
+      if codesign --verify --deep --strict "$PROBE_APP" 2>/dev/null; then
+        echo "ERROR: tampered helper retained a valid bundle signature" >&2
+        exit 1
+      fi
+      ;;
     *) echo "ERROR: unknown helper rejection expectation: $expected" >&2; exit 1 ;;
   esac
   OPENCLAW_BENCH_REPO="$ROOT_DIR" RFC54_EXPECT_STARTUP_REJECTION="$expected" \
-    node "$ROOT_DIR/scripts/bench-macos-sidecar/functional-smoke.cjs" "$helper" "$label"
+    RFC54_FUNCTIONAL_PROBE="$PROBE_EXECUTABLE" \
+    node "$ROOT_DIR/scripts/bench-macos-sidecar/functional-smoke.cjs" bundled "$label"
 }
 
 verify_candidate() {
@@ -96,37 +120,30 @@ verify_candidate() {
 }
 
 verify_bundled_signature_gate() {
-  local probe_app="$INSTALL_ROOT/bundled-probe/OpenClaw.app"
-  local probe_executable="$probe_app/Contents/MacOS/OpenClaw"
-  mkdir -p "$(dirname "$probe_app")"
-  /usr/bin/ditto --noqtn "$INSTALLED_APP" "$probe_app"
-  cp "$PROOF_ROOT/bin/functional-probe" "$probe_executable"
-  chmod 0755 "$probe_executable"
-  SIGN_IDENTITY=- ALLOW_ADHOC_SIGNING=1 CODESIGN_TIMESTAMP=off SKIP_TEAM_ID_CHECK=1 \
-    "$ROOT_DIR/scripts/codesign-mac-app.sh" "$probe_app"
-  codesign --verify --deep --strict "$probe_app"
-  OPENCLAW_BENCH_REPO="$ROOT_DIR" RFC54_FUNCTIONAL_PROBE="$probe_executable" \
+  prepare_bundled_probe bundled "$INSTALLED_APP"
+  codesign --verify --deep --strict "$PROBE_APP"
+  OPENCLAW_BENCH_REPO="$ROOT_DIR" RFC54_FUNCTIONAL_PROBE="$PROBE_EXECUTABLE" \
     node "$ROOT_DIR/scripts/bench-macos-sidecar/functional-smoke.cjs" bundled package-bundled-signature
 }
 
-# Fresh install of the exact packaged candidate.
+# Place the exact packaged candidate into a fresh disposable Applications root.
 install_bundle "$CANDIDATE_APP"
 verify_candidate package-fresh-install
 CANDIDATE_HELPER_SHA256="$(shasum -a 256 "$INSTALLED_APP/Contents/MacOS/openclaw-mac-node-sidecar" | awk '{print $1}')"
 verify_bundled_signature_gate
+expect_bundled_helper_failure package-tampered-signature "$INSTALLED_APP" signature
 
-# Roll back to a valid predecessor bundle that predates the optional helper.
+# Replace the candidate with a valid predecessor-shaped bundle that omits the helper.
 install_bundle "$BASELINE_APP"
 [[ ! -e "$INSTALLED_APP/Contents/MacOS/openclaw-mac-node-sidecar" ]] || {
   echo "ERROR: rollback retained the candidate helper" >&2
   exit 1
 }
-expect_helper_failure package-rollback-missing-helper \
-  "$INSTALLED_APP/Contents/MacOS/openclaw-mac-node-sidecar" missing
+expect_bundled_helper_failure package-replacement-missing-helper "$INSTALLED_APP" missing
 
-# Upgrade restores the signed helper and its real Swift/Rust behavior.
+# Replacing that bundle with the candidate restores the signed helper and behavior.
 install_bundle "$CANDIDATE_APP"
-verify_candidate package-upgrade
+verify_candidate package-replacement-upgrade
 [[ "$(shasum -a 256 "$INSTALLED_APP/Contents/MacOS/openclaw-mac-node-sidecar" | awk '{print $1}')" == \
   "$CANDIDATE_HELPER_SHA256" ]] || {
   echo "ERROR: upgraded helper digest differs from the packaged candidate" >&2
@@ -135,12 +152,11 @@ verify_candidate package-upgrade
 
 # A signed but protocol-incompatible executable must fail before any native effect.
 install_bundle "$INCOMPATIBLE_APP"
-expect_helper_failure package-incompatible-helper \
-  "$INSTALLED_APP/Contents/MacOS/openclaw-mac-node-sidecar" incompatible
+expect_bundled_helper_failure package-incompatible-helper "$INSTALLED_APP" incompatible
 
-# Leave the proof installation on the verified candidate, matching a recovered upgrade.
+# Leave the proof installation on the verified candidate after replacement recovery.
 install_bundle "$CANDIDATE_APP"
-verify_candidate package-recovered-upgrade
+verify_candidate package-replacement-recovery
 
 HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 cat > "$PROOF_ROOT/package-lifecycle.json" <<EOF
@@ -148,12 +164,13 @@ cat > "$PROOF_ROOT/package-lifecycle.json" <<EOF
   "head": "$HEAD_SHA",
   "signing": "ad-hoc bundle integrity only; Developer ID and notarization not exercised",
   "helperSha256": "$CANDIDATE_HELPER_SHA256",
-  "freshInstall": true,
-  "upgrade": true,
-  "rollback": true,
+  "freshBundlePlacement": true,
+  "bundleReplacementUpgrade": true,
+  "bundleReplacementRollback": true,
   "missingHelperRejected": true,
   "incompatibleHelperRejected": true,
-  "bundledSignatureGate": true,
+  "bundledSignatureAccepted": true,
+  "tamperedBundledSignatureRejected": true,
   "retirementBeforeNativeEffect": true
 }
 EOF

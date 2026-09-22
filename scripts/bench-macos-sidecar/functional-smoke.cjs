@@ -50,6 +50,7 @@ function deadline(p, deadlineLabel) {
     nativeEntered = new Set(),
     nativeEffects = new Set(),
     nativeRejectedBeforeEffect = new Set();
+  let startupFailure;
   let nativeRouteRetired = false;
   const observed = new Set();
   let finished = false;
@@ -161,6 +162,9 @@ function deadline(p, deadlineLabel) {
         }
         if (row.nativeRouteRetired) {
           nativeRouteRetired = true;
+        }
+        if (row.startupFailure) {
+          startupFailure = row.startupFailure;
         }
       }
     });
@@ -381,18 +385,26 @@ function deadline(p, deadlineLabel) {
   } catch (error) {
     const expectedStartupRejection = process.env.RFC54_EXPECT_STARTUP_REJECTION;
     const startupExit = /^exit ([^/]+)\//u.exec(error.message);
+    const expectedStartup = {
+      missing: { domain: "OpenClawRustSidecarStartup", code: 3 },
+      incompatible: { domain: "OpenClawRustSidecarStartup", code: 4 },
+      signature: { domain: "OpenClawRustSidecar", code: 2 },
+    }[expectedStartupRejection];
     if (
-      ["missing", "incompatible"].includes(expectedStartupRejection) &&
+      expectedStartup &&
       !ws &&
       nativeEntered.size === 0 &&
       nativeEffects.size === 0 &&
       startupExit &&
-      startupExit[1] !== "0"
+      startupExit[1] !== "0" &&
+      startupFailure?.domain === expectedStartup.domain &&
+      startupFailure.code === expectedStartup.code
     ) {
       record.checks.push({
         scenario: `${expectedStartupRejection} helper rejected before Gateway connection or native effect`,
         passed: true,
-        failurePhase: "nonzero transport exit before Gateway connection",
+        failurePhase: "typed transport startup rejection before Gateway connection",
+        startupFailure,
       });
     } else {
       record.failure = error.message;

@@ -3,6 +3,19 @@ import Testing
 @testable import OpenClawRustSidecar
 
 struct RustGatewayWebSocketSessionTests {
+    @Test func `commandless connect retains identity with an empty manifest`() throws {
+        let commandlessConnect = try Self.frame([
+            "type": "req",
+            "id": "connect-without-commands",
+            "method": "connect",
+            "params": ["role": "node"],
+        ])
+
+        let metadata = RustGatewayWebSocketSession._testConnectMetadata(commandlessConnect)
+        #expect(metadata?.id == "connect-without-commands")
+        #expect(metadata?.commands.isEmpty == true)
+    }
+
     @Test func `finish retains only terminal connect failures`() throws {
         let connectID = "connect-1"
         let failedConnect = try Self.frame([

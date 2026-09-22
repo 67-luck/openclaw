@@ -19,6 +19,9 @@ import OpenClawRustSidecar
             role: "node", scopes: [], caps: [], commands: ["benchmark.echo"], permissions: [:],
             clientId: "openclaw-macos", clientMode: "node", clientDisplayName: "RFC54 RPC probe",
             includeDeviceIdentity: false, allowStoredDeviceAuth: false)
+        let postHello = await session.makeServerEventSubscription(bufferingNewest: 1) {
+            $0.event == "benchmark.post-hello"
+        }
         var checks: [[String: Any]] = []
         do {
             try await session.connect(
@@ -27,6 +30,13 @@ import OpenClawRustSidecar
                 onDisconnected: { _ in }, onInvoke: { r in BridgeInvokeResponse(id: r.id, ok: true) })
             print("{\"ready\":true}")
             fflush(stdout)
+            var postHelloEvents = postHello.events.makeAsyncIterator()
+            guard await postHelloEvents.next() != nil else { throw URLError(.networkConnectionLost) }
+            postHello.cancel()
+            checks.append([
+                "scenario": "event immediately after hello reaches pre-connect subscriber",
+                "passed": true,
+            ])
             if !CommandLine.arguments.contains("capacity") {
                 let start = ContinuousClock.now
                 let data = try await session.request(

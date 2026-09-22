@@ -103,7 +103,7 @@ jobs:
           export BUILD_ARCHS="$(uname -m)"
           scripts/package-mac-app.sh
 
-      - name: Prove install, upgrade, rollback, and rejection behavior
+      - name: Prove bundle replacement and rejection behavior
         run: >-
           scripts/bench-macos-sidecar/package-lifecycle.sh
           "$GITHUB_WORKSPACE/dist/OpenClawSidecarProof.app"
