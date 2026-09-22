@@ -348,10 +348,10 @@ function deadline(p, deadlineLabel) {
               continue;
             }
             try {
-              const command = execFileSync("/bin/ps", ["-p", String(pid), "-o", "command="], {
+              const executable = execFileSync("/bin/ps", ["-p", String(pid), "-o", "comm="], {
                 encoding: "utf8",
               }).trim();
-              if (command === helperPath) {
+              if (fs.realpathSync(executable) === helperPath) {
                 return pid;
               }
             } catch {}
