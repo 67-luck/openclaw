@@ -278,9 +278,9 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
                 "artifactIdentity": "bundled-macos-app",
             ],
         ]
-        try self.writeNow(["type": "offer", "offer": offer])
         let acceptance: [String: Any]
         do {
+            try self.writeNow(["type": "offer", "offer": offer])
             acceptance = try self.readMessage(stdoutPipe.fileHandleForReading, bootstrap: true)
         } catch {
             throw Self.startupError(4, "The macOS node runtime helper protocol is incompatible.")

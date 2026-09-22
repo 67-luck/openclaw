@@ -636,8 +636,16 @@ fn response_error(id: &str, error: ClientError) -> Value {
 
 fn event_frame(event: Event) -> Value {
     let mut frame = json!({"type":"event","event":event.event,"payload":event.payload});
-    if let (Some(seq), Value::Object(fields)) = (event.seq, &mut frame) {
-        fields.insert("seq".into(), json!(seq));
+    if let Value::Object(fields) = &mut frame {
+        if let Some(seq) = event.seq {
+            fields.insert("seq".into(), json!(seq));
+        }
+        if let Some(state_version) = event.state_version {
+            fields.insert("stateVersion".into(), state_version);
+        }
+        if let Some(recipient_profile_id) = event.recipient_profile_id {
+            fields.insert("recipientProfileId".into(), json!(recipient_profile_id));
+        }
     }
     frame
 }
@@ -653,8 +661,11 @@ mod tests {
                 event: "gateway.status".into(),
                 payload: json!({"ready": true}),
                 seq: Some(42),
+                state_version: Some(json!({"presence": 7})),
+                recipient_profile_id: Some("profile-1".into()),
             }),
-            json!({"type":"event","event":"gateway.status","payload":{"ready":true},"seq":42})
+            json!({"type":"event","event":"gateway.status","payload":{"ready":true},"seq":42,
+                "stateVersion":{"presence":7},"recipientProfileId":"profile-1"})
         );
     }
 
@@ -665,6 +676,8 @@ mod tests {
                 event: "gateway.status".into(),
                 payload: json!({"ready": true}),
                 seq: None,
+                state_version: None,
+                recipient_profile_id: None,
             }),
             json!({"type":"event","event":"gateway.status","payload":{"ready":true}})
         );
