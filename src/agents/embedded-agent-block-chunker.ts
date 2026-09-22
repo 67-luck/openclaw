@@ -443,14 +443,16 @@ export class EmbeddedBlockChunker {
     const sourceOffset = (index: number) =>
       Math.max(0, indentedCode.toSource(originalIndex(index)) - this.#reopenPrefix.length);
     let start = 0;
+    let committedStart = 0;
     let reopenFence: FenceSplit | undefined;
-    const emitSourceChunk = (chunk: string, from: number, to: number) => {
+    let committedReopenFence: FenceSplit | undefined;
+    const emitSourceChunk = (chunk: string, from: number, to: number, custodyFrom = from) => {
       preparedSourceBreaks.push(sourceStart + sourceOffset(to));
       emit(chunk, {
-        sourceText: this.#buffer.slice(sourceOffset(from), sourceOffset(to)),
+        sourceText: this.#buffer.slice(sourceOffset(custodyFrom), sourceOffset(to)),
         sourceGeneration: this.#sourceGeneration,
         reconciledSourceBreak: reconciledSourceBreak || undefined,
-        sourceStart: this.#sourceOffset + this.#consumedLength + sourceOffset(from),
+        sourceStart: this.#sourceOffset + this.#consumedLength + sourceOffset(custodyFrom),
         sourceEnd: this.#sourceOffset + this.#consumedLength + sourceOffset(to),
         startsAtLineStart:
           Boolean(reopenFence) ||
@@ -467,6 +469,7 @@ export class EmbeddedBlockChunker {
         // A checkpoint can withdraw the remaining body while retaining its
         // source closer. Earlier chunks already carried a synthetic closer.
         start = skipLeadingNewlines(source, resumedFence.end);
+        committedStart = start;
       }
     }
 
@@ -488,7 +491,9 @@ export class EmbeddedBlockChunker {
             paragraphBreak.index + paragraphBreak.length,
           );
           if (chunk.trim().length > 0) {
-            emitSourceChunk(chunk, start, nextStart);
+            emitSourceChunk(chunk, start, nextStart, committedStart);
+            committedStart = nextStart;
+            committedReopenFence = undefined;
           }
           start = nextStart;
           reopenFence = undefined;
@@ -528,9 +533,15 @@ export class EmbeddedBlockChunker {
             );
       if (breakResult.index <= 0) {
         if (force) {
-          emitSourceChunk(`${reopenPrefix}${source.slice(start)}`, start, source.length);
-          start = source.length;
+          emitSourceChunk(
+            `${reopenPrefix}${source.slice(start)}`,
+            start,
+            source.length,
+            committedStart,
+          );
+          committedStart = source.length;
           reopenFence = undefined;
+          committedReopenFence = undefined;
         }
         break;
       }
@@ -559,7 +570,9 @@ export class EmbeddedBlockChunker {
         continue;
       }
       if (consumed.chunk) {
-        emitSourceChunk(consumed.chunk, start, consumed.start);
+        emitSourceChunk(consumed.chunk, start, consumed.start, committedStart);
+        committedStart = consumed.start;
+        committedReopenFence = consumed.reopenFence;
       }
       start = consumed.start;
       reopenFence = consumed.reopenFence;
@@ -573,6 +586,8 @@ export class EmbeddedBlockChunker {
         break;
       }
     }
+    start = committedStart;
+    reopenFence = committedReopenFence;
     if (!reopenFence) {
       start = skipLeadingNewlines(source, start);
     }

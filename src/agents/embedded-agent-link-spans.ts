@@ -179,6 +179,9 @@ function scanMarkdownDestination(
   }
 
   if (!hasDestination) {
+    if (index >= text.length) {
+      return { end: text.length, complete: false };
+    }
     return null;
   }
   while (text[index] === " " || text[index] === "\t") {
@@ -251,7 +254,10 @@ export function scanUnbreakableSpans(
 
   for (const match of text.matchAll(/https?:\/\/[^\s<]+/giu)) {
     const urlStart = match.index;
-    if (isInsideCode(urlStart)) {
+    if (
+      isInsideCode(urlStart) ||
+      spans.some((span) => urlStart >= span.start && urlStart < span.end)
+    ) {
       continue;
     }
     const start = text[urlStart - 1] === "<" ? urlStart - 1 : urlStart;
