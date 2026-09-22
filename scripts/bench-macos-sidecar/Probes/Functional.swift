@@ -22,9 +22,16 @@ actor InputInbox {
         let url = URL(string: CommandLine.arguments[1])!
         let session = GatewayNodeSession()
         let inbox = InputInbox()
-        let transport: any WebSocketSessioning = CommandLine
-            .arguments[2] == "baseline" ? URLSession(configuration: .ephemeral) :
-            RustGatewayWebSocketSession(executableURL: URL(fileURLWithPath: CommandLine.arguments[2]))
+        let mode = CommandLine.arguments[2]
+        let transport: any WebSocketSessioning
+        if mode == "baseline" {
+            transport = URLSession(configuration: .ephemeral)
+        } else if mode == "bundled" {
+            transport = RustGatewayWebSocketSession(
+                executableURL: RustGatewayWebSocketSession.bundledExecutableURL)
+        } else {
+            transport = RustGatewayWebSocketSession(executableURL: URL(fileURLWithPath: mode))
+        }
         let options = GatewayConnectOptions(
             role: "node",
             scopes: [],
@@ -44,6 +51,32 @@ actor InputInbox {
             onConnected: {},
             onDisconnected: { _ in },
             onInvoke: { req in
+                if req.id == "retire-during-delivery" {
+                    print("{\"nativeEntered\":\"\(req.id)\"}")
+                    fflush(stdout)
+                    let release = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                        .appendingPathComponent("retirement-release-\(req.id)")
+                    while !FileManager.default.fileExists(atPath: release.path) {
+                        // Ignore cancellation until the harness releases the handoff so the
+                        // explicit final-effect fence, rather than sleep, proves rejection.
+                        try? await Task.sleep(for: .milliseconds(5))
+                    }
+                    do {
+                        try Task.checkCancellation()
+                    } catch {
+                        print("{\"nativeRejectedBeforeEffect\":\"\(req.id)\"}")
+                        fflush(stdout)
+                        return BridgeInvokeResponse(
+                            id: req.id,
+                            ok: false,
+                            error: OpenClawNodeError(
+                                code: .unavailable,
+                                message: "native operation retired before effect"))
+                    }
+                    print("{\"nativeEffect\":\"\(req.id)\"}")
+                    fflush(stdout)
+                    return BridgeInvokeResponse(id: req.id, ok: true, payloadJSON: "{}")
+                }
                 if req.command == "benchmark.duplex" || req.command == "system.notify" {
                     do {
                         _ = try await session.request(
@@ -78,6 +111,10 @@ actor InputInbox {
             onInvokeInput: { event in await inbox.deliver(event) },
             onInvokeCancel: { id in
                 print("{\"nativeCancelEvent\":\"\(id)\"}")
+                fflush(stdout)
+            },
+            onRouteInvalidated: {
+                print("{\"nativeRouteRetired\":true}")
                 fflush(stdout)
             })
         print("{\"ready\":true,\"pid\":\(ProcessInfo.processInfo.processIdentifier)}")

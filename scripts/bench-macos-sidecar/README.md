@@ -20,6 +20,8 @@ node validate-sandbox.cjs
 # Functional contracts and native TLS pinning.
 node functional-smoke.cjs "$RFC54_BENCH_ROOT/bin/openclaw-mac-node-sidecar" functional
 RFC54_CHECK_OVERFLOW=1 node functional-smoke.cjs "$RFC54_BENCH_ROOT/bin/openclaw-mac-node-sidecar" overflow
+RFC54_CHECK_RETIREMENT=helper node functional-smoke.cjs "$RFC54_BENCH_ROOT/bin/openclaw-mac-node-sidecar" helper-retirement
+RFC54_CHECK_RETIREMENT=gateway node functional-smoke.cjs "$RFC54_BENCH_ROOT/bin/openclaw-mac-node-sidecar" gateway-retirement
 # Both original Swift and candidate auxiliary RPC lifetime/cancellation owners.
 node probe-runner.cjs aux baseline auxiliary-baseline
 node probe-runner.cjs aux "$RFC54_BENCH_ROOT/bin/openclaw-mac-node-sidecar" auxiliary-candidate
@@ -36,6 +38,16 @@ RFC54_BENCH_FORCE_SUPERVISOR_EXIT=1 \
 # Missing-helper failure must return nonzero and leave no child processes.
 RFC54_BENCH_EXTRA_ARGS='["<output>/bin/absent-helper"]' \
   node run-bench.cjs "$RFC54_BENCH_ROOT/bin/candidate-swift" missing-helper 1 1
+
+# On a disposable Mac, package an opt-in ad-hoc signed app and prove fresh
+# install, upgrade, rollback, missing/incompatible helper, bundled signature
+# verification, and recovery behavior.
+OPENCLAW_PACKAGE_RUST_NODE_SIDECAR=1 OPENCLAW_SKIP_MLX_TTS=1 \
+  ALLOW_ADHOC_SIGNING=1 SIGN_IDENTITY=- SKIP_TEAM_ID_CHECK=1 \
+  BUILD_CONFIG=debug BUILD_ARCHS="$(uname -m)" \
+  ../../scripts/package-mac-app.sh
+RFC54_BENCH_ROOT=<output> \
+  ./package-lifecycle.sh ../../dist/OpenClaw.app
 
 # Run only after compiler/test activity finishes; use the same quiet machine.
 python3 run-paired.py

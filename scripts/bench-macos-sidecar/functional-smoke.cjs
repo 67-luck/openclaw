@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const root = process.env.RFC54_BENCH_ROOT || __dirname;
 const mode = process.argv[2] || root + "/bin/openclaw-mac-node-sidecar";
 const label = process.argv[3] || "candidate-functional";
+const functionalProbe = process.env.RFC54_FUNCTIONAL_PROBE || root + "/bin/functional-probe";
 const delay = (ms) =>
   new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -45,7 +46,11 @@ function deadline(p, deadlineLabel) {
   const results = new Map(),
     progress = new Map(),
     cancelled = new Set(),
-    cancelEvents = new Map();
+    cancelEvents = new Map(),
+    nativeEntered = new Set(),
+    nativeEffects = new Set(),
+    nativeRejectedBeforeEffect = new Set();
+  let nativeRouteRetired = false;
   const observed = new Set();
   let finished = false;
   const record = { mode, checks: [] };
@@ -107,7 +112,7 @@ function deadline(p, deadlineLabel) {
         `BENCH_ENDPOINT=localhost:${server.address().port}`,
         "-f",
         root + "/sandbox.sb",
-        root + "/bin/functional-probe",
+        functionalProbe,
         `ws://127.0.0.1:${server.address().port}`,
         mode,
       ],
@@ -145,11 +150,23 @@ function deadline(p, deadlineLabel) {
             (cancelEvents.get(row.nativeCancelEvent) || 0) + 1,
           );
         }
+        if (row.nativeEntered) {
+          nativeEntered.add(row.nativeEntered);
+        }
+        if (row.nativeEffect) {
+          nativeEffects.add(row.nativeEffect);
+        }
+        if (row.nativeRejectedBeforeEffect) {
+          nativeRejectedBeforeEffect.add(row.nativeRejectedBeforeEffect);
+        }
+        if (row.nativeRouteRetired) {
+          nativeRouteRetired = true;
+        }
       }
     });
     child.stderr.on("data", (data) => (stderr += data));
     child.on("error", reject);
-    child.on("exit", (code, signal) => reject(new Error(`exit ${code}/${signal} ${stderr}`)));
+    child.on("close", (code, signal) => reject(new Error(`exit ${code}/${signal} ${stderr}`)));
   });
   async function until(predicate, waitLabel) {
     return deadline(
@@ -313,9 +330,74 @@ function deadline(p, deadlineLabel) {
         error: overflow.error,
       });
     }
+    const retirementMode = process.env.RFC54_CHECK_RETIREMENT;
+    if (mode !== "baseline" && retirementMode) {
+      const id = "retire-during-delivery";
+      invoke(id, "system.notify");
+      await until(() => nativeEntered.has(id), "native retirement handoff");
+      let retiredBoundary;
+      if (retirementMode === "1" || retirementMode === "helper") {
+        const helperPath = fs.realpathSync(mode);
+        const helperPID = await until(() => {
+          for (const pid of descendants(child.pid)) {
+            if (pid === child.pid) {
+              continue;
+            }
+            try {
+              const command = execFileSync("/bin/ps", ["-p", String(pid), "-o", "command="], {
+                encoding: "utf8",
+              }).trim();
+              if (command === helperPath) {
+                return pid;
+              }
+            } catch {}
+          }
+          return undefined;
+        }, "Rust helper process");
+        process.kill(helperPID, "SIGTERM");
+        retiredBoundary = "helper process";
+      } else if (retirementMode === "gateway") {
+        ws.terminate();
+        retiredBoundary = "Gateway WebSocket session";
+      } else {
+        throw new Error(`unknown RFC54_CHECK_RETIREMENT mode: ${retirementMode}`);
+      }
+      await until(() => nativeRouteRetired, "native route retirement");
+      fs.writeFileSync(root + "/retirement-release-" + id, "release\n");
+      await until(
+        () => nativeRejectedBeforeEffect.has(id),
+        "native retirement before final effect",
+      );
+      await delay(100);
+      if (nativeEffects.has(id)) {
+        throw new Error("retired session reached the native effect");
+      }
+      record.checks.push({
+        scenario: `${retiredBoundary} retirement during native delivery prevents the final effect`,
+        passed: true,
+        retirementBoundary: retiredBoundary,
+      });
+    }
   } catch (error) {
-    record.failure = error.message;
-    throw error;
+    const expectedStartupRejection = process.env.RFC54_EXPECT_STARTUP_REJECTION;
+    const startupExit = /^exit ([^/]+)\//u.exec(error.message);
+    if (
+      ["missing", "incompatible"].includes(expectedStartupRejection) &&
+      !ws &&
+      nativeEntered.size === 0 &&
+      nativeEffects.size === 0 &&
+      startupExit &&
+      startupExit[1] !== "0"
+    ) {
+      record.checks.push({
+        scenario: `${expectedStartupRejection} helper rejected before Gateway connection or native effect`,
+        passed: true,
+        failurePhase: "nonzero transport exit before Gateway connection",
+      });
+    } else {
+      record.failure = error.message;
+      throw error;
+    }
   } finally {
     finished = true;
     for (const pid of descendants(child.pid)) {
@@ -352,6 +434,7 @@ function deadline(p, deadlineLabel) {
     record.nativeCancelEvents = Object.fromEntries(cancelEvents);
     record.cleanup = { observedPIDs: [...observed], forcedPIDs: forced, remainingPIDs: remaining };
     record.stderr = stderr;
+    fs.rmSync(root + "/retirement-release-retire-during-delivery", { force: true });
     for (const socket of server.clients) {
       socket.terminate();
     }
