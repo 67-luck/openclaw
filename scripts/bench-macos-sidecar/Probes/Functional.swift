@@ -76,6 +76,15 @@ actor InputInbox {
                             error: OpenClawNodeError(
                                 code: .unavailable,
                                 message: "native operation retired before effect"))
+                    } catch {
+                        print("{\"nativeFenceError\":\"\\(error)\"}")
+                        fflush(stdout)
+                        return BridgeInvokeResponse(
+                            id: req.id,
+                            ok: false,
+                            error: OpenClawNodeError(
+                                code: .unavailable,
+                                message: "native effect fence failed"))
                     }
                     return BridgeInvokeResponse(id: req.id, ok: true, payloadJSON: "{}")
                 }
