@@ -30,7 +30,9 @@ import {
   REALTIME_READY_TIMEOUT_MS,
   resolveFaceTimeRealtimeProvider,
 } from "./talk-driver-config.js";
+import { createFaceTimeTalkVideo } from "./talk-driver-video.js";
 import { createFaceTimeInitialGreeting } from "./talk-initial-greeting.js";
+import type { FaceTimeVideoBridgeStatus } from "./video-bridge.js";
 
 export type FaceTimeTalkDriver = {
   readonly callUUID: string;
@@ -38,6 +40,7 @@ export type FaceTimeTalkDriver = {
   readyForAudio(): Promise<void>;
   processOutputSuppressed(): boolean;
   realtimeActive(): boolean;
+  videoStatus(): FaceTimeVideoBridgeStatus | undefined;
   activate(): void;
   suspendMedia(reason?: string): Promise<void>;
   close(reason?: string): Promise<void>;
@@ -100,6 +103,13 @@ export async function startFaceTimeTalkDriver(params: {
   let stopped = false;
   let mediaSuspended = false;
   let bridge: RealtimeVoiceBridgeSession | undefined;
+  const video = createFaceTimeTalkVideo({
+    config: params.config.video,
+    fullConfig: params.fullConfig,
+    logger: params.logger,
+    callUUID: params.callUUID,
+    isRetired: () => stopped || mediaSuspended,
+  });
   let lastInputAudioStatusAt = 0;
   let callMediaTimestampMs = 0;
   let modelMediaGeneration = 1;
@@ -175,6 +185,7 @@ export async function startFaceTimeTalkDriver(params: {
     interruptProviderConnect?.();
     consultRef.current?.abortForClose();
     suspendMediaPromise = (async () => {
+      const videoStop = video.stop(reason);
       try {
         await bridge?.close();
       } catch (error) {
@@ -191,6 +202,7 @@ export async function startFaceTimeTalkDriver(params: {
           `[facetime] native media suspension failed: ${formatErrorMessage(error)}`,
         );
       }
+      await videoStop;
       resetResponsePlayback();
       finishOutputAudio(reason);
     })();
@@ -244,6 +256,7 @@ export async function startFaceTimeTalkDriver(params: {
     resetResponsePlayback();
     finishOutputAudio("playback-drained");
     endTurn("completed");
+    video.setState("listening");
   };
   const rememberSettledResponse = (responseId: string | undefined) => {
     if (!responseId) {
@@ -267,6 +280,7 @@ export async function startFaceTimeTalkDriver(params: {
     }
     if (response) {
       pump?.clearOutputAudio();
+      video.clear("response-superseded");
       finishOutputAudio("response-superseded");
       endTurn("response-superseded");
     }
@@ -275,6 +289,7 @@ export async function startFaceTimeTalkDriver(params: {
       startTimestampMs: callMediaTimestampMs,
       playbackStartFrame: pump?.playedAudioFrames() ?? 0,
     };
+    video.setState("thinking");
     bridge?.setMediaTimestamp(Math.floor(callMediaTimestampMs));
   };
   const finishResponseOutcome = (outcome: RealtimeVoiceResponseOutcome, typed: boolean) => {
@@ -302,6 +317,7 @@ export async function startFaceTimeTalkDriver(params: {
       return;
     }
     pump?.clearOutputAudio();
+    video.clear(outcome.status);
     if (outcome.status === "failed" || outcome.status === "incomplete") {
       remember({ type: "session.error", payload: outcome, final: true });
     }
@@ -314,6 +330,7 @@ export async function startFaceTimeTalkDriver(params: {
     modelMediaGeneration += 1;
     consultRef.current?.abortForClose();
     pump?.clearOutputAudio();
+    video.clear("continuity-reset");
     resetResponsePlayback();
     finishOutputAudio("continuity-reset");
     endTurn("continuity-reset");
@@ -386,6 +403,7 @@ export async function startFaceTimeTalkDriver(params: {
       finishDrainedResponse();
     },
   });
+  video.start();
   const providerConnect = (async () => {
     let removeAbortListener: (() => void) | undefined;
     let readinessTimer: NodeJS.Timeout | undefined;
@@ -461,6 +479,7 @@ export async function startFaceTimeTalkDriver(params: {
               payload: { byteLength: audio.byteLength },
             });
             pump?.writeOutputAudio(audio, metadata);
+            video.sendAudio(audio);
           },
           getPlaybackState: () => pump.getPlaybackState(),
           clearAudio() {
@@ -468,6 +487,7 @@ export async function startFaceTimeTalkDriver(params: {
               return;
             }
             pump?.clearOutputAudio();
+            video.clear("barge-in");
             resetResponsePlayback();
             finishOutputAudio("clear");
           },
@@ -655,6 +675,9 @@ export async function startFaceTimeTalkDriver(params: {
     },
     realtimeActive() {
       return providerReady && !mediaSuspended && !stopped;
+    },
+    videoStatus() {
+      return video.status();
     },
     activate() {
       if (stopped || mediaSuspended || !providerReady || activated) {
