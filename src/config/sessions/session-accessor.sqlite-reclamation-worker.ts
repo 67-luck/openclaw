@@ -223,6 +223,7 @@ export class SqliteReclamationWorker {
   private workerThreadId?: number;
   private ended?: Promise<void>;
   private nativeExitProven = false;
+  private dispatchAttempted = false;
   private taskCustodyReleased = false;
   private closeRequested = false;
   private healthyCloseAcknowledged = false;
@@ -430,6 +431,7 @@ export class SqliteReclamationWorker {
           validationOwner: params.validationOwner,
           dispatch: () => {
             this.assertCurrent(params.databaseOptions, params.claim);
+            this.dispatchAttempted = true;
             worker.postMessage(
               {
                 ...params.request(operationId, coordination),
@@ -607,7 +609,9 @@ export class SqliteReclamationWorker {
     return (this.closing ??= (async () => {
       await this.active?.catch(() => {});
       const transport = this.transport;
-      if (transport) {
+      // Bootstrap waits for its first request before acquiring any database resources.
+      const exitedBeforeDispatch = this.nativeExitProven && !this.dispatchAttempted;
+      if (transport && !exitedBeforeDispatch) {
         const worker = transport.channel;
         worker.ref();
         await runOpenClawAgentWorkerWrite(this.options, async () => {
@@ -622,6 +626,7 @@ export class SqliteReclamationWorker {
             async (coordination) => {
               try {
                 this.closeRequested = true;
+                this.dispatchAttempted = true;
                 worker.postMessage(
                   {
                     type: "close",
@@ -681,6 +686,7 @@ export class SqliteReclamationWorker {
         });
       } else if (
         transport &&
+        !exitedBeforeDispatch &&
         (!this.cleanup?.settled || (transport.kind === "pooled" && !this.taskCustodyReleased))
       ) {
         throw new Error(
