@@ -266,10 +266,18 @@ function decodeSqliteWorkerReplyError(
   return failure;
 }
 
-function decodeSqliteWorkerCleanupError(payload: OpenClawStateWorkerErrorPayload): Error {
-  const failure = new Error("SQLite worker native cleanup failed");
-  retainOpenClawStateWorkerErrorPayload(failure, payload);
-  return hydrateOpenClawStateWorkerError(failure, { includeOrdinary: true });
+function decodeSqliteWorkerCleanupError(
+  job: Job,
+  payload: OpenClawStateWorkerErrorPayload,
+): Error {
+  return hydrateOpenClawStateWorkerError(
+    decodeSqliteWorkerReplyError(job, {
+      name: "SqliteCoordinatorError",
+      message: "SQLite coordinator cleanup failed",
+      sharedState: payload,
+    }),
+    { includeOrdinary: true },
+  );
 }
 
 export type CompletedSqliteWorkerOutcome = { value: unknown } | { error: unknown };
@@ -309,7 +317,7 @@ export function receiveSqliteWorkerReply(
           ? undefined
           : admission?.failure;
       const original = failure ?? decodeSqliteWorkerReplyError(job, reply.error);
-      owner.fail(decodeSqliteWorkerCleanupError(reply.cleanupFailure), undefined, undefined, {
+      owner.fail(decodeSqliteWorkerCleanupError(job, reply.cleanupFailure), undefined, undefined, {
         error: original,
       });
       return;
@@ -361,7 +369,7 @@ export function receiveSqliteWorkerReply(
     const admission = job.operationAdmission?.admission;
     const failure = admission?.failureSource === "domain" ? undefined : admission?.failure;
     owner.fail(
-      decodeSqliteWorkerCleanupError(reply.cleanupFailure),
+      decodeSqliteWorkerCleanupError(job, reply.cleanupFailure),
       undefined,
       undefined,
       failure === undefined ? { value } : { error: failure },

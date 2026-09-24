@@ -13,6 +13,8 @@ export type SqliteWorkerStateContext = {
   /** Known agent paths preserve deletion-history uncertainty during native initialization. */
   initializationAgentPaths?: readonly string[];
   existingSchemaPath?: string;
+  /** Cleanup-only callers retain native error graphs without changing outcome classification. */
+  includeOrdinaryErrors?: true;
 };
 
 export function captureSqliteWorkerStateContext(
@@ -27,6 +29,7 @@ export function captureSqliteWorkerStateContext(
       ? { initializationAgentPaths: [...context.initializationAgentPaths] }
       : {}),
     existingSchemaPath: context.existingSchemaPath,
+    ...(context.includeOrdinaryErrors ? { includeOrdinaryErrors: true } : {}),
   };
 }
 
