@@ -492,9 +492,9 @@ describe("gateway probe endpoints", () => {
     });
   });
 
-  it("keeps /readyz healthy when only optional-agent cleanup is retained", async () => {
+  it("keeps /readyz healthy when agent cleanup is retained", async () => {
     const cleanup = {
-      agentId: "optional-agent",
+      agentId: "main",
       reason: "Agent native cleanup failed: database is locked",
       repairHint: "Restart the Gateway if cleanup remains blocked.",
     };
@@ -507,11 +507,10 @@ describe("gateway probe endpoints", () => {
       channelManager,
       startedAt: Date.now(),
       getAgentDatabaseCleanupFailures: () => [cleanup],
-      canIsolateAgentDatabaseCleanup: () => true,
     });
 
     await withGatewayServer({
-      prefix: "probe-optional-agent-cleanup",
+      prefix: "probe-agent-cleanup",
       resolvedAuth: AUTH_NONE,
       overrides: { getReadiness, openAiChatCompletionsEnabled: true },
       run: async (server) => {

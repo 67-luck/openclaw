@@ -467,8 +467,6 @@ export async function prepareGatewayKernelState(params: {
     },
     getAgentDatabaseCleanupFailures: () =>
       getOpenClawAgentDatabaseCleanupFailures(resolveDatabasePath()),
-    canIsolateAgentDatabaseCleanup: (agentId) =>
-      canIsolateAgentDatabase(getRuntimeConfig(), agentId),
     getPluginReloadStatus: params.getPluginReloadStatus,
     shouldSkipChannelReadiness: () =>
       isTruthyEnvValue(process.env.OPENCLAW_SKIP_CHANNELS) ||

@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   link,
   mkdir,
@@ -31,6 +31,7 @@ import {
   readWorkerRows as read,
 } from "./sqlite-worker-fixture.test-support.js";
 import {
+  openSharedStateSqliteWorkerCleanupStore,
   openSharedStateSqliteWorkerStore,
   closeUnclaimedSharedStateSqliteWorkers,
   hasUnclaimedSharedStateSqliteCleanup,
@@ -45,7 +46,7 @@ vi.mock("node:os", async (importOriginal) => ({
   availableParallelism: () => 32,
 }));
 
-const { stores, tempDirs, databasePath, open, openWithGateway } = useSqliteWorkerStoreFixture(
+const { stores, tempDirs, databasePath, open, openOwned } = useSqliteWorkerStoreFixture(
   "openclaw-sqlite-worker-store-",
 );
 
@@ -68,6 +69,29 @@ async function expectRejectedOpen(
 const nodeIt = process.versions.bun ? it.skip : it;
 
 describe("SQLite worker store", () => {
+  it("preserves nested native failures while opening a cleanup store", async () => {
+    const file = databasePath();
+    await writeFile(file, "");
+
+    const failure: unknown = await openSharedStateSqliteWorkerCleanupStore(
+      {
+        moduleUrl: new URL("./sqlite-worker-open-failure.test-support.ts", import.meta.url),
+        databasePath: file,
+        existingOnly: true,
+      },
+      {
+        environment: { OPENCLAW_STATE_DIR: path.dirname(file) },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({
+      message: "Fixture native open failed",
+      cause: { message: "Fixture native open detail", code: "SQLITE_CANTOPEN" },
+      errors: [{ message: "Fixture native open detail", code: "SQLITE_CANTOPEN" }],
+    });
+  });
+
   it("registers storage-worker CPU sources until native close", async () => {
     const initial = getTrackedWorkerCpuSources();
     const store = await open(databasePath());
@@ -733,7 +757,7 @@ describe("SQLite worker store", () => {
     "preserves $owner close diagnostics and committed data (aggregate: $aggregate)",
     async ({ owner, aggregate }) => {
       const file = databasePath();
-      const { store, gateway } = await openWithGateway(file, owner);
+      const store = await openOwned(file, owner);
       try {
         const receipt = await append(store, "preserved");
         await store.execute({ type: "failClose", input: { aggregate } });
@@ -767,11 +791,7 @@ describe("SQLite worker store", () => {
         expect(recoveredReceipt.writes).toBe(1);
         expect(await read(recovered)).toEqual(["preserved", "after recovery"]);
       } finally {
-        try {
-          await store.close();
-        } finally {
-          gateway.release();
-        }
+        await store.close();
       }
     },
   );

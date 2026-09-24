@@ -101,12 +101,13 @@ that is running but cannot admit work must monitor `/readyz`.
 
 ### Agent database cleanup failure
 
-A retained native cleanup failure for a required agent makes `/ready` and
-`/readyz` return `503` even when channel readiness was recently healthy or
-channels are intentionally skipped. Detailed responses include
-`failing: ["agent-database-cleanup:<id>"]` and `agentDatabaseCleanup` entries
-with each affected agent's `reason` and `repairHint`. An isolated optional-agent
-failure remains visible in `agentDatabaseCleanup` without making readiness fail.
+A retained native cleanup failure remains visible in detailed `/ready` and
+`/readyz` responses through `agentDatabaseCleanup` entries with each affected
+agent's `reason` and `repairHint`. Cleanup is retryable by the owning agent, so
+it does not make global readiness fail while requests remain admissible. An
+agent database admission refusal remains a separate readiness failure. Cleanup
+that failed after explicit agent revocation reports a restart-only repair hint
+because the retired owner cannot accept a request-driven retry.
 
 Readiness reads the execution owners' recorded failures without querying SQLite
 or trying to close resources. The signal clears after the owning cleanup succeeds;

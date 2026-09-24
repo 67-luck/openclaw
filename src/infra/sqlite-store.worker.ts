@@ -420,11 +420,13 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
     const code = executed ? "outcome-unknown" : "code" in failure ? failure.code : undefined;
     const errorContext =
       request.stateContext ??
-      (request.type === "execute-frame" ? stateContexts.get(request.actor) : undefined);
+      (request.type === "execute-frame" || request.type === "close"
+        ? stateContexts.get(request.actor)
+        : undefined);
     const sharedState =
       errorContext && !executed
         ? encodeOpenClawStateWorkerError(failure, {
-            includeOrdinary: request.type === "close" || errorContext.includeOrdinaryErrors,
+            includeOrdinary: request.type === "close" || request.includeOrdinaryErrors,
           })
         : undefined;
     reply = {

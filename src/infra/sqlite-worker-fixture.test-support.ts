@@ -10,7 +10,6 @@ import {
   type SqliteWorkerStore,
 } from "./sqlite-worker-store.js";
 import type { FixtureOpenInput, FixtureOperations } from "./sqlite-worker-store.test-support.js";
-import * as coordinatorOwner from "./state-database-coordinator.js";
 
 type Store = SqliteWorkerStore<FixtureOperations>;
 
@@ -30,43 +29,37 @@ export function useSqliteWorkerStoreFixture(prefix: string, beforeClose?: () => 
   return {
     stores,
     tempDirs,
-    openWithGateway: async (file: string, owner: "agent" | "shared" = "shared") => {
+    openOwned: async (file: string, owner: "agent" | "shared" = "shared") => {
       const root = path.dirname(file);
-      const gateway = coordinatorOwner.acquireGatewayLifecycleCoordinator({
+      const options = {
+        moduleUrl: new URL("./sqlite-worker-store.test-support.ts", import.meta.url),
         databasePath: file,
-        runtimeDirectory: root,
-      });
-      try {
-        const options = {
-          moduleUrl: new URL("./sqlite-worker-store.test-support.ts", import.meta.url),
-          databasePath: file,
-          input: undefined,
-        };
-        const stateContext = {
-          environment: { OPENCLAW_STATE_DIR: root },
-          coordinatorRuntime: { directory: root, keepAlive: false as const },
-        };
-        const store =
-          owner === "agent"
-            ? await openAgentDatabaseSqliteWorkerStore<FixtureOperations>(options, {
-                stateContext,
-                stateDatabasePath: file,
-                assertCurrent() {},
-                createAdmission: () => ({
-                  nativeLocations: [file],
-                  admission: createSqliteWorkerOperationAdmission((_request, grant) => {
+        input: undefined,
+      };
+      const stateContext = {
+        environment: { OPENCLAW_STATE_DIR: root },
+        coordinatorRuntime: { directory: root, keepAlive: false as const },
+      };
+      const store =
+        owner === "agent"
+          ? await openAgentDatabaseSqliteWorkerStore<FixtureOperations>(options, {
+              stateContext,
+              stateDatabasePath: file,
+              assertCurrent() {},
+              createAdmission: () => ({
+                nativeLocations: [file],
+                admission: createSqliteWorkerOperationAdmission(
+                  (_request, grant) => {
                     grant();
-                  }),
-                }),
-              })
-            : await openSharedStateSqliteWorkerStore<FixtureOperations>(options, stateContext);
-        assert(store, "Fixture shared-state worker did not open");
-        stores.add(store);
-        return { store, gateway };
-      } catch (error) {
-        gateway.release();
-        throw error;
-      }
+                  },
+                  { kind: "agent-execution", startupJournal: false },
+                ),
+              }),
+            })
+          : await openSharedStateSqliteWorkerStore<FixtureOperations>(options, stateContext);
+      assert(store, "Fixture owned worker did not open");
+      stores.add(store);
+      return store;
     },
     databasePath: () => path.join(tempDirs.make(prefix), "store.sqlite"),
     open: async (databasePath: string, input?: FixtureOpenInput) => {

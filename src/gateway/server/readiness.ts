@@ -97,7 +97,6 @@ export function createReadinessChecker(
     getStateDatabaseFailure?: () => Error | undefined;
     getAgentDatabaseAdmissionRefusals?: () => readonly AgentDatabaseAdmissionRefusal[];
     getAgentDatabaseCleanupFailures?: () => readonly AgentDatabaseCleanupFailure[];
-    canIsolateAgentDatabaseCleanup?: (agentId: string) => boolean;
     getPluginReloadStatus?: () => GatewayPluginReloadStatus | undefined;
     shouldSkipChannelReadiness?: () => boolean;
     cacheTtlMs?: number;
@@ -131,22 +130,14 @@ export function createReadinessChecker(
     }
     const agentDatabases = deps.getAgentDatabaseAdmissionRefusals?.();
     const agentDatabaseCleanup = deps.getAgentDatabaseCleanupFailures?.();
-    const blockingCleanup = agentDatabaseCleanup?.filter(
-      ({ agentId }) => !deps.canIsolateAgentDatabaseCleanup?.(agentId),
-    );
     const withCleanup = (result: ReadinessResult): ReadinessResult =>
       agentDatabaseCleanup?.length ? { ...result, agentDatabaseCleanup } : result;
-    if (agentDatabases?.length || blockingCleanup?.length) {
+    if (agentDatabases?.length) {
       cachedState = null;
       return withCleanup({
         ready: false,
-        failing: [
-          ...(agentDatabases ?? []).map(({ agentId }) => `agent-database:${agentId}`),
-          ...(blockingCleanup ?? []).map(
-            ({ agentId }) => `agent-database-cleanup:${agentId}`,
-          ),
-        ],
-        ...(agentDatabases?.length ? { agentDatabases } : {}),
+        failing: agentDatabases.map(({ agentId }) => `agent-database:${agentId}`),
+        agentDatabases,
         uptimeMs,
       });
     }

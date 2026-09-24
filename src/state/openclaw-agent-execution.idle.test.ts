@@ -31,7 +31,7 @@ vi.mock("./openclaw-agent-db.paths.js", () => ({
 vi.mock("./openclaw-state-db-async-lifecycle.js", () => ({
   getOpenClawDatabaseMaintenanceScope: () => undefined,
   observeOpenClawDatabaseMaintenanceResource: vi.fn(),
-  runOutsideOpenClawDatabaseMaintenanceScope: (run: () => unknown) => run(),
+  runOutsideOpenClawDatabaseMaintenanceScope: (operation: () => unknown) => operation(),
 }));
 vi.mock("./openclaw-state-db-cache.js", () => ({
   registerOpenClawStateDatabaseAsyncResource: () => () => undefined,
@@ -84,6 +84,11 @@ beforeEach(() => {
     return {
       failed: () => false,
       close,
+      captureClaim: () => ({
+        identity: agentId,
+        incarnation: `fixture:${agentId}`,
+        assertCurrent() {},
+      }),
       async run(authority, operation, assertCallerCurrent) {
         authority.assertCurrent();
         assertCallerCurrent?.();
@@ -189,6 +194,12 @@ it("keeps explicit drainage fail-closed until the retained native cleanup succee
     "native cleanup refused",
   );
   expect(() => borrow("first")).toThrow("admission is closed");
+  expect(getOpenClawAgentDatabaseCleanupFailures("idle-test-state.sqlite")).toEqual([
+    expect.objectContaining({
+      agentId: "first",
+      repairHint: expect.stringContaining("cannot retry on a request"),
+    }),
+  ]);
   expect(createNative).toHaveBeenCalledTimes(1);
   close.mockResolvedValue(undefined);
   await Promise.all(revokeAgentDatabaseResources(selection));
@@ -221,7 +232,7 @@ it.each(["single", "aggregate"] as const)(
     expect(failures).toHaveLength(1);
     expect(failures[0]).toMatchObject({
       agentId: "first",
-      repairHint: expect.stringContaining("restart the Gateway"),
+      repairHint: expect.stringContaining("next request"),
     });
     expect(failures[0]!.reason).toContain("native close refused");
     expect(failures[0]!.reason).toContain("SQLITE_BUSY");

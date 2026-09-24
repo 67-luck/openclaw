@@ -8,7 +8,10 @@ import { expect, it, vi } from "vitest";
 import * as logging from "../logging/logger.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
-import { encodeOpenClawStateWorkerError } from "../state/openclaw-state-worker-error.js";
+import {
+  encodeOpenClawStateWorkerError,
+  hydrateOpenClawStateWorkerError,
+} from "../state/openclaw-state-worker-error.js";
 import { formatErrorMessageWithCode } from "./errors.js";
 import {
   receiveSqliteWorkerReply,
@@ -60,10 +63,6 @@ it.each([false, true])(
         actor: 1,
         type: "execute",
         input: serialize(undefined),
-        stateContext: {
-          environment: { OPENCLAW_STATE_DIR: "/synthetic" },
-          coordinatorRuntime: { directory: "/synthetic", keepAlive: false },
-        },
       },
       bytes: 0,
       nativeDispatched: true,
@@ -81,7 +80,7 @@ it.each([false, true])(
       { fail, finish, dispatch },
     );
     expect(fail).toHaveBeenCalledOnce();
-    const [received, currentError, completed] = fail.mock.calls[0]!;
+    const [received, currentError, , completed] = fail.mock.calls[0]!;
     assert(received instanceof Error);
     expect(currentError).toBeUndefined();
     expect(completed).toEqual({ value: committed });
@@ -106,6 +105,86 @@ it.each([false, true])(
     expect(postMessage).not.toHaveBeenCalled();
   },
 );
+
+it("retains ordinary close errors without request state context", () => {
+  const native = Object.assign(new Error("Native close refused"), {
+    code: "SQLITE_BUSY",
+    errcode: 5,
+    errno: -16,
+  });
+  const payload = encodeOpenClawStateWorkerError(native, { includeOrdinary: true });
+  assert(payload);
+  const job: Job = {
+    request: { id: 1, actor: 1, type: "close" },
+    bytes: 0,
+    nativeDispatched: true,
+    resolve: vi.fn(),
+    reject: vi.fn(),
+    detach: vi.fn(),
+  };
+  const fail = vi.fn<SqliteWorkerReplyOwner["fail"]>();
+  receiveSqliteWorkerReply(
+    { current: job, worker: { postMessage: vi.fn() } },
+    {
+      id: 1,
+      ok: false,
+      error: { name: native.name, message: native.message, sharedState: structuredClone(payload) },
+    },
+    { fail, finish: vi.fn(), dispatch: vi.fn() },
+  );
+  expect(fail).toHaveBeenCalledOnce();
+  const [received, currentError] = fail.mock.calls[0]!;
+  assert(received instanceof Error);
+  expect(currentError).toBe(received);
+  expect(hydrateOpenClawStateWorkerError(received, { includeOrdinary: true })).toMatchObject({
+    message: native.message,
+    code: "SQLITE_BUSY",
+    errcode: 5,
+    errno: -16,
+  });
+});
+
+it("retains ordinary errors from opted-in input frames without request state context", () => {
+  const native = Object.assign(new Error("Native framed cleanup refused"), {
+    code: "SQLITE_BUSY",
+    errcode: 5,
+  });
+  const payload = encodeOpenClawStateWorkerError(native, { includeOrdinary: true });
+  assert(payload);
+  const job: Job = {
+    request: {
+      id: 1,
+      actor: 1,
+      type: "execute-frame",
+      input: serialize(undefined),
+      includeOrdinaryErrors: true,
+    },
+    bytes: 0,
+    nativeDispatched: true,
+    resolve: vi.fn(),
+    reject: vi.fn(),
+    detach: vi.fn(),
+  };
+  const fail = vi.fn<SqliteWorkerReplyOwner["fail"]>();
+  receiveSqliteWorkerReply(
+    { current: job, worker: { postMessage: vi.fn() } },
+    {
+      id: 1,
+      ok: false,
+      error: { name: native.name, message: native.message, sharedState: structuredClone(payload) },
+    },
+    { fail, finish: vi.fn(), dispatch: vi.fn() },
+  );
+  expect(fail).toHaveBeenCalledOnce();
+  const [received, currentError] = fail.mock.calls[0]!;
+  assert(received instanceof Error);
+  expect(currentError).toBe(received);
+  expect(hydrateOpenClawStateWorkerError(received, { includeOrdinary: true })).toMatchObject({
+    message: native.message,
+    code: "SQLITE_BUSY",
+    errcode: 5,
+  });
+});
 
 nodeIt("keeps an independent database responsive while another worker is at capacity", async () => {
   const busy = await open(databasePath());

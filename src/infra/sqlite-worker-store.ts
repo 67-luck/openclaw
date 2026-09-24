@@ -61,6 +61,41 @@ export function runSqliteWorkerStoreOperation<Operations extends SqliteWorkerOpe
   assertCurrent?: (commandType: PropertyKey) => void,
   createAdmission?: SqliteWorkerAdmissionFactory,
 ): Promise<T> {
+  return runSqliteWorkerStoreOperationInternal(
+    store,
+    operation,
+    stateContext,
+    assertCurrent,
+    createAdmission,
+  );
+}
+
+/** Internal cleanup path that preserves ordinary nested failures across the worker boundary. */
+export function runSqliteWorkerStoreCleanupOperation<Operations extends SqliteWorkerOperations, T>(
+  store: SqliteWorkerStore<Operations>,
+  operation: (scope: Pick<SqliteWorkerStore<Operations>, "execute">) => T | Promise<T>,
+  stateContext?: SqliteWorkerStateContext,
+  assertCurrent?: (commandType: PropertyKey) => void,
+  createAdmission?: SqliteWorkerAdmissionFactory,
+): Promise<T> {
+  return runSqliteWorkerStoreOperationInternal(
+    store,
+    operation,
+    stateContext,
+    assertCurrent,
+    createAdmission,
+    true,
+  );
+}
+
+function runSqliteWorkerStoreOperationInternal<Operations extends SqliteWorkerOperations, T>(
+  store: SqliteWorkerStore<Operations>,
+  operation: (scope: Pick<SqliteWorkerStore<Operations>, "execute">) => T | Promise<T>,
+  stateContext?: SqliteWorkerStateContext,
+  assertCurrent?: (commandType: PropertyKey) => void,
+  createAdmission?: SqliteWorkerAdmissionFactory,
+  includeOrdinaryErrors?: true,
+): Promise<T> {
   return withCallerErrors(
     resolveSqliteWorkerBroker().runOperation(
       store,
@@ -68,8 +103,9 @@ export function runSqliteWorkerStoreOperation<Operations extends SqliteWorkerOpe
       stateContext,
       assertCurrent,
       createAdmission,
+      includeOrdinaryErrors,
     ),
-    { includeOrdinary: stateContext?.includeOrdinaryErrors },
+    { includeOrdinary: includeOrdinaryErrors },
   );
 }
 
@@ -237,6 +273,26 @@ export function openSharedStateSqliteWorkerStore<Operations extends SqliteWorker
   assertCurrent?: () => void,
   lifecycle?: SqliteWorkerOpenCustody,
 ): Promise<SqliteWorkerStore<Operations> | undefined> {
+  return openSharedStateSqliteWorkerStoreInternal(options, stateContext, assertCurrent, lifecycle);
+}
+
+/** Internal cleanup admission that preserves ordinary nested failures from native open. */
+export function openSharedStateSqliteWorkerCleanupStore<Operations extends SqliteWorkerOperations>(
+  options: Omit<SqliteWorkerStoreOptions, "input">,
+  stateContext: SqliteWorkerStateContext,
+  assertCurrent?: () => void,
+): Promise<SqliteWorkerStore<Operations> | undefined> {
+  return openSharedStateSqliteWorkerStoreInternal(options, stateContext, assertCurrent, {
+    includeOrdinaryErrors: true,
+  });
+}
+
+function openSharedStateSqliteWorkerStoreInternal<Operations extends SqliteWorkerOperations>(
+  options: Omit<SqliteWorkerStoreOptions, "input">,
+  stateContext: SqliteWorkerStateContext,
+  assertCurrent?: () => void,
+  lifecycle?: SqliteWorkerOpenCustody,
+): Promise<SqliteWorkerStore<Operations> | undefined> {
   if (!isMainThread) {
     return Promise.reject(
       new SqliteWorkerError("Shared-state admission requires the host broker", "unavailable"),
@@ -249,6 +305,7 @@ export function openSharedStateSqliteWorkerStore<Operations extends SqliteWorker
       assertCurrent,
       lifecycle,
     ),
+    { includeOrdinary: lifecycle?.includeOrdinaryErrors },
   ).then((store) => {
     if (store) {
       const execute = store.execute.bind(store);

@@ -288,7 +288,7 @@ describe("createReadinessChecker", () => {
   );
 
   it.each([false, true])(
-    "keeps optional cleanup diagnostic while required cleanup fails readiness (skip channels: %s)",
+    "keeps cleanup failures diagnostic while requests remain admissible (skip channels: %s)",
     (skipChannels) => {
       withReadinessClock(() => {
         let failures: AgentDatabaseCleanupFailure[] = [];
@@ -299,7 +299,6 @@ describe("createReadinessChecker", () => {
           cacheTtlMs: 1_000,
           shouldSkipChannelReadiness: () => skipChannels,
           getAgentDatabaseCleanupFailures: () => failures,
-          canIsolateAgentDatabaseCleanup: (agentId) => agentId === "optional-agent",
         });
         expect(readiness()).toEqual(readySnapshot());
         expect(readiness()).toEqual(readySnapshot());
@@ -311,7 +310,7 @@ describe("createReadinessChecker", () => {
           repairHint: "Retry the affected agent; restart the Gateway if cleanup remains blocked.",
         }));
         expect(readiness()).toEqual({
-          ...failingSnapshot(["agent-database-cleanup:retired-agent"]),
+          ...readySnapshot(),
           agentDatabaseCleanup: failures,
         });
         expect(manager.getRuntimeSnapshot).toHaveBeenCalledTimes(skipChannels ? 0 : 1);
@@ -320,14 +319,23 @@ describe("createReadinessChecker", () => {
           snapshotWith({ discord: stoppedAccount({ connected: false }) }),
         );
         failures = [];
-        expect(readiness()).toEqual(skipChannels ? readySnapshot() : failingSnapshot(["discord"]));
+        expect(readiness()).toEqual(readySnapshot());
+        expect(manager.getRuntimeSnapshot).toHaveBeenCalledTimes(skipChannels ? 0 : 1);
+
+        vi.setSystemTime(Date.now() + 1_000);
+        expect(readiness()).toEqual(
+          skipChannels
+            ? readySnapshot(FIVE_MIN_MS + 1_000)
+            : failingSnapshot(["discord"], FIVE_MIN_MS + 1_000),
+        );
         expect(manager.getRuntimeSnapshot).toHaveBeenCalledTimes(skipChannels ? 0 : 2);
 
         vi.mocked(manager.getRuntimeSnapshot).mockReturnValue(
           snapshotWith({ discord: managedAccount() }),
         );
         vi.setSystemTime(Date.now() + 1_000);
-        expect(readiness()).toEqual(readySnapshot(FIVE_MIN_MS + 1_000));
+        expect(readiness()).toEqual(readySnapshot(FIVE_MIN_MS + 2_000));
+        expect(manager.getRuntimeSnapshot).toHaveBeenCalledTimes(skipChannels ? 0 : 3);
       });
     },
   );
@@ -349,7 +357,6 @@ describe("createReadinessChecker", () => {
         startedAt: Date.now() - FIVE_MIN_MS,
         getAgentDatabaseAdmissionRefusals: () => [refusal],
         getAgentDatabaseCleanupFailures: () => [cleanup],
-        canIsolateAgentDatabaseCleanup: () => true,
       });
       expect(readiness()).toEqual({
         ...failingSnapshot(["agent-database:main"]),

@@ -83,7 +83,7 @@ const source: AgentDatabaseRequestExecutionSource = {
         if (!grant()) {
           throw new Error("Cleanup isolation fixture lost admission");
         }
-      }),
+      }, binding.attachment),
     });
   },
 };

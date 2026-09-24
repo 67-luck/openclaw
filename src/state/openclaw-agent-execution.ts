@@ -77,7 +77,7 @@ type ExecutionOwner = {
   readonly agentId: string;
   readonly sharedDatabaseKey: string;
   readonly stateDatabasePath: string;
-  getCleanupFailure(): { error: unknown } | undefined;
+  getCleanupFailure(): { reason: string; retryable: boolean } | undefined;
   assertCurrent(): void;
   borrow(
     pathname: string,
@@ -108,9 +108,10 @@ export function getOpenClawAgentDatabaseCleanupFailures(
       ? [
           {
             agentId: owner.agentId,
-            reason: formatErrorMessageWithCode(failure.error),
-            repairHint:
-              "Idle cleanup retries on this agent's next request. If cleanup remains blocked, restart the Gateway; do not delete its database or lease.",
+            reason: failure.reason,
+            repairHint: failure.retryable
+              ? "Idle cleanup retries on this agent's next request. If cleanup remains blocked, restart the Gateway; do not delete its database or lease."
+              : "Cleanup failed after this agent was explicitly revoked and cannot retry on a request. Restart the Gateway; do not delete its database or lease.",
           },
         ]
       : [];
@@ -223,7 +224,7 @@ function createAgentDatabaseExecution(
   let generation: AgentDatabaseNativeGeneration | undefined;
   let fileIdentity: AgentDatabaseExecutionFileIdentity | undefined;
   let nativeClosing: Promise<void> | undefined;
-  let cleanupFailure: { error: unknown } | undefined;
+  let cleanupFailure: { error: unknown; reason: string } | undefined;
   let closing: Promise<void> | undefined;
   let unregisterShared: (() => void) | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -235,12 +236,17 @@ function createAgentDatabaseExecution(
     clearTimeout(idleTimer);
     idleTimer = undefined;
   };
-  const reportCleanupFailure = (error: unknown) => {
+  const describeCleanupFailure = (error: unknown): string => {
+    try {
+      return formatErrorMessageWithCode(error);
+    } catch {
+      return "Agent database cleanup failed";
+    }
+  };
+  const reportCleanupFailure = (reason: string) => {
     // Diagnostic failures cannot turn a committed command into a replayable failure.
     try {
-      log.warn(
-        `Agent database idle cleanup failed (agent ${agentId}): ${formatErrorMessageWithCode(error)}`,
-      );
+      log.warn(`Agent database idle cleanup failed (agent ${agentId}): ${reason}`);
     } catch {
       // The resource owner still retains the cleanup failure.
     }
@@ -289,9 +295,10 @@ function createAgentDatabaseExecution(
       },
       (error: unknown) => {
         const firstFailure = !cleanupFailure;
-        cleanupFailure = { error };
+        const reason = describeCleanupFailure(error);
+        cleanupFailure = { error, reason };
         if (firstFailure) {
-          reportCleanupFailure(error);
+          reportCleanupFailure(reason);
         }
         throw error;
       },
@@ -397,8 +404,8 @@ function createAgentDatabaseExecution(
       if (generation === current && current.failed()) {
         try {
           await owner.close();
-        } catch (error) {
-          reportCleanupFailure(error);
+        } catch {
+          // closeNative reported and retained this generation's cleanup failure.
         }
       }
       return result;
@@ -430,7 +437,8 @@ function createAgentDatabaseExecution(
       return context.admission.identity.key;
     },
     stateDatabasePath: context.admission.databasePath,
-    getCleanupFailure: () => cleanupFailure,
+    getCleanupFailure: () =>
+      cleanupFailure ? { reason: cleanupFailure.reason, retryable: !revoked } : undefined,
     assertCurrent,
     borrow(borrowedPath, expected, creating) {
       const expectedIdentity = expected ? Object.freeze({ ...expected }) : undefined;
