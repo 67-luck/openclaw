@@ -190,9 +190,17 @@ function prepareGitHubToolEnvironmentForIdentity(
   const previewToken =
     params.sourceConfig?.gateway?.controlUi?.github?.token ??
     params.config.gateway?.controlUi?.github?.token;
-  const credentialScrubEnv: Record<string, string> = managedLocalIdentity
-    ? { GH_TOKEN: "", GITHUB_TOKEN: "" }
-    : {};
+  const credentialScrubEnv: Record<string, string> = {
+    OPENCLAW_GITHUB_APP_PRIVATE_KEY: "",
+    ...(managedLocalIdentity
+      ? {
+          GH_TOKEN: "",
+          GH_ENTERPRISE_TOKEN: "",
+          GITHUB_TOKEN: "",
+          GITHUB_ENTERPRISE_TOKEN: "",
+        }
+      : {}),
+  };
   const excludedStoreNames: string[] = [];
   if (isSecretRef(previewToken)) {
     if (previewToken.source === "env" && isValidEnvSecretRefId(previewToken.id)) {
