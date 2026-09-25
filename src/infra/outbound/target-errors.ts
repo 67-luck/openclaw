@@ -8,6 +8,18 @@ export function missingTargetError(provider: string, hint?: string): Error {
   );
 }
 
+export function missingChannelDestinationError(
+  provider: string,
+  namespace: string,
+  hint?: string,
+): Error {
+  return new MessageActionDeniedError(
+    `Target "${namespace}" names the ${provider} channel but does not specify a destination. Provide an explicit destination such as @username, a numeric/chat ID, a conversation reference, or ${namespace}:<destination>.${formatTargetHint(hint, true)}`,
+    "message_target_missing",
+    "message-target:required",
+  );
+}
+
 export function missingMessageActionTargetError(action: string): Error {
   return new MessageActionDeniedError(
     `Action ${action} requires a target.`,

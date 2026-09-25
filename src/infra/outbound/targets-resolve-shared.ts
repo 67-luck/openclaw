@@ -6,8 +6,15 @@ import type { ChannelOutboundTargetMode } from "../../channels/plugins/types.pub
 import { formatCliCommand } from "../../cli/command-format.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel-constants.js";
-import { validateTargetProviderPrefix } from "./channel-target-prefix.js";
-import { missingTargetError, reservedTargetLiteralError } from "./target-errors.js";
+import {
+  resolveBareTargetChannelNamespace,
+  validateTargetProviderPrefix,
+} from "./channel-target-prefix.js";
+import {
+  missingChannelDestinationError,
+  missingTargetError,
+  reservedTargetLiteralError,
+} from "./target-errors.js";
 import { resolveReservedTargetLiteral } from "./target-normalization.js";
 
 /**
@@ -75,6 +82,17 @@ export function resolveOutboundTargetWithPlugin(params: {
     return { ok: false, error: targetPrefixError };
   }
   const hint = plugin.messaging?.targetResolver?.hint;
+  const channelNamespace = resolveBareTargetChannelNamespace({ raw: effectiveTo, plugin });
+  if (channelNamespace) {
+    return {
+      ok: false,
+      error: missingChannelDestinationError(
+        plugin.meta.label ?? params.target.channel,
+        channelNamespace,
+        hint,
+      ),
+    };
+  }
   // Heartbeats defer reserved literals to the async resolver so directory hits can win.
   if (params.target.mode !== "heartbeat") {
     const reservedLiteral = resolveReservedTargetLiteral({ raw: effectiveTo, plugin });

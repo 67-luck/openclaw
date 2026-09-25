@@ -231,6 +231,24 @@ describe("runMessageAction send validation", () => {
     ).rejects.toThrow(/requires a target/i);
   });
 
+  it("rejects the sole configured channel id as a missing send destination", async () => {
+    await expect(
+      runMessageAction({
+        cfg: workspaceConfig,
+        action: "send",
+        params: {
+          target: "workspace",
+          message: "hello from codex",
+        },
+        dryRun: true,
+      }),
+    ).rejects.toMatchObject({
+      reasonCode: "message_target_missing",
+      policyRef: "message-target:required",
+      message: expect.stringContaining("workspace:<destination>"),
+    });
+  });
+
   it.each([undefined, false, true])(
     "applies provider policy to explicit message-tool-only routes (allowed=%s)",
     async (allowAcrossProviders) => {
