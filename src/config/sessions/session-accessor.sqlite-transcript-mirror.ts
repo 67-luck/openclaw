@@ -1,65 +1,61 @@
-import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+} from "../../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import {
-  openOpenClawAgentDatabase,
-  type OpenClawAgentDatabase,
-} from "../../state/openclaw-agent-db.js";
-import type {
-  SessionTranscriptAccessScope,
-  TranscriptEvent,
-} from "./session-accessor.sqlite-contract.js";
-import {
-  readTranscriptEventId,
+  loadTranscriptEventsFromDatabase,
   readTranscriptEventMessage,
-  readTranscriptEventRows,
 } from "./session-accessor.sqlite-read.js";
-import {
-  getSessionKysely,
-  resolveSqliteTranscriptScope,
-  toDatabaseOptions,
-  type ResolvedTranscriptScope,
-} from "./session-accessor.sqlite-scope.js";
-import { readActiveTranscriptEntryAnchorInTransaction } from "./session-accessor.sqlite-transcript-anchor.js";
-import { resolveTranscriptMessageAppendParent } from "./session-accessor.sqlite-transcript-parent.js";
-import { readTranscriptGenerationInTransaction } from "./session-accessor.sqlite-transcript-state.js";
-import { readMessageIdempotencyKey } from "./session-accessor.sqlite-transcript-store.js";
+import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
+import { createTranscriptEntryAnchor } from "./session-accessor.sqlite-transcript-anchor.js";
+import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import { sessionTranscriptIndexNeedsReconcile } from "./session-transcript-index.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
-import {
-  resolveVisibleTranscriptAppendParentId,
-  selectVisibleTranscriptEventEntries,
-} from "./transcript-visible-events.js";
+import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
+import { transcriptEventJsonSql } from "./transcript-payload.js";
 
 // Keep supplied-key probes below SQLite's conservative variable ceiling.
 const TRANSCRIPT_MIRROR_KEY_QUERY_BATCH_SIZE = 900;
 
 type TranscriptMirrorFacts = {
-  activeAppendParentId: string | null;
-  anchorsByEntryId: Map<string, TranscriptEntryAnchor>;
   anchorsByIdempotencyKey: Map<string, TranscriptEntryAnchor>;
   existingIdempotencyKeys: Set<string>;
   messagesByIdempotencyKey: Map<string, unknown>;
 };
 
-type RawTranscriptEvent = {
-  event: TranscriptEvent;
-  seq: number;
-};
-
-/** Returns raw rows only when the transcript identity projection is not current. */
-function loadTranscriptRowsForMirrorFallback(
+/** Returns raw events only when the transcript identity projection is not current. */
+function loadTranscriptEventsForMirrorFallback(
   database: OpenClawAgentDatabase,
   sessionId: string,
-): RawTranscriptEvent[] | undefined {
-  if (!sessionTranscriptIndexNeedsReconcile(database.db, sessionId)) {
+): TranscriptEvent[] | undefined {
+  const db = getSessionKysely(database.db);
+  const latest = executeSqliteQueryTakeFirstSync(
+    database.db,
+    db
+      .selectFrom("transcript_events")
+      .select("seq")
+      .where("session_id", "=", sessionId)
+      .orderBy("seq", "desc")
+      .limit(1),
+  );
+  if (!latest) {
+    return [];
+  }
+  const state = executeSqliteQueryTakeFirstSync(
+    database.db,
+    db
+      .selectFrom("session_transcript_index_state")
+      .select(["indexed_seq", "needs_rebuild"])
+      .where("session_id", "=", sessionId),
+  );
+  if (state && state.needs_rebuild === 0 && state.indexed_seq === latest.seq) {
     return undefined;
   }
-  // Dirty projection rows are not evidence. Resolve the same raw tree used by
-  // projection rebuild without mutating or retrying maintenance from this read.
-  return readTranscriptEventRows(database, sessionId).map((row) => ({
-    event: JSON.parse(row.eventJson),
-    seq: row.seq,
-  }));
+  // Raw rows stay authoritative if projection maintenance has not caught up.
+  return loadTranscriptEventsFromDatabase(database, sessionId);
 }
 
 /** Reads the bounded identity facts needed by transcript mirrors. */
@@ -67,13 +63,12 @@ export function readTranscriptMirrorFacts(
   database: OpenClawAgentDatabase,
   resolved: ResolvedTranscriptScope,
   params: {
-    entryIds?: readonly string[];
     idempotencyKeys: readonly string[];
   },
 ): TranscriptMirrorFacts {
   return runSqliteDeferredTransactionSync(
     database.db,
-    () => readTranscriptMirrorFactsInTransaction(database, resolved, params),
+    () => readTranscriptMirrorFactsInSnapshot(database, resolved, params),
     {
       databaseLabel: database.path,
       operationLabel: "session.transcript.mirror-facts",
@@ -81,50 +76,28 @@ export function readTranscriptMirrorFacts(
   );
 }
 
-/** Reads an active anchor from the indexed view or its authoritative raw fallback. */
-export function readAuthoritativeTranscriptEntryAnchor(
-  scope: SessionTranscriptAccessScope & { entryId: string },
-): TranscriptEntryAnchor | undefined {
-  const resolved = resolveSqliteTranscriptScope(scope);
-  return readTranscriptMirrorFacts(
-    openOpenClawAgentDatabase(toDatabaseOptions(resolved)),
-    resolved,
-    {
-      entryIds: [scope.entryId],
-      idempotencyKeys: [],
-    },
-  ).anchorsByEntryId.get(scope.entryId);
-}
-
 /** Reads mirror facts after the caller has established one SQLite snapshot. */
-export function readTranscriptMirrorFactsInTransaction(
+function readTranscriptMirrorFactsInSnapshot(
   database: OpenClawAgentDatabase,
   resolved: ResolvedTranscriptScope,
   params: {
-    entryIds?: readonly string[];
     idempotencyKeys: readonly string[];
   },
 ): TranscriptMirrorFacts {
+  assertSessionTranscriptHot(database.db, resolved.sessionId);
   const idempotencyKeys = [...new Set(params.idempotencyKeys)];
-  const fallbackRows = loadTranscriptRowsForMirrorFallback(database, resolved.sessionId);
-  if (fallbackRows !== undefined) {
-    return readMirrorFactsFromRawProjection(
-      database,
-      resolved,
-      fallbackRows,
-      new Set(idempotencyKeys),
-      new Set(params.entryIds),
-    );
+  const fallbackEvents = loadTranscriptEventsForMirrorFallback(database, resolved.sessionId);
+  if (fallbackEvents !== undefined) {
+    return readMirrorFactsFromEvents(fallbackEvents, new Set(idempotencyKeys));
   }
 
   const db = getSessionKysely(database.db);
   const facts: TranscriptMirrorFacts = {
-    activeAppendParentId: resolveTranscriptMessageAppendParent(database, resolved.sessionId, {}),
-    anchorsByEntryId: new Map(),
     anchorsByIdempotencyKey: new Map(),
     existingIdempotencyKeys: new Set(),
     messagesByIdempotencyKey: new Map(),
   };
+  let anchorsReady: boolean | undefined;
   for (
     let offset = 0;
     offset < idempotencyKeys.length;
@@ -140,7 +113,23 @@ export function readTranscriptMirrorFactsInTransaction(
             .onRef("event.session_id", "=", "identity.session_id")
             .onRef("event.seq", "=", "identity.seq"),
         )
-        .select(["identity.event_id", "identity.message_idempotency_key", "event.event_json"])
+        .leftJoin("session_transcript_active_events as active", (join) =>
+          join
+            .onRef("active.session_id", "=", "identity.session_id")
+            .onRef("active.event_seq", "=", "identity.seq"),
+        )
+        .leftJoin("transcript_rewrite_watermarks as rewrite", (join) =>
+          join.onRef("rewrite.session_id", "=", "identity.session_id"),
+        )
+        .select([
+          "identity.event_id",
+          "identity.message_idempotency_key",
+          "identity.seq",
+          "identity.parent_id",
+          transcriptEventJsonSql(database.db, "event").as("event_json"),
+          "active.message_position",
+          "rewrite.generation",
+        ])
         .where("identity.session_id", "=", resolved.sessionId)
         .where("identity.message_idempotency_key", "in", batch)
         .orderBy("identity.seq", "asc"),
@@ -151,13 +140,16 @@ export function readTranscriptMirrorFactsInTransaction(
         continue;
       }
       facts.existingIdempotencyKeys.add(idempotencyKey);
-      const anchor = readActiveTranscriptEntryAnchorInTransaction({
-        database,
-        resolved,
-        entryId: row.event_id,
-      });
+      anchorsReady ??= !sessionTranscriptIndexNeedsReconcile(database.db, resolved.sessionId);
+      const anchor = anchorsReady
+        ? createTranscriptEntryAnchor({
+            database,
+            resolved,
+            entryId: row.event_id,
+            row,
+          })
+        : undefined;
       if (anchor) {
-        facts.anchorsByEntryId.set(anchor.entryId, anchor);
         facts.anchorsByIdempotencyKey.set(idempotencyKey, anchor);
       }
       const message = readTranscriptEventMessage(JSON.parse(row.event_json) as TranscriptEvent);
@@ -166,36 +158,15 @@ export function readTranscriptMirrorFactsInTransaction(
       }
     }
   }
-  readRequestedAnchors(database, resolved, params.entryIds, facts);
   return facts;
 }
 
-function readRequestedAnchors(
-  database: OpenClawAgentDatabase,
-  resolved: ResolvedTranscriptScope,
-  entryIds: readonly string[] | undefined,
-  facts: TranscriptMirrorFacts,
-): void {
-  for (const entryId of new Set(entryIds)) {
-    const anchor = readActiveTranscriptEntryAnchorInTransaction({ database, resolved, entryId });
-    if (anchor) {
-      facts.anchorsByEntryId.set(entryId, anchor);
-    }
-  }
-}
-
-/** Reconstructs active anchors and topology from authoritative raw transcript rows. */
-function readMirrorFactsFromRawProjection(
-  database: OpenClawAgentDatabase,
-  resolved: ResolvedTranscriptScope,
-  rows: readonly RawTranscriptEvent[],
+/** Extracts supplied mirror identities from authoritative transcript events. */
+function readMirrorFactsFromEvents(
+  events: readonly TranscriptEvent[],
   candidateKeys: ReadonlySet<string>,
-  candidateEntryIds: ReadonlySet<string>,
 ): TranscriptMirrorFacts {
-  const events = rows.map((row) => row.event);
   const facts: TranscriptMirrorFacts = {
-    activeAppendParentId: resolveVisibleTranscriptAppendParentId(events),
-    anchorsByEntryId: new Map(),
     anchorsByIdempotencyKey: new Map(),
     existingIdempotencyKeys: new Set(),
     messagesByIdempotencyKey: new Map(),
@@ -209,59 +180,6 @@ function readMirrorFactsFromRawProjection(
     facts.existingIdempotencyKeys.add(idempotencyKey);
     if (message !== undefined) {
       facts.messagesByIdempotencyKey.set(idempotencyKey, message);
-    }
-  }
-  const generation = readTranscriptGenerationInTransaction(database, resolved.sessionId);
-  if (!generation) {
-    return facts;
-  }
-  const db = getSessionKysely(database.db);
-  const identityByEventId = new Map(
-    executeSqliteQuerySync(
-      database.db,
-      db
-        .selectFrom("transcript_event_identities")
-        .select(["event_id", "message_idempotency_key", "parent_id", "seq"])
-        .where("session_id", "=", resolved.sessionId),
-    ).rows.map((identity) => [identity.event_id, identity] as const),
-  );
-  let activeMessagePosition = 0;
-  for (const visible of selectVisibleTranscriptEventEntries(events)) {
-    const message = readTranscriptEventMessage(visible.event);
-    if (message === undefined) {
-      continue;
-    }
-    const position = activeMessagePosition++;
-    const entryId = readTranscriptEventId(visible.event);
-    if (!entryId) {
-      continue;
-    }
-    const identity = identityByEventId.get(entryId);
-    if (!identity) {
-      continue;
-    }
-    const idempotencyKey = identity.message_idempotency_key ?? undefined;
-    if (
-      !candidateEntryIds.has(entryId) &&
-      (!idempotencyKey || !candidateKeys.has(idempotencyKey))
-    ) {
-      continue;
-    }
-    const anchor = Object.freeze({
-      agentId: resolved.agentId,
-      sessionId: resolved.sessionId,
-      sessionKey: resolved.sessionKey,
-      storePath: database.path,
-      generation,
-      entryId,
-      rawSeq: identity.seq,
-      effectiveParentId: identity.parent_id,
-      activeMessagePosition: position,
-      ...(idempotencyKey ? { idempotencyKey } : {}),
-    });
-    facts.anchorsByEntryId.set(entryId, anchor);
-    if (idempotencyKey && candidateKeys.has(idempotencyKey)) {
-      facts.anchorsByIdempotencyKey.set(idempotencyKey, anchor);
     }
   }
   return facts;

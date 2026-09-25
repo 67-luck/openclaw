@@ -1,11 +1,12 @@
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { parseTeamReportsConfig, resolveTeamReportsConfig } from "./src/config.js";
 import { registerTeamReportsGatewayMethods } from "./src/gateway-methods.js";
 import { createTeamReportsHttpHandler } from "./src/http.js";
 import { TeamReportsScheduler } from "./src/scheduler.js";
 import { createTeamReportsStore, type TeamReportsStore } from "./src/store.js";
+import { listWorkSessions } from "./src/work-sessions.js";
 
 export default definePluginEntry({
   id: "team-reports",
@@ -38,7 +39,7 @@ export default definePluginEntry({
     const requireScheduler = () => {
       if (!scheduler) {
         throw new Error(
-          "Team Reports service is not running; check plugin configuration and restart the Gateway",
+          "Team Reports service is not running; check plugin configuration and reload the plugin",
         );
       }
       return scheduler;
@@ -52,7 +53,6 @@ export default definePluginEntry({
 
     api.registerService({
       id: "team-reports",
-      reload: { configPrefixes: ["plugins.entries.team-reports"] },
       async start(ctx) {
         if (retired) {
           throw new Error("Team Reports runtime has been retired");
@@ -77,7 +77,18 @@ export default definePluginEntry({
           delete summaryOptions.model;
         }
         startingStore = (async () => {
-          const nextStore = await createTeamReportsStore({ stateDir: ctx.stateDir });
+          if (!api.runtimeSource) {
+            throw new Error(
+              "Team Reports requires an OpenClaw host with runtime entrypoint metadata",
+            );
+          }
+          const nextStore = await createTeamReportsStore({
+            stateDir: ctx.stateDir,
+            workerModuleUrl: new URL(
+              `./src/store.worker${path.extname(api.runtimeSource)}`,
+              pathToFileURL(api.runtimeSource),
+            ),
+          });
           if (retired || currentGeneration !== generation) {
             await nextStore.close();
             return;
@@ -86,7 +97,7 @@ export default definePluginEntry({
             config: { ...config, summaries: summaryOptions },
             resolved,
             store: nextStore,
-            llm: api.runtime.llm,
+            llm: { complete: (params) => api.runtime.llm.complete(params) },
             context: ctx,
           });
           try {
@@ -120,13 +131,6 @@ export default definePluginEntry({
         return undefined;
       },
     });
-    // Route and descriptor registration belong to the registry, not a restarted service.
-    api.registerReload({
-      restartPrefixes: [
-        "plugins.entries.team-reports.config.basePath",
-        "plugins.entries.team-reports.config.displayTimezone",
-      ],
-    });
     api.registerHttpRoute({
       path: initial.basePath,
       match: "prefix",
@@ -134,6 +138,14 @@ export default definePluginEntry({
       handler: createTeamReportsHttpHandler({
         basePath: initial.basePath,
         displayTimezone: initial.displayTimezone,
+        sessionRouting: () => {
+          const config = api.runtime.config.current();
+          return {
+            controlUiBasePath: config.gateway?.controlUi?.basePath,
+            mainKey: config.session?.mainKey,
+          };
+        },
+        workSessions: listWorkSessions,
         // Source checkouts, the flattened dist bundle, and installed packages all keep assets/ at the plugin root.
         assetsDir: path.join(api.rootDir ?? path.dirname(fileURLToPath(import.meta.url)), "assets"),
         getStore: () => store,

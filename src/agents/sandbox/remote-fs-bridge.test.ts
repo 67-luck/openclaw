@@ -2,15 +2,13 @@
 // the pinned mutation helper and remote stat/path guards.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { GUEST_FILESYSTEM_CREATE_EXISTS_EXIT_CODE } from "@openclaw/fs-safe/guest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createSandboxedReadTool, createSandboxedWriteTool } from "../agent-tools.read.js";
+import { createCoreCodingTools } from "../core-coding-tools.js";
 import { resolveSandboxFileMutationQueueKey } from "./file-mutation-identity.js";
-import { SANDBOX_PINNED_MUTATION_PYTHON_SHELL_LITERAL } from "./fs-bridge-mutation-helper.js";
-import {
-  SANDBOX_CREATE_EXISTS_EXIT_CODE,
-  SANDBOX_PINNED_MUTATION_PYTHON,
-} from "./fs-bridge-mutation-python.js";
 import { createSandbox } from "./fs-bridge.test-helpers.js";
 import {
   createRemoteShellSandboxFsBridge,
@@ -18,10 +16,11 @@ import {
 } from "./remote-fs-bridge.js";
 import {
   createLocalRemoteShellScriptRunner,
-  spawnLocalRemoteShellAsync,
   type LocalRemoteShellSpawn,
   type LocalRemoteShellSpawnResult,
 } from "./remote-fs-bridge.test-helpers.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function shellResult(stdout: string) {
   return { stdout: Buffer.from(stdout), stderr: Buffer.alloc(0), code: 0 };
@@ -85,7 +84,183 @@ function createWorkspaceReadBridge(workspaceDir: string) {
   });
 }
 
+describe("remote pinned read sources", () => {
+  it.runIf(process.platform !== "win32")(
+    "does not classify a parent alias into a protected mount as workspace memory",
+    async () => {
+      const workspaceDir = await fs.realpath(tempDirs.make("remote-protected-read-"));
+      const protectedDir = path.join(workspaceDir, "protected");
+      await fs.mkdir(protectedDir);
+      await fs.writeFile(path.join(protectedDir, "USER.md"), "protected file");
+      await fs.symlink(protectedDir, path.join(workspaceDir, "alias"), "dir");
+      const { runtime } = createLocalRemoteRuntime({
+        remoteWorkspaceDir: workspaceDir,
+        remoteAgentWorkspaceDir: workspaceDir,
+      });
+      const bridge = createRemoteShellSandboxFsBridge({
+        sandbox: createSandbox({
+          workspaceDir,
+          agentWorkspaceDir: workspaceDir,
+          readOnlyResourceMounts: [{ hostPath: protectedDir, containerPath: protectedDir }],
+        }),
+        runtime,
+      });
+      await expect(bridge.readFileWithSource!({ filePath: "alias/USER.md" })).resolves.toEqual({
+        data: Buffer.from("protected file"),
+        canonicalPath: path.join(protectedDir, "USER.md"),
+      });
+    },
+  );
+
+  it.runIf(process.platform !== "win32").each(["alias", "canonical-parent"] as const)(
+    "keeps read provenance bound to the bytes when the %s is swapped",
+    async (swap) => {
+      const workspaceDir = await fs.realpath(tempDirs.make("openclaw-remote-read-source-"));
+      const original = path.join(workspaceDir, "original");
+      const replacement = path.join(workspaceDir, "replacement");
+      const alias = path.join(workspaceDir, "alias");
+      await fs.mkdir(original);
+      await fs.mkdir(replacement);
+      await fs.writeFile(path.join(original, "MEMORY.md"), "original bytes");
+      await fs.writeFile(path.join(replacement, "MEMORY.md"), "replacement bytes");
+      await fs.symlink(original, alias, "dir");
+      const runRemoteShellScript = createLocalRemoteShellScriptRunner();
+      let swapped = false;
+      const bridge = createRemoteShellSandboxFsBridge({
+        sandbox: createSandbox({ workspaceDir, agentWorkspaceDir: workspaceDir }),
+        runtime: {
+          remoteWorkspaceDir: workspaceDir,
+          remoteAgentWorkspaceDir: workspaceDir,
+          async runRemoteShellScript(command) {
+            // Canonicalization has finished; the unmodified guest reader runs next.
+            if (command.args?.[0] === "read" && !swapped) {
+              swapped = true;
+              if (swap === "alias") {
+                await fs.unlink(alias);
+                await fs.symlink(replacement, alias, "dir");
+              } else {
+                await fs.rename(original, path.join(workspaceDir, "moved-original"));
+                await fs.symlink(replacement, original, "dir");
+              }
+            }
+            return runRemoteShellScript(command);
+          },
+        },
+      });
+      if (!bridge.readFileWithSource) {
+        throw new Error("The remote bridge must preserve read provenance.");
+      }
+      const read = bridge.readFileWithSource({ filePath: "alias/MEMORY.md", maxBytes: 100 });
+      if (swap === "alias") {
+        await expect(read).resolves.toEqual({
+          data: Buffer.from("original bytes"),
+          canonicalPath: path.join(original, "MEMORY.md"),
+          workspaceRelativePath: "original/MEMORY.md",
+        });
+      } else {
+        await expect(read).rejects.toThrow(/not a directory|symbolic links|too many levels|ELOOP/i);
+      }
+      expect(swapped).toBe(true);
+    },
+  );
+});
+
 describe("remote sandbox fs bridge", () => {
+  it.each([false, true])(
+    "keeps equal-root descriptor and resolver ownership aligned with protected=%s",
+    (protectedRoot) => {
+      const workspaceDir = path.resolve("mapping-workspace");
+      const agentWorkspaceDir = path.resolve("mapping-agent");
+      const resourceRoot = path.resolve("mapping-resource");
+      const bridge = createRemoteShellSandboxFsBridge({
+        sandbox: createSandbox({
+          workspaceDir,
+          agentWorkspaceDir,
+          workspaceAccess: "ro",
+          readOnlyResourceMounts: protectedRoot
+            ? [{ hostPath: resourceRoot, containerPath: "/runtime" }]
+            : [],
+        }),
+        runtime: {
+          remoteWorkspaceDir: "/runtime",
+          remoteAgentWorkspaceDir: "/runtime",
+          runRemoteShellScript: async () => {
+            throw new Error("Path projection must not execute transport");
+          },
+        },
+      });
+      expect(bridge.pathMappings?.filter((mount) => mount.containerRoot === "/runtime")).toEqual([
+        { hostRoot: protectedRoot ? resourceRoot : agentWorkspaceDir, containerRoot: "/runtime" },
+      ]);
+      expect(bridge.resolvePath({ filePath: "/runtime/note.txt" })).toEqual({
+        containerPath: "/runtime/note.txt",
+        relativePath: protectedRoot ? "note.txt" : "/runtime/note.txt",
+      });
+    },
+  );
+
+  // This composition executes the bridge's GNU stat/readlink scripts locally.
+  it.runIf(process.platform === "linux")(
+    "admits the backend's nondefault agent root without a local host path",
+    async () => {
+      await withTempDir("openclaw-remote-mapping-", async (stateDir) => {
+        const root = await fs.realpath(stateDir);
+        const workspaceDir = path.join(root, "local-workspace");
+        const agentWorkspaceDir = path.join(root, "local-agent");
+        const remoteWorkspaceDir = path.join(root, "remote-workspace");
+        const remoteAgentWorkspaceDir = path.join(root, "remote-agent");
+        for (const dir of [
+          workspaceDir,
+          agentWorkspaceDir,
+          remoteWorkspaceDir,
+          remoteAgentWorkspaceDir,
+        ]) {
+          await fs.mkdir(dir);
+        }
+        await fs.writeFile(path.join(remoteAgentWorkspaceDir, "note.txt"), "REMOTE_AGENT_MARKER");
+        const { calls, runtime } = createLocalRemoteRuntime({
+          remoteWorkspaceDir,
+          remoteAgentWorkspaceDir,
+        });
+        const sandbox = createSandbox({
+          workspaceDir,
+          agentWorkspaceDir,
+          workspaceAccess: "ro",
+          containerWorkdir: remoteWorkspaceDir,
+        });
+        const bridge = createRemoteShellSandboxFsBridge({ sandbox, runtime });
+        sandbox.fsBridge = bridge;
+        const tools = createCoreCodingTools({
+          codingRoot: workspaceDir,
+          containmentRoot: workspaceDir,
+          includeBaseCodingTools: true,
+          shellTools: "disabled",
+          workspaceOnly: true,
+          readOnly: false,
+          sandbox,
+          applyPatchEnabled: false,
+          applyPatchWorkspaceOnly: true,
+          execDefaults: {},
+          processDefaults: {},
+        });
+        const target = path.join(remoteAgentWorkspaceDir, "note.txt");
+        expect(bridge.resolvePath({ filePath: target }).hostPath).toBeUndefined();
+        const read = tools.find((tool) => tool.name === "read")!;
+        expect(
+          JSON.stringify((await read.execute("read-agent", { path: target })).content),
+        ).toContain("REMOTE_AGENT_MARKER");
+        const before = calls.length;
+        await expect(
+          tools
+            .find((tool) => tool.name === "ls")!
+            .execute("deny-agent", { path: remoteAgentWorkspaceDir }),
+        ).rejects.toThrow("Path escapes sandbox root");
+        expect(calls).toHaveLength(before);
+        expect(await fs.readFile(target, "utf8")).toBe("REMOTE_AGENT_MARKER");
+      });
+    },
+  );
+
   it.runIf(process.platform !== "win32").each([
     { workspaceAccess: "rw", mutation: "write" },
     { workspaceAccess: "none", mutation: "write" },
@@ -174,7 +349,7 @@ describe("remote sandbox fs bridge", () => {
       remoteAgentWorkspaceDir: "/workspace",
       spawn: () => ({
         error: pipeError,
-        status: SANDBOX_CREATE_EXISTS_EXIT_CODE,
+        status: GUEST_FILESYSTEM_CREATE_EXISTS_EXIT_CODE,
         signal: null,
         stdout: Buffer.alloc(0),
         stderr: Buffer.alloc(0),
@@ -188,7 +363,7 @@ describe("remote sandbox fs bridge", () => {
         stdin: Buffer.alloc(1_048_576),
         allowFailure: true,
       }),
-    ).resolves.toMatchObject({ code: SANDBOX_CREATE_EXISTS_EXIT_CODE });
+    ).resolves.toMatchObject({ code: GUEST_FILESYSTEM_CREATE_EXISTS_EXIT_CODE });
   });
 
   it.each([
@@ -210,7 +385,7 @@ describe("remote sandbox fs bridge", () => {
     {
       name: "a different exit status",
       command: {},
-      result: { status: SANDBOX_CREATE_EXISTS_EXIT_CODE + 1 },
+      result: { status: GUEST_FILESYSTEM_CREATE_EXISTS_EXIT_CODE + 1 },
     },
     {
       name: "a signaled child",
@@ -228,7 +403,8 @@ describe("remote sandbox fs bridge", () => {
     });
     const spawnResult: LocalRemoteShellSpawnResult = {
       error: spawnError,
-      status: result.status === undefined ? SANDBOX_CREATE_EXISTS_EXIT_CODE : result.status,
+      status:
+        result.status === undefined ? GUEST_FILESYSTEM_CREATE_EXISTS_EXIT_CODE : result.status,
       signal: result.signal === undefined ? null : result.signal,
       stdout: Buffer.alloc(0),
       stderr: Buffer.alloc(0),
@@ -349,77 +525,6 @@ describe("remote sandbox fs bridge", () => {
 // These fixtures execute remote GNU stat/readlink and the Python launcher
 // locally. Portable Python behavior stays in fs-bridge-mutation-helper.test.ts.
 describe.runIf(process.platform === "linux")("remote sandbox fs bridge (GNU shell)", () => {
-  it("joins concurrent writes that race to create the same absent parent", async () => {
-    await withTempDir("openclaw-remote-fs-parent-race-", async (stateDir) => {
-      const workspaceDir = path.join(stateDir, "host-workspace");
-      const remoteWorkspaceDir = path.join(stateDir, "remote-workspace");
-      const rendezvousDir = path.join(stateDir, "rendezvous");
-      await fs.mkdir(workspaceDir);
-      await fs.mkdir(remoteWorkspaceDir);
-      await fs.mkdir(rendezvousDir);
-      // Both real Python children must observe the missing parent before either
-      // may create it. The deadline also releases a child if its peer fails.
-      const source = SANDBOX_PINNED_MUTATION_PYTHON.replace(
-        "            except FileNotFoundError:",
-        [
-          "            except FileNotFoundError:",
-          "                if segment == 'shared':",
-          "                    import time",
-          `                    rendezvous = ${JSON.stringify(rendezvousDir)}`,
-          "                    ready_fd = os.open(os.path.join(rendezvous, sys.argv[4]), WRITE_FLAGS, 0o600)",
-          "                    os.close(ready_fd)",
-          "                    deadline = time.monotonic() + 5",
-          "                    while len(os.listdir(rendezvous)) != 2:",
-          "                        if time.monotonic() >= deadline:",
-          "                            raise RuntimeError('parent creation rendezvous timed out')",
-          "                        time.sleep(0.005)",
-        ].join("\n"),
-      );
-      const shellLiteral = `'${source.replaceAll("'", "'\\''")}'`;
-      const { runtime } = createLocalRemoteRuntime({
-        remoteWorkspaceDir,
-        remoteAgentWorkspaceDir: remoteWorkspaceDir,
-        spawn: (file, args, stdin) =>
-          spawnLocalRemoteShellAsync(
-            file,
-            args.map((arg) =>
-              arg.replace(SANDBOX_PINNED_MUTATION_PYTHON_SHELL_LITERAL, () => shellLiteral),
-            ),
-            stdin,
-          ),
-      });
-      const bridge = createRemoteShellSandboxFsBridge({
-        sandbox: createSandbox({ workspaceDir, agentWorkspaceDir: workspaceDir }),
-        runtime,
-      });
-      // Await every child close before assertions or withTempDir can remove inputs.
-      const results = await Promise.allSettled(
-        ["one", "two"].map((name) =>
-          bridge.writeFile({ filePath: `shared/${name}.txt`, data: name, mkdir: true }),
-        ),
-      );
-      const failures = results.filter((result) => result.status === "rejected");
-      if (failures.length > 0) {
-        throw new AggregateError(
-          failures.map((failure) => failure.reason),
-          "Concurrent remote writes failed",
-        );
-      }
-      await expect(
-        fs.readdir(rendezvousDir).then((entries) => entries.toSorted()),
-      ).resolves.toEqual(["one.txt", "two.txt"]);
-      await expect(
-        fs.readdir(path.join(remoteWorkspaceDir, "shared")).then((entries) => entries.toSorted()),
-      ).resolves.toEqual(["one.txt", "two.txt"]);
-      for (const name of ["one", "two"]) {
-        await expect(
-          fs.readFile(path.join(remoteWorkspaceDir, "shared", `${name}.txt`), "utf8"),
-        ).resolves.toBe(name);
-      }
-      await expect(fs.readdir(workspaceDir)).resolves.toEqual([]);
-    });
-  });
-
   it("orders sandbox tools through one remote alias identity", async () => {
     await withTempDir("openclaw-remote-fs-queue-", async (stateDir) => {
       const workspaceDir = path.join(stateDir, "host-workspace");

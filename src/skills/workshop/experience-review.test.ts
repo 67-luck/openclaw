@@ -1,20 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { EmbeddedRunTrigger } from "../../agents/embedded-agent-runner/run/params.js";
 import {
   getPreparedModelRuntimePluginGeneration,
   withPreparedModelRuntimePluginGenerationScope,
 } from "../../agents/prepared-model-runtime-generation-scope.js";
 import type { PreparedModelRuntimePluginGeneration } from "../../agents/prepared-model-runtime.types.js";
+import type { EmbeddedRunTrigger } from "../../agents/run-trigger.js";
+import {
+  createPluginCache,
+  getPluginCache,
+  retirePluginCache,
+  withPluginCache,
+} from "../../plugins/plugin-cache.js";
+import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
+import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
+import {
+  getPluginRegistryForContext,
+  withPluginRuntimeRegistryScope,
+} from "../../plugins/runtime/gateway-request-scope.js";
 import {
   createNestedToolActivity,
   projectNestedToolActivityForHooks,
 } from "../../sessions/nested-tool-activity.js";
-import {
-  AsyncWorkScope,
-  captureAsyncWorkTracker,
-  getAsyncWorkSignal,
-} from "../../shared/async-work-scope.js";
-import { createDeferredCore } from "../../shared/deferred.js";
 import { buildSkillExperienceReviewPrompt } from "./experience-review-prompt.js";
 import {
   createSkillExperienceReviewScheduler,
@@ -109,79 +115,83 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
 }
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  resetPluginRuntimeStateForTest();
+});
 
 describe("skill experience review scheduler", () => {
-  it.each([false, true])(
-    "runs outside drained foreground owners with initial activity=%s",
-    async (initiallyActive) => {
-      const generation: PreparedModelRuntimePluginGeneration = {
-        configuredCatalogEntries: [],
-        inlineProviderModels: [],
-        pluginMetadataSnapshot: {} as never,
-      };
-      const foreground = new AsyncWorkScope();
-      const observedGenerations: Array<PreparedModelRuntimePluginGeneration | undefined> = [];
-      const observedSignals: Array<AbortSignal | undefined> = [];
-      const observedForegroundClosed: boolean[] = [];
-      const timerDelays: number[] = [];
-      const reviewFinished = createDeferredCore();
-      let foregroundClosed = false;
-      let activityChecks = 0;
-      const observe = () => {
-        observedGenerations.push(getPreparedModelRuntimePluginGeneration());
-        observedSignals.push(getAsyncWorkSignal());
-        observedForegroundClosed.push(foregroundClosed);
-      };
+  it.each(["context", "source"] as const)(
+    "does not retain or schedule Incognito %s evidence",
+    async (identity) => {
+      vi.useFakeTimers();
+      const runReview = vi.fn(async () => {});
       const scheduler = createSkillExperienceReviewScheduler({
-        isSystemActive: () => {
-          observe();
-          return activityChecks++ === 0 && initiallyActive;
-        },
-        runReview: async (candidate) => {
-          try {
-            await captureAsyncWorkTracker()(async () => {
-              observe();
-              await prepareSkillExperienceReviewCandidate(candidate, candidate.config);
-              observe();
-            });
-            reviewFinished.resolve();
-          } catch (error) {
-            reviewFinished.reject(error);
-          }
-        },
-        setTimer: (callback, delayMs) => {
-          timerDelays.push(delayMs);
-          return setTimeout(callback, 0);
-        },
+        isSystemActive: () => false,
+        runReview,
       });
-
-      try {
-        await foreground.track(() =>
-          withPreparedModelRuntimePluginGenerationScope(generation, () => {
-            scheduler.schedule(completedRun());
-          }),
-        );
-        await foreground.drain();
-        const lateForegroundWork = vi.fn();
-        await expect(foreground.track(lateForegroundWork)).rejects.toThrow(
-          "Async work scope is closed",
-        );
-        expect(lateForegroundWork).not.toHaveBeenCalled();
-        foregroundClosed = true;
-        await reviewFinished.promise;
-
-        const observations = initiallyActive ? 4 : 3;
-        expect(observedGenerations).toEqual(Array(observations).fill(undefined));
-        expect(observedSignals).toEqual(Array(observations).fill(undefined));
-        expect(observedForegroundClosed).toEqual(Array(observations).fill(true));
-        expect(timerDelays).toEqual(initiallyActive ? [30_000, 30_000] : [30_000]);
-      } finally {
-        scheduler.clear();
-        await foreground.drain();
+      const params = completedRun();
+      const sessionKey = "agent:main:dashboard:incognito-workshop";
+      if (identity === "context") {
+        params.ctx = { ...params.ctx, sessionKey };
+      } else {
+        params.source = { ...params.source!, sessionKey };
       }
+      scheduler.schedule(params);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.runAllTimersAsync();
+      expect(runReview).not.toHaveBeenCalled();
     },
   );
+
+  it("runs detached review work outside the foreground prepared generation", async () => {
+    const generation: PreparedModelRuntimePluginGeneration = {
+      configuredCatalogEntries: [],
+      inlineProviderModels: [],
+      pluginMetadataSnapshot: {} as never,
+    };
+    const observedGenerations: Array<PreparedModelRuntimePluginGeneration | undefined> = [];
+    const foregroundCache = createPluginCache();
+    const foregroundRegistry = createEmptyPluginRegistry();
+    const currentRegistry = createEmptyPluginRegistry();
+    const observedPluginScopes: unknown[] = [];
+    let finishReview: (() => void) | undefined;
+    const reviewFinished = new Promise<void>((resolve) => {
+      finishReview = resolve;
+    });
+    const scheduler = createSkillExperienceReviewScheduler({
+      isSystemActive: () => {
+        observedGenerations.push(getPreparedModelRuntimePluginGeneration());
+        return false;
+      },
+      runReview: async (candidate) => {
+        observedPluginScopes.push(
+          getPluginCache() === foregroundCache,
+          getPluginRegistryForContext(),
+        );
+        observedGenerations.push(getPreparedModelRuntimePluginGeneration());
+        await prepareSkillExperienceReviewCandidate(candidate, candidate.config);
+        observedGenerations.push(getPreparedModelRuntimePluginGeneration());
+        finishReview?.();
+      },
+      setTimer: (callback) => setTimeout(callback, 0),
+    });
+
+    withPluginCache(foregroundCache, () =>
+      withPluginRuntimeRegistryScope(foregroundRegistry, () =>
+        withPreparedModelRuntimePluginGenerationScope(generation, () => {
+          scheduler.schedule(completedRun());
+        }),
+      ),
+    );
+    await retirePluginCache(foregroundCache);
+    setActivePluginRegistry(currentRegistry);
+    await reviewFinished;
+
+    expect(observedGenerations).toEqual([undefined, undefined, undefined]);
+    expect(observedPluginScopes).toEqual([false, currentRegistry]);
+    scheduler.clear();
+  });
 
   it("runs one deep turn after the idle window", async () => {
     vi.useFakeTimers();
@@ -668,6 +678,13 @@ describe("skill experience review prompt", () => {
 });
 
 describe("skill experience review preparation", () => {
+  it("rejects Incognito evidence before preparing a queued review", async () => {
+    const params = completedRun({ sessionKey: "agent:main:dashboard:incognito-workshop" });
+    await expect(
+      prepareSkillExperienceReviewCandidate(captureCandidate(params), params.config),
+    ).resolves.toBeUndefined();
+  });
+
   it.each([
     { agentId: "direct", eligible: true },
     { agentId: "isolated", eligible: false },

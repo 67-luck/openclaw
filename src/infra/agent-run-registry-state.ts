@@ -1,0 +1,88 @@
+// Canonical process-local registry state; callers retain the existing singleton identity.
+import { randomUUID } from "node:crypto";
+import { sessionChanges } from "../sessions/session-row-changes.js";
+import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import { recordAgentEventRouting } from "./agent-event-execution-context.js";
+import type {
+  AgentRunContext,
+  AgentRunContextOwnership,
+  AgentRunRegistryState,
+} from "./agent-run-registry.types.js";
+import { resetAgentRunUsageForTest } from "./agent-run-usage.js";
+
+const AGENT_RUN_REGISTRY_STATE_KEY = Symbol.for("openclaw.agentRunRegistry.state");
+
+export function getAgentRunRegistryState(): AgentRunRegistryState {
+  return resolveGlobalSingleton<AgentRunRegistryState>(AGENT_RUN_REGISTRY_STATE_KEY, () => ({
+    contexts: new Map<string, AgentRunContext>(),
+    owners: new Map<string, AgentRunContextOwnership>(),
+    lifecycleGeneration: randomUUID(),
+    version: 0,
+  }));
+}
+
+export function storeRunContext(
+  runId: string,
+  context: AgentRunContext,
+  predecessor?: AgentRunContext,
+  executionOwner?: object,
+) {
+  // Callers supply a fresh record; scheduler leases never transfer with its metadata.
+  context.capacityWaits = undefined;
+  context.registeredAt ??= Date.now();
+  const state = getAgentRunRegistryState();
+  state.contexts.set(runId, context);
+  if (executionOwner) {
+    (state.executionOwners ??= new WeakMap()).set(context, executionOwner);
+  }
+  recordAgentEventRouting(runId, context, predecessor);
+}
+
+export function getAgentRunContextOwnerStatus(
+  runId: string,
+  claimId: string,
+  lifecycleGeneration: string,
+): "active" | "clear-requested" | undefined {
+  const state = getAgentRunRegistryState();
+  const owners = state.owners.get(runId);
+  if (
+    lifecycleGeneration !== state.lifecycleGeneration ||
+    owners?.lifecycleGeneration !== lifecycleGeneration ||
+    !owners.claimIds.has(claimId)
+  ) {
+    return undefined;
+  }
+  return owners.clearRequested ? "clear-requested" : "active";
+}
+
+export function bumpAgentRunIndexVersion(
+  context?: AgentRunContext,
+  previous?: AgentRunContext,
+): void {
+  getAgentRunRegistryState().version += 1;
+  for (const target of previous &&
+  (previous.sessionKey !== context?.sessionKey || previous.agentId !== context?.agentId)
+    ? [previous, context]
+    : [context]) {
+    const { sessionKey, agentId } = target ?? {};
+    sessionChanges.emit(
+      sessionKey ? { sessionKey, agentId, scope: "runtime" } : { all: true, scope: "agent-runs" },
+    );
+  }
+}
+
+export function resetAgentRunRegistryForTest(): void {
+  const state = getAgentRunRegistryState();
+  const hadRunContexts = state.contexts.size > 0;
+  for (const context of state.contexts.values()) {
+    context.approvalLeases?.close();
+  }
+  resetAgentRunUsageForTest();
+  state.contexts.clear();
+  state.owners.clear();
+  state.queuedRunContextLeases = undefined;
+  state.executionOwners = undefined;
+  if (hadRunContexts) {
+    bumpAgentRunIndexVersion();
+  }
+}

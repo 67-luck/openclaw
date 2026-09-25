@@ -1,69 +1,65 @@
-import {
-  inspectTranscriptEventsSync,
-  type SessionTranscriptRuntimeTarget,
-} from "../../config/sessions/session-accessor.js";
+import type { DatabaseSync } from "node:sqlite";
+import { inspectTranscriptEventsSync } from "../../config/sessions/session-accessor.js";
 import {
   readSessionTranscriptBoundedActiveContextCore,
   type SessionTranscriptBoundedActiveContext,
 } from "../../config/sessions/session-accessor.sqlite-active-context.js";
-import { loadTranscriptReadSnapshotSync } from "../../config/sessions/session-accessor.sqlite-read.js";
-import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-transcript-state.js";
+import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-contract.js";
+import {
+  resolveSqliteTranscriptScope,
+  toDatabaseOptions,
+} from "../../config/sessions/session-accessor.sqlite-scope.js";
+import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.types.js";
 import { assertCurrentSessionTranscriptHeader } from "../../config/sessions/session-entry-codec.js";
-import { SessionEntryNavigation } from "../../config/sessions/session-entry-navigation.js";
-import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
+import { prepareSessionTranscriptHydration } from "../../config/sessions/session-transcript-hydration.js";
+import {
+  captureSessionTranscriptTargetBinding,
+  sameSessionTranscriptTargetBinding,
+  sessionTranscriptExecution,
+} from "../../config/sessions/transcript-target-binding.js";
+import {
+  captureOwnedTranscriptWriteAssertion,
+  SessionTranscriptWriterClaimReboundError,
+} from "../../config/sessions/transcript-write-context.js";
+import {
+  captureSqliteTransactionState,
+  type CapturedSqliteTransactionState,
+} from "../../infra/sqlite-post-commit.js";
+import { captureSqliteWorkerCallerViewRollback } from "../../infra/sqlite-worker-host-context.js";
+import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import {
   isIndexedSessionEntry,
   migrateToCurrentVersion,
-  parseOpaqueLeafEntry,
-  parseParentLinkedOpaqueEntry,
   partitionSessionFileEntries,
 } from "./session-manager-codec.js";
-import { createManagedSessionId, generateSessionEntryId } from "./session-manager-id.js";
+import { createManagedSessionId } from "./session-manager-id.js";
+import type { FileEntry } from "./session-manager-types.js";
 import type {
-  FileEntry,
-  NewSessionOptions,
-  PreservedOpaqueFileEntry,
-  SessionEntry,
-  SessionHeader,
-  SessionLeafControl,
-} from "./session-manager-types.js";
+  SessionManagerPersistenceTarget,
+  PreparedSessionTranscriptReload,
+  SessionManagerBoundedContext,
+} from "./session-manager-view-types.js";
+import { SessionManagerView } from "./session-manager-view.js";
 
-export type SessionManagerPersistenceTarget = SessionTranscriptRuntimeTarget;
-export type SessionManagerBoundedContextLimits = { maxBytes: number; maxEvents: number };
-export type SessionManagerBoundedContext = Pick<
-  SessionTranscriptBoundedActiveContext,
-  | "activeLeafEntryId"
-  | "version"
-  | "opaqueParents"
-  | "parents"
-  | "firstKeptRanges"
-  | "persistedSuffixStartSeq"
-  | "boundaryCount"
-  | "transcriptMutationAt"
-> & { limits: SessionManagerBoundedContextLimits };
+type NativeTranscriptViewOwner = {
+  database: DatabaseSync;
+  path: string;
+  journal: CapturedSqliteTransactionState;
+  target: SessionManagerPersistenceTarget;
+  disposition: { live: boolean; hydrated: boolean };
+};
 
-export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
-  migrated = false;
-  protected sessionId = "";
-  protected transcriptVersion: SessionTranscriptContextVersion | undefined;
+export class SessionManagerCore extends SessionManagerView {
+  private hydrationRevision = 0;
+  private publishedHydration = {};
+  private nativeViewOwner: NativeTranscriptViewOwner | undefined;
+  private readonly nativePublicFresh: NativeTranscriptViewOwner[] = [];
   protected cwd: string;
-  protected fileEntries: FileEntry[] = [];
-  protected opaqueFileEntries: PreservedOpaqueFileEntry[] = [];
-  protected boundedParentIds = new Map<string, string | null>();
-  private boundedFirstKeptById = new Map<string, string>();
-  protected pendingDeliberateAppend = false;
-  protected persistenceTarget: SessionManagerPersistenceTarget | undefined;
-  protected persistenceHeaderPending = false;
-  protected boundedContextLimits: SessionManagerBoundedContextLimits | undefined;
-  protected boundedContextIncomplete = false;
-  protected persistedBoundaryCount: number | undefined;
-  protected persistedSuffixStartSeq: number | undefined;
-  protected transcriptMutationAt: number | null | undefined;
 
   constructor(
     cwd: string,
     persistenceTarget?: SessionManagerPersistenceTarget,
-    loadedEntries?: FileEntry[],
+    loadedEntries?: readonly unknown[],
     boundedContext?: SessionManagerBoundedContext,
     transcriptMutationAt?: number | null,
     version?: SessionTranscriptContextVersion,
@@ -85,28 +81,138 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
     }
   }
 
-  setSessionTarget(target: SessionManagerPersistenceTarget): void {
-    const bounded = this.boundedContextLimits
-      ? readSessionTranscriptBoundedActiveContextCore(target, this.boundedContextLimits)
-      : undefined;
-    const snapshot = bounded ? undefined : loadTranscriptReadSnapshotSync(target);
-    const entries = (bounded?.events ?? snapshot?.events ?? []) as FileEntry[];
-    this.boundedContextIncomplete = bounded !== undefined;
-    this.persistedBoundaryCount = bounded?.boundaryCount;
-    this.persistedSuffixStartSeq = bounded?.persistedSuffixStartSeq;
-    this.transcriptMutationAt =
-      bounded !== undefined ? bounded.transcriptMutationAt : snapshot?.version.updatedAt;
-    const header = entries.find(
-      (entry) => typeof entry === "object" && entry !== null && entry.type === "session",
-    );
-    this.setLoadedSessionTarget(target, entries, bounded, bounded?.version ?? snapshot?.version);
-    if (header?.cwd) {
-      this.cwd = header.cwd;
+  /** @deprecated Runtime callers should await setSessionTargetAsync. */
+  setSessionTarget(target: SessionTranscriptRuntimeTarget): void {
+    this.assertTranscriptViewAvailable();
+    this.hydrationRevision++;
+    const hydration = prepareSessionTranscriptHydration(target, this.boundedContextLimits);
+    let capturedReader:
+      | { database: DatabaseSync; journal: CapturedSqliteTransactionState }
+      | undefined;
+    const prepared = hydration.initializeReady((database) => {
+      const journal = captureSqliteTransactionState(database);
+      if (journal) {
+        capturedReader = { database, journal };
+      }
+    });
+    const reader = capturedReader;
+    const candidate = this.prepareHydratedView(hydration.target, prepared, false);
+    const replacement = candidate.captureTranscriptViewImage();
+    const previous = this.captureTranscriptViewImage();
+    const owner =
+      reader &&
+      [this.nativeViewOwner, ...this.nativePublicFresh.toReversed()].find(
+        (value) =>
+          value?.disposition.live &&
+          value.database === reader.database &&
+          value.journal.transaction === reader.journal.transaction &&
+          sameSessionTranscriptTargetBinding(value.target, hydration.target),
+      );
+    const joined = owner && sameSessionTranscriptTargetBinding(previous.target, owner.target);
+    const published = {};
+    let adopted = false;
+    if (
+      owner &&
+      reader &&
+      !reader.journal.stage({
+        stage() {},
+        commit() {},
+        rollback: () => {
+          if (
+            !adopted ||
+            this.publishedHydration !== published ||
+            !sameSessionTranscriptTargetBinding(this.persistenceTarget, hydration.target)
+          ) {
+            return;
+          }
+          // A same-journal reload is canonical, even when the previous local view
+          // was stale. Cross-target undo instead preserves the independently chosen view.
+          this.restoreTranscriptViewImage(
+            joined
+              ? {
+                  ...replacement,
+                  identity: previous.identity,
+                  owner: previous.owner,
+                }
+              : previous,
+            true,
+          );
+        },
+      })
+    ) {
+      throw new Error("Transcript hydration lost its original native snapshot");
     }
+    this.restoreTranscriptViewImage(replacement, true);
+    this.publishedHydration = published;
+    this.nativeViewOwner = owner;
+    adopted = true;
+    if (owner && joined) {
+      owner.disposition.hydrated = true;
+    }
+  }
+
+  /** Prepare off-thread and publish the entire view only while this manager is unchanged. */
+  setSessionTargetAsync(
+    target: SessionTranscriptRuntimeTarget,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.hydrateSessionTarget(target, false, signal);
+  }
+
+  private async hydrateSessionTarget(
+    target: SessionTranscriptRuntimeTarget,
+    preserveCwd: boolean,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    this.assertTranscriptViewAvailable();
+    const hydration = prepareSessionTranscriptHydration(target, this.boundedContextLimits, signal);
+    const assertOwned = captureOwnedTranscriptWriteAssertion(hydration.target);
+    const revision = ++this.hydrationRevision;
+    const prior = this.captureTranscriptView();
+    const entryCount = this.fileEntries.length;
+    const opaqueCount = this.opaqueFileEntries.length;
+    assertOwned();
+    const prepared = await hydration.read().catch((error: unknown) => {
+      assertOwned();
+      throw error;
+    });
+    signal?.throwIfAborted();
+    assertOwned();
+    hydration.assertCurrent();
+    this.assertTranscriptViewAvailable();
+    const current = this.captureTranscriptView();
+    if (
+      revision !== this.hydrationRevision ||
+      this.fileEntries.length !== entryCount ||
+      this.opaqueFileEntries.length !== opaqueCount ||
+      Object.keys(prior).some((key) => Reflect.get(prior, key) !== Reflect.get(current, key))
+    ) {
+      throw new Error("Session manager changed during transcript hydration");
+    }
+    // Validate and index a candidate first; a malformed transcript cannot damage the current view.
+    const candidate = this.prepareHydratedView(hydration.target, prepared);
+    Object.assign(this, candidate.captureTranscriptView());
+    this.persistenceTarget = candidate.persistenceTarget;
+    this.persistenceHeaderPending = candidate.persistenceHeaderPending;
+    if (!preserveCwd) {
+      this.cwd = candidate.fileEntries.find((entry) => entry.type === "session")?.cwd ?? this.cwd;
+    }
+    this.hydrationRevision++;
+    this.publishedHydration = {};
+    this.nativeViewOwner = undefined;
+  }
+
+  /** Reload an existing view without changing the runtime working directory. */
+  async reloadPersistedTranscriptAsync(signal?: AbortSignal): Promise<void> {
+    if (!this.persistenceTarget) {
+      return;
+    }
+    await this.hydrateSessionTarget(this.persistenceTarget, true, signal);
   }
 
   /** Active-only loads can omit sibling rows even when they fit the context limits. */
   protected ensureCompletePersistedHistory(): void {
+    this.assertTranscriptViewAvailable();
     if (!this.persistenceTarget || !this.boundedContextIncomplete) {
       return;
     }
@@ -118,13 +224,14 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
 
   protected setLoadedSessionTarget(
     target: SessionManagerPersistenceTarget | undefined,
-    entries: FileEntry[],
+    entries: readonly unknown[],
     bounded?: Pick<
       SessionTranscriptBoundedActiveContext,
       "activeLeafEntryId" | "version" | "opaqueParents" | "parents" | "firstKeptRanges"
     >,
     version?: SessionTranscriptContextVersion,
   ): void {
+    this.assertTranscriptViewAvailable();
     this.transcriptVersion = version ?? bounded?.version;
     this.boundedFirstKeptById.clear();
     this.boundedParentIds.clear();
@@ -132,7 +239,7 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
     // Only a physically empty transcript may initialize lazily. Opaque persisted rows still need
     // a canonical header, or runtime would silently replace malformed history with a fresh session.
     if (partitioned.fileEntries.length === 0 && partitioned.opaqueEntries.length === 0) {
-      this.persistenceTarget = target ? { ...target } : undefined;
+      this.persistenceTarget = target ? captureSessionTranscriptTargetBinding(target) : undefined;
       this.initializeSession({ id: target?.sessionId });
       this.persistenceHeaderPending = target !== undefined;
       return;
@@ -142,7 +249,7 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
       assertCurrentSessionTranscriptHeader(header);
     }
     this.persistenceHeaderPending = false;
-    this.persistenceTarget = target ? { ...target } : undefined;
+    this.persistenceTarget = target ? captureSessionTranscriptTargetBinding(target) : undefined;
     this.fileEntries = partitioned.fileEntries;
     this.opaqueFileEntries = partitioned.opaqueEntries;
     this.sessionId = header?.id ?? target?.sessionId ?? createManagedSessionId();
@@ -173,50 +280,340 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
     }
   }
 
-  protected adoptSelectedTranscriptPath(
-    appendParentId: string | null,
-    parents: Iterable<readonly [string, string | null]>,
-  ): void {
-    // Selected payloads omit navigation controls. Use their resolved ancestry,
-    // not the side-append parent guesses made while indexing those payloads.
-    this.logicalParentsById.clear();
-    for (const [id, parentId] of parents) {
-      this.logicalParentsById.set(id, this.resolveCanonicalParentId(parentId));
-    }
-    this.appendParentId = appendParentId;
-    this.leafId = this.resolveOpaqueLeafTargetId(appendParentId);
-    this.appendMode = undefined;
-  }
-
-  /** The loaded view only: bounded managers must never hydrate inactive history for a rewrite. */
-  protected captureTranscriptView() {
+  protected captureTranscriptViewRollback() {
+    const previous = this.captureTranscriptViewImage();
+    const target = this.persistenceTarget;
+    const revision = this.hydrationRevision;
+    const restore = (image = previous) => this.restoreTranscriptViewImage(image);
+    let version = this.transcriptVersion;
+    let count = this.fileEntries.length;
+    let leaf = this.leafId;
+    const rollback = (image = previous) => {
+      // Rollback must not resurrect this branch over an independently replaced view.
+      if (
+        sameSessionTranscriptTargetBinding(this.persistenceTarget, target) &&
+        this.publishedHydration === previous.identity &&
+        this.fileEntries.length === count &&
+        this.leafId === leaf &&
+        this.transcriptVersion?.generation === version?.generation &&
+        this.transcriptVersion?.rawSeq === version?.rawSeq &&
+        this.transcriptVersion?.updatedAt === version?.updatedAt
+      ) {
+        restore(image);
+      }
+    };
     return {
-      sessionId: this.sessionId,
-      transcriptVersion: this.transcriptVersion,
-      migrated: this.migrated,
-      fileEntries: this.fileEntries,
-      opaqueFileEntries: this.opaqueFileEntries,
-      byId: this.byId,
-      opaqueParentsById: this.opaqueParentsById,
-      logicalParentsById: this.logicalParentsById,
-      invalidLeafControlIds: this.invalidLeafControlIds,
-      labelsById: this.labelsById,
-      labelTimestampsById: this.labelTimestampsById,
-      boundedFirstKeptById: this.boundedFirstKeptById,
-      boundedParentIds: this.boundedParentIds,
-      boundedContextIncomplete: this.boundedContextIncomplete,
-      boundedContextLimits: this.boundedContextLimits,
-      persistedBoundaryCount: this.persistedBoundaryCount,
-      persistedSuffixStartSeq: this.persistedSuffixStartSeq,
-      transcriptMutationAt: this.transcriptMutationAt,
-      leafId: this.leafId,
-      appendParentId: this.appendParentId,
-      appendMode: this.appendMode,
-      pendingDeliberateAppend: this.pendingDeliberateAppend,
+      image: previous,
+      restore,
+      rollback,
+      assertCurrent: () => {
+        if (
+          this.hydrationRevision !== revision ||
+          !sameSessionTranscriptTargetBinding(this.persistenceTarget, target)
+        ) {
+          throw new SessionTranscriptWriterClaimReboundError();
+        }
+      },
+      checkpoint: () => {
+        version = this.transcriptVersion;
+        count = this.fileEntries.length;
+        leaf = this.leafId;
+      },
     };
   }
 
+  private captureTranscriptViewImage() {
+    const target = this.persistenceTarget;
+    return {
+      view: structuredClone(this.captureTranscriptView()),
+      headerPending: this.persistenceHeaderPending,
+      target,
+      cwd: this.cwd,
+      fence: target && {
+        expectedLifecycleRevision: target.expectedLifecycleRevision,
+        expectedWriterRunId: target.expectedWriterRunId,
+      },
+      // These are ownership identities, not data. Cloning them breaks reverse undo.
+      identity: this.publishedHydration,
+      owner: this.nativeViewOwner,
+    };
+  }
+
+  private restoreTranscriptViewImage(
+    image: ReturnType<SessionManagerCore["captureTranscriptViewImage"]>,
+    replaceTarget = false,
+  ): void {
+    // A caught savepoint failure can publish this data while an outer inverse
+    // still owns the image. Later local writes must not mutate that before-image.
+    Object.assign(this, structuredClone(image.view));
+    this.persistenceHeaderPending = image.headerPending;
+    this.publishedHydration = image.identity;
+    this.nativeViewOwner = image.owner;
+    if (replaceTarget) {
+      this.persistenceTarget = image.target;
+      this.cwd = image.cwd;
+    }
+    if (this.persistenceTarget && image.fence) {
+      Object.assign(this.persistenceTarget, image.fence);
+    }
+  }
+
+  private prepareHydratedView(
+    target: SessionManagerPersistenceTarget,
+    prepared: PreparedSessionTranscriptReload,
+    preserveCwd = true,
+  ): SessionManagerCore {
+    const candidate = new SessionManagerCore(this.cwd);
+    candidate.persistenceTarget = target;
+    candidate.boundedContextLimits = this.boundedContextLimits;
+    candidate.adoptPreparedTranscriptReload(prepared);
+    if (!preserveCwd) {
+      candidate.cwd = candidate.getHeader()?.cwd ?? this.cwd;
+    }
+    return candidate;
+  }
+
+  protected captureNativeTranscriptViewRollback(onCommit: () => void) {
+    const target = this.persistenceTarget!;
+    let view = this.captureTranscriptViewRollback();
+    let owner: NativeTranscriptViewOwner | undefined;
+    let ownsLifetime = false;
+    let messageSettled = false;
+    let source: ReturnType<SessionManagerCore["captureTranscriptViewImage"]> | undefined;
+    type EarlyBoundary = {
+      view: typeof view;
+      source: ReturnType<SessionManagerCore["captureTranscriptViewImage"]>;
+      settled: boolean;
+    };
+    let early: EarlyBoundary | undefined;
+    const retire = () => {
+      if (!ownsLifetime || !owner) {
+        return;
+      }
+      owner.disposition.live = false;
+      if (this.nativeViewOwner === owner) {
+        this.nativeViewOwner = undefined;
+      }
+    };
+    const bindOwner = (
+      database: DatabaseSync,
+      path: string,
+      journal: CapturedSqliteTransactionState,
+    ) => {
+      const previous = this.nativeViewOwner;
+      const shared =
+        previous?.disposition.live &&
+        previous.database === database &&
+        previous.journal.transaction === journal.transaction &&
+        sameSessionTranscriptTargetBinding(previous.target, target);
+      owner = shared
+        ? previous
+        : {
+            database,
+            path,
+            journal,
+            target,
+            disposition: { live: true, hydrated: false },
+          };
+      ownsLifetime = !shared;
+    };
+    const readSource = (expected: Pick<NativeTranscriptViewOwner, "database" | "journal">) => {
+      view.assertCurrent();
+      let matched = false;
+      const prepared = prepareSessionTranscriptHydration(
+        target,
+        this.boundedContextLimits,
+      ).initializeReady((database) => {
+        const journal = captureSqliteTransactionState(database);
+        if (
+          database !== expected.database ||
+          journal?.transaction !== expected.journal.transaction
+        ) {
+          throw new SessionTranscriptWriterClaimReboundError();
+        }
+        matched = true;
+      });
+      if (!matched) {
+        throw new SessionTranscriptWriterClaimReboundError();
+      }
+      // An uninitialized transcript has no persisted header to replace the
+      // manager's original lazy header. Descendant initialization can still roll back.
+      return this.persistenceHeaderPending && prepared.snapshot.events.length === 0
+        ? view.image
+        : {
+            ...this.prepareHydratedView(target, prepared).captureTranscriptViewImage(),
+            identity: view.image.identity,
+            owner: view.image.owner,
+          };
+    };
+    if (this.nativePublicFresh.length) {
+      const path = resolveOpenClawAgentSqlitePath(
+        toDatabaseOptions(resolveSqliteTranscriptScope(target)),
+      );
+      const caller = this.nativePublicFresh.findLast(
+        (frame) => frame.disposition.live && frame.path === path,
+      );
+      // Path selects only capture timing. The actual reader above must prove
+      // this exact connection/journal before any tentative initialization begins.
+      if (caller) {
+        source = readSource(caller);
+        bindOwner(caller.database, caller.path, caller.journal);
+        const boundary: EarlyBoundary = { view, source, settled: false };
+        early = boundary;
+        if (
+          !owner!.journal.stage({
+            stage: () => {
+              this.nativeViewOwner = owner;
+            },
+            commit: () => {
+              boundary.settled = true;
+              retire();
+            },
+            rollback: () => {
+              if (boundary.settled) {
+                return;
+              }
+              boundary.settled = true;
+              boundary.view.rollback(
+                owner!.disposition.hydrated ? boundary.source : boundary.view.image,
+              );
+              retire();
+            },
+          })
+        ) {
+          throw new Error("Native session view requires its original transaction");
+        }
+      }
+    }
+    return {
+      enter: (
+        database: { db: DatabaseSync; path: string },
+        nested: boolean,
+        initialized: boolean,
+      ) => {
+        view.assertCurrent();
+        const journal = captureSqliteTransactionState(database.db);
+        if (!journal) {
+          throw new Error("Native session view requires its original transaction");
+        }
+        if (owner) {
+          if (owner.database !== database.db || owner.journal.transaction !== journal.transaction) {
+            throw new SessionTranscriptWriterClaimReboundError();
+          }
+          // Initialization already RELEASEd into the outer journal. A caught
+          // message failure restores only this post-header savepoint boundary.
+          view = this.captureTranscriptViewRollback();
+          source = early && {
+            ...early.source,
+            identity: view.image.identity,
+            owner: view.image.owner,
+          };
+        } else {
+          if (!nested) {
+            view = this.captureTranscriptViewRollback();
+          }
+          bindOwner(database.db, database.path, journal);
+        }
+        if (
+          !owner!.journal.stage({
+            stage: () => {
+              this.nativeViewOwner = owner;
+            },
+            commit: () => {
+              if (messageSettled) {
+                return;
+              }
+              messageSettled = true;
+              onCommit();
+              if (!early) {
+                retire();
+              }
+            },
+            rollback: () => {
+              if (messageSettled) {
+                return;
+              }
+              messageSettled = true;
+              view.rollback(owner!.disposition.hydrated && source ? source : view.image);
+              if (early && !early.settled) {
+                early.view.checkpoint();
+              } else {
+                retire();
+              }
+            },
+          })
+        ) {
+          throw new Error("Native session view requires its original transaction");
+        }
+        // Only actual initializer/header work requires a second SQL before-image.
+        // It belongs to the message savepoint, not the earlier pre-init boundary.
+        if ((early && initialized) || (!source && this.nativePublicFresh.length)) {
+          source = readSource(owner!);
+        }
+        return () => {
+          view.checkpoint();
+          if (early && !early.settled) {
+            early.view.checkpoint();
+          }
+        };
+      },
+      enterPublicFresh: () => {
+        if (!owner || !owner.disposition.live) {
+          throw new Error("Native public callback lost its original transaction");
+        }
+        source ??= readSource(owner);
+        this.nativePublicFresh.push(owner);
+        return () => {
+          this.nativePublicFresh.pop();
+        };
+      },
+      assertCurrent: () => view.assertCurrent(),
+      abort: () => {
+        // Failed initialization can leave earlier RELEASEd work in the outer
+        // transaction. Keep its inverse live until that original journal settles.
+        if (early && !early.settled) {
+          early.view.checkpoint();
+        }
+      },
+    };
+  }
+
+  /** A nested native savepoint exposes its view locally, but cannot publish it as committed. */
+  protected stageTranscriptView(update: () => void): () => void {
+    const view = this.captureTranscriptViewRollback();
+    try {
+      update();
+    } catch (error) {
+      view.restore();
+      throw error;
+    }
+    view.checkpoint();
+    return view.rollback;
+  }
+
+  protected withTentativeTranscriptView<T>(update: () => T): T {
+    const stage = captureSqliteWorkerCallerViewRollback(
+      this.persistenceTarget?.[sessionTranscriptExecution]?.execution.incarnation,
+    );
+    // An unrelated native transaction cannot undo this target's committed view,
+    // including when publication throws after its independently completed write.
+    if (!stage) {
+      return update();
+    }
+    let result: { value: T } | undefined;
+    const rollback = this.stageTranscriptView(() => {
+      result = { value: update() };
+    });
+    if (!stage(rollback)) {
+      rollback();
+      throw new Error("Tentative transcript view lost its original native snapshot");
+    }
+    return result!.value;
+  }
+
+  /** @deprecated Runtime callers should await reloadPersistedTranscriptAsync. */
   reloadPersistedTranscript(): void {
+    this.assertTranscriptViewAvailable();
     if (this.persistenceTarget) {
       const runtimeCwd = this.cwd;
       this.setSessionTarget(this.persistenceTarget);
@@ -233,21 +630,60 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
     if (!this.persistenceTarget) {
       return;
     }
-    const runtimeCwd = this.cwd;
     const target = this.persistenceTarget;
-    const previousView = structuredClone(this.captureTranscriptView());
+    if (this.boundedContextLimits) {
+      this.adoptPreparedTranscriptReload(
+        {
+          kind: "bounded",
+          snapshot: readSessionTranscriptBoundedActiveContextCore(target, {
+            ...this.boundedContextLimits,
+            ignoreReadFence: true,
+          }),
+        },
+        { expectedMutationAt, expectedEntryId, admittedUserId },
+      );
+    } else {
+      const inspected = inspectTranscriptEventsSync(target);
+      this.adoptPreparedTranscriptReload(
+        {
+          kind: "full",
+          snapshot: {
+            events: inspected.events,
+            version: {
+              generation: inspected.snapshot.generation,
+              rawSeq: inspected.snapshot.lastSeq,
+              updatedAt: inspected.snapshot.transcriptUpdatedAt,
+            },
+          },
+        },
+        { expectedMutationAt, expectedEntryId, admittedUserId },
+      );
+    }
+  }
+
+  /** Adopt owner-prepared bytes without reading SQLite again on the receiving thread. */
+  protected adoptPreparedTranscriptReload(
+    prepared: PreparedSessionTranscriptReload,
+    append?: { expectedMutationAt: number | null; expectedEntryId: string; admittedUserId: string },
+  ): void {
+    const target = this.persistenceTarget;
+    if (!target) {
+      return;
+    }
+    const runtimeCwd = this.cwd;
+    const previousView = append ? structuredClone(this.captureTranscriptView()) : undefined;
     let reloaded = false;
     try {
-      if (this.boundedContextLimits) {
-        const bounded = readSessionTranscriptBoundedActiveContextCore(target, {
-          ...this.boundedContextLimits,
-          ignoreReadFence: true,
-        });
+      if (prepared.kind === "bounded") {
+        const bounded = prepared.snapshot;
         // SAFETY: SQLite transcript readers return the same persisted entry union used by SessionManager.
         const entries = bounded.events as FileEntry[];
         if (
-          bounded.transcriptMutationAt !== expectedMutationAt &&
-          !entries.some((entry) => isIndexedSessionEntry(entry) && entry.id === expectedEntryId)
+          append &&
+          bounded.transcriptMutationAt !== append.expectedMutationAt &&
+          !entries.some(
+            (entry) => isIndexedSessionEntry(entry) && entry.id === append.expectedEntryId,
+          )
         ) {
           throw new Error("SQLite transcript changed before adopting the committed append");
         }
@@ -258,25 +694,29 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
         this.setLoadedSessionTarget(target, entries, bounded);
         reloaded = true;
       } else {
-        const inspected = inspectTranscriptEventsSync(target);
+        const snapshot = prepared.snapshot;
         // SAFETY: SQLite transcript readers return the same persisted entry union used by SessionManager.
-        const entries = inspected.events as FileEntry[];
+        const entries = snapshot.events as FileEntry[];
         if (
-          inspected.snapshot.transcriptUpdatedAt !== expectedMutationAt &&
-          !entries.some((entry) => isIndexedSessionEntry(entry) && entry.id === expectedEntryId)
+          append &&
+          snapshot.version.updatedAt !== append.expectedMutationAt &&
+          !entries.some(
+            (entry) => isIndexedSessionEntry(entry) && entry.id === append.expectedEntryId,
+          )
         ) {
           throw new Error("SQLite transcript changed before adopting the committed append");
         }
-        this.transcriptMutationAt = inspected.snapshot.transcriptUpdatedAt;
-        this.setLoadedSessionTarget(target, entries, undefined, {
-          generation: inspected.snapshot.generation,
-          rawSeq: inspected.snapshot.lastSeq,
-          updatedAt: inspected.snapshot.transcriptUpdatedAt,
-        });
+        this.transcriptMutationAt = snapshot.version.updatedAt;
+        this.setLoadedSessionTarget(target, entries, undefined, snapshot.version);
         reloaded = true;
       }
+      if (!append) {
+        return;
+      }
       const activeBranch = this.getBranch();
-      const admittedUserIndex = activeBranch.findIndex((entry) => entry.id === admittedUserId);
+      const admittedUserIndex = activeBranch.findIndex(
+        (entry) => entry.id === append.admittedUserId,
+      );
       const activeBranchHasNewerUser =
         admittedUserIndex < 0 ||
         activeBranch
@@ -284,287 +724,17 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
           .some((entry) => entry.type === "message" && entry.message.role === "user");
       if (activeBranchHasNewerUser) {
         this.adoptSelectedTranscriptPath(
-          expectedEntryId,
+          append.expectedEntryId,
           [...this.byId].map(([id, entry]) => [id, entry.parentId]),
         );
       }
     } catch (error) {
-      if (reloaded) {
+      if (reloaded && previousView) {
         Object.assign(this, previousView);
       }
       throw error;
     } finally {
       this.cwd = runtimeCwd;
     }
-  }
-
-  newSession(options?: NewSessionOptions): string | undefined {
-    if (this.persistenceTarget) {
-      throw new Error("Persisted session managers cannot change session identity in place");
-    }
-    return this.initializeSession(options);
-  }
-
-  private initializeSession(options?: NewSessionOptions): string | undefined {
-    this.sessionId = options?.id ?? this.persistenceTarget?.sessionId ?? createManagedSessionId();
-    this.migrated = false;
-    const timestamp = new Date().toISOString();
-    const header: SessionHeader = {
-      type: "session",
-      version: CURRENT_SESSION_VERSION,
-      id: this.sessionId,
-      timestamp,
-      cwd: this.cwd,
-      parentSession: options?.parentSession,
-    };
-    this.fileEntries = [header];
-    this.opaqueFileEntries = [];
-    this.byId.clear();
-    this.opaqueParentsById.clear();
-    this.boundedFirstKeptById.clear();
-    this.boundedParentIds.clear();
-    this.logicalParentsById.clear();
-    this.invalidLeafControlIds.clear();
-    this.labelsById.clear();
-    this.labelTimestampsById.clear();
-    this.leafId = null;
-    this.appendParentId = null;
-    this.appendMode = undefined;
-    this.pendingDeliberateAppend = false;
-    return this.persistenceTarget ? this.sessionId : undefined;
-  }
-
-  protected buildIndex(): void {
-    this.clearNavigation();
-    this.pendingDeliberateAppend = false;
-    let opaqueIndex = 0;
-    for (let index = 0; index <= this.fileEntries.length; index += 1) {
-      while (this.opaqueFileEntries[opaqueIndex]?.index === index) {
-        this.appendOpaqueNavigationRecord(this.opaqueFileEntries[opaqueIndex]?.record);
-        opaqueIndex += 1;
-      }
-      const entry = this.fileEntries[index];
-      // Current entries were validated by partition/append. Legacy imports retain readable rows
-      // through migration, so only those need the final shape check before indexing.
-      if (!entry || entry.type === "session" || (this.migrated && !isIndexedSessionEntry(entry))) {
-        continue;
-      }
-      this.appendCanonicalNavigationEntry(entry);
-    }
-    this.finishNavigation();
-  }
-
-  protected override normalizeEntryParent(entry: SessionEntry): SessionEntry {
-    let normalized = super.normalizeEntryParent(entry);
-    const boundedFirstKept = this.boundedFirstKeptById.get(normalized.id);
-    if (
-      boundedFirstKept !== undefined &&
-      (normalized.type === "compaction" || normalized.type === "reset")
-    ) {
-      normalized = { ...normalized, firstKeptEntryId: boundedFirstKept };
-    }
-    if (
-      (normalized.type === "compaction" || normalized.type === "reset") &&
-      normalized.firstKeptEntryId !== undefined &&
-      !this.byId.has(normalized.firstKeptEntryId) &&
-      this.opaqueParentsById.has(normalized.firstKeptEntryId)
-    ) {
-      const resolvedFirstKeptParent = this.resolveCanonicalParentId(normalized.firstKeptEntryId);
-      const firstKeptEntryId =
-        resolvedFirstKeptParent ??
-        this.findFirstCanonicalDescendantOnBranch(
-          normalized.firstKeptEntryId,
-          normalized.parentId,
-        ) ??
-        this.findFirstCanonicalDescendant(normalized.firstKeptEntryId) ??
-        this.resolveEntryParentId(entry);
-      if (firstKeptEntryId && firstKeptEntryId !== normalized.firstKeptEntryId) {
-        normalized = { ...normalized, firstKeptEntryId };
-      }
-    }
-    return normalized;
-  }
-
-  private findFirstCanonicalDescendantOnBranch(
-    opaqueId: string,
-    leafId: string | null,
-  ): string | undefined {
-    const seen = new Set<string>();
-    let currentId = leafId;
-    let firstCanonicalDescendant: string | undefined;
-    while (currentId && !seen.has(currentId)) {
-      if (currentId === opaqueId) {
-        return firstCanonicalDescendant;
-      }
-      seen.add(currentId);
-      const entry = this.byId.get(currentId);
-      if (entry) {
-        firstCanonicalDescendant = entry.id;
-        currentId = entry.parentId;
-      } else {
-        currentId = this.opaqueParentsById.get(currentId) ?? null;
-      }
-    }
-    return undefined;
-  }
-
-  private findFirstCanonicalDescendant(opaqueId: string): string | undefined {
-    for (const entry of this.fileEntries) {
-      if (!isIndexedSessionEntry(entry)) {
-        continue;
-      }
-      const seen = new Set<string>();
-      let parentId = entry.parentId;
-      while (parentId && this.opaqueParentsById.has(parentId) && !seen.has(parentId)) {
-        if (parentId === opaqueId) {
-          return entry.id;
-        }
-        seen.add(parentId);
-        parentId = this.opaqueParentsById.get(parentId) ?? null;
-      }
-    }
-    return undefined;
-  }
-
-  protected resolveBranchTargetId(branchFromId: string): string | null | undefined {
-    if (this.byId.has(branchFromId)) {
-      return branchFromId;
-    }
-    if (!this.opaqueParentsById.has(branchFromId)) {
-      return undefined;
-    }
-    return this.resolveCanonicalParentId(branchFromId);
-  }
-
-  protected clampOpaqueFileEntryIndexes(): void {
-    let previousOpaqueIndex = 0;
-    for (const opaqueEntry of this.opaqueFileEntries) {
-      opaqueEntry.index = Math.max(
-        previousOpaqueIndex,
-        Math.min(opaqueEntry.index, this.fileEntries.length),
-      );
-      previousOpaqueIndex = opaqueEntry.index;
-    }
-  }
-
-  protected createLeafControl(
-    parentId: string | null,
-    appendParentId: string | null = this.appendParentId,
-    appendMode?: "side",
-  ): SessionLeafControl {
-    return {
-      type: "leaf",
-      id: generateSessionEntryId(),
-      parentId,
-      timestamp: new Date().toISOString(),
-      targetId: this.leafId,
-      ...(appendParentId !== this.leafId ? { appendParentId } : {}),
-      ...(appendMode ? { appendMode } : {}),
-    };
-  }
-
-  protected rememberLeafControl(leafEntry: SessionLeafControl): void {
-    this.opaqueFileEntries.push({ index: this.fileEntries.length, record: leafEntry });
-    this.opaqueParentsById.set(leafEntry.id, leafEntry.targetId);
-  }
-
-  getAppendParentId(): string | null {
-    return this.appendParentId;
-  }
-
-  getAppendMode(): "side" | undefined {
-    return this.appendMode;
-  }
-
-  protected getPersistedFileEntries(
-    leafAppendParentId: string | null = this.appendParentId,
-    leafAppendMode?: "side",
-  ): unknown[] {
-    this.clampOpaqueFileEntryIndexes();
-    const entries: unknown[] = [];
-    let opaqueIndex = 0;
-    for (let index = 0; index <= this.fileEntries.length; index += 1) {
-      while (this.opaqueFileEntries[opaqueIndex]?.index === index) {
-        entries.push(this.opaqueFileEntries[opaqueIndex]?.record);
-        opaqueIndex += 1;
-      }
-      const entry = this.fileEntries[index];
-      if (entry) {
-        entries.push(entry);
-      }
-    }
-    while (opaqueIndex < this.opaqueFileEntries.length) {
-      entries.push(this.opaqueFileEntries[opaqueIndex]?.record);
-      opaqueIndex += 1;
-    }
-
-    let persistedLeafId: string | null = null;
-    let persistedAppendParentId: string | null = null;
-    let rawTailId: string | null = null;
-    for (const entry of entries) {
-      const leafEntry = parseOpaqueLeafEntry(entry);
-      if (leafEntry) {
-        rawTailId = leafEntry.id;
-        if (this.invalidLeafControlIds.has(leafEntry.id)) {
-          continue;
-        }
-        const targetId = this.resolveOpaqueLeafTargetId(leafEntry.targetId);
-        persistedLeafId = targetId;
-        persistedAppendParentId =
-          leafEntry.appendParentId === undefined
-            ? targetId
-            : this.resolveOpaqueAppendParentId(leafEntry.appendParentId);
-        continue;
-      }
-      if (isIndexedSessionEntry(entry)) {
-        persistedLeafId = entry.id;
-        persistedAppendParentId = entry.id;
-        rawTailId = entry.id;
-        continue;
-      }
-      const opaqueLink = parseParentLinkedOpaqueEntry(entry);
-      if (opaqueLink) {
-        persistedAppendParentId = opaqueLink.id;
-        rawTailId = opaqueLink.id;
-      }
-    }
-    if (persistedLeafId !== this.leafId || persistedAppendParentId !== this.appendParentId) {
-      const leafEntry = this.createLeafControl(rawTailId, leafAppendParentId, leafAppendMode);
-      this.rememberLeafControl(leafEntry);
-      entries.push(leafEntry);
-    }
-    return entries;
-  }
-
-  getPersistedEntries(): unknown[] {
-    return this.getPersistedFileEntries();
-  }
-
-  clearPreservedOpaqueFileEntries(): void {
-    this.opaqueFileEntries = [];
-    this.opaqueParentsById.clear();
-    this.invalidLeafControlIds.clear();
-    this.appendParentId = null;
-    this.appendMode = undefined;
-    this.pendingDeliberateAppend = false;
-  }
-
-  /** SQLite appends are synchronous; retained for the AgentSession contract. */
-  protected flushPendingPersistence(): void {}
-
-  isPersisted(): boolean {
-    return this.persistenceTarget !== undefined;
-  }
-
-  getCwd(): string {
-    return this.cwd;
-  }
-
-  getSessionId(): string {
-    return this.sessionId;
-  }
-
-  getSessionTarget(): SessionManagerPersistenceTarget | undefined {
-    return this.persistenceTarget ? { ...this.persistenceTarget } : undefined;
   }
 }

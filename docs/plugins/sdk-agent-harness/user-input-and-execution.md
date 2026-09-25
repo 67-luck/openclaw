@@ -126,6 +126,24 @@ binds the host-resolved run, sandbox, requester, route, and approval identity;
 plugins must not reconstruct those fields or retain the capability after the
 attempt returns. Calls made after attempt settlement fail closed.
 
+For independently retained native work, call the optional
+`retainSourceAuthority()` while the host capability is active. When an operator
+source exists, the returned `assertCurrent`, optional `signal`, and idempotent
+`release` retain that original source independently of foreground completion.
+The method returns `undefined` for a run without an operator source. It supplies
+neither new tool permission nor a replacement foreground capability. Bind it to
+the exact resources admitted through the existing native policy path, recheck it
+before further effects, and stop those resources when its signal aborts. Keep
+termination and settlement custody separate from action permission, and release
+the source after the owned resources settle. Report failed cleanup while retaining
+custody of unsettled resources. Do not reconstruct ownership from session
+attribution or reused process IDs.
+
+The host signals Gateway lifecycle retirement. Proactive source revocation also
+requires the originating authority's signal; Visitor Access provides it for
+grant expiry and revocation. Assertion-only source constraints are checked before
+effects and do not provide an asynchronous revocation notification.
+
 For native-history recovery, optional `prepareContextMedia({ message, maxChars })`
 reconstructs saved user attachments under that same host authority and current
 media policy. Include its returned text and images in the native context budget;
@@ -139,16 +157,6 @@ event data, and persists it through the canonical trajectory store. Treat the
 capability as optional, send only structured non-secret facts, and await
 `flush()` before the attempt settles; do not infer storage paths or create a
 plugin-side fallback when the capability is absent.
-
-Harnesses that return provider-observed tool results may use the optional
-`commitProviderTranscriptPrefix(...)` capability to atomically persist the
-validated transcript prefix before returning the result to their native SDK.
-The host binds the operation to the current admitted run and transcript writer;
-plugins must not reconstruct that authority or add a capability-free fallback.
-Older hosts do not expose this method. A package that requires it must declare
-the first OpenClaw release containing the capability in
-`openclaw.compat.pluginApi`; do not publish that package until the release
-version is assigned.
 
 New harnesses should implement `AgentHarnessV2` and type prepared attempts as
 `AgentHarnessAttemptParamsV2`, `EmbeddedRunAttemptParamsV2`, and
@@ -182,6 +190,18 @@ tool-search/code-mode control selection, local-model lean defaults,
 runtime-compatible schema filtering, hidden catalog execution, directory
 hydration, and catalog cleanup. Harnesses still own their SDK-specific tool
 conversion and native execution callback.
+
+Native tool adapters may use `runWithAsyncWorkResources(...)` from the same
+subpath to retain operation cleanup through host-owned admitted work without
+withholding the tool result. Register cleanup with its `onAcquired` callback;
+keep real cancellation active until cleanup releases it. Set
+`releaseBeforeResultWhenIdle: true` on the acquired resources when ordinary
+operation cleanup must complete before returning a result; accepted tracked
+work still returns its logical result without waiting for admission. This retains resources,
+not permission: queued work must still revalidate its original run, caller,
+expiry, and commit guards. Timeout, abort, and failed outcomes must close their
+operation immediately. Manual automation admission uses the existing per-call
+mutation receipt to join only activation, not the scheduled payload's lifetime.
 
 After the last policy filter, schema quarantine, and native registration
 intersection, call `finalizeAgentToolAvailability(tools, options?)` from
@@ -229,6 +249,24 @@ provider failures or timeouts, for invalid responses, or for an `allow` response
 whose risk is not low or medium. Detected reviewer-directed prompt injection
 returns `deny` with high risk. Facade loading or reviewer construction errors
 may still reject the promise; an error is never permission to execute.
+
+## Sandbox subprocess cleanup
+
+Use `prepareSandboxProcessCleanup(backend, env)` from
+`openclaw/plugin-sdk/sandbox` before building a subprocess exec spec. Pass its
+returned environment to `buildExecSpec`, and retain its `terminate` callback with
+the child owner. Call the exec spec’s `assertCurrent` immediately before spawning,
+and finalize the backend token on every exit or launch failure.
+
+Docker and Podman provide `prepareProcessCleanup`: a live owner mints a random
+process marker and a termination-only callback pinned to that runtime. Revoking
+execution blocks new preparation, commands, and file writes, but the previously
+minted callback can still stop its marked process tree. It cannot execute an
+arbitrary script or select a different runtime. The returned `interrupt` callback
+keeps ordinary live execution checks because a signal handler can run guest code.
+Backends without this optional
+capability retain the existing shell-command cleanup path; they must preserve
+cleanup authority according to their own lifecycle contract.
 
 ## Paired-device execution
 

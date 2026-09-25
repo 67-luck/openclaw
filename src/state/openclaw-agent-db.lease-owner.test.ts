@@ -5,6 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as nodeSqlite from "../infra/node-sqlite.js";
 import {
+  assertNoOpenClawAgentDatabaseLeasesReadOnly,
+  readActiveOpenClawAgentDatabaseLeasesReadOnly,
+} from "./openclaw-agent-db-lease.js";
+import {
   closeOpenClawAgentDatabaseByPath,
   closeOpenClawAgentDatabasesForTest,
   getOpenClawAgentDatabaseIfOpen,
@@ -15,6 +19,7 @@ import {
   withOpenClawAgentDatabaseAdmission,
   type OpenClawAgentDatabaseWriteAdmission,
 } from "./openclaw-agent-db.js";
+import { clearOpenClawAgentIntegrityVerification } from "./openclaw-quarantine-store.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -48,6 +53,28 @@ function createOwner() {
 }
 
 describe("agent database lease acquisition owner", () => {
+  it.each([true, false])("observes live leases before maintenance (cached: %s)", (cached) => {
+    const { env } = createOwner();
+    const agent = openOpenClawAgentDatabase({ agentId: "main", env });
+    if (!cached) {
+      closeOpenClawStateDatabaseForTest();
+    }
+
+    expect(readActiveOpenClawAgentDatabaseLeasesReadOnly({ env })).toEqual([
+      expect.objectContaining({ agent_id: "main", path: agent.path, owner_pid: process.pid }),
+    ]);
+    expect(() => assertNoOpenClawAgentDatabaseLeasesReadOnly({ env })).toThrow(
+      "database is still open in process",
+    );
+
+    expect(closeOpenClawAgentDatabaseByPath(agent.path)).toBe(true);
+    if (!cached) {
+      closeOpenClawStateDatabaseForTest();
+    }
+    expect(readActiveOpenClawAgentDatabaseLeasesReadOnly({ env })).toEqual([]);
+    expect(() => assertNoOpenClawAgentDatabaseLeasesReadOnly({ env })).not.toThrow();
+  });
+
   it("rejects initial authority denial without creating a database or changing its directory", async () => {
     const owner = createOwner();
     const directory = path.join(owner.stateDir, "custom");
@@ -93,6 +120,8 @@ describe("agent database lease acquisition owner", () => {
       DROP INDEX idx_agent_cache_expiry;
     `);
     expect(closeOpenClawAgentDatabaseByPath(original.path)).toBe(true);
+    closeOpenClawAgentDatabasesForTest(owner.stateDir);
+    clearOpenClawAgentIntegrityVerification(original.path, owner.env);
     const nativeOpen = nodeSqlite.openNodeSqliteDatabase;
     let opened: DatabaseSync | undefined;
     const open = vi
@@ -207,12 +236,6 @@ describe("agent database lease acquisition owner", () => {
       agentId: "main",
       ...(ambient ? {} : { env: owner.env }),
     });
-    const originalOwnerEnv = database.ownerEnv;
-    expect(originalOwnerEnv).toEqual({
-      OPENCLAW_STATE_DIR: owner.stateDir,
-      ...(external ? { OPENCLAW_SUPERVISOR_MODE: "external" } : {}),
-    });
-    expect(Object.isFrozen(originalOwnerEnv)).toBe(true);
     expect(owner.leases()).toHaveLength(1);
     try {
       if (external) {
@@ -222,13 +245,6 @@ describe("agent database lease acquisition owner", () => {
         vi.stubEnv("OPENCLAW_STATE_DIR", owner.nextStateDir);
       }
       expect(fs.readdirSync(owner.nextStateDir)).toEqual([]);
-      const cached = openOpenClawAgentDatabase({
-        agentId: "main",
-        env: owner.env,
-        path: database.path,
-      });
-      expect(cached).toBe(database);
-      expect(cached.ownerEnv).toBe(originalOwnerEnv);
       if (worker) {
         expect(settleOpenClawAgentDatabaseWorkerClose(database.path)).toEqual({
           errors: [],

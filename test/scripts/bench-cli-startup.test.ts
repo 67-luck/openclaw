@@ -1,20 +1,28 @@
 // Bench Cli Startup tests cover bench cli startup script behavior.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { testing } from "../../scripts/bench-cli-startup.ts";
 import { forceKillVitestProcessGroup } from "../../scripts/vitest-process-group.mts";
+import {
+  resolveRuntimeWorkerArgv,
+  resolveRuntimeWorkerUrl,
+} from "../../src/infra/runtime-worker-url.js";
 import { withEnv } from "../../src/test-utils/env.js";
+import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { isProcessAlive, waitForDead } from "../helpers/process-wait.js";
 import { createTempDirTracker, useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { toolingTsEntrypoints } from "./tooling-ts-runtime.test-support.js";
 
 const repoRoot = join(__dirname, "../..");
+const testNodeExecPath = resolveTestNodeExecPath();
+const benchmarkUrl = resolveRuntimeWorkerUrl(toolingTsEntrypoints.benchCli);
+const benchmarkArgs = resolveRuntimeWorkerArgv(benchmarkUrl, testNodeExecPath);
 
 function runBenchmarkCli(args: string[]) {
-  return spawnSync(process.execPath, ["--import", "tsx", "scripts/bench-cli-startup.ts", ...args], {
+  return spawnSync(testNodeExecPath, [...benchmarkArgs, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
   });
@@ -23,12 +31,152 @@ function runBenchmarkCli(args: string[]) {
 describe("bench-cli-startup", () => {
   const memoryTempDirs = useAutoCleanupTempDirTracker(afterEach);
 
+  it("routes synthetic samples and their state through the explicit transport without runner environment", () => {
+    const tempDirs = createTempDirTracker();
+    const root = tempDirs.make("openclaw-cli-transport-");
+    try {
+      const prefix = join(root, "transport.mjs");
+      const entry = join(root, "entry.mjs");
+      const calls = join(root, "calls.jsonl");
+      const output = join(root, "report.json");
+      writeFileSync(
+        prefix,
+        `import assert from "node:assert/strict";
+import fs from "node:fs";
+import { spawnSync } from "node:child_process";
+const args = process.argv.slice(2);
+assert.equal(args.shift(), "/usr/bin/env");
+assert.equal(args.shift(), "-C");
+const cwd = args.shift();
+assert.equal(cwd, ${JSON.stringify(root)});
+assert.equal(args.shift(), "-i");
+const env = {};
+while (args[0]?.includes("=") && !args[0].startsWith("/")) {
+  const value = args.shift(), index = value.indexOf("=");
+  env[value.slice(0,index)] = value.slice(index+1);
+}
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({args,env})+"\\n");
+if (args[0] === "/usr/bin/timeout") {
+  assert.deepEqual(args.splice(0,4), ["/usr/bin/timeout","--signal=TERM","--kill-after=1s","5s"]);
+}
+const result = spawnSync(args[0],args.slice(1),{env,cwd,stdio:"inherit"});
+process.exit(result.status ?? 99);
+`,
+      );
+      writeFileSync(
+        entry,
+        `import assert from "node:assert/strict";
+import fs from "node:fs";
+assert.equal(process.env.SUT_FIXTURE,"yes");
+assert.equal(process.env.RUNNER_PRIVATE_CANARY,undefined);
+assert.equal(process.env.OPENCLAW_BENCH_TRANSPORT_JSON,undefined);
+assert.equal(process.cwd(),${JSON.stringify(root)});
+fs.writeFileSync(process.env.OPENCLAW_STATE_DIR+"/witness","sample");
+console.log("fixture version");
+`,
+      );
+      const result = spawnSync(
+        testNodeExecPath,
+        [
+          ...benchmarkArgs,
+          "--entry",
+          entry,
+          "--case",
+          "version",
+          "--runs",
+          "1",
+          "--warmup",
+          "0",
+          "--timeout-ms",
+          "5000",
+          "--json",
+          "--output",
+          output,
+        ],
+        {
+          cwd: resolve(__dirname, "../.."),
+          env: {
+            ...process.env,
+            RUNNER_PRIVATE_CANARY: "must-not-forward",
+            OPENCLAW_BENCH_TRANSPORT_JSON: JSON.stringify({
+              prefix: [testNodeExecPath, prefix],
+              binary: testNodeExecPath,
+              env: { HOME: root, PATH: process.env.PATH, SUT_FIXTURE: "yes" },
+            }),
+          },
+          encoding: "utf8",
+          timeout: 15_000,
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      const report = JSON.parse(readFileSync(output, "utf8"));
+      expect(report.primary.executionMode).toBe("transport");
+      expect(report.primary.cases[0].samples).toMatchObject([{ exitCode: 0, signal: null }]);
+      const invocations = readFileSync(calls, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(invocations).toHaveLength(4);
+      expect(invocations.filter((call) => call.args.includes("/usr/bin/timeout"))).toHaveLength(1);
+      expect(invocations.every((call) => call.env.RUNNER_PRIVATE_CANARY === undefined)).toBe(true);
+    } finally {
+      tempDirs.cleanup();
+    }
+  });
+
+  it.each(["{}", '{"prefix":["relative"],"binary":"/node","env":{}}'])(
+    "rejects malformed cross-user transport before candidate execution: %s",
+    (transport) => {
+      const result = spawnSync(testNodeExecPath, [...benchmarkArgs, "--entry", "/not-executed"], {
+        env: { ...process.env, OPENCLAW_BENCH_TRANSPORT_JSON: transport },
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Invalid benchmark transport");
+      expect(result.stdout).toBe("");
+    },
+  );
+
+  it("rejects transported runtime RSS before launching the SUT filesystem helper", () => {
+    const root = memoryTempDirs.make("openclaw-cli-rss-transport-");
+    const prefix = join(root, "transport.mjs");
+    const witness = join(root, "prefix-launched");
+    writeFileSync(
+      prefix,
+      `import fs from "node:fs";
+fs.writeFileSync(${JSON.stringify(witness)}, "launched");
+throw new Error("SUT prefix must not launch");`,
+    );
+    const result = spawnSync(
+      testNodeExecPath,
+      [...benchmarkArgs, "--runtime-rss", "--entry", join(root, "missing-entry.mjs")],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          OPENCLAW_BENCH_TRANSPORT_JSON: JSON.stringify({
+            prefix: [testNodeExecPath, prefix],
+            binary: testNodeExecPath,
+            env: { HOME: root, PATH: process.env.PATH },
+          }),
+        },
+        encoding: "utf8",
+      },
+    );
+    expect(result.status).toBe(1);
+    expect(existsSync(witness)).toBe(false);
+    expect(result.stderr.trim()).toBe("Cross-user runtime RSS sampling is not supported");
+    expect(result.stdout).toBe("");
+  });
+
   it.each(["warning", "ca", "windows"])(
     "preserves legacy RSS and opts into runtime RSS through the actual %s respawn plan",
     (mode) => {
       const tmpDir = memoryTempDirs.make("openclaw-cli-rss-respawn-");
       const entryPath = join(tmpDir, "entry.mjs");
       const caPath = join(tmpDir, "ca.pem");
+      const respawnUrl = resolveRuntimeWorkerUrl(toolingTsEntrypoints.respawn);
+      const respawnPreload = resolveRuntimeWorkerArgv(respawnUrl, testNodeExecPath).slice(0, -1);
       writeFileSync(caPath, "");
       writeFileSync(
         entryPath,
@@ -38,9 +186,8 @@ const usage = process.resourceUsage();
 const runtime = process.env.FIXTURE_RUNTIME === "1";
 process.resourceUsage = () => ({ ...usage, maxRSS: (runtime ? 32 : 64) * 1024 });
 if (isMainThread && !runtime) {
-  const { tsImport } = await import(${JSON.stringify(pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm/api")).href)});
-  const { buildCliRespawnPlan, runCliRespawnPlan } = await tsImport(
-    ${JSON.stringify(resolve(repoRoot, "src/entry.respawn.ts"))}, import.meta.url);
+  ${respawnPreload.length > 0 ? `await import(${JSON.stringify(respawnPreload[1])});` : ""}
+  const { buildCliRespawnPlan, runCliRespawnPlan } = await import(${JSON.stringify(respawnUrl.href)});
   const plan = buildCliRespawnPlan({
     platform: ${JSON.stringify(mode === "windows" ? "win32" : "linux")},
     env: { ...process.env, OPENCLAW_NO_RESPAWN: "0", NODE_EXTRA_CA_CERTS: "",
@@ -120,7 +267,9 @@ if (isMainThread && !runtime) {
         ...(runtimeRss ? ["--runtime-rss"] : []),
       ]);
       expect(result.status, result.stderr).toBe(0);
-      const sample = JSON.parse(result.stdout).primary.cases[0].samples[0];
+      const report = JSON.parse(result.stdout);
+      expect(report.primary.executionMode).toBe("native");
+      const sample = report.primary.cases[0].samples[0];
       expect(sample.maxRssMb).toBeGreaterThan(0);
       if (runtimeRss) {
         expect(sample.firstOutputMs).toBeNull();
@@ -352,10 +501,9 @@ setInterval(() => {}, 1000);
         // Keep real processes, but advance deadlines only after child-owned readiness.
         // The driver isolates Node mock timers from Vitest and the fixture processes.
         const result = spawnSync(
-          process.execPath,
+          testNodeExecPath,
           [
-            "--import",
-            "tsx",
+            ...benchmarkArgs.slice(0, -1),
             "--input-type=module",
             "-e",
             `
@@ -363,7 +511,7 @@ import assert from "node:assert/strict";
 import { mock } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import { isProcessAlive, waitForPidFile } from ${JSON.stringify(new URL("../helpers/process-wait.ts", import.meta.url).href)};
+import { isProcessAlive, waitForPidFile } from ${JSON.stringify(resolveRuntimeWorkerUrl(toolingTsEntrypoints.processWait).href)};
 const realDelay = delay;
 mock.timers.enable({ apis: ["setTimeout", "Date"] });
 try {
@@ -388,7 +536,7 @@ try {
   mock.timers.reset();
 }
 `,
-            resolve(__dirname, "../../scripts/bench-cli-startup.ts"),
+            fileURLToPath(benchmarkUrl),
             "--entry",
             entryPath,
             "--case",
@@ -546,6 +694,41 @@ try {
       ]);
       expect(compatible.status, compatible.stderr).toBe(0);
       expect(JSON.parse(compatible.stdout)).toEqual(comparison);
+
+      for (const [before, after, error] of [
+        [undefined, "native", null],
+        ["native", undefined, null],
+        ["native", "native", null],
+        ["transport", "transport", null],
+        [undefined, "transport", "Incompatible CLI execution modes"],
+        ["transport", "native", "Incompatible CLI execution modes"],
+        ["unknown", "unknown", "Unknown CLI execution mode"],
+        [null, "native", "Unknown CLI execution mode"],
+        ["native", 1, "Unknown CLI execution mode"],
+      ] satisfies Array<[unknown, unknown, string | null]>) {
+        writeFileSync(
+          baselinePath,
+          JSON.stringify({ primary: { ...makeReport(100, 50).primary, executionMode: before } }),
+        );
+        writeFileSync(
+          candidatePath,
+          JSON.stringify({ primary: { ...makeReport(125, 60).primary, executionMode: after } }),
+        );
+        const modeResult = runBenchmarkCli([
+          "--compare-baseline",
+          baselinePath,
+          "--compare-candidate",
+          candidatePath,
+          "--json",
+        ]);
+        expect(modeResult.status, modeResult.stderr).toBe(error ? 1 : 0);
+        if (error) {
+          expect(modeResult.stderr).toContain(error);
+          expect(modeResult.stdout).toBe("");
+        } else {
+          expect(JSON.parse(modeResult.stdout)).toEqual(comparison);
+        }
+      }
     } finally {
       tempDirs.cleanup();
     }

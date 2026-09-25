@@ -26,7 +26,10 @@ The following lifecycle applies to Workshop proposals:
   `stale` if the live skill changes before apply.
 - **Scanner gated:** apply reruns the security scanner before writing. Only
   critical findings block apply; warn-level findings remain visible but do not
-  block it.
+  block it. Prompt-related keywords are not scanner findings: mentioning hidden
+  instructions or tool approval does not establish an instruction override.
+  Literal credential rejection, approval policy, and blocking evaluator decisions
+  remain enforced.
 - **Recoverable:** apply writes rollback metadata before touching live files.
 - **Revision atomic:** create and revise flush a complete immutable proposal
   generation, publish it with an atomic rename, then sync its parent directory
@@ -47,6 +50,9 @@ Open **Plugins → Workshop** and select the agent whose skills you want to insp
   Current instructions remain readable while saved versions are compared.
 - **Suggestions** contains pending proposals that you can evaluate, revise,
   apply, or reject.
+
+Action confirmations dismiss automatically. A warning that a suggestion changed
+stays visible so you can review the updated draft.
 
 Past applied, rejected, quarantined, and stale proposals remain available through
 CLI and Gateway inspection. They are not listed as a separate Control UI section

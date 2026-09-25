@@ -1,9 +1,11 @@
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { createAgentRunDirectAbortError } from "../../agents/run-termination.js";
 import * as sandboxWorkspace from "../../agents/sandbox/context.js";
+import { registerAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import * as staging from "../../auto-reply/reply/stage-sandbox-media.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
@@ -15,6 +17,138 @@ import { createDirectChatContext } from "../server-chat.agent-events.test-helper
 import { prepareChatSendAttachments } from "./chat-send-attachments.js";
 import { prepareAndAdmitChatSend } from "./chat-send-setup.js";
 import type { RespondFn } from "./types.js";
+
+it.each([
+  { canTransfer: true, stopped: false },
+  { canTransfer: false, stopped: false },
+  { canTransfer: false, stopped: true },
+  { canTransfer: true, stopped: true },
+])("routes chat uploads: %j", async ({ canTransfer, stopped }) => {
+  await withOpenClawTestState({ label: "remote-chat-attachment" }, async (state) => {
+    const cfg = {
+      agents: {
+        ownership: "explicit",
+        entries: { main: { workspace: state.workspaceDir } },
+        defaults: {
+          skipBootstrap: true,
+          sandbox: {
+            mode: "all",
+            scope: "agent",
+            workspaceRoot: state.path("sandbox"),
+            workspaceAccess: "none",
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    await state.writeConfig(cfg);
+    const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
+    const respond = vi.fn<RespondFn>();
+    const runId = "remote-attachment";
+    const setup = await prepareAndAdmitChatSend({
+      client: null,
+      context,
+      respond,
+      params: {
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        message: "read the file",
+        idempotencyKey: runId,
+        attachments: [
+          {
+            fileName: "input.txt",
+            mimeType: "text/plain",
+            content: Buffer.from("original upload").toString("base64"),
+          },
+        ],
+      },
+    });
+    if (!setup) {
+      throw new Error("chat admission failed");
+    }
+    const release = registerAgentWorkspaceAccess(state.workspaceDir, {
+      ...(canTransfer ? { prepareTurnAttachments: vi.fn(async () => undefined) } : {}),
+      bridge: {
+        readFile: async () => {
+          throw new Error("unexpected workspace read");
+        },
+        writeFile: async () => {
+          throw new Error("unexpected workspace write");
+        },
+        stat: async () => {
+          throw new Error("unexpected workspace stat");
+        },
+      },
+    });
+    if (stopped) {
+      release();
+    }
+    const sandboxSpy = vi.spyOn(sandboxWorkspace, "ensureSandboxWorkspaceForSession");
+    let prepared: Awaited<ReturnType<typeof prepareChatSendAttachments>> | undefined;
+    const admission = setup.admitted.value;
+    const cleanup = async () => {
+      const failures: unknown[] = [];
+      try {
+        await admission.cleanupAdmittedRun();
+        clearAgentRunContext(runId, admission.lifecycleGeneration);
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        if (prepared?.ok) {
+          await attachments.discardPreparedInboundMedia(prepared.value.offloadedRefs);
+        }
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 1) {
+        throw failures[0];
+      }
+      if (failures.length > 1) {
+        throw new AggregateError(failures, "attachment run and media cleanup failed");
+      }
+    };
+    try {
+      prepared = await prepareChatSendAttachments({
+        request: setup.normalizedRequest.value,
+        session: setup.preparedSession.value,
+        admission,
+        respond,
+        context,
+      });
+      if (canTransfer && stopped) {
+        expect(prepared.ok).toBe(false);
+        expect(sandboxSpy).not.toHaveBeenCalled();
+        expect(respond).toHaveBeenCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({ code: "UNAVAILABLE" }),
+        );
+        return;
+      }
+      expect(prepared.ok).toBe(true);
+      if (!prepared.ok) {
+        throw new Error("attachment preparation failed");
+      }
+      const source = prepared.value.offloadedRefs[0]!.path;
+      const media = prepared.value.mediaPathOffloads[0]!;
+      expect(await fs.readFile(source, "utf8")).toBe("original upload");
+      if (canTransfer) {
+        expect(media).toMatchObject({ path: source, fileName: "input.txt" });
+        expect(sandboxSpy).not.toHaveBeenCalled();
+      } else {
+        expect(sandboxSpy).toHaveBeenCalled();
+        expect(media.workspaceDir?.startsWith(state.path("sandbox"))).toBe(true);
+        expect(await fs.readFile(path.join(media.workspaceDir!, media.path!), "utf8")).toBe(
+          "original upload",
+        );
+      }
+    } finally {
+      release();
+      sandboxSpy.mockRestore();
+      await cleanup();
+    }
+  });
+});
 
 it.each([
   {
@@ -181,6 +315,28 @@ it.each([
       throw stageError === "abort" ? signal.reason : ordinaryFailure;
     });
     let prepared: Awaited<ReturnType<typeof prepareChatSendAttachments>> | undefined;
+    const cleanupAdmission = async () => {
+      const failures: unknown[] = [];
+      try {
+        await admission.cleanupAdmittedRun();
+        clearAgentRunContext(runId, admission.lifecycleGeneration);
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        if (prepared?.ok) {
+          await discard(prepared.value.offloadedRefs);
+        }
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 1) {
+        throw failures[0];
+      }
+      if (failures.length > 1) {
+        throw new AggregateError(failures, "attachment run and media cleanup failed");
+      }
+    };
     const preparing = prepareChatSendAttachments({
       request: setup.normalizedRequest.value,
       session: setup.preparedSession.value,
@@ -229,7 +385,14 @@ it.each([
         if (!result.ok) {
           throw new Error("ordinary managed-PDF fallback failed");
         }
-        expect(result.value.mediaPathOffloadPaths).toEqual([inboundPath]);
+        expect(result.value.mediaPathOffloads).toEqual([
+          {
+            path: inboundPath,
+            contentType: "application/pdf",
+            fileName: "notes.pdf",
+            workspaceDir: path.dirname(inboundPath),
+          },
+        ]);
         expect((await fs.readFile(inboundPath)).equals(bytes)).toBe(true);
         expect(discardSpy).not.toHaveBeenCalled();
         expect(respond).not.toHaveBeenCalled();
@@ -316,11 +479,7 @@ it.each([
         parseSpy.mockRestore();
         discardSpy.mockRestore();
         failureSpy.mockRestore();
-        admission.cleanupAdmittedRun();
-        clearAgentRunContext(runId, admission.lifecycleGeneration);
-        if (prepared?.ok) {
-          await discard(prepared.value.offloadedRefs);
-        }
+        await cleanupAdmission();
       }
     }
   });

@@ -1,7 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { performance } from "node:perf_hooks";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { createDeferredCore } from "./deferred.js";
 import { resolveGlobalSingleton } from "./global-singleton.js";
+
+const MAX_WRITERS_PER_TURN = 4;
+const WRITER_TURN_BUDGET_MS = 4;
 
 /** Pending exclusive store write plus the promise hooks for its caller. */
 type StoreWriterTask = {
@@ -13,7 +17,7 @@ type StoreWriterTask = {
   reject: (reason: unknown) => void;
 };
 
-/** Per-store-path FIFO queue that serializes file writes within one process. */
+/** Per-store-path FIFO queue that serializes writes within one process. */
 export type StoreWriterQueue = {
   /** Writes waiting behind the active drain. */
   pending: StoreWriterTask[];
@@ -29,6 +33,8 @@ export type StoreWriterTiming = { startedAt?: number; finishedAt?: number; reent
 
 type ActiveStoreWriter = {
   active: boolean;
+  native: Set<object>;
+  hostSteps: Set<object>;
   parent: ActiveStoreWriter | undefined;
   queues: StoreWriterQueues;
   storePath: string;
@@ -41,15 +47,47 @@ const activeStoreWriters = resolveGlobalSingleton(
   () => new AsyncLocalStorage<ActiveStoreWriter>(),
 );
 
-function isActiveStoreWriter(queues: StoreWriterQueues, storePath: string): boolean {
-  let active = activeStoreWriters.getStore();
-  while (active) {
-    if (active.active && active.queues === queues && active.storePath === storePath) {
-      return true;
-    }
-    active = active.parent;
+// Independently draining stores share one event loop, including separately bundled callers.
+const writerTurn = resolveGlobalSingleton(
+  Symbol.for("openclaw.storeWriterTurn"),
+  (): {
+    started: number;
+    startedAt: number;
+    reset: Promise<void> | undefined;
+    wait: Promise<void> | undefined;
+    nativeWaitDepth: number;
+  } => ({
+    started: 0,
+    startedAt: 0,
+    reset: undefined,
+    wait: undefined,
+    nativeWaitDepth: 0,
+  }),
+);
+
+function claimStoreWriterTurn(immediate: boolean): Promise<void> | undefined {
+  const now = performance.now();
+  if (!writerTurn.reset) {
+    writerTurn.started = 0;
+    writerTurn.startedAt = now;
+    writerTurn.reset = nextTurn().then(() => {
+      writerTurn.reset = undefined;
+    });
   }
-  return false;
+  // Idle first writers retain synchronous acquisition; their work still consumes the turn.
+  if (
+    !immediate &&
+    (writerTurn.wait ||
+      writerTurn.started >= MAX_WRITERS_PER_TURN ||
+      now - writerTurn.startedAt >= WRITER_TURN_BUDGET_MS)
+  ) {
+    // The reset can precede I/O queued during this turn. Yield from exhaustion, not its start.
+    return (writerTurn.wait ??= nextTurn().then(() => {
+      writerTurn.wait = undefined;
+    }));
+  }
+  writerTurn.started++;
+  return undefined;
 }
 
 async function runActiveStoreWriter<T>(
@@ -58,18 +96,161 @@ async function runActiveStoreWriter<T>(
   fn: () => Promise<T>,
   timing?: StoreWriterTiming,
 ): Promise<T> {
-  const writer = { active: true, parent: activeStoreWriters.getStore(), queues, storePath };
+  const writer = {
+    active: true,
+    native: new Set<object>(),
+    hostSteps: new Set<object>(),
+    parent: activeStoreWriters.getStore(),
+    queues,
+    storePath,
+  };
   if (timing) {
     timing.reentrant = false;
     timing.startedAt = performance.now();
   }
   try {
-    return await activeStoreWriters.run(writer, fn);
+    return await activeStoreWriters.run(writer, () => runStoreWriterHostPhase(writer, fn));
   } finally {
     if (timing) {
       timing.finishedAt = performance.now();
     }
     writer.active = false;
+  }
+}
+
+function findActiveStoreWriter(queues: StoreWriterQueues, storePath: string) {
+  // A new lane cannot be reentrant; bulk acquisition must not scan held owners.
+  if (!queues.has(storePath)) {
+    return undefined;
+  }
+  let writer = activeStoreWriters.getStore();
+  while (writer) {
+    if (writer.active && writer.queues === queues && writer.storePath === storePath) {
+      return writer;
+    }
+    writer = writer.parent;
+  }
+  return undefined;
+}
+
+function assertStoreWriterHostPhase(writer: ActiveStoreWriter) {
+  if (
+    !writer.active ||
+    writerTurn.nativeWaitDepth > 0 ||
+    [...writer.native].some((operation) => !writer.hostSteps.has(operation))
+  ) {
+    throw new Error("Store writer host execution is not active");
+  }
+}
+
+function runStoreWriterHostPhase<T>(writer: ActiveStoreWriter, run: () => T): T {
+  assertStoreWriterHostPhase(writer);
+  return run();
+}
+
+/** Only a normal owner continuation may resume hooks; an inherited ALS value is not this capability. */
+export function captureStoreWriterHostExecution(queues: StoreWriterQueues, storePath: string) {
+  const execution = captureActiveStoreWriterHostExecution(queues, storePath);
+  if (!execution) {
+    throw new Error("Store writer has no live host execution capability");
+  }
+  return execution;
+}
+
+/** Reads suspend an existing writer, but never acquire one by observing an idle lane. */
+export function captureActiveStoreWriterHostExecution(
+  queues: StoreWriterQueues,
+  storePath: string,
+) {
+  const writer = findActiveStoreWriter(queues, storePath);
+  if (!writer) {
+    return undefined;
+  }
+  assertStoreWriterHostPhase(writer);
+  const runInOwner = AsyncLocalStorage.snapshot();
+  return {
+    run<T>(run: () => T): T {
+      return runInOwner(() => runStoreWriterHostPhase(writer, run));
+    },
+    beginNative() {
+      assertStoreWriterHostPhase(writer);
+      const operation = {};
+      writer.native.add(operation);
+      let settled = false;
+      return {
+        runHostStep<T>(this: void, run: () => T): T {
+          if (settled || !writer.active || writerTurn.nativeWaitDepth > 0) {
+            throw new Error("Native session continuation lost its original writer");
+          }
+          const reentrant = writer.hostSteps.has(operation);
+          writer.hostSteps.add(operation);
+          try {
+            return runInOwner(() => runStoreWriterHostPhase(writer, run));
+          } finally {
+            if (!reentrant) {
+              writer.hostSteps.delete(operation);
+            }
+          }
+        },
+        settle(this: void) {
+          settled = true;
+          writer.native.delete(operation);
+        },
+      };
+    },
+  };
+}
+
+/** Native reply service can settle fixed state, but cannot activate caller hooks or reentry. */
+export function runWithStoreWriterNativeWait<T>(run: () => T): T {
+  writerTurn.nativeWaitDepth += 1;
+  try {
+    return run();
+  } finally {
+    writerTurn.nativeWaitDepth -= 1;
+  }
+}
+
+/** Ready calls reuse the original callback lifetime only after its native outcome was consumed. */
+export function runReadyStoreWrite<T>(params: {
+  queues: StoreWriterQueues;
+  storePath: string;
+  fn: () => T;
+}): T {
+  const active = findActiveStoreWriter(params.queues, params.storePath);
+  if (writerTurn.nativeWaitDepth > 0) {
+    throw new Error("Synchronous session work requires its live host execution owner");
+  }
+  if (active) {
+    return runStoreWriterHostPhase(active, params.fn);
+  }
+  if (params.queues.has(params.storePath)) {
+    throw new Error(
+      "Synchronous session work requires a quiescent store; await its admitted operation",
+    );
+  }
+  const queue = getOrCreateStoreWriterQueue(params.queues, params.storePath);
+  const drain = createDeferredCore();
+  queue.drainPromise = drain.promise;
+  const writer: ActiveStoreWriter = {
+    active: true,
+    native: new Set<object>(),
+    hostSteps: new Set<object>(),
+    parent: activeStoreWriters.getStore(),
+    queues: params.queues,
+    storePath: params.storePath,
+  };
+  try {
+    return activeStoreWriters.run(writer, () => runStoreWriterHostPhase(writer, params.fn));
+  } finally {
+    writer.active = false;
+    queue.drainPromise = null;
+    drain.resolve();
+    if (queue.pending.length) {
+      void drainStoreWriterQueue(params.queues, params.storePath);
+    } else {
+      params.queues.delete(params.storePath);
+    }
   }
 }
 
@@ -95,26 +276,20 @@ async function drainStoreWriterQueue(queues: StoreWriterQueues, storePath: strin
   // Publish ownership before the first writer can enqueue more work, without
   // yielding its place to a competing lifecycle admission on an idle lane.
   queue.drainPromise = drain.promise;
+  let first = true;
   try {
     while (queue.pending.length > 0) {
+      let wait: Promise<void> | undefined;
+      // Every resumed drain claims again; sharing only the wakeup would admit the whole herd.
+      while ((wait = claimStoreWriterTurn(first))) {
+        await wait;
+      }
+      first = false;
       const task = queue.pending.shift();
       if (!task) {
         continue;
       }
-      let result: unknown;
-      let failed: unknown;
-      let hasFailure = false;
-      try {
-        result = await task.fn();
-      } catch (err) {
-        hasFailure = true;
-        failed = err;
-      }
-      if (hasFailure) {
-        task.reject(failed);
-        continue;
-      }
-      task.resolve(result);
+      await task.fn().then(task.resolve, task.reject);
     }
   } finally {
     queue.drainPromise = null;
@@ -132,6 +307,8 @@ export async function runQueuedStoreWrite<T>(params: {
   fn: () => Promise<T>;
   reentrant?: boolean;
   timing?: StoreWriterTiming;
+  /** Cancellation removes only a waiting task; admitted work must settle normally. */
+  signal?: AbortSignal;
 }): Promise<T> {
   if (!params.storePath || typeof params.storePath !== "string") {
     throw new Error(
@@ -140,15 +317,18 @@ export async function runQueuedStoreWrite<T>(params: {
       )}`,
     );
   }
+  params.signal?.throwIfAborted();
   // Explicit reentrancy keeps one logical read/decide/write section on the
   // active lane; ordinary async children must queue behind the current writer.
-  if (params.reentrant === true && isActiveStoreWriter(params.queues, params.storePath)) {
+  const active =
+    params.reentrant === true ? findActiveStoreWriter(params.queues, params.storePath) : undefined;
+  if (active) {
     if (params.timing) {
       params.timing.reentrant = true;
       params.timing.startedAt = performance.now();
     }
     try {
-      return await params.fn();
+      return await runStoreWriterHostPhase(active, params.fn);
     } finally {
       if (params.timing) {
         params.timing.finishedAt = performance.now();
@@ -159,22 +339,39 @@ export async function runQueuedStoreWrite<T>(params: {
   // async context. The active-writer scope still belongs to actual execution.
   const runInAsyncContext = AsyncLocalStorage.snapshot();
   const queue = getOrCreateStoreWriterQueue(params.queues, params.storePath);
-  return await new Promise<T>((resolve, reject) => {
+  let detach = () => {};
+  const completion = new Promise<T>((resolve, reject) => {
+    detach = () => params.signal?.removeEventListener("abort", abort);
+    const abort = () => {
+      const index = queue.pending.indexOf(task);
+      if (index !== -1) {
+        queue.pending.splice(index, 1);
+        task.reject(params.signal?.reason);
+      }
+    };
     const task: StoreWriterTask = {
-      fn: async () =>
-        await runInAsyncContext(
+      fn: async () => {
+        detach();
+        return await runInAsyncContext(
           runActiveStoreWriter,
           params.queues,
           params.storePath,
           params.fn,
           params.timing,
-        ),
+        );
+      },
       resolve: (value) => resolve(value as T),
       reject,
     };
     queue.pending.push(task);
+    params.signal?.addEventListener("abort", abort, { once: true });
     void drainStoreWriterQueue(params.queues, params.storePath);
   });
+  if (params.signal) {
+    // Observe cleanup without adding a settlement hop to the writer's result.
+    void completion.then(detach, detach);
+  }
+  return await completion;
 }
 
 /** Rejects pending queued writes and clears queue state for test cleanup. */
@@ -183,30 +380,7 @@ export function clearStoreWriterQueuesForTest(queues: StoreWriterQueues, message
     for (const task of queue.pending) {
       task.reject(new Error(message));
     }
+    queue.pending.length = 0;
   }
   queues.clear();
-}
-
-/** Waits for active drains to settle while rejecting still-pending test writes. */
-export async function drainStoreWriterQueuesForTest(
-  queues: StoreWriterQueues,
-  message: string,
-): Promise<void> {
-  while (queues.size > 0) {
-    const activeQueues = [...queues.values()];
-    for (const queue of activeQueues) {
-      for (const task of queue.pending) {
-        task.reject(new Error(message));
-      }
-      queue.pending.length = 0;
-    }
-    const activeDrains = activeQueues.flatMap((queue) =>
-      queue.drainPromise ? [queue.drainPromise] : [],
-    );
-    if (activeDrains.length === 0) {
-      queues.clear();
-      return;
-    }
-    await Promise.allSettled(activeDrains);
-  }
 }

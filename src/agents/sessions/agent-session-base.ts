@@ -11,17 +11,15 @@ import type {
   ThinkingLevel,
 } from "../runtime/index.js";
 import { isToolResultError } from "../tool-result-error.js";
+import { takeCodeModeResponseSource } from "../transcript-code-mode-source.js";
+import { persistAgentSessionMessage } from "./agent-session-transcript.js";
 import type {
   AgentSessionConfig,
   AgentSessionEvent,
   AgentSessionEventListener,
   AgentSessionWriteSettlementRunner,
 } from "./agent-session-types.js";
-import {
-  prepareAgentSessionMessageAppend,
-  replaceAgentMessageInPlace,
-  type AssistantAppendReceipt,
-} from "./agent-session-utils.js";
+import { replaceAgentMessageInPlace } from "./agent-session-utils.js";
 import { formatNoApiKeyFoundMessage } from "./auth-guidance.js";
 import type { CompactionRequestBudget } from "./compaction/request-budget.js";
 import {
@@ -42,7 +40,7 @@ import {
   type TurnEndEvent,
   type TurnStartEvent,
 } from "./extensions/index.js";
-import type { BashExecutionMessage, CustomMessage } from "./messages.js";
+import type { CustomMessage } from "./messages.js";
 import { getModelRegistryRuntime } from "./model-registry-runtime.js";
 import type { ModelRegistry } from "./model-registry.js";
 import type { PromptTemplate } from "./prompt-templates.js";
@@ -51,9 +49,12 @@ import {
   retireQueuedUserMessage,
 } from "./queued-user-message-retirement.js";
 import type { ResourceLoader } from "./resource-loader.js";
+import { withSessionManagerWrite } from "./session-manager-write-admission.js";
 import type { SessionManager } from "./session-manager.js";
+import { prepareSessionToolResult } from "./session-tool-result-redaction.js";
 import type { SettingsManager } from "./settings-manager.js";
 import type { SourceInfo } from "./source-info.js";
+import { reportSteeringMessagePersistenceFailure } from "./steering-message-identity.js";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.js";
 
 const log = createSubsystemLogger("agents/session");
@@ -73,8 +74,6 @@ export abstract class AgentSessionBase {
   readonly agent: Agent;
   readonly sessionManager: SessionManager;
   readonly settingsManager: SettingsManager;
-
-  protected scopedModelEntries: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 
   // Event subscription state
   protected unsubscribeAgent?: () => void;
@@ -100,10 +99,6 @@ export abstract class AgentSessionBase {
   // Retry state
   protected retryAbortController: AbortController | undefined = undefined;
   protected retryCount = 0;
-
-  // Bash execution state
-  protected bashAbortController: AbortController | undefined = undefined;
-  protected pendingBashMessages: BashExecutionMessage[] = [];
 
   // Extension system
   protected currentExtensionRunner!: ExtensionRunner;
@@ -147,7 +142,6 @@ export abstract class AgentSessionBase {
     this.agent = config.agent;
     this.sessionManager = config.sessionManager;
     this.settingsManager = config.settingsManager;
-    this.scopedModelEntries = config.scopedModels ?? [];
     this.sessionResourceLoader = config.resourceLoader;
     this.customTools = config.customTools ?? [];
     this.cwd = config.cwd;
@@ -350,7 +344,6 @@ export abstract class AgentSessionBase {
   // Track last assistant message for auto-compaction check
   protected lastAssistantMessage: AssistantMessage | undefined = undefined;
   private lastAssistantEntryId: string | undefined;
-  private assistantAppendReceipts = new WeakMap<AssistantMessage, AssistantAppendReceipt>();
   protected lastRunEndedForTurnHandoff = false;
 
   /** Internal handler for agent events - shared by subscribe and reconnect */
@@ -367,6 +360,8 @@ export abstract class AgentSessionBase {
       await this.runWithSessionWriteSettlement(
         async () => await this.handleAgentEventUnlocked(event),
       );
+      // Supported callbacks can change the current result or register another secret.
+      prepareSessionToolResult(this.sessionManager, event);
       return;
     }
     await this.handleAgentEventUnlocked(event);
@@ -375,17 +370,7 @@ export abstract class AgentSessionBase {
   private async handleAgentEventUnlocked(event: AgentEvent): Promise<void> {
     if (event.type === "agent_start") {
       this.lastAssistantEntryId = undefined;
-      this.assistantAppendReceipts = new WeakMap();
     }
-
-    const appendMessage =
-      event.type === "message_end"
-        ? prepareAgentSessionMessageAppend(
-            this.sessionManager,
-            event.message,
-            this.assistantAppendReceipts,
-          )
-        : undefined;
 
     // Retire the exact queued display entry before publishing message_start.
     if (event.type === "message_start" && event.message.role === "user") {
@@ -393,8 +378,12 @@ export abstract class AgentSessionBase {
       retireQueuedUserMessage(event.message);
     }
 
+    const sourceSlots =
+      event.type === "message_end" ? takeCodeModeResponseSource(event.message) : undefined;
     // Emit to extensions first
-    const messageChanged = await this.emitExtensionEvent(event);
+    let messageChanged = await this.emitExtensionEvent(event);
+    // Extensions can replace the final result. Protect listeners before publishing it.
+    messageChanged = prepareSessionToolResult(this.sessionManager, event) || messageChanged;
     const publishAfterPersistence = event.type === "message_end" && event.message.role === "user";
 
     // Notify all listeners
@@ -407,17 +396,22 @@ export abstract class AgentSessionBase {
     } else if (!publishAfterPersistence) {
       this.emit(event);
     }
+    // Persist the same prepared bytes after synchronous listener changes.
+    messageChanged = prepareSessionToolResult(this.sessionManager, event) || messageChanged;
 
     // Handle session persistence
-    if (event.type === "message_end" && appendMessage) {
+    if (event.type === "message_end") {
       // Check if this is a custom message from extensions
       if (event.message.role === "custom") {
         // Persist as CustomMessageEntry
-        this.sessionManager.appendCustomMessageEntry(
-          event.message.customType,
-          event.message.content,
-          event.message.display,
-          event.message.details,
+        const message = event.message;
+        await withSessionManagerWrite(this.sessionManager, () =>
+          this.sessionManager.appendCustomMessageEntry(
+            message.customType,
+            message.content,
+            message.display,
+            message.details,
+          ),
         );
       } else if (
         event.message.role === "user" ||
@@ -428,13 +422,21 @@ export abstract class AgentSessionBase {
         const toolResultChangedByExtension =
           event.message.role === "toolResult" &&
           this.extensionModifiedToolResultIds.delete(event.message.toolCallId);
-        const entryId = appendMessage(
-          event.message,
-          messageChanged || toolResultChangedByExtension,
-        );
-        if (event.message.role === "assistant") {
-          this.lastAssistantEntryId = entryId;
-        } else if (event.message.role === "user") {
+        try {
+          const entryId = await persistAgentSessionMessage(this.sessionManager, event.message, {
+            invalidateSerializedPrefixCache: messageChanged || toolResultChangedByExtension,
+            sourceAppend: sourceSlots,
+          });
+          if (event.message.role === "assistant") {
+            this.lastAssistantEntryId = entryId;
+          }
+        } catch (error) {
+          if (event.message.role === "user") {
+            reportSteeringMessagePersistenceFailure(event.message, error);
+          }
+          throw error;
+        }
+        if (event.message.role === "user") {
           // A queued user message_end normally follows a committed append before listeners consume it.
           // before_message_write suppression marks its recorder blocked first and is terminal without retry.
           this.emit(event);
@@ -445,24 +447,24 @@ export abstract class AgentSessionBase {
       // Track assistant message for auto-compaction (checked on agent_end)
       if (event.message.role === "assistant") {
         this.lastAssistantMessage = event.message;
-
-        const assistantMsg = event.message;
-        // A length response may still need overflow recovery in checkCompaction();
-        // retryCount is independent and resets for every non-error response below.
-        if (assistantMsg.stopReason !== "error" && assistantMsg.stopReason !== "length") {
-          this.overflowRecoveryAttempts = 0;
-        }
-
-        // Reset retry counter immediately on successful assistant response
-        // This prevents accumulation across multiple LLM calls within a turn
-        if (assistantMsg.stopReason !== "error" && this.retryCount > 0) {
-          this.emit({
-            type: "auto_retry_end",
-            success: true,
-            attempt: this.retryCount,
-          });
-          this.retryCount = 0;
-        }
+      }
+    }
+    // Async message fragments do not establish a successful provider response.
+    if (event.type === "turn_end" && event.message.role === "assistant") {
+      const assistantMsg = event.message;
+      if (assistantMsg.stopReason !== "error" && assistantMsg.stopReason !== "length") {
+        this.overflowRecoveryAttempts = 0;
+      }
+      if (assistantMsg.stopReason !== "error" && this.retryCount > 0) {
+        this.emit({
+          type: "auto_retry_end",
+          success: assistantMsg.stopReason !== "aborted",
+          attempt: this.retryCount,
+          ...(assistantMsg.stopReason === "aborted"
+            ? { finalError: assistantMsg.errorMessage }
+            : {}),
+        });
+        this.retryCount = 0;
       }
     }
   }
@@ -607,7 +609,6 @@ export abstract class AgentSessionBase {
       () => this.abortRetry(),
       () => this.abortCompaction(),
       () => this.abortBranchSummary(),
-      () => this.abortBash(),
       () => this.agent.abort(),
     ];
     for (const abortOperation of abortOperations) {
@@ -622,7 +623,6 @@ export abstract class AgentSessionBase {
       "This extension ctx is stale after session replacement or reload. Do not use a captured api or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
     );
     this.disconnectFromAgent();
-    this.assistantAppendReceipts = new WeakMap();
     this.eventListeners = [];
     if (this.cleanupProviderSessionResourcesOnDispose) {
       cleanupSessionResources(this.sessionId);
@@ -776,16 +776,6 @@ export abstract class AgentSessionBase {
     return this.sessionManager.getSessionName();
   }
 
-  /** Scoped models for cycling (from --models flag) */
-  get scopedModels(): ReadonlyArray<{ model: Model; thinkingLevel?: ThinkingLevel }> {
-    return this.scopedModelEntries;
-  }
-
-  /** Update scoped models for cycling */
-  setScopedModels(scopedModels: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>): void {
-    this.scopedModelEntries = scopedModels;
-  }
-
   /** File-based prompt templates */
   get promptTemplates(): ReadonlyArray<PromptTemplate> {
     return this.sessionResourceLoader.getPrompts().prompts;
@@ -882,6 +872,4 @@ export abstract class AgentSessionBase {
   abstract abortRetry(): void;
   abstract abortCompaction(): void;
   abstract abortBranchSummary(): void;
-  abstract abortBash(): void;
-  protected abstract flushPendingBashMessages(): void;
 }

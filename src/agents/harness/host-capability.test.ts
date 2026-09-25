@@ -5,8 +5,10 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
+import { setActiveNodeContext } from "../../infra/active-node-context.js";
 import { onAgentEvent } from "../../infra/agent-events.js";
 import {
+  resetAgentRunRegistryForTest,
   rotateAgentRunRegistryLifecycleGeneration,
   validateAgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
@@ -19,7 +21,10 @@ import {
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import {
   closeAdmittedRunDelegatedAuthority,
+  createOperationalRunInstanceRef,
   getAdmittedRunDelegatedAuthority,
+  prepareAgentRunAdmission,
+  type PreparedAgentRunAdmission,
 } from "../admitted-run-context.js";
 import { runAgentToolSourceExecutionGuard } from "../agent-tool-source-execution-guard.js";
 import {
@@ -37,13 +42,6 @@ import { getGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js
 import { callGatewayTool } from "../tools/gateway.js";
 import { getInProcessGatewayToolContext } from "../tools/in-process-gateway.js";
 import { createAgentHarnessHostCapabilities } from "./host-capability.js";
-import {
-  admittedAttempt,
-  cleanupHostCapabilityTestAdmissions,
-  policyRevocations,
-  type HostAttempt,
-  type HostRevocationContext,
-} from "./host-capability.test-helpers.js";
 import { retainBeforeToolCallForNativeHookRelay } from "./host-private-capabilities.js";
 
 vi.mock("../agent-tools.before-tool-call.js", async (importOriginal) => ({
@@ -56,6 +54,69 @@ vi.mock("../tools/gateway.js", () => ({ callGatewayTool: vi.fn() }));
 const mockRewrap = vi.mocked(rewrapToolWithBeforeToolCallHook);
 const mockRunBefore = vi.mocked(runBeforeToolCallHook);
 const mockCallGatewayTool = vi.mocked(callGatewayTool);
+type HostAttempt = Parameters<typeof createAgentHarnessHostCapabilities>[0]["attempt"];
+
+type HostRevocationContext = {
+  host: ReturnType<typeof createAgentHarnessHostCapabilities>;
+  attempt: HostAttempt;
+  admission: PreparedAgentRunAdmission;
+};
+
+const policyRevocations = [
+  {
+    name: "lexical host closure",
+    revoke: async ({ host }: HostRevocationContext) => {
+      host.close();
+    },
+  },
+  {
+    name: "exact authority release",
+    revoke: async ({ attempt }: HostRevocationContext) => {
+      expect(closeAdmittedRunDelegatedAuthority(attempt.admittedRunContext)).toBe(true);
+    },
+  },
+  {
+    name: "replacement owner",
+    revoke: async ({ attempt }: HostRevocationContext) => {
+      await admittedAttempt(attempt.runId);
+    },
+  },
+];
+
+const admissions: PreparedAgentRunAdmission[] = [];
+
+async function admittedAttempt(
+  runId = "run-1",
+  overrides: Omit<Partial<HostAttempt>, "admittedRunContext" | "runId"> = {},
+): Promise<{ attempt: HostAttempt; admission: PreparedAgentRunAdmission }> {
+  const admission = prepareAgentRunAdmission({
+    cfg: {},
+    facts: {
+      runId,
+      agentId: "main",
+      ingress: { kind: "system", boundary: "host-capability-test", state: "present" },
+    },
+    operationalRunInstance: createOperationalRunInstanceRef(runId),
+  });
+  admissions.push(admission);
+  const admittedRunContext = await admission.admit("plugin-harness", `harness-${runId}`);
+  return {
+    admission,
+    attempt: {
+      agentId: "main",
+      sessionId: "session-1",
+      sessionKey: "agent:main:session-1",
+      runId,
+      cwd: "/attempt/worktree",
+      workspaceDir: "/workspace",
+      currentChannelId: "chat-1",
+      messageChannel: "telegram",
+      ...overrides,
+      admittedRunContext,
+    },
+  };
+}
+
 function testTool(execute = vi.fn(async () => ({ content: [], details: {} }))): {
   tool: AnyAgentTool;
   execute: typeof execute;
@@ -89,10 +150,40 @@ function bindTool(
 
 afterEach(() => {
   vi.unstubAllEnvs();
-  cleanupHostCapabilityTestAdmissions();
+  setActiveNodeContext(null);
+  for (const admission of admissions.splice(0)) {
+    admission.close();
+  }
+  resetAgentRunRegistryForTest();
 });
 
 describe("agent harness host capability", () => {
+  it.each([
+    { available: undefined, expected: [] },
+    { available: false, expected: ["github_identity_status"] },
+    { available: true, expected: ["github_identity_status", "github_publish"] },
+  ])(
+    "captures GitHub availability independently of plugin inputs: $available",
+    async ({ available, expected }) => {
+      const { attempt } = await admittedAttempt("github-tools", {
+        githubPublicationAvailable: available,
+      });
+      const host = createAgentHarnessHostCapabilities({ attempt, pluginId: "copilot" });
+      attempt.githubPublicationAvailable = available !== true;
+      try {
+        const tools = host.capabilities.createToolSurface?.({
+          githubPublicationAvailable: available !== true,
+          config: { tools: { profile: "coding" } },
+        });
+        expect(
+          tools?.filter((tool) => tool.name.startsWith("github_")).map((tool) => tool.name),
+        ).toEqual(expected);
+      } finally {
+        host.close();
+      }
+    },
+  );
+
   it.each(["restart", "unrelated scope", "user abort", "timeout"] as const)(
     "preserves the original cancellation when a startup capability closes: %s",
     async (reason) => {
@@ -282,7 +373,7 @@ describe("agent harness host capability", () => {
     }
   });
 
-  it("keeps prepared environment access closure-bound", async () => {
+  it("keeps host context reads current and closure-bound", async () => {
     vi.stubEnv("GH_TOKEN", "");
     vi.stubEnv("GITHUB_TOKEN", "");
     const config = { tools: { github: { profileId: "ghp_11111111111111111111111111111111" } } };
@@ -303,8 +394,19 @@ describe("agent harness host capability", () => {
       },
     });
     expect(Object.isFrozen(host.capabilities.preparedEnvironment?.().localProcessEnv)).toBe(true);
+    for (const nodeId of ["mac-a", "mac-b"]) {
+      setActiveNodeContext({ nodeId });
+      expect(host.capabilities.activeComputerContext?.()).toBe(
+        `Current active computer (latest physical input, not message origin): active_node=${nodeId}`,
+      );
+    }
+    setActiveNodeContext({ nodeId: "mac-b" }, { isCurrent: () => false });
+    expect(host.capabilities.activeComputerContext?.()).toBe(
+      "Current active computer (latest physical input, not message origin): active_node=unknown",
+    );
     host.close();
     expect(() => host.capabilities.preparedEnvironment?.()).toThrow("no longer active");
+    expect(() => host.capabilities.activeComputerContext?.()).toThrow("no longer active");
   });
 
   it("rejects retained preparation after the admitted Gateway is replaced", async () => {
@@ -344,6 +446,38 @@ describe("agent harness host capability", () => {
 
     expect(preparedExecute).not.toHaveBeenCalled();
   });
+
+  it.each(policyRevocations)(
+    "does not stage reply bytes after $name during a remote read",
+    async ({ revoke }) => {
+      const readStarted = createDeferred();
+      const readResult = createDeferred<Buffer>();
+      const readWorkspaceFile = vi.fn(async () => {
+        readStarted.resolve();
+        return await readResult.promise;
+      });
+      const { attempt, admission } = await admittedAttempt("run-reply-media");
+      const host = createAgentHarnessHostCapabilities({ attempt, pluginId: "codex" });
+      const prepare = host.capabilities.prepareReplyMedia;
+      if (!prepare) {
+        throw new Error("expected reply media capability");
+      }
+      const request = {
+        kind: "payload" as const,
+        payload: { text: "Artifact ready\nMEDIA:./artifact.txt" },
+        readWorkspaceFile,
+      };
+      const pending = prepare(request);
+      const rejected = expect(pending).rejects.toThrow();
+      await readStarted.promise;
+      await revoke({ host, attempt, admission });
+      readResult.resolve(Buffer.from("remote artifact"));
+      await rejected;
+      await expect(prepare(request)).rejects.toThrow();
+      expect(readWorkspaceFile).toHaveBeenCalledTimes(1);
+      host.close();
+    },
+  );
 
   it("delegates trajectory events and rejects a flush that outlives the capability", async () => {
     const flushStarted = createDeferred();
@@ -680,6 +814,7 @@ describe("agent harness host capability", () => {
       expect(payload).toMatchObject({
         mcpTool: { server: "docs", tool: "write_note" },
         toolCallId: "item-1",
+        detail: "Full review evidence",
       });
       expect(payload).not.toHaveProperty("isMcpToolApprovalActive");
       expect(takeMcpToolApprovalBinding({ ...scope, agentId: "other" })).toBeUndefined();
@@ -690,6 +825,7 @@ describe("agent harness host capability", () => {
     await host.capabilities.requestApproval({
       title: "MCP approval",
       description: "Write a note",
+      detail: "Full review evidence",
       severity: "warning",
       toolName: "codex_mcp_tool_approval",
       toolCallId: "item-1",

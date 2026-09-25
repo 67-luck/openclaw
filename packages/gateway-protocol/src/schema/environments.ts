@@ -3,6 +3,19 @@ import { Type, type Static } from "typebox";
 import { closedObject } from "./closed-object.js";
 import { NonEmptyString } from "./primitives.js";
 
+export {
+  EnvironmentsSessionCreateParamsSchema,
+  EnvironmentsSessionStatusParamsSchema,
+  EnvironmentsSessionDestroyParamsSchema,
+  type EnvironmentsSessionCreateParams,
+  type EnvironmentsSessionStatusParams,
+  type EnvironmentsSessionDestroyParams,
+} from "./environments-session.js";
+export {
+  EnvironmentsSessionExecParamsSchema,
+  type EnvironmentsSessionExecParams,
+} from "./environments-session-exec.js";
+
 /**
  * Environment inventory protocol schemas.
  *
@@ -17,6 +30,13 @@ export const EnvironmentStatusSchema = Type.String({
 const EnvironmentTrustSchema = Type.String({
   enum: ["persistent", "disposable"],
 });
+
+/** Operational desktop state reported by the current native node connection. */
+export const DesktopAvailabilitySchema = closedObject({
+  state: Type.Union([Type.Literal("locked"), Type.Literal("unlocked"), Type.Literal("unknown")]),
+});
+
+export type DesktopAvailability = Static<typeof DesktopAvailabilitySchema>;
 
 /** Durable lifecycle states for plugin-provisioned worker environments. */
 export const WorkerEnvironmentStateSchema = Type.Union([
@@ -91,6 +111,7 @@ export const WorkerEnvironmentMetadataSchema = closedObject({
   state: WorkerEnvironmentStateSchema,
   ageMs: Type.Integer({ minimum: 0 }),
   idleMs: Type.Optional(Type.Integer({ minimum: 0 })),
+  destroyRequestedAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
   attachedSessionIds: Type.Array(NonEmptyString),
   tunnelStatus: WorkerTunnelStatusSchema,
   error: Type.Optional(NonEmptyString),
@@ -123,12 +144,23 @@ function createEnvironmentSummaryProperties() {
       }),
     ),
     desktop: Type.Optional(Type.Boolean()),
+    desktopAvailability: Type.Optional(DesktopAvailabilitySchema),
     issues: Type.Optional(Type.Array(RuntimeTargetIssueSchema, { minItems: 1, maxItems: 8 })),
     worker: Type.Optional(WorkerEnvironmentMetadataSchema),
     preparation: Type.Optional(
       closedObject({
         purpose: Type.Union([Type.Literal("reserve"), Type.Literal("build")]),
         key: NonEmptyString,
+        details: Type.Optional(
+          closedObject({
+            demandAtMs: Type.Integer({ minimum: 0 }),
+            expiresAtMs: Type.Integer({ minimum: 0 }),
+            consumedAtMs: Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
+            project: Type.Optional(
+              closedObject({ label: Type.Optional(NonEmptyString), baseCommit: NonEmptyString }),
+            ),
+          }),
+        ),
       }),
     ),
   };
@@ -142,11 +174,25 @@ function createEnvironmentSummarySchema() {
 export const EnvironmentSummarySchema = closedObject({
   ...createEnvironmentSummaryProperties(),
   requiredNodeCommand: Type.Optional(RequiredNodeCommandSchema),
+  desktopSetup: Type.Optional(
+    closedObject({
+      state: Type.Union([
+        Type.Literal("ready"),
+        Type.Literal("needs-server"),
+        Type.Literal("unsupported"),
+        Type.Literal("managed"),
+      ]),
+      detail: Type.Optional(NonEmptyString),
+    }),
+  ),
 });
 
-/** Optional runtime scope for listing known environments. */
+/** Optional runtime scope or profile-only projection for environment discovery. */
 export const EnvironmentsListParamsSchema = closedObject({
   runtimeId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+  projection: Type.Optional(Type.Literal("profiles")),
+  includeDesktopSetup: Type.Optional(Type.Boolean()),
+  includePreparedDetails: Type.Optional(Type.Boolean()),
 });
 
 /** Provider-authored machine choice for one configured worker profile. */
@@ -182,6 +228,10 @@ export const WorkerExecutionModeSchema = Type.Union([
 const WorkerEnvironmentProfileSummarySchema = closedObject({
   id: NonEmptyString,
   providerId: NonEmptyString,
+  readyWorkers: Type.Optional(Type.Integer({ minimum: 0 })),
+  providerDisplayId: Type.Optional(
+    Type.String({ pattern: "^[a-z][a-z0-9-]{0,63}(?![\\s\\S])", maxLength: 64 }),
+  ),
   trust: Type.Optional(EnvironmentTrustSchema),
   executionMode: Type.Optional(WorkerExecutionModeSchema),
   executionModes: Type.Optional(
@@ -196,14 +246,23 @@ const WorkerEnvironmentProfileSummarySchema = closedObject({
   ),
 });
 
-/** List response containing all gateway-visible environment summaries. */
+/** Profile-only requests leave environments empty without reading inventory. */
 export const EnvironmentsListResultSchema = closedObject({
   environments: Type.Array(EnvironmentSummarySchema),
   profiles: Type.Optional(Type.Array(WorkerEnvironmentProfileSummarySchema)),
+  preparedPool: Type.Optional(
+    closedObject({
+      maxTotal: Type.Integer({ minimum: 0 }),
+      reservedEnvironmentIds: Type.Array(NonEmptyString, { uniqueItems: true }),
+    }),
+  ),
 });
 
 /** Status lookup request for one environment id. */
-export const EnvironmentsStatusParamsSchema = closedObject({ environmentId: NonEmptyString });
+export const EnvironmentsStatusParamsSchema = closedObject({
+  environmentId: NonEmptyString,
+  includePreparedDetails: Type.Optional(Type.Boolean()),
+});
 
 /** Status lookup result for one environment id. */
 export const EnvironmentsStatusResultSchema = createEnvironmentSummarySchema();
@@ -250,6 +309,8 @@ export const WorkerDesktopObserveResultSchema = closedObject({
   wsPath: NonEmptyString,
   expiresAtMs: Type.Integer({ minimum: 0 }),
   control: Type.Boolean(),
+  // Permission to request resizing, not proof that the RFB server supports it.
+  canResize: Type.Optional(Type.Boolean()),
   vncPassword: Type.Optional(NonEmptyString),
 });
 

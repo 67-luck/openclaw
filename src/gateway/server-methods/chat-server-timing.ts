@@ -1,4 +1,6 @@
+import { performance as ackPerformance } from "node:perf_hooks";
 import { isOperatorUiClient } from "../../utils/message-channel.js";
+import type { ChatRunTiming } from "../server-chat-state.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
 
 type ChatSendAckServerTiming = {
@@ -34,11 +36,35 @@ export function chatSendAckServerTimingAttributes(
   };
 }
 
-export function shouldIncludeChatSendAckServerTiming(client?: {
-  id?: string | null;
-  mode?: string | null;
-}): boolean {
-  return isOperatorUiClient(client);
+export function createChatSendAckTiming({
+  clientInfo,
+  client,
+  chatSendReceivedAtMs,
+  sessionLoadMs,
+  prepareAttachmentsMs,
+}: {
+  clientInfo?: { id?: string | null; mode?: string | null };
+  client?: GatewayClient | null;
+  chatSendReceivedAtMs: number;
+  sessionLoadMs: number;
+  prepareAttachmentsMs?: number;
+}) {
+  const serverTiming = isOperatorUiClient(clientInfo)
+    ? {
+        receivedToAckMs: roundedChatSendTimingMs(ackPerformance.now() - chatSendReceivedAtMs),
+        loadSessionMs: sessionLoadMs,
+        ...(prepareAttachmentsMs !== undefined ? { prepareAttachmentsMs } : {}),
+      }
+    : undefined;
+  const chatSendTiming: ChatRunTiming | undefined =
+    serverTiming && typeof client?.connId === "string" && client.connId.trim()
+      ? {
+          ackedAtMs: ackPerformance.now(),
+          connId: client.connId.trim(),
+          receivedAtMs: chatSendReceivedAtMs,
+        }
+      : undefined;
+  return { serverTiming, chatSendTiming };
 }
 
 const CONTROL_UI_RECONNECT_RESUME_PARAM = "__controlUiReconnectResume";

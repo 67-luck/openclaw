@@ -16,7 +16,14 @@ import { getOwnedSessionTranscriptWriterFence } from "../config/sessions/transcr
 import { sha256HexPrefixCore } from "../infra/crypto-digest.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { getUserTurnTranscriptAdmissionOwner } from "./user-turn-transcript-admission.js";
+import { isUserMessage } from "./user-turn-transcript.message.js";
+import {
+  normalizePersistedSteerTargetRunId,
+  rewritePersistedSteerTargetRunId,
+} from "./user-turn-transcript.metadata.js";
 import type {
+  PersistedUserTurnMessage,
+  UserTurnTranscriptAdmissionReceipt,
   UserTurnTranscriptAnnotation,
   UserTurnTranscriptRecorder,
 } from "./user-turn-transcript.types.js";
@@ -36,7 +43,7 @@ export function bindUserTurnTranscriptAnnotation(params: {
   const owner = getUserTurnTranscriptAdmissionOwner(params.recorder);
   const receipt = owner?.receipt();
   const message = owner?.message();
-  if (!owner || !receipt || !message || owner.blocked() || message.display === false) {
+  if (!owner || !receipt || !message || owner.blocked() || message.excludeFromContext === true) {
     return undefined;
   }
   let admission = structuredClone(receipt);
@@ -163,4 +170,37 @@ export function bindUserTurnTranscriptAnnotation(params: {
       assertCurrent();
     }
   };
+}
+
+export async function confirmPersistedSteerTargetRunId(params: {
+  admission: UserTurnTranscriptAdmissionReceipt;
+  targetRunId: string;
+}): Promise<
+  | {
+      admission: UserTurnTranscriptAdmissionReceipt;
+      message: PersistedUserTurnMessage;
+    }
+  | undefined
+> {
+  const rewritten = await rewriteTranscriptMessageAtAnchor(params.admission, (message) => {
+    if (!isUserMessage(message)) {
+      return undefined;
+    }
+    const currentTarget = normalizePersistedSteerTargetRunId(
+      message["__openclaw"]?.steerTargetRunId,
+    );
+    return currentTarget === params.targetRunId
+      ? undefined
+      : rewritePersistedSteerTargetRunId(message, params.targetRunId);
+  });
+  if (!rewritten) {
+    return undefined;
+  }
+  const admission = { ...params.admission, generation: rewritten.generation };
+  await publishTranscriptUpdate(admission, {
+    message: rewritten.message,
+    messageId: admission.entryId,
+    messageSeq: admission.activeMessagePosition + 1,
+  });
+  return { admission, message: rewritten.message };
 }

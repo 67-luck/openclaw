@@ -54,6 +54,13 @@ const codexAppServerServiceTierSchema = z
     z.string().trim().min(1).nullable().optional(),
   )
   .optional();
+const codexAppServerCyberFailoverSchema = z
+  .object({
+    mode: z.enum(["auto", "off"]).optional(),
+    model: z.string().trim().min(1).optional(),
+    cooloffMs: z.number().positive().optional(),
+  })
+  .strict();
 const codexAppServerExperimentalSchema = z
   .object({
     sandboxExecServer: z.boolean().optional(),
@@ -179,6 +186,7 @@ const codexPluginConfigSchema = z
         sandbox: codexAppServerSandboxSchema.optional(),
         approvalsReviewer: codexAppServerApprovalsReviewerSchema.optional(),
         serviceTier: codexAppServerServiceTierSchema,
+        cyberFailover: codexAppServerCyberFailoverSchema.optional(),
         networkProxy: codexAppServerNetworkProxySchema.optional(),
         defaultWorkspaceDir: z.string().optional(),
         experimental: codexAppServerExperimentalSchema.optional(),
@@ -205,6 +213,17 @@ export function readCodexPluginConfig(value: unknown): ParsedCodexPluginConfig {
   }
   const parsed = codexPluginConfigSchema.safeParse(value);
   if (!parsed.success) {
+    if (asNullableRecord(appServer?.networkProxy)?.enabled === true) {
+      const issuePath = parsed.error.issues[0]?.path ?? [];
+      // Record keys (domains, headers, etc.) are values, not safe diagnostic field names.
+      const fieldDepth = issuePath[0] === "appServer" && issuePath[1] === "networkProxy" ? 3 : 2;
+      const fieldPath = ["plugins.entries.codex.config", ...issuePath.slice(0, fieldDepth)].join(
+        ".",
+      );
+      throw new Error(
+        `Invalid ${fieldPath}; fix this field before starting Codex with network restrictions. Run "openclaw doctor --fix" for supported repairs.`,
+      );
+    }
     return {};
   }
   const { codexPlugins: rawCodexPlugins, ...config } = parsed.data;

@@ -2,32 +2,58 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { resolveTimestampMsToIsoString } from "@openclaw/normalization-core/number-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  captureSqlitePostCommitPublication,
+  stageSqliteTransactionState,
+} from "../../infra/sqlite-post-commit.js";
+import { canonicalizePersistedUserMessageMedia } from "../../media/media-facts.js";
+import {
+  isOpenClawDeliveryMirrorAssistantMessage,
+  OPENCLAW_TRANSCRIPT_ARTIFACT_API,
+} from "../../shared/transcript-only-openclaw-assistant.js";
+import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type {
+  SessionTranscriptWriteScope,
+  SessionTranscriptContextVersion,
   TranscriptMessageAppendOptions,
   TranscriptMessageAppendResult,
 } from "./session-accessor.sqlite-contract.js";
 import { readSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
 import {
   consumeSessionPendingInput,
+  consumeSessionPendingInputInTransaction,
   resolveSessionPendingInputAppend,
 } from "./session-accessor.sqlite-pending-inputs.js";
 import { readTranscriptIdentityByEventId } from "./session-accessor.sqlite-read.js";
-import type { ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
+import {
+  resolveSqliteTranscriptScope,
+  toDatabaseOptions,
+  type ResolvedTranscriptScope,
+} from "./session-accessor.sqlite-scope.js";
 import { readActiveTranscriptEntryAnchorInTransaction } from "./session-accessor.sqlite-transcript-anchor.js";
-import { readTranscriptMirrorFactsInTransaction } from "./session-accessor.sqlite-transcript-mirror.js";
+import { ensureTranscriptHeader } from "./session-accessor.sqlite-transcript-header.js";
 import {
   isTranscriptEntryOnActivePathInTransaction,
   resolveTranscriptMessageAppendParent,
 } from "./session-accessor.sqlite-transcript-parent.js";
 import {
+  readTranscriptRawSnapshotInTransaction,
+  type TranscriptRawSnapshot,
+} from "./session-accessor.sqlite-transcript-raw-snapshot.js";
+import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
+import {
   appendTranscriptEventInTransaction,
-  ensureTranscriptHeader,
-  readMessageIdempotencyKey,
   readTranscriptMessageByEventId,
   readTranscriptMessageByScopedIdempotencyKey,
   redactTranscriptMessageForStorage,
 } from "./session-accessor.sqlite-transcript-store.js";
+import type { SessionPendingInputAppend } from "./session-pending-input.types.js";
+import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
+import {
+  prepareTranscriptPayloadForReuse,
+  type PreparedTranscriptPayload,
+} from "./transcript-payload.js";
 
 class TranscriptTurnAdmissionConflictError extends Error {
   constructor(idempotencyKey: string) {
@@ -37,15 +63,109 @@ class TranscriptTurnAdmissionConflictError extends Error {
 }
 
 function messagesMatchForIdempotentReplay(stored: unknown, candidate: unknown): boolean {
-  const serializedShape = (message: unknown): unknown => {
+  const storedDelivery = isRecord(stored) ? stored.openclawDelivery : undefined;
+  // v2026.9.4 mirrors did not retain URLs. Compare their original representation
+  // without rewriting accepted bytes; an explicit mediaUrls field stays strict.
+  const legacyMediaMirror =
+    isRecord(stored) &&
+    isOpenClawDeliveryMirrorAssistantMessage(stored) &&
+    stored.api === OPENCLAW_TRANSCRIPT_ARTIFACT_API &&
+    (storedDelivery === undefined ||
+      (isRecord(storedDelivery) && !Object.hasOwn(storedDelivery, "mediaUrls")));
+  const serializedShape = (message: unknown, projectLegacyMedia = false): unknown => {
     if (!isRecord(message)) {
       return message;
     }
     const { timestamp: _timestamp, ...stable } = message;
+    if (
+      projectLegacyMedia &&
+      isRecord(stable.openclawDelivery) &&
+      Array.isArray(stable.openclawDelivery.mediaUrls) &&
+      stable.openclawDelivery.mediaUrls.every((url) => typeof url === "string")
+    ) {
+      const { mediaUrls: _mediaUrls, ...delivery } = stable.openclawDelivery;
+      if (storedDelivery === undefined && Object.keys(delivery).length === 0) {
+        delete stable.openclawDelivery;
+      } else {
+        stable.openclawDelivery = delivery;
+      }
+    }
     const serialized = JSON.stringify(stable);
     return serialized === undefined ? undefined : JSON.parse(serialized);
   };
-  return isDeepStrictEqual(serializedShape(stored), serializedShape(candidate));
+  return isDeepStrictEqual(serializedShape(stored), serializedShape(candidate, legacyMediaMirror));
+}
+
+export type PreparedTranscriptMessageAppend<TMessage> = {
+  messageJson: string;
+  persistedMessage: TMessage;
+  physicalPayload?: PreparedTranscriptPayload;
+  pendingInput?: {
+    append: SessionPendingInputAppend | undefined;
+    consumedInputIds: readonly string[];
+    relocatedInputId?: string;
+  };
+};
+
+export type TranscriptMessageAppendPreparation = (facts: {
+  result: TranscriptMessageAppendResult<unknown>;
+  before: SessionTranscriptContextVersion;
+  after: SessionTranscriptContextVersion;
+  snapshot: () => TranscriptRawSnapshot;
+  deferPublication: ReturnType<typeof captureSqlitePostCommitPublication>;
+}) => Parameters<typeof stageSqliteTransactionState>[1] | undefined;
+
+/** Hooks and caller-owned toJSON finish before worker dispatch and before BEGIN. */
+export function prepareSerializedTranscriptMessageAppend<TMessage extends object>(
+  options: Pick<TranscriptMessageAppendOptions<TMessage>, "message" | "config">,
+): PreparedTranscriptMessageAppend<TMessage> {
+  const message = redactTranscriptMessageForStorage(options.message, options);
+  const messageJson = JSON.stringify(canonicalizePersistedUserMessageMedia(message).message);
+  // SAFETY: This is the detached message decoded from its own canonical storage bytes.
+  return { messageJson, persistedMessage: JSON.parse(messageJson) as TMessage };
+}
+
+type TranscriptMessageEnvelope = {
+  type: "message";
+  id: string;
+  parentId: string | null;
+  appendMode?: "side";
+  timestamp: string;
+};
+
+function serializePreparedMessageEvent(envelope: TranscriptMessageEnvelope, messageJson: string) {
+  return `${JSON.stringify(envelope).slice(0, -1)},"message":${messageJson}}`;
+}
+
+/** SessionManager owns a detached JSON message and retains this preparation across retries. */
+export function prepareTranscriptMessageAppend<TMessage extends object>(
+  options: Pick<TranscriptMessageAppendOptions<TMessage>, "message" | "config">,
+  candidate?: {
+    scope: SessionTranscriptWriteScope;
+    envelope: TranscriptMessageEnvelope;
+  },
+): PreparedTranscriptMessageAppend<TMessage> | undefined {
+  if (
+    !isRecord(options.message) ||
+    (options.message.role !== "assistant" && options.message.role !== "toolResult")
+  ) {
+    // Pending user custody retains its transaction-owned preparation.
+    return undefined;
+  }
+  const prepared = prepareSerializedTranscriptMessageAppend(options);
+  if (!candidate) {
+    return prepared;
+  }
+  const eventJson = serializePreparedMessageEvent(candidate.envelope, prepared.messageJson);
+  const read = withOpenClawAgentDatabaseReadOnly(
+    ({ db }) =>
+      prepareTranscriptPayloadForReuse(db, eventJson, {
+        ...candidate.envelope,
+        message: prepared.persistedMessage,
+      }),
+    toDatabaseOptions(resolveSqliteTranscriptScope(candidate.scope)),
+  );
+  return read.found ? { ...prepared, physicalPayload: read.value } : prepared;
 }
 
 export function appendTranscriptMessageInTransaction<TMessage>(
@@ -55,8 +175,54 @@ export function appendTranscriptMessageInTransaction<TMessage>(
     messageAlreadyRedacted?: boolean;
     appendMode?: "side";
   },
+  preparedMessage?: PreparedTranscriptMessageAppend<TMessage>,
+  projection?: {
+    scheduleProjectionReconcile?: boolean;
+    onProjectionReconcileNeeded?: () => void;
+    preparePending?: TranscriptMessageAppendPreparation;
+  },
 ): TranscriptMessageAppendResult<TMessage> | undefined {
-  const pending = resolveSessionPendingInputAppend(database, resolved, options.message);
+  const preparePending = projection?.preparePending;
+  const before = preparePending
+    ? readTranscriptContextVersionInTransaction(database, resolved.sessionId)
+    : undefined;
+  let rawSnapshot: TranscriptRawSnapshot | undefined;
+  const snapshot = () =>
+    (rawSnapshot ??= readTranscriptRawSnapshotInTransaction(database, resolved));
+  const finish = (result: TranscriptMessageAppendResult<TMessage>) => {
+    if (before && preparePending) {
+      const state = preparePending({
+        result,
+        before,
+        after: readTranscriptContextVersionInTransaction(database, resolved.sessionId),
+        snapshot,
+        deferPublication: captureSqlitePostCommitPublication(database.db),
+      });
+      if (state && !stageSqliteTransactionState(database.db, state)) {
+        throw new Error("Transcript pending custody requires its managed transaction");
+      }
+    }
+    return result;
+  };
+  const pending = preparedMessage?.pendingInput
+    ? preparedMessage.pendingInput.append
+    : resolveSessionPendingInputAppend(database, resolved, options.message);
+  if (pending && preparedMessage && pending.messageJson !== preparedMessage.messageJson) {
+    throw new Error("Prepared pending input differs from its accepted storage bytes");
+  }
+  const consumePending = () => {
+    if (!pending) {
+      return;
+    }
+    if (preparedMessage?.pendingInput) {
+      preparedMessage.pendingInput.consumedInputIds = consumeSessionPendingInputInTransaction(
+        database,
+        pending,
+      );
+    } else {
+      consumeSessionPendingInput(database, pending);
+    }
+  };
   if (
     pending &&
     readSessionEntryRow(database, resolved.sessionKey)?.entry.sessionId !== resolved.sessionId
@@ -64,7 +230,10 @@ export function appendTranscriptMessageInTransaction<TMessage>(
     throw new Error("Pending input session changed before transcript promotion");
   }
   const serializeForStorage = (message: TMessage): TMessage =>
-    options.messageAlreadyRedacted ? message : redactTranscriptMessageForStorage(message, options);
+    preparedMessage?.persistedMessage ??
+    (options.messageAlreadyRedacted
+      ? message
+      : redactTranscriptMessageForStorage(message, options));
   const readAnchor = (params: {
     message: unknown;
     messageId: string;
@@ -74,14 +243,9 @@ export function appendTranscriptMessageInTransaction<TMessage>(
       resolved,
       entryId: params.messageId,
       message: params.message,
-    });
+    }) ?? (preparePending ? snapshot().anchors.get(params.messageId) : undefined);
   const existingAppendResult = (found: { message: unknown; messageId: string }) => {
-    const anchor =
-      readAnchor(found) ??
-      readTranscriptMirrorFactsInTransaction(database, resolved, {
-        entryIds: [found.messageId],
-        idempotencyKeys: [],
-      }).anchorsByEntryId.get(found.messageId);
+    const anchor = readAnchor(found);
     if (pending) {
       if (
         found.messageId !== pending.inputId ||
@@ -97,9 +261,9 @@ export function appendTranscriptMessageInTransaction<TMessage>(
       ) {
         throw new Error("Pending input is no longer active in its admitted transcript");
       }
-      consumeSessionPendingInput(database, pending);
+      consumePending();
     }
-    return {
+    return finish({
       appended: false as const,
       ...(anchor ? { anchor } : {}),
       effectiveParentId:
@@ -107,7 +271,7 @@ export function appendTranscriptMessageInTransaction<TMessage>(
         null,
       message: found.message as TMessage,
       messageId: found.messageId,
-    };
+    });
   };
   const idempotencyKey = readMessageIdempotencyKey(options.message);
   if (idempotencyKey && options.idempotencyLookup !== "caller-checked") {
@@ -149,17 +313,31 @@ export function appendTranscriptMessageInTransaction<TMessage>(
     pending && !pending.alreadyPromoted ? pending.inputId : (options.eventId ?? randomUUID());
   const now = options.now ?? Date.now();
   const finalMessage = pending ? prepared : serializeForStorage(prepared);
-  ensureTranscriptHeader(database, resolved, options.cwd);
+  if (!pending) {
+    // Accepted custody and replay retain their original decision. Fresh input
+    // must still belong to its captured owner before any transcript write.
+    options.beforeFreshMessageCommit?.();
+  }
+  ensureTranscriptHeader(database, resolved, options.cwd, projection);
   const parentId = resolveTranscriptMessageAppendParent(database, resolved.sessionId, options);
   const event = {
-    type: "message",
+    type: "message" as const,
     id: messageId,
     parentId: parentId ?? null,
     ...(options.appendMode ? { appendMode: options.appendMode } : {}),
     timestamp: resolveTimestampMsToIsoString(now),
-    message: finalMessage,
+    message: preparedMessage?.persistedMessage ?? finalMessage,
   };
+  let eventJson: string | undefined;
+  if (preparedMessage) {
+    // The parent is authoritative only after BEGIN; serialize just its small envelope here.
+    const { message: _message, ...envelope } = event;
+    eventJson = serializePreparedMessageEvent(envelope, preparedMessage.messageJson);
+  }
   const appended = appendTranscriptEventInTransaction(database, resolved, event, {
+    ...projection,
+    eventJson,
+    preparedPayload: preparedMessage?.physicalPayload,
     idempotencyKeyMode:
       options.idempotencyLookup === "caller-checked"
         ? "relocate-owner"
@@ -199,21 +377,23 @@ export function appendTranscriptMessageInTransaction<TMessage>(
   if (!appended) {
     throw new Error(`SQLite transcript append did not insert message ${messageId}.`);
   }
-  // SAFETY: Receipt custody comes from this event's exact committed JSON after storage normalization.
-  const persistedMessage = (JSON.parse(appended) as typeof event).message;
+  const persistedMessage =
+    preparedMessage?.persistedMessage ??
+    // SAFETY: Receipt custody comes from this event's exact committed JSON after storage normalization.
+    (JSON.parse(appended) as typeof event).message;
   const anchor = readAnchor({ message: persistedMessage, messageId });
   if (pending) {
     if (pending.stageRelocation) {
       pending.stageRelocation(messageId);
     } else {
-      consumeSessionPendingInput(database, pending);
+      consumePending();
     }
   }
-  return {
+  return finish({
     appended: true,
     ...(anchor ? { anchor } : {}),
     effectiveParentId: parentId ?? null,
     message: persistedMessage,
     messageId,
-  };
+  });
 }

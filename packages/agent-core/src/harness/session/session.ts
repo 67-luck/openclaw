@@ -1,7 +1,6 @@
 import { stripCompactionReplayCheckpoint } from "@openclaw/ai/transports";
 import type { AgentMessage } from "../../types.js";
 import {
-  asAgentMessage,
   createBranchSummaryMessage,
   createCompactionSummaryMessage,
   createCustomMessage,
@@ -10,6 +9,21 @@ import type { SessionContext, SessionTreeEntry } from "../types.js";
 import { selectResetKeptEntries } from "./tool-result-pairing.js";
 
 const SESSION_HISTORY_PRELUDE = Symbol.for("openclaw.sessionHistoryPrelude");
+
+/** Private cursor transport preserves this non-enumerable projection fact explicitly. */
+export function isSessionHistoryPrelude(message: AgentMessage): boolean {
+  const marked: AgentMessage & { [SESSION_HISTORY_PRELUDE]?: unknown } = message;
+  return marked[SESSION_HISTORY_PRELUDE] === true;
+}
+
+export function markSessionHistoryPrelude(message: AgentMessage): AgentMessage {
+  Object.defineProperty(message, SESSION_HISTORY_PRELUDE, {
+    configurable: true,
+    enumerable: false,
+    value: true,
+  });
+  return message;
+}
 
 /** The same semantic cut is used before payload acquisition and when building messages. */
 function resolveSessionContextWindow(
@@ -37,23 +51,17 @@ export function projectSessionEntryMessage(entry: SessionTreeEntry): AgentMessag
         ? undefined
         : entry.message;
     case "custom_message":
-      return asAgentMessage(
-        createCustomMessage(
-          entry.customType,
-          entry.content,
-          entry.display,
-          entry.details,
-          entry.timestamp,
-        ),
+      return createCustomMessage(
+        entry.customType,
+        entry.content,
+        entry.display,
+        entry.details,
+        entry.timestamp,
       );
     case "branch_summary":
-      return asAgentMessage(
-        createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp),
-      );
+      return createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp);
     case "compaction":
-      return asAgentMessage(
-        createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp),
-      );
+      return createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp);
     default:
       return undefined;
   }
@@ -72,7 +80,9 @@ export function* iterateSessionContextEntries<T extends SessionTreeEntry>(
   if (boundary) {
     yield { entry: boundary, context: "current" };
   }
-  for (const [index, entry] of pathEntries.entries()) {
+  let index = -1;
+  for (const entry of pathEntries) {
+    index += 1;
     const retained = index < boundaryIndex;
     if (
       index === boundaryIndex ||
@@ -123,12 +133,7 @@ export function* iterateSessionContextMessages<T extends SessionTreeEntry>(
       message = stripCompactionReplayCheckpoint(message);
     }
     if (context === "reset-retained" && (message.role === "user" || message.role === "assistant")) {
-      message = { ...message };
-      Object.defineProperty(message, SESSION_HISTORY_PRELUDE, {
-        configurable: true,
-        enumerable: false,
-        value: true,
-      });
+      message = markSessionHistoryPrelude({ ...message });
     }
     yield message;
   }

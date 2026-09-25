@@ -14,25 +14,18 @@ import {
   queueAgentHarnessMessage,
   setActiveEmbeddedRun,
   type AgentHarness,
-  type AgentHarnessHostCapabilities,
-  type AgentHarnessProviderTranscriptCommitParams,
-  type AgentHarnessProviderTranscriptCommitResult,
   type AgentHarnessQuestionGatewayCall,
   type AgentHarnessAttemptParams,
   type AgentHarnessAttemptParamsV2,
   type AgentHarnessSideQuestionParams,
   type AgentHarnessSideQuestionParamsV2,
+  type AgentHarnessSessionForkParams,
   type AgentHarnessSupportContext,
   type AgentHarnessTerminalOutcomeClassification,
   type AgentHarnessV2,
   type EmbeddedRunAttemptParams,
   type EmbeddedRunAttemptParamsV2,
 } from "./agent-harness-runtime.js";
-import type {
-  AgentHarnessHostCapabilities as FocusedAgentHarnessHostCapabilities,
-  AgentHarnessProviderTranscriptCommitParams as FocusedProviderTranscriptCommitParams,
-  AgentHarnessProviderTranscriptCommitResult as FocusedProviderTranscriptCommitResult,
-} from "./agent-harness.js";
 import type {
   ProviderModelRouteRuntimePolicy,
   ProviderRouteOverridePresence,
@@ -162,30 +155,6 @@ describe("classifyAgentHarnessTerminalOutcome", () => {
 });
 
 describe("agent harness runtime SDK facade", () => {
-  it("keeps the provider transcript commit typed and optional for stable v2026.9.2 hosts", () => {
-    const stableHostCapabilities = {
-      kind: "agent-harness-host-capability",
-      version: 1,
-      assertActive: () => {},
-      bindToolSurface: (tools) => tools,
-      runBeforeToolCall: async (request) => ({ blocked: false, params: request.params }),
-      requestApproval: async () => undefined,
-      waitForApproval: async () => undefined,
-    } satisfies AgentHarnessHostCapabilities;
-
-    expect(stableHostCapabilities).not.toHaveProperty("commitProviderTranscriptPrefix");
-    expectTypeOf<AgentHarnessProviderTranscriptCommitParams["entries"][number]>().toHaveProperty(
-      "message",
-    );
-    expectTypeOf<AgentHarnessProviderTranscriptCommitResult>().toMatchTypeOf<
-      | { kind: "committed" | "replayed"; results: readonly unknown[] }
-      | { kind: "conflict" | "rejected" | "suppressed"; reason?: string }
-    >();
-    expectTypeOf<FocusedAgentHarnessHostCapabilities>().toEqualTypeOf<AgentHarnessHostCapabilities>();
-    expectTypeOf<FocusedProviderTranscriptCommitParams>().toEqualTypeOf<AgentHarnessProviderTranscriptCommitParams>();
-    expectTypeOf<FocusedProviderTranscriptCommitResult>().toEqualTypeOf<AgentHarnessProviderTranscriptCommitResult>();
-  });
-
   it("exposes structured input through one frozen named runtime surface", () => {
     expect(Object.isFrozen(agentHarnessStructuredInput)).toBe(true);
     expect(Object.keys(agentHarnessStructuredInput).toSorted()).toEqual([
@@ -199,6 +168,7 @@ describe("agent harness runtime SDK facade", () => {
   });
 
   it("keeps legacy harness implementations source-compatible while requiring capabilities in V2", () => {
+    type SessionForkParamsV2 = Parameters<NonNullable<AgentHarnessV2["sessionForkV2"]>["fork"]>[0];
     const legacyHarness = {
       id: "legacy-test",
       label: "Legacy test harness",
@@ -237,6 +207,13 @@ describe("agent harness runtime SDK facade", () => {
       > extends AgentHarnessSideQuestionParamsV2
         ? true
         : false
+    >().toEqualTypeOf<false>();
+
+    expectTypeOf<
+      Omit<SessionForkParamsV2, "assertCurrent">
+    >().toEqualTypeOf<AgentHarnessSessionForkParams>();
+    expectTypeOf<
+      Omit<SessionForkParamsV2, "assertCurrent"> extends SessionForkParamsV2 ? true : false
     >().toEqualTypeOf<false>();
 
     // v2026.8.1 queue/register callers need neither a source predicate nor V2.

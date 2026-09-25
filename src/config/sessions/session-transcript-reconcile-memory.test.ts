@@ -1,89 +1,51 @@
-import fs from "node:fs";
-import { Worker, type WorkerOptions } from "node:worker_threads";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { Worker } from "node:worker_threads";
+import { describe, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import {
   closeOpenClawAgentDatabaseByPath,
   getOpenClawAgentDatabaseIfOpen,
   openOpenClawAgentDatabase,
-  resolveIncognitoOpenClawAgentSqlitePath,
-  runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
-import {
-  createOpenClawTestState,
-  type OpenClawTestState,
-} from "../../test-utils/openclaw-test-state.js";
+import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   createSessionEntryWithTranscript,
   loadSessionEntry,
   persistSessionTranscriptTurn,
   readSessionTranscriptMessageEventPage,
 } from "./session-accessor.js";
-import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
-import {
-  resolveSqliteTranscriptScope,
-  runExclusiveSqliteSessionWrite,
-} from "./session-accessor.sqlite-scope.js";
+import { runExclusiveSqliteSessionWrite } from "./session-accessor.sqlite-scope.js";
 import { readCommittedTranscriptMessageSequence } from "./session-accessor.sqlite-transcript-sequences.js";
-import { appendTranscriptEventInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import {
   appendTranscriptEvent,
   replaceTranscriptEvents,
 } from "./session-accessor.sqlite-transcript-write.js";
 import { prepareSessionTranscriptProjection } from "./session-transcript-projection-rebuild.js";
+import {
+  useMemoryReconcileFixture,
+  sessionId,
+  message,
+} from "./session-transcript-reconcile-memory.fixture.test-support.js";
 import { createMemoryTranscriptProjectionSource } from "./session-transcript-reconcile-memory.js";
 import {
   reconcileSessionTranscriptIndexes,
   startSessionTranscriptIndexReconcile,
   waitForSessionTranscriptIndexReconcile,
-  waitForSessionTranscriptIndexReconcilesInStateDir,
   waitForSessionTranscriptProjection,
 } from "./session-transcript-reconcile.js";
+import { useReconcileWorkerObserver } from "./session-transcript-reconcile.test-support.js";
+import { transcriptMessage } from "./transcript-message.test-support.js";
+vi.mock("node:worker_threads", async () =>
+  (await import("./session-transcript-reconcile.test-support.js")).createObservedWorkerThreads(),
+);
 
-const agentId = "secondary";
-const sessionId = "memory-reconcile";
-const sessionKey = "agent:secondary:dashboard:incognito-reconcile";
-const message = (id: string, content = id): TranscriptEvent => ({
-  type: "message",
-  id,
-  parentId: null,
-  message: { role: "user", content },
-});
-
+const observer = useReconcileWorkerObserver();
 describe("incognito transcript reconciliation", () => {
   let ambient: OpenClawTestState;
   let explicit: OpenClawTestState;
-
-  beforeEach(async () => {
-    ambient = await createOpenClawTestState({ prefix: "memory-reconcile-ambient-" });
-    explicit = await createOpenClawTestState({
-      prefix: "memory-reconcile-explicit-",
-      applyEnv: false,
-    });
+  const { target, expectNoDiskState } = useMemoryReconcileFixture((ambientState, explicitState) => {
+    ambient = ambientState;
+    explicit = explicitState;
   });
-
-  afterEach(async () => {
-    for (const state of [explicit, ambient]) {
-      await waitForSessionTranscriptIndexReconcilesInStateDir(state.stateDir);
-      closeOpenClawAgentDatabaseByPath(
-        resolveIncognitoOpenClawAgentSqlitePath({ agentId, env: state.env }),
-      );
-      await state.cleanup();
-    }
-  });
-
-  function target(env: NodeJS.ProcessEnv | undefined) {
-    const path = resolveIncognitoOpenClawAgentSqlitePath({ agentId, env });
-    return {
-      options: { agentId, env, path },
-      scope: { agentId, env, sessionId, sessionKey, storePath: path },
-    };
-  }
-
-  function expectNoDiskState() {
-    expect(fs.readdirSync(ambient.stateDir, { recursive: true })).toEqual([]);
-    expect(fs.readdirSync(explicit.stateDir, { recursive: true })).toEqual([]);
-  }
 
   it.each(["ambient", "explicit"] as const)(
     "repairs a supported branch through the scheduled worker (%s environment)",
@@ -91,17 +53,12 @@ describe("incognito transcript reconciliation", () => {
       const { scope, options } = target(environment === "ambient" ? undefined : explicit.env);
       const turn = await persistSessionTranscriptTurn(scope, {
         messages: [
-          { eventId: "root", parentId: null, message: { role: "user", content: "root" } },
-          {
-            eventId: "abandoned",
-            parentId: "root",
-            message: { role: "assistant", content: "🦞".repeat(262_144) },
-          },
-          {
-            eventId: "active",
-            parentId: "root",
-            message: { role: "assistant", content: "active" },
-          },
+          transcriptMessage("root", null, { role: "user", content: "root" }),
+          transcriptMessage("abandoned", "root", {
+            role: "assistant",
+            content: "🦞".repeat(262_144),
+          }),
+          transcriptMessage("active", "root", { role: "assistant", content: "active" }),
         ],
         touchSessionEntry: false,
       });
@@ -141,60 +98,65 @@ describe("incognito transcript reconciliation", () => {
     30_000,
   );
 
-  it("transfers exact UTF-8 in bounded frames without retaining a transaction", async () => {
+  it.each([false, true])(
+    "transfers exact UTF-8 in bounded frames without retaining a transaction (ranged=%s)",
+    async (ranged) => {
+      const { scope, options } = target(explicit.env);
+      const event = message("large", "🦞".repeat(131_073));
+      await replaceTranscriptEvents(
+        scope,
+        ranged ? [message("excluded-before"), event, message("excluded-after")] : [event],
+      );
+      const database = openOpenClawAgentDatabase(options);
+      const source = createMemoryTranscriptProjectionSource(
+        database,
+        options,
+        ranged ? { afterSeq: 0, throughSeq: 1 } : undefined,
+      );
+      const bytes: Uint8Array[] = [];
+      while (true) {
+        const frame = source.read(sessionId);
+        expect(database.db.isTransaction).toBe(false);
+        if (frame.type === "source-end") {
+          expect(frame.snapshot.maxSeq).toBe(ranged ? 1 : 0);
+          break;
+        }
+        expect(frame.type).toBe("source-frame");
+        if (frame.type !== "source-frame") {
+          throw new Error("source unexpectedly unavailable");
+        }
+        expect(frame.seq).toBe(ranged ? 1 : 0);
+        expect(frame.bytes.byteLength).toBeLessThanOrEqual(256 * 1024);
+        bytes.push(frame.bytes);
+        if (ranged && bytes.length === 1) {
+          await appendTranscriptEvent(scope, { type: "metadata", id: "later-append" });
+        }
+      }
+      expect(bytes.length).toBeGreaterThan(1);
+      expect(JSON.parse(Buffer.concat(bytes).toString("utf8"))).toEqual(event);
+      source.clear();
+      expectNoDiskState();
+    },
+  );
+
+  it("returns an empty captured range without reading later appends or a future prefix", async () => {
     const { scope, options } = target(explicit.env);
-    const event = message("large", "🦞".repeat(131_073));
-    await replaceTranscriptEvents(scope, [event]);
+    await replaceTranscriptEvents(scope, [message("prefix")]);
     const database = openOpenClawAgentDatabase(options);
-    const source = createMemoryTranscriptProjectionSource(database, options);
-    const bytes: Uint8Array[] = [];
-    while (true) {
-      const frame = source.read(sessionId);
-      expect(database.db.isTransaction).toBe(false);
-      if (frame.type === "source-end") {
-        break;
-      }
-      expect(frame.type).toBe("source-frame");
-      if (frame.type !== "source-frame") {
-        throw new Error("source unexpectedly unavailable");
-      }
-      expect(frame.bytes.byteLength).toBeLessThanOrEqual(256 * 1024);
-      bytes.push(frame.bytes);
-    }
-    expect(bytes.length).toBeGreaterThan(1);
-    expect(JSON.parse(Buffer.concat(bytes).toString("utf8"))).toEqual(event);
-    expectNoDiskState();
-  });
-
-  it("keeps a reused memory handle's append worker with its original state owner", async () => {
-    const env = { ...explicit.env };
-    const { scope, options } = target(env);
-    const originalScope = { ...scope, env: explicit.env };
-    await replaceTranscriptEvents(originalScope, [message("seed")]);
-    const database = openOpenClawAgentDatabase(options);
-    const ownerEnv = database.ownerEnv;
-    env.OPENCLAW_STATE_DIR = ambient.stateDir;
-    const cached = openOpenClawAgentDatabase(options);
-    expect(cached).toBe(database);
-    expect(cached.ownerEnv).toBe(ownerEnv);
-
-    runOpenClawAgentWriteTransaction((writer) => {
-      appendTranscriptEventInTransaction(writer, resolveSqliteTranscriptScope(originalScope), {
-        type: "leaf",
-        id: "selected-leaf",
-        parentId: "seed",
-        targetId: "seed",
-      });
-    }, options);
-    await waitForSessionTranscriptIndexReconcile(options);
-
-    expect(
-      readSessionTranscriptMessageEventPage(originalScope, {
-        maxMessages: 10,
-        offset: 0,
-      }).events.map(({ event }) => event),
-    ).toEqual([expect.objectContaining({ id: "seed" })]);
-    expect(getOpenClawAgentDatabaseIfOpen(target(ambient.env).options)).toBeUndefined();
+    const source = createMemoryTranscriptProjectionSource(database, options, {
+      afterSeq: 0,
+      throughSeq: 0,
+    });
+    expect(source.read(sessionId)).toMatchObject({ type: "source-end", snapshot: { maxSeq: 0 } });
+    await appendTranscriptEvent(scope, { type: "metadata", id: "later-append" });
+    expect(source.read(sessionId)).toMatchObject({ type: "source-end", snapshot: { maxSeq: 0 } });
+    source.clear();
+    const future = createMemoryTranscriptProjectionSource(database, options, {
+      afterSeq: 1,
+      throughSeq: 2,
+    });
+    expect(future.read(sessionId)).toEqual({ type: "source-unavailable" });
+    future.clear();
     expectNoDiskState();
   });
 
@@ -230,13 +192,21 @@ describe("incognito transcript reconciliation", () => {
     expectNoDiskState();
   });
 
-  it.each(["append", "replace", "delete-recreate", "dispose", "reopen"] as const)(
-    "revokes a captured source after %s before another frame or plan is accepted",
-    async (mutation) => {
+  it.each(
+    (["append", "replace", "delete-recreate", "dispose", "reopen"] as const).flatMap((mutation) =>
+      (mutation === "append" ? [false] : [false, true]).map((ranged) => ({ mutation, ranged })),
+    ),
+  )(
+    "revokes a captured source after $mutation before another frame or plan is accepted (ranged=$ranged)",
+    async ({ mutation, ranged }) => {
       const { scope, options } = target(explicit.env);
       await replaceTranscriptEvents(scope, [message("original", "x".repeat(300_000))]);
       const database = openOpenClawAgentDatabase(options);
-      const source = createMemoryTranscriptProjectionSource(database, options);
+      const source = createMemoryTranscriptProjectionSource(
+        database,
+        options,
+        ranged ? { afterSeq: -1, throughSeq: 0 } : undefined,
+      );
       const plan = prepareSessionTranscriptProjection(database.db, sessionId)!;
       expect(source.read(sessionId)).toMatchObject({ type: "source-frame", final: false });
       expect(source.isCurrentPlan(plan)).toBe(true);
@@ -325,30 +295,27 @@ describe("incognito transcript reconciliation", () => {
       const release = createDeferred();
       let blocker: Promise<void> | undefined;
       let worker: Worker | undefined;
-      const params = {
-        ...options,
-        createWorker: (filename: string | URL, workerOptions: WorkerOptions) => {
-          worker = new Worker(filename, workerOptions);
-          worker.on("message", (workerMessage: { type: string }) => {
-            if (workerMessage.type === (stage === "pending" ? "active-chunk" : stage) && !blocker) {
-              if (stage === "pending") {
-                startSessionTranscriptIndexReconcile(params);
-              }
-              // Enter the real FIFO ahead of the owner handler, then dispose
-              // immediately before its queued write could acquire a database.
-              blocker = runExclusiveSqliteSessionWrite(
-                options,
-                async () => {
-                  blocked.resolve();
-                  await release.promise;
-                  closeOpenClawAgentDatabaseByPath(database.path);
-                },
-                "sessions.transcript-index.preflight",
-              );
+      const params = options;
+      observer.onTask = ({ worker: created, observeMessage }) => {
+        worker = created;
+        observeMessage((workerMessage: { type: string }) => {
+          if (workerMessage.type === (stage === "pending" ? "active-chunk" : stage) && !blocker) {
+            if (stage === "pending") {
+              startSessionTranscriptIndexReconcile(params);
             }
-          });
-          return worker;
-        },
+            // Enter the real FIFO ahead of the owner handler, then dispose
+            // immediately before its queued write could acquire a database.
+            blocker = runExclusiveSqliteSessionWrite(
+              options,
+              async () => {
+                blocked.resolve();
+                await release.promise;
+                closeOpenClawAgentDatabaseByPath(database.path);
+              },
+              "sessions.transcript-index.preflight",
+            );
+          }
+        });
       };
       let pending: Promise<unknown>;
       if (stage === "pending") {
@@ -376,134 +343,4 @@ describe("incognito transcript reconciliation", () => {
     },
     20_000,
   );
-
-  it("joins the final memory sweep after the worker exits naturally", async () => {
-    const { scope, options } = target(explicit.env);
-    await replaceTranscriptEvents(scope, [message("seed")]);
-    const database = openOpenClawAgentDatabase(options);
-    database.db
-      .prepare("UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?")
-      .run(sessionId);
-    const blocked = createDeferred();
-    const release = createDeferred();
-    const exited = createDeferred<number>();
-    let blocker: Promise<void> | undefined;
-    let worker: Worker | undefined;
-    let settled = false;
-    const outcome = reconcileSessionTranscriptIndexes({
-      ...options,
-      createWorker: (filename, workerOptions) => {
-        worker = new Worker(filename, workerOptions);
-        worker.once("exit", exited.resolve);
-        worker.on("message", (workerMessage: { type: string }) => {
-          if (workerMessage.type === "done") {
-            // Memory's port can close while its final parent write waits in the FIFO.
-            blocker = runExclusiveSqliteSessionWrite(
-              options,
-              async () => {
-                blocked.resolve();
-                await release.promise;
-              },
-              "sessions.transcript-index.preflight",
-            );
-          }
-        });
-        return worker;
-      },
-    }).then(
-      (value) => {
-        settled = true;
-        return { value };
-      },
-      (error: unknown) => {
-        settled = true;
-        return { error };
-      },
-    );
-    try {
-      await withTestTimeout(blocked.promise, 10_000, "memory final sweep did not reach its fence");
-      expect(
-        await withTestTimeout(exited.promise, 10_000, "memory worker did not exit naturally"),
-      ).toBe(0);
-      expect(worker?.threadId).toBe(-1);
-      expect(settled).toBe(false);
-    } finally {
-      release.resolve();
-      await blocker;
-      await outcome;
-    }
-    expect(await outcome).toEqual({ value: { reconciledSessions: 1 } });
-    expectNoDiskState();
-  }, 20_000);
-
-  it("hands a successor's scheduled work over after successful old-owner settlement", async () => {
-    const { scope, options } = target(ambient.env);
-    await replaceTranscriptEvents(scope, [message("old-owner")]);
-    const database = openOpenClawAgentDatabase(options);
-    const state = () =>
-      getOpenClawAgentDatabaseIfOpen(options)
-        ?.db.prepare(
-          "SELECT needs_rebuild FROM session_transcript_index_state WHERE session_id = ?",
-        )
-        .get(sessionId);
-    database.db
-      .prepare("UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?")
-      .run(sessionId);
-    const joined = createDeferred();
-    const release = createDeferred();
-    const workers: Worker[] = [];
-    startSessionTranscriptIndexReconcile({
-      ...options,
-      createWorker: (filename, workerOptions) => {
-        const worker = new Worker(filename, workerOptions);
-        workers.push(worker);
-        if (workers.length === 1) {
-          const terminate = worker.terminate.bind(worker);
-          worker.terminate = async () => {
-            const code = await terminate();
-            joined.resolve();
-            await release.promise;
-            return code;
-          };
-        }
-        return worker;
-      },
-    });
-    const pending = waitForSessionTranscriptIndexReconcile(options);
-    try {
-      await withTestTimeout(joined.promise, 10_000, "old memory worker did not settle");
-      expect(state()).toEqual({ needs_rebuild: 0 });
-      expect(workers[0]?.threadId).toBe(-1);
-      closeOpenClawAgentDatabaseByPath(database.path);
-      await persistSessionTranscriptTurn(scope, {
-        messages: [
-          { eventId: "root", parentId: null, message: { role: "user", content: "root" } },
-          {
-            eventId: "abandoned",
-            parentId: "root",
-            message: { role: "assistant", content: "abandoned" },
-          },
-          {
-            eventId: "active",
-            parentId: "root",
-            message: { role: "assistant", content: "active" },
-          },
-        ],
-        touchSessionEntry: false,
-      });
-      expect(getOpenClawAgentDatabaseIfOpen(options)).not.toBe(database);
-      expect(state()).toEqual({ needs_rebuild: 1 });
-    } finally {
-      release.resolve();
-      await pending;
-    }
-    expect(state()).toEqual({ needs_rebuild: 0 });
-    expect(
-      readSessionTranscriptMessageEventPage(scope, { maxMessages: 10, offset: 0 }).events.map(
-        ({ event }) => event,
-      ),
-    ).toEqual([expect.objectContaining({ id: "root" }), expect.objectContaining({ id: "active" })]);
-    expect(workers.map((worker) => worker.threadId)).toEqual([-1, -1]);
-    expectNoDiskState();
-  }, 20_000);
 });

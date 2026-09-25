@@ -1,14 +1,19 @@
 import { stripCompactionReplayCheckpointInPlace } from "@openclaw/ai/transports";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { buildSessionContext as buildCoreSessionContext } from "../../../packages/agent-core/src/harness/session/session.js";
+import { isIndexedSessionEntry } from "../../config/sessions/session-entry-codec.js";
 import { selectSessionTranscriptLeafControlledPath } from "../../config/sessions/transcript-tree.js";
 import { MIN_READABLE_SESSION_VERSION } from "../../config/sessions/version.js";
 import { logWarn } from "../../logger.js";
+import { copyPreparedModelVisibleToolText } from "../../logging/redact-internal.js";
+import type { SessionTreeEntry as CoreSessionTreeEntry } from "../runtime/index.js";
 import {
-  buildSessionContext as buildCoreSessionContext,
-  type SessionTreeEntry as CoreSessionTreeEntry,
-} from "../runtime/index.js";
+  copyCodeModeSourceAppend,
+  getCodeModeSourceAppend,
+} from "../transcript-code-mode-source.js";
 import { generateSessionEntryId } from "./session-manager-id.js";
 import type {
+  AppendPersistenceOptions,
   CompactionEntry,
   FileEntry,
   SessionContext,
@@ -22,6 +27,21 @@ export {
   parseParentLinkedOpaqueEntry,
   partitionSessionFileEntries,
 } from "../../config/sessions/session-entry-codec.js";
+
+export function isTalkRealtimeVoiceEntry(entry: SessionEntry): boolean {
+  if (
+    entry.type !== "message" ||
+    (entry.message.role !== "user" && entry.message.role !== "assistant")
+  ) {
+    return false;
+  }
+  const provenance: unknown = Reflect.get(entry.message, "provenance");
+  return (
+    isRecord(provenance) &&
+    provenance.kind === "realtime_voice" &&
+    provenance.sourceChannel === "talk"
+  );
+}
 
 export function isSessionContextMetadataEntry(entry: SessionEntry): boolean {
   return (
@@ -208,4 +228,39 @@ export function normalizeLoadedFileEntry(entry: FileEntry): FileEntry {
     message.content = [message.content];
   }
   return entry;
+}
+
+export function canonicalizeSessionEntry<T extends SessionEntry>(
+  entry: T,
+  options?: AppendPersistenceOptions,
+): T {
+  // oxlint-disable-next-line unicorn/prefer-structured-clone -- Match the persisted JSON/toJSON shape exactly.
+  const canonicalEntry: unknown = JSON.parse(JSON.stringify(entry));
+  if (!isIndexedSessionEntry(canonicalEntry) || canonicalEntry.type !== entry.type) {
+    throw new Error(`Invalid session transcript entry: ${entry.type}`);
+  }
+  if (entry.type === "message" && canonicalEntry.type === "message") {
+    if (
+      entry.message.role === "toolResult" &&
+      canonicalEntry.message.role === "toolResult" &&
+      Array.isArray(entry.message.content) &&
+      Array.isArray(canonicalEntry.message.content)
+    ) {
+      const canonicalContent = canonicalEntry.message.content;
+      entry.message.content.forEach((block, index) => {
+        const canonicalBlock = canonicalContent[index];
+        if (block?.type === "text" && canonicalBlock?.type === "text") {
+          copyPreparedModelVisibleToolText(block, canonicalBlock);
+        }
+      });
+    }
+    copyCodeModeSourceAppend(
+      entry.message,
+      canonicalEntry.message,
+      getCodeModeSourceAppend(options),
+      (source) => source,
+    );
+  }
+  // SAFETY: Manager-built envelopes retain T's checked discriminant; the codec validates their JSON storage shape.
+  return canonicalEntry as T;
 }

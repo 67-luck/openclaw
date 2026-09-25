@@ -11,9 +11,6 @@ export {
 export type {
   AgentHarness,
   AgentHarnessV2,
-  AgentHarnessHostCapabilities,
-  AgentHarnessProviderTranscriptCommitParams,
-  AgentHarnessProviderTranscriptCommitResult,
   AgentToolResultMiddleware,
   AgentToolResultMiddlewareEvent,
   AnyAgentTool,

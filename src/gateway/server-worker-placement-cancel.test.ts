@@ -11,8 +11,6 @@ import {
 import { onAgentEvent } from "../infra/agent-events.js";
 import { clearAgentRunContext } from "../infra/agent-run-registry.js";
 import type { SubsystemLogger } from "../logging/subsystem.js";
-import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import {
   createChatRunState,
   createSessionEventSubscriberRegistry,
@@ -25,6 +23,7 @@ import { cancelGatewayWorkerSessionWork } from "./server-worker-placement-cancel
 import { createGatewayWorkerPlacementReclaimBarriers } from "./server-worker-placement-reclaim.js";
 import { admitWorkerStopChat } from "./server-worker-placement.test-harness.js";
 import * as lifecycleState from "./session-lifecycle-state.js";
+import { closeSessionSqliteDatabasesForTest } from "./session-utils.test-support.js";
 const routing = vi.hoisted(() => ({ load: vi.fn() }));
 vi.mock("./session-utils.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./session-utils.js")>()),
@@ -87,6 +86,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
     } as unknown as import("./server-methods/types.js").GatewayRequestContext;
     routing.load.mockImplementation(() => ({
       ...target,
+      agentId: "main",
       canonicalKey: target.sessionKey,
       cfg: {},
       entry: loadSessionEntry(target),
@@ -94,6 +94,9 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
     let subscriptions: ReturnType<typeof startGatewayEventSubscriptions> | undefined;
     let heldWriter: Promise<unknown> | undefined;
     let reclaim: Promise<unknown> | undefined;
+    let reclaimFailureObserved = false;
+    let abortCleanup: Promise<{ error: unknown } | undefined> | undefined;
+    const failures: unknown[] = [];
     const writerEntered = createDeferred();
     const releaseWriter = createDeferred();
     const abortObserved = createDeferred();
@@ -129,9 +132,11 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
     try {
       await replaceSessionEntry(target, entry);
       subscriptions = startGatewayEventSubscriptions({
+        signal: new AbortController().signal,
         log,
         broadcast: context.broadcast,
         broadcastToConnIds: vi.fn(),
+        nodeHasSessionSubscribers: () => false,
         nodeSendToSession: context.nodeSendToSession,
         agentRunSeq: context.agentRunSeq,
         chatRunState,
@@ -141,6 +146,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         chatAbortControllers: context.chatAbortControllers,
         restartRecoveryCandidates: new Map(),
         terminalSessions: { closeTaskSessions: vi.fn() },
+        refreshConnectedUserProfiles: vi.fn(),
       });
       active = await admit(runId);
       expect(active.ok).toBe(true);
@@ -148,6 +154,9 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         throw new Error("active admission missing");
       }
       const owned = active.value;
+      if (outcome !== "setup-failed-write") {
+        expect(owned.activeRunAbort.markExecutionStarted()).toBe(true);
+      }
       await replaceSessionEntry(target, {
         ...entry,
         status: "running",
@@ -158,7 +167,14 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         "abort",
         () => {
           if (outcome !== "setup-failed-write") {
-            owned.cleanupAdmittedRun();
+            try {
+              abortCleanup = Promise.resolve(owned.cleanupAdmittedRun()).then(
+                () => undefined,
+                (error: unknown) => ({ error }),
+              );
+            } catch (error) {
+              abortCleanup = Promise.resolve({ error });
+            }
           }
           abortObserved.resolve();
         },
@@ -243,47 +259,91 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         releaseWriter.resolve();
         await heldWriter;
         await rejected;
+        reclaimFailureObserved = true;
         expect(reclaimEffectStarted).toBe(false);
         expect(loadSessionEntry(target)?.status).toBe("running");
-        return;
+      } else {
+        releaseWriter.resolve();
+        await heldWriter;
+        await reclaim;
+        expect(events.filter((event) => event.phase === "end")).toEqual([
+          { phase: "end", status: "cancelled", aborted: true, stopReason: "rpc" },
+        ]);
+        expect(context.chatAbortControllers.has(runId)).toBe(false);
+        await closeSessionSqliteDatabasesForTest();
+        const persisted = loadSessionEntry({ ...target, readConsistency: "latest" });
+        expect(persisted).toMatchObject({
+          status: "killed",
+          lastRunId: runId,
+          abortedLastRun: true,
+        });
+        expect(persisted?.endedAt).toBeTypeOf("number");
+        const fresh = await admit("explicit-after-terminal-stop");
+        expect(fresh.ok).toBe(true);
+        if (fresh.ok) {
+          await fresh.value.cleanupAdmittedRun();
+          clearAgentRunContext("explicit-after-terminal-stop", fresh.value.lifecycleGeneration);
+        }
       }
-      releaseWriter.resolve();
-      await heldWriter;
-      await reclaim;
-      expect(events.filter((event) => event.phase === "end")).toEqual([
-        { phase: "end", status: "cancelled", aborted: true, stopReason: "rpc" },
-      ]);
-      expect(context.chatAbortControllers.has(runId)).toBe(false);
-      closeOpenClawAgentDatabasesForTest();
-      const persisted = loadSessionEntry({ ...target, readConsistency: "latest" });
-      expect(persisted).toMatchObject({ status: "killed", lastRunId: runId, abortedLastRun: true });
-      expect(persisted?.endedAt).toBeTypeOf("number");
-      const fresh = await admit("explicit-after-terminal-stop");
-      expect(fresh.ok).toBe(true);
-      if (fresh.ok) {
-        fresh.value.cleanupAdmittedRun();
-        clearAgentRunContext("explicit-after-terminal-stop", fresh.value.lifecycleGeneration);
-      }
+    } catch (error) {
+      failures.push(error);
     } finally {
       terminalWrite.resolve();
       releaseWriter.resolve();
-      await heldWriter;
-      await reclaim?.catch(() => {});
-      if (active?.ok) {
-        active.value.cleanupAdmittedRun();
-        clearAgentRunContext(runId, active.value.lifecycleGeneration);
+      const cleanups: Array<() => void | Promise<void>> = [
+        () => heldWriter,
+        async () => {
+          try {
+            await reclaim;
+          } catch (error) {
+            if (!reclaimFailureObserved) {
+              throw error;
+            }
+          }
+        },
+        async () => {
+          if (active?.ok) {
+            if (abortCleanup) {
+              const failure = await abortCleanup;
+              if (failure) {
+                throw failure.error;
+              }
+            } else {
+              await active.value.cleanupAdmittedRun();
+            }
+            clearAgentRunContext(runId, active.value.lifecycleGeneration);
+          }
+        },
+        () => unsubscribe(),
+        () => subscriptions?.agentUnsub(),
+        () => subscriptions?.heartbeatUnsub(),
+        () => subscriptions?.transcriptUnsub(),
+        () => subscriptions?.lifecycleUnsub(),
+        () => subscriptions?.taskUnsub(),
+        () => closeSessionSqliteDatabasesForTest(),
+        () => {
+          persistenceSpy?.mockRestore();
+        },
+        () => {
+          routing.load.mockReset();
+        },
+        () => fs.rm(root, { recursive: true, force: true }),
+      ];
+      for (const cleanup of cleanups) {
+        try {
+          await cleanup();
+        } catch (error) {
+          if (!failures.includes(error)) {
+            failures.push(error);
+          }
+        }
       }
-      unsubscribe();
-      await subscriptions?.agentUnsub();
-      subscriptions?.heartbeatUnsub();
-      subscriptions?.transcriptUnsub();
-      subscriptions?.lifecycleUnsub();
-      await subscriptions?.taskUnsub();
-      closeOpenClawAgentDatabasesForTest();
-      closeOpenClawStateDatabaseForTest();
-      persistenceSpy?.mockRestore();
-      routing.load.mockReset();
-      await fs.rm(root, { recursive: true, force: true });
+    }
+    if (failures.length === 1) {
+      throw failures[0];
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Stop fixture and cleanup failed");
     }
   },
 );

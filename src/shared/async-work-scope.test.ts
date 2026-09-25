@@ -5,89 +5,60 @@ import {
   AsyncWorkScope,
   captureAsyncWorkTracker,
   getAsyncWorkSignal,
-  runOutsideAsyncWorkScope,
+  isAsyncWorkScopeActiveHere,
   trackAsyncWork,
 } from "./async-work-scope.js";
 import { createDeferredCore } from "./deferred.js";
+import { resolveGlobalSingleton } from "./global-singleton.js";
 
 describe("async work scope", () => {
-  it("exits only work ownership and restores it after synchronous returns and throws", async () => {
-    const foreground = new AsyncWorkScope();
-    const authorization = new AsyncLocalStorage<string>();
-    const value = {};
-    const failure = new Error("independent failure");
-    let continuation: Promise<void> | undefined;
-    try {
-      authorization.run("caller", () =>
-        foreground.run(() => {
-          expect(
-            runOutsideAsyncWorkScope(() => {
-              expect(getAsyncWorkSignal()).toBeUndefined();
-              expect(authorization.getStore()).toBe("caller");
-              continuation = Promise.resolve().then(() => {
-                expect(getAsyncWorkSignal()).toBeUndefined();
-                expect(authorization.getStore()).toBe("caller");
-              });
-              return value;
-            }),
-          ).toBe(value);
-          expect(getAsyncWorkSignal()).toBe(foreground.signal);
-          expect(() =>
-            runOutsideAsyncWorkScope(() => {
-              expect(getAsyncWorkSignal()).toBeUndefined();
-              throw failure;
-            }),
-          ).toThrow(failure);
-          expect(getAsyncWorkSignal()).toBe(foreground.signal);
-          expect(authorization.getStore()).toBe("caller");
-        }),
+  it.each(["released caller", "released helper"])(
+    "joins work across the shipped scope carrier with a %s",
+    async (direction) => {
+      // Released chunks retain this carrier while package replacement drains their work.
+      const carrier = resolveGlobalSingleton(
+        Symbol.for("openclaw.asyncWorkScope"),
+        () => new AsyncLocalStorage<AsyncWorkScope>(),
       );
-    } finally {
-      try {
-        await Promise.all([continuation, foreground.drain()]);
-      } finally {
-        authorization.disable();
-      }
-    }
-  });
-
-  it("joins independent descendants without retaining the foreground cleanup owner", async () => {
-    const foreground = new AsyncWorkScope();
-    const review = new AsyncWorkScope();
-    const finishDescendant = createDeferredCore();
-    const cleanupStarted = createDeferredCore();
-    let independent: Promise<void> | undefined;
-    let descendant: Promise<void> | undefined;
-    let reviewClosed = false;
-    try {
-      await foreground.track(() => {
-        independent = runOutsideAsyncWorkScope(() =>
-          trackAsyncWork(async () => {
-            await review.track(() => {
-              descendant = trackAsyncWork(() => finishDescendant.promise);
-            });
-            cleanupStarted.resolve();
-            await review.drain();
-            reviewClosed = true;
-          }),
-        );
+      const scope = new AsyncWorkScope();
+      const finish = createDeferredCore();
+      let drained = false;
+      const work =
+        direction === "released caller"
+          ? carrier.run(scope, () => trackAsyncWork(() => finish.promise))
+          : scope.run(() => carrier.getStore()!.track(() => finish.promise));
+      const closing = scope.drain().then(() => {
+        drained = true;
       });
-      await cleanupStarted.promise;
-      expect(foreground.hasPendingWork).toBe(false);
-      await foreground.drain();
-      expect(foreground.signal.aborted).toBe(true);
-      expect(review.hasPendingWork).toBe(true);
-      expect(reviewClosed).toBe(false);
-      finishDescendant.resolve();
-      await independent;
-      expect(reviewClosed).toBe(true);
-      expect(review.hasPendingWork).toBe(false);
-    } finally {
-      finishDescendant.resolve();
-      await descendant;
-      await independent;
-      await Promise.all([foreground.drain(), review.drain()]);
-    }
+      try {
+        await nextTurn();
+        expect(drained).toBe(false);
+      } finally {
+        finish.resolve();
+        await work;
+        await closing;
+      }
+      expect(drained).toBe(true);
+    },
+  );
+
+  it("does not inherit scope ancestry through a released detach helper", async () => {
+    const carrier = resolveGlobalSingleton(
+      Symbol.for("openclaw.asyncWorkScope"),
+      () => new AsyncLocalStorage<AsyncWorkScope>(),
+    );
+    const owner = new AsyncWorkScope();
+    const detached = new AsyncWorkScope();
+    await owner.track(() =>
+      carrier.exit(() => {
+        expect(isAsyncWorkScopeActiveHere(owner)).toBe(false);
+        return detached.track(() => {
+          expect(isAsyncWorkScopeActiveHere(owner)).toBe(false);
+          expect(isAsyncWorkScopeActiveHere(detached)).toBe(true);
+        });
+      }),
+    );
+    await Promise.all([owner.drain(), detached.drain()]);
   });
 
   it("excludes newly admitted disposal work while another owner enters its next phase", async () => {
@@ -270,14 +241,20 @@ describe("async work scope", () => {
     try {
       await authorization.run("invoker", () =>
         caller.track(() => {
+          expect(isAsyncWorkScopeActiveHere(caller)).toBe(true);
+          expect(isAsyncWorkScopeActiveHere(owner)).toBe(false);
           producer = track(async () => {
             expect(authorization.getStore()).toBe("invoker");
             expect(getAsyncWorkSignal()).toBe(owner.signal);
+            expect(isAsyncWorkScopeActiveHere(owner)).toBe(true);
+            expect(isAsyncWorkScopeActiveHere(caller)).toBe(true);
             await Promise.resolve();
             descendant = trackAsyncWork(() => gate.promise);
           });
         }),
       );
+      expect(isAsyncWorkScopeActiveHere(caller)).toBe(false);
+      expect(isAsyncWorkScopeActiveHere(owner)).toBe(false);
       await producer;
       const closing = owner.drain().then(() => {
         drained = true;
@@ -311,6 +288,7 @@ describe("async work scope", () => {
       await caller.track(() => {
         producer = track(() => {
           expect(getAsyncWorkSignal()).toBeUndefined();
+          expect(isAsyncWorkScopeActiveHere(caller)).toBe(false);
           descendant = trackAsyncWork(async () => {
             await gate.promise;
             descendantSettled = true;

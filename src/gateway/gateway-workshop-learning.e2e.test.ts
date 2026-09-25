@@ -13,7 +13,7 @@ import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { loadSessionEntry, loadTranscriptEventsSync } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withServer } from "../plugin-sdk/test-helpers/http-test-server.js";
-import { readSkillReviewOutcomes } from "../skills/workshop/collection-review-state.js";
+import { readSkillCuratorReviewStatus } from "../skills/workshop/collection-review-state.test-support.js";
 import { resolveWorkshopSkillsDir } from "../skills/workshop/skills-root.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.e2e.js";
@@ -278,29 +278,7 @@ describe("Gateway automatic Workshop learning", () => {
               reviewStarted.promise,
               45_000,
               "The idle Workshop review did not reach the provider.",
-            ).catch((cause: unknown) => {
-              const summarizeError = (error: unknown) =>
-                String(error).replaceAll(state.root, "<test-state>").slice(0, 300);
-              let outcomes: unknown;
-              try {
-                outcomes = Object.values(readSkillReviewOutcomes().experienceReviews)
-                  .slice(0, 3)
-                  .map(({ outcome, error }) => ({
-                    outcome,
-                    error: error ? summarizeError(error) : undefined,
-                  }));
-              } catch (error) {
-                outcomes = { readError: summarizeError(error) };
-              }
-              throw new Error(
-                `The idle Workshop review did not reach the provider. ${JSON.stringify({
-                  foregroundRequests,
-                  reviewRequests: reviewRequests.length,
-                  outcomes,
-                })}`,
-                { cause },
-              );
-            });
+            );
             let continuedTranscript: typeof originalTranscript;
             try {
               const laterAccepted = await gateway.client.request<{ runId: string; status: string }>(
@@ -334,7 +312,7 @@ describe("Gateway automatic Workshop learning", () => {
             expect(laterTranscript).toContain(laterMessage);
             expect(laterTranscript).toContain(laterReply);
             await expect
-              .poll(() => Object.values(readSkillReviewOutcomes().experienceReviews).length, {
+              .poll(() => Object.values(readSkillCuratorReviewStatus().experienceReviews).length, {
                 timeout: 80_000,
                 interval: 100,
               })

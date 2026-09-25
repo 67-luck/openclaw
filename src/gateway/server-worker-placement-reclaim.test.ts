@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { loadTranscriptEvents, replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import { clearAgentRunContext } from "../infra/agent-run-registry.js";
+import { runCommandWithTimeout } from "../process/exec.js";
 import { runExclusiveSessionLifecycleMutation } from "../sessions/session-lifecycle-admission.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import {
@@ -64,6 +65,11 @@ async function scenario(
   const storePath = path.join(root, "sessions.sqlite");
   const worktreePath = path.join(root, "workspace");
   await fs.mkdir(worktreePath);
+  // Recovery reads real result refs, so this managed-worktree fixture owns its Git root.
+  const initialized = await runCommandWithTimeout(["git", "-C", worktreePath, "init", "--quiet"], {
+    timeoutMs: 10_000,
+  });
+  expect(initialized.code).toBe(0);
   const entry = {
     sessionId: REQUEST.sessionId,
     worktree: { id: "task-worktree", branch: "test", repoRoot: worktreePath },
@@ -204,7 +210,7 @@ async function scenario(
   const provisionEntered = createDeferred();
   const releaseProvision = createDeferred();
   if (pendingDispatch) {
-    vi.mocked(harness.environments.create).mockImplementationOnce(async () => {
+    vi.mocked(harness.environments.createWithRequest).mockImplementationOnce(async () => {
       provisionEntered.resolve();
       await releaseProvision.promise;
       return harness.ready;
@@ -246,16 +252,30 @@ async function scenario(
   if (pendingMove) {
     context.chatRunState.getOrCreate(name + "-running").buffer = "partial before queued Move Stop";
   }
-  let cancellationRecovery: Promise<void> | undefined;
+  let cancellationRecovery: Promise<{ error: unknown } | undefined> | undefined;
   if (running?.ok) {
     running.value.activeRunAbort.controller.signal.addEventListener("abort", () => {
-      if (cancellationNeedsRecovery) {
-        // Real worker failure completion joins placement recovery before releasing admission.
-        cancellationRecovery = coordinated.reconcileActive().finally(() => {
-          running.value.cleanupAdmittedRun();
-        });
-      } else {
-        running.value.cleanupAdmittedRun();
+      try {
+        let completion: void | Promise<void>;
+        if (cancellationNeedsRecovery) {
+          // Real worker failure completion joins placement recovery before releasing admission.
+          const recovery = coordinated.reconcileActive();
+          completion = (async () => {
+            try {
+              await recovery;
+            } finally {
+              await running.value.cleanupAdmittedRun();
+            }
+          })();
+        } else {
+          completion = running.value.cleanupAdmittedRun();
+        }
+        cancellationRecovery = Promise.resolve(completion).then(
+          () => undefined,
+          (error: unknown) => ({ error }),
+        );
+      } catch (error) {
+        cancellationRecovery = Promise.resolve({ error });
       }
     });
   }
@@ -305,15 +325,21 @@ async function scenario(
   let abortedDuringInspection = false;
   let destroyedDuringInspection = false;
   let old!: ReturnType<typeof admit>;
+  let oldCleanup: Promise<{ error: unknown } | undefined> | undefined;
   let reclaimResult: { ok: boolean; state?: string; message?: string } | undefined;
   const reserveOld = () => {
     old = admit(oldRunId);
     if (blockedInspection || pendingDispatch) {
-      void old.promise.then((result) => {
-        if (result.ok) {
-          result.value.cleanupAdmittedRun();
-        }
-      });
+      oldCleanup = old.promise
+        .then(async (result) => {
+          if (result.ok) {
+            await result.value.cleanupAdmittedRun();
+          }
+        })
+        .then(
+          () => undefined,
+          (error: unknown) => ({ error }),
+        );
     }
     const reservation = context.dedupe.get(pendingChatSendDedupeKey(oldRunId));
     if (beforeStop) {
@@ -365,7 +391,10 @@ async function scenario(
     releaseBarrier.resolve();
     reclaimResult = await reclaim;
     await sweep;
-    await cancellationRecovery;
+    const recoveryFailure = await cancellationRecovery;
+    if (recoveryFailure) {
+      throw recoveryFailure.error;
+    }
     await moving;
   };
   if (beforeStop) {
@@ -383,6 +412,10 @@ async function scenario(
     await stop();
   }
   const oldResult = await old.promise;
+  const oldCleanupFailure = await oldCleanup;
+  if (oldCleanupFailure) {
+    throw oldCleanupFailure.error;
+  }
   if (destroyFailure && !failedRetry) {
     expect(oldResult.ok).toBe(false);
     expect(harness.environments.get(active.environmentId!)?.state).toBe("destroying");
@@ -397,14 +430,14 @@ async function scenario(
   expect(environment?.state).toBe("destroyed");
   expect(harness.environments.destroy).toHaveBeenCalledTimes(destroyFailure ? 2 : 1);
   if (oldResult.ok) {
-    oldResult.value.cleanupAdmittedRun();
+    await oldResult.value.cleanupAdmittedRun();
     clearAgentRunContext(oldRunId, oldResult.value.lifecycleGeneration);
   }
   const freshRunId = name + "-explicit-after-stop";
   const fresh = admit(freshRunId);
   const freshResult = await fresh.promise;
   if (freshResult.ok) {
-    freshResult.value.cleanupAdmittedRun();
+    await freshResult.value.cleanupAdmittedRun();
     clearAgentRunContext(freshRunId, freshResult.value.lifecycleGeneration);
   }
   const persistedPartials = pendingMove
@@ -448,7 +481,7 @@ async function scenario(
   };
   context.chatRunState.clear();
   if (running?.ok) {
-    running.value.cleanupAdmittedRun();
+    await running.value.cleanupAdmittedRun();
     clearAgentRunContext(name + "-running", running.value.lifecycleGeneration);
   }
   return report;
@@ -663,8 +696,16 @@ it.each(["missing", "local"] as const)(
     }
     context.chatRunState.getOrCreate(runId).buffer = "partial before queued dispatch Stop";
     const aborted = createDeferred();
+    let abortCleanup: Promise<{ error: unknown } | undefined> | undefined;
     controller.controller.signal.addEventListener("abort", () => {
-      admitted.value.cleanupAdmittedRun();
+      try {
+        abortCleanup = Promise.resolve(admitted.value.cleanupAdmittedRun()).then(
+          () => undefined,
+          (error: unknown) => ({ error }),
+        );
+      } catch (error) {
+        abortCleanup = Promise.resolve({ error });
+      }
       aborted.resolve();
     });
     const entered = createDeferred();
@@ -709,16 +750,21 @@ it.each(["missing", "local"] as const)(
       await setImmediate();
       expect(dispatchSettled).toBe(true);
       expect(stopped).toBe(false);
-      expect(harness.environments.create).not.toHaveBeenCalled();
+      expect(harness.environments.createWithRequest).not.toHaveBeenCalled();
     } finally {
       cancellationLoad.resolve();
       release.resolve();
       await Promise.all([sweep, dispatch, stopping]);
-      admitted.value.cleanupAdmittedRun();
+      await abortCleanup?.then((failure) => {
+        if (failure) {
+          throw failure.error;
+        }
+      });
+      await admitted.value.cleanupAdmittedRun();
       clearAgentRunContext(runId, admitted.value.lifecycleGeneration);
     }
     expect(await dispatch).toBe("cancelled");
-    expect(harness.environments.create).not.toHaveBeenCalled();
+    expect(harness.environments.createWithRequest).not.toHaveBeenCalled();
     expect(harness.environments.destroy).not.toHaveBeenCalled();
     const transcript = await loadTranscriptEvents({ storePath, ...REQUEST });
     expect(transcript.filter((event) => asRecord(event)?.type === "message")).toEqual([
