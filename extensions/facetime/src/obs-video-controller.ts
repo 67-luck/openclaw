@@ -5,6 +5,13 @@ import type { FaceTimeVideoConfig } from "./config.js";
 
 type ObsClient = Pick<OBSWebSocket, "call" | "connect" | "disconnect">;
 
+const VIRTUAL_CAMERA_STATUS_ATTEMPTS = 20;
+const VIRTUAL_CAMERA_STATUS_INTERVAL_MS = 50;
+
+function waitForVirtualCameraStatus(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, VIRTUAL_CAMERA_STATUS_INTERVAL_MS));
+}
+
 /** Owns the plugin-created OBS browser input and virtual-camera lease for one call. */
 export class FaceTimeObsVideoController {
   readonly #config: FaceTimeVideoConfig;
@@ -12,6 +19,7 @@ export class FaceTimeObsVideoController {
   readonly #client: ObsClient;
   readonly #inputName: string;
   readonly #sceneName: string;
+  readonly #waitForVirtualCameraStatus: () => Promise<void>;
   #connected = false;
   #inputAttached = false;
   #rendererUrl?: string;
@@ -25,12 +33,15 @@ export class FaceTimeObsVideoController {
     inputName: string;
     sceneName: string;
     client?: ObsClient;
+    waitForVirtualCameraStatus?: () => Promise<void>;
   }) {
     this.#config = params.config;
     this.#logger = params.logger;
     this.#inputName = params.inputName;
     this.#sceneName = params.sceneName;
     this.#client = params.client ?? new OBSWebSocket();
+    this.#waitForVirtualCameraStatus =
+      params.waitForVirtualCameraStatus ?? waitForVirtualCameraStatus;
   }
 
   async attach(
@@ -85,13 +96,17 @@ export class FaceTimeObsVideoController {
       return;
     }
     await this.#client.call("StartVirtualCam");
-    const started = await this.#client.call("GetVirtualCamStatus");
-    if (!started.outputActive) {
-      throw new Error(
-        "OBS virtual camera did not start; approve the OBS Camera Extension in macOS System Settings",
-      );
-    }
     this.#startedVirtualCamera = true;
+    for (let attempt = 0; attempt < VIRTUAL_CAMERA_STATUS_ATTEMPTS; attempt += 1) {
+      await this.#waitForVirtualCameraStatus();
+      const started = await this.#client.call("GetVirtualCamStatus");
+      if (started.outputActive) {
+        return;
+      }
+    }
+    throw new Error(
+      "OBS virtual camera did not start; approve the OBS Camera Extension in macOS System Settings",
+    );
   }
 
   async stop(): Promise<void> {

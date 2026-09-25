@@ -3,8 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import { resolveFaceTimeConfig } from "../src/config.js";
 import { FaceTimeObsVideoController } from "../src/obs-video-controller.js";
 
-function createHarness(params: { virtualCameraInitiallyActive?: boolean } = {}) {
+function createHarness(
+  params: {
+    virtualCameraInitiallyActive?: boolean;
+    virtualCameraStatusLagReads?: number;
+  } = {},
+) {
   let virtualCameraActive = params.virtualCameraInitiallyActive ?? false;
+  let virtualCameraStarted = false;
+  let virtualCameraStatusLagReads = params.virtualCameraStatusLagReads ?? 0;
   let currentScene = "Previous Scene";
   let rendererUrl: string | undefined;
   const call = vi.fn(async (request: string, input?: Record<string, unknown>) => {
@@ -29,9 +36,14 @@ function createHarness(params: { virtualCameraInitiallyActive?: boolean } = {}) 
       return { inputSettings: { url: rendererUrl } };
     }
     if (request === "GetVirtualCamStatus") {
+      if (virtualCameraStarted && virtualCameraStatusLagReads > 0) {
+        virtualCameraStatusLagReads -= 1;
+        return { outputActive: false };
+      }
       return { outputActive: virtualCameraActive };
     }
     if (request === "StartVirtualCam") {
+      virtualCameraStarted = true;
       virtualCameraActive = true;
       return {};
     }
@@ -123,6 +135,58 @@ describe("FaceTime OBS video controller", () => {
 
     expect(call).not.toHaveBeenCalledWith("StartVirtualCam");
     expect(call).not.toHaveBeenCalledWith("StopVirtualCam");
+  });
+
+  it("waits for OBS to report an asynchronously started virtual camera", async () => {
+    const { call, client, config, logger } = createHarness({
+      virtualCameraStatusLagReads: 2,
+    });
+    const waitForVirtualCameraStatus = vi.fn(async () => {});
+    const controller = new FaceTimeObsVideoController({
+      config,
+      logger,
+      inputName: "OpenClaw Live Visual (test)",
+      sceneName: "OpenClaw FaceTime Video (test)",
+      client: client as never,
+      waitForVirtualCameraStatus,
+    });
+
+    await controller.attach("http://127.0.0.1/avatar/", {
+      width: 1280,
+      height: 720,
+      frameRate: 30,
+    });
+    await controller.startVirtualCamera();
+    await controller.stop();
+
+    expect(waitForVirtualCameraStatus).toHaveBeenCalledTimes(3);
+    expect(call).toHaveBeenCalledWith("StopVirtualCam");
+  });
+
+  it("stops the activation it initiated when readiness never appears", async () => {
+    const { call, client, config, logger } = createHarness({
+      virtualCameraStatusLagReads: Number.POSITIVE_INFINITY,
+    });
+    const controller = new FaceTimeObsVideoController({
+      config,
+      logger,
+      inputName: "OpenClaw Live Visual (test)",
+      sceneName: "OpenClaw FaceTime Video (test)",
+      client: client as never,
+      waitForVirtualCameraStatus: vi.fn(async () => {}),
+    });
+
+    await controller.attach("http://127.0.0.1/avatar/", {
+      width: 1280,
+      height: 720,
+      frameRate: 30,
+    });
+    await expect(controller.startVirtualCamera()).rejects.toThrow(
+      "OBS virtual camera did not start",
+    );
+    await controller.stop();
+
+    expect(call).toHaveBeenCalledWith("StopVirtualCam");
   });
 
   it("does not remove a same-name input or scene after renderer ownership changes", async () => {
