@@ -107,9 +107,13 @@ describe("resolveMessagingTarget (directory fallback)", () => {
     });
   });
 
-  it.each(["richchat", "chatty", "rc"])(
-    "rejects bare selected-channel namespace %s before target normalization",
-    async (input) => {
+  it.each([
+    { input: "richchat", destinationPrefix: "rc" },
+    { input: "chatty", destinationPrefix: "rc" },
+    { input: "rc", destinationPrefix: "rc" },
+  ])(
+    "rejects bare selected-channel namespace $input after an exact directory miss",
+    async ({ input, destinationPrefix }) => {
       const base = createChannelTestPluginBase({
         id: "richchat",
         label: "Rich Chat",
@@ -133,11 +137,13 @@ describe("resolveMessagingTarget (directory fallback)", () => {
           },
         },
       } satisfies ChannelPlugin;
+      mocks.listGroups.mockResolvedValue([]);
 
       const result = await resolveMessagingTarget({
         cfg,
         channel: "richchat",
         input,
+        preferredKind: "group",
         plugin,
       });
 
@@ -145,14 +151,43 @@ describe("resolveMessagingTarget (directory fallback)", () => {
       if (!result.ok) {
         expect(result.error).toMatchObject({
           reasonCode: "message_target_missing",
-          policyRef: "message-target:required",
+          policyRef: "message-target:destination-required",
         });
         expect(result.error.message).toContain("does not specify a destination");
+        expect(result.error.message).toContain(`${destinationPrefix}:<destination>`);
       }
-      expect(mocks.listGroups).not.toHaveBeenCalled();
+      expect(mocks.listGroups).toHaveBeenCalled();
       expect(mocks.resolveTarget).not.toHaveBeenCalled();
     },
   );
+
+  it("preserves an exact directory destination named like its channel", async () => {
+    const plugin = {
+      ...createChannelTestPluginBase({ id: "richchat", label: "Rich Chat" }),
+      directory: { listGroups: mocks.listGroups },
+      messaging: {
+        targetPrefixes: ["rc"],
+        targetResolver: { resolveTarget: mocks.resolveTarget },
+      },
+    } satisfies ChannelPlugin;
+    mocks.listGroups.mockResolvedValue([
+      { kind: "group", id: "room-1", name: "richchat" } satisfies ChannelDirectoryEntry,
+    ]);
+
+    const result = await resolveMessagingTarget({
+      cfg,
+      channel: "richchat",
+      input: "richchat",
+      preferredKind: "group",
+      plugin,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      target: { to: "room-1", source: "directory", resolutionSource: "directory" },
+    });
+    expect(mocks.resolveTarget).not.toHaveBeenCalled();
+  });
 
   it("uses live directory fallback and caches the result", async () => {
     const entry: ChannelDirectoryEntry = { kind: "group", id: "123456789", name: "support" };

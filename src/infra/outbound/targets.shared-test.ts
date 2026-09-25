@@ -126,7 +126,7 @@ export function runResolveOutboundTargetCoreTests(): void {
         if (!res.ok) {
           expect(res.error).toMatchObject({
             reasonCode: "message_target_missing",
-            policyRef: "message-target:required",
+            policyRef: "message-target:destination-required",
           });
           expect(res.error.message).toContain("does not specify a destination");
         }
@@ -170,34 +170,37 @@ export function runResolveOutboundTargetCoreTests(): void {
       },
     );
 
-    it.each(["@telegram", "telegram:@telegram", "telegram:123456789", "conversation:ref-1"])(
-      "allows explicit destination %s",
-      (to) => {
-        setActivePluginRegistry(
-          createTargetsTestRegistry([
-            createTestChannelPlugin({
-              id: "telegram",
-              label: "Telegram",
-              outbound: {
-                deliveryMode: "direct",
-                sendText: async () => ({ channel: "telegram", messageId: "telegram-msg" }),
+    it.each([
+      "@telegram",
+      "telegram:@telegram",
+      "telegram:@current",
+      "telegram:123456789",
+      "conversation:ref-1",
+    ])("allows explicit destination %s", (to) => {
+      setActivePluginRegistry(
+        createTargetsTestRegistry([
+          createTestChannelPlugin({
+            id: "telegram",
+            label: "Telegram",
+            outbound: {
+              deliveryMode: "direct",
+              sendText: async () => ({ channel: "telegram", messageId: "telegram-msg" }),
+            },
+            messaging: {
+              targetPrefixes: ["telegram", "tg"],
+              targetResolver: {
+                reservedLiterals: ["current", "self", "this", "me"],
+                hint: "<chatId>",
               },
-              messaging: {
-                targetPrefixes: ["telegram", "tg"],
-                targetResolver: {
-                  reservedLiterals: ["current", "self", "this", "me"],
-                  hint: "<chatId>",
-                },
-              },
-            }),
-          ]),
-        );
+            },
+          }),
+        ]),
+      );
 
-        const res = resolveOutboundTarget({ channel: "telegram", to, mode: "explicit" });
+      const res = resolveOutboundTarget({ channel: "telegram", to, mode: "explicit" });
 
-        expect(res).toEqual({ ok: true, to });
-      },
-    );
+      expect(res).toEqual({ ok: true, to });
+    });
 
     it("uses the plugin hint when a channel has outbound support but no target resolver", () => {
       setActivePluginRegistry(

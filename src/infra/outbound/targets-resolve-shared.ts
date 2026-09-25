@@ -84,11 +84,17 @@ export function resolveOutboundTargetWithPlugin(params: {
   const hint = plugin.messaging?.targetResolver?.hint;
   const channelNamespace = resolveBareTargetChannelNamespace({ raw: effectiveTo, plugin });
   if (channelNamespace) {
+    // Heartbeats continue through the async directory resolver, where an exact
+    // destination match can win before an unmatched namespace is rejected.
+    if (params.target.mode === "heartbeat" && effectiveTo) {
+      return { ok: true, to: effectiveTo };
+    }
     return {
       ok: false,
       error: missingChannelDestinationError(
         plugin.meta.label ?? params.target.channel,
-        channelNamespace,
+        channelNamespace.namespace,
+        channelNamespace.destinationPrefix,
         hint,
       ),
     };

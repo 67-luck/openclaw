@@ -244,7 +244,7 @@ describe("runMessageAction send validation", () => {
       }),
     ).rejects.toMatchObject({
       reasonCode: "message_target_missing",
-      policyRef: "message-target:required",
+      policyRef: "message-target:destination-required",
       message: expect.stringContaining("workspace:<destination>"),
     });
   });
