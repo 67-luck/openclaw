@@ -162,6 +162,7 @@ export async function finishGatewayStartup(params: {
       bootId,
       preauthConnectionBudget,
       port,
+      publishedPort: opts.publishedPort,
       gatewayHost: bindHost ?? undefined,
       pluginSurfaceScheme: gatewayTls.enabled ? "https" : "http",
       getPluginNodeCapabilities,
@@ -420,6 +421,7 @@ export async function finishGatewayStartup(params: {
     assertGatewayRuntimeSecurityConfig({
       cfg,
       port,
+      publishedPort: opts.publishedPort,
       bindHost,
       controlUiEnabled: opts.controlUiEnabled ?? cfg.gateway?.controlUi?.enabled ?? true,
       tailscaleMode: runtime.tailscaleMode,

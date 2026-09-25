@@ -316,5 +316,7 @@ export function buildCellContainerArgs(
     "lan",
     "--port",
     String(FLEET_GATEWAY_PORT),
+    "--published-port",
+    String(profile.hostPort),
   ];
 }

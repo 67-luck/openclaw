@@ -276,7 +276,6 @@ sync_local_control_ui_origins() {
   chmod 600 "$tmp" 2>/dev/null || true
   mv -f "$tmp" "$file"
 }
-
 TOKEN_ENV_FILE=""
 cleanup_token_env_file() {
   if [[ -n "$TOKEN_ENV_FILE" && -f "$TOKEN_ENV_FILE" ]]; then
@@ -304,7 +303,7 @@ JSON
   )
   echo "Created $CONFIG_JSON (minimal gateway.mode=local)." >&2
 fi
-sync_local_control_ui_origins "$CONFIG_JSON" "$HOST_GATEWAY_PORT"
+ensure_local_gateway_mode "$CONFIG_JSON"
 
 PODMAN_USERNS="${OPENCLAW_PODMAN_USERNS:-keep-id}"
 USERNS_ARGS=()
@@ -369,7 +368,7 @@ run_podman_detached --pull="$PODMAN_PULL" -d --replace \
   -p "${PUBLISH_HOST}:${HOST_GATEWAY_PORT}:18789" \
   -p "${PUBLISH_HOST}:${HOST_BRIDGE_PORT}:18790" \
   "$OPENCLAW_IMAGE" \
-  node dist/index.js gateway --bind "$GATEWAY_BIND" --port 18789 >/dev/null
+  node dist/index.js gateway --bind "$GATEWAY_BIND" --port 18789 --published-port "$HOST_GATEWAY_PORT" >/dev/null
 
 echo "Container $CONTAINER_NAME started: http://127.0.0.1:${HOST_GATEWAY_PORT}/"
 echo "podman exec -it $CONTAINER_NAME openclaw dashboard --no-open"
