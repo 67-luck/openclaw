@@ -45,6 +45,7 @@ export {
   areDiagnosticsEnabledForProcess,
   emitDiagnosticEvent,
   emitTrustedDiagnosticEvent,
+  emitTrustedToolExecutionEvent,
   emitTrustedDiagnosticEventWithPrivateData,
   hasPendingInternalDiagnosticEvent,
   isInternalDiagnosticEventMetadata,

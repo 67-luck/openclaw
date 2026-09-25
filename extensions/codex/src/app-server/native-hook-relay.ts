@@ -9,7 +9,7 @@ import type {
   NativeHookRelayEvent,
   registerNativeHookRelay,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
-import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
+import { emitTrustedToolExecutionEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { registerNativeHookRelayForBundledRuntime } from "openclaw/plugin-sdk/native-hook-relay-runtime";
@@ -159,7 +159,7 @@ export function emitCodexNativePreToolUseFailureDiagnostic(params: {
   terminalReason?: CodexNativePreToolUseFailure["disposition"];
   sourceTimestampMs?: number;
 }): void {
-  emitTrustedDiagnosticEvent({
+  emitTrustedToolExecutionEvent({
     type: "tool.execution.error",
     ...(params.agentId ? { agentId: params.agentId } : {}),
     sessionId: params.sessionId,

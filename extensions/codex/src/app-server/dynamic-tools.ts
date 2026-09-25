@@ -47,7 +47,7 @@ import {
   type AcceptedSessionSpawn,
   type AgentHarnessToolExecutionSnapshot,
 } from "openclaw/plugin-sdk/agent-harness-tool-runtime";
-import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
+import { emitTrustedToolExecutionEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import {
   type JsonSchemaObject,
@@ -870,7 +870,7 @@ function reportQuarantinedDynamicTools(params: {
     },
   );
   for (const tool of params.tools) {
-    emitTrustedDiagnosticEvent({
+    emitTrustedToolExecutionEvent({
       type: "tool.execution.blocked",
       agentId: params.hookContext?.agentId,
       runId: params.hookContext?.runId,

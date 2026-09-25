@@ -304,3 +304,22 @@ accepts only untrusted events that pass `include`/`exclude`. Event payload field
 cannot override the dispatcher's trust metadata. Accepted events retain their
 individual frozen copies; this filter does not change diagnostic collection or
 queue behavior.
+
+### Tool execution facts
+
+Execution-owning adapters use `emitTrustedToolExecutionEvent(event, options?)`
+from `openclaw/plugin-sdk/diagnostic-runtime` for raw source starts, outcomes,
+and pre-execution denials. These metadata-only facts remain available to
+operational consumers when optional diagnostics are disabled. A start means
+the source callback was entered, not that an OS side effect occurred.
+
+The emitter also publishes optional diagnostics unless `emitDiagnostics: false`
+is set. Optional `privateData` stays on the diagnostic channel; it is never
+included in the operational event. Existing diagnostic and audit collection
+settings still apply. Neither channel grants execution authority.
+
+Use `emitTrustedDiagnosticEvent` or `emitTrustedDiagnosticEventWithPrivateData`
+for presentation observations, including results rewritten by middleware.
+Diagnostic emission alone never publishes an operational execution fact.
+An adapter executing an OpenClaw-wrapped tool must leave those facts to the
+core wrapper instead of publishing a second terminal from its presentation.
