@@ -26,7 +26,10 @@ import {
   captureUpdateCommandExecutorAuthority,
   type UpdateCommandExecutor,
 } from "./update-command-executor.js";
-import type { InitializedUpdate } from "./update-command-initialization.js";
+import {
+  type InitializedUpdate,
+  withUpdateInitializationCleanup,
+} from "./update-command-initialization.js";
 import { preparePackageUpdateRuntime } from "./update-command-node-runtime.js";
 import type { StagedPackageInstallUpdate } from "./update-command-package.js";
 import {
@@ -517,6 +520,8 @@ async function runResolvedUpdate(
     mutableUpdatePrepared = true;
   };
 
+  let releaseLocalTuiGate: (() => Promise<void>) | undefined;
+  return await withUpdateInitializationCleanup(async () => {
   const execution = await executeMutableUpdate({
     ...target,
     callerLegacyConfigPlan: initialization?.callerLegacyConfigPlan,
@@ -542,6 +547,9 @@ async function runResolvedUpdate(
     onActivation: () => {
       presentation.suspend();
       progress.deferLedgerWrites();
+    },
+    onLocalTuiGateAcquired: (release) => {
+      releaseLocalTuiGate = release;
     },
   });
   run.executorFence?.assertCurrent();
@@ -652,4 +660,5 @@ async function runResolvedUpdate(
       presentation.resume();
     },
   });
+  }, async () => await releaseLocalTuiGate?.());
 }
