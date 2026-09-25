@@ -1297,6 +1297,7 @@ printf 'status=%s\\n' "$status"
   it("binds the Podman Quadlet Gateway port to loopback", () => {
     const template = readFileSync(PODMAN_QUADLET_TEMPLATE_PATH, "utf8");
     expect(template).toContain("PublishPort=127.0.0.1:18789:18789");
+    expect(template).not.toContain("/home/admin");
   });
   it("allows repository branch history and release tags for secret-backed Docker release checks", () => {
     const workflow = readFileSync(LIVE_E2E_WORKFLOW_PATH, "utf8");
