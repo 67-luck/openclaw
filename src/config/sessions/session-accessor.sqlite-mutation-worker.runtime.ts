@@ -34,7 +34,6 @@ import type { SqliteSessionReclamationPlan } from "./session-accessor.sqlite-lif
 import {
   markSqliteReclamationSettled,
   waitForSqliteReclamationCommit,
-  waitForSqliteReclamationParentRelease,
 } from "./session-accessor.sqlite-reclamation-commit.js";
 import type {
   SqliteCanonicalValidationWorkerRequest,
@@ -142,7 +141,6 @@ async function runColdMutationWorker(
               );
             },
           );
-          waitForSqliteReclamationParentRelease(commitGate);
           return changed;
         } finally {
           validation = getOpenClawAgentDatabaseValidation(openedDatabase);
@@ -387,8 +385,7 @@ export async function runReclamationWorkerPort(
                           {
                             beforeMutation: currentClaim.assertCurrent,
                             onCommit: authorizeCommit,
-                            afterCommit: () =>
-                              waitForSqliteReclamationParentRelease(request.commitGate),
+                            afterCommit: () => markSqliteReclamationSettled(request.commitGate),
                           },
                         );
                   // Warm results must not revive proof invalidated by the parent between requests.

@@ -3,10 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { isMainThread } from "node:worker_threads";
 import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
-import {
-  createSqliteLifecycleAggregateError,
-  runWithSqliteCoordinator,
-} from "../infra/sqlite-coordinator.js";
+import { runWithSqliteCoordinator } from "../infra/sqlite-coordinator.js";
 import { assertSqliteIntegrityInWorker } from "../infra/sqlite-integrity-worker.js";
 import type { SqliteIntegrityOperation } from "../infra/sqlite-integrity.js";
 import { registerDeferredSqliteWalWriteAdmission } from "../infra/sqlite-wal-write-admission.js";
@@ -25,7 +22,6 @@ import type {
 } from "./openclaw-agent-db-contract.js";
 import {
   assertAgentDatabaseOpenAuthority,
-  isAgentIntegrityPreparationChanged,
   prepareAgentIntegrityReadOnly,
   runAgentDatabaseIntegrityOperationSync,
   withPreparedAgentIntegrity,
@@ -254,71 +250,48 @@ export function createOpenClawAgentDatabaseAdmissionOwner(
       captured?.close();
     };
     try {
-      while (true) {
-        const cached = cache.databases.get(pathname);
-        if (!isMainThread && (!cached?.db.isOpen || cache.failures.has(pathname))) {
-          preparation = prepareAgentIntegrityReadOnly(
-            options,
-            () => assertOpenClawAgentDatabaseAdmissionCurrent(options, pending),
-            preparationValidation,
-          );
-        }
-        const outcome = await withAdmission(async (assertCurrent, validation) => {
-          const assertAdmittedCurrent = (database?: DatabaseSync) => {
-            try {
-              assertCurrent();
-              assertOpenClawAgentDatabaseAdmissionCurrent(options, pending, database);
-            } catch (error) {
-              throw new Error(error instanceof Error ? error.message : String(error), {
-                cause: error,
-              });
-            }
-          };
-          assertAdmittedCurrent();
-          try {
-            preparation?.assertCurrent();
-          } catch (error) {
-            if (!isAgentIntegrityPreparationChanged(error)) {
-              throw error;
-            }
-            // No generator step or write-capable open has started; prepare again outside FIFO.
-            return { done: false as const, error };
-          }
-          pending.validation = validation;
-          const database = withPreparedAgentIntegrity(preparation, () =>
-            runAgentDatabaseIntegrityOperationSync(
-              openSteps(options, pending),
-              assertAdmittedCurrent,
-            ),
-          );
-          // Canonical repairs and subsequent checks retain this same write reservation.
-          closePreparation();
-          pending.releaseBorrow = retainAgentDatabase(database.db);
-          admission.complete(database);
-          const assertOperationCurrent = () =>
-            assertAgentDatabaseOperationCurrent(database, options, pending, assertCurrent);
-          assertOperationCurrent();
-          const flushMaintenance = isMainThread
-            ? undefined
-            : registerDeferredSqliteWalWriteAdmission(database.db);
-          flushMaintenance?.(assertOperationCurrent);
-          const result = await operation(database);
-          flushMaintenance?.(assertOperationCurrent);
-          return { done: true as const, result };
-        });
-        if (outcome.done) {
-          return outcome.result;
-        }
-        try {
-          closePreparation();
-        } catch (cleanupError) {
-          throw createSqliteLifecycleAggregateError(
-            [outcome.error, cleanupError],
-            "Stale agent preparation and cleanup failed",
-            outcome.error,
-          );
-        }
+      const cached = cache.databases.get(pathname);
+      if (!isMainThread && (!cached?.db.isOpen || cache.failures.has(pathname))) {
+        preparation = prepareAgentIntegrityReadOnly(
+          options,
+          () => assertOpenClawAgentDatabaseAdmissionCurrent(options, pending),
+          preparationValidation,
+        );
       }
+      return await withAdmission(async (assertCurrent, validation) => {
+        const assertAdmittedCurrent = (database?: DatabaseSync) => {
+          try {
+            assertCurrent();
+            assertOpenClawAgentDatabaseAdmissionCurrent(options, pending, database);
+          } catch (error) {
+            throw new Error(error instanceof Error ? error.message : String(error), {
+              cause: error,
+            });
+          }
+        };
+        assertAdmittedCurrent();
+        pending.validation = validation;
+        const database = withPreparedAgentIntegrity(preparation, () =>
+          runAgentDatabaseIntegrityOperationSync(
+            openSteps(options, pending),
+            assertAdmittedCurrent,
+          ),
+        );
+        // Canonical repairs and subsequent checks retain this same write reservation.
+        closePreparation();
+        pending.releaseBorrow = retainAgentDatabase(database.db);
+        admission.complete(database);
+        const assertOperationCurrent = () =>
+          assertAgentDatabaseOperationCurrent(database, options, pending, assertCurrent);
+        assertOperationCurrent();
+        const flushMaintenance = isMainThread
+          ? undefined
+          : registerDeferredSqliteWalWriteAdmission(database.db);
+        flushMaintenance?.(assertOperationCurrent);
+        const result = await operation(database);
+        flushMaintenance?.(assertOperationCurrent);
+        return result;
+      });
     } catch (error) {
       const failures = [error];
       try {

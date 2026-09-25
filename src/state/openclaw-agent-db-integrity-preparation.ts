@@ -29,12 +29,7 @@ import {
   type OpenClawAgentDatabaseValidation,
 } from "./openclaw-agent-db-validation-cache.js";
 
-const PREPARATION_CHANGED = "AGENT_INTEGRITY_PREPARATION_CHANGED";
 const preparedIntegrity = new AsyncLocalStorage<PreparedAgentIntegrity>();
-
-export function isAgentIntegrityPreparationChanged(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === PREPARATION_CHANGED;
-}
 
 /** Native read custody is private to the canonical opener and never grants write authority. */
 class PreparedAgentIntegrity {
@@ -44,6 +39,7 @@ class PreparedAgentIntegrity {
   private version = 0;
   private outcome: { failure?: { error: unknown } } | undefined;
   private consumed = false;
+  private freshVerificationRequired = false;
   private borrowedValidation: OpenClawAgentDatabaseValidation | undefined;
 
   constructor(
@@ -60,6 +56,7 @@ class PreparedAgentIntegrity {
       assertAllowed();
       this.assertPhysicalCurrent();
       this.recoveryGeneration = readStableSqliteFileGeneration(retained.database.path);
+      this.freshVerificationRequired = true;
       this.assertPhysicalCurrent();
       assertAllowed();
       return;
@@ -71,33 +68,53 @@ class PreparedAgentIntegrity {
       (validation && adoptOpenClawAgentDatabaseValidation(retained.database, validation)
         ? validation
         : undefined);
-    let before: number;
-    do {
-      assertAllowed();
-      this.assertResourceCurrent();
-      before = readSqliteDataVersion(retained.database.db);
+    assertAllowed();
+    this.assertResourceCurrent();
+    const before = readSqliteDataVersion(retained.database.db);
+    if (
+      this.borrowedValidation &&
+      Atomics.load(new Int32Array(this.borrowedValidation.valid), 0) !== 1
+    ) {
+      this.borrowedValidation = undefined;
+    }
+    try {
+      if (!this.borrowedValidation) {
+        runSqliteIntegrityCheckSync({
+          database: retained.database.db,
+          databaseLabel: retained.database.path,
+        });
+        this.outcome = {};
+      }
+    } catch (error) {
+      this.outcome = { failure: { error } };
+    }
+    this.assertResourceCurrent();
+    assertAllowed();
+    this.version = before;
+  }
+
+  /** The admitted writer owns progress; a stale verdict cannot authorize repair. */
+  admit(): void {
+    if (this.recoveryGeneration) {
+      this.assertCurrent();
+      return;
+    }
+    this.assertResourceCurrent();
+    const version = readSqliteDataVersion(this.retained.database.db);
+    if (
+      version !== this.version ||
+      (this.borrowedValidation &&
+        Atomics.load(new Int32Array(this.borrowedValidation.valid), 0) !== 1)
+    ) {
       this.outcome = undefined;
-      if (
-        this.borrowedValidation &&
-        Atomics.load(new Int32Array(this.borrowedValidation.valid), 0) !== 1
-      ) {
-        this.borrowedValidation = undefined;
-      }
-      try {
-        if (!this.borrowedValidation) {
-          runSqliteIntegrityCheckSync({
-            database: retained.database.db,
-            databaseLabel: retained.database.path,
-          });
-          this.outcome = {};
-        }
-      } catch (error) {
-        this.outcome = { failure: { error } };
-      }
-      this.assertResourceCurrent();
-      assertAllowed();
-      this.version = readSqliteDataVersion(retained.database.db);
-    } while (before !== this.version);
+      this.borrowedValidation = undefined;
+      this.freshVerificationRequired = true;
+      this.version = version;
+    }
+  }
+
+  get requiresFreshVerification(): boolean {
+    return this.freshVerificationRequired;
   }
 
   private assertPhysicalCurrent(): void {
@@ -133,9 +150,7 @@ class PreparedAgentIntegrity {
           readStableSqliteFileGeneration(this.retained.database.path),
         )
       ) {
-        throw Object.assign(new Error("Agent recovery source changed before promotion"), {
-          code: PREPARATION_CHANGED,
-        });
+        throw new Error("Agent recovery source changed before promotion");
       }
       return;
     }
@@ -145,9 +160,7 @@ class PreparedAgentIntegrity {
       (this.borrowedValidation &&
         Atomics.load(new Int32Array(this.borrowedValidation.valid), 0) !== 1)
     ) {
-      throw Object.assign(new Error("Agent integrity preparation changed before promotion"), {
-        code: PREPARATION_CHANGED,
-      });
+      throw new Error("Agent integrity preparation changed after writer admission");
     }
   }
 
@@ -240,7 +253,7 @@ export function withPreparedAgentIntegrity<T>(
   preparation: PreparedAgentIntegrity | undefined,
   open: () => T,
 ): T {
-  preparation?.assertCurrent();
+  preparation?.admit();
   return preparation ? preparedIntegrity.run(preparation, open) : open();
 }
 
@@ -249,9 +262,11 @@ export function resolveAgentDatabaseOpeningLocation(pathname: string): string {
   return preparedIntegrity.getStore() ? resolveExistingSqliteFileUri(pathname) : pathname;
 }
 
-/** Fence the new native connection before its first query can recover a rollback journal. */
-export function assertPreparedAgentDatabaseOpenSource(database: DatabaseSync): void {
-  preparedIntegrity.getStore()?.assertOpenSource(database);
+/** Fence the new native source and report whether its canonical gate must verify afresh. */
+export function assertPreparedAgentDatabaseOpenSource(database: DatabaseSync): boolean {
+  const preparation = preparedIntegrity.getStore();
+  preparation?.assertOpenSource(database);
+  return preparation?.requiresFreshVerification ?? false;
 }
 
 /** Only the first matching canonical gate consumes the retained read; repairs verify afresh. */

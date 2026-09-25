@@ -98,7 +98,7 @@ type MutationRunParams<Result> = {
   validationOwner?: SqliteMutationWorkerValidationOwner;
   diagnostics?: SqliteSessionReclamationDiagnostics;
   commitGate: SharedArrayBuffer;
-  onCommitRequest: () => unknown[];
+  onCommitRequest: () => void;
   withWriteAdmission: SqliteWorkerWriteAdmission<Result>;
 };
 type WorkerCleanup = { cleanupWarnings: string[]; settled: boolean };
@@ -119,12 +119,6 @@ const retained = resolveGlobalSingleton(
   Symbol.for("openclaw.sessionReclamationWorkers"),
   () => new Map<string, SqliteReclamationWorker>(),
 );
-
-channel("openclaw.memory.critical").subscribe(() => {
-  for (const worker of retained.values()) {
-    worker.retireIfIdle();
-  }
-});
 
 /** The global archive FIFO bounds ordinary reclamation's whole-buffer heaps. */
 export function withSqliteReclamationWorker<T>(
@@ -244,6 +238,7 @@ export class SqliteReclamationWorker {
   private readonly beforeExit = () => {
     void this.close().catch((error: unknown) => log.error(String(error)));
   };
+  private readonly onMemoryPressure = () => this.retireIfIdle();
 
   constructor(
     private readonly options: DatabaseOptions,
@@ -418,15 +413,7 @@ export class SqliteReclamationWorker {
           onExit: (code) => {
             exitCode = code;
           },
-          onCommitRequest: () => {
-            const errors = params.onCommitRequest();
-            if (errors.length) {
-              log.warn("SQLite session reclamation recovered commit settlement errors", {
-                errors: errors.map(String),
-                path: this.options.path,
-              });
-            }
-          },
+          onCommitRequest: params.onCommitRequest,
           withWriteAdmission: params.withWriteAdmission,
           validationOwner: params.validationOwner,
           dispatch: () => {
@@ -552,6 +539,10 @@ export class SqliteReclamationWorker {
         resolve();
       });
     });
+    // Only ordinary retained Workers use pressure retirement; validation scopes own their close.
+    if (this.onRetired) {
+      channel("openclaw.memory.critical").subscribe(this.onMemoryPressure);
+    }
     return transport;
   }
 
@@ -700,6 +691,7 @@ export class SqliteReclamationWorker {
         });
       }
       this.retired = true;
+      channel("openclaw.memory.critical").unsubscribe(this.onMemoryPressure);
       this.unregisterAgent();
       this.unregisterState();
       process.off("beforeExit", this.beforeExit);
