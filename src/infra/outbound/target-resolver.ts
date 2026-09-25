@@ -371,6 +371,7 @@ export async function resolveChannelTarget(params: {
   preferredKind?: TargetResolveKind;
   runtime?: RuntimeEnv;
   unknownTargetMode?: "error" | "normalized";
+  allowNativeChannelNamespace?: boolean;
   plugin?: ChannelPlugin;
 }): Promise<ResolveMessagingTargetResult> {
   const raw = params.input.trim();
@@ -392,16 +393,29 @@ export async function resolveChannelTarget(params: {
   const normalizedInput = resolveNormalizedTargetInput(params.channel, raw, plugin);
   const normalized = normalizedInput?.normalized ?? raw;
   const reservedLiteral = resolveReservedTargetLiteral({ raw, plugin });
-  if (
+  const targetLooksLikeId = Boolean(
     normalizedInput &&
-    !reservedLiteral &&
-    !channelNamespace &&
     looksLikeTargetId({
       channel: params.channel,
       raw: normalizedInput.raw,
       normalized,
       plugin,
-    })
+    }),
+  );
+  // Explicit or contextual channel provenance may admit a plugin-native destination
+  // that shares the channel name, but only when normalization preserves that identity.
+  const pluginAcceptsNamespaceAsNativeTarget = Boolean(
+    channelNamespace &&
+    params.allowNativeChannelNamespace !== false &&
+    plugin?.messaging?.normalizeTarget &&
+    normalizedInput?.normalized === normalizedInput?.raw &&
+    targetLooksLikeId,
+  );
+  if (
+    normalizedInput &&
+    !reservedLiteral &&
+    (!channelNamespace || pluginAcceptsNamespaceAsNativeTarget) &&
+    targetLooksLikeId
   ) {
     const resolvedIdLikeTarget = await maybeResolveIdLikeTarget({
       cfg: params.cfg,

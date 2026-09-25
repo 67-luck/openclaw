@@ -21,6 +21,7 @@ import {
   resolveOutboundChannelPlugin,
 } from "./channel-resolution.js";
 import {
+  resolveBareTargetChannelNamespace,
   resolveTargetPrefixedChannel,
   stripTargetProviderPrefix,
 } from "./channel-target-prefix.js";
@@ -520,18 +521,26 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
     return delivery;
   }
   let routeResolvedTarget: ResolvedMessagingTarget | undefined;
-  // Target normalization failure should not suppress an otherwise deliverable heartbeat.
+  const channelNamespace = resolveBareTargetChannelNamespace({ raw: deliveryTo, plugin });
+  // Ordinary target normalization failures should not suppress an otherwise deliverable heartbeat.
   const targetResolution = await resolveChannelTarget({
     cfg: params.cfg,
     channel: delivery.channel as ChannelId,
     input: deliveryTo,
     accountId: delivery.accountId,
     unknownTargetMode: "normalized",
+    allowNativeChannelNamespace: false,
     plugin,
   }).catch(() => null);
+  if (!targetResolution && channelNamespace) {
+    return rejectDelivery(ownerRouteMustBeDirect ? "no-route" : "no-target");
+  }
   if (targetResolution?.ok) {
     routeResolvedTarget = targetResolution.target;
-  } else if (targetResolution && isReservedTargetLiteralError(targetResolution.error)) {
+  } else if (
+    targetResolution &&
+    (channelNamespace || isReservedTargetLiteralError(targetResolution.error))
+  ) {
     return rejectDelivery(ownerRouteMustBeDirect ? "no-route" : "no-target");
   }
   if (routeResolvedTarget?.kind === "user" && heartbeat?.directPolicy === "block") {

@@ -38,7 +38,8 @@ describe("outbound channel namespace targets", () => {
         },
         messaging: {
           targetPrefixes: ["a"],
-          targetResolver: { hint: "<channel>" },
+          normalizeTarget: (raw) => raw.trim(),
+          targetResolver: { looksLikeId: () => true, hint: "<channel>" },
           resolveOutboundSessionRoute: ({ target }) => ({
             sessionKey: `main:alpha:group:${target}`,
             baseSessionKey: `main:alpha:group:${target}`,
@@ -62,5 +63,112 @@ describe("outbound channel namespace targets", () => {
 
     expect(resolved).toMatchObject({ channel: "alpha", to: "C123456" });
     expect(listGroups).toHaveBeenCalledWith(expect.objectContaining({ query: "alpha" }));
+  });
+
+  it("rejects unmatched heartbeat channel namespaces before delivery", async () => {
+    const plugin = {
+      ...createTestChannelPlugin({
+        id: "alpha",
+        label: "Alpha",
+        outbound: { deliveryMode: "direct" },
+        messaging: {
+          targetPrefixes: ["a"],
+          normalizeTarget: (raw) => raw.trim(),
+          targetResolver: { looksLikeId: () => true, hint: "<channel>" },
+          resolveOutboundSessionRoute: ({ target }) => ({
+            sessionKey: `main:alpha:group:${target}`,
+            baseSessionKey: `main:alpha:group:${target}`,
+            peer: { kind: "group", id: target },
+            chatType: "group",
+            from: `alpha:group:${target}`,
+            to: target,
+          }),
+        },
+      }),
+      directory: { listGroups: vi.fn().mockResolvedValue([]) },
+    };
+    setActivePluginRegistry(createTargetsTestRegistry([plugin]));
+    mocks.resolveOutboundChannelPlugin.mockReturnValue(plugin);
+
+    const resolved = await resolveHeartbeatDeliveryTargetWithSessionRoute({
+      cfg: { channels: { alpha: {} } } as OpenClawConfig,
+      agentId: "main",
+      heartbeat: { target: "alpha", to: "alpha" },
+    });
+
+    expect(resolved).toMatchObject({ channel: "none", reason: "no-target" });
+  });
+
+  it("fails closed when heartbeat namespace directory lookup throws", async () => {
+    const plugin = {
+      ...createTestChannelPlugin({
+        id: "alpha",
+        label: "Alpha",
+        outbound: { deliveryMode: "direct" },
+        messaging: {
+          targetPrefixes: ["a"],
+          normalizeTarget: (raw) => raw.trim(),
+          targetResolver: { looksLikeId: () => true, hint: "<channel>" },
+          resolveOutboundSessionRoute: ({ target }) => ({
+            sessionKey: `main:alpha:group:${target}`,
+            baseSessionKey: `main:alpha:group:${target}`,
+            peer: { kind: "group", id: target },
+            chatType: "group",
+            from: `alpha:group:${target}`,
+            to: target,
+          }),
+        },
+      }),
+      directory: { listGroups: vi.fn().mockRejectedValue(new Error("directory unavailable")) },
+    };
+    setActivePluginRegistry(createTargetsTestRegistry([plugin]));
+    mocks.resolveOutboundChannelPlugin.mockReturnValue(plugin);
+
+    const resolved = await resolveHeartbeatDeliveryTargetWithSessionRoute({
+      cfg: { channels: { alpha: {} } } as OpenClawConfig,
+      agentId: "main",
+      heartbeat: { target: "alpha", to: "alpha" },
+    });
+
+    expect(resolved).toMatchObject({ channel: "none", reason: "no-target" });
+  });
+
+  it("fails closed when heartbeat namespace directory matches are ambiguous", async () => {
+    const plugin = {
+      ...createTestChannelPlugin({
+        id: "alpha",
+        label: "Alpha",
+        outbound: { deliveryMode: "direct" },
+        messaging: {
+          targetPrefixes: ["a"],
+          normalizeTarget: (raw) => raw.trim(),
+          targetResolver: { looksLikeId: () => true, hint: "<channel>" },
+          resolveOutboundSessionRoute: ({ target }) => ({
+            sessionKey: `main:alpha:group:${target}`,
+            baseSessionKey: `main:alpha:group:${target}`,
+            peer: { kind: "group", id: target },
+            chatType: "group",
+            from: `alpha:group:${target}`,
+            to: target,
+          }),
+        },
+      }),
+      directory: {
+        listGroups: vi.fn().mockResolvedValue([
+          { kind: "group", id: "C1", name: "alpha" },
+          { kind: "group", id: "C2", name: "alpha" },
+        ]),
+      },
+    };
+    setActivePluginRegistry(createTargetsTestRegistry([plugin]));
+    mocks.resolveOutboundChannelPlugin.mockReturnValue(plugin);
+
+    const resolved = await resolveHeartbeatDeliveryTargetWithSessionRoute({
+      cfg: { channels: { alpha: {} } } as OpenClawConfig,
+      agentId: "main",
+      heartbeat: { target: "alpha", to: "alpha" },
+    });
+
+    expect(resolved).toMatchObject({ channel: "none", reason: "no-target" });
   });
 });

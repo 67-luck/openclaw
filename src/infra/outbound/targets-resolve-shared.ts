@@ -10,11 +10,7 @@ import {
   resolveBareTargetChannelNamespace,
   validateTargetProviderPrefix,
 } from "./channel-target-prefix.js";
-import {
-  missingChannelDestinationError,
-  missingTargetError,
-  reservedTargetLiteralError,
-} from "./target-errors.js";
+import { missingTargetError, reservedTargetLiteralError } from "./target-errors.js";
 import { resolveReservedTargetLiteral } from "./target-normalization.js";
 
 /**
@@ -82,22 +78,14 @@ export function resolveOutboundTargetWithPlugin(params: {
     return { ok: false, error: targetPrefixError };
   }
   const hint = plugin.messaging?.targetResolver?.hint;
-  const channelNamespace = resolveBareTargetChannelNamespace({ raw: effectiveTo, plugin });
-  if (channelNamespace) {
-    // Heartbeats continue through the async directory resolver, where an exact
-    // destination match can win before an unmatched namespace is rejected.
-    if (params.target.mode === "heartbeat" && effectiveTo) {
-      return { ok: true, to: effectiveTo };
-    }
-    return {
-      ok: false,
-      error: missingChannelDestinationError(
-        plugin.meta.label ?? params.target.channel,
-        channelNamespace.namespace,
-        channelNamespace.destinationPrefix,
-        hint,
-      ),
-    };
+  // Preserve heartbeat namespace input for the async directory owner, which
+  // can distinguish an exact destination from an unmatched channel name.
+  if (
+    params.target.mode === "heartbeat" &&
+    effectiveTo &&
+    resolveBareTargetChannelNamespace({ raw: effectiveTo, plugin })
+  ) {
+    return { ok: true, to: effectiveTo };
   }
   // Heartbeats defer reserved literals to the async resolver so directory hits can win.
   if (params.target.mode !== "heartbeat") {

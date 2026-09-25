@@ -8,10 +8,6 @@ export function missingTargetError(provider: string, hint?: string): Error {
   );
 }
 
-export function isMissingChannelDestinationError(error: Error): boolean {
-  return "policyRef" in error && error.policyRef === "message-target:destination-required";
-}
-
 export function missingChannelDestinationError(
   provider: string,
   namespace: string,

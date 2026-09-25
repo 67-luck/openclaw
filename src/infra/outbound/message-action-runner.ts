@@ -543,8 +543,14 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
         route.assertTargetAuthorityCurrent ?? input.assertDirectAdapterHandoff,
         async (): Promise<ResolvedActionContext> => {
           params = route.params;
-          const { channel, channelPlugin, accountId, dryRun, defersExternalTargetResolution } =
-            route;
+          const {
+            channel,
+            channelPlugin,
+            accountId,
+            dryRun,
+            defersExternalTargetResolution,
+            allowNativeChannelNamespace,
+          } = route;
 
           const extraActionMediaSourceParamKeys = resolveExtraActionMediaSourceParamKeys({
             cfg,
@@ -634,6 +640,7 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
             toolContext: input.toolContext,
             agentId: resolvedAgentId,
             deferExternalTargetResolution: defersExternalTargetResolution,
+            allowNativeChannelNamespace,
             plugin: channelPlugin,
           });
 

@@ -100,38 +100,30 @@ export function runResolveOutboundTargetCoreTests(): void {
       }
     });
 
-    it.each(["telegram", "tg"])(
-      "rejects bare selected-channel namespace %s before direct outbound normalization",
-      (to) => {
-        setActivePluginRegistry(
-          createTargetsTestRegistry([
-            createTestChannelPlugin({
-              id: "telegram",
-              label: "Telegram",
-              outbound: {
-                deliveryMode: "direct",
-                sendText: async () => ({ channel: "telegram", messageId: "telegram-msg" }),
-              },
-              messaging: {
-                targetPrefixes: ["telegram", "tg"],
-                targetResolver: { hint: "<chatId>" },
-              },
-            }),
-          ]),
-        );
+    it("preserves a plugin-native direct target that matches its channel id", () => {
+      setActivePluginRegistry(
+        createTargetsTestRegistry([
+          createTestChannelPlugin({
+            id: "irc",
+            label: "IRC",
+            outbound: {
+              deliveryMode: "direct",
+              resolveTarget: ({ to }) =>
+                to
+                  ? { ok: true as const, to: to.trim() }
+                  : { ok: false as const, error: new Error("target required") },
+            },
+            messaging: {
+              targetPrefixes: ["irc"],
+            },
+          }),
+        ]),
+      );
 
-        const res = resolveOutboundTarget({ channel: "telegram", to, mode: "explicit" });
+      const res = resolveOutboundTarget({ channel: "irc", to: "irc", mode: "explicit" });
 
-        expect(res.ok).toBe(false);
-        if (!res.ok) {
-          expect(res.error).toMatchObject({
-            reasonCode: "message_target_missing",
-            policyRef: "message-target:destination-required",
-          });
-          expect(res.error.message).toContain("does not specify a destination");
-        }
-      },
-    );
+      expect(res).toEqual({ ok: true, to: "irc" });
+    });
 
     it.each(["current", "telegram:current", "tg:self"])(
       "rejects plugin-reserved literal target %s before direct outbound fallback",

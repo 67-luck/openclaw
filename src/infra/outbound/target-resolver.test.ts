@@ -189,6 +189,29 @@ describe("resolveMessagingTarget (directory fallback)", () => {
     expect(mocks.resolveTarget).not.toHaveBeenCalled();
   });
 
+  it("preserves a plugin-native target that matches its channel id", async () => {
+    const plugin = {
+      ...createChannelTestPluginBase({ id: "irc", label: "IRC" }),
+      messaging: {
+        targetPrefixes: ["irc"],
+        normalizeTarget: (raw: string) => raw.trim(),
+        targetResolver: { looksLikeId: () => true },
+      },
+    } satisfies ChannelPlugin;
+
+    const result = await resolveMessagingTarget({
+      cfg,
+      channel: "irc",
+      input: "irc",
+      plugin,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      target: { to: "irc", source: "normalized", resolutionSource: "normalized" },
+    });
+  });
+
   it("uses live directory fallback and caches the result", async () => {
     const entry: ChannelDirectoryEntry = { kind: "group", id: "123456789", name: "support" };
     mocks.listGroups.mockResolvedValue([]);
