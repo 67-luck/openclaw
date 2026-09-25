@@ -35,6 +35,19 @@ async function listTempSiblings(dir: string): Promise<string[]> {
 }
 
 describe("bootstrap publication atomicity", () => {
+  it.runIf(process.platform !== "win32")(
+    "publishes private workspace files by default",
+    async () => {
+      const tempDir = await makeTempWorkspace("openclaw-bootstrap-private-");
+      const target = path.join(tempDir, DEFAULT_AGENTS_FILENAME);
+
+      await expect(publishBootstrapFile(target, "private instructions\n")).resolves.toBe(true);
+
+      expect((await fs.stat(target)).mode & 0o777).toBe(0o600);
+      expect(await fs.readFile(target, "utf8")).toBe("private instructions\n");
+    },
+  );
+
   it("checkpoints the pinned published object after link metadata changes", async () => {
     const tempDir = await makeTempWorkspace("openclaw-bootstrap-checkpoint-");
     const target = path.join(tempDir, DEFAULT_BOOTSTRAP_FILENAME);

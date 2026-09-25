@@ -830,6 +830,66 @@ describe("planWorkspaceAdoptionTargets resume ownership", () => {
     );
   });
 
+  it.each(["removed", "replaced"] as const)(
+    "rejects a package-only adopted directory %s during installation",
+    async (change) => {
+      const { source, workspace } = await createPlanSource();
+      await mkdir(workspace);
+      const parsed = parseClawManifest({
+        schemaVersion: 1,
+        agent: { id: "adopt-agent" },
+        packages: [{ kind: "plugin", source: "clawhub", ref: "@acme/audit", version: "1.0.0" }],
+      });
+      if (!parsed.ok) {
+        throw new Error(JSON.stringify(parsed.diagnostics));
+      }
+      const plan = await buildClawAddPlan({
+        manifest: parsed.manifest,
+        source,
+        context: {
+          workspace,
+          adoptExistingWorkspace: true,
+          packagePreflight: async () => ({
+            ok: true,
+            action: "install",
+            integrity: `sha256:${"a".repeat(64)}`,
+            installId: "audit",
+          }),
+        },
+      });
+      expect(plan.blockers).toEqual([]);
+      const env = stateEnv(source.packageRoot);
+      const commitConfig = vi.fn();
+      const result = await applyClawAddPlan(plan, {
+        consentPlanIntegrity: plan.planIntegrity,
+        env,
+        readConfigForApply: () => ({}),
+        // No file actions can incidentally catch the invalid workspace in this plan.
+        installPackages: async () => {
+          await rmdir(workspace);
+          if (change === "replaced") {
+            await writeFile(workspace, "replacement\n");
+          }
+          return [];
+        },
+        commitConfig,
+      });
+      expect(result).toMatchObject({
+        status: "partial",
+        configCommitted: false,
+        installRecord: { status: "workspace_ready" },
+        error: { code: "workspace_collision" },
+      });
+      expect(commitConfig).not.toHaveBeenCalled();
+      expect(readClawWorkspaceFiles(plan.agent.finalId, { env })).toEqual([]);
+      if (change === "replaced") {
+        expect(await readFile(workspace, "utf8")).toBe("replacement\n");
+      } else {
+        await expect(stat(workspace)).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    },
+  );
+
   it("rejects a workspace reassigned to another agent during the package install before any file effect", async () => {
     const { root, source, manifest, packageBootstrap, workspace } =
       await buildResumeManifestAndSource({ withPlugin: true });

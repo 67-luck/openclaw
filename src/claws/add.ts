@@ -331,6 +331,16 @@ export async function applyClawAddPlan(
         ? await options.readConfigForApply()
         : lockedConfig;
       try {
+        // Package installation can replace the adopted directory while admission is pending.
+        if (workspaceAdoption) {
+          const adoptedState = await lstat(workspace).catch(() => undefined);
+          if (!adoptedState?.isDirectory()) {
+            throw new ClawAddMutationError(
+              "workspace_collision",
+              `Adoptable workspace ${JSON.stringify(workspace)} is no longer an existing directory.`,
+            );
+          }
+        }
         // Reuse the commit owner's identity and resume rules before any file effects.
         commitClawAddAgentConfig({
           config: currentConfig,

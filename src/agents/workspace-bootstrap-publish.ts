@@ -33,7 +33,7 @@ export async function publishBootstrapFile(
   content: string | Buffer,
   beforePersistentApply?: () => void,
   beforePublish?: (identity: BootstrapPublicationIdentity) => void,
-  mode = 0o666 & ~process.umask(),
+  mode = 0o600,
   afterPublish?: (identity: BootstrapPublicationIdentity) => void,
 ): Promise<boolean> {
   const dir = await fs.realpath(path.dirname(filePath));
