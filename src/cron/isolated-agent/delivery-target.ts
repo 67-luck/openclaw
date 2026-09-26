@@ -322,11 +322,7 @@ export async function resolveDeliveryTarget(
     allowFrom: effectiveAllowFrom,
   });
   if (!docked.ok) {
-    if (
-      !toCandidate ||
-      (!isReservedTargetLiteralError(docked.error) &&
-        !isMissingChannelDestinationError(docked.error))
-    ) {
+    if (!toCandidate || !isReservedTargetLiteralError(docked.error)) {
       return failTarget(docked.error);
     }
   } else {
@@ -338,6 +334,7 @@ export async function resolveDeliveryTarget(
     agentId,
     input: toCandidate,
     accountId,
+    allowFrom: effectiveAllowFrom,
     allowNativeChannelNamespace,
     nativeTargetMode: mode,
   });
