@@ -266,11 +266,11 @@ describe("telegram proxy client", () => {
       setupFirstSend: () => {
         vi.useFakeTimers();
         botApi.sendMessage
-          .mockRejectedValueOnce({
-            error_code: 429,
-            description: "Too Many Requests: retry after 1",
-            parameters: { retry_after: 1 },
-          })
+          // This mock omits the account transformer: use a pre-connect retry to
+          // test transport custody. Real flood custody is covered through HTTP.
+          .mockRejectedValueOnce(
+            Object.assign(new Error("connect refused"), { code: "ECONNREFUSED" }),
+          )
           .mockResolvedValueOnce({ message_id: 1, chat: { id: "123" } });
         return {
           waitUntilActive: async () => {

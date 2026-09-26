@@ -49,7 +49,6 @@ import {
   withEphemeralCodexAuthStore,
 } from "./auth-start-options.js";
 import type { CodexAppServerClient } from "./client.js";
-import { ensureCodexComputerUseSharedPluginCache } from "./computer-use-cache.js";
 import {
   ensureCodexManagedBundledMarketplace,
   resolveCodexManagedBundledMarketplaceSource,
@@ -59,6 +58,7 @@ import {
   ensureCodexComputerUseServiceApp,
   resolveCodexComputerUseServiceAppSourcePath,
 } from "./computer-use-service.js";
+import { reconcileManagedCodexComputerUseCache } from "./computer-use-unified.js";
 import type { CodexAppServerHomeScope, CodexAppServerStartOptions } from "./config-contracts.js";
 import { resolveCodexComputerUseConfig } from "./config-runtime.js";
 import {
@@ -552,15 +552,18 @@ async function reconcileCodexComputerUseStartArtifactsOnce(params: {
       })
     : exactDesktopCandidate;
   params.assertCurrent();
+  let marketplacePath: string | undefined;
   if (provisioningAgentDir) {
     if (desktopCandidates.length > 0 && !artifactCandidate) {
       throw new CodexComputerUseCandidateArtifactsUnavailableError();
     }
     try {
-      const marketplacePath = usesManagedBundledMarketplace
+      marketplacePath = usesManagedBundledMarketplace
         ? await ensureCodexManagedBundledMarketplace({
             codexHome,
             ownershipRoot: provisioningAgentDir,
+            computerUsePluginName: computerUseConfig.pluginName,
+            computerUseMcpServerName: computerUseConfig.mcpServerName,
             ...(artifactCandidate
               ? {
                   appServerCommand: artifactCandidate.appServerCommandPath,
@@ -602,23 +605,17 @@ async function reconcileCodexComputerUseStartArtifactsOnce(params: {
     }
   }
   params.assertCurrent();
-  const cacheBinding = [
-    params.desktopGeneration?.epoch ?? "manual",
-    artifactCandidate?.bundledMarketplacePath ?? "default",
-    computerUseConfig.pluginName,
-  ].join("\0");
-  const cache = await ensureCodexComputerUseSharedPluginCache({
+  return await reconcileManagedCodexComputerUseCache({
     codexHome,
     config: computerUseConfig,
-    ...(ownsIsolatedCodexHome ? { ownershipRoot: params.agentDir } : {}),
-    ...(artifactCandidate
-      ? { bundledMarketplacePath: artifactCandidate.bundledMarketplacePath }
-      : {}),
+    ownershipRoot: ownsIsolatedCodexHome ? params.agentDir : undefined,
+    managedMarketplacePath: marketplacePath,
+    bundledMarketplacePath: artifactCandidate?.bundledMarketplacePath,
+    epoch: params.desktopGeneration?.epoch,
     assertCurrent: params.assertCurrent,
-    forceRefresh: params.forceCacheRefresh === true || params.previousCacheBinding !== cacheBinding,
+    forceRefresh: params.forceCacheRefresh,
+    previousCacheBinding: params.previousCacheBinding,
   });
-  params.assertCurrent();
-  return cache.status === "shared" ? cacheBinding : undefined;
 }
 
 async function resolveCompleteComputerUseArtifactCandidate(params: {

@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
@@ -145,6 +144,7 @@ vi.mock("openclaw/plugin-sdk/node-host", async (importOriginal) => {
   };
 });
 
+import { createOpenCodeCliInstaller } from "./session-catalog-cli.test-support.js";
 import { registerOpenCodeSessionCatalog } from "./session-catalog-plugin.js";
 import {
   OPENCODE_SESSIONS_LIST_COMMAND,
@@ -306,87 +306,7 @@ function captureOpenCodeContinuationCatalog() {
   return { createSessionEntry, entries, provider: provider! };
 }
 
-async function installFakeOpenCode(
-  assistantText = "hi",
-  sessionTitle = "Catalog session",
-  toolInput: unknown = { command: "pwd" },
-): Promise<string> {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-opencode-catalog-"));
-  temporaryDirectories.push(directory);
-  const executable = path.join(directory, "opencode");
-  const session = {
-    id: "ses_test",
-    title: sessionTitle,
-    created: 1_700_000_000_000,
-    updated: 1_700_000_001_000,
-    projectId: "project",
-    directory: "/workspace",
-  };
-  const model = { providerID: "anthropic", modelID: "claude" };
-  const exported = {
-    info: session,
-    messages: [
-      {
-        info: { id: "msg_user", role: "user", time: { created: session.created }, model },
-        parts: [{ id: "prt_user", type: "text", text: "hello" }],
-      },
-      {
-        info: {
-          id: "msg_assistant",
-          role: "assistant",
-          time: { created: session.updated },
-          ...model,
-        },
-        parts: [
-          { id: "prt_reason", type: "reasoning", text: "thinking" },
-          { id: "prt_answer", type: "text", text: assistantText },
-          {
-            id: "prt_tool",
-            type: "tool",
-            tool: "bash",
-            state: { status: "completed", input: toolInput, output: "/workspace" },
-          },
-        ],
-      },
-    ],
-  };
-  const script = `#!/usr/bin/env node
-const args = process.argv.slice(2);
-if (process.env.CATALOG_UNRELATED_ENV) process.exit(3);
-if (args[0] === "--pure" && args[1] === "db" && args.includes("--format") && args.includes("json")) {
-  process.stdout.write(args[2].includes("event_sequence")
-    ? ${JSON.stringify(JSON.stringify([{ id: "ses_test", seq: 4 }]))}
-    : ${JSON.stringify(JSON.stringify([session]))});
-} else if (args[0] === "--pure" && args[1] === "export" && args[2] === "ses_test") {
-  process.stdout.write(${JSON.stringify(JSON.stringify(exported))});
-} else {
-  process.exitCode = 2;
-}
-`;
-  // Flush and close the executable before exec: a still-open write handle makes
-  // the immediately following spawn fail with ETXTBSY under parallel CI shards.
-  const executableHandle = await fs.open(executable, "w");
-  try {
-    await executableHandle.writeFile(script);
-    await executableHandle.sync();
-  } finally {
-    await executableHandle.close();
-  }
-  if (process.platform === "win32") {
-    await fs.writeFile(path.join(directory, "opencode.js"), script);
-    // This exact direct-forwarder shape is parsed into a Node entrypoint;
-    // the batch wrapper itself is never executed through cmd.exe.
-    await fs.writeFile(
-      path.join(directory, "opencode.cmd"),
-      '@echo off\r\n"%~dp0\\opencode.js" %*\r\n',
-    );
-  } else {
-    await fs.chmod(executable, 0o755);
-  }
-  process.env.PATH = `${directory}${path.delimiter}${originalPath ?? ""}`;
-  process.env.CATALOG_UNRELATED_ENV = "present";
-  return directory;
-}
+const installFakeOpenCode = createOpenCodeCliInstaller(temporaryDirectories, originalPath);
 
 function restoreEnv(name: string, value: string | undefined) {
   Reflect.deleteProperty(process.env, name);
@@ -455,106 +375,155 @@ describe("OpenCode session catalog", () => {
     },
   );
 
-  itWithCli("lists and reads sessions through the official CLI JSON surfaces", async () => {
-    await installFakeOpenCode();
-    const listed = await listLocalOpenCodeSessionPage({ limit: 20 });
-    const expectedSession = {
-      threadId: "ses_test",
-      name: "Catalog session",
-      cwd: "/workspace",
-      source: "opencode-cli",
-      canContinue: true,
-    };
-    expect(listed).toEqual({ sessions: [expect.objectContaining(expectedSession)] });
+  itWithCli.each([1, 2])(
+    "lists and reads sessions through the v%s CLI JSON surfaces",
+    async (version) => {
+      const cliDirectory = await installFakeOpenCode(
+        "hi",
+        "Catalog session",
+        { command: "pwd" },
+        version,
+      );
+      if (version === 2) {
+        process.env.PATH =
+          path.relative(process.cwd(), cliDirectory) + path.delimiter + (originalPath ?? "");
+      }
+      const dataRoot = process.env.OPENCODE_DB;
+      const listed = await listLocalOpenCodeSessionPage({ limit: 20 });
+      const expectedSession = {
+        threadId: "ses_test",
+        name: "Catalog session",
+        cwd: "/workspace",
+        source: "opencode-cli",
+        canContinue: true,
+      };
+      expect(listed).toEqual({ sessions: [expect.objectContaining(expectedSession)] });
 
-    const transcript = await readTestTranscript({ limit: 20 });
-    expect(transcript.items.map((item) => [item.type, item.text])).toEqual([
-      ["toolResult", "/workspace"],
-      ["toolCall", 'bash\n{"command":"pwd"}'],
-      ["agentMessage", "hi"],
-      ["reasoning", "thinking"],
-      ["userMessage", "hello"],
-    ]);
-    const itemIds = transcript.items.flatMap((item) => (item.id ? [item.id] : []));
-    expect(new Set(itemIds).size).toBe(itemIds.length);
+      const transcript = await readTestTranscript({ limit: 20 });
+      if (version === 2) {
+        for (const [argv, options] of processRuntimeMocks.runCommandBuffered.mock.calls) {
+          if (!argv.includes("--standalone")) {
+            continue;
+          }
+          expect(options?.cwd).toBe(options?.env?.OPENCODE_CONFIG_DIR);
+          expect(options?.env?.PATH?.split(path.delimiter)[0]).toBe(cliDirectory);
+          expect(options?.env?.OPENCODE_DB).toBe(dataRoot);
+        }
+      }
+      expect(transcript.items.map((item) => [item.type, item.text])).toEqual([
+        ["toolResult", "/workspace"],
+        ["toolCall", 'bash\n{"command":"pwd"}'],
+        ["agentMessage", "hi"],
+        ["reasoning", "thinking"],
+        ["userMessage", "hello"],
+      ]);
+      const itemIds = transcript.items.flatMap((item) => (item.id ? [item.id] : []));
+      expect(new Set(itemIds).size).toBe(itemIds.length);
 
-    const latest = await readTestTranscript({ limit: 2 });
-    expect(latest.items.map((item) => item.type)).toEqual(["toolResult", "toolCall"]);
-    expect(latest.nextCursor).toBeTruthy();
-    const older = await readTestTranscript({ limit: 2, cursor: latest.nextCursor });
-    expect(older.items.map((item) => item.type)).toEqual(["agentMessage", "reasoning"]);
-    const nonEmitted = Buffer.from(JSON.stringify({ offset: 2, extra: true }), "utf8").toString(
-      "base64url",
-    );
-    const unsafeOffset = Buffer.from(
-      JSON.stringify({ offset: Number.MAX_SAFE_INTEGER + 1 }),
-      "utf8",
-    ).toString("base64url");
-    for (const cursor of [
-      `${latest.nextCursor}$`,
-      `${latest.nextCursor}=`,
-      ` ${latest.nextCursor} `,
-      nonEmitted,
-      unsafeOffset,
-    ]) {
-      await expectRejects(readTestTranscript({ cursor }), "cursor is invalid");
-    }
-    await expectRejects(listLocalOpenCodeSessionPage({ cursor: " " }), "cursor is invalid");
-    await expectRejects(readTestTranscript({ cursor: 123 }), "cursor is invalid");
-    await expectRejects(
-      readLocalOpenCodeTranscriptPage({ threadId: "--help" }),
-      "threadId is invalid",
-    );
+      const latest = await readTestTranscript({ limit: 2 });
+      expect(latest.items.map((item) => item.type)).toEqual(["toolResult", "toolCall"]);
+      expect(latest.nextCursor).toBeTruthy();
+      const older = await readTestTranscript({ limit: 2, cursor: latest.nextCursor });
+      expect(older.items.map((item) => item.type)).toEqual(["agentMessage", "reasoning"]);
+      const nonEmitted = Buffer.from(JSON.stringify({ offset: 2, extra: true }), "utf8").toString(
+        "base64url",
+      );
+      const unsafeOffset = Buffer.from(
+        JSON.stringify({ offset: Number.MAX_SAFE_INTEGER + 1 }),
+        "utf8",
+      ).toString("base64url");
+      for (const cursor of [
+        `${latest.nextCursor}$`,
+        `${latest.nextCursor}=`,
+        ` ${latest.nextCursor} `,
+        nonEmitted,
+        unsafeOffset,
+      ]) {
+        await expectRejects(readTestTranscript({ cursor }), "cursor is invalid");
+      }
+      await expectRejects(listLocalOpenCodeSessionPage({ cursor: " " }), "cursor is invalid");
+      await expectRejects(readTestTranscript({ cursor: 123 }), "cursor is invalid");
+      await expectRejects(
+        readLocalOpenCodeTranscriptPage({ threadId: "--help" }),
+        "threadId is invalid",
+      );
 
-    const { provider } = captureOpenCodeSessionRegistrations();
-    await expect(
-      provider!.read({ hostId: "gateway", threadId: "ses_test", limit: 2 }),
-    ).resolves.toMatchObject({ threadId: "ses_test", items: expect.any(Array) });
-    await expect(provider!.list({})).resolves.toEqual([
-      expect.objectContaining({ hostId: "gateway", sessions: [expect.any(Object)] }),
-    ]);
-  });
-
-  itWithCli("allows a relative OPENCODE_DB as an explicit isolated-state root", async () => {
-    await installFakeOpenCode();
-    const { provider } = captureOpenCodeSessionRegistrations();
-
-    await withEnvAsync(
-      { OPENCODE_DB: undefined, XDG_DATA_HOME: undefined },
-      async () =>
-        await Promise.all([
-          expect(
-            provider!.list({ allowProcessHomeFallback: false, hostIds: ["gateway"] }),
-          ).resolves.toEqual([]),
-          expect(
-            provider!.continueSession?.({
-              allowProcessHomeFallback: false,
-              hostId: "gateway",
-              threadId: "ses_test",
-            }),
-          ).rejects.toThrow("local OpenCode sessions are unavailable in isolated state"),
-          expect(
-            provider!.openTerminal?.({
-              allowProcessHomeFallback: false,
-              hostId: "gateway",
-              threadId: "ses_test",
-            }),
-          ).rejects.toThrow("local OpenCode sessions are unavailable in isolated state"),
-        ]),
-    );
-    await withEnvAsync({ OPENCODE_DB: "relative.db", XDG_DATA_HOME: undefined }, async () => {
+      const { provider } = captureOpenCodeSessionRegistrations();
       await expect(
-        provider!.list({ allowProcessHomeFallback: false, hostIds: ["gateway"] }),
-      ).resolves.toEqual([expect.objectContaining({ hostId: "gateway" })]);
-      await expect(
-        provider!.read({
-          allowProcessHomeFallback: false,
-          hostId: "gateway",
-          threadId: "ses_test",
-        }),
-      ).resolves.toMatchObject({ hostId: "gateway", threadId: "ses_test" });
+        provider!.read({ hostId: "gateway", threadId: "ses_test", limit: 2 }),
+      ).resolves.toMatchObject({ threadId: "ses_test", items: expect.any(Array) });
+      await expect(provider!.list({})).resolves.toEqual([
+        expect.objectContaining({ hostId: "gateway", sessions: [expect.any(Object)] }),
+      ]);
+    },
+  );
+
+  itWithCli("finds live v2 sessions behind an archived API page", async () => {
+    await installFakeOpenCode("hi", "Catalog session", {}, 2, true);
+    const { provider } = captureOpenCodeSessionRegistrations();
+    const hosts = await provider!.list({ limitPerHost: 1 });
+    expect(hosts[0]?.sessions.map((session) => session.threadId)).toEqual(["ses_test"]);
+
+    const now = Date.now();
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+    const run = processRuntimeMocks.runCommandBuffered.getMockImplementation()!;
+    processRuntimeMocks.runCommandBuffered.mockImplementationOnce(async (...args) => {
+      const result = await run(...args);
+      nowSpy.mockReturnValue(now + 30_001);
+      return result;
     });
+    try {
+      await expect(
+        listLocalOpenCodeSessionPage({ limit: 1 }, { forceRefresh: true }),
+      ).rejects.toThrow("OpenCode session scan exceeded the time limit");
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
+
+  itWithCli.each([1, 2])(
+    "allows a relative OPENCODE_DB as an explicit isolated-state root (v%s)",
+    async (version) => {
+      await installFakeOpenCode("hi", "Catalog session", { command: "pwd" }, version);
+      const { provider } = captureOpenCodeSessionRegistrations();
+
+      await withEnvAsync(
+        { OPENCODE_DB: undefined, XDG_DATA_HOME: undefined },
+        async () =>
+          await Promise.all([
+            expect(
+              provider!.list({ allowProcessHomeFallback: false, hostIds: ["gateway"] }),
+            ).resolves.toEqual([]),
+            expect(
+              provider!.continueSession?.({
+                allowProcessHomeFallback: false,
+                hostId: "gateway",
+                threadId: "ses_test",
+              }),
+            ).rejects.toThrow("local OpenCode sessions are unavailable in isolated state"),
+            expect(
+              provider!.openTerminal?.({
+                allowProcessHomeFallback: false,
+                hostId: "gateway",
+                threadId: "ses_test",
+              }),
+            ).rejects.toThrow("local OpenCode sessions are unavailable in isolated state"),
+          ]),
+      );
+      await withEnvAsync({ OPENCODE_DB: "relative.db", XDG_DATA_HOME: undefined }, async () => {
+        await expect(
+          provider!.list({ allowProcessHomeFallback: false, hostIds: ["gateway"] }),
+        ).resolves.toEqual([expect.objectContaining({ hostId: "gateway" })]);
+        await expect(
+          provider!.read({
+            allowProcessHomeFallback: false,
+            hostId: "gateway",
+            threadId: "ses_test",
+          }),
+        ).resolves.toMatchObject({ hostId: "gateway", threadId: "ses_test" });
+      });
+    },
+  );
 
   itWithCli(
     "memoizes the CLI database query across cadence and invalidates by config identity",
@@ -566,21 +535,21 @@ describe("OpenCode session catalog", () => {
       try {
         await listLocalOpenCodeSessionPage({ limit: 20 }, { configIdentity });
         await listLocalOpenCodeSessionPage({ limit: 20 }, { configIdentity });
-        expect(processRuntimeMocks.runCommandBuffered).toHaveBeenCalledOnce();
+        expect(processRuntimeMocks.runCommandBuffered).toHaveBeenCalledTimes(2);
 
         now += 31_999;
         await listLocalOpenCodeSessionPage({ limit: 20 }, { configIdentity });
-        expect(processRuntimeMocks.runCommandBuffered).toHaveBeenCalledOnce();
-
-        await listLocalOpenCodeSessionPage({ limit: 20 }, { configIdentity, forceRefresh: true });
         expect(processRuntimeMocks.runCommandBuffered).toHaveBeenCalledTimes(2);
 
-        await listLocalOpenCodeSessionPage({ limit: 20 }, { configIdentity: {} });
+        await listLocalOpenCodeSessionPage({ limit: 20 }, { configIdentity, forceRefresh: true });
         expect(processRuntimeMocks.runCommandBuffered).toHaveBeenCalledTimes(3);
+
+        await listLocalOpenCodeSessionPage({ limit: 20 }, { configIdentity: {} });
+        expect(processRuntimeMocks.runCommandBuffered).toHaveBeenCalledTimes(4);
 
         now += 32_001;
         await listLocalOpenCodeSessionPage({ limit: 20 }, { configIdentity });
-        expect(processRuntimeMocks.runCommandBuffered).toHaveBeenCalledTimes(4);
+        expect(processRuntimeMocks.runCommandBuffered).toHaveBeenCalledTimes(6);
       } finally {
         nowSpy.mockRestore();
       }

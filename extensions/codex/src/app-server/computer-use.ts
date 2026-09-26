@@ -2,7 +2,6 @@
  * Computer Use plugin/MCP readiness checks and optional install flow for Codex
  * app-server sessions.
  */
-import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { reconcileCodexComputerUseStartArtifacts } from "./auth-bridge.js";
@@ -14,7 +13,10 @@ import {
   isCodexAppServerIndeterminateTransportError,
   type CodexAppServerClient,
 } from "./client.js";
-import { resolveCodexManagedBundledMarketplacePath } from "./computer-use-marketplace.js";
+import {
+  resolveClientManagedBundledMarketplacePath,
+  resolveBundledComputerUseMarketplacePath,
+} from "./computer-use-marketplace.js";
 import {
   createComputerUseRequest,
   runCodexComputerUseLiveTest,
@@ -25,15 +27,17 @@ import {
 } from "./computer-use-readiness.js";
 import { assertNotSymlink } from "./computer-use-service-path.js";
 import {
+  hasLegacyCodexComputerUseMcpPolicy,
+  isLegacyCodexComputerUsePluginDisabled,
+  resolveManagedCodexComputerUseConfig,
+} from "./computer-use-unified.js";
+import {
   resolveCodexAppServerRuntimeOptions,
   resolveCodexComputerUseConfig,
   type CodexComputerUseConfig,
   type ResolvedCodexComputerUseConfig,
 } from "./config.js";
-import {
-  resolveFirstExistingMacOSDesktopCodexBundledMarketplacePath,
-  resolveMacOSDesktopCodexBundledMarketplaceCandidates,
-} from "./desktop-app-paths.js";
+import { resolveMacOSDesktopCodexBundledMarketplaceCandidates } from "./desktop-app-paths.js";
 import { isManagedCodexDesktopCommand } from "./managed-binary.js";
 import { acquireCodexNativeConfigFence } from "./native-config-fence.js";
 import type {
@@ -436,24 +440,45 @@ async function inspectCodexComputerUseWithoutFence(
     if (!resolveCodexComputerUseConfig({ pluginConfig: params.pluginConfig }).autoInstall) {
       await prepareExplicitManagedComputerUseInstall(params);
     }
-    await request<JsonValue>("experimentalFeature/enablement/set", {
-      enablement: { plugins: true },
-    } satisfies CodexRequestObject);
   }
 
   const managedMarketplacePath = await resolveClientManagedBundledMarketplacePath(
-    params.client,
+    params.client?.getRuntimeIdentity()?.codexHome,
     params.agentDir,
   );
   const managedCodexHome = managedMarketplacePath
     ? params.client?.getRuntimeIdentity()?.codexHome
     : undefined;
+  let computerUseConfig = await resolveManagedCodexComputerUseConfig(
+    params.computerUseConfig,
+    managedMarketplacePath,
+  );
+  if (computerUseConfig !== params.computerUseConfig) {
+    const nativeConfig = await request<CodexConfigReadResponse>("config/read", {
+      includeLayers: false,
+    });
+    if (isLegacyCodexComputerUsePluginDisabled(nativeConfig.config)) {
+      return unavailableStatus(
+        params.computerUseConfig,
+        "plugin_disabled",
+        "Computer Use is disabled by native plugin policy; automatic replacement was not installed.",
+      );
+    }
+    if (hasLegacyCodexComputerUseMcpPolicy(nativeConfig.config)) {
+      computerUseConfig = params.computerUseConfig;
+    }
+  }
+  if (params.installPlugin) {
+    await request<JsonValue>("experimentalFeature/enablement/set", {
+      enablement: { plugins: true },
+    } satisfies CodexRequestObject);
+  }
   if (params.installPlugin && managedCodexHome) {
     await assertNotSymlink(path.join(managedCodexHome, "config.toml"), "Codex config");
   }
   const marketplace = await resolveMarketplaceRef({
     request,
-    config: params.computerUseConfig,
+    config: computerUseConfig,
     allowAdd: params.installPlugin,
     signal: params.signal,
     defaultBundledMarketplacePath: params.defaultBundledMarketplacePath ?? managedMarketplacePath,
@@ -462,16 +487,16 @@ async function inspectCodexComputerUseWithoutFence(
   });
   if (!marketplace.marketplace) {
     return unavailableStatus(
-      params.computerUseConfig,
+      computerUseConfig,
       "marketplace_missing",
       marketplace.message ??
-        `No Codex marketplace containing ${params.computerUseConfig.pluginName} is registered. Configure computerUse.marketplaceSource or computerUse.marketplacePath, then run /codex computer-use install.`,
+        `No Codex marketplace containing ${computerUseConfig.pluginName} is registered. Configure computerUse.marketplaceSource or computerUse.marketplacePath, then run /codex computer-use install.`,
     );
   }
 
   const pluginInspection = await ensureComputerUsePlugin({
     request,
-    config: params.computerUseConfig,
+    config: computerUseConfig,
     marketplace: marketplace.marketplace,
     installPlugin: params.installPlugin,
   });
@@ -483,7 +508,7 @@ async function inspectCodexComputerUseWithoutFence(
     request,
     client: params.client,
     signal: params.signal,
-    config: params.computerUseConfig,
+    config: computerUseConfig,
     plugin: pluginInspection.plugin,
     runLiveTest: params.runLiveTest,
     installPlugin: params.installPlugin,
@@ -556,25 +581,6 @@ async function resolveExplicitManagedComputerUseInstallContext(
     command,
     desktopGeneration,
   };
-}
-
-async function resolveClientManagedBundledMarketplacePath(
-  client: CodexAppServerClient | undefined,
-  agentDir: string | undefined,
-): Promise<string | undefined> {
-  const codexHome = client?.getRuntimeIdentity()?.codexHome;
-  if (!codexHome || !agentDir) {
-    return undefined;
-  }
-  const [actualRealHome, expectedRealHome] = await Promise.all([
-    fs.realpath(codexHome).catch(() => undefined),
-    fs.realpath(resolveCodexAppServerHomeDir(agentDir)).catch(() => undefined),
-  ]);
-  if (!actualRealHome || actualRealHome !== expectedRealHome) {
-    return undefined;
-  }
-  const managedPath = resolveCodexManagedBundledMarketplacePath(codexHome);
-  return existsSync(managedPath) ? managedPath : undefined;
 }
 
 async function ensureComputerUsePlugin(params: {
@@ -886,23 +892,6 @@ function shouldAddBundledComputerUseMarketplace(params: {
     !params.config.marketplaceName &&
     Boolean(resolveBundledComputerUseMarketplacePath(params))
   );
-}
-
-function resolveBundledComputerUseMarketplacePath(params: {
-  defaultBundledMarketplacePath?: string;
-  defaultBundledMarketplacePathCandidates?: readonly string[];
-}): string | undefined {
-  if (params.defaultBundledMarketplacePath) {
-    return existsSync(params.defaultBundledMarketplacePath)
-      ? params.defaultBundledMarketplacePath
-      : undefined;
-  }
-  if (!params.defaultBundledMarketplacePathCandidates) {
-    return undefined;
-  }
-  return resolveFirstExistingMacOSDesktopCodexBundledMarketplacePath({
-    candidates: params.defaultBundledMarketplacePathCandidates,
-  });
 }
 
 function findComputerUseMarketplaces(

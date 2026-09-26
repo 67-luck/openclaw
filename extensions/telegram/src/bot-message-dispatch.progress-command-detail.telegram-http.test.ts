@@ -7,6 +7,7 @@ import type { ReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 import { setReplyPayloadMetadata } from "openclaw/plugin-sdk/reply-payload-testing";
 import { dispatchInboundMessage } from "openclaw/plugin-sdk/reply-runtime";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { getOrCreateAccountThrottler } from "./account-throttler.js";
 import type { TelegramBotDeps } from "./bot-deps.js";
 import type { TelegramMessageContext } from "./bot-message-context.js";
 import { dispatchTelegramMessage } from "./bot-message-dispatch.js";
@@ -14,6 +15,7 @@ import type { TelegramDraftStream } from "./draft-stream.js";
 import { setTelegramPluginStateRuntimeForTests } from "./runtime-state.test-support.js";
 import {
   clearTelegramRuntimeForTest,
+  resetTelegramAccountThrottlersForTest,
   resetTelegramReplyFenceForTest,
 } from "./runtime.test-support.js";
 
@@ -32,6 +34,13 @@ describe("Telegram progress command detail through the shared dispatcher and Tel
   const calls: RecordedBotApiCall[] = [];
   const visibleMessages = new Map<number, string>();
   let rejectNextQuote = false;
+  let respondToCall:
+    | ((
+        call: RecordedBotApiCall,
+      ) =>
+        | { error_code: number; description: string; parameters?: { retry_after: number } }
+        | undefined)
+    | undefined;
 
   beforeAll(async () => {
     server = createServer((request, response) => {
@@ -46,6 +55,11 @@ describe("Telegram progress command detail through the shared dispatcher and Tel
         const method = request.url?.split("/").at(-1) ?? "";
         calls.push({ method, fields });
         response.setHeader("content-type", "application/json");
+        const rejection = respondToCall?.({ method, fields });
+        if (rejection) {
+          response.writeHead(rejection.error_code).end(JSON.stringify({ ok: false, ...rejection }));
+          return;
+        }
         if (
           method === "sendMessage" &&
           rejectNextQuote &&
@@ -100,6 +114,8 @@ describe("Telegram progress command detail through the shared dispatcher and Tel
     calls.length = 0;
     visibleMessages.clear();
     rejectNextQuote = false;
+    respondToCall = undefined;
+    resetTelegramAccountThrottlersForTest();
     nextMessageId = 0;
     resetPluginStateStoreForTests({ closeDatabase: false });
     resetTelegramReplyFenceForTest();
@@ -209,6 +225,7 @@ describe("Telegram progress command detail through the shared dispatcher and Tel
       replyToMode?: "all" | "first";
       accountId?: string;
       telegramDeps?: TelegramBotDeps;
+      allowErrors?: boolean;
     },
   ) {
     const replyResolver: ReplyResolver = async (_ctx, options) => {
@@ -261,9 +278,11 @@ describe("Telegram progress command detail through the shared dispatcher and Tel
       context.ctxPayload.AccountId = scenario.accountId;
     }
 
+    const bot = new Bot(BOT_TOKEN, { client: { apiRoot } });
+    bot.api.config.use(getOrCreateAccountThrottler(BOT_TOKEN).transformer);
     const result = await dispatchTelegramMessage({
       context,
-      bot: new Bot(BOT_TOKEN, { client: { apiRoot } }),
+      bot,
       cfg,
       runtime: {
         log: () => undefined,
@@ -293,12 +312,70 @@ describe("Telegram progress command detail through the shared dispatcher and Tel
       },
     });
 
-    expect(errors).toEqual([]);
+    if (!scenario?.allowErrors) {
+      expect(errors).toEqual([]);
+    }
     expect(result).toEqual({ kind: "completed" });
     return calls
       .filter((call) => call.method === "sendMessage" || call.method === "editMessageText")
       .map((call) => [call.method, call.fields.message_id ?? null, call.fields.text] as const);
   }
+
+  it("delivers the final answer through repeated Telegram flood waits", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const floodedAt: number[] = [];
+    let progressMessageId: number | undefined;
+    let flooded = Promise.withResolvers<void>();
+    respondToCall = (call) => {
+      if (
+        call.method !== "sendMessage" ||
+        call.fields.text !== "The command failed." ||
+        floodedAt.length >= 3
+      ) {
+        return undefined;
+      }
+      floodedAt.push(Date.now());
+      flooded.resolve();
+      return {
+        error_code: 429,
+        description: "Too Many Requests: retry after 5",
+        parameters: { retry_after: 5 },
+      };
+    };
+    const turn = dispatchProgressTurn(
+      async (options) => {
+        await emitToolStart(options, { name: "exec", phase: "start", toolCallId: "flood" });
+        await waitForBotApiCall((call) => call.method === "sendMessage");
+        progressMessageId = visibleMessages.keys().next().value;
+      },
+      {
+        mode: "progress",
+        toolProgress: true,
+        allowErrors: true,
+        finalReply: { text: "The command failed." },
+      },
+    );
+    for (let flood = 0; flood < 3; flood += 1) {
+      await flooded.promise;
+      flooded = Promise.withResolvers<void>();
+      await vi.advanceTimersByTimeAsync(5_000);
+    }
+    await turn;
+    // Dispatch settles before the queued progress deletion reaches the API.
+    await waitForBotApiCall(
+      (call) =>
+        call.method === "deleteMessage" && Number(call.fields.message_id) === progressMessageId,
+    );
+
+    expect(floodedAt).toHaveLength(3);
+    expect(floodedAt[2]! - floodedAt[0]!).toBeGreaterThanOrEqual(10_000);
+    expect([...visibleMessages.values()]).toEqual(["The command failed."]);
+    expect(
+      calls.some((call) =>
+        String(call.fields.text).startsWith("I couldn't confirm the reply reached Telegram."),
+      ),
+    ).toBe(false);
+  });
 
   it("flushes a pending parent progress surface before adopting a fast yield", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
