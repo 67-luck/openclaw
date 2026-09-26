@@ -34,6 +34,7 @@ class ChatCommentController extends OpenClawLightDomContentsElement {
   private editorAnchor?: HTMLElement;
   private editorObserver?: MutationObserver;
   private positionEditor?: () => void;
+  private pendingFocus?: { from: Element | null; run: () => void };
   private focusFrame?: number;
 
   override connectedCallback() {
@@ -52,6 +53,7 @@ class ChatCommentController extends OpenClawLightDomContentsElement {
     this.editorAnchor = undefined;
     this.positionEditor = undefined;
     this.editorObserver?.disconnect();
+    this.pendingFocus = undefined;
     if (this.focusFrame !== undefined) {
       cancelAnimationFrame(this.focusFrame);
       this.focusFrame = undefined;
@@ -82,6 +84,27 @@ class ChatCommentController extends OpenClawLightDomContentsElement {
     if (!this.root) {
       this.root = this.closest(".chat");
       this.root?.addEventListener("openclaw-comment-action", this.handleCommentAction);
+    }
+    const pending = this.pendingFocus;
+    if (pending) {
+      // Fresh props follow the parent's attachment commit. Sibling pins finish
+      // their own updates before registering this final geometry frame.
+      void this.updateComplete.then(() => {
+        if (this.pendingFocus !== pending) {
+          return;
+        }
+        this.pendingFocus = undefined;
+        this.focusFrame = requestAnimationFrame(() => {
+          this.focusFrame = undefined;
+          const focused = this.ownerDocument.activeElement;
+          if (
+            focused === pending.from ||
+            (focused === this.ownerDocument.body && !pending.from?.isConnected)
+          ) {
+            pending.run();
+          }
+        });
+      });
     }
   }
 
@@ -193,6 +216,7 @@ class ChatCommentController extends OpenClawLightDomContentsElement {
     const index = comments.findIndex((item) => item.id === id);
     const next = comments[index + 1] ?? comments[index - 1];
     const current = this.currentAttachments();
+    const focused = this.ownerDocument.activeElement;
     this.changeAttachments(
       current,
       current.filter((item) => item.id !== id),
@@ -201,21 +225,22 @@ class ChatCommentController extends OpenClawLightDomContentsElement {
       this.focusComposer();
       return;
     }
-    // Wait for the attachment owner to render the renumbered list before moving focus.
-    this.focusFrame = requestAnimationFrame(() => {
-      this.focusFrame = undefined;
-      if (
-        !this.canChange(signal) ||
-        this.sessionKey !== sessionKey ||
-        !preview.isConnected ||
-        !preview.hasAttribute("open")
-      ) {
-        return;
-      }
-      preview
-        .querySelector<HTMLElement>(`[data-comment-delete="${CSS.escape(next.id)}"]`)
-        ?.focus({ preventScroll: true });
-    });
+    this.pendingFocus = {
+      from: focused,
+      run: () => {
+        if (
+          !this.canChange(signal) ||
+          this.sessionKey !== sessionKey ||
+          !preview.isConnected ||
+          !preview.hasAttribute("open")
+        ) {
+          return;
+        }
+        preview
+          .querySelector<HTMLElement>(`[data-comment-delete="${CSS.escape(next.id)}"]`)
+          ?.focus({ preventScroll: true });
+      },
+    };
   }
 
   private readonly syncEditorAnchor = () => {
@@ -228,6 +253,7 @@ class ChatCommentController extends OpenClawLightDomContentsElement {
 
   private editComment(attachment: CommentAttachment, anchor: HTMLElement) {
     const signal = this.props.readSignal;
+    const sessionKey = this.sessionKey;
     if (!this.canChange(signal)) {
       return;
     }
@@ -261,22 +287,26 @@ class ChatCommentController extends OpenClawLightDomContentsElement {
         if (!replacement) {
           return false;
         }
+        const focused = this.ownerDocument.activeElement;
         this.changeAttachments(
           current,
           current.map((item) => (item.id === attachment.id ? replacement : item)),
         );
         this.retireEditor();
-        this.focusFrame = requestAnimationFrame(() => {
-          this.focusFrame = undefined;
-          if (this.canChange(signal)) {
-            const target = this.visiblePin(replacement.id) ?? (anchor.isConnected ? anchor : null);
-            if (target) {
-              focusWithoutTooltip(target);
-            } else {
-              this.focusComposer();
+        this.pendingFocus = {
+          from: focused,
+          run: () => {
+            if (this.canChange(signal) && this.sessionKey === sessionKey) {
+              const target =
+                this.visiblePin(replacement.id) ?? (anchor.isConnected ? anchor : null);
+              if (target) {
+                focusWithoutTooltip(target);
+              } else {
+                this.focusComposer();
+              }
             }
-          }
-        });
+          },
+        };
         return true;
       },
       onDelete: () => {
