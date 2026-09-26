@@ -267,6 +267,8 @@ export async function admitUpdateCommandRun(params: {
       throw new GatewayServiceUpdateOwnershipError(
         "Gateway state or configuration selectors changed during target initialization. Retry from the installation's current owning account.",
         undefined,
+        undefined,
+        "service-context-changed",
       );
     }
     await revalidateUpdateDatabaseContext({

@@ -101,6 +101,7 @@ it.each([
       KillMode: property("s", "control-group"),
       TasksCurrent: property("t", running ? 1 : 0),
       MemoryCurrent: property("t", 0),
+      ControlGroup: property("s", `/system.slice/${target.unitName}`),
     };
     exec.mockReset().mockImplementation(async (command, args) => {
       if (command === "systemctl" && args[0] === "is-enabled") {

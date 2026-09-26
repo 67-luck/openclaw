@@ -46,6 +46,7 @@ type SystemdServiceInfo = {
   nRestarts?: number;
   startLimitBurst?: number;
   unit?: string;
+  controlGroup?: string;
   killMode?: string;
   tasksCurrent?: number;
   memoryCurrent?: number;
@@ -123,6 +124,9 @@ function parseSystemdShow(output: string): SystemdServiceInfo {
     if (memoryCurrent !== undefined) {
       info.memoryCurrent = memoryCurrent;
     }
+  }
+  if (entries.controlgroup) {
+    info.controlGroup = entries.controlgroup;
   }
   return info;
 }
@@ -214,7 +218,7 @@ export async function readSystemdServiceRuntime(
     unitName,
     "--no-page",
     "--property",
-    "Id,LoadState,ActiveState,SubState,Result,NRestarts,StartLimitBurst,MainPID,ExecMainStatus,ExecMainCode,KillMode,TasksCurrent,MemoryCurrent",
+    "Id,LoadState,ActiveState,SubState,Result,NRestarts,StartLimitBurst,MainPID,ExecMainStatus,ExecMainCode,KillMode,TasksCurrent,MemoryCurrent,ControlGroup",
   ];
   const res =
     installed?.scope === "system"
@@ -264,6 +268,7 @@ export async function readSystemdServiceRuntime(
       scope: installed?.scope ?? "user",
       transport: installed?.scope === "system" ? undefined : await readSystemdUserTransport(env),
       unit: parsed.unit ?? unitName,
+      controlGroup: parsed.controlGroup,
       killMode: parsed.killMode,
       tasksCurrent: parsed.tasksCurrent,
       memoryCurrent: parsed.memoryCurrent,

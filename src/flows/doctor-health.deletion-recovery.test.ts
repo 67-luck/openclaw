@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { prepareDoctorDatabasePreflight } from "../commands/doctor-database-preflight.js";
+import { classifyDoctorMaintenanceRestorationRefusal } from "../commands/doctor-maintenance-inspection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createLegacyDatabaseFixture } from "../infra/state-migrations.media-persistence.test-support.js";
 import { readAgentDeletionRecoveryHolds } from "../state/agent-deletion-journal-recovery.js";
@@ -58,14 +59,30 @@ it("refreshes supplied missing-history discovery after maintenance admits a newe
     mocks.emulateNativeInstall = false;
     const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
     try {
-      await runDoctorHealthFlow(
-        runtime,
-        { repair: true, nonInteractive: true },
-        undefined,
-        prepared,
-      );
-      expect(runtime.error).not.toHaveBeenCalled();
-      expect(runtime.exit).not.toHaveBeenCalled();
+      let refusal: unknown;
+      await expect(
+        runDoctorHealthFlow(
+          runtime,
+          { repair: true, nonInteractive: true },
+          undefined,
+          prepared,
+        ).catch((error: unknown) => {
+          refusal = error;
+          throw error;
+        }),
+      ).rejects.toThrow("Failing check agent-deletion-journal");
+      expect(classifyDoctorMaintenanceRestorationRefusal(refusal)).toEqual({
+        kind: "data-at-risk",
+        reason: "incomplete-migration",
+      });
+      expect(refusal).toMatchObject({
+        failureFacts: [
+          expect.objectContaining({
+            check: "agent-deletion-journal",
+            code: "unverified-agent-databases",
+          }),
+        ],
+      });
       expect(
         readAgentDeletionRecoveryHolds(openOpenClawStateDatabase({ env: state.env }))
           .map((target) => target.path)

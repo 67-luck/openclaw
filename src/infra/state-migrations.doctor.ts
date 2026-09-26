@@ -3031,7 +3031,10 @@ async function executeLegacyStateMigrations(
         );
         agentDatabaseTargets = hasCustomAgentDirOverride(env)
           ? []
-          : [...(agentDatabaseMigrationDiscovery?.configuredAgentDatabaseTargets ?? [])];
+          : resolveConfiguredAgentDatabaseTargets(params.cfg, {
+              env: stateEnv,
+              registeredDatabases: agentDatabaseMigrationDiscovery.registeredAgentDatabases,
+            });
         return { changes: [], warnings: [] };
       } catch (error) {
         if (mode === "automatic") {

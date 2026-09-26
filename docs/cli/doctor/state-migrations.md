@@ -95,12 +95,24 @@ agent must be restored before deletion. For a custom database filename, restore
 the original `session.store` configuration first; `agents add` refuses to create
 an empty replacement when it cannot select a held store. If Doctor cannot verify
 a custom store's owner, it leaves the journal unavailable and reports the path
-while continuing other repairs. Rerun Doctor after resolving the holds.
+as a failing `agent-deletion-journal` check. Rerun Doctor after resolving the holds.
 
 Invalid configuration also leaves the journal unavailable: Doctor cannot record
 a complete recovery inventory until it can validate configured ownership paths.
 Repair the configuration, then rerun `openclaw doctor --fix` to discover and hold
 external stores before reconstruction.
+
+The intact historical shared schema written by `2026.7.35` predates the deletion
+journal. Doctor recognizes that schema and initializes the journal during the
+shared-schema migration, before migrating the agent databases in the same pass.
+This does not apply to modern databases with a missing journal or to recorded
+recovery holds. Explicit repair exits nonzero while deletion-history recovery
+leaves stores unverified; the failing check names the reason and restoration steps.
+
+Doctor resolves configured agent databases and custom session stores before its
+media/schema migration step. That prerequisite runs before auth-profile imports,
+session repairs, and post-session plugin repairs, including when preflight inspected
+a custom store that has not yet been registered.
 
 Doctor reports interrupted auth-profile archive recovery even when no new migration remains or you decline another migration. If recovery cannot finish, its warning includes the failure cause and leaves the pending source for recovery; do not delete it to silence the warning.
 

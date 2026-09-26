@@ -4,6 +4,7 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { isSqliteCorruptionError } from "../infra/sqlite-error-diagnostics.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
+import { hasPreJournalStateSchema } from "./agent-deletion-journal-history.js";
 import {
   readAgentDeletionRecoveryHolds,
   type HeldAgentDatabase,
@@ -88,6 +89,9 @@ export function readRetainedAgentDeletionsFromDatabase(
     purpose === "maintenance" && tableExists(database, "migration_sources")
       ? readAgentDeletionRecoveryHolds({ db: database, path: statePath })
       : [];
+  if (missing && held.length === 0 && hasPreJournalStateSchema(database)) {
+    return { status: "empty" };
+  }
   if (missing || unreadableReason !== undefined) {
     return {
       status: "unavailable",

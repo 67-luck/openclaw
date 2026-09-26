@@ -1,4 +1,5 @@
 import type { LegacyConfigUpdatePlan } from "../../commands/doctor/legacy-config-repair.js";
+import { createUpdatePreflightFailure } from "../../infra/update-preflight-details.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { withCommandProcessScope } from "../../process/exec-spawn.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
@@ -73,7 +74,11 @@ export async function inspectUpdateDatabaseContexts(params: {
         throw new UpdatePreMutationError(
           "managed-service-preflight",
           formatUpdateAncestryBlockMessage(inspected.blockMessage),
-          { failureFacts: collectServiceInspectionFailureFacts(inspected.serviceUpdateVerdict) },
+          {
+            failureFacts:
+              inspected.blockFailureFacts ??
+              collectServiceInspectionFailureFacts(inspected.serviceUpdateVerdict),
+          },
         );
       }
       if (
@@ -82,21 +87,24 @@ export async function inspectUpdateDatabaseContexts(params: {
           inspected.serviceUpdateVerdict?.kind === "unresolved") &&
         inspected.offline !== true
       ) {
-        throw new UpdatePreMutationError(
+        const failure = createUpdatePreflightFailure(
+          "service-not-offline",
+          undefined,
           "managed-service-preflight",
-          "Another Gateway service uses this installation and is not verified offline. Stop it through its service owner before updating the foreground Gateway.",
-          { failureFacts: collectServiceInspectionFailureFacts(inspected.serviceUpdateVerdict) },
         );
+        throw new UpdatePreMutationError("managed-service-preflight", failure.message, failure);
       }
       if (
         params.managedServiceRoot &&
         (inspected.serviceUpdateVerdict?.kind !== "owned" ||
           !inspected.serviceUpdateVerdict.refreshDefinition)
       ) {
-        throw new UpdatePreMutationError(
+        const failure = createUpdatePreflightFailure(
+          "service-definition-not-writable",
+          undefined,
           "managed-service-preflight",
-          "The Gateway cannot be rebound from its current installation: its owned service definition must be writable before this update can align it with the CLI.",
         );
+        throw new UpdatePreMutationError("managed-service-preflight", failure.message, failure);
       }
       services.set(root, inspected);
       if (inspected.serviceUpdateVerdict?.kind === "owned") {
@@ -111,10 +119,12 @@ export async function inspectUpdateDatabaseContexts(params: {
       legacyConfigPlan: params.legacyConfigPlan,
     });
     if ((params.managedServiceRootRedirect || params.managedServiceRoot) && !managed) {
-      throw new UpdatePreMutationError(
+      const failure = createUpdatePreflightFailure(
+        "service-context-changed",
+        undefined,
         "managed-service-preflight",
-        "The managed Gateway service changed before database admission. Retry so its package root and state can be inspected together.",
       );
+      throw new UpdatePreMutationError("managed-service-preflight", failure.message, failure);
     }
     // Redirected package replacement does not own the invoking installation's stores.
     const contexts = params.managedServiceRootRedirect

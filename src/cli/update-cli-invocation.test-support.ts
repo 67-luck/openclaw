@@ -7,6 +7,7 @@ import type { UpdateRunRecord } from "../infra/update-run-record.js";
 import { updateGitCheckout } from "../infra/update-runner-git.js";
 import type { UpdateRunResult } from "../infra/update-runner-types.js";
 import { ExitError } from "../runtime.js";
+import { withEnvAsync } from "../test-utils/env.js";
 import type { UpdateCommandOptions } from "./update-cli/shared.js";
 
 export function expectGitMetadataPreview(result: unknown): void {
@@ -207,3 +208,39 @@ export const mockGitUpdateAfterMutation = (
   });
   return mutationAdmitted;
 };
+
+export function createFreshPostUpdateDoctorAssertion(
+  runExec: typeof import("../process/exec.js").runExec,
+  entrypoint: string,
+) {
+  return (params: { yes: boolean; workspaceSuggestions?: boolean }) => {
+    const calls = vi
+      .mocked(runExec)
+      .mock.calls.filter(([, args]) => args[0] === entrypoint && args[1] === "doctor");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[1]).toEqual([
+      entrypoint,
+      "doctor",
+      "--repair",
+      "--non-interactive",
+      ...(params.workspaceSuggestions ? [] : ["--no-workspace-suggestions"]),
+      ...(params.yes ? ["--yes"] : []),
+    ]);
+  };
+}
+
+export function createGatewayServiceEnvInvocation(
+  invoke: (options: UpdateCommandOptions) => Promise<unknown>,
+) {
+  return (options: UpdateCommandOptions, env: NodeJS.ProcessEnv = {}) =>
+    withEnvAsync(
+      {
+        OPENCLAW_SERVICE_MARKER: "openclaw",
+        OPENCLAW_SERVICE_KIND: "gateway",
+        ...env,
+      },
+      async () => {
+        await invoke(options);
+      },
+    );
+}

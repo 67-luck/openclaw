@@ -251,6 +251,27 @@ async function runDoctorHealthFlowWithResult(
       for (const message of deletionJournal.warnings) {
         effectiveRuntime.log(message);
       }
+      if (prompter.shouldRepair && deletionJournal.warnings.length > 0) {
+        const { createLegacyStateMigrationStepReceipt, DoctorStateMigrationRefusalError } =
+          await import("../infra/state-migrations.messages.js");
+        throw new DoctorStateMigrationRefusalError([
+          createLegacyStateMigrationStepReceipt(
+            {
+              id: "agent-deletion-journal",
+              phase: "shared",
+              source: [],
+              target: [],
+              requiredness: "required",
+              reversibility: "checkpoint-required",
+              refusal: {
+                code: "unverified-agent-databases",
+                message: deletionJournal.warnings.join("\n"),
+              },
+            },
+            deletionJournal,
+          ),
+        ]);
+      }
 
       // Keep side-effect-heavy legacy checks before structured contributions until fully migrated.
       const { maybeRepairUiProtocolFreshness } = await import("../commands/doctor-ui.js");

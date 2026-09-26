@@ -62,7 +62,7 @@ export {
   maybeResumeWindowsTaskAutoStartAfterPackageUpdate,
   maybeStopManagedServiceBeforeMutableUpdate,
   revalidateManagedGatewayServiceAfterUpdate,
-  shouldBlockMutableUpdateFromGatewayServiceEnv,
+  mutableUpdateGatewayServiceBlock,
   UpdateCommandAbort,
   type PreManagedServiceStop,
   type UpdateCommandRecoveryState,

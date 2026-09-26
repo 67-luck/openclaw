@@ -163,7 +163,7 @@ const mockedRunDaemonInstall = vi.fn();
 const serviceReadCommand = vi.fn();
 const serviceReadRuntime = vi.fn();
 let absentServicePort: number;
-const mockGetSelfAndAncestorPidsSync = vi.fn(() => new Set<number>([process.pid]));
+const mockGetSelfAndAncestorPidsSync = vi.fn(() => new Set<number>([process.pid, 1]));
 const terminateStaleGatewayPids = vi.fn();
 const inspectPortUsage = vi.fn();
 const probePortUsage = vi.fn();
@@ -438,8 +438,16 @@ vi.mock("../infra/runtime-guard.js", async (importOriginal) => ({
   },
 }));
 
+vi.mock("../daemon/service-process-membership.js", () => ({
+  inspectServiceProcessMembershipSync: vi.fn(() => "outside"),
+}));
+
 vi.mock("../infra/restart-stale-pids.js", () => ({
   getSelfAndAncestorPidsSync: () => mockGetSelfAndAncestorPidsSync(),
+  inspectSelfAndAncestorPidsSync: () => {
+    const pids = mockGetSelfAndAncestorPidsSync();
+    return { pids, complete: pids.has(1) };
+  },
   terminateStaleGatewayPids: (...args: unknown[]) => terminateStaleGatewayPids(...args),
 }));
 
@@ -780,6 +788,8 @@ const {
   expectUpdateFailureReport,
   expectDelegatedPluginDoctorInput,
   expectSelectorTriageFailure,
+  createGatewayServiceEnvInvocation,
+  createFreshPostUpdateDoctorAssertion,
 } = await import("./update-cli-invocation.test-support.js");
 
 const { updateFinalizeCommand } = await import("./update-cli/update-command-finalize.js");
@@ -1264,25 +1274,10 @@ describe("update-cli", () => {
     FRESH_POST_UPDATE_ENTRYPOINT,
   );
 
-  const expectFreshPostUpdateDoctor = (params: {
-    yes: boolean;
-    workspaceSuggestions?: boolean;
-  }) => {
-    const calls = vi
-      .mocked(runExec)
-      .mock.calls.filter(
-        ([, args]) => args[0] === FRESH_POST_UPDATE_ENTRYPOINT && args[1] === "doctor",
-      );
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.[1]).toEqual([
-      FRESH_POST_UPDATE_ENTRYPOINT,
-      "doctor",
-      "--repair",
-      "--non-interactive",
-      ...(params.workspaceSuggestions ? [] : ["--no-workspace-suggestions"]),
-      ...(params.yes ? ["--yes"] : []),
-    ]);
-  };
+  const expectFreshPostUpdateDoctor = createFreshPostUpdateDoctorAssertion(
+    runExec,
+    FRESH_POST_UPDATE_ENTRYPOINT,
+  );
 
   const {
     mockNpmPluginOutcomes,
@@ -1445,20 +1440,7 @@ describe("update-cli", () => {
     return updatedEntrypoint;
   };
 
-  const runWithGatewayServiceEnv = (
-    options: Parameters<typeof updateCommand>[0],
-    env: NodeJS.ProcessEnv = {},
-  ) =>
-    withEnvAsync(
-      {
-        OPENCLAW_SERVICE_MARKER: "openclaw",
-        OPENCLAW_SERVICE_KIND: "gateway",
-        ...env,
-      },
-      async () => {
-        await invokeUpdateCli(options);
-      },
-    );
+  const runWithGatewayServiceEnv = createGatewayServiceEnvInvocation(invokeUpdateCli);
 
   const runControlPlaneUpdate = async (params: {
     meta: Record<string, unknown>;
@@ -1733,7 +1715,7 @@ describe("update-cli", () => {
         ? { status: "running", pid: gatewayFixturePid, state: "running" }
         : { status: "stopped", state: "stopped", missingUnit: true },
     );
-    mockGetSelfAndAncestorPidsSync.mockReturnValue(new Set<number>([process.pid]));
+    mockGetSelfAndAncestorPidsSync.mockReturnValue(new Set<number>([process.pid, 1]));
     prepareRestartScript.mockResolvedValue("/tmp/openclaw-restart-test.sh");
     runRestartScript.mockResolvedValue(undefined);
     inspectPortUsage.mockResolvedValue({
@@ -6730,6 +6712,7 @@ describe("update-cli", () => {
       mockFileBackedPathExists();
       vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValue(entryPath);
       mockRunningManagedGateway([process.execPath, entryPath, "gateway", "run"]);
+      mockGetSelfAndAncestorPidsSync.mockReturnValue(new Set([process.pid, gatewayFixturePid, 1]));
       managedUpdateHandoff.start.mockResolvedValue({
         status: "started",
         handoffId: "current-artifact-handoff",
@@ -7175,12 +7158,6 @@ describe("update-cli", () => {
     },
   );
 
-  const packageUpdateInGatewayMessage = [
-    "Package updates cannot run from inside the gateway service process.",
-    "That path replaces the active OpenClaw dist tree while the live gateway may still lazy-load old chunks.",
-    "Run `openclaw update` from a terminal outside the gateway service.",
-  ].join("\n");
-
   it("allows package updates from inherited gateway service env when the managed gateway is not running", async () => {
     await mockPackageInstallAtCaseDir();
     serviceReadRuntime.mockResolvedValueOnce({
@@ -7191,7 +7168,6 @@ describe("update-cli", () => {
 
     await runWithGatewayServiceEnv({ yes: true });
 
-    expect(defaultRuntime.error).not.toHaveBeenCalledWith(packageUpdateInGatewayMessage);
     expectPackageInstallSpec("openclaw@9999.0.0");
   });
 
@@ -7217,23 +7193,59 @@ describe("update-cli", () => {
     }
   });
 
-  it("refuses package updates from inherited gateway service env when --no-restart leaves the gateway running", async () => {
-    const root = await mockPackageInstallAtCaseDir();
-    primeServiceCommand(["node", path.join(root, "dist", "index.js"), "gateway", "run"], {
-      OPENCLAW_SERVICE_MARKER: "openclaw",
-      OPENCLAW_SERVICE_KIND: "gateway",
-    });
-    serviceLoaded.mockResolvedValue(true);
+  it.each([
+    "external",
+    "inspected Gateway",
+    "another Gateway",
+    "another Gateway with stopped service",
+  ])(
+    "checks ancestry before --no-restart package updates with inherited markers (%s)",
+    async (caller) => {
+      const inside = caller !== "external";
+      const callerGatewayPid = caller.startsWith("another Gateway")
+        ? gatewayFixturePid + 1
+        : gatewayFixturePid;
+      const root = await mockPackageInstallAtCaseDir();
+      primeServiceCommand(["node", path.join(root, "dist", "index.js"), "gateway", "run"], {
+        OPENCLAW_SERVICE_MARKER: "openclaw",
+        OPENCLAW_SERVICE_KIND: "gateway",
+      });
+      serviceLoaded.mockResolvedValue(true);
+      if (caller === "another Gateway with stopped service") {
+        serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
+      }
+      mockGetSelfAndAncestorPidsSync.mockReturnValue(
+        new Set(inside ? [process.pid, callerGatewayPid, 1] : [process.pid, 1]),
+      );
 
-    await expect(runWithGatewayServiceEnv({ yes: true, restart: false })).rejects.toEqual(
-      new ExitError(1),
-    );
+      if (!inside) {
+        await runWithGatewayServiceEnv({ yes: true, restart: false });
+        expectPackageInstallSpec("openclaw@9999.0.0");
+        expect(serviceStop).not.toHaveBeenCalled();
+        return;
+      }
+      await expect(
+        runWithGatewayServiceEnv(
+          { yes: true, restart: false, json: true },
+          {
+            [GATEWAY_SERVICE_RUNTIME_PID_ENV]: String(callerGatewayPid),
+          },
+        ),
+      ).rejects.toEqual(new ExitError(1));
 
-    expect(defaultRuntime.error).toHaveBeenCalledWith(packageUpdateInGatewayMessage);
-    expect(defaultRuntime.exit).not.toHaveBeenCalled();
-    expectNoSideEffects(serviceStop, updateGitCheckout);
-    expect(packageInstallCommandCall()?.[0]).toBeUndefined();
-  });
+      expect(lastWriteJsonCall()).toMatchObject({
+        reason: "managed-service-preflight",
+        steps: expect.arrayContaining([
+          expect.objectContaining({
+            failureFacts: [expect.objectContaining({ code: "inside-gateway-process-tree" })],
+          }),
+        ]),
+      });
+      expect(defaultRuntime.exit).not.toHaveBeenCalled();
+      expectNoSideEffects(serviceStop, updateGitCheckout);
+      expect(packageInstallCommandCall()?.[0]).toBeUndefined();
+    },
+  );
 
   it.each([
     {
@@ -7347,7 +7359,7 @@ describe("update-cli", () => {
     { platform: "linux", env: {}, supervisor: "systemd", ancestor: true, git: true },
   ])(
     "hands agent-initiated updates to $supervisor before stopping the gateway ($env, git=$git)",
-    async ({ platform, env, supervisor, options = {}, ancestor = false, git = false }) => {
+    async ({ platform, env, supervisor, options = {}, ancestor = true, git = false }) => {
       const phases = vi.spyOn(
         await import("./update-cli/update-command-service.js"),
         "maybeStopManagedServiceBeforeMutableUpdate",
@@ -7447,7 +7459,7 @@ describe("update-cli", () => {
     vi.mocked(runCommandWithTimeout).mockResolvedValue(commandResult({ stdout: sha }));
     mockRunningManagedGateway(["node", path.join(root, "dist", "index.js"), "gateway"]);
     const mutationAdmitted = mockGitUpdateAfterMutation(makeOkUpdateResult({ mode: "git", root }));
-    mockGetSelfAndAncestorPidsSync.mockReturnValue(new Set<number>([process.pid]));
+    mockGetSelfAndAncestorPidsSync.mockReturnValue(new Set<number>([process.pid, 1]));
     const runningRuntime = { status: "running", pid: gatewayFixturePid, state: "running" };
     // The final reread follows the ancestry check immediately before shutdown.
     // Additional schema inspections must not move this fault into handoff selection.
@@ -7504,39 +7516,54 @@ describe("update-cli", () => {
     expect(defaultRuntime.exit).not.toHaveBeenCalled();
   });
 
-  it("refuses package updates from inherited gateway runtime pid when process ancestry is truncated", async () => {
-    const root = await mockPackageInstallAtCaseDir();
-    primeServiceCommand(["node", path.join(root, "dist", "index.js"), "gateway", "run"]);
-    serviceLoaded.mockResolvedValue(true);
-    serviceReadRuntime.mockResolvedValue({
-      status: "running",
-      pid: gatewayFixturePid,
-      state: "running",
-    });
-    mockGetSelfAndAncestorPidsSync.mockReturnValue(new Set<number>([process.pid]));
+  it.each(["running", "stopped", "unavailable", "dead inherited PID"])(
+    "checks inherited Gateway liveness with incomplete ancestry and %s service inspection",
+    async (scenario) => {
+      const root = await mockPackageInstallAtCaseDir();
+      primeServiceCommand(["node", path.join(root, "dist", "index.js"), "gateway", "run"]);
+      serviceLoaded.mockResolvedValue(true);
+      serviceReadRuntime.mockResolvedValue({
+        status: scenario === "stopped" ? "stopped" : "running",
+        pid: gatewayFixturePid,
+        state: scenario === "stopped" ? "stopped" : "running",
+      });
+      if (scenario === "unavailable") {
+        serviceReadRuntime.mockRejectedValue(new Error("fixture service manager unavailable"));
+      }
+      if (scenario === "dead inherited PID") {
+        serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
+      }
+      mockGetSelfAndAncestorPidsSync.mockReturnValue(new Set<number>([process.pid]));
 
-    await expect(
-      runWithGatewayServiceEnv(
-        { yes: true },
-        {
-          [GATEWAY_SERVICE_RUNTIME_PID_ENV]: String(gatewayFixturePid),
-          OPENCLAW_UPDATE_RUN_HANDOFF: "1",
-        },
-      ),
-    ).rejects.toEqual(new ExitError(1));
+      const env = {
+        [GATEWAY_SERVICE_RUNTIME_PID_ENV]: String(
+          scenario === "dead inherited PID" ? 2_000_000_000 : process.ppid,
+        ),
+      };
+      if (scenario === "dead inherited PID") {
+        await runWithGatewayServiceEnv({ yes: true, restart: false }, env);
+        expectPackageInstallSpec("openclaw@9999.0.0");
+        expect(serviceStop).not.toHaveBeenCalled();
+        return;
+      }
 
-    const errors = getErrorOutput();
-    expect(errors).toContain(
-      `This command is running inside the gateway process tree (gateway PID ${gatewayFixturePid}).`,
-    );
-    expect(errors).not.toContain("Run this command from a shell outside the gateway service.");
-    expect(errors).toContain("would kill this command");
-    expect(errors).toContain("gateway update action or /update");
-    expect(errors).not.toContain("stop the gateway service first");
-    expect(defaultRuntime.exit).not.toHaveBeenCalled();
-    expect(serviceStop).not.toHaveBeenCalled();
-    expect(packageInstallCommandCall()?.[0]).toBeUndefined();
-  });
+      await expect(
+        runWithGatewayServiceEnv({ yes: true, restart: false, json: true }, env),
+      ).rejects.toEqual(new ExitError(1));
+
+      expect(lastWriteJsonCall()).toMatchObject({
+        reason: "managed-service-preflight",
+        steps: expect.arrayContaining([
+          expect.objectContaining({
+            failureFacts: [expect.objectContaining({ code: "service-ancestry-unverified" })],
+          }),
+        ]),
+      });
+      expect(defaultRuntime.exit).not.toHaveBeenCalled();
+      expect(serviceStop).not.toHaveBeenCalled();
+      expect(packageInstallCommandCall()?.[0]).toBeUndefined();
+    },
+  );
 
   it("blocks package updates when the target requires a newer Node runtime", async () => {
     // This case specifies system-runtime guidance, independent of the host Node manager.
