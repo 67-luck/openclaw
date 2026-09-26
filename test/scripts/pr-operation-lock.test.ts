@@ -1901,14 +1901,51 @@ describePosix("scripts/pr per-PR operation lock", () => {
     },
   );
   it.each([
-    { wrapper: "canonical", command: "merge-run", failure: "none" },
-    { wrapper: "linked", command: "merge-run", failure: "none" },
-    { wrapper: "linked", command: "gc", failure: "none" },
-    { wrapper: "linked", command: "merge-run", failure: "merge" },
-    { wrapper: "linked", command: "merge-run", failure: "release" },
+    {
+      wrapper: "canonical",
+      command: "merge-run",
+      failure: "none",
+      installed: false,
+      dependencySuffix: "",
+    },
+    {
+      wrapper: "linked",
+      command: "merge-run",
+      failure: "none",
+      installed: false,
+      dependencySuffix: "",
+    },
+    {
+      wrapper: "linked",
+      command: "gc",
+      failure: "none",
+      installed: false,
+      dependencySuffix: "",
+    },
+    {
+      wrapper: "linked",
+      command: "merge-run",
+      failure: "merge",
+      installed: false,
+      dependencySuffix: "",
+    },
+    {
+      wrapper: "linked",
+      command: "merge-run",
+      failure: "release",
+      installed: false,
+      dependencySuffix: "",
+    },
+    {
+      wrapper: "linked",
+      command: "merge-run",
+      failure: "none",
+      installed: true,
+      dependencySuffix: " with installed dependencies",
+    },
   ])(
-    "finishes native cleanup with $wrapper wrapper ($command, failure=$failure)",
-    ({ wrapper, command, failure }) => {
+    "finishes native cleanup with $wrapper wrapper ($command, failure=$failure)$dependencySuffix",
+    ({ wrapper, command, failure, installed }) => {
       const repoDir = createRepo();
       const { binDir, cli, wrapperSources } = installPrCliFixture(repoDir);
       linkPrWrapperDependencies(repoDir);
@@ -1954,12 +1991,20 @@ describePosix("scripts/pr per-PR operation lock", () => {
       git("worktree", "add", "-q", "-b", "temp/pr-42", worktreeDir);
       const registeredPath = realpathSync(worktreeDir);
       const worktreeAdmin = git("-C", worktreeDir, "rev-parse", "--absolute-git-dir");
+      let nextWorktreeAdmin: string | undefined;
+      if (installed) {
+        const exclude = join(repoDir, ".git/info/exclude");
+        writeFileSync(exclude, `${readFileSync(exclude, "utf8")}node_modules/\n`);
+        linkPrWrapperDependencies(worktreeDir);
+        expect(git("-C", worktreeDir, "status", "--porcelain")).toBe("");
+      }
       for (const branch of ["pr-42", "pr-42-prep"]) {
         git("branch", branch, preparedHead);
       }
       if (command === "gc") {
         // The linked wrapper disappears first; later targets must still use its loaded helpers.
         git("worktree", "add", "-q", "-b", "temp/pr-43", nextWorktreeDir, preparedHead);
+        nextWorktreeAdmin = git("-C", nextWorktreeDir, "rev-parse", "--absolute-git-dir");
         for (const branch of ["pr-43", "pr-43-prep"]) {
           git("branch", branch, preparedHead);
         }
@@ -2017,6 +2062,7 @@ describePosix("scripts/pr per-PR operation lock", () => {
         "esac",
       ]);
       chmodSync(gh, 0o755);
+      const backendPath = expectDefined(process.env.PATH, "Git backend search PATH");
       const realGit = realpathSync(join(binDir, "git"));
       unlinkSync(join(binDir, "git"));
       const gitShim = writeFixtureFile(binDir, "git", [
@@ -2024,17 +2070,17 @@ describePosix("scripts/pr per-PR operation lock", () => {
         "set -euo pipefail",
         'case "$*" in',
         '  "worktree remove "*)',
-        '    "$OPENCLAW_TEST_REAL_GIT" "$@"',
+        `    PATH=${shellQuote(backendPath)} "$OPENCLAW_TEST_REAL_GIT" "$@"`,
         '    printf "removed\\n" >> "$OPENCLAW_TEST_LIFECYCLE"',
         '    if [ "$OPENCLAW_TEST_FAILURE" = release ]; then : > "$OPENCLAW_TEST_REF_LOCK"; fi',
         "    exit 0 ;;",
         '  *"update-ref --no-deref -d refs/openclaw/pr-operation-locks/42 "*)',
         '    pwd -P > "$OPENCLAW_TEST_RELEASE_CWD"',
-        '    "$OPENCLAW_TEST_REAL_GIT" "$@"',
+        `    PATH=${shellQuote(backendPath)} "$OPENCLAW_TEST_REAL_GIT" "$@"`,
         '    printf "released\\n" >> "$OPENCLAW_TEST_LIFECYCLE"',
         "    exit 0 ;;",
         "esac",
-        'exec "$OPENCLAW_TEST_REAL_GIT" "$@"',
+        `PATH=${shellQuote(backendPath)} exec "$OPENCLAW_TEST_REAL_GIT" "$@"`,
       ]);
       chmodSync(gitShim, 0o755);
       const result = spawnSync(
@@ -2067,6 +2113,12 @@ describePosix("scripts/pr per-PR operation lock", () => {
       );
       const output = `${result.stdout}\n${result.stderr}`;
       expect(result.error, output).toBeUndefined();
+      if (wrapper === "linked") {
+        expect(result.stderr).toContain(
+          "matches origin/main but can remove its executing checkout",
+        );
+        expect(result.stderr).toContain("running wrapper code materialized from");
+      }
       expect(existsSync(lifecycle), output).toBe(true);
       const events = readFileSync(lifecycle, "utf8");
       expect(git("rev-parse", "HEAD")).toBe(canonicalHead);
@@ -2100,6 +2152,10 @@ describePosix("scripts/pr per-PR operation lock", () => {
         );
         if (command === "gc") {
           expect(existsSync(nextWorktreeDir), output).toBe(false);
+          expect(
+            existsSync(expectDefined(nextWorktreeAdmin, "second cleanup target admin")),
+            output,
+          ).toBe(false);
           expect(result.stdout, output).toContain("removed .worktrees/pr-43");
           for (const ref of [
             "refs/heads/temp/pr-43",
