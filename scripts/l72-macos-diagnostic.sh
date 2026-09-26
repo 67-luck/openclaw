@@ -48,6 +48,7 @@ run_l72_mac_node_diagnostics() {
 }
 
 run_l72_presence_diagnostics() {
+  mkdir -p "$native_test_log_dir"
   [[ "$(git rev-parse HEAD)" == "$OPENCLAW_PRESENCE_EXPECTED_SHA" ]]
   presence_receipts="$native_test_log_dir/presence-diagnostic-$native_test_log_id.log"
   printf 'diagnostic_only=true\nhead=%s\nexpected_runs=5\n' "$OPENCLAW_PRESENCE_EXPECTED_SHA" > "$presence_receipts"
