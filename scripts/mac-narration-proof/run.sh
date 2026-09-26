@@ -159,7 +159,9 @@ fs.copyFileSync(path.join(images, matches[0].exportedFileName), path.join(output
 NODE
 # Check the exact live row, not fixture payloads; both arguments and active status must render.
 tesseract "$output/live-tool.png" "$output/live-tool" -l eng --psm 6
-grep -Fq 'Layout.swift' "$output/live-tool.txt"
+# Tesseract may split a monospace filename at its period; keep every filename
+# character required while accepting the observed OCR-only whitespace.
+grep -Eq 'Layout[[:space:]]*\.[[:space:]]*swift' "$output/live-tool.txt"
 grep -Fq 'Working' "$output/live-tool.txt"
 node -e 'const r=require(process.argv[1]);if(r.result!=="Passed"||r.failedTests!==0||r.passedTests!==1)process.exit(1)' "$output/summary.json"
 node -e 'const r=require(process.argv[1]);if(r.requests.filter(x=>x.method==="chat.send").length!==1)throw new Error("Expected exactly one UI chat.send")' "$output/requests.json"
