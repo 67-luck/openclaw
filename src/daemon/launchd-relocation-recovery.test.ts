@@ -674,12 +674,16 @@ describe.skipIf(process.platform === "win32")("LaunchAgent relocation and recove
     let decodes = 0;
     vi.spyOn(performance, "now").mockImplementation(() => now);
     native.decode.mockImplementation(async (_command, args, options) => {
-      if (++decodes === phase) now = 100;
+      if (++decodes === phase) {
+        now = 100;
+      }
       return decodeLaunchAgentPlistFixture(options.input, args[1]);
     });
     const service = {
       readCommand: vi.fn(async () => {
-        if (phase === 0) now = 100;
+        if (phase === 0) {
+          now = 100;
+        }
         return null;
       }),
     };
@@ -699,7 +703,9 @@ describe.skipIf(process.platform === "win32")("LaunchAgent relocation and recove
     const error = new CommandProcessCleanupError();
     let decodes = 0;
     native.decode.mockImplementation(async (_command, args, options) => {
-      if (++decodes === phase) throw error;
+      if (++decodes === phase) {
+        throw error;
+      }
       return decodeLaunchAgentPlistFixture(options.input, args[1]);
     });
     await expect(

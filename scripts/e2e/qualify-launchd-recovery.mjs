@@ -11,6 +11,7 @@ import path from "node:path";
 import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { inspect } from "node:util";
 
 const [checkoutArg, expectedCommit, resultFile] = process.argv.slice(2);
 assert(resultFile && path.isAbsolute(resultFile), "provide an absolute retained result path");
@@ -28,7 +29,7 @@ await fs.writeFile(resultFile, JSON.stringify(receipt, null, 2) + "\n");
 try {
   await qualify();
 } catch (error) {
-  receipt.error = String(error);
+  receipt.error = inspect(error, { depth: 5 });
   process.exitCode = 1;
 } finally {
   receipt.status = process.exitCode ? "failed" : "passed";
@@ -218,6 +219,8 @@ async function qualify() {
         environment: { HOME: home, NATIVE_WITNESS: witness, NATIVE_MARKER: "original" },
       };
       const effects = [];
+      const caseReceipt = { ...scenario, effects };
+      receipt.activeCase = caseReceipt;
       let updaterCurrent = true;
       let injected = false;
       const observedPids = new Set();
@@ -320,6 +323,7 @@ async function qualify() {
           );
         } catch (error) {
           failure = error;
+          caseReceipt.installFailure = inspect(error, { depth: 5 });
         }
         assert.equal(Boolean(failure), scenario.failure || scenario.revoked);
         assert.equal(
@@ -385,15 +389,15 @@ async function qualify() {
           assert.equal(await fs.readlink(former), canonical);
         }
         receipt.cases.push({
-          ...scenario,
+          ...caseReceipt,
           passed: true,
           originalPid: originalWitness.pid,
           finalPid: finalWitness.pid,
           retryPid,
           discoveredPid,
           originalSha256: createHash("sha256").update(original).digest("hex"),
-          effects,
         });
+        delete receipt.activeCase;
       } finally {
         const beforeStop = await native(["launchctl", "print", domain + "/" + label]);
         const currentPid = Number(/\bpid = (\d+)/.exec(beforeStop.stdout)?.[1]);
@@ -446,7 +450,7 @@ async function qualify() {
     assert.equal(git(["rev-parse", "HEAD"]), expectedCommit);
     assert.equal(git(["status", "--porcelain", "--untracked-files=no"]), "");
   } catch (error) {
-    receipt.error = String(error);
+    receipt.error = inspect(error, { depth: 5 });
     process.exitCode = 1;
   } finally {
     try {
@@ -461,7 +465,7 @@ async function qualify() {
       await fs.rm(root, { recursive: true });
       receipt.cleanup = { resourcesSettled: true, disabledPolicyRestored: true };
     } catch (error) {
-      receipt.cleanupError = String(error);
+      receipt.cleanupError = inspect(error, { depth: 5 });
       receipt.retainedRoot = root;
       receipt.unsettledLabels = [...unsettledLabels];
       process.exitCode = 1;

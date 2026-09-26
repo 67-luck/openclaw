@@ -332,7 +332,9 @@ export async function readLaunchAgentProgramArgumentsFromFile(
       throw error;
     }
     if (options?.requireEffective) {
-      throw new Error("Effective LaunchAgent service command could not be inspected.");
+      throw new Error("Effective LaunchAgent service command could not be inspected.", {
+        cause: error,
+      });
     }
     return null;
   }
