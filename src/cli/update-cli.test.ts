@@ -7661,7 +7661,7 @@ describe("update-cli", () => {
     const tempDir = createCaseDir("openclaw-update");
     const nodeModules = path.join(tempDir, "lib", "node_modules");
     const pkgRoot = path.join(nodeModules, "openclaw");
-    mockPackageInstallStatus(tempDir);
+    mockPackageInstallStatus(pkgRoot);
     await writeOpenClawPackageFixture(pkgRoot, "2026.3.23", {
       inventory: true,
     });
@@ -7705,7 +7705,9 @@ describe("update-cli", () => {
       const targetShim = path.join(prefix, "bin", "openclaw");
       if (failure !== "verification") {
         await fs.mkdir(path.dirname(targetShim), { recursive: true });
-        await fs.writeFile(targetShim, "old shim\n");
+        const oldLauncher = path.join(pkgRoot, "openclaw.mjs");
+        await fs.writeFile(oldLauncher, "old shim\n");
+        await fs.symlink(path.relative(path.dirname(targetShim), oldLauncher), targetShim);
       }
       let stagedShim: string | undefined;
       const copyFailure = await mockStagedShimCopyFailure(tempDir, pkgRoot, () => stagedShim);
@@ -12026,7 +12028,7 @@ describe("update-cli", () => {
       replaceConfigFile,
       launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob,
     );
-    expect(commandCalls().map(([argv]) => argv)).toEqual(runtimeRecovery.expectedNpmProbes);
+    expect(commandCalls().map(([argv]) => argv)).toEqual([["npm", "--version"]]);
     expect(legacyConfigRepairMocks.repairLegacyConfigForUpdateChannel).not.toHaveBeenCalled();
     expect(defaultRuntime.exit).not.toHaveBeenCalled();
   });
