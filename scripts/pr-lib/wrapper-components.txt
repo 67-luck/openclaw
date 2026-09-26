@@ -760,6 +760,7 @@ src/infra/sqlite-staging-token.ts
 src/infra/sqlite-store.worker.ts
 src/infra/sqlite-strict.ts
 src/infra/sqlite-terminal-open-latch.ts
+src/infra/sqlite-transaction-receipt.ts
 src/infra/sqlite-transaction.ts
 src/infra/sqlite-user-version.ts
 src/infra/sqlite-wal-checkpoint.ts
@@ -795,6 +796,8 @@ src/infra/temp-artifact-cleanup.ts
 src/infra/test-runtime-env.ts
 src/infra/tmp-openclaw-dir.ts
 src/infra/update-channels.ts
+src/infra/update-database-image.ts
+src/infra/update-database-write-receipts.ts
 src/infra/update-doctor-config-schema.ts
 src/infra/update-doctor-result.ts
 src/infra/update-failure-facts.ts
@@ -1223,8 +1226,8 @@ src/state/openclaw-state-db-audit-migration.ts
 src/state/openclaw-state-db-borrow.ts
 src/state/openclaw-state-db-cache.idle.ts
 src/state/openclaw-state-db-cache.ts
-src/state/openclaw-state-db-contract.ts
 src/state/openclaw-state-db-content-version.ts
+src/state/openclaw-state-db-contract.ts
 src/state/openclaw-state-db-delivery-queue-backfill.ts
 src/state/openclaw-state-db-doctor-schema.ts
 src/state/openclaw-state-db-existing-schema.ts

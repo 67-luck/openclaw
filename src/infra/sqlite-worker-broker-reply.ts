@@ -351,6 +351,9 @@ export function receiveSqliteWorkerReply(
     owner.fail(new Error("SQLite worker returned an unexpected response"));
     return;
   }
+  if (reply.databaseWrites) {
+    job.maintenanceScope?.databaseWrites?.record(reply.databaseWrites);
+  }
   const settle = (operation: () => void) => {
     if (pumping) {
       queueMicrotask(() => {

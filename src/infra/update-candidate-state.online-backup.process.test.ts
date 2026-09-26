@@ -27,7 +27,7 @@ async function readWriterGeneration(file: string): Promise<number> {
   return Number(generations.at(-2) ?? -1);
 }
 
-it.each(["inventory", "snapshot"] as const)(
+it.each(["inventory", "snapshot", "discover", "versions"] as const)(
   "%s acquires coherent rehearsal copies while an independent WAL writer commits",
   async (mode) => {
     const root = await fs.realpath(tempDirs.make("rehearsal-online-backup-"));
@@ -57,6 +57,7 @@ it.each(["inventory", "snapshot"] as const)(
       }
     }
     await fs.mkdir(candidateRoot);
+    await fs.mkdir(targetStateDir);
     await fs.writeFile(path.join(candidateRoot, "package.json"), '{"type":"module"}');
     const ready = path.join(root, "writer-ready");
     const stop = path.join(root, "writer-stop");
@@ -95,12 +96,20 @@ it.each(["inventory", "snapshot"] as const)(
       }
     `,
     );
+    const backups = path.join(root, "backups.jsonl");
     const preload = path.join(root, "slow-source-copy.cjs");
     // Reproduce a busy family changing during raw copy without replacing SQLite or its worker.
     await fs.writeFile(
       preload,
       `
       const fs = require("node:fs");
+      const sqlite = require("node:sqlite");
+      const backup = sqlite.backup;
+      sqlite.backup = async function(source, destination, ...args) {
+        fs.appendFileSync(${JSON.stringify(backups)}, JSON.stringify({ destination }) + "\\n");
+        return backup(source, destination, ...args);
+      };
+
       const opened = new Map();
       const open = fs.openSync, read = fs.readSync, close = fs.closeSync;
       const sources = new Set(${JSON.stringify([shared, agent])});
@@ -129,6 +138,7 @@ it.each(["inventory", "snapshot"] as const)(
     const input = {
       stateDir,
       targetStateDir,
+      stagingRoot: targetStateDir,
       candidateRoot,
       config: {},
       env: {
@@ -137,7 +147,7 @@ it.each(["inventory", "snapshot"] as const)(
     };
     const runWorker = (request: object) =>
       runCommandBuffered(workerArgv, {
-        input: JSON.stringify({ ...input, ...request }),
+        input: JSON.stringify({ ...input, ...request, streamProgress: true }),
         timeoutMs: 20_000,
         killGraceMs: 500,
         maxOutputBytes: { stdout: 1024 * 1024, stderr: 20_000 },
@@ -155,6 +165,7 @@ it.each(["inventory", "snapshot"] as const)(
         databaseInventory: [...inventory.databases.keys()],
       };
     }
+    await fs.writeFile(backups, "");
     const writing = runCommandBuffered([process.execPath, writer], {
       timeoutMs: 30_000,
       killGraceMs: 500,
@@ -168,6 +179,23 @@ it.each(["inventory", "snapshot"] as const)(
       const before = await readWriterGeneration(progress);
       const result = await runWorker({ mode, ...admission });
       expect(result.code, result.stderr.toString()).toBe(0);
+      const progressFrames = result.stderr
+        .toString()
+        .split("\n")
+        .filter((line) => line.startsWith("State schema progress: "))
+        .map((line) => JSON.parse(line.slice("State schema progress: ".length)));
+      const completed = progressFrames.filter((entry) => entry.snapshot?.status === "completed");
+      expect(completed).toHaveLength(mode === "snapshot" ? 2 : 1);
+      for (const { snapshot } of completed) {
+        expect(snapshot.copiedBytes).toBeGreaterThan(4194304);
+        expect(snapshot.copiedPages).toBeGreaterThan(0);
+        expect(snapshot.copiedPages).toBe(snapshot.totalPages);
+        expect(snapshot.elapsedMs).toBeGreaterThanOrEqual(0);
+      }
+      // One fresh materialization per source; verification consumes that private image.
+      expect((await fs.readFile(backups, "utf8")).split("\n").filter(Boolean)).toHaveLength(
+        mode === "snapshot" ? 2 : 1,
+      );
       const observedAfter = await readWriterGeneration(progress);
       expect(observedAfter).toBeGreaterThan(before);
       // A committed generation can precede its watermark; join the writer before bounding copies.
@@ -179,6 +207,17 @@ it.each(["inventory", "snapshot"] as const)(
           JSON.parse(result.stdout.toString()),
         );
         expect([...inventory.databases.keys()]).toEqual(expect.arrayContaining([shared, agent]));
+      } else if (mode === "discover") {
+        expect(JSON.parse(result.stdout.toString())).toMatchObject({
+          sharedVersion: { path: shared, userVersion: 3 },
+        });
+      } else if (mode === "versions") {
+        expect(JSON.parse(result.stdout.toString())).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ path: shared, userVersion: 3 }),
+            expect.objectContaining({ path: agent, userVersion: 3 }),
+          ]),
+        );
       } else {
         const snapshot = UpdateCandidateStateSnapshotSchema.parse(
           JSON.parse(result.stdout.toString()),

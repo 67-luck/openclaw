@@ -172,6 +172,7 @@ export async function captureSystemdServiceIdentity(params: {
 export async function activateSystemdServiceIdentity(params: {
   identity: SystemdServiceIdentity;
   action: "start" | "restart";
+  onRestartAttempted?: () => void;
   assertCurrent?: () => void;
   warn: (message: string) => void;
 }): Promise<void> {
@@ -198,6 +199,9 @@ export async function activateSystemdServiceIdentity(params: {
       assertCurrent();
       const reset = method === "ResetFailedUnit";
       try {
+        if (!reset && params.action === "restart") {
+          params.onRestartAttempted?.();
+        }
         await broker.query(
           [
             "call",

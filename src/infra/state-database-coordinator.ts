@@ -40,7 +40,17 @@ type HeldCoordinator = {
   references: number;
   keepAlive: boolean;
   gatewayOwners: number;
+  gatewayExclusion?: GatewayMaintenanceOwner;
+  schemaReferences: number;
   gatewayDelegates: Set<Int32Array>;
+};
+
+// Private custody: only this live maintenance owner can lend its exclusion.
+type GatewayMaintenanceOwner = {
+  active: boolean;
+  readonly excludeGateway: boolean;
+  references: number;
+  coordinator?: HeldCoordinator;
 };
 
 type SourceReadScope = {
@@ -123,7 +133,17 @@ export function resolveStateDatabaseCoordinatorPath(params: {
 function acquireLifecycleCoordinator(
   family: CoordinatorFamily,
   params: CoordinatorOptions,
-  { keepAlive = false, gatewayOwner = false }: { keepAlive?: boolean; gatewayOwner?: boolean } = {},
+  {
+    keepAlive = false,
+    gatewayOwner = false,
+    maintenanceOwner,
+    schemaAccess = false,
+  }: {
+    keepAlive?: boolean;
+    gatewayOwner?: boolean;
+    maintenanceOwner?: GatewayMaintenanceOwner;
+    schemaAccess?: boolean;
+  } = {},
 ): StateDatabaseCoordinatorLease {
   const coordinatorPath =
     params.coordinatorPath ??
@@ -139,11 +159,26 @@ function acquireLifecycleCoordinator(
     }
   }
   let held = heldCoordinators.get(coordinatorPath);
+  if (
+    maintenanceOwner &&
+    (!maintenanceOwner.active ||
+      (maintenanceOwner.coordinator && maintenanceOwner.coordinator !== held))
+  ) {
+    throw new SqliteCoordinatorError("Gateway maintenance coordinator is closed");
+  }
   if (held) {
     if (held.references === 0) {
       throw new SqliteCoordinatorError(
         `${family} coordinator cleanup is pending; retry its close before reacquiring`,
       );
+    }
+    if (
+      (held.gatewayExclusion && held.gatewayExclusion !== maintenanceOwner) ||
+      (maintenanceOwner?.excludeGateway &&
+        held.gatewayExclusion !== maintenanceOwner &&
+        (held.gatewayOwners > 0 || held.gatewayDelegates.size > 0 || held.schemaReferences > 0))
+    ) {
+      throw new StateDatabaseCoordinatorContentionError("gateway-lifecycle");
     }
     held.references += 1;
     held.keepAlive &&= keepAlive;
@@ -161,12 +196,23 @@ function acquireLifecycleCoordinator(
       references: 1,
       keepAlive,
       gatewayOwners: 0,
+      schemaReferences: 0,
       gatewayDelegates: new Set(),
     };
     heldCoordinators.set(coordinatorPath, held);
   }
   if (gatewayOwner) {
     held.gatewayOwners += 1;
+  }
+  if (schemaAccess) {
+    held.schemaReferences += 1;
+  }
+  if (maintenanceOwner) {
+    maintenanceOwner.coordinator = held;
+    maintenanceOwner.references += 1;
+    if (maintenanceOwner.excludeGateway) {
+      held.gatewayExclusion = maintenanceOwner;
+    }
   }
 
   const owner = held;
@@ -189,6 +235,14 @@ function acquireLifecycleCoordinator(
             for (const delegate of owner.gatewayDelegates) {
               Atomics.store(delegate, 0, 0);
             }
+          }
+        }
+        if (schemaAccess) {
+          owner.schemaReferences -= 1;
+        }
+        if (maintenanceOwner && --maintenanceOwner.references === 0) {
+          if (owner.gatewayExclusion === maintenanceOwner) {
+            owner.gatewayExclusion = undefined;
           }
         }
         owner.references -= 1;
@@ -218,10 +272,24 @@ export function acquireGatewayLifecycleCoordinator(params: CoordinatorOptions) {
 }
 
 /** Maintenance lends schema access only to jobs admitted through its lexical resource scope. */
-export function acquireGatewayMaintenanceCoordinator(params: CoordinatorOptions) {
-  const lease = acquireLifecycleCoordinator("gateway-lifecycle", params);
+export function acquireGatewayMaintenanceCoordinator(
+  params: CoordinatorOptions & { excludeGateway?: boolean },
+) {
+  // Restoration must seal local Gateway admission as well as hold the native fence.
+  const maintenanceOwner: GatewayMaintenanceOwner = {
+    active: true,
+    excludeGateway: params.excludeGateway === true,
+    references: 0,
+  };
+  const lease = acquireLifecycleCoordinator("gateway-lifecycle", params, {
+    maintenanceOwner,
+  });
   return {
-    ...lease,
+    path: lease.path,
+    release() {
+      maintenanceOwner.active = false;
+      lease.release();
+    },
     get closed() {
       return lease.closed;
     },
@@ -229,13 +297,11 @@ export function acquireGatewayMaintenanceCoordinator(params: CoordinatorOptions)
       if (resolveGatewaySchemaFencePath(target) !== lease.path) {
         return undefined;
       }
-      if (lease.closed) {
-        throw new SqliteCoordinatorError("Gateway maintenance coordinator is closed");
-      }
-      const retained = acquireLifecycleCoordinator("gateway-lifecycle", {
-        ...target,
-        coordinatorPath: lease.path,
-      });
+      const retained = acquireLifecycleCoordinator(
+        "gateway-lifecycle",
+        { ...target, coordinatorPath: lease.path },
+        { maintenanceOwner, schemaAccess: true },
+      );
       const live = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
       Atomics.store(live, 0, 1);
       return createCoordinatorDelegate(
@@ -463,11 +529,11 @@ export function withStateSchemaFence<T>(
   try {
     // Never wait while the caller holds the state-lifecycle coordinator. A
     // running Gateway must win immediately so lock ordering cannot deadlock.
-    coordinator = acquireLifecycleCoordinator("gateway-lifecycle", {
-      ...params,
-      coordinatorPath: delegatePath,
-      busyTimeoutMs: 0,
-    });
+    coordinator = acquireLifecycleCoordinator(
+      "gateway-lifecycle",
+      { ...params, coordinatorPath: delegatePath, busyTimeoutMs: 0 },
+      { schemaAccess: true },
+    );
   } catch (error) {
     if (error instanceof StateDatabaseCoordinatorContentionError) {
       throw new StateSchemaMutationConflictError(params.databasePath, error);

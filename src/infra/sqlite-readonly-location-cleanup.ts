@@ -3,6 +3,7 @@ import path from "node:path";
 import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
 import { registerSignalExitFinalizer } from "../cli/signal-exit-barrier.js";
 import { getChildLogger } from "../logging/logger.js";
+import { createSqliteLifecycleAggregateError } from "./sqlite-coordinator.js";
 import type { PreparedSqliteReadOnlyLocation } from "./sqlite-readonly-location.types.js";
 import {
   beginSqliteSnapshotRetirement,
@@ -71,6 +72,45 @@ export function retainSnapshotWork<T>(work: Promise<T>, stop: () => void = () =>
   const release = () => activeSnapshotWork.delete(work);
   void work.then(release, release);
   return work;
+}
+
+/** Keep signal cleanup behind the consumer, including private transforms and publication. */
+export function withPreparedSqliteSnapshot<T>(
+  snapshot: PreparedSqliteReadOnlyLocation,
+  read: (location: string) => T | Promise<T>,
+): Promise<T> {
+  return retainSnapshotWork(
+    Promise.resolve().then(async () => {
+      let outcome: { value: T } | { cause: unknown };
+      try {
+        outcome = { value: await read(snapshot.location) };
+      } catch (cause) {
+        outcome = { cause };
+      }
+      try {
+        if (!(await snapshot.cleanupAsync())) {
+          throw new SqliteSnapshotCleanupError(
+            "SQLite snapshot cleanup failed: " +
+              (snapshot.cleanupRoot ?? path.dirname(snapshot.location)) +
+              ". Check directory permissions and available storage before retrying.",
+          );
+        }
+      } catch (cleanupError) {
+        if ("cause" in outcome) {
+          throw createSqliteLifecycleAggregateError(
+            [outcome.cause, cleanupError],
+            String(outcome.cause) + "; " + String(cleanupError),
+            outcome.cause,
+          );
+        }
+        throw cleanupError;
+      }
+      if ("cause" in outcome) {
+        throw outcome.cause;
+      }
+      return outcome.value;
+    }),
+  );
 }
 
 export function registerSnapshotTempDirectory(

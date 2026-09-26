@@ -2,6 +2,7 @@ import type { MessagePort } from "node:worker_threads";
 import type { OpenClawStateWorkerErrorPayload } from "../state/openclaw-state-worker-error.js";
 import type { SqliteWorkerStateContext } from "./sqlite-worker-state-context.js";
 import type { SqliteWorkerTransferHandle } from "./sqlite-worker-transfer.js";
+import type { UpdateDatabaseTransactionEvidence } from "./update-database-write-receipts.js";
 
 export type SqliteWorkerOperations = Record<string, { input: unknown; output: unknown }>;
 export type SqliteWorkerCommand<Operations extends SqliteWorkerOperations> = {
@@ -38,6 +39,8 @@ export type SqliteWorkerRequest = {
   id: number;
   actor: number;
   stateContext?: SqliteWorkerStateContext;
+  databaseWritePaths?: readonly string[];
+  databaseWriteSequence?: SharedArrayBuffer;
   gatewaySchemaFence?: MessagePort;
   maintenanceSchemaFence?: MessagePort;
   stateLifecycle?: MessagePort;
@@ -65,6 +68,7 @@ export type SqliteWorkerRequest = {
 
 export type SqliteWorkerReply = {
   id: number;
+  databaseWrites?: UpdateDatabaseTransactionEvidence;
   cleanupFailure?: OpenClawStateWorkerErrorPayload;
 } & (
   | { ok: true; value: Uint8Array; transfer?: "start" | "frame"; input?: "next" }

@@ -9,6 +9,7 @@ import {
   type OpenClawStateWorkerErrorPayload,
 } from "../state/openclaw-state-worker-error.js";
 import { withSqliteReaderOwner } from "./sqlite-reader-lifecycle.js";
+import { withSqliteTransactionReceiptObserver } from "./sqlite-transaction-receipt.js";
 import {
   SQLITE_WORKER_MAX_RESULT_BYTES,
   SQLITE_WORKER_PREPARE_COMMAND,
@@ -42,6 +43,7 @@ import {
   withStateDatabaseCoordinatorRuntimeDirectory,
 } from "./state-database-coordinator.js";
 import type { acquireStateDatabaseCoordinator } from "./state-database-coordinator.js";
+import { createUpdateDatabaseTransactionCollector } from "./update-database-write-receipts.js";
 import { cancelWorkerIdleGc, scheduleWorkerIdleGc } from "./worker-idle-gc.js";
 import { ownedWorkerBytes } from "./worker-transfer-bytes.js";
 
@@ -67,6 +69,7 @@ const gatewayFences = new Map<
   number,
   Awaited<ReturnType<typeof attachGatewaySchemaFenceDelegate>>
 >();
+let databaseWrites: ReturnType<typeof createUpdateDatabaseTransactionCollector> | undefined;
 let sourceLoaderRegistered = false;
 let preparedGatewayActor: number | undefined;
 let lifecycleReply: { actor: number; port: MessagePort } | undefined;
@@ -100,9 +103,11 @@ function runWithActorFacts<T>(actor: number, operation: () => T): T {
 
 function runInActorContext<T>(actor: number, operation: () => T): T {
   const runAdmitted = () =>
-    operationAdmission?.actor === actor
-      ? withSqliteWorkerOperationAdmission(operationAdmission.context, operation)
-      : operation();
+    withSqliteTransactionReceiptObserver(databaseWrites?.observe, () =>
+      operationAdmission?.actor === actor
+        ? withSqliteWorkerOperationAdmission(operationAdmission.context, operation)
+        : operation(),
+    );
   const context = stateContexts.get(actor);
   if (!context) {
     return runAdmitted();
@@ -127,6 +132,19 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
   try {
     let value: unknown;
     if (request.type !== "result-next" && request.type !== "execute-frame") {
+      if (request.databaseWritePaths) {
+        if (databaseWrites) {
+          throw new Error("Database write evidence still belongs to the preceding job");
+        }
+        databaseWrites = createUpdateDatabaseTransactionCollector(
+          request.databaseWritePaths,
+          undefined,
+          request.databaseWriteSequence,
+        );
+        if (!request.databaseWriteSequence) {
+          databaseWrites.evidence.verified = false;
+        }
+      }
       if (request.lifecyclePreparation) {
         const databasePath = request.stateDatabasePath ?? actorPaths.get(request.actor);
         if (lifecyclePreparation || !request.workerStateLifecycle || !databasePath) {
@@ -559,6 +577,22 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
     });
   }
   const complete = !reply.ok || (!pendingInput && !pendingResult);
+  if (complete && databaseWrites) {
+    // Evidence shares the existing result-payload allowance. Missing evidence
+    // refuses rollback, never changes the backend result or raises its budget.
+    reply.databaseWrites = { verified: false, transactions: [] };
+    try {
+      if (
+        serialize(databaseWrites.evidence).byteLength + (reply.ok ? reply.value.byteLength : 0) <=
+        SQLITE_WORKER_MAX_RESULT_BYTES
+      ) {
+        reply.databaseWrites = databaseWrites.evidence;
+      }
+    } catch {
+      /* Optional evidence cannot replace the native outcome. */
+    }
+    databaseWrites = undefined;
+  }
   if (complete && nativeCleanupFailure) {
     reply.cleanupFailure = nativeCleanupFailure;
     nativeCleanupFailure = undefined;

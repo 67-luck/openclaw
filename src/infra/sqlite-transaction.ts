@@ -22,6 +22,7 @@ import {
   sqlitePrimaryResultCode,
 } from "./sqlite-error-diagnostics.js";
 import { discardSqliteTransactionState } from "./sqlite-post-commit.js";
+import { observeSqliteTransaction } from "./sqlite-transaction-receipt.js";
 
 const DEFAULT_SLOW_BUSY_WAIT_MS = 1_000;
 const DEFAULT_SLOW_TRANSACTION_HOLD_MS = 1_000;
@@ -428,19 +429,25 @@ function runSqliteTransactionSync<T>(
   beginTransaction(db, options, mode);
   const transactionStartedAt = Date.now();
   try {
+    const receipt = mode === "immediate" ? observeSqliteTransaction(db) : undefined;
     const result = operation();
     assertSyncTransactionResult(result);
     assertTransactionUsable(db);
+    // Capture under native exclusion, BEFORE the owner revalidates commit
+    // authority. A large image scan cannot leave its authority check stale.
+    receipt?.beforeCommit();
     logSlowTransactionHold({
       elapsedMs: Date.now() - transactionStartedAt,
       options,
     });
-    if (options?.withCommit) {
-      assertSyncTransactionResult(
-        options.withCommit(() => commitImmediateTransaction(db, options)),
-      );
-    } else {
+    const commit = () => {
       commitImmediateTransaction(db, options);
+      receipt?.committed();
+    };
+    if (options?.withCommit) {
+      assertSyncTransactionResult(options.withCommit(commit));
+    } else {
+      commit();
     }
     return result;
   } catch (error) {

@@ -151,9 +151,15 @@ it.each(changes)(
     afterReset = () => {
       current = { ...current, ...change };
     };
+    const onRestartAttempted = vi.fn();
     await expect(
-      restartSystemdService({ stdout: new PassThrough(), systemdIdentity: original }),
+      restartSystemdService({
+        stdout: new PassThrough(),
+        systemdIdentity: original,
+        onRestartAttempted,
+      }),
     ).rejects.toMatchObject({ name: "ServiceOwnershipRefusalError", reason });
+    expect(onRestartAttempted).not.toHaveBeenCalled();
     expect(effects).toEqual(["ResetFailedUnit"]);
     expect(native.systemctl).not.toHaveBeenCalled();
   },
@@ -249,4 +255,17 @@ it("refuses to capture authority for another service account", async () => {
     captureSystemdServiceIdentity({ env: {}, target: original, managerUid: 0 }),
   ).rejects.toBeInstanceOf(ServiceOwnershipRefusalError);
   expect(effects).toEqual([]);
+});
+
+it("observes a pinned restart after revalidation but before the native effect", async () => {
+  const onRestartAttempted = vi.fn(() => {
+    expect(effects).toEqual(["ResetFailedUnit"]);
+  });
+  await restartSystemdService({
+    stdout: new PassThrough(),
+    systemdIdentity: original,
+    onRestartAttempted,
+  });
+  expect(onRestartAttempted).toHaveBeenCalledOnce();
+  expect(effects).toEqual(["ResetFailedUnit", "RestartUnit"]);
 });

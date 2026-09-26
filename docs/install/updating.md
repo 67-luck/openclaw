@@ -179,6 +179,16 @@ This candidate-side behavior also applies when the installed updater is 2026.9.3
 That older updater still caps the entire validation sequence at five minutes;
 its `--timeout` option cannot increase this cap.
 
+Database rehearsal also avoids a second full backup of each private snapshot.
+Update schema inspection and rehearsal use SQLite online backup with a pinned
+read transaction, so a busy Gateway can keep writing while the copy includes
+committed WAL data. Each acquisition makes one copy instead of retrying until
+the database becomes quiet. On rollback-journal volumes, SQLite can delay writer
+commits until the consistent read finishes. Rehearsal records copied pages, bytes, and elapsed
+time in the update ledger, then checks, compacts, and publishes the private
+copy for validation. Source databases and recovery backups retain their existing
+protection; the faster preparation takes effect when the newer updater runs.
+
 Package updates also check npm availability for enabled configured plugins before
 stopping the serving Gateway or replacing the installed core. Registry targets
 are checked early; explicit package artifacts are checked using the privately

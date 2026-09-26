@@ -1,5 +1,6 @@
 import type { StateDatabaseCoordinatorRuntime } from "../infra/state-database-coordinator.js";
 import type { StateLeaseProcessOwner } from "../infra/state-lease-process-owner.js";
+import type { UpdateDatabaseTransactionEvidence } from "../infra/update-database-write-receipts.js";
 import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease-store.js";
 import type { OpenClawStateWorkerErrorPayload } from "./openclaw-state-worker-error.js";
 
@@ -38,6 +39,8 @@ export type LeaseHeartbeatRenewalFailure = {
 
 export type LeaseHeartbeatWorkerData = {
   path: string;
+  databaseWritePaths?: readonly string[];
+  databaseWriteSequence?: SharedArrayBuffer;
   existingOnly?: boolean;
   /** Private parent retains the actual lifecycle coordinator until native worker exit. */
   parentCoordinatorRetained?: true;
@@ -65,6 +68,7 @@ export type LeaseHeartbeatRequest = {
 export type LeaseHeartbeatParentMessage = LeaseHeartbeatRequest | { startup: "activate" } | null;
 
 export type LeaseHeartbeatReply =
+  | { databaseWrites: UpdateDatabaseTransactionEvidence }
   | LeaseHeartbeatRenewalFailure
   | { startup: "prepared" }
   | { id: number; ok: true; expiresAt: number }

@@ -294,6 +294,10 @@ export function prepareSqliteWorkerLifecycle(
   actor: Actor | undefined,
   assertDispatchable: () => void,
 ): void {
+  if (job.maintenanceScope?.databaseWrites) {
+    job.request.databaseWritePaths = job.maintenanceScope.databaseWrites.paths;
+    job.request.databaseWriteSequence = job.maintenanceScope.databaseWrites.sequence;
+  }
   const context = job.request.stateContext ?? actor?.stateContext;
   if (!actor || !context) {
     if (job.requireStateLifecycle) {

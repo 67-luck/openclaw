@@ -315,6 +315,7 @@ export async function startLaunchAgent({
 }
 
 export async function restartLaunchAgent({
+  onRestartAttempted,
   preserveDefinition,
   preserveAutoStart,
   stdout,
@@ -426,6 +427,8 @@ export async function restartLaunchAgent({
       if (bootout.code === 0) {
         reportMutation("bootout");
       }
+      assertCurrent?.();
+      onRestartAttempted?.();
       await bootstrapLaunchAgentOrThrow({
         domain,
         serviceTarget,
@@ -438,6 +441,7 @@ export async function restartLaunchAgent({
       });
     } else {
       assertCurrent?.();
+      onRestartAttempted?.();
       const start = await execLaunchctl(["kickstart", "-k", serviceTarget]);
       if (start.code === 0) {
         reportMutation("kickstart");
