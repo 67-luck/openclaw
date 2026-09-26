@@ -14,6 +14,7 @@ import {
   releaseSubagentRun,
   releaseSubagentRunKillClaim,
 } from "../agents/subagents/registry/subagent-registry.test-helpers.js";
+import * as spawnRuntime from "../agents/subagents/spawn/subagent-spawn.runtime.js";
 import {
   activateSwarmRun,
   holdQueuedSwarmRun,
@@ -22,6 +23,7 @@ import {
   reserveSwarmRun,
 } from "../agents/subagents/swarm/swarm-scheduler.js";
 import { testing as schedulerTesting } from "../agents/subagents/swarm/swarm-scheduler.test-support.js";
+import { getRuntimeConfig } from "../config/config.js";
 import { loadTranscriptEvents, replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import { clearAgentRunContext } from "../infra/agent-run-registry.js";
 import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
@@ -98,7 +100,22 @@ describe("queued collector session projection", () => {
       publications.push(publishLifecycle(event));
     });
     try {
-      const results = await spawnCollectors();
+      const resolveRequester = spawnRuntime.resolveGatewaySessionStoreTargetInWorker;
+      const requester = await resolveRequester({ cfg: getRuntimeConfig(), key: parentKey });
+      let requesterReads = 0;
+      const lookup = vi
+        .spyOn(spawnRuntime, "resolveGatewaySessionStoreTargetInWorker")
+        .mockImplementation(async (params) => {
+          if (params.key !== parentKey || requesterReads >= 2) {
+            return resolveRequester(params);
+          }
+          if (requesterReads++ === 0) {
+            // A later worker read can finish before the first submitted collector's read.
+            await Promise.resolve();
+          }
+          return requester;
+        });
+      const results = await spawnCollectors().finally(() => lookup.mockRestore());
       const first = expectDefined(results[0], "first collector");
       const second = expectDefined(results[1], "second collector");
       expect(results.map((result) => result.status)).toEqual(["accepted", "accepted"]);
