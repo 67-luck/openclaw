@@ -110,18 +110,20 @@ describe("outbound channel namespace targets", () => {
 
   it.each([
     {
-      name: "rejects a miss",
+      name: "preserves an outbound-resolver target after a miss",
       entries: [],
-      expected: { channel: "none", reason: "no-target" },
+      expected: { channel: "alpha", to: "@alpha" },
+      outboundCalls: 1,
     },
     {
       name: "uses an exact directory destination",
       entries: [{ kind: "group", id: "C123456", name: "alpha" }],
       expected: { channel: "alpha", to: "C123456" },
+      outboundCalls: 0,
     },
   ])(
     "validates heartbeat namespaces without optional messaging hooks: $name",
-    async ({ entries, expected }) => {
+    async ({ entries, expected, outboundCalls }) => {
       const outboundResolveTarget = vi.fn(() => ({ ok: true as const, to: "@alpha" }));
       const resolved = await resolveNamespaceHeartbeat(
         createNamespacePlugin({
@@ -132,7 +134,7 @@ describe("outbound channel namespace targets", () => {
       );
 
       expect(resolved).toMatchObject(expected);
-      expect(outboundResolveTarget).not.toHaveBeenCalled();
+      expect(outboundResolveTarget).toHaveBeenCalledTimes(outboundCalls);
     },
   );
 

@@ -6,6 +6,7 @@ import type {
   ChannelDirectoryEntry,
   ChannelDirectoryEntryKind,
   ChannelId,
+  ChannelOutboundTargetMode,
 } from "../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { defaultRuntime, type RuntimeEnv } from "../../runtime.js";
@@ -372,6 +373,7 @@ export async function resolveChannelTarget(params: {
   runtime?: RuntimeEnv;
   unknownTargetMode?: "error" | "normalized";
   allowNativeChannelNamespace?: boolean;
+  nativeTargetMode?: ChannelOutboundTargetMode;
   plugin?: ChannelPlugin;
 }): Promise<ResolveMessagingTargetResult> {
   const raw = params.input.trim();
@@ -486,6 +488,28 @@ export async function resolveChannelTarget(params: {
       if (resolvedNativeTarget) {
         return { ok: true, target: resolvedNativeTarget };
       }
+    }
+    const hasConcreteMessagingResolver = Boolean(plugin?.messaging?.targetResolver?.resolveTarget);
+    if (
+      params.allowNativeChannelNamespace !== false &&
+      !hasConcreteMessagingResolver &&
+      plugin?.outbound?.resolveTarget
+    ) {
+      const resolvedOutboundTarget = plugin.outbound.resolveTarget({
+        cfg: params.cfg,
+        to: raw,
+        accountId: params.accountId,
+        mode: params.nativeTargetMode ?? "explicit",
+      });
+      if (!resolvedOutboundTarget.ok) {
+        return resolvedOutboundTarget;
+      }
+      const outboundTarget = resolvedOutboundTarget.to.trim();
+      if (outboundTarget) {
+        return buildNormalizedResolveResult({ normalized: outboundTarget, kind });
+      }
+    }
+    if (pluginAcceptsNamespaceAsNativeTarget && !hasConcreteMessagingResolver) {
       return buildNormalizedResolveResult({ normalized, kind });
     }
     return {

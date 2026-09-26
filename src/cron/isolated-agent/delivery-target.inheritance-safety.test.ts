@@ -60,9 +60,11 @@ vi.mock("../../config/sessions/session-accessor.js", () => {
 });
 
 vi.mock("../../infra/outbound/channel-selection.runtime.js", () => ({
-  resolveMessageChannelSelection: vi
-    .fn()
-    .mockResolvedValue({ channel: "alpha", configured: ["alpha"] }),
+  resolveMessageChannelSelection: vi.fn().mockResolvedValue({
+    channel: "alpha",
+    configured: ["alpha"],
+    source: "single-configured",
+  }),
 }));
 
 vi.mock("../../infra/outbound/target-id-resolution.js", () => ({
@@ -346,6 +348,45 @@ describe("resolveDeliveryTarget — issue #91613 cross-room drain fix", () => {
 });
 
 describe("resolveDeliveryTarget — channel namespace safety", () => {
+  it("rejects an inferred channel namespace while preserving an explicit native target", async () => {
+    const listGroups = vi.fn(async () => []);
+    const outboundResolveTarget = vi.fn(({ to }: { to?: string }) =>
+      to
+        ? { ok: true as const, to: to.trim() }
+        : { ok: false as const, error: new Error("target required") },
+    );
+    setMainSessionEntry(undefined);
+    setActivePluginRegistry(
+      createTestRegistry([
+        {
+          pluginId: "alpha",
+          plugin: {
+            ...createOutboundTestPlugin({
+              id: "alpha",
+              outbound: { deliveryMode: "direct", resolveTarget: outboundResolveTarget },
+            }),
+            capabilities: { chatTypes: ["group"] },
+            directory: { listGroups },
+          },
+          source: "test",
+        },
+      ]),
+    );
+
+    const inferred = await resolveDeliveryTarget(makeCfg(), AGENT_ID, {
+      channel: "last",
+      to: "alpha",
+    });
+    const explicit = await resolveDeliveryTarget(makeCfg(), AGENT_ID, {
+      channel: "alpha",
+      to: "alpha",
+    });
+
+    expect(inferred.ok).toBe(false);
+    expect(explicit).toMatchObject({ ok: true, channel: "alpha", to: "alpha" });
+    expect(listGroups).toHaveBeenCalledWith(expect.objectContaining({ query: "alpha" }));
+  });
+
   it("preserves exact directory destinations before rejecting channel namespaces", async () => {
     const listGroups = vi.fn(async () => [
       { kind: "group", id: "C123456", name: "alpha" } satisfies ChannelDirectoryEntry,

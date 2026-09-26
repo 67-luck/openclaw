@@ -212,6 +212,54 @@ describe("resolveMessagingTarget (directory fallback)", () => {
     });
   });
 
+  it("preserves an explicit channel namespace accepted by the outbound resolver", async () => {
+    const outboundResolveTarget = vi.fn(() => ({ ok: true as const, to: "@richchat" }));
+    const plugin = {
+      ...createChannelTestPluginBase({ id: "richchat", label: "Rich Chat" }),
+      outbound: { deliveryMode: "direct", resolveTarget: outboundResolveTarget },
+    } satisfies ChannelPlugin;
+
+    const result = await resolveMessagingTarget({
+      cfg,
+      channel: "richchat",
+      input: "richchat",
+      plugin,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      target: { to: "@richchat", source: "normalized", resolutionSource: "normalized" },
+    });
+    expect(outboundResolveTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "richchat", mode: "explicit" }),
+    );
+  });
+
+  it("rejects a plugin-native channel namespace when its resolver misses", async () => {
+    const plugin = {
+      ...createChannelTestPluginBase({ id: "richchat", label: "Rich Chat" }),
+      messaging: {
+        normalizeTarget: (raw: string) => raw.trim(),
+        targetResolver: {
+          looksLikeId: () => true,
+          resolveTarget: mocks.resolveTarget,
+          hint: "<conversation>",
+        },
+      },
+    } satisfies ChannelPlugin;
+    mocks.resolveTarget.mockResolvedValue(undefined);
+
+    const result = await resolveMessagingTarget({
+      cfg,
+      channel: "richchat",
+      input: "richchat",
+      plugin,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(mocks.resolveTarget).toHaveBeenCalled();
+  });
+
   it("uses live directory fallback and caches the result", async () => {
     const entry: ChannelDirectoryEntry = { kind: "group", id: "123456789", name: "support" };
     mocks.listGroups.mockResolvedValue([]);
