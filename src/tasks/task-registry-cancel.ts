@@ -18,6 +18,7 @@ import { matchesTaskCancellationSelection } from "./task-cancellation-selection.
 import { isProvisionalSubagentKillTask } from "./task-cancellation-state.js";
 import { captureTaskMutationContext } from "./task-executor-mutation-effects.async.js";
 import { ensureLinkedTaskFlowRegistryReady } from "./task-registry-flow-link.js";
+import { captureResidentTaskRegistryTask } from "./task-registry-read.js";
 import { cloneTaskRecord } from "./task-registry-records.js";
 import { loadTaskRegistryControlRuntime } from "./task-registry-runtime-loaders.js";
 import {
@@ -47,6 +48,7 @@ export async function cancelTaskById(params: {
 }): Promise<TaskCancellationResult> {
   const taskId = params.taskId.trim();
   let selection: ReturnType<typeof captureTaskCancellationSelection> | undefined;
+  let selectedRunOwner: ReturnType<typeof getTaskRunOwner>;
   const notCancelled = (reason: string): TaskCancellationResult => {
     const current = tasks.get(taskId);
     return {
@@ -57,6 +59,11 @@ export async function cancelTaskById(params: {
     };
   };
   try {
+    const resident = captureResidentTaskRegistryTask(taskId);
+    if (resident) {
+      selection = captureTaskCancellationSelection(resident);
+      selectedRunOwner = getTaskRunOwner(resident);
+    }
     for (
       let pending = prepareTaskCancellationRead();
       pending;
@@ -72,18 +79,27 @@ export async function cancelTaskById(params: {
     if (!initial) {
       return { found: false, cancelled: false, reason: "Task not found." };
     }
-    selection = captureTaskCancellationSelection(initial);
+    if (selection) {
+      if (
+        !matchesTaskCancellationSelection(initial, selection.task) ||
+        getTaskRunOwner(initial) !== selectedRunOwner
+      ) {
+        return notCancelled("Task changed while cancellation was in progress.");
+      }
+    } else {
+      selection = captureTaskCancellationSelection(initial);
+      selectedRunOwner = getTaskRunOwner(initial);
+    }
     const task = selection.task;
+    const runOwner = selectedRunOwner;
     let provisional = isProvisionalSubagentKillTask(task);
     if (!provisional && isTerminalTaskStatus(task.status)) {
       return { found: true, cancelled: false, reason: "Task is already terminal.", task };
     }
     const creation = captureTaskMutationContext();
     const inherited = prepareTaskCancellationControl(task);
-    const runOwner = getTaskRunOwner(task);
-    const assertCurrent = () => {
+    const assertTargetCurrent = () => {
       creation.assertStores();
-      inherited?.assertCurrent();
       const current = tasks.get(taskId);
       if (
         !current ||
@@ -92,12 +108,17 @@ export async function cancelTaskById(params: {
       ) {
         throw new Error("Task changed while cancellation was in progress.");
       }
-      prepareTaskCancellationControl(current)?.assertCurrent();
       if (!hasResidentTaskBacking(current)) {
         throw new Error("Task backing ownership could not be verified.");
       }
     };
-    const refresh = async () => {
+    const assertCurrent = () => {
+      assertTargetCurrent();
+      inherited?.assertCurrent();
+      prepareTaskCancellationControl(tasks.get(taskId))?.assertCurrent();
+    };
+    const refreshTarget = async () => {
+      creation.assertStores();
       read = await prepareTaskBackingRead(taskId);
       if (!read) {
         throw new Error("Task persistence preparation did not settle.");
@@ -107,6 +128,10 @@ export async function cancelTaskById(params: {
       if (!current || !read.hasAuthoritativeTaskBacking(current)) {
         throw new Error("Task backing ownership could not be verified.");
       }
+      assertTargetCurrent();
+    };
+    const refresh = async () => {
+      await refreshTarget();
       assertCurrent();
     };
     const control: TaskCancellationControl = {
@@ -281,22 +306,47 @@ export async function cancelTaskById(params: {
             async settleResult(result, assertOutcomeCurrent) {
               let reconcilingTerminal = false;
               try {
-                await refresh();
-                assertOutcomeCurrent();
+                await refreshTarget();
                 const current = read?.getTaskById(taskId);
-                if (current && isProvisionalSubagentKillTask(current)) {
-                  provisional = true;
-                }
-                let reason: string | undefined;
-                if (current?.status === "succeeded") {
-                  reason = "Subagent completed while cancellation was in progress.";
-                } else if (
+                // Observing this exact task's durable winner needs no new caller effect.
+                if (
                   current &&
                   isTerminalTaskStatus(current.status) &&
                   current.status !== "cancelled"
                 ) {
-                  reason = `Subagent became ${current.status} while cancellation was in progress.`;
-                } else if (current?.status === "cancelled" && !provisional) {
+                  cancellation = notCancelled(
+                    current.status === "succeeded"
+                      ? "Subagent completed while cancellation was in progress."
+                      : `Subagent became ${current.status} while cancellation was in progress.`,
+                  );
+                  return;
+                }
+                assertOutcomeCurrent();
+                try {
+                  assertCurrent();
+                } catch (error) {
+                  assertTargetCurrent();
+                  assertOutcomeCurrent();
+                  // A live native outcome owns settlement of its already accepted Stop.
+                  // Retired callers cannot promote a marker or admit another transition.
+                  if (
+                    current?.status === "cancelled" &&
+                    result.found &&
+                    result.killed &&
+                    !result.error &&
+                    result.targetState?.state === "terminal" &&
+                    result.targetState.task.status === "cancelled"
+                  ) {
+                    cancellation = { found: true, cancelled: true, task: current };
+                    return;
+                  }
+                  throw error;
+                }
+                if (current && isProvisionalSubagentKillTask(current)) {
+                  provisional = true;
+                }
+                let reason: string | undefined;
+                if (current?.status === "cancelled" && !provisional) {
                   reason = "Subagent was cancelled while cancellation was in progress.";
                 } else if (result.found && result.targetState?.state === "terminal") {
                   const terminal = result.targetState.task;

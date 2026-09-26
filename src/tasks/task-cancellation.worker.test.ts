@@ -5,6 +5,7 @@ import {
   closeOpenClawStateDatabase,
   closeOpenClawStateDatabaseAsync,
 } from "../state/openclaw-state-db.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { getDetachedTaskLifecycleRuntime } from "./detached-task-runtime.js";
@@ -19,7 +20,10 @@ import {
 import { cancelDetachedTaskRunByIdAsync } from "./task-executor-cancel.async.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import { upsertTaskFlowRegistryRecordToSqlite } from "./task-flow-registry.store.sqlite.js";
+import { cancelTaskById } from "./task-registry-cancel.js";
 import { updateTask } from "./task-registry-mutation.js";
+import { prepareTaskRegistryRead } from "./task-registry-read.js";
+import { reloadTaskRegistryFromStoreAsync } from "./task-registry-state.js";
 import { getTaskRegistryStore } from "./task-registry.store.js";
 import {
   loadTaskRegistryStateFromSqliteReadOnly,
@@ -231,3 +235,97 @@ it.each(["selected", "same-run peer"] as const)(
     });
   },
 );
+
+it.each([
+  "owned externally",
+  "owned externally with later core arrival",
+  "later core arrival",
+  "delegates to later core arrival",
+] as const)("preserves external-only cancellation selection for %s", async (outcome) => {
+  await withOpenClawTestState({ layout: "state-only" }, async () => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    let retained: TaskCancellationControl | undefined;
+    const externalCancel = vi.fn(async () => {
+      retained = captureTaskCancellationControl();
+      expect(retained).toBeDefined();
+      retained!.assertCurrent();
+      entered.resolve();
+      await release.promise;
+      retained!.assertCurrent();
+      if (outcome === "delegates to later core arrival") {
+        return cancelTaskById({ cfg: {}, taskId: task.taskId });
+      }
+      return outcome.startsWith("owned externally")
+        ? { found: true, cancelled: true }
+        : { found: false, cancelled: false };
+    });
+    setDetachedTaskLifecycleRuntime({
+      ...getDetachedTaskLifecycleRuntime(),
+      cancelDetachedTaskRunById: externalCancel,
+    });
+    const pending = cancelDetachedTaskRunByIdAsync(
+      { cfg: {}, taskId: task.taskId },
+      { selectedTask: undefined, assertCurrent() {} },
+    );
+    const settled = Promise.allSettled([pending]);
+    try {
+      await Promise.race([
+        entered.promise,
+        pending.then((result) => {
+          throw new Error(`External owner was not reached: ${JSON.stringify(result)}`);
+        }),
+      ]);
+      if (outcome !== "owned externally") {
+        upsertTaskWithDeliveryStateToSqlite({ task });
+        await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
+        expect((await prepareTaskRegistryRead())?.getTaskById(task.taskId)).toEqual(task);
+      }
+      release.resolve();
+      expect(await pending).toMatchObject(
+        outcome.startsWith("owned externally")
+          ? { found: true, cancelled: true }
+          : { found: outcome === "delegates to later core arrival", cancelled: false },
+      );
+      expect(externalCancel).toHaveBeenCalledOnce();
+      expect(() => retained!.assertCurrent()).toThrow("no longer active");
+      expect(loadTaskRegistryStateFromSqliteReadOnly().tasks.get(task.taskId)).toEqual(
+        outcome !== "owned externally" ? task : undefined,
+      );
+    } finally {
+      release.resolve();
+      await settled;
+    }
+  });
+});
+
+it("retains a registered runtime's durable cancellation after caller retirement", async () => {
+  await withOpenClawTestState({ layout: "state-only" }, async () => {
+    upsertTaskWithDeliveryStateToSqlite({ task });
+    let active = true;
+    setDetachedTaskLifecycleRuntime({
+      ...getDetachedTaskLifecycleRuntime(),
+      async cancelDetachedTaskRunById(params) {
+        const result = await cancelTaskById(params);
+        expect(result.cancelled).toBe(true);
+        active = false;
+        return result;
+      },
+    });
+    const result = await cancelDetachedTaskRunByIdAsync(
+      { cfg: {}, taskId: task.taskId },
+      {
+        selectedTask: task,
+        assertCurrent() {
+          if (!active) {
+            throw new Error("Caller retired after settled cancellation.");
+          }
+        },
+      },
+    );
+    expect(loadTaskRegistryStateFromSqliteReadOnly().tasks.get(task.taskId)?.status).toBe(
+      "cancelled",
+    );
+    expect(result).toMatchObject({ found: true, cancelled: true, task: { status: "cancelled" } });
+  });
+});

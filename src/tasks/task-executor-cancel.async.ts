@@ -15,16 +15,21 @@ import { tasks } from "./task-registry-state.js";
 import type { TaskRecord } from "./task-registry.types.js";
 import { getTaskRunOwner } from "./task-run-owner.js";
 
-/** Flow callers retain the exact child and runtime owner across worker preparation. */
+/** Callers retain their selected task and runtime owner across worker preparation. */
 export async function cancelDetachedTaskRunByIdAsync(
   params: { cfg: OpenClawConfig; taskId: string; reason?: string },
-  authority: { selectedTask: TaskRecord; assertCurrent: () => void },
+  authority: { selectedTask: TaskRecord | undefined; assertCurrent: () => void },
 ): Promise<TaskCancellationResult> {
   const owner = captureDetachedTaskRuntimeOwner({ settlement: true });
-  const selection = captureTaskCancellationSelection(authority.selectedTask);
-  const selected = selection.task;
-  const selectedRunOwner = getTaskRunOwner(selected);
+  const selection =
+    authority.selectedTask && captureTaskCancellationSelection(authority.selectedTask);
+  const selected = selection?.task;
+  const selectedRunOwner = selected && getTaskRunOwner(selected);
+  let active = true;
   const assertCurrent = () => {
+    if (!active) {
+      throw new Error("Task cancellation is no longer active.");
+    }
     owner.assertCurrent();
     authority.assertCurrent();
   };
@@ -32,8 +37,18 @@ export async function cancelDetachedTaskRunByIdAsync(
     assertCurrent();
     const read = await prepareTaskBackingRead(params.taskId);
     assertCurrent();
-    const task = read?.getTaskById(params.taskId);
-    if (!task || !matchesTaskCancellationSelection(task, selected)) {
+    if (!read) {
+      return {
+        found: selected !== undefined,
+        cancelled: false,
+        reason: "Task persistence preparation did not settle.",
+      };
+    }
+    const task = read.getTaskById(params.taskId);
+    if (
+      Boolean(task) !== Boolean(selected) ||
+      (task && selected && !matchesTaskCancellationSelection(task, selected))
+    ) {
       return {
         found: Boolean(task),
         cancelled: false,
@@ -43,6 +58,9 @@ export async function cancelDetachedTaskRunByIdAsync(
     }
     const assertSelected = () => {
       assertCurrent();
+      if (!selected) {
+        return;
+      }
       const current = tasks.get(selected.taskId);
       if (
         !current ||
@@ -53,11 +71,16 @@ export async function cancelDetachedTaskRunByIdAsync(
       }
     };
     return await withTaskCancellationContext(
-      assertSelected,
+      () => {
+        assertSelected();
+        if (!selected) {
+          throw new Error("Task changed while cancellation was in progress.");
+        }
+      },
       async () => {
         const runtime = owner.runtime;
         if (runtime) {
-          const inherited = prepareTaskCancellationControl(task);
+          const inherited = task && prepareTaskCancellationControl(task);
           const control = {
             prepareRead: inherited?.prepareRead,
             assertCurrent() {
@@ -69,13 +92,16 @@ export async function cancelDetachedTaskRunByIdAsync(
           const result = await withTaskCancellationControl(control, () =>
             runtime.cancelDetachedTaskRunById(params),
           );
-          control.assertCurrent();
+          // The runtime owns its settled result; new fallback work still checks the caller.
+          owner.assertCurrent();
           if (result.found) {
             return result;
           }
         }
         assertCurrent();
-        return cancelTaskById(params);
+        return task
+          ? cancelTaskById(params)
+          : { found: false, cancelled: false, reason: "Task not found." };
       },
       { selectedTask: task },
     );
@@ -85,6 +111,7 @@ export async function cancelDetachedTaskRunByIdAsync(
     }
     return { found: true, cancelled: false, reason: formatErrorMessage(error) };
   } finally {
-    selection.release();
+    active = false;
+    selection?.release();
   }
 }

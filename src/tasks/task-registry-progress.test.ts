@@ -40,8 +40,8 @@ import {
 } from "./task-registry-progress-authority.test-utils.js";
 import type * as ProgressRuntime from "./task-registry-progress-runtime.js";
 import type { TaskProgressPublication } from "./task-registry-progress-runtime.js";
-import { updateTaskStateByRunId } from "./task-registry-record-api.js";
 import { runTaskRegistryWorkerMutation, tasks } from "./task-registry-state.js";
+import { transitionTaskRecordsByRunAsync } from "./task-registry-transition.async.js";
 import {
   createTaskRecord,
   getTaskById,
@@ -477,13 +477,16 @@ describe("adopted requester progress", () => {
       },
       execution: { status: "terminal", endedAt: Date.now() },
     });
-    updateTaskStateByRunId({
-      taskId: item.task.taskId,
-      runId: item.entry.runId,
-      runtime: "subagent",
-      detail: createSubagentTaskBackingDetail(2),
-      status: "failed",
-      endedAt: Date.now(),
+    await transitionTaskRecordsByRunAsync({
+      kind: "state",
+      params: {
+        taskId: item.task.taskId,
+        runId: item.entry.runId,
+        runtime: "subagent",
+        detail: createSubagentTaskBackingDetail(2),
+        status: "failed",
+        endedAt: Date.now(),
+      },
     });
     await vi.advanceTimersByTimeAsync(15_000);
     expect(publications.map((entry) => entry.messageId)).toEqual([

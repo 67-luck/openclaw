@@ -9,7 +9,7 @@ import {
 } from "../test-utils/task-registry-store.js";
 import { createSubagentTaskBackingDetail } from "./task-backing-records.js";
 import { getTaskPreparedActivity, recordTaskActivityEvent } from "./task-registry-activity.js";
-import { updateTaskStateByRunId } from "./task-registry-record-api.js";
+import { transitionTaskRecordsByRunAsync } from "./task-registry-transition.async.js";
 import { getTaskById, markTaskTerminalById } from "./task-registry.js";
 import { configureTaskRegistryRuntime } from "./task-registry.store.js";
 import { createTaskFixture } from "./task-registry.test-support.js";
@@ -303,7 +303,7 @@ describe("prepared task activity", () => {
     expect(prepared).toEqual(successor);
   });
 
-  it("rejects predecessor items before a same-run generation replacement emits activity", () => {
+  it("rejects predecessor items before a same-run generation replacement emits activity", async () => {
     const task = createTaskFixture("subagent", {
       childSessionKey: "agent:main:subagent:prepared-same-run",
       runId: "run-prepared-same-run",
@@ -323,11 +323,14 @@ describe("prepared task activity", () => {
       },
     });
     expect(getTaskPreparedActivity(task.taskId)?.has("predecessor-command")).toBe(true);
-    updateTaskStateByRunId({
-      taskId: task.taskId,
-      runId: task.runId!,
-      runtime: "subagent",
-      detail: createSubagentTaskBackingDetail(2),
+    await transitionTaskRecordsByRunAsync({
+      kind: "state",
+      params: {
+        taskId: task.taskId,
+        runId: task.runId!,
+        runtime: "subagent",
+        detail: createSubagentTaskBackingDetail(2),
+      },
     });
     expect(getTaskPreparedActivity(task.taskId)).toBeUndefined();
 

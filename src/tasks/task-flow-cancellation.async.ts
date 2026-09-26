@@ -13,10 +13,11 @@ import {
 } from "./task-flow-cancellation.types.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import {
-  ensureTaskFlowRegistryReadyAsync,
+  prepareTaskFlowRegistryRead,
   readResidentTaskFlow,
   runTaskFlowRegistryWorkerMutation,
 } from "./task-flow-runtime-internal.js";
+import { prepareTaskRegistryRead, prepareTaskRegistryReadOwner } from "./task-registry-read.js";
 import { getTaskRegistryStore } from "./task-registry.store.js";
 
 async function cancelFlow(
@@ -56,8 +57,11 @@ async function cancelFlow(
   };
   try {
     assertCurrent();
-    await ensureTaskFlowRegistryReadyAsync(context);
+    const flowRead = await prepareTaskFlowRegistryRead(context);
     assertCurrent();
+    if (!flowRead) {
+      throw new Error("Flow cancellation read preparation did not settle.");
+    }
     const { runOpenClawStateWorkerOperation } =
       await import("../state/openclaw-state-worker-store.js");
     assertCurrent();
@@ -90,9 +94,16 @@ async function cancelFlow(
         }
         const selection = expected ?? captureTaskFlowCancellationSelection(flow);
         selected = selection;
-        const mutate = (phase: "request" | "finalize", expectedRevision: number) =>
-          runTaskFlowRegistryWorkerMutation(
-            { flowId: flow.flowId, admission: context.admission },
+        const mutate = async (phase: "request" | "finalize", expectedRevision: number) => {
+          let publicationSettled = true;
+          const result = await runTaskFlowRegistryWorkerMutation(
+            {
+              flowId: flow.flowId,
+              admission: context.admission,
+              onPublicationError: () => {
+                publicationSettled = false;
+              },
+            },
             () =>
               scope.execute({
                 type: "flows.cancel",
@@ -100,6 +111,12 @@ async function cancelFlow(
               }),
             () => scope.execute({ type: "flows.current", input: { flowId: flow.flowId } }),
           );
+          assertCurrent();
+          if (!publicationSettled || !flowRead.isTaskFlowCurrent(flow.flowId)) {
+            throw new Error("Flow cancellation publication did not settle.");
+          }
+          return result;
+        };
         const { dispatch, ...requested } = await mutate("request", flow.revision);
         assertCurrent();
         if (!dispatch) {
@@ -117,6 +134,14 @@ async function cancelFlow(
               { selectedTask: task, assertCurrent },
             );
             assertCurrent();
+          }
+          const taskReadOwner = await prepareTaskRegistryReadOwner(context, taskStore);
+          assertCurrent();
+          const taskRead = await prepareTaskRegistryRead(taskReadOwner);
+          assertCurrent();
+          // Later notification metadata keeps its own publication owner.
+          if (!taskRead || dispatch.some((task) => !taskRead.isTaskCurrent(task.taskId))) {
+            throw new Error("Child task cancellation publication did not settle.");
           }
         }
         const current = await scope.execute({

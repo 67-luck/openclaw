@@ -1,4 +1,5 @@
 /** Authorized tree and admin subagent kill orchestration. */
+import { isDeepStrictEqual } from "node:util";
 import { resolveSubagentLabel } from "../../../auto-reply/reply/subagents-utils.js";
 import { loadExactSessionEntryReadOnly } from "../../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
@@ -7,6 +8,7 @@ import {
   isAgentEventLifecycleGenerationCurrent,
 } from "../../../infra/agent-events.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
+import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "../../../tasks/detached-task-runtime-contract.js";
 import {
   captureTaskCancellationControl,
@@ -32,6 +34,7 @@ import {
   isSameSubagentRunGeneration,
   type ResolvedSubagentController,
 } from "./subagent-control-scope.js";
+import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import {
   listSubagentRunsForController,
@@ -215,7 +218,23 @@ async function withSubagentKillScope<T>(
       return;
     }
     try {
-      params.assertCurrent?.();
+      try {
+        params.assertCurrent?.();
+      } catch (error) {
+        if (
+          !hasSqliteWorkerOutcomeUnknown(error) &&
+          tree.entry.execution.status === "terminal" &&
+          tree.entry.endedReason === SUBAGENT_ENDED_REASON_KILLED &&
+          tree.entry.killReconciliation?.taskCancellationAccepted === true &&
+          tree.canTraverse()
+        ) {
+          // Retired callers cannot discover new work; unfinished captured descendants
+          // still check their caller while accepted outcomes remain observable.
+          tree.children.forEach(refreshTree);
+          return;
+        }
+        throw error;
+      }
       if (!tree.canTraverse()) {
         return;
       }
@@ -260,9 +279,6 @@ async function withSubagentKillScope<T>(
       do {
         await preparePublication.prepare();
       } while (preparePublication.needsPreparation());
-    }
-    if (publish) {
-      params.assertCurrent?.();
     }
     outcome = { ok: true, value: publish ? await publish(result, trees) : result };
   } catch (error) {
@@ -666,9 +682,11 @@ export async function killSubagentRunAdmin(
       const targetState = ownsOutcome ? resolveSubagentKillTargetState(tree.entry) : undefined;
       const { errors } = collectKillErrors([tree], tree);
       const assertOutcomeCurrent = () => {
-        control?.assertCurrent();
         if (rootStopSuperseded || !tree.ownsRun() || !tree.canTraverse()) {
           throw new Error("Subagent ownership changed during cancellation; retry.");
+        }
+        if (!isDeepStrictEqual(resolveSubagentKillTargetState(tree.entry), targetState)) {
+          throw new Error("Subagent outcome changed during cancellation; retry.");
         }
       };
       return settle(

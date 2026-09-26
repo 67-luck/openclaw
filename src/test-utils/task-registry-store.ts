@@ -1,5 +1,6 @@
 import { serializeAgentSchemaInspectionError } from "../state/openclaw-agent-schema-inspection-response.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
+import { collectCronHistoryOverflowTaskIds } from "../tasks/cron-history-retention.js";
 import {
   hasAuthoritativeTaskBackingFromRecords,
   readManagedTaskBacking,
@@ -58,6 +59,7 @@ import {
 } from "../tasks/task-registry-transition.operation.js";
 import type { TaskRegistryStore, TaskRegistryStoreSnapshot } from "../tasks/task-registry.store.js";
 import type { TaskRegistryMutationScope } from "../tasks/task-registry.store.types.js";
+import { resolveEffectiveTaskCleanupAfter } from "../tasks/task-retention.js";
 
 type TaskFlowRegistryStore = ReturnType<typeof getTaskFlowRegistryStore>;
 
@@ -257,6 +259,16 @@ export function createInMemoryTaskRegistryStore(
             return { kind: "unchanged" };
           }
           const result = prepareTaskRetention(current, input);
+          if (
+            result.kind === "pruned" &&
+            input.cronHistoryOverflow &&
+            input.now < resolveEffectiveTaskCleanupAfter(current) &&
+            !collectCronHistoryOverflowTaskIds(
+              [...state.tasks.values()].map(normalizeTaskTimestamps),
+            ).has(input.taskId)
+          ) {
+            return { kind: "unchanged" };
+          }
           assertCurrent();
           if (result.kind === "pruned") {
             state.tasks.delete(input.taskId);

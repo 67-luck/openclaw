@@ -175,9 +175,9 @@ it.each(["before interruption", "after interruption", "after abort"] as const)(
     const runAdmin = killSubagentRunAdmin;
     const adminSpy = vi
       .spyOn(taskControlRuntime, "killSubagentRunAdmin")
-      .mockImplementation((params) => {
+      .mockImplementation((params, control) => {
         ownerEntered.resolve();
-        return runAdmin(params);
+        return runAdmin(params, control);
       });
     const pending = withTaskCancellationContext(
       () => {
@@ -289,9 +289,9 @@ it.each([
     const runAdmin = killSubagentRunAdmin;
     const adminSpy = vi
       .spyOn(taskControlRuntime, "killSubagentRunAdmin")
-      .mockImplementation((params) => {
+      .mockImplementation((params, control) => {
         ownerEntered.resolve();
-        return runAdmin(params);
+        return runAdmin(params, control);
       });
     const readEntered = createDeferred();
     const releaseRead = createDeferred();

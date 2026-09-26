@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetSystemEventsForTest } from "../infra/system-events.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "./detached-task-runtime-contract.js";
 import { captureTaskDeliveryWork } from "./task-registry-delivery.test-support.js";
-import { updateTaskStateByRunId } from "./task-registry-record-api.js";
 import { readTaskRegistryRevision } from "./task-registry-state.js";
+import { transitionTaskRecordsByRunAsync } from "./task-registry-transition.async.js";
 import { finalizeTaskRecordByRunId, getTaskById, markTaskTerminalById } from "./task-registry.js";
 import { configureTaskRegistryRuntime, getTaskRegistryStore } from "./task-registry.store.js";
 import { createTaskFixture, withTaskRegistryTempDir } from "./task-registry.test-support.js";
@@ -95,10 +95,16 @@ describe("task registry terminal update timestamps", () => {
         deliveryStatus: "pending",
         lastEventAt: 100,
       });
-      updateTaskStateByRunId({ runId: "run-generic-terminal", endedAt: 150 });
+      await transitionTaskRecordsByRunAsync({
+        kind: "state",
+        params: { runId: "run-generic-terminal", endedAt: 150 },
+      });
       const nowSpy = vi.spyOn(Date, "now").mockReturnValue(300);
 
-      updateTaskStateByRunId({ runId: "run-generic-terminal", status: "failed" });
+      await transitionTaskRecordsByRunAsync({
+        kind: "state",
+        params: { runId: "run-generic-terminal", status: "failed" },
+      });
       await deliveries.settle();
       nowSpy.mockRestore();
 

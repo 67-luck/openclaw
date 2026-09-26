@@ -170,6 +170,7 @@ export function resolveGatewayOperatorRoleActor(
 export function resolveOperatorRolePolicy(
   client: GatewayClient | null,
   cfg: OpenClawConfig,
+  prepared?: { readCurrentRole: (profileId: string) => string | null },
 ): GatewayOperatorRoleDefinition | undefined {
   const actor = resolveGatewayOperatorRoleActor(client);
   if (actor?.kind === "system") {
@@ -194,9 +195,17 @@ export function resolveOperatorRolePolicy(
       cfg,
     );
   }
-  const prepared = client?.preparedSessionProfile;
-  if (actor?.kind === "operator" && prepared?.aliases.has(actor.profileId)) {
-    return resolveOperatorRolePolicyForAssignment(prepared.profileId, prepared.role, cfg);
+  if (prepared) {
+    const profileId = actor?.kind === "operator" ? actor.profileId : undefined;
+    return resolveOperatorRolePolicyForAssignment(
+      profileId,
+      cfg.gateway?.roles && profileId ? prepared.readCurrentRole(profileId) : null,
+      cfg,
+    );
+  }
+  const profile = client?.preparedSessionProfile;
+  if (actor?.kind === "operator" && profile?.aliases.has(actor.profileId)) {
+    return resolveOperatorRolePolicyForAssignment(profile.profileId, profile.role, cfg);
   }
   return resolveOperatorRolePolicyForProfile(actor?.profileId, cfg);
 }
@@ -223,12 +232,20 @@ export function authorizeCurrentOperatorRoleScopes(
   return undefined;
 }
 
-export function operatorSessionCap(client: GatewayClient | null, cfg: OpenClawConfig) {
-  return resolveOperatorRolePolicy(client, cfg)?.sessions.others;
+export function operatorSessionCap(
+  client: GatewayClient | null,
+  cfg: OpenClawConfig,
+  prepared?: Parameters<typeof resolveOperatorRolePolicy>[2],
+) {
+  return resolveOperatorRolePolicy(client, cfg, prepared)?.sessions.others;
 }
 
-export function hasOperatorBoundary(client: GatewayClient | null, cfg: OpenClawConfig): boolean {
-  if (operatorSessionCap(client, cfg) !== undefined) {
+export function hasOperatorBoundary(
+  client: GatewayClient | null,
+  cfg: OpenClawConfig,
+  prepared?: { sessionCap: ReturnType<typeof operatorSessionCap> },
+): boolean {
+  if ((prepared ? prepared.sessionCap : operatorSessionCap(client, cfg)) !== undefined) {
     return true;
   }
   if (resolveGatewayOperatorRoleActor(client)?.kind === "system") {

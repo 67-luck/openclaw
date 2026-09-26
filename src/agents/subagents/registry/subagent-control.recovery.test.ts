@@ -74,7 +74,7 @@ it("does not promote a provisional task when replacement wins before admin admis
   const pending = cancelTaskById({ cfg: getRuntimeConfig(), taskId: task.taskId });
   try {
     expect(admin).not.toHaveBeenCalled();
-    // The existing lazy-runtime await leaves admission open before admin captures a run.
+    // Preparation yields before admin admission without transferring the original selection.
     await followup.run(async () => {
       expect(
         replaceSubagentRunAfterSteerCore({
@@ -91,7 +91,7 @@ it("does not promote a provisional task when replacement wins before admin admis
       });
     });
     const result = await pending;
-    expect(await admin.mock.results[0]!.value).toEqual({ found: false, killed: false });
+    expect(admin).not.toHaveBeenCalled();
     expect.soft(result.cancelled).toBe(false);
     expect.soft(getTaskById(task.taskId)?.status).toBe("running");
     expect.soft(getTaskById(task.taskId)?.error).toBeUndefined();

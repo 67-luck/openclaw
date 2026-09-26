@@ -141,6 +141,20 @@ export function isTaskRegistryTaskSettled(taskId: string): boolean {
   return !hasPendingTaskRegistryEvents(taskId) && isTaskRegistryReadCurrent(taskId, "settled");
 }
 
+/** Pin a usable resident assignment before yielding, without starting storage work. */
+export function captureResidentTaskRegistryTask(taskId: string): TaskRecord | undefined {
+  const normalized = taskId.trim();
+  if (
+    !isTaskRegistryResidentReady() ||
+    getTaskRegistryProcessState().projection.dirty ||
+    !isTaskRegistryReadCurrent(normalized, "identity")
+  ) {
+    return undefined;
+  }
+  const task = tasks.get(normalized);
+  return task ? cloneTaskRecord(task) : undefined;
+}
+
 /** Pin known identity before yielding; cold or uncertain projections use normal preparation. */
 function captureResidentTaskRegistryRunCandidates(runId: string): TaskRecord[] | undefined {
   const normalized = runId.trim();

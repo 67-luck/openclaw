@@ -24,12 +24,13 @@ import {
   listTaskRecordPage,
   prepareTaskRegistryRead,
 } from "../../tasks/runtime-internal.js";
-import { withTaskCancellationContext } from "../../tasks/task-cancellation-context.js";
+import { matchesTaskCancellationSelection } from "../../tasks/task-cancellation-selection.js";
 import type { TaskRecord, TaskStatus } from "../../tasks/task-registry.types.js";
 import { readGatewayAccessRevision } from "../gateway-access-revision.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import {
   canAccessTaskRequesterSession,
+  prepareTaskSessionAccess,
   prepareTaskSessionReadFilter,
 } from "../task-session-access.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
@@ -366,51 +367,67 @@ export const tasksHandlers: GatewayRequestHandlers = {
     assertRequestCurrent();
     const taskId = params.taskId;
     const reason = normalizeOptionalString(params.reason);
-    const { cancelDetachedTaskRunByIdCore } =
-      await import("../../tasks/task-executor-cancel.runtime.js");
+    const prepareRead = createTaskRegistryReadPreparation();
+    let read = await prepareRead();
     assertRequestCurrent();
-    const cfg = context.getRuntimeConfig();
-    const task = getTaskById(taskId);
-    if (task && !canAccessTaskRequesterSession({ access: "write", cfg, client, task })) {
-      respond(true, { found: false, cancelled: false });
+    if (!read) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.UNAVAILABLE, "Task activity did not stabilize. Refresh the task."),
+      );
       return;
     }
-    const cancel = () =>
-      cancelDetachedTaskRunByIdCore({ cfg, taskId, ...(reason ? { reason } : {}) });
-    const result = task
-      ? await withTaskCancellationContext(
-          () => {
-            assertRequestCurrent();
-            const current = getTaskById(taskId);
-            if (
-              !current ||
-              current.requesterSessionKey !== task.requesterSessionKey ||
-              current.requesterAgentId !== task.requesterAgentId ||
-              !canAccessTaskRequesterSession({
-                access: "write",
-                cfg: context.getRuntimeConfig(),
-                client,
-                task: current,
-              })
-            ) {
-              throw new Error("Task cancellation authority changed.");
-            }
-          },
-          cancel,
-          { selectedTask: task },
-        )
-      : await cancel();
-    assertRequestCurrent();
-    const responseTask = result.task && getTaskById(result.task.taskId);
-    respond(true, {
-      found: result.found,
-      cancelled: result.cancelled,
-      ...(result.reason ? { reason: result.reason } : {}),
-      ...(responseTask &&
-      canAccessTaskRequesterSession({ cfg: context.getRuntimeConfig(), client, task: responseTask })
-        ? { task: mapTaskSummary(responseTask) }
-        : {}),
-    });
+    const task = read.getTaskById(taskId);
+    const cfg = context.getRuntimeConfig();
+    const access = task ? await prepareTaskSessionAccess({ cfg, client, task }) : undefined;
+    try {
+      assertRequestCurrent();
+      if (access && !access.canAccess(context.getRuntimeConfig(), "write")) {
+        respond(true, { found: false, cancelled: false });
+        return;
+      }
+      const { cancelDetachedTaskRunByIdAsync } =
+        await import("../../tasks/task-executor-cancel.async.js");
+      const assertCurrent = () => {
+        assertRequestCurrent();
+        if (!task) {
+          return;
+        }
+        const current = read?.getTaskById(taskId);
+        if (
+          !current ||
+          current.requesterSessionKey !== task.requesterSessionKey ||
+          current.requesterAgentId !== task.requesterAgentId ||
+          !access?.canAccess(context.getRuntimeConfig(), "write")
+        ) {
+          throw new Error("Task cancellation authority changed.");
+        }
+      };
+      assertCurrent();
+      const result = await cancelDetachedTaskRunByIdAsync(
+        { cfg, taskId, ...(reason ? { reason } : {}) },
+        { selectedTask: task, assertCurrent },
+      );
+      assertRequestCurrent();
+      read = await prepareRead();
+      assertRequestCurrent();
+      const responseTask = task && result.task && read?.getTaskById(taskId);
+      respond(true, {
+        found: result.found,
+        cancelled: result.cancelled,
+        ...(result.reason ? { reason: result.reason } : {}),
+        ...(responseTask &&
+        matchesTaskCancellationSelection(responseTask, task) &&
+        responseTask.requesterSessionKey === task.requesterSessionKey &&
+        responseTask.requesterAgentId === task.requesterAgentId &&
+        access?.canAccess(context.getRuntimeConfig())
+          ? { task: mapTaskSummary(responseTask) }
+          : {}),
+      });
+    } finally {
+      access?.release();
+    }
   },
   "tasks.retry": createTaskRecoveryHandler("tasks.retry"),
   "tasks.dismiss": createTaskRecoveryHandler("tasks.dismiss"),
