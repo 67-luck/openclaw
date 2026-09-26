@@ -283,6 +283,87 @@ describe("outbound channel namespace targets", () => {
     );
   });
 
+  it("reclassifies an exact directory target rewritten by heartbeat policy", async () => {
+    const resolved = await resolveNamespaceHeartbeat(
+      createNamespacePlugin({
+        listGroups: vi.fn().mockResolvedValue([{ kind: "group", id: "C123456", name: "alpha" }]),
+        outbound: {
+          deliveryMode: "direct",
+          resolveTarget: () => ({ ok: true, to: "user:42" }),
+        },
+        messaging: {
+          targetPrefixes: ["a"],
+          inferTargetChatType: ({ to }) => (to.startsWith("user:") ? "direct" : "group"),
+        },
+      }),
+      "block",
+    );
+
+    expect(resolved).toMatchObject({ channel: "none", reason: "dm-blocked" });
+  });
+
+  it("preserves an unchanged exact directory kind over conflicting inference", async () => {
+    const resolved = await resolveNamespaceHeartbeat(
+      createNamespacePlugin({
+        listGroups: vi.fn().mockResolvedValue([{ kind: "user", id: "D123456", name: "alpha" }]),
+        outbound: {
+          deliveryMode: "direct",
+          resolveTarget: ({ to }) => ({ ok: true, to: to ?? "" }),
+        },
+        messaging: {
+          targetPrefixes: ["a"],
+          inferTargetChatType: () => "group",
+        },
+      }),
+      "block",
+    );
+
+    expect(resolved).toMatchObject({ channel: "none", reason: "dm-blocked" });
+  });
+
+  it("honors a semantic type change when heartbeat policy preserves the directory ID", async () => {
+    const resolved = await resolveNamespaceHeartbeat(
+      createNamespacePlugin({
+        listGroups: vi.fn().mockResolvedValue([{ kind: "group", id: "C123456", name: "alpha" }]),
+        outbound: {
+          deliveryMode: "direct",
+          resolveTarget: () => ({ ok: true, to: "user:C123456" }),
+        },
+        messaging: { targetPrefixes: ["a"] },
+      }),
+      "block",
+    );
+
+    expect(resolved).toMatchObject({ channel: "none", reason: "dm-blocked" });
+  });
+
+  it("reclassifies a native target rewritten by heartbeat policy", async () => {
+    const resolved = await resolveNamespaceHeartbeat(
+      createNamespacePlugin({
+        listGroups: vi.fn().mockResolvedValue([]),
+        outbound: {
+          deliveryMode: "direct",
+          resolveTarget: () => ({ ok: true, to: "user:42" }),
+        },
+        messaging: {
+          targetPrefixes: ["a"],
+          normalizeTarget: (raw) => `@${raw.trim()}`,
+          targetResolver: {
+            looksLikeId: () => true,
+            resolveTarget: async ({ normalized }) => ({
+              to: normalized,
+              kind: "group",
+              source: "normalized",
+            }),
+          },
+        },
+      }),
+      "block",
+    );
+
+    expect(resolved).toMatchObject({ channel: "none", reason: "dm-blocked" });
+  });
+
   it("applies heartbeat direct policy to outbound-resolved namespace targets", async () => {
     const resolved = await resolveNamespaceHeartbeat(
       createNamespacePlugin({

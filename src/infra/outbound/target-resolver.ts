@@ -162,15 +162,32 @@ function detectTargetKind(
   if (preferred) {
     return preferred;
   }
+  const semanticKind = detectSemanticTargetKind(channel, raw, plugin);
+  if (semanticKind) {
+    return semanticKind;
+  }
   const trimmed = raw.trim();
   if (!trimmed) {
     return "group";
   }
+  if (trimmed.startsWith("@") || /^<@!?/.test(trimmed)) {
+    return "user";
+  }
+  if (trimmed.startsWith("#")) {
+    return "group";
+  }
+
+  return "group";
+}
+
+function detectSemanticTargetKind(
+  channel: ChannelId,
+  raw: string,
+  plugin?: ChannelPlugin,
+): TargetResolveKind | undefined {
   const inferredChatType = (
     plugin ?? getRuntimeVisibleChannelPlugin(channel)
-  )?.messaging?.inferTargetChatType?.({
-    to: raw,
-  });
+  )?.messaging?.inferTargetChatType?.({ to: raw });
   if (inferredChatType === "direct") {
     return "user";
   }
@@ -181,10 +198,14 @@ function detectTargetKind(
     return "group";
   }
 
-  if (trimmed.startsWith("@") || /^<@!?/.test(trimmed) || /^user:/i.test(trimmed)) {
+  const trimmed = raw.trim();
+  if (/^user:/i.test(trimmed)) {
     return "user";
   }
-  if (trimmed.startsWith("#") || /^channel:/i.test(trimmed)) {
+  if (/^channel:/i.test(trimmed)) {
+    return "channel";
+  }
+  if (/^group:/i.test(trimmed)) {
     return "group";
   }
 
@@ -193,7 +214,33 @@ function detectTargetKind(
     return "user";
   }
 
-  return "group";
+  return undefined;
+}
+
+function classifyPolicyRewrittenTarget(params: {
+  channel: ChannelId;
+  originalTo: string;
+  originalKind: TargetResolveKind;
+  resolvedTo: string;
+  plugin?: ChannelPlugin;
+}): TargetResolveKind {
+  if (params.originalTo.trim() === params.resolvedTo.trim()) {
+    return params.originalKind;
+  }
+  const semanticKind = detectSemanticTargetKind(params.channel, params.resolvedTo, params.plugin);
+  if (semanticKind) {
+    return semanticKind;
+  }
+  const originalIdentity = normalizeLowercaseStringOrEmpty(
+    stripTargetPrefixes(params.originalTo, params.channel, params.plugin),
+  );
+  const resolvedIdentity = normalizeLowercaseStringOrEmpty(
+    stripTargetPrefixes(params.resolvedTo, params.channel, params.plugin),
+  );
+  if (originalIdentity && originalIdentity === resolvedIdentity) {
+    return params.originalKind;
+  }
+  return detectTargetKind(params.channel, params.resolvedTo, undefined, params.plugin);
 }
 
 function normalizeDirectoryEntryId(
@@ -493,11 +540,18 @@ export async function resolveChannelTarget(params: {
     if (!targetTo) {
       return { ok: false, error: missingTargetError(providerLabel, hint) };
     }
+    const targetKind = classifyPolicyRewrittenTarget({
+      channel: params.channel,
+      originalTo: directoryTarget,
+      originalKind: entry.kind,
+      resolvedTo: targetTo,
+      plugin,
+    });
     return {
       ok: true,
       target: {
         to: targetTo,
-        kind: entry.kind,
+        kind: targetKind,
         display:
           entry.name ?? entry.handle ?? stripTargetPrefixes(entry.id, params.channel, plugin),
         source: "directory",
@@ -542,7 +596,20 @@ export async function resolveChannelTarget(params: {
         if (!targetTo) {
           return { ok: false, error: missingTargetError(providerLabel, hint) };
         }
-        return { ok: true, target: { ...resolvedNativeTarget, to: targetTo } };
+        return {
+          ok: true,
+          target: {
+            ...resolvedNativeTarget,
+            to: targetTo,
+            kind: classifyPolicyRewrittenTarget({
+              channel: params.channel,
+              originalTo: resolvedNativeTarget.to,
+              originalKind: resolvedNativeTarget.kind,
+              resolvedTo: targetTo,
+              plugin,
+            }),
+          },
+        };
       }
     }
     const hasConcreteMessagingResolver = Boolean(plugin?.messaging?.targetResolver?.resolveTarget);
