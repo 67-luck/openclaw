@@ -8,7 +8,7 @@ import type {
 import { showToast } from "../lib/toast.ts";
 import { releaseChatAttachmentPayloads } from "../pages/chat/attachment-payload-lifecycle.ts";
 import type { NewSessionDraftHandoff } from "../pages/new-session/draft-persistence.ts";
-import type { ApplicationChatAttachmentHandoff } from "./context.ts";
+import type { ChatAttachmentHandoff } from "./context.ts";
 import { registerControlUiReloadGuard } from "./document-reload-guard.ts";
 import { createGatewayControlUiReloadOptions } from "./gateway-control-ui-reload.ts";
 import type { ApplicationGateway } from "./gateway.ts";
@@ -20,7 +20,7 @@ const MAX_PENDING_CHAT_ATTACHMENT_ENTRIES = 32;
 // would lose valid drafts. Bounded oldest-first eviction owns abandoned cleanup.
 
 type PendingChatAttachmentHandoff = {
-  owner: NonNullable<Parameters<ApplicationChatAttachmentHandoff["prepare"]>[0]["owner"]>;
+  owner: NonNullable<Parameters<ChatAttachmentHandoff["prepare"]>[0]["owner"]>;
   paneId: string;
   scopeKey: string;
   attachments: ChatAttachment[];
@@ -33,18 +33,14 @@ type PendingChatAttachmentHandoff = {
   preparedAt: number;
   incognito?: boolean;
   isConnectionCurrent: () => boolean;
-  reviewPrivateDraft: Parameters<
-    ApplicationChatAttachmentHandoff["prepare"]
-  >[0]["reviewPrivateDraft"];
+  reviewPrivateDraft: Parameters<ChatAttachmentHandoff["prepare"]>[0]["reviewPrivateDraft"];
 };
 
 const hasInput = (
   draft: Pick<PendingChatAttachmentHandoff, "message" | "attachments" | "goalMode" | "mentions">,
 ) => Boolean(draft.message || draft.attachments.length || draft.goalMode || draft.mentions?.length);
 
-export function createChatAttachmentHandoff(
-  gateway: ApplicationGateway,
-): ApplicationChatAttachmentHandoff {
+export function createChatAttachmentHandoff(gateway: ApplicationGateway): ChatAttachmentHandoff {
   const pending = new Map<string, PendingChatAttachmentHandoff>();
   let disposed = false;
   let activeReview: { key: string; controller: AbortController } | undefined;

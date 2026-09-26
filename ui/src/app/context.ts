@@ -84,7 +84,15 @@ type ChatAttachmentHandoffKey = {
   scopeKey: string;
 };
 
-export type ApplicationChatAttachmentHandoff = {
+// Loaded presentations supply the implementation; the application retains its lifetime.
+export type ApplicationChatAttachmentHandoff = Omit<ChatAttachmentHandoff, "prepare"> & {
+  prepare(
+    handoff: Parameters<ChatAttachmentHandoff["prepare"]>[0],
+    create: (gateway: ApplicationGateway) => ChatAttachmentHandoff,
+  ): void;
+};
+
+export type ChatAttachmentHandoff = {
   prepare(
     handoff: ChatAttachmentHandoffKey & {
       attachments: readonly ChatAttachment[];

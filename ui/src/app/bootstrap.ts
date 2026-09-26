@@ -53,7 +53,7 @@ import {
 } from "./bootstrap-warm-boot.ts";
 import { startBrowserAuthRecovery } from "./browser-auth-recovery.ts";
 import { createBrowserHistory, resolveControlUiPaths } from "./browser.ts";
-import { createChatAttachmentHandoff } from "./chat-attachment-handoff.ts";
+import { createApplicationChatAttachmentHandoff } from "./chat-attachment-handoff-owner.ts";
 import { createChatSubmissions } from "./chat-submissions.ts";
 import { createApplicationConfigCapability } from "./config.ts";
 import { createConnectionBootstrapCoordinator } from "./connection-bootstrap.ts";
@@ -351,7 +351,7 @@ export function bootstrapApplication(): ApplicationRuntime {
     sessions,
     chatSubmissions,
   });
-  const chatAttachmentHandoff = createChatAttachmentHandoff(gateway);
+  const chatAttachmentHandoff = createApplicationChatAttachmentHandoff(gateway);
   let routerStarted = false;
   // Pre-start navigations are invisible to history; retain the latest request so
   // router.start() cannot resolve the stale browser URL over the user's route.

@@ -8,6 +8,7 @@ import type { ChatAttachment } from "../../lib/chat/chat-types.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
 import { resolveUiConversationIdentity } from "../../lib/sessions/session-key.ts";
 import { createApplicationGateway } from "../../test-helpers/application-context.ts";
+import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
 import {
   getChatAttachmentDataUrl,
@@ -23,7 +24,11 @@ import {
   replacePaneStagedAttachmentGatewayOwner,
   restorePaneStagedAttachments,
 } from "./chat-pane-attachment-handoff.ts";
-import { createSessionCapabilityFixture, createTestChatPane } from "./chat-pane.test-support.ts";
+import {
+  createSessionCapabilityFixture,
+  createSessionContext,
+  createTestChatPane,
+} from "./chat-pane.test-support.ts";
 import { enqueueChatMessage, subscribeChatOutboxProjection } from "./chat-queue.ts";
 import {
   captureChatCommandComposerRecovery,
@@ -266,10 +271,8 @@ describe("cross-region Home composer ownership", () => {
   });
 
   it("releases only unreferenced command payloads after every presentation unmounts", () => {
-    const context = {
-      chatAttachmentHandoff: createChatAttachmentHandoff(createApplicationGateway().gateway),
-    } as ApplicationContext;
-    const owner = { recoveryScope: "profile-a" } as GatewayBrowserClient;
+    const owner = createTestGatewayClient(async () => undefined);
+    const context = createSessionContext(owner);
     const page = presentation(context, owner, "page");
     const staged = storedAttachment("staged-command", "text/plain");
     const fallback = storedAttachment("staged-fallback", "text/plain");

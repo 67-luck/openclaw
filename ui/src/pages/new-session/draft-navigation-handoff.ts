@@ -1,3 +1,4 @@
+import { createChatAttachmentHandoff } from "../../app/chat-attachment-handoff.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { HumanMention } from "../../lib/chat/chat-types.ts";
 import { reviewPrivateComposerDraft } from "../chat/components/private-composer-recovery-dialog.ts";
@@ -18,17 +19,20 @@ export function retainDraft(
     return;
   }
   const routeKey = openedFor ?? catalog.routeKeyFromSearch(window.location.search);
-  context.chatAttachmentHandoff.prepare({
-    reviewPrivateDraft: reviewPrivateComposerDraft,
-    owner,
-    paneId: NEW_SESSION_DRAFT_PANE_ID,
-    scopeKey: routeKey,
-    message: messageOwnerKey === routeKey ? submission.message : "",
-    mentions: messageOwnerKey === routeKey ? submission.mentions : undefined,
-    newSessionDraft: submission.draftPersistence.captureSubmission(),
-    attachments: submission.attachmentDraft.take(),
-    fallbacks: {},
-  });
+  context.chatAttachmentHandoff.prepare(
+    {
+      reviewPrivateDraft: reviewPrivateComposerDraft,
+      owner,
+      paneId: NEW_SESSION_DRAFT_PANE_ID,
+      scopeKey: routeKey,
+      message: messageOwnerKey === routeKey ? submission.message : "",
+      mentions: messageOwnerKey === routeKey ? submission.mentions : undefined,
+      newSessionDraft: submission.draftPersistence.captureSubmission(),
+      attachments: submission.attachmentDraft.take(),
+      fallbacks: {},
+    },
+    createChatAttachmentHandoff,
+  );
 }
 
 export function restoreDraft(

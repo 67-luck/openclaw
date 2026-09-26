@@ -20,7 +20,7 @@ import type {
 } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { createApplicationTheme } from "../../app/bootstrap-theme.ts";
-import { createChatAttachmentHandoff } from "../../app/chat-attachment-handoff.ts";
+import { createApplicationChatAttachmentHandoff } from "../../app/chat-attachment-handoff-owner.ts";
 import { createChatSubmissions } from "../../app/chat-submissions.ts";
 import { createConnectionBootstrapCoordinator } from "../../app/connection-bootstrap.ts";
 import type { ApplicationContext } from "../../app/context.ts";
@@ -235,7 +235,7 @@ type FixtureContextServices =
 function withLiveCapabilities(
   context: Omit<ApplicationContext, FixtureContextServices> & { sessions?: SessionCapability },
 ): ApplicationContext {
-  const chatAttachmentHandoff = createChatAttachmentHandoff(context.gateway);
+  const chatAttachmentHandoff = createApplicationChatAttachmentHandoff(context.gateway);
   const connectionBootstrap = createConnectionBootstrapCoordinator();
   const synchronizeBootstrap = (snapshot: ApplicationContext["gateway"]["snapshot"]) =>
     connectionBootstrap.synchronize({

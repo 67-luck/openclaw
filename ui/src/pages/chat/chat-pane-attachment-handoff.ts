@@ -1,3 +1,4 @@
+import { createChatAttachmentHandoff } from "../../app/chat-attachment-handoff.ts";
 import type { ChatInputRegion } from "../../app/chat-input-owner.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { ChatAttachment } from "../../lib/chat/chat-types.ts";
@@ -272,20 +273,23 @@ export function preparePaneStagedAttachments(
   draftRevision: number,
 ): void {
   const attachments = [...state.chatAttachments];
-  context.chatAttachmentHandoff.prepare({
-    reviewPrivateDraft: reviewPrivateComposerDraft,
-    ...handoffKey(paneId, state, owner),
-    attachments,
-    fallbacks: state.chatComposerFallbackByScope,
-    message: state.chatMessage,
-    mentions: state.chatMentions,
-    goalMode: state.chatGoalDraftMode,
-    draftRevision,
-    incognito: isIncognitoComposerScope(
-      state,
-      resolveUiConversationIdentity(state, state.sessionKey),
-    ),
-  });
+  context.chatAttachmentHandoff.prepare(
+    {
+      reviewPrivateDraft: reviewPrivateComposerDraft,
+      ...handoffKey(paneId, state, owner),
+      attachments,
+      fallbacks: state.chatComposerFallbackByScope,
+      message: state.chatMessage,
+      mentions: state.chatMentions,
+      goalMode: state.chatGoalDraftMode,
+      draftRevision,
+      incognito: isIncognitoComposerScope(
+        state,
+        resolveUiConversationIdentity(state, state.sessionKey),
+      ),
+    },
+    createChatAttachmentHandoff,
+  );
 }
 
 export function discardStateStagedAttachments(state: ChatPageHost | undefined): void {
