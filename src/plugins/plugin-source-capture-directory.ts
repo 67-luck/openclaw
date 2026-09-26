@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { resolveStateDir } from "../config/state-dir.js";
 import { hasErrnoCode } from "../infra/errno.js";
+import { isPathInside, normalizeWindowsPathPreservingCase } from "../infra/path-guards.js";
 import {
   tryAcquireExclusiveSqliteCoordinator,
   type SqliteCoordinatorLease,
@@ -23,38 +24,73 @@ type Instance = {
   references: number;
   pendingNative: Set<string>;
   closing?: boolean;
-  timer: ReturnType<typeof setInterval>;
+  timer?: ReturnType<typeof setInterval>;
   root?: string;
   managedRoot?: string;
   lease?: SqliteCoordinatorLease;
 };
-const { instances, ownedRoots, nativeReferences, retiringNativeRoots, sweeps, warningBackoff } =
-  resolveGlobalSingleton(Symbol.for("openclaw.pluginSourceCaptureInstances"), () => {
-    process.once("exit", () => {
-      // Explicit exits cannot await generation disposal. These native leases belong
-      // only to this exiting process; worker overrides remain with their parent.
-      for (const [key, instance] of instances) {
-        try {
-          const root = retireInstance(key, instance);
-          if (root) {
-            removeInstanceSync(root, instance.pendingNative);
-          }
-        } catch (error) {
-          process.stderr.write(`Plugin source capture exit cleanup failed: ${String(error)}\n`);
+const {
+  instances,
+  ownedRoots,
+  nativeReferences,
+  retiringNativeRoots,
+  nativeLoadPaths,
+  retainedRoots,
+  sweeps,
+  warningBackoff,
+} = resolveGlobalSingleton(Symbol.for("openclaw.pluginSourceCaptureInstances"), () => {
+  const observedNativePaths = new Set<string>();
+  const loadAddon = process.dlopen.bind(process);
+  // Node keeps main-thread addons loaded: https://github.com/nodejs/node/blob/v24.8.0/src/env.cc#L1050
+  // Windows mapped-image unlink fails (access denied becomes EPERM):
+  // https://github.com/libuv/libuv/blob/v1.51.0/src/win/fs.c#L1172
+  // https://github.com/libuv/libuv/blob/v1.51.0/src/win/error.c#L158
+  // Record before initialization: it can throw or reenter cleanup with the image already mapped.
+  // Full diagnostic reports race Windows DbgHelp across workers; cleanup consumes load facts only.
+  process.dlopen = (...args) => {
+    try {
+      const file = fs.realpathSync.native(args[1]);
+      observedNativePaths.add(
+        process.platform === "win32" ? normalizeWindowsPathPreservingCase(file) : file,
+      );
+    } catch {
+      // Observation must not replace the native loader's return or original error.
+    }
+    return loadAddon(...args);
+  };
+  process.once("exit", () => {
+    // Explicit exits cannot await generation disposal. These native leases belong
+    // only to this exiting process; worker overrides remain with their parent.
+    for (const [key, instance] of instances) {
+      try {
+        const root = retireInstance(key, instance);
+        if (root) {
+          removeInstanceSync(root, instance.pendingNative);
         }
+      } catch (error) {
+        process.stderr.write(`Plugin source capture exit cleanup failed: ${String(error)}\n`);
       }
-    });
-    return {
-      instances: new Map<string, Instance>(),
-      ownedRoots: new Set<string>(),
-      nativeReferences: new Map<string, number>(),
-      retiringNativeRoots: new Set<string>(),
-      sweeps: new Map<string, Promise<void>>(),
-      warningBackoff: new Map<string, { next: number; delay: number }>(),
-    };
+    }
   });
+  return {
+    instances: new Map<string, Instance>(),
+    ownedRoots: new Set<string>(),
+    nativeReferences: new Map<string, number>(),
+    retiringNativeRoots: new Set<string>(),
+    nativeLoadPaths: observedNativePaths,
+    retainedRoots: new Set<string>(),
+    sweeps: new Map<string, Promise<void>>(),
+    warningBackoff: new Map<string, { next: number; delay: number }>(),
+  };
+});
 
 function retireInstance(key: string, instance: Instance): string | undefined {
+  if (instance.root && retainLoadedPluginSourceCapture(instance.root)) {
+    instance.references = 0;
+    clearInterval(instance.timer);
+    instance.timer = undefined;
+    return undefined;
+  }
   instance.closing = true;
   // Keep custody and the retryable handle if native close fails.
   instance.lease?.release();
@@ -75,7 +111,25 @@ function warn(error: unknown) {
   process.emitWarning(`Plugin source capture cleanup: ${String(error)}`);
 }
 
+/** Physical module lifetime outlives registration and CommonJS cache eviction. */
+export function retainLoadedPluginSourceCapture(directory: string): boolean {
+  if (![...nativeLoadPaths].some((file) => isPathInside(directory, file))) {
+    return false;
+  }
+  const retained = [...ownedRoots].find((root) => isPathInside(root, directory)) ?? directory;
+  if (
+    ![...retainedRoots].some((root) => isPathInside(root, retained) || isPathInside(retained, root))
+  ) {
+    warn(`retained-by-loaded-module: ${retained}; cleanup deferred until the next startup`);
+  }
+  retainedRoots.add(retained);
+  return true;
+}
+
 function removeInstanceSync(root: string, pendingNative: Iterable<string> = []): void {
+  if (retainLoadedPluginSourceCapture(root)) {
+    return;
+  }
   // A sharing violation must leave the coordinator beside any retained payload.
   fs.rmSync(path.join(root, "captures"), { recursive: true, force: true });
   for (const directory of pendingNative) {
@@ -95,6 +149,7 @@ async function reclaimInstances(
     retainedPaths: ReadonlySet<string>;
     assertCurrent: () => void;
     removed: string[];
+    startup?: boolean;
   },
 ): Promise<void> {
   let entries: fs.Dirent[];
@@ -119,12 +174,12 @@ async function reclaimInstances(
       const changed = legacy
         ? Math.max(stat.mtimeMs, stat.ctimeMs, stat.birthtimeMs)
         : stat.mtimeMs;
-      if (!stat.isDirectory() || changed > cutoff) {
+      if (!stat.isDirectory() || (changed > cutoff && !nativeMaintenance?.startup)) {
         continue;
       }
       const canonical = await fsPromises.realpath(directory);
       // Opening/closing a second native connection can disturb this process's POSIX locks.
-      if (ownedRoots.has(canonical)) {
+      if (ownedRoots.has(canonical) || retainLoadedPluginSourceCapture(canonical)) {
         continue;
       }
       const leasePath = path.join(canonical, LEASE_FILE);
@@ -145,6 +200,9 @@ async function reclaimInstances(
         continue;
       }
       if (!leaseStat) {
+        if (changed > cutoff) {
+          continue;
+        }
         // Native admissions can outlive their producer; a missing lease is not
         // evidence that their published payload is disposable legacy scratch.
         if (nativeStat) {
@@ -268,6 +326,7 @@ export async function prunePluginNativeCaptureDirectories(
   stateDir: string,
   retainedPaths: ReadonlySet<string>,
   assertCurrent: () => void,
+  options: { startup?: boolean } = {},
 ) {
   const removed: string[] = [];
   const warnings: string[] = [];
@@ -276,7 +335,7 @@ export async function prunePluginNativeCaptureDirectories(
     path.resolve(instanceDirectory(stateDir)),
     (error) => warnings.push(String(error)),
     false,
-    { retainedPaths, assertCurrent, removed },
+    { retainedPaths, assertCurrent, removed, ...options },
   );
   return { removed, warnings };
 }
@@ -440,12 +499,14 @@ export function retainPluginSourceCaptureInstance(stateDir = resolveStateDir()) 
     );
   }
   if (!instance) {
-    const timer = runInPluginSourceCaptureContext(() =>
+    instance = { references: 0, pendingNative: new Set() };
+    instances.set(key, instance);
+  }
+  if (!instance.timer) {
+    instance.timer = runInPluginSourceCaptureContext(() =>
       setInterval(() => void sweepPluginSourceCaptureDirectories(key), CAPTURE_GRACE_MS),
     );
-    timer.unref();
-    instance = { references: 0, timer, pendingNative: new Set() };
-    instances.set(key, instance);
+    instance.timer.unref();
     void sweepPluginSourceCaptureDirectories(key);
   }
   instance.references += 1;
@@ -533,7 +594,7 @@ export function createPluginNativeCaptureRoot(stateDir = resolveStateDir()) {
       },
       dispose() {
         if (!disposed) {
-          if (!committed) {
+          if (!committed && !retainLoadedPluginSourceCapture(root.directory)) {
             fs.rmSync(root.directory, { recursive: true, force: true });
           }
           disposed = true;
@@ -542,7 +603,7 @@ export function createPluginNativeCaptureRoot(stateDir = resolveStateDir()) {
       },
       async disposeAsync() {
         if (!disposed) {
-          if (!committed) {
+          if (!committed && !retainLoadedPluginSourceCapture(root.directory)) {
             await removeTemporaryArtifacts(root.directory, "Plugin native capture");
           }
           disposed = true;
@@ -565,7 +626,9 @@ export function createPluginSourceCaptureRoot(stateDir: string, prefix: string) 
       directory,
       managedRoot: instance.managedRoot,
       release: async () => {
-        await removeTemporaryArtifacts(directory, "Plugin source worker");
+        if (!retainLoadedPluginSourceCapture(directory)) {
+          await removeTemporaryArtifacts(directory, "Plugin source worker");
+        }
         await instance.releaseAsync();
       },
     };

@@ -1,10 +1,13 @@
 /** CLI integration coverage for plugin commands, setup, status, and registry flows. */
 import { Command } from "commander";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/config.js";
-import { createPluginCliLoadSession } from "./cli-registry-loader.js";
+import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-readonly.js";
+import { createPluginCliLoadSession, loadPluginCliDescriptors } from "./cli-registry-loader.js";
 
 const mocks = vi.hoisted(() => ({
+  cleanupCaptures: vi.fn(async () => {}),
   memoryRegister: vi.fn(),
   otherRegister: vi.fn(),
   memoryListAction: vi.fn(),
@@ -16,6 +19,10 @@ const mocks = vi.hoisted(() => ({
   loadConfig: vi.fn(),
   getRuntimeConfigSnapshot: vi.fn(),
   readConfigFileSnapshot: vi.fn(),
+}));
+
+vi.mock("../commands/startup-plugin-source-captures.js", () => ({
+  cleanupStartupPluginSourceCaptures: mocks.cleanupCaptures,
 }));
 
 vi.mock("./loader.js", () => ({
@@ -202,6 +209,7 @@ describe("registerPluginCliCommands", () => {
   });
 
   beforeEach(() => {
+    mocks.cleanupCaptures.mockReset().mockResolvedValue(undefined);
     mocks.memoryRegister.mockReset();
     mocks.memoryRegister.mockImplementation(({ program }: { program: Command }) => {
       const memory = program.command("memory").description("Memory commands");
@@ -239,6 +247,54 @@ describe("registerPluginCliCommands", () => {
       config: {},
       runtimeConfig: {},
     });
+  });
+
+  it.each(["descriptors", "registration"])(
+    "settles startup capture cleanup before %s executes plugin code",
+    async (kind) => {
+      const started = createDeferred();
+      const finish = createDeferred();
+      mocks.cleanupCaptures.mockImplementationOnce(async () => {
+        started.resolve();
+        await finish.promise;
+      });
+      const session = createPluginCliLoadSession();
+      const config = {};
+      const program = createProgram();
+      const load = () =>
+        kind === "descriptors"
+          ? loadPluginCliDescriptors({ cfg: config, session })
+          : registerPluginCliCommands(program, config, undefined, undefined, { session });
+      try {
+        const pending = load();
+        await started.promise;
+        expect(mocks.loadOpenClawPluginCliRegistry).not.toHaveBeenCalled();
+        expect(mocks.loadOpenClawPlugins).not.toHaveBeenCalled();
+        finish.resolve();
+        await pending;
+        await load();
+        expect(mocks.cleanupCaptures).toHaveBeenCalledOnce();
+        expect(
+          kind === "descriptors" ? mocks.loadOpenClawPluginCliRegistry : mocks.loadOpenClawPlugins,
+        ).toHaveBeenCalledOnce();
+      } finally {
+        finish.resolve();
+        session.close();
+      }
+    },
+  );
+
+  it("leaves observational captures untouched without consuming runtime cleanup", async () => {
+    const session = createPluginCliLoadSession();
+    const params = { cfg: {}, session };
+    try {
+      await withArtifactPreservingStateReads(() => loadPluginCliDescriptors(params));
+      expect(mocks.cleanupCaptures).not.toHaveBeenCalled();
+      await loadPluginCliDescriptors(params);
+      expect(mocks.cleanupCaptures).toHaveBeenCalledOnce();
+    } finally {
+      session.close();
+    }
   });
 
   it("skips plugin CLI registrars when commands already exist", async () => {

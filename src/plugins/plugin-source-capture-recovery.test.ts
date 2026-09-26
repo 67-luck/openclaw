@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as notes from "../../packages/terminal-core/src/note.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { noteLegacyPluginSourceCaptures } from "../commands/doctor-plugin-source-captures.js";
+import { cleanupStartupPluginSourceCaptures } from "../commands/startup-plugin-source-captures.js";
 import * as census from "../infra/openclaw-process-census.js";
 import * as coordinator from "../infra/sqlite-coordinator.js";
 import { acquireGatewayMaintenanceCoordinator } from "../infra/state-database-coordinator.js";
@@ -115,133 +116,150 @@ it.each(["sync", "async"])(
   },
 );
 
-it("reclaims only unreferenced native roots under maintenance while preserving live custody", async () => {
-  const stateDir = temp.make("native-capture-maintenance-");
-  const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
-  const note = vi.spyOn(notes, "note").mockImplementation(() => {});
-  const inspectProcesses = vi.spyOn(census, "inspectOtherOpenClawProcesses");
-  const realpath = fsPromises.realpath.bind(fsPromises);
-  vi.spyOn(fsPromises, "realpath").mockImplementation(async (target) =>
-    realpath(String(target) === "/tmp" ? tmpdir() : target),
-  );
-  const runCaptureReport = async () => {
-    note.mockClear();
-    await noteLegacyPluginSourceCaptures(env, true);
-    return note.mock.calls.map(([message]) => String(message)).join("\n");
-  };
-  const duringMaintenance = async () => {
-    const lease = acquireGatewayMaintenanceCoordinator({
-      databasePath: path.join(stateDir, "openclaw.sqlite"),
-      runtimeDirectory: path.join(stateDir, "locks"),
-    });
-    const scope = createOpenClawDatabaseMaintenanceScope(lease.createSchemaFenceDelegate);
-    try {
-      return await scope.run(runCaptureReport);
-    } finally {
-      await scope.close();
-      lease.release();
-    }
-  };
-  const write = (root: string, filename: string, contents: string) => {
-    const file = path.join(root, filename);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, contents);
-    return file;
-  };
-  const referenced = createPluginNativeCaptureRoot(stateDir);
-  const captured = write(referenced.directory, "content/bin/native", "published native bytes");
-  referenced.commit();
-  referenced.dispose();
-  const orphan = createPluginNativeCaptureRoot(stateDir);
-  write(orphan.directory, "package/bin/native", "superseded native bytes");
-  orphan.commit();
-  orphan.dispose();
-  const warm = createPluginNativeCaptureRoot(stateDir);
-  const warmFile = write(warm.directory, "package/bin/native", "warm generation bytes");
-  warm.commit();
-  warm.dispose();
-  const releaseWarm = retainPluginNativeCapturePath(warmFile);
-  const live = createPluginNativeCaptureRoot(stateDir);
-  const liveFile = write(live.directory, "package/bin/native", "currently in use");
-  await writePersistedInstalledPluginIndex(
-    {
-      version: 1,
-      hostContractVersion: "fixture",
-      compatRegistryVersion: "fixture",
-      migrationVersion: 1,
-      policyHash: "fixture",
-      generatedAtMs: Date.now(),
-      installRecords: {},
-      plugins: [
-        {
-          pluginId: "fixture",
-          manifestPath: "/fixture/openclaw.plugin.json",
-          manifestHash: "fixture",
-          rootDir: "/fixture",
-          origin: "global",
-          enabled: true,
-          startup: { sidecar: false, memory: false, agentHarnesses: [] },
-          compat: [],
-          sourceAdmissions: {
-            fixture: {
-              signature: "fixture",
-              sourceDigest: "a".repeat(64),
-              nativeArtifacts: {
-                "bin/native": {
-                  sourceIdentity: "fixture",
-                  contentHash: "b".repeat(64),
-                  sizeBytes: 22,
-                  capturedPath: captured,
-                  namespace: referenced.directory,
-                  capturedIdentity: "fixture",
+it.each(["doctor", "startup"])(
+  "%s reclaims only unreferenced native roots while preserving live custody",
+  async (mode) => {
+    const stateDir = temp.make("native-capture-maintenance-");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    const note = vi.spyOn(notes, "note").mockImplementation(() => {});
+    const warning = vi.spyOn(process, "emitWarning");
+    const inspectProcesses = vi.spyOn(census, "inspectOtherOpenClawProcesses");
+    const realpath = fsPromises.realpath.bind(fsPromises);
+    vi.spyOn(fsPromises, "realpath").mockImplementation(async (target) =>
+      realpath(String(target) === "/tmp" ? tmpdir() : target),
+    );
+    const runCaptureReport = async () => {
+      note.mockClear();
+      if (mode === "startup") {
+        await cleanupStartupPluginSourceCaptures(env);
+      } else {
+        await noteLegacyPluginSourceCaptures(env, true);
+      }
+      return note.mock.calls.map(([message]) => String(message)).join("\n");
+    };
+    const duringMaintenance = async () => {
+      const lease = acquireGatewayMaintenanceCoordinator({
+        databasePath: path.join(stateDir, "openclaw.sqlite"),
+        runtimeDirectory: path.join(stateDir, "locks"),
+      });
+      const scope = createOpenClawDatabaseMaintenanceScope(lease.createSchemaFenceDelegate);
+      try {
+        return await scope.run(runCaptureReport);
+      } finally {
+        await scope.close();
+        lease.release();
+      }
+    };
+    const write = (root: string, filename: string, contents: string) => {
+      const file = path.join(root, filename);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, contents);
+      return file;
+    };
+    const referenced = createPluginNativeCaptureRoot(stateDir);
+    const captured = write(referenced.directory, "content/bin/native", "published native bytes");
+    referenced.commit();
+    referenced.dispose();
+    const orphan = createPluginNativeCaptureRoot(stateDir);
+    write(orphan.directory, "package/bin/native", "superseded native bytes");
+    orphan.commit();
+    orphan.dispose();
+    const warm = createPluginNativeCaptureRoot(stateDir);
+    const warmFile = write(warm.directory, "package/bin/native", "warm generation bytes");
+    warm.commit();
+    warm.dispose();
+    const releaseWarm = retainPluginNativeCapturePath(warmFile);
+    const live = createPluginNativeCaptureRoot(stateDir);
+    const liveFile = write(live.directory, "package/bin/native", "currently in use");
+    await writePersistedInstalledPluginIndex(
+      {
+        version: 1,
+        hostContractVersion: "fixture",
+        compatRegistryVersion: "fixture",
+        migrationVersion: 1,
+        policyHash: "fixture",
+        generatedAtMs: Date.now(),
+        installRecords: {},
+        plugins: [
+          {
+            pluginId: "fixture",
+            manifestPath: "/fixture/openclaw.plugin.json",
+            manifestHash: "fixture",
+            rootDir: "/fixture",
+            origin: "global",
+            enabled: true,
+            startup: { sidecar: false, memory: false, agentHarnesses: [] },
+            compat: [],
+            sourceAdmissions: {
+              fixture: {
+                signature: "fixture",
+                sourceDigest: "a".repeat(64),
+                nativeArtifacts: {
+                  "bin/native": {
+                    sourceIdentity: "fixture",
+                    contentHash: "b".repeat(64),
+                    sizeBytes: 22,
+                    capturedPath: captured,
+                    namespace: referenced.directory,
+                    capturedIdentity: "fixture",
+                  },
                 },
-              },
-              nativeNamespaces: {
-                [referenced.directory]: {
-                  sourceDirectory: "/fixture",
-                  capturedRoot: referenced.directory,
-                  managed: false,
-                  members: {
-                    "bin/native": {
-                      source: "/fixture/bin/native",
-                      sourceIdentity: "fixture",
-                      capturedIdentity: "fixture",
-                      boundaryChecked: false,
-                      contentHash: "b".repeat(64),
-                      sizeBytes: 22,
+                nativeNamespaces: {
+                  [referenced.directory]: {
+                    sourceDirectory: "/fixture",
+                    capturedRoot: referenced.directory,
+                    managed: false,
+                    members: {
+                      "bin/native": {
+                        source: "/fixture/bin/native",
+                        sourceIdentity: "fixture",
+                        capturedIdentity: "fixture",
+                        boundaryChecked: false,
+                        contentHash: "b".repeat(64),
+                        sizeBytes: 22,
+                      },
                     },
                   },
                 },
               },
             },
           },
-        },
-      ],
-      diagnostics: [],
-    },
-    { stateDir },
-  );
-  vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1_000);
-  try {
-    inspectProcesses.mockReturnValue({ pids: [4242] });
-    expect(await duringMaintenance()).toContain("PIDs: 4242");
-    expect(fs.existsSync(orphan.directory)).toBe(true);
-    inspectProcesses.mockReturnValue({ pids: [] });
-    const output = await duringMaintenance();
-    expect(output).toContain("Removed 1 unreferenced native plugin capture root(s).");
-    expect(fs.existsSync(orphan.directory)).toBe(false);
-    expect(fs.readFileSync(captured, "utf8")).toBe("published native bytes");
-    expect(fs.readFileSync(warmFile, "utf8")).toBe("warm generation bytes");
-    expect(fs.readFileSync(liveFile, "utf8")).toBe("currently in use");
-    releaseWarm();
-    await duringMaintenance();
-    expect(fs.existsSync(warm.directory)).toBe(false);
-  } finally {
-    releaseWarm();
-    live.dispose();
-  }
-});
+        ],
+        diagnostics: [],
+      },
+      { stateDir },
+    );
+    if (mode === "doctor") {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1_000);
+    }
+    try {
+      if (mode === "doctor") {
+        inspectProcesses.mockReturnValue({ pids: [4242] });
+        expect(await duringMaintenance()).toContain("PIDs: 4242");
+        expect(fs.existsSync(orphan.directory)).toBe(true);
+      }
+      inspectProcesses.mockReturnValue({ pids: [] });
+      const output = await duringMaintenance();
+      if (mode === "doctor") {
+        expect(output).toContain("Removed 1 unreferenced native plugin capture root(s).");
+      } else {
+        expect(warning).not.toHaveBeenCalled();
+        expect(inspectProcesses).not.toHaveBeenCalled();
+      }
+      expect(fs.existsSync(orphan.directory)).toBe(false);
+      expect(fs.readFileSync(captured, "utf8")).toBe("published native bytes");
+      expect(fs.readFileSync(warmFile, "utf8")).toBe("warm generation bytes");
+      expect(fs.readFileSync(liveFile, "utf8")).toBe("currently in use");
+      releaseWarm();
+      await duringMaintenance();
+      expect(fs.existsSync(warm.directory)).toBe(false);
+    } finally {
+      releaseWarm();
+      live.dispose();
+    }
+  },
+);
 
 it.each(["sync", "async"])("preserves custody after partial %s disposal", async (mode) => {
   const stateDir = temp.make("capture-recovery-state-");

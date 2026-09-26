@@ -10,6 +10,7 @@ import { getRuntimeConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { isArtifactPreservingStateRead } from "../state/openclaw-state-db-readonly.js";
 import { resolveManifestActivationPluginIds } from "./activation-planner.js";
 import { resolvePluginActivationSourceConfig } from "./activation-source-config.js";
 import { createPluginCliGatewayNodesRuntime } from "./cli-gateway-nodes-runtime.js";
@@ -67,6 +68,7 @@ type PreparedPluginCliLoad = {
   assertCurrent: () => void;
   withCache: <T>(run: () => T) => T;
   resources?: CliPluginInvocationResources;
+  sourceCaptureCleanup?: Promise<void>;
   metadataRegistry?: Promise<PluginRegistry>;
   entries?: Promise<PluginCliCommandGroupEntry[]>;
 };
@@ -276,11 +278,27 @@ async function resolvePrimaryCommandPluginIds(
   return listPluginCliRootOwnerIds(registry, normalizedPrimary);
 }
 
+/** Both descriptor callbacks and full registration can load native addons. */
+async function preparePluginCliSourceCaptures(prepared: PreparedPluginCliLoad): Promise<void> {
+  prepared.assertCurrent();
+  // A read-only inspection must not consume the later runtime cleanup opportunity.
+  if (isArtifactPreservingStateRead()) {
+    return;
+  }
+  await (prepared.sourceCaptureCleanup ??=
+    import("../commands/startup-plugin-source-captures.js").then(
+      ({ cleanupStartupPluginSourceCaptures }) =>
+        cleanupStartupPluginSourceCaptures(prepared.context.env),
+    ));
+  prepared.assertCurrent();
+}
+
 async function loadPluginCliMetadataRegistryWithContext(
   prepared: PreparedPluginCliLoad,
   params?: { primaryCommand?: string },
   loaderOptions?: PluginCliLoaderOptions,
 ): Promise<PluginRegistry> {
+  await preparePluginCliSourceCaptures(prepared);
   const onlyPluginIds = resolvePrimaryCommandManifestPluginIds(
     prepared.context,
     params?.primaryCommand,
@@ -305,6 +323,7 @@ async function loadPluginCliCommandRegistryWithContext(params: {
   primaryCommand?: string;
   loaderOptions?: PluginCliLoaderOptions;
 }): Promise<PluginRegistry> {
+  await preparePluginCliSourceCaptures(params.prepared);
   const { context } = params.prepared;
   let onlyPluginIds: string[] | undefined;
   try {

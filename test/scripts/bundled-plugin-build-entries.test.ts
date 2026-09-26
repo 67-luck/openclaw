@@ -130,6 +130,7 @@ describe("bundled plugin build entries", () => {
     ["openai", "realtime-quicksilver-audio.worker", false],
     ["openai", "realtime-quicksilver-socket.worker", false],
     ["discord", "src/voice/audio-worker.runtime", true],
+    ["memory-lancedb", "lancedb-runtime", true],
   ] as const)("emits %s/%s through its owning build", (id, worker, isolated) => {
     const entry = collectSourceCheckoutPluginBuildEntries().find((plugin) => plugin.id === id);
     const plan = resolvePluginNpmRuntimeBuildPlan({ packageDir: `extensions/${id}` });

@@ -435,6 +435,7 @@ async function runDoctorConfigPreflightOperation(
         env: startupMigrationEnv,
         measure: options.measure,
         converge: !gatewayStartupCheckpointRequired || shouldRecordStartupCheckpoint,
+        cleanupSourceCaptures: gatewayStartupCheckpointRequired && options.observe !== false,
         lease: startupMigrationLease,
         snapshotRead: { ...configSnapshotRead, snapshot },
         readRefreshedSnapshot: () => readConfigSnapshotForPreflight(false),

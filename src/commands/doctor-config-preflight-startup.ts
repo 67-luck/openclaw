@@ -63,6 +63,7 @@ import {
   resolveStartupConfigSnapshot,
 } from "./doctor/shared/automatic-startup-config-repair.js";
 import type { PluginMigrationInspection } from "./doctor/shared/plugin-migration-availability.js";
+import { cleanupStartupPluginSourceCaptures } from "./startup-plugin-source-captures.js";
 
 /** Admit the same config and state before the lease and again before migration writes. */
 export async function readStartupMigrationSnapshot(params: {
@@ -330,6 +331,7 @@ export async function prepareDoctorMigrationPlugins(params: {
   env: NodeJS.ProcessEnv;
   measure?: ConfigSnapshotReadMeasure;
   converge: boolean;
+  cleanupSourceCaptures?: boolean;
   lease: StartupMigrationLease | undefined;
   snapshotRead: DoctorConfigPreflightPluginSnapshotRead;
   readRefreshedSnapshot: () => Promise<DoctorConfigPreflightPluginSnapshotRead>;
@@ -340,6 +342,9 @@ export async function prepareDoctorMigrationPlugins(params: {
     inspection?: PluginMigrationInspection,
   ) => void;
 }): Promise<DoctorConfigPreflightPluginSnapshotRead> {
+  if (params.cleanupSourceCaptures) {
+    await cleanupStartupPluginSourceCaptures(params.env);
+  }
   if (params.converge) {
     params.lease?.heartbeat();
   }
