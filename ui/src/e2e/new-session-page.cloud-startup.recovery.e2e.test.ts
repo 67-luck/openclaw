@@ -274,6 +274,9 @@ suite.define(() => {
       await expect
         .poll(() => page.locator("#new-session-where-trigger").getAttribute("data-machine-class"))
         .toBe("fast");
+      // Filling the composer does not dismiss the pinned machine chooser.
+      await page.keyboard.press("Escape");
+      await place.locator('[data-value="machine:standard"]').waitFor({ state: "hidden" });
       await page.locator(".new-session-page__message").fill(message);
       await pastePng(page.locator(".new-session-page__message"));
       await expectPastedPngImage(page.getByRole("img", { name: "pixel.png" }));
