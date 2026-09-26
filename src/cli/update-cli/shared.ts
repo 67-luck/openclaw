@@ -106,20 +106,23 @@ export type UpdateWizardOptions = {
   timeout?: string;
 };
 
-export class UpdatePreMutationError extends Error {
+export class UpdatePreMutationError<Reason extends string = string> extends Error {
+  readonly nextAction?: string;
   readonly recoverySteps?: readonly UpdateRecoveryStep[];
   readonly failureFacts: UpdateFailureFact[];
 
   constructor(
-    readonly reason: string,
+    readonly reason: Reason,
     message: string,
     options?: ErrorOptions & {
+      nextAction?: string;
       failureFacts?: readonly UpdateFailureFact[];
       recoverySteps?: readonly UpdateRecoveryStep[];
     },
   ) {
     super(message, options);
     this.name = "UpdatePreMutationError";
+    this.nextAction = options?.nextAction;
     this.recoverySteps = options?.recoverySteps;
     this.failureFacts = normalizeUpdateFailureFacts(
       options?.failureFacts ?? [{ check: reason, code: reason, message }],

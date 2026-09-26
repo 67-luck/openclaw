@@ -12,7 +12,7 @@ import {
 } from "./agent-roster-provenance.js";
 import { cloneEnvWithPlatformSemantics } from "./config-env-vars.js";
 import { resolveManagedUnsetPathsForWrite } from "./config-path-mutation.js";
-import { ConfigIncludeError } from "./includes.js";
+import { ConfigIncludeError, ConfigIncludeReadError } from "./includes.js";
 import { createConfigIoContext, type ConfigIoContext } from "./io.context.js";
 import {
   maybeRecoverSuspiciousConfigRead,
@@ -218,6 +218,9 @@ async function readConfigSnapshotWithPreparation(
         ),
       );
     } catch (error) {
+      if (findStartupMaintenanceRequiredError(error)) {
+        throw error;
+      }
       const message =
         error instanceof ConfigIncludeError
           ? error.message
@@ -233,7 +236,15 @@ async function readConfigSnapshotWithPreparation(
           valid: false,
           runtimeConfig: coerceConfig(effectiveParsed),
           hash: rawHash,
-          issues: [{ path: "", message }],
+          issues: [
+            {
+              path: "",
+              ...(error instanceof ConfigIncludeReadError || !(error instanceof ConfigIncludeError)
+                ? { errorCode: "CONFIG_READ_FAILED" }
+                : {}),
+              message,
+            },
+          ],
           warnings: [],
           legacyIssues: [],
         }),
@@ -483,7 +494,8 @@ async function readConfigSnapshotWithPreparation(
         runtimeConfig: fallbackSourceConfig,
         hash: fallbackHash,
         ...(fallbackRaw === null ? { readError: { code: nodeError?.code ?? null } } : {}),
-        issues: [{ path: "", message }],
+        // Diagnostic classification must not broaden readError's unavailable-source write guard.
+        issues: [{ path: "", errorCode: "CONFIG_READ_FAILED", message }],
         warnings: [],
         legacyIssues: [],
       }),
