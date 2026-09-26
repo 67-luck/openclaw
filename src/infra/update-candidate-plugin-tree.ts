@@ -20,6 +20,7 @@ import {
   relocateRuntimeEntry,
   type RuntimeRelocation,
 } from "./update-runtime-relocation.js";
+import { isGitRuntimeStagingName } from "./update-runtime-staging.js";
 
 const entryFields = {
   path: z.string(),
@@ -116,6 +117,7 @@ export async function prepareUpdateCandidatePluginTrees(params: {
   const privateRoot = resolvePathViaExistingAncestorSync(path.resolve(params.targetStateDir));
   const candidateRoot = resolvePathViaExistingAncestorSync(path.resolve(params.candidateRoot));
   const scanned = new Set<string>();
+  const staging = new Set<string>();
   const footprints = new Map<string, UpdateCandidatePluginEntry>();
   const edges = new Map<string, { target: string; real: string }>();
   const hosts = new Set<string>();
@@ -246,6 +248,7 @@ export async function prepareUpdateCandidatePluginTrees(params: {
   }
   async function scan(directory: string): Promise<void> {
     assertUpdateCandidatePluginCopySource(directory, privateRoot);
+    staging.delete(directory);
     if (scanned.has(directory)) {
       return;
     }
@@ -305,7 +308,13 @@ export async function prepareUpdateCandidatePluginTrees(params: {
         // The complete-wave owner pass records the authoritative host identity.
         continue;
       } else if (entry.isDirectory()) {
-        await scan(file);
+        if (isGitRuntimeStagingName(entry.name) && !roots.has(file)) {
+          // Transaction links describe their final location. Incidental inventory
+          // must not read candidate or rollback contents as live dependencies.
+          staging.add(file);
+        } else {
+          await scan(file);
+        }
       } else {
         const measured = await measureEntry(file);
         if (measured.kind !== "symlink") {
@@ -397,6 +406,12 @@ export async function prepareUpdateCandidatePluginTrees(params: {
     await refreshHostEdges();
     let added = false;
     for (const [file, { real }] of edges) {
+      const directory = [...staging].find((root) => isPathInside(root, real));
+      if (directory && staging.delete(directory)) {
+        // Explicit links still demand their source bytes and normal validation.
+        await scan(directory);
+        added = true;
+      }
       if (
         (covered(real) && !(insideHost(real) && isRetainedDependency(real))) ||
         hostRoots.has(real) ||

@@ -13,7 +13,7 @@ import {
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
 
-async function fixture(hardlink = false) {
+async function fixture(hardlink = false, prepare?: (source: string) => Promise<void>) {
   const root = await fs.realpath(dirs.make("candidate-plugin-copy-"));
   const source = path.join(root, "source");
   const targetStateDir = path.join(root, "snapshot");
@@ -27,6 +27,7 @@ async function fixture(hardlink = false) {
   if (hardlink) {
     await fs.link(file, `${file}.linked`);
   }
+  await prepare?.(source);
   const plan = await prepareUpdateCandidatePluginTrees({
     roots: new Map([[source, destination]]),
     project: (entry) => path.join(destination, path.relative(source, entry)),
@@ -157,3 +158,121 @@ it.each(["mode", "same-size content with changed mtime", "identity"] as const)(
     expect(await fs.readdir(f.destination)).toEqual([]);
   },
 );
+
+it("copies a linked workspace dependency without reading or changing Git update transactions", async () => {
+  let dependency = "";
+  let abandoned = "";
+  let rollback = "";
+  const sdkLink = "../../../../packages/plugin-sdk";
+  const f = await fixture(false, async (source) => {
+    const workspace = path.join(path.dirname(source), "workspace");
+    dependency = path.join(workspace, "extensions", "a2a");
+    const sdk = path.join(workspace, "packages", "plugin-sdk");
+    await fs.mkdir(path.join(dependency, "node_modules", "@openclaw"), { recursive: true });
+    await fs.mkdir(sdk, { recursive: true });
+    await fs.writeFile(path.join(sdk, "package.json"), '{"name":"@openclaw/plugin-sdk"}');
+    await fs.writeFile(path.join(dependency, "package.json"), '{"name":"workspace-dependency"}');
+    await fs.writeFile(path.join(dependency, "data.txt"), "live dependency");
+    await fs.symlink(sdkLink, path.join(dependency, "node_modules", "@openclaw", "plugin-sdk"));
+    await fs.mkdir(path.join(source, "node_modules"));
+    await fs.symlink(
+      dependency,
+      path.join(source, "node_modules", "workspace-dependency"),
+      "junction",
+    );
+
+    // Promotion links describe the final destination, not the intermediate candidate directory.
+    abandoned = path.join(
+      dependency,
+      "node_modules.openclaw-update-00000000-0000-4000-8000-000000000009.tmp",
+    );
+    const stagedSdk = path.join(abandoned, "candidate", "@openclaw", "plugin-sdk");
+    await fs.mkdir(path.dirname(stagedSdk), { recursive: true });
+    await fs.symlink(sdkLink, stagedSdk);
+    rollback = path.join(
+      dependency,
+      "dist.openclaw-update-00000000-0000-4000-8000-000000000010.tmp",
+    );
+    await fs.mkdir(path.join(rollback, "previous"), { recursive: true });
+    await fs.writeFile(path.join(rollback, "previous", "keep.txt"), "rollback bytes");
+    await fs.mkdir(path.join(dependency, "ordinary.tmp"));
+    await fs.writeFile(path.join(dependency, "ordinary.tmp", "asset.txt"), "plugin asset");
+  });
+  await f.copy();
+  const copied = path.join(f.destination, "node_modules", "workspace-dependency");
+  expect(await fs.readFile(path.join(copied, "data.txt"), "utf8")).toBe("live dependency");
+  expect(await fs.readFile(path.join(copied, "ordinary.tmp", "asset.txt"), "utf8")).toBe(
+    "plugin asset",
+  );
+  expect(await fs.readdir(copied)).not.toContain(path.basename(abandoned));
+  expect(await fs.readdir(copied)).not.toContain(path.basename(rollback));
+  expect(await fs.readlink(path.join(abandoned, "candidate", "@openclaw", "plugin-sdk"))).toBe(
+    sdkLink,
+  );
+  expect(await fs.readFile(path.join(rollback, "previous", "keep.txt"), "utf8")).toBe(
+    "rollback bytes",
+  );
+  await fs.writeFile(path.join(copied, "data.txt"), "private candidate data");
+  expect(await fs.readFile(path.join(dependency, "data.txt"), "utf8")).toBe("live dependency");
+});
+
+it.each(["ordinary.tmp", "node_modules.openclaw-update-operator.tmp"])(
+  "still rejects a missing dependency beneath %s",
+  async (directory) => {
+    await expect(
+      fixture(false, async (source) => {
+        const nested = path.join(source, directory);
+        await fs.mkdir(nested);
+        await fs.symlink(
+          path.join(path.dirname(source), "missing-dependency"),
+          path.join(nested, "required"),
+        );
+      }),
+    ).rejects.toThrow("Cannot privately copy plugin dependency");
+  },
+);
+
+it("retains explicitly linked inputs inside a Git transaction namespace", async () => {
+  const name = "store.openclaw-update-00000000-0000-4000-8000-000000000011.tmp";
+  const f = await fixture(false, async (source) => {
+    await fs.mkdir(path.join(source, name));
+    await fs.writeFile(path.join(source, name, "required.txt"), "explicit dependency");
+    await fs.symlink(path.join(name, "required.txt"), path.join(source, "required.txt"));
+  });
+  await f.copy();
+  expect(await fs.readFile(path.join(f.destination, "required.txt"), "utf8")).toBe(
+    "explicit dependency",
+  );
+});
+
+it("validates explicitly reached transaction contents instead of ignoring their broken dependencies", async () => {
+  await expect(
+    fixture(false, async (source) => {
+      const name = "store.openclaw-update-00000000-0000-4000-8000-000000000011.tmp";
+      const directory = path.join(source, name);
+      await fs.mkdir(directory);
+      await fs.symlink(
+        path.join(path.dirname(source), "missing-dependency"),
+        path.join(directory, "required"),
+      );
+      await fs.symlink(name, path.join(source, "explicit"), "junction");
+    }),
+  ).rejects.toThrow("Cannot privately copy plugin dependency");
+});
+
+it("recognizes only the producer's UUID-v4 transaction namespace", async () => {
+  const { gitRuntimeStagingPath, isGitRuntimeStagingName } =
+    await import("./update-runtime-staging.js");
+  const generated = gitRuntimeStagingPath(path.join("custom", "virtual-store"));
+  expect(isGitRuntimeStagingName(path.basename(generated))).toBe(true);
+  for (const name of [
+    "ordinary.tmp",
+    "node_modules.openclaw-update-operator.tmp",
+    "node_modules.openclaw-update-00000000-0000-3000-8000-000000000011.tmp",
+    "node_modules.openclaw-update-00000000-0000-4000-7000-000000000011.tmp",
+    ".openclaw-update-00000000-0000-4000-8000-000000000011.tmp",
+    "node_modules.openclaw-update-00000000-0000-4000-8000-000000000011.tmp.bak",
+  ]) {
+    expect(isGitRuntimeStagingName(name), name).toBe(false);
+  }
+});
