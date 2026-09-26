@@ -62,6 +62,7 @@ type AllocationContext = LeaseContext & {
     demandAtMs: number;
   };
   timeoutMs: () => number;
+  onDispatch?: () => void;
 };
 
 export function createCrabboxWarmImageManager(dependencies: {
@@ -621,6 +622,11 @@ export function createCrabboxWarmImageManager(dependencies: {
     }),
 
     async allocate(context: AllocationContext): Promise<WarmAllocationRecord["choice"]> {
+      // Selection is not allocation. Transfer cleanup custody only at command dispatch.
+      const runAllocationCommand: CrabboxCommandRunner = (argv, options) => {
+        context.onDispatch?.();
+        return dependencies.runCommand(argv, options);
+      };
       assertCurrent(context);
       if (!context.profile.warmImage) {
         const replay = await lookupLease(context.id);
@@ -640,7 +646,7 @@ export function createCrabboxWarmImageManager(dependencies: {
         if (owner.choice.kind === "checkpoint") {
           const checkpointId = owner.choice.checkpointId;
           parseForkedCheckpoint(
-            await checkpointCommand(
+            await createCheckpointCommands(runAllocationCommand).checkpointCommand(
               context,
               "fork",
               [
@@ -671,7 +677,7 @@ export function createCrabboxWarmImageManager(dependencies: {
       assertCurrent(context);
       await runProvisionWarmup({
         ...context,
-        runCommand: dependencies.runCommand,
+        runCommand: runAllocationCommand,
       });
       return { kind: "cold" };
     },
