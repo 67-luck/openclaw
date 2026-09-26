@@ -1,4 +1,4 @@
-name: Windows Testbox Probe
+name: Windows 9.4 Diagnostic (Full Campaign Unqualified)
 
 on:
   workflow_dispatch:
@@ -1004,7 +1004,7 @@ jobs:
           if ($manifest.candidate.name -cne "openclaw" -or [string]::IsNullOrWhiteSpace($manifest.candidate.version) -or $manifest.candidate.packageSourceSha -cne $binding.sourceSha -or $manifest.candidate.sha256 -cne $binding.packageSha256 -or (Get-FileHash -LiteralPath $tarball -Algorithm SHA256).Hash.ToLowerInvariant() -cne $binding.packageSha256) { throw "Candidate package identity changed in transit." }
           $nodePath = (node -p 'process.execPath').Trim()
           if ($LASTEXITCODE -ne 0 -or $manifest.runtime.version -cne "v$env:NODE_VERSION" -or (node --version).Trim() -cne $manifest.runtime.version -or (Get-FileHash -LiteralPath $nodePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.runtime.sha256) { throw "Native runtime differs from the producer's pinned runtime." }
-          $record = @{ status = "transport-verified-only"; artifactId = $env:HANDOFF_ID; artifactDigest = $env:HANDOFF_DIGEST; manifestSha256 = $env:MANIFEST_SHA256; origin = $manifest.origin; candidate = $manifest.candidate; plannedCells = @("fresh", "published-2026.9.3-to-candidate", "published-2026.9.4-to-candidate"); productProof = "not-run" }
+          $record = @{ status = "transport-verified-only"; artifactId = $env:HANDOFF_ID; artifactDigest = $env:HANDOFF_DIGEST; manifestSha256 = $env:MANIFEST_SHA256; origin = $manifest.origin; candidate = $manifest.candidate; plannedCells = @("published-2026.9.4-to-candidate"); productProof = "isolated diagnostic; full three-cell campaign remains unqualified" }
           New-Item -ItemType Directory -Force -Path .artifacts/windows-schtasks | Out-Null
           $record | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath .artifacts/windows-schtasks/package-handoff.json
           $published = @()
@@ -1058,7 +1058,8 @@ jobs:
 
       - name: Prepare installed Scheduled Task cell fresh
         id: native_prepare_fresh
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' }}
+        # Isolated diagnostic only. Keep the full-campaign reducer below unchanged.
+        if: ${{ false }}
         shell: bash
         env:
           OPENCLAW_VITEST_WORKER_CACHE: "1"
@@ -1376,7 +1377,7 @@ jobs:
 
       - name: Prepare installed Scheduled Task cell 2026.9.4
         id: native_prepare_9_4
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_retire_9_3.outcome == 'success' }}
+        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' }}
         shell: bash
         env:
           CI_WINDOWS_SCHTASKS_INSTALLED_CELL: "2026.9.4"
@@ -1384,6 +1385,8 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$NODE_BIN:$PATH"
+          # Fresh fixture roots only; the existing cell owner verifies the input and prior-cell absence.
+          node --import ./scripts/tsx.mjs --input-type=module -e 'import fs from "node:fs/promises"; import { readInput } from "./src/daemon/schtasks.installed-package.test-support.ts"; const input = await readInput(".artifacts/windows-schtasks/installed-input.json"); await fs.mkdir(input.stateRoot); await fs.mkdir(input.installRoot);'
           node --import ./scripts/tsx.mjs src/daemon/schtasks.installed-package.test-support.ts prepare .artifacts/windows-schtasks/installed-input.json
 
       - name: Run installed Scheduled Task cell 2026.9.4
