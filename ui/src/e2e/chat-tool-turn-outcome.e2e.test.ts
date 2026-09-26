@@ -408,6 +408,7 @@ suite.define(() => {
     if ((await activity.getAttribute("aria-expanded")) !== "true") {
       await activity.click();
     }
+    await activity.locator("..").locator(".chat-activity-group__body").waitFor();
 
     const rows = page.locator(".chat-activity-group__body .chat-tool-msg-summary");
     expect(await rows.count()).toBe(2);
@@ -418,10 +419,12 @@ suite.define(() => {
     // File rows put the workspace link inside the row, so toggle from the icon
     // edge instead of the row centre to avoid opening the linked file.
     await rows.first().click({ position: { x: 4, y: 4 } });
+    await rows.first().locator("..").locator(".chat-tool-msg-body").waitFor();
     expect(await page.getByText("offset:", { exact: true }).count()).toBe(1);
     expect(await page.getByText("limit:", { exact: true }).count()).toBe(1);
     const patchRow = rows.filter({ hasText: "2 files" });
     await patchRow.click();
+    await patchRow.locator("..").locator(".chat-tool-msg-body").waitFor();
 
     expect(await page.locator(".chat-diff__row--file .chat-diff__text").allTextContents()).toEqual([
       "Update src/a.ts",

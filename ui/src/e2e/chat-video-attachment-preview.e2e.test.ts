@@ -148,6 +148,7 @@ suite.define(() => {
         await resources.evaluate((proof) => proof.releaseFrames());
         await expect.poll(() => resources.evaluate((proof) => proof.liveUrls())).toBe(0);
         expect(await resources.evaluate((proof) => proof.retainedDecoders())).toBe(0);
+        await chip.waitFor({ state: "detached" });
         expect(await chip.count()).toBe(0);
 
         await input.setInputFiles({

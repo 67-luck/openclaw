@@ -53,9 +53,10 @@ export function registerItemOnlyOutcomeTest(
           const rows = page.locator(".chat-activity-group__body .chat-tool-msg-summary");
           await expect.poll(() => rows.count()).toBe(3);
           for (let index = 0; index < 3; index += 1) {
-            await rows.nth(index).click();
+            const row = rows.nth(index);
+            await row.click();
+            await row.locator("..").locator(".chat-tool-msg-body").waitFor();
           }
-          await page.locator(".chat-tool-msg-body").last().waitFor();
           await captureToolActivityProof(page, `item-outcomes-${stage}-expanded`);
           expect
             .soft(await page.locator(".chat-tool-card__outcome").allTextContents())

@@ -76,6 +76,7 @@ suite.define(() => {
         await page.getByRole("tab", { name: "Raw", exact: true }).getAttribute("aria-selected"),
       ).toBe("true");
       await row.click({ position: { x: 4, y: 4 } });
+      await row.locator('.chat-tool-row__toggle[aria-expanded="false"]').waitFor();
       expect(await row.textContent()).toContain("Skipped");
 
       const historyPage = await context.newPage();

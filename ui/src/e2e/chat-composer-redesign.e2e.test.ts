@@ -475,6 +475,8 @@ suite.define(() => {
       await page.clock.pauseAt(new Date("2026-01-01T01:00:00Z"));
       await page.mouse.down();
       await page.clock.runFor(150);
+      // Commit the arming state before inspecting its layout on the paused clock.
+      await page.clock.runFor(16);
       await expect
         .poll(() =>
           voice.evaluate((node) => node.classList.contains("chat-send-btn--dictation-arming")),

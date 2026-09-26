@@ -1,4 +1,7 @@
+import type WaDropdownItem from "@awesome.me/webawesome/dist/components/dropdown-item/dropdown-item.js";
 import { html, nothing, type TemplateResult } from "lit";
+import { guard } from "lit/directives/guard.js";
+import { ref } from "lit/directives/ref.js";
 import type { ToolsEffectiveEntry, ToolsEffectiveResult } from "../../../api/types.ts";
 import { pathForRoute } from "../../../app-route-paths.ts";
 import type { ApplicationNavigationOptions } from "../../../app/context.ts";
@@ -449,16 +452,9 @@ function handleMenuSelection(
     }
     return;
   }
-  const menu = event.currentTarget as HTMLElement;
-  const changeView = (view: ChatComposerPlusMenuView) => {
-    props.onViewChange(view);
-    requestAnimationFrame(() =>
-      menu.querySelector<HTMLElement>("wa-dropdown-item:not([disabled])")?.focus(),
-    );
-  };
   if (value === "back") {
     event.preventDefault();
-    changeView(
+    props.onViewChange(
       props.view.startsWith("tools:")
         ? "connectors"
         : props.view.startsWith("library:")
@@ -469,10 +465,10 @@ function handleMenuSelection(
   }
   if (value === "open-skills" || value === "open-connectors") {
     event.preventDefault();
-    changeView(value === "open-skills" ? "skills" : "connectors");
+    props.onViewChange(value === "open-skills" ? "skills" : "connectors");
     return;
   }
-  if (handleComposerLibrarySelection(value, props.library, changeView)) {
+  if (handleComposerLibrarySelection(value, props.library, props.onViewChange)) {
     event.preventDefault();
     return;
   }
@@ -546,7 +542,7 @@ function handleMenuSelection(
     const server = props.mcpServers[Number(value.slice("tools:".length))];
     if (server) {
       props.onOpenToolAccess?.(server.name);
-      changeView(`tools:${server.name}`);
+      props.onViewChange(`tools:${server.name}`);
     }
     return;
   }
@@ -615,6 +611,43 @@ function renderChatComposerPlusMenuContent(props: ChatComposerPlusMenuProps) {
         }
       }}
       data-view=${view}
+      ${guard([view], () =>
+        ref((menu) => {
+          if (!(menu instanceof HTMLElement) || !props.open) {
+            return;
+          }
+          const ownerDocument = menu.ownerDocument;
+          const previousFocus = ownerDocument.activeElement;
+          if (!previousFocus || !menu.contains(previousFocus)) {
+            return;
+          }
+          // Refs precede child commits; the outgoing option may release focus to body.
+          queueMicrotask(() => {
+            const currentFocus = ownerDocument.activeElement;
+            if (
+              currentFocus !== previousFocus &&
+              (currentFocus !== ownerDocument.body || previousFocus.isConnected)
+            ) {
+              return;
+            }
+            const item = menu.querySelector<WaDropdownItem>("wa-dropdown-item:not([disabled])");
+            if (!item) {
+              return;
+            }
+            void item.updateComplete.then(() => {
+              if (
+                menu.isConnected &&
+                menu.hasAttribute("open") &&
+                menu.dataset.view === view &&
+                menu.contains(item) &&
+                ownerDocument.activeElement === currentFocus
+              ) {
+                item.focus({ preventScroll: true });
+              }
+            });
+          });
+        }),
+      )}
     >
       ${renderChatAttachmentMenuTrigger(props.disabled, hasOverrides)} ${content}
     </wa-dropdown>
