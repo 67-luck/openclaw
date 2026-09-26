@@ -108,7 +108,7 @@ function git(root, args, { statuses = [0], env = {} } = {}) {
   return result;
 }
 
-function readIsolationIntentOid(root, ref) {
+export function readIsolationIntentOid(root, ref) {
   const symbolic = git(root, ["symbolic-ref", "--quiet", ref], { statuses: [0, 1] });
   if (symbolic.status === 0) {
     throw new Error("Native PR isolation intent must be a direct ref");

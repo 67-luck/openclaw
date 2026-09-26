@@ -4,7 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDirectRunUrl } from "../lib/direct-run.mjs";
-import { getPrWorktreePaths, requireIsolatedPrWorktreeParent } from "./worktree-placement.mjs";
+import {
+  getPrWorktreePaths,
+  readIsolationIntentOid,
+  requireIsolatedPrWorktreeParent,
+} from "./worktree-placement.mjs";
 
 const oidPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -138,10 +142,7 @@ function isolatePrWorktree({ root: requestedRoot, pr, expectedHead, lockRef, own
   }
   let retained;
   try {
-    retained = git(["for-each-ref", "--format=%(refname) %(objectname)", ref])
-      .split("\n")
-      .find((line) => line.startsWith(`${ref} `))
-      ?.slice(ref.length + 1);
+    retained = readIsolationIntentOid(root, ref);
   } catch (error) {
     // A failed observation cannot establish absence of earlier move custody.
     retainOperation();
@@ -155,11 +156,7 @@ function isolatePrWorktree({ root: requestedRoot, pr, expectedHead, lockRef, own
   const paths = getPrWorktreePaths(root, pr);
   let record = retained ? JSON.parse(git(["cat-file", "blob", retained])) : undefined;
   function assertIntent() {
-    same(
-      git(["for-each-ref", "--format=%(refname) %(objectname) %(symref)", ref]),
-      `${ref} ${retained}`,
-      "Retained native isolation intent",
-    );
+    same(readIsolationIntentOid(root, ref), retained, "Retained native isolation intent");
   }
   function writeRecord(next) {
     assertAuthority();

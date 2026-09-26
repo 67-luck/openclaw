@@ -372,6 +372,36 @@ describePosix("native PR worktree isolation", () => {
   );
 
   it.each(["create", "remove"] as const)(
+    "preserves missing legacy registration when the sibling write probe cannot %s",
+    (phase) => {
+      const f = preparedFixture();
+      rmSync(f.legacy, { recursive: true });
+      const registration = f.git(f.canonical, "worktree", "list", "--porcelain");
+      const refs = f.git(f.canonical, "for-each-ref");
+      const adminEntries = readdirSync(f.admin);
+      const adminFiles = ["HEAD", "commondir", "gitdir", "index"];
+      const administration = adminFiles.map((name) => readFileSync(join(f.admin, name)));
+      const probe = injectParentWriteFailure(f, phase);
+      const result = f.run();
+      expect(result.status).toBe(1);
+      expect(result.error).toBeUndefined();
+      expect(result.signal).toBeNull();
+      probe.expectFailure(result.stderr);
+      expect(result.stderr).toContain("cold PR creation");
+      expect(readFileSync(probe.fetches, "utf8")).toBe("");
+      expect(readFileSync(f.isolation.launches, "utf8")).toBe("");
+      expect(f.git(f.canonical, "worktree", "list", "--porcelain")).toBe(registration);
+      expect(f.git(f.canonical, "for-each-ref")).toBe(refs);
+      expect(f.git(f.canonical, "for-each-ref", intentRef, lockRef)).toBe("");
+      expect(statSync(f.admin).ino).toBe(f.original.adminInode);
+      expect(readdirSync(f.admin)).toEqual(adminEntries);
+      expect(adminFiles.map((name) => readFileSync(join(f.admin, name)))).toEqual(administration);
+      expect(existsSync(f.legacy)).toBe(false);
+      expect(existsSync(f.worktree)).toBe(false);
+    },
+  );
+
+  it.each(["create", "remove"] as const)(
     "preserves fresh isolation when the sibling write probe cannot %s",
     (phase) => {
       const f = preparedFixture();
@@ -505,6 +535,101 @@ describePosix("native PR worktree isolation", () => {
     expect(readFileSync(join(f.admin, "index"))).toEqual(f.original.index);
     expect(existsSync(f.worktree)).toBe(false);
   });
+
+  it.each(["dangling symbolic", "malformed direct"] as const)(
+    "retains isolation custody for a %s intent before write admission",
+    (kind) => {
+      const f = preparedFixture();
+      const registration = f.git(f.canonical, "worktree", "list", "--porcelain");
+      const adminEntries = readdirSync(f.admin);
+      const adminFiles = ["HEAD", "commondir", "gitdir", "index"];
+      const administration = adminFiles.map((name) => readFileSync(join(f.admin, name)));
+      const gitfile = readFileSync(join(f.legacy, ".git"));
+      const artifacts = [...f.artifacts.keys()].map((name) => join(f.legacy, ".local", name));
+      const artifactIdentities = () =>
+        artifacts.map((file) => {
+          const { dev, ino } = statSync(file);
+          return [dev, ino];
+        });
+      const originalArtifacts = artifactIdentities();
+      const localEntries = readdirSync(join(f.legacy, ".local"));
+      const target = "refs/openclaw/missing/42";
+      const refPath = join(f.canonical, ".git", intentRef);
+      if (kind === "dangling symbolic") {
+        f.git(f.canonical, "symbolic-ref", intentRef, target);
+      } else {
+        mkdirSync(dirname(refPath), { recursive: true });
+        writeFileSync(refPath, "not-an-object\n");
+      }
+      const originalRef = readFileSync(refPath);
+      const probe = injectParentWriteFailure(f, "create");
+      const originalGit = expectDefined(f.env.OPENCLAW_PR_GIT, "admission Git observer");
+      const originalPath = expectDefined(f.env.PATH, "original Git search path");
+      const acquired = join(f.root, "acquired-lock");
+      const writes = join(f.root, "isolation-writes");
+      const wrapper = join(f.root, "invalid-intent-git");
+      writeFileSync(writes, "");
+      // The native lock writes its own owner blob before isolation starts.
+      // Observe every later object write/move without replacing that acquisition.
+      writeFileSync(
+        wrapper,
+        `#!/bin/sh
+PATH=${shellQuote(originalPath)}
+export PATH
+if [ "$#" = 7 ] && [ "$1" = -C ] && [ "$2" = ${shellQuote(f.canonical)} ] &&
+  [ "$3 $4 $5" = ${shellQuote(`update-ref --no-deref ${lockRef}`)} ]; then
+  ${shellQuote(originalGit)} "$@"
+  status=$?
+  if [ "$status" = 0 ]; then printf '%s\\n' "$6" > ${shellQuote(acquired)}; fi
+  exit "$status"
+fi
+if [ -f ${shellQuote(acquired)} ] &&
+  { [ "$3 $4" = 'hash-object -w' ] || [ "$3 $4" = 'worktree move' ]; }; then
+  printf '%s\\n' "$3 $4" >> ${shellQuote(writes)}
+fi
+exec ${shellQuote(originalGit)} "$@"
+`,
+      );
+      chmodSync(wrapper, 0o755);
+      f.env.OPENCLAW_PR_GIT = wrapper;
+      f.env.GIT_REF_PARANOIA = "0";
+      const result = f.run("isolate", f.head);
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.signal).toBeNull();
+      expect(result.stderr).toContain(
+        kind === "dangling symbolic"
+          ? "Native PR isolation intent must be a direct ref"
+          : "Cannot inspect native PR placement:",
+      );
+      expect(existsSync(probe.receipt)).toBe(false);
+      expect(readFileSync(probe.fetches, "utf8")).toBe("");
+      expect(readFileSync(writes, "utf8")).toBe("");
+      const originalLock = readFileSync(acquired, "utf8").trim();
+      expect(originalLock).toMatch(/^[0-9a-f]{40}$/);
+      expect(f.git(f.canonical, "rev-parse", lockRef)).toBe(originalLock);
+      expect(readFileSync(refPath)).toEqual(originalRef);
+      if (kind === "dangling symbolic") {
+        expect(f.git(f.canonical, "symbolic-ref", intentRef)).toBe(target);
+        expect(f.git(f.canonical, "for-each-ref", "--format=%(refname)", target)).toBe("");
+        expect(existsSync(join(f.canonical, ".git", target))).toBe(false);
+      }
+      expect(f.git(f.canonical, "worktree", "list", "--porcelain")).toBe(registration);
+      expect(statSync(f.legacy).ino).toBe(f.original.inode);
+      expect(statSync(f.admin).ino).toBe(f.original.adminInode);
+      expect(readdirSync(f.admin)).toEqual(adminEntries);
+      expect(adminFiles.map((name) => readFileSync(join(f.admin, name)))).toEqual(administration);
+      expect(readFileSync(join(f.legacy, ".git"))).toEqual(gitfile);
+      expect(artifactIdentities()).toEqual(originalArtifacts);
+      expect(readdirSync(join(f.legacy, ".local"))).toEqual(localEntries);
+      expect(f.git(f.legacy, "rev-parse", "HEAD")).toBe(f.head);
+      expect(f.git(f.canonical, "rev-parse", f.original.privateRef)).toBe(f.original.parents[0]);
+      for (const [name, bytes] of f.artifacts) {
+        expect(readFileSync(join(f.legacy, ".local", name))).toEqual(bytes);
+      }
+      expect(existsSync(f.worktree)).toBe(false);
+    },
+  );
 
   it("does not adopt a suffix-only isolation ref match", () => {
     const f = preparedFixture();
@@ -753,7 +878,7 @@ console.log("held");`,
 PATH=${shellQuote(originalPath)}
 export PATH
 if [ "$#" = 5 ] && [ "$1" = -C ] && [ "$2" = ${shellQuote(f.canonical)} ] &&
-  [ "$3" = for-each-ref ] && [ "$4" = '--format=%(refname) %(objectname)' ] && [ "$5" = ${shellQuote(intentRef)} ]; then
+  [ "$3" = symbolic-ref ] && [ "$4" = --quiet ] && [ "$5" = ${shellQuote(intentRef)} ]; then
   printf 'initial-intent-query\\n' >> ${shellQuote(observed)}
   printf 'synthetic initial intent read failure (EACCES)\\n' >&2
   exit 74
@@ -768,7 +893,7 @@ exec ${shellQuote(originalGit)} "$@"
     expect(result.status).toBe(1);
     expect(result.signal).toBeNull();
     expect(result.stderr).toContain(
-      "Native PR isolation Git operation failed: synthetic initial intent read failure (EACCES)",
+      "Cannot inspect native PR placement: synthetic initial intent read failure (EACCES)",
     );
     expect(readFileSync(observed, "utf8")).toBe("initial-intent-query\n");
     expect(f.git(f.canonical, "rev-parse", intentRef)).toBe(intent);

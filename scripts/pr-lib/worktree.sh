@@ -388,10 +388,6 @@ enter_worktree() {
 
   if [ "$registration" != registered ] ||
     ! printf '%s\n' "$state" | jq -e '.present' >/dev/null; then
-    if [ "$registration" = registered ] ||
-      printf '%s\n' "$state" | jq -e '.present or .admin != ""' >/dev/null; then
-      mark_pr_operation_side_effects_started || return 1
-    fi
     # Refuse an unwritable cold destination before retiring stale state or fetching.
     local placement_helper
     placement_helper=$(cd "${BASH_SOURCE[0]%/*}" && pwd -P)/worktree-placement.mjs || return 1
