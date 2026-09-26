@@ -81,6 +81,8 @@ export function createChatSendReplyDispatch(params: {
   accountId: string | undefined;
   requesterContext?: WebchatReplyMediaRequesterContext;
   isAgentRunStarted: () => boolean;
+  /** Current SID from the retained work owner, never a delivery-time store read. */
+  getSourceSessionId: () => string | undefined;
   onCommandBlock?: (text: string) => void;
   isRunCurrent?: () => boolean;
   abortSignal?: AbortSignal;
@@ -137,6 +139,7 @@ export function createChatSendReplyDispatch(params: {
     session,
     userTurnRecorder,
     getAgentRunId: () => agentRunId,
+    getSourceSessionId: params.getSourceSessionId,
   });
   const finalizedAgentMediaTranscriptKeys = new Set<string>();
   let preparingTranscript = false;
