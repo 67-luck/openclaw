@@ -40,7 +40,6 @@ export const databaseWorkerCoreTestFiles = [
   "src/commands/sessions.acp-model-display.test.ts",
   "src/gateway/agent-turn/agent-request-preflight.source-lineage.test.ts",
   "src/gateway/server-methods/chat-history-worker.test.ts",
-  "src/gateway/server.chat.gateway-server-chat-b.test.ts",
   "src/gateway/session-history.subagent-visibility.test.ts",
   "src/gateway/session-row-projection.worker-read.test.ts",
   "src/gateway/session-runtime-selection-projection.test.ts",

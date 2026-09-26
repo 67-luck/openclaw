@@ -25,7 +25,7 @@ import { agentCommandMock } from "./test-helpers.js";
 
 async function inboundMediaFiles(): Promise<string[]> {
   try {
-    return (await fs.readdir(path.join(mediaStore.getMediaDir(), "inbound"))).sort();
+    return (await fs.readdir(path.join(mediaStore.getMediaDir(), "inbound"))).toSorted();
   } catch (error) {
     if (isMissingPathError(error)) {
       return [];
