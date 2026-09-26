@@ -17,7 +17,6 @@ import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-wo
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import * as taskRuntime from "../../tasks/runtime-internal.js";
 import {
-  getTaskById,
   markTaskTerminalById,
   recordTaskProgressByRunId,
 } from "../../tasks/runtime-internal.js";

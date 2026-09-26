@@ -3,7 +3,7 @@ import {
   createPluginRuntimeMock,
   createRuntimeTaskFlow,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
-import { useAutoCleanupTempDirTracker, withTempHome } from "openclaw/plugin-sdk/test-env";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin from "../index.js";
