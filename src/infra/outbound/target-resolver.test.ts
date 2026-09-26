@@ -112,7 +112,7 @@ describe("resolveMessagingTarget (directory fallback)", () => {
     { input: "chatty", destinationPrefix: "rc" },
     { input: "rc", destinationPrefix: "rc" },
   ])(
-    "rejects bare selected-channel namespace $input after an exact directory miss",
+    "rejects inferred bare selected-channel namespace $input after an exact directory miss",
     async ({ input, destinationPrefix }) => {
       const base = createChannelTestPluginBase({
         id: "richchat",
@@ -144,6 +144,7 @@ describe("resolveMessagingTarget (directory fallback)", () => {
         channel: "richchat",
         input,
         preferredKind: "group",
+        allowNativeChannelNamespace: false,
         plugin,
       });
 
@@ -209,6 +210,29 @@ describe("resolveMessagingTarget (directory fallback)", () => {
     expect(result).toMatchObject({
       ok: true,
       target: { to: "irc", source: "normalized", resolutionSource: "normalized" },
+    });
+  });
+
+  it("preserves an explicit plugin-native target after provider normalization", async () => {
+    const plugin = {
+      ...createChannelTestPluginBase({ id: "alpha", label: "Alpha" }),
+      messaging: {
+        targetPrefixes: ["a"],
+        normalizeTarget: (raw: string) => `@${raw.trim()}`,
+        targetResolver: { looksLikeId: () => true },
+      },
+    } satisfies ChannelPlugin;
+
+    const result = await resolveMessagingTarget({
+      cfg,
+      channel: "alpha",
+      input: "alpha",
+      plugin,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      target: { to: "@alpha", source: "normalized", resolutionSource: "normalized" },
     });
   });
 

@@ -10,7 +10,7 @@ import type { SessionEntry } from "../../config/sessions.js";
 import type { AgentDefaultsConfig } from "../../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { channelRouteTargetsMatchExact } from "../../plugin-sdk/channel-route.js";
-import { normalizeAccountId } from "../../routing/session-key.js";
+import { DEFAULT_AGENT_ID, normalizeAccountId } from "../../routing/session-key.js";
 import { isSecretOwnerAvailable } from "../../secrets/runtime-degraded-state.js";
 import { deliveryContextFromSession } from "../../utils/delivery-context.read.js";
 import { mergeDeliveryContext } from "../../utils/delivery-context.shared.js";
@@ -50,7 +50,10 @@ type OutboundTarget = {
   implicitDefaultRoute?: true;
 };
 
-type HeartbeatTargetResolution = OutboundTarget & { targetAllowFrom?: string[] };
+type HeartbeatTargetResolution = OutboundTarget & {
+  targetAllowFrom?: string[];
+  targetPlugin?: ChannelPlugin;
+};
 
 type ResolveHeartbeatDeliveryTargetParams = {
   cfg: OpenClawConfig;
@@ -441,16 +444,9 @@ async function resolveHeartbeatDeliveryTargetWithPolicy(
     lastChannel: resolvedTarget.lastChannel,
     lastAccountId: resolvedTarget.lastAccountId,
     ...(targetAllowFrom.length > 0 ? { targetAllowFrom } : {}),
+    ...(plugin ? { targetPlugin: plugin } : {}),
     ...(implicitDefaultRoute ? { implicitDefaultRoute: true as const } : {}),
   };
-}
-
-export async function resolveHeartbeatDeliveryTarget(
-  params: ResolveHeartbeatDeliveryTargetParams,
-): Promise<OutboundTarget> {
-  const { targetAllowFrom: _targetAllowFrom, ...delivery } =
-    await resolveHeartbeatDeliveryTargetWithPolicy(params);
-  return delivery;
 }
 
 function isPositivelyDirectHeartbeatOwnerTarget(params: {
@@ -495,15 +491,16 @@ function buildNoHeartbeatDeliveryTarget(params: {
 }
 
 /** Resolves heartbeat delivery and lets plugins refine the outbound session route. */
-export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
+export async function resolveHeartbeatDeliveryTarget(params: {
   cfg: OpenClawConfig;
-  agentId: string;
+  agentId?: string;
   entry?: SessionEntry;
   heartbeat?: AgentDefaultsConfig["heartbeat"];
   turnSource?: DeliveryContext;
   currentSessionKey?: string;
 }): Promise<OutboundTarget> {
-  const { targetAllowFrom, ...delivery } = await resolveHeartbeatDeliveryTargetWithPolicy(params);
+  const { targetAllowFrom, targetPlugin, ...delivery } =
+    await resolveHeartbeatDeliveryTargetWithPolicy(params);
   const heartbeat = params.heartbeat ?? params.cfg.agents?.defaults?.heartbeat;
   const ownerRouteMustBeDirect =
     (heartbeat?.target === undefined || heartbeat.target === "owner") &&
@@ -519,12 +516,14 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
       lastAccountId: delivery.lastAccountId,
     });
   const deliveryTo = delivery.to;
-  const plugin = resolveOutboundChannelPlugin({
-    channel: delivery.channel,
-    cfg: params.cfg,
-    agentId: params.agentId,
-    allowBootstrap: true,
-  });
+  const plugin =
+    targetPlugin ??
+    resolveOutboundChannelPlugin({
+      channel: delivery.channel,
+      cfg: params.cfg,
+      agentId: params.agentId,
+      allowBootstrap: true,
+    });
   const resolveSessionRoute = plugin?.messaging?.resolveOutboundSessionRoute;
   const channelNamespace = resolveBareTargetChannelNamespace({ raw: deliveryTo, plugin });
   if (
@@ -548,6 +547,7 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
     input: deliveryTo,
     accountId: delivery.accountId,
     unknownTargetMode: "normalized",
+    allowNativeChannelNamespace: heartbeat?.target !== "last",
     nativeTargetMode: "heartbeat",
     allowFrom: targetAllowFrom,
     plugin,
@@ -575,9 +575,10 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
   ) {
     return rejectDelivery("no-route");
   }
-  const resolvedDelivery = routeResolvedTarget
-    ? { ...delivery, to: routeResolvedTarget.to }
-    : delivery;
+  const resolvedDelivery =
+    channelNamespace && routeResolvedTarget
+      ? { ...delivery, to: routeResolvedTarget.to }
+      : delivery;
   if (!resolveSessionRoute) {
     return resolvedDelivery;
   }
@@ -585,7 +586,7 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
     cfg: params.cfg,
     channel: delivery.channel as ChannelId,
     plugin,
-    agentId: params.agentId,
+    agentId: params.agentId ?? DEFAULT_AGENT_ID,
     accountId: delivery.accountId,
     target: routeResolvedTarget?.to ?? deliveryTo,
     ...(ownerRouteMustBeDirect ? { deliveryPurpose: "heartbeat-owner" as const } : {}),

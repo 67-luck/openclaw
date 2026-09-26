@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
-import { resolveHeartbeatDeliveryTargetWithSessionRoute } from "./targets.js";
+import { resolveHeartbeatDeliveryTarget } from "./targets.js";
 import { createTestChannelPlugin, createTargetsTestRegistry } from "./targets.test-helpers.js";
 
 const mocks = vi.hoisted(() => ({
@@ -52,7 +52,7 @@ function createNamespacePlugin(options: NamespacePluginOptions): ChannelPlugin {
 async function resolveNamespaceHeartbeat(plugin: ChannelPlugin, directPolicy?: "allow" | "block") {
   setActivePluginRegistry(createTargetsTestRegistry([plugin]));
   mocks.resolveOutboundChannelPlugin.mockReturnValue(plugin);
-  return await resolveHeartbeatDeliveryTargetWithSessionRoute({
+  return await resolveHeartbeatDeliveryTarget({
     cfg: { channels: { alpha: {} } } as OpenClawConfig,
     agentId: "main",
     heartbeat: { target: "alpha", to: "alpha", directPolicy },
@@ -77,12 +77,12 @@ describe("outbound channel namespace targets", () => {
     expect(listGroups).toHaveBeenCalledWith(expect.objectContaining({ query: "alpha" }));
   });
 
-  it("rejects unmatched heartbeat channel namespaces before delivery", async () => {
+  it("preserves an explicit heartbeat namespace after a directory miss", async () => {
     const resolved = await resolveNamespaceHeartbeat(
       createNamespacePlugin({ listGroups: vi.fn().mockResolvedValue([]) }),
     );
 
-    expect(resolved).toMatchObject({ channel: "none", reason: "no-target" });
+    expect(resolved).toMatchObject({ channel: "alpha", to: "@alpha" });
   });
 
   it("fails closed when heartbeat namespace directory lookup throws", async () => {
@@ -119,12 +119,15 @@ describe("outbound channel namespace targets", () => {
       name: "uses an exact directory destination",
       entries: [{ kind: "group", id: "C123456", name: "alpha" }],
       expected: { channel: "alpha", to: "C123456" },
-      outboundCalls: 0,
+      outboundCalls: 1,
     },
   ])(
     "validates heartbeat namespaces without optional messaging hooks: $name",
     async ({ entries, expected, outboundCalls }) => {
-      const outboundResolveTarget = vi.fn(() => ({ ok: true as const, to: "@alpha" }));
+      const outboundResolveTarget = vi.fn(({ to }: { to?: string }) => ({
+        ok: true as const,
+        to: to === "alpha" ? "@alpha" : (to ?? ""),
+      }));
       const resolved = await resolveNamespaceHeartbeat(
         createNamespacePlugin({
           listGroups: vi.fn().mockResolvedValue(entries),
@@ -150,6 +153,37 @@ describe("outbound channel namespace targets", () => {
     );
 
     expect(resolved).toMatchObject({ channel: "alpha", to: "C123456" });
+  });
+
+  it("uses the exact directory entry kind for heartbeat direct policy", async () => {
+    const resolved = await resolveNamespaceHeartbeat(
+      createNamespacePlugin({
+        listGroups: vi.fn().mockResolvedValue([{ kind: "group", id: "C123456", name: "alpha" }]),
+        messaging: {
+          targetPrefixes: ["a"],
+          targetResolver: { hint: "<channel>" },
+        },
+      }),
+      "block",
+    );
+
+    expect(resolved).toMatchObject({ channel: "alpha", to: "C123456" });
+  });
+
+  it("preserves the directory entry kind after outbound policy validation", async () => {
+    const resolved = await resolveNamespaceHeartbeat(
+      createNamespacePlugin({
+        listGroups: vi.fn().mockResolvedValue([{ kind: "group", id: "C123456", name: "alpha" }]),
+        outbound: {
+          deliveryMode: "direct",
+          resolveTarget: () => ({ ok: true, to: "@C123456" }),
+        },
+        messaging: { targetPrefixes: ["a"] },
+      }),
+      "block",
+    );
+
+    expect(resolved).toMatchObject({ channel: "alpha", to: "@C123456" });
   });
 
   it("keeps an exact directory target when session-route refinement fails", async () => {
@@ -187,6 +221,65 @@ describe("outbound channel namespace targets", () => {
     expect(resolved).toMatchObject({ channel: "alpha", to: "@alpha" });
     expect(resolveTarget).toHaveBeenCalledWith(
       expect.objectContaining({ allowFrom: ["operator"] }),
+    );
+  });
+
+  it("applies heartbeat allow-from policy after native namespace resolution", async () => {
+    const resolveTarget = vi.fn(({ to, allowFrom }: { to?: string; allowFrom?: string[] }) =>
+      to === "@alpha" && allowFrom?.includes("operator")
+        ? { ok: false as const, error: new Error("recipient not allowed") }
+        : { ok: true as const, to: to ?? "" },
+    );
+    const plugin = createNamespacePlugin({
+      listGroups: vi.fn().mockResolvedValue([]),
+      outbound: { deliveryMode: "direct", resolveTarget },
+      messaging: {
+        targetPrefixes: ["a"],
+        normalizeTarget: (raw) => `@${raw.trim()}`,
+        targetResolver: {
+          looksLikeId: () => true,
+          resolveTarget: async ({ normalized }) => ({
+            to: normalized,
+            kind: "group",
+            source: "normalized",
+          }),
+        },
+      },
+    });
+    plugin.config = {
+      ...plugin.config,
+      resolveAllowFrom: () => ["operator"],
+    };
+
+    const resolved = await resolveNamespaceHeartbeat(plugin);
+
+    expect(resolved).toMatchObject({ channel: "none", reason: "no-target" });
+    expect(resolveTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "@alpha", allowFrom: ["operator"], mode: "heartbeat" }),
+    );
+  });
+
+  it("applies heartbeat allow-from policy to exact directory targets", async () => {
+    const resolveTarget = vi.fn(({ to, allowFrom }: { to?: string; allowFrom?: string[] }) =>
+      to === "C123456" && allowFrom?.includes("operator")
+        ? { ok: false as const, error: new Error("recipient not allowed") }
+        : { ok: true as const, to: to ?? "" },
+    );
+    const plugin = createNamespacePlugin({
+      listGroups: vi.fn().mockResolvedValue([{ kind: "group", id: "C123456", name: "alpha" }]),
+      outbound: { deliveryMode: "direct", resolveTarget },
+      messaging: { targetPrefixes: ["a"] },
+    });
+    plugin.config = {
+      ...plugin.config,
+      resolveAllowFrom: () => ["operator"],
+    };
+
+    const resolved = await resolveNamespaceHeartbeat(plugin);
+
+    expect(resolved).toMatchObject({ channel: "none", reason: "no-target" });
+    expect(resolveTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "C123456", allowFrom: ["operator"], mode: "heartbeat" }),
     );
   });
 

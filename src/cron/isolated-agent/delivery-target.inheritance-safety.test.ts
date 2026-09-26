@@ -387,6 +387,42 @@ describe("resolveDeliveryTarget — channel namespace safety", () => {
     expect(listGroups).toHaveBeenCalledWith(expect.objectContaining({ query: "alpha" }));
   });
 
+  it("rejects a namespace target on an inherited last channel", async () => {
+    const outboundResolveTarget = vi.fn(({ to }: { to?: string }) =>
+      to
+        ? { ok: true as const, to: to.trim() }
+        : { ok: false as const, error: new Error("target required") },
+    );
+    setLastSessionEntry({
+      sessionId: "sess-last-channel",
+      lastChannel: "alpha",
+      lastTo: "room:previous",
+    });
+    setActivePluginRegistry(
+      createTestRegistry([
+        {
+          pluginId: "alpha",
+          plugin: {
+            ...createOutboundTestPlugin({
+              id: "alpha",
+              outbound: { deliveryMode: "direct", resolveTarget: outboundResolveTarget },
+            }),
+            capabilities: { chatTypes: ["group"] },
+            directory: { listGroups: vi.fn(async () => []) },
+          },
+          source: "test",
+        },
+      ]),
+    );
+
+    const result = await resolveDeliveryTarget(makeCfg(), AGENT_ID, {
+      channel: "last",
+      to: "alpha",
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
   it("preserves exact directory destinations before rejecting channel namespaces", async () => {
     const listGroups = vi.fn(async () => [
       { kind: "group", id: "C123456", name: "alpha" } satisfies ChannelDirectoryEntry,

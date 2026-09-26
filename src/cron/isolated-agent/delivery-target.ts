@@ -175,7 +175,8 @@ export async function resolveDeliveryTarget(
   });
 
   let fallbackChannel: string | undefined;
-  let allowNativeChannelNamespace: boolean | undefined;
+  let allowNativeChannelNamespace: boolean | undefined =
+    requestedChannel === "last" ? false : undefined;
   let channelResolutionError: Error | undefined;
   if (!preliminary.channel) {
     if (preliminary.lastChannel) {
