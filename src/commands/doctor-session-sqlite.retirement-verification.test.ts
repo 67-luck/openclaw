@@ -12,6 +12,7 @@ import {
 import { importSqliteSessionRows } from "../config/sessions/session-accessor.sqlite-import.test-support.js";
 import { loadTranscriptEventsSync } from "../config/sessions/session-accessor.sqlite-read.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
+import { writeSessionSqliteMigrationManifest } from "./doctor-session-sqlite-migration-run.js";
 import * as sqliteReaders from "./doctor-session-sqlite-readers.js";
 import { inspectSessionSqliteRecovery } from "./doctor-session-sqlite-recovery-inventory.js";
 import { retireSessionSqliteRecovery } from "./doctor-session-sqlite-retirement.js";
@@ -278,7 +279,7 @@ describe("runDoctorSessionSqlite", () => {
     },
   );
 
-  it("retires verified exact originals while preserving current SQLite and unknown archives", async () => {
+  it("retires verified originals after remount while preserving current SQLite and unknown archives", async () => {
     const store = createLegacyStore({
       transcriptLines: [
         JSON.stringify({ type: "session", id: "session-1", version: 3 }),
@@ -310,6 +311,17 @@ describe("runDoctorSessionSqlite", () => {
     const imported = await importLegacyStore(store);
     expect(imported.targets[0]?.issues).toEqual([]);
     const manifest = readMigrationManifest(imported.migrationRun?.manifestPath);
+    for (const target of manifest.targets) {
+      for (const move of [...target.plannedMoves, ...target.completedMoves]) {
+        if (move.artifact) {
+          move.artifact.identity.dev = String(BigInt(move.artifact.identity.dev) + 1n);
+        }
+      }
+    }
+    writeSessionSqliteMigrationManifest({
+      manifest,
+      manifestPath: imported.migrationRun!.manifestPath,
+    });
     const originalMove = manifest.targets[0]!.completedMoves.find(
       (move) => move.kind === "transcript",
     )!;
