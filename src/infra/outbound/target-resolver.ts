@@ -208,6 +208,12 @@ function detectSemanticTargetKind(
   if (/^group:/i.test(trimmed)) {
     return "group";
   }
+  if (trimmed.startsWith("@") || /^<@!?/.test(trimmed)) {
+    return "user";
+  }
+  if (trimmed.startsWith("#")) {
+    return "group";
+  }
 
   const chatTypes = plugin?.capabilities?.chatTypes ?? [];
   if (chatTypes.length > 0 && chatTypes.every((chatType) => chatType === "direct")) {

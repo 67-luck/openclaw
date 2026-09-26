@@ -663,9 +663,13 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
             accountId,
             dryRun,
             gateway,
-            input: route.assertTargetAuthorityCurrent
-              ? { ...input, assertDirectAdapterHandoff: route.assertTargetAuthorityCurrent }
-              : input,
+            input: {
+              ...input,
+              allowNativeChannelNamespace,
+              ...(route.assertTargetAuthorityCurrent
+                ? { assertDirectAdapterHandoff: route.assertTargetAuthorityCurrent }
+                : {}),
+            },
             agentId: resolvedAgentId,
             resolvedTarget,
             abortSignal: input.abortSignal,

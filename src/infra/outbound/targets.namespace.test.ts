@@ -170,7 +170,7 @@ describe("outbound channel namespace targets", () => {
     expect(resolved).toMatchObject({ channel: "alpha", to: "C123456" });
   });
 
-  it("preserves the directory entry kind after outbound policy validation", async () => {
+  it("reclassifies a prefix-changing outbound policy rewrite", async () => {
     const resolved = await resolveNamespaceHeartbeat(
       createNamespacePlugin({
         listGroups: vi.fn().mockResolvedValue([{ kind: "group", id: "C123456", name: "alpha" }]),
@@ -183,7 +183,7 @@ describe("outbound channel namespace targets", () => {
       "block",
     );
 
-    expect(resolved).toMatchObject({ channel: "alpha", to: "@C123456" });
+    expect(resolved).toEqual({ channel: "none", reason: "dm-blocked" });
   });
 
   it("keeps an exact directory target when session-route refinement fails", async () => {

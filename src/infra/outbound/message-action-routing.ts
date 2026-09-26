@@ -461,7 +461,10 @@ export async function prepareMessageRoute(params: {
     defersExternalTargetResolution,
     // A sole configured channel was inferred without destination intent. Keep its
     // own namespace ambiguous unless an exact directory destination proves otherwise.
-    allowNativeChannelNamespace: selection.source !== "single-configured",
+    allowNativeChannelNamespace:
+      input.allowNativeChannelNamespace ??
+      input.messageActionAuthorization?.allowNativeChannelNamespace ??
+      selection.source !== "single-configured",
     assertReadAuthorityCurrent,
     assertTargetAuthorityCurrent,
   };
