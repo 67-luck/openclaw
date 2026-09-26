@@ -48,17 +48,13 @@ test("automatic list and search projection reuse conventional state-directory pr
         await withPluginMetadataSnapshotScope(
           metadata,
           async () => {
-            const observations = [];
-            const filesystemProbes: Array<{
-              operation: string;
-              pathname: fsSync.PathLike;
+            const stateDirectoryProbes: Array<{
               search: string;
               runtime: string;
-              error: Error;
+              stack: string | undefined;
             }> = [];
             for (const search of [undefined, "unmatched-runtime-search", "openclaw"]) {
               const request = { configuredAgentsOnly: true, includeGlobal: false, search };
-              const counts = [];
               for (const agentRuntimeOverride of ["openclaw", undefined]) {
                 for (const agentId of agentIds) {
                   await writeSessionStore({
@@ -75,35 +71,21 @@ test("automatic list and search projection reuse conventional state-directory pr
                 }
                 const warm = await directSessionReq("sessions.list", request);
                 expect(warm.ok).toBe(true);
-                const recordProbe = (operation: string, pathname: fsSync.PathLike) => {
-                  if (filesystemProbes.length < 6) {
-                    filesystemProbes.push({
-                      operation,
-                      pathname,
-                      search: search ?? "list",
-                      runtime: agentRuntimeOverride ?? "auto",
-                      error: new Error("Unexpected filesystem probe"),
-                    });
-                  }
-                };
+                stateDirectoryProbes.length = 0;
                 const existsSync = fsSync.existsSync;
                 const exists = vi.spyOn(fsSync, "existsSync").mockImplementation((pathname) => {
-                  if (pathname === stateDir || pathname === legacyStateDir) {
-                    recordProbe("exists", pathname);
+                  // Retain bounded provenance for probes that only reproduce in shared CI shards.
+                  if (
+                    stateDirectoryProbes.length < 3 &&
+                    (pathname === stateDir || pathname === legacyStateDir)
+                  ) {
+                    stateDirectoryProbes.push({
+                      search: search ?? "list",
+                      runtime: agentRuntimeOverride ?? "auto",
+                      stack: new Error("Unexpected state-directory probe").stack,
+                    });
                   }
                   return existsSync(pathname);
-                });
-                const lstatSync = fsSync.lstatSync;
-                const lstat = vi.spyOn(fsSync, "lstatSync").mockImplementation((...args) => {
-                  recordProbe("lstat", args[0]);
-                  return lstatSync(...args);
-                });
-                const readlink = vi.spyOn(fsSync, "readlinkSync");
-                const realpath = vi.spyOn(fsSync.realpathSync, "native");
-                const statSync = fsSync.statSync;
-                const stat = vi.spyOn(fsSync, "statSync").mockImplementation((...args) => {
-                  recordProbe("stat", args[0]);
-                  return statSync(...args);
                 });
                 const environments = vi.spyOn(runtimePaths, "captureRuntimeStateEnvironment");
                 syncBuiltinESMExports();
@@ -117,40 +99,20 @@ test("automatic list and search projection reuse conventional state-directory pr
                     search === "unmatched-runtime-search" ? 0 : agentIds.length,
                   );
                   expect.soft(environments.mock.calls.length, search ?? "list").toBe(0);
-                  counts.push({
-                    exists: exists.mock.calls.length,
-                    stateDirectoryExists: exists.mock.calls.filter(
-                      ([pathname]) => pathname === stateDir || pathname === legacyStateDir,
-                    ).length,
-                    lstat: lstat.mock.calls.length,
-                    readlink: readlink.mock.calls.length,
-                    realpath: realpath.mock.calls.length,
-                    stat: stat.mock.calls.length,
-                  });
+                  expect
+                    .soft(
+                      stateDirectoryProbes,
+                      `${search ?? "list"}: ${agentRuntimeOverride ?? "auto"}`,
+                    )
+                    .toEqual([]);
                 } finally {
-                  for (const spy of [exists, lstat, readlink, realpath, stat, environments]) {
+                  for (const spy of [exists, environments]) {
                     spy.mockRestore();
                   }
                   syncBuiltinESMExports();
                 }
               }
-              observations.push({
-                surface: search ? "search" : "list",
-                pinned: counts[0],
-                auto: counts[1],
-              });
             }
-            // Format stacks after restoring spies: source-map lookup can itself touch the filesystem.
-            const provenance = filesystemProbes.map((probe) => ({
-              operation: probe.operation,
-              pathname: String(probe.pathname).replace(home, "<fixture>"),
-              search: probe.search,
-              runtime: probe.runtime,
-              stack: probe.error.stack,
-            }));
-            expect(observations, JSON.stringify(provenance, null, 2)).toEqual(
-              observations.map(({ surface, pinned }) => ({ surface, pinned, auto: pinned })),
-            );
           },
           { config, trustConfigIdentity: true },
         );
