@@ -1,11 +1,15 @@
-// Regression coverage for read-only Claw state access on databases that predate
-// the additive provenance columns but already report the current schema version.
+// Regression coverage for read-only Claw state access before additive tables and columns.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { StatementSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
+import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
+import { getAdmittedSqliteSchemaFacts } from "../infra/sqlite-schema-facts.js";
 import {
   closeOpenClawStateDatabaseForTest,
+  openExistingOpenClawStateDatabaseReadOnly,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { OPENCLAW_STATE_MAINTENANCE_SCHEMA_COMPATIBILITY } from "../state/openclaw-state-schema-compatibility.js";
@@ -13,6 +17,7 @@ import { readClawResumeStateReadOnly } from "./package-resume.js";
 import { parseClawManifest } from "./schema.js";
 import type { ClawSourceIdentity } from "./types.js";
 import { buildClawUpdatePlan } from "./update-plan.js";
+import { readClawWorkspaceAdoptionFromDatabase } from "./workspace-origin.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -82,6 +87,80 @@ async function createFixture(label: string): Promise<{
 }
 
 describe("read-only Claw state compatibility", () => {
+  it.each([false, true])(
+    "reuses admitted adoption table facts without changing older state (table missing: %s)",
+    async (missingTable) => {
+      const fixture = await createFixture("openclaw-claw-adoption-schema-");
+      const writer = openNodeSqliteDatabase(fixture.databasePath);
+      try {
+        if (missingTable) {
+          // Pre-v6 state may lack Claw tables; read-only previews must not install them.
+          writer.exec(`
+            DROP TABLE claw_workspace_files;
+            PRAGMA user_version = 5;
+            UPDATE schema_meta SET schema_version = 5 WHERE meta_key = 'primary';
+            DELETE FROM config_machine_state WHERE state_key = 'state.schema.contentVersion';
+          `);
+        } else {
+          writer
+            .prepare(
+              `INSERT INTO claw_workspace_files (
+                agent_id, target_path, schema_version, workspace, source_path,
+                content_digest, status, created_at_ms, updated_at_ms
+              ) VALUES (?, '.', 'openclaw.clawWorkspaceFileRecord.v1', ?, ?,
+                'openclaw:adopted-workspace', 'complete', 1000, 2000)`,
+            )
+            .run(
+              "legacy-worker",
+              fixture.workspace,
+              JSON.stringify({ adoptedFiles: ["AGENTS.md"], installId: "fixture-install" }),
+            );
+        }
+      } finally {
+        writer.close();
+      }
+      const before = await readFile(fixture.databasePath);
+      const database = await openExistingOpenClawStateDatabaseReadOnly({
+        path: fixture.databasePath,
+      });
+      if (!database) {
+        throw new Error("Expected the existing state snapshot");
+      }
+      try {
+        // Measure after open: admission owns schema scans, repeated domain reads do not.
+        const observation = observeSqliteReadSql(StatementSync.prototype);
+        try {
+          expect(
+            getAdmittedSqliteSchemaFacts(database.db)?.tables.has("claw_workspace_files"),
+          ).toBe(!missingTable);
+          for (let index = 0; index < 3; index += 1) {
+            expect(
+              readClawWorkspaceAdoptionFromDatabase(
+                database.db,
+                "legacy-worker",
+                fixture.workspace,
+              ),
+            ).toEqual(
+              missingTable
+                ? { adopted: false }
+                : { adopted: true, adoptedFiles: ["AGENTS.md"], bootstrapSeeded: false },
+            );
+          }
+          expect(
+            observation.queries.filter((sql) =>
+              /sqlite_master|sqlite_schema|table_info/iu.test(sql),
+            ),
+          ).toEqual([]);
+        } finally {
+          observation.restore();
+        }
+      } finally {
+        database.walMaintenance.close();
+      }
+      expect(before.equals(await readFile(fixture.databasePath))).toBe(true);
+    },
+  );
+
   it("plans an update against a base-shape database without mutating it", async () => {
     const fixture = await createFixture("openclaw-claw-base-shape-");
     const before = await readFile(fixture.databasePath);

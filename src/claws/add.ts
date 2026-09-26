@@ -5,8 +5,6 @@ import { coerceErrorMessage } from "@openclaw/normalization-core";
 import { transformConfigFileWithRetry } from "../config/config.js";
 import { withConfigMutationExclusive } from "../config/mutate.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
-import { normalizeWindowsPathForComparison } from "../infra/path-guards.js";
 import type { PluginInstallBatchReload } from "../plugins/install-runtime-batch.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { recordAgentProvenance } from "../state/agent-provenance.js";
@@ -18,6 +16,10 @@ import {
   planWithPackageActions,
   statusAtLeast,
 } from "./add-plan-helpers.js";
+import {
+  assertAdoptedWorkspaceCurrent,
+  assertWorkspacePathUnchanged,
+} from "./add-workspace-guard.js";
 import { ClawBootstrapWriteError, seedClawPackageBootstrap } from "./bootstrap.js";
 import {
   ClawCronInstallError,
@@ -115,20 +117,6 @@ function clearUnownedInstallRecord(
     ...options,
     expectedStatuses,
   });
-}
-
-function workspacePathKey(value: string): string {
-  return process.platform === "win32" ? normalizeWindowsPathForComparison(value) : value;
-}
-
-function assertWorkspacePathUnchanged(workspace: string): void {
-  const canonicalWorkspace = resolvePathViaExistingAncestorSync(workspace);
-  if (workspacePathKey(canonicalWorkspace) !== workspacePathKey(workspace)) {
-    throw new ClawAddMutationError(
-      "workspace_path_changed",
-      `Workspace ancestry changed after planning: expected ${JSON.stringify(workspace)}, resolved ${JSON.stringify(canonicalWorkspace)}.`,
-    );
-  }
 }
 
 function partialResult(params: {
@@ -242,12 +230,19 @@ export async function applyClawAddPlan(
     });
   }
   if (workspaceState && !workspaceState.isDirectory()) {
+    if (!workspacePhaseRecorded) {
+      clearUnownedInstallRecord(plan.agent.finalId, ["pending", "partial"], options);
+    }
     throw new ClawAddMutationError(
       "workspace_collision",
       `Workspace ${JSON.stringify(workspace)} is no longer a directory.`,
     );
   }
 
+  // Retain the admitted object, not just its path, across package and source I/O.
+  const assertWorkspaceCurrent = workspaceAdoption
+    ? () => assertAdoptedWorkspaceCurrent(workspace, workspaceState)
+    : undefined;
   let workspaceCreated = workspaceState?.isDirectory() ?? false;
   let configCommitted = statusAtLeast(installRecord.status, "config_committed");
   if (workspaceAdoption && (!workspaceCreated || !workspacePhaseRecorded)) {
@@ -331,16 +326,7 @@ export async function applyClawAddPlan(
         ? await options.readConfigForApply()
         : lockedConfig;
       try {
-        // Package installation can replace the adopted directory while admission is pending.
-        if (workspaceAdoption) {
-          const adoptedState = await lstat(workspace).catch(() => undefined);
-          if (!adoptedState?.isDirectory()) {
-            throw new ClawAddMutationError(
-              "workspace_collision",
-              `Adoptable workspace ${JSON.stringify(workspace)} is no longer an existing directory.`,
-            );
-          }
-        }
+        assertWorkspaceCurrent?.();
         // Reuse the commit owner's identity and resume rules before any file effects.
         commitClawAddAgentConfig({
           config: currentConfig,
@@ -372,7 +358,11 @@ export async function applyClawAddPlan(
 
       try {
         assertWorkspacePathUnchanged(workspace);
-        await mkdir(dirname(workspace), { recursive: true });
+        if (assertWorkspaceCurrent) {
+          assertWorkspaceCurrent();
+        } else {
+          await mkdir(dirname(workspace), { recursive: true });
+        }
         assertWorkspacePathUnchanged(workspace);
       } catch (error) {
         if (packages.length > 0) {
@@ -459,6 +449,7 @@ export async function applyClawAddPlan(
           ...options,
           ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
           publication: bootstrapPublication,
+          assertWorkspaceCurrent,
         });
       } catch (error) {
         const installStatus: ClawInstallStatus = configCommitted
@@ -490,7 +481,7 @@ export async function applyClawAddPlan(
       // exact digest; a failure therefore leaves only retryable provenance, never an enabled agent.
       const createFiles = options.createWorkspaceFiles ?? createClawWorkspaceFiles;
       try {
-        workspaceFiles = await createFiles(plan, options);
+        workspaceFiles = await createFiles(plan, { ...options, assertWorkspaceCurrent });
       } catch (error) {
         const workspaceError =
           error instanceof ClawWorkspaceWriteError
@@ -542,15 +533,16 @@ export async function applyClawAddPlan(
               transform: (config) => ({ nextConfig: transform(config) }),
             });
           });
-        await commit((config) =>
-          commitClawAddAgentConfig({
+        await commit((config) => {
+          assertWorkspaceCurrent?.();
+          return commitClawAddAgentConfig({
             config,
             plan,
             workspace,
             resumePlan: options.resumePlan,
             resumeRecord: options.resumeRecord,
-          }),
-        );
+          });
+        });
         // The transform runs before persistence can still fail; record the fact only after commit.
         // Moving this into the callback retains the workspace and reports a write that never landed.
         configCommitted = true;

@@ -282,7 +282,7 @@ export async function planWorkspaceAdoptionTargets(params: {
       identical &&
       owned &&
       owned.contentDigest === pending.action.digest &&
-      owned.status !== "failed"
+      owned.status === "complete"
     ) {
       continue;
     }

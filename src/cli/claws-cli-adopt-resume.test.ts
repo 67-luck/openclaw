@@ -19,13 +19,16 @@ import {
   persistClawInstallRecord,
   readClawInstallRecord,
 } from "../claws/provenance.js";
+import { parseClawManifest } from "../claws/schema.js";
 import type { ClawAddPlan } from "../claws/types.js";
+import { buildClawUpdatePlan } from "../claws/update-plan.js";
 import { readClawWorkspaceAdoption } from "../claws/workspace-origin.js";
 import * as workspaceOrigin from "../claws/workspace-origin.js";
 import {
   CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
   upsertClawWorkspaceFile,
   createClawWorkspaceFiles,
+  readClawWorkspaceFiles,
 } from "../claws/workspace.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import * as openClawStateDb from "../state/openclaw-state-db.js";
@@ -238,6 +241,97 @@ describe("claws add adopted-workspace resume", () => {
         );
       }
       expect(mocks.runtime.exit).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["pending", "failed"] as const)(
+    "never claims or deletes an external file after a %s write",
+    async (status) => {
+      const source = syncFs.realpathSync(tempDirs.make("openclaw-claws-pending-source-"));
+      const host = syncFs.realpathSync(tempDirs.make("openclaw-claws-pending-host-"));
+      const workspace = join(host, "workspace");
+      const configPath = join(host, "openclaw.json");
+      const manifestPath = join(source, "openclaw.claw.json");
+      await mkdir(workspace);
+      await writeFile(configPath, "{}\n");
+      await writeFile(join(source, "HEARTBEAT.md"), "# Heartbeat\n");
+      const parsed = parseClawManifest({
+        schemaVersion: 1,
+        agent: { id: "pending-worker" },
+        workspace: { bootstrapFiles: { "HEARTBEAT.md": { source: "HEARTBEAT.md" } } },
+      });
+      if (!parsed.ok) {
+        throw new Error(JSON.stringify(parsed.diagnostics));
+      }
+      await writeFile(manifestPath, JSON.stringify(parsed.manifest));
+      vi.stubEnv("OPENCLAW_STATE_DIR", join(host, "state"));
+      vi.stubEnv("OPENCLAW_CONFIG_PATH", configPath);
+      const opts = { workspace, adoptExistingWorkspace: true, json: true };
+      await runClawsAddCommand(manifestPath, { ...opts, dryRun: true });
+      const plan = JSON.parse(mocks.logs.at(-1) ?? "{}") as ClawAddPlan;
+      expect(plan.blockers).toEqual([]);
+      persistClawInstallRecord(plan, { status: "workspace_ready", nowMs: 1 });
+      // Model the durable crash boundary: intent exists, but no successful file write occurred.
+      upsertClawWorkspaceFile({
+        schemaVersion: CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
+        agentId: "pending-worker",
+        workspace,
+        path: "HEARTBEAT.md",
+        sourcePath: "HEARTBEAT.md",
+        contentDigest: `sha256:${createHash("sha256").update("# Heartbeat\n").digest("hex")}`,
+        status,
+        createdAtMs: 1,
+        updatedAtMs: 1,
+      });
+      await writeFile(join(workspace, "HEARTBEAT.md"), "# Heartbeat\n");
+      const before = await stat(join(workspace, "HEARTBEAT.md"));
+      closeOpenClawStateDatabaseForTest();
+      mocks.logs.length = 0;
+      await expect(
+        runClawsAddCommand(manifestPath, { ...opts, yes: true, planIntegrity: plan.planIntegrity }),
+      ).rejects.toThrow("__exit__:1");
+      expect(mocks.applyClawAddPlan).not.toHaveBeenCalled();
+      // The mutation owner must independently reject a caller holding the original consented plan.
+      await expect(createClawWorkspaceFiles(plan)).rejects.toMatchObject({
+        diagnostics: [expect.objectContaining({ code: "workspace_file_collision" })],
+      });
+      expect(readClawWorkspaceFiles("pending-worker")).toEqual([
+        expect.objectContaining({ status }),
+      ]);
+      const update = await buildClawUpdatePlan({
+        agentId: "pending-worker",
+        targetManifest: parsed.manifest,
+        targetSource: plan.claw,
+        config: {},
+        sourceMcpServers: {},
+      });
+      expect(update.blockers).toContainEqual(
+        expect.objectContaining({ code: "workspace_file_ownership_uncertain" }),
+      );
+      const removal = await buildClawRemovePlan("pending-worker", { config: {} });
+      expect(removal.blockers).toEqual([]);
+      expect(removal.actions).toContainEqual(
+        expect.objectContaining({ kind: "workspaceFile", id: "HEARTBEAT.md", action: "retain" }),
+      );
+      const removed = await applyClawRemovePlan(removal, {
+        config: {},
+        consentPlanIntegrity: removal.planIntegrity,
+        monitorGateway: quiescentClawMonitorGateway,
+        purgeSessions: async () => undefined,
+        trashPath: async (target) => {
+          await rm(target, { recursive: true, force: true });
+          return true;
+        },
+      });
+      expect(removed).toMatchObject({ status: "complete" });
+      expect(removed.workspaceFiles).toContainEqual({
+        path: "HEARTBEAT.md",
+        action: "retainedUnowned",
+      });
+      expect(await readFile(join(workspace, "HEARTBEAT.md"), "utf8")).toBe("# Heartbeat\n");
+      const after = await stat(join(workspace, "HEARTBEAT.md"));
+      expect(after.ino).toBe(before.ino);
+      expect(after.mtimeMs).toBe(before.mtimeMs);
     },
   );
 

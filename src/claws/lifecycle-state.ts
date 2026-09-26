@@ -25,9 +25,10 @@ import {
   cleanupClawAgentFilesystem,
   deletionEffects,
   planClawWorkspaceRemoval,
+  clawWorkspaceFileRemovalOwned,
   readClawRemoveCronInventory,
   releaseClawRemoveRows,
-  removeClawWorkspaceFile,
+  removeClawWorkspaceFiles,
   workspaceContainsUntrackedEntries,
 } from "./lifecycle-delete-support.js";
 import { removeClawMcpServers } from "./lifecycle-mcp-removal.js";
@@ -299,7 +300,10 @@ export async function buildClawRemovePlan(
       actions.push({
         kind: "workspaceFile",
         id: file.path,
-        action: file.state === "unchanged" ? "delete" : "retain",
+        action:
+          file.state === "unchanged" && clawWorkspaceFileRemovalOwned(file, record.workspaceOrigin)
+            ? "delete"
+            : "retain",
         target: `${file.workspace}:${file.path}`,
         blocked: file.state === "unsafe",
         details: {
@@ -632,10 +636,7 @@ export async function applyClawRemovePlan(
         return partial("package_cleanup_failed", packageErrors.map((pkg) => pkg.reason).join("; "));
       }
       const workspaceFiles = result.workspaceFiles;
-      for (const file of record.workspaceFiles) {
-        assertCurrent();
-        workspaceFiles.push(await removeClawWorkspaceFile(file, assertCurrent));
-      }
+      await removeClawWorkspaceFiles(record, workspaceFiles, assertCurrent);
       assertCurrent();
       const bootstrap = await removeClawBootstrap(record, assertCurrent);
       const cleanupErrors = workspaceFiles

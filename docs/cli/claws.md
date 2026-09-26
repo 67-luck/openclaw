@@ -407,7 +407,10 @@ this install already wrote, so the original `--plan-integrity` stays valid and a
 bootstrap file with a valid recorded ownership receipt is not a conflict. If an
 interruption leaves a file without a matching receipt, retry refuses to claim it
 rather than guessing from identical contents. A declared file that appeared
-without being consented or written still blocks. Adoption is
+without being consented or written still blocks. A `pending` or failed write
+record is not proof of creation: retry and update refuse to claim that file,
+and removal retains it. To recover, remove the partial install, then preview
+adoption again and explicitly consent to the retained file. Adoption is
 disclosed as a distinct capability change in the plan, and a workspace already
 configured for another agent still blocks.
 

@@ -522,6 +522,8 @@ export async function seedWorkspaceBootstrap(params: {
   afterPublish?: (identity: BootstrapPublicationIdentity) => void;
   ownsExisting?: (file: syncFs.BigIntStats) => boolean;
   assertCurrent?: () => void;
+  /** Revalidate an already-admitted root outside database transactions; never recreate it. */
+  assertWorkspaceCurrent?: () => void;
 }): Promise<"seeded" | "already-seeded" | "consumed"> {
   if (params.content.byteLength > MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES) {
     throw new WorkspaceBootstrapSeedConflictError(
@@ -538,27 +540,33 @@ export async function seedWorkspaceBootstrap(params: {
     throw new WorkspaceBootstrapSeedConflictError("BOOTSTRAP.md must not be empty.");
   }
 
-  params.assertCurrent?.();
+  const assertBeforePublication = () => {
+    params.assertWorkspaceCurrent?.();
+    params.assertCurrent?.();
+  };
+  assertBeforePublication();
   const dir = resolveUserPath(params.dir);
   const bootstrapPath = path.join(dir, DEFAULT_BOOTSTRAP_FILENAME);
   const initialState = (await readCanonicalWorkspaceStateSnapshot(dir, params.stateOptions)).setup;
-  params.assertCurrent?.();
+  assertBeforePublication();
   if (initialState.setupCompletedAt) {
     return "consumed";
   }
   const bootstrapExists = await pathExists(bootstrapPath);
-  params.assertCurrent?.();
+  assertBeforePublication();
   if (initialState.bootstrapSeededAt && !bootstrapExists) {
     return "consumed";
   }
 
-  await fs.mkdir(dir, { recursive: true });
+  if (!params.assertWorkspaceCurrent) {
+    await fs.mkdir(dir, { recursive: true });
+  }
   const created =
     !bootstrapExists &&
     (await publishBootstrapFile(
       bootstrapPath,
       params.content,
-      params.assertCurrent,
+      assertBeforePublication,
       params.beforePublish,
       0o600,
       params.afterPublish,
@@ -580,6 +588,7 @@ export async function seedWorkspaceBootstrap(params: {
       const before = syncFs.fstatSync(opened.fd, { bigint: true });
       const content = await readWorkspaceBootstrapFile(opened.fd);
       const after = syncFs.fstatSync(opened.fd, { bigint: true });
+      assertBeforePublication();
       if (
         !Buffer.from(content, "utf8").equals(params.content) ||
         before.size !== after.size ||
@@ -606,6 +615,7 @@ export async function seedWorkspaceBootstrap(params: {
     }
   }
 
+  assertBeforePublication();
   if (!initialState.bootstrapSeededAt) {
     const nowMs = params.nowMs ?? Date.now();
     await mergeWorkspaceSetupState(

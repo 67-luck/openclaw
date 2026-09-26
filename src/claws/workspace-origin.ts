@@ -12,7 +12,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
-import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
+import { getAdmittedSqliteSchemaFacts } from "../infra/sqlite-schema-facts.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -197,9 +197,12 @@ export function readClawWorkspaceAdoptionFromDatabase(
   agentId: string,
   workspace: string,
 ): ClawWorkspaceAdoption {
-  // Read-only previews may run against schema-compatible but pre-migration state where this
-  // table does not exist yet; absence reads as "not adopted", not a hard failure.
-  if (!tableExists(db, "claw_workspace_files")) {
+  const schema = getAdmittedSqliteSchemaFacts(db);
+  if (!schema) {
+    throw new Error("Claw workspace adoption requires an admitted state database.");
+  }
+  // Admission retains table absence for pre-migration read-only previews; do not re-query it.
+  if (!schema.tables.has("claw_workspace_files")) {
     return { adopted: false };
   }
   const row = selectWorkspaceOriginRow(db, agentId, workspace);

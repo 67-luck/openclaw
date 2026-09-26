@@ -258,41 +258,111 @@ describe("buildClawAddPlan workspace adoption", () => {
 });
 
 describe("applyClawAddPlan workspace adoption", () => {
-  it("revalidates an adopted workspace before realizing shared plugin requirements", async () => {
-    const root = tempDirs.make("openclaw-claw-adopt-add-");
-    const workspace = join(root, "existing-workspace");
+  it.each(["removed", "file"] as const)(
+    "releases unused adoption when the root is %s before apply",
+    async (change) => {
+      const root = tempDirs.make("openclaw-claw-adopt-add-");
+      const workspace = join(root, "existing-workspace");
+      await mkdir(workspace);
+      const { plan } = await makeProvenancePlan(
+        root,
+        {
+          schemaVersion: 1,
+          agent: { id: "worker" },
+          packages: [{ kind: "plugin", source: "clawhub", ref: "@acme/audit", version: "1.0.0" }],
+        },
+        {
+          workspace,
+          adoptExistingWorkspace: true,
+          packagePreflight: async () => ({
+            ok: true,
+            action: "install",
+            integrity: `sha256:${"a".repeat(64)}`,
+            installId: "audit",
+          }),
+        },
+      );
+      expect(plan.blockers).toEqual([]);
+      await rmdir(workspace);
+      if (change === "file") {
+        await writeFile(workspace, "operator file");
+      }
+      const installPackages = vi.fn();
+
+      await expect(
+        applyClawAddPlan(plan, {
+          consentPlanIntegrity: plan.planIntegrity,
+          env: stateEnv(root),
+          installPackages,
+        }),
+      ).rejects.toMatchObject({ code: "workspace_collision" });
+      expect(installPackages).not.toHaveBeenCalled();
+      expect(readInstallRow("worker", root)).toBeUndefined();
+      expect(readClawWorkspaceFiles("worker", { env: stateEnv(root) })).toEqual([]);
+    },
+  );
+
+  it.each(["removed", "replacement"] as const)(
+    "refuses a root %s at the final config effect",
+    async (change) => {
+      const root = tempDirs.make("openclaw-claw-adopt-final-config-");
+      const workspace = join(root, "workspace");
+      await mkdir(workspace);
+      const { plan } = await makeProvenancePlan(
+        root,
+        { schemaVersion: 1, agent: { id: "worker" } },
+        { workspace, adoptExistingWorkspace: true },
+      );
+      let config: OpenClawConfig = {};
+      const result = await applyClawAddPlan(plan, {
+        consentPlanIntegrity: plan.planIntegrity,
+        env: stateEnv(root),
+        commitConfig: async (transform) => {
+          // Preserve the original inode so replacement is deterministic on every filesystem.
+          syncFs.renameSync(workspace, join(root, "original"));
+          if (change === "replacement") {
+            await mkdir(workspace);
+          }
+          config = transform(config);
+        },
+      });
+      expect(result).toMatchObject({ status: "partial", configCommitted: false });
+      expect(config.agents?.entries?.worker).toBeUndefined();
+      expect(readInstallRow("worker", root)?.status).not.toBe("complete");
+      if (change === "removed") {
+        await expect(stat(workspace)).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    },
+  );
+
+  it("does not recreate an adopted root after bootstrap source I/O", async () => {
+    const root = tempDirs.make("openclaw-claw-adopt-final-bootstrap-");
+    const workspace = join(root, "workspace");
     await mkdir(workspace);
     const { plan } = await makeProvenancePlan(
       root,
-      {
-        schemaVersion: 1,
-        agent: { id: "worker" },
-        packages: [{ kind: "plugin", source: "clawhub", ref: "@acme/audit", version: "1.0.0" }],
-      },
-      {
-        workspace,
-        adoptExistingWorkspace: true,
-        packagePreflight: async () => ({
-          ok: true,
-          action: "install",
-          integrity: `sha256:${"a".repeat(64)}`,
-          installId: "audit",
-        }),
-      },
+      { schemaVersion: 1, agent: { id: "worker" } },
+      { workspace, adoptExistingWorkspace: true },
     );
-    expect(plan.blockers).toEqual([]);
-    await rmdir(workspace);
-    const installPackages = vi.fn();
-
-    await expect(
-      applyClawAddPlan(plan, {
-        consentPlanIntegrity: plan.planIntegrity,
-        env: stateEnv(root),
-        installPackages,
-      }),
-    ).rejects.toMatchObject({ code: "workspace_collision" });
-    expect(installPackages).not.toHaveBeenCalled();
-    expect(readInstallRow("worker", root)).toBeUndefined();
+    const commitConfig = vi.fn();
+    const result = await applyClawAddPlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
+      env: stateEnv(root),
+      commitConfig,
+      seedPackageBootstrap: async (_plan, options) => {
+        // Enter the real seed owner after the awaited source boundary removes the admitted root.
+        await rmdir(workspace);
+        return seedWorkspaceBootstrap({
+          dir: workspace,
+          content: Buffer.from("bootstrap\n"),
+          stateOptions: options,
+          assertWorkspaceCurrent: options?.assertWorkspaceCurrent,
+        });
+      },
+    });
+    expect(result).toMatchObject({ status: "partial", configCommitted: false });
+    expect(commitConfig).not.toHaveBeenCalled();
+    await expect(stat(workspace)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("preserves the recorded workspace_ready phase when shared package install fails on first adoption", async () => {

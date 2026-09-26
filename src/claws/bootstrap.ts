@@ -31,6 +31,7 @@ export async function seedClawPackageBootstrap(
     seedBootstrap?: typeof seedWorkspaceBootstrap;
     existingFile?: "claim" | "conflict";
     publication?: ReturnType<typeof prepareClawBootstrapPublication>;
+    assertWorkspaceCurrent?: () => void;
   } & OpenClawStateDatabaseOptions = {},
 ): Promise<"seeded" | "already-seeded" | "consumed" | undefined> {
   const actions = plan.actions.filter((action) => action.kind === "bootstrap");
@@ -90,6 +91,7 @@ export async function seedClawPackageBootstrap(
       ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
       ...(options.existingFile ? { existingFile: options.existingFile } : {}),
       stateOptions: options,
+      assertWorkspaceCurrent: options.assertWorkspaceCurrent,
       ...(publication ? { ...publication, existingFile: "conflict" as const } : {}),
     });
   } catch (error) {

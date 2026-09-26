@@ -23,7 +23,7 @@ import {
 import { clawContainedRelativePath } from "./path-containment.js";
 import { parseClawMarkdown } from "./reader.js";
 import type { ClawAddPlan, ClawAddPlanAction, ClawDiagnostic } from "./types.js";
-import { CLAW_ADOPTED_WORKSPACE_MARKER_PATH } from "./workspace-origin.js";
+import { CLAW_ADOPTED_WORKSPACE_MARKER_PATH, planAdoptsWorkspace } from "./workspace-origin.js";
 
 export const CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION =
   "openclaw.clawWorkspaceFileRecord.v1" as const;
@@ -328,7 +328,10 @@ export function readAllClawWorkspaceFiles(
 
 export async function createClawWorkspaceFiles(
   plan: ClawAddPlan,
-  options: OpenClawStateDatabaseOptions & { nowMs?: number } = {},
+  options: OpenClawStateDatabaseOptions & {
+    nowMs?: number;
+    assertWorkspaceCurrent?: () => void;
+  } = {},
 ): Promise<PersistedClawWorkspaceFile[]> {
   const actions = plan.actions.filter((action) => action.kind === "workspaceFile");
   if (actions.length === 0) {
@@ -347,6 +350,7 @@ export async function createClawWorkspaceFiles(
     maxBytes: MAX_CLAW_WORKSPACE_FILE_BYTES,
     symlinks: "reject",
   });
+  options.assertWorkspaceCurrent?.();
   const createdFiles: PersistedClawWorkspaceFile[] = [];
   const nowMs = options.nowMs ?? Date.now();
 
@@ -400,7 +404,12 @@ export async function createClawWorkspaceFiles(
         );
       }
       if (await workspace.exists(targetRelative)) {
-        if (!existingRecord || existingRecord.status === "failed") {
+        // Pending intent cannot prove a write happened in an operator-owned directory.
+        if (
+          !existingRecord ||
+          existingRecord.status === "failed" ||
+          (planAdoptsWorkspace(plan) && existingRecord.status !== "complete")
+        ) {
           if (action.action === "adopt") {
             const adoptedTarget = await workspace.read(targetRelative, {
               hardlinks: "reject",
@@ -419,6 +428,7 @@ export async function createClawWorkspaceFiles(
                 createdFiles,
               );
             }
+            options.assertWorkspaceCurrent?.();
             const adoptedRecord = existingRecord ?? expectedRecord;
             if (existingRecord) {
               const previousStatus = existingRecord.status;
@@ -454,6 +464,7 @@ export async function createClawWorkspaceFiles(
             `Claw-owned workspace destination ${JSON.stringify(targetRelative)} no longer matches its recorded content.`,
           );
         }
+        options.assertWorkspaceCurrent?.();
         const previousStatus = existingRecord.status;
         existingRecord.status = "complete";
         existingRecord.updatedAtMs = nowMs;
@@ -473,6 +484,7 @@ export async function createClawWorkspaceFiles(
           createdFiles,
         );
       }
+      options.assertWorkspaceCurrent?.();
       const record = existingRecord ?? expectedRecord;
       if (existingRecord) {
         const previousStatus = record.status;
@@ -486,7 +498,9 @@ export async function createClawWorkspaceFiles(
         await workspace.write(targetRelative, resolvedSource.content, {
           mkdir: true,
           overwrite: false,
+          assertBeforeMutation: options.assertWorkspaceCurrent,
         });
+        options.assertWorkspaceCurrent?.();
         record.status = "complete";
         updateWorkspaceFileStatus(record, ["pending"], options);
         createdFiles.push(record);

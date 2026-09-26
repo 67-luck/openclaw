@@ -488,6 +488,14 @@ export async function inspectClawBootstrap(
   return { ...base, state: "unknown", message: "BOOTSTRAP.md disappeared during inspection." };
 }
 
+/** A write-ahead row grants no deletion authority over an unconsented adopted file. */
+export function clawWorkspaceFileRemovalOwned(
+  file: PersistedClawWorkspaceFile,
+  origin: ClawWorkspaceAdoption,
+): boolean {
+  return !origin.adopted || file.status === "complete" || origin.adoptedFiles.includes(file.path);
+}
+
 export async function removeClawWorkspaceFile(
   record: ClawRemovableWorkspaceFile,
   assertCurrent: () => void,
@@ -621,4 +629,20 @@ export function releaseClawRemoveRows(
     cleanupErrors.push(coerceErrorMessage(error));
   }
   return complete;
+}
+
+/** Removes owned workspace files sequentially while retaining partial results. */
+export async function removeClawWorkspaceFiles(
+  record: { workspaceFiles: ClawManagedFileStatus[]; workspaceOrigin: ClawWorkspaceAdoption },
+  results: RemovedWorkspaceFile[],
+  assertCurrent: () => void,
+): Promise<void> {
+  for (const file of record.workspaceFiles) {
+    assertCurrent();
+    results.push(
+      clawWorkspaceFileRemovalOwned(file, record.workspaceOrigin)
+        ? await removeClawWorkspaceFile(file, assertCurrent)
+        : { path: file.path, action: "retainedUnowned" },
+    );
+  }
 }
