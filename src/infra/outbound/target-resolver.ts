@@ -411,12 +411,7 @@ export async function resolveChannelTarget(params: {
     normalizedInput?.normalized === normalizedInput?.raw &&
     targetLooksLikeId,
   );
-  if (
-    normalizedInput &&
-    !reservedLiteral &&
-    (!channelNamespace || pluginAcceptsNamespaceAsNativeTarget) &&
-    targetLooksLikeId
-  ) {
+  if (normalizedInput && !reservedLiteral && !channelNamespace && targetLooksLikeId) {
     const resolvedIdLikeTarget = await maybeResolveIdLikeTarget({
       cfg: params.cfg,
       channel: params.channel,
@@ -479,6 +474,20 @@ export async function resolveChannelTarget(params: {
     };
   }
   if (channelNamespace) {
+    if (pluginAcceptsNamespaceAsNativeTarget && normalizedInput) {
+      const resolvedNativeTarget = await maybeResolveIdLikeTarget({
+        cfg: params.cfg,
+        channel: params.channel,
+        input: raw,
+        accountId: params.accountId,
+        preferredKind: params.preferredKind,
+        plugin,
+      });
+      if (resolvedNativeTarget) {
+        return { ok: true, target: resolvedNativeTarget };
+      }
+      return buildNormalizedResolveResult({ normalized, kind });
+    }
     return {
       ok: false,
       error: missingChannelDestinationError(

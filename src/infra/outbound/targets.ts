@@ -507,6 +507,7 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
     allowBootstrap: true,
   });
   const resolveSessionRoute = plugin?.messaging?.resolveOutboundSessionRoute;
+  const channelNamespace = resolveBareTargetChannelNamespace({ raw: deliveryTo, plugin });
   if (
     ownerRouteMustBeDirect &&
     !isPositivelyDirectHeartbeatOwnerTarget({
@@ -517,11 +518,10 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
   ) {
     return rejectDelivery("no-route");
   }
-  if (!resolveSessionRoute && !plugin?.messaging?.targetResolver) {
+  if (!resolveSessionRoute && !plugin?.messaging?.targetResolver && !channelNamespace) {
     return delivery;
   }
   let routeResolvedTarget: ResolvedMessagingTarget | undefined;
-  const channelNamespace = resolveBareTargetChannelNamespace({ raw: deliveryTo, plugin });
   // Ordinary target normalization failures should not suppress an otherwise deliverable heartbeat.
   const targetResolution = await resolveChannelTarget({
     cfg: params.cfg,
@@ -529,7 +529,6 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
     input: deliveryTo,
     accountId: delivery.accountId,
     unknownTargetMode: "normalized",
-    allowNativeChannelNamespace: false,
     plugin,
   }).catch(() => null);
   if (!targetResolution && channelNamespace) {
@@ -556,7 +555,7 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
     return rejectDelivery("no-route");
   }
   if (!resolveSessionRoute) {
-    return delivery;
+    return routeResolvedTarget ? { ...delivery, to: routeResolvedTarget.to } : delivery;
   }
   const route = await resolveOutboundSessionRoute({
     cfg: params.cfg,
