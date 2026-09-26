@@ -11,6 +11,8 @@ import * as coordinators from "../infra/state-database-coordinator.js";
 import { DoctorStateMigrationRefusalError } from "../infra/state-migrations.messages.js";
 import {
   collectUpdateDoctorFailureFacts,
+  createUpdatePostInstallDoctorResultPath,
+  consumeUpdatePostInstallDoctorResult,
   UpdateDoctorError,
 } from "../infra/update-doctor-result.js";
 import { buildUpdateDoctorEnv } from "../infra/update-runner-doctor.js";
@@ -82,6 +84,47 @@ describe("Doctor refused-migration maintenance outcome", () => {
       new ExitError(130),
     );
     expect(maintenance.release).toHaveBeenCalledOnce();
+  });
+
+  it("forwards database write proof produced while failed Doctor maintenance settles", async () => {
+    const resultPath = createUpdatePostInstallDoctorResultPath();
+    await withOpenClawTestState(
+      {
+        scenario: "minimal",
+        env: { OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH: resultPath },
+      },
+      async (state) => {
+        await state.writeConfig({ gateway: { mode: "local" } });
+        const databaseGenerations = { [state.statePath("state/openclaw.sqlite")]: null };
+        const databaseWrites = { unchanged: false, generations: databaseGenerations };
+        let released = false;
+        vi.mocked(doctorMaintenance.beginDoctorMaintenance).mockResolvedValueOnce({
+          ...maintenance,
+          get databaseWrites() {
+            return released ? databaseWrites : undefined;
+          },
+          release: async () => {
+            released = true;
+          },
+        });
+        const failure = new Error("injected post-migration Doctor failure");
+        mocks.runContributions.mockRejectedValueOnce(failure);
+        await expect(
+          runDoctorHealthFlow(
+            { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+            { repair: true, nonInteractive: true },
+            { inputHash: hashConfigRaw(null), assertCurrent() {}, databaseGenerations },
+          ),
+        ).rejects.toBe(failure);
+        expect(doctorMaintenance.beginDoctorMaintenance).toHaveBeenCalledWith(
+          expect.objectContaining({ databaseGenerations }),
+        );
+        await expect(consumeUpdatePostInstallDoctorResult(resultPath)).resolves.toMatchObject({
+          status: "error",
+          databaseWrites,
+        });
+      },
+    );
   });
 
   it.each(["success", "validation", "conflict", "missing-receipt"] as const)(

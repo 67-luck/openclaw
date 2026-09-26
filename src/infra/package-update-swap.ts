@@ -411,7 +411,7 @@ export async function swapStagedPackageInstall(
             }
           }
         : rootLink?.verifyRuntime;
-      params.onTransaction({
+      await params.onTransaction({
         backupRoot,
         ...(assertRollbackSafe ? { assertRollbackSafe } : {}),
         rollback: (assertion) => {
@@ -546,10 +546,9 @@ export async function swapStagedPackageInstall(
       });
     }
     await rootLink?.assertLiveUnchanged();
-    if (process.platform === "freebsd") {
-      // Keep executor authority after the last asynchronous link observation.
-      params.assertCurrent?.();
-    }
+    // Snapshot capture and link inspection can outlive the admitted executor.
+    // Recheck every platform before touching the live package, not just FreeBSD.
+    params.assertCurrent?.();
     // A native refusal must still allow the unchanged Gateway to restart.
     // Mark mutation only now: a copy-fallback move can fail after partial publication,
     // and only a completed backup permits restoration.

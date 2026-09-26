@@ -8,6 +8,7 @@ import {
 } from "../infra/backup-archive-path-policy.js";
 import { normalizeWindowsPathForComparison } from "../infra/path-guards.js";
 import { isRecord } from "../utils.js";
+import { buildBackupArchivePath } from "./backup-shared.js";
 
 export function backupManifestSizeError(bytes: number): Error | undefined {
   const maxBytes = 1024 * 1024;
@@ -16,7 +17,13 @@ export function backupManifestSizeError(bytes: number): Error | undefined {
     : undefined;
 }
 
+export type BackupManifestSqliteSnapshot = { sourcePath: string } & (
+  | { role: "global" }
+  | { role: "agent"; agentId: string }
+);
+
 export type BackupManifest = {
+  sqliteSnapshots?: BackupManifestSqliteSnapshot[];
   schemaVersion: number;
   createdAt: string;
   archiveRoot: string;
@@ -99,6 +106,53 @@ function parseBackupManifestAgentRoots(
     agentRoots.push({ agentId, sourcePath: normalizedSourcePath });
   }
   return agentRoots;
+}
+
+function parseBackupManifestSqliteSnapshots(
+  value: unknown,
+): BackupManifestSqliteSnapshot[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("Backup manifest sqliteSnapshots must be an array.");
+  }
+  let hasGlobal = false;
+  const paths = new Set<string>();
+  return value.map((snapshot) => {
+    if (
+      !isRecord(snapshot) ||
+      (snapshot.role !== "global" && snapshot.role !== "agent") ||
+      Object.keys(snapshot).some(
+        (key) =>
+          key !== "sourcePath" &&
+          key !== "role" &&
+          !(snapshot.role === "agent" && key === "agentId"),
+      )
+    ) {
+      throw new Error("Backup manifest contains an invalid SQLite snapshot owner.");
+    }
+    const sourcePath = parseBackupManifestSourcePath(snapshot.sourcePath, "SQLite snapshot");
+    let identity: { role: "global" } | { role: "agent"; agentId: string };
+    if (snapshot.role === "global") {
+      identity = { role: "global" };
+    } else {
+      const agentId = snapshot.agentId;
+      if (typeof agentId !== "string" || !agentId || normalizeAgentId(agentId) !== agentId) {
+        throw new Error("Backup manifest SQLite snapshot has an invalid agentId.");
+      }
+      identity = { role: "agent", agentId };
+    }
+    // Archives must restore portably, even when created on a case-sensitive host.
+    const sourceKey = sourcePath.replaceAll("\\", "/").normalize("NFC").toLowerCase();
+    // A moved agent can retain a distinct database at its previous location.
+    if ((identity.role === "global" && hasGlobal) || paths.has(sourceKey)) {
+      throw new Error("Backup manifest contains duplicate SQLite snapshot ownership.");
+    }
+    hasGlobal ||= identity.role === "global";
+    paths.add(sourceKey);
+    return { sourcePath, ...identity };
+  });
 }
 
 export function parseBackupManifest(raw: string): BackupManifest {
@@ -184,6 +238,7 @@ export function parseBackupManifest(raw: string): BackupManifest {
         }
       : undefined,
     assets,
+    sqliteSnapshots: parseBackupManifestSqliteSnapshots(parsed.sqliteSnapshots),
     ...(parsed.externalSymbolicLinks === undefined ? {} : { externalSymbolicLinks }),
   };
 }
@@ -219,6 +274,33 @@ export function verifyBackupManifestEntries(manifest: BackupManifest, entries: S
       !normalizedEntries.some((entry) => isArchivePathWithin(entry, assetArchivePath))
     ) {
       throw new Error(`Archive is missing payload for manifest asset: ${assetArchivePath}`);
+    }
+  }
+}
+
+/** The capture-time inventory, never today's filesystem, defines required database coverage. */
+export function verifyBackupSqliteCoverage(
+  manifest: BackupManifest,
+  requiredSnapshots: readonly BackupManifestSqliteSnapshot[],
+  verifiedSnapshots: readonly ({ archivePath: string } & (
+    | { role: "global" }
+    | { role: "agent"; agentId: string }
+  ))[],
+): void {
+  for (const required of [...(manifest.sqliteSnapshots ?? []), ...requiredSnapshots]) {
+    const expectedPath = buildBackupArchivePath(manifest.archiveRoot, required.sourcePath);
+    if (
+      !verifiedSnapshots.some(
+        (verified) =>
+          verified.archivePath === expectedPath &&
+          verified.role === required.role &&
+          (required.role === "global" ||
+            (verified.role === "agent" && verified.agentId === required.agentId)),
+      )
+    ) {
+      throw new Error(
+        `Backup lacks verified canonical SQLite coverage for ${required.sourcePath}.`,
+      );
     }
   }
 }

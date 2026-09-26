@@ -15,6 +15,7 @@ import {
 import { createCpuTrackedWorker } from "../infra/worker-cpu.js";
 import { runInDetachedAsyncContext } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { getOpenClawDatabaseMaintenanceScope } from "./openclaw-state-db-async-lifecycle.js";
 import {
   createLeaseHeartbeatCleanup,
   type LeaseHeartbeatCleanup,
@@ -129,6 +130,8 @@ export function startOpenClawStateLeaseHeartbeat(
     | "parentCoordinatorRetained"
     | "retainedStartup"
     | "deferActivation"
+    | "databaseWritePaths"
+    | "databaseWriteSequence"
   > & {
     /** The caller retains its shared-state actor through startup and failure teardown. */
     startupContext?: OpenClawStateWorkerContext;
@@ -141,6 +144,7 @@ export function startOpenClawStateLeaseHeartbeat(
   },
 ) {
   const { startupContext } = params;
+  const databaseWrites = getOpenClawDatabaseMaintenanceScope()?.databaseWrites;
   startupContext?.admission.assertCurrent();
   if (startupContext && params.path !== startupContext.admission.databasePath) {
     throw new Error("state lease heartbeat path differs from its captured admission");
@@ -407,6 +411,12 @@ export function startOpenClawStateLeaseHeartbeat(
         createCpuTrackedWorker(url, {
           workerData: {
             path: databasePath,
+            ...(databaseWrites
+              ? {
+                  databaseWritePaths: databaseWrites.paths,
+                  databaseWriteSequence: databaseWrites.sequence,
+                }
+              : {}),
             existingOnly: retainedStartup ? true : params.existingOnly,
             ...(retainedStartup ? { retainedStartup } : {}),
             ...(startupContext ? { deferActivation: true as const } : {}),
@@ -464,6 +474,12 @@ export function startOpenClawStateLeaseHeartbeat(
   worker.on("message", (reply: LeaseHeartbeatReply | null) => {
     if (reply === null) {
       settleStartup("message");
+      return;
+    }
+    if ("databaseWrites" in reply) {
+      // Cleanup joins the native exit event without removing message listeners.
+      // Only this retained maintenance capture receives its worker evidence.
+      databaseWrites?.record(reply.databaseWrites);
       return;
     }
     if ("attempt" in reply) {

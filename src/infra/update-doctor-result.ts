@@ -12,6 +12,7 @@ import {
   resolvePreferredOpenClawTmpDir,
   type ResolvePreferredOpenClawTmpDirOptions,
 } from "./tmp-openclaw-dir.js";
+import type { UpdateDatabaseGenerations } from "./update-database-generations.js";
 import {
   UpdateDoctorConfigChangeSchema,
   UpdateDoctorConfigWriteRefusalSchema,
@@ -62,6 +63,10 @@ const doctorResultEvidence = {
   failureFacts: z.array(UpdateFailureFactSchema).catch([]).optional(),
   configChanges: z.array(UpdateDoctorConfigChangeSchema).optional(),
   configWriteRefusal: UpdateDoctorConfigWriteRefusalSchema.optional(),
+  databaseWrites: z
+    .object({ unchanged: z.boolean(), generations: z.record(z.string(), z.string().nullable()) })
+    .optional()
+    .catch(undefined),
 };
 const UpdatePostInstallDoctorResultSchema = z.discriminatedUnion("status", [
   z.object({ status: z.enum(["ok", "error"]), ...doctorResultEvidence }),
@@ -126,7 +131,9 @@ export type UpdateDoctorWriteAuthority = {
   inputHash: string;
   assertCurrent: () => void;
   postCoreSchemaRepair?: { runId: string; assertCurrent: () => void };
+  databaseGenerations?: UpdateDatabaseGenerations;
 };
+
 const doctorConfigWrites = new AsyncLocalStorage<{
   capture: DoctorConfigCapture;
   authority?: UpdateDoctorWriteAuthority;

@@ -671,43 +671,55 @@ describe("maybeRestartService", () => {
     },
   );
 
-  it("does not infer activation from a detached script when the expected Git build is never observed", async () => {
-    mocks.runRestartScript.mockResolvedValueOnce(false);
-    mocks.waitForGatewayHealthyRestart.mockResolvedValue({
-      runtime: { status: "stopped" },
-      portUsage: {
-        port: 18789,
-        status: "free",
-        listeners: [],
-        hints: [],
-      },
-      healthy: false,
-      staleGatewayPids: [],
-      expectedBuildId: "new-build",
-      waitOutcome: "timeout",
-    });
-
-    await expect(
-      maybeRestartService({
-        shouldRestart: true,
-        result: {
-          status: "ok",
-          mode: "git",
-          root: "/tmp/openclaw-configured-ui-update",
-          after: { version: "2026.9.1", buildId: "new-build" },
-          steps: [],
-          durationMs: 0,
+  it.each(["unaccepted", "thrown"] as const)(
+    "marks a detached script attempt before its uncertain outcome: %s",
+    async (outcome) => {
+      const onGatewayStartAttempted = vi.fn();
+      mocks.runRestartScript.mockImplementationOnce(async () => {
+        expect(onGatewayStartAttempted).toHaveBeenCalledOnce();
+        if (outcome === "thrown") {
+          throw new Error("script settlement failed");
+        }
+        return false;
+      });
+      mocks.waitForGatewayHealthyRestart.mockResolvedValue({
+        runtime: { status: "stopped" },
+        portUsage: {
+          port: 18789,
+          status: "free",
+          listeners: [],
+          hints: [],
         },
-        opts: { json: true, run },
-        refreshServiceEnv: false,
-        serviceEnv: { HOME: "/home/operator" },
-        serviceInstallEnv: {},
-        gatewayPort: 18789,
-        restartScriptPath: "/tmp/openclaw-configured-ui-restart.sh",
-        timeoutMs: 1_000,
-      }),
-    ).resolves.toBe("failed");
-  });
+        healthy: false,
+        staleGatewayPids: [],
+        expectedBuildId: "new-build",
+        waitOutcome: "timeout",
+      });
+
+      await expect(
+        maybeRestartService({
+          shouldRestart: true,
+          onGatewayStartAttempted,
+          result: {
+            status: "ok",
+            mode: "git",
+            root: "/tmp/openclaw-configured-ui-update",
+            after: { version: "2026.9.1", buildId: "new-build" },
+            steps: [],
+            durationMs: 0,
+          },
+          opts: { json: true, run },
+          refreshServiceEnv: false,
+          serviceEnv: { HOME: "/home/operator" },
+          serviceInstallEnv: {},
+          gatewayPort: 18789,
+          restartScriptPath: "/tmp/openclaw-configured-ui-restart.sh",
+          timeoutMs: 1_000,
+        }),
+      ).resolves.toBe("failed");
+      expect(onGatewayStartAttempted).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each(
     [false, true].flatMap((refreshServiceEnv) => [

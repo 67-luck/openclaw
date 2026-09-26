@@ -7,12 +7,14 @@ import {
   sqliteErrorCode,
   sqliteExtendedResultCode,
 } from "../infra/sqlite-error-diagnostics.js";
+import { withSqliteTransactionReceiptObserver } from "../infra/sqlite-transaction-receipt.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import {
   acquireStateDatabaseCoordinator,
   StateDatabaseCoordinatorContentionError,
   withStateDatabaseCoordinatorRuntimeDirectory,
 } from "../infra/state-database-coordinator.js";
+import { createUpdateDatabaseTransactionCollector } from "../infra/update-database-write-receipts.js";
 import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
 import { openTrackedStateDatabase, closeTrackedStateDatabase } from "./openclaw-state-db-handle.js";
 import { OpenClawStateLeaseError } from "./openclaw-state-lease-error.js";
@@ -33,6 +35,16 @@ import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js
 
 // SAFETY: The lease owner alone starts this private entry with its typed structured-clone payload.
 const params = workerData as LeaseHeartbeatWorkerData;
+const databaseWrites = params.databaseWritePaths
+  ? createUpdateDatabaseTransactionCollector(
+      params.databaseWritePaths,
+      "leases",
+      params.databaseWriteSequence,
+    )
+  : undefined;
+if (databaseWrites && !params.databaseWriteSequence) {
+  databaseWrites.evidence.verified = false;
+}
 const shared = new BigInt64Array(params.shared);
 const renewalProgress = new BigInt64Array(params.renewalProgress);
 Atomics.store(shared, state.startupPhase, startupPhase["body-entry"]);
@@ -128,7 +140,20 @@ const renewInWorker = (explicit: boolean): number | undefined => {
                 processOwner?.identity,
               );
             },
-            { logger: { warn() {} } },
+            {
+              logger: { warn() {} },
+              withCommit(commit) {
+                if (
+                  Atomics.load(shared, state.status) >= state.closed ||
+                  readOpenClawStateLeaseExpiry(db, params.identity) === undefined
+                ) {
+                  throw new OpenClawStateLeaseError("state lease heartbeat lost commit ownership", {
+                    code: "OPENCLAW_STATE_LEASE_LOST",
+                  });
+                }
+                commit();
+              },
+            },
           ),
         { lockFailureReporting: "suppress" },
       ),
@@ -194,8 +219,23 @@ const renew = (explicit = false): number | undefined => {
   Atomics.add(renewalProgress, 0, 1n);
   Atomics.notify(shared, state.ack);
   try {
-    return renewInWorker(explicit);
+    return withSqliteTransactionReceiptObserver(databaseWrites?.observe, () =>
+      renewInWorker(explicit),
+    );
   } finally {
+    if (databaseWrites) {
+      // One native renewal yields one small, exact table transition. No full-DB
+      // scan or new timeout is introduced on the independent heartbeat owner.
+      try {
+        parentPort?.postMessage(
+          { databaseWrites: databaseWrites.evidence } satisfies LeaseHeartbeatReply,
+          [],
+        );
+      } catch {
+        /* A missing edge refuses rollback; diagnostics cannot replace heartbeat failure. */
+      }
+      databaseWrites.evidence.transactions.length = 0;
+    }
     Atomics.add(renewalProgress, 0, 1n);
     Atomics.notify(shared, state.ack);
   }

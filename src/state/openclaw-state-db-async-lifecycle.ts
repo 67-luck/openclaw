@@ -2,12 +2,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
+import { runOutsideSqliteTransactionReceiptObserver } from "../infra/sqlite-transaction-receipt.js";
 import {
   inspectDatabasePathIdentitySync,
   readDatabasePathIdentitySync,
   type DatabasePathIdentity,
 } from "../infra/sqlite-worker-identity.js";
 import type { tryCreateGatewaySchemaFenceDelegate } from "../infra/state-database-coordinator.js";
+import type { createUpdateDoctorDatabaseWriteCapture } from "../infra/update-doctor-database-write-capture.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 
 const STATE_DATABASE_READ_ADMISSION_INVALIDATED = "STATE_DATABASE_READ_ADMISSION_INVALIDATED";
@@ -67,6 +69,7 @@ type AgentSchemaMigration = {
 
 export type OpenClawDatabaseMaintenanceScope = {
   readonly ownsSchemaMaintenance: boolean;
+  readonly databaseWrites?: ReturnType<typeof createUpdateDoctorDatabaseWriteCapture>;
   assertOwnerCurrent(access?: "read"): void;
   assertAdmission(): void;
   assertReadAdmission(): void;
@@ -103,7 +106,9 @@ export function getOpenClawDatabaseMaintenanceScope():
 
 /** Delayed work acquires its own resources instead of inheriting the completed scope. */
 export function runOutsideOpenClawDatabaseMaintenanceScope<T>(operation: () => T): T {
-  return maintenanceResources.current.exit(operation);
+  return maintenanceResources.current.exit(() =>
+    runOutsideSqliteTransactionReceiptObserver(operation),
+  );
 }
 
 export function isOpenClawDatabaseMaintenanceResourceOwned(
@@ -158,8 +163,10 @@ function commonMaintenanceAncestor(
 export function createOpenClawDatabaseMaintenanceScope(
   createSchemaFenceDelegate?: SchemaDelegateFactory,
   assertOwnerCurrent?: () => void,
+  databaseWrites?: ReturnType<typeof createUpdateDoctorDatabaseWriteCapture>,
 ): OpenClawDatabaseMaintenanceScope {
   const parent = getOpenClawDatabaseMaintenanceScope();
+  const writeCapture = databaseWrites ?? parent?.databaseWrites;
   const schemaDelegateFactory =
     createSchemaFenceDelegate ??
     (parent?.ownsSchemaMaintenance ? parent.createSchemaFenceDelegate : undefined);
@@ -182,6 +189,7 @@ export function createOpenClawDatabaseMaintenanceScope(
     }
   };
   const scope: OpenClawDatabaseMaintenanceScope = {
+    databaseWrites: writeCapture,
     ownsSchemaMaintenance: schemaDelegateFactory !== undefined,
     assertOwnerCurrent(access) {
       if (checkingOwner) {
@@ -226,7 +234,9 @@ export function createOpenClawDatabaseMaintenanceScope(
       scope.assertAdmission();
       const accepted = { scope, active: true };
       try {
-        const result = maintenanceResources.current.run(accepted, operation);
+        const result = maintenanceResources.current.run(accepted, () =>
+          writeCapture ? writeCapture.run(operation) : operation(),
+        );
         if (result instanceof Promise) {
           const settled = () => {
             accepted.active = false;
@@ -264,57 +274,62 @@ export function createOpenClawDatabaseMaintenanceScope(
       return schemaDelegateFactory?.(params);
     },
     close() {
-      return (closing ??= maintenanceResources.current
-        .run({ scope, active: true }, async () => {
-          while (pending.size || resources.size) {
-            while (pending.size) {
-              await Promise.allSettled(pending);
-            }
-            // Agent lease release can create shared-state handles during cleanup.
-            for (const phase of [
-              "agent-resources",
-              "agent-handles",
-              "shared-leases",
-              "shared-resources",
-              "shared-references",
-              "shared-handles",
-            ] as const) {
-              while ([...resources.values()].some((resource) => resource.phase === phase)) {
-                // Earlier cleanup can start tracked work using resources in this batch.
-                while (pending.size) {
-                  await Promise.allSettled(pending);
-                }
-                const batch = [...resources].filter(([, resource]) => resource.phase === phase);
-                const results = await Promise.allSettled(
-                  batch.map(async ([key, resource]) => {
-                    await resource.close();
-                    resources.delete(key);
-                    maintenanceResources.claims.delete(key);
-                  }),
-                );
-                const errors = results.flatMap((result) =>
-                  result.status === "rejected" ? [result.reason] : [],
-                );
-                if (errors.length === 1) {
-                  throw errors[0];
-                }
-                if (errors.length > 1) {
-                  throw createSqliteLifecycleAggregateError(
-                    errors,
-                    "Maintenance resource cleanup failed",
-                    errors[0],
+      if (closed) {
+        return closing ?? Promise.resolve();
+      }
+      const close = () =>
+        (closing ??= maintenanceResources.current
+          .run({ scope, active: true }, async () => {
+            while (pending.size || resources.size) {
+              while (pending.size) {
+                await Promise.allSettled(pending);
+              }
+              // Agent lease release can create shared-state handles during cleanup.
+              for (const phase of [
+                "agent-resources",
+                "agent-handles",
+                "shared-leases",
+                "shared-resources",
+                "shared-references",
+                "shared-handles",
+              ] as const) {
+                while ([...resources.values()].some((resource) => resource.phase === phase)) {
+                  // Earlier cleanup can start tracked work using resources in this batch.
+                  while (pending.size) {
+                    await Promise.allSettled(pending);
+                  }
+                  const batch = [...resources].filter(([, resource]) => resource.phase === phase);
+                  const results = await Promise.allSettled(
+                    batch.map(async ([key, resource]) => {
+                      await resource.close();
+                      resources.delete(key);
+                      maintenanceResources.claims.delete(key);
+                    }),
                   );
+                  const errors = results.flatMap((result) =>
+                    result.status === "rejected" ? [result.reason] : [],
+                  );
+                  if (errors.length === 1) {
+                    throw errors[0];
+                  }
+                  if (errors.length > 1) {
+                    throw createSqliteLifecycleAggregateError(
+                      errors,
+                      "Maintenance resource cleanup failed",
+                      errors[0],
+                    );
+                  }
                 }
               }
             }
-          }
-          schemaMigrationChecks.clear();
-          closed = true;
-        })
-        .catch((error: unknown) => {
-          closing = undefined;
-          throw error;
-        }));
+            schemaMigrationChecks.clear();
+            closed = true;
+          })
+          .catch((error: unknown) => {
+            closing = undefined;
+            throw error;
+          }));
+      return writeCapture ? writeCapture.run(close) : close();
     },
   };
   if (parent) {

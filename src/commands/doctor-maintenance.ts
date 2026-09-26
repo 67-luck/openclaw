@@ -21,11 +21,11 @@ import {
 } from "../infra/state-database-coordinator.js";
 import { DoctorUnreadableStateDatabaseError } from "../infra/state-repair-message.js";
 import { UPDATE_RUN_ID_ENV } from "../infra/update-control-plane-sentinel.js";
+import { createUpdateDoctorDatabaseWriteCapture } from "../infra/update-doctor-database-write-capture.js";
 import { UpdateDoctorError } from "../infra/update-doctor-result.js";
 import { createUpdateFailureFact, type UpdateFailureFact } from "../infra/update-failure-facts.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { withCommandProcessScope } from "../process/exec-spawn.js";
-import type { RuntimeEnv } from "../runtime.js";
 import {
   createOpenClawDatabaseMaintenanceScope,
   type OpenClawDatabaseMaintenanceScope,
@@ -50,7 +50,11 @@ import {
   inspectStaleDoctorGateway,
   type DoctorStaleGateway,
 } from "./doctor-maintenance-stale-service.js";
-import type { DoctorOptions } from "./doctor-prompter.js";
+import type {
+  DoctorConfigWriter,
+  DoctorMaintenance,
+  DoctorMaintenanceParams,
+} from "./doctor-maintenance-types.js";
 import { isDoctorUpdateRepairMode, resolveDoctorRepairMode } from "./doctor-repair-mode.js";
 import {
   assertDoctorServiceSelection,
@@ -64,30 +68,9 @@ import {
   resolveUpdateDoctorGitRecovery,
 } from "./doctor-update-refusal.js";
 
-type DoctorConfigWriter = (nextConfig: OpenClawConfig) => Promise<OpenClawConfig>;
-
-export async function beginDoctorMaintenance(params: {
-  options: DoctorOptions;
-  root: string | null;
-  runtime: RuntimeEnv;
-  runId?: string;
-  assertCurrent?: () => void;
-}): Promise<
-  | {
-      run<T>(operation: () => T): T;
-      signal: AbortSignal;
-      releaseState(): Promise<void>;
-      release(): Promise<void>;
-      finish(
-        cfg: OpenClawConfig | undefined,
-        writeConfig?: DoctorConfigWriter,
-        failure?: unknown,
-      ): Promise<void>;
-      warnings?: string[];
-      failureFacts?: UpdateFailureFact[];
-    }
-  | undefined
-> {
+export async function beginDoctorMaintenance(
+  params: DoctorMaintenanceParams,
+): Promise<DoctorMaintenance | undefined> {
   if (!(params.options.repair === true || params.options.yes === true)) {
     return undefined;
   }
@@ -150,9 +133,12 @@ export async function beginDoctorMaintenance(params: {
       throw error;
     }
     coordinators.push(owner, stateOwner);
+    await databaseCapture?.admit();
+    params.assertCurrent?.();
     resources = createOpenClawDatabaseMaintenanceScope(
       owner.createSchemaFenceDelegate,
       params.assertCurrent,
+      databaseCapture,
     );
   };
   const acquireStoppedMaintenanceResources = () =>
@@ -174,8 +160,14 @@ export async function beginDoctorMaintenance(params: {
       await resources?.close();
       repairStoresMayBeOpen = false;
     }
-    for (const coordinator of coordinators.splice(0).toReversed()) {
-      coordinator.release();
+    try {
+      if (coordinators.length > 0) {
+        await databaseCapture?.settle();
+      }
+    } finally {
+      for (const coordinator of coordinators.splice(0).toReversed()) {
+        coordinator.release();
+      }
     }
   };
   const release = async (assertCustody?: () => void) => {
@@ -441,6 +433,16 @@ export async function beginDoctorMaintenance(params: {
   };
   // Admission can stop the service before returning a maintenance handle.
   const exit = holdDoctorMaintenanceExit();
+  const databaseCapture = createUpdateDoctorDatabaseWriteCapture(params.databaseGenerations, {
+    env,
+    root: params.root ?? undefined,
+    signal: exit.signal,
+    assertCurrent: params.assertCurrent,
+    warn: (message) => {
+      warnings.push(message);
+      params.runtime.log(message);
+    },
+  });
   try {
     await settle(async () => {
       const externallyManaged = isServiceRepairExternallyManaged();
@@ -621,6 +623,9 @@ export async function beginDoctorMaintenance(params: {
     signal: exit.signal,
     warnings,
     failureFacts,
+    get databaseWrites() {
+      return databaseCapture?.receipt;
+    },
     run: <T>(operation: () => T) => resources!.run(operation),
     releaseState: () => settle(releaseState),
     async release() {

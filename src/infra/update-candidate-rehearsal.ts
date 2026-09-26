@@ -22,6 +22,7 @@ import {
   POST_CORE_UPDATE_SOURCE_CONFIG_PATH_ENV,
 } from "./update-post-core-context.js";
 import { buildUpdateRehearsalPathEnv } from "./update-rehearsal-paths.js";
+import type { UpdateRunStep } from "./update-run-record.js";
 import { buildUpdateDoctorEnv } from "./update-runner-doctor.js";
 import type { UpdateSnapshotCapacity } from "./update-snapshot-capacity.js";
 
@@ -32,6 +33,7 @@ export type UpdateCandidateRehearsal = {
   env: NodeJS.ProcessEnv;
   port: number;
   snapshotCapacity: UpdateSnapshotCapacity;
+  snapshotDiagnostics?: string[];
   cleanupDirectories: string[];
   cleanup: () => Promise<void>;
 };
@@ -130,6 +132,7 @@ export async function prepareUpdateCandidateRehearsal(params: {
   nodeRunner?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  onProgress?: (step: UpdateRunStep) => void;
 }): Promise<UpdateCandidateRehearsal> {
   const sourceEnv = params.env ?? process.env;
   const workerEnv = (tempDir: string): NodeJS.ProcessEnv => {
@@ -189,6 +192,7 @@ export async function prepareUpdateCandidateRehearsal(params: {
     stateDir: tempDir,
     pluginPaths,
     snapshotCapacity,
+    snapshotDiagnostics,
     cleanupDirectories,
   } = await prepareUpdateCandidateStateSnapshot({
     ...params,
@@ -229,6 +233,7 @@ export async function prepareUpdateCandidateRehearsal(params: {
       env,
       port,
       snapshotCapacity,
+      snapshotDiagnostics,
       cleanupDirectories,
       cleanup,
     };

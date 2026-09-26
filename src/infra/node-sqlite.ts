@@ -1,12 +1,18 @@
 // Loads node:sqlite with OpenClaw warning handling.
+import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { ensureSqliteLibrarySelected } from "./bun-sqlite-library.js";
+import { hasErrnoCode } from "./errno.js";
 import { formatErrorMessage } from "./errors.js";
 import { compareValidSemver } from "./semver.js";
 import { registerSqliteReaderConnection } from "./sqlite-reader-lifecycle.js";
 import { isSqliteWalResetSafeVersion } from "./sqlite-runtime-version.js";
+import {
+  observeSqliteReceiptOpen,
+  observeSqliteReceiptOpened,
+} from "./sqlite-transaction-receipt.js";
 import { installProcessWarningFilter } from "./warning-filter.js";
 
 const require = createRequire(import.meta.url);
@@ -144,11 +150,33 @@ export function openNodeSqliteDatabase(
   // Callers may pass file: URIs or already-namespaced paths from specialized
   // resolvers; location normalization must remain idempotent for those forms.
   const resolvedLocation = resolveNodeSqliteLocation(location);
+  if (!options?.readOnly && options?.open !== false) {
+    observeSqliteReceiptOpen(resolvedLocation, () => {
+      // Only a requested receipt for a captured path calls this reservation.
+      // Never open/close an existing database descriptor: that can release its
+      // native POSIX locks. The normal writable-open owner remains the creator.
+      let descriptor: number;
+      try {
+        descriptor = fs.openSync(resolvedLocation, "wx", 0o600);
+      } catch (error) {
+        if (hasErrnoCode(error, "EEXIST")) {
+          return undefined;
+        }
+        throw error;
+      }
+      try {
+        return fs.fstatSync(descriptor, { bigint: true });
+      } finally {
+        fs.closeSync(descriptor);
+      }
+    });
+  }
   const database =
     options === undefined
       ? new sqlite.DatabaseSync(resolvedLocation)
       : new sqlite.DatabaseSync(resolvedLocation, options);
   registerSqliteReaderConnection(database);
+  observeSqliteReceiptOpened(database);
   return database;
 }
 

@@ -48,6 +48,7 @@ async function runSystemdServiceAction(params: {
   action: "start" | "stop" | "restart";
   label: string;
   onMutation?: () => void;
+  onRestartAttempted?: () => void;
   assertCurrent?: () => void;
   systemdIdentity?: SystemdServiceIdentity;
   warn?: (message: string) => void;
@@ -70,6 +71,7 @@ async function runSystemdServiceAction(params: {
     await activateSystemdServiceIdentity({
       identity: params.systemdIdentity,
       action: params.action,
+      onRestartAttempted: params.onRestartAttempted,
       assertCurrent: params.assertCurrent,
       warn:
         params.warn ??
@@ -112,6 +114,9 @@ async function runSystemdServiceAction(params: {
     await runSystemctl(["reset-failed", unitName]);
   }
   params.assertCurrent?.();
+  if (params.action === "restart") {
+    params.onRestartAttempted?.();
+  }
   const res = await runSystemctl([params.action, unitName]);
   if (res.code !== 0) {
     throw new Error(`systemctl ${params.action} failed: ${res.stderr || res.stdout}`.trim());
@@ -159,6 +164,7 @@ export async function stopSystemdService({
 }
 
 export async function restartSystemdService({
+  onRestartAttempted,
   stdout,
   env,
   onMutation,
@@ -171,6 +177,7 @@ export async function restartSystemdService({
     stdout,
     env,
     action: "restart",
+    onRestartAttempted,
     assertCurrent,
     systemdIdentity,
     warn,
