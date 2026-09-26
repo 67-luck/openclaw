@@ -104,6 +104,8 @@ const WORKER_START_MESSAGE = { type: "openclaw-worker-start-v1" } as const;
 type ChildAdapterInput = ProcessAdapterConstruction & {
   /** Retain a local tree owner independently of Gateway service markers. */
   ownProcessTree?: true;
+  /** Refuse ordinary Windows spawn if native Job admission is unavailable or fails. */
+  requireWindowsJob?: true;
   /** Preserve an owner-materialized Windows shell invocation without parsing it again. */
   windowsShell?: true;
   /** Own a separately signalable tree whose private IPC channel gates worker startup. */
@@ -134,7 +136,7 @@ export async function createChildAdapter(
   params: ChildAdapterInput,
 ): Promise<ProcessAdapterStartup<WorkerChildAdapter>> {
   if (params.anchoredShellCommand !== undefined) {
-    const startup = await createServiceChildRelayAdapter({
+    return await createServiceChildRelayAdapter({
       assertCurrent: params.assertCurrent,
       beforeSpawn: params.beforeSpawn,
       command: process.platform === "win32" ? params.anchoredShellCommand : "/bin/sh",
@@ -148,7 +150,6 @@ export async function createChildAdapter(
       onSpawnCleanup: params.onSpawnCleanup,
       stderrDestination: params.stderrDestination,
     });
-    return startup;
   }
 
   const baseEnv = params.env ? toStringEnv(params.env) : undefined;
@@ -176,7 +177,7 @@ export async function createChildAdapter(
     params.ownedWorker === undefined &&
     (params.ownProcessTree === true || process.env.OPENCLAW_SERVICE_MARKER?.trim())
   ) {
-    const startup = await createServiceChildRelayAdapter({
+    return await createServiceChildRelayAdapter({
       assertCurrent: params.assertCurrent,
       beforeSpawn: params.beforeSpawn,
       command: preparedSpawn.command,
@@ -193,7 +194,6 @@ export async function createChildAdapter(
       stderrDestination: params.stderrDestination,
       stdoutConsumption: params.stdoutConsumption,
     });
-    return startup;
   }
 
   // A detached POSIX child is still a descendant in the service cgroup/job, but
@@ -248,6 +248,9 @@ export async function createChildAdapter(
                 },
               );
               if (!owned) {
+                if (params.requireWindowsJob) {
+                  throw new Error("Windows Job Object is required but unavailable");
+                }
                 return spawn(command, args, spawnOptions);
               }
               windowsJob = owned.job;
@@ -277,8 +280,11 @@ export async function createChildAdapter(
     if (!(error instanceof WindowsJobSetupError)) {
       throw error;
     }
-    // No command has been admitted. Retire the launcher before the ordinary spawn.
+    // No command has been admitted. Retire the launcher before refusing or falling back.
     await windowsJob?.certify();
+    if (params.requireWindowsJob) {
+      throw error;
+    }
     windowsFallback = { status: "uncertain", reason: error.reason, cause: error.cause };
     windowsJob = undefined;
     windowsCleanup = undefined;

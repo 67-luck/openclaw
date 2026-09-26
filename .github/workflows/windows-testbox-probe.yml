@@ -888,6 +888,21 @@ jobs:
       - *windows_node_path
       - *windows_install
 
+      - name: Time task supervisor and Windows Job admission tests
+        if: ${{ inputs.run_windows_ci }}
+        shell: bash
+        env:
+          CI: true
+          OPENCLAW_TEST_SKIP_FULL_EXTENSIONS_SHARD: 1
+          OPENCLAW_VITEST_MAX_WORKERS: 1
+        run: |
+          set -euo pipefail
+          export PATH="$NODE_BIN:$PATH"
+          TIMEFORMAT='task-supervisor.wall_seconds=%3R'
+          time pnpm test src/cli/gateway-cli/task-supervisor.test.ts --maxWorkers=1
+          TIMEFORMAT='owned-stdio.windows.wall_seconds=%3R'
+          time pnpm test src/process/owned-stdio.windows.test.ts --maxWorkers=1
+
       - name: Install authenticated released Scheduled Task driver
         if: ${{ inputs.run_windows_ci }}
         shell: pwsh
