@@ -374,6 +374,7 @@ export async function resolveChannelTarget(params: {
   unknownTargetMode?: "error" | "normalized";
   allowNativeChannelNamespace?: boolean;
   nativeTargetMode?: ChannelOutboundTargetMode;
+  allowFrom?: string[];
   plugin?: ChannelPlugin;
 }): Promise<ResolveMessagingTargetResult> {
   const raw = params.input.trim();
@@ -498,6 +499,7 @@ export async function resolveChannelTarget(params: {
       const resolvedOutboundTarget = plugin.outbound.resolveTarget({
         cfg: params.cfg,
         to: raw,
+        allowFrom: params.allowFrom,
         accountId: params.accountId,
         mode: params.nativeTargetMode ?? "explicit",
       });
@@ -506,7 +508,10 @@ export async function resolveChannelTarget(params: {
       }
       const outboundTarget = resolvedOutboundTarget.to.trim();
       if (outboundTarget) {
-        return buildNormalizedResolveResult({ normalized: outboundTarget, kind });
+        return buildNormalizedResolveResult({
+          normalized: outboundTarget,
+          kind: detectTargetKind(params.channel, outboundTarget, undefined, plugin),
+        });
       }
     }
     if (pluginAcceptsNamespaceAsNativeTarget && !hasConcreteMessagingResolver) {
