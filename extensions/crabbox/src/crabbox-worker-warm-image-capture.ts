@@ -89,7 +89,7 @@ export function createCrabboxWarmImageCapture(dependencies: {
           owner.demandAtMs === null ||
           (owner.projectKey ? owner.phase !== "prepared" : owner.phase !== "enrolled")
         ) {
-          return;
+          return undefined;
         }
         if (
           (owner.os ?? "linux") !== context.profile.target ||
@@ -103,14 +103,14 @@ export function createCrabboxWarmImageCapture(dependencies: {
         }
         let existing = (await openStore().lookup(key))!;
         if (existing.operation) {
-          return;
+          return undefined;
         }
         if (existing.image?.pinned && existing.previous?.pinned) {
           warnOnce(
             "capture paused",
             "The current and previous snapshots are pinned; unpin one before publishing another generation.",
           );
-          return;
+          return undefined;
         }
         if (existing.image) {
           const runtimeMatches = isDeepStrictEqual(
@@ -133,7 +133,7 @@ export function createCrabboxWarmImageCapture(dependencies: {
               sameCrabboxWarmImageGeneration(owner.publicationBase, existing.image)
             )
           ) {
-            return;
+            return undefined;
           }
           // The successful fork already attested this image. A concurrently replaced
           // image still needs its own verification before capture or retirement.
@@ -160,7 +160,7 @@ export function createCrabboxWarmImageCapture(dependencies: {
             owner.baseCommit &&
             existing.image.baseCommit !== owner.baseCommit
           ) {
-            return;
+            return undefined;
           }
           if (
             state === "missing" &&
@@ -170,7 +170,7 @@ export function createCrabboxWarmImageCapture(dependencies: {
             await deleteImage(context, key, existing);
             existing = (await openStore().lookup(key))!;
             if (existing.image || existing.operation) {
-              return;
+              return undefined;
             }
           } else if (
             state !== "missing" &&
@@ -182,7 +182,7 @@ export function createCrabboxWarmImageCapture(dependencies: {
             !context.projectCaptureRequired &&
             (!owner.projectKey || existing.image.baseCommit === owner.baseCommit)
           ) {
-            return;
+            return undefined;
           }
         }
         const now = Date.now();
@@ -216,7 +216,7 @@ export function createCrabboxWarmImageCapture(dependencies: {
         );
         if (!claimed) {
           pendingCapture = false;
-          return;
+          return undefined;
         }
         // Runtime preparation belongs only to a claimed capture. Scrub its forwarded
         // credential artifacts afterward, before any native image can include them.
@@ -254,7 +254,7 @@ export function createCrabboxWarmImageCapture(dependencies: {
         if (!creating) {
           await clearCrabboxWarmImageCapture(openStore(), key, captureId);
           pendingCapture = false;
-          return;
+          return undefined;
         }
         const created = parseCreatedCheckpoint(
           await checkpointCommand(
@@ -355,7 +355,7 @@ export function createCrabboxWarmImageCapture(dependencies: {
             "capture ownership changed",
             `Checkpoint ${created.checkpointId} returned after recovery of ${captureId}; reconcile it in the Crabbox catalog before resuming captures.`,
           );
-          return;
+          return undefined;
         }
         pendingCapture = false;
         const replacement = await openStore().lookup(key);
