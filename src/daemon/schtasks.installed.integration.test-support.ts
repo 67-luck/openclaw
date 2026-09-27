@@ -20,7 +20,6 @@ import {
   doctorReportSchema,
   inspectDisabledDiscoveryTasks,
   inspectInstalledUpdateFailure,
-  runInstalledPublishedUpdate,
   type InstalledTask as Task,
 } from "./schtasks.installed-diagnostics.test-support.js";
 import {
@@ -41,6 +40,7 @@ import {
   samePath,
   verifyPreparedInstall,
 } from "./schtasks.installed-package.test-support.js";
+import { runInstalledPublishedUpdate } from "./schtasks.installed-update.test-support.js";
 
 type Lifetime = ReturnType<typeof createFixtureLifetime>;
 type Owners = {
@@ -357,6 +357,9 @@ export async function runInstalledLifecycle(
         installed: await hashInstall(installRoot),
       };
       await recordProgress("published-driver:hash-verified");
+      const { readInstalledRetirementBaseline } =
+        await import("./schtasks.installed-retirement-baseline.test-support.js");
+      const retirementBaseline = await readInstalledRetirementBaseline(selected);
       observations.update = await runInstalledPublishedUpdate({
         task: selected,
         input,
@@ -367,6 +370,7 @@ export async function runInstalledLifecycle(
         observations,
         recordProgress,
         observationCellDeadlineAt: cellDeadlineAt,
+        retirementBaseline,
       });
       await prepareInstalledPackage({ ...input, installRoot });
       await recordProgress("updated-candidate:hash-verified");

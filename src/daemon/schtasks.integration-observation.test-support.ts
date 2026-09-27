@@ -7,6 +7,11 @@ import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
 import { setScheduledTaskXmlEnabled } from "./schtasks-control.js";
 import { execSchtasks } from "./schtasks-exec.js";
 import { probeScheduledTaskExists } from "./schtasks-state-probe.js";
+import {
+  buildInstalledUpdateRetirementCensus,
+  readInstalledUpdateRetirementObservation,
+  type InstalledUpdateRetirementBinding,
+} from "./schtasks.installed-retirement-observation.test-support.js";
 import type { GatewayServiceRuntime } from "./service-runtime.js";
 
 const WAIT_INTERVAL_MS = 200;
@@ -143,16 +148,25 @@ export function readTaskPrincipal(taskName: string): ScheduledTaskPrincipal {
   };
 }
 
-export function readRelatedProcessDiagnostics(needles: string[]): {
+export function readRelatedProcessDiagnostics(
+  needles: string[],
+  binding?: InstalledUpdateRetirementBinding,
+): {
   error: string | null;
   ok: boolean;
   processes: WindowsProcessDiagnostic[];
   truncated: boolean;
+  retirement?: ReturnType<typeof readInstalledUpdateRetirementObservation>;
 } {
-  const script = [
-    "$ErrorActionPreference='Stop'",
-    "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine,UserModeTime,KernelModeTime,ReadOperationCount,WriteOperationCount,OtherOperationCount,@{Name='CreationDate';Expression={if ($_.CreationDate) {$_.CreationDate.ToUniversalTime().ToString('o')}}} | ConvertTo-Json -Compress",
-  ].join("; ");
+  const script = binding
+    ? buildInstalledUpdateRetirementCensus(binding)
+    : [
+        "$ErrorActionPreference='Stop'",
+        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine,UserModeTime,KernelModeTime,ReadOperationCount,WriteOperationCount,OtherOperationCount,@{Name='CreationDate';Expression={if ($_.CreationDate) {$_.CreationDate.ToUniversalTime().ToString('o')}}} | ConvertTo-Json -Compress",
+      ].join("; ");
+  const unavailableRetirement = binding
+    ? { retirement: readInstalledUpdateRetirementObservation(undefined, binding) }
+    : {};
   const result = spawnSync(
     getWindowsPowerShellExePath(),
     [
@@ -164,7 +178,13 @@ export function readRelatedProcessDiagnostics(needles: string[]): {
     { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 5_000, windowsHide: true },
   );
   if (result.error) {
-    return { error: result.error.message, ok: false, processes: [], truncated: false };
+    return {
+      error: result.error.message,
+      ok: false,
+      processes: [],
+      truncated: false,
+      ...unavailableRetirement,
+    };
   }
   if (result.status !== 0) {
     return {
@@ -172,6 +192,7 @@ export function readRelatedProcessDiagnostics(needles: string[]): {
       ok: false,
       processes: [],
       truncated: false,
+      ...unavailableRetirement,
     };
   }
   let parsed: unknown;
@@ -183,9 +204,22 @@ export function readRelatedProcessDiagnostics(needles: string[]): {
       ok: false,
       processes: [],
       truncated: false,
+      ...unavailableRetirement,
     };
   }
-  const entries = (Array.isArray(parsed) ? parsed : [parsed]).filter(
+  const envelope =
+    binding &&
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "processes" in parsed &&
+    "retirement" in parsed
+      ? parsed
+      : undefined;
+  const processRows = envelope ? envelope.processes : parsed;
+  const retirement = binding
+    ? readInstalledUpdateRetirementObservation(envelope?.retirement, binding)
+    : undefined;
+  const entries = (Array.isArray(processRows) ? processRows : [processRows]).filter(
     (entry): entry is WindowsProcessDiagnostic => typeof entry === "object" && entry !== null,
   );
   const normalizedNeedles = needles.map((needle) => needle.replaceAll("/", "\\").toLowerCase());
@@ -231,6 +265,7 @@ export function readRelatedProcessDiagnostics(needles: string[]): {
     ok: true,
     processes: processes.slice(0, DIAGNOSTIC_PROCESS_LIMIT),
     truncated: processes.length > DIAGNOSTIC_PROCESS_LIMIT,
+    ...(retirement ? { retirement } : {}),
   };
 }
 

@@ -14,17 +14,25 @@ import {
   type SupportRedactionContext,
 } from "../logging/diagnostic-support-redaction.js";
 import { formatCommandOutput } from "../process/command-error.js";
+import type { InstalledUpdateRetirementBinding } from "./schtasks.installed-retirement-observation.test-support.js";
 import { readRelatedProcessDiagnostics } from "./schtasks.integration-observation.test-support.js";
 
 type ServiceObservation = "install" | "status";
 export const PUBLISHED_UPDATE_ACCEPTANCE_MS = 360_000;
 export const MAX_SETTLEMENT_OBSERVATION_MS = 480_000;
+export type InstalledPublishedCommandStart = Readonly<{
+  launcherPid: number;
+  commandPid: number;
+  commandStartedAtMs: number;
+  commandSpawnedAtMs: number;
+}>;
 
 export function captureInstalledUpdateProcesses(
   context: SupportRedactionContext,
   needles: string[],
   progress: Pick<UpdateRunRecord, "runId" | "phase" | "status">,
   reason: "terminal" | "elapsed-300s" | "follow-up" | "before-physical-cutoff",
+  retirementBinding?: InstalledUpdateRetirementBinding,
 ) {
   const sample = {
     runId: progress.runId,
@@ -35,12 +43,15 @@ export function captureInstalledUpdateProcesses(
   };
   const safeText = (value: string) => redactSupportString(value, context, { maxLength: 2_000 });
   try {
-    const capture = readRelatedProcessDiagnostics(needles);
+    const capture = retirementBinding
+      ? readRelatedProcessDiagnostics(needles, retirementBinding)
+      : readRelatedProcessDiagnostics(needles);
     return {
       ...sample,
       ok: capture.ok,
       truncated: capture.truncated,
       ...(capture.error ? { unavailable: safeText(capture.error) } : {}),
+      ...(capture.retirement ? { retirement: capture.retirement } : {}),
       processes: capture.processes.map((process) => ({
         pid: process.ProcessId,
         parentPid: process.ParentProcessId,
@@ -58,8 +69,8 @@ export function captureInstalledUpdateProcesses(
   }
 }
 
-function captureServiceOutput(
-  kind: ServiceObservation,
+function captureCommandOutput(
+  kind: ServiceObservation | "published-update",
   stdout: string,
   truncated: boolean,
   diagnostic: (value: string) => string,
@@ -93,6 +104,38 @@ function captureServiceOutput(
       }),
     );
   };
+  if (kind === "published-update") {
+    return {
+      kind,
+      ...fields(value, ["status", "mode", "reason", "durationMs"]),
+      before: fields(value.before, ["version", "buildId", "sha"]),
+      after: fields(value.after, ["version", "buildId", "sha"]),
+      recovery: fields(value.recovery, [
+        "serviceRestartSafe",
+        "reason",
+        "version",
+        "buildId",
+        "packageRollbackVerified",
+      ]),
+      steps: Array.isArray(value.steps)
+        ? value.steps.slice(0, 40).map((entry: unknown) => {
+            const step = asOptionalRecord(entry);
+            return Object.assign(
+              fields(step, ["name", "exitCode", "durationMs", "signal", "killed", "termination"]),
+              step?.exitCode !== 0 ? fields(step, ["stdoutTail", "stderrTail"]) : {},
+              {
+                failureFacts: Array.isArray(step?.failureFacts)
+                  ? step.failureFacts
+                      .slice(0, 8)
+                      .map((fact: unknown) => fields(fact, ["check", "code", "message"]))
+                  : undefined,
+              },
+            );
+          })
+        : undefined,
+      stepsOmitted: Array.isArray(value.steps) ? Math.max(0, value.steps.length - 40) : 0,
+    };
+  }
   const service = asOptionalRecord(value.service);
   const common = { kind };
   if (kind === "install") {
@@ -165,7 +208,8 @@ export type CommandRecord = {
     acceptanceExceeded: boolean;
   };
   failureOutput?: { stdout: string; stderr: string; captureTruncated: boolean };
-  serviceOutput?: ReturnType<typeof captureServiceOutput>;
+  serviceOutput?: ReturnType<typeof captureCommandOutput>;
+  publishedUpdate?: ReturnType<typeof captureCommandOutput>;
 };
 export async function run(
   args: string[],
@@ -179,6 +223,7 @@ export async function run(
     observeService?: ServiceObservation;
     commandBudget?: "published-update";
     physicalObservationLimitMs?: number;
+    onStarted?: (facts: InstalledPublishedCommandStart) => void;
   } = {},
 ) {
   const { expectedStderr = [], observeService } = options;
@@ -235,8 +280,20 @@ export async function run(
               Number.isSafeInteger(control.pid) &&
               control.pid > 0
             ) {
-              settlement.commandSpawnedAtMs ??= Date.now();
-              settlement.commandPid ??= control.pid;
+              if (settlement.commandPid === undefined) {
+                settlement.commandSpawnedAtMs = Date.now();
+                settlement.commandPid = control.pid;
+                if (typeof launched.pid === "number") {
+                  options.onStarted?.(
+                    Object.freeze({
+                      launcherPid: launched.pid,
+                      commandPid: control.pid,
+                      commandStartedAtMs: settlement.startedAtMs,
+                      commandSpawnedAtMs: settlement.commandSpawnedAtMs,
+                    }),
+                  );
+                }
+              }
             }
           });
           launched.once("close", () => {
@@ -351,7 +408,10 @@ export async function run(
     ...(naturalSettlementObservation ? { naturalSettlementObservation } : {}),
     ...(failureOutput ? { failureOutput } : {}),
     ...(observeService
-      ? { serviceOutput: captureServiceOutput(observeService, stdout, truncated, diagnostic) }
+      ? { serviceOutput: captureCommandOutput(observeService, stdout, truncated, diagnostic) }
+      : {}),
+    ...(options.commandBudget === "published-update"
+      ? { publishedUpdate: captureCommandOutput("published-update", stdout, truncated, diagnostic) }
       : {}),
   });
   if (child && afterCleanup !== "dead") {
