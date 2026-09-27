@@ -45,6 +45,7 @@ function admittedCheckRows(context: Parameters<typeof evaluateWorkflowExpression
 
 function materializePlan(runnerProfile: string, rows: number) {
   const input: CiCheckPlanInput = {
+    typeGraphBoundaryOwner: "",
     changedPaths: ["docs/ci.md"],
     changedCoreTestPaths: null,
     runnerProfile,
@@ -129,6 +130,7 @@ describe("CI check-plan completion count", () => {
     "counts the actual compiler placement for %s",
     async (runnerProfile) => {
       const plan = await createCiCheckPlan({
+        typeGraphBoundaryOwner: "check-plan",
         changedPaths: ["src/shared.ts"],
         changedCoreTestPaths: null,
         runnerProfile,

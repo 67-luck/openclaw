@@ -1950,7 +1950,13 @@ jobs:
             }
           }
           const narrowCheckScope = changedNodeTestShards !== null ? proposedCheckScope : null;
-          const runCheckPlan = Boolean(runCheck && narrowCheckScope);
+          const runCheckPlan = Boolean(runCheck && proposedCheckScope);
+          let typeGraphBoundaryOwner = "";
+          if (runCheckPlan && (!narrowCheckScope || narrowCheckScope.types)) {
+            const { resolveChangedCiTsgoInputs } = await import("./scripts/lib/tsgo-core-test-shards.mts");
+            typeGraphBoundaryOwner = runNodeFull && !releaseFastLane && !resolveChangedCiTsgoInputs(changedPaths, existsSync)
+              ? "additional-checks" : "check-plan";
+          }
           const fullCoreLintStripes = runnerProfile === "hybrid" && !frozenTarget &&
             ((!releaseGate && ["push", "pull_request"].includes(eventName)) ||
               nodeRunnerBackend === "runson" || ciQualification) ? [1, 2] : [1, 2, 3, 4, 5];
@@ -2258,7 +2264,7 @@ jobs:
             // Keep these scans on available capacity; their resource guards remain authoritative.
             { check_name: "check-additional-extension-package-boundary", group: "extension-package-boundary", runner: "blacksmith-16vcpu-ubuntu-2404" },
             { check_name: "check-additional-runtime-topology-architecture", group: "runtime-topology-architecture", runner: "blacksmith-16vcpu-ubuntu-2404" },
-          ].filter(({ group }) => !narrowCheckScope ||
+          ].filter(({ group }) => (group === "boundaries" && typeGraphBoundaryOwner === "additional-checks") || !narrowCheckScope ||
             (group === "prompt-snapshots" ? changedScopeHasPromptSnapshotImpact :
               narrowCheckScope.additionalGroups.includes(group)));
           const checkTasks = [
@@ -2331,9 +2337,10 @@ jobs:
             checks_node_core_nondist_matrix: createMatrix(nodeTestNonDistShards),
             run_checks_node_core_dist: runNodeCoreDist,
             run_check: runCheck,
-            narrow_check_paths_json: narrowCheckScope ? JSON.stringify(changedPaths) : "",
+            narrow_check_paths_json: runCheckPlan ? JSON.stringify(changedPaths) : "",
             run_check_plan: runCheckPlan,
             check_plan_input_json: runCheckPlan ? JSON.stringify({
+              typeGraphBoundaryOwner,
               changedPaths,
               changedCoreTestPaths: changedCoreTestPaths ?? null,
               runnerProfile,
@@ -2349,8 +2356,8 @@ jobs:
             central_lint_selection_json: "",
             run_lint_core: runCheck && coreLintRows.length > 0,
             run_lint_extensions: runCheck && extensionLintRows.length > 0,
-            run_changed_core_type_stripes: Boolean(narrowCheckScope?.types && usesHostedRunnerProfile),
-            type_graph_boundary_owner: runCheckPlan && narrowCheckScope.types ? "check-plan" : "",
+            run_changed_core_type_stripes: Boolean(typeGraphBoundaryOwner && usesHostedRunnerProfile),
+            type_graph_boundary_owner: typeGraphBoundaryOwner,
             startup_corpus_node_revision: startupCorpusNodeRevision,
             startup_corpus_test_files_json: startupCorpusTestFiles ? JSON.stringify(startupCorpusTestFiles) : "",
             changed_core_test_paths_json: changedCoreTestPaths ? JSON.stringify(changedCoreTestPaths) : "",
@@ -5478,8 +5485,9 @@ jobs:
             .artifacts/extension-package-boundary/plugins
             .artifacts/extension-package-boundary/*.json
             .artifacts/extension-package-boundary/compile
-          key: ${{ runner.os }}-extension-package-boundary-v4-${{ steps.extension-boundary-inputs.outputs.fingerprint }}
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-extension-package-boundary-compiled-v1-${{ steps.extension-boundary-inputs.outputs.fingerprint }}
           restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-extension-package-boundary-compiled-v1-
             ${{ runner.os }}-extension-package-boundary-v4-
 
       - name: Run additional check shard
@@ -5526,7 +5534,7 @@ jobs:
                 if [[ ! -f scripts/run-additional-boundary-checks.mts ]]; then
                   boundary_runner=(node scripts/run-additional-boundary-checks.mjs)
                 fi
-                if [ -n "${CHANGED_CORE_TEST_PATHS_JSON:-}" ] || [ "${TYPE_GRAPH_BOUNDARY_OWNER:-}" = "check-plan" ]; then
+                if [[ "$TYPE_GRAPH_BOUNDARY_OWNER" == "check-plan" || ( -z "$TYPE_GRAPH_BOUNDARY_OWNER" && -n "${CHANGED_CORE_TEST_PATHS_JSON:-}" ) ]]; then
                   boundary_runner+=(--core-test-boundary-owner=test-types)
                 fi
                 "${boundary_runner[@]}"
@@ -5616,6 +5624,20 @@ jobs:
           done
 
           exit "$failures"
+
+      # Only completed main checks publish compiler receipts. The SDK warmer's
+      # v4 archive remains a cold fallback until this protected seed exists.
+      - name: Save compiled extension package boundary artifacts
+        if: ${{ success() && github.repository == 'openclaw/openclaw' && github.ref == 'refs/heads/main' && contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) && !inputs.release_gate && needs.preflight.outputs.candidate_trust == 'main' && needs.preflight.outputs.cache_write_allowed == 'true' && needs.preflight.outputs.cache_mode != 'off' && needs.preflight.outputs.frozen_target != 'true' && needs.preflight.outputs.compatibility_target != 'true' && matrix.group == 'extension-package-boundary' && steps.extension-boundary-inputs.outputs.enabled == 'true' && steps.extension-package-boundary-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            packages/plugin-sdk/dist
+            .artifacts/extension-package-boundary/plugins
+            .artifacts/extension-package-boundary/*.json
+            .artifacts/extension-package-boundary/compile
+          key: ${{ steps.extension-package-boundary-cache.outputs.cache-primary-key }}
 
       - name: Upload Plugin SDK API diff
         if: always() && matrix.group == 'plugin-sdk-api-diff' && hashFiles('.artifacts/plugin-sdk-api-diff.json') != ''

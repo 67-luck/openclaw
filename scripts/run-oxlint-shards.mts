@@ -84,102 +84,66 @@ const SCRIPTS_SHARD = {
   args: ["--tsconfig", "config/tsconfig/oxlint.scripts.json", "scripts"],
 };
 
-async function lintWorkspacePackages(cwd: string): Promise<string[] | undefined> {
-  const { parse: parseYaml } = await import("yaml");
-  const workspace: unknown = parseYaml(
-    fs.readFileSync(path.join(cwd, "pnpm-workspace.yaml"), "utf8"),
+const LINT_SOURCE_PATH = /^(?:src|ui|packages|extensions|scripts)\/.+\.[cm]?[jt]sx?$/u;
+
+function isLintSourcePath(file: string, cwd: string) {
+  return (
+    file === file.trim() &&
+    !file.split("/").includes("..") &&
+    LINT_SOURCE_PATH.test(file) &&
+    !/\.d\.[cm]?ts$/u.test(file) &&
+    fs.existsSync(path.join(cwd, file))
   );
+}
+
+/** Expand changes once; executing rows consume these prepared file facts. */
+export async function resolveChangedOxlintFileScope(
+  changedFiles: readonly string[],
+  cwd = process.cwd(),
+) {
+  const rootTest = (file: string) =>
+    /^test\/.+\.[cm]?[jt]sx?$/u.test(file) &&
+    !/\.d\.[cm]?ts$/u.test(file) &&
+    !file.split("/").includes("..") &&
+    fs.existsSync(path.join(cwd, file));
+  if (!changedFiles.every((file) => isLintSourcePath(file, cwd) || rootTest(file))) {
+    return undefined;
+  }
+  // Ambient/module augmentations can affect consumers without an import edge.
   if (
-    !workspace ||
-    typeof workspace !== "object" ||
-    !("packages" in workspace) ||
-    !Array.isArray(workspace.packages) ||
-    !workspace.packages.every((entry) => typeof entry === "string" && !entry.startsWith("!"))
+    changedFiles.some((file) =>
+      /\bdeclare\s+(?:global|module)\b/u.test(fs.readFileSync(path.join(cwd, file), "utf8")),
+    )
   ) {
     return undefined;
   }
-  const roots = [
-    ...new Set(
-      workspace.packages.flatMap((pattern: string) =>
-        (pattern === "." ? ["."] : [...fs.globSync(pattern, { cwd })])
-          .filter((root) => fs.existsSync(path.join(cwd, root, "package.json")))
-          .map((root) => root.replaceAll(path.sep, "/")),
-      ),
-    ),
-  ];
-  return roots.includes(".")
-    ? roots.toSorted((left, right) => right.length - left.length)
-    : undefined;
-}
-
-/** Workspace metadata owns package boundaries; test/ remains outside full semantic lint. */
-export async function resolveChangedOxlintPackageScope(
-  files: readonly string[],
-  cwd = process.cwd(),
-) {
-  const roots = await lintWorkspacePackages(cwd);
-  if (!roots) {
-    return undefined;
-  }
-  const selected = new Set<string>();
-  for (const file of files) {
-    if (
-      path.isAbsolute(file) ||
-      file !== file.trim() ||
-      file.split("/").includes("..") ||
-      !OXLINT_SOURCE_FILE_PATTERN.test(file) ||
-      /\.d\.[cm]?ts$/u.test(file) ||
-      !fs.existsSync(path.join(cwd, file))
-    ) {
-      return undefined;
-    }
-    const owner = roots.find((root) => root !== "." && file.startsWith(`${root}/`)) ?? ".";
-    selected.add(owner);
-  }
-  return prepareOxlintPackageScope(roots, [...selected].toSorted(), cwd);
-}
-
-/** Filter after stripe assignment so package scope never changes execution ownership. */
-export async function createOxlintPackageScope(packages: readonly string[], cwd = process.cwd()) {
-  const roots = await lintWorkspacePackages(cwd);
-  if (!roots) {
-    throw new Error("Oxlint package selection requires canonical workspace roots");
-  }
-  return prepareOxlintPackageScope(roots, packages, cwd);
-}
-
-function prepareOxlintPackageScope(
-  roots: readonly string[],
-  packages: readonly string[],
-  cwd: string,
-) {
-  const selected = new Set(packages);
-  if (selected.size !== packages.length || packages.some((root) => !roots.includes(root))) {
-    throw new Error("Oxlint package selection must name unique canonical workspace roots");
-  }
-  const project = (target: string): string[] => {
-    const owner =
-      roots.find((root) => root !== "." && (target === root || target.startsWith(`${root}/`))) ??
-      ".";
-    const nested = roots.filter((root) => root !== "." && root.startsWith(`${target}/`));
-    if (!selected.has(owner)) {
-      return nested.filter((root) => selected.has(root));
-    }
-    if (nested.length === 0) {
-      return fs.statSync(path.join(cwd, target)).isDirectory() ||
-        OXLINT_SOURCE_FILE_PATTERN.test(target)
-        ? [target]
-        : [];
-    }
-    // A canonical container such as packages/ can contain both workspace
-    // packages and root-owned files. Split only along declared package roots.
-    return fs.readdirSync(path.join(cwd, target)).flatMap((entry) => project(`${target}/${entry}`));
-  };
+  const { resolveImportGraphDependents } = await import("./test-projects.test-support.mts");
+  const consumers = changedFiles.length
+    ? resolveImportGraphDependents(changedFiles, cwd, { tooling: true, resolveAliases: true })
+    : [];
+  const selected = [...new Set([...changedFiles, ...consumers])];
   return {
-    packages: [...selected].toSorted(),
+    ...createOxlintFileScope(
+      selected.filter((file) => isLintSourcePath(file, cwd)),
+      cwd,
+    ),
+    rootTestFiles: selected.filter(rootTest).toSorted((left, right) => left.localeCompare(right)),
+  };
+}
+
+/** Filtering follows canonical stripe assignment, so a narrowed row cannot steal another row's files. */
+export function createOxlintFileScope(files: readonly string[], cwd = process.cwd()) {
+  if (new Set(files).size !== files.length || !files.every((file) => isLintSourcePath(file, cwd))) {
+    throw new Error("Oxlint file selection requires unique, present canonical source paths");
+  }
+  const selected = files.toSorted((left, right) => left.localeCompare(right));
+  return {
+    files: selected,
     selectShards(shards: readonly OxlintShard[]) {
       return shards.flatMap((shard) => {
-        const targets = [...new Set(shard.args.slice(2).flatMap(project))];
+        const targets = selected.filter((file) =>
+          shard.args.slice(2).some((root) => file === root || file.startsWith(`${root}/`)),
+        );
         return targets.length ? [{ ...shard, args: [...shard.args.slice(0, 2), ...targets] }] : [];
       });
     },
@@ -390,8 +354,8 @@ export async function main(
     }),
     shardArgs.extensionStripe,
   );
-  const selectedShards = shardArgs.packages
-    ? (await createOxlintPackageScope(shardArgs.packages)).selectShards(stripedShards)
+  const selectedShards = shardArgs.files
+    ? createOxlintFileScope(shardArgs.files).selectShards(stripedShards)
     : stripedShards;
 
   const needsArtifacts = shouldPrepareExtensionPackageBoundaryArtifactsForShards(
@@ -464,23 +428,23 @@ export function parseShardRunnerArgs(args: string[]) {
   let coreStripe: ShardStripe | undefined;
   let extensionStripe: ShardStripe | undefined;
   let splitCore = false;
-  let packages: string[] | undefined;
+  let files: string[] | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === undefined) {
       break;
     }
-    if (arg === "--packages-json") {
+    if (arg === "--files-json") {
       const value: unknown = JSON.parse(args[index + 1] ?? "null");
       if (
         !Array.isArray(value) ||
         value.length === 0 ||
         !value.every((root) => typeof root === "string")
       ) {
-        throw new Error("--packages-json requires a nonempty JSON string array");
+        throw new Error("--files-json requires a nonempty JSON string array");
       }
-      packages = value;
+      files = value;
       index += 1;
       continue;
     }
@@ -530,7 +494,7 @@ export function parseShardRunnerArgs(args: string[]) {
     only,
     oxlintArgs,
     splitCore,
-    ...(packages ? { packages } : {}),
+    ...(files ? { files } : {}),
   };
 }
 

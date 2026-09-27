@@ -188,7 +188,6 @@ type WatchableVitestSpecShape = VitestSpecShape & Pick<VitestRunSpec, "watchMode
 type ImportGraph = {
   files: readonly string[];
   reverseImports: Map<string, string[]>;
-  testFiles: Set<string>;
 };
 type ImportGraphEdges = {
   file: string;
@@ -1720,6 +1719,7 @@ function resolveImportSpecifiers(
   extensions: readonly string[] = IMPORTABLE_FILE_EXTENSIONS,
   aliases: readonly ImportGraphAlias[] = [],
   aliasResolutions?: Map<string, string[]>,
+  runtimeOnly = false,
 ): string[] {
   if (!specifier.startsWith(".")) {
     if (aliasResolutions?.has(specifier)) {
@@ -1743,6 +1743,9 @@ function resolveImportSpecifiers(
           `./${target.replace("*", wildcard ?? "")}`,
           fileSet,
           extensions,
+          [],
+          undefined,
+          runtimeOnly,
         )) {
           resolved.add(file);
         }
@@ -1770,8 +1773,12 @@ function resolveImportSpecifiers(
     );
   }
 
-  const resolved = candidates.find((candidate) => fileSet.has(candidate));
-  return resolved ? [resolved] : [];
+  // A .js runtime sibling must not hide the TypeScript source selected by
+  // extension substitution. Combined graphs retain both kinds of consumers.
+  const resolved = [...new Set(candidates.filter((candidate) => fileSet.has(candidate)))];
+  return runtimeOnly || ![".js", ".jsx", ".mjs", ".cjs"].includes(ext)
+    ? resolved.slice(0, 1)
+    : resolved;
 }
 
 const cachedImportGraphs = new Map<string, { graph: ImportGraph; additionalPaths: string }>();
@@ -2134,6 +2141,8 @@ function findDirectImporters(
                 resolution.files,
                 extensions,
                 resolution.aliases,
+                undefined,
+                resolution.runtimeOnly,
               ).includes(importedFile),
           )
         : imports.has(importedFile);
@@ -2269,9 +2278,6 @@ function getImportGraph(
     fileSet.add(file);
   }
   const reverseImports = new Map<string, string[]>();
-  const testFiles = new Set(
-    files.filter((file) => isTestFileTarget(file) && !file.endsWith(".live.test.ts")),
-  );
 
   readImportGraphEdges(cwd, files, fileSet, options.tooling);
   const aliases = options.resolveAliases ? getImportGraphAliases(cwd) : [];
@@ -2296,6 +2302,7 @@ function getImportGraph(
         extensions,
         aliases,
         aliasResolutions,
+        options.runtimeOnly,
       )) {
         const importers = reverseImports.get(imported) ?? [];
         importers.push(file);
@@ -2304,7 +2311,7 @@ function getImportGraph(
     }
   }
 
-  const graph = { files, reverseImports, testFiles };
+  const graph = { files, reverseImports };
   cachedImportGraphs.set(cacheKey, { graph, additionalPaths: missingKey });
   return graph;
 }
@@ -2351,6 +2358,7 @@ export function hasImportGraphImpactOnTargets(
           extensions,
           aliases,
           aliasResolutions,
+          options.runtimeOnly,
         )) {
           if (changed.has(dependency)) {
             return true;
@@ -2391,25 +2399,29 @@ export function resolveAffectedTestsFromImportGraph(
     }
   }
 
-  const queue = typeof changedPath === "string" ? [changedPath] : [...changedPath];
-  const { reverseImports, testFiles } = getImportGraph(cwd, options, queue);
-  const seen = new Set(queue);
-  const targets = [];
+  return resolveImportGraphDependents(paths, cwd, options).filter(
+    (file) => isTestFileTarget(file) && !file.endsWith(".live.test.ts"),
+  );
+}
 
-  for (const current of queue) {
+/** Complete transitive consumers, including erased type imports unless runtimeOnly is requested. */
+export function resolveImportGraphDependents(
+  changedPaths: readonly string[],
+  cwd = process.cwd(),
+  options: ImportGraphOptions = {},
+) {
+  const roots = new Set(changedPaths);
+  const { reverseImports } = getImportGraph(cwd, options, [...roots]);
+  const seen = new Set(roots);
+  // Set iteration visits newly admitted consumers once, including across cycles.
+  for (const current of seen) {
     for (const importer of reverseImports.get(current) ?? []) {
-      if (seen.has(importer)) {
-        continue;
-      }
       seen.add(importer);
-      if (testFiles.has(importer)) {
-        targets.push(importer);
-      }
-      queue.push(importer);
     }
   }
-
-  return [...new Set(targets)].toSorted((left, right) => left.localeCompare(right));
+  return [...seen]
+    .filter((file) => !roots.has(file))
+    .toSorted((left, right) => left.localeCompare(right));
 }
 
 /** Changed resolved dependencies enter the same graph at their literal import consumers. */

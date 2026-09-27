@@ -4703,6 +4703,102 @@ setImmediate(() => {
     }
   });
 
+  it("publishes completed extension compiler receipts only from trusted current main", () => {
+    const job = readCiWorkflow().jobs["check-additional-shard"];
+    const steps = job.steps as WorkflowStep[];
+    const restore = expectDefined(
+      steps.find((step) => step.id === "extension-package-boundary-cache"),
+      "extension boundary restore",
+    );
+    const checks = expectDefined(
+      steps.find((step) => step.name === "Run additional check shard"),
+      "extension compile and canary checks",
+    );
+    const save = expectDefined(
+      steps.find((step) => step.name === "Save compiled extension package boundary artifacts"),
+      "completed extension boundary publication",
+    );
+    const restoreInputs = expectDefined(restore.with, "extension boundary restore inputs");
+    const compiledPrefix =
+      "${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-extension-package-boundary-compiled-v1-";
+    expect(restore.uses).toBe(CACHE_V5);
+    expect(restoreInputs.key).toBe(
+      `${compiledPrefix}\${{ steps.extension-boundary-inputs.outputs.fingerprint }}`,
+    );
+    expect(restoreInputs["restore-keys"]).toBe(
+      `${compiledPrefix}\n\${{ runner.os }}-extension-package-boundary-v4-\n`,
+    );
+    expect(save.uses).toBe(CACHE_SAVE_V5);
+    expect(save.with).toEqual({
+      path: restoreInputs.path,
+      key: "${{ steps.extension-package-boundary-cache.outputs.cache-primary-key }}",
+    });
+    expect(String(save.with?.path).split("\n")).toContain(
+      ".artifacts/extension-package-boundary/compile",
+    );
+    expect(steps.indexOf(restore)).toBeLessThan(steps.indexOf(checks));
+    expect(steps.indexOf(save)).toBeGreaterThan(steps.indexOf(checks));
+    expect(checks["continue-on-error"]).not.toBe(true);
+    expect(save["continue-on-error"]).toBe(true);
+
+    type Context = Parameters<typeof evaluateWorkflowExpression>[1];
+    const context: Context = {
+      eventName: "push",
+      repository: "openclaw/openclaw",
+      ref: "refs/heads/main",
+      runAttempt: 1,
+      matrix: { group: "extension-package-boundary" },
+      preflightOutputs: {
+        candidate_trust: "main",
+        cache_write_allowed: "true",
+        cache_mode: "restore",
+        compatibility_target: "false",
+      },
+      steps: {
+        "extension-boundary-inputs": { outputs: { enabled: "true" } },
+        "extension-package-boundary-cache": { outputs: { "cache-hit": "false" } },
+      },
+    };
+    for (const eventName of ["push", "schedule", "workflow_dispatch"] as const) {
+      for (const runnerEnvironment of ["github-hosted", "self-hosted"] as const) {
+        expect(
+          evaluateWorkflowExpression(save.if, { ...context, eventName, runnerEnvironment }),
+        ).toBe(true);
+      }
+    }
+    const refused: Partial<Context>[] = [
+      { eventName: "pull_request" },
+      { eventName: "pull_request", headRepository: "contributor/openclaw" },
+      { eventName: "pull_request_target" },
+      { eventName: "workflow_run" },
+      { repository: "contributor/openclaw" },
+      { ref: "refs/heads/release" },
+      { eventName: "workflow_dispatch", releaseGate: true },
+      { preflightOutputs: { candidate_trust: "release" } },
+      { preflightOutputs: { candidate_trust: "workflow" } },
+      { preflightOutputs: { cache_write_allowed: "false" } },
+      { preflightOutputs: { cache_mode: "off" } },
+      { preflightOutputs: { compatibility_target: "true" } },
+      { frozenTarget: true },
+      { failed: true },
+      { cancelled: true },
+      { matrix: { group: "boundaries" } },
+      { steps: { "extension-boundary-inputs": { outputs: { enabled: "false" } } } },
+      { steps: { "extension-package-boundary-cache": { outputs: { "cache-hit": "true" } } } },
+    ];
+    for (const override of refused) {
+      expect(
+        evaluateWorkflowExpression(save.if, {
+          ...context,
+          ...override,
+          preflightOutputs: { ...context.preflightOutputs, ...override.preflightOutputs },
+          steps: { ...context.steps, ...override.steps },
+        }),
+        JSON.stringify(override),
+      ).toBe(false);
+    }
+  });
+
   it("owns one exact immutable semantic dependency cache", () => {
     const actionSource = readFileSync(".github/actions/setup-node-env/action.yml", "utf8");
     const ciSource = readFileSync(".github/workflows/ci.yml", "utf8");

@@ -1190,7 +1190,7 @@ describe("ci workflow guards", () => {
           core: lintCoreStripes.map((stripe) => ({
             stripe,
             lint_selection_json: JSON.stringify({
-              packages: [lintPackage],
+              files: paths.filter((file) => !file.startsWith("test/")),
               coreStripes: stripe === 1 ? [1, 2] : [3, 4, 5],
               extensionStripes: [],
               groups: [],
@@ -1200,7 +1200,7 @@ describe("ci workflow guards", () => {
           extensions: lintExtensionStripes.map((stripe) => ({
             stripe,
             lint_selection_json: JSON.stringify({
-              packages: [lintPackage],
+              files: paths.filter((file) => !file.startsWith("test/")),
               coreStripes: [],
               extensionStripes: [stripe],
               groups: [],
@@ -1208,7 +1208,7 @@ describe("ci workflow guards", () => {
             }),
           })),
           central: {
-            packages: [lintPackage],
+            files: paths.filter((file) => !file.startsWith("test/")),
             coreStripes: [],
             extensionStripes: [],
             groups: lintPackage === "." ? ["scripts"] : [],
@@ -1307,6 +1307,90 @@ describe("ci workflow guards", () => {
       },
     );
 
+    it.each(["tsconfig.json", "src/config/settings.json"])(
+      "keeps full compiler boundary proof independent for %s",
+      (file) => {
+        const manifest = runCiManifestFixture({
+          bundledPlanner: true,
+          checkFamilyScope: true,
+          eventName: "pull_request",
+          runnerProfile: "hybrid",
+          changedPaths: [file],
+          changedPlannerSource: changedPlannerSource(),
+        });
+        expect(manifest.status, manifest.output).toBe(0);
+        expect(manifest.outputs.type_graph_boundary_owner).toBe("additional-checks");
+        expect(
+          JSON.parse(
+            expectDefined(manifest.outputs.check_additional_matrix, "additional check matrix"),
+          ).include,
+        ).toEqual(expect.arrayContaining([expect.objectContaining({ group: "boundaries" })]));
+        const context: Parameters<typeof evaluateWorkflowExpression>[1] = {
+          eventName: "pull_request",
+          repository: "openclaw/openclaw",
+          runAttempt: 1,
+          runnerProfile: "hybrid",
+          preflightOutputs: manifest.outputs,
+          additionalNeeds: {
+            "check-plan": { outputs: manifest.checkPlanOutputs, result: "success" },
+          },
+        };
+        for (const result of ["success", "failure", "cancelled", "skipped"] as const) {
+          const gate = runCiGateFixture(
+            renderCiGateEnvironment(context, { "check-additional-shard": result }),
+          );
+          expect(gate.status, `${gate.stdout}${gate.stderr}`).toBe(result === "success" ? 0 : 1);
+        }
+      },
+    );
+
+    it.each([false, true])(
+      "keeps data-only TypeScript fixture boundary proof in the required planner (fails=%s)",
+      (ciTypeBoundaryFailure) => {
+        const manifest = runCiManifestFixture({
+          bundledPlanner: true,
+          checkFamilyScope: true,
+          eventName: "pull_request",
+          runnerProfile: "hybrid",
+          changedPaths: ["test/fixtures/value.ts", "test/fixtures/value.json"],
+          changedPlannerSource: changedPlannerSource(),
+          scopeEnv: { OPENCLAW_CI_NODE_TEST_DATA_ONLY: "true" },
+          ciTypeBoundaryFailure,
+        });
+        expect(manifest.outputs.run_check_plan).toBe("true");
+        expect(manifest.outputs.run_checks_node_core_nondist).toBe("false");
+        expect(manifest.outputs.type_graph_boundary_owner).toBe("check-plan");
+        expect(manifest.outputs.run_check_additional).toBe("false");
+        expect(manifest.output).toContain("fixture: core compiler boundary checked");
+        expect(manifest.status, manifest.output).toBe(ciTypeBoundaryFailure ? 1 : 0);
+        if (ciTypeBoundaryFailure) {
+          expect(manifest.output).toContain("core compiler graph includes a bundled extension");
+          expect(manifest.checkPlanOutputs).toEqual({});
+        }
+        const plannerResult = manifest.status === 0 ? "success" : "failure";
+        const context: Parameters<typeof evaluateWorkflowExpression>[1] = {
+          eventName: "pull_request",
+          repository: "openclaw/openclaw",
+          runAttempt: 1,
+          runnerProfile: "hybrid",
+          preflightOutputs: manifest.outputs,
+          additionalNeeds: {
+            "check-plan": { outputs: manifest.checkPlanOutputs, result: plannerResult },
+          },
+        };
+        expect(
+          evaluateWorkflowExpression(readCiWorkflow().jobs["check-additional-shard"].if, context),
+        ).toBe(false);
+        const gate = runCiGateFixture(
+          renderCiGateEnvironment(context, {
+            "check-plan": plannerResult,
+            "check-additional-shard": "skipped",
+          }),
+        );
+        expect(gate.status, `${gate.stdout}${gate.stderr}`).toBe(ciTypeBoundaryFailure ? 1 : 0);
+      },
+    );
+
     it.each(["pull_request", "push"] as const)(
       "keeps full families on %s when narrowing is unavailable",
       (eventName) => {
@@ -1326,6 +1410,10 @@ describe("ci workflow guards", () => {
           runAttempt: 1,
           preflightOutputs: manifest.outputs,
           runnerProfile: "hybrid",
+          additionalNeeds:
+            eventName === "pull_request"
+              ? { "check-plan": { outputs: manifest.checkPlanOutputs, result: "success" } }
+              : undefined,
         };
         expect(
           evaluateWorkflowExpression(
@@ -1341,7 +1429,9 @@ describe("ci workflow guards", () => {
           "dependencies",
           "test-types",
         ]);
-        expect(manifest.outputs.narrow_check_paths_json).toBe("");
+        expect(manifest.outputs.narrow_check_paths_json).toBe(
+          eventName === "pull_request" ? JSON.stringify(["ui/src/styles/chat.css"]) : "",
+        );
         expect(manifest.outputs.run_baseline_ratchets).toBe("true");
         expect(manifest.outputs.run_plugin_contracts_shards).toBe("true");
         expect(manifest.outputs.run_channel_contracts_shards).toBe("true");
@@ -1367,7 +1457,7 @@ describe("ci workflow guards", () => {
           core: [{ stripe: 1, lint_selection_json: "{}" }],
           extensions: [{ stripe: 1, lint_selection_json: "{}" }],
           central: {
-            packages: ["."],
+            files: ["src/shared/runtime.ts"],
             coreStripes: [],
             extensionStripes: [],
             groups: ["scripts"],
@@ -1495,6 +1585,12 @@ describe("ci workflow guards", () => {
         repository: "openclaw/openclaw",
         runAttempt: 1,
         preflightOutputs: manifest.outputs,
+        additionalNeeds: {
+          "check-plan": {
+            outputs: manifest.checkPlanOutputs,
+            result: manifest.outputs.run_check_plan === "true" ? "success" : "skipped",
+          },
+        },
       };
       expect(
         evaluateWorkflowExpression(workflow.jobs["check-shard"].strategy.matrix, context).include,
@@ -4963,12 +5059,22 @@ describe("ci workflow guards", () => {
     );
     for (const cache of [hostedLintCache, hostedCoreCache]) {
       expect(cache.uses).toBe(CACHE_V5);
-      expect(cache.with).toEqual(boundaryCache.with);
+      expect(cache.with.path).toEqual(boundaryCache.with.path);
+      expect(cache.with.key).toBe(
+        "${{ runner.os }}-extension-package-boundary-v4-${{ steps.extension-boundary-inputs.outputs.fingerprint }}",
+      );
+      expect(cache.with["restore-keys"].trim()).toBe(
+        "${{ runner.os }}-extension-package-boundary-v4-",
+      );
     }
     const fingerprintReference = "${{ steps.extension-boundary-inputs.outputs.fingerprint }}";
     expect(boundaryCache.with.key).toBe(
-      "${{ runner.os }}-extension-package-boundary-v4-${{ steps.extension-boundary-inputs.outputs.fingerprint }}",
+      "${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-extension-package-boundary-compiled-v1-${{ steps.extension-boundary-inputs.outputs.fingerprint }}",
     );
+    expect(boundaryCache.with["restore-keys"].trim().split("\n")).toEqual([
+      "${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-extension-package-boundary-compiled-v1-",
+      "${{ runner.os }}-extension-package-boundary-v4-",
+    ]);
     expect(boundaryCache.with.path.trim().split("\n")).toEqual([
       "packages/plugin-sdk/dist",
       ".artifacts/extension-package-boundary/plugins",
@@ -5019,7 +5125,7 @@ describe("ci workflow guards", () => {
       "warmer boundary save",
     );
     expect(warmerBoundaryRestore.with.path).toBe(boundaryCache.with.path);
-    expect(warmerBoundaryRestore.with["restore-keys"]).toBe(boundaryCache.with["restore-keys"]);
+    expect(warmerBoundaryRestore.with["restore-keys"]).toBe(hostedLintCache.with["restore-keys"]);
     expect(warmerBoundarySave.with.path).toBe(boundaryCache.with.path);
     // Single semantic writer: protected pushes commit explicitly (not
     // on-change/if-missing, whose allocated-byte heuristic can strand a stale

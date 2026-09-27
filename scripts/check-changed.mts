@@ -52,7 +52,8 @@ type ChangedCheckCommand = {
 };
 
 type CiLintSelection = {
-  packages: string[];
+  files: string[];
+  rootTestFiles?: string[];
   coreStripes: number[];
   extensionStripes: number[];
   groups: ("core" | "extensions" | "scripts")[];
@@ -522,7 +523,7 @@ export function createChangedCheckPlan(
   const finishPlan = (summary: string) => {
     // Full lint shards exclude test/. Keep changed root sources covered even
     // when another path selects the all-lane early return, without widening lint.
-    let rootTestTargets = result.paths.filter(
+    let rootTestTargets = (options.lintSelection?.rootTestFiles ?? result.paths).filter(
       (file) => getChangedPathFacts(file).isRootTestSource && existsSync(file),
     );
     if (rootTestTargets.length > 0) {
@@ -759,17 +760,18 @@ export function createChangedCheckPlan(
   }
   // Select before docs-only returns; trace schema entries without expanding config IO/loaders.
   if (
-    result.lanes.all ||
-    result.lanes.releaseMetadata ||
-    hasConfigDocInput(result.paths) ||
-    hasImportGraphImpactOnTargets(
-      result.paths.filter(
-        (file) => /\.[cm]?[jt]sx?$/u.test(file) && !getChangedPathFacts(file).isChangedLaneTest,
-      ),
-      isConfigDocSchemaSourcePath,
-      process.cwd(),
-      { tooling: true },
-    )
+    !options.lintOnly &&
+    (result.lanes.all ||
+      result.lanes.releaseMetadata ||
+      hasConfigDocInput(result.paths) ||
+      hasImportGraphImpactOnTargets(
+        result.paths.filter(
+          (file) => /\.[cm]?[jt]sx?$/u.test(file) && !getChangedPathFacts(file).isChangedLaneTest,
+        ),
+        isConfigDocSchemaSourcePath,
+        process.cwd(),
+        { tooling: true },
+      ))
   ) {
     add("config docs baseline", ["config:docs:check"]);
   }
@@ -1106,7 +1108,7 @@ function createCiLintCommands(
   threads: 1 | 8,
   env: NodeJS.ProcessEnv,
 ): ChangedCheckCommand[] {
-  if (selection.packages.length === 0) {
+  if (selection.files.length === 0) {
     return [];
   }
   const command = (name: string, args: string[]) => ({
@@ -1119,20 +1121,20 @@ function createCiLintCommands(
       "scripts/run-oxlint-shards.mts",
       ...args,
       `--threads=${threads}`,
-      "--packages-json",
-      JSON.stringify(selection.packages),
+      "--files-json",
+      JSON.stringify(selection.files),
     ],
   });
   return [
     ...selection.coreStripes.map((stripe) =>
-      command(`lint core package stripe ${stripe}`, [
+      command(`lint core file stripe ${stripe}`, [
         "--only=core",
         "--split-core",
         `--core-stripe=${stripe}/5`,
       ]),
     ),
     ...selection.extensionStripes.map((stripe) =>
-      command(`lint extension package stripe ${stripe}`, [
+      command(`lint extension file stripe ${stripe}`, [
         "--only=extensions",
         `--extension-stripe=${stripe}/6`,
       ]),
@@ -1140,7 +1142,7 @@ function createCiLintCommands(
     ...(selection.groups.length
       ? [
           command(
-            "lint remaining package groups",
+            "lint remaining file groups",
             selection.groups.map((group) => `--only=${group}`),
           ),
         ]
@@ -1148,7 +1150,7 @@ function createCiLintCommands(
   ];
 }
 
-/** Keep complete changed packages with the existing full-CI lint owners. */
+/** PRs keep changed files and all transitive consumers on their existing lint owners. */
 export async function createChangedCiLintPlan(
   result: ChangedLaneResult,
   { runnerProfile }: { runnerProfile: string },
@@ -1164,32 +1166,25 @@ export async function createChangedCiLintPlan(
   }
   const {
     createOxlintShards,
-    resolveChangedOxlintPackageScope,
+    resolveChangedOxlintFileScope,
     selectCoreOxlintStripe,
     selectExtensionOxlintStripe,
   } = await import("./run-oxlint-shards.mts");
-  const files = commands
-    .filter((command) => targetedLintOwner(command))
-    .flatMap((command) => command.args.slice(3));
-  const packageScope = await resolveChangedOxlintPackageScope(files);
-  if (!packageScope) {
+  const changedFiles = result.paths.filter((file) => /\.[cm]?[jt]sx?$/u.test(file));
+  const fileScope = await resolveChangedOxlintFileScope(changedFiles);
+  if (!fileScope) {
     return null;
   }
   const shards = createOxlintShards({ splitCore: true, splitExtensions: true, platform: "linux" });
-  const packages = packageScope.packages;
-  const selected = packageScope.selectShards(shards);
+  const selected = fileScope.selectShards(shards);
   if (
-    files.some(
-      (file) =>
-        !selected.some((shard) =>
-          shard.args.slice(2).some((root) => file === root || file.startsWith(`${root}/`)),
-        ),
-    )
+    fileScope.files.some((file) => !selected.some((shard) => shard.args.slice(2).includes(file)))
   ) {
     return null;
   }
   const central: CiLintSelection = {
-    packages,
+    files: [],
+    rootTestFiles: fileScope.rootTestFiles,
     coreStripes: [],
     extensionStripes: [],
     groups: [],
@@ -1197,73 +1192,87 @@ export async function createChangedCiLintPlan(
   };
   const core: { stripe: number; lint_selection_json: string }[] = [];
   const extensions: { stripe: number; lint_selection_json: string }[] = [];
-  if (runnerProfile !== "github" && runnerProfile !== "hybrid") {
-    central.groups = ["core", "extensions", "scripts"].filter(
-      (group): group is "core" | "extensions" | "scripts" =>
-        selected.some((shard) => shard.name === group || shard.name.startsWith(`${group}:`)),
-    );
-    return { core, extensions, central };
-  }
-  const coreStripes = [1, 2, 3, 4, 5].filter(
-    (index) =>
-      packageScope.selectShards(
-        selectCoreOxlintStripe(
-          shards.filter((shard) => shard.name.startsWith("core:")),
-          { index, total: 5 },
-        ),
-      ).length > 0,
-  );
-  const extensionStripes = [1, 2, 3, 4, 5, 6].filter(
-    (index) =>
-      packageScope.selectShards(
-        selectExtensionOxlintStripe(
-          shards.filter((shard) => shard.name.startsWith("extensions:")),
-          { index, total: 6 },
-        ),
-      ).length > 0,
-  );
-  const row = (
-    stripe: number,
-    selectedCoreStripes: number[],
-    selectedExtensionStripes: number[],
-  ) => ({
+  const coreShards = shards.filter((shard) => shard.name.startsWith("core:"));
+  const extensionShards = shards.filter((shard) => shard.name.startsWith("extensions:"));
+  const filesFor = (coreStripes: number[], extensionStripes: number[], groups: string[]) =>
+    [
+      ...new Set(
+        fileScope
+          .selectShards([
+            ...coreStripes.flatMap((index) =>
+              selectCoreOxlintStripe(coreShards, { index, total: 5 }),
+            ),
+            ...extensionStripes.flatMap((index) =>
+              selectExtensionOxlintStripe(extensionShards, { index, total: 6 }),
+            ),
+            ...shards.filter((shard) =>
+              groups.some((group) => shard.name === group || shard.name.startsWith(`${group}:`)),
+            ),
+          ])
+          .flatMap((shard) => shard.args.slice(2)),
+      ),
+    ].toSorted((left, right) => left.localeCompare(right));
+  const row = (stripe: number, coreStripes: number[], extensionStripes: number[]) => ({
     stripe,
     lint_selection_json: JSON.stringify({
-      packages,
-      coreStripes: selectedCoreStripes,
-      extensionStripes: selectedExtensionStripes,
+      files: filesFor(coreStripes, extensionStripes, []),
+      coreStripes,
+      extensionStripes,
       groups: [],
       central: false,
     }),
   });
-  if (runnerProfile === "hybrid") {
-    for (const [index, stripes] of [
-      coreStripes.filter((stripe) => stripe <= 2),
-      coreStripes.filter((stripe) => stripe > 2),
-    ].entries()) {
-      if (stripes.length) {
-        core.push(row(index + 1, stripes, []));
-      }
-    }
-    for (const stripe of extensionStripes) {
-      extensions.push(row(stripe, [], [stripe]));
-    }
+  if (!["github", "hybrid"].includes(runnerProfile)) {
+    const groups: CiLintSelection["groups"] = ["core", "extensions", "scripts"];
+    central.groups = groups.filter((group) =>
+      selected.some((shard) => shard.name === group || shard.name.startsWith(`${group}:`)),
+    );
   } else {
-    for (const stripe of [1, 2, 3, 4, 5]) {
-      if (coreStripes.includes(stripe) || extensionStripes.includes(stripe)) {
-        core.push(
-          row(
-            stripe,
-            coreStripes.includes(stripe) ? [stripe] : [],
-            extensionStripes.includes(stripe) ? [stripe] : [],
-          ),
-        );
+    const coreStripes = [1, 2, 3, 4, 5].filter((stripe) => filesFor([stripe], [], []).length);
+    const extensionStripes = [1, 2, 3, 4, 5, 6].filter(
+      (stripe) => filesFor([], [stripe], []).length,
+    );
+    if (runnerProfile === "hybrid") {
+      for (const [index, stripes] of [
+        coreStripes.filter((stripe) => stripe <= 2),
+        coreStripes.filter((stripe) => stripe > 2),
+      ].entries()) {
+        if (stripes.length) {
+          core.push(row(index + 1, stripes, []));
+        }
       }
+      for (const stripe of extensionStripes) {
+        extensions.push(row(stripe, [], [stripe]));
+      }
+    } else {
+      for (const stripe of [1, 2, 3, 4, 5]) {
+        if (coreStripes.includes(stripe) || extensionStripes.includes(stripe)) {
+          core.push(
+            row(
+              stripe,
+              coreStripes.includes(stripe) ? [stripe] : [],
+              extensionStripes.includes(stripe) ? [stripe] : [],
+            ),
+          );
+        }
+      }
+      central.extensionStripes = extensionStripes.filter((stripe) => stripe === 6);
     }
-    central.extensionStripes = extensionStripes.filter((stripe) => stripe === 6);
+    if (selected.some((shard) => shard.name === "scripts")) {
+      central.groups = ["scripts"];
+    }
   }
-  if (selected.some((shard) => shard.name === "scripts")) {
-    central.groups = ["scripts"];
+  central.files = filesFor(central.coreStripes, central.extensionStripes, central.groups);
+  // Both workflow outputs and process arguments are bounded. A very broad
+  // closure keeps full lint instead of truncating consumers or overflowing exec.
+  if (
+    [
+      JSON.stringify(central),
+      ...core.map((entry) => entry.lint_selection_json),
+      ...extensions.map((entry) => entry.lint_selection_json),
+    ].some((selection) => Buffer.byteLength(selection) > CORE_LINT_ARGV_BYTES)
+  ) {
+    return null;
   }
   return { core, extensions, central };
 }
