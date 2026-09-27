@@ -26,7 +26,8 @@ const MODEL = "restart-proof/restart-proof";
 const EMAIL = "restart-proof@example.test";
 const CONTINUATION = "COLD_SELF_CONTINUATION";
 
-it.each(["allowed", "revoked"] as const)(
+// This proof kills a POSIX process group; it does not claim Windows process-lifecycle coverage.
+it.skipIf(process.platform === "win32").each(["allowed", "revoked"] as const)(
   "revalidates original self-send authority through cold restart before final I/O: %s",
   { timeout: 300_000 },
   async (outcome) => {
