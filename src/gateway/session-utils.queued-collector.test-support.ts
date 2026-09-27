@@ -1,5 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, expect, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import {
   registerSubagentRun,
@@ -57,6 +58,16 @@ export function useQueuedCollectorFixture() {
   let state: OpenClawTestState;
   let projection: SessionRowProjection;
   const launchedRunIds: string[] = [];
+  const launchSignals = new Map<string, ReturnType<typeof createDeferred<void>>>();
+
+  function waitForLaunch(runId: string) {
+    if (launchedRunIds.includes(runId)) {
+      return Promise.resolve();
+    }
+    const signal = launchSignals.get(runId) ?? createDeferred();
+    launchSignals.set(runId, signal);
+    return signal.promise;
+  }
 
   beforeEach(async () => {
     resetGatewayWorkAdmission();
@@ -113,6 +124,7 @@ export function useQueuedCollectorFixture() {
           stream: "lifecycle",
           data: { phase: "start", startedAt: Date.now() },
         });
+        launchSignals.get(runId)?.resolve();
         return { runId, status: "accepted" } as T;
       },
     });
@@ -130,6 +142,7 @@ export function useQueuedCollectorFixture() {
     for (const runId of launchedRunIds.splice(0)) {
       clearAgentRunContext(runId);
     }
+    launchSignals.clear();
     resetSubagentRegistryForTests({ persist: false });
     spawnTesting.setDepsForTest();
     resetAgentEventsForTest({ preserveListeners: true });
@@ -200,28 +213,30 @@ export function useQueuedCollectorFixture() {
     completionOwnerKey?: string,
   ) {
     const results: Awaited<ReturnType<typeof spawnSubagentDirect>>[] = [];
-    // Requester lookup can yield before reservation; establish which child owns the active slot.
     for (const label of labels) {
-      results.push(
-        await spawnSubagentDirect(
-          {
-            task: "Wait for cancellation",
-            label,
-            collect: true,
-            context: "isolated",
-            lightContext: true,
-          },
-          {
-            agentSessionKey: parentKey,
-            completionOwnerKey,
-            requesterRunId: "parent-turn",
-            requesterTurnRunId: "parent-turn",
-          },
-        ),
+      const result = await spawnSubagentDirect(
+        {
+          task: "Wait for cancellation",
+          label,
+          collect: true,
+          context: "isolated",
+          lightContext: true,
+        },
+        {
+          agentSessionKey: parentKey,
+          completionOwnerKey,
+          requesterRunId: "parent-turn",
+          requesterTurnRunId: "parent-turn",
+        },
       );
+      expect(result.status).toBe("accepted");
+      results.push(result);
+      // Establish occupied capacity before creating the collector expected to queue.
+      if (results.length === 1) {
+        await waitForLaunch(expectDefined(result.runId, "first collector run"));
+      }
     }
-    expect(results.map((result) => result.status)).toEqual(labels.map(() => "accepted"));
-    await vi.waitFor(() => expect(launchedRunIds).toEqual([results[0]?.runId]));
+    expect(launchedRunIds).toEqual([results[0]?.runId]);
     return results;
   }
 
@@ -272,6 +287,7 @@ export function useQueuedCollectorFixture() {
   return {
     parentKey,
     launchedRunIds,
+    waitForLaunch,
     requestContext,
     operatorClient,
     listChildren,
