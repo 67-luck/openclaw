@@ -39,6 +39,7 @@ type SlackPendingApproval = {
   messageTs: string;
   threadTs?: string;
   teamId?: string;
+  showMessageExcerpt?: boolean;
 };
 type SlackPendingDelivery = {
   text: string;
@@ -169,9 +170,9 @@ function resolveSlackPluginDescription(view: SlackPluginApprovalView): string {
 }
 
 type SlackApprovalRenderInput =
-  | { phase: "pending"; view: PendingApprovalView }
-  | { phase: "resolved"; view: ResolvedApprovalView }
-  | { phase: "expired"; view: ExpiredApprovalView };
+  | { phase: "pending"; view: PendingApprovalView; showMessageExcerpt?: boolean }
+  | { phase: "resolved"; view: ResolvedApprovalView; showMessageExcerpt?: boolean }
+  | { phase: "expired"; view: ExpiredApprovalView; showMessageExcerpt?: boolean };
 
 function buildSlackApprovalPayload(input: SlackApprovalRenderInput): SlackPendingDelivery {
   const { phase, view } = input;
@@ -201,9 +202,10 @@ function buildSlackApprovalPayload(input: SlackApprovalRenderInput): SlackPendin
   const metadata = isPlugin ? buildSlackPluginMetadata(view) : view.metadata;
   const bodyLabel = isPlugin ? "*Request*" : isSystemAgent ? "*Change*" : "*Command*";
   const bodyText = isPlugin ? view.title : buildSlackCodeBlock(view.commandText);
-  const userMessageExcerpt = isPlugin
-    ? normalizeOptionalString(view.approvalSource?.userMessageExcerpt)
-    : undefined;
+  const userMessageExcerpt =
+    isPlugin && input.showMessageExcerpt
+      ? normalizeOptionalString(view.approvalSource?.userMessageExcerpt)
+      : undefined;
   const includeMetadata = isPlugin || phase === "pending";
   const text = [
     heading,
@@ -323,13 +325,21 @@ export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdap
   },
   presentation: {
     buildPendingPayload: ({ view }) => buildSlackApprovalPayload({ phase: "pending", view }),
-    buildResolvedResult: ({ view }) => ({
+    buildResolvedResult: ({ view, entry }) => ({
       kind: "update",
-      payload: buildSlackApprovalPayload({ phase: "resolved", view }),
+      payload: buildSlackApprovalPayload({
+        phase: "resolved",
+        view,
+        showMessageExcerpt: entry?.showMessageExcerpt,
+      }),
     }),
-    buildExpiredResult: ({ view }) => ({
+    buildExpiredResult: ({ view, entry }) => ({
       kind: "update",
-      payload: buildSlackApprovalPayload({ phase: "expired", view }),
+      payload: buildSlackApprovalPayload({
+        phase: "expired",
+        view,
+        showMessageExcerpt: entry?.showMessageExcerpt,
+      }),
     }),
   },
   transport: {
@@ -352,7 +362,15 @@ export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdap
         },
       };
     },
-    deliverPending: async ({ cfg, accountId, context, preparedTarget, pendingPayload }) => {
+    deliverPending: async ({
+      cfg,
+      accountId,
+      context,
+      plannedTarget,
+      preparedTarget,
+      pendingPayload,
+      view,
+    }) => {
       const resolved = resolveHandlerContext({ cfg, accountId, context });
       if (!resolved) {
         return null;
@@ -370,11 +388,15 @@ export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdap
             }),
           }
         : undefined;
-      const message = await sendMessageSlack(to, pendingPayload.text, {
+      const showMessageExcerpt = plannedTarget.surface === "approver-dm";
+      const payload = showMessageExcerpt
+        ? buildSlackApprovalPayload({ phase: "pending", view, showMessageExcerpt })
+        : pendingPayload;
+      const message = await sendMessageSlack(to, payload.text, {
         cfg,
         accountId: resolved.accountId,
         threadTs: preparedTarget.threadTs,
-        blocks: pendingPayload.blocks,
+        blocks: payload.blocks,
         client,
         eventScope,
       });
@@ -389,6 +411,7 @@ export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdap
         messageTs: message.messageId,
         threadTs: preparedTarget.threadTs,
         teamId: preparedTarget.teamId,
+        showMessageExcerpt,
       };
     },
     updateEntry: async ({ cfg, accountId, context, entry, payload, phase }) => {

@@ -5,6 +5,7 @@ import type { ExecApprovalRequestPayload } from "../../infra/exec-approvals.js";
 import type { PluginApprovalRequestPayload } from "../../infra/plugin-approvals.js";
 import { runWithRetainedGatewayRootWork } from "../../process/gateway-work-admission.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
+import { projectApprovalRequestForExternal } from "../approval-request-projection.js";
 import type { ExecApprovalRecord } from "../exec-approval-manager.js";
 import {
   buildRequestedApprovalEvent,
@@ -68,7 +69,11 @@ export function handlePendingApprovalRequestWithDelivery<TKind extends keyof App
     afterDecisionErrorLabel,
     ...pending
   } = params;
-  const requestEvent = buildRequestedApprovalEvent(pending.record, approvalKind);
+  const nativeRequestEvent = buildRequestedApprovalEvent(pending.record, approvalKind);
+  const requestEvent = {
+    ...nativeRequestEvent,
+    request: projectApprovalRequestForExternal(nativeRequestEvent.request),
+  };
   const iosPushDelivery = getIosPushDelivery();
   const iosPushRequest = iosPushDelivery?.handleRequested?.bind(iosPushDelivery);
   const logContext = source === "node-policy" ? "node policy " : "";
@@ -78,6 +83,7 @@ export function handlePendingApprovalRequestWithDelivery<TKind extends keyof App
     approvalKind,
     requestEventName: `${approvalKind}.approval.requested`,
     requestEvent,
+    nativeRequestEvent,
     deliverRequest: () =>
       runApprovalRequestDeliveries({
         context: pending.context,
@@ -142,7 +148,7 @@ function resolveFirstSuccessfulApprovalDelivery(
 }
 
 /** Runs external approval deliveries concurrently and reports whether any route accepted. */
-function runApprovalRequestDeliveries<TPayload>(params: {
+function runApprovalRequestDeliveries<TPayload extends object>(params: {
   context: ApprovalDeliveryLogContext;
   record: ExecApprovalRecord<TPayload>;
   forward?: ApprovalRequestDelivery;
@@ -172,7 +178,12 @@ function runApprovalRequestDeliveries<TPayload>(params: {
     ];
   });
   try {
-    const webPushDelivery = params.context.approvalWebPushDelivery?.handleRequested(params.record);
+    const publicRequest = projectApprovalRequestForExternal(params.record.request);
+    const webPushDelivery = params.context.approvalWebPushDelivery?.handleRequested(
+      publicRequest === params.record.request
+        ? params.record
+        : { ...params.record, request: publicRequest },
+    );
     if (webPushDelivery !== false && webPushDelivery !== undefined) {
       deliveryTasks.push(
         trackApprovalDelivery(() => Promise.resolve(webPushDelivery)).catch((err: unknown) => {

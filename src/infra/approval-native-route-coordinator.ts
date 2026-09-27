@@ -65,6 +65,7 @@ type ApprovalRouteSelectionVerdict =
 
 type ApprovalRouteSelection = {
   verdicts: Map<string, ApprovalRouteSelectionVerdict>;
+  pluginResolvedWithoutNotice?: boolean;
   cleanupTimeout: NodeJS.Timeout;
 };
 
@@ -588,6 +589,10 @@ async function maybeFinalizeApprovalRouteNotice(
   if (!options?.force && missingSelectedRuntime) {
     return;
   }
+  if (selection.pluginResolvedWithoutNotice) {
+    clearPendingApprovalRouteNotice(state, approvalId);
+    return;
+  }
 
   const reports = Array.from(entry.reports.values());
   const notice = resolveApprovalRouteNotice({
@@ -823,6 +828,12 @@ export function createApprovalNativeRouteCoordinator(): ApprovalNativeRouteCoord
         return;
       }
       if (status === "allowed" || status === "cancelled") {
+        const selection = state.selections.get(approvalId);
+        if (selection) {
+          // Delivery can finish after the Gateway resolves the request. Keep the
+          // outcome on the route so a late report cannot announce stale pending work.
+          selection.pluginResolvedWithoutNotice = true;
+        }
         clearPluginTerminalNotice(state, approvalId);
         return;
       }

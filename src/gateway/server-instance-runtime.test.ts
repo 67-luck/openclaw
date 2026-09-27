@@ -5,6 +5,7 @@ import type { ChannelPlugin } from "../channels/plugins/types.public.js";
 import type { GatewayNativeApprovalMethod } from "../infra/approval-gateway-runtime-methods.js";
 import type { ExecApprovalRequest } from "../infra/exec-approvals.js";
 import { findDeliveryIntentOwner } from "../infra/outbound/delivery-queue-storage.js";
+import type { PluginApprovalRequest } from "../infra/plugin-approvals.js";
 import {
   captureActivePluginRegistrySnapshot,
   restoreActivePluginRegistrySnapshot,
@@ -49,6 +50,109 @@ function createRegistry(handlers: GatewayRequestHandlers) {
 }
 
 describe("createGatewayInstanceRuntime", () => {
+  it("keeps a requester excerpt inside the matching Slack native approval runtime", () => {
+    const runtime = createGatewayInstanceRuntime({
+      getContext: createContext,
+      getMethodRegistry: () => createRegistry({}),
+      isDispatchAvailable: () => true,
+    });
+    const source = {
+      channel: "slack",
+      senderId: "U123",
+      userMessageExcerpt: "private original message",
+    };
+    const request: PluginApprovalRequest = {
+      approvalKind: "plugin",
+      id: "plugin:private",
+      request: {
+        title: "Sensitive action",
+        description: "Needs approval",
+        turnSourceChannel: "slack",
+        turnSourceAccountId: "work",
+        approvalSource: source,
+      },
+      createdAtMs: 1,
+      expiresAtMs: 2,
+    };
+    const recipients = [
+      { channel: "slack", accountId: "work" },
+      { channel: "slack", accountId: "personal" },
+      { channel: "matrix", accountId: "work" },
+      { channel: "slack", accountId: "default" },
+    ].map(({ channel, accountId }) => {
+      const shouldHandle = vi.fn(() => true);
+      const onRequested = vi.fn();
+      const onResolved = vi.fn();
+      runtime.nativeApprovals.subscribe({
+        eventKinds: new Set(["plugin"]),
+        channel,
+        accountId,
+        shouldHandle,
+        onRequested,
+        onResolved,
+      });
+      return { shouldHandle, onRequested, onResolved };
+    });
+
+    expect(runtime.approvalEvents.publishRequested("plugin", request)).toBe(4);
+    for (const recipient of recipients) {
+      expect(recipient.shouldHandle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          request: expect.objectContaining({
+            approvalSource: { channel: "slack", senderId: "U123" },
+          }),
+        }),
+      );
+    }
+    expect(recipients[0]?.onRequested).toHaveBeenCalledWith(request);
+    for (const recipient of recipients.slice(1)) {
+      expect(recipient.onRequested).toHaveBeenCalledWith(
+        expect.objectContaining({
+          request: expect.objectContaining({
+            approvalSource: { channel: "slack", senderId: "U123" },
+          }),
+        }),
+      );
+    }
+
+    for (const recipient of recipients) {
+      recipient.onRequested.mockClear();
+    }
+    const defaultRequest: PluginApprovalRequest = {
+      ...request,
+      id: "plugin:default",
+      request: { ...request.request, turnSourceAccountId: null },
+    };
+    expect(runtime.approvalEvents.publishRequested("plugin", defaultRequest)).toBe(4);
+    expect(recipients[3]?.onRequested).toHaveBeenCalledWith(defaultRequest);
+    for (const recipient of recipients.slice(0, 3)) {
+      expect(recipient.onRequested).toHaveBeenCalledWith(
+        expect.objectContaining({
+          request: expect.objectContaining({
+            approvalSource: { channel: "slack", senderId: "U123" },
+          }),
+        }),
+      );
+    }
+
+    runtime.approvalEvents.publishResolved("plugin", {
+      id: request.id,
+      decision: "deny",
+      ts: 3,
+      request: request.request,
+    });
+    for (const recipient of recipients) {
+      expect(recipient.onResolved).toHaveBeenCalledWith(
+        expect.objectContaining({
+          request: expect.objectContaining({
+            approvalSource: { channel: "slack", senderId: "U123" },
+          }),
+        }),
+      );
+    }
+    runtime.close();
+  });
+
   it.each([
     [{ decision: "deny" as const }, "denied"],
     [{ decision: "deny" as const, terminalStatus: "expired" as const }, "expired"],

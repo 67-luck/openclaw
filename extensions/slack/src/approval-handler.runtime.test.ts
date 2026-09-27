@@ -124,9 +124,9 @@ async function buildPluginPendingPayload(params: {
   metadata?: ApprovalMetadataView[];
   decisions?: ApprovalDecision[];
   approvalSource?: PluginApprovalPendingView["approvalSource"];
-}): Promise<SlackPayload> {
+}) {
   const decisions = params.decisions ?? ["deny"];
-  return (await slackApprovalNativeRuntime.presentation.buildPendingPayload({
+  return await slackApprovalNativeRuntime.presentation.buildPendingPayload({
     ...APPROVAL_CONTEXT,
     request: {
       id: params.approvalId,
@@ -155,7 +155,7 @@ async function buildPluginPendingPayload(params: {
       ),
       expiresAtMs: APPROVAL_TIMING.expiresAtMs,
     },
-  })) as SlackPayload;
+  });
 }
 
 function buildExecResolvedResult() {
@@ -535,18 +535,19 @@ describe("slackApprovalNativeRuntime", () => {
     ]);
   });
 
-  it("shows the requester, source, and literal original-message excerpt on a plugin card", async () => {
+  it("shows the original message only on the approver DM card and its updates", async () => {
     const excerpt = "Please render <@U999OTHER> & show the *diff*.";
+    const approvalSource = {
+      channel: "slack",
+      senderId: "U0C5KQJEE56",
+      senderName: "Lightning <McQueen> & Friends",
+      workspaceId: "T123ABC45",
+      conversationKind: "direct" as const,
+      userMessageExcerpt: excerpt,
+    };
     const payload = await buildPluginPendingPayload({
       ...SCREEN_SHARE_APPROVAL,
-      approvalSource: {
-        channel: "slack",
-        senderId: "U0C5KQJEE56",
-        senderName: "Lightning <McQueen> & Friends",
-        workspaceId: "T123ABC45",
-        conversationKind: "direct",
-        userMessageExcerpt: excerpt,
-      },
+      approvalSource,
     });
 
     expect(payload.text).toContain(
@@ -554,13 +555,87 @@ describe("slackApprovalNativeRuntime", () => {
     );
     expect(payload.text).not.toContain("<@U0C5KQJEE56>");
     expect(payload.text).toContain("*Source:* Slack DM in T123ABC45");
-    expect(payload.text).toContain(
+    expect(payload.text).not.toContain(excerpt);
+
+    const view: PluginApprovalPendingView = {
+      ...SCREEN_SHARE_APPROVAL,
+      phase: "pending",
+      approvalSource,
+      actions: [buildApprovalAction("plugin", SCREEN_SHARE_APPROVAL.approvalId, "deny")],
+      expiresAtMs: APPROVAL_TIMING.expiresAtMs,
+    };
+    const request = {
+      ...SCREEN_SHARE_REQUEST,
+      request: { ...SCREEN_SHARE_REQUEST.request, approvalSource },
+    };
+    sendMessageSlackMock.mockReset().mockResolvedValue({
+      channelId: "D123APPROVER",
+      messageId: "1712345678.999999",
+    });
+    const context = { app: { client: {} }, config: {} } as never;
+    const deliver = async (surface: "origin" | "approver-dm") => {
+      const entry = await slackApprovalNativeRuntime.transport.deliverPending({
+        ...APPROVAL_CONTEXT,
+        context,
+        request,
+        approvalKind: "plugin",
+        plannedTarget: {
+          surface,
+          reason: "preferred",
+          target: { to: surface === "origin" ? "channel:C123" : "user:U123" },
+        },
+        preparedTarget: { to: surface === "origin" ? "channel:C123" : "user:U123" },
+        pendingPayload: payload,
+        view,
+      });
+      if (!entry) {
+        throw new Error("Expected delivered Slack approval entry");
+      }
+      const [, text, options] = sendMessageSlackMock.mock.lastCall as [
+        string,
+        string,
+        { blocks: unknown },
+      ];
+      return { entry, payload: { text, blocks: options.blocks } as SlackPayload };
+    };
+    const origin = await deliver("origin");
+    const reviewer = await deliver("approver-dm");
+    expect(origin.payload.text).not.toContain(excerpt);
+    expect(JSON.stringify(origin.payload.blocks)).not.toContain(excerpt);
+    expect(reviewer.payload.text).toContain(
       "*Original message (excerpt)*\n```\nPlease render &lt;@U999OTHER&gt; &amp; show the *diff*.\n```",
     );
-    const excerptBlock = (payload.blocks as Array<{ text?: { type: string; text: string } }>).find(
-      (block) => block.text?.type === "plain_text",
-    );
+    const excerptBlock = (
+      reviewer.payload.blocks as Array<{ text?: { type: string; text: string } }>
+    ).find((block) => block.text?.type === "plain_text");
     expect(excerptBlock?.text?.text).toBe(`Original message (excerpt)\n${excerpt}`);
+
+    for (const delivered of [origin, reviewer]) {
+      const resolved = await slackApprovalNativeRuntime.presentation.buildResolvedResult({
+        ...APPROVAL_CONTEXT,
+        request,
+        resolved: { id: request.id, decision: "deny", ts: 1 },
+        view: { ...view, phase: "resolved", decision: "deny", resolvedBy: "U123" },
+        entry: delivered.entry,
+      });
+      const expired = await slackApprovalNativeRuntime.presentation.buildExpiredResult({
+        ...APPROVAL_CONTEXT,
+        request,
+        view: { ...view, phase: "expired" },
+        entry: delivered.entry,
+      });
+      for (const result of [resolved, expired]) {
+        expect(result.kind).toBe("update");
+        if (result.kind === "update") {
+          expect(result.payload.text.includes("*Original message (excerpt)*")).toBe(
+            delivered === reviewer,
+          );
+          expect(JSON.stringify(result.payload.blocks).includes(excerpt)).toBe(
+            delivered === reviewer,
+          );
+        }
+      }
+    }
 
     for (const senderName of [undefined, "U0C5KQJEE56"]) {
       const idOnlyPayload = await buildPluginPendingPayload({

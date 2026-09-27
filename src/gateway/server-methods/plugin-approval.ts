@@ -26,6 +26,7 @@ import {
   resolvePluginApprovalTimeoutMs,
   truncatePluginApprovalDetail,
 } from "../../infra/plugin-approvals.js";
+import { projectApprovalRequestForExternal } from "../approval-request-projection.js";
 import type { ExecApprovalManager } from "../exec-approval-manager.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { resolveStoredSessionKeyForAgentStore } from "../session-store-key.js";
@@ -66,7 +67,14 @@ export function createPluginApprovalHandlers(
         ...(client?.authenticatedUserProfile ? { getCfg: context.getRuntimeConfig } : {}),
       });
       authority.assertCurrent();
-      respond(true, approvals, undefined);
+      respond(
+        true,
+        approvals.map((approval) => ({
+          ...approval,
+          request: projectApprovalRequestForExternal(approval.request),
+        })),
+        undefined,
+      );
     },
     "plugin.approval.request": async ({ params, client, respond, context }) => {
       if (

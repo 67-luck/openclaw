@@ -12,11 +12,14 @@ import type {
 } from "../infra/approval-gateway-runtime.types.js";
 import { createApprovalNativeRouteCoordinator } from "../infra/approval-native-route-coordinator.js";
 import type { ChannelApprovalKind } from "../infra/approval-types.js";
+import type { PluginApprovalRequest } from "../infra/plugin-approvals.js";
+import { DEFAULT_ACCOUNT_ID, normalizeOptionalAccountId } from "../routing/account-id.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 // HTTP agent ingress can finish before the lazy agent.wait handler loads its recorder.
 import "./agent-turn/agent-job.js";
 import { createInternalAgentTurnFacade } from "./agent-turn/internal-facade.js";
 import type { InternalAgentTurnPrincipalOptions } from "./agent-turn/internal-facade.types.js";
+import { projectApprovalRequestForExternal } from "./approval-request-projection.js";
 import {
   resolveLeastPrivilegeOperatorScopesForMethod,
   APPROVALS_SCOPE,
@@ -299,12 +302,39 @@ export function createGatewayInstanceRuntime(
   return {
     createAgentTurnFacade,
     approvalEvents: {
-      publishRequested: (kind, request) =>
-        publish(
+      publishRequested: (kind, request) => {
+        const pluginRequest = kind === "plugin" ? (request as PluginApprovalRequest) : null;
+        const source = pluginRequest?.request.approvalSource;
+        const sourceAccountId = normalizeOptionalAccountId(
+          pluginRequest?.request.turnSourceAccountId,
+        );
+        const publicRequest = pluginRequest
+          ? {
+              ...pluginRequest,
+              request: projectApprovalRequestForExternal(pluginRequest.request),
+            }
+          : (request as GatewayApprovalRequest);
+        return publish(
           kind,
-          (subscriber) => subscriber.onRequested(request as GatewayApprovalRequest),
-          (subscriber) => subscriber.shouldHandle(request as GatewayApprovalRequest),
-        ),
+          (subscriber) => {
+            // The excerpt is only for the matching, Gateway-hosted Slack runtime.
+            // Other subscribers receive the same public projection as WebSocket clients.
+            const subscriberAccountId = normalizeOptionalAccountId(subscriber.accountId);
+            const ownsSlackSource =
+              source?.channel === "slack" &&
+              subscriber.channel === "slack" &&
+              pluginRequest?.request.turnSourceChannel === "slack" &&
+              subscriberAccountId !== undefined &&
+              (subscriberAccountId === sourceAccountId ||
+                (pluginRequest.request.turnSourceAccountId == null &&
+                  subscriberAccountId === DEFAULT_ACCOUNT_ID));
+            subscriber.onRequested(
+              (ownsSlackSource ? pluginRequest : publicRequest) as GatewayApprovalRequest,
+            );
+          },
+          (subscriber) => subscriber.shouldHandle(publicRequest as GatewayApprovalRequest),
+        );
+      },
       publishResolved: (kind, resolved) => {
         if (
           kind === "plugin" &&
@@ -331,7 +361,21 @@ export function createGatewayInstanceRuntime(
               options.logError?.(`plugin approval origin notice failed: ${String(error)}`);
             });
         }
-        publish(kind, (subscriber) => subscriber.onResolved(resolved as GatewayApprovalResolved));
+        const publicResolved =
+          kind === "plugin" &&
+          resolved !== null &&
+          typeof resolved === "object" &&
+          "request" in resolved &&
+          resolved.request !== null &&
+          typeof resolved.request === "object"
+            ? {
+                ...resolved,
+                request: projectApprovalRequestForExternal(resolved.request),
+              }
+            : resolved;
+        publish(kind, (subscriber) =>
+          subscriber.onResolved(publicResolved as GatewayApprovalResolved),
+        );
       },
     },
     nativeApprovals: {

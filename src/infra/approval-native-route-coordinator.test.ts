@@ -166,6 +166,41 @@ describe("plugin approval requester outcome", () => {
     coordinator.close();
   });
 
+  it.each(["allowed", "cancelled"] as const)(
+    "does not tell the requester a %s approval is pending after it resolves during DM delivery",
+    async (status) => {
+      const coordinator = createApprovalNativeRouteCoordinator();
+      const requestGateway = createGatewayRequestMock();
+      const reporter = coordinator.createReporter(
+        reporterOptions({
+          handledKinds: new Set(["plugin"]),
+          channel: "slack",
+          channelLabel: "Slack",
+          accountId: "work",
+          requestGateway,
+        }),
+      );
+      const request = createPluginRequest(`plugin:early-${status}`);
+      reporter.start();
+      reporter.selectRequest({ approvalKind: "plugin", request });
+      await coordinator.publishPluginTerminal({ approvalId: request.id, status });
+      await reporter.reportDelivery({
+        approvalKind: "plugin",
+        request,
+        deliveryPlan: {
+          targets: [approverDm("user:reviewer")],
+          originTarget: { to: "channel:C123", threadId: "1712345678.123456" },
+          notifyOriginWhenDmOnly: true,
+        },
+        deliveredTargets: [approverDm("user:reviewer")],
+      });
+      reporter.completeRequest(request.id);
+
+      expect(requestGateway).not.toHaveBeenCalled();
+      coordinator.close();
+    },
+  );
+
   it.each(["origin-card", "forwarded-only", "dm-without-origin-notice"] as const)(
     "does not duplicate the %s outcome in the origin",
     async (route) => {
