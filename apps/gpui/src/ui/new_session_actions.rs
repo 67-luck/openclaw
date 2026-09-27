@@ -54,8 +54,11 @@ impl AppView {
         }
         self.new_session.active = true;
         self.sidebar_state.pending_selection = None;
-        self.chat
-            .select_context(String::new(), Some(self.new_session.draft.agent_id.clone()));
+        self.switch_transcript(
+            String::new(),
+            Some(self.new_session.draft.agent_id.clone()),
+            None,
+        );
         self.chat.selected_session = None;
         self.sync_subscription(cx);
         self.composer_state

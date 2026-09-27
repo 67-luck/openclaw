@@ -25,13 +25,13 @@ use super::{
     model_controls_state::ModelControlsUi,
     sidebar_state::SidebarState,
     theme::{self, Palette},
-    transcript_state::TranscriptUi,
+    transcript_state::{PreparedTranscript, TranscriptUi},
 };
 use crate::gateway::router::Router;
 use crate::{
     gateway::{config::ConnectionConfig, connection::Connection},
     model::{
-        chat::{ChatNote, ChatState},
+        chat::{ChatNote, cache::Sessions},
         sessions::{SessionRow, friendly_session_title},
     },
 };
@@ -75,7 +75,7 @@ pub struct AppView {
     pub(super) rows: Vec<SessionRow>,
     pub(super) roster_loading: bool,
     pub(super) roster_error: Option<String>,
-    pub(super) chat: ChatState,
+    pub(super) chat: Sessions<PreparedTranscript>,
     pub(super) transcript_list: ListState,
     pub(super) sidebar_state: SidebarState,
     pub(super) composer_state: ComposerUi,
@@ -195,7 +195,7 @@ impl AppView {
             rows: Vec::new(),
             roster_loading: false,
             roster_error: None,
-            chat: ChatState::default(),
+            chat: Sessions::default(),
             transcript_list,
             sidebar_state: SidebarState::new(window, cx),
             composer_state: ComposerUi::default(),
@@ -271,18 +271,31 @@ impl AppView {
             return;
         };
         let epoch = self.epoch;
+        let history_claim = matches!(method, "chat.history" | "chat.startup")
+            .then(|| self.chat.history_claim())
+            .flatten()
+            .filter(|(scope, _)| {
+                params.get("sessionKey").and_then(Value::as_str) == Some(&scope.session_key)
+                    && params.get("agentId").and_then(Value::as_str) == scope.agent_id.as_deref()
+            });
         let (tx, rx) = oneshot::channel();
         self.runtime.spawn(async move {
-            let result = session
-                .request(method, params)
-                .await
-                .map_err(|error| error.to_string());
-            let _ = tx.send(result);
+            let result = session.request(method, params).await;
+            let access_denied = matches!(&result, Err(openclaw_gateway_client::ClientError::Gateway { code, details, .. }) if code == "FORBIDDEN" || details.as_ref().is_some_and(|details| details["code"] == "AUTH_UNAUTHORIZED" || (details["code"] == "MISSING_SCOPE" && details["missingScope"] == "operator.read")));
+            let _ = tx.send((result.map_err(|error| error.to_string()), access_denied));
         });
         cx.spawn(async move |this, cx| {
-            if let Ok(result) = rx.await {
+            if let Ok((result, access_denied)) = rx.await {
                 let _ = this.update(cx, |this, cx| {
                     if this.epoch == epoch {
+                        if access_denied
+                            && let Some(claim) = history_claim
+                            && this.chat.deny_history(&claim)
+                        {
+                            this.chat.history_error = result.as_ref().err().cloned();
+                            this.transcript_list.reset(0);
+                            this.sync_transcript();
+                        }
                         apply(this, result, cx);
                         cx.notify();
                     }
@@ -309,6 +322,7 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let switch_started = std::time::Instant::now();
         self.composer_save_draft(cx);
         self.new_session.active = false;
         self.new_session.picker = None;
@@ -344,13 +358,22 @@ impl AppView {
             }
         }
         self.remember_selected_descriptor(&key);
-        self.chat
-            .select_context(key, self.sidebar_state.selected_agent.clone());
+        let session_id = self
+            .rows
+            .iter()
+            .chain(self.sidebar_state.children.values().flatten())
+            .chain(self.sidebar_state.selected_descriptor.iter())
+            .find(|row| row.key == key)
+            .and_then(|row| row.session_id.clone());
+        self.switch_transcript(
+            key,
+            self.sidebar_state.selected_agent.clone(),
+            session_id.as_deref(),
+        );
+        self.transcript_state.switch_timing = Some((switch_started, self.chat.loaded, 0));
         self.composer_restore_draft(window, cx);
         self.sync_subscription(cx);
         self.load_composer_catalogs(cx);
-        self.transcript_list.reset(0);
-        self.transcript_list.set_follow_mode(FollowMode::Tail);
         self.load_history(cx);
         cx.notify();
     }

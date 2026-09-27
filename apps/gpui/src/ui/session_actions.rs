@@ -319,16 +319,26 @@ impl AppView {
             cx,
             move |this, result, cx| match result {
                 Ok(_) => {
-                    this.rows.retain(|candidate| candidate.key != row.key);
-                    for children in this.sidebar_state.children.values_mut() {
-                        children.retain(|candidate| candidate.key != row.key);
-                    }
-                    if this.chat.scope() == source
+                    let selected = this.chat.scope() == source
                         && source
                             .as_ref()
                             .is_some_and(|scope| scope.session_key == row.key)
-                        && this.sidebar_state.selected_agent == agent
-                    {
+                        && this.sidebar_state.selected_agent == agent;
+                    this.chat.invalidate_generation(
+                        &row.key,
+                        row.agent(),
+                        row.session_id.as_deref(),
+                    );
+                    let keep = |candidate: &SessionRow| {
+                        candidate.key != row.key
+                            || candidate.session_id != row.session_id
+                            || candidate.agent() != row.agent()
+                    };
+                    this.rows.retain(keep);
+                    for children in this.sidebar_state.children.values_mut() {
+                        children.retain(keep);
+                    }
+                    if selected {
                         this.queue_session_selection(this.agent_home());
                     }
                     this.sidebar_state

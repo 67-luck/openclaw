@@ -27,6 +27,7 @@ pub(super) struct TranscriptUi {
     pub scroll_installed: bool,
     pub focus: Option<FocusHandle>,
     pub owner: Option<crate::model::chat::RequestScope>,
+    pub switch_timing: Option<(std::time::Instant, bool, usize)>,
 }
 pub(super) struct CachedMarkdown {
     pub source: String,
@@ -34,7 +35,61 @@ pub(super) struct CachedMarkdown {
     pub extensions: Option<(bool, MarkdownExtensions)>,
 }
 
+pub(super) struct PreparedTranscript {
+    ui: TranscriptUi,
+    list: ListState,
+}
+
+impl crate::model::chat::cache::Presentation for PreparedTranscript {
+    fn approximate_bytes(&self) -> usize {
+        self.ui.approximate_bytes() + self.list.item_count() * 256
+    }
+}
+
+impl TranscriptUi {
+    fn approximate_bytes(&self) -> usize {
+        // Parsed Markdown keeps source, tree nodes, styles and shaped text.
+        // Decoded images and in-flight media are retired before cache admission.
+        self.markdown
+            .values()
+            .map(|entry| entry.source.capacity() * 16 + 1024)
+            .sum::<usize>()
+    }
+}
+
 impl AppView {
+    pub(super) fn switch_transcript(
+        &mut self,
+        key: String,
+        agent: Option<String>,
+        session_id: Option<&str>,
+    ) {
+        self.reset_transcript_media();
+        self.transcript_state.images.clear();
+        let fresh_list = ListState::new(
+            0,
+            ListAlignment::Top,
+            super::theme::tokens::shell::TRANSCRIPT_OVERSCAN,
+        );
+        fresh_list.set_follow_mode(FollowMode::Tail);
+        let presentation = PreparedTranscript {
+            ui: std::mem::take(&mut self.transcript_state),
+            list: std::mem::replace(&mut self.transcript_list, fresh_list),
+        };
+        if let Some(restored) = self.chat.switch(key, agent, session_id, presentation) {
+            self.transcript_state = restored.ui;
+            self.transcript_list = restored.list;
+        }
+        self.transcript_state.owner = self.chat.scope();
+        self.sync_transcript();
+        log::debug!(
+            "session switch cached={} messages={} retained={} approximate_bytes={}",
+            self.chat.loaded,
+            self.chat.messages.len(),
+            self.chat.cached_count(),
+            self.chat.cached_bytes()
+        );
+    }
     pub(super) fn load_history(&mut self, cx: &mut Context<Self>) {
         self.load_history_page(false, cx);
     }
@@ -52,11 +107,17 @@ impl AppView {
         let params = HistoryParams {
             session_key: request.scope.session_key.clone(),
             agent_id: request.scope.agent_id.clone(),
-            limit: 100,
+            limit: if request.rebase_offset { 1 } else { 100 },
             offset: request.offset,
+            cursor: request.cursor.clone(),
+            max_bytes: 256 * 1024,
         };
         self.request(
-            "chat.history",
+            if request.startup {
+                "chat.startup"
+            } else {
+                "chat.history"
+            },
             serde_json::to_value(params).expect("history parameters"),
             cx,
             move |this, result, cx| {
@@ -68,6 +129,14 @@ impl AppView {
                     Err(error) => this.chat.history_failed(&request, error),
                 };
                 if changed {
+                    if this.chat.needs_history_replacement() {
+                        this.load_history(cx);
+                        return;
+                    }
+                    if request.rebase_offset && this.chat.history_error.is_none() {
+                        this.load_earlier(cx);
+                        return;
+                    }
                     if this.chat.history_error.is_none() {
                         log::debug!(
                             "history loaded messages={} offset={} has_more={}",
@@ -92,10 +161,84 @@ impl AppView {
                     this.composer_history_loaded(cx);
                     this.refresh_composer_commands(commands_scope, cx);
                     this.reveal_search_target(cx);
+                    if !older && this.chat.history_error.is_none() {
+                        this.prefetch_sessions(cx);
+                    }
                     cx.notify();
                 }
             },
         );
+    }
+    fn prefetch_sessions(&mut self, cx: &mut Context<Self>) {
+        // Like the web: at most two inactive conversations, serialized behind
+        // the presented transcript. Never let warming evict a hotter session.
+        let candidates: Vec<_> = self
+            .rows
+            .iter()
+            .filter(|row| !row.running())
+            .filter_map(|row| {
+                self.chat
+                    .prefetch(row.key.clone(), row.agent().map(str::to_owned))
+            })
+            .take(2)
+            .collect();
+        self.prefetch_next(candidates.into_iter(), cx);
+    }
+    fn prefetch_next(
+        &mut self,
+        mut candidates: std::vec::IntoIter<(
+            u64,
+            crate::model::chat::ChatState,
+            crate::model::chat::HistoryRequest,
+        )>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((generation, mut state, request)) = candidates.next() else {
+            return;
+        };
+        if !self.chat.prefetch_is_current(generation) {
+            return;
+        }
+        let params = HistoryParams {
+            session_key: request.scope.session_key.clone(),
+            agent_id: request.scope.agent_id.clone(),
+            limit: 20,
+            offset: None,
+            cursor: None,
+            max_bytes: 64 * 1024,
+        };
+        self.request(
+            "chat.history",
+            serde_json::to_value(params).expect("prefetch parameters"),
+            cx,
+            move |this, result, cx| {
+                if let Ok(payload) = result
+                    && state.apply_history(&request, &payload)
+                {
+                    this.chat.finish_prefetch(generation, state);
+                }
+                this.prefetch_next(candidates, cx);
+            },
+        );
+    }
+    pub(super) fn record_transcript_frame(&mut self, window: &mut Window) {
+        if !log::log_enabled!(target: "openclaw_gpui::session_cache", log::Level::Debug) {
+            return;
+        }
+        let Some((started, cached, frames)) = self.transcript_state.switch_timing.as_mut() else {
+            return;
+        };
+        *frames += 1;
+        let (started, cached, frame) = (*started, *cached, *frames);
+        let messages = self.chat.messages.len();
+        let loaded = self.chat.loaded;
+        let loading = self.chat.loading;
+        window.on_next_frame(move |_, _| {
+            log::debug!(target: "openclaw_gpui::session_cache", "paint cached={cached} frame={frame} loaded={loaded} loading={loading} messages={messages} elapsed_us={}", started.elapsed().as_micros());
+        });
+        if loaded {
+            self.transcript_state.switch_timing = None;
+        }
     }
     pub(super) fn reveal_search_target(&mut self, cx: &mut Context<Self>) {
         let Some(target) = self.sidebar_state.search_target.clone() else {
@@ -148,6 +291,8 @@ impl AppView {
         };
         self.transcript_list
             .remeasure_items(changed.min(count)..count);
+        self.chat
+            .bound_memory(self.transcript_state.approximate_bytes() + count * 256);
     }
     pub(super) fn install_transcript_scroll(&mut self, cx: &mut Context<Self>) {
         if self.transcript_state.scroll_installed {

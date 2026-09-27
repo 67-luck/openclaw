@@ -5,7 +5,6 @@ use crate::{
         connection::{self, ConnectionEvent},
         router::{RoutedEvent, Router},
     },
-    model::chat::ChatState,
     ui::{
         attention_state::AttentionUi, sidebar_state::SidebarState, transcript_state::TranscriptUi,
     },
@@ -95,6 +94,11 @@ impl AppView {
         if self.connection_stage == ConnectionStage::SigningOut {
             return;
         }
+        let credentials_changed = self
+            .web
+            .auth
+            .as_ref()
+            .is_some_and(|auth| auth.token != config.token || auth.password != config.password);
         self.web.retire_control();
         let selection = (self.composer_state.drafts.gateway() == Some(config.url.as_str()))
             .then(|| self.chat.scope())
@@ -107,11 +111,27 @@ impl AppView {
         self.attention_state = AttentionUi::default();
         self.session = None;
         self.rows.clear();
-        self.chat = ChatState::default();
-        if let Some(scope) = selection {
+        let profile = self
+            .profile
+            .as_ref()
+            .map(|profile| {
+                serde_json::to_string(&(&profile.id, &profile.kind)).expect("Gateway profile scope")
+            })
+            .unwrap_or_else(|| config.url.clone());
+        let changed = self.chat.set_profile(profile) || credentials_changed;
+        if credentials_changed {
+            self.chat.clear();
+        }
+        self.chat.reconnect();
+        if changed && let Some(scope) = selection {
             self.chat.select_context(scope.session_key, scope.agent_id);
         }
-        self.transcript_list.reset(0);
+        if changed {
+            self.transcript_state = TranscriptUi::default();
+            self.transcript_list.reset(0);
+        } else {
+            self.transcript_state.owner = self.chat.scope();
+        }
         self.sidebar_state.selected_descriptor = None;
         self.sidebar_state.search_rows.clear();
         self.sidebar_state.search_hits.clear();
@@ -225,6 +245,8 @@ impl AppView {
                 self.browser_open_requested = false;
                 self.connection_message = Some(message);
                 self.router.disconnected(self.epoch);
+                self.chat.reconnect();
+                self.transcript_state.owner = self.chat.scope();
                 self.chat.manual_compaction = None;
                 self.sync_transcript();
                 self.sidebar_state.reconnect_at = retry_after.map(|delay| Instant::now() + delay);
@@ -257,6 +279,11 @@ impl AppView {
                 self.sidebar_state.reconnect_at = None;
                 self.connection_message = None;
                 self.router.connected(self.epoch, session.hello());
+                let authority = json!({"role":session.hello().pointer("/auth/role"), "scopes":session.hello().pointer("/auth/scopes")});
+                if self.chat.set_authority(authority) {
+                    self.transcript_state = TranscriptUi::default();
+                    self.transcript_list.reset(0);
+                }
                 if self.chat.selected_session.is_none() {
                     let key = session
                         .hello()
@@ -311,6 +338,11 @@ impl AppView {
                 self.sidebar_connected(cx);
             }
             ConnectionEvent::Event(event) => {
+                if self.chat.observe_event(&event.event, &event.payload) {
+                    self.transcript_list.reset(0);
+                    self.sync_transcript();
+                    self.load_history(cx);
+                }
                 self.sidebar_state.activity.handle_event(
                     &event.event,
                     &event.payload,
@@ -398,7 +430,7 @@ impl AppView {
         self.rows.clear();
         self.roster_loading = false;
         self.roster_error = None;
-        self.chat = ChatState::default();
+        self.chat.clear();
         self.router = Router::default();
         self.router.disconnected(self.epoch);
         self.attention_state = AttentionUi::default();
@@ -510,7 +542,7 @@ impl AppView {
         cx.notify();
     }
 
-    fn clear_account_composer(&mut self) {
+    pub(in crate::ui) fn clear_account_composer(&mut self) {
         let gateway = self.composer_state.drafts.gateway().map(str::to_owned);
         self.composer_state.drafts = Default::default();
         if let Some(gateway) = gateway {

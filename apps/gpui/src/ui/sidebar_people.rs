@@ -42,6 +42,19 @@ impl AppView {
         self.request("users.self", json!({}), cx, |this, result, cx| {
             if let Ok(profile) = result {
                 this.sidebar_state.people.apply_self_profile(&profile);
+                if let Some(identity) = this
+                    .sidebar_state
+                    .people
+                    .self_user
+                    .as_ref()
+                    .map(|person| person.key())
+                    && this.chat.set_identity(identity)
+                {
+                    this.clear_account_composer();
+                    this.transcript_list.reset(0);
+                    this.sync_transcript();
+                    this.queue_session_selection(this.agent_home());
+                }
                 this.refresh_sidebar_avatars(cx);
             }
         });
