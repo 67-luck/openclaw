@@ -37,8 +37,8 @@ import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-clie
 import type { GatewayHostLifecycle, GatewayServer } from "./server-public.js";
 import { createMaintenanceHandles } from "./server-runtime-services.test-harness.js";
 import { expectCoreAgentDatabaseReadiness } from "./server-startup-readiness.test-support.js";
-import { withPreparedSessionEventRow } from "./session-event-prepared-row.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
+import { withPreparedSessionEventRow } from "./session-row-publication-work.js";
 
 const KERNEL_TEST_ENV = {
   OPENCLAW_GATEWAY_PASSWORD: undefined,
@@ -268,8 +268,8 @@ describe("createGatewayKernel", () => {
           publish,
         );
         await publicationStarted.promise;
-        const drainPublications = kernel.shutdownRuntime.drainSessionEventPublications;
-        vi.spyOn(kernel.shutdownRuntime, "drainSessionEventPublications").mockImplementation(
+        const drainPublications = kernel.shutdownRuntime.drainSessionRowPublications;
+        vi.spyOn(kernel.shutdownRuntime, "drainSessionRowPublications").mockImplementation(
           async (owner) => {
             const draining = drainPublications(owner);
             publicationDrainEntered.resolve();

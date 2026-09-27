@@ -3,8 +3,8 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { GatewayBroadcastFn } from "./server-broadcast-types.js";
 import { broadcastSessionActivitySummary } from "./session-activity-summary-events.js";
-import { drainSessionEventPublications } from "./session-event-prepared-row.js";
 import { createSessionRowProjectionFixture } from "./session-row-projection.test-support.js";
+import { drainSessionRowPublications } from "./session-row-publication-work.js";
 
 function summaryFixture() {
   vi.useFakeTimers();
@@ -61,7 +61,7 @@ function summaryFixture() {
     ready.resolve();
     await vi.runAllTimersAsync();
     await Promise.allSettled(publications);
-    await drainSessionEventPublications(projection);
+    await drainSessionRowPublications(projection);
     projection.dispose();
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -73,7 +73,7 @@ it("joins a recap admitted before its deferred preparation starts", async () => 
   const f = summaryFixture();
   const publication = f.publish();
   let drained = false;
-  const drain = drainSessionEventPublications(f.projection).then(() => {
+  const drain = drainSessionRowPublications(f.projection).then(() => {
     drained = true;
   });
   await f.entered.promise;

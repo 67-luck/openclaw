@@ -5,15 +5,15 @@ import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js"
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createLifecycleEventBroadcastHandler } from "./server-session-events.js";
-import {
-  drainSessionEventPublications,
-  sessionEventPublicationRows,
-  withPreparedSessionEventRow,
-} from "./session-event-prepared-row.js";
+import { withPreparedSessionEventRow } from "./session-event-prepared-row.js";
 import { retainSessionListForegroundWork } from "./session-projection-work.js";
 import { withPreparedSessionRows } from "./session-row-prepared-read.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 import { createSessionRowProjectionFixture } from "./session-row-projection.test-support.js";
+import {
+  drainSessionRowPublications,
+  sessionRowPublicationRows,
+} from "./session-row-publication-work.js";
 
 it.each([0, 7])(
   "lets I/O progress through a ready burst (publication cost %i ms)",
@@ -66,7 +66,7 @@ it.each([0, 7])(
       held.resolve();
       await vi.runAllTimersAsync();
       await settled;
-      await drainSessionEventPublications(projection);
+      await drainSessionRowPublications(projection);
       expect(published).toEqual([...keys.slice(1), keys[0]]);
       expect(preparations).toBeLessThanOrEqual(keys.length * 2);
     } finally {
@@ -114,7 +114,7 @@ it.each(["replacement", "reset"])(
     onTestFinished(async () => {
       await vi.runAllTimersAsync();
       await Promise.allSettled(publications);
-      await drainSessionEventPublications(projection);
+      await drainSessionRowPublications(projection);
       projection.dispose();
       vi.restoreAllMocks();
       vi.useRealTimers();
@@ -141,11 +141,11 @@ it("retains canonical deferral and rejects asynchronous prepared consumers", asy
     database,
   });
   onTestFinished(async () => {
-    await drainSessionEventPublications(projection);
+    await drainSessionRowPublications(projection);
     projection.dispose();
     vi.restoreAllMocks();
   });
-  const rows = sessionEventPublicationRows(projection);
+  const rows = sessionRowPublicationRows(projection);
   const publish = vi.fn();
   await expect(rows.withPreparedExactRows(() => [], publish)).resolves.toEqual({
     kind: "pending",

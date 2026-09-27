@@ -7,16 +7,16 @@ import { bumpGatewayAccessRevision } from "../gateway-access-revision.js";
 import { hasSessionChangeReceivers } from "../session-change-receivers.js";
 import { buildGatewaySessionSnapshot } from "../session-event-payload.js";
 import {
-  drainSessionEventPublications,
-  sessionEventPublicationRows,
-} from "../session-event-prepared-row.js";
-import {
   resolvePrivateSessionEventBroadcastScope,
   resolveSessionEventAgentScope,
   type SessionEventAgentScope,
 } from "../session-request-agent.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
 import type { SessionRowProjection } from "../session-row-projection.js";
+import {
+  drainSessionRowPublications,
+  sessionRowPublicationRows,
+} from "../session-row-publication-work.js";
 import { invalidateSessionSharingSnapshot } from "../session-sharing.js";
 import { resolveSessionStoreKey } from "../session-store-key.js";
 import { resolveVisibleActiveSessionRunState } from "./session-active-runs.js";
@@ -284,7 +284,7 @@ async function publishSessionChange(context: SessionChangeContext, change: Sessi
     if (change.captureFailed) {
       broadcast(false);
     } else if (query && projection) {
-      const prepared = await sessionEventPublicationRows(projection).withPreparedExactRows(
+      const prepared = await sessionRowPublicationRows(projection).withPreparedExactRows(
         () => [query],
         () => {
           broadcast(!captured || projection.isCurrent(captured));
@@ -383,7 +383,7 @@ export async function flushPendingSessionsChangedEvents(context?: object): Promi
     const projections = new Set(
       pending.flatMap((entry) => getSessionRowProjection(entry.context) ?? []),
     );
-    await Promise.all([...projections].map(drainSessionEventPublications));
+    await Promise.all([...projections].map(drainSessionRowPublications));
   }
 }
 

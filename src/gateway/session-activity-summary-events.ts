@@ -1,8 +1,8 @@
 import type { GatewayBroadcastFn } from "./server-broadcast-types.js";
 import { buildGatewaySessionSnapshot } from "./session-event-payload.js";
-import { sessionEventPublicationRows } from "./session-event-prepared-row.js";
 import { identity, type Row } from "./session-row-projection-record.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
+import { sessionRowPublicationRows } from "./session-row-publication-work.js";
 
 type PendingSummary = { captured: Row; work: Promise<void> };
 const pendingSummaries = new WeakMap<SessionRowProjection, Map<string, PendingSummary>>();
@@ -46,7 +46,7 @@ export async function broadcastSessionActivitySummary(
     );
   };
   if (projection) {
-    const publications = sessionEventPublicationRows(projection);
+    const publications = sessionRowPublicationRows(projection);
     const work = publications.track(
       Promise.resolve().then(() =>
         publications.withReadyRows(() => [query], publish, { includeAncestors: true }),

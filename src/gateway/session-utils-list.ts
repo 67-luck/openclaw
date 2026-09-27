@@ -30,10 +30,10 @@ import {
 } from "./session-list-filters.js";
 import { sortAndLimitSessionEntries, type SessionEntryPair } from "./session-list-order.js";
 import { bindSessionListRowRead } from "./session-list-read-result.js";
-import { withReadySessionRows } from "./session-row-prepared-read.js";
 import { prepareProjectedSessionPresentation } from "./session-row-presentation.js";
 import type { Query as SessionRowQuery } from "./session-row-projection-record.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
+import { sessionRowPublicationRows } from "./session-row-publication-work.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
 import { getSessionDefaults } from "./session-utils-model.js";
 import type { GatewaySessionRow, SessionsListResult } from "./session-utils.types.js";
@@ -508,8 +508,7 @@ export async function listProjectedSessions(params: {
     }
   };
   let page: ReturnType<typeof selectPage>;
-  return withReadySessionRows(
-    projection,
+  return sessionRowPublicationRows(projection).withReadyRows(
     () => {
       page = selectPage();
       return page.selection.entries.flatMap(([key]) => {

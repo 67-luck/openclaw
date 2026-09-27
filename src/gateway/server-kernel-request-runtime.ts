@@ -87,7 +87,7 @@ export async function prepareGatewayKernelRequestRuntime(params: {
       const projection = await projectionReady.catch(() => undefined);
       await shutdownRuntime.flushPendingSessionsChangedEvents(gatewayRequestContext);
       if (projection) {
-        await shutdownRuntime.drainSessionEventPublications(projection);
+        await shutdownRuntime.drainSessionRowPublications(projection);
       }
       projectionLifetime.detach?.();
       projection?.dispose();

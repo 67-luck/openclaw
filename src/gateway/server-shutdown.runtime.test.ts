@@ -30,10 +30,10 @@ vi.mock("./server-methods/session-change-event.js", () => {
   state.loaded.push("session-change-events");
   return { flushPendingSessionsChangedEvents: state.flushSessionChanges };
 });
-vi.mock("./session-event-prepared-row.js", () => {
+vi.mock("./session-row-publication-work.js", () => {
   state.loaded.push("session-event-publications");
   return {
-    get drainSessionEventPublications() {
+    get drainSessionRowPublications() {
       if (!state.artifactsAvailable) {
         throw new Error("installed session-event-prepared-row chunk was removed");
       }
@@ -128,7 +128,7 @@ describe("gateway shutdown runtime", () => {
     expect(state.drainSessionPublications).not.toHaveBeenCalled();
     state.artifactsAvailable = false;
     try {
-      expect(runtime.drainSessionEventPublications).toBe(state.drainSessionPublications);
+      expect(runtime.drainSessionRowPublications).toBe(state.drainSessionPublications);
       await runtime.waitForPluginCacheRetirement();
       expect(state.waitForPluginCacheRetirement).toHaveBeenCalledOnce();
     } finally {
