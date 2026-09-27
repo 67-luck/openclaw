@@ -30,6 +30,10 @@ import {
   finishUpdateRun,
   recordUpdateRunStep,
 } from "../../infra/update-run-ledger.js";
+import {
+  CommandProcessCleanupError,
+  hasCommandProcessCleanupError,
+} from "../../process/exec-result.js";
 import * as childCommands from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../../state/openclaw-agent-db-contract.js";
@@ -369,15 +373,20 @@ it.each<{
         },
         [],
       );
+    let continuedResult: Awaited<ReturnType<typeof continueUpdate>> | undefined;
+    const operation = withUpdateCommandTerminalResult(
+      async (registerRun) => {
+        registerRun(run);
+        continuedResult = await continueUpdate();
+        if (continuedResult.preparedFailure) {
+          throw continuedResult.preparedFailure;
+        }
+        return continuedResult;
+      },
+      { json: true, onResult },
+    );
+    const settled = await operation.catch((error: unknown) => error);
     if (completion) {
-      const operation = withUpdateCommandTerminalResult(
-        (registerRun) => {
-          registerRun(run);
-          return continueUpdate();
-        },
-        { json: true, onResult },
-      );
-      const settled = await operation.catch((error: unknown) => error);
       expect.soft(stdoutAtCompletion).toBe(0);
       expect.soft(observedAtCompletion).toBe(0);
       expect.soft(readCandidateRow()).toEqual(candidateRow);
@@ -401,8 +410,13 @@ it.each<{
       }
       return;
     }
-    const outcome = await continueUpdate();
-
+    if (exitCode !== 0 && !handback) {
+      expect(settled).toBeInstanceOf(UpdateCommandFailure);
+      expect(settled).not.toBeInstanceOf(UpdateCommandPendingRecoveryFailure);
+    } else {
+      expect(settled).toBe(continuedResult);
+    }
+    const outcome = continuedResult!;
     expect(outcome).toMatchObject({
       exitCode,
       result: { status },
@@ -529,6 +543,9 @@ it.each([
   { json: true, legacy: false, parentOwns: true, settlement: "package" },
   { json: true, legacy: false, parentOwns: true, settlement: "scratch" },
   { json: true, legacy: false, parentOwns: true, settlement: "release" },
+  { json: true, legacy: false, parentOwns: true, settlement: "no-owner" },
+  { json: true, legacy: false, parentOwns: true, settlement: "swallowed" },
+  { json: true, legacy: false, parentOwns: true, settlement: "uncertain-cleanup" },
 ])(
   "fences migrated candidate finalization (json=$json, legacy=$legacy, parentOwns=$parentOwns, foreground=$foreground, retained=$retained, original=$original, check=$checkWorkMs, budget=$stepBudgetMs, settlement=$settlement)",
   async ({
@@ -709,6 +726,7 @@ it.each([
           : child;
       },
     );
+    const uncertainCleanup = new CommandProcessCleanupError();
     const execute = (
       registerRun?: Parameters<Parameters<typeof withUpdateCommandTerminalResult>[0]>[0],
     ) =>
@@ -740,7 +758,9 @@ it.each([
         };
         const executorFence = await executor.enter(root, { serviceRoot });
         const scopedRun = { ...run, executorFence };
-        registerRun?.(scopedRun);
+        if (settlement !== "no-owner") {
+          registerRun?.(scopedRun);
+        }
         const continued = await continueMigratedUpdateInFreshProcess(
           {
             mutationStarted: true,
@@ -851,21 +871,30 @@ it.each([
             leases.close();
           }
         }
-        if (settlement && continued.exitCode !== 0) {
-          throw new UpdateCommandFailure(continued.result, continued.exitCode, undefined, {
-            automaticTriage: continued.automaticTriage,
-          });
+        if (settlement === "uncertain-cleanup") {
+          throw uncertainCleanup;
+        }
+        if (continued.preparedFailure && settlement !== "swallowed") {
+          throw continued.preparedFailure;
         }
         return continued;
       });
-    const work = settlement
-      ? withUpdateCommandTerminalResult(execute, { json, onResult })
-      : execute();
+    const refusesBeforeHandoff =
+      legacy ||
+      (checkWorkMs !== undefined && stepBudgetMs !== undefined && stepBudgetMs < checkWorkMs);
+    const work = refusesBeforeHandoff
+      ? execute()
+      : withUpdateCommandTerminalResult(execute, { json, onResult });
     void runtimeFixture.track(work);
     if (settlement) {
       const failure = await work.catch((error: unknown) => error);
-      expect.soft(stdoutAtCleanup).toBe("");
-      if (settlement === "healthy" || settlement === "release") {
+      expect.soft(stdoutAtCleanup).toBe(settlement === "no-owner" ? undefined : "");
+      if (
+        settlement === "healthy" ||
+        settlement === "release" ||
+        settlement === "swallowed" ||
+        settlement === "uncertain-cleanup"
+      ) {
         expect.soft(stdoutAtExecutorSettlement).toBe("");
       }
       expect.soft(oldRuntimeOpens).toEqual([]);
@@ -874,7 +903,15 @@ it.each([
         .soft(terminalFromCandidate)
         .toMatchObject({ status: "failed", reason: "state-migrated-no-rollback" });
       if (settlement !== "healthy") {
-        expect.soft(failure).toBeInstanceOf(UpdateCommandPendingRecoveryFailure);
+        if (settlement === "uncertain-cleanup") {
+          expect.soft(hasCommandProcessCleanupError(failure)).toBe(true);
+          if (!(failure instanceof Error)) {
+            throw new Error("Expected the executor's cleanup failure wrapper.");
+          }
+          expect.soft(failure.cause).toBe(uncertainCleanup);
+        } else {
+          expect.soft(failure).toBeInstanceOf(UpdateCommandPendingRecoveryFailure);
+        }
         expect.soft(stdout).toBe("");
         expect.soft(onResult).not.toHaveBeenCalled();
         expect(rollback).not.toHaveBeenCalled();
@@ -899,7 +936,10 @@ it.each([
       expect(terminalAtCleanup).toBeUndefined();
       return;
     }
-    const result = settlement ? settledResult! : await work;
+    if (!settlement) {
+      await expect(work).rejects.toBeInstanceOf(UpdateCommandFailure);
+    }
+    const result = settledResult!;
     expect(result.candidateStartAttempted).toBe(false);
     expect(result.automaticTriage).toMatchObject({
       kind: "update",

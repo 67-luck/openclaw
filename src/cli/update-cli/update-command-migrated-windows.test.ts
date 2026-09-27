@@ -21,7 +21,10 @@ import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.pa
 import { withEnvAsync } from "../../test-utils/env.js";
 import type { MigratedUpdateFinalizationInput } from "./update-command-migrated-types.js";
 import { continueMigratedUpdateInFreshProcess } from "./update-command-migrated.js";
-import { UpdateCommandPendingRecoveryFailure } from "./update-command-result.js";
+import {
+  UpdateCommandFailure,
+  UpdateCommandPendingRecoveryFailure,
+} from "./update-command-result.js";
 import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service-maintenance.js";
 import { withUpdateCommandTerminalResult } from "./update-command-terminal.js";
 
@@ -308,19 +311,33 @@ it.each([
           },
           [],
         );
-      const operation =
-        outcome === "terminal compensation refusal"
-          ? withUpdateCommandTerminalResult(
-              (registerRun) => {
-                registerRun(run);
-                return continueUpdate();
-              },
-              { json: true, onResult },
-            )
-          : continueUpdate();
+      const refusesBeforeReceipt =
+        outcome === "launch failure" ||
+        outcome === "replaced task" ||
+        outcome === "changed protected task";
+      const operation = refusesBeforeReceipt
+        ? continueUpdate()
+        : withUpdateCommandTerminalResult(
+            async (registerRun) => {
+              registerRun(run);
+              const continued = await continueUpdate();
+              if (continued.preparedFailure) {
+                throw continued.preparedFailure;
+              }
+              return continued;
+            },
+            { json: true, onResult },
+          );
       try {
         if (outcome === "terminal compensation refusal") {
-          await expect(operation).rejects.toBeInstanceOf(UpdateCommandPendingRecoveryFailure);
+          const failure = await operation.catch((error: unknown) => error);
+          expect(terminalFromCandidate).toMatchObject({
+            status: "failed",
+            phase: "finished",
+            reason: "plugin-convergence-failed",
+            finished_at_ms: expect.any(Number),
+          });
+          expect(failure).toBeInstanceOf(UpdateCommandPendingRecoveryFailure);
           expect(stdout).not.toHaveBeenCalled();
           expect(onResult).not.toHaveBeenCalled();
           expect(inspectTerminal()).toEqual(terminalFromCandidate);
@@ -335,7 +352,11 @@ it.each([
             result: { status: "ok", postUpdate: { plugins: { status: "warning" } } },
           });
         } else {
-          await expect(operation).resolves.toMatchObject({ exitCode: 1 });
+          await expect(operation).rejects.toMatchObject({
+            result: expect.objectContaining({ status: "error" }),
+            exitCode: 1,
+          });
+          await expect(operation).rejects.toBeInstanceOf(UpdateCommandFailure);
         }
         expect(enabledAtWorkerStart).toBe(false);
         const replaced =
