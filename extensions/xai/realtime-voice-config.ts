@@ -1,8 +1,3 @@
-import { resolveAgentDir } from "openclaw/plugin-sdk/agent-scope-runtime";
-import {
-  isProviderAuthProfileConfigured,
-  type OpenClawConfig,
-} from "openclaw/plugin-sdk/provider-auth";
 import type {
   OpenAICompatibleRealtimeAudioFormat,
   RealtimeVoiceBridgeCreateRequest,
@@ -34,18 +29,11 @@ type XaiRealtimeVoiceProviderConfig = {
   sessionResumption?: boolean;
 };
 
-export type XaiRealtimeVoiceBridgeConfig = RealtimeVoiceBridgeCreateRequest & {
-  apiKey?: string;
-  baseUrl: string;
-  model?: string;
-  voice?: string;
-  vadThreshold?: number;
-  silenceDurationMs?: number;
-  prefixPaddingMs?: number;
-  reasoningEffort?: XaiRealtimeReasoningEffort;
-  sessionResumption?: boolean;
-  resolveApiKey?: () => Promise<string>;
-};
+export type XaiRealtimeVoiceBridgeConfig = RealtimeVoiceBridgeCreateRequest &
+  Omit<XaiRealtimeVoiceProviderConfig, "interruptResponseOnInputAudio"> & {
+    baseUrl: string;
+    resolveApiKey?: () => Promise<string>;
+  };
 
 type XaiRealtimeResponseItem = {
   id?: string;
@@ -230,19 +218,4 @@ export function toXaiRealtimeWsUrl(
     url.searchParams.set("conversation_id", conversationId);
   }
   return url.toString();
-}
-
-export function hasXaiRealtimeApiKeyInput(
-  configApiKey: string | undefined,
-  cfg: OpenClawConfig | undefined,
-  agentId?: string,
-): boolean {
-  if (normalizeOptionalString(configApiKey) || normalizeOptionalString(process.env.XAI_API_KEY)) {
-    return true;
-  }
-  return isProviderAuthProfileConfigured({
-    provider: "xai",
-    cfg,
-    ...(cfg && agentId ? { agentDir: resolveAgentDir(cfg, agentId) } : {}),
-  });
 }

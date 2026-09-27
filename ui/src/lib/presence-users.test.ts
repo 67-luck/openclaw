@@ -1,10 +1,31 @@
 import { expect, it } from "vitest";
 import {
   hasSessionPresenceViewers,
+  presenceUserLabel,
+  presenceViewerActivity,
   projectOnlinePresenceViewers,
   projectPresencePayload,
   projectPresenceViewers,
 } from "./presence-users.ts";
+
+it.each([
+  [{ id: "gateway-owner" }, { name: "Shared owner", isSharedOwner: true }],
+  [
+    { id: "gateway-owner", name: "Saved owner name" },
+    { name: "Shared owner", isSharedOwner: true },
+  ],
+  [
+    { id: "person", name: "Example person", email: "person@example.test" },
+    { name: "Example person", isSharedOwner: false },
+  ],
+  [
+    { id: "person", email: "person@example.test" },
+    { name: "person@example.test", isSharedOwner: false },
+  ],
+  [{ id: "person" }, { name: "person", isSharedOwner: false }],
+])("labels presence without presenting the shared identity as a person: %j", (user, expected) => {
+  expect(presenceUserLabel(user)).toEqual(expected);
+});
 
 it("isolates namespaces while merging renamed tabs and excluding disconnected facts", () => {
   const id = "synthetic-shared-id";
@@ -124,4 +145,39 @@ it.each([
   expect(viewers.map((user) => user.identity)).toEqual(
     identity?.type === "profile" ? [undefined] : [payload.presence[0]!.user.identity, undefined],
   );
+});
+
+it("ages person interaction independently of connection beacons and native input recency", () => {
+  const now = 1_000_000;
+  const viewer = (entries: Parameters<typeof presenceViewerActivity>[0]["entries"]) => ({
+    id: "person",
+    watchedSessions: [],
+    entries,
+  });
+  expect(presenceViewerActivity(viewer([{ ts: now, lastInputSeconds: 0 }]), now)).toBe("unknown");
+  expect(presenceViewerActivity(viewer([{ ts: now, lastActivityAt: now - 120_000 }]), now)).toBe(
+    "idle",
+  );
+  expect(presenceViewerActivity(viewer([{ ts: now, lastActivityAt: now - 119_999 }]), now)).toBe(
+    "active",
+  );
+  expect(
+    presenceViewerActivity(
+      viewer([
+        { ts: now, lastActivityAt: now - 600_000 },
+        { ts: now, lastActivityAt: now - 5_000 },
+        { ts: now },
+      ]),
+      now,
+    ),
+  ).toBe("active");
+  expect(
+    presenceViewerActivity(
+      viewer([
+        { ts: now, lastActivityAt: now - 600_000 },
+        { ts: now, lastActivityAt: now, reason: "disconnect" },
+      ]),
+      now,
+    ),
+  ).toBe("idle");
 });

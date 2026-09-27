@@ -7,16 +7,16 @@ import {
   sendGatewayCronWebhook,
 } from "../gateway/server-cron-notifications.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
-import { resetTaskRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { runCronCommandJob } from "./command-runner.js";
 import { resolveCronDeliveryPreviews } from "./delivery-preview.js";
+import { readCronRunHistoryPageForTests } from "./run-history.test-support.js";
 import { CronService } from "./service.js";
 import { createNoopLogger } from "./service.test-harness.js";
 import type { CronServiceDeps } from "./service/state.js";
 import { loadCronStore } from "./store.js";
 import { cronStoreKey } from "./store/key.js";
-import { readCronTaskRunHistoryPage } from "./task-run-history.js";
 
 type WebhookRequest = {
   body: Record<string, unknown>;
@@ -75,7 +75,7 @@ function commandRunner(): NonNullable<CronServiceDeps["runCommandJob"]> {
 }
 
 function historyEntry(storePath: string, jobId: string) {
-  const history = readCronTaskRunHistoryPage({
+  const history = readCronRunHistoryPageForTests({
     storeKey: cronStoreKey(storePath),
     jobId,
     limit: 1,
@@ -88,16 +88,17 @@ async function persistedJob(storePath: string, jobId: string) {
   return (await loadCronStore(storePath)).jobs.find((job) => job.id === jobId);
 }
 
-describe.sequential("cron delivery outcomes", () => {
+describe("cron delivery outcomes", { concurrent: false }, () => {
   it("delivers a command result through the guarded webhook boundary and persists it", async () => {
     const receiver = await createWebhookReceiver();
     try {
       await withOpenClawTestState(
         { layout: "state-only", prefix: "openclaw-cron-webhook-delivery-" },
         async (state) => {
-          resetTaskRegistryForTests({ persist: false });
           const storePath = state.path("cron", "jobs.json");
           const cron = new CronService({
+            scheduler: createTestGatewayScheduler(),
+            nowMs: () => Date.now(),
             storePath,
             cronEnabled: true,
             log: createNoopLogger(),
@@ -176,7 +177,6 @@ describe.sequential("cron delivery outcomes", () => {
             expect(receiver.requests[1]?.body).toMatchObject({ status: "error" });
           } finally {
             cron.stop();
-            resetTaskRegistryForTests({ persist: false });
           }
         },
       );
@@ -191,9 +191,10 @@ describe.sequential("cron delivery outcomes", () => {
       await withOpenClawTestState(
         { layout: "state-only", prefix: "openclaw-cron-failure-destination-" },
         async (state) => {
-          resetTaskRegistryForTests({ persist: false });
           const storePath = state.path("cron", "jobs.json");
           const cron = new CronService({
+            scheduler: createTestGatewayScheduler(),
+            nowMs: () => Date.now(),
             storePath,
             cronEnabled: true,
             log: createNoopLogger(),
@@ -284,7 +285,7 @@ describe.sequential("cron delivery outcomes", () => {
                 lastFailureNotificationDeliveryStatus: "not-requested",
               },
             });
-            const history = readCronTaskRunHistoryPage({
+            const history = readCronRunHistoryPageForTests({
               storeKey: cronStoreKey(storePath),
               jobId: job.id,
               limit: 25,
@@ -303,7 +304,6 @@ describe.sequential("cron delivery outcomes", () => {
             ).toHaveLength(1);
           } finally {
             cron.stop();
-            resetTaskRegistryForTests({ persist: false });
           }
         },
       );
@@ -318,22 +318,23 @@ describe.sequential("cron delivery outcomes", () => {
       await withOpenClawTestState(
         { layout: "state-only", prefix: "openclaw-cron-completion-failure-" },
         async (state) => {
-          resetTaskRegistryForTests({ persist: false });
           const storePath = state.path("cron", "jobs.json");
           let now = Date.now();
+          const runIsolatedAgentJob = vi.fn(async () => ({
+            status: "ok" as const,
+            delivered: false,
+            deliveryAttempted: true,
+            deliveryError: "primary route rejected",
+          }));
           const cron = new CronService({
+            scheduler: createTestGatewayScheduler(),
             storePath,
             cronEnabled: true,
             nowMs: () => now,
             log: createNoopLogger(),
             enqueueSystemEvent: vi.fn(),
             requestHeartbeat: vi.fn(),
-            runIsolatedAgentJob: vi.fn(async () => ({
-              status: "ok" as const,
-              delivered: false,
-              deliveryAttempted: true,
-              deliveryError: "primary route rejected",
-            })),
+            runIsolatedAgentJob,
             sendCronFailureAlert: async (params) =>
               await sendGatewayCronFailureAlert({
                 ...params,
@@ -388,7 +389,7 @@ describe.sequential("cron delivery outcomes", () => {
             await cron.run(job.id, "force");
             await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
             expect(receiver.requests).toHaveLength(1);
-            const history = readCronTaskRunHistoryPage({
+            const history = readCronRunHistoryPageForTests({
               storeKey: cronStoreKey(storePath),
               jobId: job.id,
               limit: 10,
@@ -407,6 +408,12 @@ describe.sequential("cron delivery outcomes", () => {
             ).toHaveLength(1);
 
             now += 3_540_000;
+            runIsolatedAgentJob.mockResolvedValue({
+              status: "ok",
+              delivered: false,
+              deliveryAttempted: true,
+              deliveryError: "primary target no longer exists",
+            });
             await cron.run(job.id, "force");
             await vi.waitFor(() => expect(receiver.requests).toHaveLength(2));
 
@@ -431,7 +438,6 @@ describe.sequential("cron delivery outcomes", () => {
             expect(receiver.requests).toHaveLength(2);
           } finally {
             cron.stop();
-            resetTaskRegistryForTests({ persist: false });
           }
         },
       );
@@ -448,6 +454,8 @@ describe.sequential("cron delivery outcomes", () => {
         const requestHeartbeat = vi.fn();
         const storePath = state.path("cron", "jobs.json");
         const cron = new CronService({
+          scheduler: createTestGatewayScheduler(),
+          nowMs: () => Date.now(),
           storePath,
           cronEnabled: true,
           log: createNoopLogger(),
@@ -524,9 +532,10 @@ describe.sequential("cron delivery outcomes", () => {
       await withOpenClawTestState(
         { layout: "state-only", prefix: "openclaw-cron-skipped-alert-" },
         async (state) => {
-          resetTaskRegistryForTests({ persist: false });
           const storePath = state.path("cron", "jobs.json");
           const cron = new CronService({
+            scheduler: createTestGatewayScheduler(),
+            nowMs: () => Date.now(),
             storePath,
             cronEnabled: true,
             cronConfig: {
@@ -594,7 +603,6 @@ describe.sequential("cron delivery outcomes", () => {
             });
           } finally {
             cron.stop();
-            resetTaskRegistryForTests({ persist: false });
           }
         },
       );
@@ -607,8 +615,9 @@ describe.sequential("cron delivery outcomes", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-cron-delivery-preview-" },
       async (state) => {
-        resetTaskRegistryForTests({ persist: false });
         const cron = new CronService({
+          scheduler: createTestGatewayScheduler(),
+          nowMs: () => Date.now(),
           storePath: state.path("cron", "jobs.json"),
           cronEnabled: true,
           log: createNoopLogger(),
@@ -652,7 +661,6 @@ describe.sequential("cron delivery outcomes", () => {
           });
         } finally {
           cron.stop();
-          resetTaskRegistryForTests({ persist: false });
         }
       },
     );

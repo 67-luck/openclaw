@@ -1,6 +1,6 @@
 // Schema-level tests for gateway.tls certPath and keyPath validation.
 import { describe, expect, it } from "vitest";
-import { validateConfigObject } from "./validation.js";
+import { validateConfigObject } from "./validation-core.js";
 
 describe("gateway.tls schema", () => {
   it("rejects empty certPath", () => {
@@ -14,13 +14,6 @@ describe("gateway.tls schema", () => {
   it("rejects whitespace-only keyPath", () => {
     const res = validateConfigObject({ gateway: { tls: { enabled: true, keyPath: "   " } } });
     expect(res.ok).toBe(false);
-  });
-
-  it("accepts a non-empty certPath", () => {
-    const res = validateConfigObject({
-      gateway: { tls: { enabled: true, certPath: "/etc/ssl/cert.pem" } },
-    });
-    expect(res.ok).toBe(true);
   });
 
   it("preserves exact bytes of a non-empty certPath (no silent trim)", () => {

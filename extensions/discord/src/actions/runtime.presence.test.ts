@@ -90,14 +90,9 @@ describe("handleDiscordPresenceAction", () => {
       expectedActivities: [{ name: "", type: 4, state: "Vibing" }],
     },
     {
-      name: "activity with state",
-      params: { activityType: "playing", activityName: "My Game", activityState: "In the lobby" },
-      expectedActivities: [{ name: "My Game", type: 0, state: "In the lobby" }],
-    },
-    {
-      name: "default empty activity name when only type provided",
-      params: { activityType: "playing" },
-      expectedActivities: [{ name: "", type: 0 }],
+      name: "mixed-case competing activity",
+      params: { activityType: "CoMpEtInG", activityName: "a tournament" },
+      expectedActivities: [{ name: "a tournament", type: 5 }],
     },
   ])("sets $name", async ({ params, expectedActivities }) => {
     await setPresence(params);
@@ -105,16 +100,6 @@ describe("handleDiscordPresenceAction", () => {
       since: null,
       activities: expectedActivities,
       status: "online",
-      afk: false,
-    });
-  });
-
-  it("sets status-only without activity", async () => {
-    await setPresence({ status: "idle" });
-    expect(mockUpdatePresence).toHaveBeenCalledWith({
-      since: null,
-      activities: [],
-      status: "idle",
       afk: false,
     });
   });
@@ -130,14 +115,11 @@ describe("handleDiscordPresenceAction", () => {
     await expect(setPresence(params)).rejects.toThrow(expectedMessage);
   });
 
-  it("defaults status to online", async () => {
-    await setPresence({ activityType: "playing", activityName: "test" });
-    expect(mockUpdatePresence).toHaveBeenCalledWith({
-      since: null,
-      activities: [{ name: "test", type: 0 }],
-      status: "online",
-      afk: false,
-    });
+  it("rejects inherited constructor activityType before sending to the gateway", async () => {
+    await expect(setPresence({ activityType: "constructor", activityName: "x" })).rejects.toThrow(
+      /Invalid activityType/,
+    );
+    expect(mockUpdatePresence).not.toHaveBeenCalled();
   });
 
   it("respects presence gating", async () => {

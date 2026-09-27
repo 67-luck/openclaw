@@ -12,6 +12,7 @@ import {
   type ManagedImageRecordDatabase,
 } from "../gateway/managed-image-record-store.js";
 import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
@@ -91,6 +92,7 @@ describe("legacy managed outgoing image migration", () => {
   });
 
   afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     await fsp.rm(stateDir, { recursive: true, force: true });
   });
@@ -105,8 +107,8 @@ describe("legacy managed outgoing image migration", () => {
       "Migrated 1 managed outgoing image record(s) → shared SQLite state",
     );
     await expect(fsp.access(legacy.sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(fsp.access(legacy.originalPath)).resolves.toBeUndefined();
-    expect(readManagedImageRecord(legacy.record.attachmentId, stateDir)).toEqual({
+    await fsp.access(legacy.originalPath);
+    expect(await readManagedImageRecord(legacy.record.attachmentId, stateDir)).toEqual({
       ...legacy.record,
       original: {
         ...legacy.record.original,
@@ -143,7 +145,7 @@ describe("legacy managed outgoing image migration", () => {
 
     expect(detected.hasLegacy).toBe(true);
     expect(result.warnings).toEqual([]);
-    expect(readManagedImageRecord(legacy.record.attachmentId, stateDir)).not.toBeNull();
+    expect(await readManagedImageRecord(legacy.record.attachmentId, stateDir)).not.toBeNull();
     await expect(fsp.access(legacy.sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fsp.access(claimPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -162,7 +164,7 @@ describe("legacy managed outgoing image migration", () => {
 
     expect(result.warnings).toEqual([]);
     expect(result.changes.join("\n")).toContain("Discarded 1 expired managed outgoing image");
-    expect(readManagedImageRecord(legacy.record.attachmentId, stateDir)).toBeNull();
+    expect(await readManagedImageRecord(legacy.record.attachmentId, stateDir)).toBeNull();
     await expect(fsp.access(legacy.sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fsp.access(legacy.originalPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -176,8 +178,14 @@ describe("legacy managed outgoing image migration", () => {
         createdAt: "2026-07-15T00:00:00.000Z",
       },
     });
-    const rmSpy = vi.spyOn(fs, "rmSync").mockImplementationOnce(() => {
-      throw new Error("synthetic attachment remove failure");
+    const remove = fs.rmSync;
+    let attachmentRemovalFailed = false;
+    const rmSpy = vi.spyOn(fs, "rmSync").mockImplementation((target, options) => {
+      if (target === legacy.originalPath) {
+        attachmentRemovalFailed = true;
+        throw new Error("synthetic attachment remove failure");
+      }
+      return remove(target, options);
     });
 
     let result!: ReturnType<typeof migrate>;
@@ -187,16 +195,17 @@ describe("legacy managed outgoing image migration", () => {
       rmSpy.mockRestore();
     }
 
+    expect(attachmentRemovalFailed).toBe(true);
     expect(result.warnings.join("\n")).toContain("synthetic attachment remove failure");
-    await expect(fsp.access(legacy.sourcePath)).resolves.toBeUndefined();
-    await expect(fsp.access(legacy.originalPath)).resolves.toBeUndefined();
-    expect(readManagedImageRecord(legacy.record.attachmentId, stateDir)).toBeNull();
+    await fsp.access(legacy.sourcePath);
+    await fsp.access(legacy.originalPath);
+    expect(await readManagedImageRecord(legacy.record.attachmentId, stateDir)).toBeNull();
   });
 
   it("fails atomically on a conflicting SQLite row and retains every source", async () => {
     const first = await writeLegacyRecord({ stateDir, index: 1 });
     const second = await writeLegacyRecord({ stateDir, index: 2 });
-    insertManagedImageRecord(
+    await insertManagedImageRecord(
       {
         attachmentId: second.record.attachmentId,
         sessionKey: "agent:other:main",
@@ -221,9 +230,9 @@ describe("legacy managed outgoing image migration", () => {
     const result = migrate(stateDir);
 
     expect(result.warnings.join("\n")).toContain("conflicts with shared SQLite state");
-    expect(readManagedImageRecord(first.record.attachmentId, stateDir)).toBeNull();
-    await expect(fsp.access(first.sourcePath)).resolves.toBeUndefined();
-    await expect(fsp.access(second.sourcePath)).resolves.toBeUndefined();
+    expect(await readManagedImageRecord(first.record.attachmentId, stateDir)).toBeNull();
+    await fsp.access(first.sourcePath);
+    await fsp.access(second.sourcePath);
   });
 
   it("retains malformed and symlinked sources", async () => {
@@ -234,15 +243,16 @@ describe("legacy managed outgoing image migration", () => {
 
     const malformed = migrate(stateDir);
     expect(malformed.warnings.join("\n")).toContain("Failed reading legacy managed outgoing");
-    await expect(fsp.access(malformedPath)).resolves.toBeUndefined();
+    await fsp.access(malformedPath);
 
     await fsp.rm(malformedPath);
     const targetPath = path.join(stateDir, "target.json");
     await fsp.writeFile(targetPath, "{}");
     await fsp.symlink(targetPath, malformedPath);
     const symlinked = migrate(stateDir);
-    expect(symlinked.warnings.join("\n")).toContain("non-symlink file");
+    expect(symlinked.warnings.join("\n")).toContain("regular file");
     expect(fs.lstatSync(malformedPath).isSymbolicLink()).toBe(true);
+    expect(await fsp.readFile(targetPath, "utf8")).toBe("{}");
   });
 
   it.each([
@@ -259,11 +269,11 @@ describe("legacy managed outgoing image migration", () => {
     expect(result.warnings).toEqual([
       `Failed reading legacy managed outgoing image state: Error: legacy managed image record has unexpected field ${field}`,
     ]);
-    await expect(fsp.access(legacy.originalPath)).resolves.toBeUndefined();
+    await fsp.access(legacy.originalPath);
     expect(fs.readdirSync(path.dirname(legacy.sourcePath))).toEqual([
       path.basename(legacy.sourcePath),
     ]);
-    expect(readManagedImageRecord(legacy.record.attachmentId, stateDir)).toBeNull();
+    expect(await readManagedImageRecord(legacy.record.attachmentId, stateDir)).toBeNull();
   });
 
   it("keeps JSON when the source changes before cleanup", async () => {
@@ -276,8 +286,8 @@ describe("legacy managed outgoing image migration", () => {
     });
 
     expect(result.warnings.join("\n")).toContain("Failed claiming legacy managed outgoing");
-    await expect(fsp.access(legacy.sourcePath)).resolves.toBeUndefined();
-    expect(readManagedImageRecord(legacy.record.attachmentId, stateDir)).toBeNull();
+    await fsp.access(legacy.sourcePath);
+    expect(await readManagedImageRecord(legacy.record.attachmentId, stateDir)).toBeNull();
   });
 
   it("restores JSON when cleanup fails and succeeds on retry", async () => {
@@ -289,7 +299,7 @@ describe("legacy managed outgoing image migration", () => {
       },
     });
     expect(failed.warnings.join("\n")).toContain("synthetic remove failure");
-    await expect(fsp.access(legacy.sourcePath)).resolves.toBeUndefined();
+    await fsp.access(legacy.sourcePath);
 
     const retried = migrate(stateDir);
     expect(retried.warnings).toEqual([]);

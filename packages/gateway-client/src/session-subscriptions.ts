@@ -35,9 +35,9 @@ type SessionMessageSubscriptionEntry = {
   agentId: string | null;
   ready: Promise<SessionMessageSubscriptionResponse>;
   approvalRequest: Promise<SessionMessageSubscriptionResponse> | null;
-  approvalResponse: SessionMessageSubscriptionResponse | null;
   plainFallback: Promise<SessionMessageSubscriptionResponse> | null;
   canonicalSettled: boolean;
+  refreshRequired: boolean;
   handles: Set<GatewaySessionMessageSubscription>;
   pendingOwners: number;
   release: Promise<void> | null;
@@ -141,6 +141,18 @@ export class GatewaySessionMessageSubscriptionCoordinator {
 
     entry.pendingOwners += 1;
     try {
+      if (entry.refreshRequired) {
+        entry.refreshRequired = false;
+        entry.plainFallback = null;
+        entry.approvalRequest = null;
+        const retainedApprovals = [...entry.handles].some((handle) => handle.includeApprovals);
+        // Refresh retained capabilities before applying a new owner's request;
+        // plain fallback must not downgrade an existing approval observer.
+        entry.ready = this.#requestSubscribe(entry, retainedApprovals).catch((error: unknown) => {
+          entry.refreshRequired = true;
+          throw error;
+        });
+      }
       const result = await this.#acquireCapability(entry, options.includeApprovals === true);
       if (this.#retired) {
         throw new Error("Session message subscription completed on a replaced Gateway connection");
@@ -207,9 +219,18 @@ export class GatewaySessionMessageSubscriptionCoordinator {
         sessionSubscriptionParams(entry.key, entry.agentId),
         { timeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS },
       )
-      .then(() => {
-        this.#finishRelease(subscription, owner, true);
-      });
+      .then(
+        () => {
+          this.#finishRelease(subscription, owner, true);
+        },
+        (error: unknown) => {
+          if (error instanceof GatewayProtocolRequestTimeoutError && error.requestSent) {
+            // The unsubscribe may have committed despite its missing acknowledgment.
+            entry.refreshRequired = true;
+          }
+          throw error;
+        },
+      );
     const tracked = request.finally(() => {
       if (entry.release === tracked) {
         entry.release = null;
@@ -244,23 +265,16 @@ export class GatewaySessionMessageSubscriptionCoordinator {
       agentId,
       ready: Promise.resolve({ key }),
       approvalRequest: null,
-      approvalResponse: null,
       plainFallback: null,
       canonicalSettled: false,
+      refreshRequired: false,
       handles: new Set(),
       pendingOwners: 0,
       release: null,
     };
-    entry.ready = this.#requestSubscribe(entry, includeApprovals).then((result) => {
-      entry.key = result.key;
-      entry.canonicalSettled = true;
-      if (includeApprovals) {
-        entry.approvalResponse = result;
-      }
-      return result;
-    });
+    entry.ready = this.#requestSubscribe(entry, includeApprovals);
     if (includeApprovals) {
-      entry.approvalRequest = entry.ready;
+      entry.ready = this.#trackApprovalRequest(entry, entry.ready);
     }
     // Concurrent owners observe the same rejection; this observer only prevents
     // an unhandled side branch and never changes the rejected acquire result.
@@ -274,7 +288,7 @@ export class GatewaySessionMessageSubscriptionCoordinator {
     includeApprovals: boolean,
   ): Promise<SessionMessageSubscriptionResponse> {
     if (!includeApprovals) {
-      if (entry.approvalRequest === entry.ready && !entry.approvalResponse) {
+      if (entry.approvalRequest === entry.ready) {
         if (!entry.plainFallback) {
           const approvalRequest = entry.ready;
           // Approval authorization is stronger than transcript observation.
@@ -285,8 +299,6 @@ export class GatewaySessionMessageSubscriptionCoordinator {
               throw error;
             }
             const result = await this.#requestSubscribe(entry, false);
-            entry.key = result.key;
-            entry.canonicalSettled = true;
             entry.ready = Promise.resolve(result);
             if (entry.approvalRequest === approvalRequest) {
               entry.approvalRequest = null;
@@ -298,27 +310,29 @@ export class GatewaySessionMessageSubscriptionCoordinator {
       }
       return entry.ready;
     }
-    if (entry.approvalResponse) {
-      return Promise.resolve(entry.approvalResponse);
-    }
     if (entry.approvalRequest) {
       return entry.approvalRequest;
     }
 
-    const upgrade = entry.ready
-      .then(() => this.#requestSubscribe(entry, true))
-      .then((result) => {
-        entry.key = result.key;
-        entry.approvalResponse = result;
-        return result;
-      });
-    entry.approvalRequest = upgrade;
-    void upgrade.catch(() => {
-      if (entry.approvalRequest === upgrade) {
+    return this.#trackApprovalRequest(
+      entry,
+      entry.ready.then(() => this.#requestSubscribe(entry, true)),
+    );
+  }
+
+  #trackApprovalRequest(
+    entry: SessionMessageSubscriptionEntry,
+    request: Promise<SessionMessageSubscriptionResponse>,
+  ): Promise<SessionMessageSubscriptionResponse> {
+    // Replays describe a moment in time. Share concurrent requests, but let
+    // each later viewer retrieve the Gateway's current pending set.
+    const tracked = request.finally(() => {
+      if (entry.approvalRequest === tracked) {
         entry.approvalRequest = null;
       }
     });
-    return upgrade;
+    entry.approvalRequest = tracked;
+    return tracked;
   }
 
   async #requestSubscribe(
@@ -341,13 +355,14 @@ export class GatewaySessionMessageSubscriptionCoordinator {
           throw error;
         }
         try {
-          // A sent request can commit before its acknowledgment; preserve an existing
-          // plain lease while removing any unacknowledged approval authority.
+          // A sent request can commit before its acknowledgment. Restore only
+          // capabilities still owned by acquired leases, including older approval panes.
+          const retainedApprovals = [...entry.handles].some((handle) => handle.includeApprovals);
           await this.#client.request(
             entry.handles.size > 0
               ? "sessions.messages.subscribe"
               : "sessions.messages.unsubscribe",
-            params,
+            retainedApprovals ? { ...params, includeApprovals: true } : params,
             { timeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS },
           );
         } catch (recoveryError) {
@@ -364,8 +379,11 @@ export class GatewaySessionMessageSubscriptionCoordinator {
       });
     const response = result && typeof result === "object" ? result : null;
     const responseKey = response && "key" in response ? response.key : undefined;
+    entry.key =
+      typeof responseKey === "string" && responseKey.trim() ? responseKey.trim() : entry.key;
+    entry.canonicalSettled = true;
     return {
-      key: typeof responseKey === "string" && responseKey.trim() ? responseKey.trim() : entry.key,
+      key: entry.key,
       ...(response && "approvalReplay" in response
         ? { approvalReplay: response.approvalReplay }
         : {}),

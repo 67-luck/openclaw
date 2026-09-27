@@ -1,9 +1,10 @@
-// Qa Channel plugin module implements channel behavior.
+import type { ChannelThreadingToolContext } from "openclaw/plugin-sdk/channel-contract";
 import {
   buildChannelOutboundSessionRoute,
   buildThreadAwareOutboundSessionRoute,
   createChatChannelPlugin,
 } from "openclaw/plugin-sdk/channel-core";
+import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import {
   createMessageReceiptFromOutboundResults,
   defineChannelMessageAdapter,
@@ -20,7 +21,6 @@ import { qaChannelMessageActions } from "./channel-actions.js";
 import { createQaChannelPluginBase, QA_CHANNEL_ID, qaChannelRuntimeMeta } from "./channel-base.js";
 import { startQaGatewayAccount } from "./gateway.js";
 import { sendQaChannelMedia, sendQaChannelMediaBatch, sendQaChannelText } from "./outbound.js";
-import type { ChannelPlugin } from "./runtime-api.js";
 import { qaChannelStatus } from "./status.js";
 import type { CoreConfig, ResolvedQaChannelAccount } from "./types.js";
 
@@ -144,6 +144,28 @@ const qaChannelMessageAdapter = defineChannelMessageAdapter({
 
 const qaChannelPluginBase = createQaChannelPluginBase(qaChannelRuntimeMeta);
 
+function matchesQaToolContextTarget(target: string, toolContext: ChannelThreadingToolContext) {
+  // Native source identity wins when To describes a different conversation.
+  const currentTarget = toolContext.currentChannelId || toolContext.currentMessagingTarget;
+  if (
+    !currentTarget ||
+    (toolContext.currentChannelProvider && toolContext.currentChannelProvider !== QA_CHANNEL_ID)
+  ) {
+    return false;
+  }
+  // Message-action bare targets mean channels; the source kind cannot reinterpret them.
+  const requested = parseQaTarget(target, { defaultChatType: "channel" });
+  const current = parseQaTarget(currentTarget, {
+    defaultChatType: toolContext.currentChatType ?? requested.chatType,
+  });
+  return (
+    current.chatType === requested.chatType &&
+    current.conversationId === requested.conversationId &&
+    (!requested.threadId ||
+      requested.threadId === (toolContext.currentThreadTs ?? current.threadId))
+  );
+}
+
 export const qaChannelPlugin: ChannelPlugin<ResolvedQaChannelAccount> = createChatChannelPlugin({
   base: {
     ...qaChannelPluginBase,
@@ -152,8 +174,7 @@ export const qaChannelPlugin: ChannelPlugin<ResolvedQaChannelAccount> = createCh
       normalizeTarget: normalizeQaTarget,
       inferTargetChatType: ({ to }) => parseQaTarget(to).chatType,
       targetResolver: {
-        looksLikeId: (raw) =>
-          /^((dm|channel|group):|thread:[^/]+\/)/i.test(raw.trim()) || raw.trim().length > 0,
+        looksLikeId: (raw) => raw.trim().length > 0,
         hint: "<dm:user|channel:room|group:room|thread:room/thread>",
       },
       resolveOutboundSessionRoute: ({
@@ -167,6 +188,10 @@ export const qaChannelPlugin: ChannelPlugin<ResolvedQaChannelAccount> = createCh
       }) => {
         const resolved = resolveQaTargetThread({ target, threadId });
         const parsed = resolved.target;
+        const baseTarget = buildQaTarget({
+          chatType: parsed.chatType,
+          conversationId: parsed.conversationId,
+        });
         const baseRoute = buildChannelOutboundSessionRoute({
           cfg,
           agentId,
@@ -174,26 +199,17 @@ export const qaChannelPlugin: ChannelPlugin<ResolvedQaChannelAccount> = createCh
           accountId,
           recipientSessionExact: true,
           peer: {
-            kind:
-              parsed.chatType === "direct"
-                ? "direct"
-                : parsed.chatType === "group"
-                  ? "group"
-                  : "channel",
-            id: buildQaTarget(parsed),
+            kind: parsed.chatType,
+            id: baseTarget,
           },
           chatType: parsed.chatType,
           from: `${QA_CHANNEL_ID}:${accountId ?? DEFAULT_ACCOUNT_ID}`,
-          to: buildQaTarget(parsed),
+          to: baseTarget,
         });
-        // An explicit thread target already owns the complete session identity;
-        // applying reply or current-thread metadata would append a second thread.
-        if (parsed.threadId !== undefined) {
-          return baseRoute;
-        }
         return buildThreadAwareOutboundSessionRoute({
           route: baseRoute,
-          replyToId,
+          // Structured thread identity is authoritative; reply metadata must not replace its thread.
+          replyToId: resolved.threadId === undefined ? replyToId : undefined,
           threadId: resolved.threadId,
           currentSessionKey,
           canRecoverCurrentThread: ({ route }) =>
@@ -220,55 +236,60 @@ export const qaChannelPlugin: ChannelPlugin<ResolvedQaChannelAccount> = createCh
       },
     },
     threading: {
-      matchesToolContextTarget: ({ target, toolContext }) => {
-        const requested = parseQaTarget(target, {
-          defaultChatType: toolContext.currentChatType ?? "channel",
-        });
-        return [toolContext.currentChannelId, toolContext.currentMessagingTarget].some(
-          (currentTarget) => {
-            if (!currentTarget) {
-              return false;
-            }
-            const current = parseQaTarget(currentTarget, {
-              defaultChatType: toolContext.currentChatType ?? requested.chatType,
-            });
-            return (
-              current.chatType === requested.chatType &&
-              current.conversationId === requested.conversationId &&
-              (!requested.threadId ||
-                requested.threadId === current.threadId ||
-                requested.threadId === toolContext.currentThreadTs)
-            );
-          },
-        );
+      resolveReplyTransport: ({
+        currentMessageId,
+        replyToId,
+        replyToIsExplicit,
+        replyDelivery,
+      }) => {
+        if (
+          !currentMessageId ||
+          replyToId !== undefined ||
+          replyToIsExplicit ||
+          (replyDelivery && replyDelivery.replyToMode !== "all")
+        ) {
+          return null;
+        }
+        // Correlate queued replies like the inbound callback, without restoring
+        // references that an earlier first/off/batched policy may have removed.
+        return { replyToId: currentMessageId };
       },
+      matchesToolContextTarget: ({ target, toolContext }) =>
+        matchesQaToolContextTarget(target, toolContext),
+      resolveAutoThreadId: ({ to, toolContext }) =>
+        toolContext?.currentThreadTs &&
+        !parseQaTarget(to).threadId &&
+        matchesQaToolContextTarget(to, toolContext)
+          ? toolContext.currentThreadTs
+          : undefined,
       buildToolContext: ({ context, hasRepliedRef }) => {
         const currentMessagingTarget = context.To?.trim() || undefined;
+        const chatType =
+          context.ChatType === "direct" ||
+          context.ChatType === "group" ||
+          context.ChatType === "channel"
+            ? context.ChatType
+            : undefined;
         const parsedTarget = currentMessagingTarget
           ? parseQaTarget(currentMessagingTarget, {
-              defaultChatType:
-                context.ChatType === "direct" ||
-                context.ChatType === "group" ||
-                context.ChatType === "channel"
-                  ? context.ChatType
-                  : "channel",
+              defaultChatType: chatType ?? "channel",
             })
           : undefined;
+        const nativeChannelId = context.NativeChannelId?.trim() || undefined;
         const currentThreadTs =
           context.MessageThreadId != null
             ? String(context.MessageThreadId)
             : parsedTarget?.threadId;
         return {
-          currentChannelId:
-            context.NativeChannelId?.trim() ||
-            parsedTarget?.conversationId ||
-            currentMessagingTarget,
-          currentChatType:
-            context.ChatType === "direct" ||
-            context.ChatType === "group" ||
-            context.ChatType === "channel"
-              ? context.ChatType
-              : parsedTarget?.chatType,
+          // Implicit actions need a typed root; embedding To's thread would
+          // bypass topLevel/threadId:null opt-outs.
+          currentChannelId: parsedTarget
+            ? buildQaTarget({
+                chatType: parsedTarget.chatType,
+                conversationId: nativeChannelId || parsedTarget.conversationId,
+              })
+            : nativeChannelId,
+          currentChatType: chatType ?? parsedTarget?.chatType,
           currentMessagingTarget,
           currentThreadTs,
           ...(currentThreadTs ? { replyToMode: "all" as const } : {}),

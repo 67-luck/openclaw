@@ -96,29 +96,6 @@ describe("renderIdentitySection", () => {
     expect(avatar?.textContent?.trim()).toBe("AL");
   });
 
-  it("edits and saves the display name with the standard input pattern", () => {
-    const onDisplayNameInput = vi.fn();
-    const onSaveDisplayName = vi.fn();
-    const container = document.createElement("div");
-    render(
-      renderIdentitySection(
-        createProps({ displayName: "Ada", onDisplayNameInput, onSaveDisplayName }),
-      ),
-      container,
-    );
-
-    const input = container.querySelector<HTMLInputElement>('.settings-input[type="text"]');
-    expect(input?.value).toBe("Ada");
-    input!.value = "Augusta Ada";
-    input!.dispatchEvent(new Event("input", { bubbles: true }));
-    container
-      .querySelector<HTMLFormElement>(".identity-name-control")
-      ?.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
-
-    expect(onDisplayNameInput).toHaveBeenCalledWith("Augusta Ada");
-    expect(onSaveDisplayName).toHaveBeenCalledOnce();
-  });
-
   it("forwards an allowlisted avatar file and resets the picker", () => {
     const onAvatarSelect = vi.fn();
     const container = document.createElement("div");
@@ -196,6 +173,31 @@ describe("renderIdentitySection", () => {
     expect(container.textContent).toContain("GitHub-backed sign-in");
     expect(container.textContent).toContain("Refresh to retry");
     expect(container.querySelector(".identity-github-form")).toBeNull();
+    const toggle = container.querySelector<HTMLElement & { checked: boolean }>("wa-switch");
+    expect(toggle?.checked).toBe(false);
+    expect(toggle?.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("explains personal GitHub sign-in for the shared owner without email or retry rows", () => {
+    const container = document.createElement("div");
+    render(
+      renderIdentitySection(
+        createProps({ profile: { ...PROFILE, id: "gateway-owner", emails: [] } }),
+      ),
+      container,
+    );
+
+    const descriptions = [...container.querySelectorAll(".settings-row__desc")].map((node) =>
+      node.textContent?.trim(),
+    );
+    expect(descriptions).toContain(
+      "GitHub-backed sign-in through Cloudflare Access or Tailscale Serve provides this identity.",
+    );
+    expect(descriptions).toContain(
+      "Requires GitHub-backed sign-in through Cloudflare Access or Tailscale Serve.",
+    );
+    expect(container.textContent).not.toContain("Linked emails");
+    expect(container.textContent).not.toContain("Refresh to retry");
     const toggle = container.querySelector<HTMLElement & { checked: boolean }>("wa-switch");
     expect(toggle?.checked).toBe(false);
     expect(toggle?.hasAttribute("disabled")).toBe(true);

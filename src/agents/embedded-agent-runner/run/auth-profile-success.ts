@@ -1,11 +1,12 @@
+import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { sanitizeForLog } from "../../../../packages/terminal-core/src/ansi.js";
 import { MODEL_APIS, type ModelApi } from "../../../config/types.models.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
-import { redactIdentifier } from "../../../logging/redact-identifier.js";
 import type { ProviderRouteOverridePresence } from "../../../plugin-sdk/provider-model-types.js";
 import { resolveProviderModelRoutes } from "../../../plugins/provider-model-routes.js";
 import { looksLikeSecretSentinel, resolveSecretSentinel } from "../../../secrets/sentinel.js";
+import { getOpenClawDatabaseMaintenanceScope } from "../../../state/openclaw-state-db-async-lifecycle.js";
 import type { AuthProfileStore } from "../../auth-profiles.js";
 import { markAuthProfileSuccess } from "../../auth-profiles.js";
 import { recordRuntimeAuthMaterialization } from "../../auth-profiles/runtime-materializations.js";
@@ -38,13 +39,10 @@ export function markEmbeddedRunAuthProfileSuccess(input: {
   }
   const successProfileId = input.profileId;
   const safeSuccessProfileId = redactIdentifier(successProfileId, { len: 12 });
-  const successProvider = resolveAuthProfileStateProvider(
-    input.profileStore,
-    successProfileId,
-    input.provider,
-  );
+  const successProvider =
+    input.profileStore.profiles[successProfileId]?.provider.trim() || input.provider;
   const successStarted = Date.now();
-  void markAuthProfileSuccess({
+  const bookkeeping = markAuthProfileSuccess({
     store: input.profileStore,
     provider: successProvider,
     profileId: successProfileId,
@@ -73,6 +71,9 @@ export function markEmbeddedRunAuthProfileSuccess(input: {
           `error=${formatErrorMessage(error)}`,
       );
     });
+  // Capture the entire operation before it waits in the auth writer queue.
+  // Ordinary turns remain nonblocking; a repair owner must join it before Doctor.
+  void getOpenClawDatabaseMaintenanceScope()?.track(bookkeeping);
 }
 
 export function reportEmbeddedRunSuccessfulAuthBinding(input: {
@@ -265,16 +266,4 @@ function resolvePluginHarnessApiKeyInfo(input: {
   }
   const resolvedApiKey = resolveSecretSentinel(apiKey);
   return resolvedApiKey ? { ...apiKeyInfo, apiKey: resolvedApiKey } : null;
-}
-
-function resolveAuthProfileStateProvider(
-  store: AuthProfileStore,
-  profileId: string,
-  fallbackProvider: string,
-): string {
-  const profileProvider = store.profiles?.[profileId]?.provider?.trim();
-  if (profileProvider) {
-    return profileProvider;
-  }
-  return profileId.split(":", 1)[0]?.trim() || fallbackProvider;
 }

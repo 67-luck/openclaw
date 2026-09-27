@@ -1,5 +1,10 @@
 // Cron list regression tests cover preserving cron jobs in list output.
 import { describe, expect, it, vi } from "vitest";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
+import { mockCall } from "../test-utils/mock-call-assertions.js";
 import { CronService } from "./service.js";
 import {
   createStartedCronServiceWithFinishedBarrier,
@@ -10,39 +15,20 @@ import type { CronJob } from "./types.js";
 
 const { logger: noopLogger, makeStorePath } = setupCronServiceSuite({
   prefix: "openclaw-cron-16156-",
-  baseTimeIso: "2025-12-13T00:00:00.000Z",
+  fakeTimers: false,
 });
 
 async function writeJobsStore(storePath: string, jobs: CronJob[]) {
   await saveCronStore(storePath, { version: 1, jobs });
 }
 
-function createCronFromStorePath(storePath: string) {
-  return new CronService({
-    storePath,
-    cronEnabled: true,
-    log: noopLogger,
-    enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
-    runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
-  });
-}
-
-function requireEnqueueSystemEventCall(
-  enqueueSystemEvent: ReturnType<typeof vi.fn>,
-): [string, { agentId?: string } | undefined] {
-  const call = enqueueSystemEvent.mock.calls[0];
-  if (!call) {
-    throw new Error("Expected enqueueSystemEvent call");
-  }
-  return call as [string, { agentId?: string } | undefined];
-}
-
 // regression: #16156
 describe("#16156: cron.list() must not silently advance past-due recurring jobs", () => {
   it("does not skip a cron job when list() is called while the job is past-due", async () => {
     const store = await makeStorePath();
+    const clock = createGatewaySchedulerClock(Date.parse("2025-12-13T00:00:00.000Z"));
     const { cron, enqueueSystemEvent, finished } = createStartedCronServiceWithFinishedBarrier({
+      scheduler: createTestGatewayScheduler(clock.clock),
       storePath: store.storePath,
       logger: noopLogger,
     });
@@ -63,10 +49,10 @@ describe("#16156: cron.list() must not silently advance past-due recurring jobs"
     expect(firstDueAt).toBe(Date.parse("2025-12-13T00:01:00.000Z"));
 
     // Advance time so the job is past-due but the timer hasn't fired yet.
-    vi.setSystemTime(new Date(firstDueAt + 5));
+    clock.setTime(firstDueAt + 5);
 
     // Simulate the user running `cron list` while the job is past-due.
-    // Before the fix, this would call recomputeNextRuns() which silently
+    // Before the fix, load-time schedule repair would silently
     // advances nextRunAtMs to the next occurrence (00:02:00) without
     // executing the job.
     const listedBefore = await cron.list({ includeDisabled: true });
@@ -77,14 +63,17 @@ describe("#16156: cron.list() must not silently advance past-due recurring jobs"
 
     // Now let the timer fire. The job should be found as due and execute.
     const finishedRun = finished.waitForOk(job.id);
-    await vi.runOnlyPendingTimersAsync();
+    await clock.wake();
     await finishedRun;
 
     const jobs = await cron.list({ includeDisabled: true });
     const updated = jobs.find((j) => j.id === job.id);
 
     // Job must have actually executed.
-    const [text, options] = requireEnqueueSystemEventCall(enqueueSystemEvent);
+    const [text, options] = mockCall(enqueueSystemEvent) as [
+      string,
+      { agentId?: string } | undefined,
+    ];
     expect(text).toBe("cron-tick");
     expect(options?.agentId).toBe("main");
     expect(updated?.state.lastStatus).toBe("ok");
@@ -96,7 +85,9 @@ describe("#16156: cron.list() must not silently advance past-due recurring jobs"
 
   it("does not skip a cron job when status() is called while the job is past-due", async () => {
     const store = await makeStorePath();
+    const clock = createGatewaySchedulerClock(Date.parse("2025-12-13T00:00:00.000Z"));
     const { cron, enqueueSystemEvent, finished } = createStartedCronServiceWithFinishedBarrier({
+      scheduler: createTestGatewayScheduler(clock.clock),
       storePath: store.storePath,
       logger: noopLogger,
     });
@@ -115,20 +106,23 @@ describe("#16156: cron.list() must not silently advance past-due recurring jobs"
     const firstDueAt = job.state.nextRunAtMs!;
 
     // Advance time past due.
-    vi.setSystemTime(new Date(firstDueAt + 10));
+    clock.setTime(firstDueAt + 10);
 
     // Call status() while job is past-due.
     await cron.status();
 
     // Timer fires.
     const finishedRun = finished.waitForOk(job.id);
-    await vi.runOnlyPendingTimersAsync();
+    await clock.wake();
     await finishedRun;
 
     const jobs = await cron.list({ includeDisabled: true });
     const updated = jobs.find((j) => j.id === job.id);
 
-    const [text, options] = requireEnqueueSystemEventCall(enqueueSystemEvent);
+    const [text, options] = mockCall(enqueueSystemEvent) as [
+      string,
+      { agentId?: string } | undefined,
+    ];
     expect(text).toBe("tick-5");
     expect(options?.agentId).toBe("main");
     expect(updated?.state.lastStatus).toBe("ok");
@@ -156,7 +150,15 @@ describe("#16156: cron.list() must not silently advance past-due recurring jobs"
       },
     ]);
 
-    const cron = createCronFromStorePath(store.storePath);
+    const cron = new CronService({
+      scheduler: createTestGatewayScheduler(createGatewaySchedulerClock(nowMs).clock),
+      storePath: store.storePath,
+      cronEnabled: true,
+      log: noopLogger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    });
 
     await cron.start();
 

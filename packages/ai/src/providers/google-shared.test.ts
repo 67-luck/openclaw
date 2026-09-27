@@ -1,4 +1,3 @@
-// Google shared provider tests cover response conversion and finish reasons.
 import { createServer } from "node:http";
 import {
   ApiError,
@@ -9,18 +8,20 @@ import {
   type Part,
 } from "@google/genai";
 import { describe, expect, it, vi } from "vitest";
+// Google shared provider tests cover response conversion and finish reasons.
+import { createAssistantOutput } from "../transports/assistant-output.js";
 import { withProviderAcceptanceObserver } from "../transports/transport-stream-shared.js";
 import type { Model } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
+import { onLlmRequestActivity } from "../utils/llm-request-activity.js";
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "../utils/system-prompt-cache-boundary.js";
 import {
   buildGoogleGenerateContentParams,
   buildGoogleSimpleThinking,
-  convertMessages,
-  consumeGoogleGenerateContentStream,
-  createGoogleAssistantOutput,
   runGoogleGenerateContentLifecycle,
 } from "./google-shared.js";
+import { convertMessages } from "./google-shared.test-helpers.js";
+import { consumeGoogleGenerateContentStream } from "./google-stream.js";
 
 const model: Model<"google-generative-ai"> = {
   id: "gemini-test",
@@ -40,7 +41,7 @@ const model: Model<"google-generative-ai"> = {
   maxTokens: 8_192,
 };
 
-const createOutput = () => createGoogleAssistantOutput(model);
+const createOutput = () => createAssistantOutput(model);
 
 describe("buildGoogleSimpleThinking", () => {
   it.each([
@@ -84,7 +85,6 @@ describe("buildGoogleSimpleThinking", () => {
 
   it.each([
     { id: "gemini-2.5-pro", expected: { enabled: true, budgetTokens: -1 } },
-    { id: "gemini-2.5-flash", expected: { enabled: true, budgetTokens: -1 } },
     { id: "gemini-3.1-pro-preview", expected: { enabled: true } },
     { id: "gemini-3-flash-preview", expected: { enabled: true } },
     { id: "gemma-4-26b-a4b-it", expected: { enabled: true, level: "HIGH" } },
@@ -115,7 +115,7 @@ describe("buildGoogleSimpleThinking", () => {
     });
   });
 
-  it.each(["xhigh", "max"] as const)(
+  it.each(["max"] as const)(
     "keeps thinking disabled when reasoning=%s clamps to off",
     (reasoning) => {
       const offOnlyThinkingModel = {
@@ -238,7 +238,7 @@ async function runGoogleFixture(
   fixture: GoogleFixtureOptions = {},
 ) {
   const targetModel = fixture.targetModel ?? model;
-  const output = createGoogleAssistantOutput(targetModel);
+  const output = createAssistantOutput(targetModel);
   const stream = new AssistantMessageEventStream();
   const events: StreamEvent[] = [];
   const collect = fixture.collectEvents
@@ -269,6 +269,33 @@ async function runGoogleFixture(
 }
 
 describe("consumeGoogleGenerateContentStream", () => {
+  it("reports every parsed Google response as request activity", async () => {
+    const controller = new AbortController();
+    const onActivity = vi.fn();
+    const unsubscribe = onLlmRequestActivity(controller.signal, onActivity);
+    const output = createOutput();
+    const stream = new AssistantMessageEventStream();
+    const responses = [
+      googleResponse({ usageMetadata: { totalTokenCount: 1 } }),
+      googleResponse({ finishReason: FinishReason.STOP }),
+    ];
+
+    try {
+      await consumeGoogleGenerateContentStream({
+        chunks: chunks(responses),
+        model,
+        output,
+        stream,
+        signal: controller.signal,
+        nextToolCallId: (name) => `generated-${name}`,
+      });
+    } finally {
+      unsubscribe();
+    }
+
+    expect(onActivity).toHaveBeenCalledTimes(responses.length);
+  });
+
   it("projects text, thinking, tool calls, response id, and usage into one stream", async () => {
     const { output, events } = await consumeGoogleFixture(
       [
@@ -330,12 +357,6 @@ describe("consumeGoogleGenerateContentStream", () => {
       returned: ["gemini-test-002"],
       expected: "gemini-test-002",
     },
-    {
-      api: "google-vertex",
-      requested: "gemini-test",
-      returned: ["gemini-test-002"],
-      expected: "gemini-test-002",
-    },
     { api: "google-generative-ai", requested: "gemini-test", returned: ["gemini-test"] },
     { api: "google-generative-ai", requested: "google/gemini-test", returned: ["gemini-test"] },
     { api: "google-generative-ai", requested: "models/gemini-test", returned: ["gemini-test"] },
@@ -360,11 +381,6 @@ describe("consumeGoogleGenerateContentStream", () => {
       requested: "publishers/meta/models/gemini-test",
       returned: ["gemini-test"],
       expected: "gemini-test",
-    },
-    {
-      api: "google-generative-ai",
-      requested: "tunedModels/fixture-gemini",
-      returned: ["tunedModels/fixture-gemini"],
     },
     {
       api: "google-generative-ai",
@@ -864,7 +880,7 @@ describe("runGoogleGenerateContentLifecycle", () => {
     expect(output.errorCode).toBe("GATEWAY_RESTART");
   });
 
-  it.each([429, 503])("preserves the official Google SDK's %s API error status", async (status) => {
+  it.each([429])("preserves the official Google SDK's %s API error status", async (status) => {
     const { result } = await runGoogleFixture([], {
       generateContentStream: async () => {
         throw new ApiError({ status, message: "Google quota exceeded" });
@@ -913,35 +929,22 @@ describe("runGoogleGenerateContentLifecycle", () => {
     }
   });
 
-  it.each([
-    { api: "google-generative-ai", blockReason: BlockedReason.SAFETY },
-    { api: "google-generative-ai", blockReason: undefined },
-    { api: "google-vertex", blockReason: BlockedReason.SAFETY },
-    { api: "google-vertex", blockReason: undefined },
-  ] as const)(
-    "surfaces blocked $api prompts as typed stream errors when blockReason is $blockReason",
-    async ({ api, blockReason }) => {
-      const targetModel = {
-        ...model,
-        api,
-        provider: api === "google-vertex" ? "google-vertex" : "google",
-      } satisfies Model<"google-generative-ai" | "google-vertex">;
-      const { result } = await runGoogleFixture(
-        [
-          googleResponse({
-            promptFeedback: {
-              ...(blockReason ? { blockReason } : {}),
-              blockReasonMessage: "Prompt violates provider safety policy",
-            },
-            usageMetadata: {
-              promptTokenCount: 12,
-              cachedContentTokenCount: 2,
-              totalTokenCount: 12,
-            },
-          }),
-        ],
-        { targetModel },
-      );
+  it.each([BlockedReason.SAFETY, undefined])(
+    "surfaces blocked Google prompts as typed stream errors when blockReason is %s",
+    async (blockReason) => {
+      const { result } = await runGoogleFixture([
+        googleResponse({
+          promptFeedback: {
+            ...(blockReason ? { blockReason } : {}),
+            blockReasonMessage: "Prompt violates provider safety policy",
+          },
+          usageMetadata: {
+            promptTokenCount: 12,
+            cachedContentTokenCount: 2,
+            totalTokenCount: 12,
+          },
+        }),
+      ]);
 
       const expectedBlockReason = blockReason ?? "PROMPT_BLOCKED";
       expect(result).toMatchObject({

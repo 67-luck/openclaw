@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import process from "node:process";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { signalProcessTree } from "../process/kill-tree.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import {
   TAILSCALE_ROUTE_OWNER_ARG,
   type TailscaleRouteOwnerMessage,
@@ -81,10 +82,7 @@ export function runTailscaleRouteOwner(
   let ready = false;
   let stopping = false;
   let forceTimer: NodeJS.Timeout | undefined;
-  let resolveExit!: (exit: TailscaleRouteOwnerExit) => void;
-  const exited = new Promise<TailscaleRouteOwnerExit>((resolve) => {
-    resolveExit = resolve;
-  });
+  const exit = createDeferredCore<TailscaleRouteOwnerExit>();
   const child = spawn(command, args, {
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
@@ -129,16 +127,16 @@ export function runTailscaleRouteOwner(
     if (!stopping || !ready) {
       sendMessage({ type: "failed", code, signal, stdout, stderr });
     }
-    resolveExit({ code, signal, stopping });
+    exit.resolve({ code, signal, stopping });
   });
-  return { exited, stop };
+  return { exited: exit.promise, stop };
 }
 
 if (process.argv[2] === TAILSCALE_ROUTE_OWNER_ARG) {
   try {
     const owner = runTailscaleRouteOwner(parseStart(process.argv[3]));
-    // Terminal signals reach this worker with the Gateway process group. Drain the
-    // detached route child first or the HTTPS port remains claimed after Gateway exit.
+    // The owner survives a Gateway process-group kill. IPC closure releases the
+    // detached claim even when the Gateway cannot run its shutdown hooks.
     for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
       process.once(signal, owner.stop);
     }
@@ -148,6 +146,9 @@ if (process.argv[2] === TAILSCALE_ROUTE_OWNER_ARG) {
         owner.stop();
       }
     });
+    if (!process.connected) {
+      owner.stop();
+    }
     void owner.exited.then((exit) => process.exit(exit.stopping ? 0 : 1));
   } catch (error) {
     send({

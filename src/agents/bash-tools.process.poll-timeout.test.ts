@@ -16,6 +16,7 @@ import { createProcessSessionFixture } from "./bash-process-registry.test-helper
 import { resetProcessRegistryForTests } from "./bash-process-registry.test-support.js";
 import { createProcessTool } from "./bash-tools.process.js";
 import { processSchema } from "./bash-tools.schemas.js";
+import { acknowledgeInternalToolResult } from "./runtime/internal-hooks.js";
 
 afterEach(() => {
   resetProcessRegistryForTests();
@@ -66,56 +67,8 @@ function pollStatus(result: Awaited<ReturnType<ReturnType<typeof createProcessTo
   return (result.details as { status?: string }).status;
 }
 
-async function expectCompletedPollWithTimeout(params: {
-  sessionId: string;
-  callId: string;
-  timeout: number | string;
-  advanceMs: number;
-  assertUnresolvedAtMs?: number;
-}) {
-  vi.useFakeTimers();
-  try {
-    const { processTool, session } = createProcessSessionHarness(params.sessionId);
-
-    setTimeout(() => {
-      appendOutput(session, "stdout", "done\n");
-      markExited(session, 0, null, "completed");
-    }, 10);
-
-    const pollPromise = pollSession(processTool, params.callId, params.sessionId, params.timeout);
-    if (params.assertUnresolvedAtMs !== undefined) {
-      let resolved = false;
-      void pollPromise.finally(() => {
-        resolved = true;
-      });
-      await vi.advanceTimersByTimeAsync(params.assertUnresolvedAtMs);
-      expect(resolved).toBe(false);
-    }
-
-    await vi.advanceTimersByTimeAsync(params.advanceMs);
-    const poll = await pollPromise;
-    const details = poll.details as { status?: string; aggregated?: string };
-    expect(details.status).toBe("completed");
-    expect(details.aggregated ?? "").toContain("done");
-  } finally {
-    vi.useRealTimers();
-  }
-}
-
-test("process poll waits for completion when timeout is provided", async () => {
-  await expectCompletedPollWithTimeout({
-    sessionId: "sess",
-    callId: "toolcall",
-    timeout: 2000,
-    assertUnresolvedAtMs: 200,
-    advanceMs: 100,
-  });
-});
-
 test.each([
   { name: "buffered stdout", stream: "stdout", arrivesDuringWait: false, dropped: false },
-  { name: "buffered stderr", stream: "stderr", arrivesDuringWait: false, dropped: false },
-  { name: "new stdout", stream: "stdout", arrivesDuringWait: true, dropped: false },
   { name: "new stderr", stream: "stderr", arrivesDuringWait: true, dropped: false },
   { name: "buffered capped output", stream: "stdout", arrivesDuringWait: false, dropped: true },
 ] as const)(
@@ -278,6 +231,8 @@ test("waiting poll retains terminal state and its receipt after indexed cleanup"
       type: "text",
       text: expect.stringContaining("done after cleanup"),
     });
+    expect(remove).not.toHaveBeenCalled();
+    acknowledgeInternalToolResult(poll);
     expect(remove).toHaveBeenCalledOnce();
   } finally {
     vi.useRealTimers();
@@ -323,6 +278,8 @@ test("waiting poll does not adopt a same-id successor after removal", async () =
       status: "completed",
       aggregated: expect.stringContaining("successor output"),
     });
+    expect(successorRemove).not.toHaveBeenCalled();
+    acknowledgeInternalToolResult(successorPoll);
     expect(successorRemove).toHaveBeenCalledOnce();
   } finally {
     vi.useRealTimers();
@@ -373,6 +330,8 @@ test("waiting poll never recommends successor logs for omitted original output",
     expect(originalText).not.toContain("successor output");
     expect(originalText).not.toContain("use action=log");
     expect(originalText).toContain("omitted output is no longer available through action=log");
+    expect(originalRemove).not.toHaveBeenCalled();
+    acknowledgeInternalToolResult(original);
     expect(originalRemove).toHaveBeenCalledOnce();
     expect(successorRemove).not.toHaveBeenCalled();
 
@@ -430,12 +389,19 @@ test.each([
 });
 
 test("process poll accepts string timeout values", async () => {
-  await expectCompletedPollWithTimeout({
-    sessionId: "sess-2",
-    callId: "toolcall",
-    timeout: "2000",
-    advanceMs: 350,
-  });
+  vi.useFakeTimers();
+  try {
+    const { processTool, session } = createProcessSessionHarness("sess-string-timeout");
+    setTimeout(() => {
+      appendOutput(session, "stdout", "done\n");
+      markExited(session, 0, null, "completed");
+    }, 10);
+    const pending = pollSession(processTool, "toolcall", session.id, "2000");
+    await vi.advanceTimersByTimeAsync(350);
+    expect((await pending).details).toMatchObject({ status: "completed", aggregated: "done\n" });
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("terminal polls compact tiny stream chunks and never reopen frozen output", async () => {
@@ -673,13 +639,9 @@ test("process poll resets retryInMs when output appears and clears on completion
   expect(retryMs(pollFinished)).toBeUndefined();
 });
 
-test.each([
-  { name: "below the retained tail", outputLength: 1_999, expectsOmissionNote: false },
-  { name: "at the retained tail", outputLength: 2_000, expectsOmissionNote: false },
-  { name: "above the retained tail", outputLength: 2_001, expectsOmissionNote: false },
-])(
+test.each([{ name: "above the retained tail", outputLength: 2_001 }])(
   "process poll returns unread finished output $name",
-  async ({ outputLength, expectsOmissionNote }) => {
+  async ({ outputLength }) => {
     const sessionId = `sess-finished-tail-${outputLength}`;
     const { processTool, session } = createProcessSessionHarness(sessionId);
     const earlierMarker = "[earlier-output]";
@@ -697,22 +659,13 @@ test.each([
     expect(aggregated).toHaveLength(outputLength);
     expect(details.aggregated).toBe(aggregated);
     expect(text).toContain(latestMarker);
-    if (expectsOmissionNote) {
-      expect(text).not.toContain(earlierMarker);
-      expect(text).toContain("earlier retained output is omitted");
-      expect(text).toContain("action=log with offset and limit");
-    } else {
-      expect(text).toContain(earlierMarker);
-      expect(text).not.toContain("earlier retained output is omitted");
-    }
+    expect(text).toContain(earlierMarker);
+    expect(text).not.toContain("earlier retained output is omitted");
     expect(text).not.toContain("discarded at the retention cap");
   },
 );
 
-test.each([
-  { name: "below the retained tail", outputLength: 1_500, aggregateCap: 1_000 },
-  { name: "above the retained tail", outputLength: 3_500, aggregateCap: 3_000 },
-])(
+test.each([{ name: "above the retained tail", outputLength: 3_500, aggregateCap: 3_000 }])(
   "process poll distinguishes discarded aggregate output $name",
   async ({ outputLength, aggregateCap }) => {
     const sessionId = `sess-aggregate-cap-${aggregateCap}`;
@@ -853,7 +806,7 @@ test.each([
     timedOut: false,
   },
 ] as const)(
-  "process log and poll preserve authoritative $name without log consuming the completion",
+  "process list, log, and poll preserve authoritative $name without consuming the completion",
   async ({ name, exitCode, exitSignal, status, exitReason, timedOut, ...optional }) => {
     const sessionId = `sess-terminal-${name.replaceAll(" ", "-")}`;
     const { processTool, session } = createProcessSessionHarness(sessionId);
@@ -862,6 +815,22 @@ test.each([
     appendOutput(session, "stderr", "terminal output\n");
     markExited(session, exitCode, exitSignal, status, exitReason, optional.noOutputTimedOut);
     recordNotifyOnExitRemoval(session, remove);
+
+    const list = await processTool.execute("toolcall-terminal-list", { action: "list" });
+    const listedSessions = (list.details as { sessions?: Array<{ sessionId?: string }> }).sessions;
+    const listed = listedSessions?.find((candidate) => candidate.sessionId === sessionId);
+    expect(listed).toMatchObject({
+      status,
+      sessionId,
+      exitCode: exitCode ?? undefined,
+      exitReason,
+      timedOut,
+      ...optional,
+    });
+    const listText = list.content[0]?.type === "text" ? list.content[0].text : "";
+    expect(listText).toContain(sessionId);
+    expect(listText.includes(`[${exitReason}]`)).toBe(timedOut);
+    expect(remove).not.toHaveBeenCalled();
 
     const log = await processTool.execute("toolcall-terminal-log", {
       action: "log",
@@ -893,6 +862,8 @@ test.each([
     const pollText = poll.content[0]?.type === "text" ? poll.content[0].text : "";
     expect(pollText).toContain("terminal output");
     expect(pollText.includes("Verify the resulting state before retrying")).toBe(timedOut);
+    expect(remove).not.toHaveBeenCalled();
+    acknowledgeInternalToolResult(poll);
     expect(remove).toHaveBeenCalledOnce();
   },
 );

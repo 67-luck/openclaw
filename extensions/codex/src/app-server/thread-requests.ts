@@ -6,7 +6,12 @@ import {
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { isIncognitoSessionKey } from "../incognito-session.js";
 import type { CodexAppServerClient } from "./client.js";
+import {
+  CODEX_SESSION_OVERRIDABLE_LAYER_TYPES,
+  readCodexEffectiveConfig,
+} from "./config-layer-policy.js";
 import type { CodexAppServerRuntimeOptions } from "./config.js";
+import { joinPresentSections } from "./developer-instruction-sections.js";
 import {
   isMessageOnlyCodexSourceReply,
   isSystemAgentOnlyCodexDynamicToolAllowlist,
@@ -26,6 +31,8 @@ import {
   type JsonObject,
   type JsonValue,
 } from "./protocol.js";
+import { isCodexResponsesOAuthRun } from "./responses-oauth.js";
+import type { CodexThreadConfigurationOptions } from "./thread-configuration-options.js";
 import { fingerprintJsonObject } from "./thread-fingerprints.js";
 import {
   CODEX_NATIVE_PERSONALITY_NONE,
@@ -44,6 +51,10 @@ export const CODEX_RING_ZERO_BASE_INSTRUCTIONS = "";
 const CODEX_CODE_MODE_THREAD_CONFIG: JsonObject = {
   "features.code_mode": true,
   "features.code_mode_only": false,
+  // Native code mode replaces OpenClaw's own exec/read/write/edit tools with the
+  // Codex shell, and cron creator caps project read/exec on the same premise, so
+  // request the shell explicitly instead of relying on the codex-home default.
+  "features.shell_tool": true,
   "features.apply_patch_streaming_events": true,
   suppress_unstable_features_warning: true,
 };
@@ -146,16 +157,6 @@ const CODEX_RING_ZERO_RESTRICTED_FEATURE_ALIASES = new Map<string, string>([
   ["codex_hooks", "hooks"],
 ]);
 
-const CODEX_RING_ZERO_OVERRIDABLE_LAYER_TYPES = new Set([
-  "packagedDefaults",
-  "mdm",
-  "system",
-  "enterpriseManaged",
-  "user",
-  "project",
-  "sessionFlags",
-]);
-
 export type CodexThreadConfigurationContext = CodexThreadPromptContext &
   Pick<
     EmbeddedRunAttemptParams,
@@ -165,25 +166,6 @@ export type CodexThreadConfigurationContext = CodexThreadPromptContext &
     | "bootstrapContextMode"
     | "scheduledRuntimeAuthority"
   >;
-
-type CodexThreadConfigurationOptions = {
-  cwd?: string;
-  dynamicTools?: CodexDynamicToolSpec[];
-  appServer: CodexAppServerRuntimeOptions;
-  developerInstructions?: string;
-  config?: JsonObject;
-  nativeCodeModeEnabled?: boolean;
-  nativeProviderWebSearchSupport?: CodexNativeWebSearchSupport;
-  nativeCodeModeOnlyEnabled?: boolean;
-  webSearchAllowed?: boolean;
-  environmentSelection?: CodexTurnEnvironmentParams[];
-  model?: string | null;
-  modelProvider?: string | null;
-  hostSystemAgentActive?: boolean;
-  restrictedToolSurfaceInheritedMcpServerNames?: readonly string[];
-  shellEnvironment?: Readonly<Record<string, string>>;
-  disableLoginShell?: boolean;
-};
 
 /** Common deterministic start/resume/fork fields; no run resources or unsupported setters. */
 export function buildCodexThreadConfiguration(
@@ -202,21 +184,17 @@ export function buildCodexThreadConfiguration(
       ? { serviceTier: options.appServer.serviceTier }
       : {}),
     config: buildCodexRuntimeThreadConfigForRun(params, options.config, {
-      nativeCodeModeEnabled: options.nativeCodeModeEnabled,
-      nativeProviderWebSearchSupport: options.nativeProviderWebSearchSupport,
-      nativeCodeModeOnlyEnabled: options.nativeCodeModeOnlyEnabled,
+      ...options,
       directOnlyToolNamespaces: resolveDirectOnlyToolNamespaces(options.dynamicTools),
-      webSearchAllowed: options.webSearchAllowed,
-      appServer: options.appServer,
-      hostSystemAgentActive: options.hostSystemAgentActive,
-      restrictedToolSurfaceInheritedMcpServerNames:
-        options.restrictedToolSurfaceInheritedMcpServerNames,
-      shellEnvironment: options.shellEnvironment,
-      disableLoginShell: options.disableLoginShell,
     }),
-    developerInstructions:
+    // Catalog-owned collaboration messages replace caller collaboration instructions
+    // (codex-rs/core/src/context/world_state/collaboration_mode.rs), so the skill
+    // catalog rides the thread developer carrier after the immutable generic policy.
+    developerInstructions: joinPresentSections(
       options.developerInstructions ??
-      buildDeveloperInstructions(params, { dynamicTools: options.dynamicTools }),
+        buildDeveloperInstructions(params, { dynamicTools: options.dynamicTools }),
+      options.skillsInstructions,
+    ),
   };
 }
 
@@ -225,19 +203,14 @@ export function buildThreadStartParams(
   options: CodexThreadConfigurationOptions & { cwd: string; dynamicTools: CodexDynamicToolSpec[] },
 ): CodexThreadStartParams {
   const resolvedModelProvider = resolveCodexAppServerModelProvider({
-    provider: params.provider,
-    authProfileId: params.authProfileId,
-    authProfileStore: params.authProfileStore,
-    agentDir: params.agentDir,
-    config: params.config,
+    ...params,
+    homeScope: options.appServer.start.homeScope,
   });
   const modelSelection = resolveCodexAppServerRequestModelSelection({
+    ...params,
+    homeScope: options.appServer.start.homeScope,
     model: options.model ?? params.modelId,
     modelProvider: options.modelProvider ?? resolvedModelProvider,
-    authProfileId: params.authProfileId,
-    authProfileStore: params.authProfileStore,
-    agentDir: params.agentDir,
-    config: params.config,
   });
   return {
     model: modelSelection.model,
@@ -249,6 +222,7 @@ export function buildThreadStartParams(
       : {}),
     personality: CODEX_NATIVE_PERSONALITY_NONE,
     serviceName: "OpenClaw",
+    threadSource: "openclaw",
     ...resolveCodexThreadEnvironmentSelection(options),
     // Codex 0.146 accepts canonical typed function and namespace specs natively.
     dynamicTools: [...options.dynamicTools],
@@ -271,20 +245,17 @@ export function buildThreadResumeParams(
   const modelSelection = options.preserveNativeModel
     ? undefined
     : resolveCodexAppServerRequestModelSelection({
+        ...params,
+        homeScope: options.appServer.start.homeScope,
         model: options.model ?? params.modelId,
         modelProvider:
           options.modelProvider ??
           resolveCodexAppServerModelProvider({
-            provider: params.provider,
+            ...params,
+            homeScope: options.appServer.start.homeScope,
             authProfileId: options.authProfileId ?? params.authProfileId,
-            authProfileStore: params.authProfileStore,
-            agentDir: params.agentDir,
-            config: params.config,
           }),
         authProfileId: options.authProfileId ?? params.authProfileId,
-        authProfileStore: params.authProfileStore,
-        agentDir: params.agentDir,
-        config: params.config,
       });
   return {
     threadId: options.threadId,
@@ -337,27 +308,17 @@ export function buildCodexRuntimeThreadConfig(
     delete disabledConfig["features.apply_patch_streaming_events"];
     return disabledConfig;
   }
-  if (options.nativeCodeModeOnlyEnabled === true) {
-    const merged = expectDefined(
-      mergeCodexThreadConfigs(
-        codeModeConfig,
-        configured,
-        CODEX_GOAL_CONTINUATION_DISABLED_THREAD_CONFIG,
-        CODEX_NATIVE_UPDATE_PLAN_DISABLED_THREAD_CONFIG,
-        { "features.code_mode_only": true },
-      ),
-      "Codex code mode only config",
-    );
-    return ensureDirectOnlyToolNamespaces(merged, options.directOnlyToolNamespaces);
-  }
   const merged = expectDefined(
     mergeCodexThreadConfigs(
       codeModeConfig,
       configured,
       CODEX_GOAL_CONTINUATION_DISABLED_THREAD_CONFIG,
       CODEX_NATIVE_UPDATE_PLAN_DISABLED_THREAD_CONFIG,
+      options.nativeCodeModeOnlyEnabled === true ? { "features.code_mode_only": true } : undefined,
     ),
-    "Codex code mode config",
+    options.nativeCodeModeOnlyEnabled === true
+      ? "Codex code mode only config"
+      : "Codex code mode config",
   );
   return ensureDirectOnlyToolNamespaces(merged, options.directOnlyToolNamespaces);
 }
@@ -411,6 +372,7 @@ export function buildCodexRuntimeThreadConfigForRun(
     hostSystemAgentActive?: boolean;
     restrictedToolSurfaceInheritedMcpServerNames?: readonly string[];
     shellEnvironment?: Readonly<Record<string, string>>;
+    shellPathPrepend?: readonly string[];
     disableLoginShell?: boolean;
   } = {},
 ): JsonObject {
@@ -437,7 +399,7 @@ export function buildCodexRuntimeThreadConfigForRun(
   const webSearchConfig = resolveCodexWebSearchPlan({
     config: params.config,
     disableTools: params.disableTools,
-    nativeToolSurfaceEnabled: options.nativeCodeModeEnabled,
+    nativeToolSurfaceEnabled: isCodexResponsesOAuthRun(params) || options.nativeCodeModeEnabled,
     nativeProviderWebSearchSupport: options.nativeProviderWebSearchSupport,
     webSearchAllowed: options.webSearchAllowed,
   }).threadConfig;
@@ -449,6 +411,19 @@ export function buildCodexRuntimeThreadConfigForRun(
     mergeCodexThreadConfigs(
       baseConfig,
       options.appServer?.networkProxy?.configPatch,
+      isCodexResponsesOAuthRun(params)
+        ? {
+            ...CODEX_DELEGATION_DISABLED_THREAD_CONFIG,
+            "features.apps": false,
+            "features.plugins": false,
+            "features.image_generation": false,
+            "features.memories": false,
+            "features.skill_search": false,
+            "orchestrator.skills.enabled": false,
+            "orchestrator.mcp.enabled": false,
+            "skills.bundled.enabled": false,
+          }
+        : undefined,
       params.pluginHarnessToolPolicySafeDeniedTools?.includes("image_generate")
         ? { "features.image_generation": false }
         : undefined,
@@ -461,7 +436,7 @@ export function buildCodexRuntimeThreadConfigForRun(
       messageOnlySourceReply || params.pluginHarnessToolPolicyRestricted === true
         ? buildRestrictedToolConfigPatch(
             restrictedToolSurfaceMcpServerNames,
-            Boolean(params.scheduledRuntimeAuthority),
+            Boolean(params.scheduledRuntimeAuthority) && !isCodexResponsesOAuthRun(params),
           )
         : buildCodexRingZeroThreadConfigPatch(
             params,
@@ -481,6 +456,7 @@ export function buildCodexRuntimeThreadConfigForRun(
     contextConfig,
     options.shellEnvironment,
     options.disableLoginShell,
+    options.shellPathPrepend,
   );
 }
 
@@ -524,18 +500,9 @@ export async function readCodexInheritedMcpServerNames(
   client: Pick<CodexAppServerClient, "request">,
   cwd: string,
   signal?: AbortSignal,
+  effectiveConfig?: CodexConfigReadResponse,
 ): Promise<string[]> {
-  const response: CodexConfigReadResponse = await client.request(
-    "config/read",
-    {
-      cwd,
-      includeLayers: true,
-    },
-    { signal },
-  );
-  if (!isJsonObject(response) || !isJsonObject(response.config)) {
-    throw new Error("Codex config/read returned an invalid effective config");
-  }
+  const response = effectiveConfig ?? (await readCodexEffectiveConfig(client, cwd, { signal }));
   if (!Array.isArray(response.layers)) {
     throw new Error("Codex config/read omitted effective config layers");
   }
@@ -555,7 +522,7 @@ export async function readCodexInheritedMcpServerNames(
         `Codex restricted tool surface cannot override config layer ${layer.name.type}; ${migrationGuidance}.`,
       );
     }
-    if (!CODEX_RING_ZERO_OVERRIDABLE_LAYER_TYPES.has(layer.name.type)) {
+    if (!CODEX_SESSION_OVERRIDABLE_LAYER_TYPES.has(layer.name.type)) {
       throw new Error(
         `Codex restricted tool surface does not recognize config layer ${layer.name.type}`,
       );
@@ -575,12 +542,14 @@ export async function assertCodexManagedRequirementsDoNotOverrideToolPolicy(
   client: Pick<CodexAppServerClient, "request">,
   options: {
     restrictedToolSurface: boolean;
+    requiredNativeShell?: boolean;
     additionalDeniedFeatures?: readonly string[];
     allowedManagedRequirementsFingerprint?: string;
     allowConfiguredManagedHooks?: boolean;
+    privateManagedHooksPresent?: boolean;
   },
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<{ enableManagedHooks: boolean }> {
   const requirements = await readCodexManagedRequirements(client, signal);
   const managedRequirementsFingerprint = buildCodexManagedRequirementsFingerprint(requirements);
   const managedRequirementsMatch =
@@ -594,8 +563,12 @@ export async function assertCodexManagedRequirementsDoNotOverrideToolPolicy(
     );
   }
   if (requirements === null) {
-    return;
+    return {
+      enableManagedHooks: managedHooksAllowed && options.privateManagedHooksPresent === true,
+    };
   }
+  let hasManagedHooks = false;
+  let requiredHooksEnabled: boolean | undefined;
   if (options.restrictedToolSurface) {
     for (const key of ["hooks", "managedHooks", "managed_hooks"] as const) {
       const hooks = requirements[key];
@@ -605,7 +578,8 @@ export async function assertCodexManagedRequirementsDoNotOverrideToolPolicy(
       if (!isJsonObject(hooks)) {
         throw new Error("Codex configRequirements/read returned invalid managed hooks");
       }
-      if (hasNonEmptyJsonValue(hooks) && !managedHooksAllowed) {
+      hasManagedHooks ||= hasNonEmptyJsonValue(hooks);
+      if (hasManagedHooks && !managedHooksAllowed) {
         throw new Error("Codex restricted tool surface cannot override managed hooks");
       }
     }
@@ -624,11 +598,17 @@ export async function assertCodexManagedRequirementsDoNotOverrideToolPolicy(
         throw new Error("Codex configRequirements/read returned invalid feature requirements");
       }
       const canonicalFeature = CODEX_RING_ZERO_RESTRICTED_FEATURE_ALIASES.get(feature) ?? feature;
+      if (options.requiredNativeShell && canonicalFeature === "shell_tool" && !enabled) {
+        throw new Error(
+          "Codex native code mode requires shell_tool, but managed requirements disable it. Ask your administrator to allow the shell, or select a tool policy that disables native code mode; no automation authority was captured.",
+        );
+      }
       const deniedByToolPolicy =
         (options.restrictedToolSurface &&
           CODEX_RING_ZERO_RESTRICTED_FEATURES.has(canonicalFeature)) ||
         additionalDeniedFeatures.has(canonicalFeature);
       if (canonicalFeature === "hooks" && managedHooksAllowed) {
+        requiredHooksEnabled = enabled;
         continue;
       }
       if (enabled && deniedByToolPolicy) {
@@ -636,6 +616,14 @@ export async function assertCodexManagedRequirementsDoNotOverrideToolPolicy(
       }
     }
   }
+  return {
+    enableManagedHooks:
+      managedHooksAllowed &&
+      requiredHooksEnabled !== false &&
+      (hasManagedHooks ||
+        options.privateManagedHooksPresent === true ||
+        requiredHooksEnabled === true),
+  };
 }
 
 /** Hashes the exact managed requirements without retaining their hook commands or policy details. */

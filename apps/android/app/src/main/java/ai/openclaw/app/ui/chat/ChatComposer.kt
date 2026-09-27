@@ -212,15 +212,9 @@ internal fun chatComposerTextDraftsFromSnapshot(values: List<String>?): ChatComp
         if (entry[7].isNotEmpty()) restored[owner] = entry[7]
       }
 
-      CHAT_COMPOSER_PENDING_SEND_RECORD -> {
+      CHAT_COMPOSER_PENDING_SEND_RECORD, CHAT_COMPOSER_PENDING_SEND_WITHOUT_INPUT_RECORD -> {
         if (entry[6].isNotEmpty()) {
-          pending += PendingChatComposerSend(entry[6], owner, entry[7])
-        }
-      }
-
-      CHAT_COMPOSER_PENDING_SEND_WITHOUT_INPUT_RECORD -> {
-        if (entry[6].isNotEmpty()) {
-          pending += PendingChatComposerSend(entry[6], owner, null)
+          pending += PendingChatComposerSend(entry[6], owner, entry[7].takeIf { entry[0] == CHAT_COMPOSER_PENDING_SEND_RECORD })
         }
       }
     }
@@ -527,18 +521,18 @@ internal fun appendChatDictationTranscript(
 
 internal fun chatComposerSendEnabled(
   voiceNoteState: VoiceNoteRecorderState,
-  pendingRunCount: Int,
+  talkActive: Boolean,
   hasContent: Boolean,
   shareStaging: Boolean,
   sendInFlight: Boolean = false,
   dictationActive: Boolean = false,
   modelUnavailable: Boolean = false,
 ): Boolean =
-  !shareStaging &&
+  !talkActive &&
+    !shareStaging &&
     !sendInFlight &&
     !dictationActive &&
     !modelUnavailable &&
     voiceNoteState !is VoiceNoteRecorderState.Recording &&
     voiceNoteState !is VoiceNoteRecorderState.Preparing &&
-    pendingRunCount == 0 &&
     hasContent

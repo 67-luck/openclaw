@@ -4,7 +4,7 @@ import { bindActiveOperatorTurnAuthority } from "./cron-creator-authority-contex
 import type { AnyAgentTool } from "./tools/common.js";
 import { createTranscriptsTool } from "./tools/transcripts-tool.js";
 
-type TranscriptCallerOptions = {
+function resolveTranscriptCaller(options: {
   agentChannel?: string;
   agentAccountId?: string;
   agentGroupId?: string | null;
@@ -16,11 +16,7 @@ type TranscriptCallerOptions = {
   gatewayCallerScheduled?: boolean;
   requesterSenderId?: string | null;
   runId?: string;
-};
-
-function resolveTranscriptCaller(
-  options: TranscriptCallerOptions,
-): { caller: TranscriptToolCaller; assertCallerActive?: () => void } | undefined {
+}): { caller: TranscriptToolCaller; assertCallerActive?: () => void } | undefined {
   const accountId = options.gatewayCallerAccountId ?? options.agentAccountId;
   const channel =
     options.gatewayCallerLocal || options.gatewayCallerChannel === null
@@ -61,7 +57,7 @@ function resolveTranscriptCaller(
 export function resolveTranscriptsTool(
   config: OpenClawConfig | undefined,
   agentId: string,
-  options: TranscriptCallerOptions | undefined,
+  options: Parameters<typeof resolveTranscriptCaller>[0] | undefined,
 ): AnyAgentTool | undefined {
   if (config?.transcripts?.enabled === false) {
     return undefined;
@@ -72,6 +68,10 @@ export function resolveTranscriptsTool(
   }
   return createTranscriptsTool({
     agentId,
+    agentChannel: options?.gatewayCallerLocal
+      ? undefined
+      : (options?.gatewayCallerChannel ?? options?.agentChannel),
+    agentAccountId: options?.gatewayCallerAccountId ?? options?.agentAccountId,
     caller: caller.caller,
     ...(caller.assertCallerActive ? { assertCallerActive: caller.assertCallerActive } : {}),
     config,

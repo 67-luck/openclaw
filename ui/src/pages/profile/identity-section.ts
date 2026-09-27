@@ -1,5 +1,8 @@
 import { html, nothing } from "lit";
-import type { UserProfile } from "../../../../packages/gateway-protocol/src/index.ts";
+import {
+  GATEWAY_OWNER_PROFILE_ID,
+  type UserProfile,
+} from "../../../../packages/gateway-protocol/src/index.ts";
 import {
   renderSettingsRow,
   renderSettingsSection,
@@ -8,10 +11,13 @@ import {
   renderSettingsValue,
 } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
+import { registerProfileEnglish } from "../../i18n/locales/en-profile.ts";
 import "../../components/viewer-facepile.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "../../lib/external-link.ts";
 import type { PresenceViewer } from "../../lib/presence-users.ts";
 import { PROFILE_SETTINGS_TARGET_IDS } from "../config/settings-targets.ts";
+
+registerProfileEnglish();
 
 type IdentitySectionProps = {
   profile: UserProfile;
@@ -41,6 +47,7 @@ export function renderIdentitySection(props: IdentitySectionProps) {
   const nameChanged = props.displayName.trim() !== savedName;
   const emails = props.profile.emails.join(", ");
   const githubIdentity = props.profile.githubIdentity;
+  const isOwnerProfile = props.profile.id === GATEWAY_OWNER_PROFILE_ID;
   return html`<div id=${PROFILE_SETTINGS_TARGET_IDS.identity}>
     ${renderSettingsSection(
       {
@@ -70,9 +77,11 @@ export function renderIdentitySection(props: IdentitySectionProps) {
                   }
                 }}
               >
-                ${props.busy === "avatar"
-                  ? t("profilePage.identity.processingAvatar")
-                  : t("profilePage.identity.chooseAvatar")}
+                ${
+                  props.busy === "avatar"
+                    ? t("profilePage.identity.processingAvatar")
+                    : t("profilePage.identity.chooseAvatar")
+                }
               </button>
               <input
                 type="file"
@@ -122,16 +131,22 @@ export function renderIdentitySection(props: IdentitySectionProps) {
             </form>
           `,
         })}
-        ${renderSettingsRow({
-          title: t("profilePage.identity.linkedEmails"),
-          description: t("profilePage.identity.linkedEmailsDescription"),
-          control: emails ? renderSettingsValue(emails) : nothing,
-        })}
+        ${
+          isOwnerProfile
+            ? nothing
+            : renderSettingsRow({
+                title: t("profilePage.identity.linkedEmails"),
+                description: t("profilePage.identity.linkedEmailsDescription"),
+                control: emails ? renderSettingsValue(emails) : nothing,
+              })
+        }
         ${renderSettingsRow({
           title: t("profilePage.identity.githubAccount"),
-          description: githubIdentity
-            ? t("profilePage.identity.githubAccountDescription")
-            : t("profilePage.identity.githubUnavailableDescription"),
+          description: isOwnerProfile
+            ? t("profilePage.identity.ownerGithubDescription")
+            : githubIdentity
+              ? t("profilePage.identity.githubAccountDescription")
+              : t("profilePage.identity.githubUnavailableDescription"),
           control: githubIdentity
             ? html`
                 <a
@@ -157,18 +172,22 @@ export function renderIdentitySection(props: IdentitySectionProps) {
         })}
         ${renderSettingsToggleRow({
           title: t("profilePage.identity.gitCoauthor"),
-          description: githubIdentity
-            ? t("profilePage.identity.gitCoauthorDescription")
-            : t("profilePage.identity.gitCoauthorUnavailable"),
+          description: isOwnerProfile
+            ? t("profilePage.identity.ownerGitCoauthorDescription")
+            : githubIdentity
+              ? t("profilePage.identity.gitCoauthorDescription")
+              : t("profilePage.identity.gitCoauthorUnavailable"),
           checked: Boolean(githubIdentity && props.gitCoauthorEnabled),
           disabled: props.busy !== null || !githubIdentity,
           onChange: props.onGitCoauthorChange,
         })}
-        ${props.error
-          ? html`<div class="settings-row identity-error" role="alert">
-              <span class="settings-row__desc">${props.error}</span>
-            </div>`
-          : nothing}
+        ${
+          props.error
+            ? html`<div class="settings-row identity-error" role="alert">
+                <span class="settings-row__desc">${props.error}</span>
+              </div>`
+            : nothing
+        }
       `,
     )}
   </div>`;

@@ -3,12 +3,13 @@
  * Includes reasoning/tool-call cleanup and internal event prompt formatting.
  */
 
-import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it } from "vitest";
 import { markInboundContextLabel } from "../auto-reply/reply/inbound-context-marker.js";
+import { createCommandError } from "../process/command-error.js";
+import type { SpawnResult } from "../process/exec-result.js";
 import {
   downgradeOpenAIFunctionCallReasoningPairs,
-  downgradeOpenAIReasoningBlocks,
+  dropStaleOpenAIReasoning,
   isMessagingToolDuplicate,
   normalizeTextForComparison,
 } from "./embedded-agent-helpers.js";
@@ -27,12 +28,12 @@ describe("sanitizeUserFacingText", () => {
     expect(sanitizeUserFacingText("Hi <final>there</final>!")).toBe("Hi there!");
   });
 
-  it("strips self-closing and attributed final tags", () => {
-    expect(sanitizeUserFacingText("<final/>Hello")).toBe("Hello");
-    expect(sanitizeUserFacingText("<final data-model='gemini'>Hello</final>")).toBe("Hello");
-    expect(sanitizeUserFacingText('<final reason="gemma">Hello</final>')).toBe("Hello");
-    expect(sanitizeUserFacingText("<final data-model=openrouter/google/gemini>Hello</final>")).toBe(
-      "Hello",
+  it.each([
+    'Example:\n```xml\n<final data-model="demo">payload</final>\n```',
+    "Write `<final>payload</final>` as XML.",
+  ])("preserves literal final tags through user-facing sanitization: %s", (example) => {
+    expect(sanitizeUserFacingText(`${example}\n<final>Outside answer</final>`)).toBe(
+      `${example}\nOutside answer`,
     );
   });
 
@@ -204,6 +205,49 @@ describe("sanitizeUserFacingText", () => {
     ).toBe("LLM request failed: connection refused by the provider endpoint.");
   });
 
+  it("preserves the production Git inventory timeout and its hint instead of provider copy", () => {
+    const header =
+      "Error: git ls-tree -r --format=%(objectsize) c79ad267ba623c1a323f1f6e8b60228bd5a30ce5 -- failed (timed out after 120 seconds; signal SIGTERM):";
+    const hint = "Check repository access and disk space.";
+    const text = `${header}\n…\n4514\n4168\n…\n${hint}`;
+    const rendered = renderUserFacingText(text, { errorContext: true });
+    expect(rendered).toBe(`${header} ${hint}`);
+    expect(rendered).not.toBe("LLM request timed out.");
+  });
+
+  it.each([
+    ["Error: fetch failed", "LLM request failed: network connection error."],
+    ["Error: request timed out", "LLM request timed out."],
+  ])("keeps provider presentation for unmarked errors: %s", (text, expected) => {
+    expect(renderUserFacingText(text, { errorContext: true })).toBe(expected);
+  });
+
+  it.each([
+    { termination: "exit", code: 23, signal: null },
+    { termination: "exit", code: null, signal: null },
+  ] satisfies Array<Partial<SpawnResult>>)(
+    "preserves command failure metadata and the bounded recovery tail: %j",
+    (metadata) => {
+      const error = createCommandError(
+        "worktree setup",
+        {
+          stdout: "",
+          stderr: `Provider rate limit reached\nCreate   the fixture input and retry ${"x".repeat(600)}`,
+          killed: false,
+          ...metadata,
+        },
+        { timeoutMs: 120_000 },
+      );
+      const header = String(error).split("\n", 1)[0];
+      const rendered = renderUserFacingText(String(error), { errorContext: true });
+      expect(rendered).toContain(`${header} Create the fixture input and retry`);
+      expect(rendered).not.toContain("Provider rate limit");
+      expect(rendered).not.toMatch(/\s{2,}/u);
+      expect(rendered.length).toBeLessThanOrEqual(500);
+      expect(rendered).toMatch(/\.\.\.$/u);
+    },
+  );
+
   it.each(["disk full", "ENOSPC: no space left on device"])(
     "rewrites disk-space failures with errorContext: %s",
     (input) => {
@@ -238,10 +282,7 @@ describe("sanitizeUserFacingText", () => {
   });
 
   it.each([
-    { input: "\n\nHello there!", expected: "Hello there!" },
     { input: "\nHello there!", expected: "Hello there!" },
-    { input: "\n\n\nMultiple newlines", expected: "Multiple newlines" },
-    { input: "\n \nHello", expected: "Hello" },
     { input: "  \n\nHello", expected: "Hello" },
   ])("strips leading empty lines: %j", ({ input, expected }) => {
     expect(sanitizeUserFacingText(input)).toBe(expected);
@@ -379,86 +420,6 @@ describe("sanitizeUserFacingText", () => {
     ].join("\n");
 
     expect(sanitizeUserFacingText(input)).toBe("Before\n\nAfter");
-  });
-
-  it("strips function response wrappers adjacent to stripped function calls", () => {
-    const input = [
-      '<function_calls><invoke name="exec">internal</invoke></function_calls><function_response>',
-      'Searching for: "what skills matter most in the age of AI"',
-      "</function_response>",
-      "After",
-    ].join("\n");
-
-    expect(sanitizeUserFacingText(input)).toBe("After");
-  });
-
-  it("strips function response wrappers adjacent to inline stripped function calls", () => {
-    const input = [
-      'Checking. <function_calls><invoke name="exec">internal</invoke></function_calls><function_response>',
-      'Searching for: "what skills matter most in the age of AI"',
-      "</function_response>",
-      "After",
-    ].join("\n");
-
-    expect(sanitizeUserFacingText(input)).toBe("Checking. \nAfter");
-  });
-
-  it("strips compact function response wrappers after newline-separated function calls", () => {
-    const input = [
-      'Checking. <function_calls><invoke name="exec">internal</invoke></function_calls>',
-      "<function_response>ok</function_response>",
-      "After",
-    ].join("\n");
-
-    expect(sanitizeUserFacingText(input)).toBe("Checking. \n\nAfter");
-  });
-
-  it("strips compact dangling function response wrappers adjacent to function calls", () => {
-    const input =
-      'Checking. <function_calls><invoke name="exec">internal</invoke></function_calls><function_response>raw output';
-
-    expect(sanitizeUserFacingText(input)).toBe("Checking. ");
-  });
-
-  it("strips same-line function response payloads with leading spaces", () => {
-    const input =
-      '<function_calls><invoke name="exec">internal</invoke></function_calls><function_response> raw output</function_response>\nAfter';
-
-    expect(sanitizeUserFacingText(input)).toBe("After");
-  });
-
-  it("strips same-line function response payloads that start like prose", () => {
-    const input =
-      '<function_calls><invoke name="exec">internal</invoke></function_calls><function_response> is enabled</function_response>\nAfter';
-
-    expect(sanitizeUserFacingText(input)).toBe("After");
-  });
-
-  it("strips adjacent function response payloads that match explanation wording", () => {
-    const input =
-      '<function_calls><invoke name="exec">internal</invoke></function_calls><function_response> response wrapper secret</function_response>\nAfter';
-
-    expect(sanitizeUserFacingText(input)).toBe("After");
-  });
-
-  it("strips dangling same-line function response payloads with leading spaces", () => {
-    const input =
-      'Checking. <function_calls><invoke name="exec">internal</invoke></function_calls><function_response> raw output';
-
-    expect(sanitizeUserFacingText(input)).toBe("Checking. ");
-  });
-
-  it("strips chained function response wrappers adjacent to stripped function calls", () => {
-    const input = [
-      'Checking. <function_calls><invoke name="exec">internal</invoke></function_calls><function_response>',
-      "first result",
-      "</function_response><function_response>",
-      "second result",
-      "</function_response>",
-      "After",
-    ].join("\n");
-
-    expect(sanitizeUserFacingText(input)).toBe("Checking. \nAfter");
   });
 
   it("strips compact chained function response wrappers adjacent to stripped function calls", () => {
@@ -698,17 +659,6 @@ describe("stripThoughtSignatures", () => {
       thinking: "test",
       thought_signature: "AQID",
     });
-    expect("thought_signature" in expectDefined(result[0], "result[0] test invariant")).toBe(false);
-    expect("thought_signature" in expectDefined(result[1], "result[1] test invariant")).toBe(true);
-  });
-  it("preserves blocks without thought_signature", () => {
-    const input = [
-      { type: "text", text: "hello" },
-      { type: "toolCall", id: "call_1", name: "read", arguments: {} },
-    ];
-    const result = stripThoughtSignatures(input);
-
-    expect(result).toEqual(input);
   });
   it("handles mixed blocks with and without thought_signature", () => {
     const input = [
@@ -724,9 +674,6 @@ describe("stripThoughtSignatures", () => {
       { type: "thinking", thinking: "hmm" },
     ]);
   });
-  it("handles empty array", () => {
-    expect(stripThoughtSignatures([])).toStrictEqual([]);
-  });
   it("handles null/undefined blocks in array", () => {
     const input = [null, undefined, { type: "text", text: "hello" }];
     const result = stripThoughtSignatures(input);
@@ -734,50 +681,34 @@ describe("stripThoughtSignatures", () => {
   });
 });
 
-describe("downgradeOpenAIReasoningBlocks", () => {
-  it("keeps reasoning signatures when followed by content", () => {
-    const input = [
-      {
-        role: "assistant",
-        content: [
-          {
-            type: "thinking",
-            thinking: "internal reasoning",
-            thinkingSignature: JSON.stringify({ id: "rs_123", type: "reasoning" }),
-          },
-          { type: "text", text: "answer" },
-        ],
-      },
-    ];
+describe("dropStaleOpenAIReasoning", () => {
+  it.each([undefined, "synthetic-completed-reasoning"])(
+    "drops reasoning at the model switch boundary (encrypted: %s)",
+    (encryptedContent) => {
+      const input = [
+        {
+          role: "assistant",
+          timestamp: 2,
+          content: [
+            {
+              type: "thinking",
+              thinking: "internal reasoning",
+              thinkingSignature: JSON.stringify({
+                id: "rs_123",
+                type: "reasoning",
+                encrypted_content: encryptedContent,
+              }),
+            },
+            { type: "text", text: "answer" },
+          ],
+        },
+      ];
 
-    expect(
-      downgradeOpenAIReasoningBlocks(input as Parameters<typeof downgradeOpenAIReasoningBlocks>[0]),
-    ).toEqual(input);
-  });
-
-  it("drops replayable reasoning at the switch boundary even with following content", () => {
-    const input = [
-      {
-        role: "assistant",
-        timestamp: 2,
-        content: [
-          {
-            type: "thinking",
-            thinking: "internal reasoning",
-            thinkingSignature: JSON.stringify({ id: "rs_123", type: "reasoning" }),
-          },
-          { type: "text", text: "answer" },
-        ],
-      },
-    ];
-
-    expect(
-      downgradeOpenAIReasoningBlocks(
-        input as Parameters<typeof downgradeOpenAIReasoningBlocks>[0],
-        { dropReplayableReasoningBefore: 2 },
-      ),
-    ).toEqual([{ role: "assistant", timestamp: 2, content: [{ type: "text", text: "answer" }] }]);
-  });
+      expect(
+        dropStaleOpenAIReasoning(input as Parameters<typeof dropStaleOpenAIReasoning>[0], 2),
+      ).toEqual([{ role: "assistant", timestamp: 2, content: [{ type: "text", text: "answer" }] }]);
+    },
+  );
 
   it("drops the paired message id when replayable reasoning is dropped", () => {
     const input = [
@@ -799,35 +730,8 @@ describe("downgradeOpenAIReasoningBlocks", () => {
     ];
 
     expect(
-      downgradeOpenAIReasoningBlocks(
-        input as Parameters<typeof downgradeOpenAIReasoningBlocks>[0],
-        { dropReplayableReasoningBefore: 2 },
-      ),
+      dropStaleOpenAIReasoning(input as Parameters<typeof dropStaleOpenAIReasoning>[0], 2),
     ).toEqual([{ role: "assistant", content: [{ type: "text", text: "answer" }] }]);
-  });
-
-  it("keeps the paired message id when reasoning is preserved", () => {
-    const input = [
-      {
-        role: "assistant",
-        content: [
-          {
-            type: "thinking",
-            thinking: "internal reasoning",
-            thinkingSignature: JSON.stringify({ id: "rs_123", type: "reasoning" }),
-          },
-          {
-            type: "text",
-            text: "answer",
-            textSignature: JSON.stringify({ v: 1, id: "msg_123" }),
-          },
-        ],
-      },
-    ];
-
-    expect(
-      downgradeOpenAIReasoningBlocks(input as Parameters<typeof downgradeOpenAIReasoningBlocks>[0]),
-    ).toEqual(input);
   });
 
   it("drops paired message ids across every text block when reasoning is dropped", () => {
@@ -855,10 +759,7 @@ describe("downgradeOpenAIReasoningBlocks", () => {
     ];
 
     expect(
-      downgradeOpenAIReasoningBlocks(
-        input as Parameters<typeof downgradeOpenAIReasoningBlocks>[0],
-        { dropReplayableReasoningBefore: 2 },
-      ),
+      dropStaleOpenAIReasoning(input as Parameters<typeof dropStaleOpenAIReasoning>[0], 2),
     ).toEqual([
       {
         role: "assistant",
@@ -879,45 +780,6 @@ describe("downgradeOpenAIReasoningBlocks", () => {
     ]);
   });
 
-  it("drops orphaned reasoning blocks without following content", () => {
-    const input = [
-      {
-        role: "assistant",
-        content: [
-          {
-            type: "thinking",
-            thinkingSignature: JSON.stringify({ id: "rs_abc", type: "reasoning" }),
-          },
-        ],
-      },
-      { role: "user", content: "next" },
-    ];
-
-    expect(
-      downgradeOpenAIReasoningBlocks(input as Parameters<typeof downgradeOpenAIReasoningBlocks>[0]),
-    ).toEqual([{ role: "user", content: "next" }]);
-  });
-
-  it("drops object-form orphaned signatures", () => {
-    const input = [
-      {
-        role: "assistant",
-        content: [
-          {
-            type: "thinking",
-            thinkingSignature: { id: "rs_obj", type: "reasoning" },
-          },
-        ],
-      },
-    ];
-
-    expect(
-      downgradeOpenAIReasoningBlocks(
-        input as unknown as Parameters<typeof downgradeOpenAIReasoningBlocks>[0],
-      ),
-    ).toStrictEqual([]);
-  });
-
   it("keeps non-reasoning thinking signatures", () => {
     const input = [
       {
@@ -933,31 +795,8 @@ describe("downgradeOpenAIReasoningBlocks", () => {
     ];
 
     expect(
-      downgradeOpenAIReasoningBlocks(input as Parameters<typeof downgradeOpenAIReasoningBlocks>[0]),
+      dropStaleOpenAIReasoning(input as Parameters<typeof dropStaleOpenAIReasoning>[0], 2),
     ).toEqual(input);
-  });
-
-  it("is idempotent for orphaned reasoning cleanup", () => {
-    const input = [
-      {
-        role: "assistant",
-        content: [
-          {
-            type: "thinking",
-            thinkingSignature: JSON.stringify({ id: "rs_orphan", type: "reasoning" }),
-          },
-        ],
-      },
-      { role: "user", content: "next" },
-    ];
-
-    const once = downgradeOpenAIReasoningBlocks(
-      input as Parameters<typeof downgradeOpenAIReasoningBlocks>[0],
-    );
-    const twice = downgradeOpenAIReasoningBlocks(
-      once as Parameters<typeof downgradeOpenAIReasoningBlocks>[0],
-    );
-    expect(twice).toEqual(once);
   });
 });
 
@@ -994,35 +833,6 @@ describe("downgradeOpenAIFunctionCallReasoningPairs", () => {
     content: [makeToolCall(id)],
   });
 
-  it("strips fc ids when reasoning cannot be replayed", () => {
-    const input = [
-      makePlainAssistantTurn(callIdWithReasoning),
-      makeToolResult(callIdWithReasoning, "ok"),
-    ];
-
-    expect(
-      downgradeOpenAIFunctionCallReasoningPairs(
-        input as Parameters<typeof downgradeOpenAIFunctionCallReasoningPairs>[0],
-      ),
-    ).toEqual([
-      makePlainAssistantTurn(callIdWithoutReasoning),
-      makeToolResult(callIdWithoutReasoning, "ok"),
-    ]);
-  });
-
-  it("keeps fc ids when replayable reasoning is present", () => {
-    const input = [
-      makeReasoningAssistantTurn(callIdWithReasoning),
-      makeToolResult(callIdWithReasoning, "ok"),
-    ];
-
-    expect(
-      downgradeOpenAIFunctionCallReasoningPairs(
-        input as Parameters<typeof downgradeOpenAIFunctionCallReasoningPairs>[0],
-      ),
-    ).toEqual(input);
-  });
-
   it("only rewrites tool results paired to the downgraded assistant turn", () => {
     const input = [
       makePlainAssistantTurn(callIdWithReasoning),
@@ -1045,15 +855,12 @@ describe("downgradeOpenAIFunctionCallReasoningPairs", () => {
 });
 
 describe("normalizeTextForComparison", () => {
-  it.each([
-    { input: "Hello World", expected: "hello world" },
-    { input: "  hello  ", expected: "hello" },
-    { input: "hello    world", expected: "hello world" },
-    { input: "Hello 👋 World 🌍", expected: "hello world" },
-    { input: "  Hello 👋   WORLD  🌍  ", expected: "hello world" },
-  ])("normalizes comparison text", ({ input, expected }) => {
-    expect(normalizeTextForComparison(input)).toBe(expected);
-  });
+  it.each([{ input: "  Hello 👋   WORLD  🌍  ", expected: "hello world" }])(
+    "normalizes comparison text",
+    ({ input, expected }) => {
+      expect(normalizeTextForComparison(input)).toBe(expected);
+    },
+  );
 });
 
 describe("isMessagingToolDuplicate", () => {

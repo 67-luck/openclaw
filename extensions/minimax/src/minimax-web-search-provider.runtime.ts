@@ -1,4 +1,3 @@
-// Minimax provider module implements model/runtime integration.
 import {
   createProviderHttpError,
   formatProviderHttpErrorMessage,
@@ -272,11 +271,3 @@ export async function executeMiniMaxWebSearchProviderTool(
   writeCachedSearchPayload(cacheKey, payload, cacheTtlMs);
   return payload;
 }
-
-export const testing = {
-  MINIMAX_SEARCH_ENDPOINT_GLOBAL,
-  MINIMAX_SEARCH_ENDPOINT_CN,
-  resolveMiniMaxApiKey,
-  resolveMiniMaxEndpoint,
-  resolveMiniMaxRegion,
-} as const;

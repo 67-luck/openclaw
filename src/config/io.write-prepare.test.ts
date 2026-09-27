@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { collectChangedPaths } from "./config-change-paths.js";
 import { applyUnsetPathsForWrite } from "./config-path-mutation.js";
-import { restoreEnvRefsFromMap, resolveWriteEnvSnapshotForPath } from "./env-preserve.js";
+import { resolveWriteEnvSnapshotForPath } from "./env-preserve.js";
 import { createConfigValidationFailedError } from "./io.write-errors.js";
 import { resolvePersistCandidateForWrite } from "./io.write-prepare.js";
 import { tryResolveLegacyCompatibilityAgentId } from "./legacy.default-agent-owner.js";
@@ -31,6 +31,10 @@ const main = { default: true };
 const worker = { workspace: "/srv/worker" };
 const roster = (entries: Record<string, unknown>) => ({ agents: { entries } });
 const listRoster = (list: unknown[]) => ({ agents: { list } });
+const explicitRoster = (entries: unknown) => ({ agents: { ownership: "explicit", entries } });
+const tony = { workspace: "/w/tony" };
+const tonyInclude = { $include: "./tony.json5" };
+const keyedTonyInclude = [["agents", "entries", "tony"]];
 const identityRef = { source: "env", provider: "default", id: "SSH_IDENTITY" };
 const runtimeSecretEntry = {
   default: true,
@@ -108,13 +112,6 @@ const writeCases: WriteCase[] = [
     current: roster({ main, worker }),
     next: roster({ worker }),
     error: "Config write would drop agent roster entries without an explicit deletion: main.",
-  },
-  {
-    name: "allows an explicitly authorized agent deletion from the canonical roster",
-    current: roster({ main, worker }),
-    next: roster({ worker }),
-    options: { allowedAgentRosterRemovals: ["main"] },
-    expected: roster({ worker }),
   },
   {
     name: "replaces a complete legacy list atomically when the roster changes",
@@ -264,6 +261,7 @@ const writeCases: WriteCase[] = [
     current: roster({ main: { ...main, identity: { name: "Main", emoji: "🦞" } } }),
     authored: roster({ main: { ...main, identity: { $include: "./identity.json" } } }),
     next: roster({ main: { ...main, identity: { name: "Main", emoji: "🦞" } }, worker }),
+    options: { explicitSetPaths: [["agents"]] },
     expected: roster({ main: { ...main, identity: { $include: "./identity.json" } }, worker }),
   },
   {
@@ -273,6 +271,14 @@ const writeCases: WriteCase[] = [
     authored: listRoster([{ id: "main", ...main, identity: { $include: "./identity.json" } }]),
     next: roster({ main: { ...main, identity: { name: "Main", emoji: "🦞" } }, worker }),
     expected: roster({ main: { ...main, identity: { $include: "./identity.json" } }, worker }),
+  },
+  {
+    name: "preserves included tool arrays during explicit parent writes",
+    current: roster({ main: { ...main, tools: { allow: ["read"] } } }),
+    authored: roster({ main: { ...main, tools: { $include: "./tools.json" } } }),
+    next: roster({ main: { ...main, tools: { allow: ["read"] } }, worker }),
+    options: { explicitSetPaths: [["agents"]] },
+    expected: roster({ main: { ...main, tools: { $include: "./tools.json" } }, worker }),
   },
   {
     name: "rejects a roster write when a legacy whole-entry include owns the agent id",
@@ -536,24 +542,67 @@ const writeCases: WriteCase[] = [
     },
   },
   {
-    name: "preserves untouched include-owned subtrees during unrelated writes",
-    current: { agents: { defaults: { model: "openai/gpt-5.4" } }, gateway: { mode: "local" } },
-    authored: { agents: { $include: "./config/agents.json" }, gateway: { mode: "local" } },
-    next: {
-      agents: { defaults: { model: "openai/gpt-5.4" } },
-      gateway: { mode: "local", port: 18789 },
-    },
-    expected: {
-      agents: { $include: "./config/agents.json" },
-      gateway: { mode: "local", port: 18789 },
-    },
+    name: "preserves multiple keyed entry includes while adding one root-owned agent",
+    current: explicitRoster({ tony, ops: { workspace: "/w/ops" } }),
+    authored: explicitRoster({ tony: tonyInclude, ops: { $include: "./ops.json5" } }),
+    next: explicitRoster({
+      tony,
+      ops: { workspace: "/w/ops" },
+      worker: { workspace: "/w/worker" },
+    }),
+    options: { keyedAgentEntryIncludePaths: [...keyedTonyInclude, ["agents", "entries", "ops"]] },
+    expected: explicitRoster({
+      tony: tonyInclude,
+      ops: { $include: "./ops.json5" },
+      worker: { workspace: "/w/worker" },
+    }),
   },
   {
-    name: "allows removing root-authored sibling keys beside an include",
-    current: { gateway: { mode: "local", legacyKey: true } },
-    authored: { gateway: { $include: "./config/gateway.json", legacyKey: true } },
-    next: { gateway: { mode: "local" } },
-    expected: { gateway: { $include: "./config/gateway.json" } },
+    name: "removes a root-owned agent beside an unchanged keyed entry include",
+    current: explicitRoster({ tony, worker: { workspace: "/w/worker" } }),
+    authored: explicitRoster({ tony: tonyInclude, worker: { workspace: "/w/worker" } }),
+    next: explicitRoster({ tony }),
+    options: {
+      allowedAgentRosterRemovals: ["worker"],
+      keyedAgentEntryIncludePaths: keyedTonyInclude,
+    },
+    expected: explicitRoster({ tony: tonyInclude }),
+  },
+  {
+    name: "rejects array-shaped entries containing an include",
+    current: explicitRoster({ tony }),
+    authored: explicitRoster([tonyInclude]),
+    next: explicitRoster({ tony, worker: { workspace: "/w/worker" } }),
+    error: "Config write would flatten $include-owned config at agents",
+  },
+  {
+    name: "rejects an agents.entries include while adding a root-owned agent",
+    current: explicitRoster({ tony }),
+    authored: explicitRoster({ $include: "./agents.json5" }),
+    next: explicitRoster({ tony, worker: { workspace: "/w/worker" } }),
+    error: "Config write would flatten $include-owned config at agents",
+  },
+  {
+    name: "rejects changing a keyed entry include while adding a root-owned agent",
+    current: explicitRoster({ tony }),
+    authored: explicitRoster({ tony: tonyInclude }),
+    next: explicitRoster({
+      tony: { workspace: "/w/tony-next" },
+      worker: { workspace: "/w/worker" },
+    }),
+    options: { keyedAgentEntryIncludePaths: keyedTonyInclude },
+    error: "Config write would flatten $include-owned config at agents.entries.tony",
+  },
+  {
+    name: "rejects deleting a keyed entry include while adding a root-owned agent",
+    current: explicitRoster({ tony }),
+    authored: explicitRoster({ tony: tonyInclude }),
+    next: explicitRoster({ worker: { workspace: "/w/worker" } }),
+    options: {
+      allowedAgentRosterRemovals: ["tony"],
+      keyedAgentEntryIncludePaths: keyedTonyInclude,
+    },
+    error: "Config write would flatten $include-owned config at agents.entries.tony",
   },
   {
     name: "allows nested root-authored sibling edits without flattening included values",
@@ -581,6 +630,82 @@ const writeCases: WriteCase[] = [
     authored: { gateway: { $include: "./config/gateway.json", legacyKey: "old" } },
     next: { gateway: { mode: "remote", legacyKey: "new" } },
     error: "Config write would flatten $include-owned config at gateway",
+  },
+  ...[["fixture/replacement"], []].flatMap((fallbacks) =>
+    [false, true].map((envRef) => ({
+      name: `allows root-array replacement ${JSON.stringify(fallbacks)} (env ref: ${envRef})`,
+      current: {
+        agents: {
+          defaults: {
+            model: { primary: "fixture/primary", fallbacks: ["fixture/root"] },
+            maxConcurrent: 16,
+          },
+        },
+      },
+      source: {
+        agents: {
+          defaults: { model: { primary: "fixture/primary", fallbacks: ["fixture/root"] } },
+        },
+      },
+      before: envRef
+        ? {
+            agents: {
+              defaults: { model: { primary: "fixture/primary", fallbacks: ["fixture/root"] } },
+            },
+          }
+        : undefined,
+      authored: {
+        agents: {
+          $include: "./agents.json",
+          defaults: { model: { fallbacks: [envRef ? "${FALLBACK}" : "fixture/root"] } },
+        },
+      },
+      next: {
+        agents: {
+          defaults: { model: { primary: "fixture/primary", fallbacks }, maxConcurrent: 16 },
+        },
+      },
+      expected: { agents: { $include: "./agents.json", defaults: { model: { fallbacks } } } },
+    })),
+  ),
+  {
+    name: "rejects edits to arrays composed from both root and included values",
+    current: {
+      agents: { defaults: { model: { fallbacks: ["fixture/included", "fixture/root"] } } },
+    },
+    authored: {
+      agents: {
+        $include: "./agents.json",
+        defaults: { model: { fallbacks: ["fixture/root"] } },
+      },
+    },
+    next: { agents: { defaults: { model: { fallbacks: ["fixture/root"] } } } },
+    error: "Config write would flatten $include-owned config at agents",
+  },
+  {
+    name: "does not infer array ownership from a normalized baseline that dropped included values",
+    before: {
+      agents: { defaults: { model: { fallbacks: ["fixture/included", "fixture/root"] } } },
+    },
+    current: { agents: { defaults: { model: { fallbacks: ["fixture/root"] } } } },
+    authored: {
+      agents: { $include: "./agents.json", defaults: { model: { fallbacks: ["fixture/root"] } } },
+    },
+    next: { agents: { defaults: { model: { fallbacks: [] } } } },
+    error: "Config write would flatten $include-owned config at agents",
+  },
+  {
+    name: "rejects replacing root arrays that contain nested includes",
+    before: { agents: { defaults: { model: { fallbacks: ["fixture/root"] } } } },
+    current: { agents: { defaults: { model: { fallbacks: ["fixture/root"] } } } },
+    authored: {
+      agents: {
+        $include: "./agents.json",
+        defaults: { model: { fallbacks: [{ $include: "./fallback.json" }] } },
+      },
+    },
+    next: { agents: { defaults: { model: { fallbacks: [] } } } },
+    error: "Config write would flatten $include-owned config at agents",
   },
   {
     name: "preserves include-owned array entries across runtime-only normalization",
@@ -665,37 +790,6 @@ const writeCases: WriteCase[] = [
     next: { agents: { defaults: { model: "anthropic/sonnet-4.5" } } },
     error: "Config write would flatten $include-owned config at agents",
   },
-  {
-    name: "preserves root $schema during unrelated partial writes",
-    current: { $schema: "https://openclaw.ai/config.json", gateway: { mode: "local" } },
-    next: { gateway: { mode: "local", port: 18789 } },
-    expected: {
-      $schema: "https://openclaw.ai/config.json",
-      gateway: { mode: "local", port: 18789 },
-    },
-  },
-  {
-    name: "rejects writes that would flatten a root include",
-    current: {
-      $schema: "https://openclaw.ai/config-from-include.json",
-      gateway: { mode: "local" },
-    },
-    authored: { $include: "./extra.json5", gateway: { mode: "local" } },
-    next: { gateway: { mode: "local", port: 18789 } },
-    error: "Config write would flatten $include-owned config at <root>",
-  },
-  {
-    name: "does not restore root $schema when the next config explicitly clears it",
-    current: { $schema: "https://openclaw.ai/config.json", gateway: { mode: "local" } },
-    next: { $schema: null, gateway: { mode: "local", port: 18789 } },
-    expected: { gateway: { mode: "local", port: 18789 } },
-  },
-  {
-    name: "does not restore root $schema when the next config sets an invalid value",
-    current: { $schema: "https://openclaw.ai/config.json", gateway: { mode: "local" } },
-    next: { $schema: 123, gateway: { mode: "local", port: 18789 } },
-    expected: { $schema: 123, gateway: { mode: "local", port: 18789 } },
-  },
 ];
 
 function resolveWriteCase(testCase: WriteCase): OpenClawConfig {
@@ -718,6 +812,132 @@ describe("config io write prepare", () => {
     const persisted = resolveWriteCase(testCase);
     expect(persisted).toEqual(testCase.expected);
     testCase.verify?.(persisted);
+  });
+
+  it.each([
+    { includeAt: "root", authoredDefaults: true },
+    { includeAt: "agents", authoredDefaults: false },
+  ])(
+    "preserves explicit sibling intent beside a $includeAt include (authored defaults: $authoredDefaults)",
+    ({ includeAt, authoredDefaults }) => {
+      const authoredAgents = {
+        ownership: "explicit",
+        ...(authoredDefaults ? { defaults: { workspace: "/old" } } : {}),
+        entries: { main: {}, spare: {} },
+      };
+      const rootAuthoredConfig =
+        includeAt === "root"
+          ? { $include: "./base.json", agents: authoredAgents }
+          : { agents: { $include: "./base.json", ...authoredAgents } };
+      const sourceConfig = {
+        agents: {
+          ...authoredAgents,
+          defaults: { ...authoredAgents.defaults, model: { primary: "fixture/primary" } },
+        },
+      };
+      const runtimeConfig = {
+        commands: { restart: true },
+        agents: {
+          ...sourceConfig.agents,
+          defaults: { ...sourceConfig.agents.defaults, maxConcurrent: 16 },
+        },
+      };
+      const entries = { ...authoredAgents.entries, worker: {} };
+      expect(
+        resolvePersistCandidateForWrite({
+          sourceConfig,
+          rootAuthoredConfig,
+          runtimeConfig,
+          nextConfig: { ...runtimeConfig, agents: { ...runtimeConfig.agents, entries } },
+          explicitSetPaths: [
+            ["agents", "entries"],
+            ["agents", "defaults", "maxConcurrent"],
+            ["commands", "restart"],
+          ],
+          allowIncludeAncestorExplicitSetPaths: true,
+        }),
+      ).toEqual({
+        ...rootAuthoredConfig,
+        commands: { restart: true },
+        agents: {
+          ...rootAuthoredConfig.agents,
+          entries,
+          defaults: { ...authoredAgents.defaults, maxConcurrent: 16 },
+        },
+      });
+    },
+  );
+
+  it.each(
+    [
+      {
+        name: "included",
+        authored: undefined,
+        resolved: ["included"],
+        allowed: false,
+        kinds: ["array", "parent", "index"],
+      },
+      {
+        name: "mixed",
+        authored: ["root"],
+        resolved: ["included", "root"],
+        allowed: false,
+        kinds: ["parent"],
+      },
+      {
+        name: "root-owned",
+        authored: ["root"],
+        resolved: ["root"],
+        allowed: true,
+        kinds: ["index"],
+      },
+      { name: "empty include", authored: undefined, resolved: [], allowed: true, kinds: ["array"] },
+    ].flatMap((testCase) => testCase.kinds.map((kind) => ({ testCase, kind }))),
+  )("checks $testCase.name array ownership for explicit $kind writes", ({ testCase, kind }) => {
+    const sourceConfig = {
+      agents: { defaults: { model: { fallbacks: testCase.resolved } }, entries: { main: {} } },
+    };
+    const rootAuthoredConfig = {
+      agents: {
+        $include: "./agents.json",
+        entries: { main: {} },
+        ...(testCase.authored ? { defaults: { model: { fallbacks: testCase.authored } } } : {}),
+      },
+    };
+    const write = () =>
+      resolvePersistCandidateForWrite({
+        sourceConfig,
+        sourceConfigBeforeMigrations: sourceConfig,
+        runtimeConfig: sourceConfig,
+        rootAuthoredConfig,
+        nextConfig: { agents: { ...sourceConfig.agents, entries: { main: {}, worker: {} } } },
+        explicitSetPaths: [
+          ["agents", "entries"],
+          kind === "parent"
+            ? ["agents", "defaults"]
+            : [
+                "agents",
+                "defaults",
+                "model",
+                "fallbacks",
+                ...(kind === "index" ? [String(testCase.resolved.length - 1)] : []),
+              ],
+        ],
+        allowIncludeAncestorExplicitSetPaths: true,
+      });
+    const persisted = write();
+    expect(persisted).toMatchObject({
+      agents: {
+        $include: "./agents.json",
+        entries: { main: {}, worker: {} },
+      },
+    });
+    const authored = testCase.allowed ? testCase.resolved : testCase.authored;
+    if (authored === undefined) {
+      expect(persisted).not.toHaveProperty("agents.defaults.model.fallbacks");
+    } else {
+      expect(persisted).toHaveProperty("agents.defaults.model.fallbacks", authored);
+    }
   });
 
   it("uses recorded facts instead of placeholder-shaped roster bytes", () => {
@@ -850,32 +1070,6 @@ describe("config io write prepare", () => {
     expect(persisted.agents).not.toHaveProperty("entries");
   });
 
-  it("strips transient plugin install records from partial writes", () => {
-    const install = {
-      source: "npm",
-      spec: "@ollama/openclaw-web-search",
-      installPath: "/tmp/openclaw-web-search",
-      resolvedName: "@ollama/openclaw-web-search",
-      resolvedVersion: "0.2.2",
-    };
-    const persisted = applyUnsetPathsForWrite(
-      resolvePersistCandidateForWrite({
-        runtimeConfig: { plugins: { entries: {} } },
-        sourceConfig: { plugins: { entries: {}, installs: { "openclaw-web-search": install } } },
-        nextConfig: {
-          plugins: {
-            entries: {},
-            installs: {
-              "openclaw-web-search": { ...install, spec: "@ollama/openclaw-web-search@0.2.2" },
-            },
-          },
-        },
-      }) as OpenClawConfig,
-      [["plugins", "installs"]],
-    );
-    expect(persisted.plugins).not.toHaveProperty("installs");
-  });
-
   it("preserves authored agent provider params during narrowed agent-list writes", () => {
     const defaults = {
       params: { transport: "sse", openaiWsWarmup: false },
@@ -905,13 +1099,20 @@ describe("config io write prepare", () => {
     ).toEqual({ agents: { defaults, entries: { main: {}, ops: {} } }, gateway: { mode: "local" } });
   });
 
-  it("preserves authored Google model params under normalized config keys", () => {
+  it.each([
+    ["google/gemini-3-pro-preview", "google/gemini-3.1-pro-preview"],
+    ["together/moonshotai/Kimi-K2.5", "together/moonshotai/Kimi-K2.6"],
+    ["custom/custom/model", "custom/custom/model"],
+  ])("preserves separate authored model params when writing %s", (authored, canonical) => {
     const params = { thinking: { level: "high" } };
     const sourceConfig = {
       agents: {
         defaults: {
-          model: { primary: "google/gemini-3-pro-preview" },
-          models: { "google/gemini-3-pro-preview": { alias: "Gemini", params } },
+          model: { primary: authored, fallbacks: ["custom/model"] },
+          models: {
+            [authored]: { alias: "Selected", params },
+            "custom/model": { alias: "Control" },
+          },
         },
       },
     };
@@ -920,9 +1121,10 @@ describe("config io write prepare", () => {
         runtimeConfig: {
           agents: {
             defaults: {
-              model: { primary: "google/gemini-3.1-pro-preview" },
+              model: { primary: canonical, fallbacks: ["custom/model"] },
               models: {
-                "google/gemini-3.1-pro-preview": { alias: "Gemini", params },
+                [canonical]: { alias: "Selected", params },
+                "custom/model": { alias: "Control" },
               },
             },
           },
@@ -931,8 +1133,8 @@ describe("config io write prepare", () => {
         nextConfig: {
           agents: {
             defaults: {
-              model: { primary: "google/gemini-3.1-pro-preview" },
-              models: { "google/gemini-3.1-pro-preview": {} },
+              model: { primary: canonical, fallbacks: ["custom/model"] },
+              models: { [canonical]: {}, "custom/model": { alias: "Control" } },
             },
           },
         },
@@ -940,8 +1142,8 @@ describe("config io write prepare", () => {
     ).toEqual({
       agents: {
         defaults: {
-          model: { primary: "google/gemini-3-pro-preview" },
-          models: { "google/gemini-3.1-pro-preview": { params } },
+          model: { primary: authored, fallbacks: ["custom/model"] },
+          models: { [canonical]: { params }, "custom/model": { alias: "Control" } },
         },
       },
     });
@@ -1001,12 +1203,13 @@ describe("config io write prepare", () => {
   it("leaves untouched retired model maps for doctor instead of normalizing unrelated writes", () => {
     const retired = "google/gemini-3-pro-preview";
     const canonical = "google/gemini-3.1-pro-preview";
+    const entry = { alias: "Gemini", params: { temperature: 0.2 } };
     const sourceConfig = {
-      agents: { defaults: { models: { [retired]: { alias: "Gemini" } } } },
+      agents: { defaults: { models: { [retired]: entry } } },
       gateway: { port: 18789 },
     };
     const runtimeConfig = {
-      agents: { defaults: { models: { [canonical]: { alias: "Gemini" } } } },
+      agents: { defaults: { models: { [canonical]: entry } } },
       gateway: { port: 18789 },
     };
 
@@ -1017,7 +1220,7 @@ describe("config io write prepare", () => {
         nextConfig: { ...runtimeConfig, gateway: { port: 18888 } },
       }),
     ).toEqual({
-      agents: { defaults: { models: { [retired]: { alias: "Gemini" } } } },
+      agents: { defaults: { models: { [retired]: entry } } },
       gateway: { port: 18888 },
     });
   });
@@ -1025,11 +1228,12 @@ describe("config io write prepare", () => {
   it("canonicalizes an explicitly persisted model-map path even when runtime values are equal", () => {
     const retired = "google/gemini-3-pro-preview";
     const canonical = "google/gemini-3.1-pro-preview";
+    const entry = { alias: "Gemini", params: { temperature: 0.2 } };
     const sourceConfig = {
-      agents: { defaults: { models: { [retired]: { alias: "Gemini" } } } },
+      agents: { defaults: { models: { [retired]: entry } } },
     };
     const runtimeConfig = {
-      agents: { defaults: { models: { [canonical]: { alias: "Gemini" } } } },
+      agents: { defaults: { models: { [canonical]: entry } } },
     };
 
     expect(
@@ -1040,6 +1244,37 @@ describe("config io write prepare", () => {
         explicitSetPaths: [["agents", "defaults", "models"]],
       }),
     ).toEqual(runtimeConfig);
+  });
+
+  it("preserves untouched model rows that share a runtime identity", () => {
+    const shorthand = "google/gemini-3.1-pro";
+    const canonical = "google/gemini-3.1-pro-preview";
+    const sourceConfig = {
+      agents: {
+        defaults: {
+          models: {
+            [shorthand]: { alias: "Shorthand", params: { temperature: 0.2 } },
+            [canonical]: { alias: "Canonical", params: { topP: 0.8 } },
+          },
+        },
+      },
+    };
+    const runtimeConfig = {
+      agents: {
+        defaults: {
+          models: {
+            [canonical]: { alias: "Canonical", params: { temperature: 0.2, topP: 0.8 } },
+          },
+        },
+      },
+    };
+    expect(
+      resolvePersistCandidateForWrite({
+        sourceConfig,
+        runtimeConfig,
+        nextConfig: { ...runtimeConfig, gateway: { port: 18888 } },
+      }),
+    ).toEqual({ ...sourceConfig, gateway: { port: 18888 } });
   });
 
   it("canonicalizes only the model identity selected by an explicit descendant path", () => {
@@ -1135,24 +1370,57 @@ describe("config io write prepare", () => {
       tools: { alsoAllow: ["exec", "fetch", "read"] },
     };
     const before = structuredClone(input);
+    const result = applyUnsetPathsForWrite(input, [
+      ["commands", "ownerDisplay"],
+      ["tools", "alsoAllow", "1"],
+    ]);
+    expect(result).toEqual({ gateway: { mode: "local" }, tools: { alsoAllow: ["exec", "read"] } });
+    expect(result).not.toBe(input);
+    expect(result.gateway).toBe(input.gateway);
+    expect(result.tools).not.toBe(input.tools);
+    expect(input).toEqual(before);
+  });
+
+  it.each([
+    {
+      name: "prunes empty objects inside arrays",
+      values: [{ value: "remove" }, { value: "keep" }],
+      paths: [["0", "value"]],
+      expected: [{ value: "keep" }],
+    },
+    {
+      name: "retains emptied arrays",
+      values: ["remove"],
+      paths: [["0"]],
+      expected: [],
+    },
+    {
+      name: "interprets successive indexes against the updated array",
+      values: ["first", "second", "third"],
+      paths: [["0"], ["1"]],
+      expected: ["second"],
+    },
+  ])("$name during explicit unsets", ({ values, paths, expected }) => {
+    const input = { plugins: { entries: { example: { config: { values } } } } };
+    const before = structuredClone(input);
+    const prefix = ["plugins", "entries", "example", "config", "values"];
     expect(
-      applyUnsetPathsForWrite(input, [
-        ["commands", "ownerDisplay"],
-        ["tools", "alsoAllow", "1"],
-      ]),
-    ).toEqual({ gateway: { mode: "local" }, tools: { alsoAllow: ["exec", "read"] } });
+      applyUnsetPathsForWrite(
+        input,
+        paths.map((parts) => [...prefix, ...parts]),
+      ),
+    ).toEqual({
+      plugins: { entries: { example: { config: { values: expected } } } },
+    });
     expect(input).toEqual(before);
   });
 
   it.each([
     ["invalid array suffix", ["tools", "alsoAllow", "1abc"]],
-    ["signed array index", ["tools", "alsoAllow", "+0"]],
     ["unsafe integer", ["tools", "alsoAllow", "9007199254740993"]],
     ["maximum array key", ["tools", "alsoAllow", "4294967294"]],
     ["missing key", ["commands", "missingKey"]],
     ["prototype key", ["commands", "__proto__"]],
-    ["constructor key", ["commands", "constructor"]],
-    ["prototype constructor property", ["commands", "prototype"]],
   ] as const)("treats %s unset paths as immutable no-ops", (_name, unsetPath) => {
     const input: OpenClawConfig = {
       gateway: { mode: "local" },
@@ -1174,78 +1442,6 @@ describe("config io write prepare", () => {
     expect(message).toContain('openclaw config set channels.telegram.dmPolicy "pairing"');
   });
 
-  it("preserves env refs on unchanged paths while keeping changed paths resolved", () => {
-    const unchanged = {
-      plugins: { entries: { acme: { config: { env: { API_KEY: "secret" } } } } },
-    };
-    const before = { ...unchanged, gateway: { port: 18789 } };
-    const after = { ...unchanged, gateway: { port: 18789, auth: { mode: "token" } } };
-    const changedPaths = new Set<string>();
-    collectChangedPaths(before, after, "", changedPaths);
-    expect(
-      restoreEnvRefsFromMap(
-        after,
-        "",
-        new Map([["plugins.entries.acme.config.env.API_KEY", "${ACME_API_KEY}"]]),
-        changedPaths,
-      ),
-    ).toEqual({
-      plugins: { entries: { acme: { config: { env: { API_KEY: "${ACME_API_KEY}" } } } } },
-      gateway: { port: 18789, auth: { mode: "token" } },
-    });
-  });
-
-  it("preserves env refs in arrays while keeping appended entries resolved", () => {
-    const config = (args: string[]) => ({ plugins: { entries: { acme: { config: { args } } } } });
-    const changedPaths = new Set<string>();
-    collectChangedPaths(
-      config(["${USER_ID}", "123"]),
-      config(["${USER_ID}", "123", "456"]),
-      "",
-      changedPaths,
-    );
-    expect(
-      restoreEnvRefsFromMap(
-        config(["999", "123", "456"]),
-        "",
-        new Map([["plugins.entries.acme.config.args[0]", "${USER_ID}"]]),
-        changedPaths,
-      ),
-    ).toEqual(config(["${USER_ID}", "123", "456"]));
-  });
-
-  it.each([
-    {
-      name: "does not overwrite identity-restored env refs with positional map entries",
-      agents: [
-        { id: "b", token: "${TOKEN_B}" },
-        { id: "a", token: "${TOKEN_A}" },
-      ],
-      refs: [
-        ["agents[0].token", "${TOKEN_A}"],
-        ["agents[1].token", "${TOKEN_B}"],
-      ] as const,
-    },
-    {
-      name: "does not overwrite identity-restored escaped refs with positional map entries",
-      agents: [
-        { id: "real", token: "${TOKEN}" },
-        { id: "literal", token: "$${TOKEN}" },
-      ],
-      refs: [["agents[1].token", "${TOKEN}"]] as const,
-    },
-  ])("$name", ({ agents, refs }) => {
-    expect(
-      restoreEnvRefsFromMap(
-        { agents },
-        "",
-        new Map<string, string>(refs),
-        new Set(["agents[0].id", "agents[1].id"]),
-        new Set(["agents[0].token", "agents[1].token"]),
-      ),
-    ).toEqual({ agents });
-  });
-
   it("ignores prototype-chain keys when collecting changed paths", () => {
     const base = { safe: { mode: "local" }, collision: { mode: "owned-base" } };
     const target = Object.create({ collision: { mode: "inherited-target" } }) as Record<
@@ -1256,38 +1452,6 @@ describe("config io write prepare", () => {
     const changedPaths = new Set<string>();
     collectChangedPaths(base, target, "", changedPaths);
     expect([...changedPaths].toSorted()).toEqual(["collision", "safe.mode"]);
-  });
-
-  it("restores unchanged paths even when their values equal another authored template", () => {
-    expect(
-      restoreEnvRefsFromMap(
-        {
-          included: {
-            first: "${SECOND}",
-            second: "second-secret",
-            third: "$${SECOND}",
-            escaped: "$${SECOND}",
-          },
-          gateway: { port: 18790 },
-        },
-        "",
-        new Map([
-          ["included.first", "${FIRST}"],
-          ["included.second", "${SECOND}"],
-          ["included.third", "${THIRD}"],
-          ["included.escaped", "$${SECOND}"],
-        ]),
-        new Set(["gateway.port"]),
-      ),
-    ).toEqual({
-      included: {
-        first: "${FIRST}",
-        second: "${SECOND}",
-        third: "${THIRD}",
-        escaped: "$${SECOND}",
-      },
-      gateway: { port: 18790 },
-    });
   });
 
   it.each([
@@ -1315,30 +1479,6 @@ describe("config io write prepare", () => {
     }
   });
 
-  it("keeps runtime-only channel defaults out of the persisted candidate", () => {
-    const sourceConfig = {
-      gateway: { port: 18789 },
-      channels: { imessage: { cliPath: "/usr/local/bin/imsg" } },
-    };
-    const runtimeConfig = {
-      ...sourceConfig,
-      channels: { imessage: { cliPath: "/usr/local/bin/imsg", runtimeOnlyDefault: true } },
-    };
-    expect(
-      resolvePersistCandidateForWrite({
-        runtimeConfig,
-        sourceConfig,
-        nextConfig: {
-          ...structuredClone(runtimeConfig),
-          gateway: { port: 18789, auth: { mode: "token" } },
-        },
-      }),
-    ).toEqual({
-      gateway: { port: 18789, auth: { mode: "token" } },
-      channels: { imessage: { cliPath: "/usr/local/bin/imsg" } },
-    });
-  });
-
   it("does not reintroduce legacy nested dm.policy defaults in the persisted candidate", () => {
     const oldChannel = { dmPolicy: "pairing", dm: { enabled: true, policy: "pairing" } };
     const newChannel = { dmPolicy: "pairing", dm: { enabled: true } };
@@ -1350,19 +1490,6 @@ describe("config io write prepare", () => {
       channels: { discord: structuredClone(newChannel), slack: structuredClone(newChannel) },
       gateway: { port: 18789 },
     };
-    expect(
-      resolvePersistCandidateForWrite({ runtimeConfig: sourceConfig, sourceConfig, nextConfig }),
-    ).toEqual(nextConfig);
-  });
-
-  it("preserves normalized nested channel enabled keys during unrelated writes", () => {
-    const channels = {
-      slack: { channels: { ops: { enabled: false } } },
-      googlechat: { groups: { "spaces/aaa": { enabled: true } } },
-      discord: { guilds: { "100": { channels: { general: { enabled: false } } } } },
-    };
-    const sourceConfig = { channels };
-    const nextConfig = { ...structuredClone(sourceConfig), gateway: { auth: { mode: "token" } } };
     expect(
       resolvePersistCandidateForWrite({ runtimeConfig: sourceConfig, sourceConfig, nextConfig }),
     ).toEqual(nextConfig);

@@ -1,4 +1,3 @@
-// Discord plugin module implements command deploy behavior.
 import { createHash } from "node:crypto";
 import { ApplicationCommandType, type APIApplicationCommand } from "discord-api-types/v10";
 import type { DiscordCommandDeployHashStore } from "../command-deploy-store.js";
@@ -79,26 +78,17 @@ export class DiscordCommandDeployer {
       }
       return { mode: options.mode ?? "reconcile", usedDevGuilds: true };
     }
-    if (options.mode !== "overwrite") {
-      await this.putCommandSetIfChanged(
-        this.scopedCacheKey("global:reconcile"),
-        serializedGlobal,
-        async () => {
-          await this.reconcileGlobalCommands(serializedGlobal);
-        },
-        options,
-      );
-      return { mode: "reconcile" as const, usedDevGuilds: false };
-    }
+    const mode = options.mode === "overwrite" ? "overwrite" : "reconcile";
     await this.putCommandSetIfChanged(
-      this.scopedCacheKey("global:overwrite"),
+      this.scopedCacheKey(`global:${mode}`),
       serializedGlobal,
-      async () => {
-        await overwriteApplicationCommands(this.rest, this.params.clientId, serializedGlobal);
-      },
+      () =>
+        mode === "overwrite"
+          ? overwriteApplicationCommands(this.rest, this.params.clientId, serializedGlobal)
+          : this.reconcileGlobalCommands(serializedGlobal),
       options,
     );
-    return { mode: "overwrite" as const, usedDevGuilds: false };
+    return { mode, usedDevGuilds: false };
   }
 
   /**
@@ -191,7 +181,7 @@ export class DiscordCommandDeployer {
 
 function groupGuildCommands(commands: BaseCommand[]): Map<string, SerializedCommand[]> {
   const guildCommands = new Map<string, SerializedCommand[]>();
-  for (const command of commands.filter((entry) => entry.guildIds)) {
+  for (const command of commands) {
     for (const guildId of command.guildIds ?? []) {
       const entries = guildCommands.get(guildId) ?? [];
       entries.push(command.serialize());

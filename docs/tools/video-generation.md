@@ -70,8 +70,7 @@ Video generation is asynchronous:
 While a job is in flight, duplicate `video_generate` calls in the same
 session return the current task status instead of starting another
 generation. Use `action: "status"` to check without triggering a new
-generation, or `openclaw tasks list` / `openclaw tasks show <lookup>` from the
-CLI (see [Background tasks](/automation/tasks)).
+generation.
 
 Outside of session-backed agent runs (for example, direct tool invocations),
 the tool falls back to inline generation and returns the final media path
@@ -91,14 +90,6 @@ of failing the task if local persistence rejects an oversized file.
 | `running`   | Provider is processing (typically 30 seconds to several minutes depending on provider and resolution). |
 | `succeeded` | Video ready; the agent wakes and posts it to the conversation.                                         |
 | `failed`    | Provider error or timeout; the agent wakes with error details.                                         |
-
-Check status from the CLI:
-
-```bash
-openclaw tasks list
-openclaw tasks show <lookup>
-openclaw tasks cancel <lookup>
-```
 
 ## Supported providers
 
@@ -132,7 +123,7 @@ runtime modes at runtime.
 The explicit mode contract used by `video_generate`, contract tests, and
 the shared live sweep:
 
-| Provider   | `generate` | `imageToVideo` | `videoToVideo` | Shared live lanes today                                                                                                                 |
+| Provider   | `generate` | `imageToVideo` | `videoToVideo` | Shared live lanes                                                                                                                       |
 | ---------- | :--------: | :------------: | :------------: | --------------------------------------------------------------------------------------------------------------------------------------- |
 | Alibaba    |     ✓      |       ✓        |       ✓        | `generate`, `imageToVideo`; `videoToVideo` skipped because this provider needs remote `http(s)` video URLs                              |
 | BytePlus   |     ✓      |       ✓        |       -        | `generate`, `imageToVideo`                                                                                                              |
@@ -141,7 +132,7 @@ the shared live sweep:
 | fal        |     ✓      |       ✓        |       ✓        | `generate`, `imageToVideo`; `videoToVideo` only when using Seedance reference-to-video                                                  |
 | Google     |     ✓      |       ✓        |       ✓        | `generate`, `imageToVideo`; shared `videoToVideo` skipped because the current buffer-backed Gemini/Veo sweep does not accept that input |
 | MiniMax    |     ✓      |       ✓        |       -        | `generate`, `imageToVideo`                                                                                                              |
-| OpenAI     |     ✓      |       ✓        |       ✓        | `generate`, `imageToVideo`; shared `videoToVideo` skipped because this org/input path currently needs provider-side video edit access   |
+| OpenAI     |     ✓      |       ✓        |       ✓        | `generate`, `imageToVideo`; shared `videoToVideo` skipped because this org/input path needs provider-side video edit access             |
 | OpenRouter |     ✓      |       ✓        |       -        | `generate`, `imageToVideo`                                                                                                              |
 | Qwen       |     ✓      |       ✓        |       ✓        | `generate`, `imageToVideo`; `videoToVideo` skipped because this provider needs remote `http(s)` video URLs                              |
 | Runway     |     ✓      |       ✓        |       ✓        | `generate`, `imageToVideo`; `videoToVideo` runs only when the selected model is `runway/gen4_aleph`                                     |
@@ -189,6 +180,8 @@ corresponding reference list; off-by-one mistakes fail with a clear error.
 Use an empty string to leave a slot unset. For xAI, set every image role to
 `reference_image` to use its `reference_images` generation mode; omit the
 role or use `first_frame` for single-image image-to-video.
+Repeated references keep their positions, so the same image can supply both
+`first_frame` and `last_frame` for a looping clip.
 </Note>
 
 ### Style controls
@@ -516,8 +509,8 @@ transform modes the shared sweep can exercise safely with local media:
   provider/model accepts buffer-backed local video input in the shared
   sweep.
 
-Today the shared `videoToVideo` live lane covers `runway` only when you
-select `runway/gen4_aleph`.
+In the shared sweep, buffer-backed `videoToVideo` runs for `runway` only with
+`runway/gen4_aleph`, and for `fal` only with a `reference-to-video` model.
 
 ## Configuration
 
@@ -547,7 +540,6 @@ openclaw config set agents.defaults.mediaModels.video.primary "qwen/wan2.6-t2v"
 ## Related
 
 - [Alibaba Model Studio](/providers/alibaba)
-- [Background tasks](/automation/tasks) - task tracking for async video generation
 - [BytePlus](/concepts/model-providers#byteplus-international)
 - [ComfyUI](/providers/comfy)
 - [Configuration reference](/gateway/config-agents#agent-defaults)
@@ -556,9 +548,11 @@ openclaw config set agents.defaults.mediaModels.video.primary "qwen/wan2.6-t2v"
 - [MiniMax](/providers/minimax)
 - [Models](/concepts/models)
 - [OpenAI](/providers/openai)
+- [OpenRouter](/providers/openrouter)
 - [Qwen](/providers/qwen)
 - [Runway](/providers/runway)
 - [Together AI](/providers/together)
 - [Tools overview](/tools)
 - [Vydra](/providers/vydra)
 - [xAI](/providers/xai)
+- [Media overview](/tools/media-overview) - how the media tools fit together

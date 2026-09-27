@@ -5,6 +5,7 @@ import {
   resolveNonNegativeIntegerOption,
 } from "../../packages/normalization-core/src/number-coercion.js";
 import { computeBackoffSchedule } from "../../packages/retry/src/index.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { sleep } from "../utils/sleep.js";
 import { collectErrorGraphCandidates, extractErrorCode } from "./errors.js";
 import {
@@ -215,6 +216,13 @@ export function isRetryableDeliveryNotSentError(err: unknown): boolean {
   );
 }
 
+/** True when the durable queue retained the exact failed attempt for recovery. */
+export function isDeliveryRecoveryOwnedRetry(err: unknown): boolean {
+  return collectErrorGraphCandidates(err, nestedErrorCandidates).some(
+    (candidate) => isOutboundDeliveryError(candidate) && candidate.queueCustody === "held",
+  );
+}
+
 export function computeBackoffMs(retryCount: number): number {
   return computeBackoffSchedule(RECOVERY_BACKOFF_MS, retryCount);
 }
@@ -233,11 +241,9 @@ function createRecoveryReplayPacer(): {
 
   return {
     async wait(deadlineMs) {
-      let releaseWaiter: () => void = () => {};
       const previousWaiter = waitQueue;
-      waitQueue = new Promise<void>((resolve) => {
-        releaseWaiter = resolve;
-      });
+      const completion = createDeferredCore();
+      waitQueue = completion.promise;
       await previousWaiter;
 
       try {
@@ -260,7 +266,7 @@ function createRecoveryReplayPacer(): {
         lastReplayStartedAt = Date.now();
         return "ready";
       } finally {
-        releaseWaiter();
+        completion.resolve();
       }
     },
   };

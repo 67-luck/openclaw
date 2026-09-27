@@ -9,7 +9,6 @@ const providerRuntimeMocks = vi.hoisted(() => ({
 // and compiled payload probes cover the real provider boundary.
 vi.mock("../../plugins/provider-failover.js", () => providerRuntimeMocks);
 
-import { resolveReplyFailoverFacts } from "../../auto-reply/reply/agent-runner-failure-reply.js";
 import {
   classifyFailoverSignal,
   isAuthErrorMessage,
@@ -21,6 +20,7 @@ import {
 } from "./classify.js";
 import { failoverClassificationCorpus } from "./failover-classification.corpus.cases.test-support.js";
 import { classifyProviderRequestFacets } from "./request-error-facets.js";
+import { resolveReplyFailoverFacts } from "./request-error-facts.js";
 import type { FailoverSignal } from "./signal.js";
 
 afterEach(() => {
@@ -52,6 +52,74 @@ describe("golden failover classification corpus", () => {
 });
 
 describe("cross-layer drift (documents current behavior, see refactor-02)", () => {
+  it.each([503, 521, 529])("classifies body-only HTTP %s failures", (status) => {
+    const signal = {
+      message: "Provider rejected request",
+      details: [`${status} status code (no body)`],
+    };
+    expect(classifyFailoverSignal(signal)).toEqual({
+      kind: "reason",
+      reason: status === 529 ? "overloaded" : "server_error",
+    });
+  });
+
+  it("does not infer permanent model removal from availability prose alone", () => {
+    const message = "The model is not available. Please try again later.";
+    expect(classifyFailoverSignal({ message })).toBeNull();
+    expect(classifyReplyRequest({ message })?.code).not.toBe("provider_model_unavailable");
+  });
+
+  it.each([
+    ...[504, 522, 524].map((status) => ({
+      signal: { status, message: "The model is not available. Please try again later." },
+      reason: "timeout",
+    })),
+    ...[500, 502, 503, 520, 521, 523].map((status) => ({
+      signal: { status, message: "The model is not available. Please try again later." },
+      reason: "server_error",
+    })),
+    {
+      signal: {
+        message:
+          '{"type":"error","error":{"type":"overloaded_error","message":"The model is not available due to high demand."}}',
+      },
+      reason: "overloaded",
+    },
+    {
+      signal: { errorType: "server_error", message: "The model is not available." },
+      reason: "server_error",
+    },
+    {
+      signal: {
+        message: "The model is not available.",
+        details: ['{"error":{"type":"overloaded_error","message":"Overloaded"}}'],
+      },
+      reason: "overloaded",
+    },
+    {
+      signal: {
+        status: 529,
+        message: '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+      },
+      reason: "overloaded",
+    },
+    {
+      signal: {
+        status: 500,
+        message:
+          '{"error":{"type":"server_error","message":"An error occurred while processing your request."}}',
+      },
+      reason: "server_error",
+    },
+    {
+      signal: { message: "Selected model is at capacity. Please try a different model." },
+      reason: "overloaded",
+    },
+  ])("keeps outage evidence transient: $signal", ({ signal, reason }) => {
+    expect(classifyFailoverSignal(signal)).toEqual({ kind: "reason", reason });
+    expect(classifyReplyRequest(signal)?.code).not.toBe("provider_model_unavailable");
+  });
+
   it.each([
     ["Ollama setup pull", "Failed to download gemma4:e2b: pull stream ended before success"],
     ["OpenRouter music", "OpenRouter music generation stream ended before completion"],
@@ -177,7 +245,12 @@ describe("cross-layer drift (documents current behavior, see refactor-02)", () =
     // MOVED(refactor-02): model availability copy consumes the canonical typed reason.
     expect(classification).toEqual({ kind: "reason", reason: "model_not_found" });
     expect(facet).toBeNull();
-    expect(classifyReplyRequest({ message })).toMatchObject({ code: "provider_model_unavailable" });
+    expect(classifyReplyRequest({ message })).toMatchObject({
+      code: "provider_model_unavailable",
+      userMessage: expect.stringContaining(
+        "Select an available model or update the model configuration, then try again.",
+      ),
+    });
   });
 
   it.each([

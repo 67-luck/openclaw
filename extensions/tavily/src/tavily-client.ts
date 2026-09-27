@@ -1,4 +1,3 @@
-// Tavily plugin module implements tavily client behavior.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { readProviderJsonResponse } from "openclaw/plugin-sdk/provider-http";
 import {
@@ -416,7 +415,3 @@ export async function runTavilyExtract(
   );
   return result;
 }
-
-export const testing = {
-  resolveEndpoint,
-};

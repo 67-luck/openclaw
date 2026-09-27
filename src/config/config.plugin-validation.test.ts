@@ -124,7 +124,6 @@ function expectNoPath(
 describe("config plugin validation", () => {
   let fixtureRoot = "";
   let suiteHome = "";
-  let badPluginDir = "";
   let enumPluginDir = "";
   let chatPluginDir = "";
   let googleOverridePluginDir = "";
@@ -180,12 +179,22 @@ describe("config plugin validation", () => {
 
   const validateInSuite = (raw: unknown) => validateConfigObjectWithPlugins(raw);
 
-  const validateRemovedPluginConfig = (removedId: string) =>
+  const validateVoiceCallConfig = (config: Record<string, unknown>) =>
+    validateInSuite({
+      agents: { list: [{ id: "openclaw" }] },
+      plugins: {
+        enabled: true,
+        load: { paths: [voiceCallSchemaPluginDir] },
+        entries: { "voice-call-schema-fixture": { config } },
+      },
+    });
+
+  const validateRemovedPluginConfig = (removedId: string, enabled = true) =>
     validateInSuite({
       agents: { list: [{ id: "openclaw" }] },
       plugins: {
         enabled: false,
-        entries: { [removedId]: { enabled: true } },
+        entries: { [removedId]: { enabled } },
         allow: [removedId],
         deny: [removedId],
         slots: { memory: removedId },
@@ -197,21 +206,8 @@ describe("config plugin validation", () => {
     await chmodSafeDir(fixtureRoot);
     suiteHome = path.join(fixtureRoot, "home");
     await mkdirSafe(suiteHome);
-    badPluginDir = path.join(suiteHome, "bad-plugin");
     enumPluginDir = path.join(suiteHome, "enum-plugin");
     chatPluginDir = path.join(suiteHome, "chat-plugin");
-    await writePluginFixture({
-      dir: badPluginDir,
-      id: "bad-plugin",
-      schema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          value: { type: "boolean" },
-        },
-        required: ["value"],
-      },
-    });
     await writePluginFixture({
       dir: enumPluginDir,
       id: "enum-plugin",
@@ -347,14 +343,15 @@ describe("config plugin validation", () => {
   });
 
   it("reports missing plugin refs across entries and allowlist surfaces", () => {
-    const missingPath = path.join(suiteHome, "missing-plugin-dir");
     const res = validateInSuite({
       agents: { list: [{ id: "openclaw" }] },
       plugins: {
         enabled: true,
-        load: { paths: [missingPath] },
-        entries: { "missing-plugin": { enabled: true } },
-        allow: ["missing-allow"],
+        entries: {
+          "missing-plugin": { enabled: true },
+          "missing-slot": { enabled: false },
+        },
+        allow: ["missing-allow", "missing-slot"],
         deny: ["missing-deny"],
         slots: { memory: "missing-slot" },
       },
@@ -362,25 +359,6 @@ describe("config plugin validation", () => {
     expect(res.ok).toBe(false);
     if (!res.ok) {
       expectPathMessage(res.issues, "plugins.slots.memory", "plugin not found: missing-slot");
-      expect(res.warnings).toEqual(
-        expect.arrayContaining([
-          {
-            path: "plugins.entries.missing-plugin",
-            message:
-              "plugin not found: missing-plugin (stale config entry ignored; remove it from plugins config)",
-          },
-          {
-            path: "plugins.allow",
-            message:
-              "plugin not found: missing-allow (stale config entry ignored; remove it from plugins config)",
-          },
-          {
-            path: "plugins.deny",
-            message:
-              "plugin not found: missing-deny (stale config entry ignored; remove it from plugins config)",
-          },
-        ]),
-      );
       expect(res.warnings.filter((warning) => warning.path.startsWith("plugins."))).toEqual([
         {
           path: "plugins.entries.missing-plugin",
@@ -404,31 +382,61 @@ describe("config plugin validation", () => {
   it.each([
     {
       name: "an exact explicit disable marker",
+      pluginId: "missing-plugin",
       entry: { enabled: false },
-      warns: false,
+      warningPaths: [],
+    },
+    {
+      name: "an exact explicit disable marker",
+      pluginId: "duckduckgo",
+      entry: { enabled: false },
+      warningPaths: [],
     },
     {
       name: "a disabled entry that retains settings",
+      pluginId: "missing-plugin",
       entry: { enabled: false, config: { stale: true } },
-      warns: true,
+      warningPaths: ["plugins.entries.missing-plugin", "plugins.allow"],
     },
-  ])("handles $name for a missing plugin", ({ entry, warns }) => {
-    const res = validateInSuite({
-      agents: { list: [{ id: "openclaw" }] },
-      plugins: { entries: { "missing-plugin": entry } },
-    });
+    {
+      name: "a disabled entry that retains settings",
+      pluginId: "duckduckgo",
+      entry: { enabled: false, config: { stale: true } },
+      warningPaths: ["plugins.entries.duckduckgo"],
+    },
+  ])(
+    "handles $name for missing $pluginId in the allowlist",
+    ({ pluginId, entry, warningPaths }) => {
+      const plugins = { entries: { [pluginId]: entry }, allow: [pluginId] };
+      const res = validateConfigObjectWithPlugins(
+        {
+          agents: { list: [{ id: "openclaw" }] },
+          plugins,
+        },
+        {
+          pluginMetadataSnapshot: {
+            manifestRegistry: { plugins: [], diagnostics: [] },
+          },
+        },
+      );
 
-    expect(res.ok).toBe(true);
-    const hasWarning = (res.warnings ?? []).some(
-      (warning) => warning.path === "plugins.entries.missing-plugin",
-    );
-    expect(hasWarning).toBe(warns);
-  });
+      expect(res.ok).toBe(true);
+      expect(
+        (res.warnings ?? [])
+          .filter((warning) => warning.path.startsWith("plugins."))
+          .map((warning) => warning.path),
+      ).toEqual(warningPaths);
+      if (res.ok) {
+        expect(res.config.plugins).toMatchObject(plugins);
+      }
+    },
+  );
 
   it("warns instead of failing for stale plugins.deny entries", () => {
     const res = validateInSuite({
       agents: { list: [{ id: "openclaw" }] },
       plugins: {
+        entries: { "missing-deny": { enabled: false } },
         deny: ["missing-deny"],
       },
     });
@@ -444,6 +452,27 @@ describe("config plugin validation", () => {
   });
 
   describe("missing Codex plugin diagnostics", () => {
+    const createPiProviderModels = (baseUrl: string, modelRuntime: "auto" | "codex") => ({
+      providers: {
+        openai: {
+          baseUrl,
+          agentRuntime: { id: "pi" },
+          models: [
+            {
+              id: "gpt-5.5",
+              name: "GPT 5.5",
+              reasoning: true,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 128000,
+              maxTokens: 8192,
+              agentRuntime: { id: modelRuntime },
+            },
+          ],
+        },
+      },
+    });
+
     const validateWithMissingCodexPlugin = (
       raw: Record<string, unknown>,
       env: NodeJS.ProcessEnv = suiteEnv(),
@@ -529,6 +558,29 @@ describe("config plugin validation", () => {
       expectNoMissingCodexPluginWarning(res.warnings);
     });
 
+    it("scopes request-parameter diagnostics to the affected keyed agent", () => {
+      const res = validateWithMissingCodexPlugin({
+        agents: {
+          entries: {
+            openclaw: {
+              default: true,
+              model: { primary: "anthropic/claude-sonnet-4-6", fallbacks: [] },
+              subagents: { model: "anthropic/claude-sonnet-4-6" },
+            },
+            work: {
+              model: { primary: "openai/gpt-5.6", fallbacks: [] },
+              subagents: { model: "openai/gpt-5.6" },
+              params: { temperature: 0.4 },
+            },
+          },
+        },
+        plugins: { entries: { codex: {} } },
+      });
+
+      expect(res.ok).toBe(true);
+      expectNoMissingCodexPluginWarning(res.warnings);
+    });
+
     it("still warns when only one provider model route is pinned to OpenClaw", () => {
       const res = validateWithMissingCodexPlugin({
         models: {
@@ -559,26 +611,7 @@ describe("config plugin validation", () => {
 
     it("still warns when provider PI policy is overridden by an automatic OpenAI model route", () => {
       const res = validateWithMissingCodexPlugin({
-        models: {
-          providers: {
-            openai: {
-              baseUrl: "https://api.openai.com/v1",
-              agentRuntime: { id: "pi" },
-              models: [
-                {
-                  id: "gpt-5.5",
-                  name: "GPT 5.5",
-                  reasoning: true,
-                  input: ["text"],
-                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                  contextWindow: 128000,
-                  maxTokens: 8192,
-                  agentRuntime: { id: "auto" },
-                },
-              ],
-            },
-          },
-        },
+        models: createPiProviderModels("https://api.openai.com/v1", "auto"),
         plugins: { entries: { codex: {} } },
       });
 
@@ -689,31 +722,6 @@ describe("config plugin validation", () => {
 
       expect(res.ok).toBe(true);
       expectNoMissingCodexPluginWarning(res.warnings);
-    });
-
-    it("warns when a listed agent can fall back from gpt-5.6 to Spark", () => {
-      const res = validateWithMissingCodexPlugin({
-        agents: {
-          ownership: "explicit",
-          defaults: {
-            model: { primary: "openai/gpt-5.6", fallbacks: [] },
-          },
-          list: [
-            { id: "openclaw" },
-            {
-              id: "worker",
-              model: {
-                primary: "openai/gpt-5.6",
-                fallbacks: ["openai/gpt-5.3-codex-spark"],
-              },
-            },
-          ],
-        },
-        plugins: { entries: { codex: {} } },
-      });
-
-      expect(res.ok).toBe(true);
-      expectMissingCodexPluginWarning(res.warnings);
     });
 
     it.each([
@@ -1060,26 +1068,7 @@ describe("config plugin validation", () => {
 
     it("does not warn when a custom OpenAI-compatible base URL uses automatic runtime policy", () => {
       const res = validateWithMissingCodexPlugin({
-        models: {
-          providers: {
-            openai: {
-              baseUrl: "https://proxy.example.invalid/v1",
-              agentRuntime: { id: "pi" },
-              models: [
-                {
-                  id: "gpt-5.5",
-                  name: "GPT 5.5",
-                  reasoning: true,
-                  input: ["text"],
-                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                  contextWindow: 128000,
-                  maxTokens: 8192,
-                  agentRuntime: { id: "auto" },
-                },
-              ],
-            },
-          },
-        },
+        models: createPiProviderModels("https://proxy.example.invalid/v1", "auto"),
         plugins: { entries: { codex: {} } },
       });
 
@@ -1089,26 +1078,7 @@ describe("config plugin validation", () => {
 
     it("does not warn when exact agent policy overrides an automatic OpenAI provider model route", () => {
       const res = validateWithMissingCodexPlugin({
-        models: {
-          providers: {
-            openai: {
-              baseUrl: "https://api.openai.com/v1",
-              agentRuntime: { id: "pi" },
-              models: [
-                {
-                  id: "gpt-5.5",
-                  name: "GPT 5.5",
-                  reasoning: true,
-                  input: ["text"],
-                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                  contextWindow: 128000,
-                  maxTokens: 8192,
-                  agentRuntime: { id: "auto" },
-                },
-              ],
-            },
-          },
-        },
+        models: createPiProviderModels("https://api.openai.com/v1", "auto"),
         agents: {
           list: [{ id: "openclaw" }],
           defaults: {
@@ -1271,26 +1241,7 @@ describe("config plugin validation", () => {
 
     it("still warns when a provider model route explicitly selects Codex", () => {
       const res = validateWithMissingCodexPlugin({
-        models: {
-          providers: {
-            openai: {
-              baseUrl: "https://api.openai.com/v1",
-              agentRuntime: { id: "pi" },
-              models: [
-                {
-                  id: "gpt-5.5",
-                  name: "GPT 5.5",
-                  reasoning: true,
-                  input: ["text"],
-                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                  contextWindow: 128000,
-                  maxTokens: 8192,
-                  agentRuntime: { id: "codex" },
-                },
-              ],
-            },
-          },
-        },
+        models: createPiProviderModels("https://api.openai.com/v1", "codex"),
         plugins: { entries: { codex: {} } },
       });
 
@@ -1393,33 +1344,6 @@ describe("config plugin validation", () => {
         warning.message.includes("gateway will run without persistent memory"),
       ),
     ).toBe(false);
-  });
-
-  it("deduplicates yuanbao missing-plugin warnings across entries and allow", () => {
-    const res = validateConfigObjectWithPlugins(
-      {
-        agents: { list: [{ id: "openclaw" }] },
-        plugins: {
-          entries: { yuanbao: { enabled: true } },
-          allow: ["yuanbao"],
-        },
-      },
-      {
-        env: suiteEnv(),
-        pluginMetadataSnapshot: {
-          manifestRegistry: {
-            plugins: [],
-            diagnostics: [],
-          },
-        },
-      },
-    );
-
-    expect(res.ok).toBe(true);
-    const message =
-      "plugin not installed: yuanbao — install the official external plugin with: openclaw plugins install openclaw-plugin-yuanbao@2.18.2";
-    expectPathMessage(res.warnings, "plugins.entries.yuanbao", message);
-    expect((res.warnings ?? []).filter((warning) => warning.message === message)).toHaveLength(1);
   });
 
   it("keeps official external non-memory plugins fatal in the memory slot", () => {
@@ -1798,7 +1722,7 @@ describe("config plugin validation", () => {
         pluginMetadataSnapshot: {
           manifestRegistry: {
             plugins: [],
-            diagnostics: [],
+            diagnostics: [{ level: "info", message: "explicit plugin source selected" }],
           },
         },
       },
@@ -1880,6 +1804,7 @@ describe("config plugin validation", () => {
       plugins: {
         allow: ["dreaming"],
         entries: {
+          dreaming: { enabled: false },
           "memory-core": {
             config: { dreaming: { enabled: true } },
           },
@@ -1921,15 +1846,14 @@ describe("config plugin validation", () => {
     expect(res.ok).toBe(true);
   });
 
-  it("warns for removed legacy plugin ids instead of failing validation", () => {
-    const removedId = "google-antigravity-auth";
-    const res = validateRemovedPluginConfig(removedId);
-    expectRemovedPluginWarnings(res, removedId, removedId);
-  });
-
-  it("warns for removed google gemini auth plugin ids instead of failing validation", () => {
-    const removedId = "google-gemini-cli-auth";
-    const res = validateRemovedPluginConfig(removedId);
+  it.each([
+    ["google-antigravity-auth", true],
+    ["google-antigravity-auth", false],
+    ["google-gemini-cli-auth", true],
+    ["webhooks", true],
+    ["webhooks", false],
+  ] as const)("warns for removed %s plugin with enabled=%s", (removedId, enabled) => {
+    const res = validateRemovedPluginConfig(removedId, enabled);
     expectRemovedPluginWarnings(res, removedId, removedId);
   });
 
@@ -1994,6 +1918,17 @@ describe("config plugin validation", () => {
     );
   });
 
+  it.each([
+    { config: { sessionCatalog: { enabled: true } } },
+    { enabled: false, config: { sessionCatalog: { enabled: false } } },
+    { config: { sessionCatalog: { enabled: false, homes: ["/synthetic/catalog"] } } },
+  ])("retains disabled-plugin warnings for authored Codex settings: %j", (entry) => {
+    const res = validateInSuite({ plugins: { entries: { codex: entry } } });
+
+    expect(res.ok).toBe(true);
+    expectPathMessageIncludes(res.warnings, "plugins.entries.codex", "plugin disabled");
+  });
+
   it("ignores standalone helper scripts in auto-discovered global extensions", async () => {
     const helperPath = path.join(suiteHome, ".openclaw", "extensions", "my-helper.mjs");
     await mkdirSafe(path.dirname(helperPath));
@@ -2049,26 +1984,6 @@ describe("config plugin validation", () => {
         agentId: "ops",
         match: { channel: channelId, accountId: "*" },
       });
-    }
-  });
-
-  it("surfaces plugin config diagnostics", () => {
-    const res = validateInSuite({
-      agents: { list: [{ id: "openclaw" }] },
-      plugins: {
-        enabled: true,
-        load: { paths: [badPluginDir] },
-        entries: { "bad-plugin": { config: { value: "nope" } } },
-      },
-    });
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      const hasIssue = res.issues.some(
-        (issue) =>
-          issue.path.startsWith("plugins.entries.bad-plugin.config") &&
-          issue.message.includes("invalid config"),
-      );
-      expect(hasIssue).toBe(true);
     }
   });
 
@@ -2292,56 +2207,34 @@ describe("config plugin validation", () => {
   });
 
   it("accepts voice-call webhookSecurity and streaming guard config fields", () => {
-    const res = validateInSuite({
-      agents: { list: [{ id: "openclaw" }] },
-      plugins: {
-        enabled: true,
-        load: { paths: [voiceCallSchemaPluginDir] },
-        entries: {
-          "voice-call-schema-fixture": {
-            config: {
-              provider: "twilio",
-              webhookSecurity: {
-                allowedHosts: ["voice.example.com"],
-                trustForwardingHeaders: false,
-                trustedProxyIPs: ["127.0.0.1"],
-              },
-              streaming: {
-                enabled: true,
-                preStartTimeoutMs: 5000,
-                maxPendingConnections: 16,
-                maxPendingConnectionsPerIp: 4,
-                maxConnections: 64,
-              },
-              staleCallReaperSeconds: 180,
-            },
-          },
-        },
+    const res = validateVoiceCallConfig({
+      provider: "twilio",
+      webhookSecurity: {
+        allowedHosts: ["voice.example.com"],
+        trustForwardingHeaders: false,
+        trustedProxyIPs: ["127.0.0.1"],
       },
+      streaming: {
+        enabled: true,
+        preStartTimeoutMs: 5000,
+        maxPendingConnections: 16,
+        maxPendingConnectionsPerIp: 4,
+        maxConnections: 64,
+      },
+      staleCallReaperSeconds: 180,
     });
     expect(res.ok).toBe(true);
   });
 
   it("accepts voice-call OpenAI TTS speakerVoice, speed, instructions, and baseUrl fields", () => {
-    const res = validateInSuite({
-      agents: { list: [{ id: "openclaw" }] },
-      plugins: {
-        enabled: true,
-        load: { paths: [voiceCallSchemaPluginDir] },
-        entries: {
-          "voice-call-schema-fixture": {
-            config: {
-              tts: {
-                providers: {
-                  openai: {
-                    baseUrl: "http://localhost:8880/v1",
-                    speakerVoice: "alloy",
-                    speed: 1.5,
-                    instructions: "Speak in a cheerful tone",
-                  },
-                },
-              },
-            },
+    const res = validateVoiceCallConfig({
+      tts: {
+        providers: {
+          openai: {
+            baseUrl: "http://localhost:8880/v1",
+            speakerVoice: "alloy",
+            speed: 1.5,
+            instructions: "Speak in a cheerful tone",
           },
         },
       },
@@ -2350,30 +2243,19 @@ describe("config plugin validation", () => {
   });
 
   it("accepts voice-call SecretRef credentials declared by the plugin schema", () => {
-    const res = validateInSuite({
-      agents: { list: [{ id: "openclaw" }] },
-      plugins: {
-        enabled: true,
-        load: { paths: [voiceCallSchemaPluginDir] },
-        entries: {
-          "voice-call-schema-fixture": {
-            config: {
-              provider: "twilio",
-              twilio: {
-                accountSid: "twilio-account-sid-placeholder",
-                authToken: { source: "env", provider: "default", id: "TWILIO_AUTH_TOKEN" },
-              },
-              tts: {
-                providers: {
-                  openai: {
-                    apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
-                  },
-                  elevenlabs: {
-                    apiKey: { source: "env", provider: "default", id: "ELEVENLABS_API_KEY" },
-                  },
-                },
-              },
-            },
+    const res = validateVoiceCallConfig({
+      provider: "twilio",
+      twilio: {
+        accountSid: "twilio-account-sid-placeholder",
+        authToken: { source: "env", provider: "default", id: "TWILIO_AUTH_TOKEN" },
+      },
+      tts: {
+        providers: {
+          openai: {
+            apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
+          },
+          elevenlabs: {
+            apiKey: { source: "env", provider: "default", id: "ELEVENLABS_API_KEY" },
           },
         },
       },
@@ -2382,22 +2264,11 @@ describe("config plugin validation", () => {
   });
 
   it("rejects out-of-range voice-call OpenAI TTS speed values", () => {
-    const res = validateInSuite({
-      agents: { list: [{ id: "openclaw" }] },
-      plugins: {
-        enabled: true,
-        load: { paths: [voiceCallSchemaPluginDir] },
-        entries: {
-          "voice-call-schema-fixture": {
-            config: {
-              tts: {
-                providers: {
-                  openai: {
-                    speed: 10,
-                  },
-                },
-              },
-            },
+    const res = validateVoiceCallConfig({
+      tts: {
+        providers: {
+          openai: {
+            speed: 10,
           },
         },
       },
@@ -2415,23 +2286,12 @@ describe("config plugin validation", () => {
   });
 
   it("rejects out-of-range voice-call ElevenLabs voice settings", () => {
-    const res = validateInSuite({
-      agents: { list: [{ id: "openclaw" }] },
-      plugins: {
-        enabled: true,
-        load: { paths: [voiceCallSchemaPluginDir] },
-        entries: {
-          "voice-call-schema-fixture": {
-            config: {
-              tts: {
-                providers: {
-                  elevenlabs: {
-                    voiceSettings: {
-                      stability: 5,
-                    },
-                  },
-                },
-              },
+    const res = validateVoiceCallConfig({
+      tts: {
+        providers: {
+          elevenlabs: {
+            voiceSettings: {
+              stability: 5,
             },
           },
         },

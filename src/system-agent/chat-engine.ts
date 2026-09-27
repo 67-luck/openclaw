@@ -11,7 +11,7 @@ import {
   type SystemAgentTurnRunner,
 } from "./agent-turn.js";
 import type { SystemAgentApprovalClassifier } from "./approval-intent.js";
-import type { SystemAgentAssistantPlanner, SystemAgentAssistantTurn } from "./assistant.js";
+import type { SystemAgentAssistantTurn } from "./assistant.js";
 import {
   ChatTurnRouter,
   redactSensitiveCommandText,
@@ -44,7 +44,6 @@ export { SystemAgentWizardAnswerError } from "./chat-wizard-host.js";
 export type SystemAgentChatEngineOptions = {
   yes?: boolean;
   deps?: SystemAgentCommandDeps;
-  planWithAssistant?: SystemAgentAssistantPlanner;
   planGreeting?: SystemAgentGreetingPlanner;
   runAgentTurn?: SystemAgentTurnRunner;
   classifyApproval?: SystemAgentApprovalClassifier;
@@ -102,7 +101,6 @@ export class SystemAgentChatEngine {
         rebindVerifiedInference: (next) => this.rebindVerifiedInference(next),
         getVerifiedInference: () => this.verifiedInference,
         loadOverview: async () => await this.loadOverview(),
-        getHistory: () => this.history,
         verifyConfigAfterWrite: async () => await this.verifyConfigAfterWrite(),
       },
     );
@@ -120,20 +118,25 @@ export class SystemAgentChatEngine {
     decision: "allow-once" | "allow-always" | "deny" | null,
     proposalHash: string,
     beforePersistentApply?: () => void,
+    terminalStatus?: "expired" | "cancelled",
   ): Promise<SystemAgentChatReply | null> {
-    const turn = this.turnQueue.then(async () => {
+    return await this.enqueueTurn(async () => {
       const reply = await this.router.resolveOperatorApproval(
         decision,
         proposalHash,
         beforePersistentApply,
       );
+      if (reply && terminalStatus && !reply.applied) {
+        reply.text = `OpenClaw change ${terminalStatus}. No change. Retry the request if it is still needed.`;
+      }
+      if (reply && decision === "allow-once" && !reply.applied) {
+        reply.text += " Check the current settings and OpenClaw status before retrying.";
+      }
       if (reply?.text) {
         this.history.push({ role: "assistant", text: reply.text });
       }
       return reply;
     });
-    this.turnQueue = turn.catch(() => undefined);
-    return await turn;
   }
 
   noteAssistantMessage(text: string): void {
@@ -172,7 +175,7 @@ export class SystemAgentChatEngine {
   }
 
   async handle(text: string, options?: SystemAgentChatTurnOptions): Promise<SystemAgentChatReply> {
-    const turn = this.turnQueue.then(async () => {
+    return await this.enqueueTurn(async () => {
       await this.requireVerifiedInference();
       const sensitiveTurn = this.wizard.sensitiveInputPending;
       const reply = await this.router.resolveTurn(text, options);
@@ -181,27 +184,27 @@ export class SystemAgentChatEngine {
         sensitiveTurn ? "<redacted secret>" : redactSensitiveCommandText(text),
       );
     });
-    this.turnQueue = turn.catch(() => undefined);
-    return await turn;
   }
 
   async answerWizard(answer: WizardAnswer): Promise<SystemAgentChatReply> {
-    const turn = this.turnQueue.then(async () => {
+    return await this.enqueueTurn(async () => {
       await this.requireVerifiedInference();
       const result = await this.router.answerWizard(this.wizard.answer(answer));
       return this.completeTurn({ text: result.text, action: "none" }, result.userHistoryText);
     });
-    this.turnQueue = turn.catch(() => undefined);
-    return await turn;
   }
 
   async cancelWizard(cancel: SystemAgentWizardCancel): Promise<SystemAgentChatReply> {
-    const turn = this.turnQueue.then(async () => {
+    return await this.enqueueTurn(async () => {
       const result = await this.router.answerWizard(this.wizard.cancel(cancel));
       return this.completeTurn({ text: result.text, action: "none" }, result.userHistoryText);
     });
+  }
+
+  private enqueueTurn<T>(run: () => Promise<T>): Promise<T> {
+    const turn = this.turnQueue.then(run);
     this.turnQueue = turn.catch(() => undefined);
-    return await turn;
+    return turn;
   }
 
   private completeTurn(reply: SystemAgentChatReply, userHistoryText: string): SystemAgentChatReply {
@@ -218,7 +221,9 @@ export class SystemAgentChatEngine {
     const overview = await (this.options.deps?.loadOverview ?? loadSystemAgentOverview)({
       agentId: route.agentId,
     });
-    return { ...overview, defaultModel: route.modelLabel };
+    return route.modelTarget === "utility"
+      ? { ...overview, setupModel: route.modelLabel }
+      : { ...overview, defaultModel: route.modelLabel };
   }
 
   async planGreeting(params: {

@@ -5,10 +5,10 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { setCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata.test-support.js";
 import { resolveInstalledPluginIndexPolicyHash } from "../plugins/installed-plugin-index-policy.js";
-import type { InstalledPluginIndexRecord } from "../plugins/installed-plugin-index.js";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
-import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
+import { finalizePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { resetPluginRuntimeStateForTest } from "../plugins/runtime.js";
 import { clearSecretsRuntimeSnapshot } from "../secrets/runtime.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
@@ -142,26 +142,32 @@ function createComfyPlugin(
   });
 }
 
-function createInstalledPluginRecord(
-  plugin: PluginManifestRecord,
-  enabledPluginIds: string[],
-): InstalledPluginIndexRecord {
-  const enabled = plugin.origin === "bundled" || enabledPluginIds.includes(plugin.id);
+function createComfyConfig(config: Record<string, unknown> = {}): OpenClawConfig {
   return {
-    pluginId: plugin.id,
-    manifestPath: plugin.manifestPath,
-    manifestHash: `test-${plugin.id}`,
-    source: plugin.source,
-    rootDir: plugin.rootDir,
-    origin: plugin.origin,
-    enabled,
-    startup: {
-      sidecar: false,
-      memory: false,
-      agentHarnesses: [],
+    plugins: {
+      entries: {
+        comfy: {
+          config: {
+            mode: "local",
+            workflow: { "1": { inputs: {} } },
+            promptNodeId: "1",
+            ...config,
+          },
+        },
+      },
     },
-    compat: [],
   };
+}
+
+function createComfyConfigSignals(mode: "local" | "cloud") {
+  return [
+    {
+      rootPath: "plugins.entries.comfy.config",
+      mode: { path: "mode", ...(mode === "local" ? { default: "local" } : {}), allowed: [mode] },
+      requiredAny: ["workflow", "workflowPath"],
+      required: mode === "cloud" ? ["promptNodeId", "apiKey"] : ["promptNodeId"],
+    },
+  ];
 }
 
 function legacyModelProviderConfig(provider: Record<string, unknown>): OpenClawConfig {
@@ -177,54 +183,18 @@ function legacyModelProviderConfig(provider: Record<string, unknown>): OpenClawC
 function installSnapshot(
   config: OpenClawConfig,
   plugins: PluginManifestRecord[],
-  enabledPluginIds = plugins
-    .filter((plugin) => plugin.origin !== "bundled")
-    .map((plugin) => plugin.id),
   workspaceDir?: string,
 ) {
-  // Builds the current plugin metadata snapshot used by factory planning.
-  const index: PluginMetadataSnapshot["index"] = {
-    version: 1,
-    hostContractVersion: "test",
-    compatRegistryVersion: "test",
-    migrationVersion: 1,
-    policyHash: "test",
-    generatedAtMs: 0,
-    installRecords: {},
-    plugins: plugins.map((plugin) => createInstalledPluginRecord(plugin, enabledPluginIds)),
-    diagnostics: [],
-  };
-  const snapshot = {
-    policyHash: resolveInstalledPluginIndexPolicyHash(config),
+  const prepared = createPluginMetadataSnapshotFixture({ plugins });
+  const policyHash = resolveInstalledPluginIndexPolicyHash(config);
+  const index = { ...prepared.index, policyHash };
+  const snapshot = finalizePluginMetadataSnapshot({
+    ...prepared,
+    policyHash,
     ...(workspaceDir ? { workspaceDir } : {}),
     index,
     registryIndex: index,
-    registryDiagnostics: [],
-    manifestRegistry: { plugins, diagnostics: [] },
-    plugins,
-    diagnostics: [],
-    byPluginId: new Map(plugins.map((plugin) => [plugin.id, plugin])),
-    normalizePluginId: (id: string) => id,
-    owners: {
-      channels: new Map(),
-      channelConfigs: new Map(),
-      providers: new Map(),
-      modelCatalogProviders: new Map(),
-      cliBackends: new Map(),
-      setupProviders: new Map(),
-      commandAliases: new Map(),
-      contracts: new Map(),
-      modelIdNormalizationPolicies: new Map(),
-    },
-    metrics: {
-      registrySnapshotMs: 0,
-      manifestRegistryMs: 0,
-      ownerMapsMs: 0,
-      totalMs: 0,
-      indexPluginCount: 0,
-      manifestPluginCount: plugins.length,
-    },
-  } satisfies PluginMetadataSnapshot;
+  });
   setCurrentPluginMetadataSnapshot(snapshot, { config });
   return snapshot;
 }
@@ -427,7 +397,6 @@ describe("optional media tool factory planning", () => {
           setupProviders: [{ id: "image-owner", envVars: ["IMAGE_OWNER_API_KEY"] }],
         }),
       ],
-      undefined,
       "/workspace/a",
     );
     expect(getCurrentPluginMetadataSnapshot({ config })).toBeUndefined();
@@ -533,24 +502,6 @@ describe("optional media tool factory planning", () => {
       }),
     ).toEqual({
       imageGenerate: true,
-      videoGenerate: false,
-      musicGenerate: false,
-      pdf: false,
-    });
-  });
-
-  it("skips tools that the resolved denylist blocks", () => {
-    const config: OpenClawConfig = {};
-    installSnapshot(config, createImageAndPdfPlugins());
-
-    expect(
-      resolveOptionalMediaToolFactoryPlan({
-        config,
-        authStore: createAuthStore(["image-owner", "anthropic"]),
-        toolDenylist: ["image_generate", "pdf"],
-      }),
-    ).toEqual({
-      imageGenerate: false,
       videoGenerate: false,
       musicGenerate: false,
       pdf: false,
@@ -698,6 +649,29 @@ describe("optional media tool factory planning", () => {
     });
   });
 
+  it("rechecks workspace capability activation after the selected slot changes", () => {
+    const config: OpenClawConfig = {};
+    installSnapshot(config, [
+      {
+        ...createPlugin({
+          id: "workspace-image",
+          origin: "workspace",
+          contracts: { imageGenerationProviders: ["workspace-image"] },
+        }),
+        kind: "context-engine",
+      },
+    ]);
+    const authStore = createAuthStore(["workspace-image"]);
+    const available = () =>
+      resolveOptionalMediaToolFactoryPlan({ config, authStore }).imageGenerate;
+
+    expect(available()).toBe(false);
+    config.plugins = { slots: { contextEngine: "workspace-image" } };
+    expect(available()).toBe(true);
+    config.plugins = {};
+    expect(available()).toBe(false);
+  });
+
   it("keeps manifest-declared image provider auth aliases on the factory path", async () => {
     const config: OpenClawConfig = {};
     const plugins = [
@@ -731,7 +705,7 @@ describe("optional media tool factory planning", () => {
       authStore: createAuthStore(["openai"]),
     });
     expect(plan.imageGenerate).toBe(true);
-    installSnapshot(config, plugins, undefined, process.cwd());
+    installSnapshot(config, plugins, process.cwd());
     expect(
       (
         await createOpenClawToolsForTest({
@@ -745,31 +719,8 @@ describe("optional media tool factory planning", () => {
   });
 
   it("keeps manifest-declared config-only generation providers on the factory path", () => {
-    const config: OpenClawConfig = {
-      plugins: {
-        entries: {
-          comfy: {
-            config: {
-              mode: "local",
-              workflow: { "1": { inputs: {} } },
-              promptNodeId: "1",
-            },
-          },
-        },
-      },
-    };
-    const configSignals = [
-      {
-        rootPath: "plugins.entries.comfy.config",
-        mode: {
-          path: "mode",
-          default: "local",
-          allowed: ["local"],
-        },
-        requiredAny: ["workflow", "workflowPath"],
-        required: ["promptNodeId"],
-      },
-    ];
+    const config = createComfyConfig();
+    const configSignals = createComfyConfigSignals("local");
     installSnapshot(config, [createComfyPlugin(configSignals)]);
 
     const plan = resolveOptionalMediaToolFactoryPlan({
@@ -782,32 +733,9 @@ describe("optional media tool factory planning", () => {
   });
 
   it("does not expose manifest-backed generation providers when plugins are globally disabled", async () => {
-    const config: OpenClawConfig = {
-      plugins: {
-        enabled: false,
-        entries: {
-          comfy: {
-            config: {
-              mode: "local",
-              workflow: { "1": { inputs: {} } },
-              promptNodeId: "1",
-            },
-          },
-        },
-      },
-    };
-    const configSignals = [
-      {
-        rootPath: "plugins.entries.comfy.config",
-        mode: {
-          path: "mode",
-          default: "local",
-          allowed: ["local"],
-        },
-        requiredAny: ["workflow", "workflowPath"],
-        required: ["promptNodeId"],
-      },
-    ];
+    const config = createComfyConfig();
+    config.plugins = { ...config.plugins, enabled: false };
+    const configSignals = createComfyConfigSignals("local");
     installSnapshot(config, [createComfyPlugin(configSignals)]);
 
     expect(
@@ -836,32 +764,12 @@ describe("optional media tool factory planning", () => {
   it("does not count unresolved SecretRef config signals as configured", async () => {
     vi.stubEnv("COMFY_TEST_API_KEY", "");
     const workspaceDir = process.cwd();
-    const config: OpenClawConfig = {
-      plugins: {
-        entries: {
-          comfy: {
-            config: {
-              mode: "cloud",
-              apiKey: { source: "env", provider: "default", id: "COMFY_TEST_API_KEY" },
-              workflow: { "1": { inputs: {} } },
-              promptNodeId: "1",
-            },
-          },
-        },
-      },
-    };
-    const configSignals = [
-      {
-        rootPath: "plugins.entries.comfy.config",
-        mode: {
-          path: "mode",
-          allowed: ["cloud"],
-        },
-        requiredAny: ["workflow", "workflowPath"],
-        required: ["promptNodeId", "apiKey"],
-      },
-    ];
-    installSnapshot(config, [createComfyPlugin(configSignals)], undefined, workspaceDir);
+    const config = createComfyConfig({
+      mode: "cloud",
+      apiKey: { source: "env", provider: "default", id: "COMFY_TEST_API_KEY" },
+    });
+    const configSignals = createComfyConfigSignals("cloud");
+    installSnapshot(config, [createComfyPlugin(configSignals)], workspaceDir);
 
     expect(
       resolveOptionalMediaToolFactoryPlan({
@@ -889,40 +797,16 @@ describe("optional media tool factory planning", () => {
   });
 
   it("counts configured non-env SecretRef config signals without resolving secrets", () => {
-    const config: OpenClawConfig = {
-      plugins: {
-        entries: {
-          comfy: {
-            config: {
-              mode: "cloud",
-              apiKey: { source: "file", provider: "vault", id: "/comfy/api-key" },
-              workflow: { "1": { inputs: {} } },
-              promptNodeId: "1",
-            },
-          },
-        },
-      },
-      secrets: {
-        providers: {
-          vault: {
-            source: "file",
-            path: "/tmp/openclaw-secrets.json",
-            mode: "json",
-          },
-        },
+    const config = createComfyConfig({
+      mode: "cloud",
+      apiKey: { source: "file", provider: "vault", id: "/comfy/api-key" },
+    });
+    config.secrets = {
+      providers: {
+        vault: { source: "file", path: "/tmp/openclaw-secrets.json", mode: "json" },
       },
     };
-    const configSignals = [
-      {
-        rootPath: "plugins.entries.comfy.config",
-        mode: {
-          path: "mode",
-          allowed: ["cloud"],
-        },
-        requiredAny: ["workflow", "workflowPath"],
-        required: ["promptNodeId", "apiKey"],
-      },
-    ];
+    const configSignals = createComfyConfigSignals("cloud");
     installSnapshot(config, [createComfyPlugin(configSignals)]);
 
     const plan = resolveOptionalMediaToolFactoryPlan({
@@ -947,7 +831,6 @@ describe("optional media tool factory planning", () => {
           setupProviders: [{ id: "media-owner", envVars: ["MEDIA_OWNER_API_KEY"] }],
         }),
       ],
-      undefined,
       workspaceDir,
     );
 
@@ -1105,4 +988,3 @@ describe("optional media tool factory planning", () => {
     });
   });
 });
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

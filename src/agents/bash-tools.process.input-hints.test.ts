@@ -3,7 +3,13 @@
  * Idle writable sessions should surface actionable metadata and user-facing hints.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { addSession, appendOutput, markExited } from "./bash-process-registry.js";
+import { createAgentToolExecutionBudget } from "./agent-tool-source-execution-guard.js";
+import {
+  addSession,
+  appendOutput,
+  markExited,
+  type ProcessSession,
+} from "./bash-process-registry.js";
 import { createProcessSessionFixture } from "./bash-process-registry.test-helpers.js";
 import { resetProcessRegistryForTests } from "./bash-process-registry.test-support.js";
 import { createProcessTool } from "./bash-tools.process.js";
@@ -28,16 +34,6 @@ function textOf(result: ProcessToolResult): string {
   return item?.type === "text" ? item.text : "";
 }
 
-function expectRecordFields(record: unknown, expected: Record<string, unknown>) {
-  if (!record || typeof record !== "object") {
-    throw new Error("Expected record");
-  }
-  const actual = record as Record<string, unknown>;
-  for (const [key, value] of Object.entries(expected)) {
-    expect(actual[key]).toEqual(value);
-  }
-}
-
 function installWritableStdin(
   session: ReturnType<typeof createProcessSessionFixture>,
   state?: { writableEnded?: boolean; writableFinished?: boolean; destroyed?: boolean },
@@ -55,6 +51,40 @@ function installWritableStdin(
 }
 
 describe("process input-wait hints", () => {
+  it("does not close stdin when requester authority is revoked during a pending write", async () => {
+    let current = true;
+    const controller = new AbortController();
+    const budget = createAgentToolExecutionBudget({
+      signal: controller.signal,
+      abort: (error) => controller.abort(error),
+      isCurrent: () => current,
+    });
+    const session = createProcessSessionFixture({
+      id: "sess-revoked-input",
+      command: "cat",
+      backgrounded: true,
+    });
+    const write = vi.fn<NonNullable<ProcessSession["stdin"]>["write"]>((_data, done) => {
+      current = false;
+      done?.(null);
+    });
+    const end = vi.fn();
+    session.stdin = { write, end, destroyed: false };
+    addSession(session);
+    await expect(
+      budget.run(() =>
+        runProcessAction(createProcessTool(), {
+          action: "write",
+          sessionId: session.id,
+          data: "allowed input",
+          eof: true,
+        }),
+      ),
+    ).rejects.toThrow("execution scope is no longer active");
+    expect(write).toHaveBeenCalledOnce();
+    expect(end).not.toHaveBeenCalled();
+  });
+
   it("reports the UTF-8 byte count for process writes", async () => {
     const processTool = createProcessTool();
     const session = createProcessSessionFixture({
@@ -95,7 +125,7 @@ describe("process input-wait hints", () => {
     expect(text).toContain("Name? ");
     expect(text).toContain("No new output for 20s");
     expect(text).toContain("Use process write, send-keys, submit, or paste to provide input.");
-    expectRecordFields(result.details, {
+    expect(result.details).toMatchObject({
       status: "running",
       sessionId: "sess-log-hint",
       stdinWritable: true,
@@ -125,7 +155,7 @@ describe("process input-wait hints", () => {
 
     expect(textOf(result)).toContain("(no new output)");
     expect(textOf(result)).toContain("may be waiting for input");
-    expectRecordFields(result.details, {
+    expect(result.details).toMatchObject({
       status: "running",
       sessionId: "sess-poll",
       stdinWritable: true,
@@ -153,42 +183,11 @@ describe("process input-wait hints", () => {
     expect(textOf(result)).toContain("sess-list");
     expect(textOf(result)).toContain("[input-wait]");
     const sessions = (result.details as { sessions?: Array<Record<string, unknown>> }).sessions;
-    expectRecordFields(sessions?.[0], {
+    expect(sessions?.[0]).toMatchObject({
       sessionId: "sess-list",
       stdinWritable: true,
       waitingForInput: true,
       idleMs: 30_000,
-    });
-  });
-
-  it("adds input-wait metadata and hint text to log", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-01-01T00:00:25.000Z"));
-    const processTool = createProcessTool();
-    const session = createProcessSessionFixture({
-      id: "sess-log",
-      command: "node prompt.js",
-      backgrounded: true,
-      startedAt: Date.now() - 25_000,
-    });
-    installWritableStdin(session);
-    appendOutput(session, "stdout", "Password: ");
-    addSession(session);
-
-    const result = await runProcessAction(processTool, {
-      action: "log",
-      sessionId: "sess-log",
-    });
-
-    expect(textOf(result)).toContain("Password: ");
-    expect(textOf(result)).toContain("No new output for 25s");
-    expect(textOf(result)).toContain("Use process write, send-keys, submit, or paste");
-    expectRecordFields(result.details, {
-      status: "running",
-      sessionId: "sess-log",
-      stdinWritable: true,
-      waitingForInput: true,
-      idleMs: 25_000,
     });
   });
 
@@ -210,7 +209,7 @@ describe("process input-wait hints", () => {
       sessionId: "sess-ended",
     });
     expect(textOf(log)).not.toContain("provide input");
-    expectRecordFields(log.details, {
+    expect(log.details).toMatchObject({
       status: "running",
       stdinWritable: false,
       waitingForInput: false,
@@ -222,7 +221,7 @@ describe("process input-wait hints", () => {
       data: "answer\n",
     });
     expect(textOf(write)).toContain("stdin is not writable");
-    expectRecordFields(write.details, { status: "failed" });
+    expect(write.details).toMatchObject({ status: "failed" });
   });
 
   it("can read finished session logs without exposing input controls", async () => {
@@ -243,7 +242,7 @@ describe("process input-wait hints", () => {
 
     expect(textOf(result)).toContain("done");
     expect(textOf(result)).not.toContain("provide input");
-    expectRecordFields(result.details, {
+    expect(result.details).toMatchObject({
       status: "completed",
       sessionId: "sess-finished",
       exitCode: 0,

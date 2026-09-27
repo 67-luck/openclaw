@@ -1,12 +1,10 @@
 /** Tests ACP manager cancellation of active turns and idle sessions. */
 import type { AcpRuntimeEvent } from "@openclaw/acp-core/runtime/types";
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
+import { createTestAdmittedRunContext } from "../../agents/admitted-run-context.test-support.js";
+import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import {
-  requireTaskByRunId,
-  withAcpManagerTaskStateDir,
-} from "../../../test/helpers/acp-manager-task-state.js";
-import {
+  AcpRuntimeError,
   AcpSessionManager,
   baseCfg,
   createRuntime,
@@ -14,15 +12,58 @@ import {
   extractStatesFromUpserts,
   hoisted,
   installAcpSessionManagerTestLifecycle,
-  mockParentedAcpSessionEntries,
   mockCallArg,
+  mockParentedAcpSessionEntries,
+  readySessionMeta,
 } from "./manager.test-helpers.js";
 
 describe("AcpSessionManager cancelSession", () => {
   installAcpSessionManagerTestLifecycle();
 
+  it.each(["generic", "acp"] as const)(
+    "records idle cancellation failures without losing %s error identity",
+    async (kind) => {
+      const runtimeState = createRuntime();
+      const error =
+        kind === "generic"
+          ? new Error("Cancel transport failed")
+          : new AcpRuntimeError("ACP_BACKEND_UNAVAILABLE", "Cancel backend unavailable", {
+              detailCode: "CANCEL_UNAVAILABLE",
+            });
+      runtimeState.cancel.mockRejectedValue(error);
+      hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
+        id: "acpx",
+        runtime: runtimeState.runtime,
+      });
+      const sessionKey = "agent:codex:acp:idle-cancel";
+      hoisted.readAcpSessionEntryMock.mockReturnValue({
+        sessionKey,
+        storeSessionKey: sessionKey,
+        acp: readySessionMeta(),
+      });
+
+      const cancellation = new AcpSessionManager().cancelSession({
+        cfg: baseCfg,
+        sessionKey,
+        reason: "manual-cancel",
+      });
+      if (kind === "generic") {
+        await expect(cancellation).rejects.toMatchObject({
+          code: "ACP_TURN_FAILED",
+          message: error.message,
+          cause: error,
+        });
+      } else {
+        await expect(cancellation).rejects.toBe(error);
+      }
+      expect(runtimeState.cancel).toHaveBeenCalledOnce();
+      expectRecordFields(mockCallArg(runtimeState.cancel), { reason: "manual-cancel" });
+      expect(extractStatesFromUpserts().at(-1)).toBe("error");
+    },
+  );
+
   it("preempts an active turn on cancel and returns to idle state", async () => {
-    await withAcpManagerTaskStateDir(async () => {
+    await withStateDirEnv("openclaw-acp-manager-", async () => {
       const runtimeState = createRuntime();
       hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
         id: "acpx",
@@ -48,12 +89,14 @@ describe("AcpSessionManager cancelSession", () => {
 
       const manager = new AcpSessionManager();
       const events: AcpRuntimeEvent[] = [];
+      const admitted = createTestAdmittedRunContext("run-1");
       const runPromise = manager.runTurn({
         provenance: "system",
         cfg: baseCfg,
         sessionKey: "agent:codex:acp:child-1",
         text: "long task",
         mode: "prompt",
+        admittedRunContext: admitted,
         requestId: "run-1",
         onEvent: (event) => {
           events.push(event);
@@ -65,8 +108,7 @@ describe("AcpSessionManager cancelSession", () => {
         },
         { interval: 1 },
       );
-      const taskDetail = asOptionalRecord(requireTaskByRunId("run-1").detail);
-      const instanceId = typeof taskDetail?.instanceId === "string" ? taskDetail.instanceId : "";
+      const instanceId = admitted.operationalRunInstance.instanceId;
       expect(instanceId).not.toBe("");
 
       await manager.cancelSession({
@@ -83,11 +125,6 @@ describe("AcpSessionManager cancelSession", () => {
       expectRecordFields(mockCallArg(runtimeState.cancel), {
         reason: "manual-cancel",
       });
-      expectRecordFields(requireTaskByRunId("run-1"), {
-        ownerKey: "agent:main:main",
-        childSessionKey: "agent:codex:acp:child-1",
-        status: "cancelled",
-      });
       expect(events.at(-1)).toEqual({
         type: "done",
         status: "cancelled",
@@ -101,7 +138,7 @@ describe("AcpSessionManager cancelSession", () => {
   });
 
   it("keeps a queued same-id successor outside the active-turn cancellation", async () => {
-    await withAcpManagerTaskStateDir(async () => {
+    await withStateDirEnv("openclaw-acp-manager-", async () => {
       const runtimeState = createRuntime();
       hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
         id: "acpx",
@@ -140,17 +177,18 @@ describe("AcpSessionManager cancelSession", () => {
       });
 
       const manager = new AcpSessionManager();
+      const admitted = createTestAdmittedRunContext("run-shared");
       const firstRun = manager.runTurn({
         provenance: "system",
         cfg: baseCfg,
         sessionKey: "agent:codex:acp:child-1",
         text: "first task",
         mode: "prompt",
+        admittedRunContext: admitted,
         requestId: "run-shared",
       });
       await vi.waitFor(() => expect(firstEntered).toBe(true), { interval: 1 });
-      const taskDetail = asOptionalRecord(requireTaskByRunId("run-shared").detail);
-      const instanceId = typeof taskDetail?.instanceId === "string" ? taskDetail.instanceId : "";
+      const instanceId = admitted.operationalRunInstance.instanceId;
       expect(instanceId).not.toBe("");
 
       const successorRun = manager.runTurn({
@@ -184,7 +222,7 @@ describe("AcpSessionManager cancelSession", () => {
   });
 
   it("does not cancel a replacement active turn", async () => {
-    await withAcpManagerTaskStateDir(async () => {
+    await withStateDirEnv("openclaw-acp-manager-", async () => {
       const runtimeState = createRuntime();
       hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
         id: "acpx",
@@ -204,17 +242,18 @@ describe("AcpSessionManager cancelSession", () => {
         yield { type: "done" as const, stopReason: "end_turn" };
       });
       const manager = new AcpSessionManager();
+      const admitted = createTestAdmittedRunContext("run-current");
       const runPromise = manager.runTurn({
         provenance: "system",
         cfg: baseCfg,
         sessionKey: "agent:codex:acp:child-1",
         text: "replacement task",
         mode: "prompt",
+        admittedRunContext: admitted,
         requestId: "run-current",
       });
       await vi.waitFor(() => expect(enteredRun).toBe(true), { interval: 1 });
-      const taskDetail = asOptionalRecord(requireTaskByRunId("run-current").detail);
-      const instanceId = typeof taskDetail?.instanceId === "string" ? taskDetail.instanceId : "";
+      const instanceId = admitted.operationalRunInstance.instanceId;
       expect(instanceId).not.toBe("");
 
       await expect(

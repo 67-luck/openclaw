@@ -8,6 +8,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecuteNodeHostCommandParams } from "./bash-tools.exec-host-node.types.js";
 import type { BashSandboxConfig } from "./bash-tools.shared.js";
 import type { ExtensionContext } from "./sessions/index.js";
+import type { AnyAgentTool } from "./tools/common.js";
 
 declare module "../plugins/hook-types.js" {
   interface PluginHookChannelSenderContext {
@@ -93,6 +94,7 @@ vi.mock("../process/supervisor/index.js", () => ({
       mocks.spawnInputs.push({ env: input.env ? { ...input.env } : undefined });
       input.onStdout?.("ok\n");
       return {
+        activity: { resultSettled: true, lastOutputAtMs: Date.now() },
         runId: "mock-run",
         startedAtMs: Date.now(),
         stdin: undefined,
@@ -111,7 +113,6 @@ vi.mock("../process/supervisor/index.js", () => ({
     },
     cancel: vi.fn(),
     cancelScope: vi.fn(),
-    getRecord: vi.fn(),
   }),
 }));
 
@@ -119,6 +120,20 @@ let createExecTool: typeof import("./bash-tools.exec-run.js").createExecTool;
 let toToolDefinitions: typeof import("./agent-tool-definition-adapter.js").toToolDefinitions;
 let createOpenClawCodingTools: typeof import("./agent-tools.js").createOpenClawCodingTools;
 const testExtensionContext = {} as ExtensionContext;
+
+function createTestExecTool(options: Parameters<typeof createExecTool>[0]) {
+  return createExecTool({ security: "full", ask: "off", ...options });
+}
+
+function backendSandboxConfig(overrides: Partial<BashSandboxConfig>): BashSandboxConfig {
+  return {
+    containerName: "remote-sandbox-workdir-test",
+    workspaceDir: process.cwd(),
+    containerWorkdir: "/remote/workspace",
+    workdirValidation: "backend",
+    ...overrides,
+  };
+}
 
 function installResolveExecEnvHook(result: Record<string, string>) {
   mocks.hookRunner = {
@@ -143,10 +158,8 @@ describe("exec resolve_exec_env hook wiring", () => {
   });
 
   it("adds only channel identity env to gateway exec subprocesses", async () => {
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "auto",
-      security: "full",
-      ask: "off",
       channelContext: {
         sender: { id: "ou_1", unionId: "on_1" },
         chat: { id: "oc_1" },
@@ -177,11 +190,10 @@ describe("exec resolve_exec_env hook wiring", () => {
       "bad-key": "bad",
     });
 
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "auto",
-      security: "full",
-      ask: "off",
       sessionKey: "agent:main:telegram:chat-1",
+      sessionId: "session-1",
       messageProvider: "telegram",
       currentChannelId: "chat-1",
       channelContext: {
@@ -204,6 +216,7 @@ describe("exec resolve_exec_env hook wiring", () => {
       {
         agentId: "main",
         sessionKey: "agent:main:telegram:chat-1",
+        sessionId: "session-1",
         messageProvider: "telegram",
         channelId: "chat-1",
         channelContext: {
@@ -235,16 +248,28 @@ describe("exec resolve_exec_env hook wiring", () => {
     });
   });
 
+  it("retains plugin env when prepared arguments are prepared again", async () => {
+    installResolveExecEnvHook({ PLUGIN_SAFE: "yes" });
+    const tool: AnyAgentTool = createExecTool({ host: "node", security: "full", ask: "off" });
+    const prepare = expectDefined(tool.prepareBeforeToolCallParams, "exec preparation");
+    const prepared = await prepare({ command: "echo ok" }, {});
+    const preparedAgain = await prepare(prepared, {});
+
+    await tool.execute("call-prepared-twice", preparedAgain);
+
+    expect(mocks.hookRunner?.runResolveExecEnv).toHaveBeenCalledOnce();
+    expect(mocks.nodeHostParams[0]?.env).toMatchObject({ PLUGIN_SAFE: "yes" });
+    expect(mocks.nodeHostParams[0]?.requestedEnv).toMatchObject({ PLUGIN_SAFE: "yes" });
+  });
+
   it("inherits configured node for auto while forwarding filtered plugin env", async () => {
     installResolveExecEnvHook({
       NODE_HOST_SAFE: "yes",
       LD_PRELOAD: "/tmp/preload.dylib",
     });
 
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "node",
-      security: "full",
-      ask: "off",
       sessionKey: "agent:main:main",
       channelContext: {
         sender: { id: "ou_node" },
@@ -281,11 +306,9 @@ describe("exec resolve_exec_env hook wiring", () => {
   });
 
   it("does not forward configured gateway cwd defaults to node host requests", async () => {
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       cwd: "/gateway/default/that/node/cannot/use",
       host: "node",
-      security: "full",
-      ask: "off",
     });
 
     await tool.execute("call-node-default-cwd", {
@@ -296,10 +319,8 @@ describe("exec resolve_exec_env hook wiring", () => {
   });
 
   it("fails blank explicit node host workdirs before node invocation", async () => {
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "node",
-      security: "full",
-      ask: "off",
     });
 
     const result = await tool.execute("call-node-blank-cwd", {
@@ -317,17 +338,9 @@ describe("exec resolve_exec_env hook wiring", () => {
   it("prevalidates node workdirs before resolving exec env when a backend sandbox exists", async () => {
     installResolveExecEnvHook({ PLUGIN_SAFE: "yes" });
     const validateWorkdir = vi.fn(async (workdir: string) => workdir);
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "node",
-      security: "full",
-      ask: "off",
-      sandbox: {
-        containerName: "remote-sandbox-workdir-test",
-        workspaceDir: process.cwd(),
-        containerWorkdir: "/remote/workspace",
-        workdirValidation: "backend",
-        validateWorkdir,
-      },
+      sandbox: backendSandboxConfig({ validateWorkdir }),
     });
 
     const result = await tool.execute("call-node-invalid-cwd-with-backend-sandbox", {
@@ -343,10 +356,8 @@ describe("exec resolve_exec_env hook wiring", () => {
 
   it("fails invalid workdirs before resolving exec env", async () => {
     installResolveExecEnvHook({ PLUGIN_SAFE: "yes" });
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "gateway",
-      security: "full",
-      ask: "off",
     });
 
     const result = await tool.execute("call-invalid-cwd-before-env", {
@@ -363,17 +374,9 @@ describe("exec resolve_exec_env hook wiring", () => {
   it("prevalidates gateway workdirs before resolving exec env when a backend sandbox exists", async () => {
     installResolveExecEnvHook({ PLUGIN_SAFE: "yes" });
     const validateWorkdir = vi.fn(async (workdir: string) => workdir);
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "gateway",
-      security: "full",
-      ask: "off",
-      sandbox: {
-        containerName: "remote-sandbox-workdir-test",
-        workspaceDir: process.cwd(),
-        containerWorkdir: "/remote/workspace",
-        workdirValidation: "backend",
-        validateWorkdir,
-      },
+      sandbox: backendSandboxConfig({ validateWorkdir }),
     });
 
     const result = await tool.execute("call-gateway-invalid-cwd-with-backend-sandbox", {
@@ -396,10 +399,8 @@ describe("exec resolve_exec_env hook wiring", () => {
       runResolveExecEnv: vi.fn(async () => ({ PLUGIN_SAFE: "yes" })),
       runBeforeToolCall: vi.fn(async () => undefined),
     };
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "gateway",
-      security: "full",
-      ask: "off",
       sessionKey: "agent:main:telegram:chat-1",
     });
     const [definition] = toToolDefinitions([tool], {
@@ -436,17 +437,9 @@ describe("exec resolve_exec_env hook wiring", () => {
         blockReason: "blocked by test hook",
       })),
     };
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "sandbox",
-      security: "full",
-      ask: "off",
-      sandbox: {
-        containerName: "remote-sandbox-workdir-test",
-        workspaceDir: process.cwd(),
-        containerWorkdir: "/remote/workspace",
-        workdirValidation: "backend",
-        validateWorkdir,
-      },
+      sandbox: backendSandboxConfig({ validateWorkdir }),
     });
     const [definition] = toToolDefinitions([tool], {
       agentId: "main",
@@ -485,17 +478,9 @@ describe("exec resolve_exec_env hook wiring", () => {
       runResolveExecEnv: vi.fn(async () => ({ PLUGIN_SAFE: "yes" })),
       runBeforeToolCall: vi.fn(async () => undefined),
     };
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "sandbox",
-      security: "full",
-      ask: "off",
-      sandbox: {
-        containerName: "remote-sandbox-workdir-test",
-        workspaceDir: process.cwd(),
-        containerWorkdir: "/remote/workspace",
-        workdirValidation: "backend",
-        validateWorkdir,
-      },
+      sandbox: backendSandboxConfig({ validateWorkdir }),
     });
     const [definition] = toToolDefinitions([tool], {
       agentId: "main",
@@ -537,24 +522,16 @@ describe("exec resolve_exec_env hook wiring", () => {
       runResolveExecEnv: vi.fn(async () => ({ PLUGIN_SAFE: "yes" })),
       runBeforeToolCall: vi.fn(async () => undefined),
     };
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "sandbox",
-      security: "full",
-      ask: "off",
       agentId: "policy-agent",
       sessionKey: "global",
-      sandbox: {
-        containerName: "remote-sandbox-workdir-test",
-        workspaceDir: process.cwd(),
-        containerWorkdir: "/remote/workspace",
-        workdirValidation: "backend",
-        validateWorkdir,
-        buildExecSpec,
-      },
+      sandbox: backendSandboxConfig({ validateWorkdir, buildExecSpec }),
     });
     const [definition] = toToolDefinitions([tool], {
       agentId: "ctx-agent",
       sessionKey: "agent:ctx-agent:telegram:chat-2",
+      sessionId: "ctx-session",
       channelId: "ctx-channel",
     });
 
@@ -581,6 +558,7 @@ describe("exec resolve_exec_env hook wiring", () => {
     expect(mocks.hookRunner.runResolveExecEnv!.mock.calls[0]?.[1]).toMatchObject({
       agentId: "ctx-agent",
       sessionKey: "agent:ctx-agent:telegram:chat-2",
+      sessionId: "ctx-session",
       channelId: "ctx-channel",
     });
     expect(buildExecSpec.mock.calls[0]?.[0]?.env).toMatchObject({
@@ -632,10 +610,8 @@ describe("exec resolve_exec_env hook wiring", () => {
 
   it("forwards explicit node host workdirs without local gateway validation", async () => {
     const remoteWorkdir = "/remote/node/workspace";
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "node",
-      security: "full",
-      ask: "off",
     });
 
     await tool.execute("call-node-explicit-cwd", {
@@ -659,10 +635,8 @@ describe("exec resolve_exec_env hook wiring", () => {
       }),
     };
 
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "auto",
-      security: "full",
-      ask: "off",
       sessionKey: "agent:main:telegram:chat-1",
       messageProvider: "telegram",
       currentChannelId: "chat-1",
@@ -758,10 +732,8 @@ describe("exec resolve_exec_env hook wiring", () => {
       })),
     };
 
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "auto",
-      security: "full",
-      ask: "off",
       agentId: "policy-agent",
       sessionKey: "global",
     });
@@ -809,10 +781,8 @@ describe("exec resolve_exec_env hook wiring", () => {
       })),
     };
 
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "auto",
-      security: "full",
-      ask: "off",
       sessionKey: "agent:main:telegram:chat-1",
     });
     const [definition] = toToolDefinitions([tool], {
@@ -856,10 +826,8 @@ describe("exec resolve_exec_env hook wiring", () => {
       })),
     };
 
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "gateway",
-      security: "full",
-      ask: "off",
       sessionKey: "agent:main:telegram:chat-1",
     });
     const [definition] = toToolDefinitions([tool], {
@@ -891,10 +859,8 @@ describe("exec resolve_exec_env hook wiring", () => {
       hasHooks: vi.fn((hookName: string) => hookName === "resolve_exec_env"),
     };
 
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "gateway",
-      security: "full",
-      ask: "off",
       sessionKey: "agent:main:telegram:chat-1",
     });
     await tool.execute("call-stale-hook-runner", {
@@ -922,10 +888,8 @@ describe("exec resolve_exec_env hook wiring", () => {
       }),
     };
 
-    const tool = createExecTool({
+    const tool = createTestExecTool({
       host: "gateway",
-      security: "full",
-      ask: "off",
       sessionKey: "agent:main:telegram:chat-1",
     });
     const [definition] = toToolDefinitions([tool], {

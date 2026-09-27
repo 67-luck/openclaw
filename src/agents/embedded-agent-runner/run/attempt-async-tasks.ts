@@ -5,13 +5,13 @@ import { createAbortError as createNamedAbortError } from "../../../infra/abort-
 import { isFastTestRuntimeEnv } from "../../../infra/env.js";
 import { toErrorObject } from "../../../infra/errors.js";
 import { isCronRunSessionKey } from "../../../sessions/session-key-utils.js";
-import { isTerminalTaskStatus } from "../../../tasks/task-executor-policy.js";
-import type { TaskRecord } from "../../../tasks/task-registry.types.js";
-import {
-  findTaskByRunIdForStatus,
-  listTasksForOwnerOrRequesterSessionKeyForStatus,
-} from "../../../tasks/task-status-access.js";
 import { sleep } from "../../../utils/sleep.js";
+import {
+  findMediaGenerationOperation,
+  isTerminalMediaGenerationStatus,
+  listMediaGenerationOperations,
+  type MediaGenerationOperation,
+} from "../../media-generation-activity.js";
 
 export type AsyncStartedToolMeta = {
   toolName?: string;
@@ -24,7 +24,7 @@ export type AsyncStartedToolMeta = {
 export type CompletionRequiredAsyncTaskWaitResult = {
   waitedRunIds: string[];
   timedOutRunIds: string[];
-  terminalTasks: TaskRecord[];
+  terminalTasks: MediaGenerationOperation[];
 };
 
 const DEFAULT_ASYNC_TASK_POLL_INTERVAL_MS = 500;
@@ -103,11 +103,11 @@ function collectAsyncTaskRunIds(
   }
   // Registry lookup catches completion-required tasks started before their
   // tool metadata reached the current attempt result.
-  for (const task of listTasksForOwnerOrRequesterSessionKeyForStatus(normalizedSessionKey)) {
+  for (const task of listMediaGenerationOperations(normalizedSessionKey)) {
     if (!COMPLETION_REQUIRED_TASK_KINDS.has(task.taskKind ?? "")) {
       continue;
     }
-    if (isTerminalTaskStatus(task.status)) {
+    if (isTerminalMediaGenerationStatus(task.status)) {
       continue;
     }
     addRunId(task.runId);
@@ -117,13 +117,13 @@ function collectAsyncTaskRunIds(
 
 function findTerminalTasks(runIds: readonly string[]): {
   pendingRunIds: string[];
-  terminalTasks: TaskRecord[];
+  terminalTasks: MediaGenerationOperation[];
 } {
   const pendingRunIds: string[] = [];
-  const terminalTasks: TaskRecord[] = [];
+  const terminalTasks: MediaGenerationOperation[] = [];
   for (const runId of runIds) {
-    const task = findTaskByRunIdForStatus(runId);
-    if (task && isTerminalTaskStatus(task.status)) {
+    const task = findMediaGenerationOperation(runId);
+    if (task && isTerminalMediaGenerationStatus(task.status)) {
       terminalTasks.push(task);
       continue;
     }
@@ -136,7 +136,9 @@ function findTerminalTasks(runIds: readonly string[]): {
 export function requiresCompletionRequiredAsyncTaskWait(params: {
   sessionKey: string | undefined;
   toolMetas: readonly AsyncStartedToolMeta[];
+  abortSignal?: AbortSignal;
 }): boolean {
+  throwIfAborted(params.abortSignal);
   const sessionKey = params.sessionKey?.trim();
   if (!sessionKey || !isCronRunSessionKey(sessionKey)) {
     return false;
@@ -148,10 +150,10 @@ export function requiresCompletionRequiredAsyncTaskWait(params: {
   ) {
     return true;
   }
-  return listTasksForOwnerOrRequesterSessionKeyForStatus(sessionKey).some(
+  return listMediaGenerationOperations(sessionKey).some(
     (task) =>
       COMPLETION_REQUIRED_TASK_KINDS.has(task.taskKind ?? "") &&
-      !isTerminalTaskStatus(task.status) &&
+      !isTerminalMediaGenerationStatus(task.status) &&
       Boolean(task.runId?.trim()),
   );
 }
@@ -161,6 +163,7 @@ export function shouldWaitForCompletionRequiredAsyncTasks(params: {
   sessionKey: string | undefined;
   toolMetas: readonly AsyncStartedToolMeta[];
   yieldDetected?: boolean;
+  abortSignal?: AbortSignal;
 }): boolean {
   if (params.yieldDetected === true) {
     // sessions_yield pauses the turn so the completion event can wake it later;
@@ -170,6 +173,7 @@ export function shouldWaitForCompletionRequiredAsyncTasks(params: {
   return requiresCompletionRequiredAsyncTaskWait({
     sessionKey: params.sessionKey,
     toolMetas: params.toolMetas,
+    abortSignal: params.abortSignal,
   });
 }
 
@@ -193,7 +197,7 @@ export async function waitForCompletionRequiredAsyncTasks(params: {
   const pollIntervalMs = params.pollIntervalMs ?? resolveAsyncTaskPollIntervalMs();
   const waitedRunIds = new Set<string>();
   const timedOutRunIds = new Set<string>();
-  const terminalTasksByRunId = new Map<string, TaskRecord>();
+  const terminalTasksByRunId = new Map<string, MediaGenerationOperation>();
 
   while (true) {
     throwIfAborted(params.abortSignal);

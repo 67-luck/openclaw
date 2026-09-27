@@ -10,7 +10,7 @@ import type { MeetingSessionRecord, MeetingTranscriptLine } from "./session-type
 
 export type MeetingDurableTranscriptsOptions = {
   config?: unknown;
-  cfg?: OpenClawConfig;
+  openclawConfig?: OpenClawConfig;
   providerId: string;
   providerName: string;
   stateDir?: string;

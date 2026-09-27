@@ -17,6 +17,7 @@ private enum WatchTextValue {
 }
 
 struct WatchInboxView: View {
+    @Binding var navigationPath: [WatchDestination]
     var store: WatchInboxStore
     var directNode: WatchDirectNode
     var onAction: ((WatchPromptAction) -> Void)?
@@ -24,36 +25,23 @@ struct WatchInboxView: View {
     var onRefreshExecApprovalReview: (() -> Void)?
     var onRefreshAppSnapshot: (() -> Void)?
     var onAppCommand: ((WatchAppCommand) -> Void)?
-    var onSendChatMessage: ((String) -> String?)?
-
-    var body: some View {
-        NavigationStack {
-            WatchControlSurfaceView(
-                store: self.store,
-                directNode: self.directNode,
-                onAction: self.onAction,
-                onExecApprovalDecision: self.onExecApprovalDecision,
-                onRefreshExecApprovalReview: self.onRefreshExecApprovalReview,
-                onRefreshAppSnapshot: self.onRefreshAppSnapshot,
-                onAppCommand: self.onAppCommand,
-                onSendChatMessage: self.onSendChatMessage)
-                .toolbar(.hidden, for: .navigationBar)
-        }
-    }
-}
-
-private struct WatchControlSurfaceView: View {
-    var store: WatchInboxStore
-    var directNode: WatchDirectNode
-    var onAction: ((WatchPromptAction) -> Void)?
-    var onExecApprovalDecision: ((String, String?, WatchExecApprovalDecision) -> Void)?
-    var onRefreshExecApprovalReview: (() -> Void)?
-    var onRefreshAppSnapshot: (() -> Void)?
-    var onAppCommand: ((WatchAppCommand) -> Void)?
-    var onSendChatMessage: ((String) -> String?)?
+    var onSendChatMessage: ((String, Bool) async -> String?)?
     @State private var selectedFace = WatchScreenshotMode.approvals ? 2 : 0
 
     var body: some View {
+        NavigationStack(path: self.$navigationPath) {
+            self.controlSurface
+                .toolbar(.hidden, for: .navigationBar)
+                .navigationDestination(for: WatchDestination.self) { destination in
+                    switch destination {
+                    case .standaloneVoice:
+                        WatchRealtimeCallView(directNode: self.directNode)
+                    }
+                }
+        }
+    }
+
+    private var controlSurface: some View {
         TabView(selection: self.$selectedFace) {
             self.nowFace
                 .tag(0)
@@ -69,12 +57,8 @@ private struct WatchControlSurfaceView: View {
         .navigationTitle("")
     }
 
-    private var faceCount: Int {
-        4
-    }
-
     private var pageRail: some View {
-        WatchPageRail(selectedIndex: self.selectedFace, pageCount: self.faceCount)
+        WatchPageRail(selectedIndex: self.selectedFace, pageCount: 4)
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.bottom, -5)
             .allowsHitTesting(false)
@@ -109,6 +93,13 @@ private struct WatchControlSurfaceView: View {
             }
             .buttonStyle(.plain)
 
+            NavigationLink(value: WatchDestination.standaloneVoice) {
+                WatchPrimaryLabel(title: "Talk on Watch")
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens standalone voice without starting the microphone")
+            .accessibilityIdentifier("watch-standalone-voice")
+
             NavigationLink {
                 self.chatTimelineDestination
             } label: {
@@ -118,8 +109,8 @@ private struct WatchControlSurfaceView: View {
 
             if self.chatCount > 0 || self.approvalCount > 0 {
                 WatchCompactStatusStrip(
-                    inboxCount: self.chatCountText,
-                    approvalCount: self.approvalCountText,
+                    inboxCount: self.chatCount.formatted(),
+                    approvalCount: self.approvalCount.formatted(),
                     status: self.statusLine)
             }
         }
@@ -229,6 +220,9 @@ private struct WatchControlSurfaceView: View {
 
             if let replyStatusText = store.replyStatusText, !replyStatusText.isEmpty {
                 WatchTinyStatus(text: replyStatusText)
+            }
+            if let receipt = self.store.savedPromptDeliveryReceipt {
+                WatchChatDeliveryReceiptView(receipt: receipt)
             }
         }
     }
@@ -364,7 +358,8 @@ private struct WatchControlSurfaceView: View {
             WatchDetailText(
                 text: .verbatim(String(localized: """
                 Direct mode supports device info, status, and notifications. \
-                Chat, Talk, and approvals still use the iPhone.
+                Voice is included when you connect from iPhone Settings → Apple Watch. \
+                Chat and approvals still use the iPhone.
                 """)))
 
             if self.directNode.isConfigured {
@@ -425,14 +420,6 @@ private struct WatchControlSurfaceView: View {
         max(self.store.sortedExecApprovals.count, self.store.appSnapshot?.pendingApprovalCount ?? 0)
     }
 
-    private var chatCountText: String {
-        self.chatCount.formatted()
-    }
-
-    private var approvalCountText: String {
-        self.approvalCount.formatted()
-    }
-
     private var connectionLine: String {
         if let snapshot = store.appSnapshot {
             return snapshot.gatewayConnected
@@ -453,10 +440,7 @@ private struct WatchControlSurfaceView: View {
         if let record = store.activeExecApproval {
             return record.approval.commandPreview ?? record.approval.commandText
         }
-        if self.chatCount > 0 {
-            return self.chatItems.last?.text ?? self.store.gatewaySummaryText
-        }
-        return self.store.gatewaySummaryText
+        return self.chatItems.last?.text ?? self.store.gatewaySummaryText
     }
 
     private var primarySubtitle: String {
@@ -511,28 +495,15 @@ private struct WatchControlSurfaceView: View {
         if record.isResolving {
             return String(localized: "Sending")
         }
-        if let risk = approvalRiskText(record.approval.risk) {
+        if let risk = WatchExecApprovalDisplay.riskText(record.approval.risk) {
             return risk
         }
         return String(localized: "Review")
     }
 
-    private func approvalRiskText(_ risk: WatchRiskLevel?) -> String? {
-        switch risk {
-        case .high:
-            String(localized: "High risk")
-        case .medium:
-            String(localized: "Medium risk")
-        case .low:
-            String(localized: "Low risk")
-        case nil:
-            nil
-        }
-    }
-
     private var chatPreviewTitle: String {
         guard let item = chatItems.last else { return String(localized: "No chat synced") }
-        return self.roleTitle(item.role)
+        return item.localizedRoleTitle
     }
 
     private var chatPreviewSubtitle: String {
@@ -581,17 +552,6 @@ private struct WatchControlSurfaceView: View {
     private var updatedText: String {
         guard let updatedAt = store.updatedAt else { return String(localized: "Just now") }
         return updatedAt.formatted(date: .omitted, time: .shortened)
-    }
-
-    private func roleTitle(_ role: String) -> String {
-        switch role.lowercased() {
-        case "user":
-            String(localized: "You")
-        case "system":
-            String(localized: "System")
-        default:
-            "OpenClaw"
-        }
     }
 
     private func actionSubtitle(_ action: WatchPromptAction) -> String {
@@ -876,38 +836,6 @@ private struct WatchCompactMetric: View {
     }
 }
 
-private struct WatchPrimaryLabel: View {
-    let title: LocalizedStringKey
-
-    var body: some View {
-        HStack(spacing: 7) {
-            WatchVoiceGlyph()
-            Text(self.title)
-                .font(WatchClawType.captionBold)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 7)
-        .background {
-            Capsule(style: .continuous)
-                .fill(WatchClawStyle.hotGradient)
-        }
-    }
-}
-
-private struct WatchVoiceGlyph: View {
-    var body: some View {
-        HStack(alignment: .center, spacing: 2) {
-            ForEach([7.0, 13.0, 18.0, 12.0, 8.0], id: \.self) { height in
-                Capsule(style: .continuous)
-                    .fill(.white.opacity(0.82))
-                    .frame(width: 2, height: height)
-            }
-        }
-        .frame(width: 20, height: 20)
-    }
-}
-
 private struct WatchPageRail: View {
     let selectedIndex: Int
     let pageCount: Int
@@ -1103,6 +1031,19 @@ private struct WatchApprovalCommandReview: View {
 }
 
 private enum WatchExecApprovalDisplay {
+    static func riskText(_ risk: WatchRiskLevel?) -> String? {
+        switch risk {
+        case .high:
+            String(localized: "High risk")
+        case .medium:
+            String(localized: "Medium risk")
+        case .low:
+            String(localized: "Low risk")
+        case nil:
+            nil
+        }
+    }
+
     static func warningText(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
@@ -1135,7 +1076,7 @@ private struct WatchChatBubble: View {
             }
 
             VStack(alignment: self.isUser ? .trailing : .leading, spacing: 3) {
-                Text(self.roleTitle)
+                Text(self.item.localizedRoleTitle)
                     .font(WatchClawType.label(size: 9, weight: .bold))
                     .foregroundStyle(self.isUser ? .secondary : WatchClawStyle.accent)
                 Text(self.item.text)
@@ -1162,9 +1103,11 @@ private struct WatchChatBubble: View {
     private var isUser: Bool {
         self.item.role.lowercased() == "user"
     }
+}
 
-    private var roleTitle: String {
-        switch self.item.role.lowercased() {
+extension WatchChatItem {
+    fileprivate var localizedRoleTitle: String {
+        switch self.role.lowercased() {
         case "user":
             String(localized: "You")
         case "system":
@@ -1184,7 +1127,7 @@ private struct WatchChatTimelineView: View {
     var avatarImageSource: String?
     var avatarText: String?
     var onRefresh: (() -> Void)?
-    var onSendMessage: ((String) -> String?)?
+    var onSendMessage: ((String, Bool) async -> String?)?
     @State private var speechPlayback = WatchSpeechPlayback()
     @State private var voiceReplyTimeout: Task<Void, Never>?
     @State private var isVisible = false
@@ -1206,6 +1149,10 @@ private struct WatchChatTimelineView: View {
 
                     if let sendStatusText, !sendStatusText.isEmpty {
                         WatchTinyStatus(text: sendStatusText)
+                    }
+
+                    if let receipt = self.store.savedChatDeliveryReceipt {
+                        WatchChatDeliveryReceiptView(receipt: receipt)
                     }
 
                     if let voiceStatusText = self.voiceStatusText {
@@ -1299,10 +1246,16 @@ private struct WatchChatTimelineView: View {
                     reason: String(localized: "Chat changed on iPhone. Your message was not sent."))
                 return
             }
-            guard let commandId = self.onSendMessage?(text) else { return }
-            if spokenReply {
-                self.store.beginVoiceTurn(commandId: commandId)
-                self.scheduleVoiceReplyTimeout()
+            Task { @MainActor in
+                guard self.store.appSnapshot?.chatSessionIdentity == chatSession,
+                      await self.onSendMessage?(text, spokenReply) != nil
+                else { return }
+                // The durable command keeps its original owner if iPhone changes chat while saving.
+                guard self.store.appSnapshot?.chatSessionIdentity == chatSession else { return }
+                if spokenReply {
+                    self.handleCompletedVoiceTurn()
+                    self.scheduleVoiceReplyTimeout()
+                }
             }
         }
     }
@@ -1495,13 +1448,7 @@ private struct WatchExecApprovalListView: View {
     }
 
     private func metadataLine(for record: WatchExecApprovalRecord) -> String {
-        var parts: [String] = []
-        if let host = record.approval.host, !host.isEmpty {
-            parts.append(host)
-        }
-        if let nodeId = record.approval.nodeId, !nodeId.isEmpty {
-            parts.append(nodeId)
-        }
+        var parts = [record.approval.host, record.approval.nodeId].compactMap(\.self).filter { !$0.isEmpty }
         if let expiresText = Self.expiresText(record.approval.expiresAtMs) {
             parts.append(expiresText)
         }
@@ -1532,7 +1479,7 @@ private struct WatchExecApprovalDetailView: View {
         WatchDetailScroll(title: "Review Command") {
             WatchHeroCard(
                 label: .verbatim(
-                    self.riskText(self.currentRecord?.approval.risk ?? self.record.approval.risk)
+                    WatchExecApprovalDisplay.riskText(self.currentRecord?.approval.risk ?? self.record.approval.risk)
                         ?? String(localized: "Review")),
                 title: .localized("Command execution"),
                 subtitle: .verbatim(self.metadataSummary),
@@ -1599,32 +1546,10 @@ private struct WatchExecApprovalDetailView: View {
 
     private var metadataSummary: String {
         let approval = self.currentRecord?.approval ?? self.record.approval
-        var parts: [String] = []
-        if let host = approval.host, !host.isEmpty {
-            parts.append(host)
-        }
-        if let nodeId = approval.nodeId, !nodeId.isEmpty {
-            parts.append(nodeId)
-        }
-        if let agentId = approval.agentId, !agentId.isEmpty {
-            parts.append(agentId)
-        }
+        let parts = [approval.host, approval.nodeId, approval.agentId].compactMap(\.self).filter { !$0.isEmpty }
         return parts.isEmpty
             ? String(localized: "Review command below")
             : parts.joined(separator: " · ")
-    }
-
-    private func riskText(_ risk: WatchRiskLevel?) -> String? {
-        switch risk {
-        case .high:
-            String(localized: "High risk")
-        case .medium:
-            String(localized: "Medium risk")
-        case .low:
-            String(localized: "Low risk")
-        case nil:
-            nil
-        }
     }
 
     private static func expiresText(_ expiresAtMs: Int64?) -> String? {

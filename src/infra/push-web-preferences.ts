@@ -23,8 +23,8 @@ const DEFAULT_WEB_PUSH_NOTIFICATION_PREFERENCES: WebPushNotificationPreferences 
     approvalRequested: true,
     agentFinished: false,
     agentQuestion: false,
+    humanMentioned: false,
     scheduledTaskFailed: false,
-    backgroundTaskFailed: false,
   },
   detailLevel: "private",
   quietHours: {
@@ -40,8 +40,8 @@ const CATEGORY_KEYS = [
   "approvalRequested",
   "agentFinished",
   "agentQuestion",
+  "humanMentioned",
   "scheduledTaskFailed",
-  "backgroundTaskFailed",
 ] as const;
 
 type CategoryKey = (typeof CATEGORY_KEYS)[number];
@@ -50,8 +50,8 @@ const CATEGORY_TO_KEY: Record<WebPushNotificationCategory, CategoryKey> = {
   "approval-requested": "approvalRequested",
   "agent-finished": "agentFinished",
   "agent-question": "agentQuestion",
+  "human-mentioned": "humanMentioned",
   "scheduled-task-failed": "scheduledTaskFailed",
-  "background-task-failed": "backgroundTaskFailed",
 };
 
 function detailLevel(value: unknown): WebPushDetailLevel | undefined {
@@ -178,7 +178,7 @@ export function webPushCategoryEnabled(
   category: WebPushNotificationCategory,
 ): boolean {
   const key = CATEGORY_TO_KEY[category];
-  return key !== undefined && preferences.enabled && preferences.categories[key];
+  return key !== undefined && preferences.enabled && preferences.categories[key] === true;
 }
 
 export function isWebPushQuietHours(

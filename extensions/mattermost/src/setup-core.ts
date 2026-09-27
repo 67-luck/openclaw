@@ -1,4 +1,3 @@
-// Mattermost plugin module implements setup core behavior.
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import {
   defineChannelSetupContract,
@@ -63,7 +62,11 @@ export function applyMattermostSetupConfigPatch(params: {
   });
 }
 
+const accountCredentialKeys = ["botToken", "baseUrl"];
+
 export const mattermostSetupAdapter: ChannelSetupAdapter = {
+  singleAccountKeysToMove: accountCredentialKeys,
+  namedAccountPromotionKeys: accountCredentialKeys,
   resolveAccountId: ({ accountId }) => normalizeAccountId(accountId),
   applyAccountName: ({ cfg, accountId, name }) =>
     applyAccountNameToChannelSection({

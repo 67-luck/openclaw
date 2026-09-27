@@ -13,6 +13,7 @@ import {
   normalizeAgentToolResultMiddlewareRuntimes,
 } from "./agent-tool-result-middleware.js";
 import { buildPluginApi, createUnavailableRuntime } from "./api-builder.js";
+import { resolveCapabilityProviderRegistration } from "./capability-catalog.js";
 import type { CodexAppServerExtensionFactory } from "./codex-app-server-extension-types.js";
 import type { EmbeddingProviderAdapter } from "./embedding-providers.js";
 import type {
@@ -25,6 +26,8 @@ import type {
   PluginToolMetadataRegistration,
   PluginTrustedToolPolicyRegistration,
 } from "./host-hooks.js";
+import { resolvePluginCapabilityCatalogContext } from "./loader-runtime-load.js";
+import type { PluginManifestContracts } from "./manifest-types.js";
 import type { PluginAgentToolResultMiddlewareRegistration } from "./registry-types.js";
 import { createPluginRuntime } from "./runtime/index.js";
 import type { SessionCatalogProvider } from "./session-catalog.js";
@@ -97,6 +100,7 @@ export type CapturedPluginRegistration = {
 
 export function createCapturedPluginRegistration(params?: {
   config?: OpenClawConfig;
+  contracts?: PluginManifestContracts;
   id?: string;
   name?: string;
   registrationMode?: OpenClawPluginApi["registrationMode"];
@@ -242,7 +246,10 @@ export function createCapturedPluginRegistration(params?: {
           handler: AgentToolResultMiddleware,
           options?: AgentToolResultMiddlewareOptions,
         ) {
-          const runtimes = normalizeAgentToolResultMiddlewareRuntimes(options);
+          const runtimes = normalizeAgentToolResultMiddlewareRuntimes(
+            options,
+            params?.contracts?.agentToolResultMiddleware,
+          );
           const matcher = normalizePluginToolMatcher(options?.matcher);
           const scopedHandler: AgentToolResultMiddleware = (event, ctx) => {
             if (
@@ -281,13 +288,25 @@ export function createCapturedPluginRegistration(params?: {
         registerEmbeddingProvider(provider: EmbeddingProviderAdapter) {
           embeddingProviders.push(provider);
         },
-        registerSpeechProvider(provider: SpeechProviderPlugin) {
+        registerSpeechProvider(entry) {
+          const provider = resolveCapabilityProviderRegistration(
+            entry,
+            resolvePluginCapabilityCatalogContext,
+          );
           speechProviders.push(provider);
         },
-        registerRealtimeTranscriptionProvider(provider: RealtimeTranscriptionProviderPlugin) {
+        registerRealtimeTranscriptionProvider(entry) {
+          const provider = resolveCapabilityProviderRegistration(
+            entry,
+            resolvePluginCapabilityCatalogContext,
+          );
           realtimeTranscriptionProviders.push(provider);
         },
-        registerRealtimeVoiceProvider(provider: RealtimeVoiceProviderPlugin) {
+        registerRealtimeVoiceProvider(entry) {
+          const provider = resolveCapabilityProviderRegistration(
+            entry,
+            resolvePluginCapabilityCatalogContext,
+          );
           realtimeVoiceProviders.push(provider);
         },
         registerMediaUnderstandingProvider(provider: MediaUnderstandingProviderPlugin) {
@@ -361,7 +380,7 @@ export function createCapturedPluginRegistration(params?: {
         },
         unscheduleSessionTurnsByTag: async () => ({ removed: 0, failed: 0 }),
         registerTool(tool) {
-          if (typeof tool !== "function") {
+          if (typeof tool !== "function" && !("contextVersion" in tool)) {
             tools.push(tool);
           }
         },

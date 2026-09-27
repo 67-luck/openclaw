@@ -14,12 +14,13 @@ import { resolveHeartbeatPreflight } from "./heartbeat-runner-prompt.js";
 import { runHeartbeatOnce } from "./heartbeat-runner.js";
 import { installHeartbeatRunnerTestRuntime } from "./heartbeat-runner.test-harness.js";
 import {
+  type HeartbeatReplySpy,
   readSessionStoreForTest,
   seedHeartbeatScratchForTest,
   seedSessionStore,
   withTempHeartbeatSandbox,
 } from "./heartbeat-runner.test-utils.js";
-import { resetSystemEventsForTest } from "./system-events.js";
+import { enqueueSystemEvent, resetSystemEventsForTest } from "./system-events.js";
 
 type MockDeliveryRequest = {
   payloads?: Array<{ text?: string; mediaUrl?: string; mediaUrls?: string[] }>;
@@ -92,6 +93,32 @@ function makeIsolatedLastTargetConfig(tmpDir: string, storePath: string): OpenCl
     channels: { whatsapp: { allowFrom: ["*"] } },
     session: { store: storePath },
   };
+}
+
+function runHeartbeat(
+  cfg: OpenClawConfig,
+  replySpy: HeartbeatReplySpy,
+  nowMs: number,
+  wake: Pick<
+    Parameters<typeof runHeartbeatOnce>[0],
+    "sessionKey" | "source" | "intent" | "reason"
+  > = {},
+) {
+  return runHeartbeatOnce({
+    cfg,
+    ...wake,
+    deps: { getReplyFromConfig: replySpy, getQueueSize: () => 0, nowMs: () => nowMs },
+  });
+}
+
+function drainTargetAwareness(cfg: OpenClawConfig, sessionKey: string) {
+  return drainFormattedSystemEvents({
+    cfg,
+    agentId: "main",
+    sessionKey,
+    isMainSession: false,
+    isNewSession: false,
+  });
 }
 
 function installWhatsAppRoute(options?: { exact?: boolean }) {
@@ -176,14 +203,7 @@ describe("runHeartbeatOnce - isolated heartbeat outbound session mirror", () => 
       });
       replySpy.mockResolvedValueOnce({ text: "Status needs attention." });
 
-      const result = await runHeartbeatOnce({
-        cfg,
-        deps: {
-          getReplyFromConfig: replySpy,
-          getQueueSize: () => 0,
-          nowMs: () => nowMs,
-        },
-      });
+      const result = await runHeartbeat(cfg, replySpy, nowMs);
 
       expect(result.status).toBe("ran");
       expect(replySpy.mock.calls[0]?.[0]).toMatchObject({
@@ -222,24 +242,28 @@ describe("runHeartbeatOnce - isolated heartbeat outbound session mirror", () => 
       const isolatedSessionKey = `${baseSessionKey}:heartbeat`;
       const nowMs = Date.now();
 
-      await seedSessionStore(storePath, isolatedSessionKey, {
-        sessionId: "isolated-session",
+      await seedSessionStore(storePath, baseSessionKey, {
+        sessionId: "base-session",
         updatedAt: nowMs - 1_000,
         lastChannel: "whatsapp",
         lastProvider: "whatsapp",
         lastTo: "+15551234567",
+      });
+      await seedSessionStore(storePath, isolatedSessionKey, {
+        sessionId: "isolated-session",
+        updatedAt: nowMs - 1_000,
         heartbeatIsolatedBaseSessionKey: baseSessionKey,
+      });
+      enqueueSystemEvent("Exec completed (mirror-reentry, code 0) :: result needs attention", {
+        sessionKey: isolatedSessionKey,
       });
       replySpy.mockResolvedValueOnce({ text: "Wake result needs attention." });
 
-      const result = await runHeartbeatOnce({
-        cfg,
+      const result = await runHeartbeat(cfg, replySpy, nowMs, {
         sessionKey: isolatedSessionKey,
-        deps: {
-          getReplyFromConfig: replySpy,
-          getQueueSize: () => 0,
-          nowMs: () => nowMs,
-        },
+        source: "exec-event",
+        intent: "event",
+        reason: "exec-event",
       });
 
       expect(result.status).toBe("ran");
@@ -257,6 +281,29 @@ describe("runHeartbeatOnce - isolated heartbeat outbound session mirror", () => 
     });
   });
 
+  it("skips an ambient isolated poll when its base conversation is missing", async () => {
+    await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
+      const cfg = makeIsolatedLastTargetConfig(tmpDir, storePath);
+      const baseSessionKey = resolveMainSessionKey(cfg);
+      const isolatedSessionKey = `${baseSessionKey}:heartbeat`;
+      const nowMs = Date.now();
+      await seedSessionStore(storePath, isolatedSessionKey, {
+        sessionId: "isolated-session",
+        updatedAt: nowMs - 1_000,
+        lastChannel: "whatsapp",
+        lastProvider: "whatsapp",
+        lastTo: "+15551234567",
+        heartbeatIsolatedBaseSessionKey: baseSessionKey,
+      });
+
+      const result = await runHeartbeat(cfg, replySpy, nowMs, { sessionKey: isolatedSessionKey });
+
+      expect(result).toEqual({ status: "skipped", reason: "no-route" });
+      expect(replySpy).not.toHaveBeenCalled();
+      expect(deliverOutboundPayloadsInternal).not.toHaveBeenCalled();
+    });
+  });
+
   it("queues a successful direct alert for the next ordinary target turn", async () => {
     await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
       const { cfg, nowMs, target, targetSessionKey } = await seedExistingHeartbeatTarget({
@@ -271,14 +318,7 @@ describe("runHeartbeatOnce - isolated heartbeat outbound session mirror", () => 
       });
       replySpy.mockResolvedValueOnce({ text: "Status needs attention." });
 
-      const heartbeat = runHeartbeatOnce({
-        cfg,
-        deps: {
-          getReplyFromConfig: replySpy,
-          getQueueSize: () => 0,
-          nowMs: () => nowMs,
-        },
-      });
+      const heartbeat = runHeartbeat(cfg, replySpy, nowMs);
       let result!: Awaited<ReturnType<typeof runHeartbeatOnce>>;
       let pendingEventCount: number | undefined;
       let heartbeatModeAwareness: string | undefined;
@@ -302,15 +342,9 @@ describe("runHeartbeatOnce - isolated heartbeat outbound session mirror", () => 
           sessionKey: targetSessionKey,
           isMainSession: false,
           isNewSession: false,
-          suppressHeartbeatOwnedEvents: true,
+          events: nextHeartbeatPreflight.pendingEventEntries,
         });
-        awareness = await drainFormattedSystemEvents({
-          cfg,
-          agentId: "main",
-          sessionKey: targetSessionKey,
-          isMainSession: false,
-          isNewSession: false,
-        });
+        awareness = await drainTargetAwareness(cfg, targetSessionKey);
       } finally {
         releaseCompletion.resolve();
         result = await withTestTimeout(heartbeat, 5_000, "heartbeat did not finish delivery");
@@ -322,15 +356,7 @@ describe("runHeartbeatOnce - isolated heartbeat outbound session mirror", () => 
       expect(heartbeatModeAwareness).toBeUndefined();
       expect(awareness).toContain("A heartbeat delivered this message to this channel:");
       expect(awareness).toContain("Status needs attention.");
-      await expect(
-        drainFormattedSystemEvents({
-          cfg,
-          agentId: "main",
-          sessionKey: targetSessionKey,
-          isMainSession: false,
-          isNewSession: false,
-        }),
-      ).resolves.toBeUndefined();
+      await expect(drainTargetAwareness(cfg, targetSessionKey)).resolves.toBeUndefined();
     });
   });
 
@@ -343,26 +369,11 @@ describe("runHeartbeatOnce - isolated heartbeat outbound session mirror", () => 
       });
       replySpy.mockResolvedValueOnce({ text: "Status needs attention." });
 
-      const result = await runHeartbeatOnce({
-        cfg,
-        deps: {
-          getReplyFromConfig: replySpy,
-          getQueueSize: () => 0,
-          nowMs: () => nowMs,
-        },
-      });
+      const result = await runHeartbeat(cfg, replySpy, nowMs);
 
       expect(result.status).toBe("ran");
       expect(latestDeliveryRequest()).toMatchObject({ channel: "whatsapp", to: target });
-      await expect(
-        drainFormattedSystemEvents({
-          cfg,
-          agentId: "main",
-          sessionKey: targetSessionKey,
-          isMainSession: false,
-          isNewSession: false,
-        }),
-      ).resolves.toBeUndefined();
+      await expect(drainTargetAwareness(cfg, targetSessionKey)).resolves.toBeUndefined();
     });
   });
 
@@ -375,25 +386,10 @@ describe("runHeartbeatOnce - isolated heartbeat outbound session mirror", () => 
       replySpy.mockResolvedValueOnce({ text: "Status needs attention." });
       deliverOutboundPayloadsInternal.mockRejectedValueOnce(new Error("channel unavailable"));
 
-      const result = await runHeartbeatOnce({
-        cfg,
-        deps: {
-          getReplyFromConfig: replySpy,
-          getQueueSize: () => 0,
-          nowMs: () => nowMs,
-        },
-      });
+      const result = await runHeartbeat(cfg, replySpy, nowMs);
 
       expect(result.status).toBe("failed");
-      await expect(
-        drainFormattedSystemEvents({
-          cfg,
-          agentId: "main",
-          sessionKey: targetSessionKey,
-          isMainSession: false,
-          isNewSession: false,
-        }),
-      ).resolves.toBeUndefined();
+      await expect(drainTargetAwareness(cfg, targetSessionKey)).resolves.toBeUndefined();
     });
   });
 
@@ -411,14 +407,7 @@ describe("runHeartbeatOnce - isolated heartbeat outbound session mirror", () => 
       });
       replySpy.mockResolvedValueOnce({ text: "Status needs attention." });
 
-      const heartbeat = runHeartbeatOnce({
-        cfg,
-        deps: {
-          getReplyFromConfig: replySpy,
-          getQueueSize: () => 0,
-          nowMs: () => nowMs,
-        },
-      });
+      const heartbeat = runHeartbeat(cfg, replySpy, nowMs);
       let result!: Awaited<ReturnType<typeof runHeartbeatOnce>>;
       let systemEventsCleared: number | undefined;
       try {
@@ -437,15 +426,7 @@ describe("runHeartbeatOnce - isolated heartbeat outbound session mirror", () => 
 
       expect(result.status).toBe("ran");
       expect(systemEventsCleared).toBe(1);
-      await expect(
-        drainFormattedSystemEvents({
-          cfg,
-          agentId: "main",
-          sessionKey: targetSessionKey,
-          isMainSession: false,
-          isNewSession: false,
-        }),
-      ).resolves.toBeUndefined();
+      await expect(drainTargetAwareness(cfg, targetSessionKey)).resolves.toBeUndefined();
     });
   });
 
@@ -458,25 +439,10 @@ describe("runHeartbeatOnce - isolated heartbeat outbound session mirror", () => 
         replaceTargetLifecycle("target-lifecycle-2"),
       );
 
-      const result = await runHeartbeatOnce({
-        cfg,
-        deps: {
-          getReplyFromConfig: replySpy,
-          getQueueSize: () => 0,
-          nowMs: () => nowMs,
-        },
-      });
+      const result = await runHeartbeat(cfg, replySpy, nowMs);
 
       expect(result.status).toBe("ran");
-      await expect(
-        drainFormattedSystemEvents({
-          cfg,
-          agentId: "main",
-          sessionKey: targetSessionKey,
-          isMainSession: false,
-          isNewSession: false,
-        }),
-      ).resolves.toBeUndefined();
+      await expect(drainTargetAwareness(cfg, targetSessionKey)).resolves.toBeUndefined();
     });
   });
 });

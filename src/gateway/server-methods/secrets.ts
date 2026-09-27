@@ -1,6 +1,10 @@
 // Secrets gateway methods reload runtime secret snapshots and resolve scoped
 // command secrets while redacting validation detail to caller-friendly fields.
 import {
+  normalizeArrayBackedTrimmedStringList,
+  normalizeTrimmedStringList,
+} from "@openclaw/normalization-core/string-normalization";
+import {
   ErrorCodes,
   errorShape,
   type ValidationError,
@@ -27,6 +31,7 @@ import {
   writeSecretStoreEntry,
 } from "../../secrets/store/secret-store.js";
 import { isKnownCoreSecretTargetId, isKnownSecretTargetId } from "../../secrets/target-registry.js";
+import { holdGatewayPolicyResponse } from "../server/ws-policy-close.js";
 import { createAgentRuntimeAuthorityGuard } from "./agent-runtime-authority.js";
 import type { GatewayClient, GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
@@ -77,9 +82,9 @@ export function createSecretStoreWriteService(params: {
   reloadSecrets: SecretStoreReload;
   log?: SecretStoreLogger;
 }) {
-  const purgeRetention = () => {
+  const purgeRetention = async () => {
     try {
-      purgeExpiredSecretStoreEntries();
+      await purgeExpiredSecretStoreEntries();
     } catch (error) {
       params.log?.warn?.(`secrets.store retention purge failed: ${errorMessage(error)}`);
     }
@@ -87,7 +92,7 @@ export function createSecretStoreWriteService(params: {
   const reloadReference = async (
     name: string,
   ): Promise<{ reloaded: boolean; warningCount?: number }> => {
-    purgeRetention();
+    await purgeRetention();
     const snapshot = getActiveSecretsRuntimeSnapshotState();
     const refKeys = snapshot
       ? collectSecretStoreRefKeysInSnapshot(snapshot, name)
@@ -185,6 +190,7 @@ export function createSecretsHandlers(params: {
   return {
     "secrets.reload": async ({ respond }) => {
       try {
+        holdGatewayPolicyResponse(respond);
         const result = await params.reloadSecrets();
         respond(true, { ok: true, warningCount: result.warningCount });
       } catch (error) {
@@ -211,20 +217,16 @@ export function createSecretsHandlers(params: {
         );
         return;
       }
-      const targetIds = requestParams.targetIds
-        .map((entry) => entry.trim())
-        .filter((entry) => entry.length > 0);
+      const targetIds = normalizeTrimmedStringList(requestParams.targetIds);
       // Normalize allow/force/optional path lists before resolving so secrets
       // code receives policy paths, not UI whitespace artifacts.
-      const allowedPaths = requestParams.allowedPaths
-        ?.map((entry) => entry.trim())
-        .filter((entry) => entry.length > 0);
-      const forcedActivePaths = requestParams.forcedActivePaths
-        ?.map((entry) => entry.trim())
-        .filter((entry) => entry.length > 0);
-      const optionalActivePaths = requestParams.optionalActivePaths
-        ?.map((entry) => entry.trim())
-        .filter((entry) => entry.length > 0);
+      const allowedPaths = normalizeArrayBackedTrimmedStringList(requestParams.allowedPaths);
+      const forcedActivePaths = normalizeArrayBackedTrimmedStringList(
+        requestParams.forcedActivePaths,
+      );
+      const optionalActivePaths = normalizeArrayBackedTrimmedStringList(
+        requestParams.optionalActivePaths,
+      );
       const providerOverrides = {
         ...(requestParams.providerOverrides?.webSearch?.trim()
           ? { webSearch: requestParams.providerOverrides.webSearch.trim() }
@@ -313,6 +315,7 @@ export function createSecretsHandlers(params: {
       }
       let saved = false;
       try {
+        holdGatewayPolicyResponse(respond);
         params.storeWriteService.write({
           name: requestParams.name,
           value: requestParams.value,
@@ -370,6 +373,7 @@ export function createSecretsHandlers(params: {
         if (!createAgentRuntimeAuthorityGuard(client, context, respond).ensureActive()) {
           return;
         }
+        holdGatewayPolicyResponse(respond);
         deleteSecretStoreEntry({ scope: teamScope, name: requestParams.name });
         deleted = true;
         const reload = await params.storeWriteService.reloadReference(requestParams.name);

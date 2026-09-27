@@ -1,6 +1,4 @@
-/**
- * Resolves hook-selected model state and pre-model attachments for a run.
- */
+import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { ProviderRuntimeModel } from "../../../plugins/provider-runtime-model.types.js";
@@ -28,7 +26,6 @@ import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import { FailoverError } from "../../failover-error.js";
 import { resolveModelContextWindowProfile } from "../../model-context-window.js";
 import { log } from "../logger.js";
-import { readAgentModelContextTokens } from "../model-context-tokens.js";
 
 type HookContext = {
   agentId?: string;
@@ -202,7 +199,7 @@ function resolveEffectiveRuntimeModel(params: {
     cfg: params.cfg,
     provider: params.contextConfigProvider ?? params.provider,
     modelId: params.modelId,
-    modelContextTokens: readAgentModelContextTokens(params.runtimeModel),
+    modelContextTokens: asFiniteNumber(params.runtimeModel.contextTokens),
     modelContextWindow: contextWindowProfile.contextTokens,
     defaultTokens: DEFAULT_CONTEXT_TOKENS,
   });
@@ -224,10 +221,7 @@ function resolveEffectiveRuntimeModel(params: {
       ? { ...params.runtimeModel, contextWindow: ctxInfo.tokens }
       : params.runtimeModel;
   const ctxGuard = evaluateContextWindowGuard({ info: ctxInfo });
-  const runtimeBaseUrl =
-    typeof (params.runtimeModel as { baseUrl?: unknown }).baseUrl === "string"
-      ? (params.runtimeModel as { baseUrl: string }).baseUrl
-      : undefined;
+  const runtimeBaseUrl = params.runtimeModel.baseUrl;
   if (ctxGuard.shouldWarn) {
     log.warn(
       formatContextWindowWarningMessage({
@@ -268,6 +262,7 @@ export function resolveEmbeddedRuntimeModelPolicy(params: {
   runtimeModel: ProviderRuntimeModel;
   nativeModelOwned: boolean;
   contextWindow?: string;
+  contextTokenBudget?: number;
 }): {
   contextWindowInfo?: ContextWindowInfo;
   contextTokenBudget?: number;
@@ -277,9 +272,25 @@ export function resolveEmbeddedRuntimeModelPolicy(params: {
     return { effectiveModel: params.runtimeModel };
   }
   const resolved = resolveEffectiveRuntimeModel(params);
+  const contextTokenBudget = Math.min(
+    resolved.ctxInfo.tokens,
+    params.contextTokenBudget ?? resolved.ctxInfo.tokens,
+  );
+  const contextWindowInfo =
+    contextTokenBudget < resolved.ctxInfo.tokens
+      ? {
+          ...resolved.ctxInfo,
+          tokens: contextTokenBudget,
+          referenceTokens: resolved.ctxInfo.referenceTokens ?? resolved.ctxInfo.tokens,
+        }
+      : resolved.ctxInfo;
+  const effectiveModel =
+    contextTokenBudget < (resolved.effectiveModel.contextWindow ?? Infinity)
+      ? { ...resolved.effectiveModel, contextWindow: contextTokenBudget }
+      : resolved.effectiveModel;
   return {
-    contextWindowInfo: resolved.ctxInfo,
-    contextTokenBudget: resolved.ctxInfo.tokens,
-    effectiveModel: resolved.effectiveModel,
+    contextWindowInfo,
+    contextTokenBudget,
+    effectiveModel,
   };
 }

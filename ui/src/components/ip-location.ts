@@ -29,14 +29,16 @@ class OpenClawIpLocation extends OpenClawLightDomContentsElement {
 
   override willUpdate() {
     const ip = this.ip?.trim();
-    if (!ip || ip === this.requestedIp) {
+    if (ip === this.requestedIp) {
       return;
     }
     this.clearRetry();
     this.requestedIp = ip;
     this.retryAttempt = 0;
     this.location = null;
-    this.resolve(ip);
+    if (ip) {
+      this.resolve(ip);
+    }
   }
 
   private clearRetry() {
@@ -82,17 +84,19 @@ class OpenClawIpLocation extends OpenClawLightDomContentsElement {
     }
     const attribution = this.location?.attribution;
     return html`<span class="activity-feed__device-location"
-      >${label}${attribution
-        ? html`<a
-            class="activity-feed__device-attribution"
-            href=${attribution.url}
-            target="_blank"
-            rel="noreferrer noopener"
-            aria-label=${attribution.text}
-            title=${attribution.text}
-            >${icons.info}</a
-          >`
-        : nothing}</span
+      >${label}${
+        attribution
+          ? html`<a
+              class="activity-feed__device-attribution"
+              href=${attribution.url}
+              target="_blank"
+              rel="noreferrer noopener"
+              aria-label=${attribution.text}
+              title=${attribution.text}
+              >${icons.info}</a
+            >`
+          : nothing
+      }</span
     >`;
   }
 }

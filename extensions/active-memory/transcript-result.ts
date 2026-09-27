@@ -7,10 +7,7 @@ import { normalizeActiveSummary, truncateSummary } from "./prompt.js";
 import { extractTextContent } from "./query.js";
 import { readMergedActiveMemoryTranscriptState } from "./transcript-watch.js";
 import {
-  fileTranscriptSource,
-  hasUnavailableMemoryResultInSessionRecord,
-  hasUsableMemoryResultInSessionRecord,
-  isUnavailableMemorySearchDebug,
+  readMemoryResultFromSessionRecord,
   resolveTranscriptReadLimits,
   streamActiveMemoryTranscriptRecords,
 } from "./transcript.js";
@@ -54,13 +51,9 @@ function readMemoryToolResultEvidence(params: {
       details: result?.details,
     },
   };
-  return {
-    hasUsableMemoryResult: hasUsableMemoryResultInSessionRecord(record, params.toolsAllow),
-    hasUnavailableMemorySearchResult: hasUnavailableMemoryResultInSessionRecord(
-      record,
-      params.toolsAllow,
-    ),
-  };
+  const { hasUsableMemoryResult, hasUnavailableMemorySearchResult } =
+    readMemoryResultFromSessionRecord(record, params.toolsAllow);
+  return { hasUsableMemoryResult, hasUnavailableMemorySearchResult };
 }
 
 function extractAssistantTextFromSessionRecord(value: unknown): string {
@@ -78,17 +71,14 @@ function extractAssistantTextFromSessionRecord(value: unknown): string {
 }
 
 async function readPartialAssistantText(
-  source: ActiveMemoryTranscriptSource | string | undefined,
+  source: ActiveMemoryTranscriptSource,
   limits?: TranscriptReadLimits,
 ): Promise<string | null> {
-  if (!source) {
-    return null;
-  }
   const texts: string[] = [];
   const resolvedLimits = resolveTranscriptReadLimits(limits);
   let collectedChars = 0;
   await streamActiveMemoryTranscriptRecords({
-    source: typeof source === "string" ? fileTranscriptSource(source) : source,
+    source,
     limits: resolvedLimits,
     onRecord: (record) => {
       const text = extractAssistantTextFromSessionRecord(record);
@@ -158,9 +148,8 @@ async function waitForSubagentPartialTimeoutData(
     return await Promise.race([
       subagentPromise.then(
         (result) => ({
-          hasUsableMemoryResult: result.hasUsableMemoryResult === true,
-          // Cleanup can cross the deadline after execution has already failed.
-          resultStatus: result.resultStatus,
+          // Cleanup may remove temporary transcripts before this result settles.
+          ...result,
           settled: true as const,
         }),
         (error: unknown) => ({ ...readPartialTimeoutData(error), settled: true as const }),
@@ -221,7 +210,7 @@ async function buildTimeoutRecallResult(
     subagentPartialData.resultStatus === "failed" ||
     params.cleanupFailed ||
     subagentPartialData.cleanupFailed ||
-    isUnavailableMemorySearchDebug(searchDebug) ||
+    Boolean(searchDebug?.error) ||
     !subagentPartialData.settled ||
     params.hasUnavailableMemorySearchResult ||
     subagentPartialData.hasUnavailableMemorySearchResult ||
@@ -252,7 +241,7 @@ function buildSubagentRecallResult(params: {
     resultStatus === "failed"
       ? "failed"
       : resultStatus === "unavailable" ||
-          isUnavailableMemorySearchDebug(searchDebug) ||
+          Boolean(searchDebug?.error) ||
           params.subagentResult.hasUnavailableMemorySearchResult === true
         ? "unavailable"
         : "no_relevant_memory";

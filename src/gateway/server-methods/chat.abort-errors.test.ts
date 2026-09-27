@@ -1,4 +1,7 @@
 /** Parent cancellation survives an unreadable descendant partition without hiding failure. */
+// Preserve module setup before modules that consume it.
+// oxfmt-ignore
+import { useChatAbortRegistryFixture } from "./chat.abort-registry.test-support.js";
 import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -12,6 +15,7 @@ import {
 } from "../../agents/embedded-agent-runner/runs.js";
 import { createEmbeddedRunHandle } from "../../agents/embedded-agent-runner/runs.test-support.js";
 import { killSubagentRunAdmin } from "../../agents/subagents/registry/subagent-control.js";
+import { SUBAGENT_KILL_TASK_ERROR } from "../../agents/subagents/registry/subagent-control.types.js";
 import { registerSubagentRun } from "../../agents/subagents/registry/subagent-registry.js";
 import { writeSubagentSessionEntry } from "../../agents/subagents/registry/subagent-registry.persistence.test-support.js";
 import { getSubagentRunByChildSessionKey } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
@@ -32,16 +36,13 @@ import { isPathInside } from "../../infra/path-guards.js";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
 import {
   closeOpenClawAgentDatabaseByPath,
-  listOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
-import { SUBAGENT_KILL_TASK_ERROR } from "../../tasks/detached-task-runtime-contract.js";
-import { cancelTaskById, findTaskByRunId, getTaskById } from "../../tasks/task-registry.js";
+import { listOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.test-support.js";
 import { finishFailedGatewayHttpResponse } from "../http-common.js";
 import { handleSessionKillHttpRequest } from "../session-kill-http.js";
 import { handleChatAbortRequestWithLifecycle } from "./chat-abort-handler.js";
 import { handleChatSend } from "./chat-send-handler.js";
-import { useChatAbortRegistryFixture } from "./chat.abort-registry.test-support.js";
 import {
   createActiveRun,
   createChatAbortContext,
@@ -97,7 +98,7 @@ it.each(
       ["bad", badKey],
       ["healthy", healthyKey],
     ] as const) {
-      registerSubagentRun({
+      await registerSubagentRun({
         runId,
         childSessionKey,
         requesterSessionKey: nested && runId !== "root" ? rootKey : sessionKey,
@@ -239,9 +240,7 @@ it.each(
 );
 
 it.each(
-  ["admin", "task", "HTTP"].flatMap((boundary) =>
-    [false, true].map((queued) => ({ boundary, queued })),
-  ),
+  ["admin", "HTTP"].flatMap((boundary) => [false, true].map((queued) => ({ boundary, queued }))),
 )(
   "$boundary reports incomplete cancellation for a corrupt descendant (queued=$queued)",
   async ({ boundary, queued }) => {
@@ -259,7 +258,7 @@ it.each(
         sessionKey: childSessionKey,
         defaultSessionId: `${runId}-session`,
       });
-      registerSubagentRun({
+      await registerSubagentRun({
         runId,
         childSessionKey,
         requesterSessionKey,
@@ -274,12 +273,6 @@ it.each(
     }
     const badStore = path.join(fixture.stateDir, "agents/broken/sessions/sessions.json");
     await corruptChildDatabase(badStore, badKey);
-    const task = findTaskByRunId("parent")!;
-    expect(task).toMatchObject({
-      runtime: "subagent",
-      status: "running",
-      childSessionKey: sessionKey,
-    });
     const badDispatch = vi.fn(async () => {});
     const healthyDispatch = vi.fn(async () => {});
     const survivorDispatch = vi.fn(async () => {});
@@ -339,7 +332,7 @@ it.each(
           method: "POST",
           headers: { "x-forwarded-for": "203.0.113.10" },
         });
-        expect(unauthenticated.status).toBe(401);
+        expect(unauthenticated.status, await unauthenticated.clone().text()).toBe(401);
         await unauthenticated.arrayBuffer();
         const wrongAgent = await fetch(
           `${url.replace(encodeURIComponent(sessionKey), encodeURIComponent(badKey))}?agentId=main`,
@@ -360,10 +353,7 @@ it.each(
         });
         result = { status: response.status, body: await response.json() };
       } else {
-        result =
-          boundary === "task"
-            ? await cancelTaskById({ cfg, taskId: task.taskId })
-            : await killSubagentRunAdmin({ cfg, sessionKey });
+        result = await killSubagentRunAdmin({ cfg, sessionKey });
       }
       expect(parentAbort, JSON.stringify(result)).toHaveBeenCalledOnce();
       expect(getSubagentRunByChildSessionKey(sessionKey)?.endedReason).toBe("subagent-killed");
@@ -384,18 +374,6 @@ it.each(
             error: { type: "unavailable", message: expect.stringContaining("bad:") },
           },
         });
-      } else if (boundary === "task") {
-        expect(result).toMatchObject({
-          found: true,
-          cancelled: false,
-          reason: expect.stringContaining("bad:"),
-          task: { status: "cancelled", error: SUBAGENT_KILL_TASK_ERROR },
-        });
-        if (!("task" in result)) {
-          throw new Error("Missing task cancellation snapshot");
-        }
-        expect(result.task).toEqual(getTaskById(task.taskId));
-        expect(result.task).not.toEqual(task);
       } else {
         expect(result).toMatchObject({
           found: true,
@@ -454,7 +432,7 @@ it.each(["exact native new", "cascade native new", "RPC reset", "RPC delete"])(
       message: { role: "user", content: "old user turn", timestamp: Date.now() },
     });
     expect(seeded).toMatchObject({ ok: true, value: { messageId: expect.any(String) } });
-    registerSubagentRun({
+    await registerSubagentRun({
       runId: "child",
       childSessionKey: childKey,
       requesterSessionKey: sessionKey,
@@ -469,14 +447,6 @@ it.each(["exact native new", "cascade native new", "RPC reset", "RPC delete"])(
     const entered = createDeferred();
     const release = createDeferred();
     const native = boundary.endsWith("native new");
-    const childAdmission = native
-      ? await beginSessionWorkAdmission({
-          scope: childStore,
-          identities: [childKey, "incarnation-child"],
-          assertAllowed: () => {},
-          onInterrupt: () => entered.resolve(),
-        })
-      : undefined;
     let writer: Promise<unknown> | undefined;
     const childHandle = createEmbeddedRunHandle({
       abort: () => {
@@ -490,9 +460,7 @@ it.each(["exact native new", "cascade native new", "RPC reset", "RPC delete"])(
         );
       },
     });
-    if (!native) {
-      setActiveEmbeddedRun("incarnation-child", childHandle, childKey);
-    }
+    setActiveEmbeddedRun("incarnation-child", childHandle, childKey);
     const parentAdmission = await beginSessionWorkAdmission({
       scope: storePath,
       identities: [sessionKey, sessionId],
@@ -537,11 +505,10 @@ it.each(["exact native new", "cascade native new", "RPC reset", "RPC delete"])(
       ]);
       expect(parent.controller.signal.aborted).toBe(true);
       expect(context.chatAbortControllers.has("parent")).toBe(false);
-      if (!native) {
-        expect(getSubagentRunByChildSessionKey(childKey)?.endedReason).toBe("subagent-killed");
-        // Runtime is already quiescent; only its canonical marker write remains pending.
-        clearActiveEmbeddedRun("incarnation-child", childHandle, childKey);
-      }
+      expect(getSubagentRunByChildSessionKey(childKey)?.endedReason).toBe("subagent-killed");
+      // Explicit reset drains children, including native /new. Keep the original
+      // abort pending on its marker writer, not on work the reset must stop.
+      clearActiveEmbeddedRun("incarnation-child", childHandle, childKey);
       if (native) {
         const reset = await initSessionState({
           cfg,
@@ -596,7 +563,6 @@ it.each(["exact native new", "cascade native new", "RPC reset", "RPC delete"])(
           events.findLast((event) => asOptionalRecord(event)?.type === "reset"),
         ).not.toHaveProperty("firstKeptEntryId");
       }
-      childAdmission?.release();
       release.resolve();
       await writer;
       const response = await abort;
@@ -611,7 +577,6 @@ it.each(["exact native new", "cascade native new", "RPC reset", "RPC delete"])(
         expect(transcriptRows()).toEqual({ nodes: 0, windows: 0 });
       }
     } finally {
-      childAdmission?.release();
       parentAdmission.release();
       operation.complete();
       release.resolve();

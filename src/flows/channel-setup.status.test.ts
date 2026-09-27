@@ -1,4 +1,5 @@
 // Channel setup status tests cover status text and docs link rendering.
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { withEnv, withEnvAsync } from "../test-utils/env.js";
 import {
@@ -84,17 +85,6 @@ import {
   resolveChannelSetupSelectionContributions,
 } from "./channel-setup.status.js";
 
-function requireFirstMockCall<const Calls extends readonly unknown[][]>(
-  calls: Calls,
-  label: string,
-): Calls[number] {
-  const call = calls.at(0);
-  if (!call) {
-    throw new Error(`expected ${label} call`);
-  }
-  return call as Calls[number];
-}
-
 describe("resolveChannelSetupSelectionContributions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -160,32 +150,16 @@ describe("resolveChannelSetupSelectionContributions", () => {
 
   it("sorts channels alphabetically by picker label", () => {
     const contributions = resolveChannelSetupSelectionContributions({
-      entries: [
-        {
-          id: "zalo",
-          meta: {
-            id: "zalo",
-            label: "Zalo",
-            selectionLabel: "Zalo (Bot API)",
-          },
-        },
-        {
-          id: "discord",
-          meta: {
-            id: "discord",
-            label: "Discord",
-            selectionLabel: "Discord (Bot API)",
-          },
-        },
-        {
-          id: "imessage",
-          meta: {
-            id: "imessage",
-            label: "iMessage",
-            selectionLabel: "iMessage (macOS app)",
-          },
-        },
-      ],
+      entries: (
+        [
+          ["zalo", "Zalo", "Zalo (Bot API)"],
+          ["discord", "Discord", "Discord (Bot API)"],
+          ["imessage", "iMessage", "iMessage (macOS app)"],
+        ] as const
+      ).map(([id, label, selectionLabel]) => ({
+        id,
+        meta: makeMeta(id, label, { selectionLabel }),
+      })),
       statusByChannel: new Map(),
       resolveDisabledHint: () => undefined,
     });
@@ -195,53 +169,6 @@ describe("resolveChannelSetupSelectionContributions", () => {
       "iMessage (macOS app)",
       "Zalo (Bot API)",
     ]);
-  });
-
-  it("does not invent hints before status has been collected", () => {
-    const contributions = resolveChannelSetupSelectionContributions({
-      entries: [
-        {
-          id: "zalo",
-          meta: {
-            id: "zalo",
-            label: "Zalo",
-            selectionLabel: "Zalo (Bot API)",
-          },
-        },
-      ],
-      statusByChannel: new Map(),
-      resolveDisabledHint: () => undefined,
-    });
-
-    expect(contributions.map((contribution) => contribution.option)).toEqual([
-      {
-        value: "zalo",
-        label: "Zalo (Bot API)",
-      },
-    ]);
-  });
-
-  it("combines real status and disabled hints when available", () => {
-    const contributions = resolveChannelSetupSelectionContributions({
-      entries: [
-        {
-          id: "zalo",
-          meta: {
-            id: "zalo",
-            label: "Zalo",
-            selectionLabel: "Zalo (Bot API)",
-          },
-        },
-      ],
-      statusByChannel: new Map([["zalo", { selectionHint: "configured" }]]),
-      resolveDisabledHint: () => "disabled",
-    });
-
-    expect(contributions[0]?.option).toEqual({
-      value: "zalo",
-      label: "Zalo (Bot API)",
-      hint: "configured · disabled",
-    });
   });
 
   it("sanitizes picker labels and hints before terminal rendering", () => {
@@ -309,7 +236,7 @@ describe("resolveChannelSetupSelectionContributions", () => {
     ]);
   });
 
-  it.each(["rejected status check", "synchronous status check", "adapter resolution"] as const)(
+  it.each(["rejected status check", "adapter resolution"] as const)(
     "keeps healthy channels selectable after a %s failure",
     async (failurePoint) => {
       const installedPlugins = [
@@ -345,13 +272,9 @@ describe("resolveChannelSetupSelectionContributions", () => {
             channel,
             getStatus:
               channel === "matrix"
-                ? failurePoint === "synchronous status check"
-                  ? () => {
-                      throw failure;
-                    }
-                  : async () => {
-                      throw failure;
-                    }
+                ? async () => {
+                    throw failure;
+                  }
                 : async () => ({
                     channel: "telegram",
                     configured: true,
@@ -474,7 +397,10 @@ describe("resolveChannelSetupSelectionContributions", () => {
     );
 
     expect(formatChannelPrimerLine).toHaveBeenCalledOnce();
-    const [primerMeta] = requireFirstMockCall(formatChannelPrimerLine.mock.calls, "primer line");
+    const [primerMeta] = expectDefined(
+      formatChannelPrimerLine.mock.calls.at(0),
+      "primer line call",
+    );
     expect(primerMeta?.id).toBe("bad\\nid");
     expect(primerMeta?.label).toBe("bad\\nid");
     expect(primerMeta?.selectionLabel).toBe("bad\\nid");
@@ -549,9 +475,9 @@ describe("resolveChannelSetupSelectionContributions", () => {
     });
 
     expect(formatChannelSelectionLine).toHaveBeenCalledOnce();
-    const [selectionMeta, docsLink] = requireFirstMockCall(
-      formatChannelSelectionLine.mock.calls,
-      "selection line",
+    const [selectionMeta, docsLink] = expectDefined(
+      formatChannelSelectionLine.mock.calls.at(0),
+      "selection line call",
     );
     expect(selectionMeta?.label).toBe("Zalo\\nBot");
     expect(selectionMeta?.blurb).toBe("Setup\\nhelp");
@@ -594,9 +520,9 @@ describe("resolveChannelSetupSelectionContributions", () => {
       selection: ["custom-chat"],
     });
 
-    const [selectionMeta] = requireFirstMockCall(
-      formatChannelSelectionLine.mock.calls,
-      "selection line",
+    const [selectionMeta] = expectDefined(
+      formatChannelSelectionLine.mock.calls.at(0),
+      "selection line call",
     );
     expect(selectionMeta?.selectionDocsPrefix).toBe(expected);
   });

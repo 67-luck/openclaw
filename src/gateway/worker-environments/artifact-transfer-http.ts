@@ -55,6 +55,15 @@ export async function handleArtifactTransferHttpRequest(
     sendOpaqueNotFound(params.res);
     return true;
   }
+  return handleWorkerTransferHttpRequest(params, (bearer) =>
+    params.callback?.({ req: params.req, res: params.res, artifactKey, bearer }),
+  );
+}
+
+export async function handleWorkerTransferHttpRequest(
+  params: ArtifactTransferHttpRequest,
+  authorize: (bearer: string) => ReturnType<ArtifactTransferHttpCallback> | undefined,
+): Promise<boolean> {
   const authorization = normalizeOptionalString(params.req.headers.authorization);
   const bearer = authorization?.toLowerCase().startsWith("bearer ")
     ? normalizeOptionalString(authorization.slice(7))
@@ -73,10 +82,10 @@ export async function handleArtifactTransferHttpRequest(
       if (rateCheck && !rateCheck.allowed) {
         return { kind: "rate-limited", retryAfterMs: rateCheck.retryAfterMs };
       }
-      const outcome =
-        bearer && params.callback
-          ? await params.callback({ req: params.req, res: params.res, artifactKey, bearer })
-          : ({ kind: "unauthorized" } as const);
+      const pendingAuthorization = bearer ? authorize(bearer) : undefined;
+      const outcome = pendingAuthorization
+        ? await pendingAuthorization
+        : ({ kind: "unauthorized" } as const);
       if (outcome.kind === "unauthorized") {
         params.rateLimiter?.recordFailure(params.clientIp, AUTH_RATE_LIMIT_SCOPE_WORKER_TRANSFER);
       } else {
@@ -140,9 +149,14 @@ export function createArtifactTransferHttpCallback(
             "content-length": String(file.bytes),
             "x-openclaw-content-sha256": file.sha256,
           });
-          await pipeline(file.handle.createReadStream({ autoClose: false }), checkAuthority, res, {
-            signal,
+          // An extra EOF read can outlive the client's Content-Length-complete response
+          // and let owner revocation destroy its reused keep-alive socket.
+          const stream = file.handle.createReadStream({
+            start: 0,
+            end: file.bytes - 1,
+            autoClose: false,
           });
+          await pipeline(stream, checkAuthority, res, { signal });
         } catch {
           if (!res.headersSent && !res.destroyed) {
             sendOpaqueNotFound(res);

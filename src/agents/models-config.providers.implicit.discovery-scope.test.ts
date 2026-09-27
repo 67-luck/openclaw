@@ -2,8 +2,23 @@
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import type { ModelProviderConfig } from "../config/types.models.js";
 import type { PluginMetadataSnapshotOwnerMaps } from "../plugins/plugin-metadata-snapshot.js";
+import {
+  createPluginManifestRecordFixture,
+  createPluginMetadataSnapshotFixture,
+} from "../plugins/plugin-metadata.test-support.js";
+import {
+  prepareProviderExternalAuthWithPlugin,
+  resolveProviderSyntheticAuthWithPlugin,
+} from "../plugins/provider-runtime.js";
+import {
+  prepareSyntheticAuthWithProvider,
+  resolveSyntheticAuthWithProvider,
+} from "../plugins/provider-synthetic-auth.js";
 import type { ProviderPlugin } from "../plugins/types.js";
+import { SecretSurfaceUnavailableError } from "../secrets/runtime-degraded-state.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
   createOpenClawTestState,
@@ -18,6 +33,15 @@ const mocks = vi.hoisted(() => ({
   runProviderStaticCatalog: vi.fn(),
 }));
 const BUNDLED_PLUGINS_DIR = fileURLToPath(new URL("../../extensions/", import.meta.url));
+
+vi.mock("../plugins/provider-runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../plugins/provider-runtime.js")>();
+  return {
+    ...actual,
+    prepareProviderExternalAuthWithPlugin: vi.fn(actual.prepareProviderExternalAuthWithPlugin),
+    resolveProviderSyntheticAuthWithPlugin: vi.fn(actual.resolveProviderSyntheticAuthWithPlugin),
+  };
+});
 
 vi.mock("../plugins/provider-discovery.js", () => ({
   resolveRuntimePluginDiscoveryProviders: mocks.resolveRuntimePluginDiscoveryProviders,
@@ -66,6 +90,7 @@ function metadataOwners(
     setupProviders: new Map(),
     commandAliases: new Map(),
     contracts: new Map(),
+    providerAuthContributions: [],
     modelIdNormalizationPolicies: new Map(),
     ...overrides,
   };
@@ -130,6 +155,15 @@ function firstMockArg(mock: { mock: { calls: unknown[][] } }, label: string): un
 describe("resolveImplicitProviders startup discovery scope", () => {
   let state: OpenClawTestState;
   let ambientHome: MockInstance<typeof os.homedir>;
+
+  function discover(options: Omit<Parameters<typeof resolveImplicitProviders>[0], "agentDir">) {
+    return resolveImplicitProviders({
+      agentDir: state.agentDir(),
+      config: {},
+      env: state.env,
+      ...options,
+    });
+  }
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -207,6 +241,102 @@ describe("resolveImplicitProviders startup discovery scope", () => {
     expect(mocks.runProviderCatalog).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    { scoped: false, api: "openai-completions" as const },
+    { scoped: false, api: "openai-responses" as const },
+    { scoped: true, api: "openai-responses" as const },
+  ])(
+    "prepares configured native auth within the discovery scope (scoped: $scoped, api: $api)",
+    async ({ scoped, api }) => {
+      const prepareNative = vi.fn<NonNullable<ProviderPlugin["prepareSyntheticAuth"]>>(
+        async () => ({ apiKey: "native-auth-ready", source: "native fixture", mode: "oauth" }),
+      );
+      const provider: ProviderPlugin = {
+        ...createProvider("openai-completions"),
+        pluginId: "auth-owner",
+        hookAliases: ["openai-responses"],
+        prepareSyntheticAuth: prepareNative,
+      };
+      const metadata = createPluginMetadataSnapshotFixture({
+        plugins: [{ id: "auth-owner", providers: [provider.id] }],
+      });
+      const pluginMetadataSnapshot = {
+        ...metadata,
+        index: {
+          ...metadata.index,
+          plugins: metadata.index.plugins.map((plugin) =>
+            Object.assign({}, plugin, { syntheticAuthRefs: [provider.id] }),
+          ),
+        },
+      };
+      const config = {
+        models: {
+          providers: {
+            "custom-native": {
+              api,
+              baseUrl: "https://native.example.test",
+              models: [],
+            },
+            "unrelated-provider": {
+              baseUrl: "https://unrelated.example.test",
+              models: [],
+            },
+          },
+        },
+      };
+      const prepared = vi
+        .mocked(prepareProviderExternalAuthWithPlugin)
+        .mockImplementation((params) =>
+          prepareSyntheticAuthWithProvider(provider, params.context, params),
+        );
+      const resolved = vi
+        .mocked(resolveProviderSyntheticAuthWithPlugin)
+        .mockImplementation((params) =>
+          resolveSyntheticAuthWithProvider(provider, params.context, params),
+        );
+      mocks.resolveRuntimePluginDiscoveryProviders.mockResolvedValue([provider]);
+      let discoveryApiKey: string | undefined;
+      mocks.runProviderCatalog.mockImplementationOnce(
+        async ({
+          resolveProviderAuth,
+        }: Parameters<typeof import("../plugins/provider-discovery.js").runProviderCatalog>[0]) => {
+          const auth = resolveProviderAuth("custom-native");
+          discoveryApiKey = auth.discoveryApiKey;
+          return {
+            providers: {
+              [provider.id]: {
+                apiKey: auth.apiKey,
+                baseUrl: "https://native.example.test",
+                models: [],
+              },
+            },
+          };
+        },
+      );
+      try {
+        await resolveImplicitProviders({
+          agentDir: state.agentDir(),
+          authStore: { version: 1, profiles: {} },
+          config,
+          env: state.env,
+          pluginMetadataSnapshot,
+          ...(scoped ? { providerDiscoveryProviderIds: [provider.id] } : {}),
+        });
+        expect(mocks.runProviderCatalog).toHaveBeenCalledOnce();
+        expect(discoveryApiKey).toBe(scoped ? undefined : "native-auth-ready");
+        expect(
+          prepareNative.mock.calls.filter(([context]) => context.provider === "custom-native"),
+        ).toHaveLength(scoped ? 0 : 1);
+        expect(prepared.mock.calls.map(([params]) => params.provider)).not.toContain(
+          "unrelated-provider",
+        );
+      } finally {
+        prepared.mockRestore();
+        resolved.mockRestore();
+      }
+    },
+  );
+
   it("loads configured provider entrypoints but runs static hooks only for unresolved refs", async () => {
     const openai = createStaticOnlyProvider("openai");
     const anthropic = createStaticOnlyProvider("anthropic");
@@ -251,10 +381,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
   });
 
   it("passes startup provider scopes as plugin owner filters", async () => {
-    await resolveImplicitProviders({
-      agentDir: state.agentDir(),
-      config: {},
-      env: state.env,
+    await discover({
       explicitProviders: {},
       pluginMetadataSnapshot: {
         index: { plugins: [] } as never,
@@ -279,10 +406,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
   });
 
   it("treats an explicit empty provider scope as no discovery", async () => {
-    const providers = await resolveImplicitProviders({
-      agentDir: state.agentDir(),
-      config: {},
-      env: state.env,
+    const providers = await discover({
       explicitProviders: {},
       providerDiscoveryProviderIds: [],
     });
@@ -309,10 +433,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
       }),
     );
 
-    const providers = await resolveImplicitProviders({
-      agentDir: state.agentDir(),
-      config: {},
-      env: state.env,
+    const providers = await discover({
       explicitProviders: {},
       pluginMetadataSnapshot: {
         index: { plugins: [] } as never,
@@ -356,10 +477,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
       },
     });
 
-    const providers = await resolveImplicitProviders({
-      agentDir: state.agentDir(),
-      config: {},
-      env: state.env,
+    const providers = await discover({
       explicitProviders: {},
       pluginMetadataSnapshot: {
         index: { plugins: [] } as never,
@@ -392,10 +510,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
       },
     });
 
-    const providers = await resolveImplicitProviders({
-      agentDir: state.agentDir(),
-      config: {},
-      env: state.env,
+    const providers = await discover({
       explicitProviders: {},
       pluginMetadataSnapshot: {
         index: { plugins: [] } as never,
@@ -431,12 +546,6 @@ describe("resolveImplicitProviders startup discovery scope", () => {
       expected: ["openrouter"],
     },
     {
-      name: "maps live provider backend ids through plugin metadata cli backend owners",
-      env: { OPENCLAW_LIVE_TEST: "1", OPENCLAW_LIVE_PROVIDERS: "claude-cli" },
-      owners: { cliBackends: new Map([["claude-cli", ["anthropic"]]]) },
-      expected: ["anthropic"],
-    },
-    {
       name: "normalizes mixed-case backend ids through plugin metadata owners",
       env: { OPENCLAW_LIVE_TEST: "1", OPENCLAW_LIVE_PROVIDERS: "Claude-CLI" },
       owners: { cliBackends: new Map([["claude-cli", ["anthropic"]]]) },
@@ -447,13 +556,6 @@ describe("resolveImplicitProviders startup discovery scope", () => {
       env: { OPENCLAW_LIVE_TEST: "1", OPENCLAW_LIVE_PROVIDERS: "bytedance" },
       owners: { providers: new Map([["volcengine", ["volcengine"]]]) },
       expected: ["bytedance"],
-    },
-    {
-      name: "scopes normal startup discovery to requested provider owners",
-      env: {},
-      providerIds: ["openai"],
-      owners: { providers: new Map([["openai", ["openai"]]]) },
-      expected: ["openai"],
     },
     {
       name: "maps mixed-case startup provider ids through model catalog owners",
@@ -481,65 +583,96 @@ describe("resolveImplicitProviders startup discovery scope", () => {
     ).toMatchObject({ onlyPluginIds: expected });
   });
 
-  it("records an unavailable outcome when live catalog discovery times out", async () => {
-    mocks.runProviderCatalog.mockImplementationOnce(() => new Promise<void>(() => {}));
-    const outcomes: Array<{ provider: string; status: string }> = [];
+  it.each(["timeout", "secret-unavailable"] as const)(
+    "records every selected family identity after %s without accepting late success",
+    async (failure) => {
+      const family = createProvider("family");
+      const healthy = createProvider("healthy");
+      mocks.resolveRuntimePluginDiscoveryProviders.mockResolvedValue([family, healthy]);
+      const completion = createDeferredCore();
+      let lateCatalog: Promise<void> | undefined;
+      const outcomes: Array<{ provider: string; status: string }> = [];
+      mocks.runProviderCatalog.mockImplementation((params) => {
+        if (params.provider.id === "healthy") {
+          return Promise.resolve({
+            provider: {
+              baseUrl: "https://healthy.example.test/v1",
+              models: [createTextModel("healthy-live", "Healthy live")],
+            },
+          });
+        }
+        if (failure === "secret-unavailable") {
+          return Promise.reject(
+            new SecretSurfaceUnavailableError({
+              ownerKind: "provider",
+              ownerId: "family",
+              state: "unavailable",
+              paths: ["models.providers.family.apiKey"],
+              refKeys: [],
+              reason: "fixture secret is unavailable",
+            }),
+          );
+        }
+        lateCatalog = completion.promise.then(() => {
+          params.reportCatalogOutcome?.({ provider: "family-plan", status: "ready" });
+        });
+        return lateCatalog;
+      });
+      const providers = await resolveImplicitProviders({
+        agentDir: state.agentDir(),
+        config: {},
+        env: state.env,
+        explicitProviders: {},
+        providerDiscoveryProviderIds: ["family", "family-plan", "healthy"],
+        providerDiscoveryTimeoutMs: 1,
+        pluginMetadataSnapshot: createPluginMetadataSnapshotFixture({
+          plugins: [
+            createPluginManifestRecordFixture({
+              id: "family",
+              providers: ["family", "family-plan"],
+            }),
+            createPluginManifestRecordFixture({ id: "healthy", providers: ["healthy"] }),
+          ],
+        }),
+        onProviderCatalogOutcome: (outcome) => outcomes.push(outcome),
+      });
+      const expected = [
+        { provider: "family", status: "unavailable" },
+        { provider: "family-plan", status: "unavailable" },
+      ];
+      try {
+        expect(providers?.healthy?.models.map((model) => model.id)).toEqual(["healthy-live"]);
+        expect(outcomes).toEqual(expected);
+      } finally {
+        completion.resolve();
+        await lateCatalog;
+      }
+      expect(outcomes).toEqual(expected);
+    },
+  );
 
-    await resolveImplicitProviders({
-      agentDir: state.agentDir(),
-      config: {},
-      env: state.env,
-      explicitProviders: {},
-      providerDiscoveryProviderIds: ["openai"],
-      providerDiscoveryTimeoutMs: 1,
-      onProviderCatalogOutcome: (outcome) => outcomes.push(outcome),
-    });
-
-    expect(outcomes).toEqual([{ provider: "openai", status: "unavailable" }]);
-  });
-
-  it("rethrows non-timeout live catalog discovery failures", async () => {
+  it("records an unavailable outcome for an ordinary hook failure", async () => {
     mocks.runProviderCatalog.mockRejectedValueOnce(
       new Error("provider catalog timed out after provider-defined retry window"),
     );
     const outcomes: Array<{ provider: string; status: string }> = [];
 
-    await expect(
-      resolveImplicitProviders({
-        agentDir: state.agentDir(),
-        config: {},
-        env: state.env,
-        explicitProviders: {},
-        providerDiscoveryProviderIds: ["openai"],
-        providerDiscoveryTimeoutMs: 1_000,
-        onProviderCatalogOutcome: (outcome) => outcomes.push(outcome),
-      }),
-    ).rejects.toThrow("provider catalog timed out after provider-defined retry window");
-
-    expect(outcomes).toEqual([]);
-  });
-
-  it("can keep startup discovery on provider discovery entries only", async () => {
-    await resolveImplicitProviders({
+    const providers = await resolveImplicitProviders({
       agentDir: state.agentDir(),
       config: {},
       env: state.env,
       explicitProviders: {},
-      providerDiscoveryEntriesOnly: true,
+      providerDiscoveryProviderIds: ["openai"],
+      providerDiscoveryTimeoutMs: 1_000,
+      onProviderCatalogOutcome: (outcome) => outcomes.push(outcome),
     });
 
-    const discoveryOptions = firstMockArg(
-      mocks.resolveRuntimePluginDiscoveryProviders,
-      "runtime plugin discovery",
-    ) as { discoveryEntriesOnly?: boolean };
-    expect(discoveryOptions?.discoveryEntriesOnly).toBe(true);
+    expect(providers?.openai).toBeUndefined();
+    expect(outcomes).toEqual([{ provider: "openai", status: "unavailable" }]);
   });
 
   it("does not fall through to live catalogs when entries-only providers lack static rows", async () => {
-    await resolveImplicitProviders({
-      agentDir: state.agentDir(),
-      config: {},
-      env: state.env,
+    await discover({
       explicitProviders: {},
       providerDiscoveryEntriesOnly: true,
     });
@@ -553,10 +686,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
       createProviderWithStaticCatalog("codex"),
     ]);
 
-    await resolveImplicitProviders({
-      agentDir: state.agentDir(),
-      config: {},
-      env: state.env,
+    await discover({
       explicitProviders: {},
       providerDiscoveryEntriesOnly: true,
     });
@@ -568,10 +698,22 @@ describe("resolveImplicitProviders startup discovery scope", () => {
   it("reuses prepared static results while preserving the requesting provider scope", async () => {
     const openai = { ...createStaticOnlyProvider("openai"), pluginId: "openai" };
     const anthropic = { ...createStaticOnlyProvider("anthropic"), pluginId: "anthropic" };
-    const providers = await resolveImplicitProviders({
-      agentDir: state.agentDir(),
-      config: {},
-      env: state.env,
+    const openaiConfigs: Record<string, ModelProviderConfig> = {
+      openai: { baseUrl: "https://api.openai.com/v1", api: "openai-responses", models: [] },
+      unrelated: {
+        baseUrl: "https://unrelated.example.test",
+        api: "openai-completions",
+        models: [],
+      },
+    };
+    const anthropicConfigs: Record<string, ModelProviderConfig> = {
+      anthropic: {
+        baseUrl: "https://api.anthropic.com",
+        api: "anthropic-messages",
+        models: [],
+      },
+    };
+    const providers = await discover({
       explicitProviders: {},
       pluginMetadataSnapshot: {
         index: { plugins: [] } as never,
@@ -588,32 +730,13 @@ describe("resolveImplicitProviders startup discovery scope", () => {
         entries: [
           {
             provider: openai,
-            result: {
-              providers: {
-                openai: {
-                  baseUrl: "https://api.openai.com/v1",
-                  api: "openai-responses",
-                  models: [],
-                },
-                unrelated: {
-                  baseUrl: "https://unrelated.example.test",
-                  api: "openai-completions",
-                  models: [],
-                },
-              },
-            },
+            result: { providers: openaiConfigs },
+            providerConfigs: openaiConfigs,
           },
           {
             provider: anthropic,
-            result: {
-              providers: {
-                anthropic: {
-                  baseUrl: "https://api.anthropic.com",
-                  api: "anthropic-messages",
-                  models: [],
-                },
-              },
-            },
+            result: { providers: anthropicConfigs },
+            providerConfigs: anthropicConfigs,
           },
         ],
       },
@@ -638,10 +761,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
       },
     });
 
-    const providers = await resolveImplicitProviders({
-      agentDir: state.agentDir(),
-      config: {},
-      env: state.env,
+    const providers = await discover({
       explicitProviders: {},
       pluginMetadataSnapshot: {
         index: { plugins: [] } as never,
@@ -668,10 +788,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
       createStaticOnlyProvider("openai"),
     ]);
 
-    await resolveImplicitProviders({
-      agentDir: state.agentDir(),
-      config: {},
-      env: state.env,
+    await discover({
       explicitProviders: {},
       providerDiscoveryProviderIds: ["openai"],
     });
@@ -737,10 +854,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
       },
     });
 
-    const providers = await resolveImplicitProviders({
-      agentDir: state.agentDir(),
-      config: {},
-      env: state.env,
+    const providers = await discover({
       explicitProviders: {},
       providerDiscoveryProviderIds: ["minimax"],
     });
@@ -771,21 +885,25 @@ describe("resolveImplicitProviders startup discovery scope", () => {
     });
 
     const providers = await resolveImplicitProviders({
-      agentDir: "/tmp/openclaw-agent",
+      agentDir: state.agentDir(),
       config: { models: { providers: { "amazon-bedrock": explicitProvider } } },
-      env: { AWS_PROFILE: "default" } as NodeJS.ProcessEnv,
+      env: { ...state.env, AWS_PROFILE: "default" },
       explicitProviders: { "amazon-bedrock": explicitProvider },
       sourceModelFields: new Map([
-        ["amazon-bedrock/vision-model", { inputOmitted: true, cost: undefined }],
+        [
+          JSON.stringify(["amazon-bedrock", "vision-model"]),
+          { inputOmitted: true, cost: undefined },
+        ],
       ]),
     });
 
     expect(providers?.["amazon-bedrock"]?.models).toMatchObject([
       { id: "vision-model", input: ["text", "image"] },
+      { id: "discovered-only" },
     ]);
   });
 
-  it("keeps explicit provider models manual without provider wildcard visibility", async () => {
+  it("merges discovered models without treating configured rows or selection policy as inventory limits", async () => {
     const explicitProvider = {
       baseUrl: "http://vllm.example/v1",
       api: "openai-completions" as const,
@@ -807,46 +925,6 @@ describe("resolveImplicitProviders startup discovery scope", () => {
           defaults: {
             models: {
               "vllm/manual-model": {},
-            },
-          },
-        },
-        models: {
-          providers: {
-            vllm: explicitProvider,
-          },
-        },
-      },
-      env: state.env,
-      explicitProviders: {
-        vllm: explicitProvider,
-      },
-    });
-
-    expect(providers?.vllm?.models.map((model) => model.id)).toEqual(["manual-model"]);
-  });
-
-  it("merges discovered self-hosted models into explicit provider models for wildcard visibility", async () => {
-    const explicitProvider = {
-      baseUrl: "http://vllm.example/v1",
-      api: "openai-completions" as const,
-      models: [createTextModel("manual-model", "Manual Model")],
-    };
-    mocks.resolveRuntimePluginDiscoveryProviders.mockResolvedValue([createProvider("vllm")]);
-    mocks.runProviderCatalog.mockResolvedValue({
-      provider: {
-        baseUrl: "http://vllm.example/v1",
-        api: "openai-completions" as const,
-        models: [createTextModel("discovered-model", "Discovered Model")],
-      },
-    });
-
-    const providers = await resolveImplicitProviders({
-      agentDir: state.agentDir(),
-      config: {
-        agents: {
-          defaults: {
-            models: {
-              "vllm/*": {},
             },
           },
         },

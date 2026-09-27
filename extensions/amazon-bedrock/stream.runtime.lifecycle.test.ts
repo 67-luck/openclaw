@@ -82,26 +82,6 @@ describe("Bedrock provider-owned stream lifecycle", () => {
       endEvent: "thinking_end",
       stopReason: BedrockStopReason.END_TURN,
     },
-    {
-      label: "tool call",
-      blocks: [
-        {
-          contentBlockStart: {
-            contentBlockIndex: 0,
-            start: { toolUse: { toolUseId: "call_lookup", name: "lookup" } },
-          },
-        },
-        {
-          contentBlockDelta: {
-            contentBlockIndex: 0,
-            delta: { toolUse: { input: '{"query":"ready"}' } },
-          },
-        },
-        { contentBlockStop: { contentBlockIndex: 0 } },
-      ],
-      endEvent: "toolcall_end",
-      stopReason: BedrockStopReason.TOOL_USE,
-    },
   ])("finalizes the active $label block at the provider terminal boundary", async (scenario) => {
     vi.spyOn(BedrockRuntimeClient.prototype, "send").mockResolvedValue({
       $metadata: { httpStatusCode: 200 },
@@ -205,37 +185,6 @@ describe("Bedrock stream client lifecycle", () => {
     expectDestroyedClient(send, destroy);
   });
 
-  it("destroys the client after a provider error", async () => {
-    const send = vi
-      .spyOn(BedrockRuntimeClient.prototype, "send")
-      .mockRejectedValue(new Error("synthetic provider failure"));
-    const destroy = vi.spyOn(BedrockRuntimeClient.prototype, "destroy");
-
-    const result = await streamBedrockForTest().result();
-
-    expect(result.stopReason).toBe("error");
-    expect(result.errorMessage).toBe("synthetic provider failure");
-    expectDestroyedClient(send, destroy);
-  });
-
-  it("destroys the client when response stream iteration fails", async () => {
-    async function* failingStream() {
-      yield { messageStart: { role: ConversationRole.ASSISTANT } };
-      throw new Error("synthetic iterator failure");
-    }
-    const send = vi.spyOn(BedrockRuntimeClient.prototype, "send").mockResolvedValue({
-      $metadata: { httpStatusCode: 200 },
-      stream: failingStream(),
-    } as never);
-    const destroy = vi.spyOn(BedrockRuntimeClient.prototype, "destroy");
-
-    const result = await streamBedrockForTest().result();
-
-    expect(result.stopReason).toBe("error");
-    expect(result.errorMessage).toBe("synthetic iterator failure");
-    expectDestroyedClient(send, destroy);
-  });
-
   it("destroys the client after an aborted request", async () => {
     const controller = new AbortController();
     controller.abort();
@@ -248,6 +197,84 @@ describe("Bedrock stream client lifecycle", () => {
 
     expect(result.stopReason).toBe("aborted");
     expect(result.errorMessage).toBe("synthetic abort");
+    expectDestroyedClient(send, destroy);
+  });
+
+  it("records a transport-failure diagnostic when the request fails before any output", async () => {
+    const send = vi
+      .spyOn(BedrockRuntimeClient.prototype, "send")
+      .mockRejectedValue(Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }));
+    const destroy = vi.spyOn(BedrockRuntimeClient.prototype, "destroy");
+
+    const result = await streamBedrockForTest().result();
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      errorMessage: "socket hang up",
+      errorCode: "ECONNRESET",
+    });
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        type: "provider_transport_failure",
+        details: { eventsEmitted: false, phase: "before_message_stream_start" },
+      }),
+    ]);
+    expectDestroyedClient(send, destroy);
+  });
+
+  it.each([
+    {
+      label: "text",
+      blocks: [{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "partial" } } }],
+      content: [{ type: "text", text: "partial" }],
+    },
+    {
+      label: "tool-only output",
+      blocks: [
+        {
+          contentBlockStart: {
+            contentBlockIndex: 0,
+            start: { toolUse: { toolUseId: "call_lookup", name: "lookup" } },
+          },
+        },
+        {
+          contentBlockDelta: {
+            contentBlockIndex: 0,
+            delta: { toolUse: { input: '{"query":"partial"}' } },
+          },
+        },
+        { contentBlockStop: { contentBlockIndex: 0 } },
+      ],
+      content: [],
+    },
+  ])("keeps failures after $label out of transport-drop recovery", async ({ blocks, content }) => {
+    async function* failingStream() {
+      yield { messageStart: { role: ConversationRole.ASSISTANT } };
+      yield* blocks;
+      throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+    }
+    const send = vi.spyOn(BedrockRuntimeClient.prototype, "send").mockResolvedValue({
+      $metadata: { httpStatusCode: 200 },
+      stream: failingStream(),
+    } as never);
+    const destroy = vi.spyOn(BedrockRuntimeClient.prototype, "destroy");
+
+    const stream = streamBedrockForTest();
+    const eventTypes: string[] = [];
+    for await (const event of stream) {
+      eventTypes.push(event.type);
+    }
+    const result = await stream.result();
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      errorMessage: "socket hang up",
+      errorCode: "ECONNRESET",
+    });
+    expect(result.content).toEqual(content);
+    expect(result.diagnostics).toBeUndefined();
+    expect(eventTypes).not.toContain("toolcall_end");
+    expect(eventTypes.at(-1)).toBe("error");
     expectDestroyedClient(send, destroy);
   });
 });

@@ -2,10 +2,9 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { listSlackReactions } from "@openclaw/slack/api.js";
+import { asNonArrayRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { extractGatewayMessageText } from "../../gateway-log-sentinel.js";
 import { formatApprovalResultValue } from "../shared/live-approval-result.js";
-import { asPlainRecord } from "./slack-live.config.js";
 import {
   SLACK_QA_APPROVAL_DECISION_TIMEOUT_MS,
   type SlackQaCodexApprovalMethod,
@@ -14,6 +13,7 @@ import {
   type SlackQaScenarioMetadata,
   type SlackQaWebClient as WebClient,
 } from "./slack-live.contracts.js";
+import { loadSlackQaRuntime } from "./slack-plugin.runtime.js";
 
 export function resolveCodexFileApprovalTargetPath(token: string) {
   return path.join(os.homedir(), `.openclaw-qa-codex-file-approval-${token.toLowerCase()}.txt`);
@@ -76,6 +76,7 @@ export async function waitForSlackReaction(params: {
   sutUserId: string;
   timeoutMs: number;
 }) {
+  const { listSlackReactions } = loadSlackQaRuntime();
   const deadline = Date.now() + params.timeoutMs;
   while (true) {
     const reactions = await listSlackReactions(params.channelId, params.messageId, {
@@ -104,7 +105,7 @@ function assertCodexApprovalTranscriptSucceeded(
   messages: unknown,
   run: SlackQaCodexApprovalScenarioRun,
 ) {
-  const records = Array.isArray(messages) ? messages.map(asPlainRecord) : [];
+  const records = Array.isArray(messages) ? messages.map(asNonArrayRecord) : [];
   const assistantReply = records
     .toReversed()
     .find((message) => message.role === "assistant" && extractGatewayMessageText(message));
@@ -132,7 +133,7 @@ export async function assertCodexApprovalOperationSucceeded(params: {
   run: SlackQaCodexApprovalScenarioRun;
   sessionKey: string;
 }) {
-  const history = asPlainRecord(
+  const history = asNonArrayRecord(
     await params.context.gateway.call(
       "chat.history",
       { sessionKey: params.sessionKey, limit: 24 },
@@ -168,11 +169,11 @@ function findPendingCodexPluginApprovalRecord(params: {
       ? "codex_command_approval"
       : "codex_file_approval";
   for (const entry of list) {
-    const record = asPlainRecord(entry);
+    const record = asNonArrayRecord(entry);
     if (record.id !== params.approvalId) {
       continue;
     }
-    const request = asPlainRecord(record.request);
+    const request = asNonArrayRecord(record.request);
     if (
       request.pluginId === "codex" &&
       request.title === expectedTitle &&

@@ -1,10 +1,13 @@
-// Slack plugin module implements prepare routing behavior.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type {
   ConfiguredBindingRouteResult,
   RuntimeConversationBindingRouteResult,
 } from "openclaw/plugin-sdk/conversation-runtime";
 import { resolveAgentRoute, resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
+import {
+  getConversationSession,
+  resolveStorePath,
+} from "openclaw/plugin-sdk/session-store-runtime";
 import { resolveSlackReplyToMode } from "../../account-reply-mode.js";
 import type { ResolvedSlackAccount } from "../../accounts.js";
 import {
@@ -13,8 +16,11 @@ import {
 } from "../../conversation-binding-route.js";
 import { resolveSlackThreadContext } from "../../threading.js";
 import type { SlackMessageEvent } from "../../types.js";
+import { readSlackAssistantThreadContext } from "../assistant-thread-context.js";
 import type { SlackChannelConfigResolved } from "../channel-config.js";
+import type { SlackMonitorContext } from "../context.js";
 import type { SlackEventScope } from "../event-scope.js";
+import { captureSlackSessionTargetGuard, getSlackSessionRuns } from "../session-run-targets.js";
 import {
   qualifySlackConversationId,
   qualifySlackRoutePeerId,
@@ -41,21 +47,11 @@ type SlackRoutingContext = {
   isThreadReply: boolean;
   threadKeys: ReturnType<typeof resolveThreadSessionKeys>;
   sessionKey: string;
-  historyKey: string;
 };
 
-function resolveSlackBaseConversationId(params: {
-  message: SlackMessageEvent;
-  isDirectMessage: boolean;
-  eventScope?: SlackEventScope;
-}): string {
-  const raw = params.isDirectMessage
-    ? `user:${params.message.user ?? "unknown"}`
-    : params.message.channel;
-  return qualifySlackConversationId(raw, params.eventScope);
-}
-
 function resolveSlackInitialAgentRoute(params: {
+  boundAgentId?: string;
+  bindingOwnerAvailable: boolean;
   ctx: SlackRoutingContextDeps;
   account: ResolvedSlackAccount;
   message: SlackMessageEvent;
@@ -64,7 +60,11 @@ function resolveSlackInitialAgentRoute(params: {
   eventScope?: SlackEventScope;
 }) {
   const route = resolveAgentRoute({
-    cfg: normalizeSlackRouteBindingConfig(params.ctx.cfg),
+    cfg:
+      params.boundAgentId || !params.bindingOwnerAvailable
+        ? { session: params.ctx.cfg.session }
+        : normalizeSlackRouteBindingConfig(params.ctx.cfg),
+    defaultAgentId: params.boundAgentId,
     channel: "slack",
     accountId: params.account.accountId,
     teamId: params.eventScope?.teamId || params.ctx.teamId || undefined,
@@ -116,15 +116,6 @@ export function resolveSlackRoutingContext(params: {
     agentViewThreadTs,
     eventScope,
   } = params;
-  let route = resolveSlackInitialAgentRoute({
-    ctx,
-    account,
-    message,
-    isDirectMessage,
-    isRoom,
-    eventScope,
-  });
-
   const chatType = isDirectMessage ? "direct" : isGroupDm ? "group" : "channel";
   const replyToMode = channelConfig?.replyToMode ?? resolveSlackReplyToMode(account, chatType);
   const threadContext = resolveSlackThreadContext({ message, replyToMode, isDirectMessage });
@@ -167,16 +158,24 @@ export function resolveSlackRoutingContext(params: {
         ? threadTs
         : autoThreadId;
   const routedThreadId = canonicalThreadId ?? (isRoomish ? seededRoomThreadId : undefined);
-  const baseConversationId = resolveSlackBaseConversationId({
-    message,
-    isDirectMessage,
+  const baseConversationId = qualifySlackConversationId(
+    isDirectMessage ? `user:${message.user ?? "unknown"}` : message.channel,
     eventScope,
-  });
+  );
   const runtimeBindingThreadId =
     routedThreadId ?? (isDirectMessage && isThreadReply ? threadTs : undefined);
   const bindingRoute = resolveSlackConversationBindingRoute({
     cfg: ctx.cfg,
-    route,
+    resolveRoute: (selection) =>
+      resolveSlackInitialAgentRoute({
+        ...selection,
+        ctx,
+        account,
+        message,
+        isDirectMessage,
+        isRoom,
+        eventScope,
+      }),
     accountId: account.accountId,
     baseConversationId,
     runtimeBindingThreadId,
@@ -185,7 +184,7 @@ export function resolveSlackRoutingContext(params: {
   const runtimeRoute = bindingRoute.runtimeRoute;
   const configuredBinding = bindingRoute.configuredRoute?.bindingResolution ?? null;
   const configuredBindingSessionKey = bindingRoute.configuredRoute?.boundSessionKey ?? "";
-  route = bindingRoute.route;
+  const route = bindingRoute.route;
   const threadKeys =
     runtimeRoute.boundSessionKey || configuredBindingSessionKey
       ? { sessionKey: route.sessionKey, parentSessionKey: undefined }
@@ -196,13 +195,6 @@ export function resolveSlackRoutingContext(params: {
             routedThreadId && ctx.threadInheritParent ? route.sessionKey : undefined,
         });
   const sessionKey = threadKeys.sessionKey;
-  const historyKey =
-    isThreadReply && ctx.threadHistoryScope === "thread"
-      ? sessionKey
-      : eventScope
-        ? `${account.accountId}:${eventScope.teamId}:${message.channel}`
-        : message.channel;
-
   return {
     route,
     runtimeBinding: runtimeRoute.bindingRecord,
@@ -216,6 +208,100 @@ export function resolveSlackRoutingContext(params: {
     isThreadReply,
     threadKeys,
     sessionKey,
-    historyKey,
+  };
+}
+
+export async function resolveSlackSessionEventRoutingContext(
+  params: Omit<
+    Parameters<typeof resolveSlackRoutingContext>[0],
+    "ctx" | "assistantThreadTs" | "agentViewThreadTs"
+  > & { ctx: SlackMonitorContext; intent: "stop" | "title" },
+): Promise<SlackRoutingContext & { isCurrentSession: () => boolean }> {
+  const { ctx, message, eventScope } = params;
+  const threadTs = message.thread_ts;
+  const routing = resolveSlackRoutingContext(params);
+  const address = {
+    agentId: routing.route.agentId,
+    storePath: resolveStorePath(ctx.cfg.session?.store, { agentId: routing.route.agentId }),
+    channel: "slack",
+    accountId: params.account.accountId,
+    kind: routing.chatType,
+    peerId: qualifySlackRoutePeerId({
+      id: params.isDirectMessage ? (message.user ?? "unknown") : message.channel,
+      kind: params.isDirectMessage ? "user" : "channel",
+      eventScope,
+    }),
+  };
+  const threadAddress = { ...address, threadId: threadTs };
+  const liveAddress = { channelId: message.channel, threadTs, eventScope };
+  let allowDirectParent = false;
+  const readOwner = ():
+    | {
+        route: SlackRoutingContext["route"];
+        source: "recorded" | "live" | "parent";
+        isActive?: () => boolean;
+      }
+    | undefined => {
+    const recorded = getConversationSession(threadAddress);
+    if (recorded) {
+      return {
+        route: { ...routing.route, sessionKey: recorded.sessionKey },
+        source: "recorded",
+      };
+    }
+    // First-mode roots publish in a native thread with an unthreaded ingress address.
+    const live = getSlackSessionRuns(ctx, liveAddress).at(-1);
+    if (live) {
+      return { route: live.route, source: "live", isActive: live.isActive };
+    }
+    const parent = allowDirectParent ? getConversationSession(address) : undefined;
+    return parent
+      ? { route: { ...routing.route, sessionKey: parent.sessionKey }, source: "parent" }
+      : undefined;
+  };
+  let owner = readOwner();
+  if (owner?.source === "live" && params.isDirectMessage) {
+    // Keep a proven ordinary DM parent after its publisher finishes, without
+    // borrowing a parent for a managed thread that never had that live owner.
+    allowDirectParent = getConversationSession(address)?.sessionKey === owner.route.sessionKey;
+  }
+  if (!owner && params.isDirectMessage && threadTs) {
+    const assistantContext = ctx.getSlackAssistantThreadContext(
+      message.channel,
+      threadTs,
+      eventScope,
+    );
+    const managedThread =
+      !eventScope &&
+      ((await ctx.isSlackManagedViewThread(message.channel, threadTs)) ||
+        (await ctx.isSlackAgentView()));
+    const assistantThread =
+      assistantContext ??
+      (managedThread
+        ? undefined
+        : await readSlackAssistantThreadContext({
+            client: eventScope?.client ?? ctx.app.client,
+            channelId: message.channel,
+            threadTs,
+            userId: message.user,
+          }));
+    allowDirectParent = !assistantThread && !managedThread;
+    owner = readOwner();
+  }
+  if (!owner) {
+    throw new Error("No recorded session owns this Slack conversation");
+  }
+  const { route } = owner;
+  const isCurrentIncarnation =
+    params.intent === "stop"
+      ? captureSlackSessionTargetGuard(ctx, route, owner.isActive)
+      : undefined;
+  return {
+    ...routing,
+    route,
+    sessionKey: route.sessionKey,
+    // Re-read only prepared local facts after command admission or writer waits.
+    isCurrentSession: () =>
+      readOwner()?.route.sessionKey === route.sessionKey && isCurrentIncarnation?.() !== false,
   };
 }

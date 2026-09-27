@@ -1,5 +1,3 @@
-// PTY adapter wraps pseudo-terminal processes for the process supervisor.
-import type { IDisposable } from "@lydell/node-pty";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { signalPtySessionTree } from "../../kill-tree.js";
 import { prepareOomScoreAdjustedSpawn } from "../../linux-oom-score.js";
@@ -8,30 +6,30 @@ import {
   resolvePtyTerminalName,
   setPtyTerminalName,
 } from "../../pty-terminal-name.js";
-import type { ManagedRunStdin, SpawnProcessAdapter } from "../types.js";
+import type { TerminalPtySubscription } from "../../terminal-pty.js";
+import type { ManagedRunStdin, ProcessAdapterConstruction, SpawnProcessAdapter } from "../types.js";
 import { toStringEnv } from "./env.js";
 
 const FORCE_KILL_WAIT_FALLBACK_MS = 4000;
 declare const WORKER_DEPLOY_BUILD: boolean;
 
-type PtyAdapter = SpawnProcessAdapter;
-
-export async function createPtyAdapter(params: {
-  assertCurrent?: () => void;
-  shell: string;
-  args: string[];
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
-  cols?: number;
-  rows?: number;
-  name?: string;
-}): Promise<PtyAdapter> {
+export async function createPtyAdapter(
+  params: ProcessAdapterConstruction & {
+    shell: string;
+    args: string[];
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    cols?: number;
+    rows?: number;
+    name?: string;
+  },
+): Promise<SpawnProcessAdapter> {
   // Worker deploys are portable JavaScript artifacts; exec falls back to the child adapter
   // instead of binding the Gateway host's native PTY binary into the bundle.
   if (typeof WORKER_DEPLOY_BUILD === "boolean" && WORKER_DEPLOY_BUILD) {
     throw new Error("PTY is unavailable in the portable worker runtime");
   }
-  const { spawn } = await import("@lydell/node-pty");
+  const { spawnTerminalPty } = await import("../../terminal-pty.js");
   const baseEnv = params.env ? toStringEnv(params.env) : undefined;
   const preparedSpawn = prepareOomScoreAdjustedSpawn(params.shell, params.args, { env: baseEnv });
   const terminalName = resolvePtyTerminalName(
@@ -49,16 +47,45 @@ export async function createPtyAdapter(params: {
     setPtyTerminalName({ env: spawnEnv, name: terminalName, platform: process.platform });
   }
   params.assertCurrent?.();
-  const pty = spawn(preparedSpawn.command, preparedSpawn.args, {
-    cwd: params.cwd,
-    env: spawnEnv,
-    name: terminalName,
-    cols: params.cols ?? 120,
-    rows: params.rows ?? 30,
-  });
-
-  let dataListener: IDisposable | null = null;
-  let exitListener: IDisposable | null = null;
+  if (params.abortSignal?.aborted) {
+    throw new Error("PTY construction aborted");
+  }
+  const pty = await spawnTerminalPty(
+    {
+      file: preparedSpawn.command,
+      args: preparedSpawn.args,
+      cwd: params.cwd,
+      env: spawnEnv,
+      name: terminalName,
+      cols: params.cols ?? 120,
+      rows: params.rows ?? 30,
+    },
+    {
+      abortSignal: params.abortSignal,
+      assertCurrent: () => {
+        params.assertCurrent?.();
+        params.beforeSpawn?.();
+      },
+    },
+  );
+  try {
+    params.assertCurrent?.();
+    if (params.abortSignal?.aborted) {
+      throw new Error("PTY construction aborted");
+    }
+  } catch (error) {
+    try {
+      pty.kill();
+    } catch {
+      // The stale PTY may already have exited while the ownership check ran.
+    }
+    throw error;
+  }
+  const cleanup = createDeferredCore();
+  void cleanup.promise.catch(() => {});
+  params.onSpawnCleanup?.(cleanup.promise);
+  let dataListener: TerminalPtySubscription | null = null;
+  let exitListener: TerminalPtySubscription | null = null;
   const completion = createDeferredCore<{
     code: number | null;
     signal: NodeJS.Signals | number | null;
@@ -92,15 +119,18 @@ export async function createPtyAdapter(params: {
     // Some PTY hosts fail to emit onExit after kill; use a delayed fallback
     // so callers can still unblock without marking termination immediately.
     forceKillWaitFallbackTimer = setTimeout(() => {
+      cleanup.reject(new Error("PTY cleanup could not be confirmed before the kill deadline"));
       settleWait({ code: null, signal });
     }, FORCE_KILL_WAIT_FALLBACK_MS);
     forceKillWaitFallbackTimer.unref();
   };
 
-  exitListener = pty.onExit((event) => {
-    const signal = event.signal && event.signal !== 0 ? event.signal : null;
-    settleWait({ code: event.exitCode ?? null, signal });
-  });
+  exitListener =
+    pty.onExit((event) => {
+      cleanup.resolve();
+      const signal = event.signal && event.signal !== 0 ? event.signal : null;
+      settleWait({ code: event.exitCode ?? null, signal });
+    }) ?? null;
 
   const stdin: ManagedRunStdin = {
     get destroyed() {
@@ -139,16 +169,8 @@ export async function createPtyAdapter(params: {
   };
 
   const onStdout = (listener: (chunk: string) => void) => {
-    dataListener = pty.onData((chunk) => {
-      listener(chunk);
-    });
+    dataListener = pty.onData(listener) ?? null;
   };
-
-  const onStderr = (_listener: (chunk: string) => void) => {
-    // PTY gives a unified output stream.
-  };
-
-  const wait = async () => await completion.promise;
 
   const kill = (signal: NodeJS.Signals = "SIGKILL") => {
     try {
@@ -158,8 +180,6 @@ export async function createPtyAdapter(params: {
         pty.pid > 0
       ) {
         signalPtySessionTree(pty.pid, signal);
-      } else if (process.platform === "win32") {
-        pty.kill();
       } else {
         pty.kill(signal);
       }
@@ -175,15 +195,12 @@ export async function createPtyAdapter(params: {
   const dispose = () => {
     stdinDestroyed = true;
     stdinEnded = true;
-    try {
-      dataListener?.dispose();
-    } catch {
-      // ignore disposal errors
-    }
-    try {
-      exitListener?.dispose();
-    } catch {
-      // ignore disposal errors
+    for (const listener of [dataListener, exitListener]) {
+      try {
+        listener?.dispose();
+      } catch {
+        // Both subscriptions must be released even if one disposal fails.
+      }
     }
     clearForceKillWaitFallback();
     dataListener = null;
@@ -197,8 +214,8 @@ export async function createPtyAdapter(params: {
     oomScoreWrapperSelected: preparedSpawn.wrapped,
     supportsRawOutput: false,
     onStdout,
-    onStderr,
-    wait,
+    onStderr: () => {}, // PTY output is unified.
+    wait: async () => await completion.promise,
     kill,
     dispose,
   };

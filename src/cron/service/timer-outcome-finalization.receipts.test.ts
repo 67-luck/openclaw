@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  createCronRegressionState,
   createDueIsolatedJob,
   noopLogger,
   setupCronRegressionFixtures,
@@ -8,19 +9,21 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { advanceCronActiveJobGeneration, markCronJobActive } from "../active-jobs.js";
 import { loadCronStore, saveCronStore } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
 import {
   claimCronRunReceiptInDatabase,
   finishCronRunReceipt,
-  inspectActiveCronRunReceipt,
   prepareCronRunReceiptClaim,
 } from "../store/run-receipt-store.js";
+import { inspectActiveCronRunReceipt } from "../store/run-receipt-store.test-support.js";
+import { prepareCronRunReceiptWriteSchema } from "../store/run-receipt-write-admission.js";
 import type { CronJob } from "../types.js";
 import { reserveQueuedCronRun } from "./run-admission.js";
+import { createCronRunHandle } from "./run-history.js";
 import { createCronServiceState } from "./state.js";
-import { tryCreateCronTaskRunHandle } from "./task-runs.js";
 import type { TimedCronRunOutcome } from "./timer-execution-timeout.js";
 import { finalizeCompletedCronRunOutcomes } from "./timer-outcome-finalization.js";
 import { authorCronRunCompletion } from "./timer.js";
@@ -38,6 +41,7 @@ function claimReceipt(storePath: string, job: CronJob, startedAtMs: number) {
   return runOpenClawStateWriteTransaction(({ db }) =>
     claimCronRunReceiptInDatabase({
       database: db,
+      receiptSchema: prepareCronRunReceiptWriteSchema(db),
       prepared,
       resolveAgentId: (current) => current.agentId ?? "main",
     }),
@@ -74,16 +78,12 @@ describe("cron outcome receipt finalization", () => {
       await saveCronStore(store.storePath, { version: 1, jobs: [retired, current] });
       const retiredReceipt = claimReceipt(store.storePath, retired, startedAt);
       const currentReceipt = claimReceipt(store.storePath, current, startedAt);
-      const state = createCronServiceState({
-        cronEnabled: true,
+      const state = createCronRegressionState({
         storePath: store.storePath,
-        log: noopLogger,
         nowMs: () => startedAt,
-        enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
         runIsolatedAgentJob: vi.fn(),
       });
-      const taskRunId = tryCreateCronTaskRunHandle({
+      const taskRunId = createCronRunHandle({
         state,
         job: retired,
         startedAt,
@@ -177,13 +177,9 @@ describe("cron outcome receipt finalization", () => {
     edited.jobs.find((job) => job.id === current.id)!.name = "authoritative edited name";
     await saveCronStore(store.storePath, edited);
     const events: Array<{ action: string; jobId: string; job?: CronJob }> = [];
-    const state = createCronServiceState({
-      cronEnabled: true,
+    const state = createCronRegressionState({
       storePath: store.storePath,
-      log: noopLogger,
       nowMs: () => startedAt + 2,
-      enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
       onEvent: (event) => events.push(event),
     });
@@ -229,14 +225,10 @@ describe("cron outcome receipt finalization", () => {
     job.trigger = { script: "return false" };
     await saveCronStore(store.storePath, { version: 1, jobs: [job] });
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
-    const state = createCronServiceState({
-      cronEnabled: true,
+    const state = createCronRegressionState({
       cronConfig: { triggers: { enabled: true } },
       storePath: store.storePath,
-      log: noopLogger,
       nowMs: () => dueAt,
-      enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
       evaluateCronTrigger: vi.fn(async () => ({ kind: "evaluated" as const, fire: false })),
       runIsolatedAgentJob,
     });
@@ -269,13 +261,9 @@ describe("cron outcome receipt finalization", () => {
     imported.state.nextRunAtMs = undefined;
     await saveCronStore(store.storePath, { version: 1, jobs: [completed, imported] });
     const receipt = claimReceipt(store.storePath, completed, startedAt);
-    const state = createCronServiceState({
-      cronEnabled: true,
+    const state = createCronRegressionState({
       storePath: store.storePath,
-      log: noopLogger,
       nowMs: () => startedAt + 1,
-      enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
     });
 
@@ -317,6 +305,7 @@ describe("cron outcome receipt finalization", () => {
     const events: Array<{ action: string; jobId: string }> = [];
     const warn = vi.fn();
     const state = createCronServiceState({
+      scheduler: createTestGatewayScheduler(),
       cronEnabled: true,
       storePath: store.storePath,
       log: { ...noopLogger, warn },
@@ -328,7 +317,7 @@ describe("cron outcome receipt finalization", () => {
     });
     const database = openOpenClawStateDatabase().db;
     database.exec(`
-      CREATE TEMP TRIGGER reject_post_finalization_maintenance
+      CREATE TRIGGER reject_post_finalization_maintenance
       BEFORE UPDATE ON cron_jobs
       WHEN NEW.job_id = '${sibling.id}'
       BEGIN

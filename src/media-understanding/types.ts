@@ -1,5 +1,3 @@
-// Shared media-understanding types for attachments, provider hooks, request
-// auth, decisions, and structured extraction inputs.
 import type { Result } from "@openclaw/normalization-core/result";
 import type { MediaUnderstandingCapability } from "../../packages/media-understanding-common/src/types.js";
 import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
@@ -54,6 +52,8 @@ export type MediaAttachmentDisposition =
   | { kind: "scope-denied" }
   | { kind: "failed"; reason?: string };
 
+export type MediaAttachmentProcessing = "completed" | "omitted";
+
 export type MediaUnderstandingDecision = {
   capability: MediaUnderstandingCapability;
   outcome: MediaUnderstandingDecisionOutcome;
@@ -63,6 +63,9 @@ export type MediaUnderstandingDecision = {
   // (runner, apply-capability, runtime) always populate it; absence renders no
   // markers rather than breaking plugin compilation.
   attachmentDispositions?: Record<number, MediaAttachmentDisposition>;
+  // CLI/provider completion is independent of usable output or a rendered marker.
+  // Optional for shipped SDK decision literals; absence means unknown processing.
+  attachmentProcessing?: Record<number, MediaAttachmentProcessing>;
   nativeVisionActive?: boolean;
 };
 
@@ -151,25 +154,8 @@ export type VideoDescriptionResult = {
   model?: string;
 };
 
-export type ImageDescriptionRequest = {
-  buffer: Buffer;
-  fileName: string;
-  mime?: string;
-  prompt?: string;
-  maxTokens?: number;
-  timeoutMs: number;
-  signal?: AbortSignal;
-  profile?: string;
-  preferredProfile?: string;
-  authStore?: AuthProfileStore;
-  agentId?: string;
-  agentDir: string;
-  workspaceDir?: string;
-  preparedModelRuntime?: MediaPreparedModelRuntime;
-  cfg: OpenClawConfig;
-  model: string;
-  provider: string;
-};
+export type ImageDescriptionRequest = ImagesDescriptionInput &
+  Omit<ImagesDescriptionRequest, "images">;
 
 export type ImagesDescriptionInput = {
   buffer: Buffer;
@@ -200,10 +186,7 @@ export type ImageDescriptionResult = {
   model?: string;
 };
 
-export type ImagesDescriptionResult = {
-  text: string;
-  model?: string;
-};
+export type ImagesDescriptionResult = ImageDescriptionResult;
 
 export type StructuredExtractionTextInput = {
   type: "text";

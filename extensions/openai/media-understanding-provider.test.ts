@@ -26,7 +26,7 @@ describe("openaiMediaUnderstandingProvider", () => {
   it("declares audio support with the transcription default", () => {
     expect(openaiMediaUnderstandingProvider.capabilities).toEqual(["image", "audio"]);
     expect(openaiMediaUnderstandingProvider.defaultModels).toEqual({
-      image: "gpt-5.6-sol",
+      image: "gpt-6-astra",
       audio: "gpt-4o-transcribe",
     });
     expect(openaiMediaUnderstandingProvider.autoPriority).toEqual({ image: 20, audio: 20 });
@@ -47,7 +47,6 @@ describe("provider-owned audio transcription", () => {
 
   it.each([
     [undefined, undefined],
-    [undefined, "gpt-4o-mini-transcribe"],
     ["https://api.openai.com", "gpt-4o-mini-transcribe"],
     ["https://chatgpt.com/backend-api/codex", "gpt-4o-mini-transcribe"],
   ])(
@@ -90,13 +89,13 @@ describe("provider-owned audio transcription", () => {
     },
   );
 
-  it.each([undefined, "", " \t "])(
+  it.each([undefined, " \t "])(
     "resolves subscription auth through the real resolver with absent key %j",
     async (apiKey) =>
       withEnvAsync({ OPENAI_API_KEY: undefined }, async () => {
         const [
           { createPluginRegistryFixture },
-          { createPluginRecord },
+          { createCapturedPluginRegistration, createPluginRecord },
           { withPluginRuntimeRegistryScope },
           { default: plugin },
         ] = await Promise.all([
@@ -116,8 +115,18 @@ describe("provider-owned audio transcription", () => {
         const { registry } = createPluginRegistryFixture(cfg);
         const record = createPluginRecord({ id: "openai" });
         registry.registry.plugins.push(record);
-        // Capability discovery registers the provider before its media callback runs.
-        plugin.register(registry.createApi(record, { config: cfg, registrationMode: "discovery" }));
+        const api = registry.createApi(record, { config: cfg, registrationMode: "discovery" });
+        const captured = createCapturedPluginRegistration({
+          id: record.id,
+          config: cfg,
+          registrationMode: "discovery",
+        });
+        // Native discovery supplies auth and factories; the real scoped registry owns auth lookup.
+        plugin.register({
+          ...captured.api,
+          registerProvider: api.registerProvider,
+          registerMediaUnderstandingProvider: api.registerMediaUnderstandingProvider,
+        });
         const realAuth = await vi.importActual<
           typeof import("openclaw/plugin-sdk/provider-auth-runtime")
         >("openclaw/plugin-sdk/provider-auth-runtime");

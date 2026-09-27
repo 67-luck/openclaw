@@ -166,33 +166,26 @@ describe("diagnostics gateway methods", () => {
     const originalConcurrency = getCommandLaneSnapshot(lane).maxConcurrent;
     setCommandLaneConcurrency(lane, 1);
 
-    let releaseActive!: () => void;
-    let markActive!: () => void;
-    const activeStarted = new Promise<void>((resolve) => {
-      markActive = resolve;
-    });
-    const activeRelease = new Promise<void>((resolve) => {
-      releaseActive = resolve;
-    });
+    const activeStarted = createDeferred();
+    const activeRelease = createDeferred();
     const active = enqueueCommandInLane(lane, async () => {
-      markActive();
-      await activeRelease;
+      activeStarted.resolve();
+      await activeRelease.promise;
     });
-    await activeStarted;
-    let queued = Promise.resolve();
+    await activeStarted.promise;
+    let queued: Promise<void> | undefined;
 
     try {
       setCommandLaneConcurrency(lane, 0);
-      expect((await requestLaneDiagnostics()).lanes).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ lane, activeCount: 1, queuedCount: 0, maxConcurrent: 0 }),
-        ]),
+      expect((await requestLaneDiagnostics()).lanes).toContainEqual(
+        expect.objectContaining({ lane, activeCount: 1, queuedCount: 0, maxConcurrent: 0 }),
       );
       setCommandLaneConcurrency(lane, 1);
       queued = enqueueCommandInLane(lane, async () => undefined);
       const payload = await requestLaneDiagnostics();
       expect(payload.ts).toBeGreaterThan(0);
       expect(payload.lanes.map((snapshot) => snapshot.lane)).toEqual([
+        CommandLane.ActiveMemory,
         CommandLane.Background,
         CommandLane.Cron,
         CommandLane.CronNested,
@@ -201,34 +194,29 @@ describe("diagnostics gateway methods", () => {
         CommandLane.Nested,
         CommandLane.Subagent,
         CommandLane.SystemAgent,
+        CommandLane.SystemAgentInference,
       ]);
-      expect(payload.lanes).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            lane,
-            activeCount: 1,
-            queuedCount: 1,
-            maxConcurrent: 1,
-            blockedBy: "lane",
-          }),
-        ]),
+      expect(payload.lanes).toContainEqual(
+        expect.objectContaining({
+          lane,
+          activeCount: 1,
+          queuedCount: 1,
+          maxConcurrent: 1,
+          blockedBy: "lane",
+        }),
       );
 
       setCommandLaneConcurrency(lane, 0);
-      releaseActive();
+      activeRelease.resolve();
       await active;
-      expect((await requestLaneDiagnostics()).lanes).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ lane, activeCount: 0, queuedCount: 1, maxConcurrent: 0 }),
-        ]),
+      expect((await requestLaneDiagnostics()).lanes).toContainEqual(
+        expect.objectContaining({ lane, activeCount: 0, queuedCount: 1, maxConcurrent: 0 }),
       );
 
       setCommandLaneConcurrency(lane, 1);
       await queued;
-      expect((await requestLaneDiagnostics()).lanes).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ lane, activeCount: 0, queuedCount: 0, maxConcurrent: 1 }),
-        ]),
+      expect((await requestLaneDiagnostics()).lanes).toContainEqual(
+        expect.objectContaining({ lane, activeCount: 0, queuedCount: 0, maxConcurrent: 1 }),
       );
 
       setCommandLaneConcurrency(lane, 0);
@@ -236,7 +224,7 @@ describe("diagnostics gateway methods", () => {
         lane,
       );
     } finally {
-      releaseActive();
+      activeRelease.resolve();
       setCommandLaneConcurrency(lane, 1);
       await Promise.all([active, queued]);
       setCommandLaneConcurrency(lane, originalConcurrency);
@@ -265,24 +253,60 @@ describe("diagnostics gateway methods", () => {
     }
   });
 
+  it("reports subagent totals with per-session capacity without exposing parent identities", async () => {
+    const before = await requestLaneDiagnostics();
+    const originalConcurrency = getCommandLaneSnapshot(CommandLane.Subagent).maxConcurrent;
+    const parentA = "subagent:agent:main:private-parent-a";
+    const parents = [parentA, "subagent:agent:main:private-parent-b"];
+    const gate = createDeferred();
+    setCommandLaneConcurrency(CommandLane.Subagent, 3);
+    const runs = parents.flatMap((lane) =>
+      Array.from({ length: 2 }, () => enqueueCommandInLane(lane, async () => await gate.promise)),
+    );
+    try {
+      let payload = await requestLaneDiagnostics();
+      expect(payload.lanes.find((lane) => lane.lane === "subagent")).toMatchObject({
+        activeCount: 4,
+        queuedCount: 0,
+        maxConcurrent: 3,
+        concurrencyScope: "session",
+        saturatedLaneCount: 0,
+        blockedBy: null,
+      });
+      runs.push(
+        enqueueCommandInLane(parentA, async () => await gate.promise),
+        enqueueCommandInLane(parentA, async () => await gate.promise),
+      );
+      payload = await requestLaneDiagnostics();
+      expect(payload.lanes.find((lane) => lane.lane === "subagent")).toMatchObject({
+        activeCount: 5,
+        queuedCount: 1,
+        maxConcurrent: 3,
+        concurrencyScope: "session",
+        saturatedLaneCount: 1,
+        blockedBy: "lane",
+      });
+      expect(payload.dynamic).toEqual(before.dynamic);
+      expect(JSON.stringify(payload)).not.toContain("private-parent");
+    } finally {
+      gate.resolve();
+      await Promise.all(runs);
+      setCommandLaneConcurrency(CommandLane.Subagent, originalConcurrency);
+    }
+  });
+
   it("aggregates saturated dynamic session lanes without exporting their names", async () => {
     const lane = `session:test-${Date.now()}`;
     const before = await requestLaneDiagnostics();
     setCommandLaneConcurrency(lane, 1);
 
-    let releaseActive!: () => void;
-    let markActive!: () => void;
-    const activeStarted = new Promise<void>((resolve) => {
-      markActive = resolve;
-    });
-    const activeRelease = new Promise<void>((resolve) => {
-      releaseActive = resolve;
-    });
+    const activeStarted = createDeferred();
+    const activeRelease = createDeferred();
     const active = enqueueCommandInLane(lane, async () => {
-      markActive();
-      await activeRelease;
+      activeStarted.resolve();
+      await activeRelease.promise;
     });
-    await activeStarted;
+    await activeStarted.promise;
     const queued = enqueueCommandInLane(lane, async () => undefined);
 
     try {
@@ -301,7 +325,7 @@ describe("diagnostics gateway methods", () => {
         queuedLaneCount: baseline.queuedLaneCount + 1,
       });
     } finally {
-      releaseActive();
+      activeRelease.resolve();
       await Promise.all([active, queued]);
     }
   });

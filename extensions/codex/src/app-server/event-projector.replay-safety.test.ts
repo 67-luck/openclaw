@@ -1,3 +1,4 @@
+import { createNativeCommandItem } from "./event-projector-command.test-support.js";
 import {
   describe,
   registerCodexEventProjectorTestLifecycle,
@@ -23,6 +24,64 @@ import {
 registerCodexEventProjectorTestLifecycle();
 
 describe("CodexAppServerEventProjector replay safety and progress projection", () => {
+  it.each(["completed", "blocked"] as const)(
+    "keeps dynamic card %s outcomes in the correct progress stream",
+    async (terminalType) => {
+      const onToolResult = vi.fn();
+      const projector = await createProjector({
+        ...(await createParams()),
+        verboseLevel: "full",
+        onToolResult,
+      });
+      const success = terminalType === "completed";
+      const text = success ? "Progress card updated" : "Card write unavailable";
+      const item = {
+        type: "dynamicToolCall",
+        id: "card-outcome",
+        tool: "progress_card",
+        arguments: { markdown: '<progress aria-label="private" value="1" max="2"></progress>' },
+        status: "inProgress",
+      };
+      await projector.handleNotification(forCurrentTurn("item/started", { item }));
+      expect(onToolResult).not.toHaveBeenCalled();
+      projector.recordDynamicToolCall({
+        callId: item.id,
+        tool: item.tool,
+        arguments: item.arguments,
+      });
+      expect(onToolResult).not.toHaveBeenCalled();
+
+      const result = {
+        callId: item.id,
+        tool: item.tool,
+        success,
+        terminalType,
+        contentItems: [{ type: "inputText" as const, text }],
+      };
+      projector.recordDynamicToolResult(result);
+      projector.recordDynamicToolResult(result);
+      const completedItem = {
+        ...item,
+        status: success ? "completed" : "failed",
+        success,
+        contentItems: result.contentItems,
+      };
+      await projector.handleNotification(forCurrentTurn("item/completed", { item: completedItem }));
+      await projector.handleNotification(turnCompleted([completedItem]));
+
+      if (success) {
+        expect(onToolResult).not.toHaveBeenCalled();
+      } else {
+        expect(onToolResult).toHaveBeenCalledTimes(2);
+        expect(onToolResult).toHaveBeenCalledWith({
+          text: expect.stringContaining(text),
+          isError: true,
+        });
+        expect(JSON.stringify(onToolResult.mock.calls)).not.toContain("private");
+      }
+    },
+  );
+
   it("clears a prior terminal presentation after a native tool completes", async () => {
     let terminalPresentation: string | undefined = "stale web fetch";
     const projector = await createProjector({
@@ -31,19 +90,13 @@ describe("CodexAppServerEventProjector replay safety and progress projection", (
         terminalPresentation = observation.terminalPresentation;
       },
     });
-    const item = {
-      type: "commandExecution",
+    const item = createNativeCommandItem({
       id: "command-clear-presentation",
       command: "git status --short",
-      cwd: "/workspace",
-      processId: null,
-      source: "agent",
-      status: "completed",
       commandActions: [{ type: "unknown", command: "git status --short" }],
       aggregatedOutput: "",
-      exitCode: 0,
       durationMs: 1,
-    };
+    });
 
     await projector.handleNotification(forCurrentTurn("item/started", { item }));
     await projector.handleNotification(
@@ -76,6 +129,7 @@ describe("CodexAppServerEventProjector replay safety and progress projection", (
           id: "stale-dynamic-tool",
           turnId: "turn-old",
           tool: "web_fetch",
+          arguments: {},
           status: "completed",
         },
       ]),
@@ -119,6 +173,7 @@ describe("CodexAppServerEventProjector replay safety and progress projection", (
           id: "dynamic-after-image-view",
           turnId: TURN_ID,
           tool: "web_fetch",
+          arguments: {},
           status: "completed",
         },
         {
@@ -488,66 +543,17 @@ describe("CodexAppServerEventProjector replay safety and progress projection", (
     });
   });
 
-  it("marks declined Codex-native tool results as non-success", async () => {
-    const onAgentEvent = vi.fn();
-    const projector = await createProjector({ ...(await createParams()), onAgentEvent });
-
-    await projector.handleNotification(
-      forCurrentTurn("item/completed", {
-        item: {
-          type: "commandExecution",
-          id: "cmd-declined",
-          command: "pnpm test extensions/codex",
-          cwd: "/workspace",
-          processId: null,
-          source: "agent",
-          status: "declined",
-          commandActions: [],
-          aggregatedOutput: null,
-          exitCode: null,
-          durationMs: null,
-        },
-      }),
-    );
-
-    const itemEnd = findAgentEvent(onAgentEvent, {
-      stream: "item",
-      phase: "end",
-      itemId: "cmd-declined",
-    }).data;
-    expect(itemEnd.kind).toBe("command");
-    expect(itemEnd.name).toBe("bash");
-    expect(itemEnd.status).toBe("blocked");
-    expect(itemEnd.suppressChannelProgress).toBe(true);
-    const toolResult = findAgentEvent(onAgentEvent, {
-      stream: "tool",
-      phase: "result",
-      itemId: "cmd-declined",
-      name: "bash",
-    }).data;
-    expect(toolResult.toolCallId).toBe("cmd-declined");
-    expect(toolResult.status).toBe("blocked");
-    expect(toolResult.isError).toBe(true);
-  });
-
   it("warns once and preserves projection for an unknown Codex-native item status", async () => {
     const warn = vi.spyOn(embeddedAgentLog, "warn").mockImplementation(() => undefined);
     const onAgentEvent = vi.fn();
     const projector = await createProjector({ ...(await createParams()), onAgentEvent });
     const notification = forCurrentTurn("item/completed", {
-      item: {
-        type: "commandExecution",
+      item: createNativeCommandItem({
         id: "cmd-future-status",
-        command: "pnpm test extensions/codex",
-        cwd: "/workspace",
-        processId: null,
-        source: "agent",
         status: "pausedByProtocol",
-        commandActions: [],
-        aggregatedOutput: null,
         exitCode: null,
         durationMs: null,
-      },
+      }),
     });
 
     await projector.handleNotification(notification);
@@ -558,8 +564,15 @@ describe("CodexAppServerEventProjector replay safety and progress projection", (
         stream: "item",
         phase: "end",
         itemId: "cmd-future-status",
+      }).data,
+    ).toMatchObject({ phase: "end", summary: "Outcome unknown" });
+    expect(
+      findAgentEvent(onAgentEvent, {
+        stream: "item",
+        phase: "end",
+        itemId: "cmd-future-status",
       }).data.status,
-    ).toBe("completed");
+    ).toBeUndefined();
     const toolResult = findAgentEvent(onAgentEvent, {
       stream: "tool",
       phase: "result",

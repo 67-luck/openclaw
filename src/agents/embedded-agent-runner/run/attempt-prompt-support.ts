@@ -1,17 +1,9 @@
-/**
- * Supports prompt construction and observation between session setup and submission.
- * It may assume resolved tools, hook context, and diagnostic inputs are ready.
- */
 import { emitTrustedDiagnosticEvent } from "../../../infra/diagnostic-events.js";
 import {
   createChildDiagnosticTraceContext,
   type DiagnosticTraceContext,
   freezeDiagnosticTraceContext,
 } from "../../../infra/diagnostic-trace-context.js";
-import {
-  buildAgentHookContextChannelFields,
-  buildAgentHookContextIdentityFields,
-} from "../../../plugins/hook-agent-context.js";
 import type { PluginHookLlmInputEvent } from "../../../plugins/hook-types.js";
 import type { HookRunner } from "../../../plugins/hooks.js";
 import {
@@ -25,6 +17,7 @@ import type { AgentSession } from "../../sessions/index.js";
 import { normalizeToolPolicyName } from "../../tool-policy.js";
 import type { ToolSearchCatalogEntry, ToolSearchCatalogRef } from "../../tool-search.js";
 import { log } from "../logger.js";
+import { buildEmbeddedAgentHookContext } from "./agent-hook-context.js";
 import { summarizeSessionContext } from "./attempt-context-summary.js";
 import { resolvePromptSubmissionSkipReason } from "./attempt-prompt-submit.js";
 import type { ResolvedToolPromptFinalizer } from "./params.js";
@@ -63,7 +56,7 @@ export function createPromptBuildToolPolicy<
   let toolsAllow: string[] | undefined;
   const current = {
     activeToolNames: [...baseline.activeToolNames],
-    coreReadAuthorized: params.coreReadAuthorized,
+    callableToolNames: [...baseline.activeToolNames],
     effectiveTools: params.effectiveTools,
     uncompactedEffectiveTools: params.uncompactedEffectiveTools,
     tools: params.tools,
@@ -124,11 +117,10 @@ export function applyPromptBuildToolsAllow<
   tools: TTool[];
   catalogRef?: ToolSearchCatalogRef;
   codeModeControlsEnabled: boolean;
-  coreReadAuthorized: boolean;
   forceToolNames?: readonly string[];
 }): {
   activeToolNames: string[];
-  coreReadAuthorized: boolean;
+  callableToolNames: string[];
   effectiveTools: TEffectiveTool[];
   uncompactedEffectiveTools: TUncompactedTool[];
   tools: TTool[];
@@ -143,21 +135,15 @@ export function applyPromptBuildToolsAllow<
     catalogEntries: params.baseline.catalogEntries,
     codeModeControlsEnabled: params.codeModeControlsEnabled,
   }).apply(policyInput);
-  const allowedUncompactedTools = createAgentHarnessPromptToolPolicy({
-    tools: params.uncompactedEffectiveTools,
-    codeModeControlsEnabled: false,
-  }).apply(policyInput).tools;
-  const allowedTools = createAgentHarnessPromptToolPolicy({
-    tools: params.tools,
-    codeModeControlsEnabled: false,
-  }).apply(policyInput).tools;
+  const filterTools = <T extends NamedTool>(tools: T[]) =>
+    createAgentHarnessPromptToolPolicy({ tools, codeModeControlsEnabled: false }).apply(policyInput)
+      .tools;
+  const allowedUncompactedTools = filterTools(params.uncompactedEffectiveTools);
+  const allowedTools = filterTools(params.tools);
   const allowedActiveNames = new Set(
-    createAgentHarnessPromptToolPolicy({
-      tools: params.baseline.activeToolNames.map((name) => ({ name })),
-      codeModeControlsEnabled: false,
-    })
-      .apply(policyInput)
-      .tools.map((tool) => normalizeToolPolicyName(tool.name)),
+    filterTools(params.baseline.activeToolNames.map((name) => ({ name }))).map((tool) =>
+      normalizeToolPolicyName(tool.name),
+    ),
   );
   for (const tool of [...promptPolicy.tools, ...allowedUncompactedTools, ...allowedTools]) {
     allowedActiveNames.add(normalizeToolPolicyName(tool.name));
@@ -172,9 +158,7 @@ export function applyPromptBuildToolsAllow<
 
   return {
     activeToolNames,
-    coreReadAuthorized:
-      params.coreReadAuthorized &&
-      allowedUncompactedTools.some((tool) => normalizeToolPolicyName(tool.name) === "read"),
+    callableToolNames: promptPolicy.callableToolNames,
     effectiveTools: promptPolicy.tools,
     uncompactedEffectiveTools: allowedUncompactedTools,
     tools: allowedTools,
@@ -224,7 +208,6 @@ export function observeEmbeddedAttemptPrompt(input: {
   isRawModelRun: boolean;
   llmBoundaryPromptForPrecheck: string;
   promptForModel: string;
-  promptSubmissionRuntimeOnly?: boolean;
   reserveTokens: number;
   runTrace: DiagnosticTraceContext;
   sessionMessages: AgentMessage[];
@@ -252,21 +235,24 @@ export function observeEmbeddedAttemptPrompt(input: {
       messages: input.sessionMessages,
       note: `images: prompt=${input.imageCount}`,
     });
-    const providerVisibleTools = toTrajectoryToolDefinitions(input.effectiveTools);
-    const trajectoryTools = input.toolSearchCompacted
-      ? toTrajectoryToolDefinitions(input.uncompactedEffectiveTools)
-      : providerVisibleTools;
-    input.trajectoryRecorder?.recordEvent("context.compiled", {
-      systemPrompt: input.systemPromptForHook,
-      prompt: input.promptForModel,
-      messages: input.sessionMessages,
-      tools: trajectoryTools,
-      ...(input.toolSearchCompacted ? { providerVisibleTools } : {}),
-      imagesCount: input.imageCount,
-      streamStrategy: input.streamStrategy,
-      transport: input.transport,
-      transcriptLeafId: input.transcriptLeafId,
-    });
+    const trajectoryRecorder = input.trajectoryRecorder;
+    if (trajectoryRecorder) {
+      const providerVisibleTools = toTrajectoryToolDefinitions(input.effectiveTools);
+      const trajectoryTools = input.toolSearchCompacted
+        ? toTrajectoryToolDefinitions(input.uncompactedEffectiveTools)
+        : providerVisibleTools;
+      trajectoryRecorder.recordEvent("context.compiled", {
+        systemPrompt: input.systemPromptForHook,
+        prompt: input.promptForModel,
+        messages: input.sessionMessages,
+        tools: trajectoryTools,
+        ...(input.toolSearchCompacted ? { providerVisibleTools } : {}),
+        imagesCount: input.imageCount,
+        streamStrategy: input.streamStrategy,
+        transport: input.transport,
+        transcriptLeafId: input.transcriptLeafId,
+      });
+    }
   }
 
   const promptSkipReason = skipPromptSubmission
@@ -274,7 +260,6 @@ export function observeEmbeddedAttemptPrompt(input: {
     : resolvePromptSubmissionSkipReason({
         prompt: input.promptForModel,
         messages: input.sessionMessages,
-        runtimeOnly: input.promptSubmissionRuntimeOnly,
         imageCount: input.imageCount,
       });
   if (promptSkipReason) {
@@ -360,22 +345,11 @@ export function observeEmbeddedAttemptPrompt(input: {
           imagesCount: input.imageCount,
           tools: input.tools,
         },
-        {
-          runId: attempt.runId,
-          trace: freezeDiagnosticTraceContext(input.diagnosticTrace),
-          agentId: input.hookAgentId,
-          sessionKey: attempt.sessionKey,
-          sessionId: attempt.sessionId,
-          workspaceDir: attempt.workspaceDir,
-          trigger: attempt.trigger,
-          ...buildAgentHookContextChannelFields(attempt),
-          ...buildAgentHookContextIdentityFields({
-            trigger: attempt.trigger,
-            senderId: attempt.senderId,
-            chatId: attempt.chatId,
-            channelContext: attempt.channelContext,
-          }),
-        },
+        buildEmbeddedAgentHookContext(
+          attempt,
+          input.hookAgentId,
+          freezeDiagnosticTraceContext(input.diagnosticTrace),
+        ),
       )
       .catch((err: unknown) => {
         log.warn(`llm_input hook failed: ${String(err)}`);

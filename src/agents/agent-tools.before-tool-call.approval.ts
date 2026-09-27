@@ -4,6 +4,7 @@
  * timeout classification, and owner-provided approval outcomes.
  */
 import { addTimerTimeoutGraceMs } from "@openclaw/normalization-core/number-coercion";
+import { getRuntimeConfig } from "../config/config.js";
 import { GatewayClientRequestError } from "../gateway/client.js";
 import { sanitizeApprovalScope } from "../infra/approval-scope.js";
 import { isEmbeddedMode } from "../infra/embedded-mode.js";
@@ -209,6 +210,23 @@ async function requestPluginToolApproval(params: {
   const timeoutMs = resolvePluginToolApprovalTimeoutMs(approval);
   const gatewayTimeoutMs = resolvePluginToolApprovalGatewayTimeoutMs(timeoutMs);
   const allowedDecisions = resolveCanonicalPluginApprovalRequestAllowedDecisions(approval);
+  const resolveDecision = (decision: unknown): HookOutcome | undefined => {
+    const resolution = resolvePermittedPluginApprovalResolution(decision, allowedDecisions);
+    notifyPluginApprovalResolution(approval, resolution);
+    if (
+      resolution === PluginApprovalResolutions.ALLOW_ONCE ||
+      resolution === PluginApprovalResolutions.ALLOW_ALWAYS
+    ) {
+      return {
+        blocked: false,
+        params: mergeParamsWithApprovalOverrides(params.baseParams, params.overrideParams),
+        approvalResolution: resolution,
+      };
+    }
+    return resolution === PluginApprovalResolutions.DENY
+      ? pluginApprovalDeniedOutcome(params.baseParams)
+      : undefined;
+  };
   let gatewayApprovalPhase: "none" | "request" | "wait" = "none";
   try {
     const embeddedApprovalBroker = isEmbeddedMode() ? getEmbeddedPluginApprovalBroker() : null;
@@ -233,21 +251,9 @@ async function requestPluginToolApproval(params: {
         timeoutMs,
         signal: params.signal,
       });
-      const decision = result.decision;
-      const resolution = resolvePermittedPluginApprovalResolution(decision, allowedDecisions);
-      notifyPluginApprovalResolution(approval, resolution);
-      if (
-        resolution === PluginApprovalResolutions.ALLOW_ONCE ||
-        resolution === PluginApprovalResolutions.ALLOW_ALWAYS
-      ) {
-        return {
-          blocked: false,
-          params: mergeParamsWithApprovalOverrides(params.baseParams, params.overrideParams),
-          approvalResolution: resolution,
-        };
-      }
-      if (resolution === PluginApprovalResolutions.DENY) {
-        return pluginApprovalDeniedOutcome(params.baseParams);
+      const outcome = resolveDecision(result.decision);
+      if (outcome) {
+        return outcome;
       }
       // Veto carries the plugin-supplied reason; plain timeouts record a
       // timed_out failure disposition for the audit ledger.
@@ -369,20 +375,9 @@ async function requestPluginToolApproval(params: {
       // misrouted reply must never release a different tool gate.
       decision = waitResult?.id === id ? waitResult.decision : undefined;
     }
-    const resolution = resolvePermittedPluginApprovalResolution(decision, allowedDecisions);
-    notifyPluginApprovalResolution(approval, resolution);
-    if (
-      resolution === PluginApprovalResolutions.ALLOW_ONCE ||
-      resolution === PluginApprovalResolutions.ALLOW_ALWAYS
-    ) {
-      return {
-        blocked: false,
-        params: mergeParamsWithApprovalOverrides(params.baseParams, params.overrideParams),
-        approvalResolution: resolution,
-      };
-    }
-    if (resolution === PluginApprovalResolutions.DENY) {
-      return pluginApprovalDeniedOutcome(params.baseParams);
+    const outcome = resolveDecision(decision);
+    if (outcome) {
+      return outcome;
     }
     const fallbackTimeoutReason = approval.timeoutReason ?? "Approval timed out";
     const timeoutReason =
@@ -539,10 +534,14 @@ export async function resolveSkillWorkshopApprovalForFinalParams(params: {
   ctx?: HookContext;
   signal?: AbortSignal;
 }): Promise<HookOutcome | undefined> {
+  if (params.toolName !== "skill_workshop") {
+    return undefined;
+  }
   const result = await resolveSkillWorkshopToolApproval({
     toolName: params.toolName,
     toolParams: isPlainObject(params.params) ? params.params : {},
-    ...(params.ctx?.config ? { config: params.ctx.config } : {}),
+    config: params.ctx?.config ?? getRuntimeConfig(),
+    ...(params.ctx?.agentId ? { agentId: params.ctx.agentId } : {}),
     ...(params.ctx?.workspaceDir ? { workspaceDir: params.ctx.workspaceDir } : {}),
   });
   return await resolveBeforeToolCallApprovalOutcome({

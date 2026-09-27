@@ -1,16 +1,15 @@
 // Resolve Openclaw Package Candidate tests cover resolve openclaw package candidate script behavior.
 import { execFile, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { toErrorObject as toLintErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanPackedOpenClawTarballs } from "../../scripts/lib/packed-openclaw-tarballs.mts";
 import {
   assertExpectedSha256ForTest,
   cleanupPackageSourceWorktreeForTest,
-  cleanPackedOpenClawTarballsForTest,
   downloadUrl,
   findSingleTarballForTest,
   loadTrustedPackageSource,
@@ -18,11 +17,11 @@ import {
   moveNewestPackedTarballForTest,
   parseArgs,
   readArtifactPackageCandidateMetadata,
-  readPackageBuildSourceSha,
   resolveNpmPackageCandidatePackRunner,
   runCommandForTest,
   validateOpenClawPackageSpec,
 } from "../../scripts/resolve-openclaw-package-candidate.mts";
+import { killPidIfAlive } from "../../src/test-utils/process-tree.js";
 import {
   isProcessAlive,
   waitForChildClose,
@@ -32,8 +31,16 @@ import {
 import { startProcessWatchdogFixture } from "../helpers/process-watchdog.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
-const tempDirs: string[] = [];
 const autoTempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+const trustedPackageSource = {
+  allowPrivateNetwork: true,
+  hosts: ["packages.internal"],
+  id: "enterprise-artifactory",
+  pathPrefixes: ["/artifactory/openclaw/"],
+  ports: [8443],
+  redirectHosts: ["packages.internal"],
+};
 
 type LookupAddress = { address: string; family: number };
 
@@ -55,13 +62,11 @@ async function missing(file: string): Promise<boolean> {
 async function createPackageTarball(
   dir: string,
   buildInfo?: string | { commit: string },
+  version = "2026.8.1",
 ): Promise<string> {
   const root = path.join(dir, "package");
   await mkdir(path.join(root, "dist"), { recursive: true });
-  await writeFile(
-    path.join(root, "package.json"),
-    JSON.stringify({ name: "openclaw", version: "2026.8.1" }),
-  );
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "openclaw", version }));
   if (buildInfo !== undefined) {
     await writeFile(
       path.join(root, "dist", "build-info.json"),
@@ -120,6 +125,7 @@ exit 0
   await chmod(path.join(binDir, "node"), 0o755);
   return {
     artifactDir,
+    args: ["--source", "artifact", "--artifact-dir", artifactDir],
     binDir,
     dir,
     gitLog,
@@ -144,10 +150,6 @@ async function withArtifactFixtureCommands<T>(
     delete process.env.FAKE_NODE_LOG;
   }
 }
-
-afterEach(async () => {
-  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
-});
 
 describe("resolve-openclaw-package-candidate", () => {
   it("preflights package-acceptance ref candidates before dependency installation", () => {
@@ -258,55 +260,23 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("rejects duplicate package candidate CLI options", () => {
-    const requiredArgs = ["--source", "npm", "--output-dir", ".artifacts/docker-e2e-package"];
-    const duplicateCases = [
-      ["--artifact-dir", [...requiredArgs, "--artifact-dir", "one", "--artifact-dir", "two"]],
-      [
-        "--github-output",
-        [...requiredArgs, "--github-output", "one.out", "--github-output", "two.out"],
-      ],
-      ["--metadata", [...requiredArgs, "--metadata", "one.json", "--metadata", "two.json"]],
-      ["--output-dir", ["--source", "npm", "--output-dir", "one", "--output-dir", "two"]],
-      ["--output-name", [...requiredArgs, "--output-name", "one.tgz", "--output-name", "two.tgz"]],
-      ["--package-ref", [...requiredArgs, "--package-ref", "one", "--package-ref", "two"]],
-      [
-        "--package-spec",
-        [...requiredArgs, "--package-spec", "openclaw@beta", "--package-spec", "openclaw@latest"],
-      ],
-      [
-        "--package-url",
-        [...requiredArgs, "--package-url", "", "--package-url", "https://example.com/openclaw.tgz"],
-      ],
-      ["--package-sha256", [...requiredArgs, "--package-sha256", "", "--package-sha256", "abc123"]],
-      [
-        "--source",
-        [
-          "--source",
-          "npm",
-          "--source",
-          "artifact",
-          "--output-dir",
-          ".artifacts/docker-e2e-package",
-        ],
-      ],
-      [
-        "--trusted-source-id",
-        [...requiredArgs, "--trusted-source-id", "one", "--trusted-source-id", "two"],
-      ],
-      [
-        "--trusted-source-policy",
-        [
-          ...requiredArgs,
-          "--trusted-source-policy",
-          "one.json",
-          "--trusted-source-policy",
-          "two.json",
-        ],
-      ],
-    ] satisfies Array<[string, string[]]>;
-
-    for (const [flag, args] of duplicateCases) {
-      expect(() => parseArgs(args), flag).toThrow(`${flag} was provided more than once`);
+    for (const flag of [
+      "--artifact-dir",
+      "--github-output",
+      "--metadata",
+      "--output-dir",
+      "--output-name",
+      "--package-ref",
+      "--package-spec",
+      "--package-url",
+      "--package-sha256",
+      "--source",
+      "--trusted-source-id",
+      "--trusted-source-policy",
+    ]) {
+      expect(() => parseArgs([flag, "one", flag, "two"]), flag).toThrow(
+        `${flag} was provided more than once`,
+      );
     }
   });
 
@@ -356,24 +326,76 @@ describe("resolve-openclaw-package-candidate", () => {
     });
   });
 
-  it("keeps npm pack filenames inside the package candidate output directory", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-npm-pack-"));
-    tempDirs.push(dir);
-    await writeFile(path.join(dir, "openclaw-2026.6.17.tgz"), "package");
+  it("keeps the first packed identity when a moving npm tag changes", async () => {
+    const dir = autoTempDirs.make("openclaw-package-moving-tag-");
+    const binDir = path.join(dir, "bin");
+    const outputDir = path.join(dir, "output");
+    const firstTarball = await createPackageTarball(path.join(dir, "first"), undefined, "2026.8.1");
+    const secondTarball = await createPackageTarball(
+      path.join(dir, "second"),
+      undefined,
+      "2026.9.1",
+    );
+    const countPath = path.join(dir, "pack-count");
+    await mkdir(binDir);
+    await writeFile(
+      path.join(binDir, "npm"),
+      `#!/bin/sh
+set -e
+count="$(cat "$FAKE_PACK_COUNT" 2>/dev/null || printf 0)"
+count=$((count + 1))
+printf '%s' "$count" > "$FAKE_PACK_COUNT"
+source="$FAKE_FIRST_TARBALL"
+version=2026.8.1
+if [ "$count" -gt 1 ]; then
+  source="$FAKE_SECOND_TARBALL"
+  version=2026.9.1
+fi
+cp "$source" "$FAKE_PACK_OUTPUT/openclaw-$version.tgz"
+printf '[{"filename":"openclaw-%s.tgz"}]\\n' "$version"
+`,
+    );
+    await chmod(path.join(binDir, "npm"), 0o755);
+    await mkdir(outputDir);
+    const runner = resolveNpmPackageCandidatePackRunner("openclaw@beta", outputDir, {
+      env: {
+        ...process.env,
+        FAKE_FIRST_TARBALL: firstTarball,
+        FAKE_PACK_COUNT: countPath,
+        FAKE_PACK_OUTPUT: outputDir,
+        FAKE_SECOND_TARBALL: secondTarball,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      execPath: path.join(binDir, "node"),
+      existsSync: () => false,
+      platform: process.platform,
+    });
 
-    await expect(
-      moveNewestPackedTarballForTest(
-        dir,
-        JSON.stringify([{ filename: "openclaw-2026.6.17.tgz" }]),
-        "openclaw-current.tgz",
-      ),
-    ).resolves.toBe(path.join(dir, "openclaw-current.tgz"));
-    await expect(readFile(path.join(dir, "openclaw-current.tgz"), "utf8")).resolves.toBe("package");
+    const packOutput = await runCommandForTest(runner.command, runner.args, {
+      capture: true,
+      env: runner.env,
+    });
+    const candidate = await moveNewestPackedTarballForTest(
+      outputDir,
+      packOutput,
+      "openclaw-current.tgz",
+    );
+    const packageJson = await new Promise<string>((resolve, reject) => {
+      execFile("tar", ["-xOf", candidate, "package/package.json"], (error, stdout) => {
+        if (error) {
+          reject(toLintErrorObject(error, "Non-Error rejection"));
+          return;
+        }
+        resolve(stdout);
+      });
+    });
+
+    expect(JSON.parse(packageJson)).toMatchObject({ name: "openclaw", version: "2026.8.1" });
+    await expect(readFile(countPath, "utf8")).resolves.toBe("1");
   });
 
   it("reads npm 12 name-keyed package candidate filenames", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-npm-pack-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-npm-pack-");
     await writeFile(path.join(dir, "openclaw-2026.6.17.tgz"), "package");
 
     await expect(
@@ -386,8 +408,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("rejects path-like npm pack filenames instead of renaming outside the output directory", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-npm-pack-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-npm-pack-");
 
     const unsafeFilenames = [
       "../openclaw-2026.6.17.tgz",
@@ -406,8 +427,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("rejects unsafe text npm pack filenames instead of using loose stdout fallback", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-npm-pack-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-npm-pack-");
     await writeFile(path.join(dir, "openclaw-2026.6.17.tgz"), "safe fallback");
 
     for (const filename of ["../openclaw-2026.6.17.tgz", "C:openclaw-2026.6.17.tgz"]) {
@@ -422,12 +442,11 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("cleans stale package tarballs before npm fallback scanning", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-npm-pack-stale-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-npm-pack-stale-");
     await writeFile(path.join(dir, "openclaw-9999.1.1.tgz"), "stale");
     await writeFile(path.join(dir, "openclaw-C:evil.tgz"), "unsafe");
 
-    await cleanPackedOpenClawTarballsForTest(dir);
+    await cleanPackedOpenClawTarballs(dir);
     await writeFile(path.join(dir, "openclaw-2026.6.17.tgz"), "current");
 
     await expect(
@@ -515,8 +534,8 @@ describe("resolve-openclaw-package-candidate", () => {
         await releaseAndWait();
       } finally {
         killSpy.mockRestore();
-        if (childPid !== undefined && isProcessAlive(childPid)) {
-          process.kill(childPid, "SIGKILL");
+        if (childPid !== undefined) {
+          killPidIfAlive(childPid);
           await waitForDead(childPid, 2_000);
         }
       }
@@ -557,8 +576,8 @@ describe("resolve-openclaw-package-candidate", () => {
       try {
         await releaseAndWait();
       } finally {
-        if (childPid !== undefined && isProcessAlive(childPid)) {
-          process.kill(childPid, "SIGKILL");
+        if (childPid !== undefined) {
+          killPidIfAlive(childPid);
           await waitForDead(childPid, 2_000);
         }
       }
@@ -608,8 +627,8 @@ describe("resolve-openclaw-package-candidate", () => {
       try {
         await releaseAndWait();
       } finally {
-        if (childPid !== undefined && isProcessAlive(childPid)) {
-          process.kill(childPid, "SIGKILL");
+        if (childPid !== undefined) {
+          killPidIfAlive(childPid);
           await waitForDead(childPid, 2_000);
         }
       }
@@ -677,8 +696,8 @@ describe("resolve-openclaw-package-candidate", () => {
           }
         }
       } finally {
-        if (childPid !== undefined && isProcessAlive(childPid)) {
-          process.kill(childPid, "SIGKILL");
+        if (childPid !== undefined) {
+          killPidIfAlive(childPid);
           await waitForDead(childPid, 2_000);
         }
       }
@@ -713,8 +732,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("loads named trusted package URL source policies", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-trusted-package-source-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-trusted-package-source-");
     const policy = path.join(dir, "trusted-sources.json");
     await writeFile(
       policy,
@@ -747,8 +765,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("rejects loose trusted package source port values", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-trusted-package-source-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-trusted-package-source-");
     const policy = path.join(dir, "trusted-sources.json");
     await writeFile(
       policy,
@@ -786,8 +803,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("rejects unsafe package_url downloads before fetching private targets", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-download-");
     const target = path.join(dir, "openclaw.tgz");
 
     await expect(
@@ -823,17 +839,9 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("allows private package_url downloads only through an explicit trusted source policy", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-download-");
     const target = path.join(dir, "openclaw.tgz");
-    const trustedSource = {
-      allowPrivateNetwork: true,
-      hosts: ["packages.internal"],
-      id: "enterprise-artifactory",
-      pathPrefixes: ["/artifactory/openclaw/"],
-      ports: [8443],
-      redirectHosts: ["packages.internal"],
-    };
+    const trustedSource = trustedPackageSource;
     const requestedUrls: string[] = [];
 
     await downloadUrl("https://packages.internal:8443/artifactory/openclaw/openclaw.tgz", target, {
@@ -871,16 +879,11 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("matches trusted package_url path prefixes on path segment boundaries", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-download-");
     const target = path.join(dir, "openclaw.tgz");
     const trustedSource = {
-      allowPrivateNetwork: true,
-      hosts: ["packages.internal"],
-      id: "enterprise-artifactory",
+      ...trustedPackageSource,
       pathPrefixes: ["/artifactory/openclaw"],
-      ports: [8443],
-      redirectHosts: ["packages.internal"],
     };
     const requestedUrls: string[] = [];
 
@@ -908,17 +911,9 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("keeps trusted package_url redirects inside the named source policy", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-download-");
     const target = path.join(dir, "openclaw.tgz");
-    const trustedSource = {
-      allowPrivateNetwork: true,
-      hosts: ["packages.internal"],
-      id: "enterprise-artifactory",
-      pathPrefixes: ["/artifactory/openclaw/"],
-      ports: [8443],
-      redirectHosts: ["packages.internal"],
-    };
+    const trustedSource = trustedPackageSource;
 
     await expect(
       downloadUrl("https://packages.internal:8443/artifactory/openclaw/openclaw.tgz", target, {
@@ -934,18 +929,13 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("does not forward trusted package auth headers to redirect hosts", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-download-");
     const target = path.join(dir, "openclaw.tgz");
     const previousToken = process.env.OPENCLAW_TRUSTED_PACKAGE_TOKEN;
     process.env.OPENCLAW_TRUSTED_PACKAGE_TOKEN = "token-123";
     const trustedSource = {
-      allowPrivateNetwork: true,
+      ...trustedPackageSource,
       auth: { type: "bearer" },
-      hosts: ["packages.internal"],
-      id: "enterprise-artifactory",
-      pathPrefixes: ["/artifactory/openclaw/"],
-      ports: [8443],
       redirectHosts: ["packages.internal", "mirror.internal"],
     };
     const requestHeaders: Array<Record<string, string> | undefined> = [];
@@ -988,8 +978,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("validates redirects for package_url downloads", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-download-");
     const target = path.join(dir, "openclaw.tgz");
     const requestedUrls: string[] = [];
 
@@ -1009,8 +998,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("cancels redirect response bodies before following the next hop", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-download-");
     const target = path.join(dir, "openclaw.tgz");
     const bodyCancelled: string[] = [];
 
@@ -1052,8 +1040,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("cancels response body on HTTP error before closing dispatcher", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-download-");
     const target = path.join(dir, "openclaw.tgz");
     let bodyCancelled = false;
 
@@ -1084,8 +1071,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("cancels response body on declared oversize before closing dispatcher", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-download-");
     const target = path.join(dir, "openclaw.tgz");
     let bodyCancelled = false;
 
@@ -1120,8 +1106,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("rejects unsafe decimal package_url content-length values before reading", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-download-");
     const target = path.join(dir, "openclaw.tgz");
     let readStarted = false;
     let bodyCancelled = false;
@@ -1164,8 +1149,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("bounds package_url downloads and writes completed files atomically", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-download-");
     const target = path.join(dir, "openclaw.tgz");
 
     await expect(
@@ -1196,8 +1180,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("clamps oversized package_url download timers before scheduling", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-download-");
     const target = path.join(dir, "openclaw.tgz");
 
     await downloadUrl("https://packages.example/openclaw.tgz", target, {
@@ -1226,8 +1209,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("times out stalled package_url response bodies", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-timeout-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-download-timeout-");
     const target = path.join(dir, "openclaw.tgz");
     let bodyCancelled = false;
     const startedAt = Date.now();
@@ -1260,8 +1242,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("streams non-decimal package_url content-length values through the download cap", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-download-");
     const target = path.join(dir, "openclaw.tgz");
     let readStarted = false;
     let bodyCancelled = false;
@@ -1294,8 +1275,7 @@ describe("resolve-openclaw-package-candidate", () => {
   });
 
   it("reads package source metadata from package artifacts", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-candidate-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-candidate-");
     await writeFile(
       path.join(dir, "package-candidate.json"),
       JSON.stringify(
@@ -1318,21 +1298,6 @@ describe("resolve-openclaw-package-candidate", () => {
     });
   });
 
-  it("normalizes artifact package source SHAs before workflow output", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-candidate-sha-"));
-    tempDirs.push(dir);
-    await writeFile(
-      path.join(dir, "package-candidate.json"),
-      JSON.stringify({
-        packageSourceSha: "66CE632B9B7C5C7FDD3E66C739687D51638AD6E2",
-      }),
-    );
-
-    await expect(readArtifactPackageCandidateMetadata(dir)).resolves.toEqual({
-      packageSourceSha: "66ce632b9b7c5c7fdd3e66c739687d51638ad6e2",
-    });
-  });
-
   it.each([
     ["without a registry", false],
     ["with a registry", true],
@@ -1347,10 +1312,7 @@ describe("resolve-openclaw-package-candidate", () => {
     await withArtifactFixtureCommands(fixture, async () => {
       await expect(
         main([
-          "--source",
-          "artifact",
-          "--artifact-dir",
-          fixture.artifactDir,
+          ...fixture.args,
           "--output-dir",
           path.join(fixture.dir, "output"),
           ...(registry
@@ -1379,10 +1341,7 @@ describe("resolve-openclaw-package-candidate", () => {
 
     await withArtifactFixtureCommands(fixture, async () => {
       await main([
-        "--source",
-        "artifact",
-        "--artifact-dir",
-        fixture.artifactDir,
+        ...fixture.args,
         "--output-dir",
         path.join(fixture.dir, "output"),
         "--metadata",
@@ -1404,10 +1363,7 @@ describe("resolve-openclaw-package-candidate", () => {
 
     await withArtifactFixtureCommands(fixture, async () => {
       await main([
-        "--source",
-        "artifact",
-        "--artifact-dir",
-        fixture.artifactDir,
+        ...fixture.args,
         "--output-dir",
         path.join(fixture.dir, "output-without-registry"),
         "--metadata",
@@ -1415,10 +1371,7 @@ describe("resolve-openclaw-package-candidate", () => {
       ]);
       await expect(
         main([
-          "--source",
-          "artifact",
-          "--artifact-dir",
-          fixture.artifactDir,
+          ...fixture.args,
           "--output-dir",
           path.join(fixture.dir, "output-with-registry"),
           "--plugin-registry-output-dir",
@@ -1445,14 +1398,7 @@ describe("resolve-openclaw-package-candidate", () => {
 
     await withArtifactFixtureCommands(fixture, async () => {
       await expect(
-        main([
-          "--source",
-          "artifact",
-          "--artifact-dir",
-          fixture.artifactDir,
-          "--output-dir",
-          path.join(fixture.dir, "output"),
-        ]),
+        main([...fixture.args, "--output-dir", path.join(fixture.dir, "output")]),
       ).rejects.toBeInstanceOf(SyntaxError);
     });
     await expect(missing(fixture.nodeLog)).resolves.toBe(true);
@@ -1519,8 +1465,7 @@ esac
   });
 
   it("normalizes whitespace-only artifact package source SHAs to absent", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-candidate-empty-sha-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-candidate-empty-sha-");
     await writeFile(
       path.join(dir, "package-candidate.json"),
       JSON.stringify({
@@ -1534,8 +1479,7 @@ esac
   });
 
   it("rejects malformed artifact package source SHAs", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-candidate-bad-sha-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-candidate-bad-sha-");
     await writeFile(
       path.join(dir, "package-candidate.json"),
       JSON.stringify({
@@ -1549,8 +1493,7 @@ esac
   });
 
   it("accepts uppercase package artifact SHA-256 metadata", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-sha-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-sha-");
     const file = path.join(dir, "openclaw.tgz");
     await writeFile(file, "openclaw package bytes");
     const digest = "ae0b98d18c80dbf9447fa48560a139195595db2d337ad33421ca2183b0dd3e99";
@@ -1559,8 +1502,7 @@ esac
   });
 
   it("rejects source artifact scans that exceed the filesystem entry limit", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-artifact-scan-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-artifact-scan-");
     const maxEntries = 3;
 
     for (let index = 0; index <= maxEntries; index += 1) {
@@ -1573,8 +1515,7 @@ esac
   });
 
   it("rejects source artifact directories with multiple tarballs", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-artifact-duplicates-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-artifact-duplicates-");
 
     await writeFile(path.join(dir, "openclaw-a.tgz"), "a");
     await writeFile(path.join(dir, "nested.tar.gz"), "b");
@@ -1587,17 +1528,5 @@ esac
     expect(message).toContain("openclaw-a.tgz");
     expect(message).not.toContain(path.join(dir, "nested.tar.gz"));
     expect(message).not.toContain(path.join(dir, "openclaw-a.tgz"));
-  });
-
-  it("reads the source SHA from packed npm build metadata", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-build-info-"));
-    tempDirs.push(dir);
-    const tarball = await createPackageTarball(dir, {
-      commit: "66CE632B9B7C5C7FDD3E66C739687D51638AD6E2",
-    });
-
-    await expect(readPackageBuildSourceSha(tarball)).resolves.toBe(
-      "66ce632b9b7c5c7fdd3e66c739687d51638ad6e2",
-    );
   });
 });

@@ -1,53 +1,26 @@
-/**
- * Nostr Profile Edit Form
- *
- * Provides UI for editing and publishing Nostr profile (kind:0).
- */
-
 import { html, nothing, type TemplateResult } from "lit";
 import type { NostrProfile as NostrProfileType } from "../../api/types.ts";
 import { renderSettingsStatus } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
 
-// ============================================================================
-// Types
-// ============================================================================
-
 export interface NostrProfileFormState {
-  /** Current form values */
   values: NostrProfileType;
-  /** Original values for dirty detection */
   original: NostrProfileType;
-  /** Whether the form is currently submitting */
   saving: boolean;
-  /** Whether import is in progress */
   importing: boolean;
-  /** Last error message */
   error: string | null;
-  /** Last success message */
   success: string | null;
-  /** Validation errors per field */
   fieldErrors: Record<string, string>;
-  /** Whether to show advanced fields */
   showAdvanced: boolean;
 }
 
 export interface NostrProfileFormCallbacks {
-  /** Called when a field value changes */
   onFieldChange: (field: keyof NostrProfileType, value: string) => void;
-  /** Called when save is clicked */
   onSave: () => void;
-  /** Called when import is clicked */
   onImport: () => void;
-  /** Called when cancel is clicked */
   onCancel: () => void;
-  /** Called when toggle advanced is clicked */
   onToggleAdvanced: () => void;
 }
-
-// ============================================================================
-// Helpers
-// ============================================================================
 
 function isFormDirty(state: NostrProfileFormState): boolean {
   const { values, original } = state;
@@ -62,10 +35,6 @@ function isFormDirty(state: NostrProfileFormState): boolean {
     values.lud16 !== original.lud16
   );
 }
-
-// ============================================================================
-// Form Rendering
-// ============================================================================
 
 export function renderNostrProfileForm(params: {
   state: NostrProfileFormState;
@@ -90,6 +59,9 @@ export function renderNostrProfileForm(params: {
     const error = state.fieldErrors[field];
 
     const inputId = `nostr-profile-${field}`;
+    const helpId = `${inputId}-help`;
+    const errorId = `${inputId}-error`;
+    const descriptionIds = [help ? helpId : "", error ? errorId : ""].filter(Boolean).join(" ");
     const control =
       type === "textarea"
         ? html`
@@ -100,6 +72,8 @@ export function renderNostrProfileForm(params: {
               placeholder=${placeholder ?? ""}
               maxlength=${maxLength ?? 2000}
               rows="3"
+              aria-describedby=${descriptionIds || nothing}
+              aria-invalid=${error ? "true" : nothing}
               @input=${(e: InputEvent) => {
                 const target = e.target as HTMLTextAreaElement;
                 callbacks.onFieldChange(field, target.value);
@@ -115,6 +89,8 @@ export function renderNostrProfileForm(params: {
               .value=${value}
               placeholder=${placeholder ?? ""}
               maxlength=${maxLength ?? 256}
+              aria-describedby=${descriptionIds || nothing}
+              aria-invalid=${error ? "true" : nothing}
               @input=${(e: InputEvent) => {
                 const target = e.target as HTMLInputElement;
                 callbacks.onFieldChange(field, target.value);
@@ -127,10 +103,14 @@ export function renderNostrProfileForm(params: {
       <div class="settings-row settings-row--stacked">
         <div class="settings-row__text">
           <label class="settings-row__title" for="${inputId}">${label}</label>
-          ${help ? html`<span class="settings-row__desc">${help}</span>` : nothing}
-          ${error
-            ? html`<span class="settings-row__desc" style="color: var(--danger);">${error}</span>`
-            : nothing}
+          ${help ? html`<span id=${helpId} class="settings-row__desc">${help}</span>` : nothing}
+          ${
+            error
+              ? html`<span id=${errorId} class="settings-row__desc" style="color: var(--danger);"
+                  >${error}</span
+                >`
+              : nothing
+          }
         </div>
         <div class="settings-row__control">${control}</div>
       </div>
@@ -175,27 +155,31 @@ export function renderNostrProfileForm(params: {
       </div>
     </div>
 
-    ${state.error
-      ? html`
-          <div class="settings-row">
-            <div class="settings-row__text">
-              <span class="settings-row__title"
-                >${renderSettingsStatus({ kind: "danger", label: t("channels.lastError") })}</span
-              >
-              <span class="settings-row__desc">${state.error}</span>
+    ${
+      state.error
+        ? html`
+            <div class="settings-row" role="alert">
+              <div class="settings-row__text">
+                <span class="settings-row__title"
+                  >${renderSettingsStatus({ kind: "danger", label: t("channels.lastError") })}</span
+                >
+                <span class="settings-row__desc">${state.error}</span>
+              </div>
             </div>
-          </div>
-        `
-      : nothing}
-    ${state.success
-      ? html`
-          <div class="settings-row">
-            <div class="settings-row__text">
-              <span class="settings-row__desc">${state.success}</span>
+          `
+        : nothing
+    }
+    ${
+      state.success
+        ? html`
+            <div class="settings-row" role="status">
+              <div class="settings-row__text">
+                <span class="settings-row__desc">${state.success}</span>
+              </div>
             </div>
-          </div>
-        `
-      : nothing}
+          `
+        : nothing
+    }
     ${renderPicturePreview()}
     ${renderField("name", t("channels.nostr.username"), {
       placeholder: t("channels.nostr.placeholders.username"),
@@ -218,40 +202,44 @@ export function renderNostrProfileForm(params: {
       placeholder: t("channels.nostr.placeholders.avatarUrl"),
       help: t("channels.nostr.avatarHelp"),
     })}
-    ${state.showAdvanced
-      ? html`
-          <div class="settings-row">
-            <div class="settings-row__text">
-              <span class="settings-row__title">${t("channels.nostr.advanced")}</span>
+    ${
+      state.showAdvanced
+        ? html`
+            <div class="settings-row">
+              <div class="settings-row__text">
+                <span class="settings-row__title">${t("channels.nostr.advanced")}</span>
+              </div>
             </div>
-          </div>
 
-          ${renderField("banner", t("channels.nostr.bannerUrl"), {
-            type: "url",
-            placeholder: t("channels.nostr.placeholders.bannerUrl"),
-            help: t("channels.nostr.bannerHelp"),
-          })}
-          ${renderField("website", t("channels.nostr.website"), {
-            type: "url",
-            placeholder: t("channels.nostr.placeholders.website"),
-            help: t("channels.nostr.websiteHelp"),
-          })}
-          ${renderField("nip05", t("channels.nostr.nip05Identifier"), {
-            placeholder: t("channels.nostr.placeholders.nip05"),
-            help: t("channels.nostr.nip05Help"),
-          })}
-          ${renderField("lud16", t("channels.nostr.lightningAddress"), {
-            placeholder: t("channels.nostr.placeholders.lightningAddress"),
-            help: t("channels.nostr.lightningHelp"),
-          })}
-        `
-      : nothing}
+            ${renderField("banner", t("channels.nostr.bannerUrl"), {
+              type: "url",
+              placeholder: t("channels.nostr.placeholders.bannerUrl"),
+              help: t("channels.nostr.bannerHelp"),
+            })}
+            ${renderField("website", t("channels.nostr.website"), {
+              type: "url",
+              placeholder: t("channels.nostr.placeholders.website"),
+              help: t("channels.nostr.websiteHelp"),
+            })}
+            ${renderField("nip05", t("channels.nostr.nip05Identifier"), {
+              placeholder: t("channels.nostr.placeholders.nip05"),
+              help: t("channels.nostr.nip05Help"),
+            })}
+            ${renderField("lud16", t("channels.nostr.lightningAddress"), {
+              placeholder: t("channels.nostr.placeholders.lightningAddress"),
+              help: t("channels.nostr.lightningHelp"),
+            })}
+          `
+        : nothing
+    }
 
     <div class="settings-row">
       <div class="settings-row__text">
-        ${isDirty
-          ? html`<span class="settings-row__desc">${t("common.unsavedChanges")}</span>`
-          : nothing}
+        ${
+          isDirty
+            ? html`<span class="settings-row__desc">${t("common.unsavedChanges")}</span>`
+            : nothing
+        }
       </div>
       <div class="settings-row__control">
         <button
@@ -270,7 +258,11 @@ export function renderNostrProfileForm(params: {
           ${state.importing ? t("common.importing") : t("common.importFromRelays")}
         </button>
 
-        <button class="btn" @click=${callbacks.onToggleAdvanced}>
+        <button
+          class="btn"
+          aria-expanded=${String(state.showAdvanced)}
+          @click=${callbacks.onToggleAdvanced}
+        >
           ${state.showAdvanced ? t("common.hideAdvanced") : t("common.showAdvanced")}
         </button>
 
@@ -282,13 +274,6 @@ export function renderNostrProfileForm(params: {
   `;
 }
 
-// ============================================================================
-// Factory
-// ============================================================================
-
-/**
- * Create initial form state from existing profile
- */
 export function createNostrProfileFormState(
   profile: NostrProfileType | undefined,
 ): NostrProfileFormState {

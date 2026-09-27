@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   createRealtimeVoiceAudioQueue,
   normalizeRealtimeVoiceResponseOutcome,
@@ -7,12 +7,32 @@ import {
   realtimeVoiceAudioDurationMs,
   RealtimeVoiceSessionLifecycle,
   toOpenAICompatibleRealtimeAudioFormat,
+  type RealtimeVoiceBrowserSessionCreateRequest,
+  type RealtimeVoiceGatewayControl,
   type RealtimeVoiceSessionConnection,
 } from "./realtime-voice.js";
 
+describe("RealtimeVoiceBrowserSessionCreateRequest", () => {
+  it("requires command binding only for negotiated Gateway control", () => {
+    type Base = { providerConfig: Record<string, unknown> };
+    type Claim = { clientControl: { owner: "gateway" } };
+    type Legacy = Base & { gatewayControl: Pick<RealtimeVoiceGatewayControl, "bindBridge"> };
+    type Controlled = Base &
+      Claim & {
+        gatewayControl: RealtimeVoiceGatewayControl &
+          Required<Pick<RealtimeVoiceGatewayControl, "bindControl">>;
+      };
+
+    expectTypeOf<Base>().toMatchTypeOf<RealtimeVoiceBrowserSessionCreateRequest>();
+    expectTypeOf<Legacy>().toMatchTypeOf<RealtimeVoiceBrowserSessionCreateRequest>();
+    expectTypeOf<Controlled>().toMatchTypeOf<RealtimeVoiceBrowserSessionCreateRequest>();
+    expectTypeOf<Base & Claim>().not.toMatchTypeOf<RealtimeVoiceBrowserSessionCreateRequest>();
+    expectTypeOf<Legacy & Claim>().not.toMatchTypeOf<RealtimeVoiceBrowserSessionCreateRequest>();
+  });
+});
+
 describe("realtimeVoiceAudioDurationMs", () => {
   it.each([
-    ["G.711 μ-law 8 kHz mono", REALTIME_VOICE_AUDIO_FORMAT_G711_ULAW_8KHZ, 8_000, 1_000],
     ["PCM16 24 kHz mono", REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ, 48_000, 1_000],
     [
       "one G.711 μ-law sample without rounding",

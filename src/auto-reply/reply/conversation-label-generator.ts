@@ -1,6 +1,10 @@
 // Generates short labels for sessions from conversation context.
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { createReasoningTagTextPartitioner } from "../../../packages/markdown-core/src/reasoning-tags.js";
+import {
+  assertOperatorModelAllowed,
+  type AdmittedRunOperatorAuthority,
+} from "../../agents/admitted-run-context.js";
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { runIsolatedCompletion } from "../../agents/isolated-completion.js";
 import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
@@ -32,6 +36,9 @@ export type ConversationLabelParams = {
   modelRef?: string;
   timeoutMs?: number;
   maxLength?: number;
+  abortSignal?: AbortSignal;
+  assertCurrent?: () => void;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
 };
 
 type ConversationLabelFallbackParams = ConversationLabelParams & {
@@ -100,9 +107,15 @@ async function runLabelAttempts(
     normalizeLabel?: (label: string) => string | null;
   },
 ): Promise<string | null> {
+  const assertCurrent = () => {
+    params.assertCurrent?.();
+    params.operatorAuthority?.assertCurrent();
+    params.abortSignal?.throwIfAborted();
+  };
   const seen = new Set(params.skipAttempts?.map((attempt) => resolveAttemptKey(params, attempt)));
   const failures: LabelModelPhase[] = [];
   for (const attempt of params.attempts) {
+    assertCurrent();
     const key = resolveAttemptKey(params, attempt);
     if (seen.has(key)) {
       continue;
@@ -113,6 +126,11 @@ async function runLabelAttempts(
       if (!selection) {
         throw new Error("conversation label model selection unavailable");
       }
+      const model = { provider: selection.provider, model: selection.modelId };
+      if (params.operatorAuthority?.modelPolicy?.allows(model) === false) {
+        continue;
+      }
+      assertOperatorModelAllowed(params.operatorAuthority, model);
       // The session's runtime override was resolved for its primary provider; a
       // utility model on another provider cannot run through that harness.
       const agentHarnessRuntimeOverride = resolveCompatibleAgentRuntimeForProvider({
@@ -136,9 +154,13 @@ async function runLabelAttempts(
         ].join(" "),
         prompt: params.userMessage,
         timeoutMs: params.timeoutMs,
+        abortSignal: params.abortSignal,
+        assertCurrent: params.assertCurrent,
+        ...(params.operatorAuthority ? { operatorAuthority: params.operatorAuthority } : {}),
         outputTextPolicy: "strict-visible",
         streamParams: { maxTokens: CONVERSATION_LABEL_MAX_TOKENS },
       });
+      assertCurrent();
       const partitioner = createReasoningTagTextPartitioner();
       partitioner.markStrict();
       const visibleText = [...partitioner.push(completion.text), ...partitioner.flush()]
@@ -151,6 +173,7 @@ async function runLabelAttempts(
         return normalized;
       }
     } catch {
+      assertCurrent();
       failures.push(attempt.phase);
     }
   }

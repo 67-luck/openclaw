@@ -1,4 +1,3 @@
-// Telegram plugin module implements doctor contract behavior.
 import type {
   ChannelDoctorConfigMutation,
   ChannelDoctorLegacyConfigRule,
@@ -7,11 +6,18 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { DEFAULT_GROUP_HISTORY_LIMIT } from "openclaw/plugin-sdk/reply-history";
 import {
   asObjectRecord,
+  createLegacyWebhookListenerDoctorContract,
   defineChannelAliasMigration,
   hasLegacyAccountStreamingAliases,
   normalizeChannelAccounts,
-  stripRetiredChannelKeys,
+  type CompatMutationResult,
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
+
+const webhookListenerMigration = createLegacyWebhookListenerDoctorContract({
+  channelKey: "telegram",
+  defaultPort: 8787,
+  defaultHost: "127.0.0.1",
+});
 
 const streamingAliasMigration = defineChannelAliasMigration({
   channelId: "telegram",
@@ -27,6 +33,51 @@ const RETIRED_TUNING_KEYS = new Set([
   "retry",
   "errorCooldownMs",
 ]);
+
+function stripRetiredTelegramTuning(
+  entry: Record<string, unknown>,
+  scope: "channel" | "account" | "chat" | "topic",
+): CompatMutationResult {
+  let changed = false;
+  const updated = { ...entry };
+  for (const key of scope === "channel" || scope === "account"
+    ? RETIRED_TUNING_KEYS
+    : ["errorCooldownMs"]) {
+    if (Object.hasOwn(updated, key)) {
+      delete updated[key];
+      changed = true;
+    }
+  }
+  // Account IDs and sender-policy keys can equal retired setting names. Descend
+  // only through Telegram's config maps, never arbitrary object properties.
+  const maps = scope === "topic" ? [] : scope === "chat" ? ["topics"] : ["groups", "direct"];
+  if (scope === "channel") {
+    maps.push("accounts");
+  }
+  for (const key of maps) {
+    const entries = asObjectRecord(entry[key]);
+    if (!entries) {
+      continue;
+    }
+    const nextEntries = { ...entries };
+    for (const [id, value] of Object.entries(entries)) {
+      const child = asObjectRecord(value);
+      if (!child) {
+        continue;
+      }
+      const next = stripRetiredTelegramTuning(
+        child,
+        key === "accounts" ? "account" : key === "topics" ? "topic" : "chat",
+      );
+      if (next.changed) {
+        nextEntries[id] = next.entry;
+        updated[key] = nextEntries;
+        changed = true;
+      }
+    }
+  }
+  return { entry: changed ? updated : entry, changed };
+}
 
 function hasRetiredTelegramDmConfig(value: unknown): boolean {
   const entry = asObjectRecord(value);
@@ -166,6 +217,20 @@ function removeRetiredTelegramGroupHistoryContextConfig(params: {
   return { entry: updated, changed: true };
 }
 
+function removeRetiredTelegramConfig(
+  params: Parameters<typeof removeRetiredTelegramGroupHistoryContextConfig>[0],
+): CompatMutationResult {
+  let entry = params.entry;
+  for (const remove of [
+    removeRetiredTelegramDmConfig,
+    removeRetiredTelegramNativeDraftConfig,
+    removeRetiredTelegramGroupHistoryContextConfig,
+  ]) {
+    entry = remove({ ...params, entry }).entry;
+  }
+  return { entry, changed: entry !== params.entry };
+}
+
 function resolveCompatibleDefaultGroupEntry(section: Record<string, unknown>): {
   groups: Record<string, unknown>;
   entry: Record<string, unknown>;
@@ -185,6 +250,7 @@ function resolveCompatibleDefaultGroupEntry(section: Record<string, unknown>): {
 }
 
 export const legacyConfigRules: ChannelDoctorLegacyConfigRule[] = [
+  ...webhookListenerMigration.legacyConfigRules,
   {
     path: ["channels", "telegram", "groupMentionsOnly"],
     message:
@@ -236,22 +302,19 @@ export function normalizeCompatibilityConfig({
   cfg: OpenClawConfig;
 }): ChannelDoctorConfigMutation {
   const changes: string[] = [];
-  const aliases = streamingAliasMigration.normalizeChannelConfig({ cfg, changes });
-  const tuningKnobs = stripRetiredChannelKeys({
-    cfg: aliases.config,
-    channelId: "telegram",
-    keys: RETIRED_TUNING_KEYS,
-    scope: "recursive",
-  });
+  const webhook = webhookListenerMigration.normalizeCompatibilityConfig({ cfg });
+  changes.push(...webhook.changes);
+  const aliases = streamingAliasMigration.normalizeChannelConfig({ cfg: webhook.config, changes });
   const rawEntry = asObjectRecord(
-    (tuningKnobs.config.channels as Record<string, unknown> | undefined)?.telegram,
+    (aliases.config.channels as Record<string, unknown> | undefined)?.telegram,
   );
   if (!rawEntry) {
     return { config: cfg, changes: [] };
   }
 
-  let updated = rawEntry;
-  let changed = tuningKnobs.config !== cfg;
+  const tuningKnobs = stripRetiredTelegramTuning(rawEntry, "channel");
+  let updated = tuningKnobs.entry;
+  let changed = aliases.config !== cfg || tuningKnobs.changed;
   if (tuningKnobs.changed) {
     changes.push("Removed retired Telegram tuning knobs.");
   }
@@ -261,29 +324,13 @@ export function normalizeCompatibilityConfig({
       ? updated.historyLimit
       : (cfg.messages?.groupChat?.historyLimit ?? DEFAULT_GROUP_HISTORY_LIMIT);
 
-  const removedThreadReplies = removeRetiredTelegramDmConfig({
+  const retired = removeRetiredTelegramConfig({
     entry: updated,
     pathPrefix: "channels.telegram",
     changes,
   });
-  updated = removedThreadReplies.entry;
-  changed = changed || removedThreadReplies.changed;
-
-  const removedNativeDraft = removeRetiredTelegramNativeDraftConfig({
-    entry: updated,
-    pathPrefix: "channels.telegram",
-    changes,
-  });
-  updated = removedNativeDraft.entry;
-  changed = changed || removedNativeDraft.changed;
-
-  const removedGroupHistoryContext = removeRetiredTelegramGroupHistoryContextConfig({
-    entry: updated,
-    pathPrefix: "channels.telegram",
-    changes,
-  });
-  updated = removedGroupHistoryContext.entry;
-  changed = changed || removedGroupHistoryContext.changed;
+  updated = retired.entry;
+  changed = changed || retired.changed;
 
   if (updated.groupMentionsOnly !== undefined) {
     const defaultGroupEntry = resolveCompatibleDefaultGroupEntry(updated);
@@ -315,30 +362,15 @@ export function normalizeCompatibilityConfig({
     entry: updated,
     pathPrefix: "channels.telegram",
     changes,
-    normalizeAccount: ({ account, pathPrefix, changes: accountChanges }) => {
-      const dm = removeRetiredTelegramDmConfig({
+    normalizeAccount: ({ account, pathPrefix, changes: accountChanges }) =>
+      removeRetiredTelegramConfig({
         entry: account,
-        pathPrefix,
-        changes: accountChanges,
-      });
-      const nativeDraft = removeRetiredTelegramNativeDraftConfig({
-        entry: dm.entry,
-        pathPrefix,
-        changes: accountChanges,
-      });
-      const history = removeRetiredTelegramGroupHistoryContextConfig({
-        entry: nativeDraft.entry,
         pathPrefix,
         changes: accountChanges,
         ...(rootGroupHistoryContextMode === "none"
           ? { preserveRecentHistoryLimit: rootGroupHistoryLimitBeforeMigration }
           : {}),
-      });
-      return {
-        entry: history.entry,
-        changed: dm.changed || nativeDraft.changed || history.changed,
-      };
-    },
+      }),
   });
   updated = accounts.entry;
   changed = changed || accounts.changed;
@@ -348,9 +380,9 @@ export function normalizeCompatibilityConfig({
   }
   return {
     config: {
-      ...tuningKnobs.config,
+      ...aliases.config,
       channels: {
-        ...tuningKnobs.config.channels,
+        ...aliases.config.channels,
         telegram: updated as unknown as NonNullable<OpenClawConfig["channels"]>["telegram"],
       } as OpenClawConfig["channels"],
     },

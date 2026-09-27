@@ -8,12 +8,12 @@ import { enqueueKeyedTask } from "openclaw/plugin-sdk/keyed-async-queue";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { readFiniteNumberParam, readPositiveIntegerParam } from "openclaw/plugin-sdk/param-readers";
 import { resolveLivePluginConfigObject } from "openclaw/plugin-sdk/plugin-config-runtime";
+import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { isIncognitoSessionKey, normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { textResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
-import { definePluginEntry, type OpenClawPluginApi } from "./api.js";
 import { createAutoRecallHook } from "./auto-recall.js";
 import {
   MEMORY_CATEGORIES,
@@ -26,9 +26,8 @@ import {
   createEmbeddings,
   isMemoryRecallTimeoutError,
   MemoryRecallEmbeddingError,
-  runWithTimeout,
 } from "./embeddings.js";
-import { MemoryDB, type MemoryEntry, type MemorySearchResult } from "./lancedb-store.js";
+import { MemoryDB, type MemoryEntry } from "./lancedb-store.js";
 import { sanitizeForMemoryCapture } from "./memory-capture-sanitization.js";
 import { registerMemoryCli } from "./memory-cli.js";
 import {
@@ -44,6 +43,7 @@ import {
   prepareAutoCaptureMessages,
   shouldCapture,
 } from "./memory-policy.js";
+import { startMemoryRecall } from "./recall-service.js";
 
 const loadMemoryHostCoreModule = createLazyRuntimeModule(
   () => import("openclaw/plugin-sdk/memory-host-core"),
@@ -62,7 +62,7 @@ type AutoCaptureSession = {
   completedTexts: Set<string>;
 };
 
-export { normalizeEmbeddingVector, testing } from "./embeddings.js";
+export { normalizeEmbeddingVector } from "./embeddings.js";
 export { parseMemoryCliFilter } from "./memory-cli.js";
 export {
   looksLikeEnvelopeSludge,
@@ -260,33 +260,23 @@ export default definePluginEntry({
             if (cooldown) {
               return buildMemoryRecallUnavailableResult(cooldown.error);
             }
-            let recallPhase: "embedding" | "search" = "embedding";
-            let recall: Awaited<ReturnType<typeof runWithTimeout<MemorySearchResult[]>>>;
+            const recallOperation = startMemoryRecall({
+              timeoutMs: DEFAULT_TOOL_RECALL_TIMEOUT_MS,
+              embed: (timeoutMs) =>
+                embeddings.embed(
+                  agentId,
+                  normalizeRecallQuery(query, recallMaxChars),
+                  currentCfg.embedding,
+                  timeoutMs(),
+                ),
+              search: (vector, timeoutMs) =>
+                db.search(agentId, vector, limit + DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA, 0.1, {
+                  timeoutMs,
+                }),
+            });
+            let recall: Awaited<typeof recallOperation.result>;
             try {
-              recall = await runWithTimeout({
-                timeoutMs: DEFAULT_TOOL_RECALL_TIMEOUT_MS,
-                task: async (deadlineAtMs) => {
-                  let vector: number[];
-                  try {
-                    vector = await embeddings.embed(
-                      agentId,
-                      normalizeRecallQuery(query, recallMaxChars),
-                      currentCfg.embedding,
-                      Math.max(1, deadlineAtMs - Date.now()),
-                    );
-                  } catch (error) {
-                    throw new MemoryRecallEmbeddingError(error);
-                  }
-                  recallPhase = "search";
-                  return await db.search(
-                    agentId,
-                    vector,
-                    limit + DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA,
-                    0.1,
-                    { timeoutMs: Math.max(0, deadlineAtMs - Date.now()) },
-                  );
-                },
-              });
+              recall = await recallOperation.result;
             } catch (error) {
               if (!(error instanceof MemoryRecallEmbeddingError)) {
                 throw error;
@@ -302,7 +292,7 @@ export default definePluginEntry({
             }
             if (recall.status === "timeout") {
               const message = `memory_recall timed out after ${Math.round(DEFAULT_TOOL_RECALL_TIMEOUT_MS / 1000)}s`;
-              if (recallPhase === "embedding") {
+              if (recallOperation.phase === "embedding") {
                 recordMemoryRecallCooldown(agentId, message);
               }
               api.logger.warn?.(
@@ -317,19 +307,19 @@ export default definePluginEntry({
             }
 
             const text = results
-              .map(({ result, text: memoryText }, i) => {
-                const visibleText = formatRecalledMemoryForModel(memoryText, recallMaxChars);
-                return `${i + 1}. [${result.entry.category}] ${visibleText} (${(result.score * 100).toFixed(0)}%)`;
+              .map(({ entry, score }, i) => {
+                const visibleText = formatRecalledMemoryForModel(entry.text, recallMaxChars);
+                return `${i + 1}. [${entry.category}] ${visibleText} (${(score * 100).toFixed(0)}%)`;
               })
               .join("\n");
 
             // Strip vector data for serialization (typed arrays can't be cloned)
-            const sanitizedResults = results.map(({ result, text: memoryText }) => ({
-              id: result.entry.id,
-              text: memoryText,
-              category: result.entry.category,
-              importance: result.entry.importance,
-              score: result.score,
+            const sanitizedResults = results.map(({ entry, score }) => ({
+              id: entry.id,
+              text: entry.text,
+              category: entry.category,
+              importance: entry.importance,
+              score,
             }));
 
             return textResult(
@@ -515,7 +505,10 @@ export default definePluginEntry({
       { name: "memory_forget" },
     );
 
-    registerMemoryCli(api, db, embeddings, resolveCliAgentId, resolveCurrentHookConfig);
+    registerMemoryCli(api, db, embeddings, resolveCliAgentId, resolveCurrentHookConfig, {
+      dbPath: resolvedDbPath,
+      storageOptions: cfg.storageOptions,
+    });
 
     api.on(
       "before_prompt_build",
@@ -659,6 +652,8 @@ export default definePluginEntry({
     api.registerService({
       id: "memory-lancedb",
       start: () => {
+        embeddings.start();
+        captureStopped = false;
         api.logger.info(
           `memory-lancedb: initialized (db: ${resolvedDbPath}, model: ${cfg.embedding.model})`,
         );

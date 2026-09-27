@@ -1,4 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
+import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 // Web login methods delegate QR-login start/wait requests to the active channel
 // plugin that owns web login gateway methods.
 import {
@@ -6,34 +7,64 @@ import {
   errorShape,
   validateWebLoginStartParams,
   validateWebLoginWaitParams,
+  type WebLoginStartParams,
+  type WebLoginWaitParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { listChannelPlugins } from "../../channels/plugins/index.js";
+import { listChannelPlugins, normalizeChannelId } from "../../channels/plugins/index.js";
+import { listLoadedChannelPluginsForRegistry } from "../../channels/plugins/registry-loaded.js";
 import type { ChannelId } from "../../channels/plugins/types.public.js";
 import { resolveMissingOfficialExternalChannelPluginRepairHints } from "../../plugins/official-external-plugin-repair-hints.js";
-import { formatForLog } from "../ws-log.js";
+import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
+import { respondUnavailable } from "./response.js";
 import type { GatewayRequestContext, GatewayRequestHandlers, RespondFn } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 const WEB_LOGIN_METHODS = new Set(["web.login.start", "web.login.wait"]);
 
+function resolveWebLoginChannelId(
+  raw: string,
+  plugins: ReturnType<typeof listLoadedChannelPluginsForRegistry>,
+) {
+  const normalized = normalizeOptionalLowercaseString(raw);
+  if (!normalized) {
+    return null;
+  }
+  return (
+    plugins.find(
+      (plugin) =>
+        normalizeOptionalLowercaseString(plugin.id) === normalized ||
+        plugin.meta?.aliases?.some(
+          (alias) => normalizeOptionalLowercaseString(alias) === normalized,
+        ),
+    )?.id ?? null
+  );
+}
+
 /** Resolves the channel plugin that currently owns web QR-login methods. */
-const resolveWebLoginProvider = () =>
-  listChannelPlugins().find((plugin) =>
-    [
-      ...(plugin.gatewayMethods ?? []),
-      ...(plugin.gatewayMethodDescriptors ?? []).map((descriptor) => descriptor.name),
-    ].some((method) => WEB_LOGIN_METHODS.has(method)),
-  ) ?? null;
+const resolveWebLoginProvider = (channelId?: string) => {
+  const registry = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
+  const plugins = registry ? listLoadedChannelPluginsForRegistry(registry) : listChannelPlugins();
+  if (channelId) {
+    const normalizedChannelId = registry
+      ? resolveWebLoginChannelId(channelId, plugins)
+      : normalizeChannelId(channelId);
+    return normalizedChannelId
+      ? (plugins.find((plugin) => plugin.id === normalizedChannelId) ?? null)
+      : null;
+  }
+  return (
+    plugins.find((plugin) =>
+      [
+        ...(plugin.gatewayMethods ?? []),
+        ...(plugin.gatewayMethodDescriptors ?? []).map((descriptor) => descriptor.name),
+      ].some((method) => WEB_LOGIN_METHODS.has(method)),
+    ) ?? null
+  );
+};
 
 type WebLoginProvider = NonNullable<ReturnType<typeof resolveWebLoginProvider>>;
 type WebLoginGateway = NonNullable<WebLoginProvider["gateway"]>;
 type WebLoginGatewayMethod = "loginWithQrStart" | "loginWithQrWait";
-
-function resolveAccountId(params: unknown): string | undefined {
-  return typeof (params as { accountId?: unknown }).accountId === "string"
-    ? (params as { accountId?: string }).accountId
-    : undefined;
-}
 
 function resolveMissingWebLoginPluginHint(context: GatewayRequestContext): string | null {
   const cfg = context.getRuntimeConfig();
@@ -76,13 +107,9 @@ function respondProviderUnsupported(respond: RespondFn, providerId: string) {
   );
 }
 
-function respondWebLoginUnavailable(respond: RespondFn, err: unknown) {
-  respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err)));
-}
-
 /** Resolves a concrete provider gateway login method or sends the public error. */
 function resolveWebLoginRequest<TMethod extends WebLoginGatewayMethod>(params: {
-  rawParams: unknown;
+  rawParams: WebLoginStartParams | WebLoginWaitParams;
   respond: RespondFn;
   context: GatewayRequestContext;
   gatewayMethod: TMethod;
@@ -91,8 +118,8 @@ function resolveWebLoginRequest<TMethod extends WebLoginGatewayMethod>(params: {
   provider: WebLoginProvider;
   run: NonNullable<WebLoginGateway[TMethod]>;
 } | null {
-  const accountId = resolveAccountId(params.rawParams);
-  const provider = resolveWebLoginProvider();
+  const accountId = params.rawParams.accountId;
+  const provider = resolveWebLoginProvider(params.rawParams.channel);
   if (!provider) {
     respondProviderUnavailable({
       respond: params.respond,
@@ -158,7 +185,7 @@ export const webHandlers: GatewayRequestHandlers = {
       }
       const result = await run({
         force: forceLogin,
-        timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
+        timeoutMs: params.timeoutMs,
         verbose: Boolean(params.verbose),
         accountId,
       });
@@ -176,7 +203,7 @@ export const webHandlers: GatewayRequestHandlers = {
       }
       respond(true, result, undefined);
     } catch (err) {
-      respondWebLoginUnavailable(respond, err);
+      respondUnavailable(respond, err);
     }
   },
   "web.login.wait": async ({ params, respond, context }) => {
@@ -195,17 +222,17 @@ export const webHandlers: GatewayRequestHandlers = {
       }
       const { accountId, provider, run } = request;
       const result = await run({
-        timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
+        timeoutMs: params.timeoutMs,
         accountId,
-        currentQrDataUrl:
-          typeof params.currentQrDataUrl === "string" ? params.currentQrDataUrl : undefined,
+        sessionKey: params.sessionKey,
+        currentQrDataUrl: params.currentQrDataUrl,
       });
       if (result.connected) {
         await context.startChannel(provider.id, accountId);
       }
       respond(true, result, undefined);
     } catch (err) {
-      respondWebLoginUnavailable(respond, err);
+      respondUnavailable(respond, err);
     }
   },
 };

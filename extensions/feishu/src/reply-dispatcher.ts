@@ -1,4 +1,3 @@
-// Feishu plugin module implements reply dispatcher behavior.
 import { formatReasoningMessage, resolveHumanDelayConfig } from "openclaw/plugin-sdk/agent-runtime";
 import { logTypingFailure } from "openclaw/plugin-sdk/channel-feedback";
 import {
@@ -8,7 +7,6 @@ import {
 import {
   createChannelMessageReplyPipeline,
   formatChannelProgressDraftLineForEntry,
-  isChannelProgressDraftWorkToolName,
   resolveChannelPreviewStreamMode,
   resolveChannelStreamingBlockEnabled,
 } from "openclaw/plugin-sdk/channel-outbound";
@@ -20,19 +18,25 @@ import {
   resolveTextChunksWithFallback,
   sendMediaWithLeadingCaption,
 } from "openclaw/plugin-sdk/reply-payload";
+import type { GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
 import { stripReasoningTagsFromText } from "openclaw/plugin-sdk/text-chunking";
 import type { ClawdbotConfig, OutboundIdentity, ReplyPayload, RuntimeEnv } from "../runtime-api.js";
 import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { resolveConfiguredHttpTimeoutMs } from "./client-timeout.js";
 import { createFeishuClient } from "./client.js";
 import { resolveFeishuIdentityEmoji } from "./identity-header.js";
-import { chunkFeishuPostMarkdown, materializeFeishuPostMarkdownSoftBreaks } from "./markdown.js";
+import {
+  chunkFeishuPostMarkdown,
+  materializeFeishuPostMarkdownSoftBreaks,
+  shouldUseFeishuCard,
+} from "./markdown.js";
 import { buildFeishuMediaFallbackText } from "./media-fallback.js";
 import { sendMediaFeishu, shouldSuppressFeishuTextForVoiceMedia } from "./media.js";
 import type { MentionTarget } from "./mention-target.types.js";
 import {
   consumeFeishuPresentationFallbackMarker,
   renderFeishuReplyPayload,
+  withinCardTableLimit,
 } from "./presentation-card.js";
 import {
   createFeishuPartialReplyDeliveryError,
@@ -59,11 +63,6 @@ import {
 } from "./streaming-card.js";
 import { resolveReceiveIdType } from "./targets.js";
 import { addTypingIndicator, removeTypingIndicator, type TypingIndicatorState } from "./typing.js";
-
-/** Detect if text contains markdown elements that benefit from card rendering */
-function shouldUseCard(text: string): boolean {
-  return /```[\s\S]*?```/.test(text) || /\|.+\|[\r\n]+\|[-:| ]+\|/.test(text);
-}
 
 function mergeStreamingFinalText(
   previousText: string,
@@ -102,10 +101,9 @@ function isStreamingStartBackedOff(accountId: string, now = Date.now()): boolean
   return true;
 }
 
-function rememberStreamingStartFailure(accountId: string, now = Date.now()): number {
+function rememberStreamingStartFailure(accountId: string, now = Date.now()): void {
   const backoffUntil = now + STREAMING_START_FAILURE_BACKOFF_MS;
   streamingStartBackoffUntilByAccount.set(accountId, backoffUntil);
-  return backoffUntil;
 }
 
 function normalizeEpochMs(timestamp: number | undefined): number | undefined {
@@ -205,6 +203,14 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     rootId !== undefined &&
     sendReplyToMessageId !== undefined &&
     sendReplyToMessageId !== rootId;
+  const replyTarget = {
+    cfg,
+    to: sendTarget,
+    replyToMessageId: sendReplyToMessageId,
+    replyInThread: effectiveReplyInThread,
+    allowTopLevelReplyFallback,
+    accountId,
+  };
   const account = resolveFeishuRuntimeAccount({ cfg, accountId });
   let typingState: TypingIndicatorState | null = null;
   // Reply text and card attribution share the same selected-model context.
@@ -743,15 +749,12 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     useCard: boolean;
     infoKind?: string;
     firstChunkMentions?: MentionTarget[];
-    chunkMentions?: MentionTarget[];
-    header?: CardHeaderConfig;
-    note?: string;
-    sendChunk: (params: {
-      chunk: string;
-      isFirst: boolean;
-      mentions?: MentionTarget[];
-    }) => Promise<FeishuReplyDeliverySource>;
+    preparedPostText?: boolean;
   }): Promise<FeishuReplyDeliveryResult> => {
+    const header = paramsLocal.useCard ? resolveCardHeader(agentId, identity) : undefined;
+    const note = paramsLocal.useCard
+      ? resolveCardNote(agentId, identity, responsePrefixContextProvider())
+      : undefined;
     const chunkSource = paramsLocal.useCard
       ? paramsLocal.text
       : materializeFeishuPostMarkdownSoftBreaks(
@@ -767,7 +770,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       limit: textChunkLimit,
       mode: chunkMode,
       firstChunkMentions: paramsLocal.firstChunkMentions,
-      chunkMentions: paramsLocal.chunkMentions,
+      chunkMentions: requiredMentionTargets,
       initialChunks,
     };
     const chunks = resolveTextChunksWithFallback(
@@ -775,8 +778,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       paramsLocal.useCard
         ? chunkFeishuCardMarkdown({
             ...chunkOptions,
-            header: paramsLocal.header,
-            note: paramsLocal.note,
+            header,
+            note,
           })
         : chunkFeishuPostMarkdown(chunkOptions),
     );
@@ -784,15 +787,21 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     const acceptedChunks: string[] = [];
     for (const [index, chunk] of chunks.entries()) {
       const mentions = [
-        ...(paramsLocal.chunkMentions ?? []),
+        ...(requiredMentionTargets ?? []),
         ...(index === 0 ? (paramsLocal.firstChunkMentions ?? []) : []),
       ];
       try {
-        const result = await paramsLocal.sendChunk({
-          chunk,
-          isFirst: index === 0,
-          mentions: mentions.length > 0 ? mentions : undefined,
-        });
+        const sendParams = {
+          ...replyTarget,
+          text: chunk,
+          ...(mentions.length > 0 ? { mentions } : {}),
+        };
+        const result = paramsLocal.useCard
+          ? await sendStructuredCardFeishu({ ...sendParams, header, note })
+          : await sendMessageFeishu({
+              ...sendParams,
+              ...(paramsLocal.preparedPostText ? { preparedPostText: true } : {}),
+            });
         results.push(result);
         acceptedChunks.push(chunk);
         markVisibleReplySent();
@@ -832,18 +841,6 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       useCard: false,
       infoKind,
       firstChunkMentions,
-      chunkMentions: requiredMentionTargets,
-      sendChunk: ({ chunk, mentions }) =>
-        sendMessageFeishu({
-          cfg,
-          to: sendTarget,
-          text: chunk,
-          replyToMessageId: sendReplyToMessageId,
-          replyInThread: effectiveReplyInThread,
-          allowTopLevelReplyFallback,
-          accountId,
-          ...(mentions ? { mentions } : {}),
-        }),
     });
 
   const sendMediaReplies = async (
@@ -860,13 +857,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         caption: "",
         send: async ({ mediaUrl }) => {
           const result = await sendMediaFeishu({
-            cfg,
-            to: sendTarget,
+            ...replyTarget,
             mediaUrl,
-            replyToMessageId: sendReplyToMessageId,
-            replyInThread: effectiveReplyInThread,
-            allowTopLevelReplyFallback,
-            accountId,
             ...(payload.audioAsVoice === true ? { audioAsVoice: true } : {}),
           });
           results.push(
@@ -930,13 +922,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       return false;
     }
     await sendMessageFeishu({
-      cfg,
-      to: sendTarget,
+      ...replyTarget,
       text: NO_VISIBLE_REPLY_FALLBACK_TEXT,
-      replyToMessageId: sendReplyToMessageId,
-      replyInThread: effectiveReplyInThread,
-      allowTopLevelReplyFallback,
-      accountId,
       ...(requiredMentionTargets?.length ? { mentions: requiredMentionTargets } : {}),
     });
     markVisibleReplySent();
@@ -996,28 +983,11 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     if (result?.visibleReplySent === true || !content?.trim()) {
       return result;
     }
-    const cardHeader = resolveCardHeader(agentId, identity);
-    const cardNote = resolveCardNote(agentId, identity, responsePrefixContextProvider());
-    return await sendChunkedTextReply({
+    return sendChunkedTextReply({
       text: content,
-      useCard: true,
+      useCard: withinCardTableLimit(content),
       infoKind,
-      header: cardHeader,
-      note: cardNote,
-      chunkMentions: requiredMentionTargets,
-      sendChunk: async ({ chunk, mentions }) =>
-        await sendStructuredCardFeishu({
-          cfg,
-          to: sendTarget,
-          text: chunk,
-          replyToMessageId: sendReplyToMessageId,
-          replyInThread: effectiveReplyInThread,
-          allowTopLevelReplyFallback,
-          accountId,
-          header: cardHeader,
-          note: cardNote,
-          ...(mentions ? { mentions } : {}),
-        }),
+      preparedPostText: true,
     });
   };
 
@@ -1381,17 +1351,18 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         );
       const finalTextExceedsStreamingLimit =
         info?.kind === "final" && hasText && text.length > textChunkLimit;
-      const useStaticCard =
-        hasText &&
-        (renderMode === "card" ||
-          (info?.kind === "block" && coreBlockStreamingEnabled && renderMode !== "raw") ||
-          (renderMode === "auto" && shouldUseCard(text)));
+      // Feishu's table ceiling applies to static card elements, not CardKit's streamed markdown.
+      // Keep the intents separate so an active preview cannot fork into an independent post.
+      const cardRenderingRequested =
+        renderMode === "card" ||
+        (info?.kind === "block" && coreBlockStreamingEnabled && renderMode !== "raw") ||
+        (renderMode === "auto" && shouldUseFeishuCard(text));
+      const useStaticCard = hasText && cardRenderingRequested && withinCardTableLimit(text);
       const useStreamingCard =
         hasText &&
         streamingEnabled &&
         !finalTextExceedsStreamingLimit &&
-        (info?.kind === "final" || useStaticCard);
-      const useCard = useStaticCard || useStreamingCard;
+        (info?.kind === "final" || cardRenderingRequested);
       const skipTextForDuplicateFinal =
         !hasIndependentPresentation &&
         info?.kind === "final" &&
@@ -1456,13 +1427,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         }
         await collectDelivery(
           sendCardFeishu({
-            cfg,
-            to: sendTarget,
+            ...replyTarget,
             card: presentationCard,
-            replyToMessageId: sendReplyToMessageId,
-            replyInThread: effectiveReplyInThread,
-            allowTopLevelReplyFallback,
-            accountId,
           }).then((result) =>
             createFeishuReplyDeliveryResult({
               results: [result],
@@ -1496,14 +1462,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           }
           return mergeFeishuReplyDeliveryResults(deliveredResults, text);
         }
-        if (info?.kind === "block") {
-          startStreaming();
-          if (streamingStartPromise) {
-            await streamingStartPromise;
-          }
-        }
-
-        if (info?.kind === "final" && useStreamingCard) {
+        if (info?.kind === "block" || (info?.kind === "final" && useStreamingCard)) {
           startStreaming();
           if (streamingStartPromise) {
             await streamingStartPromise;
@@ -1559,31 +1518,16 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           );
         }
 
-        if (useCard) {
-          const cardHeader = resolveCardHeader(agentId, identity);
-          const cardNote = resolveCardNote(agentId, identity, responsePrefixContextProvider());
+        // Streaming eligibility can still fall back to a static card, so the provider ceiling
+        // also applies when startup is unavailable or another generation is closing.
+        const useFallbackCard =
+          useStaticCard ||
+          (useStreamingCard &&
+            !isStreamingStartBackedOff(account.accountId) &&
+            withinCardTableLimit(text));
+        if (useFallbackCard) {
           deliveredResults.push(
-            await sendChunkedTextReply({
-              text,
-              useCard: true,
-              infoKind: info?.kind,
-              header: cardHeader,
-              note: cardNote,
-              chunkMentions: requiredMentionTargets,
-              sendChunk: async ({ chunk, mentions }) =>
-                await sendStructuredCardFeishu({
-                  cfg,
-                  to: sendTarget,
-                  text: chunk,
-                  replyToMessageId: sendReplyToMessageId,
-                  replyInThread: effectiveReplyInThread,
-                  allowTopLevelReplyFallback,
-                  accountId,
-                  header: cardHeader,
-                  note: cardNote,
-                  ...(mentions ? { mentions } : {}),
-                }),
-            }),
+            await sendChunkedTextReply({ text, useCard: true, infoKind: info?.kind }),
           );
         } else {
           const firstChunkMentions =
@@ -1657,28 +1601,21 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           }
         : undefined,
       onReasoningEnd: reasoningPreviewEnabled ? () => false : undefined,
-      onToolStart: previewStreamingEnabled
-        ? (payload: {
-            name?: string;
-            phase?: string;
-            args?: Record<string, unknown>;
-            detailMode?: "explain" | "raw";
-          }) => {
-            if (!isChannelProgressDraftWorkToolName(payload.name)) {
+      onItemEvent: previewStreamingEnabled
+        ? (payload: Parameters<NonNullable<GetReplyOptions["onItemEvent"]>>[0]) => {
+            if (
+              payload.kind === "preamble" ||
+              payload.hideFromChannelProgress ||
+              payload.suppressChannelProgress
+            ) {
               return false;
             }
-            const statusLineLocal = formatChannelProgressDraftLineForEntry(
-              account.config,
-              {
-                event: "tool",
-                name: payload.name,
-                phase: payload.phase,
-                args: payload.args,
-              },
-              {
-                detailMode: payload.detailMode,
-              },
-            );
+            const { kind: itemKind, ...item } = payload;
+            const statusLineLocal = formatChannelProgressDraftLineForEntry(account.config, {
+              event: "item",
+              itemKind,
+              ...item,
+            });
             if (statusLineLocal) {
               return updateStreamingStatusLine(statusLineLocal);
             }

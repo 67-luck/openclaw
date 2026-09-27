@@ -8,13 +8,17 @@ import {
   replaceSessionEntry,
 } from "../config/sessions/session-accessor.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
+import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { cliRecoveryEntrypoints } from "./cli-entrypoint.test-support.js";
 import { runCliProcessChild } from "./cli-process-child.test-helpers.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 afterEach(() => {
   closeOpenClawAgentDatabasesForTest();
+  closeOpenClawStateDatabaseForTest();
 });
 
 describe("CLI fork recovery process", () => {
@@ -64,6 +68,12 @@ describe("CLI fork recovery process", () => {
       }),
     );
 
+    const env = {
+      ...process.env,
+      HOME: root,
+      OPENCLAW_CONFIG_PATH: configPath,
+      OPENCLAW_STATE_DIR: stateDir,
+    };
     const entry: InternalSessionEntry = {
       sessionId: "openclaw-process-session",
       lifecycleRevision: "process-lifecycle",
@@ -76,14 +86,12 @@ describe("CLI fork recovery process", () => {
       forkNextResume: true,
       resumeCheckpointId: checkpointId,
     });
-    await replaceSessionEntry({ sessionKey, storePath }, entry);
+    await replaceSessionEntry({ sessionKey, storePath, env }, entry);
     closeOpenClawAgentDatabasesForTest();
 
     const result = await runCliProcessChild({
       nodeArgs: [
-        "--import",
-        "tsx",
-        "src/entry.ts",
+        ...resolveRuntimeWorkerArgv(resolveRuntimeWorkerUrl(cliRecoveryEntrypoints.cli)),
         "agent",
         "--local",
         "--session-key",
@@ -95,23 +103,19 @@ describe("CLI fork recovery process", () => {
         "--json",
       ],
       env: {
-        ...process.env,
-        HOME: root,
+        ...env,
         USERPROFILE: root,
         TMPDIR: tmpDir,
         NODE_DISABLE_COMPILE_CACHE: "1",
         NODE_ENV: undefined,
         NODE_OPTIONS: undefined,
-        OPENCLAW_CONFIG_PATH: configPath,
         OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
         OPENCLAW_HOME: root,
         OPENCLAW_NO_RESPAWN: "1",
-        OPENCLAW_STATE_DIR: stateDir,
         PR135168_BACKEND_SCRIPT: backendScript,
         PR135168_NEWER_CLI_SESSION_ID: newerCliSessionId,
         PR135168_REBIND_SCRIPT: rebindScript,
         PR135168_SESSION_KEY: sessionKey,
-        PR135168_SOURCE_DIR: path.resolve("src"),
         PR135168_SPAWN_LOG: spawnLog,
         PR135168_STORE_PATH: storePath,
         PR135168_SUCCESSOR_CLI_SESSION_ID: successorCliSessionId,
@@ -125,7 +129,7 @@ describe("CLI fork recovery process", () => {
     );
     closeOpenClawAgentDatabasesForTest();
     expect(
-      loadSessionEntryReadOnly({ sessionKey, storePath })?.cliSessionBindings?.["proof-cli"]
+      loadSessionEntryReadOnly({ sessionKey, storePath, env })?.cliSessionBindings?.["proof-cli"]
         ?.sessionId,
     ).toBe(newerCliSessionId);
     const spawn = JSON.parse((await fs.readFile(spawnLog, "utf8")).trim()) as {
@@ -237,11 +241,8 @@ process.stdout.write(JSON.stringify({ result: "stale recovery ran", session_id: 
     ),
     fs.writeFile(
       params.rebindScript,
-      `import path from "node:path";
-import { pathToFileURL } from "node:url";
-const source = process.env.PR135168_SOURCE_DIR;
-const accessor = await import(pathToFileURL(path.join(source, "config/sessions/session-accessor.ts")).href);
-const cliSession = await import(pathToFileURL(path.join(source, "agents/cli-session.ts")).href);
+      `const accessor = await import(${JSON.stringify(resolveRuntimeWorkerUrl(cliRecoveryEntrypoints.sessionAccessor).href)});
+const cliSession = await import(${JSON.stringify(resolveRuntimeWorkerUrl(cliRecoveryEntrypoints.cliSession).href)});
 const scope = { sessionKey: process.env.PR135168_SESSION_KEY, storePath: process.env.PR135168_STORE_PATH };
 const current = accessor.loadSessionEntry({ ...scope, readConsistency: "latest" });
 if (!current) throw new Error("proof session row missing");

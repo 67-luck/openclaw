@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import type {
   MemoryEntryProvenance,
@@ -6,6 +5,7 @@ import type {
 } from "openclaw/plugin-sdk/memory-core-host-runtime-files";
 import { formatMemoryDreamingDay } from "openclaw/plugin-sdk/memory-core-host-status";
 import { appendMemoryHostEvent } from "openclaw/plugin-sdk/memory-host-events";
+import { uniqueStrings } from "openclaw/plugin-sdk/string-coerce-runtime";
 import pLimit from "p-limit";
 import { deriveConceptTags } from "./concept-vocabulary.js";
 import {
@@ -13,6 +13,7 @@ import {
   recordMemoryEntryOrigins,
   type MemoryEntryOrigin,
 } from "./memory-entry-origins.js";
+import { inspectWorkspaceFile } from "./memory-workspace-files.js";
 import { withMemoryWorkspaceLock } from "./memory-workspace-lock.js";
 import type { SessionEntryOrigin } from "./session-ingestion.js";
 import { readStore, writeStore } from "./short-term-promotion-store.js";
@@ -61,9 +62,12 @@ function mergeRecallProvenance(
   };
 }
 
-async function shortTermRecallSourceIsFile(sourcePath: string): Promise<boolean> {
+async function shortTermRecallSourceIsFile(
+  workspaceDir: string,
+  sourcePath: string,
+): Promise<boolean> {
   try {
-    const stat = await fs.stat(sourcePath);
+    const stat = await inspectWorkspaceFile(workspaceDir, sourcePath);
     return stat.isFile();
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -88,7 +92,7 @@ export async function filterLiveShortTermRecallEntries(params: {
     if (existing) {
       return existing;
     }
-    const check = sourceFileLimit(() => shortTermRecallSourceIsFile(sourcePath));
+    const check = sourceFileLimit(() => shortTermRecallSourceIsFile(workspaceDir, sourcePath));
     sourceFileChecks.set(sourcePath, check);
     return check;
   };
@@ -242,8 +246,8 @@ export async function recordShortTermRecalls(params: {
                 entry.claimHash === claimHash,
             )
           : undefined;
-      // Interactive/grounded writers retain their path-qualified identity.
-      // Daily recurrence reinforces that candidate instead of creating a rival.
+      // Non-daily writers retain their path-qualified identity unless daily
+      // ingestion has already established the canonical claim entry.
       const claimKey =
         signalType === "daily"
           ? buildDailyClaimEntryKey(claimHash)
@@ -254,8 +258,11 @@ export async function recordShortTermRecalls(params: {
               source: "memory",
               claimHash,
             });
+      const dailyClaimEntry =
+        signalType === "daily" ? undefined : store.entries[buildDailyClaimEntryKey(claimHash)];
       const key =
         nonDailyEntry?.key ??
+        dailyClaimEntry?.key ??
         (signalType !== "recall" || store.entries[claimKey] ? claimKey : buildEntryKey(result));
       const existing = store.entries[key];
       const score = clampScore(result.score);
@@ -290,6 +297,10 @@ export async function recordShortTermRecalls(params: {
       const totalScore = Math.max(0, (existing?.totalScore ?? 0) + score * addedSignals);
       const maxScore = Math.max(existing?.maxScore ?? 0, dedupeSignal ? 0 : score);
       const queryHashes = mergeRecentDistinct(queryHashesBase, queryHash, MAX_QUERY_HASHES);
+      const userQueryHashes =
+        signalType === "recall"
+          ? mergeRecentDistinct(existing?.userQueryHashes ?? [], queryHash, MAX_QUERY_HASHES)
+          : existing?.userQueryHashes;
       const recallDays = mergeRecentDistinct(recallDaysBase, dayBucket, MAX_RECALL_DAYS);
       const conceptTags = deriveConceptTags({ path: normalizedPath, snippet });
       // Workspace-file hits without explicit provenance retain the index's
@@ -311,8 +322,11 @@ export async function recordShortTermRecalls(params: {
         ? (existing?.lastRecalledAt ?? nowIso)
         : nowIso;
       // Daily claim keys omit the file path; retain the first source citation
-      // while observations from distinct days accumulate on the same claim.
-      const preserveFirstDailySource = signalType === "daily" && existing !== undefined;
+      // while observations from distinct days accumulate on the same claim. A
+      // A later non-daily signal cites it the same way, so the claim never
+      // adopts the path of whichever file the search or backfill happened to hit.
+      const preserveFirstDailySource =
+        existing !== undefined && (signalType === "daily" || dailyClaimEntry !== undefined);
       store.entries[key] = {
         key,
         path: preserveFirstDailySource ? existing.path : normalizedPath,
@@ -332,6 +346,7 @@ export async function recordShortTermRecalls(params: {
         firstRecalledAt: existing?.firstRecalledAt ?? nowIso,
         lastRecalledAt,
         queryHashes,
+        ...(userQueryHashes ? { userQueryHashes } : {}),
         recallDays,
         conceptTags: conceptTags.length > 0 ? conceptTags : (existing?.conceptTags ?? []),
         provenance,
@@ -444,15 +459,5 @@ export function resolveShortTermSourcePathCandidates(
   if (!normalizedPath.startsWith("memory/")) {
     basenames.push(path.posix.join("memory", path.posix.basename(normalizedPath)));
   }
-  const seen = new Set<string>();
-  const resolved: string[] = [];
-  for (const relativePath of basenames) {
-    const absolutePath = path.resolve(workspaceDir, relativePath);
-    if (seen.has(absolutePath)) {
-      continue;
-    }
-    seen.add(absolutePath);
-    resolved.push(absolutePath);
-  }
-  return resolved;
+  return uniqueStrings(basenames.map((relativePath) => path.resolve(workspaceDir, relativePath)));
 }

@@ -1,6 +1,6 @@
 // Node status/list/describe commands and paired-node display formatting.
+import { formatByteSize } from "@openclaw/normalization-core";
 import {
-  normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
@@ -10,11 +10,15 @@ import { getTerminalTableWidth, renderTable } from "../../../packages/terminal-c
 import { formatErrorMessage } from "../../infra/errors.js";
 import { formatTimeAgo } from "../../infra/format-time/format-relative.ts";
 import { defaultRuntime } from "../../runtime.js";
+import { isNodeHostStats } from "../../shared/node-host-stats.js";
+import { parseNodeList, parsePairingList } from "../../shared/node-list-parse.js";
+import type { NodeListNode, PairedNode } from "../../shared/node-list-types.js";
 import { shortenHomeInString } from "../../utils.js";
 import { formatPairingApproveCommand } from "../pairing-command-format.js";
 import { parseDurationMs } from "../parse-duration.js";
+import { formatVersionLabel } from "../version-format.js";
 import { formatConnectionFlagReminder, getNodesTheme, runNodesCommand } from "./cli-utils.js";
-import { formatPermissions, parseNodeList, parsePairingList } from "./format.js";
+import { formatPermissions } from "./format.js";
 import { renderPendingPairingRequestsTable } from "./pairing-render.js";
 import {
   callNodesGatewayCli,
@@ -22,20 +26,42 @@ import {
   nodesCallOpts,
   resolveNodeDiagnosticsId,
 } from "./rpc.js";
-import type { NodeListNode, NodesRpcOpts, PairedNode } from "./types.js";
+import type { NodesRpcOpts } from "./types.js";
 
 type PairedNodeListRow = PairedNode & Partial<NodeListNode>;
 type NodeApprovalState = NonNullable<NodeListNode["approvalState"]>;
 
-function formatVersionLabel(raw: string) {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return raw;
+function formatNodeStatsBytes(bytes: number): string {
+  return formatByteSize(bytes, {
+    style: "legacy-binary",
+    maxUnit: "tera",
+    separator: " ",
+    fractionDigits: (value, unit) => (value < 10 && unit !== "byte" ? 1 : 0),
+  });
+}
+
+function formatNodeHostStats(stats: unknown, connected: boolean, now: number): string | null {
+  if (!isNodeHostStats(stats)) {
+    return null;
   }
-  if (normalizeLowercaseStringOrEmpty(trimmed).startsWith("v")) {
-    return trimmed;
-  }
-  return /^\d/.test(trimmed) ? `v${trimmed}` : trimmed;
+  const totalMemory = formatNodeStatsBytes(stats.memoryTotalBytes);
+  const usedMemory = formatNodeStatsBytes(stats.memoryTotalBytes - stats.memoryFreeBytes);
+  const memoryUnit = totalMemory.slice(totalMemory.lastIndexOf(" "));
+  const usedLabel = usedMemory.endsWith(memoryUnit)
+    ? usedMemory.slice(0, -memoryUnit.length)
+    : usedMemory;
+  const summary = [
+    stats.loadAverage ? `load ${stats.loadAverage[0].toFixed(1)}/${stats.cpuCount}` : null,
+    `mem ${usedLabel}/${totalMemory}`,
+    stats.diskAvailableBytes !== undefined
+      ? `disk ${formatNodeStatsBytes(stats.diskAvailableBytes)} free`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return connected
+    ? summary
+    : `${summary} (last known ${formatTimeAgo(Math.max(0, now - stats.updatedAtMs))})`;
 }
 
 function resolveNodeVersions(node: {
@@ -288,6 +314,7 @@ export function registerNodesStatusCommands(nodes: Command) {
               n.modelIdentifier ? `hw: ${n.modelIdentifier}` : null,
               perms ? `perms: ${perms}` : null,
               versions,
+              formatNodeHostStats(n.hostStats, Boolean(n.connected), now),
               pathEnv ? `path: ${pathEnv}` : null,
               lastActive ? `input: ${lastActive}${n.active ? " (active)" : ""}` : null,
             ]
@@ -415,52 +442,49 @@ export function registerNodesStatusCommands(nodes: Command) {
             },
           );
           const lastActive = formatNodeTimeAgo(Date.now(), obj.lastActiveAtMs);
+          const stats = formatNodeHostStats(obj.hostStats, connected, Date.now());
 
           const { heading, ok, warn, muted } = getNodesTheme();
           const status = `${paired ? ok("paired") : warn("unpaired")} · ${
             connected ? ok("connected") : muted("disconnected")
           }`;
           const tableWidth = getTerminalTableWidth();
-          const rows = [
-            { Field: "ID", Value: sanitizeTerminalText(nodeId) },
-            displayName ? { Field: "Name", Value: sanitizeTerminalText(displayName) } : null,
-            client ? { Field: "Client", Value: sanitizeTerminalText(client) } : null,
-            ip ? { Field: "IP", Value: sanitizeTerminalText(ip) } : null,
-            family ? { Field: "Device", Value: sanitizeTerminalText(family) } : null,
-            model ? { Field: "Model", Value: sanitizeTerminalText(model) } : null,
-            perms ? { Field: "Perms", Value: sanitizeTerminalText(perms) } : null,
-            versions ? { Field: "Version", Value: sanitizeTerminalText(versions) } : null,
-            pathEnv ? { Field: "PATH", Value: sanitizeTerminalText(pathEnv) } : null,
-            lastActive
-              ? {
-                  Field: "Last input",
-                  Value: `${lastActive}${obj.active === true ? " (active node)" : ""}`,
-                }
-              : null,
-            { Field: "Status", Value: status },
-            approvalState
-              ? { Field: "Approval", Value: formatApprovalStateLabel(approvalState) }
-              : null,
-            pendingRequestId
-              ? { Field: "Pending request", Value: sanitizeTerminalText(pendingRequestId) }
-              : null,
-            pendingCaps
-              ? { Field: "Pending caps", Value: sanitizeTerminalText(pendingCaps.join(", ")) }
-              : null,
-            pendingPerms
-              ? { Field: "Pending perms", Value: sanitizeTerminalText(pendingPerms) }
-              : null,
-            approveCommand
-              ? {
-                  Field: approvalState === "pending-reapproval" ? "Reapprove" : "Approve",
-                  Value: sanitizeTerminalText(approveCommand),
-                }
-              : null,
-            approveCommand && connectionReminder
-              ? { Field: "Connection reminder", Value: connectionReminder }
-              : null,
-            { Field: "Caps", Value: caps ? sanitizeTerminalText(caps.join(", ")) : "?" },
-          ].filter(Boolean) as Array<{ Field: string; Value: string }>;
+          const rows = [{ Field: "ID", Value: sanitizeTerminalText(nodeId) }];
+          const addDetail = (field: string, value: string | null) => {
+            if (value) {
+              rows.push({ Field: field, Value: sanitizeTerminalText(value) });
+            }
+          };
+          addDetail("Name", displayName);
+          addDetail("Client", client);
+          addDetail("IP", ip);
+          addDetail("Device", family);
+          addDetail("Model", model);
+          addDetail("Perms", perms);
+          addDetail("Version", versions);
+          addDetail("Stats", stats);
+          addDetail("PATH", pathEnv);
+          addDetail(
+            "Last input",
+            lastActive ? `${lastActive}${obj.active === true ? " (active node)" : ""}` : null,
+          );
+          rows.push({ Field: "Status", Value: status });
+          addDetail("Approval", approvalState ? formatApprovalStateLabel(approvalState) : null);
+          addDetail("Pending request", pendingRequestId ?? null);
+          // An empty reported capability list remains a visible row.
+          if (pendingCaps) {
+            rows.push({
+              Field: "Pending caps",
+              Value: sanitizeTerminalText(pendingCaps.join(", ")),
+            });
+          }
+          addDetail("Pending perms", pendingPerms);
+          addDetail(
+            approvalState === "pending-reapproval" ? "Reapprove" : "Approve",
+            approveCommand,
+          );
+          addDetail("Connection reminder", approveCommand && connectionReminder);
+          rows.push({ Field: "Caps", Value: caps ? sanitizeTerminalText(caps.join(", ")) : "?" });
 
           defaultRuntime.log(heading("Node"));
           defaultRuntime.log(

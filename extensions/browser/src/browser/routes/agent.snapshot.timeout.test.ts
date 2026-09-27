@@ -4,7 +4,10 @@ import { createBrowserRouteApp, createBrowserRouteResponse } from "./test-helper
 
 const cdpMocks = vi.hoisted(() => ({
   captureScreenshot: vi.fn(),
-  getMainFrameDocumentIdentityViaCdp: vi.fn(async () => "cdp:test-document"),
+  getDocumentIdentitiesViaCdp: vi.fn(async () => ({
+    mainFrame: "cdp:test-document",
+    frameTree: "cdp:test-tree",
+  })),
   snapshotAria: vi.fn(async () => ({ nodes: [] })),
   snapshotRoleViaCdp: vi.fn(async () => ({
     snapshot: "button Continue",
@@ -34,7 +37,13 @@ const profileContext = vi.hoisted(() => ({
   })),
 }));
 const browserRuntime = vi.hoisted(() => ({
-  profiles: new Map<string, { running: { headless?: boolean; headlessSource?: string } | null }>(),
+  profiles: new Map<
+    string,
+    {
+      running: { headless?: boolean; headlessSource?: string } | null;
+      externalBrowserMode?: { browserWebSocketUrl: string; headless: Promise<boolean | undefined> };
+    }
+  >(),
 }));
 const pwMocks = vi.hoisted(() => ({
   connected: false,
@@ -43,12 +52,13 @@ const pwMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../pw-ai-module.js", () => ({
+  getPwAiModule: vi.fn(async () => null),
   getLoadedPwAiModule: () => pwMocks,
 }));
 
 vi.mock("../cdp.js", () => ({
   captureScreenshot: cdpMocks.captureScreenshot,
-  getMainFrameDocumentIdentityViaCdp: cdpMocks.getMainFrameDocumentIdentityViaCdp,
+  getDocumentIdentitiesViaCdp: cdpMocks.getDocumentIdentitiesViaCdp,
   snapshotAria: cdpMocks.snapshotAria,
   snapshotRoleViaCdp: cdpMocks.snapshotRoleViaCdp,
 }));
@@ -76,14 +86,14 @@ vi.mock("../screenshot.js", () => ({
   })),
 }));
 
-vi.mock("../../media/store.js", () => ({
+vi.mock("openclaw/plugin-sdk/media-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/media-runtime")>()),
   ensureMediaDir: vi.fn(async () => {}),
   saveMediaBuffer: vi.fn(async () => ({ path: "/tmp/fake.png" })),
 }));
 
 vi.mock("./agent.shared.js", () => ({
   browserNavigationPolicyForProfile: vi.fn(() => ({})),
-  getPwAiModule: vi.fn(async () => null),
   handleRouteError: vi.fn((_ctx, _res, err) => {
     throw err;
   }),
@@ -233,28 +243,40 @@ describe("browser agent snapshot timeout routing", () => {
       expectedHeadless: true,
     },
     {
-      name: "headless environment override when its profile is configured headed",
+      name: "observed headed external browser",
+      configuredHeadless: true,
+      running: null,
+      externalHeadless: false,
+      expectedHeadless: false,
+    },
+    {
+      name: "observed headless external browser",
       configuredHeadless: false,
-      running: { headless: true, headlessSource: "env" },
+      running: null,
+      externalHeadless: true,
       expectedHeadless: true,
     },
     {
-      name: "headless Linux no-display fallback when its profile is configured headed",
-      configuredHeadless: false,
-      running: { headless: true, headlessSource: "linux-display-fallback" },
-      expectedHeadless: true,
-    },
-    {
-      name: "untracked browser without authoritative launch state",
+      name: "external browser without authoritative launch state",
       configuredHeadless: false,
       running: null,
       expectedHeadless: undefined,
     },
   ])(
     "passes the actual launch mode for $name",
-    async ({ configuredHeadless, running, expectedHeadless }) => {
+    async ({ configuredHeadless, running, externalHeadless, expectedHeadless }) => {
       profileContext.profile.headless = configuredHeadless;
-      browserRuntime.profiles.set(profileContext.profile.name, { running });
+      browserRuntime.profiles.set(profileContext.profile.name, {
+        running,
+        ...(typeof externalHeadless === "boolean"
+          ? {
+              externalBrowserMode: {
+                browserWebSocketUrl: "ws://127.0.0.1:18800/devtools/browser/test-browser",
+                headless: Promise.resolve(externalHeadless),
+              },
+            }
+          : {}),
+      });
       cdpMocks.captureScreenshot.mockResolvedValueOnce(Buffer.from("png"));
       const handler = getScreenshotHandler();
       const response = createBrowserRouteResponse();

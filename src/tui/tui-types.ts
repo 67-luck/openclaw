@@ -49,6 +49,8 @@ export type ChatEvent = {
   seq?: number;
   state: "delta" | "final" | "aborted" | "error";
   message?: unknown;
+  deltaText?: string;
+  replace?: boolean;
   errorMessage?: string;
 };
 
@@ -136,14 +138,6 @@ export type AgentSummary = {
   name?: string;
 };
 
-type QueuedMessageMode = "steer" | "followUp";
-
-type QueuedMessage = {
-  runId: string;
-  text: string;
-  mode: QueuedMessageMode;
-};
-
 export type GatewayStatusSummary = {
   runtimeVersion?: string | null;
   linkChannel?: {
@@ -161,7 +155,7 @@ export type GatewayStatusSummary = {
       everyMs?: number | null;
     }>;
   };
-  providerSummary?: string[];
+  channelSummary?: string[];
   queuedSystemEvents?: string[];
   sessions?: {
     paths?: string[];
@@ -195,7 +189,6 @@ export type TuiStateAccess = {
   sessionProjection?: SessionProjectionState;
   activeChatRunId: string | null;
   pendingSubmit: TuiPendingSubmit | null;
-  queuedMessages?: QueuedMessage[];
   historyLoaded: boolean;
   sessionInfo: SessionInfo;
   initialSessionApplied: boolean;
