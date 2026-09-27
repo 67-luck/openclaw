@@ -19,7 +19,6 @@ import { run, type CommandRecord } from "./schtasks.installed-command.test-suppo
 import {
   assertInstalledSiblingBuildRefusal,
   doctorReportSchema,
-  inspectDisabledDiscoveryTasks,
   inspectInstalledUpdateFailure,
   runInstalledPublishedUpdate,
   type InstalledTask as Task,
@@ -42,6 +41,7 @@ import {
   samePath,
   verifyPreparedInstall,
 } from "./schtasks.installed-package.test-support.js";
+import { inspectInstalledDisabledTaskStart } from "./schtasks.installed-start.test-support.js";
 import {
   inspectInstalledSelectedStartupFallback,
   inspectInstalledStartupAliasBuildRefusal,
@@ -329,7 +329,19 @@ export async function runInstalledLifecycle(
     await recordProgress("selected-status-verified");
     let candidateStatus = before;
     const configBefore = await fs.readFile(selected.configPath);
-    if (key !== "fresh") {
+    if (key === "fresh") {
+      observations.explicitStart = await inspectInstalledDisabledTaskStart({
+        task: selected,
+        cli: (args) => cli(selected, args),
+        awaitReadiness: () => awaitReadiness(selected, "explicit-start"),
+        status: () => status(selected, beforeIdentity),
+        waitForPortRelease: () => owners.waitForLoopbackPortRelease(selected.gatewayPort),
+        canBindPort: () => owners.canBindLoopbackPort(selected.gatewayPort),
+        recordProgress,
+      });
+      await cli(selected, ["gateway", "stop", "--force", "--json"]);
+      await owners.waitForLoopbackPortRelease(selected.gatewayPort);
+    } else {
       const peer = await createTask("peer");
       authorityPeerRoot = peer.installRoot;
       const peerIdentity = await readInstalledBuildIdentity(peer.installRoot, key);
@@ -441,153 +453,131 @@ export async function runInstalledLifecycle(
       await cli(peer, ["gateway", "stop", "--force", "--json"]);
       await owners.waitForLoopbackPortRelease(peer.gatewayPort);
       await cli(peer, ["gateway", "uninstall", "--json"]);
-    }
-    // The packaged candidate must reach its real strict inspection preview, not exit-zero skip.
-    const preview = async (task: Task = selected) =>
-      parseInstalledPreview(
-        await cli(task, ["update", "--dry-run", "--tag", input.tarball, "--json"]),
-        task.installRoot,
+      // The packaged candidate must reach its real strict inspection preview, not exit-zero skip.
+      const preview = async (task: Task = selected) =>
+        parseInstalledPreview(
+          await cli(task, ["update", "--dry-run", "--tag", input.tarball, "--json"]),
+          task.installRoot,
+        );
+      const configBeforePreview = await fs.readFile(selected.configPath);
+      const healthy = await preview();
+      assert.equal(
+        healthy.notes.some((note) => note.includes("Gateway service inspection is unavailable")),
+        false,
       );
-    if (key === "fresh") {
-      observations.discovery = await inspectDisabledDiscoveryTasks({
+      await cli(selected, ["gateway", "stop", "--force", "--json"]);
+      await owners.waitForLoopbackPortRelease(selected.gatewayPort);
+      observations.selectedStartupFallback = await inspectInstalledSelectedStartupFallback({
+        ...(key === "2026.9.4"
+          ? {
+              observeFingerprint: async () => {
+                const observation = JSON.parse(
+                  await run(
+                    [
+                      "--import",
+                      pathToFileURL(path.resolve("scripts/tsx.mjs")).href,
+                      path.resolve(
+                        "src/daemon/schtasks.installed-fingerprint-observer.test-support.mts",
+                      ),
+                      inputPath,
+                    ],
+                    selected.env,
+                    process.cwd(),
+                    commands,
+                    0,
+                    signal,
+                  ),
+                );
+                await recordProgress("fingerprint-result");
+                return observation;
+              },
+            }
+          : {}),
         selected,
-        preview,
-        doctor,
-        cleanupTask,
-        owners,
-        id,
-        cellIndex,
-        key,
-        rootDir,
-        installRoot,
-        admissions,
-        admissionPath,
-        recordProgress,
-      });
-      observations.startupSiblings = await inspectInstalledStartupSiblings({
-        selected,
-        launcher: selected,
-        expectedStatus: before,
+        expectedCommand: candidateStatus.service.command.programArguments,
         doctor,
         deepStatus: async (task) =>
           JSON.parse(await cli(task, ["gateway", "status", "--deep", "--json"])),
+        canBindLoopbackPort: owners.canBindLoopbackPort,
         lifetime,
         admissions,
         admissionPath,
       });
-    }
-    const configBeforePreview = await fs.readFile(selected.configPath);
-    const healthy = await preview();
-    assert.equal(
-      healthy.notes.some((note) => note.includes("Gateway service inspection is unavailable")),
-      false,
-    );
-    await cli(selected, ["gateway", "stop", "--force", "--json"]);
-    await owners.waitForLoopbackPortRelease(selected.gatewayPort);
-    observations.selectedStartupFallback = await inspectInstalledSelectedStartupFallback({
-      ...(key === "2026.9.4"
-        ? {
-            observeFingerprint: async () => {
-              const observation = JSON.parse(
-                await run(
-                  [
-                    "--import",
-                    pathToFileURL(path.resolve("scripts/tsx.mjs")).href,
-                    path.resolve(
-                      "src/daemon/schtasks.installed-fingerprint-observer.test-support.mts",
-                    ),
-                    inputPath,
-                  ],
-                  selected.env,
-                  process.cwd(),
-                  commands,
-                  0,
-                  signal,
-                ),
-              );
-              await recordProgress("fingerprint-result");
-              return observation;
-            },
-          }
-        : {}),
-      selected,
-      expectedCommand: candidateStatus.service.command.programArguments,
-      doctor,
-      deepStatus: async (task) =>
-        JSON.parse(await cli(task, ["gateway", "status", "--deep", "--json"])),
-      canBindLoopbackPort: owners.canBindLoopbackPort,
-      lifetime,
-      admissions,
-      admissionPath,
-    });
-    if (key === "2026.9.3") {
-      assert.ok(authorityPeerRoot);
-      const { inspectInstalledTaskAuthority } =
-        await import("./schtasks.installed-authority.test-support.js");
-      observations.nativeAuthority = await inspectInstalledTaskAuthority({
-        task: selected,
-        foreignInstallRoot: authorityPeerRoot,
-        canBindLoopbackPort: owners.canBindLoopbackPort,
-        recordProgress,
-      });
-    }
-    const xml = await readTaskXml(selected.taskName);
-    assert.ok(xml);
-    const canonicalScriptHash = await hashFile(selected.scriptPath);
-    const match = /<Command>([^<]+)<\/Command>/u.exec(xml);
-    assert.ok(match);
-    const empty = path.join(rootDir, "empty-registered-launcher.cmd");
-    await fs.writeFile(empty, "@echo off\r\n", "ascii");
-    const restoreXml = path.join(rootDir, "restore-task.xml");
-    const malformedXml = path.join(rootDir, "empty-task.xml");
-    const escaped = empty.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-    await fs.writeFile(restoreXml, `\uFEFF${xml}`, "utf16le");
-    await fs.writeFile(
-      malformedXml,
-      `\uFEFF${setScheduledTaskXmlEnabled(xml, false)
-        .replace(match[0], `<Command>${escaped}</Command>`)
-        .replace(/<Arguments>[\s\S]*?<\/Arguments>/u, "")}`,
-      "utf16le",
-    );
-    let previewFailure: Error | undefined;
-    try {
-      assert.equal(
-        (await execSchtasks(["/Create", "/TN", selected.taskName, "/XML", malformedXml, "/F"]))
-          .code,
-        0,
+      if (key === "2026.9.3") {
+        assert.ok(authorityPeerRoot);
+        const { inspectInstalledTaskAuthority } =
+          await import("./schtasks.installed-authority.test-support.js");
+        observations.nativeAuthority = await inspectInstalledTaskAuthority({
+          task: selected,
+          foreignInstallRoot: authorityPeerRoot,
+          canBindLoopbackPort: owners.canBindLoopbackPort,
+          recordProgress,
+        });
+      }
+      const xml = await readTaskXml(selected.taskName);
+      assert.ok(xml);
+      const canonicalScriptHash = await hashFile(selected.scriptPath);
+      const match = /<Command>([^<]+)<\/Command>/u.exec(xml);
+      assert.ok(match);
+      const empty = path.join(rootDir, "empty-registered-launcher.cmd");
+      await fs.writeFile(empty, "@echo off\r\n", "ascii");
+      const restoreXml = path.join(rootDir, "restore-task.xml");
+      const malformedXml = path.join(rootDir, "empty-task.xml");
+      const escaped = empty
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+      await fs.writeFile(restoreXml, `\uFEFF${xml}`, "utf16le");
+      await fs.writeFile(
+        malformedXml,
+        `\uFEFF${setScheduledTaskXmlEnabled(xml, false)
+          .replace(match[0], `<Command>${escaped}</Command>`)
+          .replace(/<Arguments>[\s\S]*?<\/Arguments>/u, "")}`,
+        "utf16le",
       );
-      const registeredEmpty = await readTaskXml(selected.taskName);
-      assert.equal(readTaskPrincipal(selected.taskName).enabled, false);
-      const malformed = await preview();
-      assert.equal(await readTaskXml(selected.taskName), registeredEmpty);
-      assert.ok(
-        malformed.notes.some((note) => note.includes("Gateway service inspection is unavailable")),
-      );
-      assert.equal(await hashFile(selected.scriptPath), canonicalScriptHash);
-      observations.strictPreview = {
-        healthy,
-        malformed,
-        canonicalScriptHash,
-        malformedLauncherExecuted: false,
-      };
-    } catch (error) {
-      previewFailure = toErrorObject(error, "Installed Scheduled Task fixture failed");
+      let previewFailure: Error | undefined;
+      try {
+        assert.equal(
+          (await execSchtasks(["/Create", "/TN", selected.taskName, "/XML", malformedXml, "/F"]))
+            .code,
+          0,
+        );
+        const registeredEmpty = await readTaskXml(selected.taskName);
+        assert.equal(readTaskPrincipal(selected.taskName).enabled, false);
+        const malformed = await preview();
+        assert.equal(await readTaskXml(selected.taskName), registeredEmpty);
+        assert.ok(
+          malformed.notes.some((note) =>
+            note.includes("Gateway service inspection is unavailable"),
+          ),
+        );
+        assert.equal(await hashFile(selected.scriptPath), canonicalScriptHash);
+        observations.strictPreview = {
+          healthy,
+          malformed,
+          canonicalScriptHash,
+          malformedLauncherExecuted: false,
+        };
+      } catch (error) {
+        previewFailure = toErrorObject(error, "Installed Scheduled Task fixture failed");
+      }
+      try {
+        assert.equal(
+          (await execSchtasks(["/Create", "/TN", selected.taskName, "/XML", restoreXml, "/F"]))
+            .code,
+          0,
+        );
+      } catch (error) {
+        previewFailure = new AggregateError(
+          previewFailure ? [previewFailure, error] : [error],
+          "Registered launcher restoration failed",
+        );
+      }
+      if (previewFailure) {
+        throw previewFailure;
+      }
+      assert.deepEqual(await fs.readFile(selected.configPath), configBeforePreview);
     }
-    try {
-      assert.equal(
-        (await execSchtasks(["/Create", "/TN", selected.taskName, "/XML", restoreXml, "/F"])).code,
-        0,
-      );
-    } catch (error) {
-      previewFailure = new AggregateError(
-        previewFailure ? [previewFailure, error] : [error],
-        "Registered launcher restoration failed",
-      );
-    }
-    if (previewFailure) {
-      throw previewFailure;
-    }
-    assert.deepEqual(await fs.readFile(selected.configPath), configBeforePreview);
     await cli(selected, ["gateway", "uninstall", "--json"]);
     assert.equal(probeScheduledTaskExists(selected.taskName), false);
     if (key === "fresh") {
