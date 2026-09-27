@@ -7,9 +7,12 @@ import {
 
 // Reuse the same controlled observation contract as watcher-domain tests. Root
 // admission remains real; this fixture simply publishes no unsolicited dirties.
-vi.mock("@openclaw/fs-safe/watch", async () => {
+vi.mock("openclaw/plugin-sdk/file-access-runtime", async (original) => {
   const { createMemoryObservationHarness } = await import("./watcher-test-support.js");
-  return { watch: createMemoryObservationHarness().watch };
+  return {
+    ...(await original<typeof import("openclaw/plugin-sdk/file-access-runtime")>()),
+    watch: createMemoryObservationHarness().watch,
+  };
 });
 
 beforeAll(async () => {
