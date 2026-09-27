@@ -323,8 +323,8 @@ export function resolveOverflowSummaryInboundEventKind(
     : undefined;
 }
 
-export function createOverflowSummaryRetrySource(source: FollowupRun): InternalFollowupRun {
-  const internalSource: InternalFollowupRun = source;
+export function createOverflowSummaryRetrySource(source: FollowupRun): GroupFollowupRun {
+  const internalSource: GroupFollowupRun = source;
   return {
     groupParticipation: internalSource.groupParticipation,
     prompt: source.prompt,
