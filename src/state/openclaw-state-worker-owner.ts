@@ -383,10 +383,23 @@ function createSharedStateWorkerOwner() {
       let entry: Entry | undefined;
       for (;;) {
         for (const candidate of stores) {
+          if (!matches(candidate, admission.identity)) {
+            continue;
+          }
+          try {
+            candidate.context.admission.assertCurrent();
+          } catch (error) {
+            if (hasActiveActorOperations(candidate)) {
+              throw error;
+            }
+            await (candidate.actor
+              ? retireActor(candidate.actor, candidate.context.admission.identity)
+              : retire(candidate));
+            return this.open(context, options);
+          }
           if (
-            matches(candidate, admission.identity) &&
-            (candidate.context.existingSchemaPath !== context.existingSchemaPath ||
-              candidate.source.moduleUrl.href !== source.moduleUrl.href)
+            candidate.context.existingSchemaPath !== context.existingSchemaPath ||
+            candidate.source.moduleUrl.href !== source.moduleUrl.href
           ) {
             await retire(candidate);
             assertAdmission();

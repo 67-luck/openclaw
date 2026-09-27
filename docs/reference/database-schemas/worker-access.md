@@ -94,6 +94,14 @@ not recreate a missing file. Preparing a new database directory and quarantining
 orphaned sidecars require the existing schema-maintenance owner; later permission
 hardening never recreates a removed directory.
 
+Reusing a shared-state worker requires its original path admission to remain
+current, even when a new caller observes the same physical database at another
+path. After relocation, the owner retires an idle worker before opening one with
+the new caller's admission. An active callback refuses reuse until it settles;
+it never waits on its own retirement. Cleanup failures propagate, and the new
+caller's admission is checked again before reopening. Schema-scope refusal,
+stored data, and update behavior are unchanged.
+
 Each SQLite broker worker admits up to 128 running and queued requests. A busy
 worker's admission queue does not consume another worker's request capacity;
 independent workers continue serving their databases. Requests on the same worker
