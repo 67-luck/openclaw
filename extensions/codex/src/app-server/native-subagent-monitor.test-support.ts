@@ -125,8 +125,9 @@ export function captureNativeSubagentMonitorWork() {
 export function observeCompletionAttempts() {
   const attempts = new Map<Promise<void>, string>();
   const started = new Set<{ runId: string; resolve: (attempt: Promise<void>) => void }>();
-  // oxlint-disable-next-line typescript/unbound-method -- Invoked below with .call(this, ...) to preserve the observed instance.
-  const original = CodexNativeSubagentCompletionDelivery.prototype.deliverPending;
+  const original = vi.spyOn(CodexNativeSubagentCompletionDelivery.prototype, "deliverPending");
+  // Keep Vitest's typed call-through delegate without leaving it installed on the prototype.
+  original.mockRestore();
   const observer = vi
     .spyOn(CodexNativeSubagentCompletionDelivery.prototype, "deliverPending")
     .mockImplementation(function (
