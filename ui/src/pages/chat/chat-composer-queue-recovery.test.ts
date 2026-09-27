@@ -1,8 +1,10 @@
 /* @vitest-environment jsdom */
-import { render } from "lit";
+import { html, render } from "lit";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ChatQueueItem } from "../../lib/chat/chat-types.ts";
+import { createChatProps } from "./chat-view.test-helpers.ts";
 import { renderChatQueue } from "./components/chat-composer-queue.ts";
+import { renderChatQueueRecoveryDetails } from "./components/chat-queue-recovery-details.ts";
 import type { ChatQueueRecovery } from "./components/chat-queue-recovery.types.ts";
 
 const mounts: HTMLElement[] = [];
@@ -38,39 +40,13 @@ function fixture() {
     ],
     onSend: vi.fn(),
     onDiscard: vi.fn(),
+    renderDetails: (input, inspection) =>
+      renderChatQueueRecoveryDetails(input, inspection, createChatProps(), () => {}),
   };
   const paint = (saved: ChatQueueRecovery | undefined) =>
     render(renderChatQueue({ queue, ...controls, recovery: saved }), mount);
   return { mount, queue, controls, recovery, paint };
 }
-
-it("adds inert rows without altering the real queue, reorder segments, or mounted queue rows", () => {
-  const f = fixture();
-  f.paint(undefined);
-  const before = structuredClone(f.queue);
-  const first = f.mount.querySelector('[data-chat-queue-item="first"]');
-  const handles = [...f.mount.querySelectorAll<HTMLButtonElement>(".chat-queue__grip")].map(
-    (h) => h.disabled,
-  );
-  f.paint(f.recovery);
-  expect(f.mount.querySelectorAll(".chat-queue")).toHaveLength(1);
-  expect(f.mount.querySelector('[data-chat-queue-item="first"]')).toBe(first);
-  expect(
-    [...f.mount.querySelectorAll<HTMLButtonElement>(".chat-queue__grip")].map((h) => h.disabled),
-  ).toEqual(handles);
-  expect(f.queue).toEqual(before);
-  const saved = f.mount.querySelector('[data-chat-recovery-input="saved"]');
-  expect(saved?.textContent).toContain("Not started");
-  expect(
-    saved?.querySelector(
-      "[draggable=true],.chat-queue__grip,.chat-queue__steer,.chat-queue__overflow",
-    ),
-  ).toBeNull();
-  expect(saved?.hasAttribute("data-chat-queue-item")).toBe(false);
-  f.paint(undefined);
-  expect(f.mount.querySelector('[data-chat-queue-item="first"]')).toBe(first);
-  expect(f.queue).toEqual(before);
-});
 
 it("routes explicit Send and Discard only to saved-attempt callbacks", () => {
   const f = fixture();
@@ -92,31 +68,18 @@ it("routes explicit Send and Discard only to saved-attempt callbacks", () => {
   expect(f.queue.map((item) => item.id)).toEqual(["first", "second"]);
 });
 
-it("renders an inactive cancelled row with no queue blockers or automatic actions", () => {
+it("disables Send and Discard while its explicit action is pending", () => {
   const f = fixture();
-  f.queue.length = 0;
-  f.recovery.items = [{ ...f.recovery.items[0]!, state: "cancelled" }];
-  f.paint(f.recovery);
-  expect(f.mount.textContent).toContain("Cancelled");
-  expect(f.mount.querySelector("[data-chat-queue-global-state]")).toBeNull();
-  expect(f.recovery.onSend).not.toHaveBeenCalled();
-  expect(f.recovery.onDiscard).not.toHaveBeenCalled();
-  expect(f.queue).toEqual([]);
-});
-
-it("keeps the row and controls mounted while its explicit action is pending", () => {
-  const f = fixture();
-  f.paint(f.recovery);
-  const row = f.mount.querySelector("[data-chat-recovery-input]");
-  const send = f.mount.querySelector<HTMLButtonElement>(".chat-queue__recovery-send");
   f.recovery.busyIds = new Set(["saved"]);
   f.paint(f.recovery);
-  expect(f.mount.querySelector("[data-chat-recovery-input]")).toBe(row);
-  expect(f.mount.querySelector(".chat-queue__recovery-send")).toBe(send);
-  expect(send?.disabled).toBe(true);
-  send?.click();
+  const buttons = f.mount.querySelectorAll<HTMLButtonElement>("[data-chat-recovery-input] button");
+  expect(buttons).toHaveLength(2);
+  for (const button of buttons) {
+    expect(button.disabled).toBe(true);
+    button.click();
+  }
   expect(f.recovery.onSend).not.toHaveBeenCalled();
-  expect(f.mount.querySelector(".skeleton,.btn__spinner")).toBeNull();
+  expect(f.recovery.onDiscard).not.toHaveBeenCalled();
 });
 
 it("ignores a retargeted second click after a prior saved row disappears", () => {
@@ -132,4 +95,79 @@ it("ignores a retargeted second click after a prior saved row disappears", () =>
   }
   expect(f.recovery.onSend).not.toHaveBeenCalled();
   expect(f.recovery.onDiscard).not.toHaveBeenCalled();
+});
+
+it("opens saved content without replacing normal queue rows or invoking their controls", () => {
+  const f = fixture();
+  const expanded = new Set<string>();
+  f.recovery.expandedIds = expanded;
+  f.recovery.renderDetails = () => html`<p>Complete saved message</p>`;
+  f.recovery.onToggle = (id, open) => {
+    if (open) {
+      expanded.add(id);
+    } else {
+      expanded.delete(id);
+    }
+    f.paint(f.recovery);
+  };
+  f.paint(f.recovery);
+  const first = f.mount.querySelector("[data-chat-queue-item=first]");
+  const details = f.mount.querySelector<HTMLDetailsElement>("[data-chat-recovery-input]")!;
+  expect(f.mount.textContent).not.toContain("Complete saved message");
+  details.open = true;
+  details.dispatchEvent(new Event("toggle"));
+  expect(f.mount.textContent).toContain("Complete saved message");
+  expect(f.mount.querySelector("[data-chat-queue-item=first]")).toBe(first);
+  expect(f.recovery.onSend).not.toHaveBeenCalled();
+  expect(f.controls.onQueueMove).not.toHaveBeenCalled();
+  expect(f.queue.map((item) => item.id)).toEqual(["first", "second"]);
+});
+
+it("keeps system continuation identity and summary instead of exposing the model prompt", () => {
+  const f = fixture();
+  f.recovery.items = [
+    {
+      ...f.recovery.items[0]!,
+      message: {
+        role: "user",
+        content: "PRIVATE_MODEL_CONTINUATION_PAYLOAD",
+        provenance: { kind: "internal_system", sourceTool: "main_session_restart_recovery" },
+      },
+    },
+  ];
+  f.paint(f.recovery);
+  expect(f.mount.textContent).not.toContain("PRIVATE_MODEL_CONTINUATION_PAYLOAD");
+  expect(f.mount.querySelector<HTMLButtonElement>(".chat-queue__recovery-send")?.disabled).toBe(
+    true,
+  );
+  expect(f.mount.textContent).toContain("System · restart recovery");
+  f.recovery.expandedIds = new Set(["saved"]);
+  f.paint(f.recovery);
+  expect(f.mount.querySelector(".chat-notice")).not.toBeNull();
+  expect(f.mount.textContent).not.toContain("PRIVATE_MODEL_CONTINUATION_PAYLOAD");
+});
+
+it("preserves long text, media inspection and copy without exposing reply or edit actions", () => {
+  const f = fixture();
+  const tail = "The complete prompt remains inspectable beyond the preview.";
+  f.recovery.items = [
+    {
+      ...f.recovery.items[0]!,
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "Long prompt ".repeat(180) + tail },
+          { type: "image", data: "cG5n", mimeType: "image/png", alt: "Saved image" },
+        ],
+      },
+    },
+  ];
+  f.recovery.expandedIds = new Set(["saved"]);
+  f.paint(f.recovery);
+  const body = f.mount.querySelector(".chat-queue__recovery-detail")!;
+  expect(body.textContent).toContain(tail);
+  expect(body.querySelector(".chat-message-image")).not.toBeNull();
+  expect(body.querySelector(".chat-copy-btn")).not.toBeNull();
+  expect(body.querySelector(".chat-reply-btn,.chat-rewind-btn,.chat-queue__edit-input")).toBeNull();
+  expect(f.recovery.onSend).not.toHaveBeenCalled();
 });

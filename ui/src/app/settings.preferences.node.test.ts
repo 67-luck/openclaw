@@ -16,9 +16,9 @@ import {
   resetServerUiPrefsSync,
   resolveServerUiPrefState,
 } from "./server-prefs.ts";
+import { dismissChatInputRecoveryKey } from "./settings-input-recovery.ts";
 import {
   loadLocalUserIdentity,
-  dismissChatInputRecoveryKey,
   patchSettings,
   persistSessionToken,
   loadSettings,

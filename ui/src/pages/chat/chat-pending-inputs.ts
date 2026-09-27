@@ -7,8 +7,10 @@ import type {
   ChatPendingInputsPage,
 } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
 import { t } from "../../i18n/index.ts";
-import type { ChatItem, ChatQueueItem } from "../../lib/chat/chat-types.ts";
+import type { ChatItem, ChatQueueItem, ChatQueueDisplayItem } from "../../lib/chat/chat-types.ts";
 import { findChatSubmissionMessage } from "../../lib/chat/history-message-identity.ts";
+import { extractText } from "../../lib/chat/message-extract.ts";
+import { normalizeMessage } from "../../lib/chat/message-normalizer.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { resolveUiSelectedSessionAgentId } from "../../lib/sessions/session-key.ts";
 import type { ChatMessageRecovery } from "./chat-message-recovery.ts";
@@ -22,10 +24,11 @@ import {
   reconcileChatInputCustody,
   selectChatInputDisplay,
 } from "./history-merge.ts";
+import type { PendingInputStatus } from "./system-notice-kinds.ts";
 
 type PendingInputRequest = {
   before?: number;
-  kind: "navigation" | "refresh";
+  kind: "navigation" | "refresh" | "discovery";
   client: NonNullable<ChatState["client"]>;
   connectionEpoch: number;
 };
@@ -35,11 +38,17 @@ type PendingInputView = {
   sessionId: string | null;
   agentId: string | undefined;
   page: ChatPendingInputsPage;
-  /** Recovery pagination must never replace the current execution queue. */
-  latestPage: ChatPendingInputsPage;
-  threadItems?: ChatPendingInputsPage["items"];
+  /** Connection that confirmed the published custody, not the latest read attempt. */
   client: ChatState["client"];
   connectionEpoch: number;
+  threadItems?: ChatPendingInputsPage["items"];
+  /** Accepted custody includes running inputs without a waiting-queue marker. */
+  activeInputs: ChatPendingInputsPage["items"];
+  /** Waiting chips derive from that custody, independently of retained-page browsing. */
+  queuedInputs: ChatPendingInputsPage["items"];
+  receiptRunIds: string[];
+  queuedCount: number;
+  queueBefore?: number;
   before?: number;
   readonly loading: boolean;
   error?: string;
@@ -47,12 +56,10 @@ type PendingInputView = {
   request?: PendingInputRequest;
 };
 const pendingInputViews = new WeakMap<ChatState, PendingInputView>();
-
-type PendingInput = ChatPendingInputsPage["items"][number];
 const EMPTY_INPUTS: ChatPendingInputsPage["items"] = [];
 
 function chatInputNeedsRecovery(
-  input: PendingInput,
+  input: ChatPendingInputsPage["items"][number],
   browserInputs: readonly ChatQueueItem[] = [],
 ): boolean {
   return (
@@ -68,17 +75,20 @@ function chatInputNeedsRecovery(
   );
 }
 
-/** Only active custody can participate in transcript position and unread/scroll intent. */
+/** Saved-input pagination must not create transcript scroll or unread intent. */
 export function getChatThreadPendingInputs(state: ChatState): ChatPendingInputsPage["items"] {
   const view = getChatPendingInputs(state);
   if (!view) {
     return EMPTY_INPUTS;
   }
-  const inputs = selectChatInputDisplay(
-    state.chatMessages,
-    state.chatQueue,
-    view.latestPage.items,
-  ).pendingInputs.filter((input) => !chatInputNeedsRecovery(input, state.chatQueue));
+  const display = selectChatInputDisplay(state.chatMessages, state.chatQueue, [
+    ...view.page.items.filter((input) => !input.queued),
+    ...view.queuedInputs,
+  ]);
+  const inputs = [
+    ...display.pendingInputs.filter((input) => !chatInputNeedsRecovery(input, state.chatQueue)),
+    ...display.queuedInputs,
+  ];
   if (
     view.threadItems?.length === inputs.length &&
     view.threadItems.every((input, index) => input === inputs[index])
@@ -86,6 +96,18 @@ export function getChatThreadPendingInputs(state: ChatState): ChatPendingInputsP
     return view.threadItems;
   }
   return (view.threadItems = inputs.length ? inputs : EMPTY_INPUTS);
+}
+
+/** Accepted custody supersedes a stale retained-page copy, including running inputs. */
+export function hasLiveChatInputCustody(
+  state: ChatState,
+  input: ChatPendingInputsPage["items"][number],
+): boolean {
+  return (
+    getChatPendingInputs(state)?.activeInputs.some(
+      (queued) => queued.id === input.id || Boolean(input.runId && queued.runId === input.runId),
+    ) === true
+  );
 }
 
 export function getChatRecoveryInputs(state: ChatState): ChatPendingInputsPage["items"] {
@@ -97,7 +119,85 @@ export function getChatRecoveryInputs(state: ChatState): ChatPendingInputsPage["
     state.chatMessages,
     state.chatQueue,
     view.page.items,
-  ).pendingInputs.filter((input) => chatInputNeedsRecovery(input, state.chatQueue));
+  ).pendingInputs.filter(
+    (input) =>
+      chatInputNeedsRecovery(input, state.chatQueue) && !hasLiveChatInputCustody(state, input),
+  );
+}
+
+function reconcileActiveInputs(
+  active: ChatPendingInputsPage["items"],
+  page: ChatPendingInputsPage,
+  receipts?: ChatInputReceipts,
+  queriedRunIds: readonly string[] = [],
+): ChatPendingInputsPage["items"] {
+  const completePage = page.nextBefore === undefined && page.items.length === page.total;
+  const observed = new Map(receipts?.map((receipt) => [receipt.runId, receipt]));
+  const queried = new Set(receipts === undefined ? [] : queriedRunIds);
+  const current = new Map(
+    (completePage ? [] : active)
+      .filter(
+        (input) =>
+          page.queuedCount !== 0 ||
+          !input.queued ||
+          observed.get(input.runId ?? "")?.state === "pending",
+      )
+      .map((input) => [input.id, input]),
+  );
+  for (const input of page.items) {
+    for (const [id, previous] of current) {
+      if (id === input.id || (input.runId && previous.runId === input.runId)) {
+        current.delete(id);
+      }
+    }
+    if (input.state === "queued") {
+      current.set(input.id, input);
+    }
+  }
+  // Ordinary consumption deletes custody. An exact queried absence retires its
+  // accepted-input projection even after the transcript advances beyond that message.
+  return [...current.values()].flatMap((input) => {
+    const receipt = input.runId ? observed.get(input.runId) : undefined;
+    if (receipt?.state === "consumed" || (!receipt && input.runId && queried.has(input.runId))) {
+      return [];
+    }
+    const queued = page.queuedCount === 0 ? undefined : receipt ? receipt.queued : input.queued;
+    return [input.queued === queued ? input : { ...input, queued }];
+  });
+}
+
+export function buildPendingInputQueueItems(
+  inputs: ChatPendingInputsPage["items"],
+): ChatQueueDisplayItem[] {
+  return inputs
+    .toSorted((left, right) => left.acceptedAt - right.acceptedAt)
+    .flatMap<ChatQueueDisplayItem>((input) => {
+      if (!input.queued || input.state !== "queued" || !input.runId) {
+        return [];
+      }
+      const message = normalizeMessage(input.message);
+      const attachmentLabels = message.content.flatMap((part) =>
+        part.type === "attachment" || part.type === "attachment_error"
+          ? [part.attachment.label]
+          : part.type === "image"
+            ? part.sources.flatMap((source) => (source.fileName ? [source.fileName] : []))
+            : [],
+      );
+      const imageCount = message.content.filter((part) => part.type === "image").length;
+      return [
+        {
+          id: `pending-input:${input.id}`,
+          text:
+            extractText(input.message) ||
+            attachmentLabels.join(", ") ||
+            (imageCount ? t("chat.queue.imageCount", { count: String(imageCount) }) : ""),
+          createdAt: input.acceptedAt,
+          pendingRunId: input.runId,
+          serverQueued: true,
+          sender: message.sender ?? undefined,
+        },
+      ];
+    });
 }
 
 export function buildPendingInputItems(
@@ -110,9 +210,6 @@ export function buildPendingInputItems(
 ): ChatItem[] {
   // Custody records stay outside active-run ordering until the writer promotes them.
   const items: ChatItem[] = [];
-  if (!inputs.length) {
-    return items;
-  }
   for (const input of inputs) {
     if (chatInputNeedsRecovery(input, browserInputs)) {
       continue;
@@ -123,34 +220,45 @@ export function buildPendingInputItems(
     ) {
       continue;
     }
+    let pendingStatus: PendingInputStatus | undefined;
+    if (input.state === "queued") {
+      if (input.runId && (workerSetupPending || workspaceSyncPendingRunIds.includes(input.runId))) {
+        pendingStatus = workerSetupPending ? "waitingForWorkerSetup" : "waitingForWorkspaceSync";
+      }
+    } else {
+      pendingStatus =
+        input.state === "interrupted" &&
+        input.runId &&
+        browserInputs.some(
+          (item) =>
+            item.sendRunId === input.runId &&
+            item.sendState !== "failed" &&
+            item.sendState !== "held",
+        )
+          ? "resuming"
+          : input.state === "cancelled"
+            ? "cancelled"
+            : "interrupted";
+    }
     // Custody keeps submission correlation outside the message; use it for
     // presentation without inventing transcript or execution identity.
     items.push(
       ...buildMessageItems([input.message], () =>
         input.runId ? `send:${input.runId}` : `pending-input:${input.id}`,
-      ).flatMap((item) => projectChatSystemNotice(item) ?? []),
+      ).flatMap((item) =>
+        projectChatSystemNotice(
+          { ...item, startsTurn: true },
+          undefined,
+          pendingStatus
+            ? {
+                status: pendingStatus,
+                key: `pending-input:${input.id}:state`,
+                timestamp: input.acceptedAt,
+              }
+            : undefined,
+        ),
+      ),
     );
-    if (input.state === "queued") {
-      if (input.runId && (workerSetupPending || workspaceSyncPendingRunIds.includes(input.runId))) {
-        items.push({
-          kind: "notice",
-          key: `pending-input:${input.id}:state`,
-          timestamp: input.acceptedAt,
-          text: t(
-            workerSetupPending
-              ? "chat.pendingInputs.waitingForWorkerSetup"
-              : "chat.pendingInputs.waitingForWorkspaceSync",
-          ),
-        });
-      }
-      continue;
-    }
-    items.push({
-      kind: "notice",
-      key: `pending-input:${input.id}:state`,
-      timestamp: input.acceptedAt,
-      text: t("chat.pendingInputs.resuming"),
-    });
   }
   return items;
 }
@@ -168,12 +276,13 @@ export function clearChatPendingInputs(state: ChatState): void {
   pendingInputViews.delete(state);
 }
 
-export function readChatInputRunIds(state: ChatState): string[] {
+function collectChatInputRunIds(state: ChatState): string[] {
   const projection = getChatSessionProjection(
     state,
     readChatSessionProjectionScope(state, { agentId: resolveUiSelectedSessionAgentId(state) }),
   );
   const runIds = [
+    ...(getChatPendingInputs(state)?.activeInputs.map((input) => input.runId) ?? []),
     ...projection.entries
       .filter((entry) => entry.pending && entry.identity?.role === "user")
       .map((entry) => entry.pendingRunId),
@@ -181,13 +290,31 @@ export function readChatInputRunIds(state: ChatState): string[] {
       .filter((item) => (item.sendAttempts ?? 0) > 0 || item.sendState === "unconfirmed")
       .map((item) => item.sendRunId),
   ];
+  const current = new Set(
+    runIds.filter((id): id is string => Boolean(id && id.length <= CHAT_INPUT_RUN_ID_MAX_CHARS)),
+  );
   return [
-    ...new Set(
-      runIds.filter((id): id is string => Boolean(id && id.length <= CHAT_INPUT_RUN_ID_MAX_CHARS)),
-    ),
-  ]
-    .toSorted()
-    .slice(0, CHAT_INPUT_RECEIPT_MAX_RUN_IDS);
+    ...new Set([
+      ...(getChatPendingInputs(state)?.receiptRunIds.filter((id) => current.has(id)) ?? []),
+      ...current,
+    ]),
+  ];
+}
+
+export function readChatInputRunIds(state: ChatState): string[] {
+  return collectChatInputRunIds(state).slice(0, CHAT_INPUT_RECEIPT_MAX_RUN_IDS).toSorted();
+}
+
+function rotateInputReceipts(
+  state: ChatState,
+  view: PendingInputView,
+  queriedRunIds: readonly string[] = [],
+): void {
+  const observed = new Set(queriedRunIds);
+  // Rotate across server, transcript, and browser custody without starving any source.
+  view.receiptRunIds = collectChatInputRunIds(state).toSorted(
+    (left, right) => Number(observed.has(left)) - Number(observed.has(right)),
+  );
 }
 
 function reconcilePendingInputPage(
@@ -241,19 +368,30 @@ function ownsPendingInputRequest(
 export function applyChatPendingInputs(
   state: ChatState,
   page: ChatPendingInputsPage | undefined,
-  options: { receipts?: ChatInputReceipts } = {},
+  options: { receipts?: ChatInputReceipts; queriedRunIds?: readonly string[] } = {},
 ): void {
   const displayPage = reconcilePendingInputPage(state, page, options.receipts);
   let view = getChatPendingInputs(state);
+  const activeInputs = reconcileActiveInputs(
+    view?.activeInputs ?? [],
+    displayPage,
+    options.receipts,
+    options.queriedRunIds,
+  );
+  const queuedInputs = activeInputs.filter((input) => input.queued);
   if (!view) {
     view = {
       sessionKey: state.sessionKey,
       sessionId: state.currentSessionId ?? null,
       agentId: resolveUiSelectedSessionAgentId(state),
       page: displayPage,
-      latestPage: displayPage,
       client: state.client,
       connectionEpoch: state.connectionEpoch,
+      activeInputs,
+      queuedInputs,
+      receiptRunIds: [],
+      queuedCount: displayPage.queuedCount ?? 0,
+      queueBefore: displayPage.nextBefore,
       revision: 0,
       get loading() {
         return this.request?.kind === "navigation";
@@ -261,21 +399,32 @@ export function applyChatPendingInputs(
     };
     pendingInputViews.set(state, view);
   } else {
+    view.activeInputs = activeInputs;
+    view.queuedInputs = queuedInputs;
+    view.queuedCount = displayPage.queuedCount ?? 0;
+    view.queueBefore = displayPage.nextBefore;
     view.revision += 1;
-    view.latestPage = displayPage;
-    view.client = state.client;
-    view.connectionEpoch = state.connectionEpoch;
     if (view.request && !ownsPendingInputRequest(state, view, view.request)) {
       view.request = undefined;
     }
     if (view.before === undefined) {
       view.page = displayPage;
+      view.client = state.client;
+      view.connectionEpoch = state.connectionEpoch;
       view.error = undefined;
     }
     // Latest custody updates ownership immediately, but cannot take over browsing.
     if (view.before !== undefined && !view.request) {
       void requestPendingInputPage(state, view.before, "refresh");
     }
+  }
+  rotateInputReceipts(state, view, options.queriedRunIds);
+  if (
+    !view.request &&
+    view.queuedInputs.length < view.queuedCount &&
+    view.queueBefore !== undefined
+  ) {
+    void requestPendingInputPage(state, view.queueBefore, "discovery");
   }
   state.requestUpdate?.();
 }
@@ -293,7 +442,7 @@ async function requestPendingInputPage(
   if (
     view.request &&
     ownsPendingInputRequest(state, view, view.request) &&
-    (kind === "refresh" || view.request.kind === "navigation")
+    (kind !== "navigation" || view.request.kind === "navigation")
   ) {
     return;
   }
@@ -307,13 +456,16 @@ async function requestPendingInputPage(
   try {
     while (current()) {
       const revision = view.revision;
+      const inputRunIds = readChatInputRunIds(state);
       const result = await client.request<{
         sessionId?: string;
         pendingInputs?: ChatPendingInputsPage;
+        inputReceipts?: ChatInputReceipts;
       }>("chat.history", {
         sessionKey: view.sessionKey,
         agentId: view.agentId,
         limit: 20,
+        ...(inputRunIds.length ? { inputRunIds } : {}),
         ...(request.before === undefined ? {} : { pendingBefore: request.before }),
       });
       if (!current() || result.sessionId !== view.sessionId) {
@@ -323,11 +475,30 @@ async function requestPendingInputPage(
       if (view.revision !== revision) {
         continue;
       }
-      view.page = reconcilePendingInputPage(state, result.pendingInputs);
-      if (request.before === undefined) {
-        view.latestPage = view.page;
+      const page = reconcilePendingInputPage(state, result.pendingInputs, result.inputReceipts);
+      view.activeInputs = reconcileActiveInputs(
+        view.activeInputs,
+        page,
+        result.inputReceipts,
+        inputRunIds,
+      );
+      view.queuedInputs = view.activeInputs.filter((input) => input.queued);
+      view.queuedCount = page.queuedCount ?? view.queuedCount;
+      rotateInputReceipts(state, view, inputRunIds);
+      if (request.kind !== "discovery") {
+        view.page = page;
+        view.before = request.before;
+        view.client = request.client;
+        view.connectionEpoch = request.connectionEpoch;
       }
-      view.before = request.before;
+      if (request.kind === "discovery" || request.before === undefined) {
+        view.queueBefore = page.nextBefore;
+      }
+      if (view.queuedInputs.length < view.queuedCount && view.queueBefore !== undefined) {
+        request.kind = "discovery";
+        request.before = view.queueBefore;
+        continue;
+      }
       return;
     }
   } catch (error) {

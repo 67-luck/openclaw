@@ -234,6 +234,7 @@ async function runCliAgentInternal(
   const modelExecution = bindOperatorModelExecution(
     readRunOperatorAuthority(params),
     params.requesterModel,
+    params.mapOperatorAuthorizationError,
   );
   const assertCallerCurrent = params.assertCurrent;
   try {
@@ -254,7 +255,6 @@ async function runCliAgentInternal(
     try {
       context = await prepareCliRunContext(runParams);
     } catch (error) {
-      runParams.assertCurrent?.();
       await settleCliPreparationError(error, runParams);
       throw error;
     }

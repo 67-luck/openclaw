@@ -1,24 +1,16 @@
 // Browser-local transcript-width validation, shared by settings reads and writes.
-const CSS_WIDTH_KEYWORDS = new Set(["none", "min-content", "max-content"]);
-const CSS_WIDTH_FUNCTIONS = new Set(["calc", "clamp", "fit-content", "max", "min"]);
-const CSS_WIDTH_UNITS = new Set(["ch", "em", "rem", "vh", "vmax", "vmin", "vw", "px"]);
+const CSS_WIDTH_KEYWORD_RE = /^(?:none|min-content|max-content)$/i;
+const CSS_WIDTH_ALLOWED_IDENTIFIER_RE =
+  /^(?:none|min-content|max-content|calc|clamp|fit-content|max|min|ch|em|rem|vh|vmax|vmin|vw|px)$/i;
 const CSS_WIDTH_ALLOWED_CHARS = /^[0-9A-Za-z.%+\-*/(),\s]+$/;
 const CSS_WIDTH_IDENTIFIER_RE = /[A-Za-z][A-Za-z0-9-]*/g;
 const CSS_WIDTH_SIMPLE_RE = /^(?:\d+(?:\.\d+)?|\.\d+)(?:px|rem|em|ch|vw|vh|vmin|vmax|%)$/i;
 const CSS_WIDTH_MAX_LENGTH = 96;
 
 function hasAllowedWidthIdentifiers(value: string): boolean {
-  for (const match of value.matchAll(CSS_WIDTH_IDENTIFIER_RE)) {
-    const identifier = match[0].toLowerCase();
-    if (
-      !CSS_WIDTH_FUNCTIONS.has(identifier) &&
-      !CSS_WIDTH_KEYWORDS.has(identifier) &&
-      !CSS_WIDTH_UNITS.has(identifier)
-    ) {
-      return false;
-    }
-  }
-  return true;
+  return (value.match(CSS_WIDTH_IDENTIFIER_RE) ?? []).every((identifier) =>
+    CSS_WIDTH_ALLOWED_IDENTIFIER_RE.test(identifier),
+  );
 }
 
 export function normalizeChatMessageMaxWidth(value: unknown): string | undefined {
@@ -26,13 +18,10 @@ export function normalizeChatMessageMaxWidth(value: unknown): string | undefined
     return undefined;
   }
   const normalized = value.trim().replace(/\s+/g, " ");
-  if (normalized.length === 0) {
+  if (normalized.length === 0 || normalized.length > CSS_WIDTH_MAX_LENGTH) {
     return undefined;
   }
-  if (normalized.length > CSS_WIDTH_MAX_LENGTH) {
-    return undefined;
-  }
-  if (CSS_WIDTH_KEYWORDS.has(normalized.toLowerCase()) || CSS_WIDTH_SIMPLE_RE.test(normalized)) {
+  if (CSS_WIDTH_KEYWORD_RE.test(normalized) || CSS_WIDTH_SIMPLE_RE.test(normalized)) {
     return normalized;
   }
   if (

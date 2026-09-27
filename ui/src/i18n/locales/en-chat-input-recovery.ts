@@ -7,6 +7,10 @@ const catalog = {
       interruptedStatus: "Not started",
       cancelledStatus: "Cancelled",
       send: "Send",
+      inspect: "View saved attempt",
+      loading: "Loading the full saved message…",
+      nonUser:
+        "This is a system or forwarded message, not a prompt you submitted. You can inspect or discard it, but not resend it as your own.",
       discard: "Discard saved attempt",
       attachmentOnly: "Saved attachment",
       earlier: "Earlier saved attempts",

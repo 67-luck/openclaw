@@ -1,9 +1,10 @@
-import { dismissChatInputRecoveryKey } from "../../app/settings.ts";
+import { dismissChatInputRecoveryKey } from "../../app/settings-input-recovery.ts";
 import { resolveChatAgentId } from "./chat-agent-id.ts";
 import {
   discardChatRecoveryInput,
   getChatInputRecovery,
   sendChatRecoveryInput,
+  toggleChatRecoveryInput,
 } from "./chat-input-recovery-actions.ts";
 import { getChatPendingInputs, loadChatPendingInputs } from "./chat-pending-inputs.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
@@ -13,6 +14,7 @@ import type { ChatQueueRecovery } from "./components/chat-queue-recovery.types.t
 export function createChatInputRecoveryQueueProps(
   host: ChatPageHost,
   canSend: boolean,
+  renderDetails?: ChatQueueRecovery["renderDetails"],
 ): ChatQueueRecovery | undefined {
   const gatewayUrl = host.settings.gatewayUrl;
   const incognito = host.selectedChatSessionIncognito;
@@ -52,6 +54,12 @@ export function createChatInputRecoveryQueueProps(
   }
   return {
     ...recovery,
+    renderDetails,
+    onToggle: (id, open) => {
+      if (current()) {
+        void toggleChatRecoveryInput(host, id, open);
+      }
+    },
     error: recovery.error ?? view.error,
     onSend:
       canSend && host.connected && view.connectionEpoch === epoch

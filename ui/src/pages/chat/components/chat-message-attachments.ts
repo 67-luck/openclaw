@@ -1,12 +1,11 @@
 import { html, nothing } from "lit";
-import { normalizeBasePath } from "../../../app-route-paths.ts";
 import { t } from "../../../i18n/index.ts";
 import { formatBytes } from "../../../lib/agents/display.ts";
 import type { MessageContentItem } from "../../../lib/chat/chat-types.ts";
+import { renderCompactAttachmentCard } from "./chat-attachment-card.ts";
 import "./chat-audio-player.ts";
 import "./chat-svg-attachment.ts";
 import "./chat-video-player.ts";
-import { renderCompactAttachmentCard } from "./chat-attachment-card.ts";
 import {
   isCrossOriginHttpSource,
   safeAttachmentHref,
@@ -33,6 +32,7 @@ import {
 } from "./chat-message-attachment-status.ts";
 import { openResolvedImage } from "./chat-message-image-open.ts";
 import {
+  applyResourceBasePath,
   buildAssistantAttachmentUrl,
   isLocalAssistantAttachmentSource,
 } from "./chat-message-local-media.ts";
@@ -52,6 +52,7 @@ import { renderMessageVideoPreview } from "./chat-message-video-preview.ts";
 import { isSentPastedTextAttachment } from "./chat-pasted-text.ts";
 import { isSentCommentAttachment } from "./chat-sent-comments.ts";
 import type { AttachmentSidebarState, SidebarContent } from "./chat-sidebar-content-types.ts";
+import { videoLightboxItem } from "./chat-video-lightbox-source.ts";
 
 type OmittedMediaItem = Extract<MessageContentItem, { type: "omitted_media" }>;
 
@@ -111,23 +112,6 @@ function retryManagedAttachment(
     refreshAfter: now + ASSISTANT_ATTACHMENT_UNAVAILABLE_RETRY_MS * 2 ** refreshAttempts,
     refreshAttempts: refreshAttempts + 1,
   };
-}
-
-function applyResourceBasePath(source: string, resourceBasePath: string | undefined): string {
-  if (!source.startsWith("/") || source.startsWith("//")) {
-    return source;
-  }
-  try {
-    const parsed = new URL(source, window.location.origin);
-    const basePath = normalizeBasePath(resourceBasePath ?? "");
-    const pathname =
-      basePath && parsed.pathname !== basePath && !parsed.pathname.startsWith(`${basePath}/`)
-        ? `${basePath}${parsed.pathname}`
-        : parsed.pathname;
-    return `${pathname}${parsed.search}${parsed.hash}`;
-  } catch {
-    return source;
-  }
 }
 
 function setManagedAttachmentAvailability(
@@ -379,6 +363,7 @@ function resolveAttachmentSource(
         resourceBasePath,
         assistantAvailability.mediaTicket,
         options,
+        attachment.label,
       )
     : isManagedOutgoingMediaSource(attachment.url)
       ? applyResourceBasePath(managedAvailability.url, resourceBasePath)
@@ -399,6 +384,15 @@ function resolveAttachmentSource(
       height: assistantAvailability.height ?? attachment.height,
     },
   };
+}
+
+export function hasUserFileAttachments(attachments: readonly AssistantAttachmentItem[]): boolean {
+  return attachments.some(
+    (item) =>
+      item.attachment.kind === "document" &&
+      !isSentCommentAttachment(item) &&
+      !isSentPastedTextAttachment(item),
+  );
 }
 
 export function renderAssistantAttachments(
@@ -543,17 +537,31 @@ function renderMessageAttachmentContent(
     attachment.kind === "video" && onOpenImage && safeAttachmentUrl
       ? (src: string) => {
           const requestVersion = onRequestOpenImage?.();
+          const videoItem = (video: AttachmentItem["attachment"]) =>
+            videoLightboxItem(
+              video,
+              (onRequestUpdate) => resolveAttachmentSource(video, { ...options, onRequestUpdate }),
+              options.onRequestUpdate,
+            );
+          const membership = options.galleryVideos?.(item);
           const overlayItem = {
-            kind: "video" as const,
+            ...videoItem(attachment),
             src,
             originalSrc: safeAttachmentUrl,
-            title: attachment.label,
+            ...(membership && membership.index >= 0 && membership.items.length > 1
+              ? {
+                  gallery: {
+                    index: membership.index,
+                    items: membership.items.map(
+                      ({ attachment: video }) =>
+                        async () =>
+                          videoItem(video),
+                    ),
+                  },
+                }
+              : {}),
           };
-          if (requestVersion === undefined) {
-            onOpenImage(overlayItem);
-          } else {
-            onOpenImage(overlayItem, requestVersion);
-          }
+          onOpenImage(overlayItem, requestVersion);
         }
       : undefined;
   const hasLiveSidebarSource =

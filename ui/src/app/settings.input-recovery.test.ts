@@ -1,7 +1,8 @@
 /* @vitest-environment jsdom */
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createStorageMock } from "../test-helpers/storage.ts";
-import { dismissChatInputRecoveryKey, loadSettings, saveSettings } from "./settings.ts";
+import { dismissChatInputRecoveryKey } from "./settings-input-recovery.ts";
+import { loadSettings, saveSettings } from "./settings.ts";
 
 beforeEach(() => {
   vi.stubGlobal("localStorage", createStorageMock());
