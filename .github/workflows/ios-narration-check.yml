@@ -62,7 +62,7 @@ jobs:
             apps/shared/OpenClawKit/Tests/OpenClawKitTests/ChatViewModelSessionActionTests.swift
           )
           "$RUNNER_TEMP/apple-tools/bin/swiftformat" --lint "${files[@]}" --config config/swiftformat --unexclude apps/shared/OpenClawKit,apps/ios
-          PATH="$RUNNER_TEMP/apple-tools/bin:$PATH" node scripts/run-swiftlint.mts --strict --config apps/ios/.swiftlint.yml "${files[@]}"
+          PATH="$RUNNER_TEMP/apple-tools/bin:$PATH" scripts/lint-swift.sh ios
       - name: Prepare native renderer resources
         run: |
           pnpm install --frozen-lockfile --prefer-offline --optional --filter '@openclaw/mermaid-renderer...' --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true
