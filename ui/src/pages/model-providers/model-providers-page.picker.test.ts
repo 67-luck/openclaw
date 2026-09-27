@@ -127,6 +127,17 @@ describe("Models provider picker", () => {
     );
     await searchProviders(page, "");
     expect(providerChoices(page)).toEqual(["alpha", "example", "zebra"]);
+    await selectProvider(page, "alpha");
+    expect(page.querySelector("[data-models-login-api-key]")).toBeNull();
+    expect(
+      [
+        ...page.querySelectorAll(
+          ".model-provider-login__methods .model-provider-login__option strong",
+        ),
+      ].map((element) => element.textContent),
+    ).toEqual(["Account key"]);
+    page.querySelector<HTMLButtonElement>("[data-models-login-back]")!.click();
+    await page.updateComplete;
     await selectProvider(page, "zebra");
     expect(page.querySelector("[data-models-login-api-key]")).toBeNull();
     expect(

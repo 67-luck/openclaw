@@ -56,8 +56,8 @@ export function buildProviderLoginGroups({
         group.setupChoices.push(option);
       }
     }
-    // Quick-key support is independent of wizard choices. Keep the exact
-    // capability owner for the key form even when its login brand is an alias.
+    // Keep the exact capability owner for the fallback key form even when
+    // its login brand is an alias. Advertised secret flows take precedence below.
     if (capability.quickApiKeySetup && includeApiKey) {
       const options = [...(capability.loginOptions ?? []), ...(capability.setupOptions ?? [])];
       for (const option of options.length ? options : [{ brandId: capability.provider }]) {
@@ -67,7 +67,10 @@ export function buildProviderLoginGroups({
   }
   for (const group of groups.values()) {
     group.label ||= providerDisplayLabel(group.id);
-    if (group.authProviders.length > 1) {
+    if (
+      group.authProviders.length > 1 ||
+      group.choices.some((option) => option.kind === "secret")
+    ) {
       delete group.apiKeyProvider;
     }
   }
