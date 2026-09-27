@@ -90,9 +90,17 @@ suite.define(() => {
           const dates = await page
             .locator("#lobsterdex-crimson .lobsterdex-page__dates")
             .boundingBox();
-          expect(target?.width).toBeGreaterThanOrEqual(44);
-          expect(target?.height).toBeGreaterThanOrEqual(44);
-          expect(dates!.y + dates!.height).toBeLessThan(target!.y);
+          const card = page.locator("#lobsterdex-crimson");
+          const bounds = await card.boundingBox();
+          const link = await card.getByRole("button", { name: "Copy link" }).boundingBox();
+          expect(target!.width).toBe(link!.width);
+          expect(target!.height).toBe(link!.height);
+          expect(target!.y).toBe(link!.y);
+          expect(bounds!.x + bounds!.width - target!.x - target!.width).toBeCloseTo(
+            link!.x - bounds!.x,
+          );
+          expect(target!.y + target!.height).toBeLessThan(dates!.y);
+          expect(await card.evaluate((el) => getComputedStyle(el).paddingBottom)).toBe("13px");
           const storage = await page.evaluate(() =>
             localStorage.getItem("openclaw.control.lobsterdex.v1"),
           );
