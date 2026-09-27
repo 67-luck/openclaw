@@ -204,9 +204,9 @@ describe("plugin approval requester outcome", () => {
 
     const currentAtHandoff = requestGateway.mock.calls[0]?.[2]?.liveOnlyWhenCurrent;
     expect(currentAtHandoff).toBeTypeOf("function");
-    expect(currentAtHandoff()).toBe(true);
+    expect(currentAtHandoff?.()).toBe(true);
     await coordinator.publishPluginTerminal({ approvalId: request.id, status: "denied" });
-    expect(currentAtHandoff()).toBe(false);
+    expect(currentAtHandoff?.()).toBe(false);
     coordinator.close();
   });
 
