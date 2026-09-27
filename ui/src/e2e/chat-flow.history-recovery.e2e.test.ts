@@ -414,6 +414,39 @@ suite.define(() => {
           { timeout: 10_000 },
         )
         .toBe(true);
+    } catch (error) {
+      // Retain the failing viewport before teardown without replacing the behavior assertion.
+      try {
+        const artifactDir = createControlUiE2eArtifactDir("history-visibility");
+        const thread = page.locator(".chat-pane-cache__pane--active .chat-thread");
+        const geometry = await thread.evaluate((element) => {
+          const viewport = element.getBoundingClientRect();
+          return {
+            scrollTop: element.scrollTop,
+            scrollHeight: element.scrollHeight,
+            clientHeight: element.clientHeight,
+            viewport: { top: viewport.top, bottom: viewport.bottom },
+            bubbles: Array.from(element.querySelectorAll(".chat-bubble")).map((bubble) => {
+              const rect = bubble.getBoundingClientRect();
+              return {
+                text: bubble.textContent?.slice(0, 100),
+                top: rect.top,
+                bottom: rect.bottom,
+                height: rect.height,
+              };
+            }),
+          };
+        });
+        console.info("[history-visibility]", JSON.stringify(geometry));
+        await writeFile(path.join(artifactDir, "geometry.json"), JSON.stringify(geometry, null, 2));
+        await writeFile(
+          path.join(artifactDir, "viewport.png"),
+          await takeControlUiViewportScreenshot(page, thread, []),
+        );
+      } catch (captureError) {
+        console.warn("[history-visibility] diagnostic capture failed", String(captureError));
+      }
+      throw error;
     } finally {
       await suite.closeBrowserContext(context);
     }

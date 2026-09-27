@@ -246,7 +246,16 @@ async function writeGatewayConfig(config: Record<string, unknown>) {
     throw new Error("OPENCLAW_CONFIG_PATH missing in gateway test environment");
   }
   await fs.mkdir(path.dirname(configPath), { recursive: true });
-  await fs.writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
+  // These metadata fixtures change models/session routing, not the already-running ingress.
+  // Preserve its auth mode and policy unless a case explicitly replaces gateway settings.
+  const next = {
+    ...config,
+    gateway: {
+      ...getRuntimeConfig().gateway,
+      ...(isRecord(config.gateway) ? config.gateway : {}),
+    },
+  };
+  await fs.writeFile(configPath, JSON.stringify(next, null, 2), "utf-8");
   resetConfigRuntimeState();
 }
 
