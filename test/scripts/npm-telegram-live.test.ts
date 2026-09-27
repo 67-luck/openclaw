@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { readQaScenarioById } from "../../extensions/qa-lab/src/scenario-catalog.ts";
 import { resolveFrozenTelegramScenarioOmissions } from "../../scripts/e2e/lib/npm-telegram-live/resolve-target-scenarios.mts";
 import { testing } from "../../scripts/e2e/npm-telegram-live-runner.ts";
 import { privateLocalOnlyPluginSdkEntrypoints } from "../../scripts/lib/plugin-sdk-entries.mts";
@@ -584,15 +583,6 @@ for (const subpath of ${JSON.stringify(privateQaSubpaths)}) {
     ).toThrow("OPENCLAW_NPM_TELEGRAM_RTT_CHECKS accepts at most one scenario id; got 2");
   });
 
-  it("builds a generic suite probe for the Telegram RTT lane", () => {
-    const probe = testing.createRoundTripProbe(testing.resolveRttOptions({}));
-
-    expect(probe).toMatchObject({
-      scenarioId: "channel-canary",
-      input: { conversation: { id: "telegram-rtt-room", kind: "group" } },
-    });
-  });
-
   it("rejects unknown explicit RTT scenario ids through canonical selection", () => {
     expect(() =>
       testing.resolvePackageTelegramScenarios(
@@ -611,21 +601,20 @@ for (const subpath of ${JSON.stringify(privateQaSubpaths)}) {
       name: "default canary group",
       env: {},
       scenarioId: "channel-canary",
-      policy: { requireGroupMention: true },
       conversation: { id: "qa-routing-primary", kind: "group" },
     },
     {
       name: "selected exact-marker direct message",
       env: { OPENCLAW_NPM_TELEGRAM_RTT_CHECKS: "telegram-reply-chain-exact-marker" },
       scenarioId: "telegram-reply-chain-exact-marker",
-      policy: { directMessageOnly: true },
       conversation: { id: "telegram-reply-chain-dm", kind: "direct" },
     },
-  ] as const)("builds the $name RTT route", ({ env, scenarioId, policy, conversation }) => {
-    const probe = testing.createRoundTripProbe(testing.resolveRttOptions(env), {
-      id: scenarioId,
-      execution: { transportPolicy: policy, config: { conversationId: conversation.id } },
-    });
+  ] as const)("builds the $name RTT route", async ({ env, scenarioId, conversation }) => {
+    const { readQaScenarioById } = await import("../../extensions/qa-lab/test-api.js");
+    const probe = testing.createRoundTripProbe(
+      testing.resolveRttOptions(env),
+      readQaScenarioById(scenarioId),
+    );
     expect(probe).toMatchObject({
       scenarioId,
       count: 20,
@@ -637,12 +626,40 @@ for (const subpath of ${JSON.stringify(privateQaSubpaths)}) {
     });
   });
 
-  it("preserves the generic route for a valid unannotated RTT scenario", () => {
+  it("preserves the generic route for a valid unannotated RTT scenario", async () => {
     const env = { OPENCLAW_NPM_TELEGRAM_RTT_CHECKS: "telegram-status-command" };
-    const scenario = readQaScenarioById("telegram-status-command");
-    const probe = testing.createRoundTripProbe(testing.resolveRttOptions(env), scenario);
+    const { readQaScenarioById } = await import("../../extensions/qa-lab/test-api.js");
+    const probe = testing.createRoundTripProbe(
+      testing.resolveRttOptions(env),
+      readQaScenarioById("telegram-status-command"),
+    );
 
     expect(probe?.input.conversation).toEqual({ id: "telegram-rtt-room", kind: "group" });
+  });
+
+  it.each([
+    {
+      execution: { transportPolicy: { directMessageOnly: true }, config: {} },
+      error: "must declare config.conversationId",
+    },
+    {
+      execution: {
+        transportPolicy: { directMessageOnly: true, requireGroupMention: true },
+        config: { conversationId: "room" },
+      },
+      error: "declares conflicting transport routes",
+    },
+    {
+      execution: { transportPolicy: {}, config: { conversationId: "room" } },
+      error: "does not declare a supported transport route",
+    },
+  ])("rejects invalid scenario route declarations: $error", ({ execution, error }) => {
+    expect(() =>
+      testing.createRoundTripProbe(testing.resolveRttOptions({}), {
+        id: "invalid-scenario",
+        execution,
+      }),
+    ).toThrow(error);
   });
 
   it.each([

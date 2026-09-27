@@ -7,10 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { QaProviderMode } from "../../extensions/qa-lab/src/run-config.ts";
-import {
-  resolveQaSuiteRoundTripConversation,
-  type QaSuiteRoundTripProbe,
-} from "../../extensions/qa-lab/src/suite-round-trip.ts";
+import type { QaSuiteRoundTripProbe } from "../../extensions/qa-lab/src/suite-round-trip.ts";
 import { normalizeCsvOrLooseStringList } from "../../packages/normalization-core/src/string-normalization.ts";
 import { isStrictAffirmativeValue } from "../lib/arg-utils.mts";
 import { compareReleaseVersions } from "../lib/release-version.mjs";
@@ -51,6 +48,35 @@ function resolvePackageTelegramOutputDir(env: NodeJS.ProcessEnv, repoRoot: strin
 
 const DEFAULT_RTT_CHECK_ID = "channel-canary";
 const DEFAULT_RTT_CONVERSATION = { id: "telegram-rtt-room", kind: "group" } as const;
+type RoundTripScenario = {
+  id: string;
+  execution: {
+    transportPolicy?: { directMessageOnly?: boolean; requireGroupMention?: boolean };
+    config?: Record<string, unknown>;
+  };
+};
+
+function resolveRoundTripConversation(scenario: RoundTripScenario) {
+  const { directMessageOnly, requireGroupMention } = scenario.execution.transportPolicy ?? {};
+  const conversationId = scenario.execution.config?.conversationId;
+  const hasDeclaredRoute =
+    directMessageOnly !== undefined ||
+    requireGroupMention !== undefined ||
+    conversationId !== undefined;
+  if (!hasDeclaredRoute) {
+    return DEFAULT_RTT_CONVERSATION;
+  }
+  if (typeof conversationId !== "string" || !conversationId.trim()) {
+    throw new Error(`QA RTT scenario ${scenario.id} must declare config.conversationId`);
+  }
+  if (directMessageOnly && requireGroupMention) {
+    throw new Error(`QA RTT scenario ${scenario.id} declares conflicting transport routes`);
+  }
+  if (!directMessageOnly && !requireGroupMention) {
+    throw new Error(`QA RTT scenario ${scenario.id} does not declare a supported transport route`);
+  }
+  return { id: conversationId.trim(), kind: directMessageOnly ? "direct" : "group" } as const;
+}
 const EXTENDED_STABLE_2026_6_35 = "2026.6.35";
 const EXTENDED_STABLE_2026_7_33 = "2026.7.33";
 const EXTENDED_STABLE_2026_7_34 = "2026.7.34";
@@ -186,19 +212,19 @@ function resolveRttOptions(env: NodeJS.ProcessEnv, selectedScenarioIds: readonly
 
 function createRoundTripProbe(
   options: ReturnType<typeof resolveRttOptions>,
-  scenario?: Parameters<typeof resolveQaSuiteRoundTripConversation>[0],
+  scenario?: RoundTripScenario,
 ): QaSuiteRoundTripProbe | undefined {
   if (!options) {
     return undefined;
   }
-  const conversation = scenario
-    ? (resolveQaSuiteRoundTripConversation(scenario) ?? DEFAULT_RTT_CONVERSATION)
-    : DEFAULT_RTT_CONVERSATION;
+  if (!scenario) {
+    throw new Error(`missing QA RTT scenario: ${options.scenarioId}`);
+  }
   return {
     ...options,
     markerPrefix: "QA-TELEGRAM-RTT",
     input: {
-      conversation,
+      conversation: resolveRoundTripConversation(scenario),
       senderId: "qa-rtt-driver",
       senderName: "QA RTT Driver",
     },
@@ -272,7 +298,7 @@ async function main() {
     import("../../extensions/qa-lab/src/live-transports/telegram/cli.runtime.ts"),
     import("../../extensions/qa-lab/src/live-transports/telegram/scenario-selection.ts"),
     import("../../extensions/qa-lab/src/providers/index.ts"),
-    import("../../extensions/qa-lab/src/scenario-catalog.ts"),
+    import("../../extensions/qa-lab/api.ts"),
   ]);
   const rawSutOpenClawCommand = process.env.OPENCLAW_NPM_TELEGRAM_SUT_COMMAND?.trim();
   if (!rawSutOpenClawCommand) {
