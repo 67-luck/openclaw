@@ -6,10 +6,37 @@ import { describe, expect, it, vi } from "vitest";
 import { filterFilesByPatterns, intersectIncludePatterns } from "./vitest.include-patterns.ts";
 import {
   collectVitestExcludePatterns,
+  isSharedVitestExcludedPath,
   matchesVitestCliSelection,
   matchesVitestGlob,
   narrowIncludePatternsForCli,
 } from "./vitest.pattern-file.ts";
+
+describe("specialized test exclusions", () => {
+  it.each(["ts", "tsx", "cts", "ctsx", "mts", "mtsx", "js", "jsx", "cjs", "cjsx", "mjs", "mjsx"])(
+    "keeps .%s specialized suites opt-in across root and scoped discovery",
+    (extension) => {
+      for (const directory of ["test/example", "extensions/example/src"]) {
+        for (const kind of ["e2e", "live"]) {
+          const file = `${directory}/example.${kind}.test.${extension}`;
+          expect(isSharedVitestExcludedPath(file), file).toBe(true);
+          expect(isSharedVitestExcludedPath(file.replaceAll("/", "\\")), file).toBe(true);
+          expect(isSharedVitestExcludedPath(file, directory), file).toBe(true);
+        }
+        expect(isSharedVitestExcludedPath(`${directory}/example.test.${extension}`)).toBe(false);
+      }
+    },
+  );
+
+  it.each(["json", "ts.map", "txt"])(
+    "does not classify .%s assets as specialized tests",
+    (extension) => {
+      for (const kind of ["e2e", "live"]) {
+        expect(isSharedVitestExcludedPath(`test/example.${kind}.test.${extension}`)).toBe(false);
+      }
+    },
+  );
+});
 
 describe("native CLI selection", () => {
   it("plans Node CI test ownership before dependencies are installed", () => {
