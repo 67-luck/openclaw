@@ -590,14 +590,18 @@ describe("slackApprovalNativeRuntime", () => {
     const context = {
       app: { client: { token: "xoxb-approval-card" } },
       config: {},
+      installationIdentity: { kind: "workspace", teamId: "T123ABC45" },
       readConfig: () => cfg,
       assertCurrent: () => {},
     } as never;
-    const deliver = async (surface: "origin" | "approver-dm") => {
+    const deliver = async (
+      surface: "origin" | "approver-dm",
+      deliveryContext: Record<string, unknown> = context,
+    ) => {
       const entry = await slackApprovalNativeRuntime.transport.deliverPending({
         ...APPROVAL_CONTEXT,
         cfg,
-        context,
+        context: deliveryContext,
         request,
         approvalKind: "plugin",
         plannedTarget: {
@@ -621,8 +625,14 @@ describe("slackApprovalNativeRuntime", () => {
     };
     const origin = await deliver("origin");
     const reviewer = await deliver("approver-dm");
+    const switchedWorkspace = await deliver("approver-dm", {
+      ...context,
+      installationIdentity: { kind: "workspace", teamId: "TOTHER" },
+    });
     expect(origin.payload.text).not.toContain(excerpt);
     expect(JSON.stringify(origin.payload.blocks)).not.toContain(excerpt);
+    expect(switchedWorkspace.entry.showMessageExcerpt).toBe(false);
+    expect(JSON.stringify(switchedWorkspace.payload)).not.toContain(excerpt);
     expect(reviewer.payload.text).toContain(
       "*Original message (excerpt)*\n```\nPlease render &lt;@U999OTHER&gt; &amp; show the *diff*.\n```",
     );
@@ -631,7 +641,7 @@ describe("slackApprovalNativeRuntime", () => {
     ).find((block) => block.text?.type === "plain_text");
     expect(excerptBlock?.text?.text).toBe(`Original message (excerpt)\n${excerpt}`);
 
-    for (const delivered of [origin, reviewer]) {
+    for (const delivered of [origin, reviewer, switchedWorkspace]) {
       const resolved = await slackApprovalNativeRuntime.presentation.buildResolvedResult({
         ...APPROVAL_CONTEXT,
         request,

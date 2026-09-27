@@ -9,6 +9,7 @@ import {
   type ChannelApprovalNativeDeliveryPlan,
 } from "./approval-native-delivery.js";
 import { createApprovalNativeRouteReporter } from "./approval-native-route-coordinator.js";
+import type { ApprovalRouteSendParams } from "./approval-native-route-notice.js";
 import type {
   ChannelNativeApprovalDeliveryCallbacks,
   ChannelNativeApprovalTransportSpec,
@@ -209,15 +210,20 @@ export function createChannelNativeApprovalRuntime<
         request,
         channel: adapter.channel ?? "",
       }),
-    requestGateway: async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    requestGateway: async (
+      method: "send",
+      params: ApprovalRouteSendParams,
+      options?: { liveOnlyWhenCurrent: () => boolean },
+    ): Promise<void> => {
       if (gatewayRuntime) {
-        if (method !== "send") {
-          throw new Error(`native approval route cannot dispatch ${method}`);
-        }
-        return await gatewayRuntime.requestRoute<T>(method, params);
+        await gatewayRuntime.requestRoute(method, params, options);
+        return;
+      }
+      if (options) {
+        throw new Error("live native approval notice requires a Gateway instance runtime");
       }
       const { callGatewayLeastPrivilege } = await import("../gateway/call.js");
-      return await callGatewayLeastPrivilege<T>({
+      await callGatewayLeastPrivilege({
         config: adapter.cfg,
         ...(adapter.gatewayUrl ? { url: adapter.gatewayUrl } : {}),
         method,

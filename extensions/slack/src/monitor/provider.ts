@@ -603,6 +603,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     const approvalContext = {
       app,
       config: slackCfg.execApprovals ?? {},
+      installationIdentity: identity,
       resolveClient,
       readConfig: createRuntimeConfigReader(cfg),
       assertCurrent: () => {

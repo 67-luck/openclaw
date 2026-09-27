@@ -15,10 +15,20 @@ import type {
   ChannelApprovalKind,
 } from "./approval-types.js";
 
-export type GatewayRequestFn = <T = unknown>(
-  method: string,
-  params: Record<string, unknown>,
-) => Promise<T>;
+export type ApprovalRouteSendParams = {
+  channel: string;
+  to: string;
+  accountId?: string;
+  threadId?: string | number;
+  message: string;
+  idempotencyKey: string;
+};
+
+export type GatewayRequestFn = (
+  method: "send",
+  params: ApprovalRouteSendParams,
+  options?: { liveOnlyWhenCurrent: () => boolean },
+) => Promise<void>;
 
 export type ApprovalRouteSkipReason = "ambiguous-owner" | "ineligible" | "owner-unavailable";
 
@@ -42,7 +52,7 @@ export type RouteNoticeTarget = {
 };
 
 /** Formats the human destination label for where native approval prompts were delivered. */
-export function describeApprovalDeliveryDestination(params: {
+function describeApprovalDeliveryDestination(params: {
   channelLabel: string;
   deliveredTargets: readonly ChannelApprovalNativePlannedTarget[];
 }): string {
@@ -53,7 +63,7 @@ export function describeApprovalDeliveryDestination(params: {
 }
 
 /** Builds the notice shown in the current chat when approval was routed elsewhere. */
-export function resolveApprovalRoutedElsewhereNoticeText(
+function resolveApprovalRoutedElsewhereNoticeText(
   destinations: readonly string[],
   approvalId?: string,
 ): string | null {
@@ -69,13 +79,13 @@ export function resolveApprovalRoutedElsewhereNoticeText(
 }
 
 /** Builds the recovery notice when no channel account uniquely owns the approval. */
-export function resolveAmbiguousApprovalRouteNoticeText(approvalKind: ChannelApprovalKind): string {
+function resolveAmbiguousApprovalRouteNoticeText(approvalKind: ChannelApprovalKind): string {
   const surface = approvalKind === "plugin" ? "Control UI or terminal UI" : "Control UI";
   return `Approval required, but multiple channel accounts can handle this request. Open the ${surface} to approve it.`;
 }
 
 /** Builds the fallback slash-command notice when native approval delivery fails. */
-export function resolveApprovalDeliveryFailedNoticeText(params: {
+function resolveApprovalDeliveryFailedNoticeText(params: {
   approvalId: string;
   approvalKind: ChannelApprovalKind;
   allowedDecisions?: readonly string[];

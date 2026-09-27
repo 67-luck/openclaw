@@ -11,6 +11,7 @@ import type {
   GatewayApprovalResolved,
 } from "../infra/approval-gateway-runtime.types.js";
 import { createApprovalNativeRouteCoordinator } from "../infra/approval-native-route-coordinator.js";
+import type { ApprovalRouteSendParams } from "../infra/approval-native-route-notice.js";
 import type { ChannelApprovalKind } from "../infra/approval-types.js";
 import type { PluginApprovalRequest } from "../infra/plugin-approvals.js";
 import { DEFAULT_ACCOUNT_ID, normalizeOptionalAccountId } from "../routing/account-id.js";
@@ -63,6 +64,23 @@ type GatewayInstanceRuntimeOptions = {
   isDispatchAvailable: () => boolean;
   logError?: (message: string) => void;
 };
+
+function pluginRequestForSubscriber<TRequest extends PluginApprovalRequest>(
+  request: TRequest,
+  publicRequest: TRequest,
+  subscriber: GatewayApprovalEventSubscriber,
+): TRequest {
+  const sourceAccountId = normalizeOptionalAccountId(request.request.turnSourceAccountId);
+  const subscriberAccountId = normalizeOptionalAccountId(subscriber.accountId);
+  const ownsSlackSource =
+    request.request.approvalSource?.channel === "slack" &&
+    subscriber.channel === "slack" &&
+    request.request.turnSourceChannel === "slack" &&
+    subscriberAccountId !== undefined &&
+    (subscriberAccountId === sourceAccountId ||
+      (request.request.turnSourceAccountId == null && subscriberAccountId === DEFAULT_ACCOUNT_ID));
+  return ownsSlackSource ? request : publicRequest;
+}
 
 /** Creates closed internal principals bound to one concrete Gateway lifecycle. */
 export function createGatewayInstanceRuntime(
@@ -305,10 +323,6 @@ export function createGatewayInstanceRuntime(
       publishRequested: (kind, request) => {
         // SAFETY: Gateway approval publishers pair the plugin kind with a plugin request.
         const pluginRequest = kind === "plugin" ? (request as PluginApprovalRequest) : null;
-        const source = pluginRequest?.request.approvalSource;
-        const sourceAccountId = normalizeOptionalAccountId(
-          pluginRequest?.request.turnSourceAccountId,
-        );
         const publicRequest = pluginRequest
           ? {
               ...pluginRequest,
@@ -320,18 +334,15 @@ export function createGatewayInstanceRuntime(
           (subscriber) => {
             // The excerpt is only for the matching, Gateway-hosted Slack runtime.
             // Other subscribers receive the same public projection as WebSocket clients.
-            const subscriberAccountId = normalizeOptionalAccountId(subscriber.accountId);
-            const ownsSlackSource =
-              source?.channel === "slack" &&
-              subscriber.channel === "slack" &&
-              pluginRequest?.request.turnSourceChannel === "slack" &&
-              subscriberAccountId !== undefined &&
-              (subscriberAccountId === sourceAccountId ||
-                (pluginRequest.request.turnSourceAccountId == null &&
-                  subscriberAccountId === DEFAULT_ACCOUNT_ID));
             subscriber.onRequested(
               // SAFETY: the Slack owner receives the original plugin request; others get the projection.
-              (ownsSlackSource ? pluginRequest : publicRequest) as GatewayApprovalRequest,
+              (pluginRequest
+                ? pluginRequestForSubscriber(
+                    pluginRequest,
+                    publicRequest as PluginApprovalRequest,
+                    subscriber,
+                  )
+                : publicRequest) as GatewayApprovalRequest,
             );
           },
           (subscriber) =>
@@ -407,20 +418,69 @@ export function createGatewayInstanceRuntime(
           payload,
           timeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
         }),
-      requestRoute: async <T>(method: "send", payload: Record<string, unknown>) =>
-        await dispatch<T>({
+      requestRoute: async (
+        method: "send",
+        payload: ApprovalRouteSendParams,
+        routeOptions?: { liveOnlyWhenCurrent: () => boolean },
+      ) => {
+        if (routeOptions) {
+          await recovery.sendRecoveryNotice({
+            channel: payload.channel,
+            to: payload.to,
+            accountId: payload.accountId,
+            threadId: payload.threadId,
+            text: payload.message,
+            idempotencyKey: payload.idempotencyKey,
+            liveOnly: true,
+            isCurrent: routeOptions.liveOnlyWhenCurrent,
+          });
+          return;
+        }
+        await dispatch({
           allowedMethods: approvalRouteMethods,
           client: approvalRouteClient,
           method,
           payload,
           timeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
-        }),
+        });
+      },
       routeCoordinator,
       subscribe: (subscriber) => {
         if (closed) {
           throw new Error("Gateway instance approval runtime is closed");
         }
         approvalSubscribers.add(subscriber);
+        if (subscriber.eventKinds.has("plugin")) {
+          // Replay from the live Gateway owner before the channel's public list
+          // so only its matching Slack account can recover the private excerpt.
+          for (const record of options
+            .getContext()
+            .pluginApprovalManager?.listLocalPendingRecords() ?? []) {
+            if (record.expiresAtMs <= Date.now()) {
+              continue;
+            }
+            const request = {
+              approvalKind: "plugin",
+              id: record.id,
+              request: record.request,
+              createdAtMs: record.createdAtMs,
+              expiresAtMs: record.expiresAtMs,
+            } satisfies PluginApprovalRequest & { approvalKind: "plugin" };
+            const publicRequest = {
+              ...request,
+              request: projectApprovalRequestForExternal(request.request),
+            } satisfies PluginApprovalRequest & { approvalKind: "plugin" };
+            try {
+              if (subscriber.shouldHandle(publicRequest)) {
+                subscriber.onRequested(
+                  pluginRequestForSubscriber(request, publicRequest, subscriber),
+                );
+              }
+            } catch (error) {
+              options.logError?.(`internal approval subscriber failed: ${String(error)}`);
+            }
+          }
+        }
         let subscribed = true;
         return () => {
           if (!subscribed) {

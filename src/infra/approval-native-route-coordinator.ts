@@ -44,7 +44,7 @@ type ApprovalRouteSelectionVerdict =
 
 type ApprovalRouteSelection = {
   verdicts: Map<string, ApprovalRouteSelectionVerdict>;
-  pluginResolvedWithoutNotice?: boolean;
+  pluginTerminalStatus?: PluginTerminalStatus;
   cleanupTimeout: NodeJS.Timeout;
 };
 
@@ -58,6 +58,8 @@ type PluginTerminalNotice = {
   sent: boolean;
   cleanupTimeout: NodeJS.Timeout;
 };
+
+const PLUGIN_TERMINAL_ROUTE_GRACE_MS = 60_000;
 
 type ApprovalNativeRouteCoordinatorState = {
   activeRuntimes: Map<string, ApprovalRouteRuntimeRecord>;
@@ -162,7 +164,15 @@ function createApprovalRouteSelection(
     }
   }
 
-  const timeoutMs = Math.min(Math.max(0, params.request.expiresAtMs - Date.now()), 0x7fffffff);
+  const timeoutMs = Math.min(
+    Math.max(
+      0,
+      params.request.expiresAtMs -
+        Date.now() +
+        (params.approvalKind === "plugin" ? PLUGIN_TERMINAL_ROUTE_GRACE_MS : 0),
+    ),
+    0x7fffffff,
+  );
   const cleanupTimeout = setTimeout(() => {
     clearApprovalRouteSelection(state, params.request.id);
   }, timeoutMs);
@@ -207,7 +217,10 @@ function getPluginTerminalNotice(
   }
   // Retain the actual native route until the Gateway's expiry can publish its
   // terminal outcome, even if the channel's local card timer fires first.
-  const timeoutMs = Math.min(Math.max(0, request.expiresAtMs - Date.now()) + 60_000, 0x7fffffff);
+  const timeoutMs = Math.min(
+    Math.max(0, request.expiresAtMs - Date.now()) + PLUGIN_TERMINAL_ROUTE_GRACE_MS,
+    0x7fffffff,
+  );
   const cleanupTimeout = setTimeout(() => clearPluginTerminalNotice(state, request.id), timeoutMs);
   cleanupTimeout.unref?.();
   const entry: PluginTerminalNotice = { sent: false, cleanupTimeout };
@@ -268,7 +281,12 @@ function createPendingApprovalRouteNotice(
   },
 ): PendingApprovalRouteNotice {
   const timeoutMs = Math.min(
-    Math.max(0, params.request.expiresAtMs - Date.now()),
+    Math.max(
+      0,
+      params.request.expiresAtMs -
+        Date.now() +
+        (params.approvalKind === "plugin" ? PLUGIN_TERMINAL_ROUTE_GRACE_MS : 0),
+    ),
     MAX_APPROVAL_ROUTE_NOTICE_TTL_MS,
   );
   const cleanupTimeout = setTimeout(() => {
@@ -328,6 +346,9 @@ async function maybeFinalizeApprovalRouteNotice(
   }
   const selection = state.selections.get(approvalId);
   if (!selection) {
+    if (options?.force) {
+      clearPendingApprovalRouteNotice(state, approvalId);
+    }
     return;
   }
   if (!options?.force) {
@@ -343,7 +364,10 @@ async function maybeFinalizeApprovalRouteNotice(
   if (!options?.force && missingSelectedRuntime) {
     return;
   }
-  if (selection.pluginResolvedWithoutNotice) {
+  if (
+    selection.pluginTerminalStatus === "allowed" ||
+    selection.pluginTerminalStatus === "cancelled"
+  ) {
     clearPendingApprovalRouteNotice(state, approvalId);
     return;
   }
@@ -376,22 +400,32 @@ async function maybeFinalizeApprovalRouteNotice(
   }
   const initialNotice = Promise.resolve().then(async () => {
     try {
-      // Resolution can overtake this queued send; a retired route must not announce pending work.
-      if (
-        state.closed ||
-        state.selections.get(approvalId) !== selection ||
-        selection.pluginResolvedWithoutNotice
-      ) {
+      // The same owner check runs again at platform handoff; pending work never
+      // enters the durable queue where it could outlive this approval.
+      const isCurrent = () =>
+        !(
+          state.closed ||
+          state.selections.get(approvalId) !== selection ||
+          selection.pluginTerminalStatus ||
+          terminalNotice?.status ||
+          entry.request.expiresAtMs <= Date.now()
+        );
+      if (!isCurrent()) {
         return;
       }
-      await notice.requestGateway("send", {
+      const payload = {
         channel: notice.target.channel,
         to: notice.target.to,
         accountId: notice.target.accountId ?? undefined,
         threadId: notice.target.threadId ?? undefined,
         message: notice.text,
         idempotencyKey: `approval-route-notice:${approvalId}`,
-      });
+      };
+      if (entry.approvalKind === "plugin") {
+        await notice.requestGateway("send", payload, { liveOnlyWhenCurrent: isCurrent });
+      } else {
+        await notice.requestGateway("send", payload);
+      }
     } catch {
       // The approval delivery already succeeded; the follow-up notice is best-effort.
     }
@@ -431,6 +465,16 @@ function createApprovalNativeRouteReporterForState(
     skipReason?: ApprovalRouteSkipReason;
   }): Promise<void> => {
     if (state.closed || !registered || !params.handledKinds.has(payload.approvalKind)) {
+      return;
+    }
+    // After expiry, only a denied/expired terminal can still await delivery;
+    // a late report must not resurrect a resolved request's pending notice.
+    if (
+      payload.approvalKind === "plugin" &&
+      payload.request.expiresAtMs <= Date.now() &&
+      !state.pluginTerminalNotices.get(payload.request.id)?.status &&
+      !state.selections.has(payload.request.id)
+    ) {
       return;
     }
     const selection = resolveApprovalRouteSelection(state, payload);
@@ -533,6 +577,13 @@ function createApprovalNativeRouteReporterForState(
       if (terminalNotice?.status && !terminalNotice.target) {
         return;
       }
+      const terminalStatus = state.selections.get(approvalId)?.pluginTerminalStatus;
+      if (terminalStatus === "allowed" || terminalStatus === "cancelled") {
+        // Another selected runtime may still report; retain the bounded
+        // terminal marker so it cannot announce an already resolved request.
+        clearPendingApprovalRouteNotice(state, approvalId);
+        return;
+      }
       clearApprovalRouteSelection(state, approvalId);
       clearPendingApprovalRouteNotice(state, approvalId);
     },
@@ -589,13 +640,13 @@ export function createApprovalNativeRouteCoordinator(): ApprovalNativeRouteCoord
       if (state.closed) {
         return;
       }
+      const selection = state.selections.get(approvalId);
+      if (selection) {
+        selection.pluginTerminalStatus = status;
+      }
       if (status === "allowed" || status === "cancelled") {
-        const selection = state.selections.get(approvalId);
-        if (selection) {
-          // Delivery can finish after the Gateway resolves the request. Keep the
-          // outcome on the route so a late report cannot announce stale pending work.
-          selection.pluginResolvedWithoutNotice = true;
-        }
+        // Delivery can finish after the Gateway resolves the request. Keep the
+        // outcome on the route so a late report cannot announce stale pending work.
         clearPluginTerminalNotice(state, approvalId);
         return;
       }

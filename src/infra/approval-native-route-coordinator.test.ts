@@ -4,6 +4,7 @@ import {
   createApprovalNativeRouteCoordinator,
   createApprovalNativeRouteReporter as createApprovalNativeRouteReporterRaw,
 } from "./approval-native-route-coordinator.js";
+import type { ApprovalRouteSendParams } from "./approval-native-route-notice.js";
 import type { ExecApprovalRequest } from "./exec-approvals.js";
 import type { PluginApprovalRequest } from "./plugin-approvals.js";
 
@@ -67,10 +68,13 @@ afterEach(async () => {
 });
 
 function createGatewayRequestMock() {
-  return vi.fn(async (_method: string, _params: Record<string, unknown>) => ({
-    ok: true,
-  })) as unknown as (<T = unknown>(method: string, params: Record<string, unknown>) => Promise<T>) &
-    ReturnType<typeof vi.fn>;
+  return vi.fn(
+    async (
+      _method: "send",
+      _params: ApprovalRouteSendParams,
+      _options?: { liveOnlyWhenCurrent: () => boolean },
+    ): Promise<void> => {},
+  );
 }
 
 function approverDm(to: string) {
@@ -106,20 +110,27 @@ describe("plugin approval requester outcome", () => {
       },
       deliveredTargets: [approverDm("user:reviewer")],
     });
+    expect(requestGateway.mock.calls[0]?.[2]?.liveOnlyWhenCurrent()).toBe(true);
     // The channel's own card expiry/settlement must not retire the Gateway outcome route.
     reporter.completeRequest(request.id);
     await coordinator.publishPluginTerminal({ approvalId: request.id, status });
     await coordinator.publishPluginTerminal({ approvalId: request.id, status });
 
     expect(requestGateway).toHaveBeenCalledTimes(2);
-    expect(requestGateway).toHaveBeenNthCalledWith(1, "send", {
-      channel: "slack",
-      to: "channel:C123",
-      accountId: "work",
-      threadId: "1712345678.123456",
-      message: `Approval ${request.id} required. I sent the approval request to Slack DMs, not this chat.`,
-      idempotencyKey: `approval-route-notice:${request.id}`,
-    });
+    expect(requestGateway).toHaveBeenNthCalledWith(
+      1,
+      "send",
+      {
+        channel: "slack",
+        to: "channel:C123",
+        accountId: "work",
+        threadId: "1712345678.123456",
+        message: `Approval ${request.id} required. I sent the approval request to Slack DMs, not this chat.`,
+        idempotencyKey: `approval-route-notice:${request.id}`,
+      },
+      { liveOnlyWhenCurrent: expect.any(Function) },
+    );
+    expect(requestGateway.mock.calls[0]?.[2]?.liveOnlyWhenCurrent()).toBe(false);
     expect(requestGateway).toHaveBeenLastCalledWith("send", {
       channel: "slack",
       to: "channel:C123",
@@ -160,14 +171,47 @@ describe("plugin approval requester outcome", () => {
     });
 
     expect(requestGateway.mock.calls.map((call) => call[1].idempotencyKey)).toEqual([
-      `approval-route-notice:${request.id}`,
       `approval-terminal-notice:${request.id}`,
     ]);
     coordinator.close();
   });
 
+  it("invalidates an in-flight fallback notice when a plugin approval is denied", async () => {
+    const coordinator = createApprovalNativeRouteCoordinator();
+    const requestGateway = createGatewayRequestMock();
+    const reporter = coordinator.createReporter(
+      reporterOptions({
+        handledKinds: new Set(["plugin"]),
+        channel: "slack",
+        channelLabel: "Slack",
+        accountId: "work",
+        requestGateway,
+      }),
+    );
+    const request = createPluginRequest("plugin:fallback-denied");
+    reporter.start();
+    reporter.selectRequest({ approvalKind: "plugin", request });
+    await reporter.reportDelivery({
+      approvalKind: "plugin",
+      request,
+      deliveryPlan: {
+        targets: [approverDm("user:reviewer")],
+        originTarget: { to: "channel:C123" },
+        notifyOriginWhenDmOnly: true,
+      },
+      deliveredTargets: [],
+    });
+
+    const currentAtHandoff = requestGateway.mock.calls[0]?.[2]?.liveOnlyWhenCurrent;
+    expect(currentAtHandoff).toBeTypeOf("function");
+    expect(currentAtHandoff()).toBe(true);
+    await coordinator.publishPluginTerminal({ approvalId: request.id, status: "denied" });
+    expect(currentAtHandoff()).toBe(false);
+    coordinator.close();
+  });
+
   it.each(["allowed", "cancelled"] as const)(
-    "does not tell the requester a %s approval is pending after it resolves during DM delivery",
+    "does not tell the requester a %s approval is pending after another runtime completes",
     async (status) => {
       const coordinator = createApprovalNativeRouteCoordinator();
       const requestGateway = createGatewayRequestMock();
@@ -178,12 +222,37 @@ describe("plugin approval requester outcome", () => {
           channelLabel: "Slack",
           accountId: "work",
           requestGateway,
+          classifyRoute: () => "bound-or-explicit",
+        }),
+      );
+      const forwarded = coordinator.createReporter(
+        reporterOptions({
+          handledKinds: new Set(["plugin"]),
+          channel: "slack",
+          channelLabel: "Slack",
+          accountId: "other",
+          requestGateway,
+          classifyRoute: () => "bound-or-explicit",
         }),
       );
       const request = createPluginRequest(`plugin:early-${status}`);
       reporter.start();
+      forwarded.start();
       reporter.selectRequest({ approvalKind: "plugin", request });
+      forwarded.selectRequest({ approvalKind: "plugin", request });
+      await forwarded.reportDelivery({
+        approvalKind: "plugin",
+        request,
+        deliveryPlan: {
+          targets: [approverDm("user:reviewer")],
+          originTarget: { to: "channel:C123", threadId: "1712345678.123456" },
+          notifyOriginWhenDmOnly: true,
+        },
+        deliveredTargets: [approverDm("user:reviewer")],
+      });
       await coordinator.publishPluginTerminal({ approvalId: request.id, status });
+      forwarded.completeRequest(request.id);
+      await forwarded.stop();
       await reporter.reportDelivery({
         approvalKind: "plugin",
         request,
@@ -194,7 +263,6 @@ describe("plugin approval requester outcome", () => {
         },
         deliveredTargets: [approverDm("user:reviewer")],
       });
-      reporter.completeRequest(request.id);
 
       expect(requestGateway).not.toHaveBeenCalled();
       coordinator.close();
@@ -235,6 +303,83 @@ describe("plugin approval requester outcome", () => {
       coordinator.close();
     },
   );
+
+  it.each(["allowed", "cancelled"] as const)(
+    "does not revive a %s plugin request when delivery finishes after expiry",
+    async (status) => {
+      vi.useFakeTimers();
+      const coordinator = createApprovalNativeRouteCoordinator();
+      const requestGateway = createGatewayRequestMock();
+      const reporter = coordinator.createReporter(
+        reporterOptions({
+          handledKinds: new Set(["plugin"]),
+          channel: "slack",
+          accountId: "work",
+          requestGateway,
+        }),
+      );
+      const request = createPluginRequest(`plugin:late-${status}`);
+      request.expiresAtMs = Date.now() + 100;
+      reporter.start();
+      reporter.selectRequest({ approvalKind: "plugin", request });
+      await coordinator.publishPluginTerminal({ approvalId: request.id, status });
+      await vi.advanceTimersByTimeAsync(101);
+      await reporter.reportDelivery({
+        approvalKind: "plugin",
+        request,
+        deliveryPlan: {
+          targets: [approverDm("user:reviewer")],
+          originTarget: { to: "channel:C123", threadId: "1712345678.123456" },
+          notifyOriginWhenDmOnly: true,
+        },
+        deliveredTargets: [approverDm("user:reviewer")],
+      });
+
+      expect(requestGateway).not.toHaveBeenCalled();
+      coordinator.close();
+    },
+  );
+
+  it("keeps a late DM route for the Gateway timeout without sending a stale pending notice", async () => {
+    vi.useFakeTimers();
+    const coordinator = createApprovalNativeRouteCoordinator();
+    const requestGateway = createGatewayRequestMock();
+    const reporter = coordinator.createReporter(
+      reporterOptions({
+        handledKinds: new Set(["plugin"]),
+        channel: "slack",
+        channelLabel: "Slack",
+        accountId: "work",
+        requestGateway,
+      }),
+    );
+    const request = createPluginRequest("plugin:late-timeout");
+    request.expiresAtMs = Date.now() + 100;
+    reporter.start();
+    reporter.selectRequest({ approvalKind: "plugin", request });
+    await vi.advanceTimersByTimeAsync(101);
+    await reporter.reportDelivery({
+      approvalKind: "plugin",
+      request,
+      deliveryPlan: {
+        targets: [approverDm("user:reviewer")],
+        originTarget: { to: "channel:C123", threadId: "1712345678.123456" },
+        notifyOriginWhenDmOnly: true,
+      },
+      deliveredTargets: [approverDm("user:reviewer")],
+    });
+    await coordinator.publishPluginTerminal({ approvalId: request.id, status: "expired" });
+
+    expect(requestGateway).toHaveBeenCalledTimes(1);
+    expect(requestGateway).toHaveBeenCalledWith(
+      "send",
+      expect.objectContaining({
+        idempotencyKey: `approval-terminal-notice:${request.id}`,
+        message: `Approval ${request.id} timed out. The requested action did not run.`,
+      }),
+    );
+    coordinator.close();
+  });
 
   it.each(["origin-card", "forwarded-only", "dm-without-origin-notice"] as const)(
     "does not duplicate the %s outcome in the origin",

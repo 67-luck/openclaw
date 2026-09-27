@@ -1,5 +1,6 @@
 import type { GatewayNativeApprovalMethod } from "./approval-gateway-runtime-methods.js";
 import type { ApprovalNativeRouteCoordinator } from "./approval-native-route-coordinator.js";
+import type { ApprovalRouteSendParams } from "./approval-native-route-notice.js";
 import type { ApprovalRequest, ChannelApprovalKind } from "./approval-types.js";
 import type { ExecApprovalResolved } from "./exec-approvals.js";
 import type { PluginApprovalResolved } from "./plugin-approvals.js";
@@ -27,7 +28,11 @@ export type GatewayNativeApprovalRuntime = {
     params: Record<string, unknown>,
     options?: { clientDisplayName?: string },
   ) => Promise<T>;
-  requestRoute: <T = unknown>(method: "send", params: Record<string, unknown>) => Promise<T>;
+  requestRoute: (
+    method: "send",
+    params: ApprovalRouteSendParams,
+    options?: { liveOnlyWhenCurrent: () => boolean },
+  ) => Promise<void>;
   routeCoordinator: ApprovalNativeRouteCoordinator;
   subscribe: (subscriber: GatewayApprovalEventSubscriber) => () => void;
 };
