@@ -18,6 +18,7 @@ export function describeApprovalDeliveryDestination(params: {
 /** Builds the notice shown in the current chat when approval was routed elsewhere. */
 export function resolveApprovalRoutedElsewhereNoticeText(
   destinations: readonly string[],
+  approvalId?: string,
 ): string | null {
   const uniqueDestinations = sortUniqueStrings(destinations.map((value) => value.trim())).filter(
     Boolean,
@@ -25,7 +26,7 @@ export function resolveApprovalRoutedElsewhereNoticeText(
   if (uniqueDestinations.length === 0) {
     return null;
   }
-  return `Approval required. I sent the approval request to ${formatHumanList(
+  return `Approval${approvalId ? ` ${approvalId}` : ""} required. I sent the approval request to ${formatHumanList(
     uniqueDestinations,
   )}, not this chat.`;
 }

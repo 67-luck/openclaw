@@ -112,6 +112,14 @@ describe("plugin approval requester outcome", () => {
     await coordinator.publishPluginTerminal({ approvalId: request.id, status });
 
     expect(requestGateway).toHaveBeenCalledTimes(2);
+    expect(requestGateway).toHaveBeenNthCalledWith(1, "send", {
+      channel: "slack",
+      to: "channel:C123",
+      accountId: "work",
+      threadId: "1712345678.123456",
+      message: `Approval ${request.id} required. I sent the approval request to Slack DMs, not this chat.`,
+      idempotencyKey: `approval-route-notice:${request.id}`,
+    });
     expect(requestGateway).toHaveBeenLastCalledWith("send", {
       channel: "slack",
       to: "channel:C123",

@@ -474,7 +474,10 @@ function resolveApprovalRouteNotice(params: {
       }),
     ];
   });
-  const text = resolveApprovalRoutedElsewhereNoticeText(destinations);
+  const text = resolveApprovalRoutedElsewhereNoticeText(
+    destinations,
+    params.approvalKind === "plugin" ? params.request.id : undefined,
+  );
   if (!text) {
     return null;
   }
