@@ -23,6 +23,7 @@ import {
   prepareActiveNodeContext,
 } from "../../infra/active-node-context.js";
 import { registerAgentRunDelegatedAuthorityClosedHandler } from "../../infra/agent-run-registry.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { buildPersistedUserTurnMessage } from "../../sessions/user-turn-transcript.js";
 import { prepareSkillResourceDelivery } from "../../skills/runtime/resources.js";
 import { createWorkerBrowserToolDefinition } from "../../worker/browser-runtime.js";
@@ -69,6 +70,8 @@ import {
   recoverWorkspaceBeforeTurn,
   workerWorkspaceFailure,
 } from "./workspace-result-finalize.js";
+
+const log = createSubsystemLogger("gateway/worker-turn");
 
 export async function executeWorkerTurn(
   params: Omit<Parameters<typeof executeRemoteExecTurn>[0], "environments" | "runLocal"> & {
@@ -247,7 +250,7 @@ export async function executeWorkerTurn(
     toolAuthority.allowedToolNames,
     assertTurnInputCurrent,
   );
-  const { operationalRunInstance, runtimeIdentity, assertActive, takeFinishingOutcome } =
+  const { operationalRunInstance, runtimeIdentity, operatorAuthority, assertActive, takeFinishingOutcome } =
     await prepareWorkerAgentRuntimeIdentity({
       ...params,
       agentId: placement.agentId,
@@ -317,6 +320,7 @@ export async function executeWorkerTurn(
     }
     let skillWorkshop: AnyAgentTool | undefined;
     githubGrant = await prepareWorkerGitHubBindingGrant({
+      operatorAuthority,
       sessionId: placement.sessionId,
       sessionKey: placement.sessionKey,
       agentId: placement.agentId,
@@ -712,9 +716,13 @@ export async function executeWorkerTurn(
       workspaceConflictSummary: workspaceConflict?.summary,
     });
   } finally {
-    await githubGrant?.revoke();
     await toolRuntime?.close();
     stopWatchingClaim();
     stopWatchingRun();
+    try {
+      await githubGrant?.revoke();
+    } catch {
+      log.warn("Worker GitHub token revocation failed; the installation token will expire.");
+    }
   }
 }

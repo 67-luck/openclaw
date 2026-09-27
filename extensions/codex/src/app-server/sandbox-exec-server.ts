@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { isIP } from "node:net";
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
+  hasWorkerGitHubAppConfiguration,
   prepareWorkerGitHubBindingGrant,
   type WorkerGitHubBindingGrant,
 } from "openclaw/plugin-sdk/github-worker-runtime";
@@ -194,7 +195,7 @@ async function acquireOpenClawExecServer(params: {
         const placementIdentity = readCodexPlacementWorkspaceIdentity(sandbox);
         const { agentId, ...nodePlacementIdentity } = placementIdentity;
         let githubGrant: WorkerGitHubBindingGrant | undefined;
-        if (agentId) {
+        if (agentId && hasWorkerGitHubAppConfiguration()) {
           githubGrant = await prepareWorkerGitHubBindingGrant({
             sessionId: placementIdentity.sessionId,
             sessionKey: placementIdentity.sessionKey,
@@ -229,6 +230,7 @@ async function acquireOpenClawExecServer(params: {
           sandboxExecServerRegistry.servers.get(key) !== promise
         ) {
           channel.close();
+          await githubGrant?.revoke();
           throw new Error("Codex node execution retired before its channel was ready.");
         }
         const nodeLease = {

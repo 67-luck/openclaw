@@ -41,7 +41,6 @@ import type { GitHubToolAccount } from "./github-tool-account.js";
 
 export { GitHubIdentityError } from "./github-read-identity.js";
 
-const GITHUB_HOST = "github.com";
 const MANAGED_GITHUB_ROOT_SEGMENTS = ["credentials", "github"] as const;
 
 export class GitHubAccountMismatchError extends Error {}
@@ -647,9 +646,9 @@ async function verifyManagedGitHubCredential(token: string) {
   return { account: verified.account, credential };
 }
 
-function managedGitHubHosts(identity: { login: string; token: string }): string {
+function managedGitHubHosts(identity: { login: string; token: string; host?: string }): string {
   return stringifyYaml({
-    [GITHUB_HOST]: {
+    [identity.host ?? resolveGitHubHost()]: {
       user: identity.login,
       oauth_token: identity.token,
       users: { [identity.login]: { oauth_token: identity.token } },

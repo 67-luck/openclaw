@@ -18,11 +18,11 @@ function normalizeGitHubApiBaseUrl(value: string | undefined): string {
     parsed.password ||
     parsed.search ||
     parsed.hash ||
-    (parsed.pathname !== "/" && parsed.pathname !== "")
+    !["", "/", "/api/v3", "/api/v3/"].includes(parsed.pathname)
   ) {
-    throw new Error("OPENCLAW_GITHUB_API_BASE_URL must be an HTTPS origin");
+    throw new Error("OPENCLAW_GITHUB_API_BASE_URL must be an HTTPS origin or /api/v3 endpoint");
   }
-  return parsed.origin;
+  return parsed.pathname.startsWith("/api/v3") ? `${parsed.origin}/api/v3` : parsed.origin;
 }
 
 export function resolveGitHubHost(env: NodeJS.ProcessEnv = process.env): string {
