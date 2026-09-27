@@ -148,11 +148,11 @@ describe("worker GitHub launch binding", () => {
   });
 
   it("keeps an existing public managed identity on its host when App host settings change", async () => {
-    vi.stubEnv("GITHUB_HOST", "microsoft.ghe.com");
-    vi.stubEnv("GITHUB_API_BASE_URL", "https://api.microsoft.ghe.com");
+    vi.stubEnv("GITHUB_HOST", "fixture.ghe.com");
+    vi.stubEnv("GITHUB_API_BASE_URL", "https://api.fixture.ghe.com");
     await installProfile();
     mocks.repository.mockResolvedValue({
-      originUrl: "microsoft@microsoft.ghe.com:bic/lobster.git",
+      originUrl: "fixture@fixture.ghe.com:example/repo.git",
     });
 
     await expect(prepareWorkerGitHubBinding(session)).resolves.toEqual({
@@ -167,13 +167,13 @@ describe("worker GitHub launch binding", () => {
   });
 
   it("issues one process-scoped enterprise App token and revokes it", async () => {
-    vi.stubEnv("GITHUB_HOST", "microsoft.ghe.com");
-    vi.stubEnv("GITHUB_API_BASE_URL", "https://api.microsoft.ghe.com");
+    vi.stubEnv("GITHUB_HOST", "fixture.ghe.com");
+    vi.stubEnv("GITHUB_API_BASE_URL", "https://api.fixture.ghe.com");
     vi.stubEnv("GITHUB_APP_ID", "13361");
     vi.stubEnv("GITHUB_INSTALLATION_ID", "119386");
     vi.stubEnv("GITHUB_APP_PRIVATE_KEY", appPrivateKey);
     mocks.repository.mockResolvedValue({
-      originUrl: "microsoft@microsoft.ghe.com:bic/lobster.git",
+      originUrl: "fixture@fixture.ghe.com:example/repo.git",
     });
     const fetch = vi.fn(async (_input: string | URL | Request, init: RequestInit = {}) =>
       init.method === "DELETE"
@@ -199,8 +199,8 @@ describe("worker GitHub launch binding", () => {
       token: "synthetic-installation-token",
       login: "x-access-token",
       branch: worktree.branch,
-      host: "microsoft.ghe.com",
-      remoteUrl: "https://microsoft.ghe.com/bic/lobster.git",
+      host: "fixture.ghe.com",
+      remoteUrl: "https://fixture.ghe.com/example/repo.git",
       gitAuthor: { name: "Signed-in Person", email: "person@example.test" },
     });
     await grant?.revoke();
@@ -212,8 +212,8 @@ describe("worker GitHub launch binding", () => {
       token: "synthetic-installation-token",
       login: "x-access-token",
       branch: worktree.branch,
-      host: "microsoft.ghe.com",
-      remoteUrl: "https://microsoft.ghe.com/bic/lobster.git",
+      host: "fixture.ghe.com",
+      remoteUrl: "https://fixture.ghe.com/example/repo.git",
     });
     await codexGrant?.revoke();
     await expect(
