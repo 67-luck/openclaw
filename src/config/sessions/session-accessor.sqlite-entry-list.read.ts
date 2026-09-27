@@ -159,13 +159,13 @@ export function listSqliteSessionEntriesFromDatabase(
   return Array.from(
     iterateSessionEntriesForListing(
       snapshot,
-      projection === "list" && scope.clone !== false,
+      snapshot.entryOwnership === "cache" && scope.clone !== false,
       scope.sessionKeys ? new Set(scope.sessionKeys) : undefined,
     ),
   );
 }
 
-/** Applies the listing visibility and canonical-key contract to an owned snapshot. */
+/** Applies the listing visibility and canonical-key contract to a snapshot. */
 function* iterateSessionEntriesForListing(
   snapshot: SessionEntryCacheSnapshot,
   cloneEntries = false,
@@ -189,7 +189,6 @@ function* iterateSessionEntriesForListing(
     if (sessionKeys && !sessionKeys.has(sessionKey)) {
       continue;
     }
-    // Full snapshots own their nested values; list snapshots may share cached entries.
     yield {
       sessionKey,
       entry: cloneEntries ? cloneSessionEntry(entry) : entry,

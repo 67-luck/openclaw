@@ -123,6 +123,42 @@ describe("first transcript turn initialization", () => {
     expect(counts()).toEqual({ nodes: 1, windows: 1, events: 2, receipts: 1 });
   });
 
+  it("isolates turn results from lifecycle inputs, Goal receipts, and persisted entries", async () => {
+    const entry = {
+      ...initialSessionEntry,
+      skillsSnapshot: { prompt: "saved prompt".repeat(1024), skills: [] },
+    };
+    const deliveryContext = { channel: "telegram", to: "original-target" };
+    const turn = await admit({
+      initialSessionEntry: entry,
+      sessionLifecyclePatch: { restartRecoveryDeliveryContext: deliveryContext },
+      onMessageCommitted: () => {
+        deliveryContext.to = "changed-by-completion";
+      },
+    });
+    expect(turn.sessionEntry?.restartRecoveryDeliveryContext?.to).toBe("original-target");
+    entry.skillsSnapshot.prompt = "changed input";
+    expect(turn.sessionEntry?.skillsSnapshot?.prompt).toBe("saved prompt".repeat(1024));
+
+    const returned = turn.sessionEntry!;
+    const receipt = turn.sessionTurnMutationResult!.result;
+    returned.goal!.objective = "changed entry";
+    returned.restartRecoveryDeliveryContext!.to = "changed result";
+    returned.skillsSnapshot!.prompt = "changed result";
+    expect(receipt.goal?.objective).toBe(operation.objective);
+    expect(deliveryContext.to).toBe("changed-by-completion");
+    receipt.goal!.objective = "changed receipt";
+    expect(returned.goal!.objective).toBe("changed entry");
+    expect(loadSessionEntry(scope())).toMatchObject({
+      goal: { objective: operation.objective },
+      restartRecoveryDeliveryContext: { to: "original-target" },
+      skillsSnapshot: { prompt: "saved prompt".repeat(1024) },
+    });
+    expect(
+      lookupSessionGoalOperation({ ...scope(), expectedSessionId: sessionId, operation }),
+    ).toMatchObject({ goal: { objective: operation.objective } });
+  });
+
   it.each(["inline", "none", "throws"] as const)(
     "completes committed messages once before publication with %s updates",
     async (mode) => {

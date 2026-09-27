@@ -405,6 +405,15 @@ describe("SQLite session entry cache", () => {
       expect(cloneSpy).not.toHaveBeenCalled();
       expect(first?.worktree?.branch).toBe("main");
 
+      const latest = listSessionEntriesCore({ ...scope, readConsistency: "latest" })[0]?.entry;
+      expect(latest?.worktree?.branch).toBe("main");
+      expect(cloneSpy).not.toHaveBeenCalled();
+      latest!.worktree!.branch = "mutated latest read";
+      expect(first?.worktree?.branch).toBe("main");
+      expect(
+        listSessionEntriesCore({ ...scope, readConsistency: "latest" })[0]?.entry.worktree?.branch,
+      ).toBe("main");
+
       const copiedListEntry = listSessionEntriesCore(scope)[0]?.entry;
       expect(copiedListEntry?.worktree?.branch).toBe("main");
       expect(copiedListEntry?.worktree).not.toBe(first?.worktree);

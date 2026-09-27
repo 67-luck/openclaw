@@ -16,6 +16,7 @@ export type SessionEntryCacheReadOptions = {
 export type SessionEntryCacheSnapshot = {
   entries: Map<string, SessionEntry>;
   keys: string[];
+  entryOwnership: "caller" | "cache";
 };
 
 export type SessionSharingEntry = Pick<

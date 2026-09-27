@@ -342,7 +342,7 @@ export async function appendExpectedSessionTranscriptTurn(
           }
           const next =
             Object.keys(sessionPatch).length > 0
-              ? mergeSessionEntry(appendedEntry, sessionPatch)
+              ? mergeSessionEntry(appendedEntry, structuredClone(sessionPatch))
               : appendedEntry;
           let publishIdentity: (() => void) | undefined;
           if (initialEntry || next !== appendedEntry) {
@@ -383,7 +383,7 @@ export async function appendExpectedSessionTranscriptTurn(
           result = {
             sessionTurnMutationResult,
             appendedMessages,
-            sessionEntry: cloneSessionEntry(next),
+            sessionEntry: next,
             sessionFile: options.sessionFile,
           };
           return publishIdentity;

@@ -242,7 +242,7 @@ export function readSessionEntryCache(
     // Only tracked publications identify changed rows. A generation gap can contain
     // same-timestamp or owner-only edits; updated_at cannot validate a partial reload.
     const loaded = loadSessionEntrySnapshot(database, options.projection, prepared);
-    const next = { ...loaded, validityToken };
+    const next: SqliteSessionEntryCache = { ...loaded, validityToken, entryOwnership: "cache" };
     sessionEntryCaches.set(database.db, next);
     return next;
   });

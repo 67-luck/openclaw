@@ -448,7 +448,10 @@ export async function projectSessionEntryLifecycleMutation(
       ) {
         continue;
       }
-      const expectedEntry = store[sessionKey] ? cloneSessionEntry(store[sessionKey]) : undefined;
+      const current = store[sessionKey];
+      // Repeated upserts share an earlier write input, which canonical repair can normalize.
+      const expectedEntry =
+        current && changedSessionKeys.has(sessionKey) ? cloneSessionEntry(current) : current;
       if (upsert.resetBoundary && !expectedEntry) {
         throw new Error(
           `Cannot append reset boundary without an existing session row: ${sessionKey}`,
