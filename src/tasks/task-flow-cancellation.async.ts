@@ -169,7 +169,6 @@ export async function cancelTaskFlowAsync(
       },
       {
         assertCurrent,
-        requireStateLifecycle: true,
         createAdmission: createSqliteWorkerWriteAdmission(assertCurrent, [
           context.admission.databasePath,
         ]),
