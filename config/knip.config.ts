@@ -207,7 +207,7 @@ const repositoryScriptEntries = [
   "scripts/pr-lib/merge-legacy-refusal.mjs!",
   // merge.sh and merge-outcome.sh execute refusal qualification by path.
   "scripts/pr-lib/merge-pre-dispatch-refusal.mjs!",
-  // merge.sh invokes the prior-CI evidence verifier as a standalone Node CLI.
+  // merge.sh verifies prior exact-head CI evidence through this CLI by path.
   "scripts/pr-lib/merge-prior-ci.mjs!",
   // merge-outcome.sh launches the REST adapter as a standalone Node CLI.
   "scripts/pr-lib/merge-rest.mjs!",
