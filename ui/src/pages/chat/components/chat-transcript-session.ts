@@ -42,6 +42,7 @@ export type TranscriptHeader = {
 };
 
 export type ChatTranscriptSession = {
+  readonly viewportResizePending: boolean;
   readonly entryAnimations: ChatMessageEntryAnimations;
   readonly expandedAssistantMessages: Map<string, AssistantMessageExpansionState>;
   readonly liveAnnouncementText: string;

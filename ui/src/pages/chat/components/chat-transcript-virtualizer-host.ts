@@ -316,6 +316,10 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     return this.host.updateComplete;
   }
 
+  get viewportResizePending(): boolean {
+    return this.layout.viewportResizePending;
+  }
+
   get liveAnnouncementText() {
     return this.announcement.text;
   }

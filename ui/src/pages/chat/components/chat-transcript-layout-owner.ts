@@ -10,6 +10,12 @@ export class TranscriptLayoutOwner {
 
   constructor(private readonly onClamp: (before: number, after: number) => void) {}
 
+  get viewportResizePending(): boolean {
+    const viewport = this.viewport;
+    const height = viewport?.parentElement?.clientHeight;
+    return Boolean(height && height !== viewport?.clientHeight);
+  }
+
   connect(viewport: HTMLDivElement | null): void {
     if (viewport === this.viewport) {
       return;
