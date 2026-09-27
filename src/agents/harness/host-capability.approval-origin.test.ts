@@ -22,6 +22,8 @@ it.each([
   async ({ sourceThreadId, expectedPluginThreadId }) => {
     const fixture = await createAdmittedHostCapabilityTestFixture({
       runId: `approval-thread-${sourceThreadId ?? "root"}`,
+      agentId: "main",
+      sessionKey: "agent:main:approval-thread",
       messageChannel: "slack",
       currentThreadTs: "1700000001.000002",
       messageThreadId: sourceThreadId,
