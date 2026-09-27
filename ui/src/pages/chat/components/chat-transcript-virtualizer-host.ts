@@ -80,7 +80,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
   private appliedHeaderHeight = 0;
   private implicitEndAnchorPending: boolean;
   private readonly endAnchor = new TranscriptEndAnchor();
-  private readonly layout = new TranscriptLayoutOwner((before, after) =>
+  readonly layout = new TranscriptLayoutOwner((before, after) =>
     this.endAnchor.recordLayoutCorrection(before, after),
   );
   private readonly followEnd = () => this.scrollToEnd({ source: "auto", behavior: "auto" });
@@ -314,10 +314,6 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
 
   get updateComplete() {
     return this.host.updateComplete;
-  }
-
-  get viewportResizePending(): boolean {
-    return this.layout.viewportResizePending;
   }
 
   get liveAnnouncementText() {

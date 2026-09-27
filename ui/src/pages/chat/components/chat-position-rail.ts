@@ -463,7 +463,7 @@ class ChatPositionRailDirective extends AsyncDirective {
     this.syncTabStop();
     if (initialize || this.followActive) {
       // Navigation must reach the final viewport, even if its slot resized before this frame.
-      this.followActive = this.session?.viewportResizePending ?? false;
+      this.followActive = this.session?.layout.viewportResizePending ?? false;
       const focused = this.markerElements.get(this.interaction.focusedId ?? "");
       const current =
         (initialize || focused?.matches(":focus-visible")
