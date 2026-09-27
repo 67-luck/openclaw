@@ -53,6 +53,7 @@ export function recordCronOutcomeForJob(
   const event = createCronOutcomeEvent(job, result);
   tryFinishCronTaskRun(state, {
     taskRunId: result.taskRunId,
+    operatorCancellationReason: result.operatorCancellationReason,
     job,
     event,
     errorClassification: result.errorClassification,

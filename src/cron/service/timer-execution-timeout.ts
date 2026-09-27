@@ -52,6 +52,8 @@ export type TimedCronRunOutcome = CronJobExecutionResult & {
   jobId: string;
   job: CronJob;
   taskRunId?: string;
+  /** The accepted Stop owns task status; cron history keeps its error outcome. */
+  operatorCancellationReason?: string;
   completionStatus: CronCompletionStatus;
   deliveryState: CronResolvedDeliveryState;
   isolatedAgentSetupTimeout?: IsolatedAgentSetupTimeoutSignal;

@@ -30,7 +30,7 @@ import { resolveCronJobTimeoutMs } from "./timeout-policy.js";
 import {
   type ExecuteJobCoreOptions,
   type CronJobRunResult,
-  type IsolatedAgentSetupTimeoutSignal,
+  type TimedCronRunOutcome,
   runsDetachedFromMainSession,
 } from "./timer-execution-timeout.js";
 import { executeJobCore } from "./timer-execution.js";
@@ -42,9 +42,8 @@ import {
 } from "./timer-job-runner.interruption.js";
 import { resolveDeliveryState } from "./timer-trigger.js";
 
-type CronCoreRunOutcome = Awaited<ReturnType<typeof executeJobCore>> & {
-  isolatedAgentSetupTimeout?: IsolatedAgentSetupTimeoutSignal;
-};
+type CronCoreRunOutcome = Awaited<ReturnType<typeof executeJobCore>> &
+  Pick<TimedCronRunOutcome, "isolatedAgentSetupTimeout" | "operatorCancellationReason">;
 type CronRunTimeout = { timeoutMs: number; reason: string };
 type CronCoreRunOptions = {
   runId?: string;
@@ -158,6 +157,7 @@ async function executeJobCoreWithTimeoutUnfinalized(
     : undefined;
   const operatorCancellationMarker = Symbol("cron-operator-cancelled");
   const operatorCancellation = createDeferredCore<typeof operatorCancellationMarker>();
+  let operatorCancellationReason: string | undefined;
   const createInterruptionOutcome = async (
     interruption: CronRunTimeout | "cancelled",
     execution?: CronAgentExecutionStarted,
@@ -195,6 +195,9 @@ async function executeJobCoreWithTimeoutUnfinalized(
     const result: CronCoreRunOutcome = {
       status: "error",
       error,
+      ...(interruption === "cancelled" && operatorCancellationReason !== undefined
+        ? { operatorCancellationReason }
+        : {}),
       // The abort race must retain attribution already reported by the runner.
       ...(execution && {
         provider: execution.provider,
@@ -226,7 +229,10 @@ async function executeJobCoreWithTimeoutUnfinalized(
           runId: opts?.runId ?? `cron-active:${job.id}`,
           controller: runAbortController,
           activeJobMarker: opts?.activeJobMarker,
-          onCancel: () => operatorCancellation.resolve(operatorCancellationMarker),
+          onCancel: (reason) => {
+            operatorCancellationReason = reason;
+            operatorCancellation.resolve(operatorCancellationMarker);
+          },
         })
       : undefined;
   const jobTimeoutMs = resolveCronJobTimeoutMs(job);

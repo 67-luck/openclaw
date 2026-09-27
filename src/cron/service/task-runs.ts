@@ -370,6 +370,7 @@ export function tryFinishCronTaskRunWithoutHistory(
   state: CronServiceState,
   result: {
     taskRunId?: string;
+    operatorCancellationReason?: string;
     status: "ok" | "error" | "skipped";
     completionStatus?: CronCompletionStatus;
     error?: unknown;
@@ -395,14 +396,17 @@ export function tryFinishCronTaskRunWithoutHistory(
     finalizeTaskRunByRunIdCore({
       runId: result.taskRunId,
       runtime: "cron",
-      status: cronRunStorageStatus({
-        status: result.status,
-        completionStatus: quietTriggerEval ? "succeeded" : result.completionStatus,
-        error,
-      }),
+      status:
+        result.operatorCancellationReason !== undefined
+          ? "cancelled"
+          : cronRunStorageStatus({
+              status: result.status,
+              completionStatus: quietTriggerEval ? "succeeded" : result.completionStatus,
+              error,
+            }),
       endedAt: result.endedAt,
       lastEventAt: result.endedAt,
-      error,
+      error: result.operatorCancellationReason ?? error,
       terminalSummary: result.summary,
       childSessionKey: result.childSessionKey ?? result.sessionKey ?? null,
       ...(quietTriggerEval
@@ -424,6 +428,7 @@ export function tryFinishCronTaskRun(
   state: CronServiceState,
   result: {
     taskRunId?: string;
+    operatorCancellationReason?: string;
     job?: CronJob;
     event: CronEvent & { action: "finished" };
     /** An ownerless attempt needs history without claiming an agent executed. */
@@ -466,12 +471,14 @@ export function tryFinishCronTaskRun(
       ...(result.scriptResult ? { scriptResult: result.scriptResult } : {}),
       ...(result.triggerEval ? { triggerEval: result.triggerEval } : {}),
     });
+    const terminalStatus =
+      result.operatorCancellationReason !== undefined ? "cancelled" : cronRunStorageStatus(entry);
     const finalize = (
       runId: string,
       status: Extract<
         TaskStatus,
         "succeeded" | "failed" | "timed_out" | "cancelled"
-      > = cronRunStorageStatus(entry),
+      > = terminalStatus,
     ) =>
       finalizeTaskRunByRunIdCore({
         runId,
@@ -480,7 +487,9 @@ export function tryFinishCronTaskRun(
         endedAt: entry.ts,
         lastEventAt: entry.ts,
         ...(status === "cancelled"
-          ? {}
+          ? result.operatorCancellationReason !== undefined
+            ? { error: result.operatorCancellationReason }
+            : {}
           : {
               error: entry.error,
               clearError: entry.error === undefined,
@@ -507,7 +516,7 @@ export function tryFinishCronTaskRun(
         // Startup recovery replaces them with the durable interrupted outcome.
         const recovered = finalizeTaskRunById({
           taskId: existing.taskId,
-          status: cronRunStorageStatus(entry),
+          status: terminalStatus,
           childSessionKey: entry.sessionKey ?? null,
           endedAt: entry.ts,
           lastEventAt: entry.ts,

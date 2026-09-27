@@ -442,83 +442,6 @@ describe("cron service timer regressions", () => {
     },
   );
 
-  it("cancels timeout-disabled cron task runs without waiting for the runner", async () => {
-    vi.useFakeTimers();
-    resetTaskRegistryForTests();
-    resetActiveCronTaskRunsForTests();
-    const store = timerRegressionFixtures.makeStorePath();
-    const scheduledAt = Date.parse("2026-02-15T13:10:00.000Z");
-    const cronJob = createIsolatedRegressionJob({
-      id: "no-timeout-cancel",
-      name: "no timeout cancel",
-      scheduledAt,
-      schedule: { kind: "at", at: new Date(scheduledAt).toISOString() },
-      payload: { kind: "agentTurn", message: "work", timeoutSeconds: 0 },
-      state: { nextRunAtMs: scheduledAt },
-    });
-    await saveCronStore(store.storePath, { version: 1, jobs: [cronJob] });
-
-    const now = scheduledAt;
-    let abortObserved = false;
-    let timerSettled = false;
-    const runnerStarted = createDeferred();
-    const runnerResult = createDeferred<{ status: "ok"; summary: string }>();
-    const state = createCronServiceState({
-      storePath: store.storePath,
-      nowMs: () => now,
-      runIsolatedAgentJob: vi.fn(async ({ abortSignal, onExecutionStarted }) => {
-        onExecutionStarted?.();
-        runnerStarted.resolve();
-        abortSignal?.addEventListener(
-          "abort",
-          () => {
-            abortObserved = true;
-          },
-          { once: true },
-        );
-        return await runnerResult.promise;
-      }),
-    });
-
-    const timerPromise = onTimer(state).then(() => {
-      timerSettled = true;
-    });
-    try {
-      await runnerStarted.promise;
-
-      const runId = `cron:no-timeout-cancel:${scheduledAt}`;
-      const task = findCronTaskByBaseRunId(runId);
-      if (!task) {
-        throw new Error("Expected timeout-disabled cron task row");
-      }
-
-      const cancelResult = await cancelTaskById({
-        cfg: {} as never,
-        taskId: task.taskId,
-      });
-      expect(cancelResult.found).toBe(true);
-      expect(cancelResult.cancelled).toBe(true);
-      expect(abortObserved).toBe(true);
-
-      await vi.waitFor(() => expect(timerSettled).toBe(true), { interval: 0 });
-      await timerPromise;
-
-      const finalTask = listTaskRecords().find((entry) => entry.taskId === task.taskId);
-      const job = requireJob(state, "no-timeout-cancel");
-      expect(finalTask?.status).toBe("cancelled");
-      expect(job.state.lastStatus).toBe("error");
-      expect(job.state.lastError).toBe("Cancelled by operator.");
-    } finally {
-      stop(state);
-      runnerResult.resolve({ status: "ok", summary: "done" });
-      await Promise.allSettled([timerPromise, runnerResult.promise]);
-      await vi.waitFor(() => expect(getSuspensionVisibleCronTaskRunCount()).toBe(0));
-      vi.useRealTimers();
-      resetActiveCronTaskRunsForTests();
-      resetTaskRegistryForTests();
-    }
-  });
-
   it("aborts isolated runs when cron timeout fires", async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(noopLogger, "warn");
@@ -1260,7 +1183,7 @@ describe("cron service timer regressions", () => {
         taskId: task.taskId,
       });
       expect(cancelResult.found).toBe(true);
-      expect(cancelResult.cancelled).toBe(true);
+      expect(cancelResult.cancelled, cancelResult.reason).toBe(true);
       expect(abortObserved).toBe(true);
 
       await vi.waitFor(() => expect(timerSettled).toBe(true), { interval: 0 });

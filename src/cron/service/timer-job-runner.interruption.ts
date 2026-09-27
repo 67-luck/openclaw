@@ -2,12 +2,11 @@
 // cancellation/timeout branches and their invariants are directly testable.
 import { resolveCronDeliveryPlan } from "../delivery-plan.js";
 import type { CronJob } from "../types.js";
-import type { IsolatedAgentSetupTimeoutSignal } from "./timer-execution-timeout.js";
+import type { TimedCronRunOutcome } from "./timer-execution-timeout.js";
 import type { executeJobCore } from "./timer-execution.js";
 
-type CronCoreRunOutcome = Awaited<ReturnType<typeof executeJobCore>> & {
-  isolatedAgentSetupTimeout?: IsolatedAgentSetupTimeoutSignal;
-};
+type CronCoreRunOutcome = Awaited<ReturnType<typeof executeJobCore>> &
+  Pick<TimedCronRunOutcome, "isolatedAgentSetupTimeout" | "operatorCancellationReason">;
 export type CronRunProgress = {
   completedCoreResult?: CronCoreRunOutcome;
   settledDeliveryResult?: CronCoreRunOutcome;
