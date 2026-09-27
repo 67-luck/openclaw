@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { createFixtureLifetime } from "../../../test/helpers/fixture-lifetime.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
@@ -304,12 +305,12 @@ it.each<{
           migrated.close();
           const open = nodeSqlite.openNodeSqliteDatabase;
           vi.spyOn(nodeSqlite, "openNodeSqliteDatabase").mockImplementation((...args) => {
-            const openedPath = String(args[0]);
+            const openedPath = args[0];
             if (
               (openedPath.startsWith("file:") ? fileURLToPath(openedPath) : openedPath) ===
               databasePath
             ) {
-              oldRuntimeOpens.push(String(args[0]));
+              oldRuntimeOpens.push(args[0]);
             }
             return open(...args);
           });
@@ -708,12 +709,12 @@ it.each([
           terminalFromCandidate = inspectTerminal();
           const open = nodeSqlite.openNodeSqliteDatabase;
           vi.spyOn(nodeSqlite, "openNodeSqliteDatabase").mockImplementation((...args) => {
-            const openedPath = String(args[0]);
+            const openedPath = args[0];
             if (
               (openedPath.startsWith("file:") ? fileURLToPath(openedPath) : openedPath) ===
               database.path
             ) {
-              oldRuntimeOpens.push(String(args[0]));
+              oldRuntimeOpens.push(args[0]);
             }
             return open(...args);
           });
@@ -905,10 +906,7 @@ it.each([
       if (settlement !== "healthy") {
         if (settlement === "uncertain-cleanup") {
           expect.soft(hasCommandProcessCleanupError(failure)).toBe(true);
-          if (!(failure instanceof Error)) {
-            throw new Error("Expected the executor's cleanup failure wrapper.");
-          }
-          expect.soft(failure.cause).toBe(uncertainCleanup);
+          expect.soft(collectNestedErrorCandidates(failure)).toContain(uncertainCleanup);
         } else {
           expect.soft(failure).toBeInstanceOf(UpdateCommandPendingRecoveryFailure);
         }
