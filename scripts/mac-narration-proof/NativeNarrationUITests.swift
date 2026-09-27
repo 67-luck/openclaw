@@ -137,15 +137,18 @@ final class NativeNarrationUITests: XCTestCase {
         _ = try await self.control("complete", method: "POST")
         let finalReply = self.narration("The mobile layout is ready.", in: app)
         XCTAssertTrue(finalReply.waitForExistence(timeout: 10), "Native desktop final reply did not arrive")
-        let work = app.disclosureTriangles.matching(NSPredicate(
+        let chatWindow = app.windows.firstMatch
+        let workPredicate = NSPredicate(
             format: "identifier BEGINSWITH %@ OR label BEGINSWITH %@",
-            "chat-completed-work-", "Worked")).firstMatch
+            "chat-completed-work-", "Worked")
+        let work = chatWindow.disclosureTriangles.matching(workPredicate).firstMatch
         XCTAssertTrue(work.waitForExistence(timeout: 8), "Native completed-work disclosure is missing")
         XCTAssertTrue(first.waitForNonExistence(timeout: 5))
         XCTAssertTrue(second.waitForNonExistence(timeout: 5))
         self.assertRunPresentation(in: app.windows.firstMatch, stage: stage)
         try await self.capture(app, stage: stage, state: "completed")
 
+        self.attachDisclosureDiagnostics(chatWindow, predicate: workPredicate, name: "mac-main-work")
         XCTAssertTrue(work.isHittable)
         self.clickDisclosureChevron(work)
         XCTAssertTrue(first.waitForExistence(timeout: 5))
@@ -155,6 +158,7 @@ final class NativeNarrationUITests: XCTestCase {
         self.assertRunPresentation(in: app.windows.firstMatch, stage: stage)
         try await self.capture(app, stage: stage, state: "expanded")
 
+        self.attachDisclosureDiagnostics(chatWindow, predicate: workPredicate, name: "mac-main-work")
         XCTAssertTrue(work.isHittable)
         self.clickDisclosureChevron(work)
         XCTAssertTrue(first.waitForNonExistence(timeout: 5))
@@ -166,9 +170,7 @@ final class NativeNarrationUITests: XCTestCase {
         let completedPanel = try await self.openQuickChat(app)
         let quickFinal = self.narration("The mobile layout is ready.", in: completedPanel)
         XCTAssertTrue(quickFinal.waitForExistence(timeout: 10), "Quick Chat completed history did not load")
-        let quickWork = completedPanel.disclosureTriangles.matching(NSPredicate(
-            format: "identifier BEGINSWITH %@ OR label BEGINSWITH %@",
-            "chat-completed-work-", "Worked")).firstMatch
+        let quickWork = completedPanel.disclosureTriangles.matching(workPredicate).firstMatch
         XCTAssertTrue(quickWork.waitForExistence(timeout: 5))
         let completedFirst = self.narration("Reading the mobile layout.", in: completedPanel)
         let completedSecond = self.narration("Checking spacing and contrast.", in: completedPanel)
@@ -176,6 +178,7 @@ final class NativeNarrationUITests: XCTestCase {
         XCTAssertFalse(completedSecond.exists)
         self.assertRunPresentation(in: completedPanel, stage: stage)
         self.attachScreenshot(completedPanel, name: "mac-quick-chat-\(stage)-completed")
+        self.attachDisclosureDiagnostics(completedPanel, predicate: workPredicate, name: "mac-quick-work")
         self.clickDisclosureChevron(quickWork)
         XCTAssertTrue(completedFirst.waitForExistence(timeout: 5))
         XCTAssertTrue(completedSecond.waitForExistence(timeout: 5))
@@ -183,6 +186,7 @@ final class NativeNarrationUITests: XCTestCase {
         XCTAssertTrue(quickFinal.exists)
         self.assertRunPresentation(in: completedPanel, stage: stage)
         self.attachScreenshot(completedPanel, name: "mac-quick-chat-\(stage)-expanded")
+        self.attachDisclosureDiagnostics(completedPanel, predicate: workPredicate, name: "mac-quick-work")
         self.clickDisclosureChevron(quickWork)
         XCTAssertTrue(completedFirst.waitForNonExistence(timeout: 5))
         XCTAssertTrue(quickFinal.exists)
@@ -199,6 +203,19 @@ final class NativeNarrationUITests: XCTestCase {
             frames.count,
             stage == "after" ? 1 : 0,
             "Grouped candidate must expose exactly one run container in each native chat surface")
+    }
+
+    @MainActor
+    private func attachDisclosureDiagnostics(_ root: XCUIElement, predicate: NSPredicate, name: String) {
+        // XCTest can stop before defer runs; preserve the selected surface and
+        // hit-test facts before its disclosure interaction gate.
+        let matches = root.disclosureTriangles.matching(predicate).allElementsBoundByIndex.map { element in
+            "identifier=\(element.identifier) frame=\(element.frame) hittable=\(element.isHittable)"
+        }.joined(separator: "\n")
+        let attachment = XCTAttachment(string: root.debugDescription + "\nMatched disclosures:\n" + matches)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        self.add(attachment)
     }
 
     @MainActor
