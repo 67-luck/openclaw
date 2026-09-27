@@ -201,6 +201,41 @@ describe("plugin approval requester outcome", () => {
     },
   );
 
+  it.each(["allowed", "cancelled"] as const)(
+    "does not send a queued pending notice after the approval is %s",
+    async (status) => {
+      const coordinator = createApprovalNativeRouteCoordinator();
+      const requestGateway = createGatewayRequestMock();
+      const reporter = coordinator.createReporter(
+        reporterOptions({
+          handledKinds: new Set(["plugin"]),
+          channel: "slack",
+          channelLabel: "Slack",
+          accountId: "work",
+          requestGateway,
+        }),
+      );
+      const request = createPluginRequest(`plugin:queued-${status}`);
+      reporter.start();
+      reporter.selectRequest({ approvalKind: "plugin", request });
+      const delivery = reporter.reportDelivery({
+        approvalKind: "plugin",
+        request,
+        deliveryPlan: {
+          targets: [approverDm("user:reviewer")],
+          originTarget: { to: "channel:C123", threadId: "1712345678.123456" },
+          notifyOriginWhenDmOnly: true,
+        },
+        deliveredTargets: [approverDm("user:reviewer")],
+      });
+      await coordinator.publishPluginTerminal({ approvalId: request.id, status });
+      await delivery;
+
+      expect(requestGateway).not.toHaveBeenCalled();
+      coordinator.close();
+    },
+  );
+
   it.each(["origin-card", "forwarded-only", "dm-without-origin-notice"] as const)(
     "does not duplicate the %s outcome in the origin",
     async (route) => {

@@ -1,5 +1,5 @@
 import type { RequestListener } from "node:http";
-import { type FetchFunction, type WebClientOptions, WebClient } from "@slack/web-api";
+import { type FetchFunction, WebClient } from "@slack/web-api";
 import { CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY } from "openclaw/plugin-sdk/approval-handler-adapter-runtime";
 import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
 import {
@@ -30,7 +30,7 @@ import {
   resolveSlackProxyDispatcher,
   resolveSlackWebClientOptions,
 } from "../client-options.js";
-import { createSlackStartupAuthClient, createSlackWebClient } from "../client.js";
+import { createSlackStartupAuthClient } from "../client.js";
 import { formatSlackError } from "../errors.js";
 import { normalizeSlackWebhookPath, registerSlackHttpHandler } from "../http/index.js";
 import { registerSlackInstallationState } from "../installation-identity-state.js";
@@ -79,6 +79,7 @@ import {
 import { resolveSlackMonitorPolicy } from "./runtime-policy.js";
 import { registerSlackMonitorSlashCommands } from "./slash.js";
 import type { MonitorSlackOpts } from "./types.js";
+import { createSlackWorkspaceClientResolver } from "./workspace-client-resolver.js";
 
 let slackBoltInterop: SlackBoltResolvedExports | undefined;
 
@@ -847,34 +848,6 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     await gracefulStopSlackApp(app);
     await slackDispatcher?.close();
   }
-}
-
-function createSlackWorkspaceClientResolver(params: {
-  appClient: WebClient;
-  token: string;
-  clientOptions: WebClientOptions;
-  installationIdentity: SlackInstallationIdentity;
-}): (teamId?: string) => WebClient {
-  if (params.installationIdentity.kind !== "enterprise") {
-    return () => params.appClient;
-  }
-  const clients = new Map<string, WebClient>();
-  return (rawTeamId?: string) => {
-    const teamId = rawTeamId;
-    if (!teamId || !/^T[A-Z0-9]+$/.test(teamId)) {
-      throw new Error("Slack Enterprise Grid workspace client requires a valid teamId");
-    }
-    const cached = clients.get(teamId);
-    if (cached) {
-      return cached;
-    }
-    const client = createSlackWebClient(params.token, {
-      ...params.clientOptions,
-      teamId,
-    });
-    clients.set(teamId, client);
-    return client;
-  };
 }
 
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

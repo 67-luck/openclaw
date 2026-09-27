@@ -67,14 +67,10 @@ export function createPluginApprovalHandlers(
         ...(client?.authenticatedUserProfile ? { getCfg: context.getRuntimeConfig } : {}),
       });
       authority.assertCurrent();
-      respond(
-        true,
-        approvals.map((approval) => ({
-          ...approval,
-          request: projectApprovalRequestForExternal(approval.request),
-        })),
-        undefined,
-      );
+      for (const approval of approvals) {
+        approval.request = projectApprovalRequestForExternal(approval.request);
+      }
+      respond(true, approvals, undefined);
     },
     "plugin.approval.request": async ({ params, client, respond, context }) => {
       if (

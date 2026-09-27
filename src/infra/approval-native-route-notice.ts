@@ -1,8 +1,45 @@
-// Formats native-route approval notices shown when command approvals leave the current channel.
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalString,
+} from "@openclaw/normalization-core/string-coerce";
+// Resolves native-route approval notices and formats their visible text.
 import { sortUniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { formatHumanList } from "../shared/human-list.js";
-import type { ChannelApprovalNativePlannedTarget } from "./approval-native-delivery.js";
-import type { ChannelApprovalKind } from "./approval-types.js";
+import type {
+  ChannelApprovalNativeDeliveryPlan,
+  ChannelApprovalNativePlannedTarget,
+} from "./approval-native-delivery.js";
+import { buildChannelApprovalNativeTargetKey } from "./approval-native-target-key.js";
+import type {
+  ApprovalRequestInput as ApprovalRequest,
+  ChannelApprovalKind,
+} from "./approval-types.js";
+
+export type GatewayRequestFn = <T = unknown>(
+  method: string,
+  params: Record<string, unknown>,
+) => Promise<T>;
+
+export type ApprovalRouteSkipReason = "ambiguous-owner" | "ineligible" | "owner-unavailable";
+
+export type ApprovalRouteReport = {
+  runtimeId: string;
+  request: ApprovalRequest;
+  channel?: string;
+  channelLabel?: string;
+  accountId?: string | null;
+  deliveryPlan: ChannelApprovalNativeDeliveryPlan;
+  deliveredTargets: readonly ChannelApprovalNativePlannedTarget[];
+  requestGateway: GatewayRequestFn;
+  skipReason?: ApprovalRouteSkipReason;
+};
+
+export type RouteNoticeTarget = {
+  channel: string;
+  to: string;
+  accountId?: string | null;
+  threadId?: string | number | null;
+};
 
 /** Formats the human destination label for where native approval prompts were delivered. */
 export function describeApprovalDeliveryDestination(params: {
@@ -59,4 +96,222 @@ export function resolveApprovalDeliveryFailedNoticeText(params: {
     `Reply with: /approve ${commandId} ${decisions}`,
     "If the short code is ambiguous, use the full id in /approve.",
   ].join("\n");
+}
+
+export function normalizeChannel(value?: string | null): string {
+  return normalizeLowercaseStringOrEmpty(value);
+}
+
+function resolveRouteNoticeTargetFromRequest(request: ApprovalRequest): RouteNoticeTarget | null {
+  const channel = request.request.turnSourceChannel?.trim();
+  const to = request.request.turnSourceTo?.trim();
+  if (!channel || !to) {
+    return null;
+  }
+  return {
+    channel,
+    to,
+    accountId: request.request.turnSourceAccountId ?? undefined,
+    threadId: request.request.turnSourceThreadId ?? undefined,
+  };
+}
+
+function resolveFallbackRouteNoticeTarget(report: ApprovalRouteReport): RouteNoticeTarget | null {
+  const channel = report.channel?.trim();
+  const to = report.deliveryPlan.originTarget?.to?.trim();
+  if (!channel || !to) {
+    return null;
+  }
+  return {
+    channel,
+    to,
+    accountId: report.accountId ?? undefined,
+    threadId: report.deliveryPlan.originTarget?.threadId ?? undefined,
+  };
+}
+
+function didReportDeliverToOrigin(report: ApprovalRouteReport, originAccountId?: string): boolean {
+  const originTarget = report.deliveryPlan.originTarget;
+  if (!originTarget) {
+    return false;
+  }
+  const reportAccountId = normalizeOptionalString(report.accountId);
+  if (
+    originAccountId !== undefined &&
+    reportAccountId !== undefined &&
+    reportAccountId !== originAccountId
+  ) {
+    return false;
+  }
+  const originKey = buildChannelApprovalNativeTargetKey(originTarget);
+  return report.deliveredTargets.some(
+    (plannedTarget) => buildChannelApprovalNativeTargetKey(plannedTarget.target) === originKey,
+  );
+}
+
+function hasPlannedNativeTargets(report: ApprovalRouteReport): boolean {
+  return report.deliveryPlan.targets.length > 0;
+}
+
+function readAllowedDecisionStrings(request: ApprovalRequest): string[] | undefined {
+  const allowedDecisions =
+    "allowedDecisions" in request.request ? request.request.allowedDecisions : undefined;
+  if (!Array.isArray(allowedDecisions)) {
+    return undefined;
+  }
+  return allowedDecisions.filter((value): value is string => typeof value === "string");
+}
+
+export function resolveApprovalRouteNotice(params: {
+  activeRuntimes: ReadonlyMap<string, { requestGateway: GatewayRequestFn }>;
+  approvalKind: ChannelApprovalKind;
+  request: ApprovalRequest;
+  reports: readonly ApprovalRouteReport[];
+  missingSelectedRuntime: boolean;
+}): { requestGateway: GatewayRequestFn; target: RouteNoticeTarget; text: string } | null {
+  const explicitTarget = resolveRouteNoticeTargetFromRequest(params.request);
+  const originChannel = normalizeChannel(
+    explicitTarget?.channel ?? params.request.request.turnSourceChannel,
+  );
+  const fallbackTarget =
+    params.reports
+      .filter((report) => normalizeChannel(report.channel) === originChannel || !originChannel)
+      .map(resolveFallbackRouteNoticeTarget)
+      .find((target) => target !== null) ?? null;
+  const target = explicitTarget
+    ? {
+        ...fallbackTarget,
+        ...explicitTarget,
+        accountId: explicitTarget.accountId ?? fallbackTarget?.accountId,
+        threadId: explicitTarget.threadId ?? fallbackTarget?.threadId,
+      }
+    : fallbackTarget;
+  if (!target) {
+    return null;
+  }
+  const originAccountId = normalizeOptionalString(target.accountId);
+  const deliveredAnyTarget = params.reports.some((report) => report.deliveredTargets.length > 0);
+  const ambiguousOwner = params.reports.some((report) => report.skipReason === "ambiguous-owner");
+  const requiresManualFallback =
+    ambiguousOwner || params.reports.some((report) => report.skipReason === "owner-unavailable");
+  if (
+    !deliveredAnyTarget &&
+    (params.reports.some(hasPlannedNativeTargets) ||
+      requiresManualFallback ||
+      params.missingSelectedRuntime)
+  ) {
+    const requestGateway =
+      params.reports.find((report) => params.activeRuntimes.has(report.runtimeId))
+        ?.requestGateway ??
+      params.reports[0]?.requestGateway ??
+      Array.from(params.activeRuntimes.values())[0]?.requestGateway;
+    if (!requestGateway) {
+      return null;
+    }
+    return {
+      requestGateway,
+      target,
+      text: ambiguousOwner
+        ? resolveAmbiguousApprovalRouteNoticeText(params.approvalKind)
+        : resolveApprovalDeliveryFailedNoticeText({
+            approvalId: params.request.id,
+            approvalKind: params.approvalKind,
+            allowedDecisions: readAllowedDecisionStrings(params.request),
+          }),
+    };
+  }
+
+  // If any same-channel runtime already delivered into the origin chat, every
+  // other fallback delivery becomes supplemental and should not trigger a notice.
+  const originDelivered = params.reports.some((report) => {
+    if (originChannel && normalizeChannel(report.channel) !== originChannel) {
+      return false;
+    }
+    return didReportDeliverToOrigin(report, originAccountId);
+  });
+  if (originDelivered) {
+    return null;
+  }
+
+  const destinations = params.reports.flatMap((report) => {
+    if (!report.channelLabel || report.deliveredTargets.length === 0) {
+      return [];
+    }
+    const reportChannel = normalizeChannel(report.channel);
+    if (
+      originChannel &&
+      reportChannel === originChannel &&
+      !report.deliveryPlan.notifyOriginWhenDmOnly
+    ) {
+      return [];
+    }
+    const reportAccountId = normalizeOptionalString(report.accountId);
+    if (
+      originChannel &&
+      reportChannel === originChannel &&
+      originAccountId !== undefined &&
+      reportAccountId !== undefined &&
+      reportAccountId !== originAccountId
+    ) {
+      return [];
+    }
+    return [
+      describeApprovalDeliveryDestination({
+        channelLabel: report.channelLabel,
+        deliveredTargets: report.deliveredTargets,
+      }),
+    ];
+  });
+  const text = resolveApprovalRoutedElsewhereNoticeText(
+    destinations,
+    params.approvalKind === "plugin" ? params.request.id : undefined,
+  );
+  if (!text) {
+    return null;
+  }
+
+  const requestGateway =
+    params.reports.find((report) => params.activeRuntimes.has(report.runtimeId))?.requestGateway ??
+    params.reports[0]?.requestGateway;
+  if (!requestGateway) {
+    return null;
+  }
+
+  return {
+    requestGateway,
+    target,
+    text,
+  };
+}
+
+export function isPluginDmOnlyRoute(params: {
+  approvalKind: ChannelApprovalKind;
+  reports: readonly ApprovalRouteReport[];
+  missingSelectedRuntime: boolean;
+  target: RouteNoticeTarget;
+}): boolean {
+  if (params.approvalKind !== "plugin" || params.missingSelectedRuntime) {
+    return false;
+  }
+  const originChannel = normalizeChannel(params.target.channel);
+  const originAccountId = normalizeOptionalString(params.target.accountId);
+  const matchingReports = params.reports.filter((report) => {
+    if (normalizeChannel(report.channel) !== originChannel) {
+      return false;
+    }
+    const reportAccountId = normalizeOptionalString(report.accountId);
+    return (
+      originAccountId === undefined ||
+      reportAccountId === undefined ||
+      originAccountId === reportAccountId
+    );
+  });
+  return (
+    !matchingReports.some((report) => didReportDeliverToOrigin(report, originAccountId)) &&
+    matchingReports.some(
+      (report) =>
+        report.deliveryPlan.notifyOriginWhenDmOnly &&
+        report.deliveredTargets.some((target) => target.surface === "approver-dm"),
+    )
+  );
 }
