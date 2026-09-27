@@ -253,8 +253,8 @@ function createSkillsPathWatcher(
   };
   const publishReady = () => {
     // Scan-time links need their own admitted target before coverage is ready.
-    // oxlint-disable-next-line unicorn/no-useless-spread -- Reentrant discovery can remove/re-add owners; only this captured subscriber set belongs to the handoff.
-    for (const subscriber of [...state.subscribers]) {
+    // Reentrant discovery can replace subscribers; snapshot this handoff's owners.
+    for (const subscriber of Array.from(state.subscribers)) {
       if (!isCurrent()) {
         return;
       }
