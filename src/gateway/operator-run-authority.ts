@@ -452,7 +452,8 @@ export async function captureGatewayOperatorRunAuthority(input: {
           assertCurrent();
           return assertProfileCurrent().assignedRole;
         },
-        gatewayAccessGrant:
+        gatewayAccessGrant: sourceAuthority === null ? null : sourceAuthority?.gatewayAccessGrant,
+        restartAccessGrant:
           sourceAuthority === null
             ? null
             : sourceAuthority

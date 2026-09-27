@@ -344,6 +344,7 @@ export async function restoreRestartRecoveryRequester(params: {
       profileId: snapshot.profileId,
       scopes: snapshot.scopes,
       gatewayAccessGrant: snapshot.grant,
+      restartAccessGrant: snapshot.grant,
       restartDevice: snapshot.device,
       restartAuthPolicy: snapshot.authPolicy,
       restartBrowserOrigin: snapshot.browserOrigin,

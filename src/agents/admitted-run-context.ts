@@ -42,6 +42,8 @@ export type AdmittedRunOperatorAuthority = Readonly<{
   scopes: readonly string[];
   /** Original access dependency; null is proven independent, undefined is unclassified. */
   gatewayAccessGrant?: GatewayAccessGrantRef | null;
+  /** Owner-attested reconstructible dependency; live comparison facts alone cannot survive restart. */
+  restartAccessGrant?: GatewayAccessGrantRef | null;
   /** Original durable device dependency; undefined means source recovery is unsupported. */
   restartDevice?: Readonly<{ deviceId: string; identity: string }> | null;
   /** Original classified ingress policy, never inferred from the recovery receiver. */
@@ -88,6 +90,9 @@ export function createAdmittedRunOperatorAuthority(
     gatewayAccessGrant: source.gatewayAccessGrant
       ? Object.freeze({ ...source.gatewayAccessGrant })
       : source.gatewayAccessGrant,
+    restartAccessGrant: source.restartAccessGrant
+      ? Object.freeze({ ...source.restartAccessGrant })
+      : source.restartAccessGrant,
     restartAuthPolicy: source.restartAuthPolicy,
     restartBrowserOrigin: source.restartBrowserOrigin
       ? Object.freeze({ ...source.restartBrowserOrigin })

@@ -36,6 +36,7 @@ function fixture() {
     profileId: "original-person",
     scopes: ["operator.read", "operator.write", "operator.approvals"],
     gatewayAccessGrant: { pluginId: "access-policy", grantId: GRANT },
+    restartAccessGrant: { pluginId: "access-policy", grantId: GRANT },
     restartDevice: null,
     restartBrowserOrigin: null,
     restartAuthPolicy: resolveGatewayAuthPolicyGeneration({}),
@@ -138,7 +139,7 @@ describe("restart requester capture", () => {
   });
 
   it.for([
-    "gatewayAccessGrant",
+    "restartAccessGrant",
     "restartDevice",
     "restartAuthPolicy",
     "restartBrowserOrigin",

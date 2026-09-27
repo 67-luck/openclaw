@@ -55,7 +55,7 @@ export async function captureRestartRecoveryRequester(params: {
   // An absent basis is unknown, not an unrestricted grant. Custom model
   // predicates likewise cannot be reconstructed from their visible choices.
   if (
-    source.gatewayAccessGrant === undefined ||
+    source.restartAccessGrant === undefined ||
     source.restartDevice === undefined ||
     source.restartAuthPolicy === undefined ||
     source.restartBrowserOrigin === undefined ||
@@ -94,7 +94,7 @@ export async function captureRestartRecoveryRequester(params: {
       sourceRunId: params.runId,
       profileId: source.profileId,
       scopes: intersectOperatorScopes(source.scopes, params.client?.connect.scopes ?? []),
-      grant: source.gatewayAccessGrant,
+      grant: source.restartAccessGrant,
       device: source.restartDevice,
       browserOrigin: source.restartBrowserOrigin,
       aliasBindingIds: profile.emailBindingIds,
