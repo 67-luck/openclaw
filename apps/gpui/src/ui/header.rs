@@ -1,3 +1,4 @@
+use super::components::action_menu::dropdown_menu;
 use super::{
     AppView,
     session_actions::session_menu,
@@ -12,7 +13,6 @@ use gpui_kit::{
         Icon, Sizable, StyledExt,
         button::{Button, ButtonVariants},
         input::Input,
-        menu::DropdownMenu,
         spinner::Spinner,
     },
     prelude::FluentBuilder,
@@ -121,17 +121,17 @@ impl AppView {
                 el.child(Spinner::new().small().color(p.muted))
             })
             .when_some(selected.filter(|_| !self.new_session.active), |el, row| {
-                el.child(
+                el.child(dropdown_menu(
                     Button::new("chat-header-menu")
                         .ghost()
                         .small()
                         .size(row::RENAME_HEIGHT)
                         .icon(Icon::new(IconName::Ellipsis).size(icon::NORMAL))
-                        .accessibility_label("Conversation actions")
-                        .dropdown_menu(move |menu, window, cx| {
-                            session_menu(menu, row.clone(), view.clone(), &main_key, window, cx)
-                        }),
-                )
+                        .accessibility_label("Conversation actions"),
+                    move |menu, window, cx| {
+                        session_menu(menu, row.clone(), view.clone(), &main_key, window, cx)
+                    },
+                ))
             })
             .into_any_element()
     }

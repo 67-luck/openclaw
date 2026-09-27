@@ -8,6 +8,7 @@ use crate::model::{
 use gpui_kit::{Image, ImageFormat};
 use std::{
     collections::{HashMap, HashSet},
+    rc::{Rc, Weak},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -30,6 +31,7 @@ pub(in crate::ui) struct AvatarCache {
     failed_at: HashMap<String, Instant>,
     faces: HashMap<String, Arc<Image>>,
     pending: HashMap<String, tokio::task::AbortHandle>,
+    transient_specs: Vec<Weak<Vec<AvatarSpec>>>,
 }
 
 impl Drop for AvatarCache {
@@ -62,8 +64,25 @@ impl AvatarCache {
             .unwrap_or_else(|| face::image(id))
     }
 
+    /// Temporary surfaces keep their specs alive; the cache remains the sole download owner.
+    pub fn retain_specs(&mut self, specs: &Rc<Vec<AvatarSpec>>) {
+        self.transient_specs.push(Rc::downgrade(specs));
+    }
+
     /// Retains sources in caller priority order and returns only required downloads.
     pub fn prepare(&mut self, specs: &[AvatarSpec]) -> Vec<String> {
+        self.transient_specs
+            .retain(|specs| specs.strong_count() > 0);
+        let retained: Vec<_> = self
+            .transient_specs
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect();
+        let specs: Vec<_> = retained
+            .iter()
+            .flat_map(|specs| specs.iter())
+            .chain(specs)
+            .collect();
         let mut wanted = HashSet::new();
         let urls: Vec<_> = specs
             .iter()

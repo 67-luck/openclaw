@@ -41,6 +41,8 @@ pub mod text {
     pub const BODY: Typography = Typography::new(primitives::text::BODY, 21.7, weight::NORMAL);
     pub const NAV: Typography = Typography::new(primitives::text::ROW, 20.15, weight::MEDIUM);
     pub const MENU: Typography = Typography::new(primitives::text::ROW, 20.15, weight::NORMAL);
+    pub const MENU_INFO: Typography =
+        Typography::new(primitives::text::CAPTION, 17.05, weight::NORMAL);
     pub const SESSION: Typography = Typography::new(primitives::text::ROW, 18., weight::MEDIUM);
     pub const SESSION_TEAM: Typography = Typography::new(primitives::text::ROW, 18., weight::BOOK);
     pub const CAPTION: Typography = Typography::new(primitives::text::CAPTION, 18., weight::NORMAL);
@@ -277,8 +279,22 @@ pub struct MenuMetrics {
 }
 pub mod menu {
     use super::*;
-    pub const SESSION_MIN_WIDTH: Pixels = px(230.);
-    pub const SESSION_MAX_WIDTH: Pixels = px(320.);
+    pub const SESSION_MIN_WIDTH: Pixels = px(224.);
+    pub const ACTION_RADIUS: Pixels = px(10.);
+    pub const ACTION_ITEM_RADIUS: Pixels = px(6.);
+    pub const ACTION_DISABLED_OPACITY: f32 = 0.42;
+    pub const ACTION_ICON_SIZE: Pixels = px(14.);
+    pub const ACTION_HINT_SIZE: Pixels = px(11.);
+    pub const ACTION_HINT_MIN_WIDTH: Pixels = px(12.);
+    pub const ACTION_CHEVRON_SIZE: Pixels = px(10.);
+    pub const ACTION_SEPARATOR_OPACITY: f32 = 0.8;
+    pub const ACTION_SUBMENU_GAP: Pixels = px(0.);
+    pub const ACTION_FOCUS_WIDTH: Pixels = px(2.);
+    pub const ACTION_FOCUS_OFFSET: Pixels = px(2.);
+    // session-menu.ts clamps against its 240×460 estimate before positioning the popup.
+    pub const ACTION_CONTEXT_ESTIMATED_WIDTH: Pixels = px(240.);
+    pub const ACTION_CONTEXT_ESTIMATED_HEIGHT: Pixels = px(460.);
+    pub const ACTION_CONTEXT_OFFSET_Y: Pixels = px(6.);
     pub const STANDARD: MenuMetrics = MenuMetrics {
         width: px(224.),
         max_height: px(420.),
@@ -320,6 +336,30 @@ pub mod menu {
     pub const NATIVE_PADDING: Pixels = space::XS;
     pub const NATIVE_ROW_GAP: Pixels = space::XXS;
     pub const IDENTITY_ROW_HEIGHT: Pixels = px(30.);
+    pub const OWNER_WIDTH: Pixels = px(320.);
+    pub const OWNER_MAX_HEIGHT: Pixels = px(420.);
+    pub const OWNER_EDITOR_PADDING_Y: Pixels = px(6.);
+    pub const OWNER_RANGE_TEXT_SIZE: Pixels = px(11.);
+    pub const OWNER_AVATAR: AvatarMetrics = AvatarMetrics::new(24., 10., 0.);
+    pub const APPEARANCE_WIDTH: Pixels = px(224.);
+    pub const APPEARANCE_PADDING: Pixels = px(6.);
+    pub const APPEARANCE_GRID_WIDTH: Pixels = px(183.);
+    pub const APPEARANCE_GRID_GAP: Pixels = px(3.);
+    pub const APPEARANCE_CELL: Pixels = px(28.);
+    pub const APPEARANCE_SWATCH: Pixels = px(18.);
+    pub const APPEARANCE_SWATCH_ICON: Pixels = px(12.);
+    pub const APPEARANCE_COLOR_MARGIN_BOTTOM: Pixels = px(10.);
+    pub const APPEARANCE_EMOJI_SIZE: Pixels = px(17.);
+    pub const APPEARANCE_GLYPH_SIZE: Pixels = px(16.);
+    pub const APPEARANCE_LABEL_SIZE: Pixels = px(11.);
+    pub const APPEARANCE_SELECTED_BG: f32 = 0.14;
+    pub const APPEARANCE_SELECTED_BORDER: f32 = 0.55;
+    pub const APPEARANCE_CUSTOM_GAP: Pixels = px(5.);
+    pub const APPEARANCE_BACK_SIZE: Pixels = px(24.);
+    pub const APPEARANCE_BACK_ICON: Pixels = px(15.);
+    pub const APPEARANCE_INPUT_HEIGHT: Pixels = px(30.);
+    pub const APPEARANCE_SET_WIDTH: Pixels = px(42.);
+    pub const APPEARANCE_ICON_PANEL_HEIGHT: Pixels = px(170.);
     pub const GATEWAY_STATUS_SIZE: Pixels = px(7.);
     pub const GATEWAY_CHECK_SIZE: Pixels = px(12.);
     // PopupMenu reserves its 12px icon plus 4px gap when Help has an icon.
@@ -390,11 +430,6 @@ pub mod motion {
     pub const PERSON_OPEN: Duration = Duration::from_millis(450);
     pub const PERSON_CLOSE: Duration = Duration::from_millis(220);
     pub const TYPEAHEAD_RESET: Duration = Duration::from_secs(1);
-}
-
-pub mod dialog {
-    use super::*;
-    pub const OWNER_OPTIONS_MAX_HEIGHT: Pixels = px(360.);
 }
 
 pub mod weight {

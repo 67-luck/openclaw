@@ -121,7 +121,8 @@ pub struct DeleteParams {
     #[serde(flatten)]
     pub identity: SessionIdentity,
     pub delete_transcript: bool,
-    pub archived_only: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_only: Option<bool>,
 }
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]

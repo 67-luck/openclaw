@@ -1,3 +1,7 @@
+use super::components::action_menu::{
+    ActionMenu as PopupMenu, ActionMenuItem as PopupMenuItem, dropdown_menu,
+};
+use super::components::{icons::icon as ui_icon, menu::action_item};
 use super::{
     AppView,
     session_menu::MenuTarget,
@@ -6,18 +10,21 @@ use super::{
 use crate::{
     gateway::sessions_rpc::{self as rpc, SessionIdentity},
     model::{
+        composer_capabilities::method_available,
+        session_menu::{MenuAction, disabled_reason},
         sessions::SessionRow,
         sidebar_batch::{MAX_TARGETS, PatchMany, PatchManyResult, selected_visible_rows},
     },
 };
 use gpui_kit::{
+    assets::IconName,
     component::{
         Sizable, StyledExt, WindowExt,
         button::{Button, ButtonVariants},
         dialog::DialogButtonProps,
-        menu::{DropdownMenu, PopupMenu, PopupMenuItem},
         notification::Notification,
     },
+    prelude::FluentBuilder,
     *,
 };
 use serde_json::{Value, json};
@@ -32,61 +39,200 @@ struct BatchWrite {
     errors: Vec<String>,
 }
 
+fn batch_reason(app: &AppView, rows: &[SessionRow], action: MenuAction) -> Option<String> {
+    let hello = app.session.as_ref().map(|session| session.hello());
+    if matches!(
+        action,
+        MenuAction::Read | MenuAction::Archive | MenuAction::Group | MenuAction::NewGroup
+    ) && hello.is_some_and(|hello| !method_available(hello, "sessions.patchMany"))
+    {
+        return Some("This Gateway does not support this session action.".into());
+    }
+    let all_archived = rows.iter().all(|captured| {
+        app.rows
+            .iter()
+            .chain(app.sidebar_state.children.values().flatten())
+            .find(|row| row.key == captured.key && row.agent() == captured.agent())
+            .unwrap_or(captured)
+            .archived
+    });
+    rows.iter().find_map(|captured| {
+        let current = app
+            .rows
+            .iter()
+            .chain(app.sidebar_state.children.values().flatten())
+            .find(|row| row.key == captured.key && row.agent() == captured.agent());
+        if current.is_some_and(|row| row.session_id != captured.session_id) {
+            return Some(
+                "A selected conversation was replaced. Select the conversations again.".into(),
+            );
+        }
+        let mut row = current.unwrap_or(captured).clone();
+        if action == MenuAction::Delete && !all_archived {
+            // The web permits protected or running rows only in an all-archived batch.
+            row.archived = false;
+        }
+        disabled_reason(action, &row, hello, &app.agent_home())
+    })
+}
+
 pub(super) fn batch_menu(
     mut menu: PopupMenu,
     rows: Vec<SessionRow>,
     view: WeakEntity<AppView>,
-    cx: &App,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
+    let Some(entity) = view.upgrade() else {
+        return menu;
+    };
+    let app = entity.read(cx);
+    let groups = app.sidebar_state.preferences.known_groups.clone();
+    let group_reason = batch_reason(app, &rows, MenuAction::Group);
+    let new_group_reason = batch_reason(app, &rows, MenuAction::NewGroup);
+    let delete_reason = batch_reason(app, &rows, MenuAction::Delete);
     let Some(view) = MenuTarget::new(view, cx) else {
         return menu;
     };
     let count = rows.len();
     let unread = !rows.iter().all(|row| row.unread);
     let archived = !rows.iter().all(|row| row.archived);
-    menu = menu.label(format!("{count} conversations selected"));
-    for (label, fields) in [
+    for (label, fields, action, icon, hint) in [
         (
             format!("Mark {count} as {}", if unread { "unread" } else { "read" }),
             json!({"unread":unread}),
+            MenuAction::Read,
+            if unread {
+                IconName::Circle
+            } else {
+                IconName::Eye
+            },
+            "U",
         ),
         (
             format!("{} {count}", if archived { "Archive" } else { "Restore" }),
             json!({"archived":archived}),
+            MenuAction::Archive,
+            if archived {
+                IconName::Archive
+            } else {
+                IconName::ArchiveRestore
+            },
+            "A",
         ),
     ] {
+        let reason = batch_reason(entity.read(cx), &rows, action);
         let view = view.clone();
         let rows = rows.clone();
-        menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
-            let _ = view.update(cx, |this, cx| {
-                let rows = this.captured_visible_selection(&rows);
-                this.patch_session_rows(rows, fields.clone(), cx)
-            });
-        }));
+        menu = menu.item(
+            action_item(label, icon, Some(hint), false)
+                .disabled(reason.is_some())
+                .when_some(reason, |item, reason| item.title(reason))
+                .on_click(move |_, _, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        let rows = this.captured_visible_selection(&rows);
+                        this.patch_session_rows(rows, fields.clone(), cx)
+                    });
+                }),
+        );
     }
+    let shared_category = rows
+        .first()
+        .and_then(|row| row.category.clone())
+        .filter(|category| {
+            rows.iter()
+                .all(|row| row.category.as_ref() == Some(category))
+        });
     let group_view = view.clone();
     let group_rows = rows.clone();
-    menu = menu.item(
-        PopupMenuItem::new(format!("Move {count} to group…")).on_click(move |_, window, cx| {
-            let _ = group_view.update(cx, |this, cx| {
-                let rows = this.captured_visible_selection(&group_rows);
-                if !rows.is_empty() {
-                    this.show_session_group_dialog(rows, window, cx);
+    let item_reason = group_reason.clone();
+    menu = menu
+        .separator()
+        .submenu_with_icon(
+            Some(ui_icon(
+                IconName::Folder,
+                super::theme::tokens::menu::ACTION_ICON_SIZE,
+            )),
+            format!("Move {count} to group"),
+            window,
+            cx,
+            move |mut menu, _, _| {
+                let mut choices: Vec<_> = groups.iter().cloned().map(Some).collect();
+                if shared_category.is_some() {
+                    choices.push(None);
                 }
-            });
-        }),
-    );
-    menu.separator()
-        .item(
-            PopupMenuItem::new(format!("Delete {count}…")).on_click(move |_, window, cx| {
+                for (index, category) in choices.iter().enumerate() {
+                    let category = category.clone();
+                    let view = group_view.clone();
+                    let rows = group_rows.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(
+                            category
+                                .clone()
+                                .unwrap_or_else(|| "Remove from group".into()),
+                        )
+                        .checked(category.is_some() && category == shared_category)
+                        .disabled(item_reason.is_some())
+                        .when_some(item_reason.clone(), |item, reason| item.title(reason))
+                        .when(index < 9, |item| item.hint((index + 1).to_string()))
+                        .on_click(move |_, _, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                let rows = this.captured_visible_selection(&rows);
+                                if let Some(reason) = batch_reason(this, &rows, MenuAction::Group) {
+                                    this.mutation_error(reason);
+                                    return;
+                                }
+                                if !rows.is_empty() {
+                                    this.move_session_rows(rows, category.clone(), cx);
+                                }
+                            });
+                        }),
+                    );
+                }
+                let rows = group_rows.clone();
+                let view = group_view.clone();
+                menu.item(
+                    PopupMenuItem::new("New group")
+                        .disabled(new_group_reason.is_some())
+                        .when_some(new_group_reason.clone(), |item, reason| item.title(reason))
+                        .when(choices.len() < 9, |item| {
+                            item.hint((choices.len() + 1).to_string())
+                        })
+                        .on_click(move |_, window, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                let rows = this.captured_visible_selection(&rows);
+                                if let Some(reason) =
+                                    batch_reason(this, &rows, MenuAction::NewGroup)
+                                {
+                                    this.mutation_error(reason);
+                                    return;
+                                }
+                                if !rows.is_empty() {
+                                    this.show_session_group_dialog(rows, window, cx);
+                                }
+                            });
+                        }),
+                )
+            },
+        )
+        .last_disabled(group_reason.is_some(), group_reason.map(Into::into));
+    menu.separator().item(
+        action_item(format!("Delete {count}…"), IconName::Trash, Some("D"), true)
+            .disabled(delete_reason.is_some())
+            .when_some(delete_reason, |item, reason| item.title(reason))
+            .on_click(move |_, window, cx| {
                 let _ = view.update(cx, |this, cx| {
                     let rows = this.captured_visible_selection(&rows);
+                    if let Some(reason) = batch_reason(this, &rows, MenuAction::Delete) {
+                        this.mutation_error(reason);
+                        return;
+                    }
                     if !rows.is_empty() {
                         this.confirm_delete_rows(rows, window, cx);
                     }
                 });
             }),
-        )
+    )
 }
 
 impl AppView {
@@ -128,16 +274,14 @@ impl AppView {
             .px(space::WIDGET_INSET)
             .py(space::WIDGET_GAP)
             .bg(p.accent_subtle)
-            .child(
+            .child(dropdown_menu(
                 Button::new("sidebar-batch-actions")
                     .ghost()
                     .small()
                     .label(format!("{} selected ▾", rows.len()))
-                    .accessibility_label("Selected conversations actions")
-                    .dropdown_menu(move |menu, _, cx| {
-                        batch_menu(menu, rows.clone(), view.clone(), cx)
-                    }),
-            )
+                    .accessibility_label("Selected conversations actions"),
+                move |menu, window, cx| batch_menu(menu, rows.clone(), view.clone(), window, cx),
+            ))
             .child(
                 Button::new("sidebar-clear-selection")
                     .ghost()
@@ -167,6 +311,18 @@ impl AppView {
         }
         if rows.is_empty() {
             return;
+        }
+        for (field, action) in [
+            ("unread", MenuAction::Read),
+            ("archived", MenuAction::Archive),
+            ("category", MenuAction::Group),
+        ] {
+            if patch.get(field).is_some()
+                && let Some(reason) = batch_reason(self, &rows, action)
+            {
+                self.mutation_error(reason);
+                return;
+            }
         }
         if patch.get("archived").is_some()
             && rows
@@ -237,6 +393,20 @@ impl AppView {
             return;
         }
         let rows: Vec<_> = chunk.iter().map(|(row, _)| row.clone()).collect();
+        for (field, action) in [
+            ("unread", MenuAction::Read),
+            ("archived", MenuAction::Archive),
+            ("category", MenuAction::Group),
+        ] {
+            if write.patch.get(field).is_some()
+                && let Some(reason) = batch_reason(self, &rows, action)
+            {
+                write.errors.push(reason);
+                write.remaining.clear();
+                self.write_next_session_batch(write, cx);
+                return;
+            }
+        }
         let params = PatchMany::new(&rows, write.agent.as_deref(), write.patch.clone());
         self.request(
             "sessions.patchMany",
@@ -359,6 +529,10 @@ impl AppView {
                     let _ = view.update(cx, |this, cx| {
                         if this.epoch != epoch || this.sidebar_state.agent_revision != revision {
                             this.mutation_error("Connection or agent changed. Select the conversations again.".into());
+                            return;
+                        }
+                        if let Some(reason) = batch_reason(this, &rows, MenuAction::Delete) {
+                            this.mutation_error(reason);
                             return;
                         }
                         for row in &rows { this.delete_session(row.clone(), cx); }

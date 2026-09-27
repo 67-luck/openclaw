@@ -1,32 +1,22 @@
-use super::{
-    AppView,
-    sidebar_batch::batch_menu,
-    theme::tokens::{menu, space},
+use super::components::action_menu::{ActionMenu as PopupMenu, ActionMenuItem as PopupMenuItem};
+use super::components::{icons::icon as ui_icon, menu::action_item};
+use super::{AppView, sidebar_batch::batch_menu, theme::tokens::menu};
+use crate::model::{
+    session_menu::{MenuAction, disabled_reason},
+    sessions::SessionRow,
 };
-use crate::model::sessions::SessionRow;
-use gpui_kit::{
-    base::actions::Cancel,
-    component::{
-        Sizable, StyledExt, WindowExt,
-        button::{Button, ButtonVariants},
-        menu::{PopupMenu, PopupMenuItem},
-    },
-    *,
-};
-use serde::Deserialize;
+use gpui_kit::assets::IconName;
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
 use serde_json::{Value, json};
-
-#[derive(Action, Clone, PartialEq, Deserialize)]
-#[action(namespace = openclaw, no_json)]
-pub struct SessionMenuShortcut {
-    pub key: String,
-}
 
 #[derive(Clone)]
 pub(super) struct MenuTarget {
-    view: WeakEntity<AppView>,
+    pub(super) view: WeakEntity<AppView>,
     epoch: u64,
     revision: u64,
+    hello: Option<Value>,
+    main_key: String,
 }
 
 impl MenuTarget {
@@ -37,7 +27,13 @@ impl MenuTarget {
             view,
             epoch: app.epoch,
             revision: app.sidebar_state.agent_revision,
+            hello: app.session.as_ref().map(|session| session.hello().clone()),
+            main_key: app.agent_home(),
         })
+    }
+
+    fn reason(&self, action: MenuAction, row: &SessionRow) -> Option<String> {
+        disabled_reason(action, row, self.hello.as_ref(), &self.main_key)
     }
 
     pub(super) fn update(
@@ -60,34 +56,39 @@ impl MenuTarget {
     }
 }
 
-pub(crate) fn init_session_menu_shortcuts(cx: &mut App) {
-    cx.bind_keys(["p", "r", "u", "a", "f", "d", "c", "i", "g"].map(|key| {
-        KeyBinding::new(
-            key,
-            SessionMenuShortcut { key: key.into() },
-            Some("SidebarSessionMenu && PopupMenu"),
-        )
-    }));
-}
-
 #[derive(Clone, Copy)]
 enum SessionAction {
     Rename,
     Pin,
     Read,
     Fork,
-    CopyKey,
     CopyId,
     CopyLink,
     CopyPreview,
-    CopyMenu,
+    CopyMarkdown,
     OpenPr,
+    NewWindow,
     Archive,
     Delete,
-    Icon,
-    Owner,
-    Advanced,
     Involvement,
+}
+
+impl SessionAction {
+    fn policy(self) -> MenuAction {
+        match self {
+            Self::Rename => MenuAction::Rename,
+            Self::Pin => MenuAction::Pin,
+            Self::Read => MenuAction::Read,
+            Self::Fork => MenuAction::Fork,
+            Self::CopyId => MenuAction::CopyId,
+            Self::CopyLink | Self::CopyPreview => MenuAction::CopyLink,
+            Self::CopyMarkdown => MenuAction::CopyMarkdown,
+            Self::OpenPr | Self::NewWindow => MenuAction::Open,
+            Self::Archive => MenuAction::Archive,
+            Self::Delete => MenuAction::Delete,
+            Self::Involvement => MenuAction::Involvement,
+        }
+    }
 }
 
 pub(super) fn session_menu(
@@ -104,7 +105,7 @@ pub(super) fn session_menu(
     let app = entity.read(cx);
     let selected = app.selected_sidebar_rows();
     if selected.len() > 1 && selected.iter().any(|candidate| candidate.key == row.key) {
-        return batch_menu(menu, selected, view, cx);
+        return batch_menu(menu, selected, view, window, cx);
     }
     let groups = app.sidebar_state.preferences.known_groups.clone();
     let has_pull_request = app
@@ -124,8 +125,14 @@ pub(super) fn session_menu(
     };
     menu = menu
         .min_w(menu::SESSION_MIN_WIDTH)
-        .max_w(menu::SESSION_MAX_WIDTH)
+        .max_w(menu::SESSION_MIN_WIDTH)
         .scrollable(true);
+    if let Some(timestamp) = row
+        .updated_at
+        .and_then(crate::model::chat::sidebar_timestamp)
+    {
+        menu = menu.label(format!("Last active {timestamp}"));
+    }
     if row.can_pin(main_key) {
         menu = item(
             menu,
@@ -189,48 +196,115 @@ pub(super) fn session_menu(
     menu = menu.separator();
     let icon_row = row.clone();
     let icon_view = view.clone();
-    menu = menu.submenu("Icon & color  I", window, cx, move |menu, _, _| {
-        appearance_menu(menu, &icon_row, &icon_view)
-    });
+    menu = menu
+        .submenu_with_icon(
+            Some(ui_icon(IconName::Palette, super::theme::tokens::icon::MENU)),
+            "Icon & color",
+            window,
+            cx,
+            move |menu, window, cx| {
+                super::session_appearance::appearance_menu(
+                    menu,
+                    icon_row.clone(),
+                    icon_view.clone(),
+                    window,
+                    cx,
+                )
+            },
+        )
+        .last_hint("I")
+        .last_disabled(
+            view.reason(MenuAction::Icon, &row).is_some(),
+            view.reason(MenuAction::Icon, &row).map(Into::into),
+        );
     if row.can_pin(main_key) {
         let group_row = row.clone();
         let group_view = view.clone();
-        menu = menu.submenu("Move to group", window, cx, move |mut menu, _, _| {
-            for name in &groups {
-                let name = name.clone();
-                let row = group_row.clone();
-                let view = group_view.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(name.clone())
-                        .checked(row.category.as_ref() == Some(&name))
-                        .on_click(move |_, _, cx| {
-                            let _ = view.update(cx, |this, cx| {
-                                this.move_session_rows(vec![row.clone()], Some(name.clone()), cx)
-                            });
-                        }),
-                );
-            }
-            if group_row.category.is_some() {
-                menu = patch_item(
-                    menu,
-                    "Remove from group",
-                    &group_row,
-                    &group_view,
-                    json!({"category":null}),
-                );
-            }
-            let row = group_row.clone();
-            let view = group_view.clone();
-            menu.item(
-                PopupMenuItem::new("New group…").on_click(move |_, window, cx| {
-                    let _ = view.update(cx, |this, cx| {
-                        this.show_session_group_dialog(vec![row.clone()], window, cx)
-                    });
-                }),
+        menu = menu
+            .submenu_with_icon(
+                Some(ui_icon(IconName::Folder, super::theme::tokens::icon::MENU)),
+                "Move to group",
+                window,
+                cx,
+                move |mut menu, _, _| {
+                    for (index, name) in groups.iter().enumerate() {
+                        let hint = (index < 9).then(|| (index + 1).to_string());
+                        let name = name.clone();
+                        let row = group_row.clone();
+                        let view = group_view.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(name.clone())
+                                .when_some(hint, |item, hint| item.hint(hint))
+                                .checked(row.category.as_ref() == Some(&name))
+                                .on_click(move |_, _, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.move_session_rows(
+                                            vec![row.clone()],
+                                            Some(name.clone()),
+                                            cx,
+                                        )
+                                    });
+                                }),
+                        );
+                    }
+                    if group_row.category.is_some() {
+                        let row = group_row.clone();
+                        let view = group_view.clone();
+                        let digit = groups.len() + 1;
+                        menu = menu.item(
+                            PopupMenuItem::new("Remove from group")
+                                .when(digit <= 9, |item| item.hint(digit.to_string()))
+                                .on_click(move |_, _, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.move_session_rows(vec![row.clone()], None, cx)
+                                    });
+                                }),
+                        );
+                    }
+                    let row = group_row.clone();
+                    let view = group_view.clone();
+                    let reason = view.reason(MenuAction::NewGroup, &row);
+                    let digit = groups.len() + usize::from(row.category.is_some()) + 1;
+                    menu.item(
+                        PopupMenuItem::new("New group")
+                            .disabled(reason.is_some())
+                            .when_some(reason, |item, reason| item.title(reason))
+                            .when(digit <= 9, |item| item.hint(digit.to_string()))
+                            .on_click(move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    this.show_session_group_dialog(vec![row.clone()], window, cx)
+                                });
+                            }),
+                    )
+                },
             )
-        });
+            .last_disabled(
+                view.reason(MenuAction::Group, &row).is_some(),
+                view.reason(MenuAction::Group, &row).map(Into::into),
+            );
     }
-    menu = item(menu, "Assign to…", SessionAction::Owner, &row, &view, false);
+    let owner_row = row.clone();
+    let owner_view = view.clone();
+    menu = menu
+        .submenu_with_icon(
+            Some(ui_icon(IconName::Users, super::theme::tokens::icon::MENU)),
+            "Assign to…",
+            window,
+            cx,
+            move |menu, window, cx| {
+                super::session_organization::session_owner_menu(
+                    menu,
+                    owner_row.clone(),
+                    owner_view.clone(),
+                    window,
+                    cx,
+                )
+            },
+        )
+        .last_disabled(
+            view.reason(MenuAction::Owner, &row).is_some(),
+            view.reason(MenuAction::Owner, &row).map(Into::into),
+        );
     menu = menu.separator();
     menu = item(
         menu,
@@ -242,40 +316,84 @@ pub(super) fn session_menu(
     );
     let copy_row = row.clone();
     let copy_view = view.clone();
-    menu = menu.submenu("Copy  C", window, cx, move |menu, _, _| {
-        let menu = item(
-            menu,
-            "Session link",
-            SessionAction::CopyLink,
-            &copy_row,
-            &copy_view,
-            false,
-        );
-        let menu = item(
-            menu,
-            "Preview link",
-            SessionAction::CopyPreview,
-            &copy_row,
-            &copy_view,
-            false,
-        );
-        let menu = item(
-            menu,
-            "Session ID",
-            SessionAction::CopyId,
-            &copy_row,
-            &copy_view,
-            copy_row.session_id.is_none(),
-        );
-        item(
-            menu,
-            "Session key",
-            SessionAction::CopyKey,
-            &copy_row,
-            &copy_view,
-            false,
+    menu = menu
+        .submenu_with_icon(
+            Some(ui_icon(IconName::Copy, super::theme::tokens::icon::MENU)),
+            "Copy",
+            window,
+            cx,
+            move |menu, _, _| {
+                let menu = item(
+                    menu,
+                    "Session link",
+                    SessionAction::CopyLink,
+                    &copy_row,
+                    &copy_view,
+                    false,
+                );
+                let menu = item(
+                    menu,
+                    "Preview link",
+                    SessionAction::CopyPreview,
+                    &copy_row,
+                    &copy_view,
+                    false,
+                );
+                let menu = item(
+                    menu,
+                    "Conversation as Markdown",
+                    SessionAction::CopyMarkdown,
+                    &copy_row,
+                    &copy_view,
+                    false,
+                );
+                item(
+                    menu,
+                    "Session ID",
+                    SessionAction::CopyId,
+                    &copy_row,
+                    &copy_view,
+                    copy_row.session_id.is_none(),
+                )
+            },
         )
-    });
+        .last_hint("C");
+    let open_row = row.clone();
+    let open_view = view.clone();
+    menu = menu.submenu_with_icon(
+        Some(ui_icon(
+            IconName::ExternalLink,
+            super::theme::tokens::icon::MENU,
+        )),
+        "Open in",
+        window,
+        cx,
+        move |menu, _, _| {
+            let menu = menu.item(
+                action_item("New tab", IconName::ExternalLink, None, false)
+                    .disabled(true)
+                    .title("Conversation tabs are not available in this native window."),
+            );
+            let menu = item(
+                menu,
+                "New window",
+                SessionAction::NewWindow,
+                &open_row,
+                &open_view,
+                false,
+            );
+            menu.item(
+                action_item("Split right", IconName::Columns2, None, false)
+                    .disabled(true)
+                    .title("Split conversations are not available in this native window."),
+            )
+            .item(
+                action_item("Split below", IconName::PanelBottomOpen, None, false)
+                    .disabled(true)
+                    .title("Split conversations are not available in this native window."),
+            )
+        },
+    );
     if has_pull_request {
         menu = item(
             menu,
@@ -286,14 +404,6 @@ pub(super) fn session_menu(
             false,
         );
     }
-    menu = item(
-        menu,
-        "More in Sessions…",
-        SessionAction::Advanced,
-        &row,
-        &view,
-        false,
-    );
     menu = menu.separator();
     item(
         menu,
@@ -301,23 +411,11 @@ pub(super) fn session_menu(
         SessionAction::Delete,
         &row,
         &view,
-        !row.archived && (!can_archive(&row, main_key) || row.running()),
+        false,
     )
 }
 
-pub(super) fn can_archive(row: &SessionRow, main_key: &str) -> bool {
-    row.session_id.as_ref().is_some_and(|id| !id.is_empty())
-        && !matches!(row.key.as_str(), "main" | "global" | "unknown")
-        && !matches!(row.kind.as_deref(), Some("global" | "unknown"))
-        && row.key != main_key
-        && !row.agent().is_some_and(|agent| {
-            row.key
-                == format!(
-                    "agent:{agent}:{}",
-                    main_key.rsplit(':').next().unwrap_or("main")
-                )
-        })
-}
+pub(super) use crate::model::session_menu::can_archive;
 
 fn item(
     mut menu: PopupMenu,
@@ -327,118 +425,69 @@ fn item(
     view: &MenuTarget,
     disabled: bool,
 ) -> PopupMenu {
+    let (label, hint) = label
+        .rsplit_once("  ")
+        .map_or((label, None), |(label, hint)| (label, Some(hint)));
+    let icon = match action {
+        SessionAction::Pin => {
+            if row.pinned {
+                IconName::PinOff
+            } else {
+                IconName::Pin
+            }
+        }
+        SessionAction::Rename => IconName::SquarePen,
+        SessionAction::Read => {
+            if row.unread {
+                IconName::Eye
+            } else {
+                IconName::Circle
+            }
+        }
+        SessionAction::Archive => {
+            if row.archived {
+                IconName::ArchiveRestore
+            } else {
+                IconName::Archive
+            }
+        }
+        SessionAction::Fork | SessionAction::CopyId => IconName::Copy,
+        SessionAction::CopyLink | SessionAction::CopyPreview => IconName::Link,
+        SessionAction::CopyMarkdown => IconName::FileText,
+        SessionAction::OpenPr => IconName::GitPullRequest,
+        SessionAction::NewWindow => IconName::Monitor,
+        SessionAction::Delete => IconName::Trash,
+        SessionAction::Involvement => {
+            if row.hidden_from_involving_me == Some(true) {
+                IconName::Eye
+            } else {
+                IconName::EyeOff
+            }
+        }
+    };
+    let reason = view.reason(action.policy(), row);
+    let disabled = disabled || reason.is_some();
     let row = row.clone();
     let view = view.clone();
     menu = menu.item(
-        PopupMenuItem::new(label.to_owned())
-            .disabled(disabled)
-            .on_click(move |_, window, cx| {
-                let _ = view.update(cx, |this, cx| {
-                    this.run_session_action(row.clone(), action, window, cx)
-                });
-            }),
+        action_item(
+            label.to_owned(),
+            icon,
+            hint,
+            matches!(action, SessionAction::Delete),
+        )
+        .disabled(disabled)
+        .when_some(reason, |item, reason| item.title(reason))
+        .on_click(move |_, window, cx| {
+            let _ = view.update(cx, |this, cx| {
+                this.run_session_action(row.clone(), action, window, cx)
+            });
+        }),
     );
     menu
 }
 
-fn patch_item(
-    menu: PopupMenu,
-    label: &str,
-    row: &SessionRow,
-    view: &MenuTarget,
-    fields: Value,
-) -> PopupMenu {
-    let row = row.clone();
-    let view = view.clone();
-    menu.item(
-        PopupMenuItem::new(label.to_owned()).on_click(move |_, _, cx| {
-            let _ = view.update(cx, |this, cx| {
-                this.patch_session(row.clone(), fields.clone(), cx)
-            });
-        }),
-    )
-}
-
-fn appearance_menu(mut menu: PopupMenu, row: &SessionRow, view: &MenuTarget) -> PopupMenu {
-    menu = menu.label("Color");
-    for color in [
-        "red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan",
-    ] {
-        menu = patch_item(menu, color, row, view, json!({"color":color}));
-    }
-    menu = menu.separator().label("Icon");
-    for icon in [
-        "🦞", "🚀", "🐛", "✅", "🔥", "📦", "🧪", "📝", "🔍", "⚡", "🎯", "braces", "book",
-        "monitor", "bot", "kanban", "coins",
-    ] {
-        menu = patch_item(menu, icon, row, view, json!({"icon":icon}));
-    }
-    menu = item(menu, "Custom icon…", SessionAction::Icon, row, view, false);
-    patch_item(
-        menu.separator(),
-        "Reset to default",
-        row,
-        view,
-        json!({"icon":null,"color":null}),
-    )
-    .scrollable(true)
-}
-
 impl AppView {
-    pub(super) fn session_menu_shortcut(
-        &mut self,
-        row: SessionRow,
-        action: &SessionMenuShortcut,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let batch = self.selected_sidebar_rows();
-        if batch.len() > 1 && batch.iter().any(|candidate| candidate.key == row.key) {
-            let patch = match action.key.as_str() {
-                "u" => Some(json!({"unread":!batch.iter().all(|row| row.unread)})),
-                "a" => Some(json!({"archived":!batch.iter().all(|row| row.archived)})),
-                _ => None,
-            };
-            if patch.is_some() || action.key == "d" {
-                window.dispatch_action(Box::new(Cancel), cx);
-                let delete = action.key == "d";
-                cx.defer_in(window, move |this, window, cx| {
-                    if let Some(patch) = patch {
-                        this.patch_session_rows(batch, patch, cx);
-                    } else if delete {
-                        this.confirm_delete_rows(batch, window, cx);
-                    }
-                });
-            }
-            return;
-        }
-        let action = match action.key.as_str() {
-            "p" if row.can_pin(&self.agent_home()) && !row.archived => SessionAction::Pin,
-            "r" => SessionAction::Rename,
-            "u" => SessionAction::Read,
-            "a" if row.archived || can_archive(&row, &self.agent_home()) => SessionAction::Archive,
-            "f" => SessionAction::Fork,
-            "d" if row.archived || (!row.running() && can_archive(&row, &self.agent_home())) => {
-                SessionAction::Delete
-            }
-            "c" => SessionAction::CopyMenu,
-            "i" => SessionAction::Icon,
-            "g" if self
-                .sidebar_state
-                .pull_requests
-                .menu_url(&crate::model::sidebar_pr::scoped_key(&row.key, row.agent()))
-                .is_some() =>
-            {
-                SessionAction::OpenPr
-            }
-            _ => return,
-        };
-        window.dispatch_action(Box::new(Cancel), cx);
-        cx.defer_in(window, move |this, window, cx| {
-            this.run_session_action(row, action, window, cx)
-        });
-    }
-
     fn run_session_action(
         &mut self,
         row: SessionRow,
@@ -446,17 +495,23 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.session.is_none()
-            && !matches!(
-                action,
-                SessionAction::CopyKey
-                    | SessionAction::CopyId
-                    | SessionAction::CopyLink
-                    | SessionAction::CopyPreview
-                    | SessionAction::CopyMenu
-            )
-        {
-            self.mutation_error("Reconnect before changing this conversation.".into());
+        let current = self
+            .rows
+            .iter()
+            .chain(self.sidebar_state.children.values().flatten())
+            .find(|current| current.key == row.key);
+        if current.is_some_and(|current| current.session_id != row.session_id) {
+            self.mutation_error("This conversation was replaced. Open its menu again.".into());
+            return;
+        }
+        let row = current.cloned().unwrap_or(row);
+        if let Some(reason) = disabled_reason(
+            action.policy(),
+            &row,
+            self.session.as_ref().map(|session| session.hello()),
+            &self.agent_home(),
+        ) {
+            self.mutation_error(reason);
             return;
         }
         match action {
@@ -470,7 +525,6 @@ impl AppView {
                 self.patch_session(row, json!({"unread":unread}), cx);
             }
             SessionAction::Fork => self.fork_session(row, cx),
-            SessionAction::CopyKey => cx.write_to_clipboard(ClipboardItem::new_string(row.key)),
             SessionAction::CopyId => {
                 if let Some(id) = row.session_id {
                     cx.write_to_clipboard(ClipboardItem::new_string(id));
@@ -478,31 +532,22 @@ impl AppView {
                     self.mutation_error("Refresh before copying this session's ID.".into());
                 }
             }
-            SessionAction::CopyMenu => {
-                let view = cx.entity().downgrade();
-                window.open_dialog(cx, move |dialog, _, _| {
-                    let mut choices = div().v_flex().gap(space::WIDGET_GAP);
-                    for (label, action) in [
-                        ("Session link", SessionAction::CopyLink),
-                        ("Preview link", SessionAction::CopyPreview),
-                        ("Session ID", SessionAction::CopyId),
-                        ("Session key", SessionAction::CopyKey),
-                    ] {
-                        let row = row.clone();
-                        let view = view.clone();
-                        choices = choices.child(
-                            Button::new(label).ghost().small().label(label).on_click(
-                                move |_, window, cx| {
-                                    let _ = view.update(cx, |this, cx| {
-                                        this.run_session_action(row.clone(), action, window, cx)
-                                    });
-                                    window.close_dialog(cx);
-                                },
-                            ),
-                        );
-                    }
-                    dialog.title("Copy conversation").child(choices)
-                });
+            SessionAction::CopyMarkdown => self.copy_session_markdown(row, cx),
+            SessionAction::NewWindow => {
+                let config = self
+                    .profile
+                    .as_ref()
+                    .map(crate::gateway::config::for_profile)
+                    .unwrap_or_else(|| {
+                        let optional =
+                            |value: SharedString| (!value.is_empty()).then(|| value.to_string());
+                        Ok(crate::gateway::config::ConnectionConfig {
+                            url: self.url.read(cx).value().to_string(),
+                            token: optional(self.token.read(cx).value()),
+                            password: optional(self.password.read(cx).value()),
+                        })
+                    });
+                crate::gateway_windows::open_session(self.profile.clone(), config, row.key, cx);
             }
             SessionAction::OpenPr => {
                 let url = self
@@ -543,9 +588,6 @@ impl AppView {
             }
             SessionAction::Archive => self.archive_session(row, cx),
             SessionAction::Delete => self.confirm_delete(row, window, cx),
-            SessionAction::Icon => self.show_session_icon_dialog(row, window, cx),
-            SessionAction::Owner => self.show_session_owner_dialog(row, window, cx),
-            SessionAction::Advanced => self.open_control_page("/sessions", "Sessions", window, cx),
             SessionAction::Involvement => {
                 let hidden = !row.hidden_from_involving_me.unwrap_or_default();
                 let mut params =

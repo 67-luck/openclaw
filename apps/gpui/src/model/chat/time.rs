@@ -5,6 +5,33 @@ pub fn relative_timestamp(timestamp: Option<u64>) -> String {
         .map(|timestamp| relative_time_at(timestamp, now_ms()))
         .unwrap_or_default()
 }
+pub fn sidebar_timestamp(timestamp: f64) -> Option<String> {
+    if !timestamp.is_finite() {
+        return None;
+    }
+    let difference = timestamp - now_ms() as f64;
+    if (-60_000.0..=0.0).contains(&difference) {
+        return Some("now".into());
+    }
+    let seconds = (difference.abs() / 1000.0).round();
+    let minutes = (seconds / 60.0).round();
+    let hours = (minutes / 60.0).round();
+    let (value, unit) = if seconds < 60.0 {
+        (seconds, "s")
+    } else if minutes < 60.0 {
+        (minutes, "m")
+    } else if hours < 48.0 {
+        (hours, "h")
+    } else {
+        ((hours / 24.0).round(), "d")
+    };
+    Some(if difference > 0.0 {
+        format!("in {value}{unit}")
+    } else {
+        format!("{value}{unit}")
+    })
+}
+
 fn relative_time_at(timestamp: u64, now: u64) -> String {
     if timestamp > now.saturating_add(120_000) || now.saturating_sub(timestamp) >= 604_800_000 {
         return local_time(timestamp, true);

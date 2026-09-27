@@ -154,7 +154,6 @@ fn main() {
             gpui_kit::init(cx);
             #[cfg(target_os = "macos")]
             macos_app_icon::install();
-            ui::init_session_menu_shortcuts(cx);
             if let Err(error) = cx.text_system().add_fonts(vec![
                 std::borrow::Cow::Borrowed(include_bytes!(
                     "../assets/fonts/instrument-sans-400.ttf"
@@ -188,13 +187,13 @@ fn main() {
                 gateway::remote_tunnel::shutdown_all();
                 gateway::connection::shutdown_all()
             })
+            .detach();
             #[cfg(unix)]
             cx.spawn(async move |cx| {
                 if termination.recv().await.is_ok() {
                     cx.update(|cx| cx.quit());
                 }
             })
-            .detach();
             .detach();
             cx.bind_keys([
                 KeyBinding::new("cmd-q", Quit, None),

@@ -1,9 +1,10 @@
+use super::components::action_menu::ActionContextMenuExt;
 use super::{
     AppView,
     components::{
         icon_button::icon_button as ui_icon_button, icons::icon as ui_icon, list::list_row,
     },
-    session_actions::{SessionMenuShortcut, session_menu},
+    session_actions::session_menu,
     theme::{
         Palette,
         tokens::{TypographyExt, colors, icon, icon_button, radius, row as row_style, space, text},
@@ -20,7 +21,6 @@ use gpui_kit::{
         Disableable, Sizable, StyledExt, Theme,
         button::{Button, ButtonVariants},
         input::Input,
-        menu::ContextMenuExt,
     },
     prelude::FluentBuilder,
     *,
@@ -46,9 +46,6 @@ impl AppView {
         let key = row.key.clone();
         let view = cx.entity().downgrade();
         let menu_row = row.clone();
-        let shortcut_row = row.clone();
-        let shortcut_epoch = self.epoch;
-        let shortcut_revision = self.sidebar_state.agent_revision;
         let pin_row = row.clone();
         let archive_row = row.clone();
         let expanded = self.sidebar_state.expanded.contains(&key);
@@ -131,21 +128,6 @@ impl AppView {
         .role(Role::Button)
         .aria_label(row.title())
         .group("session-row")
-        .key_context("SidebarSessionMenu")
-        .on_action(
-            cx.listener(move |this, action: &SessionMenuShortcut, window, cx| {
-                if this.epoch == shortcut_epoch
-                    && this.sidebar_state.agent_revision == shortcut_revision
-                {
-                    this.session_menu_shortcut(shortcut_row.clone(), action, window, cx);
-                } else {
-                    this.mutation_error(
-                        "The conversation changed. Reopen its menu before changing it.".into(),
-                    );
-                    cx.notify();
-                }
-            }),
-        )
         .when_some(color, |el, color| {
             el.bg(colors::category_tint(color))
                 .border_l(space::XXS)

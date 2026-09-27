@@ -1,3 +1,4 @@
+pub(crate) mod action_menu;
 pub(crate) mod avatar;
 pub(crate) mod avatar_cache;
 pub(crate) mod chip;
