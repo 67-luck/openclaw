@@ -5,6 +5,7 @@ import {
   setupCronRegressionFixtures,
 } from "../../../test/helpers/cron/service-regression-fixtures.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
 import { cancelTaskById, listTaskRecords } from "../../tasks/task-registry.js";
 import { resetTaskRegistryForTests } from "../../tasks/task-runtime.test-helpers.js";
 import { saveCronStore } from "../store.js";
@@ -127,6 +128,7 @@ describe("cron task cancellation settlement", () => {
         await vi.waitFor(() => expect(getSuspensionVisibleCronTaskRunCount()).toBe(0));
         vi.useRealTimers();
         resetActiveCronTaskRunsForTests();
+        await closeOpenClawStateDatabaseAsync();
         resetTaskRegistryForTests();
       }
     },

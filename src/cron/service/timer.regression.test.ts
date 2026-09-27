@@ -17,7 +17,10 @@ import {
   setHeartbeatWakeHandler,
   type HeartbeatRunResult,
 } from "../../infra/heartbeat-wake.js";
-import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  openOpenClawStateDatabase,
+} from "../../state/openclaw-state-db.js";
 import { CRON_TASK_KIND } from "../../tasks/cron-task-contract.js";
 import { cancelTaskById, listTaskRecords } from "../../tasks/task-registry.js";
 import { resetTaskRegistryForTests } from "../../tasks/task-runtime.test-helpers.js";
@@ -634,6 +637,7 @@ describe("cron service timer regressions", () => {
       await vi.waitFor(() => expect(getSuspensionVisibleCronTaskRunCount()).toBe(0));
       vi.useRealTimers();
       resetActiveCronTaskRunsForTests();
+      await closeOpenClawStateDatabaseAsync();
       resetTaskRegistryForTests();
     }
   });
@@ -790,6 +794,7 @@ describe("cron service timer regressions", () => {
         await vi.waitFor(() => expect(getSuspensionVisibleCronTaskRunCount()).toBe(0));
         clearCronJobActive(cronJob.id, activeJobMarker);
         resetActiveCronTaskRunsForTests();
+        await closeOpenClawStateDatabaseAsync();
         resetTaskRegistryForTests();
         vi.useRealTimers();
       }
@@ -1108,6 +1113,7 @@ describe("cron service timer regressions", () => {
         await Promise.allSettled([timerPromise, heartbeatResult.promise]);
         await vi.waitFor(() => expect(getSuspensionVisibleCronTaskRunCount()).toBe(0));
         resetActiveCronTaskRunsForTests();
+        await closeOpenClawStateDatabaseAsync();
         resetTaskRegistryForTests();
         vi.useRealTimers();
       }
@@ -1203,6 +1209,7 @@ describe("cron service timer regressions", () => {
       await Promise.allSettled([timerPromise, runnerResult.promise]);
       await vi.waitFor(() => expect(getSuspensionVisibleCronTaskRunCount()).toBe(0));
       resetActiveCronTaskRunsForTests();
+      await closeOpenClawStateDatabaseAsync();
       resetTaskRegistryForTests();
       vi.useRealTimers();
     }
@@ -1265,6 +1272,7 @@ describe("cron service timer regressions", () => {
       await Promise.allSettled([timerPromise, heartbeatResult.promise]);
       await vi.waitFor(() => expect(getSuspensionVisibleCronTaskRunCount()).toBe(0));
       resetActiveCronTaskRunsForTests();
+      await closeOpenClawStateDatabaseAsync();
       resetTaskRegistryForTests();
       vi.useRealTimers();
     }
@@ -2270,6 +2278,7 @@ describe("cron service timer regressions", () => {
       releaseRun.resolve({ status: "ok", summary: "old service result" });
       await Promise.allSettled([missedJobs, releaseRun.promise]);
       await vi.waitFor(() => expect(getSuspensionVisibleCronTaskRunCount()).toBe(0));
+      await closeOpenClawStateDatabaseAsync();
       resetTaskRegistryForTests();
     }
   });
