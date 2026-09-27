@@ -16,7 +16,7 @@ import {
 import {
   captureTaskCancellationControl,
   type TaskCancellationControl,
-} from "./task-cancellation-context.js";
+} from "./task-cancellation-context-state.js";
 import { cancelDetachedTaskRunByIdAsync } from "./task-executor-cancel.async.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import { upsertTaskFlowRegistryRecordToSqlite } from "./task-flow-registry.store.sqlite.js";

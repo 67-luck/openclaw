@@ -9,10 +9,9 @@ import { captureTaskCancellationSelection } from "./task-cancellation-selection.
 import { matchesTaskCancellationCreatedAt } from "./task-cancellation-selection.js";
 import type { TaskRecord } from "./task-registry.types.js";
 
-export {
-  captureTaskCancellationControl,
-  type TaskCancellationControl,
-  type TaskCancellationTarget,
+export type {
+  TaskCancellationControl,
+  TaskCancellationTarget,
 } from "./task-cancellation-context-state.js";
 
 /** Carry caller authority through runtime handoffs without extending the public cancel request. */
