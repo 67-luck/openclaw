@@ -10,6 +10,7 @@ import { findVitestResourceOwner } from "../../scripts/lib/vitest-resource-owner
 import { nativeSchtasksIntegrationEnabled } from "../../scripts/lib/vitest-worker-declarations.mts";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { cliRecoveryEntrypoints } from "../cli/cli-entrypoint.test-support.js";
+import { resolveProfileStateDir } from "../cli/profile-utils.js";
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -475,9 +476,7 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
     const rootDir = await proof.createIntegrationRoot(configuredRoot, id);
     const accountHome = os.userInfo().homedir;
     const profile = `schtasks-int-${id}`;
-    const stateDir = releasedBindingPath
-      ? path.join(rootDir, "state")
-      : path.join(accountHome, `.openclaw-${profile}`);
+    const stateDir = resolveProfileStateDir(profile, { HOME: accountHome }, () => accountHome);
     const activePidPath = path.join(rootDir, "active-pid.txt");
     const eventsPath = path.join(rootDir, "runs.txt");
     const probe = createGatewayTaskSupervisorProbe(rootDir);
@@ -543,8 +542,12 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
         OPENCLAW_SERVICE_MARKER: "openclaw",
       },
     };
+    // Admit cleanup only after this run owns a new profile directory and no existing task.
+    if ((await readTaskDefinitionSnapshot(taskName)).exists) {
+      throw new Error(`Native Scheduled Task profile already has a registered task: ${taskName}`);
+    }
+    await fs.mkdir(stateDir);
     try {
-      await fs.mkdir(stateDir);
       await fs.writeFile(
         path.join(stateDir, "openclaw.json"),
         `${JSON.stringify(releasedBindingPath ? {} : { logging: { file: path.join(rootDir, "task-supervisor.log") } })}\n`,
