@@ -372,6 +372,8 @@ function resolveClientVoiceToolConfirmationPolicy(
     params.toolName === "nodes"
       ? InstalledAppLaunchToolParamsSchema.safeParse(params.toolParams)
       : undefined;
+  // App preparation is not the effect boundary, even when a reusable policy matches.
+  const consumeHere = consume && (!appLaunch?.success || params.appLaunchEffectBoundary === true);
   if (appLaunch?.success) {
     const policy = resolveClientVoiceAppLaunchPolicy({
       agentId: params.agentId,
@@ -382,12 +384,13 @@ function resolveClientVoiceToolConfirmationPolicy(
       nowMs: now,
     });
     if (policy) {
+      if (consumeHere) {
+        // This exact action also spends its spoken grant; policy revocation cannot revive it.
+        resolveApprovedFingerprint(scopeKey, params.runId, fingerprint, now, true);
+      }
       return { allowed: true, policyId: policy.id, policyExpiresAtMs: policy.expiresAtMs };
     }
   }
-  // Installed-app preparation still crosses target and independent node policy awaits.
-  // Its effect owner consumes the one-shot grant at readiness, not in the tool wrapper.
-  const consumeHere = consume && (!appLaunch?.success || params.appLaunchEffectBoundary === true);
   if (resolveApprovedFingerprint(scopeKey, params.runId, fingerprint, now, consumeHere)) {
     return { allowed: true };
   }

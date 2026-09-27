@@ -193,6 +193,18 @@ and at the node's final invocation-bound readiness request. The node independent
 checks execution policy and app revision before spawning. Revocation prevents
 future permits; it cannot undo a launch already admitted by a final permit.
 A process-started acknowledgment does not prove that a GUI window appeared.
+If a spoken one-shot grant and a policy both match, the final permit spends that
+one-shot grant too; revoking the policy cannot revive it for another launch.
+
+The existing voice-call effect record may retain the selected policy ID as
+`appLaunchAuthorization` with stage `permit-authorized`. The Gateway selects it
+at final readiness, not from model arguments or an earlier policy check. This
+records authorization, not a successful native spawn: the ordinary source outcome
+remains separate, including native launch failures. The existing agent database
+worker persists this bounded field without changing the database schema, record
+version, or retention.
+As with other effect evidence, unavailable persistence is reported without
+relabeling or retrying an already admitted action.
 
 Policies do not restore authority from transcripts, stored voice-session IDs, or
 old effect records. Each new consult uses its own authenticated ingress. Startup
@@ -201,11 +213,21 @@ owner rather than borrowing a replacement audio connection. Eligible voice runs
 can use Nodes directly under Code Mode while keeping it searchable. Policies do
 not remove Nodes discovery from unrelated sessions or authorize arbitrary code.
 
-**Rollback:** No database schema or record version changes are required. An older
-build whose strict Talk schema lacks `appLaunchPolicies` rejects the key even
-when it is `[]`. Before downgrading, revoke policies on the compatible build,
+**Rollback:** The policy feature does not change the database schema or voice
+record version. An older build whose strict Talk schema lacks `appLaunchPolicies`
+rejects the key even when it is `[]`. Revoke policies on the compatible build,
 verify active application, drain in-flight launches, and remove the key entirely
-or restore a suitable pre-feature config backup. Preserve other settings.
+to restore **configuration** compatibility. Preserve unrelated settings.
+
+Key removal does not reverse other release migrations. In particular, the
+2026.9.6 published host supports shared-state schema 18, while this release line
+uses schema 19 for channel-owner revocation continuity. To return to that older
+host, restore a verified, complete pre-upgrade backup with its matching package,
+configuration, shared state, and every agent database into a separate state
+directory. Never lower schema markers or remove authority columns. Restoring the
+backup loses later revocations and receipts and does not undo external effects;
+reconcile those with a compatible build first. See
+[Database downgrade recovery](/reference/database-schemas/integrity-and-recovery#downgrade-recovery).
 
 After a confirmation prompt, say **yes** to confirm the pending action or **no**
 to cancel it. Each confirmation permits one matching action; another action may

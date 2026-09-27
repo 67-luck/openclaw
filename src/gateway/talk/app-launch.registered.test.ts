@@ -91,6 +91,9 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
     "expired-after-permit",
     "exec-revoked-after-permit",
     "policy-repeat",
+    "policy-spoken-overlap",
+    "policy-selected-at-permit",
+    "policy-native-error",
     "policy-detached-origin",
     "policy-request-ended",
     "policy-shared-token",
@@ -108,20 +111,22 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
   ] as const)("preserves final outcome and independent gates: %s", async (scenario) => {
     const policyMode = scenario.startsWith("policy-") ? scenario : undefined;
     const mode =
-      scenario === "no" ||
-      scenario === "node-denied" ||
-      scenario === "exec-denied" ||
-      scenario === "caller-closed" ||
-      scenario === "eligibility-changed" ||
-      scenario === "os-error" ||
-      scenario === "caller-revoked-after-permit" ||
-      scenario === "source-revoked-after-permit" ||
-      scenario === "cancel-after-permit" ||
-      scenario === "cancel-in-flight-after-permit" ||
-      scenario === "expired-after-permit" ||
-      scenario === "exec-revoked-after-permit"
-        ? scenario
-        : "yes";
+      scenario === "policy-native-error"
+        ? "os-error"
+        : scenario === "no" ||
+            scenario === "node-denied" ||
+            scenario === "exec-denied" ||
+            scenario === "caller-closed" ||
+            scenario === "eligibility-changed" ||
+            scenario === "os-error" ||
+            scenario === "caller-revoked-after-permit" ||
+            scenario === "source-revoked-after-permit" ||
+            scenario === "cancel-after-permit" ||
+            scenario === "cancel-in-flight-after-permit" ||
+            scenario === "expired-after-permit" ||
+            scenario === "exec-revoked-after-permit"
+          ? scenario
+          : "yes";
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       setActivePluginRegistry(createEmptyPluginRegistry());
       const data = state.path("app-data");
@@ -167,7 +172,7 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
         appRevision: app.appRevision,
         expiresAtMs: Date.now() + 60_000,
       };
-      if (policyMode) {
+      if (policyMode && policyMode !== "policy-spoken-overlap") {
         if (policyMode === "policy-mismatch-agentId") {
           policy.agentId = "other";
         }
@@ -235,8 +240,17 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
         beforeProgress: () => {
           trace.push("node-ready");
           expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(
-            policyMode ? 0 : 1,
+            policyMode && policyMode !== "policy-spoken-overlap" ? 0 : 1,
           );
+          if (policyMode === "policy-spoken-overlap") {
+            trace.push("spoken-grant-present-at-node-readiness");
+          }
+          if (policyMode === "policy-selected-at-permit") {
+            config.talk = {
+              realtime: { appLaunchPolicies: [{ ...policy, id: "final-policy" }] },
+            };
+            setRuntimeConfigSnapshot(config, config);
+          }
           if (policyMode === "policy-request-ended") {
             originRequestCurrent = false;
           }
@@ -473,15 +487,22 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
               appId: app.appId,
               appRevision: app.appRevision,
             };
-            if (policyMode) {
+            if (policyMode && policyMode !== "policy-spoken-overlap") {
               const launch = (id: string, params = launchParams) =>
                 tool.execute(id, { ...params }).then(
                   (value) => ({ value, error: undefined }),
                   (error: unknown) => ({ value: undefined, error: String(error) }),
                 );
               const result = await launch("policy-first");
+              const effect = clientVoiceSessionTesting
+                .readRecord("main", voiceSessionId)
+                ?.effects.find(
+                  (effectEntry) =>
+                    effectEntry.runId === "app-run" && effectEntry.toolCallId === "policy-first",
+                );
               if (
                 policyMode === "policy-repeat" ||
+                policyMode === "policy-selected-at-permit" ||
                 policyMode === "policy-detached-origin" ||
                 policyMode === "policy-request-ended"
               ) {
@@ -492,6 +513,14 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
                     appId: app.appId,
                     appRevision: app.appRevision,
                     pid: appSpawns()[0]?.pid,
+                  },
+                });
+                expect(effect).toMatchObject({
+                  status: "succeeded",
+                  appLaunchAuthorization: {
+                    policyId:
+                      policyMode === "policy-selected-at-permit" ? "final-policy" : policy.id,
+                    stage: "permit-authorized",
                   },
                 });
                 expect((await launch("policy-second")).error).toBeUndefined();
@@ -514,11 +543,35 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
                   "VOICE_CONFIRMATION_REQUIRED",
                 );
                 expect(appSpawns()).toHaveLength(2);
+                const spoof = await tool
+                  .execute("model-policy-spoof", {
+                    ...launchParams,
+                    appLaunchAuthorization: { policyId: policy.id, stage: "permit-authorized" },
+                  })
+                  .catch((error: unknown) => String(error));
+                expect(JSON.stringify(spoof)).toContain("VOICE_CONFIRMATION_REQUIRED");
+                expect(
+                  clientVoiceSessionTesting
+                    .readRecord("main", voiceSessionId)
+                    ?.effects.find((effectEntry) => effectEntry.toolCallId === "model-policy-spoof")
+                    ?.appLaunchAuthorization,
+                ).toBeUndefined();
+                expect(appSpawns()).toHaveLength(2);
                 expect(permits).toEqual([
                   { type: "installed-app-launch.allow", validForMs: 5000 },
                   { type: "installed-app-launch.allow", validForMs: 5000 },
                 ]);
+              } else if (policyMode === "policy-native-error") {
+                expect(result.error).toContain("ENOENT");
+                expect(appSpawns()).toHaveLength(1);
+                expect(appSpawns()[0]?.pid).toBeUndefined();
+                expect(permits).toEqual([{ type: "installed-app-launch.allow", validForMs: 5000 }]);
+                expect(effect).toMatchObject({
+                  status: "failed",
+                  appLaunchAuthorization: { policyId: policy.id, stage: "permit-authorized" },
+                });
               } else {
+                expect(effect?.appLaunchAuthorization).toBeUndefined();
                 const error = result.error ?? JSON.stringify(result.value);
                 if (
                   policyMode.startsWith("policy-mismatch-") ||
@@ -555,6 +608,9 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
               .execute("needs-confirmation", { ...launchParams })
               .catch((error: unknown) => String(error));
             expect(JSON.stringify(initial)).toContain("VOICE_CONFIRMATION_REQUIRED");
+            if (policyMode === "policy-spoken-overlap") {
+              trace.push("ordinary-confirmation-required");
+            }
             expect(appSpawns()).toHaveLength(0);
             expect(nativeCommands).toEqual(["device.apps"]);
             // Real transcript persistence arms the ordinary grant; no synthetic receipt or model inference.
@@ -580,6 +636,13 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
               expect(
                 bindAuthorizedClientVoiceConfirmation({ grant: grant!, runId: "app-run" }),
               ).toBe(true);
+            }
+            if (policyMode === "policy-spoken-overlap") {
+              trace.push("persisted-yes-grant-bound");
+              // The ordinary challenge and persisted yes precede operator policy addition.
+              config.talk = { realtime: { appLaunchPolicies: [policy] } };
+              setRuntimeConfigSnapshot(config, config);
+              trace.push("matching-policy-added-after-spoken-grant");
             }
             const result = await tool
               .execute("launch", { ...launchParams }, invocation.signal)
@@ -618,11 +681,22 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
               expect(() => process.kill(child.pid!, 0)).not.toThrow();
               expect(permits).toEqual([{ type: "installed-app-launch.allow", validForMs: 5000 }]);
               if (mode === "yes") {
+                if (policyMode === "policy-spoken-overlap") {
+                  expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(0);
+                  trace.push("spoken-grant-consumed-at-final-permit");
+                  config.talk = { realtime: { appLaunchPolicies: [] } };
+                  setRuntimeConfigSnapshot(config, config);
+                  trace.push("policy-revoked");
+                }
                 const replay = await tool
                   .execute("replay", { ...launchParams })
                   .catch((error: unknown) => String(error));
                 expect(JSON.stringify(replay)).toContain("VOICE_CONFIRMATION_REQUIRED");
                 expect(appSpawns()).toHaveLength(1);
+                expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(0);
+                if (policyMode === "policy-spoken-overlap") {
+                  trace.push("revoked-replay-challenged-no-second-process");
+                }
               }
             } else {
               const reasons = {

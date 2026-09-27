@@ -31,6 +31,47 @@ function storedRecord(transcriptFailureKeys: unknown): string {
 }
 
 describe("client voice session store", () => {
+  it.each([
+    { authorization: undefined, expected: undefined },
+    {
+      authorization: { policyId: "selected-policy", stage: "permit-authorized" },
+      expected: { policyId: "selected-policy", stage: "permit-authorized" },
+    },
+    {
+      authorization: { policyId: "x".repeat(65), stage: "permit-authorized" },
+      expected: undefined,
+    },
+    {
+      authorization: { policyId: "selected-policy", stage: "process-started" },
+      expected: undefined,
+    },
+  ])(
+    "preserves ordinary effect outcomes when decoding optional policy attribution (%#)",
+    ({ authorization, expected }) => {
+      const effect = {
+        runId: "run-1",
+        toolCallId: "call-1",
+        toolName: "nodes",
+        startedAt: 1,
+        status: "failed",
+        appLaunchAuthorization: authorization,
+      };
+      const parsed = parseStoredVoiceSessionRecord(
+        JSON.stringify({
+          ...JSON.parse(storedRecord([])),
+          effects: [effect],
+        }),
+      );
+      expect(parsed?.effects).toHaveLength(1);
+      expect(parsed?.effects[0]).toMatchObject({
+        runId: "run-1",
+        toolCallId: "call-1",
+        status: "failed",
+      });
+      expect(parsed?.effects[0]?.appLaunchAuthorization).toEqual(expected);
+    },
+  );
+
   it("preserves cache custody columns across rejected updates and a successful retry", async () => {
     const home = await createTempHomeEnv("openclaw-voice-store-");
     const scope = "talk-client-voice-sessions";

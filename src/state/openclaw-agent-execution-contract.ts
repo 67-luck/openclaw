@@ -28,6 +28,7 @@ import type {
   SqliteWorkerAdmissionRequest,
 } from "../infra/sqlite-worker-operation-admission.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
+import type { ClientVoiceAppLaunchPolicyUse } from "../talk/client-voice-session-store.js";
 import type { SqliteTrajectoryRuntimeAppend } from "../trajectory/runtime-store.sqlite.js";
 import type { AgentDatabaseRegistryChange } from "./openclaw-agent-db-registry-listing.js";
 import type { AgentDatabaseDomainOperations } from "./openclaw-agent-execution-domain.js";
@@ -59,6 +60,7 @@ export type AgentDatabaseExecutionOpen = {
 
 export type AgentDatabaseOperations = AgentDatabaseDomainOperations & {
   "database.walMaintenance": { input: SqliteWalPeriodicRequest; output: SqliteWalPeriodicResult };
+  "talk.appLaunch.recordPolicy": { input: ClientVoiceAppLaunchPolicyUse; output: void };
   "trajectory.events.append": { input: SqliteTrajectoryRuntimeAppend; output: void };
   "session.archives.preparePublication": {
     input: {

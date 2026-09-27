@@ -41,10 +41,16 @@ function prepareTalkAppLaunchDispatch(nodeId: string, rawParams: unknown) {
   let spokenGrantConsumed = false;
   let reason: string | undefined;
   let validForMs = 5000;
+  let authorizedPolicyId: string | undefined;
   return {
     dispatchParams: { ...action, agentId: caller.agentId },
     validityMs: () => validForMs,
     reason: () => reason,
+    recordPermitAuthorization: () => {
+      if (authorizedPolicyId) {
+        execution.recordPolicyAuthorization(authorizedPolicyId);
+      }
+    },
     isCurrent: (effectBoundary = false) => {
       try {
         assertCallerCurrent?.("node.invoke");
@@ -93,6 +99,9 @@ function prepareTalkAppLaunchDispatch(nodeId: string, rawParams: unknown) {
       } else if (effectBoundary) {
         spokenGrantConsumed = true;
       }
+      if (effectBoundary) {
+        authorizedPolicyId = decision.policyId;
+      }
       return true;
     },
   };
@@ -140,6 +149,9 @@ export function prepareTalkAppLaunchInvocation(params: {
           undefined &&
         launch.isCurrent(true);
       permitSent = true;
+      if (authorized) {
+        launch.recordPermitAuthorization();
+      }
       context.nodeRegistry.sendInvokeInput(
         invokeId,
         authorized

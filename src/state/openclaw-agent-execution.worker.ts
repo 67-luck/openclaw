@@ -352,6 +352,7 @@ function openAgentDatabaseBackend(
     | undefined;
   let trajectory: typeof import("../trajectory/runtime-store.sqlite.js") | undefined;
   let acpEntry: typeof import("../acp/runtime/session-meta-entry.worker.js") | undefined;
+  let voiceStore: typeof import("../talk/client-voice-session-store.js") | undefined;
   const domain = createAgentDatabaseDomainOwner({
     databasePath: input.databasePath,
     assertCurrent() {
@@ -403,6 +404,20 @@ function openAgentDatabaseBackend(
     }
     if (command.type === "session.entry.read" && entryReader) {
       return entryReader.readSessionEntryRow(openWriter(), command.input.sessionKey)?.entry;
+    }
+    if (command.type === "talk.appLaunch.recordPolicy" && voiceStore) {
+      const recordPolicy = voiceStore.recordVoiceSessionAppLaunchPolicyUseInTransaction;
+      return writeTransaction(
+        "talk.app-launch.policy-use",
+        "Voice policy attribution",
+        (current) => {
+          if (command.input.agentId !== input.agentId) {
+            throw new Error("Voice policy attribution lost its canonical agent owner");
+          }
+          recordPolicy(current, command.input);
+          admit("commit");
+        },
+      );
     }
     if (command.type === "trajectory.events.append" && trajectory) {
       const append = trajectory.appendSqliteTrajectoryRuntimeEventsInTransaction;
@@ -543,6 +558,11 @@ function openAgentDatabaseBackend(
       if (command.type === "session.entry.read") {
         return import("../config/sessions/session-accessor.sqlite-entry-read.js").then((module) => {
           entryReader = module;
+        });
+      }
+      if (command.type === "talk.appLaunch.recordPolicy") {
+        return import("../talk/client-voice-session-store.js").then((module) => {
+          voiceStore = module;
         });
       }
       if (command.type === "trajectory.events.append") {
