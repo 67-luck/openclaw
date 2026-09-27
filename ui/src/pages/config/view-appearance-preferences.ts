@@ -307,7 +307,7 @@ export function renderChatPreferencesSection(
             ? renderSettingsToggleRow({
                 title: t("configView.chatPrefs.openLinksExternally"),
                 description: html`${t("configView.chatPrefs.openLinksExternallyHint")}<br />
-                  ${t("quickSettings.personal.browserOnly")}`,
+                  ${t("configView.chatPrefs.openLinksExternallyStorage")}`,
                 checked: props.openLinksExternally === true,
                 onChange: props.setOpenLinksExternally,
               })

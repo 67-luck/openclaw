@@ -175,7 +175,7 @@ When your connection is bound to an authenticated Gateway profile, theme, theme 
 
 ## Opening links
 
-Under **Settings → Appearance → Chat**, enable **Open links in external browser**
+Under **Settings → Appearance → Chat**, enable **Open links outside OpenClaw**
 to open web links outside OpenClaw instead of in built-in readers or browser panels.
 In a web browser, links use ordinary browser navigation; in a native app, they open
 in the system's default browser. The switch is off by default, preserving current
