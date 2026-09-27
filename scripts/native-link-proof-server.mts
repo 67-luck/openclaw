@@ -114,7 +114,9 @@ await runWithFailedTrailer("native-link-proof", async () => {
       const type = response.headers.get("content-type") ?? "application/octet-stream";
       let bytes = Buffer.from(await response.arrayBuffer());
       if (type.includes("text/html")) {
-        const injected = mock + "\n" + readiness;
+        const diagnostics =
+          "window.__nativeProofErrors = []; addEventListener('error', event => window.__nativeProofErrors.push({message:event.message,source:event.filename,line:event.lineno})); addEventListener('unhandledrejection', event => window.__nativeProofErrors.push({message:String(event.reason)}));";
+        const injected = diagnostics + "\n" + mock + "\n" + readiness;
         bytes = Buffer.from(
           bytes
             .toString()

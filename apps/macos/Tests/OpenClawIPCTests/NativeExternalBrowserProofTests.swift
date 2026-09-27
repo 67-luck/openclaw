@@ -74,7 +74,23 @@ struct NativeExternalBrowserProofTests {
         try #require(enabled == true)
         try await self.capture(controller.webView, to: config.artifactDir.appendingPathComponent("native-setting-enabled.png"))
         controller.webView.load(URLRequest(url: config.uiUrl.appendingPathComponent("chat")))
-        _ = try await wait("chat")
+        do {
+            _ = try await wait("chat")
+        } catch {
+            let diagnostic = try? await controller.webView.evaluateJavaScript("""
+            JSON.stringify({url:location.href,ready:document.readyState,body:document.body.innerText,
+              errors:window.__nativeProofErrors,
+              sockets:window.openclawControlUiE2eGateway?.socketStates(),
+              requests:window.openclawControlUiE2eGateway?.requests.map(request => ({method:request.method,sessionKey:request.params?.sessionKey})),
+              route:document.querySelector('openclaw-app')?.runtime?.router.getState()})
+            """) as? String
+            if let diagnostic {
+                try diagnostic.write(to: config.artifactDir.appendingPathComponent("chat-failure.json"),
+                                     atomically: true, encoding: .utf8)
+            }
+            try? await self.capture(controller.webView, to: config.artifactDir.appendingPathComponent("chat-failure.png"))
+            throw error
+        }
         let (beforeData, _) = try await session.data(from: config.uiUrl.appendingPathComponent("__native-proof__/state"))
         let before = try #require(JSONSerialization.jsonObject(with: beforeData) as? [String: Any])
         try #require(before["opened"] == nil)
