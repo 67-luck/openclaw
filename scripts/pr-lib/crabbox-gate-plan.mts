@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  matchesVitestGlob,
   sharedVitestExcludePatterns,
   vitestE2eTestGlob,
 } from "../../test/vitest/vitest.pattern-file.ts";
@@ -112,7 +113,7 @@ export function createCrabboxGatePlan({
         (pattern) => !e2e || pattern !== vitestE2eTestGlob,
       );
       inventory = files.filter(
-        (file) => !exclude.some((pattern) => path.matchesGlob(file, pattern)),
+        (file) => !exclude.some((pattern) => matchesVitestGlob(file, pattern)),
       );
       uiInventories.set(e2e, inventory);
     }

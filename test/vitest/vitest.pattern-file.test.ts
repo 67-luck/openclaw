@@ -104,6 +104,7 @@ describe("native CLI selection", () => {
   );
 
   it("keeps absolute Windows operands selected after discovery", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     const windowsPath = {
       ...path.win32,
       resolve: (...parts: string[]) => path.win32.resolve("C:\\", ...parts),
@@ -115,6 +116,8 @@ describe("native CLI selection", () => {
     vi.doMock("node:path", () => ({ default: windowsPath }));
     try {
       const selector = await import("./vitest.pattern-file.ts");
+      // Path resolution and the glob matcher must simulate the same platform.
+      Object.defineProperty(process, "platform", { value: "win32" });
       const include = ["src/infra/**/*.test.ts"];
       const args = ["run", candidate];
       const matches = (patterns: string[], cliArgs = args) =>
@@ -126,6 +129,7 @@ describe("native CLI selection", () => {
       expect(matches(include, [...args, "--exclude", infraFile])).toBe(false);
       expect(matches(["extensions/qa-lab/**/*.test.ts"])).toBe(false);
     } finally {
+      Object.defineProperty(process, "platform", platform);
       vi.doUnmock("node:path");
       vi.resetModules();
     }
