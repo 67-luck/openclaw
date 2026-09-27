@@ -87,7 +87,8 @@ describe("qa suite runtime cancellation", () => {
       outputDir: "out",
       concurrency: 1,
       providerMode: "mock-openai",
-      scenarioIds: ["channel-chat-baseline", "control-ui-chat-flow-playwright"],
+      // A shared flow runs before the native task in the same weighted queue.
+      scenarioIds: ["dm-chat-baseline", "control-ui-chat-flow-playwright"],
       onArtifactsPublished: published,
     }).catch((error: unknown) => error);
     expect(outcome).toBeInstanceOf(QaSuiteCleanupError);
@@ -608,12 +609,23 @@ describe("qa suite runtime cancellation", () => {
       scenarioDefinitions: tasks.map(({ id }) => makeQaSuiteTestScenario(id, { channel: id })),
       adapterFactories: [{ id: "portable-driver", matches: () => true, create: vi.fn() }],
     }).then(settled, settled);
+    const waitForStage = (stage: string, barrier: Promise<void>) =>
+      Promise.race([
+        barrier,
+        run.then((outcome) => {
+          throw new Error(`suite settled before ${stage}`, { cause: outcome });
+        }),
+      ]);
     try {
-      await Promise.all([fatalTask, retryTask, healthyTask].map(({ started }) => started.promise));
+      await Promise.all(
+        [fatalTask, retryTask, healthyTask].map(({ id, started }) =>
+          waitForStage(`${id} partition started`, started.promise),
+        ),
+      );
       fatalTask.release.resolve();
-      await fatalTask.captured.promise;
+      await waitForStage("fatal failure captured", fatalTask.captured.promise);
       retryTask.release.resolve();
-      await retryTask.captured.promise;
+      await waitForStage("retry failure captured", retryTask.captured.promise);
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
       });
@@ -695,7 +707,7 @@ describe("qa suite runtime cancellation", () => {
       expect(runQaFlowSuite).not.toHaveBeenCalled();
       expect(runQaTestFileScenarios).not.toHaveBeenCalled();
       expect(prepareDockerE2eEnvironment).not.toHaveBeenCalled();
-      expect(result.result.scenarios).toHaveLength(mode === "cancel" ? 4 : 2);
+      expect(result.result.scenarios).toHaveLength(4);
       for (const scenario of result.result.scenarios) {
         expect(scenario).toMatchObject({
           status: "fail",

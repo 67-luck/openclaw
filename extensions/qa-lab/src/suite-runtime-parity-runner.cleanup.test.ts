@@ -599,6 +599,7 @@ describe("runtime parity suite transport cleanup", () => {
       const defaultWrite = mocks.writeQaSuiteArtifacts.getMockImplementation()!;
       mocks.writeQaSuiteArtifacts.mockImplementation(actual.writeQaSuiteArtifacts);
       const reason = new Error("stop during continued startup");
+      const onScenarioStarted = vi.fn();
       const run = runQaFlowSuiteFromRuntime({
         ...options,
         signal: controller.signal,
@@ -609,20 +610,15 @@ describe("runtime parity suite transport cleanup", () => {
         runtimePair: mode === "parity" ? ["openclaw", "codex"] : undefined,
         evidenceAnchors: original.invocation.anchors,
         evidenceContinuation: before,
+        onScenarioStarted,
       }).catch((error: unknown) => error);
       try {
         await entered.promise;
         controller.abort(reason);
         release.resolve();
         const result = await run;
-        if (mode === "standard") {
-          expect(result).toBe(reason);
-        } else {
-          expect(result).toMatchObject({
-            startedScenarioIds: [],
-            startedScenarioInstanceIds: [],
-          });
-        }
+        expect(result).toBe(reason);
+        expect(onScenarioStarted).not.toHaveBeenCalled();
         expect(runScenario).not.toHaveBeenCalled();
         expect(mocks.startQaGatewayChild).not.toHaveBeenCalled();
         const written = mocks.writeQaSuiteArtifacts.mock.calls.at(-1)![0];
