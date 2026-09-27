@@ -158,8 +158,11 @@ Updating target files alone does not repair an older running binary.
 The published 2026.9.4 source-server script also builds before its final restart.
 Candidate build entry points recognize its existing update marker only when the
 selected, natively owned Gateway serves this checkout's physical `dist`. The
-existing source-build transaction stops that Gateway before writing and restores
-the previous output on a settled build failure. A separate candidate checkout or
+existing source-build transaction stops that Gateway before writing. On a settled
+build failure, it restores the previous output and restarts the selected service
+through its native owner, preserving its definition and rechecking its binding.
+The original build failure remains visible; a custom shell restart command runs
+only after a successful build in the old caller. A separate candidate checkout or
 a sibling-only match never grants permission to stop another service.
 If that native stop partially succeeds and then fails, the candidate revalidates
 and restarts the original service through its native owner, without running a

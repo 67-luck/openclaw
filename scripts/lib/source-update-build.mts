@@ -6,7 +6,7 @@ import { hasCommandProcessCleanupError } from "../../src/process/exec-result.js"
 import { listTsdownOutputRoots } from "../tsdown-build.mts";
 import { withDistArtifactOwnership } from "./dist-artifact-ownership.mts";
 import { gatewayServiceCommandOverlapsPhysicalCheckout } from "./live-gateway-dist-fence.mts";
-import { hasUnjoinedWork, runManagedCommand } from "./managed-child-process.mts";
+import { hasUnjoinedWork } from "./managed-child-process.mts";
 import { assertRealOutputRoot } from "./output-root-guard.mjs";
 
 type SourceUpdateBuildResult = { exitCode: number; admissionRefused?: true };
@@ -190,14 +190,19 @@ export async function runLegacySourceUpdateBuild(
         assertRecoveryCurrent();
         await restoreAutoStart();
         assertRecoveryCurrent();
-        return await runManagedCommand({
-          bin: "bash",
-          args: ["-c", restartCommand],
-          cwd: root,
-          env,
-          stdio: "inherit",
+        const restarted = await resolveGatewayService().restart({
+          env: selected.env,
+          stdout: process.stdout,
+          preserveDefinition: true,
+          beforeMutation: revalidate,
           assertCurrent: assertRecoveryCurrent,
         });
+        if (restarted.outcome !== "completed") {
+          throw new Error(
+            "Original Gateway restart was not completed after source update failure.",
+          );
+        }
+        return 0;
       },
       settle: async (restartSafe) => {
         if (!stopped) {
