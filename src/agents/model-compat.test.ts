@@ -612,7 +612,7 @@ describe("isHighSignalLiveModelRef", () => {
     expect(
       isHighSignalLiveModelRef({
         provider: "fireworks",
-        id: "accounts/fireworks/routers/glm-5p2-fast",
+        id: "accounts/fireworks/routers/glm-5p3-fast",
       }),
     ).toBe(true);
     expect(
@@ -724,7 +724,7 @@ describe("isPrioritizedHighSignalLiveModelRef", () => {
       { provider: "xai", id: "grok-4.5" },
       { provider: "xai", id: "grok-4.20-0309-reasoning" },
       { provider: "zai", id: "glm-5.1" },
-      { provider: "fireworks", id: "accounts/fireworks/routers/glm-5p2-fast" },
+      { provider: "fireworks", id: "accounts/fireworks/routers/glm-5p3-fast" },
       { provider: "minimax-portal", id: "minimax-m3" },
     ]);
   });
@@ -807,13 +807,13 @@ describe("selectHighSignalLiveItems", () => {
     ]);
   });
 
-  it("selects the current Fireworks router instead of unavailable base models", () => {
+  it("selects the current Fireworks router instead of retired or unavailable models", () => {
     providerRuntimeMocks.resolveProviderModernModelRef.mockReturnValue(true);
     const items = [
       { provider: "fireworks", id: "accounts/fireworks/models/glm-4p7" },
       { provider: "fireworks", id: "accounts/fireworks/models/glm-5" },
-      { provider: "fireworks", id: "accounts/fireworks/models/glm-5p1" },
       { provider: "fireworks", id: "accounts/fireworks/routers/glm-5p2-fast" },
+      { provider: "fireworks", id: "accounts/fireworks/routers/glm-5p3-fast" },
       { provider: "fireworks", id: "accounts/fireworks/models/gpt-oss-120b" },
     ].filter(isHighSignalLiveModelRef);
 
@@ -824,7 +824,7 @@ describe("selectHighSignalLiveItems", () => {
         (item) => item,
         (item) => item.provider,
       ),
-    ).toEqual([{ provider: "fireworks", id: "accounts/fireworks/routers/glm-5p2-fast" }]);
+    ).toEqual([{ provider: "fireworks", id: "accounts/fireworks/routers/glm-5p3-fast" }]);
   });
 });
 
