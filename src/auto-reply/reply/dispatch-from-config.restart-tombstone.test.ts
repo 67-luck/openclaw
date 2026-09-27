@@ -95,6 +95,7 @@ describe("restart tombstone channel feedback", () => {
     visibleReplies?: "automatic" | "message_tool";
     sendPolicy?: "allow" | "deny";
     receiptless?: boolean;
+    expectedError?: RegExp;
   }) {
     const dispatcher = createReplyDispatcher({ deliver });
     if (options?.receiptless) {
@@ -131,7 +132,7 @@ describe("restart tombstone channel feedback", () => {
         dispatcher,
         replyResolver,
       }),
-    ).rejects.toThrow(/ended during restart recovery/i);
+    ).rejects.toThrow(options?.expectedError ?? /ended during restart recovery/i);
     dispatcher.markComplete();
     await dispatcher.waitForIdle();
   }
@@ -174,10 +175,12 @@ describe("restart tombstone channel feedback", () => {
 
   it("keeps model-locked recovery guidance actionable", async () => {
     sessionStoreMocks.currentEntry!.modelSelectionLocked = true;
-    await rejectInbound();
+    await rejectInbound({
+      expectedError: /paused after automatic restart recovery stopped.*WebChat.*Resume session/i,
+    });
     expect(deliver).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
-        text: expect.stringContaining("WebChat and use Resume in new session"),
+        text: expect.stringContaining("WebChat and use Resume session"),
       }),
       expect.objectContaining({ kind: "final" }),
     );

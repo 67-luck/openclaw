@@ -627,16 +627,6 @@ test("sessions.recover resumes the same session and returns its continuation out
     storePath,
   });
   expect(resumedTranscript.slice(0, sourceTranscriptBefore.length)).toEqual(sourceTranscriptBefore);
-  expect(
-    JSON.stringify(
-      await loadTranscriptEvents({
-        agentId: "main",
-        sessionId: successorSessionId,
-        sessionKey: successorKey,
-        storePath,
-      }),
-    ),
-  ).toContain("finish the interrupted implementation");
 
   const repeated = await directSessionReq<typeof recovered.payload>(
     "sessions.recover",

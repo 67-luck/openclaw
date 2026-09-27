@@ -1039,9 +1039,7 @@ describe("initSessionState thread forking", () => {
         },
         cfg: { session: { store: storePath } } as OpenClawConfig,
       }),
-    ).rejects.toThrow(
-      /cannot be replaced while model selection is locked.*WebChat.*Resume in new session/i,
-    );
+    ).rejects.toThrow(/paused after automatic restart recovery stopped.*WebChat.*Resume session/i);
 
     expect(loadSessionEntry({ storePath, sessionKey: threadSessionKey })).toMatchObject(
       existingEntry,

@@ -220,8 +220,9 @@ not need to resend a message just because recovery is waiting for capacity.
 Stopping or replacing the session still cancels pending work.
 
 If automatic recovery is exhausted, the transcript remains available. Use
-**Resume in new session** in WebChat, or `/new` or `/reset` in other channels,
-to start a replacement session.
+**Resume session** in WebChat to continue in the original conversation after
+authorization is rechecked. In other channels, `/new` or `/reset` starts a
+replacement session.
 
 ## Where state lives
 
