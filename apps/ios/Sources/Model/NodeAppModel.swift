@@ -4086,6 +4086,21 @@ extension NodeAppModel {
         authRoles: (received: Set<String>, persisted: Set<String>),
         nodeOptions: GatewayConnectOptions) async -> GatewayConnectOptions?
     {
+        #if DEBUG
+        let readinessStarted = ProcessInfo.processInfo.systemUptime
+        var readinessOutcome = "unknown"
+        GatewayDiagnostics
+            .log(
+                "ios.readiness event=bootstrap stage=auth-begin"
+                    + " current=\(self.isCurrentGatewayRoute(generation: routeGeneration, stableID: stableID))")
+        defer {
+            GatewayDiagnostics
+                .log(
+                    "ios.readiness event=bootstrap stage=auth-end outcome=\(readinessOutcome)"
+                        + " current=\(self.isCurrentGatewayRoute(generation: routeGeneration, stableID: stableID))"
+                        + " elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - readinessStarted) * 1000))")
+        }
+        #endif
         guard self.isCurrentGatewayRoute(generation: routeGeneration, stableID: stableID) else { return nil }
         do {
             // Bootstrap authentication is single-use. Do not keep a consumed bootstrap
@@ -4093,6 +4108,9 @@ extension NodeAppModel {
             let requiredRoles: Set = ["node", "operator"]
             guard authRoles.persisted.isSuperset(of: requiredRoles) else {
                 if nodeOptions.allowStoredDeviceAuth {
+                    #if DEBUG
+                    readinessOutcome = "ok"
+                    #endif
                     return nodeOptions
                 }
                 let missingRoles = requiredRoles.subtracting(authRoles.received)
@@ -4146,8 +4164,14 @@ extension NodeAppModel {
                     nodeOptions: reconnectOptions,
                     sessionBox: sessionBox)
             }
+            #if DEBUG
+            readinessOutcome = "ok"
+            #endif
             return reconnectOptions
         } catch {
+            #if DEBUG
+            readinessOutcome = "error"
+            #endif
             await self.handleGatewayCredentialHandoffFailure(
                 stableID: stableID,
                 routeGeneration: routeGeneration,
@@ -4300,6 +4324,9 @@ extension NodeAppModel {
             }
         }
         self.setOperatorConnected(true)
+        #if DEBUG
+        GatewayDiagnostics.log("ios.readiness event=bootstrap stage=operator-connected")
+        #endif
         await self.refreshDesktopObserveAvailability(
             stableID: stableID,
             routeGeneration: routeGeneration)
@@ -4322,7 +4349,13 @@ extension NodeAppModel {
         self.chatSessionRoutingRestoreTask = nil
         await self.refreshBrandingFromGateway(shouldApply: shouldContinue)
         guard shouldContinue() else { return }
+        #if DEBUG
+        GatewayDiagnostics.log("ios.readiness event=bootstrap stage=agents-begin")
+        #endif
         await self.refreshAgentsFromGateway(shouldApply: shouldContinue)
+        #if DEBUG
+        GatewayDiagnostics.log("ios.readiness event=bootstrap stage=agents-end current=\(shouldContinue())")
+        #endif
         guard shouldContinue() else { return }
         await self.talkMode.reloadConfig(shouldApply: shouldContinue)
         guard shouldContinue() else { return }
@@ -4362,6 +4395,12 @@ extension NodeAppModel {
         nodeOptions: GatewayConnectOptions,
         auth: (token: String?, bootstrapToken: String?, password: String?)) async
     {
+        #if DEBUG
+        GatewayDiagnostics
+            .log(
+                "ios.readiness event=bootstrap stage=node-connected"
+                    + " current=\(self.isCurrentGatewayRoute(generation: routeGeneration, stableID: stableID))")
+        #endif
         guard !self.isLocalGatewayFixtureEnabled,
               self.isCurrentGatewayRoute(generation: routeGeneration, stableID: stableID)
         else { return }
@@ -4383,6 +4422,9 @@ extension NodeAppModel {
         self.gatewayStatusText = "Connected"
         self.gatewayServerName = url.host ?? "gateway"
         self.gatewayConnected = true
+        #if DEBUG
+        GatewayDiagnostics.log("ios.readiness event=bootstrap stage=ui-connected")
+        #endif
         _ = GatewaySettingsStore.markGatewayConnected(
             stableID: stableID,
             atMs: Int(Date().timeIntervalSince1970 * 1000))
@@ -4482,6 +4524,9 @@ extension NodeAppModel {
                     allowStoredDeviceAuth: reconnectOptions.allowStoredDeviceAuth)
 
                 do {
+                    #if DEBUG
+                    GatewayDiagnostics.log("ios.readiness event=bootstrap stage=operator-connect-begin")
+                    #endif
                     try await self.operatorGateway.connect(
                         url: url,
                         credentials: GatewayNodeSessionCredentials(
@@ -4512,6 +4557,9 @@ extension NodeAppModel {
                                 LiveActivityManager.shared.endActivity(reason: "operator_disconnected")
                             }
                             GatewayDiagnostics.log("operator gateway disconnected reason=\(reason)")
+                            #if DEBUG
+                            GatewayDiagnostics.log("ios.readiness event=bootstrap stage=operator-disconnected")
+                            #endif
                             await MainActor.run {
                                 guard self.isCurrentGatewayRoute(
                                     generation: routeGeneration,
@@ -4562,6 +4610,14 @@ extension NodeAppModel {
                         }
                         return nextProblem
                     }
+                    #if DEBUG
+                    GatewayDiagnostics
+                        .log(
+                            "ios.readiness event=bootstrap stage=operator-error"
+                                + " problem=\(problem?.kind.rawValue ?? "unknown")"
+                                + " pairingApproval=\(problem?.needsPairingApproval == true)"
+                                + " pauseReconnect=\(problem?.pauseReconnect == true)")
+                    #endif
                     if problem?.needsPairingApproval == true || problem?.pauseReconnect == true {
                         self.operatorGatewayTask?.cancel()
                         self.operatorGatewayTask = nil
@@ -4741,6 +4797,9 @@ extension NodeAppModel {
             fallbackPassword: context.fallbackPassword)
         let connectedOptions = state.options
         GatewayDiagnostics.log("connect attempt epochMs=\(epochMs) url=\(context.url.absoluteString)")
+        #if DEBUG
+        GatewayDiagnostics.log("ios.readiness event=bootstrap stage=node-connect-begin")
+        #endif
 
         do {
             try await self.nodeGateway.connect(
@@ -4780,6 +4839,9 @@ extension NodeAppModel {
                         self.gatewayConnected = false
                     }
                     GatewayDiagnostics.log("gateway disconnected reason: \(reason)")
+                    #if DEBUG
+                    GatewayDiagnostics.log("ios.readiness event=bootstrap stage=node-disconnected")
+                    #endif
                 },
                 onInvoke: { [weak self] req in
                     guard let self else {
@@ -4852,6 +4914,13 @@ extension NodeAppModel {
             error,
             context: context)
         GatewayDiagnostics.log("gateway connect error: \(error.localizedDescription)")
+        #if DEBUG
+        GatewayDiagnostics
+            .log(
+                "ios.readiness event=bootstrap stage=node-error problem=\(problem?.kind.rawValue ?? "unknown")"
+                    + " pairingApproval=\(problem?.needsPairingApproval == true)"
+                    + " pauseReconnect=\(problem?.pauseReconnect == true)")
+        #endif
 
         if problem?.needsPairingApproval == true {
             // Stop both watchdogs so pairing keeps one stable request and remediation surface.

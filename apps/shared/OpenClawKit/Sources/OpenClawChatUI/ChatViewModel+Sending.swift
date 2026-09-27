@@ -361,7 +361,24 @@ extension OpenClawChatViewModel {
     }
 
     private func performSend() async {
+        #if DEBUG
+        let readinessStarted = ProcessInfo.processInfo.systemUptime
+        logDiagnostic(
+            "ios.readiness event=send stage=begin health=\(healthOK) current=\(!isTransportDetached)"
+                + " submitting=\(isSubmittingDraft) sending=\(isSending) pending=\(pendingRunCount)"
+                + " inputLength=\(input.count)")
+        defer {
+            logDiagnostic(
+                "ios.readiness event=send stage=end health=\(healthOK) current=\(!isTransportDetached)"
+                    + " submitting=\(isSubmittingDraft) sending=\(isSending) pending=\(pendingRunCount)"
+                    + " inputLength=\(input.count)"
+                    + " elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - readinessStarted) * 1000))")
+        }
+        #endif
         guard let draft = captureSendDraft() else { return }
+        #if DEBUG
+        logDiagnostic("ios.readiness event=send stage=captured current=\(isCurrentSession(draft.session))")
+        #endif
 
         // Own every asynchronous validation/probe below. Slash catalog lookup
         // can suspend, so taking this gate later permits duplicate enqueues.
@@ -372,6 +389,9 @@ extension OpenClawChatViewModel {
         defer { self.isSubmittingDraft = false }
 
         guard await self.validateSendDraft(draft) else { return }
+        #if DEBUG
+        logDiagnostic("ios.readiness event=send stage=validated current=\(isCurrentSession(draft.session))")
+        #endif
 
         isSending = true
         isSendingAttachmentDraft = !draft.attachments.isEmpty
@@ -382,11 +402,18 @@ extension OpenClawChatViewModel {
         }
 
         guard await self.prepareLiveRoute(for: draft) else { return }
+        #if DEBUG
+        logDiagnostic(
+            "ios.readiness event=send stage=ready current=\(isCurrentSession(draft.session)) health=\(healthOK)")
+        #endif
         guard self.composerModelAvailabilityMessage == nil else {
             logDiagnostic("chat.ui send ignored reason=model-auth sessionKey=\(sessionKey)")
             return
         }
         let attempt = self.beginLiveSend(draft)
+        #if DEBUG
+        logDiagnostic("ios.readiness event=send stage=optimistic current=\(isCurrentSession(draft.session))")
+        #endif
         await self.deliverLiveSend(attempt)
     }
 
@@ -446,7 +473,17 @@ extension OpenClawChatViewModel {
     private func prepareLiveRoute(for draft: SendDraft) async -> Bool {
         let sessionKey = draft.session.key
         if !healthOK {
+            #if DEBUG
+            let readinessStarted = ProcessInfo.processInfo.systemUptime
+            logDiagnostic(
+                "ios.readiness event=health stage=begin health=\(healthOK) current=\(isCurrentSession(draft.session))")
+            #endif
             await pollHealthIfNeeded(force: true, sessionSnapshot: draft.session)
+            #if DEBUG
+            logDiagnostic(
+                "ios.readiness event=health stage=end health=\(healthOK) current=\(isCurrentSession(draft.session))"
+                    + " elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - readinessStarted) * 1000))")
+            #endif
             guard isCurrentSession(draft.session) else { return false }
             // Offline capture: queue the full draft durably instead of
             // dropping user text or attachment bytes.

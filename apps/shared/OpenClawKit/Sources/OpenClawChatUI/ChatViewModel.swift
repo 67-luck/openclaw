@@ -608,6 +608,9 @@ public final class OpenClawChatViewModel {
     /// Permanently retires a replaced presentation without aborting its gateway run.
     public func detachTransport() {
         guard !self.isTransportDetached else { return }
+        #if DEBUG
+        self.logDiagnostic("ios.readiness event=route stage=detach submitting=\(self.isSubmittingDraft)")
+        #endif
         self.cancelHistoryInvalidationRefresh()
         self.retireQuestionAuthority()
         self.isTransportDetached = true

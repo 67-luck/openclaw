@@ -551,6 +551,18 @@ describe("native command adapter", () => {
       }),
     );
     vi.stubEnv("OPENCLAW_CI_SIMSLIM_BINARY", "");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ok: true,
+              requests: { ingress: { responses: 0, chatCompletions: 0, embeddings: 0, other: 0 } },
+            }),
+          ),
+      ),
+    );
     const instances: { cleanup: ReturnType<typeof vi.fn> }[] = [];
     let nativeCommandActive = false;
     let historyReadBeforeCommandExit = false;
@@ -567,6 +579,9 @@ describe("native command adapter", () => {
           ],
         };
       }
+      if (options.method === "device.pair.setupStatus") {
+        return { completion: { setupId: "private-setup", deviceId: "private-device" } };
+      }
       if (scenario === "setup-code-timeout") {
         throw new Error("private fixture command failed", {
           cause: Object.assign(new Error("private setup code and path"), { code: "ETIMEDOUT" }),
@@ -580,7 +595,11 @@ describe("native command adapter", () => {
           timeoutMs: 30_000,
         });
       }
-      return { setupCode: `synthetic-code-${instances.length}` };
+      return {
+        setupCode: `synthetic-code-${instances.length}`,
+        setupId: "private-setup",
+        expiresAtMs: Date.now() + 600_000,
+      };
     });
     nativeMocks.gateway.mockImplementation(async () => {
       const index = instances.length + 1;
@@ -788,7 +807,7 @@ describe("native command adapter", () => {
         expect(args).toEqual([
           "simctl",
           "get_app_container",
-          "11111111-2222-3333-4444-000000000002",
+          `11111111-2222-3333-4444-${String(created).padStart(12, "0")}`,
           "ai.synthetic.private",
           "data",
         ]);
@@ -797,14 +816,16 @@ describe("native command adapter", () => {
           throw new Error("private app container failure");
         }
         mkdirSync(path.join(appContainer, "Library/Caches"), { recursive: true });
+        const appLogTimestamp = new Date().toISOString();
         writeFileSync(
           path.join(appContainer, "Library/Caches/openclaw-gateway.log"),
-          "[2026-09-26T00:00:00Z] chat.ui send invoked sessionKey=private inputLen=100\n" +
-            "[2026-09-26T00:00:00Z] chat.ui send queued sessionKey=private localRunId=private\n" +
-            "[2026-09-26T00:00:00Z] chat.ui transport send start sessionKey=private\n" +
-            "[2026-09-26T00:00:00Z] chat.ui send failed sessionKey=private error=private\n" +
-            "[2026-09-26T00:00:00Z] chat.send skipped before dispatch: route changed\n" +
-            "[2026-09-26T00:00:00Z] unknown event private credential\n",
+          `[${appLogTimestamp}] ios.readiness event=health stage=begin health=false current=true secret=private\n` +
+            `[${appLogTimestamp}] chat.ui send invoked sessionKey=private inputLen=100 pending=0 sending=false health=false\n` +
+            `[${appLogTimestamp}] chat.ui send queued sessionKey=private localRunId=private\n` +
+            `[${appLogTimestamp}] chat.ui transport send start sessionKey=private\n` +
+            `[${appLogTimestamp}] chat.ui send failed sessionKey=private error=private\n` +
+            `[${appLogTimestamp}] chat.send skipped before dispatch: route changed\n` +
+            `[${appLogTimestamp}] unknown event private credential\n`,
         );
         stdout.write(appContainer);
       } else if (args.includes("xcresulttool")) {
@@ -883,6 +904,35 @@ describe("native command adapter", () => {
     });
     try {
       const report = await runTrials("stock", native.dependencies);
+      if (scenario === "success" || scenario === "test-exit") {
+        expect(proof.readinessDiagnostics).toEqual(
+          ["setup", "chat"].map((test, index) =>
+            expect.objectContaining({
+              trial: index + 1,
+              test,
+              phase: scenario === "success" ? "completion" : "assertion",
+              setup: "completed",
+              app: expect.objectContaining({
+                status: "read",
+                events: expect.arrayContaining([
+                  expect.objectContaining({
+                    event: "health",
+                    stage: "begin",
+                    fields: { health: false, current: true },
+                  }),
+                  expect.objectContaining({
+                    event: "send",
+                    stage: "invoked",
+                    fields: { inputLength: 100, pending: 0, sending: false, health: false },
+                  }),
+                  expect.objectContaining({ event: "send", stage: "transport-start", fields: {} }),
+                ]),
+              }),
+            }),
+          ),
+        );
+        expect(JSON.stringify(proof)).not.toContain("private");
+      }
       if (scenario.startsWith("reply-failure-")) {
         expect(report.complete).toBe(true);
         expect(report.trials.map((trial) => trial.status)).toEqual(["passed", "failed"]);
@@ -999,7 +1049,7 @@ describe("native command adapter", () => {
             operation: "native-test",
             code: "exit",
             exitCode: 65,
-            context: ["test-failed", "xctest-line:1904"],
+            context: expect.arrayContaining(["test-failed", "xctest-line:1904"]),
           },
         ]);
         expect(JSON.stringify(report)).not.toContain("private");
@@ -1009,7 +1059,10 @@ describe("native command adapter", () => {
       expect(created).toBe(2);
       expect(joinedMocks).toBe(2);
       for (const [index, instance] of instances.entries()) {
-        expect(nativeMocks.rpc).toHaveBeenNthCalledWith(index + 1, {
+        const setupCalls = nativeMocks.rpc.mock.calls.filter(
+          ([call]) => call.method === "device.pair.setupCode",
+        );
+        expect(setupCalls[index]?.[0]).toEqual({
           config: {},
           configPath: `/private/fixture-${index + 1}/config.json`,
           url: `ws://127.0.0.1:${20001 + index}`,

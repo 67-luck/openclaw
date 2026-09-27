@@ -63,6 +63,12 @@ final class IOSChatViewModelOwner {
         }
         // Initial route hydration changes transport, but the same draft keeps its native editor.
         if draft == nil { self.presentationID = UUID() }
+        #if DEBUG
+        GatewayDiagnostics
+            .log(
+                "ios.readiness event=route stage=replace sameOwner=\(self.ownerID == ownerID)"
+                    + " draftTransferred=\(draft != nil) pinned=\(self.viewModel?.isAttachmentOwnerPinned == true)")
+        #endif
         self.viewModel?.detachTransport()
         self.ownerID = ownerID
         self.transportAgentID = agentID

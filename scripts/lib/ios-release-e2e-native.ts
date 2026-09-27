@@ -20,6 +20,12 @@ import {
   type Operation,
   type TrialDependencies,
 } from "../ios-release-e2e.js";
+import {
+  diagnosticReadOutcome,
+  projectReadinessTimeline,
+  readProviderIngress,
+  readReadinessLog,
+} from "./ios-readiness-diagnostics.js";
 import { hasUnjoinedWork, runManagedCommand } from "./managed-child-process.mjs";
 
 const DEVICE_TYPE = "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro";
@@ -129,6 +135,9 @@ export async function createNativeDependencies(options: {
     throw new OperationError("source-status", "dirty-source");
   }
   options.proof.harnessSha = head;
+  // Temporary, sanitized evidence for both live Gateway qualification trials.
+  const readinessDiagnostics: Record<string, unknown>[] = [];
+  options.proof.readinessDiagnostics = readinessDiagnostics;
   const xcodeVersion = await command("xcode-version", "xcodebuild", ["-version"]);
   const xcode = /^Xcode ([0-9.]+)\r?\nBuild version ([A-Za-z0-9]+)$/u.exec(xcodeVersion);
   if (!xcode) {
@@ -244,6 +253,12 @@ export async function createNativeDependencies(options: {
           const mockAbort = new AbortController();
           let mockDone: Promise<void> | undefined;
           let mockFailed = false;
+          let providerHealthUrl: string | undefined;
+          const preparationStarted = performance.now();
+          const milestones: { stage: string; atMs: number }[] = [];
+          const milestone = (stage: "mock-ready" | "gateway-ready" | "simulator-ready") => {
+            milestones.push({ stage, atMs: Math.round(performance.now() - preparationStarted) });
+          };
           const requestLog = path.join(root, `requests-${index}.jsonl`);
           const release = async () => {
             const results = await Promise.allSettled([
@@ -347,6 +362,8 @@ export async function createNativeDependencies(options: {
               } finally {
                 readinessAbort.abort();
               }
+              providerHealthUrl = `http://127.0.0.1:${port}/health`;
+              milestone("mock-ready");
               const config = { gateway: { controlUi: { enabled: false } } };
               applyMockOpenAiModelConfig(config, { mockPort: port, modelRef: MODEL_REF });
               try {
@@ -357,6 +374,7 @@ export async function createNativeDependencies(options: {
                   env: gatewayEnv,
                 });
                 await instance.startGateway();
+                milestone("gateway-ready");
               } catch (error) {
                 if (hasUnjoinedWork(error)) {
                   preserveResources();
@@ -379,12 +397,16 @@ export async function createNativeDependencies(options: {
                   timeoutMs: 600_000,
                 });
               }
+              milestone("simulator-ready");
             },
             async test() {
               if (!instance || !udid) {
                 throw new Error("trial-not-prepared");
               }
               let setupCode: string;
+              let setupId: string | undefined;
+              let setupExpiresAt: number | undefined;
+              let setupIssuedAt = 0;
               try {
                 // The ready Gateway owns credential issuance; avoid another CLI startup beside the simulator.
                 const setup = await callGateway<DevicePairSetupCodeResult>({
@@ -401,6 +423,9 @@ export async function createNativeDependencies(options: {
                   signal: options.signal,
                 });
                 setupCode = setup.setupCode;
+                setupId = setup.setupId;
+                setupExpiresAt = setup.expiresAtMs;
+                setupIssuedAt = Date.now();
               } catch (error) {
                 if (isGatewayTransportError(error) && error.kind === "timeout") {
                   throw new OperationError("setup-code", "timeout");
@@ -415,173 +440,246 @@ export async function createNativeDependencies(options: {
               }
               const resultBundle = path.join(root, `trial-${index}.xcresult`);
               const fixture = instance;
-              await command(
-                "native-test",
-                "xcodebuild",
-                [
-                  ...buildArgs,
-                  "-destination",
-                  `platform=iOS Simulator,id=${udid}`,
-                  "-resultBundlePath",
-                  resultBundle,
-                  "-collect-test-diagnostics",
-                  "never",
-                  `-only-testing:${test}`,
-                  "test-without-building",
-                ],
-                {
-                  env: testRunnerEnv(setupCode.trim()),
-                  timeoutMs: 600_000,
-                  captureChatFailure:
-                    test === IOS_RELEASE_TESTS[1]
-                      ? async () => {
-                          const facts = new Set<string>();
-                          const logs = fixture.logs();
-                          for (const stage of ["start", "first_event", "completed", "error"]) {
-                            if (logs.includes(`[responses] ${stage} `)) {
-                              facts.add(`model-any-request-stage:${stage}`);
-                            }
+              const testStartedAt = Date.now();
+              let evidence: Promise<string[]> | undefined;
+              const captureEvidence = (phase: "assertion" | "completion") => {
+                evidence ??= (async () => {
+                  const captureStartedAt = Date.now();
+                  const facts = new Set<string>();
+                  const logs = fixture.logs();
+                  for (const stage of ["start", "first_event", "completed", "error"]) {
+                    if (logs.includes(`[responses] ${stage} `)) {
+                      facts.add(`model-any-request-stage:${stage}`);
+                    }
+                  }
+                  const [requests, history, appLog, provider, setupStatus] =
+                    await Promise.allSettled([
+                      readReadinessLog(requestLog),
+                      callGateway<unknown>({
+                        config: {},
+                        configPath: fixture.configPath,
+                        url: fixture.url,
+                        token: fixture.gatewayToken,
+                        ignoreEnvUrlOverride: true,
+                        deviceIdentity: null,
+                        sharedStateMode: "read-only",
+                        method: "chat.history",
+                        params: { sessionKey: "main", limit: 20, maxBytes: 50_000 },
+                        timeoutMs: 5_000,
+                        signal: options.signal,
+                      }),
+                      (async () => {
+                        const bundleID = await command(
+                          "app-diagnostics",
+                          "/usr/bin/plutil",
+                          [
+                            "-extract",
+                            "CFBundleIdentifier",
+                            "raw",
+                            "-o",
+                            "-",
+                            path.join(
+                              root,
+                              "DerivedData/Build/Products/Debug-iphonesimulator/OpenClaw.app/Info.plist",
+                            ),
+                          ],
+                          { timeoutMs: 5_000 },
+                        );
+                        const container = await command(
+                          "app-diagnostics",
+                          "xcrun",
+                          ["simctl", "get_app_container", udid!, bundleID, "data"],
+                          { timeoutMs: 5_000 },
+                        );
+                        return readReadinessLog(
+                          path.join(container, "Library/Caches/openclaw-gateway.log"),
+                        );
+                      })(),
+                      providerHealthUrl
+                        ? readProviderIngress(providerHealthUrl, options.signal)
+                        : Promise.resolve({ status: "unavailable" }),
+                      setupId
+                        ? callGateway<unknown>({
+                            config: {},
+                            configPath: fixture.configPath,
+                            url: fixture.url,
+                            token: fixture.gatewayToken,
+                            ignoreEnvUrlOverride: true,
+                            deviceIdentity: null,
+                            sharedStateMode: "read-only",
+                            method: "device.pair.setupStatus",
+                            params: { setupId },
+                            timeoutMs: 5_000,
+                            signal: options.signal,
+                          })
+                        : Promise.resolve(undefined),
+                    ]);
+                  const capturedAt = Date.now();
+                  const setupCategory =
+                    setupStatus.status !== "fulfilled"
+                      ? "unavailable"
+                      : !isRecord(setupStatus.value)
+                        ? "unavailable"
+                        : isRecord(setupStatus.value.completion)
+                          ? "completed"
+                          : isRecord(setupStatus.value.deliveryUncertain)
+                            ? "delivery-uncertain"
+                            : "none";
+                  const snapshot: Record<string, unknown> = {
+                    trial: index,
+                    test: test === IOS_RELEASE_TESTS[0] ? "setup" : "chat",
+                    phase,
+                    atMs: captureStartedAt - testStartedAt,
+                    captureMs: capturedAt - captureStartedAt,
+                    milestones,
+                    setupAgeMs: capturedAt - setupIssuedAt,
+                    ...(typeof setupExpiresAt === "number" && Number.isFinite(setupExpiresAt)
+                      ? { setupRemainingMs: Math.round(setupExpiresAt - capturedAt) }
+                      : {}),
+                    setup: setupCategory,
+                    provider:
+                      provider.status === "fulfilled" ? provider.value : { status: "unavailable" },
+                    requestLog:
+                      requests.status === "fulfilled"
+                        ? requests.value.trim()
+                          ? "read"
+                          : "empty"
+                        : diagnosticReadOutcome(requests.reason),
+                    app:
+                      appLog.status === "fulfilled"
+                        ? {
+                            status: "read",
+                            ...projectReadinessTimeline(appLog.value, testStartedAt),
                           }
-                          const [requests, history, appLog] = await Promise.allSettled([
-                            readFile(requestLog, "utf8"),
-                            callGateway<unknown>({
-                              config: {},
-                              configPath: fixture.configPath,
-                              url: fixture.url,
-                              token: fixture.gatewayToken,
-                              ignoreEnvUrlOverride: true,
-                              deviceIdentity: null,
-                              sharedStateMode: "read-only",
-                              method: "chat.history",
-                              params: { sessionKey: "main", limit: 20, maxBytes: 50_000 },
-                              timeoutMs: 5_000,
-                              signal: options.signal,
-                            }),
-                            (async () => {
-                              const bundleID = await command(
-                                "app-diagnostics",
-                                "/usr/bin/plutil",
-                                [
-                                  "-extract",
-                                  "CFBundleIdentifier",
-                                  "raw",
-                                  "-o",
-                                  "-",
-                                  path.join(
-                                    root,
-                                    "DerivedData/Build/Products/Debug-iphonesimulator/OpenClaw.app/Info.plist",
-                                  ),
-                                ],
-                                { timeoutMs: 5_000 },
-                              );
-                              const container = await command(
-                                "app-diagnostics",
-                                "xcrun",
-                                ["simctl", "get_app_container", udid!, bundleID, "data"],
-                                { timeoutMs: 5_000 },
-                              );
-                              return readFile(
-                                path.join(container, "Library/Caches/openclaw-gateway.log"),
-                                "utf8",
-                              );
-                            })(),
-                          ]);
-                          if (appLog.status === "fulfilled") {
-                            if (
-                              appLog.value.includes(
-                                "] chat.send skipped before dispatch: route changed",
-                              )
-                            ) {
-                              facts.add("app-send-stage:dispatch-route-changed");
-                            }
-                            for (const [event, stage] of [
-                              ["send invoked", "invoked"],
-                              ["send ignored", "ignored"],
-                              ["send queued offline", "offline-outbox"],
-                              ["send routed behind outbox", "ordered-outbox"],
-                              ["send queued sessionKey=", "optimistic-message"],
-                              ["transport send start", "transport-start"],
-                              ["transport send accepted", "transport-accepted"],
-                              ["send delivery unconfirmed", "delivery-unconfirmed"],
-                              ["send queued after route change", "route-changed"],
-                              ["send failed", "failed"],
-                            ]) {
-                              if (appLog.value.includes(`] chat.ui ${event}`)) {
-                                facts.add(`app-send-stage:${stage}`);
-                              }
-                            }
-                            facts.add("app-evidence-read");
-                          } else {
-                            facts.add("app-evidence-unavailable");
-                          }
-                          try {
-                            if (requests.status !== "fulfilled") {
-                              throw new Error("request-log-unavailable");
-                            }
-                            const lastMarker = (text: string) =>
-                              [...text.matchAll(/\bOPENCLAW_E2E_[A-Z0-9]+(?:_[A-Z0-9]+)*\b/gu)].at(
-                                -1,
-                              )?.[0];
-                            const markerStage = (marker: string | undefined) =>
-                              CHAT_MARKERS.find(([, prefix]) => marker?.startsWith(prefix))?.[0] ??
-                              "other";
-                            for (const line of requests.value.trim().split("\n").slice(-20)) {
-                              const request: unknown = JSON.parse(line);
-                              if (
-                                !isRecord(request) ||
-                                request.path !== "/v1/responses" ||
-                                typeof request.body !== "string"
-                              ) {
-                                continue;
-                              }
-                              const body: unknown = JSON.parse(request.body);
-                              if (!isRecord(body) || body.model !== "ios-e2e") {
-                                continue;
-                              }
-                              const input = Array.isArray(body.input) ? body.input : [];
-                              const user = input
-                                .map(readMockUserText)
-                                .findLast((text) => text !== undefined);
-                              const userMarker = lastMarker(user ?? "");
-                              const tailMarker = lastMarker(request.body);
-                              facts.add(`provider-latest-user:${markerStage(userMarker)}`);
-                              facts.add(`provider-body-tail:${markerStage(tailMarker)}`);
-                              facts.add(
-                                `provider-marker-match:${userMarker !== undefined && userMarker === tailMarker}`,
-                              );
-                            }
-                            facts.add("provider-evidence-read");
-                          } catch {
-                            facts.add("provider-evidence-unavailable");
-                          }
-                          if (
-                            history.status === "fulfilled" &&
-                            isRecord(history.value) &&
-                            Array.isArray(history.value.messages)
-                          ) {
-                            for (const message of history.value.messages) {
-                              if (
-                                !isRecord(message) ||
-                                (message.role !== "user" && message.role !== "assistant")
-                              ) {
-                                continue;
-                              }
-                              const content = JSON.stringify(message.content) ?? "";
-                              for (const [stage, marker] of CHAT_MARKERS) {
-                                if (content.includes(marker)) {
-                                  facts.add(`history-${message.role}:${stage}`);
-                                }
-                              }
-                            }
-                            facts.add("history-evidence-read");
-                          } else {
-                            facts.add("history-evidence-unavailable");
-                          }
-                          return [...facts];
+                        : { status: diagnosticReadOutcome(appLog.reason) },
+                  };
+                  readinessDiagnostics.push(snapshot);
+                  if (appLog.status === "fulfilled") {
+                    if (
+                      appLog.value.includes("] chat.send skipped before dispatch: route changed")
+                    ) {
+                      facts.add("app-send-stage:dispatch-route-changed");
+                    }
+                    for (const [event, stage] of [
+                      ["send invoked", "invoked"],
+                      ["send ignored", "ignored"],
+                      ["send queued offline", "offline-outbox"],
+                      ["send routed behind outbox", "ordered-outbox"],
+                      ["send queued sessionKey=", "optimistic-message"],
+                      ["transport send start", "transport-start"],
+                      ["transport send accepted", "transport-accepted"],
+                      ["send delivery unconfirmed", "delivery-unconfirmed"],
+                      ["send queued after route change", "route-changed"],
+                      ["send failed", "failed"],
+                    ]) {
+                      if (appLog.value.includes(`] chat.ui ${event}`)) {
+                        facts.add(`app-send-stage:${stage}`);
+                      }
+                    }
+                    facts.add("app-evidence-read");
+                  } else {
+                    facts.add("app-evidence-unavailable");
+                  }
+                  try {
+                    if (requests.status !== "fulfilled") {
+                      facts.add(`provider-log:${diagnosticReadOutcome(requests.reason)}`);
+                      throw new Error("request-log-unavailable");
+                    }
+                    if (!requests.value.trim()) {
+                      facts.add("provider-log:empty");
+                    }
+                    const lastMarker = (text: string) =>
+                      [...text.matchAll(/\bOPENCLAW_E2E_[A-Z0-9]+(?:_[A-Z0-9]+)*\b/gu)].at(-1)?.[0];
+                    const markerStage = (marker: string | undefined) =>
+                      CHAT_MARKERS.find(([, prefix]) => marker?.startsWith(prefix))?.[0] ?? "other";
+                    for (const line of requests.value
+                      .trim()
+                      .split("\n")
+                      .filter(Boolean)
+                      .slice(-20)) {
+                      const request: unknown = JSON.parse(line);
+                      if (
+                        !isRecord(request) ||
+                        request.path !== "/v1/responses" ||
+                        typeof request.body !== "string"
+                      ) {
+                        continue;
+                      }
+                      const body: unknown = JSON.parse(request.body);
+                      if (!isRecord(body) || body.model !== "ios-e2e") {
+                        continue;
+                      }
+                      const input = Array.isArray(body.input) ? body.input : [];
+                      const user = input
+                        .map(readMockUserText)
+                        .findLast((text) => text !== undefined);
+                      const userMarker = lastMarker(user ?? "");
+                      const tailMarker = lastMarker(request.body);
+                      facts.add(`provider-latest-user:${markerStage(userMarker)}`);
+                      facts.add(`provider-body-tail:${markerStage(tailMarker)}`);
+                      facts.add(
+                        `provider-marker-match:${userMarker !== undefined && userMarker === tailMarker}`,
+                      );
+                    }
+                    facts.add("provider-evidence-read");
+                  } catch {
+                    if (requests.status === "fulfilled") {
+                      snapshot.requestLog = "malformed";
+                      facts.add("provider-log:malformed");
+                    }
+                    facts.add("provider-evidence-unavailable");
+                  }
+                  if (
+                    history.status === "fulfilled" &&
+                    isRecord(history.value) &&
+                    Array.isArray(history.value.messages)
+                  ) {
+                    for (const message of history.value.messages) {
+                      if (
+                        !isRecord(message) ||
+                        (message.role !== "user" && message.role !== "assistant")
+                      ) {
+                        continue;
+                      }
+                      const content = JSON.stringify(message.content) ?? "";
+                      for (const [stage, marker] of CHAT_MARKERS) {
+                        if (content.includes(marker)) {
+                          facts.add(`history-${message.role}:${stage}`);
                         }
-                      : undefined,
-                },
-              );
+                      }
+                    }
+                    facts.add("history-evidence-read");
+                  } else {
+                    facts.add("history-evidence-unavailable");
+                  }
+                  return [...facts];
+                })().catch(() => ["readiness-evidence-unavailable"]);
+                return evidence;
+              };
+              try {
+                await command(
+                  "native-test",
+                  "xcodebuild",
+                  [
+                    ...buildArgs,
+                    "-destination",
+                    `platform=iOS Simulator,id=${udid}`,
+                    "-resultBundlePath",
+                    resultBundle,
+                    "-collect-test-diagnostics",
+                    "never",
+                    `-only-testing:${test}`,
+                    "test-without-building",
+                  ],
+                  {
+                    env: testRunnerEnv(setupCode.trim()),
+                    timeoutMs: 600_000,
+                    captureChatFailure: () => captureEvidence("assertion"),
+                  },
+                );
+              } finally {
+                await captureEvidence("completion");
+              }
               if (mockFailed) {
                 throw new OperationError("fixture-server", "failed");
               }
