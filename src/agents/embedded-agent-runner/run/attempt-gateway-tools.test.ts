@@ -24,7 +24,7 @@ describe("embedded Gateway tool caller source", () => {
       messageThreadId: "1700000000.000001",
     },
   ])(
-    "uses the actual source thread for a $name",
+    "keeps the reply anchor and plugin origin distinct for a $name",
     async ({ name, currentThreadTs, messageThreadId }) => {
       const runId = `gateway-source-${name}`;
       const admission = prepareAgentRunAdmission({
@@ -49,13 +49,15 @@ describe("embedded Gateway tool caller source", () => {
             currentMessagingTarget: "user:U123",
             currentThreadTs,
             messageThreadId,
+            approvalSource: { channel: "slack", senderId: "U123", conversationKind: "direct" },
             disableTools: true,
           },
           () => true,
           async () => {
             const caller = getGatewayToolCallerIdentity();
             expect(caller).toBeDefined();
-            expect(caller?.turnSourceThreadId).toBe(messageThreadId);
+            expect(caller?.turnSourceThreadId).toBe(currentThreadTs);
+            expect(caller?.pluginApprovalOriginThreadId).toBe(messageThreadId ?? null);
           },
         );
       } finally {
