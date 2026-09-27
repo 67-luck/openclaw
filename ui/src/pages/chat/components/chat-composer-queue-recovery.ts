@@ -94,9 +94,9 @@ function renderRecoveryQueueItem(
     data-recovery-state=${input.state}
     ?open=${expanded}
     @toggle=${(event: Event) => {
-      const open = (event.currentTarget as HTMLDetailsElement).open;
-      if (open !== expanded) {
-        recovery.onToggle?.(input.id, open);
+      const details = event.currentTarget;
+      if (details instanceof HTMLDetailsElement && details.open !== expanded) {
+        recovery.onToggle?.(input.id, details.open);
       }
     }}
   >
