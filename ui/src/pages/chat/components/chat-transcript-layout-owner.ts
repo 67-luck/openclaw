@@ -5,15 +5,24 @@ import { publishTranscriptScroll } from "./chat-transcript-scroll-events.ts";
 /** The native scroll range changes only at these viewport and content writes. */
 export class TranscriptLayoutOwner {
   private viewport: HTMLDivElement | null = null;
-  private observer: ResizeObserver | null = null;
+  private observers: ResizeObserver[] = [];
   private readonly rangeHeights = new WeakMap<HTMLElement, number>();
 
   constructor(private readonly onClamp: (before: number, after: number) => void) {}
 
   get viewportResizePending(): boolean {
     const viewport = this.viewport;
-    const height = viewport?.parentElement?.clientHeight;
-    return Boolean(height && height !== viewport?.clientHeight);
+    const slot = viewport?.parentElement;
+    const height = slot?.clientHeight;
+    if (!viewport || !slot || !height) {
+      return false;
+    }
+    const style = getComputedStyle(slot);
+    return (
+      height !== viewport.clientHeight ||
+      style.paddingTop !== viewport.style.paddingTop ||
+      style.paddingBottom !== viewport.style.paddingBottom
+    );
   }
 
   connect(viewport: HTMLDivElement | null): void {
@@ -26,8 +35,8 @@ export class TranscriptLayoutOwner {
     if (!viewport || !slot) {
       return;
     }
-    this.observer = new ResizeObserver((entries) => {
-      const entry = entries.find((entry) => entry.target === slot);
+    const resize = (entries: ResizeObserverEntry[]) => {
+      const entry = entries.find((candidate) => candidate.target === slot);
       const size = entry?.borderBoxSize[0];
       if (
         this.viewport !== viewport ||
@@ -37,17 +46,32 @@ export class TranscriptLayoutOwner {
       ) {
         return;
       }
-      const style = getComputedStyle(slot);
+      const { paddingTop, paddingBottom } = getComputedStyle(slot);
+      const width = `${size.inlineSize}px`;
+      const height = `${size.blockSize}px`;
+      if (
+        viewport.style.width === width &&
+        viewport.style.height === height &&
+        viewport.style.paddingTop === paddingTop &&
+        viewport.style.paddingBottom === paddingBottom
+      ) {
+        return;
+      }
       const before = viewport.style.height === "" ? null : viewport.scrollTop;
-      viewport.style.width = `${size.inlineSize}px`;
-      viewport.style.height = `${size.blockSize}px`;
-      viewport.style.paddingTop = style.paddingTop;
-      viewport.style.paddingBottom = style.paddingBottom;
+      viewport.style.width = width;
+      viewport.style.height = height;
+      viewport.style.paddingTop = paddingTop;
+      viewport.style.paddingBottom = paddingBottom;
       if (before !== null) {
         this.publishResize(before);
       }
+    };
+    // Padding and viewport size can change independently; neither box covers both.
+    this.observers = (["content-box", "border-box"] as const).map((box) => {
+      const observer = new ResizeObserver(resize);
+      observer.observe(slot, { box });
+      return observer;
     });
-    this.observer.observe(slot, { box: "border-box" });
   }
 
   commitRange(element: HTMLElement, height: number): void {
@@ -81,8 +105,10 @@ export class TranscriptLayoutOwner {
   }
 
   disconnect(): void {
-    this.observer?.disconnect();
-    this.observer = null;
+    for (const observer of this.observers) {
+      observer.disconnect();
+    }
+    this.observers = [];
     this.viewport = null;
   }
 }

@@ -13,6 +13,7 @@ class EndFollowFixture extends LitElement {
     canFollowEnd: () => this.followEnabled,
   });
   viewportHeight = 400;
+  viewportPadding = 60;
   earlierRowHeight = 400;
   lastRowHeight = 900;
 
@@ -36,7 +37,7 @@ class EndFollowFixture extends LitElement {
     return html`
       <div
         class="chat-thread-viewport"
-        style=${`height: ${this.viewportHeight}px; flex: none; padding: 0 0 60px`}
+        style=${`height: ${this.viewportHeight}px; flex: none; padding: 0 0 ${this.viewportPadding}px`}
       >
         <div class="chat-thread" style="overflow-anchor: none">
           ${this.transcript.renderSession("agent:main:end-follow", (session) => {
@@ -363,4 +364,26 @@ it("does not expose unmeasured intrinsic overflow as an independent scroll range
   await settleFrames();
   expect(thread.scrollTop).toBe(original);
   expect(distance()).toBe(200);
+});
+
+it("publishes padding changes when either viewport box stays the same size", async () => {
+  const { host, thread, distance } = await mountEndFollowFixture();
+  host.transcript.scrollToEnd();
+  await expect.poll(distance).toBe(0);
+  await settleFrames();
+  const original = thread.scrollTop;
+
+  host.viewportPadding = 40;
+  host.requestUpdate();
+  await expect.poll(() => getComputedStyle(thread).paddingBottom).toBe("40px");
+  expect(thread.clientHeight).toBe(400);
+  expect(thread.scrollTop).toBe(original - 20);
+
+  // Border-box growth and matching padding growth leave the observed content box unchanged.
+  host.viewportHeight = 420;
+  host.viewportPadding = 60;
+  host.requestUpdate();
+  await expect.poll(() => thread.clientHeight).toBe(420);
+  expect(getComputedStyle(thread).paddingBottom).toBe("60px");
+  expect(distance()).toBe(0);
 });
