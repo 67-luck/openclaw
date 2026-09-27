@@ -85,8 +85,10 @@ it.each(
       ...initial,
       sessionId: materialized.sessionId,
       updatedAt: 3,
-      ...(initialState === "absent" ? { thinkingLevel: undefined } : {}),
     };
+    if (initialState === "absent") {
+      delete committed.thinkingLevel;
+    }
     const patch = vi.fn<GatewayRequestHandler>((_method, raw) => {
       if (patch.mock.calls.length === 1) {
         return reply.promise;
@@ -221,6 +223,9 @@ it.each(
         latestReply.resolve({ ok: true, key, path: "", entry: committed });
         await expect(latestOperation).resolves.toBe(true);
         expect(selectedChatSessionRow(pane.state)).toMatchObject(committed);
+        if (initialState === "absent") {
+          expect(selectedChatSessionRow(pane.state)).not.toHaveProperty("thinkingLevel");
+        }
       } else {
         reply.reject(new Error("Synthetic unmaterialized selection rejection"));
         await expect(operation).resolves.toBe(false);
