@@ -338,11 +338,7 @@ describe("chat transcript scroll ownership", () => {
     }));
     const { container } = await mountTestTranscript("measurement-reader", rows, transcript);
     try {
-      const sizer = expectDefined(
-        container.querySelector<HTMLElement>(".chat-virtual-sizer"),
-        "transcript extent",
-      );
-      const total = Number.parseFloat(sizer.style.height);
+      const total = transcriptSize(container);
       let maxScrollTop = total + 84 - 600;
       Object.defineProperties(container, {
         clientHeight: { configurable: true, value: 600 },

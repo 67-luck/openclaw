@@ -1,5 +1,5 @@
 import { LitElement, html } from "lit";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it } from "vitest";
 import { page } from "vitest/browser";
 import "../../../styles.css";
 import "../../../styles/chat.ts";
@@ -60,9 +60,17 @@ class EndFollowFixture extends LitElement {
 customElements.define("test-transcript-end-follow", EndFollowFixture);
 
 let fixture: EndFollowFixture | undefined;
+const browserErrors: string[] = [];
+const recordBrowserError = (event: ErrorEvent) => browserErrors.push(event.message);
+beforeEach(() => {
+  browserErrors.length = 0;
+  window.addEventListener("error", recordBrowserError);
+});
 afterEach(() => {
   fixture?.remove();
   fixture = undefined;
+  window.removeEventListener("error", recordBrowserError);
+  expect(browserErrors).toEqual([]);
 });
 
 async function mountEndFollowFixture() {
@@ -74,11 +82,11 @@ async function mountEndFollowFixture() {
   await host.updateComplete;
   const thread = host.querySelector<HTMLElement>(".chat-thread")!;
   const row = host.querySelector<HTMLElement>('[data-virtual-row-key="growing-run"]')!;
-  const sizer = host.querySelector<HTMLElement>(".chat-virtual-sizer")!;
+  const extent = host.querySelector<HTMLElement>(".chat-thread-inner--virtual")!;
   const dock = host.querySelector<HTMLElement>(".chat-prs")!;
   const distance = () => thread.scrollHeight - thread.clientHeight - thread.scrollTop;
-  await expect.poll(() => sizer.offsetHeight).toBe(1300);
-  return { host, thread, row, sizer, dock, distance };
+  await expect.poll(() => extent.offsetHeight).toBe(1300);
+  return { host, thread, row, extent, dock, distance };
 }
 
 async function settleFrames() {
@@ -97,14 +105,14 @@ async function commitTask(host: EndFollowFixture, change: () => void) {
   });
 }
 
-it("tracks an outstanding end command after same-key row measurement grows the sizer", async () => {
-  const { host, thread, row, sizer, dock, distance } = await mountEndFollowFixture();
+it("tracks an outstanding end command after same-key row measurement grows the extent", async () => {
+  const { host, thread, row, extent, dock, distance } = await mountEndFollowFixture();
   host.transcript.scrollToEnd();
   await expect.poll(distance).toBe(0);
 
   const previousMax = thread.scrollHeight - thread.clientHeight;
   // A task commits growth while an end command is outstanding. Its first
-  // reconciliation frame precedes ResizeObserver's measured-sizer commit.
+  // reconciliation frame precedes ResizeObserver's measured-extent commit.
   await new Promise<void>((resolve) => {
     setTimeout(() => {
       host.transcript.scrollToEnd({ behavior: "auto" });
@@ -113,7 +121,7 @@ it("tracks an outstanding end command after same-key row measurement grows the s
       void host.updateComplete.then(() => resolve());
     }, 0);
   });
-  await expect.poll(() => sizer.offsetHeight).toBe(1348);
+  await expect.poll(() => extent.offsetHeight).toBe(1348);
   await new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   });
@@ -132,7 +140,7 @@ it("tracks an outstanding end command after same-key row measurement grows the s
 });
 
 it("does not yank a reader who left the end programmatically", async () => {
-  const { host, thread, sizer, distance } = await mountEndFollowFixture();
+  const { host, thread, extent, distance } = await mountEndFollowFixture();
   host.transcript.scrollToEnd();
   await expect.poll(distance).toBe(0);
   await settleFrames();
@@ -147,7 +155,7 @@ it("does not yank a reader who left the end programmatically", async () => {
   await commitTask(host, () => {
     host.lastRowHeight += 48;
   });
-  await expect.poll(() => sizer.offsetHeight).toBe(1348);
+  await expect.poll(() => extent.offsetHeight).toBe(1348);
   await settleFrames();
 
   // A never-moved instant end command may linger until reader input or the
@@ -184,7 +192,7 @@ it.each([400, 380])(
 );
 
 it("keeps a reader observed at the end pinned when a row grows without a follow", async () => {
-  const { host, thread, sizer, distance } = await mountEndFollowFixture();
+  const { host, thread, extent, distance } = await mountEndFollowFixture();
   // Reach the end through native observation without ever issuing an end command.
   await commitTask(host, () => {
     thread.scrollTop = thread.scrollHeight;
@@ -196,7 +204,7 @@ it("keeps a reader observed at the end pinned when a row grows without a follow"
   await commitTask(host, () => {
     host.lastRowHeight += 48;
   });
-  await expect.poll(() => sizer.offsetHeight).toBe(1348);
+  await expect.poll(() => extent.offsetHeight).toBe(1348);
   await settleFrames();
   expect(distance()).toBe(0);
   expect(host.transcript.isProgrammaticScroll).toBe(false);
@@ -208,7 +216,7 @@ it.each([
 ])(
   "preserves wheel intent when content grows at the end ($deltaY)",
   async ({ deltaY, follows }) => {
-    const { host, thread, sizer, row, dock, distance } = await mountEndFollowFixture();
+    const { host, thread, extent, row, dock, distance } = await mountEndFollowFixture();
     host.transcript.scrollToEnd();
     await expect.poll(distance).toBe(0);
     await settleFrames();
@@ -217,7 +225,7 @@ it.each([
       thread.dispatchEvent(new WheelEvent("wheel", { deltaY }));
       host.lastRowHeight += 200;
     });
-    await expect.poll(() => sizer.offsetHeight).toBe(1500);
+    await expect.poll(() => extent.offsetHeight).toBe(1500);
     await settleFrames();
     expect(distance()).toBe(follows ? 0 : 200);
     if (follows) {
@@ -229,7 +237,7 @@ it.each([
 );
 
 it("does not turn a resize-clamped reader into permission to follow", async () => {
-  const { host, thread, sizer, distance } = await mountEndFollowFixture();
+  const { host, thread, extent, distance } = await mountEndFollowFixture();
   host.transcript.scrollToEnd();
   await expect.poll(distance).toBe(0);
   await settleFrames();
@@ -245,7 +253,7 @@ it("does not turn a resize-clamped reader into permission to follow", async () =
   await commitTask(host, () => {
     host.lastRowHeight += 48;
   });
-  await expect.poll(() => sizer.offsetHeight).toBe(1348);
+  await expect.poll(() => extent.offsetHeight).toBe(1348);
   await settleFrames();
   expect(Math.abs(thread.scrollTop - clamped)).toBeLessThanOrEqual(1);
   expect(distance()).toBe(48);
@@ -255,7 +263,7 @@ it("does not turn a resize-clamped reader into permission to follow", async () =
 });
 
 it("preserves compensation provenance for later native scroll listeners", async () => {
-  const { host, thread, sizer, distance } = await mountEndFollowFixture();
+  const { host, thread, extent, distance } = await mountEndFollowFixture();
   host.transcript.scrollToEnd();
   await expect.poll(distance).toBe(0);
   await settleFrames();
@@ -295,7 +303,7 @@ it("preserves compensation provenance for later native scroll listeners", async 
   await commitTask(host, () => {
     host.earlierRowHeight += 48;
   });
-  await expect.poll(() => sizer.offsetHeight).toBe(1348);
+  await expect.poll(() => extent.offsetHeight).toBe(1348);
   await expect.poll(() => observations.length).toBeGreaterThan(0);
   expect(observations[0]).toEqual({ trusted: true, programmatic: true });
   thread.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
@@ -309,7 +317,7 @@ it.each([
 ])(
   "preserves layout clamps versus $readerMovement px reader movement (before clamp: $beforeClamp)",
   async ({ readerMovement, beforeClamp }) => {
-    const { host, thread, sizer, distance } = await mountEndFollowFixture();
+    const { host, thread, extent, distance } = await mountEndFollowFixture();
     host.transcript.scrollToEnd();
     await expect.poll(distance).toBe(0);
     await settleFrames();
@@ -335,14 +343,14 @@ it.each([
 
     host.lastRowHeight += 48;
     host.requestUpdate();
-    await expect.poll(() => sizer.offsetHeight).toBe(1348);
+    await expect.poll(() => extent.offsetHeight).toBe(1348);
     await settleFrames();
     expect(thread.scrollTop).toBe(readerMovement ? readerPosition : original + 48);
   },
 );
 
 it("does not expose unmeasured intrinsic overflow as an independent scroll range", async () => {
-  const { host, thread, row, sizer, distance } = await mountEndFollowFixture();
+  const { host, thread, row, extent, distance } = await mountEndFollowFixture();
   host.transcript.scrollToEnd();
   await expect.poll(distance).toBe(0);
   await settleFrames();
@@ -360,7 +368,7 @@ it("does not expose unmeasured intrinsic overflow as an independent scroll range
   thread.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
   host.lastRowHeight = 1100;
   host.requestUpdate();
-  await expect.poll(() => sizer.offsetHeight).toBe(1500);
+  await expect.poll(() => extent.offsetHeight).toBe(1500);
   await settleFrames();
   expect(thread.scrollTop).toBe(original);
   expect(distance()).toBe(200);

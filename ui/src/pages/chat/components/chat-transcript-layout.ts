@@ -44,10 +44,7 @@ export function renderChatTranscriptLayout<T>({
       @click=${{ handleEvent: captureInteractionResize, capture: true }}
     >
       ${header}
-      <div
-        class="chat-virtual-sizer"
-        style=${styleMap({ height: `${virtualizer.getTotalSize()}px` })}
-      >
+      <div class="chat-virtual-sizer">
         ${overlay}
         <div
           class="chat-virtual-block"
