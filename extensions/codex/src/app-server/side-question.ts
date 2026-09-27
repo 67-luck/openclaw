@@ -689,6 +689,7 @@ export async function runCodexAppServerSideQuestion(
           if (binding.pluginAppPolicyContext) {
             const refreshed = await refreshCodexPluginAppApprovalPolicy({
               policyContext: binding.pluginAppPolicyContext,
+              pluginConfig,
               configCwd: executionCwd,
               request: (method, requestParams) => {
                 assertCurrentBinding();
