@@ -14,7 +14,10 @@ import {
   type AgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
 import type { PluginApprovalSource } from "../../infra/plugin-approvals.js";
-import { getGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
+import {
+  bindGatewayContextResolver,
+  getGatewayContextResolver,
+} from "../../plugins/runtime/gateway-request-scope.js";
 import {
   getAdmittedRunDelegatedAuthority,
   readAdmittedRunOperatorAuthority,
@@ -115,13 +118,15 @@ function bindGatewayToolContextResolver(
   if (!admittedContext) {
     return () => undefined;
   }
-  return () => {
+  const resolveAdmittedContext = () => {
     try {
       return resolveGatewayContext() === admittedContext ? admittedContext : undefined;
     } catch {
       return undefined;
     }
   };
+  bindGatewayContextResolver(resolveAdmittedContext, admittedContext.resolveGatewayContext);
+  return resolveAdmittedContext;
 }
 
 type AdmittedGatewayToolCallerParams = {
@@ -412,7 +417,9 @@ export function wrapToolWithGatewayCallerIdentity(
     execute: async (...args) =>
       await withGatewayToolCallerIdentity(identity, async () => await tool.execute?.(...args)),
   };
-  copyAgentToolMetadata(tool, wrapped);
+  copyAgentToolMetadata(tool, wrapped, (source) =>
+    wrapToolWithGatewayCallerIdentity(source, identity),
+  );
   const sourcePreparer = getInternalToolExecutionPreparer(tool);
   if (sourcePreparer) {
     attachInternalToolExecutionPreparer(wrapped, async (params) => {
