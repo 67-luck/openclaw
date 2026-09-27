@@ -149,18 +149,65 @@ export function createComposerTestProjection() {
   const projection: Projection = { events: [], rejectedRows: 0, partialLines: 0, limited: false };
   const buffers = { stdout: "", stderr: "" };
   const dropping = { stdout: false, stderr: false };
+  const activities: Fact[] = [];
+  let activityLimited = false;
+  let waitIndex = 0;
+  let activeWait: string | undefined;
   const add = (line: string) => {
     if (!line.startsWith("IOS_COMPOSER_PROBE ")) {
+      if (!activeWait) {
+        return;
+      }
+      const activity = /^ *t = +([0-9]{1,4}(?:\.[0-9]{1,3})?)s +(.*)$/u.exec(line);
+      if (!activity) {
+        return;
+      }
+      const seconds = Number(activity[1]);
+      if (!Number.isFinite(seconds) || seconds > 3600) {
+        return;
+      }
+      const check =
+        /^Checking `Expect predicate `enabled == 1` for object "chat-message-input" (Any|TextView)`$/u.exec(
+          activity[2]!,
+        );
+      const lookup = /^Find the "chat-message-input" (Any|TextView)$/u.exec(activity[2]!);
+      if (!check && !lookup) {
+        return;
+      }
+      if (activities.length >= 256) {
+        activityLimited = true;
+        return;
+      }
+      activities.push({
+        event: check ? "enabled-predicate-check" : "input-element-lookup",
+        stage: activeWait,
+        wait: waitIndex,
+        activitySeconds: seconds,
+        elementKind: (check ?? lookup)![1] === "Any" ? "any" : "text-view",
+      });
       return;
     }
     if (projection.events.length >= 256) {
       projection.limited = true;
+      activeWait = undefined;
       return;
     }
     const event = projectComposerProbeLine(line.slice("IOS_COMPOSER_PROBE ".length), "test");
     if (event) {
       projection.events.push(event);
+      if (event.event === "before-enabled-wait" && typeof event.stage === "string") {
+        if (waitIndex >= 16) {
+          activityLimited = true;
+          activeWait = undefined;
+          return;
+        }
+        waitIndex += 1;
+        activeWait = event.stage;
+      } else {
+        activeWait = undefined;
+      }
     } else {
+      activeWait = undefined;
       projection.rejectedRows = Math.min(projection.rejectedRows + 1, 1_000_000);
     }
   };
@@ -195,6 +242,8 @@ export function createComposerTestProjection() {
       return {
         ...projection,
         events: [...projection.events],
+        activities: [...activities],
+        activityLimited,
         partialLines:
           Number(buffers.stdout.startsWith("IOS_COMPOSER_PROBE ")) +
           Number(buffers.stderr.startsWith("IOS_COMPOSER_PROBE ")),
