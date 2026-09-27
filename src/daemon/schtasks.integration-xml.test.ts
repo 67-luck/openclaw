@@ -4,7 +4,7 @@ import {
   normalizeScheduledTaskXmlEnabledForFixture,
 } from "./schtasks.integration-observation.test-support.js";
 
-function exportedTaskXml(settings: string[] = []) {
+function exportedTaskXml(settings: string[] = [], newline = "\r\n") {
   return [
     '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
     "  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>",
@@ -16,7 +16,7 @@ function exportedTaskXml(settings: string[] = []) {
     "  </Settings>",
     "  <Actions><Exec><Command>C:\\fixture\\gateway.cmd</Command></Exec></Actions>",
     "</Task>",
-  ].join("\r\n");
+  ].join(newline);
 }
 
 describe("installed Scheduled Task XML fixtures", () => {
@@ -41,23 +41,27 @@ describe("installed Scheduled Task XML fixtures", () => {
     },
   );
 
-  it("compares an enabled export with its default omitted without ignoring other settings", () => {
-    const enabled = exportedTaskXml(["<AllowStartOnDemand>false</AllowStartOnDemand>"]);
-    const disabled = exportedTaskXml([
-      "<AllowStartOnDemand>false</AllowStartOnDemand>",
-      "<Enabled>false</Enabled>",
-    ]);
-    expect(normalizeScheduledTaskXmlEnabledForFixture(enabled)).toBe(
-      normalizeScheduledTaskXmlEnabledForFixture(disabled),
-    );
-    for (const changed of [
-      enabled.replace("gateway.cmd", "other.cmd"),
-      enabled.replace("<Enabled>true</Enabled>", "<Enabled>false</Enabled>"),
-      enabled.replace("<AllowStartOnDemand>false", "<AllowStartOnDemand>true"),
-    ]) {
-      expect(normalizeScheduledTaskXmlEnabledForFixture(changed)).not.toBe(
+  it.each(["\n", "\r\n", "\r\r\n"])(
+    "compares enabled exports with %j line endings without ignoring other settings",
+    (newline) => {
+      const enabled = exportedTaskXml(["<AllowStartOnDemand>false</AllowStartOnDemand>"], newline);
+      const disabled = exportedTaskXml(
+        ["<AllowStartOnDemand>false</AllowStartOnDemand>", "<Enabled>false</Enabled>"],
+        newline,
+      );
+      expect(normalizeScheduledTaskXmlEnabledForFixture(enabled)).toBe(
         normalizeScheduledTaskXmlEnabledForFixture(disabled),
       );
-    }
-  });
+      for (const changed of [
+        enabled.replace("gateway.cmd", "other.cmd"),
+        enabled.replace("</MultipleInstancesPolicy>", "</MultipleInstancesPolicy>\r"),
+        enabled.replace("<Enabled>true</Enabled>", "<Enabled>false</Enabled>"),
+        enabled.replace("<AllowStartOnDemand>false", "<AllowStartOnDemand>true"),
+      ]) {
+        expect(normalizeScheduledTaskXmlEnabledForFixture(changed)).not.toBe(
+          normalizeScheduledTaskXmlEnabledForFixture(disabled),
+        );
+      }
+    },
+  );
 });
