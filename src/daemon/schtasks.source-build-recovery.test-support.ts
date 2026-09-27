@@ -108,9 +108,9 @@ export async function inspectInstalledSourceBuildRecovery(params: {
     recordSourceChildJoin,
   } = params;
   const sourceSha256 = await hashFile(path.resolve("scripts/lib/source-update-build.mts"));
-  assert.equal(sourceSha256, "fcf4808c2227e58b6789b801ebc7e196175c85a4d256dc77ed00656c3d9a1a43");
+  assert.equal(sourceSha256, "5d584218dd11d0813c58a97e76bc409df658922091ed495bf94e1dc9f3b678b3");
   observations.sourceOwner = {
-    commit: "784850df14770a9bca285f45ad983f06a619ea86",
+    commit: "c2011feadfb34e6af09c877127b357cee2a92d8b",
     sha256: sourceSha256,
   };
   const mode = "reassigned";

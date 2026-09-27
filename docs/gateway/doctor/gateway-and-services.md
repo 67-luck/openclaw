@@ -17,6 +17,8 @@ warnings, workspace status, gateway auth and health, and supervisors.
 
     Cleanup previews include only legacy launchd services and recognized legacy systemd unit names in the user scope. Legacy Windows services, unrecognized Linux unit names, and services in the system scope remain findings for manual review.
 
+    Windows extra-service hints use read-only `schtasks /Query` inspection. Node hosts remain visible in diagnostics; discovery alone does not make a service a removal target.
+
     Linux user-service cleanup preserves the unit file if stopping or disabling the service fails. An interrupted status probe does not permit file-only removal; that fallback is reported only when `systemctl` is unavailable.
 
     On Linux, if the user-level gateway service is missing but a system-level OpenClaw gateway service exists, doctor does not install a second user-level service automatically. Inspect with `openclaw gateway status --deep` or `openclaw doctor --deep`, then remove the duplicate or set `OPENCLAW_SERVICE_REPAIR_POLICY=external` when a system supervisor owns the gateway lifecycle.

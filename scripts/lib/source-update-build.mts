@@ -63,11 +63,8 @@ export async function runLegacySourceUpdateBuild(
   ) {
     return undefined;
   }
-  const {
-    maybeStopManagedServiceBeforeMutableUpdate,
-    maybeResumeWindowsTaskAutoStartAfterPackageUpdate,
-    createWindowsTaskAutoStartGuard,
-  } = await import("../../src/cli/update-cli/update-command-service-maintenance.js");
+  const { maybeStopManagedServiceBeforeMutableUpdate, createWindowsTaskAutoStartGuard } =
+    await import("../../src/cli/update-cli/update-command-service-maintenance.js");
   const { revalidateManagedGatewayServiceAfterUpdate } =
     await import("../../src/cli/update-cli/update-command-service-revalidation.js");
   const { readGatewayServiceState, resolveGatewayService } =
@@ -110,7 +107,7 @@ export async function runLegacySourceUpdateBuild(
   const restoreAutoStart = async () => {
     const before = stopped;
     if (before) {
-      await maybeResumeWindowsTaskAutoStartAfterPackageUpdate(before, true, async () => {
+      await before.windowsTaskAutoStartRecovery?.restore(true, async () => {
         assertRecoveryCurrent();
         await createWindowsTaskAutoStartGuard({ root, before })();
         assertRecoveryCurrent();

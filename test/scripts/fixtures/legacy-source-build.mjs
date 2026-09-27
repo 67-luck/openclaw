@@ -178,7 +178,7 @@ const modules = new Map([
     export const createWindowsTaskAutoStartGuard = ({root, before}) => async () => {
       if (before.serviceUpdateVerdict.root !== root) throw new Error('wrong restoration root');
     };
-    export const maybeResumeWindowsTaskAutoStartAfterPackageUpdate = (state, safe, guard) => state.windowsTaskAutoStartRecovery?.restore(safe, guard);`,
+`,
   ],
   [
     "src/cli/update-cli/update-command-service-revalidation",

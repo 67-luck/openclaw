@@ -722,6 +722,7 @@ describe("Scheduled Task stop/restart cleanup", () => {
         { ...SUCCESS_RESPONSE },
         { ...SUCCESS_RESPONSE },
       );
+      spawnSync.mockReturnValueOnce(spawnSyncResult(JSON.stringify({ state: 4, enabled: true })));
       setTaskStateProbeResult(4);
       const write = vi.fn();
       const onMutation = vi.fn(() => {
