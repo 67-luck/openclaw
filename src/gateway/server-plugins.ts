@@ -216,12 +216,19 @@ function createGatewayPluginRuntimeBindings(
       dispatchReplyFromConfig: async (params) => {
         const { dispatchLowLevelChannelReplyFromConfig } =
           await import("../auto-reply/reply/dispatch-from-config.js");
+        const abortSignal = params.replyOptions?.abortSignal
+          ? AbortSignal.any([signal, params.replyOptions.abortSignal])
+          : signal;
+        // A retained raw callback can finish resolving after its Gateway retires.
+        // Reject before admission, then retain that lifetime through reply delivery.
+        abortSignal.throwIfAborted();
         const sessionWorkerPlacementContext = getInProcessGatewayRequestContext(
           resolveBoundGatewayContext,
         );
         const run = async () =>
           await dispatchLowLevelChannelReplyFromConfig({
             ...params,
+            replyOptions: { ...params.replyOptions, abortSignal },
             ...(sessionWorkerPlacementContext ? { sessionWorkerPlacementContext } : {}),
           });
         return resolveBoundGatewayContext

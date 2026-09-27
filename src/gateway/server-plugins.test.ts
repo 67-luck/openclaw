@@ -674,7 +674,7 @@ describe("loadGatewayPlugins", () => {
     await boundDispatch(params);
 
     expect(dispatchReplyFromConfig).toHaveBeenCalledWith({
-      ...params,
+      replyOptions: { abortSignal: expect.any(AbortSignal) },
       sessionWorkerPlacementContext: context,
     });
   });

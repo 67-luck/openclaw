@@ -142,7 +142,11 @@ reply dispatcher when `resolveTurn` returns a routed plan without an explicit
 `dispatchReplyFromConfig`. An explicit dispatcher keeps its existing owner.
 Prepared dispatch closures and caller-assembled compatibility turns also retain
 their caller-owned dispatch; the standalone SDK runner does not infer a Gateway
-instance.
+instance. The injected dispatcher rejects a retained callback that finishes
+resolving after its plugin runtime or Gateway retires, before starting reply
+dispatch. It also carries that owner lifetime into the reply pipeline alongside
+any caller cancellation signal; retiring the owner does not cancel the caller’s
+controller.
 
 Assemble `dispatchChannelInboundReply(...)` inputs for compatibility
 dispatchers that keep platform delivery in the delivery adapter. New send

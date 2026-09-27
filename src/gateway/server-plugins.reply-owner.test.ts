@@ -1,7 +1,9 @@
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, test, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import type { DispatchFromConfigParams } from "../auto-reply/reply/dispatch-from-config.types.js";
 import {
   LegacyPluginSdkResourceHost,
   bindLegacyPluginSdkResourceHost,
@@ -19,7 +21,7 @@ const loadOpenClawPlugins = vi.hoisted(() =>
   vi.fn<(options: PluginLoadOptions) => ReturnType<typeof createEmptyPluginRegistry>>(),
 );
 const dispatchReplyFromConfig = vi.hoisted(() =>
-  vi.fn(async () => ({ counts: {}, queuedFinal: false })),
+  vi.fn(async (_params: DispatchFromConfigParams) => ({ counts: {}, queuedFinal: false })),
 );
 vi.mock("../plugins/loader.js", () => ({ loadOpenClawPlugins }));
 vi.mock("../auto-reply/reply/dispatch-from-config.js", () => ({
@@ -202,3 +204,105 @@ test("captures retired plugin reply owners through their canonical Gateway bindi
     closeOpenClawAgentDatabasesForTest();
   }
 });
+
+test.each(["runtime", "gateway", "caller"] as const)(
+  "blocks a delayed raw callback before channel delivery after %s cancellation",
+  async (retirement) => {
+    const { closeOpenClawAgentDatabasesForTest } = await import("../state/openclaw-agent-db.js");
+    const stateDir = tempDirs.make("openclaw-delayed-reply-owner-");
+    const storePath = path.join(stateDir, "sessions.json");
+    const context = { getRuntimeConfig: () => ({}) } as GatewayRequestContext;
+    const resolver = vi.fn(() => context);
+    const caller = new AbortController();
+    loadOpenClawPlugins.mockReturnValue(createEmptyPluginRegistry());
+    const runtime = loadGatewayPlugins({
+      loadIntent: "startup",
+      cfg: {},
+      autoEnabledReasons: {},
+      workspaceDir: stateDir,
+      log,
+      baseMethods: [],
+      pluginIds: ["test-channel"],
+      resolveGatewayContext: resolver,
+    });
+    const channel = createPluginRuntime(
+      loadOpenClawPlugins.mock.calls.at(-1)![0].runtimeOptions,
+    ).channel;
+    const deliver = vi.fn(async () => ({ visibleReplySent: true }));
+    const resolving = createDeferred();
+    const release = createDeferred();
+    dispatchReplyFromConfig.mockReset();
+    dispatchReplyFromConfig.mockImplementation(async ({ dispatcher }) => {
+      dispatcher.sendFinalReply({ text: "owned reply" });
+      return { counts: {}, queuedFinal: true };
+    });
+    const run = (deferred: boolean) =>
+      channel.inbound.run({
+        channel: "test-channel",
+        raw: "hello",
+        adapter: {
+          ingest: (raw) => ({ id: deferred ? "delayed" : "live", rawText: raw }),
+          resolveTurn: async () => {
+            if (deferred) {
+              resolving.resolve();
+              await release.promise;
+            }
+            return {
+              channel: "test-channel",
+              cfg: { session: { store: storePath } },
+              route: { agentId: "main", sessionKey: "agent:main:delayed-plugin" },
+              ctxPayload: channel.reply.finalizeInboundContext({
+                Body: "hello",
+                SessionKey: "agent:main:delayed-plugin",
+                Provider: "test-channel",
+                From: "peer",
+                To: "bot",
+              }),
+              delivery: { deliver },
+              replyOptions: { abortSignal: caller.signal },
+            };
+          },
+        },
+      });
+    let pending: Promise<unknown> | undefined;
+    try {
+      // The same public runner and real channel delivery pipeline work while live.
+      await run(false);
+      expect(deliver).toHaveBeenCalledTimes(1);
+      const liveSignal = dispatchReplyFromConfig.mock.calls.at(-1)![0].replyOptions?.abortSignal;
+      expect(liveSignal?.aborted).toBe(false);
+      deliver.mockClear();
+      dispatchReplyFromConfig.mockClear();
+      const delayed = run(true);
+      const settled = (pending = delayed.then(
+        () => undefined,
+        (error: unknown) => error,
+      ));
+      await resolving.promise;
+      if (retirement === "runtime") {
+        runtime.retireGatewayRuntimeBindings();
+      } else if (retirement === "gateway") {
+        gatewayRequestScopeModule
+          .getGatewayContextLifetime(resolver)
+          .abort(new Error("Gateway retired"));
+      } else {
+        caller.abort(new Error("Caller cancelled"));
+      }
+      expect(liveSignal?.aborted).toBe(true);
+      expect(caller.signal.aborted).toBe(retirement === "caller");
+      resolver.mockClear();
+      release.resolve();
+      expect({
+        error: await settled,
+        dispatched: dispatchReplyFromConfig.mock.calls.length,
+        delivered: deliver.mock.calls.length,
+        resolved: resolver.mock.calls.length,
+      }).toEqual({ error: expect.any(Error), dispatched: 0, delivered: 0, resolved: 0 });
+    } finally {
+      release.resolve();
+      runtime.retireGatewayRuntimeBindings();
+      await pending;
+      closeOpenClawAgentDatabasesForTest();
+    }
+  },
+);
