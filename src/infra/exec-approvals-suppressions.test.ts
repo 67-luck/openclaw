@@ -38,6 +38,10 @@ describe("suppression inspection preflight", () => {
     ["rg security.audit.suppressions *", true],
     ["rg security.audit.suppressions $(touch output)", true],
     ["sh -lc 'rg security.audit.suppressions src'", true],
+    ["zsh -c 'rg security.audit.suppressions src'", true],
+    ["zsh -fc 'rg security.audit.suppressions src'", true],
+    ["fish -c 'rg security.audit.suppressions src'", true],
+    ["env zsh -c 'rg security.audit.suppressions src'", true],
     [
       "openclaw config get security.audit.suppressions; cat > openclaw.json <<'EOF'\n{security:{audit:{suppressions:[]}}}\nEOF",
       true,

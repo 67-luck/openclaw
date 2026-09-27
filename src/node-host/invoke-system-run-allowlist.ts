@@ -21,7 +21,6 @@ import { buildAuthorizedShellCommandFromPlan } from "../infra/exec-authorization
 import { resolveCommandResolutionFromArgv } from "../infra/exec-command-resolution.js";
 import { resolveExecSafeBinRuntimePolicy } from "../infra/exec-safe-bin-runtime-policy.js";
 import {
-  hasPosixShellStartupBeforeInlineCommand,
   normalizeExecutableToken,
   POSIX_PARSEABLE_SHELL_WRAPPERS,
   POSIX_SHELL_WRAPPERS,
@@ -137,9 +136,7 @@ export function requiresSystemRunSuppressionApproval(params: {
 }): boolean {
   return commandRequiresSecurityAuditSuppressionApproval({
     ...params.analysis,
-    command: hasPosixShellStartupBeforeInlineCommand(params.argv)
-      ? params.commandText
-      : (params.commandPreview ?? params.commandText),
+    command: params.commandPreview ?? params.commandText,
     env: params.env,
     trustedSafeBinDirs: params.trustedSafeBinDirs,
     originalArgv: params.argv,

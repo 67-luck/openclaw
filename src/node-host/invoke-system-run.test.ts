@@ -959,42 +959,45 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
       const cwd = createFixtureDir("suppression-reader-");
       const config = path.join(cwd, "audit-fixture.json");
       const needle = "security.audit.suppressions";
-      fs.writeFileSync(config, needle);
       const writer = createTempExecutable(cwd, "grep");
       fs.writeFileSync(writer, "#!/bin/sh\nprintf mutated > audit-fixture.json\n");
       const shell = createTempExecutable(cwd, "sh");
       fs.copyFileSync(writer, shell);
-      const aliasDir = path.join(cwd, "alias");
-      fs.mkdirSync(aliasDir);
-      const alias = path.join(aliasDir, "grep");
+      const alias = path.join(createFixtureDir("reader-alias-"), "grep");
       fs.symlinkSync("/usr/bin/grep", alias);
       const payload = `grep ${needle} audit-fixture.json`;
-      const login = ["/bin/sh", "-lc", payload];
-      fs.writeFileSync(
-        path.join(cwd, ".profile"),
-        "grep() { printf mutated > audit-fixture.json; }\n",
-      );
-      await withEnvAsync({ HOME: cwd, PATH: "/usr/bin:/bin" }, async () => {
-        const invokeCommand = (command: string[], ask: "on-miss" | "off") =>
-          runLocalSystemInvokeWithPolicy("full", ask, {
-            command,
-            cwd,
-            rawCommand: formatExecCommand(command),
-            runCommand: realRunCommand,
-          });
+      const profileBody = "grep() { printf mutated > audit-fixture.json; }\n";
+      for (const profile of [".profile", ".zshenv"]) {
+        fs.writeFileSync(path.join(cwd, profile), profileBody);
+      }
+      const fishConfig = path.join(cwd, "fish/config.fish");
+      fs.mkdirSync(path.dirname(fishConfig));
+      fs.writeFileSync(fishConfig, "function grep; printf mutated > audit-fixture.json; end\n");
+      // Exercise optional installed shells without making them a test dependency.
+      const startupShells = ["zsh", "fish"].filter((name) => fs.existsSync(`/usr/bin/${name}`));
+      await withEnvAsync({ HOME: cwd, XDG_CONFIG_HOME: cwd, PATH: "/usr/bin:/bin" }, async () => {
         for (const [command, effect] of [
           [["/usr/bin/grep", needle, config], "read"],
           [["/bin/sh", "-c", payload], "read"],
           [[writer, needle, config], "deny"],
           [[alias, needle, config], "deny"],
           [[shell, "-c", "/usr/bin/grep " + needle + " " + config], "deny"],
-          [login, "deny"],
+          [["/bin/sh", "-lc", payload], "deny"],
+          ...startupShells.map((name) => [[`/usr/bin/${name}`, "-c", payload], "deny"] as const),
+          ...startupShells.map((name) => [[`/usr/bin/${name}`, "-c", payload], "write"] as const),
           [[writer, needle, config], "write"],
           // Source the fixture explicitly: a machine login profile can replace HOME.
           [["/bin/sh", "-c", `. ./.profile; ${payload}`], "write"],
         ] as const) {
           fs.writeFileSync(config, needle);
-          const invoke = await invokeCommand([...command], effect === "write" ? "off" : "on-miss");
+          const invoke = await runLocalSystemInvoke({
+            command: [...command],
+            cwd,
+            rawCommand: formatExecCommand([...command]),
+            security: "full",
+            ask: effect === "write" ? "off" : "on-miss",
+            runCommand: realRunCommand,
+          });
           expect(fs.readFileSync(config, "utf8")).toBe(effect === "write" ? "mutated" : needle);
           if (effect === "deny") {
             expect(invoke.runCommand).not.toHaveBeenCalled();

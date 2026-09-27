@@ -194,7 +194,9 @@ export function hasPosixShellStartupBeforeInlineCommand(argv: string[]): boolean
   return Boolean(
     candidate &&
     POSIX_SHELL_WRAPPER_CANONICAL.has(normalizeExecutableToken(candidate.token0)) &&
-    (hasPosixLoginStartupBeforeInlineCommand(candidate.argv, POSIX_INLINE_COMMAND_FLAGS) ||
+    // zsh and fish load startup files even for a non-login, non-interactive -c.
+    (["zsh", "fish"].includes(normalizeExecutableToken(candidate.token0)) ||
+      hasPosixLoginStartupBeforeInlineCommand(candidate.argv, POSIX_INLINE_COMMAND_FLAGS) ||
       hasPosixInteractiveStartupBeforeInlineCommand(candidate.argv, POSIX_INLINE_COMMAND_FLAGS)),
   );
 }

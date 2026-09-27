@@ -12,6 +12,7 @@ import type { ExecAuthorizationPlan } from "./exec-authorization-plan.js";
 import { parseExecArgvToken, type ExecutableResolution } from "./exec-command-resolution.js";
 import { getTrustedSafeBinDirs, isTrustedSafeBinPath } from "./exec-safe-bin-trust.js";
 import { resolveEnvironmentValue } from "./process-env.js";
+import { hasPosixShellStartupBeforeInlineCommand } from "./shell-wrapper-resolution.js";
 import { tokenizeWindowsSegment } from "./windows-shell-command.js";
 
 export function requiresExecApproval(params: {
@@ -188,9 +189,10 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
     return false;
   }
   if (
-    params.transportExecutable &&
-    !params.deferReaderTrustToNode &&
-    !isTrustedInspectionExecutable(params.transportExecutable, params.trustedSafeBinDirs)
+    hasPosixShellStartupBeforeInlineCommand(params.originalArgv ?? []) ||
+    (params.transportExecutable &&
+      !params.deferReaderTrustToNode &&
+      !isTrustedInspectionExecutable(params.transportExecutable, params.trustedSafeBinDirs))
   ) {
     return true;
   }
@@ -217,19 +219,24 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
       group.candidates.every((candidate) => {
         const argv = candidate.sourceSegment.sourceArgv ?? candidate.sourceSegment.argv;
         const execution = candidate.sourceSegment.resolution?.execution;
-        const transport =
+        const wrapper =
           candidate.transport.kind === "shell-wrapper"
-            ? candidate.transport.wrapperSegment.resolution?.execution
+            ? candidate.transport.wrapperSegment
             : undefined;
         return (
           candidate.trustMode === "executable" &&
           candidate.reasons.every((reason) => reason === "inline-eval") &&
+          (!wrapper ||
+            !hasPosixShellStartupBeforeInlineCommand(wrapper.sourceArgv ?? wrapper.argv)) &&
           ((plan.dialect === "argv" && candidate.transport.kind === "direct") ||
             !hasUnquotedShellExpansionSource(candidate.sourceStep.text)) &&
           isInspectionArgv(argv, params.env) &&
           (params.deferReaderTrustToNode ||
-            !transport ||
-            isTrustedInspectionExecutable(transport, params.trustedSafeBinDirs)) &&
+            !wrapper ||
+            isTrustedInspectionExecutable(
+              wrapper.resolution?.execution,
+              params.trustedSafeBinDirs,
+            )) &&
           (isReadOnlySecurityAuditSuppressionInspection(argv) ||
             params.deferReaderTrustToNode ||
             (isTrustedInspectionExecutable(execution, params.trustedSafeBinDirs) &&
