@@ -20,6 +20,8 @@ import {
   type Operation,
   type TrialDependencies,
 } from "../ios-release-e2e.js";
+import { projectChatFailureProbe } from "./ios-chat-failure-probe.js";
+import { sealChatFailureLogs } from "./ios-chat-sealed-probe.js";
 import {
   collectComposerAppProjection,
   createComposerTestProjection,
@@ -276,6 +278,7 @@ export async function createNativeDependencies(options: {
           const mockAbort = new AbortController();
           let mockDone: Promise<void> | undefined;
           let mockFailed = false;
+          let mockPort: number | undefined;
           const requestLog = path.join(root, `requests-${index}.jsonl`);
           const release = async () => {
             const results = await Promise.allSettled([
@@ -380,6 +383,7 @@ export async function createNativeDependencies(options: {
                 readinessAbort.abort();
               }
               const config = { gateway: { controlUi: { enabled: false } } };
+              mockPort = port;
               applyMockOpenAiModelConfig(config, { mockPort: port, modelRef: MODEL_REF });
               try {
                 instance = await createOpenClawTestInstance({
@@ -540,7 +544,7 @@ export async function createNativeDependencies(options: {
                               facts.add(`model-any-request-stage:${stage}`);
                             }
                           }
-                          const [requests, history, appLog] = await Promise.allSettled([
+                          const [requests, history, appLog, health] = await Promise.allSettled([
                             readFile(requestLog, "utf8"),
                             callGateway<unknown>({
                               config: {},
@@ -583,7 +587,44 @@ export async function createNativeDependencies(options: {
                                 "utf8",
                               );
                             })(),
+                            composerProbeEnabled && mockPort !== undefined
+                              ? fetch(`http://127.0.0.1:${mockPort}/health`, {
+                                  signal: AbortSignal.any([
+                                    options.signal,
+                                    AbortSignal.timeout(5_000),
+                                  ]),
+                                }).then((response) => response.json())
+                              : Promise.resolve(undefined),
                           ]);
+                          if (composerProbeEnabled) {
+                            try {
+                              options.proof.sealedChatFailureLogs = sealChatFailureLogs({
+                                gateway: logs,
+                                app: appLog.status === "fulfilled" ? appLog.value : undefined,
+                                requests:
+                                  requests.status === "fulfilled" ? requests.value : undefined,
+                                history:
+                                  history.status === "fulfilled"
+                                    ? JSON.stringify(history.value)
+                                    : undefined,
+                                health:
+                                  health.status === "fulfilled"
+                                    ? JSON.stringify(health.value)
+                                    : undefined,
+                              });
+                            } catch {
+                              options.proof.sealedChatFailureLogs = { unavailable: true };
+                            }
+                            options.proof.chatFailureProbe = projectChatFailureProbe({
+                              gatewayLog: logs,
+                              appLog: appLog.status === "fulfilled" ? appLog.value : undefined,
+                              requestLog:
+                                requests.status === "fulfilled" ? requests.value : undefined,
+                              history: history.status === "fulfilled" ? history.value : undefined,
+                              health: health.status === "fulfilled" ? health.value : undefined,
+                              mockFailed,
+                            });
+                          }
                           if (appLog.status === "fulfilled") {
                             if (
                               appLog.value.includes(
