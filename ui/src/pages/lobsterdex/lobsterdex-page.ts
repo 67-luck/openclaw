@@ -8,6 +8,7 @@ import { renderSettingsWorkspace } from "../../components/settings-workspace.ts"
 import { copyToClipboard } from "../../lib/clipboard.ts";
 import { downloadBlobFile } from "../../lib/download.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
+import type { ColoringMode } from "./coloring-art.ts";
 import {
   renderLobsterdex,
   type LobsterdexCopyFeedback,
@@ -89,7 +90,10 @@ class LobsterdexPage extends OpenClawLightDomElement {
     }, 1_500);
   };
 
-  private readonly download = async (target: LobsterPetPaletteId | "all"): Promise<void> => {
+  private readonly download = async (
+    target: LobsterPetPaletteId | "all",
+    mode: ColoringMode,
+  ): Promise<void> => {
     if (this.exportController) {
       return;
     }
@@ -102,11 +106,16 @@ class LobsterdexPage extends OpenClawLightDomElement {
     };
     try {
       const { createColoringDownload } = await import("./coloring-export.ts");
-      const result = await createColoringDownload(target, controller.signal, (completed, total) => {
-        if (!controller.signal.aborted) {
-          this.exportFeedback = { status: "working", completed, total };
-        }
-      });
+      const result = await createColoringDownload(
+        target,
+        mode,
+        controller.signal,
+        (completed, total) => {
+          if (!controller.signal.aborted) {
+            this.exportFeedback = { status: "working", completed, total };
+          }
+        },
+      );
       if (controller.signal.aborted || !this.isConnected) {
         return;
       }
@@ -131,7 +140,7 @@ class LobsterdexPage extends OpenClawLightDomElement {
       ${renderSettingsWorkspace(
         renderLobsterdex(getLobsterdexEntries(), {
           exportFeedback: this.exportFeedback,
-          onDownload: (target) => void this.download(target),
+          onDownload: (target, mode) => void this.download(target, mode),
           copyFeedback: this.copyFeedback,
           onCopyLink: (paletteId) => void this.copyLink(paletteId),
         }),

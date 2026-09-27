@@ -6,17 +6,22 @@ import type {
 } from "../../components/lobster-pet-contract.ts";
 import { lobsterPaletteName } from "../../components/lobster-pet-lore.ts";
 import { LOBSTER_PET_PALETTES } from "../../components/lobster-pet-palettes.ts";
-import { createColoringArt } from "./coloring-art.ts";
+import { createColoringArt, type ColoringMode } from "./coloring-art.ts";
 
-function coloringSheetFilename(palette: LobsterPetPalette): string {
+function coloringSheetFilename(palette: LobsterPetPalette, mode: ColoringMode): string {
   const name = lobsterPaletteName(palette.id)
     .toLowerCase()
     .replace(/[^a-z0-9-]+/gu, "-");
-  return "lobsterdex-" + palette.id + "-" + name + ".pdf";
+  return (
+    "lobsterdex-" + palette.id + "-" + name + (mode === "color" ? "-color-guide" : "") + ".pdf"
+  );
 }
 
-async function createColoringPdf(palette: LobsterPetPalette): Promise<ArrayBuffer> {
-  const art = createColoringArt(palette);
+async function createColoringPdf(
+  palette: LobsterPetPalette,
+  mode: ColoringMode,
+): Promise<ArrayBuffer> {
+  const art = createColoringArt(palette, mode);
   try {
     const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4", compress: true });
     const name = lobsterPaletteName(palette.id);
@@ -43,6 +48,7 @@ async function createColoringPdf(palette: LobsterPetPalette): Promise<ArrayBuffe
 
 export async function createColoringDownload(
   target: LobsterPetPaletteId | "all",
+  mode: ColoringMode,
   signal: AbortSignal,
   onProgress: (completed: number, total: number) => void,
 ): Promise<{ filename: string; blob: Blob }> {
@@ -52,10 +58,10 @@ export async function createColoringDownload(
     if (!palette) {
       throw new Error("Unknown lobster palette");
     }
-    const data = await createColoringPdf(palette);
+    const data = await createColoringPdf(palette, mode);
     signal.throwIfAborted();
     return {
-      filename: coloringSheetFilename(palette),
+      filename: coloringSheetFilename(palette, mode),
       blob: new Blob([data], { type: "application/pdf" }),
     };
   }
@@ -69,7 +75,9 @@ export async function createColoringDownload(
       window.setTimeout(resolve, 0);
     });
     signal.throwIfAborted();
-    files[coloringSheetFilename(palette)] = new Uint8Array(await createColoringPdf(palette));
+    files[coloringSheetFilename(palette, mode)] = new Uint8Array(
+      await createColoringPdf(palette, mode),
+    );
     signal.throwIfAborted();
     onProgress(index + 1, LOBSTER_PET_PALETTES.length);
   }
@@ -77,5 +85,8 @@ export async function createColoringDownload(
   // redundant compression work and worker/blob-script CSP requirements.
   const blob = new Blob([zipSync(files, { level: 0 })], { type: "application/zip" });
   signal.throwIfAborted();
-  return { filename: "lobsterdex-coloring-sheets.zip", blob };
+  return {
+    filename: mode === "color" ? "lobsterdex-color-guides.zip" : "lobsterdex-coloring-sheets.zip",
+    blob,
+  };
 }

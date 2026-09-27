@@ -107,11 +107,6 @@
   font-size: 12px;
 }
 
-.lobsterdex-page__download {
-  align-self: end;
-  min-height: 36px;
-}
-
 .lobsterdex-page__grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -121,11 +116,13 @@
 .lobsterdex-page__card {
   position: relative;
   display: grid;
-  grid-template-rows: 94px auto minmax(42px, auto) auto auto;
+  grid-template-rows: 94px auto minmax(42px, auto) auto;
   gap: 7px;
   justify-items: center;
   min-width: 0;
-  padding: 16px 13px 13px;
+  /* Reserve the icon’s target below dates, including the two-line shiny date.
+     Revealing the control never changes the card’s layout. */
+  padding: 16px 13px 56px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: linear-gradient(180deg, color-mix(in srgb, var(--card) 94%, white 6%), var(--card));
@@ -189,13 +186,9 @@
   min-height: 18px;
 }
 
-.lobsterdex-page__copy-link {
-  position: absolute;
-  top: 8px;
-  left: 8px;
+.lobsterdex-page__copy-link,
+.lobsterdex-page__download {
   display: grid;
-  width: 26px;
-  height: 26px;
   padding: 5px;
   border: 0;
   border-radius: 7px;
@@ -211,13 +204,52 @@
     background 0.16s ease;
 }
 
+.lobsterdex-page__copy-link {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 26px;
+  height: 26px;
+}
+
+.lobsterdex-page__download-menu {
+  /* Web Awesome defaults to display:contents; the corner anchor needs a box. */
+  display: block;
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+}
+
+.lobsterdex-page__download {
+  width: 44px;
+  height: 44px;
+}
+
+.lobsterdex-page__download svg {
+  width: 18px;
+  height: 18px;
+}
+
+.lobsterdex-page__download:disabled {
+  filter: opacity(0.5);
+  cursor: progress;
+}
+
+.lobsterdex-page__download:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .lobsterdex-page__copy-link svg {
   width: 15px;
   height: 15px;
 }
 
 .lobsterdex-page__card:hover .lobsterdex-page__copy-link,
-.lobsterdex-page__card:focus-within .lobsterdex-page__copy-link {
+.lobsterdex-page__card:focus-within .lobsterdex-page__copy-link,
+.lobsterdex-page__card:hover .lobsterdex-page__download,
+.lobsterdex-page__card:focus-within .lobsterdex-page__download,
+.lobsterdex-page__download-menu[open] .lobsterdex-page__download {
   opacity: 1;
   pointer-events: auto;
 }
@@ -232,9 +264,19 @@
 }
 
 .lobsterdex-page__copy-link:hover,
-.lobsterdex-page__copy-link:focus-visible {
+.lobsterdex-page__copy-link:focus-visible,
+.lobsterdex-page__download:hover,
+.lobsterdex-page__download:focus-visible {
   color: var(--text-strong);
   background: color-mix(in srgb, var(--accent) 13%, var(--card));
+}
+
+/* Touch and narrow layouts cannot rely on a hover affordance. */
+@media (hover: none), (pointer: coarse), (max-width: 560px) {
+  .lobsterdex-page__download {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .lobsterdex-page__star {

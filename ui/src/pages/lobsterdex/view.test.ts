@@ -36,6 +36,13 @@ describe("renderLobsterdex", () => {
     );
     expect(seen?.querySelector(".lobsterdex-page__star")).not.toBeNull();
     expect(seen?.querySelector('button[aria-label="Copy link"]')).not.toBeNull();
+    const download = seen?.querySelector<HTMLButtonElement>(".lobsterdex-page__download");
+    expect(download?.textContent?.trim()).toBe("");
+    expect(download?.querySelector("svg")).not.toBeNull();
+    expect(download?.getAttribute("aria-label")).toBe("Download PDFs for crimson");
+    expect(download?.title).toBe("Download PDFs for crimson");
+    expect(download?.getAttribute("aria-busy")).toBe("false");
+    expect(download?.disabled).toBe(false);
 
     const unseen = container.querySelector(".lobster-pet--palette-watermelon")?.closest("article");
     expect(unseen?.querySelector("h3")?.textContent).toBe("?");

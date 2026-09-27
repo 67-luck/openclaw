@@ -1,4 +1,5 @@
 import { html, nothing } from "lit";
+import "../../components/web-awesome.ts";
 import { icons } from "../../components/icons.ts";
 import type { LobsterPetPaletteId } from "../../components/lobster-pet-contract.ts";
 import {
@@ -10,6 +11,7 @@ import { LOBSTER_PALETTE_LORE, lobsterPaletteName } from "../../components/lobst
 import { LOBSTER_PET_PALETTES } from "../../components/lobster-pet-palettes.ts";
 import { i18n, t } from "../../i18n/index.ts";
 import { registerLobsterdexEnglish } from "../../i18n/locales/en-lobsterdex.ts";
+import type { ColoringMode } from "./coloring-art.ts";
 // Page stars must override the shared mini-star rules loaded by lobster-pet-look.
 import "../../styles/lobsterdex.css";
 
@@ -34,10 +36,53 @@ export type LobsterdexExportFeedback =
 
 type LobsterdexViewProps = {
   exportFeedback?: LobsterdexExportFeedback | null;
-  onDownload?: (target: LobsterPetPaletteId | "all") => void;
+  onDownload?: (target: LobsterPetPaletteId | "all", mode: ColoringMode) => void;
   copyFeedback?: LobsterdexCopyFeedback | null;
   onCopyLink?: (paletteId: LobsterPetPaletteId) => void;
 };
+
+function renderDownloadMenu(
+  target: LobsterPetPaletteId | "all",
+  props: LobsterdexViewProps,
+  exporting: boolean,
+) {
+  const bulk = target === "all";
+  const label = bulk
+    ? t("quickSettings.appearance.lobsterdexColoringAll")
+    : t("quickSettings.appearance.lobsterdexColoringDownloadLabel", {
+        name: lobsterPaletteName(target),
+      });
+  return html`
+    <wa-dropdown
+      class=${bulk ? "lobsterdex-page__bulk-menu" : "lobsterdex-page__download-menu"}
+      placement="bottom-end"
+      @wa-select=${(event: CustomEvent<{ item: { value: string } }>) => {
+        const mode = event.detail.item.value;
+        if (!exporting && (mode === "outline" || mode === "color")) {
+          props.onDownload?.(target, mode);
+        }
+      }}
+    >
+      <button
+        slot="trigger"
+        type="button"
+        class=${bulk ? "btn" : "lobsterdex-page__download"}
+        ?disabled=${exporting}
+        aria-busy=${exporting}
+        aria-label=${label}
+        title=${label}
+      >
+        ${bulk ? label : html`<span aria-hidden="true">${icons.download}</span>`}
+      </button>
+      <wa-dropdown-item value="outline" ?disabled=${exporting}
+        >${t(bulk ? "quickSettings.appearance.lobsterdexColoringSheetsZip" : "quickSettings.appearance.lobsterdexColoringSheetPdf")}</wa-dropdown-item
+      >
+      <wa-dropdown-item value="color" ?disabled=${exporting}
+        >${t(bulk ? "quickSettings.appearance.lobsterdexColorGuidesZip" : "quickSettings.appearance.lobsterdexColorGuidePdf")}</wa-dropdown-item
+      >
+    </wa-dropdown>
+  `;
+}
 
 function formatLobsterdexDate(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString(i18n.getLocale());
@@ -67,14 +112,7 @@ export function renderLobsterdex(entries: LobsterdexViewEntries, props: Lobsterd
           <h3>${t("quickSettings.appearance.lobsterdexColoringTitle")}</h3>
           <p>${t("quickSettings.appearance.lobsterdexColoringDescription")}</p>
         </div>
-        <button
-          type="button"
-          class="btn"
-          ?disabled=${exporting}
-          @click=${() => props.onDownload?.("all")}
-        >
-          ${t("quickSettings.appearance.lobsterdexColoringAll")}
-        </button>
+        ${renderDownloadMenu("all", props, exporting)}
       </div>
       <div
         role="status"
@@ -177,15 +215,7 @@ export function renderLobsterdex(entries: LobsterdexViewEntries, props: Lobsterd
                     : nothing
                 }
               </div>
-              <button
-                type="button"
-                class="btn btn--sm lobsterdex-page__download"
-                ?disabled=${exporting}
-                aria-label=${t("quickSettings.appearance.lobsterdexColoringDownloadLabel", { name: lobsterPaletteName(palette.id) })}
-                @click=${() => props.onDownload?.(palette.id)}
-              >
-                ${t("quickSettings.appearance.lobsterdexColoringDownload")}
-              </button>
+              ${renderDownloadMenu(palette.id, props, exporting)}
             </article>
           `;
         })}

@@ -1,6 +1,9 @@
 import { render } from "lit";
 import type { LobsterPetPalette } from "../../components/lobster-pet-contract.ts";
 import { canonicalLobsterLook, renderLobsterSvg } from "../../components/lobster-pet-look.ts";
+import { createColorGuideArt } from "./coloring-color.ts";
+
+export type ColoringMode = "outline" | "color";
 
 const SHAPES = new Set([
   "path",
@@ -60,10 +63,17 @@ function outline(element: SVGElement, inheritedFill = "black"): void {
   }
 }
 
-export function createColoringArt(palette: LobsterPetPalette): {
+export function createColoringArt(
+  palette: LobsterPetPalette,
+  mode: ColoringMode = "outline",
+): {
   svg: SVGSVGElement;
   dispose: () => void;
 } {
+  if (mode === "color") {
+    const art = createColorGuideArt(palette);
+    return fitArt(art.svg, art.dispose);
+  }
   const host = document.createElement("div");
   host.setAttribute("aria-hidden", "true");
   host.style.cssText =
@@ -79,6 +89,12 @@ export function createColoringArt(palette: LobsterPetPalette): {
   svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
   svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
   document.body.append(host);
+  return fitArt(svg, () => host.remove());
+}
+
+function fitArt(svg: SVGSVGElement, dispose: () => void) {
+  svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
   try {
     // Some replacement sprites extend beyond the pet viewport (balloon string,
     // tall antennae). Measure their actual geometry, then include stroke padding.
@@ -88,9 +104,9 @@ export function createColoringArt(palette: LobsterPetPalette): {
     const width = Math.max(120, bounds.x + bounds.width) - x + 4;
     const height = Math.max(105, bounds.y + bounds.height) - y + 4;
     svg.setAttribute("viewBox", [x, y, width, height].join(" "));
-    return { svg, dispose: () => host.remove() };
+    return { svg, dispose };
   } catch (error) {
-    host.remove();
+    dispose();
     throw error;
   }
 }

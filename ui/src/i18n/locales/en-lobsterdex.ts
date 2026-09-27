@@ -4,16 +4,19 @@ import { en } from "./en.ts";
 const enLobsterdex = {
   quickSettings: {
     appearance: {
-      lobsterdexColoringTitle: "Coloring sheets",
+      lobsterdexColoringTitle: "Coloring sheets and guides",
       lobsterdexColoringDescription:
         "Print a lobster of your own. Includes every lobster, even those you haven’t met. PDFs are created on this device.",
-      lobsterdexColoringAll: "Download all coloring sheets (ZIP)",
-      lobsterdexColoringDownload: "Coloring PDF",
-      lobsterdexColoringDownloadLabel: "Download coloring sheet for {name} (PDF)",
-      lobsterdexColoringProgress: "Preparing coloring sheets… {completed}/{total}",
+      lobsterdexColoringAll: "Download all (ZIP)",
+      lobsterdexColoringSheetPdf: "Coloring sheet (PDF)",
+      lobsterdexColorGuidePdf: "Color guide (PDF)",
+      lobsterdexColoringSheetsZip: "Coloring sheets (ZIP)",
+      lobsterdexColorGuidesZip: "Color guides (ZIP)",
+      lobsterdexColoringDownloadLabel: "Download PDFs for {name}",
+      lobsterdexColoringProgress: "Preparing PDFs… {completed}/{total}",
       lobsterdexColoringDownloaded: "Download started. Check your browser’s downloads.",
       lobsterdexColoringError:
-        "Couldn’t create the coloring sheets. Try again, or reload this page if the problem continues.",
+        "Couldn’t create the PDFs. Try again, or reload this page if the problem continues.",
     },
   },
 } satisfies TranslationMap;

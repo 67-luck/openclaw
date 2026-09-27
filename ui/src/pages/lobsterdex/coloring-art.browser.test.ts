@@ -54,4 +54,56 @@ describe("Lobsterdex coloring artwork", () => {
       }
     }
   });
+
+  it("resolves canonical color paint in an isolated light document", () => {
+    const previous = document.documentElement.getAttribute("data-theme-mode");
+    try {
+      for (const palette of LOBSTER_PET_PALETTES) {
+        document.documentElement.setAttribute("data-theme-mode", "light");
+        const light = createColoringArt(palette, "color");
+        document.documentElement.setAttribute("data-theme-mode", "dark");
+        const dark = createColoringArt(palette, "color");
+        try {
+          expect(dark.svg.outerHTML, palette.id).toBe(light.svg.outerHTML);
+          expect(light.svg.outerHTML).not.toContain("var(");
+          expect(light.svg.outerHTML).not.toContain("currentColor");
+          expect(light.svg.querySelectorAll("[class], [style], [filter]")).toHaveLength(0);
+          expect(light.svg.getAnimations({ subtree: true })).toHaveLength(0);
+          if (palette.id === "split") {
+            expect(light.svg.querySelector('path[d^="M100 42"]')?.getAttribute("fill")).toBe(
+              "rgb(70, 83, 107)",
+            );
+          }
+          if (palette.id === "chimera") {
+            expect(light.svg.querySelector('path[d^="M20 42"]')?.getAttribute("fill")).toBe(
+              "rgb(74, 125, 252)",
+            );
+          }
+          if (palette.id === "ascii") {
+            expect(light.svg.querySelector("text")?.getAttribute("fill")).toBe("rgb(70, 82, 94)");
+          }
+          if (palette.id === "mood") {
+            expect(light.svg.querySelector('path[d^="M60 8"]')?.getAttribute("fill")).toBe(
+              "rgb(127, 119, 221)",
+            );
+          }
+          if (palette.id === "portal") {
+            expect(light.svg.querySelector("ellipse")?.getAttribute("stroke")).toBe(
+              "rgb(74, 157, 248)",
+            );
+          }
+        } finally {
+          light.dispose();
+          dark.dispose();
+        }
+        expect(light.svg.isConnected).toBe(false);
+      }
+    } finally {
+      if (previous === null) {
+        document.documentElement.removeAttribute("data-theme-mode");
+      } else {
+        document.documentElement.setAttribute("data-theme-mode", previous);
+      }
+    }
+  });
 });
