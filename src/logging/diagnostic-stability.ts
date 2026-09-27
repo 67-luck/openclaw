@@ -4,25 +4,25 @@ import {
   type DiagnosticMemoryUsage,
 } from "../infra/diagnostic-events.js";
 import { DIAGNOSTIC_STABILITY_EVENT_INTEREST } from "./diagnostic-stability-filter.js";
+import {
+  DEFAULT_DIAGNOSTIC_STABILITY_CAPACITY,
+  normalizeDiagnosticStabilityQuery,
+} from "./diagnostic-stability-query.js";
 import type {
   DiagnosticExporterHealthUpdate,
   DiagnosticStabilityEventRecord,
   DiagnosticStabilitySnapshot,
 } from "./diagnostic-stability.types.js";
-export type {
-  DiagnosticExporterHealthUpdate,
-  DiagnosticStabilityEventRecord,
-  DiagnosticStabilitySnapshot,
-} from "./diagnostic-stability.types.js";
-import {
-  DEFAULT_DIAGNOSTIC_STABILITY_CAPACITY,
-  normalizeDiagnosticStabilityQuery,
-} from "./diagnostic-stability-query.js";
 
 export {
   MAX_DIAGNOSTIC_STABILITY_LIMIT,
   normalizeDiagnosticStabilityQuery,
 } from "./diagnostic-stability-query.js";
+export type {
+  DiagnosticExporterHealthUpdate,
+  DiagnosticStabilityEventRecord,
+  DiagnosticStabilitySnapshot,
+} from "./diagnostic-stability.types.js";
 
 // Ring-buffer recorder for stability diagnostics and support-bundle snapshots.
 const MAX_DIAGNOSTIC_EXPORTER_STATES = 16;
@@ -685,4 +685,3 @@ export function resetDiagnosticStabilityRecorderForTest(): void {
   };
   globalStore["__openclawDiagnosticStabilityState"] = next;
 }
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
