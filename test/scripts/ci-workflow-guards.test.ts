@@ -2844,7 +2844,68 @@ AFTER_CD
       "github.event_name == 'pull_request'",
     );
     expect(workflow.jobs["checks-fast-core"].strategy["max-parallel"]).toBe(12);
-    expect(workflow.jobs["checks-node-core-test-nondist-shard"].strategy["max-parallel"]).toBe(96);
+    const nodeParallel =
+      workflow.jobs["checks-node-core-test-nondist-shard"].strategy["max-parallel"];
+    const canonicalNodePr = {
+      eventName: "pull_request" as const,
+      repository: "openclaw/openclaw",
+      headRepository: "openclaw/openclaw",
+      runAttempt: 1,
+      runnerProfile: "hybrid" as const,
+    };
+    for (const runnerBackend of ["", "blacksmith", "hybrid"] as const) {
+      for (const authorAssociation of ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]) {
+        expect(
+          evaluateWorkflowExpression(nodeParallel, {
+            ...canonicalNodePr,
+            runnerBackend,
+            runnerProfile: runnerBackend === "hybrid" ? "hybrid" : "blacksmith",
+            authorAssociation,
+          }),
+          `${runnerBackend || "default"}/${authorAssociation}`,
+        ).toBe(130);
+      }
+    }
+    const restrictedNodeContexts: Array<Partial<Parameters<typeof evaluateWorkflowExpression>[1]>> =
+      [
+        { eventName: "push" },
+        { eventName: "schedule" },
+        { eventName: "workflow_dispatch" },
+        {
+          eventName: "workflow_dispatch",
+          ciShape: "main",
+          preflightOutputs: { ci_qualification: "true", qualification_runner_backend: "hybrid" },
+        },
+        {
+          eventName: "workflow_dispatch",
+          ciShape: "default",
+          preflightOutputs: { ci_qualification: "true", qualification_runner_backend: "hybrid" },
+        },
+        { runnerBackend: "github" },
+        { runnerBackend: "runson" },
+        { preflightOutputs: { node_runner_backend: "runson" } },
+        { runnerProfile: "github" },
+        { runAttempt: 2 },
+        { frozenTarget: true },
+        { authorAssociation: "FIRST_TIME_CONTRIBUTOR" },
+        { authorAssociation: "FIRST_TIMER" },
+        { authorAssociation: "NONE" },
+        { authorAssociation: "MANNEQUIN" },
+        { headRepository: "contributor/openclaw" },
+        { headRepository: "" },
+        { repository: "contributor/openclaw" },
+      ];
+    for (const context of restrictedNodeContexts) {
+      expect(
+        evaluateWorkflowExpression(nodeParallel, {
+          ...canonicalNodePr,
+          runnerBackend: "hybrid",
+          authorAssociation: "CONTRIBUTOR",
+          ...context,
+        }),
+        JSON.stringify(context),
+      ).toBe(96);
+    }
     expect(workflow.jobs["checks-fast-plugin-contracts-shard"].strategy["max-parallel"]).toBe(12);
     expect(workflow.jobs["checks-fast-channel-contracts-shard"].strategy["max-parallel"]).toBe(12);
     expect(workflow.jobs["check-shard"].strategy["max-parallel"]).toBe(12);
