@@ -278,7 +278,6 @@ export async function runUpdatedInstallGatewayCommand(
     bindChild?: (pid: number, argv?: readonly string[]) => void,
   ) => {
     const argv = [nodeRunner, entrypoint, ...args, ...(grant ? ["--update-executor", "run"] : [])];
-    assertCurrent();
     params.onGatewayStartAttempted?.();
     const result = await runCommandWithTimeout(argv, {
       // The complete owned env must not regain selectors removed during capture.
@@ -312,6 +311,9 @@ export async function runUpdatedInstallGatewayCommand(
     }
     return result;
   };
+  // The parent mutation fence closes during delegation. Validate it before
+  // child admission; the child owner checks live authority again when binding.
+  assertCurrent();
   const res = executor
     ? await withUpdateCommandExecutorChild(executor, params.result.root!, runChild)
     : await runChild();

@@ -106,6 +106,7 @@ it.each([
   `,
     );
     vi.spyOn(entrypoints, "resolveGatewayInstallEntrypoint").mockResolvedValue(entrypoint);
+    const onGatewayStartAttempted = vi.fn();
     const observed: unknown[] = [];
     const actualRun = execCommands.runCommandWithTimeout;
     vi.spyOn(execCommands, "runCommandWithTimeout").mockImplementation(async (...args) => {
@@ -160,6 +161,11 @@ it.each([
           opts: { json: true, run: { runId, env: process.env, executorFence: fence } },
           invocationEnv: process.env,
           timeoutMs: 20_000,
+          onGatewayStartAttempted: () => {
+            // Delegation suspends parent mutations until the native child joins.
+            expect(() => fence.assertCurrent()).toThrow("The update process is still running.");
+            onGatewayStartAttempted();
+          },
         },
         "restart",
       );
@@ -171,6 +177,7 @@ it.each([
     });
     if ((supported === true || supported === "without-backup") && destination !== "foreign") {
       expect(await work).toBe("accepted");
+      expect(onGatewayStartAttempted).toHaveBeenCalledOnce();
       expect(await fs.readFile(effect, "utf8")).toBe("owned");
       const childReceipt = JSON.parse(await fs.readFile(receipt, "utf8"));
       expect(childReceipt).toMatchObject({ parent: process.pid, noRespawn: "1" });
