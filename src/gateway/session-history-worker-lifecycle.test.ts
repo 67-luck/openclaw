@@ -11,11 +11,11 @@ import {
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { readSessionColdTranscript } from "../config/sessions/session-cold-storage-state.js";
 import { runSessionColdStorageMaintenance } from "../config/sessions/session-cold-storage.js";
-import type { SessionHistoryWorkerRequest } from "../config/sessions/session-history-types.js";
 import {
   createSessionColdStorageFixture,
   maintenanceConfig,
 } from "../config/sessions/session-cold-storage.test-support.js";
+import type { SessionHistoryWorkerRequest } from "../config/sessions/session-history-types.js";
 import { readSessionHistoryPageInWorker } from "../config/sessions/session-history-worker-runtime.js";
 import * as targetInventory from "../config/sessions/session-store-target-inventory.js";
 import {
@@ -276,7 +276,7 @@ type HistoryReadCase = {
   auxiliary: boolean;
   read: (fixture: Awaited<ReturnType<typeof seed>>, signal?: AbortSignal) => Promise<unknown>;
 };
-const historyReads = {
+const historyReads: Record<SessionHistoryWorkerRequest["kind"], HistoryReadCase> = {
   artifacts: {
     auxiliary: false,
     read: async ({ target }, signal) => {
@@ -321,7 +321,10 @@ const historyReads = {
       readSessionHistoryPageInWorker(
         {
           kind: "around-id",
-          params: { target, options: { messageId: `${target.sessionId}-message`, maxMessages: 20 } },
+          params: {
+            target,
+            options: { messageId: `${target.sessionId}-message`, maxMessages: 20 },
+          },
         },
         signal,
       ),
@@ -402,7 +405,7 @@ const historyReads = {
       return result;
     },
   },
-} satisfies Record<SessionHistoryWorkerRequest["kind"], HistoryReadCase>;
+};
 const selectedReads = Object.entries(historyReads).filter(([, read]) => !read.auxiliary);
 
 it.each(Object.entries(historyReads))(
@@ -440,7 +443,10 @@ it.each(Object.entries(historyReads))(
         expect(JSON.stringify(expected)).toContain('"topology-work-message"');
       }
       const inventory = vi.spyOn(targetInventory, "prepareSessionStoreTargetInventory");
-      const registry = vi.spyOn(registryListing, "prepareOpenClawAgentDatabaseRegistrySnapshotRead");
+      const registry = vi.spyOn(
+        registryListing,
+        "prepareOpenClawAgentDatabaseRegistrySnapshotRead",
+      );
       const inputs: Record<string, unknown>[] = [];
       observed.dispatch = (message) => {
         const input = asOptionalRecord(asOptionalRecord(message)?.input);
