@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -7,7 +8,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import * as projection from "../config/sessions/session-accessor.sqlite-active-projection.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { AgentDatabaseRegistryChangedError } from "../state/openclaw-agent-db-registry-listing.js";
+import { closeOpenClawAgentDatabaseByPathAsync } from "../state/openclaw-agent-db-lifecycle.js";
 import { registerOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
 import {
   openOpenClawAgentDatabase,
@@ -28,6 +29,7 @@ import {
   runtimeConfigState,
   sessionRow,
 } from "./server-session-events.test-support.js";
+import * as storeSources from "./session-utils-store-sources.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -109,92 +111,124 @@ it.each(["by-id", "count"] as const)(
   },
 );
 
-it.each([
-  "metadata refresh",
-  "continuous metadata refresh",
-  "source retirement",
-  "read failure",
-] as const)("honors %s during initial registry discovery before publication", async (change) => {
-  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const { target, handler, broadcastToConnIds } = await seedBroadcastHistory(
-      resolveOpenClawAgentSqlitePath({ agentId: "main", env: state.env }),
-    );
-    const sibling = openOpenClawAgentDatabase({ agentId: "other", env: state.env });
-    const update = {
-      target,
-      messageId: "answer",
-      message: { role: "assistant", content: "Queued answer" },
-    };
-    await handler(update);
-    broadcastToConnIds.mockClear();
-    const registration = { agentId: "other", path: sibling.path, env: state.env };
-    registerOpenClawAgentDatabase(registration);
-    const held = createDeferredCore();
-    const release = createDeferredCore();
-    const readError = new Error("Registry worker read failed");
-    const read = stateReads.executeExistingOpenClawStateRead;
-    let registryReads = 0;
-    const observation = vi
-      .spyOn(stateReads, "executeExistingOpenClawStateRead")
-      .mockImplementation(async (...args) => {
-        const result = await read(...args);
-        if (args[1].type === "agentDatabaseRegistry.read") {
-          registryReads++;
-          if (registryReads === 1) {
-            held.resolve();
-            await release.promise;
-            if (change === "read failure") {
-              throw readError;
-            }
-          } else if (change === "continuous metadata refresh") {
-            // Two documented metadata retries allow three acquisitions, never unbounded churn.
+it.each(
+  (["by-id", "count"] as const).flatMap((kind) =>
+    (
+      [
+        "registry churn",
+        "state retirement",
+        "selected retirement",
+        "selected replacement",
+        "preparation failure",
+      ] as const
+    ).map((change) => ({ kind, change })),
+  ),
+)(
+  "honors $change during selected $kind preparation before publication",
+  async ({ kind, change }) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const { target, handler, broadcastToConnIds } = await seedBroadcastHistory(
+        resolveOpenClawAgentSqlitePath({ agentId: "main", env: state.env }),
+      );
+      const sibling = openOpenClawAgentDatabase({ agentId: "other", env: state.env });
+      const update = {
+        target,
+        ...(kind === "by-id" ? { messageId: "answer" } : {}),
+        message: { role: "assistant", content: "Queued answer" },
+      };
+      await handler(update);
+      broadcastToConnIds.mockClear();
+      const registration = { agentId: "other", path: sibling.path, env: state.env };
+      registerOpenClawAgentDatabase(registration);
+      const held = createDeferredCore();
+      const release = createDeferredCore();
+      const preparationError = new Error("Selected-source preparation failed");
+      const read = stateReads.executeExistingOpenClawStateRead;
+      const registry = vi
+        .spyOn(stateReads, "executeExistingOpenClawStateRead")
+        .mockImplementation((...args) => {
+          if (args[1].type === "agentDatabaseRegistry.read") {
+            throw new Error("Unrelated registry is unavailable");
+          }
+          return read(...args);
+        });
+      const prepare = storeSources.prepareGatewaySessionStoreReadSourcesAsync;
+      const preparation = vi
+        .spyOn(storeSources, "prepareGatewaySessionStoreReadSourcesAsync")
+        .mockImplementation(async (params) => {
+          const prepared = await prepare(params);
+          // Retain the real selected matcher and caller admission across this wait;
+          // unrelated registry discovery is no longer part of raw publication.
+          held.resolve();
+          await release.promise;
+          if (change === "preparation failure") {
+            throw preparationError;
+          }
+          return prepared;
+        });
+      let closing: Promise<boolean> | undefined;
+      const pending = handler(update);
+      try {
+        await Promise.race([
+          held.promise,
+          pending.then(() => {
+            throw new Error("Publication completed before selected-source preparation");
+          }),
+        ]);
+        expect(broadcastToConnIds).not.toHaveBeenCalled();
+        if (change === "state retirement") {
+          await closeOpenClawStateDatabaseByPathAsync(openOpenClawStateDatabase().path);
+          openOpenClawStateDatabase();
+        } else if (change === "selected retirement") {
+          closing = closeOpenClawAgentDatabaseByPathAsync(target.storePath, target.agentId);
+        } else if (change === "selected replacement") {
+          fs.copyFileSync(target.storePath, `${target.storePath}.replacement`);
+          fs.renameSync(target.storePath, `${target.storePath}.previous`);
+          fs.renameSync(`${target.storePath}.replacement`, target.storePath);
+        } else if (change === "registry churn") {
+          for (let index = 0; index < 3; index++) {
             registerOpenClawAgentDatabase(registration);
           }
         }
-        return result;
-      });
-    const pending = handler(update);
-    try {
-      await Promise.race([
-        held.promise,
-        pending.then(() => {
-          throw new Error("Publication completed before its initial registry read");
-        }),
-      ]);
-      if (change === "source retirement") {
-        await closeOpenClawStateDatabaseByPathAsync(openOpenClawStateDatabase().path);
-        openOpenClawStateDatabase();
-      } else {
-        registerOpenClawAgentDatabase(registration);
+        release.resolve();
+        if (change === "state retirement") {
+          await expect(pending).rejects.toMatchObject({
+            code: "STATE_DATABASE_READ_ADMISSION_INVALIDATED",
+          });
+        } else if (change === "selected retirement") {
+          await expect(pending).rejects.toThrow("revoked");
+        } else if (change === "selected replacement") {
+          await expect(pending).rejects.toThrow("Session store changed");
+        } else if (change === "preparation failure") {
+          await expect(pending).rejects.toBe(preparationError);
+        } else {
+          await pending;
+          expect(broadcastToConnIds).toHaveBeenCalledWith(
+            "session.message",
+            expect.objectContaining({
+              messageSeq: 2,
+              message: expect.objectContaining({
+                content: kind === "by-id" ? "Stored answer" : "Queued answer",
+              }),
+            }),
+            expect.any(Set),
+          );
+        }
+        if (change !== "registry churn") {
+          expect(broadcastToConnIds).not.toHaveBeenCalled();
+        }
+        expect(
+          registry.mock.calls.filter(
+            ([, command]) => command.type === "agentDatabaseRegistry.read",
+          ),
+        ).toEqual([]);
+      } finally {
+        release.resolve();
+        await pending.catch(() => undefined);
+        await closing;
+        preparation.mockRestore();
+        registry.mockRestore();
       }
-      release.resolve();
-      if (change === "source retirement") {
-        await expect(pending).rejects.toMatchObject({
-          code: "STATE_DATABASE_READ_ADMISSION_INVALIDATED",
-        });
-      } else if (change === "read failure") {
-        await expect(pending).rejects.toBe(readError);
-      } else if (change === "continuous metadata refresh") {
-        await expect(pending).rejects.toBeInstanceOf(AgentDatabaseRegistryChangedError);
-        expect(registryReads).toBe(3);
-      } else {
-        await pending;
-        expect(broadcastToConnIds).toHaveBeenCalledWith(
-          "session.message",
-          expect.objectContaining({
-            messageSeq: 2,
-            message: expect.objectContaining({ content: "Stored answer" }),
-          }),
-          expect.any(Set),
-        );
-      }
-      if (change !== "metadata refresh") {
-        expect(broadcastToConnIds).not.toHaveBeenCalled();
-      }
-    } finally {
-      release.resolve();
-      await pending.catch(() => undefined);
-      observation.mockRestore();
-    }
-  });
-});
+    });
+  },
+);
