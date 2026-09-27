@@ -9,6 +9,7 @@ import { EMPTY_LEGACY_SESSION_SURFACES } from "../plugins/legacy-session-surface
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import * as stateLeaseErrors from "../state/openclaw-state-lease-error.js";
 import { createTrackedTempDirs } from "../test-utils/tracked-temp-dirs.js";
 import {
   readDeferredPluginMigrations,
@@ -425,6 +426,33 @@ module.exports = { stateMigrations: [{
   ])(
     "discovers live plugin actions across index migration (legacy root: $legacyRoot, phase: $phase, indexed: $fromInstallIndex, direct: $direct, legacy schema: $legacySchema, ordinary-only: $excludeDoctorOnly)",
     async ({ phase, legacyRoot, fromInstallIndex, direct, legacySchema, excludeDoctorOnly }) => {
+      const startedAt = Date.now();
+      const createLeaseLostError = stateLeaseErrors.createOpenClawStateLeaseLostError;
+      const leaseLosses: Array<{
+        identity: Pick<Parameters<typeof createLeaseLostError>[0], "scope" | "key" | "leaseLabel">;
+        error: ReturnType<typeof createLeaseLostError>;
+        cause: unknown;
+        elapsedMs: number;
+      }> = [];
+      vi.spyOn(stateLeaseErrors, "createOpenClawStateLeaseLostError").mockImplementation(
+        (identity, cause) => {
+          const previousStackTraceLimit = Error.stackTraceLimit;
+          let error: ReturnType<typeof createLeaseLostError>;
+          try {
+            Error.stackTraceLimit = Math.max(previousStackTraceLimit, 40);
+            error = createLeaseLostError(identity, cause);
+          } finally {
+            Error.stackTraceLimit = previousStackTraceLimit;
+          }
+          leaseLosses.push({
+            identity: { scope: identity.scope, key: identity.key, leaseLabel: identity.leaseLabel },
+            error,
+            cause,
+            elapsedMs: Date.now() - startedAt,
+          });
+          return error;
+        },
+      );
       const fixture = await makeFixture();
       // This execution fixture has no candidate package. Its config-root plugin directory
       // must contain only the live owner, not makeFixture's copied-plan bundled tree.
@@ -539,7 +567,36 @@ module.exports = { stateMigrations: [{
             legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
           });
 
-      expect(result.warnings).toEqual([]);
+      const refusal = result.stepReceipts.find((receipt) => receipt.outcome === "refused");
+      const sourcePath = path.join(stateDir, "plugins", "installs.json");
+      const diagnostic =
+        result.warnings.length === 0
+          ? undefined
+          : JSON.stringify({
+              elapsedMs: Date.now() - startedAt,
+              stateDir,
+              sourceExists: fs.existsSync(sourcePath),
+              archivedSourceExists: fs.existsSync(`${sourcePath}.migrated`),
+              refusedStep: refusal && {
+                id: refusal.id,
+                refusal: refusal.refusal,
+                originatingRefusal: refusal.originatingRefusal,
+              },
+              leaseLosses: leaseLosses.map(({ identity, error, cause, elapsedMs }) => ({
+                identity,
+                elapsedMs,
+                code: error.code,
+                stack: error.stack,
+                originalCausePreserved: error.cause === cause,
+                cause:
+                  cause instanceof Error
+                    ? { name: cause.name, message: cause.message, stack: cause.stack }
+                    : cause === undefined
+                      ? undefined
+                      : { type: typeof cause },
+              })),
+            });
+      expect(result.warnings, diagnostic).toEqual([]);
       expect(
         result.stepReceipts.find(
           (receipt) => receipt.id === (legacyRoot ? "state-dir" : "plugin-install-index"),
