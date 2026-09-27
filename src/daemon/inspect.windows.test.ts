@@ -233,6 +233,7 @@ describe("findExtraGatewayServices (win32)", () => {
     readScheduledTaskCommandMock.mockImplementationOnce(async (_env, options) => {
       options?.onLauncherContent?.(
         "@echo off\r\nnode C:\\openclaw\\dist\\entry.js gateway run\r\n",
+        "C:\\fixtures\\service.cmd",
       );
       throw new Error("Nested launcher could not be read");
     });

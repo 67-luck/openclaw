@@ -114,6 +114,8 @@ export function shouldUseHiddenWindowsTaskLauncher(env: GatewayServiceEnv): bool
   return value === "1" || value === "true" || value === "yes";
 }
 
+type LauncherContentObserver = (content: string, sourcePath: string) => void;
+
 export function resolveTaskLauncherScriptPath(env: GatewayServiceEnv, scriptPath: string): string {
   if (!shouldUseHiddenWindowsTaskLauncher(env)) {
     return scriptPath;
@@ -130,7 +132,7 @@ function assertStaticTaskPath(value: string): void {
 
 async function readTaskLauncher(
   launcherPath: string,
-  onLauncherContent?: (content: string) => void,
+  onLauncherContent?: LauncherContentObserver,
   startup = false,
   deadline?: number,
 ): Promise<{ scriptPath: string; content?: string }> {
@@ -143,7 +145,7 @@ async function readTaskLauncher(
     throw new Error("Unsupported Scheduled Task action");
   }
   const content = await readTaskFile(launcherPath, deadline);
-  onLauncherContent?.(content);
+  onLauncherContent?.(content, launcherPath);
   const cmd = /\.cmd$/i.test(launcherPath);
   const lines = content
     .split(/\r?\n/)
@@ -192,7 +194,7 @@ async function readTaskLauncher(
 async function readTaskLaunchers(
   env: GatewayServiceEnv,
   actionPath?: string,
-  onLauncherContent?: (content: string) => void,
+  onLauncherContent?: LauncherContentObserver,
   deadline?: number,
 ) {
   const launchers: Array<{ pathname: string; scriptPath: string; content?: string }> = [];
@@ -225,7 +227,7 @@ async function readTaskLaunchers(
 export async function readScheduledTaskCommand(
   env: GatewayServiceEnv,
   options?: GatewayServiceReadOptions & {
-    onLauncherContent?: (content: string) => void;
+    onLauncherContent?: LauncherContentObserver;
     /** Inventory reads a Task's profile without admitting it as the caller's selected service. */
     profileScope?: "registered";
     /** Shared monotonic deadline for aggregate Windows inventory. */
@@ -237,7 +239,7 @@ export async function readScheduledTaskCommand(
 
 export async function readStartupEntryCommand(
   startupEntryPath: string,
-  options?: { onLauncherContent?: (content: string) => void; deadline?: number },
+  options?: { onLauncherContent?: LauncherContentObserver; deadline?: number },
 ): Promise<GatewayServiceCommandConfig> {
   const command = await readWindowsTaskCommand(
     { kind: "startup-entry", path: startupEntryPath },
@@ -254,7 +256,7 @@ async function readWindowsTaskCommand(
     | { kind: "scheduled-task"; env: GatewayServiceEnv }
     | { kind: "startup-entry"; path: string },
   options?: GatewayServiceReadOptions & {
-    onLauncherContent?: (content: string) => void;
+    onLauncherContent?: LauncherContentObserver;
     profileScope?: "registered";
     deadline?: number;
   },
@@ -316,7 +318,7 @@ async function readWindowsTaskCommand(
     if (action && !directExecutable && action.arguments.trim()) {
       throw new Error("Scheduled Task launcher arguments cannot be inspected");
     }
-    const captureLaunchers = async (onContent?: (content: string) => void) =>
+    const captureLaunchers = async (onContent?: LauncherContentObserver) =>
       startupEntryPath !== undefined
         ? [
             {
@@ -385,7 +387,7 @@ async function readWindowsTaskCommand(
     }
     const scriptPath = launchers?.[0]?.scriptPath ?? resolveTaskScriptPath(env);
     const content = await readTaskFile(scriptPath, deadline);
-    options?.onLauncherContent?.(content);
+    options?.onLauncherContent?.(content, scriptPath);
     let workingDirectory = action?.workingDirectory ?? "";
     let commandLine = "";
     const environment: Record<string, string> = {};
