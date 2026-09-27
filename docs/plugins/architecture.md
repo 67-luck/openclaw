@@ -347,7 +347,9 @@ Startup and hourly cleanup can also reclaim tokenless `openclaw-plugin-build-*`
 and `openclaw-model-catalog-*` roots in the selected state's temporary directory
 and the current system temporary directory. Roots must be older than one hour,
 have no coordinator, and pass a complete process census that finds no other
-OpenClaw producer. A live producer or unavailable or incomplete census preserves
+OpenClaw producer. Cleanup rechecks that each legacy root belongs to the current
+UID immediately before its rename, preserving other users' captures even in
+privileged runs. A live producer or unavailable or incomplete census preserves
 legacy roots. Age and a successful rename do not prove that a producer has stopped
 using their paths; the rename probe only checks for sharing violations. Legacy
 scratch therefore remains on hosts without complete process visibility, including

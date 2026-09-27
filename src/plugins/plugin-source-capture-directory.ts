@@ -219,6 +219,11 @@ async function reclaimInstances(
           if (!legacyAllowed) {
             continue;
           }
+          // The census excludes foreign-UID processes, not their scratch. Recheck
+          // ownership after inspection, even when an elevated process could remove it.
+          if (process.getuid && (await fsPromises.lstat(canonical)).uid !== process.getuid()) {
+            continue;
+          }
         }
         // Legacy writers have no lease. Probe for Windows sharing violations before
         // removing aged scratch; retain the recognizable name if removal is interrupted.

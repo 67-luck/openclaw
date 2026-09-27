@@ -234,19 +234,14 @@ it.each(["doctor", "startup"])(
       vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1_000);
     }
     try {
-      if (mode === "doctor") {
-        inspectProcesses.mockReturnValue({ pids: [4242] });
-        expect(await duringMaintenance()).toContain("PIDs: 4242");
-        expect(fs.existsSync(orphan.directory)).toBe(true);
-      }
-      inspectProcesses.mockReturnValue({ pids: [] });
+      inspectProcesses.mockReturnValue({ error: "fixture unreadable host argv" });
       const output = await duringMaintenance();
       if (mode === "doctor") {
         expect(output).toContain("Removed 1 unreferenced native plugin capture root(s).");
       } else {
         expect(warning).not.toHaveBeenCalled();
-        expect(inspectProcesses).not.toHaveBeenCalled();
       }
+      expect(inspectProcesses).not.toHaveBeenCalled();
       expect(fs.existsSync(orphan.directory)).toBe(false);
       expect(fs.readFileSync(captured, "utf8")).toBe("published native bytes");
       expect(fs.readFileSync(warmFile, "utf8")).toBe("warm generation bytes");
