@@ -3,6 +3,7 @@
 import { html, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MessageClientSource } from "../../../../../src/chat/message-client-source.js";
+import { sanitizeChatHistoryMessages } from "../../../../../src/gateway/chat-display-projection.sanitize.js";
 import { projectAgentToolActivity } from "../../../../../src/infra/agent-activity-events.js";
 import * as markdown from "../../../components/markdown.ts";
 import type { MessageGroup } from "../../../lib/chat/chat-types.ts";
@@ -1451,14 +1452,13 @@ describe("grouped chat rendering", () => {
     expect(fixture.onAction).not.toHaveBeenCalled();
   });
 
-  it("renders assistant context snapshots separately from billing totals", () => {
+  it("renders projected history context snapshots separately from billing totals", () => {
     const renderUsage = (usage: TestMessage, contextWindow: number) => {
       const container = document.createElement("div");
-      renderAssistantMessage(
-        container,
+      const [message] = sanitizeChatHistoryMessages([
         createAssistantMessage("Done", { usage, model: "openai/gpt-5.6-luna", timestamp: 1000 }),
-        { contextWindow },
-      );
+      ]);
+      renderAssistantMessage(container, message, { contextWindow });
       return container;
     };
     const cacheCounts = (container: HTMLElement) =>
