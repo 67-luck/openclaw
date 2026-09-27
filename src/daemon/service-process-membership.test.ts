@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inspectServiceProcessMembershipSync } from "./service-process-membership.js";
 
-const native = vi.hoisted(() => ({ spawn: vi.fn(), read: vi.fn() }));
+const native = vi.hoisted(() => ({ spawn: vi.fn(), read: vi.fn(), resourceCoalition: vi.fn() }));
 vi.mock("node:child_process", async (original) => ({
   ...(await original<typeof import("node:child_process")>()),
   spawnSync: native.spawn,
@@ -9,6 +9,11 @@ vi.mock("node:child_process", async (original) => ({
 vi.mock("node:fs", async (original) => ({
   ...(await original<typeof import("node:fs")>()),
   readFileSync: native.read,
+}));
+
+vi.mock("../shared/pid-alive.js", async (original) => ({
+  ...(await original<typeof import("../shared/pid-alive.js")>()),
+  readDarwinProcessResourceCoalition: native.resourceCoalition,
 }));
 
 const gatewayPid = process.pid + 1_000;
@@ -28,6 +33,7 @@ const coalition = (id: number, name: string) => `pid/123 = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  native.resourceCoalition.mockReturnValue(null);
   native.spawn.mockReturnValue({ status: 1, stdout: "" });
   native.read.mockImplementation(() => {
     throw new Error("native observation unavailable");
@@ -76,6 +82,88 @@ describe("launchd process membership", () => {
   );
 
   it.each([
+    { label: "same kernel cohort", caller: 1203n, gateway: 1203n, expected: "inside" },
+    {
+      label: "distinct cohorts without job names",
+      caller: 1204n,
+      gateway: 1203n,
+      expected: "unknown",
+    },
+    {
+      label: "full-width distinct IDs without job names",
+      caller: 2n ** 63n,
+      gateway: 2n ** 63n + 1n,
+      expected: "unknown",
+    },
+    {
+      label: "same native job across cohorts",
+      caller: 1204n,
+      gateway: 1203n,
+      callerName: "ai.openclaw.gateway",
+      gatewayName: "ai.openclaw.gateway",
+      expected: "inside",
+    },
+    {
+      label: "distinct named jobs",
+      caller: 1204n,
+      gateway: 1203n,
+      callerName: "com.apple.Terminal",
+      gatewayName: "ai.openclaw.gateway",
+      expected: "outside",
+    },
+    {
+      label: "full-width distinct named cohorts",
+      caller: 2n ** 63n,
+      gateway: 2n ** 63n + 1n,
+      callerName: "terminal",
+      gatewayName: "gateway",
+      expected: "outside",
+    },
+    {
+      label: "missing caller name",
+      caller: 1204n,
+      gateway: 1203n,
+      gatewayName: "ai.openclaw.gateway",
+      expected: "unknown",
+    },
+    {
+      label: "missing Gateway name",
+      caller: 1204n,
+      gateway: 1203n,
+      callerName: "com.apple.Terminal",
+      expected: "unknown",
+    },
+    {
+      label: "invalid native name",
+      caller: 1204n,
+      gateway: 1203n,
+      callerName: "terminal\nforged",
+      gatewayName: "ai.openclaw.gateway",
+      expected: "unknown",
+    },
+    { label: "unreadable caller", caller: null, gateway: 1203n, expected: "unknown" },
+    { label: "unreadable Gateway", caller: 1204n, gateway: null, expected: "unknown" },
+  ])(
+    "uses $label when launchctl omits coalition fields",
+    ({ caller, gateway, callerName, gatewayName, expected }) => {
+      native.spawn.mockImplementation((command: string, args: string[]) => ({
+        status: 0,
+        stdout: command === "ps" ? groupRows(901) : `${args[1]} = {\n type = pid\n}\n`,
+      }));
+      native.resourceCoalition.mockImplementation((pid: number) =>
+        pid === process.pid && caller !== null
+          ? { id: caller, name: callerName }
+          : pid === gatewayPid && gateway !== null
+            ? { id: gateway, name: gatewayName }
+            : null,
+      );
+      expect(inspectServiceProcessMembershipSync(gatewayPid, "darwin")).toBe(expected);
+      expect(native.resourceCoalition).toHaveBeenCalledWith(process.pid);
+      expect(native.resourceCoalition).toHaveBeenCalledWith(gatewayPid);
+    },
+  );
+
+  it.each([
     { label: "missing caller", stdout: `${gatewayPid} 900 0\n` },
     { label: "invalid group", stdout: `${process.pid} 0 0\n${gatewayPid} 900 0\n` },
     { label: "duplicate PID", stdout: groupRows() + `${process.pid} 900 0\n` },
@@ -87,7 +175,17 @@ describe("launchd process membership", () => {
   });
 
   it.each([
-    { label: "missing block", stdout: "pid/123 = { type = pid }" },
+    { label: "mismatched PID domain", stdout: "pid/123 = { type = pid }" },
+    { label: "incomplete PID domain", stdout: `pid/${process.pid} = {\n type = pid\n` },
+    { label: "non-PID domain", stdout: `pid/${process.pid} = {\n type = user\n}\n` },
+    {
+      label: "unclosed nested domain",
+      stdout: `pid/${process.pid} = {\n type = pid\n services = {\n}\n`,
+    },
+    {
+      label: "duplicate PID domain",
+      stdout: `pid/${process.pid} = {\n type = pid\n}\npid/${process.pid} = {\n type = pid\n}\n`,
+    },
     {
       label: "wrong coalition type",
       stdout: coalition(1203, "ai.openclaw.gateway").replace("type = resource", "type = jetsam"),
@@ -105,10 +203,12 @@ describe("launchd process membership", () => {
       error: new Error("maxBuffer"),
     },
   ])("does not treat $label as proof of escape", ({ stdout, ...result }) => {
+    native.resourceCoalition.mockReturnValue(1203n);
     native.spawn.mockImplementation((command: string) =>
       command === "ps" ? { status: 0, stdout: groupRows(901) } : { status: 0, stdout, ...result },
     );
     expect(inspectServiceProcessMembershipSync(gatewayPid, "darwin")).toBe("unknown");
+    expect(native.resourceCoalition).not.toHaveBeenCalled();
   });
 });
 

@@ -3,12 +3,13 @@ import { readFileSync } from "node:fs";
 import { containsAsciiControlCharacter } from "@openclaw/normalization-core/string-normalization";
 import { resolveDiagnosticProcessEnv } from "../infra/process-env.js";
 import { spawnPsSync } from "../infra/spawn-ps.js";
+import { readDarwinProcessResourceCoalition } from "../shared/pid-alive.js";
 import { parseKeyValueOutput } from "./runtime-parse.js";
 
 type ServiceProcessMembership = "inside" | "outside" | "unknown";
 const PROBE_TIMEOUT_MS = 2_000;
 
-function readResourceCoalition(pid: number): { id: number; name: string } | undefined {
+function readResourceCoalition(pid: number): { id: bigint; name?: string } | undefined {
   const result = spawnSync("/bin/launchctl", ["print", `pid/${pid}`], {
     encoding: "utf8",
     env: resolveDiagnosticProcessEnv(),
@@ -18,6 +19,30 @@ function readResourceCoalition(pid: number): { id: number; name: string } | unde
   });
   if (result.error || result.status !== 0) {
     return undefined;
+  }
+  if (!/resource coalition/i.test(result.stdout)) {
+    // Older launchctl prints the PID domain but omits its coalitions. Only a complete,
+    // correctly bound domain permits the kernel query; malformed/failed output stays unknown.
+    const domain = new RegExp(`^pid/${pid} = \\{\\r?\\n([\\s\\S]*)\\r?\\n\\}\\s*$`).exec(
+      result.stdout.trim(),
+    )?.[1];
+    if (!domain || !/^\s*type = pid\s*$/m.test(domain)) {
+      return undefined;
+    }
+    let depth = 0;
+    for (const char of domain) {
+      depth += char === "{" ? 1 : char === "}" ? -1 : 0;
+      if (depth < 0) {
+        return undefined;
+      }
+    }
+    if (depth !== 0) {
+      return undefined;
+    }
+    const coalition = readDarwinProcessResourceCoalition(pid);
+    return coalition?.name && containsAsciiControlCharacter(coalition.name)
+      ? undefined
+      : (coalition ?? undefined);
   }
   const headers = result.stdout.match(/^\s*resource coalition\s*=/gm);
   const body = /^\s*resource coalition\s*=\s*\{([^{}]*)^\s*\}/m.exec(result.stdout)?.[1];
@@ -39,7 +64,7 @@ function readResourceCoalition(pid: number): { id: number; name: string } | unde
     Number.isSafeInteger(id) &&
     fields.name &&
     !containsAsciiControlCharacter(fields.name)
-    ? { id, name: fields.name }
+    ? { id: BigInt(id), name: fields.name }
     : undefined;
 }
 
@@ -71,9 +96,15 @@ function inspectLaunchdMembership(gatewayPid: number): ServiceProcessMembership 
   // Reparenting and setsid can remove ancestry/group evidence while launchd still owns the job.
   const caller = readResourceCoalition(process.pid);
   const gateway = readResourceCoalition(gatewayPid);
-  return !caller || !gateway
+  if (!caller || !gateway) {
+    return "unknown";
+  }
+  if (caller.id === gateway.id) {
+    return "inside";
+  }
+  return !caller.name || !gateway.name
     ? "unknown"
-    : caller.id === gateway.id || caller.name === gateway.name
+    : caller.name === gateway.name
       ? "inside"
       : "outside";
 }

@@ -15,10 +15,11 @@ let darwinNative:
     }
   | undefined;
 
-function readDarwinNativeIdentity(pid: number): { parentPid: number; startedAt: number } | null {
+function readDarwinNativeInfo(pid: number, flavor: number, size: number): Buffer | null {
   if (
     process.platform !== "darwin" ||
     (process.arch !== "arm64" && process.arch !== "x64") ||
+    !isValidPid(pid) ||
     pid > 0x7fffffff ||
     (typeof SEALED_RUNTIME_BUILD === "boolean" && SEALED_RUNTIME_BUILD)
   ) {
@@ -33,29 +34,99 @@ function readDarwinNativeIdentity(pid: number): { parentPid: number; startedAt: 
       );
       darwinNative = { library, query };
     }
-    // Darwin's public PROC_PIDTBSDINFO ABI is 136 bytes on arm64 and x86_64.
     // Query every foreign PID afresh; only the callable and its library are retained.
-    const bytes = Buffer.alloc(136);
-    if (darwinNative.query(pid, 3, 0, bytes, bytes.length) !== bytes.length) {
-      return null;
-    }
-    const parentPid = bytes.readUInt32LE(16);
-    const seconds = bytes.readBigUInt64LE(120);
-    if (
-      bytes.readUInt32LE(12) !== pid ||
-      parentPid > 0x7fffffff ||
-      seconds === 0n ||
-      seconds > BigInt(Number.MAX_SAFE_INTEGER) ||
-      bytes.readBigUInt64LE(128) >= 1_000_000n
-    ) {
-      return null;
-    }
-    // Published Darwin leases use ps lstart's epoch seconds, not microseconds.
-    return { parentPid, startedAt: Number(seconds) };
+    const bytes = Buffer.alloc(size);
+    return darwinNative.query(pid, flavor, 0, bytes, bytes.length) === bytes.length ? bytes : null;
   } catch {
-    // Missing native packages and denied queries retain the existing bounded ps path.
+    // Missing native packages and denied queries cannot establish native identity.
     return null;
   }
+}
+
+function readDarwinNativeIdentity(pid: number): { parentPid: number; startedAt: number } | null {
+  // Darwin's public PROC_PIDTBSDINFO ABI is 136 bytes on arm64 and x86_64.
+  const bytes = readDarwinNativeInfo(pid, 3, 136);
+  if (!bytes) {
+    return null;
+  }
+  const parentPid = bytes.readUInt32LE(16);
+  const seconds = bytes.readBigUInt64LE(120);
+  if (
+    bytes.readUInt32LE(12) !== pid ||
+    parentPid > 0x7fffffff ||
+    seconds === 0n ||
+    seconds > BigInt(Number.MAX_SAFE_INTEGER) ||
+    bytes.readBigUInt64LE(128) >= 1_000_000n
+  ) {
+    return null;
+  }
+  // Published Darwin leases use ps lstart's epoch seconds, not microseconds.
+  return { parentPid, startedAt: Number(seconds) };
+}
+
+// Keep launchd's synchronous XPC lookup in a bounded, joined diagnostic child.
+const DARWIN_COALITION_INFO_SCRIPT = String.raw`
+const koffi = require(process.argv[1]);
+const library = koffi.load('/usr/lib/system/libxpc.dylib');
+const copy = library.func('void *xpc_coalition_copy_info(uint64_t id)');
+const release = library.func('void xpc_release(void *value)');
+const type = library.func('void *xpc_get_type(void *value)');
+const getId = library.func('uint64_t xpc_dictionary_get_uint64(void *value, const char *key)');
+const getName = library.func('const char *xpc_dictionary_get_string(void *value, const char *key)');
+const dictionaryType = koffi.address(library.symbol('_xpc_type_dictionary'));
+const idKey = koffi.decode(library.symbol('XPC_COALITION_INFO_KEY_CID'), 'const char *');
+const nameKey = koffi.decode(library.symbol('XPC_COALITION_INFO_KEY_NAME'), 'const char *');
+const reply = copy(BigInt(process.argv[2]));
+if (!reply) process.exit(1);
+try {
+  if (koffi.address(type(reply)) !== dictionaryType) throw new Error('Unexpected coalition reply');
+  process.stdout.write(JSON.stringify({ id: String(getId(reply, idKey)), name: getName(reply, nameKey) }));
+} finally {
+  release(reply);
+}
+`;
+
+/** Read kernel membership and launchd's job name when older launchctl omits them. */
+export function readDarwinProcessResourceCoalition(
+  pid: number,
+): { id: bigint; name?: string } | null {
+  // PROC_PIDCOALITIONINFO: two uint64 IDs (resource, jetsam), then three reserved uint64s.
+  const bytes = readDarwinNativeInfo(pid, 20, 40);
+  const id = bytes?.readBigUInt64LE(0);
+  if (!id) {
+    return null;
+  }
+  try {
+    const koffiPath = createRequire(import.meta.url).resolve("koffi");
+    const info: unknown = JSON.parse(
+      childProcess.execFileSync(
+        process.execPath,
+        ["--input-type=commonjs", "-e", DARWIN_COALITION_INFO_SCRIPT, koffiPath, id.toString()],
+        {
+          encoding: "utf8",
+          env: resolveDiagnosticProcessEnv(),
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: PROCESS_START_TIMEOUT_MS,
+          killSignal: "SIGKILL",
+          maxBuffer: 4096,
+        },
+      ),
+    );
+    if (
+      info &&
+      typeof info === "object" &&
+      "id" in info &&
+      info.id === id.toString() &&
+      "name" in info &&
+      typeof info.name === "string" &&
+      info.name.trim()
+    ) {
+      return { id, name: info.name.trim() };
+    }
+  } catch {
+    // IDs still prove shared membership; unequal IDs without names cannot prove escape.
+  }
+  return { id };
 }
 // Bound corrupted/cyclic ancestry while allowing nested service supervisors.
 export const MAX_ANCESTOR_WALK_DEPTH = 32;

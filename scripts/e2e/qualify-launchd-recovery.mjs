@@ -3,11 +3,10 @@
 // Invoke with the candidate's loader:
 // node scripts/e2e/qualify-launchd-recovery.mjs <checkout> <full-commit> <result.json>
 import assert from "node:assert/strict";
-import childProcess, { execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
-import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
@@ -27,44 +26,12 @@ const receipt = {
 };
 await fs.mkdir(path.dirname(resultFile), { recursive: true });
 await fs.writeFile(resultFile, JSON.stringify(receipt, null, 2) + "\n");
-// Observe the actual synchronous membership calls, preserving their arguments,
-// environment, timeout, result and fail-closed interpretation. No fixture override.
-const originalSpawnSync = childProcess.spawnSync;
-childProcess.spawnSync = (...args) => {
-  const result = originalSpawnSync(...args);
-  const [command, argv] = args;
-  const coalition =
-    command === "/bin/launchctl" && argv?.[0] === "print" && argv[1]?.startsWith("pid/");
-  const groups = command === "ps" && argv?.[1] === "pid=,pgid=,sess=";
-  if (coalition || groups) {
-    const stdout = String(result.stdout ?? "");
-    (receipt.membershipObservations ??= []).push({
-      command,
-      argv,
-      status: result.status,
-      signal: result.signal,
-      error: result.error ? inspect(result.error, { depth: 2 }) : undefined,
-      stderr: String(result.stderr ?? ""),
-      // Retain coalition identity fields only, never unrelated domain environment.
-      stdout: coalition
-        ? stdout
-            .split("\n")
-            .filter((line) => /coalition|^\s*(ID|id|type|name|state|active count)\s*=/.test(line))
-            .join("\n")
-        : stdout,
-    });
-  }
-  return result;
-};
-syncBuiltinESMExports();
 try {
   await qualify();
 } catch (error) {
   receipt.error = inspect(error, { depth: 5 });
   process.exitCode = 1;
 } finally {
-  childProcess.spawnSync = originalSpawnSync;
-  syncBuiltinESMExports();
   receipt.status = process.exitCode ? "failed" : "passed";
   await fs.writeFile(resultFile, JSON.stringify(receipt, null, 2) + "\n");
 }
