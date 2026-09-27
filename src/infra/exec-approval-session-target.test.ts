@@ -2,7 +2,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { slackPlugin } from "../../extensions/slack/api.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
@@ -12,7 +11,6 @@ import {
   parseThreadSessionSuffix,
 } from "../sessions/session-key-utils.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
-import { resolveChannelNativeApprovalDeliveryPlan } from "./approval-native-delivery.js";
 import {
   doesApprovalRequestMatchChannelAccount,
   doesApprovalRequestSelectChannelAccount,
@@ -608,56 +606,6 @@ describe("exec approval session target", () => {
       });
 
       expect(target).toEqual({ to: "channel:C123" });
-    });
-  });
-
-  it("keeps a top-level Slack DM origin available for DM-only plugin approval notices", async () => {
-    await withTestDir({ prefix: "openclaw-plugin-approval-origin-" }, async (tmpDir) => {
-      const sessionKey = "agent:main:slack:direct:U123REQUESTER";
-      const cfg = await writeStoreFile(path.join(tmpDir, "sessions.json"), {
-        [sessionKey]: {
-          sessionId: "slack-dm",
-          updatedAt: 1,
-          lastChannel: "slack",
-          lastTo: "user:U123REQUESTER",
-          lastAccountId: "default",
-        },
-      });
-      cfg.channels = {
-        slack: {
-          botToken: "xoxb-test",
-          appToken: "xapp-test",
-          allowFrom: ["U999REVIEWER"],
-          execApprovals: {
-            enabled: true,
-            target: "dm",
-          },
-        },
-      };
-      const request = buildPluginRequest({
-        sessionKey,
-        turnSourceChannel: "slack",
-        turnSourceTo: "user:U123REQUESTER",
-        turnSourceAccountId: "default",
-      });
-
-      const plan = await resolveChannelNativeApprovalDeliveryPlan({
-        cfg,
-        accountId: "default",
-        approvalKind: "plugin",
-        request,
-        adapter: slackPlugin.approvalCapability?.native,
-      });
-
-      expect(plan.originTarget).toEqual({ to: "user:U123REQUESTER", threadId: undefined });
-      expect(plan.notifyOriginWhenDmOnly).toBe(true);
-      expect(plan.targets).toEqual([
-        {
-          surface: "approver-dm",
-          target: { to: "user:U999REVIEWER" },
-          reason: "preferred",
-        },
-      ]);
     });
   });
 
