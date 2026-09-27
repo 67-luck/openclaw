@@ -30,6 +30,7 @@ import { SessionMutationAuthorizationChangedError } from "../../session-sharing.
 import { withPreparedSessionResolve } from "../../sessions-resolve.js";
 import { formatForLog } from "../../ws-log.js";
 import { resolveTalkAgentConsultAuthority } from "../client-gateway-control.js";
+import { captureTalkVoiceOrigin } from "../client-voice-origin.js";
 import { createTalkHandoff, getTalkHandoff, revokeTalkHandoff } from "../handoff.js";
 import {
   cancelTalkRealtimeRelayTurn,
@@ -147,6 +148,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
       respond,
       context,
       client,
+      hasCurrentClientAuthority,
       sessionMutationAuthorization,
       sessionMutationCommitGuard,
     }) => {
@@ -362,6 +364,8 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
               []),
           ];
           const session = createTalkRealtimeRelaySession({
+            captureOriginAuthority: () =>
+              captureTalkVoiceOrigin({ client, hasCurrentClientAuthority }),
             context,
             connId,
             cfg: runtimeConfig,

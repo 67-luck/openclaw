@@ -158,20 +158,19 @@ export function createTalkRealtimeRelaySession(
     ownerConnId: params.connId,
     authority: params.consultAuthority,
     getVoiceSessionId: () => relaySessionId,
+    getOriginAuthority: () => getActiveRelay()?.originAuthority,
     initialItems: params.initialItems ?? [],
     runIdPrefix: "talk-realtime-relay-consult",
     surface: "a gateway-relay Talk session",
-    registerRun: ({ runId }) => {
-      if (!getActiveRelay()) {
-        throw new Error("Realtime gateway-relay session is closed");
-      }
+    registerRun: ({ runId, originAuthority }) =>
       registerTalkRealtimeRelayAgentRun({
+        originAuthority,
         relaySessionId,
         connId: params.connId,
         sessionKey: canonicalKey,
         runId,
-      });
-    },
+        isSessionCurrent: (session) => session === getActiveRelay(),
+      }),
     isRunCurrent: (runId) => getActiveRelay()?.activeAgentRuns.get(runId) === canonicalKey,
   });
   const runAgentConsult = bindTalkRealtimeRelayAgentConsult(
@@ -663,6 +662,7 @@ export function createTalkRealtimeRelaySession(
     toolResultEpoch: 0,
     ...(params.cfg ? { voiceConfig: params.cfg } : {}),
     voiceSessionCreated: false,
+    originAuthority: params.captureOriginAuthority?.(),
     voiceTranscriptSeq: 0,
     voiceTranscriptQueue: VOICE_TRANSCRIPT_QUEUE_POLICY.createQueue(),
     confirmationReadiness,

@@ -1,6 +1,9 @@
 /** Durable per-agent voice-call records for Talk continuity and mutation evidence. */
 import { createHash, randomUUID } from "node:crypto";
-import { isDefinitiveRunLifecycle } from "@openclaw/normalization-core/agent-run-terminal-outcome";
+import {
+  isDefinitiveRunLifecycle,
+  resolveAgentRunLifecycleTerminalFacts,
+} from "@openclaw/normalization-core/agent-run-terminal-outcome";
 import {
   appendTranscriptMessage,
   loadSessionEntryReadOnly,
@@ -16,6 +19,7 @@ import {
   type TrustedToolExecutionEvent,
 } from "../infra/diagnostic-events.js";
 import { runOpenClawAgentWriteTransaction } from "../state/openclaw-agent-db.js";
+import type { ClientVoiceAppLaunchOrigin } from "./client-voice-app-launch-policy.js";
 import {
   type ClientVoiceConfirmationUtteranceContext,
   deactivateClientVoiceConfirmationSession,
@@ -152,6 +156,16 @@ function recordClientVoiceToolEffect(event: TrustedToolExecutionEvent): void {
   );
 }
 
+function releaseVoiceRunBinding(runId: string, binding: ClientVoiceRunBinding): void {
+  if (voiceSessionByRunId.get(runId) !== binding) {
+    return;
+  }
+  voiceSessionByRunId.delete(runId);
+  binding.originAuthority?.release();
+  releaseClientVoiceConfirmationRun(binding.agentId, binding.voiceSessionId, runId);
+  mutationDigestDeliveryOwner.retry(binding);
+}
+
 function ensureToolEffectSubscription(): void {
   unsubscribeToolEffects ??= onTrustedToolExecutionEvent(recordClientVoiceToolEffect);
   // Optional per-attempt diagnostics neither close an admitted consult nor
@@ -159,7 +173,10 @@ function ensureToolEffectSubscription(): void {
   unsubscribeRunCompletion ??= onAgentEvent((event) => {
     if (
       event.stream !== "lifecycle" ||
-      !isDefinitiveRunLifecycle({ phase: event.data.phase, data: event.data })
+      !isDefinitiveRunLifecycle({ phase: event.data.phase, data: event.data }) ||
+      (event.data.phase === "end" &&
+        (event.data.yielded === true || event.data.continuationPending === true) &&
+        resolveAgentRunLifecycleTerminalFacts({ phase: "end", data: event.data }).status === "ok")
     ) {
       return;
     }
@@ -167,9 +184,7 @@ function ensureToolEffectSubscription(): void {
     if (!binding) {
       return;
     }
-    voiceSessionByRunId.delete(event.runId);
-    releaseClientVoiceConfirmationRun(binding.agentId, binding.voiceSessionId, event.runId);
-    mutationDigestDeliveryOwner.retry(binding);
+    releaseVoiceRunBinding(event.runId, binding);
   });
 }
 
@@ -283,12 +298,13 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
 
 /** Correlate a consult run with its open call for confirmation and mutation evidence. */
 export function registerClientVoiceConsultRun(params: {
+  originAuthority?: ClientVoiceAppLaunchOrigin;
   agentId: string;
   sessionKey: string;
   voiceSessionId: string;
   runId: string;
   config?: OpenClawConfig;
-}): void {
+}): () => void {
   let recordClosed = false;
   runOpenClawAgentWriteTransaction(
     (database) => {
@@ -310,33 +326,25 @@ export function registerClientVoiceConsultRun(params: {
     { agentId: params.agentId },
   );
   const previousBinding = voiceSessionByRunId.get(params.runId);
-  if (
-    previousBinding &&
-    (previousBinding.agentId !== params.agentId ||
-      previousBinding.voiceSessionId !== params.voiceSessionId)
-  ) {
-    // A run ID has one authoritative voice scope. Replacing it must retire the
-    // prior scope's post-close grant or completion can no longer find that owner.
-    releaseClientVoiceConfirmationRun(
-      previousBinding.agentId,
-      previousBinding.voiceSessionId,
-      params.runId,
-    );
-  }
-  if (
-    previousBinding?.agentId !== params.agentId ||
-    previousBinding.voiceSessionId !== params.voiceSessionId ||
-    previousBinding.sessionKey !== params.sessionKey
-  ) {
-    // Replays keep the operational claim; a reassignment must never revive it.
-    voiceSessionByRunId.set(
-      params.runId,
-      Object.freeze({
+  const sameScope =
+    previousBinding?.agentId === params.agentId &&
+    previousBinding.voiceSessionId === params.voiceSessionId &&
+    previousBinding.sessionKey === params.sessionKey;
+  const binding = sameScope
+    ? previousBinding
+    : Object.freeze({
         agentId: params.agentId,
         voiceSessionId: params.voiceSessionId,
         sessionKey: params.sessionKey,
-      }),
-    );
+        originAuthority: params.originAuthority?.isCurrent()
+          ? params.originAuthority.retain()
+          : undefined,
+      });
+  if (!sameScope) {
+    if (previousBinding) {
+      releaseVoiceRunBinding(params.runId, previousBinding);
+    }
+    voiceSessionByRunId.set(params.runId, binding);
   }
   // Bound to a call that already closed: re-arm the point-in-time summary owner so
   // the run completion becomes a retry point without coupling it to transcript work.
@@ -348,6 +356,9 @@ export function registerClientVoiceConsultRun(params: {
     });
   }
   ensureToolEffectSubscription();
+  // The startup owner disposes on failure; accepted continuations hand off to lifecycle completion.
+  // Replays still rearm the closed-call digest above, but cannot dispose or renew the original grant.
+  return sameScope ? () => {} : () => releaseVoiceRunBinding(params.runId, binding);
 }
 
 /** Return the open voice-call binding for one executing run. */
@@ -738,6 +749,9 @@ const clientVoiceSessionTesting = {
   digestDeliveryPolicy: CLIENT_VOICE_MUTATION_DIGEST_POLICY,
   digestDeliverySnapshot: () => mutationDigestDeliveryOwner.snapshot(),
   reset(): void {
+    for (const binding of voiceSessionByRunId.values()) {
+      binding.originAuthority?.release();
+    }
     voiceSessionByRunId.clear();
     voiceSessionOperations.clear();
     mutationDigestDeliveryOwner.clear();

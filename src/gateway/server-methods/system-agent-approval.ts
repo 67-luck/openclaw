@@ -15,6 +15,7 @@ import {
 } from "../../infra/system-agent-approvals.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { parseConcreteConfigPath } from "../../shared/dot-path.js";
 import { describeSystemAgentPersistentOperation } from "../../system-agent/operations.js";
 import type { AgentRuntimeDelegatedAuthority } from "../agent-runtime-identity-token.js";
 import { ApprovalObserverClosedError } from "../exec-approval-lifecycle.js";
@@ -242,7 +243,19 @@ export async function prepareDelegatedSystemAgentApproval(params: {
       };
       // Only a fresh proposal belongs to this input. An existing operator request
       // stays bound to its original decision, even if this caller has Full Access.
-      if (callerIdentity?.fullPermission === true) {
+      const configPath =
+        proposal.operation.kind === "config-set" || proposal.operation.kind === "config-set-ref"
+          ? parseConcreteConfigPath(proposal.operation.path)
+          : undefined;
+      const voicePolicyPath = ["talk", "realtime", "appLaunchPolicies"];
+      const editsVoiceAuthority =
+        configPath !== undefined &&
+        configPath
+          .slice(0, voicePolicyPath.length)
+          .every((part, index) => part === voicePolicyPath[index]);
+      // A model proposal cannot mint reusable voice authority from its existing Full Access posture.
+      // The ordinary exact-proposal operator approval remains available for this subtree.
+      if (callerIdentity?.fullPermission === true && !editsVoiceAuthority) {
         const reply = await applyDecision("allow-once");
         if (!reply) {
           throw new Error("OpenClaw change is no longer pending. Retry the request.");

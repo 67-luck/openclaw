@@ -6,6 +6,7 @@ import {
   openOpenClawAgentDatabase,
   type OpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
+import type { ClientVoiceAppLaunchOrigin } from "./client-voice-app-launch-policy.js";
 import { VOICE_TRANSCRIPT_MAX_UNRESOLVED } from "./voice-transcript.js";
 
 const VOICE_SESSION_CACHE_SCOPE = "talk-client-voice-sessions";
@@ -44,6 +45,7 @@ export type ClientVoiceSessionRecord = {
 };
 
 export type ClientVoiceRunBinding = Readonly<{
+  originAuthority?: ClientVoiceAppLaunchOrigin;
   agentId: string;
   voiceSessionId: string;
   sessionKey: string;

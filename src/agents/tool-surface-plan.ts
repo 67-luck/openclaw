@@ -1,4 +1,6 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { resolveClientVoiceAppLaunchPolicy } from "../talk/client-voice-app-launch-policy.js";
+import { resolveClientVoiceRunBinding } from "../talk/client-voice-session.js";
 import { getActiveAgentRingZeroTools } from "./agent-tools.ring-zero-context.js";
 import {
   applyCodeModeCatalog,
@@ -107,6 +109,25 @@ export function applyAgentToolSurfaceCatalog({
   // When the message tool is the only reply path it must stay directly visible
   // in every search mode; a hidden delivery tool can leave the run mute.
   const directToolNames = forceDirectMessageTool ? ["message"] : [];
+  const voice = resolveClientVoiceRunBinding(catalogParams.runId);
+  const policies = catalogParams.config?.talk?.realtime?.appLaunchPolicies ?? [];
+  if (
+    voice &&
+    voice.agentId === catalogParams.agentId &&
+    policies.some((policy) =>
+      resolveClientVoiceAppLaunchPolicy({
+        agentId: voice.agentId,
+        origin: voice.originAuthority,
+        nodeId: policy.nodeId,
+        action: policy,
+        policies: [policy],
+      }),
+    )
+  ) {
+    // Discovery is not authority. This source may use the constrained action
+    // directly, while Nodes remains searchable and execution rechecks the scope.
+    directToolNames.push("nodes");
+  }
   if (codeModeControlsEnabled) {
     return applyCodeModeCatalog({
       ...catalogParams,

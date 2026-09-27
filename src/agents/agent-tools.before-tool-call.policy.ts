@@ -92,6 +92,7 @@ export function consumeFinalClientVoiceToolConfirmation(args: {
   return consumeClientVoiceToolConfirmationPolicy({
     agentId: voiceRun?.agentId,
     voiceSessionId: voiceRun?.voiceSessionId,
+    originAuthority: voiceRun?.originAuthority,
     runId: args.ctx?.runId,
     toolCallId: args.toolCallId,
     toolName: normalizeToolPolicyName(args.toolName || "tool"),
@@ -186,6 +187,7 @@ export async function runBeforeToolCallHook(args: {
     const voiceConfirmation = checkClientVoiceToolConfirmationPolicy({
       agentId: voiceRun?.agentId,
       voiceSessionId: voiceRun?.voiceSessionId,
+      originAuthority: voiceRun?.originAuthority,
       runId: args.ctx?.runId,
       toolCallId: args.toolCallId,
       toolName,

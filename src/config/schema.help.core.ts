@@ -258,6 +258,8 @@ export const CORE_FIELD_HELP: Record<string, string> = {
     "Provider-specific reasoning effort for realtime Talk sessions, such as minimal, low, medium, or high.",
   "talk.realtime.brain":
     "Talk reasoning strategy: agent-consult for Gateway-mediated agent help, direct-tools for local tool calls, or none.",
+  "talk.realtime.appLaunchPolicies":
+    "Explicit operator policies for exact Linux installed-app launches: agent, originating paired device, target node, app identity/revision, and mandatory expiry. Empty by default; satisfies only voice confirmation, never node or execution permissions. Remove a policy to revoke future launches after runtime application.",
   "talk.realtime.consultRouting":
     "Gateway relay fallback for final user transcripts when the realtime provider skips openclaw_agent_consult. provider-direct preserves provider replies; force-agent-consult routes through OpenClaw.",
   "talk.consultThinkingLevel":

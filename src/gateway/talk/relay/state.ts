@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "../../../config/types.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
 import type { BoundedSerialQueue } from "../../../shared/bounded-serial-queue.js";
 import type { RealtimeVoiceAgentControlResult } from "../../../talk/agent-run-control.js";
+import type { ClientVoiceAppLaunchOrigin } from "../../../talk/client-voice-app-launch-policy.js";
 import type { createClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation-readiness.js";
 import type { InternalRealtimeVoiceProviderCapabilities } from "../../../talk/provider-internal.js";
 import type {
@@ -250,6 +251,7 @@ export class TalkRealtimeRelayOutputOwnership {
 }
 
 export type RelaySession = {
+  originAuthority?: ClientVoiceAppLaunchOrigin;
   getToolAuthorityOverlay?: (
     authority?: TalkAgentConsultAuthority,
     source?: "reply" | "attempt",
@@ -291,6 +293,7 @@ export type RelaySession = {
 };
 
 export type CreateTalkRealtimeRelaySessionParams = {
+  captureOriginAuthority?: () => ClientVoiceAppLaunchOrigin | undefined;
   context: GatewayRequestContext;
   connId: string;
   cfg?: OpenClawConfig;

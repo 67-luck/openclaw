@@ -1,5 +1,6 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { z } from "zod";
+import { InstalledAppIdSchema, InstalledAppRevisionSchema } from "../infra/installed-app-launch.js";
 import { findEdgeAuthIssue } from "../shared/gateway-edge-auth-headers.js";
 import { McpServerSchema } from "./zod-schema.mcp-server.js";
 import { MemorySearchSchema } from "./zod-schema.memory-search.js";
@@ -218,8 +219,37 @@ function validateTalkProviderSelection(
   }
 }
 
+const TalkAppPolicyIdentitySchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine(
+    // Exact policy identifiers exclude controls and wildcard syntax, not Unicode text.
+    // eslint-disable-next-line no-control-regex
+    (value) => value.trim() === value && !/[\u0000-\u001f\u007f*?]/u.test(value),
+    "An exact identity without wildcards or control characters is required",
+  );
+
 const TalkRealtimeSchema = z
   .strictObject({
+    appLaunchPolicies: z
+      .array(
+        z.strictObject({
+          id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+          agentId: TalkAppPolicyIdentitySchema,
+          originatingDeviceId: TalkAppPolicyIdentitySchema,
+          nodeId: TalkAppPolicyIdentitySchema,
+          appId: InstalledAppIdSchema,
+          appRevision: InstalledAppRevisionSchema,
+          expiresAtMs: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+        }),
+      )
+      .max(100)
+      .refine(
+        (policies) => new Set(policies.map((policy) => policy.id)).size === policies.length,
+        "Talk app-launch policy IDs must be unique for inventory and revocation",
+      )
+      .optional(),
     provider: z.string().optional(),
     providers: z.record(z.string(), TalkProviderEntrySchema).optional(),
     model: z.string().optional(),

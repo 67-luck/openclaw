@@ -71,8 +71,7 @@ import {
 import { resolveBaseHashParam } from "./base-hash.js";
 import {
   commitGatewayConfigWrite,
-  didActiveSharedGatewayAuthChange,
-  didSharedGatewayAuthChange,
+  shouldDisconnectSharedAuthClientsForConfigWrite,
   resolveGatewayConfigPath,
   resolveGatewayConfigRestartWriteResult,
   shouldAwaitGatewayConfigApplication,
@@ -84,7 +83,12 @@ import {
   resolveOpenPathCommand,
   sanitizePathForLog,
 } from "./open-path.js";
-import type { GatewayRequestContext, GatewayRequestHandlers, RespondFn } from "./types.js";
+import type {
+  GatewayRequestContext,
+  GatewayRequestHandlerOptions,
+  GatewayRequestHandlers,
+  RespondFn,
+} from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 const MAX_CONFIG_ISSUES_IN_ERROR_MESSAGE = 3;
@@ -634,6 +638,8 @@ function clearConfigSchemaResponseCache() {
 }
 
 async function commitConfigRestartWrite(params: {
+  client: GatewayRequestHandlerOptions["client"];
+  hasCurrentClientAuthority: GatewayRequestHandlerOptions["hasCurrentClientAuthority"];
   requestParams: unknown;
   mode: ConfigRestartWriteMode;
   writeSnapshot: Awaited<ReturnType<typeof readConfigFileSnapshotForWrite>>;
@@ -665,6 +671,8 @@ async function commitConfigRestartWrite(params: {
     snapshot,
     writeOptions,
     nextConfig: params.writeConfig,
+    client: params.client,
+    hasCurrentClientAuthority: params.hasCurrentClientAuthority,
     context: params.context,
     disconnectSharedAuthClients,
     awaitRuntimeApplication: shouldAwaitGatewayConfigApplication({
@@ -734,22 +742,6 @@ async function commitConfigRestartWrite(params: {
     undefined,
   );
   writeResult.queueFollowUp();
-}
-
-function shouldDisconnectSharedAuthClientsForConfigWrite(params: {
-  prevConfig: OpenClawConfig;
-  prevSourceConfig: OpenClawConfig;
-  nextConfig: OpenClawConfig;
-  preparedSecretsSnapshot: PreparedSecretsRuntimeSnapshot;
-}): boolean {
-  return (
-    didSharedGatewayAuthChange(params.prevConfig, params.nextConfig) ||
-    didActiveSharedGatewayAuthChange({
-      fallbackPrev: params.prevConfig,
-      fallbackSource: params.prevSourceConfig,
-      next: params.preparedSecretsSnapshot.config,
-    })
-  );
 }
 
 function respondConfigPatchNoop(params: {
@@ -954,7 +946,7 @@ export const configHandlers: GatewayRequestHandlers = {
     }
     respond(true, result, undefined);
   },
-  "config.set": async ({ params, respond, context }) => {
+  "config.set": async ({ params, respond, context, client, hasCurrentClientAuthority }) => {
     if (!assertValidParams(params, validateConfigSetParams, "config.set", respond)) {
       return;
     }
@@ -996,6 +988,8 @@ export const configHandlers: GatewayRequestHandlers = {
       snapshot,
       writeOptions,
       nextConfig: parsed.writeConfig,
+      client,
+      hasCurrentClientAuthority,
       context,
       respond,
     });
@@ -1019,7 +1013,7 @@ export const configHandlers: GatewayRequestHandlers = {
     );
     writeResult.queueFollowUp();
   },
-  "config.patch": async ({ params, respond, client, context }) => {
+  "config.patch": async ({ params, respond, client, context, hasCurrentClientAuthority }) => {
     if (!assertValidParams(params, validateConfigPatchParams, "config.patch", respond)) {
       return;
     }
@@ -1173,6 +1167,8 @@ export const configHandlers: GatewayRequestHandlers = {
       return;
     }
     await commitConfigRestartWrite({
+      client,
+      hasCurrentClientAuthority,
       requestParams: params,
       mode: "config.patch",
       writeSnapshot,
@@ -1185,7 +1181,7 @@ export const configHandlers: GatewayRequestHandlers = {
       preparedSecretsSnapshot,
     });
   },
-  "config.apply": async ({ params, respond, client, context }) => {
+  "config.apply": async ({ params, respond, client, context, hasCurrentClientAuthority }) => {
     if (!assertValidParams(params, validateConfigApplyParams, "config.apply", respond)) {
       return;
     }
@@ -1216,6 +1212,8 @@ export const configHandlers: GatewayRequestHandlers = {
     }
     const actor = resolveControlPlaneActor(client);
     await commitConfigRestartWrite({
+      client,
+      hasCurrentClientAuthority,
       requestParams: params,
       mode: "config.apply",
       writeSnapshot,

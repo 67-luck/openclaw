@@ -137,6 +137,7 @@ export function closeRelaySession(
   }
   const closing: NonNullable<RelaySession["closing"]> = { reason };
   session.closing = closing;
+  session.originAuthority?.release();
   const disposition =
     options?.disposition ??
     (isTalkVoiceSessionReplacing(session.id, session.connId, session.sessionTarget.agentId)
@@ -383,13 +384,18 @@ export function submitTalkRealtimeRelayToolResult(params: {
 
 /** Tracks the chat run started for a realtime agent-consult tool call. */
 export function registerTalkRealtimeRelayAgentRun(params: {
+  originAuthority?: RelaySession["originAuthority"];
+  isSessionCurrent?: (session: RelaySession) => boolean;
   relaySessionId: string;
   connId: string;
   sessionKey: string;
   runId: string;
   callId?: string;
-}): void {
+}): () => void {
   const session = getRelaySession(params.relaySessionId, params.connId);
+  if (params.isSessionCurrent?.(session) === false) {
+    throw new Error("Realtime gateway-relay session is closed");
+  }
   const callId = params.callId?.trim();
   if (
     callId &&
@@ -415,7 +421,8 @@ export function registerTalkRealtimeRelayAgentRun(params: {
     throw new Error("Realtime relay voice session could not be created for agent consult");
   }
   const { agentId, sessionKey } = session.sessionTarget;
-  registerClientVoiceConsultRun({
+  return registerClientVoiceConsultRun({
+    originAuthority: params.originAuthority,
     agentId,
     sessionKey,
     voiceSessionId: session.id,

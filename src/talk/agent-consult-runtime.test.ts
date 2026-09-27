@@ -6,10 +6,7 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import type { SessionEntry } from "../config/sessions/types.js";
-import {
-  emitTrustedDiagnosticEvent,
-  waitForDiagnosticEventsDrained,
-} from "../infra/diagnostic-events.js";
+import { emitAgentEvent } from "../infra/agent-events.js";
 import { MODEL_SELECTION_LOCKED_MESSAGE } from "../sessions/model-overrides.js";
 import { runExclusiveSessionLifecycleMutation } from "../sessions/session-lifecycle-admission.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
@@ -277,11 +274,10 @@ describe("realtime voice agent consult runtime", () => {
       ).toMatchObject({ allowed: false });
       started.resolve();
       await release.promise;
-      emitTrustedDiagnosticEvent({
-        type: "run.completed",
+      emitAgentEvent({
         runId: params.runId,
-        durationMs: 5,
-        outcome: "completed",
+        stream: "lifecycle",
+        data: { phase: "end" },
       });
       return { payloads: [{ text: "Done." }], meta: {} };
     });
@@ -314,7 +310,6 @@ describe("realtime voice agent consult runtime", () => {
     expect(runId).toEqual(expect.any(String));
     release.resolve();
     await expect(consult).resolves.toEqual({ text: "Done." });
-    await waitForDiagnosticEventsDrained();
     expect(resolveClientVoiceRunBinding(runId)).toBeUndefined();
   });
 

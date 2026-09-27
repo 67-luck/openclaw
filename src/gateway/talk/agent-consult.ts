@@ -14,6 +14,7 @@ import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
   buildRealtimeVoiceAgentConsultChatMessage,
 } from "../../talk/agent-consult-tool.js";
+import type { ClientVoiceAppLaunchOrigin } from "../../talk/client-voice-app-launch-policy.js";
 import { abortChatRunById } from "../chat-abort.js";
 import { handleTrustedInternalChatSend } from "../server-methods/chat-send-handler.js";
 import type { GatewayRequestHandlerOptions } from "../server-methods/shared-types.js";
@@ -40,12 +41,13 @@ function terminalTalkChatSendAckError(result: unknown): ErrorShape | undefined {
 export async function startTalkRealtimeAgentConsult(
   request: GatewayRequestHandlerOptions,
   params: {
+    originAuthority?: ClientVoiceAppLaunchOrigin;
     sessionTarget: PreparedTalkSessionTarget;
     callId: string;
     args: unknown;
     relaySessionId?: string;
     connId?: string;
-    onRunStarted?: (runId: string) => void;
+    onRunStarted?: (runId: string) => (() => void) | void;
   },
 ): Promise<{ ok: true; runId: string; idempotencyKey: string } | { ok: false; error: ErrorShape }> {
   let message: string;
@@ -61,6 +63,12 @@ export async function startTalkRealtimeAgentConsult(
     request.client,
   );
   let acknowledgedRunId: string | undefined;
+  const registrationDisposers: Array<() => void> = [];
+  const disposeRegistrations = () => {
+    for (const dispose of registrationDisposers.splice(0)) {
+      dispose();
+    }
+  };
   const chatResponse = await new Promise<
     { ok: true; result: unknown } | { ok: false; error: ErrorShape } | undefined
   >((resolve) => {
@@ -109,17 +117,40 @@ export async function startTalkRealtimeAgentConsult(
           const runId = typeof candidateRunId === "string" ? candidateRunId : idempotencyKey;
           try {
             if (params.relaySessionId && params.connId) {
-              registerTalkRealtimeRelayAgentRun({
-                relaySessionId: params.relaySessionId,
-                connId: params.connId,
-                sessionKey: params.sessionTarget.canonicalKey,
-                runId,
-                callId: params.callId,
-              });
+              registrationDisposers.push(
+                registerTalkRealtimeRelayAgentRun({
+                  originAuthority: params.originAuthority,
+                  relaySessionId: params.relaySessionId,
+                  connId: params.connId,
+                  sessionKey: params.sessionTarget.canonicalKey,
+                  runId,
+                  callId: params.callId,
+                }),
+              );
             }
-            params.onRunStarted?.(runId);
+            const dispose = params.onRunStarted?.(runId);
+            if (dispose) {
+              registrationDisposers.push(dispose);
+            }
+            const registration = request.context.chatAbortControllers.get(runId);
+            if (registration) {
+              const onRemoved = registration.onRemoved;
+              registration.onRemoved = () => {
+                try {
+                  onRemoved?.();
+                } finally {
+                  // An ACK precedes backend startup. Its exact registration owns
+                  // cleanup when dispatch fails without an agent lifecycle event.
+                  // Started/yielded work has already handed off to that lifecycle.
+                  if (registration.executionStarted !== true) {
+                    disposeRegistrations();
+                  }
+                }
+              };
+            }
             acknowledgedRunId = runId;
           } catch (registrationError) {
+            disposeRegistrations();
             abortChatRunById(request.context, {
               runId,
               sessionKey: params.sessionTarget.canonicalKey,
@@ -156,6 +187,7 @@ export async function startTalkRealtimeAgentConsult(
         }
       },
       (error: unknown) => {
+        disposeRegistrations();
         if (acknowledged) {
           request.context.logGateway.warn(
             `realtime Talk agent consult failed after acknowledgement: ${formatForLog(error)}`,

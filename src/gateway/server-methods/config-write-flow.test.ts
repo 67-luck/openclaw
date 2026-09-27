@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import { getRuntimeConfigWriteApplication } from "../../config/runtime-write-application.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { sharingPolicyClient } from "../session-sharing.test-utils.js";
 
 const configMocks = vi.hoisted(() => ({
   replaceConfigFile: vi.fn(),
@@ -96,6 +98,7 @@ describe("commitGatewayConfigWrite", () => {
       exists: false,
       raw: null,
       hash: "missing-config-revision",
+      sourceConfig: {},
     };
 
     await commitGatewayConfigWrite({
@@ -110,6 +113,84 @@ describe("commitGatewayConfigWrite", () => {
         sourceConfig: {},
       }),
     );
+  });
+
+  const voicePolicyConfig: OpenClawConfig = {
+    talk: {
+      realtime: {
+        appLaunchPolicies: [
+          {
+            id: "calculator",
+            agentId: "main",
+            originatingDeviceId: "widget",
+            nodeId: "node",
+            appId: "linux-desktop:fixture.desktop",
+            appRevision: "a".repeat(64),
+            expiresAtMs: 2_000_000_000_000,
+          },
+        ],
+      },
+    },
+  };
+  const voiceWrite = () => ({
+    snapshot: {
+      path: "/tmp/openclaw.json",
+      exists: true,
+      raw: "{}",
+      hash: "base",
+      sourceConfig: {},
+    } as Parameters<typeof commitGatewayConfigWrite>[0]["snapshot"],
+    writeOptions: {},
+    nextConfig: voicePolicyConfig,
+    client: sharingPolicyClient({ deviceId: "operator", scopes: ["operator.admin"] }),
+    hasCurrentClientAuthority: () => true,
+  });
+
+  it("rejects reusable voice authority from missing or model-delegated operator intent", async () => {
+    await expect(commitGatewayConfigWrite({ ...voiceWrite(), client: undefined })).rejects.toThrow(
+      "explicit authenticated operator",
+    );
+    await withGatewayToolCallerIdentity(
+      { agentId: "main", sessionKey: "agent:main:test", fullPermission: true },
+      async () => {
+        await expect(commitGatewayConfigWrite(voiceWrite())).rejects.toThrow(
+          "explicit authenticated operator",
+        );
+      },
+    );
+    expect(configMocks.replaceConfigFile).not.toHaveBeenCalled();
+  });
+
+  it("requires current operator authority at the actual config commit guard", async () => {
+    let active = true;
+    configMocks.replaceConfigFile.mockImplementationOnce(async (params) => {
+      active = false;
+      params.writeOptions.assertConfigPathForWrite();
+      throw new Error("unreachable");
+    });
+    await expect(
+      commitGatewayConfigWrite({ ...voiceWrite(), hasCurrentClientAuthority: () => active }),
+    ).rejects.toThrow("explicit authenticated operator");
+  });
+
+  it("acknowledges a voice-policy write only after committed runtime application", async () => {
+    let applicationClaim: ReturnType<
+      NonNullable<ReturnType<typeof getRuntimeConfigWriteApplication>>["claim"]
+    >;
+    configMocks.replaceConfigFile.mockImplementationOnce(async (params) => {
+      expect(params.writeOptions.runtimeRefresh.requireImmediateApplication).toBe(true);
+      applicationClaim = getRuntimeConfigWriteApplication(params.writeOptions)!.claim();
+      return { nextConfig: voicePolicyConfig, persistedHash: "voice-policy" };
+    });
+    let completed = false;
+    const write = commitGatewayConfigWrite(voiceWrite()).then((result) => {
+      completed = true;
+      return result;
+    });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    applicationClaim!.settle("applied");
+    await expect(write).resolves.toMatchObject({ hash: "voice-policy" });
   });
 
   it("returns the managed runtime application claimed during the write", async () => {
@@ -129,6 +210,7 @@ describe("commitGatewayConfigWrite", () => {
         exists: true,
         raw: "{}",
         hash: "base-hash",
+        sourceConfig: {},
       } as never,
       writeOptions: {},
       nextConfig: { hooks: { enabled: true } },
@@ -145,6 +227,7 @@ describe("commitGatewayConfigWrite", () => {
         exists: true,
         raw: "{}",
         hash: "base-hash",
+        sourceConfig: {},
       } as never,
       writeOptions: {},
       nextConfig: { hooks: { enabled: true } },

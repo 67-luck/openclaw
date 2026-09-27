@@ -1,0 +1,32 @@
+// Labels for the Talk configuration owner.
+export const TALK_FIELD_LABELS: Record<string, string> = {
+  talk: "Talk",
+  "talk.agentId": "Talk Agent",
+  "talk.speechLocale": "Talk Speech Locale",
+  "talk.interruptOnSpeech": "Talk Interrupt on Speech",
+  "talk.silenceTimeoutMs": "Talk Silence Timeout (ms)",
+  "talk.consultThinkingLevel": "Talk Consult Thinking Level",
+  "talk.consultFastMode": "Talk Consult Fast Mode",
+  "talk.provider": "Talk Active Provider",
+  "talk.providers": "Talk Provider Settings",
+  "talk.providers.*": "Talk Provider Config",
+  "talk.providers.*.apiKey": "Talk Provider API Key", // pragma: allowlist secret
+  "talk.realtime": "Talk Realtime",
+  "talk.realtime.provider": "Talk Realtime Provider",
+  "talk.realtime.providers": "Talk Realtime Provider Settings",
+  "talk.realtime.providers.*": "Talk Realtime Provider Config",
+  "talk.realtime.providers.*.apiKey": "Talk Realtime Provider API Key", // pragma: allowlist secret
+  "talk.realtime.model": "Talk Realtime Model",
+  "talk.realtime.speakerVoice": "Talk Realtime Speaker Voice",
+  "talk.realtime.speakerVoiceId": "Talk Realtime Speaker Voice ID",
+  "talk.realtime.instructions": "Talk Realtime Instructions",
+  "talk.realtime.mode": "Talk Realtime Mode",
+  "talk.realtime.transport": "Talk Realtime Transport",
+  "talk.realtime.vadThreshold": "Talk Realtime VAD Threshold",
+  "talk.realtime.silenceDurationMs": "Talk Realtime Silence Duration (ms)",
+  "talk.realtime.prefixPaddingMs": "Talk Realtime Prefix Padding (ms)",
+  "talk.realtime.reasoningEffort": "Talk Realtime Reasoning Effort",
+  "talk.realtime.appLaunchPolicies": "Talk Installed-App Launch Policies",
+  "talk.realtime.brain": "Talk Realtime Brain",
+  "talk.realtime.consultRouting": "Talk Realtime Consult Routing",
+};

@@ -42,6 +42,7 @@ import {
   closeTalkClientGatewayControlSession,
   resolveTalkAgentConsultAuthority,
 } from "../client-gateway-control.js";
+import { captureTalkVoiceOrigin } from "../client-voice-origin.js";
 import {
   ensureTalkRealtimeRelayVoiceSession,
   flushTalkRealtimeRelayVoiceWrites,
@@ -151,39 +152,52 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         return;
       }
 
-      const result = await startTalkRealtimeAgentConsult(request, {
-        sessionTarget: target,
-        callId: params.callId,
-        args: params.args ?? {},
-        relaySessionId: normalizeOptionalString(params.relaySessionId),
-        connId,
-        onRunStarted: (runId) => {
-          registerClientVoiceConsultRun({
+      const originAuthority = captureTalkVoiceOrigin(request);
+      try {
+        const result = await startTalkRealtimeAgentConsult(request, {
+          originAuthority,
+          sessionTarget: target,
+          callId: params.callId,
+          args: params.args ?? {},
+          relaySessionId: normalizeOptionalString(params.relaySessionId),
+          connId,
+          onRunStarted: (runId) => {
+            const dispose = registerClientVoiceConsultRun({
+              originAuthority,
+              agentId,
+              sessionKey: params.sessionKey,
+              voiceSessionId,
+              runId,
+              config: request.context.getRuntimeConfig(),
+            });
+            try {
+              if (confirmationGrant) {
+                bindAuthorizedClientVoiceConfirmation({ grant: confirmationGrant, runId });
+              }
+              return dispose;
+            } catch (error) {
+              dispose();
+              throw error;
+            }
+          },
+        });
+        if (!result.ok) {
+          respond(false, undefined, result.error);
+          return;
+        }
+        respond(
+          true,
+          {
+            runId: result.runId,
+            idempotencyKey: result.idempotencyKey,
             agentId,
-            sessionKey: params.sessionKey,
-            voiceSessionId,
-            runId,
-            config: request.context.getRuntimeConfig(),
-          });
-          if (confirmationGrant) {
-            bindAuthorizedClientVoiceConfirmation({ grant: confirmationGrant, runId });
-          }
-        },
-      });
-      if (!result.ok) {
-        respond(false, undefined, result.error);
-        return;
+            agentSessionKey: target.canonicalKey,
+          },
+          undefined,
+        );
+      } finally {
+        originAuthority?.release();
       }
-      respond(
-        true,
-        {
-          runId: result.runId,
-          idempotencyKey: result.idempotencyKey,
-          agentId,
-          agentSessionKey: target.canonicalKey,
-        },
-        undefined,
-      );
     },
   ),
   "talk.client.transcript": defineValidatedGatewayHandler(

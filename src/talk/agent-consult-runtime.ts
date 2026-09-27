@@ -62,7 +62,7 @@ type RealtimeVoiceAgentConsultContextMode = "isolated" | "fork";
 
 type RealtimeVoiceAgentConsultRunRegistration = {
   abortSignal?: AbortSignal;
-  cleanup?: () => void;
+  cleanup?: (outcome: { continuationPending: boolean }) => void;
 };
 
 /**
@@ -493,88 +493,94 @@ export async function consultRealtimeVoiceAgent(params: {
 
       // Voice consults suppress verbose/reasoning output because the bridge needs a short,
       // speakable answer, not agent-run diagnostics or hidden reasoning artifacts.
-      const runPromise = params.agentRuntime.runEmbeddedAgent({
-        sessionId,
-        sessionKey: params.sessionKey,
-        sessionTarget: {
-          agentId,
+      let continuationPending = false;
+      try {
+        const result = await params.agentRuntime.runEmbeddedAgent({
           sessionId,
           sessionKey: params.sessionKey,
-          storePath,
-        },
-        sandboxSessionKey: resolveRealtimeVoiceAgentSandboxSessionKey(agentId, params.sessionKey),
-        agentId,
-        ...toolAuthorityOverlay,
-        // ASR voice ingress has no trace/client-tool or privileged handoff capability.
-        messageProvider: toolAuthorityOverlay.messageProvider,
-        messageTo: consultDeliveryContext?.to,
-        messageThreadId: consultDeliveryContext?.threadId,
-        currentChannelId: consultDeliveryContext?.to,
-        currentThreadTs:
-          consultDeliveryContext?.threadId != null
-            ? String(consultDeliveryContext.threadId)
-            : undefined,
-        workspaceDir,
-        config: params.cfg,
-        prompt: buildRealtimeVoiceAgentConsultPrompt({
-          args: params.args,
-          transcript: params.transcript,
-          surface: params.surface,
-          userLabel: params.userLabel,
-          assistantLabel: params.assistantLabel,
-          questionSourceLabel: params.questionSourceLabel,
-        }),
-        provider: params.provider,
-        model: params.model,
-        thinkLevel: params.thinkLevel ?? "high",
-        fastMode: params.fastMode,
-        verboseLevel: "off",
-        reasoningLevel: "off",
-        toolResultFormat: "plain",
-        execSession: sessionEntry,
-        toolsAllow: params.toolsAllow,
-        timeoutMs,
-        runId,
-        lane: params.lane,
-        extraSystemPrompt:
-          params.extraSystemPrompt ??
-          "You are the configured OpenClaw agent receiving delegated requests from a live voice bridge. Act on behalf of the user, use available tools when appropriate, and return a brief speakable result.",
-        agentDir,
-        abortSignal,
-      });
-      const result = await runPromise
-        .catch((error: unknown) => {
-          assertRealtimeVoiceConsultNotInterrupted(abortSignal);
-          throw error;
-        })
-        .finally(() => runRegistration?.cleanup?.());
-      assertRealtimeVoiceConsultNotInterrupted(abortSignal, result.meta);
+          sessionTarget: {
+            agentId,
+            sessionId,
+            sessionKey: params.sessionKey,
+            storePath,
+          },
+          sandboxSessionKey: resolveRealtimeVoiceAgentSandboxSessionKey(agentId, params.sessionKey),
+          agentId,
+          ...toolAuthorityOverlay,
+          // ASR voice ingress has no trace/client-tool or privileged handoff capability.
+          messageProvider: toolAuthorityOverlay.messageProvider,
+          messageTo: consultDeliveryContext?.to,
+          messageThreadId: consultDeliveryContext?.threadId,
+          currentChannelId: consultDeliveryContext?.to,
+          currentThreadTs:
+            consultDeliveryContext?.threadId != null
+              ? String(consultDeliveryContext.threadId)
+              : undefined,
+          workspaceDir,
+          config: params.cfg,
+          prompt: buildRealtimeVoiceAgentConsultPrompt({
+            args: params.args,
+            transcript: params.transcript,
+            surface: params.surface,
+            userLabel: params.userLabel,
+            assistantLabel: params.assistantLabel,
+            questionSourceLabel: params.questionSourceLabel,
+          }),
+          provider: params.provider,
+          model: params.model,
+          thinkLevel: params.thinkLevel ?? "high",
+          fastMode: params.fastMode,
+          verboseLevel: "off",
+          reasoningLevel: "off",
+          toolResultFormat: "plain",
+          execSession: sessionEntry,
+          toolsAllow: params.toolsAllow,
+          timeoutMs,
+          runId,
+          lane: params.lane,
+          extraSystemPrompt:
+            params.extraSystemPrompt ??
+            "You are the configured OpenClaw agent receiving delegated requests from a live voice bridge. Act on behalf of the user, use available tools when appropriate, and return a brief speakable result.",
+          agentDir,
+          abortSignal,
+        });
+        assertRealtimeVoiceConsultNotInterrupted(abortSignal, result.meta);
+        continuationPending =
+          result.meta?.yielded === true || result.meta?.continuationPending === true;
 
-      if (result.meta?.yielded === true) {
-        const acknowledgment =
-          typeof result.meta.yieldAcknowledgment === "string"
-            ? truncateUtf16Safe(
-                result.meta.yieldAcknowledgment.replaceAll(/\s+/g, " ").trim(),
-                REALTIME_VOICE_YIELD_ACK_MAX_CHARS,
-              )
-            : "";
-        return {
-          text: acknowledgment || REALTIME_VOICE_YIELD_ACK_FALLBACK,
-          yielded: true,
-        };
-      }
-      // Earlier input answers remain in history; this completion speaks for the current input.
-      const currentInputPayloads = (result.payloads ?? []).filter(
-        (payload) => getReplyPayloadMetadata(payload)?.precedingInputAnswer !== true,
-      );
-      const text = collectRealtimeVoiceAgentConsultVisibleText(currentInputPayloads);
-      if (!text) {
-        params.logger.warn(
-          "[talk] agent consult produced no answer: agent returned no speakable text",
+        if (result.meta?.yielded === true) {
+          const acknowledgment =
+            typeof result.meta.yieldAcknowledgment === "string"
+              ? truncateUtf16Safe(
+                  result.meta.yieldAcknowledgment.replaceAll(/\s+/g, " ").trim(),
+                  REALTIME_VOICE_YIELD_ACK_MAX_CHARS,
+                )
+              : "";
+          return {
+            text: acknowledgment || REALTIME_VOICE_YIELD_ACK_FALLBACK,
+            yielded: true,
+          };
+        }
+        // Earlier input answers remain in history; this completion speaks for the current input.
+        const currentInputPayloads = (result.payloads ?? []).filter(
+          (payload) => getReplyPayloadMetadata(payload)?.precedingInputAnswer !== true,
         );
-        return { text: params.fallbackText ?? "I need a moment to verify that before answering." };
+        const text = collectRealtimeVoiceAgentConsultVisibleText(currentInputPayloads);
+        if (!text) {
+          params.logger.warn(
+            "[talk] agent consult produced no answer: agent returned no speakable text",
+          );
+          return {
+            text: params.fallbackText ?? "I need a moment to verify that before answering.",
+          };
+        }
+        return { text };
+      } catch (error) {
+        assertRealtimeVoiceConsultNotInterrupted(abortSignal);
+        throw error;
+      } finally {
+        runRegistration?.cleanup?.({ continuationPending });
       }
-      return { text };
     });
   } finally {
     params.abortSignal?.removeEventListener("abort", abortFromCaller);
