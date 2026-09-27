@@ -72,9 +72,10 @@ pub(super) fn appearance_menu(
             .unwrap_or(CUSTOM_INDEX),
     }]
     .clone();
+    let width = t::APPEARANCE_WIDTH + (t::ACTION_SUBMENU_PADDING + space::HAIRLINE) * 2.;
     menu.initial_focus(focus)
-        .min_w(t::APPEARANCE_WIDTH)
-        .max_w(t::APPEARANCE_WIDTH)
+        .min_w(width)
+        .max_w(width)
         .item(PopupMenuItem::element(move |_, _| picker.clone()).disabled(true))
 }
 
@@ -590,7 +591,10 @@ impl Render for AppearancePicker {
                     .w_full()
                     .min_h(t::APPEARANCE_CELL)
                     .justify_start()
-                    .label("Reset to default")
+                    .px(t::APPEARANCE_RESET_PADDING)
+                    .text_size(text::MENU.size)
+                    .accessibility_label("Reset to default")
+                    .child(div().w_full().text_left().child("Reset to default"))
                     .disabled(reset_reason.is_some())
                     .when_some(reset_reason, |button, reason| button.tooltip(reason))
                     .on_click(cx.listener(|this, _, _, cx| {

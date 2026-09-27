@@ -139,7 +139,7 @@ pub(crate) struct ActionMenu {
     submenu_open: bool,
     bounds: Bounds<Pixels>,
     item_bounds: Vec<Bounds<Pixels>>,
-    width: Pixels,
+    min_width: Option<Pixels>,
     max_width: Pixels,
     max_height: Option<Pixels>,
     scrollable: bool,
@@ -169,7 +169,7 @@ impl ActionMenu {
             submenu_open: false,
             bounds: Bounds::default(),
             item_bounds: vec![],
-            width: t::STANDARD.width,
+            min_width: None,
             max_width: t::STANDARD.width,
             max_height: None,
             scrollable: false,
@@ -186,7 +186,7 @@ impl ActionMenu {
         cx.new(|cx| builder(Self::new(cx), window, cx))
     }
     pub fn min_w(mut self, value: impl Into<Pixels>) -> Self {
-        self.width = value.into();
+        self.min_width = Some(value.into());
         self
     }
     pub fn max_w(mut self, value: impl Into<Pixels>) -> Self {
@@ -491,7 +491,6 @@ impl ActionMenu {
             })
             .relative()
             .h_flex()
-            .w_full()
             .min_h(t::ROW_HEIGHT)
             .items_center()
             .gap(t::ICON_GAP)
@@ -552,10 +551,16 @@ impl ActionMenu {
             row = row.child(icon(IconName::Check, t::ACTION_ICON_SIZE).text_color(p.accent));
         }
         row = match &item.entry {
-            Entry::Action(label) | Entry::Submenu(label, _) => row
-                .aria_label(label.clone())
-                .child(div().flex_1().truncate().child(label.clone())),
-            Entry::Content(render) => row.child(div().flex_1().min_w_0().child(render(window, cx))),
+            Entry::Action(label) | Entry::Submenu(label, _) => row.aria_label(label.clone()).child(
+                div()
+                    .flex_grow(1.)
+                    .min_w_0()
+                    .truncate()
+                    .child(label.clone()),
+            ),
+            Entry::Content(render) => {
+                row.child(div().flex_grow(1.).min_w_0().child(render(window, cx)))
+            }
             _ => row,
         };
         if item.checked && self.check_side.is_right() {
@@ -564,6 +569,7 @@ impl ActionMenu {
         if let Some(hint) = &item.hint {
             row = row.child(
                 div()
+                    .ml(t::ACTION_HINT_MARGIN - t::ICON_GAP)
                     .min_w(t::ACTION_HINT_MIN_WIDTH)
                     .font_family(Theme::global(cx).mono_font_family.clone())
                     .text_size(t::ACTION_HINT_SIZE)
@@ -615,11 +621,7 @@ impl Render for ActionMenu {
             .enumerate()
             .map(|(index, item)| self.render_row(index, item, window, cx))
             .collect();
-        let mut body = div()
-            .id("action-menu-items")
-            .v_flex()
-            .w_full()
-            .children(rows);
+        let mut body = div().id("action-menu-items").v_flex().children(rows);
         if self.scrollable {
             body = body
                 .max_h(
@@ -636,9 +638,13 @@ impl Render for ActionMenu {
             .track_focus(&self.focus)
             .tab_group()
             .v_flex()
-            .w(self.width)
+            .when_some(self.min_width, |menu, width| menu.min_w(width))
             .max_w(self.max_width)
-            .p(space::XS)
+            .p(if self.parent.is_some() {
+                t::ACTION_SUBMENU_PADDING
+            } else {
+                space::XS
+            })
             .border(space::HAIRLINE)
             .border_color(colors::overlay_border(p))
             .rounded(t::ACTION_RADIUS)

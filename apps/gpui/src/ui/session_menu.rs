@@ -2,7 +2,7 @@ use super::components::action_menu::{ActionMenu as PopupMenu, ActionMenuItem as 
 use super::components::{icons::icon as ui_icon, menu::action_item};
 use super::{AppView, sidebar_batch::batch_menu, theme::tokens::menu};
 use crate::model::{
-    session_menu::{MenuAction, disabled_reason},
+    session_menu::{MenuAction, can_archive, disabled_reason},
     sessions::SessionRow,
 };
 use gpui_kit::assets::IconName;
@@ -414,8 +414,6 @@ pub(super) fn session_menu(
         false,
     )
 }
-
-pub(super) use crate::model::session_menu::can_archive;
 
 fn item(
     mut menu: PopupMenu,

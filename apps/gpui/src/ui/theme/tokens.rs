@@ -286,6 +286,8 @@ pub mod menu {
     pub const ACTION_ICON_SIZE: Pixels = px(14.);
     pub const ACTION_HINT_SIZE: Pixels = px(11.);
     pub const ACTION_HINT_MIN_WIDTH: Pixels = px(12.);
+    pub const ACTION_HINT_MARGIN: Pixels = px(22.);
+    pub const ACTION_SUBMENU_PADDING: Pixels = px(3.25);
     pub const ACTION_CHEVRON_SIZE: Pixels = px(10.);
     pub const ACTION_SEPARATOR_OPACITY: f32 = 0.8;
     pub const ACTION_SUBMENU_GAP: Pixels = px(0.);
@@ -343,6 +345,7 @@ pub mod menu {
     pub const OWNER_AVATAR: AvatarMetrics = AvatarMetrics::new(24., 10., 0.);
     pub const APPEARANCE_WIDTH: Pixels = px(224.);
     pub const APPEARANCE_PADDING: Pixels = px(6.);
+    pub const APPEARANCE_RESET_PADDING: Pixels = px(7.);
     pub const APPEARANCE_GRID_WIDTH: Pixels = px(183.);
     pub const APPEARANCE_GRID_GAP: Pixels = px(3.);
     pub const APPEARANCE_CELL: Pixels = px(28.);

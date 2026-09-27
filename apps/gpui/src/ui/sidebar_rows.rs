@@ -394,7 +394,9 @@ impl AppView {
                     } else {
                         "Archive session"
                     })
-                    .disabled(!row.archived && !super::session_menu::can_archive(row, &main_key))
+                    .disabled(
+                        !row.archived && !crate::model::session_menu::can_archive(row, &main_key),
+                    )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.archive_session(archive_row.clone(), cx);
