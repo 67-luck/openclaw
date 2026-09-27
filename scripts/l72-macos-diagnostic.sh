@@ -7,44 +7,8 @@ run_l72_mac_node_diagnostics() {
   source .ci-harness/scripts/lib/swift-toolchain.sh
   node_diagnostic_logs="$RUNNER_TEMP/openclaw-macos-node2-diagnostic-logs"
   mkdir -p "$node_diagnostic_logs"
-  node_receipts="$node_diagnostic_logs/receipts.log"
-  printf 'diagnostic_only=true\nhead=%s\nexpected_full_runs=1\nexpected_focused_runs=20\n' "$OPENCLAW_MACOS_NODE_EXPECTED_SHA" > "$node_receipts"
-  uname -r >> "$node_receipts"
-  sw_vers >> "$node_receipts"
-  node --version >> "$node_receipts"
-  pnpm --version >> "$node_receipts"
-  printf 'phase\texit\tstartedUTC\tendedUTC\tlog\n' >> "$node_receipts"
-  node_diagnostic_failed=0
-  node_diagnostic_completed=0
-  run_mac_node_diagnostic_phase() {
-    local label="$1" log_path started code=0
-    shift
-    log_path="$node_diagnostic_logs/$label.log"
-    started="$(date -u +%FT%TZ)"
-    printf 'phase=%s command=' "$label" >> "$node_diagnostic_logs/commands.log"
-    printf '%q ' "$@" >> "$node_diagnostic_logs/commands.log"
-    printf '\n' >> "$node_diagnostic_logs/commands.log"
-    run_apple_command_logged "$log_path" "$@" || code=$?
-    printf '%s\t%s\t%s\t%s\t%s\n' "$label" "$code" "$started" "$(date -u +%FT%TZ)" "$log_path" >> "$node_receipts"
-    node_diagnostic_completed=$((node_diagnostic_completed + 1))
-    if [[ "$code" == 0 ]]; then return; fi
-    node_diagnostic_failed=1
-    if [[ "$code" -ge 128 ]]; then
-      echo "Mac Node command interrupted; remaining diagnostic phases are unexecuted." >&2
-      exit 1
-    fi
-    # Inspect only a nonzero invocation; passing negative controls may log errors.
-    node scripts/l72-native-diagnostic-log.mjs "$log_path"
-  }
-  run_mac_node_diagnostic_phase original-macos-node-2 pnpm test:macos:ci:2
-  for ((node_iteration=1; node_iteration<=20; node_iteration++)); do
-    printf -v node_label 'focused-elevation-%02d' "$node_iteration"
-    run_mac_node_diagnostic_phase "$node_label" node scripts/run-vitest.mjs test/scripts/mac-elevation-artifact.test.ts -t 'rejects mismatched worker commit' --maxWorkers=2 --reporter=verbose
-  done
-  printf 'completed_phases=%s\nany_failure=%s\n' "$node_diagnostic_completed" "$node_diagnostic_failed" >> "$node_receipts"
-  cat "$node_receipts"
-  [[ "$node_diagnostic_completed" == 21 ]]
-  exit "$node_diagnostic_failed"
+  run_apple_command_logged "$node_diagnostic_logs/darwin-zombie.log" node --import ./scripts/tsx.mjs scripts/l72-darwin-zombie-repro.mts "$PWD" "$node_diagnostic_logs/darwin-zombie-receipt.json"
+  exit $?
 }
 
 run_l72_presence_diagnostics() {

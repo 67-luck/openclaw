@@ -2441,8 +2441,8 @@ jobs:
             }
             manifest.macos_node_matrix.include = macosNode2;
             manifest.run_macos = true;
-            manifest.run_macos_swift = true;
-            manifest.run_macos_node = false;
+            manifest.run_macos_swift = false;
+            manifest.run_macos_node = true;
             console.log("DIAGNOSTIC ONLY: macOS failures; not full CI.");
             if (process.env.GITHUB_STEP_SUMMARY) {
               appendFileSync(process.env.GITHUB_STEP_SUMMARY,
