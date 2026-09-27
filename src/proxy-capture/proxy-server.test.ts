@@ -514,7 +514,11 @@ describe("startDebugProxyServer", () => {
     const firstDrain = new Promise<void>((resolve) => {
       resolveFirstDrain = resolve;
     });
-    const callOn = captureMethodCall(IncomingMessage.prototype, "on");
+    const callOn = captureMethodCall<
+      "on",
+      Parameters<IncomingMessage["on"]>,
+      ReturnType<IncomingMessage["on"]>
+    >(IncomingMessage.prototype, "on");
     vi.spyOn(IncomingMessage.prototype, "on").mockImplementation(function (
       this: IncomingMessage,
       ...args: Parameters<IncomingMessage["on"]>
@@ -524,7 +528,11 @@ describe("startDebugProxyServer", () => {
       }
       return callOn(this, ...args);
     });
-    const callWrite = captureMethodCall(ServerResponse.prototype, "write");
+    const callWrite = captureMethodCall<
+      "write",
+      Parameters<ServerResponse["write"]>,
+      ReturnType<ServerResponse["write"]>
+    >(ServerResponse.prototype, "write");
     vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
       this: ServerResponse,
       ...args: Parameters<ServerResponse["write"]>
@@ -540,7 +548,11 @@ describe("startDebugProxyServer", () => {
       }
       return accepted;
     });
-    const callEmit = captureMethodCall(ServerResponse.prototype, "emit");
+    const callEmit = captureMethodCall<
+      "emit",
+      Parameters<ServerResponse["emit"]>,
+      ReturnType<ServerResponse["emit"]>
+    >(ServerResponse.prototype, "emit");
     vi.spyOn(ServerResponse.prototype, "emit").mockImplementation(function (
       this: ServerResponse,
       ...args: Parameters<ServerResponse["emit"]>
