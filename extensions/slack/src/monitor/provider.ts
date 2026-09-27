@@ -2,9 +2,15 @@ import type { RequestListener } from "node:http";
 import { type FetchFunction, type WebClientOptions, WebClient } from "@slack/web-api";
 import { CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY } from "openclaw/plugin-sdk/approval-handler-adapter-runtime";
 import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
-import { registerChannelRuntimeContext } from "openclaw/plugin-sdk/channel-runtime-context";
+import {
+  getChannelRuntimeContext,
+  registerChannelRuntimeContext,
+} from "openclaw/plugin-sdk/channel-runtime-context";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
-import { getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
+import {
+  createRuntimeConfigReader,
+  getRuntimeConfig,
+} from "openclaw/plugin-sdk/runtime-config-snapshot";
 import {
   warn,
   computeBackoff,
@@ -593,23 +599,40 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
       clientOptions,
       installationIdentity: identity,
     });
+    const approvalContext = {
+      app,
+      config: slackCfg.execApprovals ?? {},
+      resolveClient,
+      readConfig: createRuntimeConfigReader(cfg),
+      assertCurrent: () => {
+        // Channel replacement can leave an approval send awaiting Slack or its queue.
+        // Only this monitor's registered context may post the pending card.
+        if (
+          opts.abortSignal?.aborted ||
+          getChannelRuntimeContext({
+            channelRuntime: opts.channelRuntime,
+            channelId: "slack",
+            accountId: account.accountId,
+            capability: CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY,
+          }) !== approvalContext
+        ) {
+          throw new Error("Slack approval delivery is no longer authorized");
+        }
+      },
+      ...(identity.kind === "enterprise"
+        ? {
+            enterprise: {
+              enterpriseId: identity.enterpriseId,
+            },
+          }
+        : {}),
+    };
     registerChannelRuntimeContext({
       channelRuntime: opts.channelRuntime,
       channelId: "slack",
       accountId: account.accountId,
       capability: CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY,
-      context: {
-        app,
-        config: slackCfg.execApprovals ?? {},
-        resolveClient,
-        ...(identity.kind === "enterprise"
-          ? {
-              enterprise: {
-                enterpriseId: identity.enterpriseId,
-              },
-            }
-          : {}),
-      },
+      context: approvalContext,
       abortSignal: opts.abortSignal,
     });
     approvalRuntimeInstalled = true;

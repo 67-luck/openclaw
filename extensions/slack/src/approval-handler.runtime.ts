@@ -17,12 +17,14 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { logError } from "openclaw/plugin-sdk/logging-core";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
+import { resolveSlackAccount, resolveSlackOperationToken } from "./accounts.js";
 import { SLACK_APPROVAL_HEADER_BLOCK_ID } from "./approval-actions.js";
 import { runSlackApprovalMessageUpdate } from "./approval-message-updates.js";
 import {
   isSlackAnyNativeApprovalClientEnabled,
   shouldHandleSlackNativeApprovalRequest,
 } from "./approval-native-gates.js";
+import { resolveSlackApproverDmTargets } from "./approval-native.js";
 import { getSlackListenerWriteClient } from "./client.js";
 import { normalizeSlackApproverId } from "./exec-approvals.js";
 import { SLACK_EDIT_TEXT_MAX_BYTES } from "./limits.js";
@@ -40,6 +42,7 @@ type SlackPendingApproval = {
   threadTs?: string;
   teamId?: string;
   showMessageExcerpt?: boolean;
+  reviewerTarget?: string;
 };
 type SlackPendingDelivery = {
   text: string;
@@ -64,6 +67,8 @@ type SlackExecApprovalConfig = NonNullable<
 type SlackApprovalHandlerContext = {
   app: App;
   config: SlackExecApprovalConfig;
+  readConfig?: () => OpenClawConfig;
+  assertCurrent?: () => void;
   resolveClient?: (teamId?: string) => WebClient | undefined;
   enterprise?: {
     enterpriseId: string;
@@ -80,6 +85,50 @@ function resolveHandlerContext(params: ChannelApprovalCapabilityHandlerContext):
     return null;
   }
   return { accountId, context };
+}
+
+function createSlackApprovalDeliveryAssertion(params: {
+  cfg: OpenClawConfig;
+  accountId: string;
+  context: SlackApprovalHandlerContext;
+  request: Parameters<typeof resolveSlackApproverDmTargets>[0]["request"];
+  approvalKind: Parameters<typeof resolveSlackApproverDmTargets>[0]["approvalKind"];
+  reviewerTarget?: string;
+}): () => void {
+  const initialWriteToken = params.reviewerTarget
+    ? resolveSlackOperationToken(
+        resolveSlackAccount({ cfg: params.cfg, accountId: params.accountId }),
+        "write",
+      )
+    : undefined;
+  return () => {
+    params.context.assertCurrent?.();
+    if (!params.reviewerTarget) {
+      return;
+    }
+    if (!params.context.assertCurrent || !params.context.readConfig) {
+      throw new Error("Slack approval delivery is no longer authorized");
+    }
+    const currentConfig = params.context.readConfig();
+    const currentAccount = resolveSlackAccount({
+      cfg: currentConfig,
+      accountId: params.accountId,
+    });
+    const currentTargets = resolveSlackApproverDmTargets({
+      cfg: currentConfig,
+      accountId: params.accountId,
+      approvalKind: params.approvalKind,
+      request: params.request,
+    });
+    if (
+      !currentAccount.enabled ||
+      !initialWriteToken ||
+      resolveSlackOperationToken(currentAccount, "write") !== initialWriteToken ||
+      !currentTargets.some((target) => target.to === params.reviewerTarget)
+    ) {
+      throw new Error("Slack approval delivery is no longer authorized");
+    }
+  };
 }
 
 function truncateSlackMrkdwn(text: string, maxChars: number): string {
@@ -366,6 +415,8 @@ export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdap
       cfg,
       accountId,
       context,
+      request,
+      approvalKind,
       plannedTarget,
       preparedTarget,
       pendingPayload,
@@ -375,20 +426,39 @@ export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdap
       if (!resolved) {
         return null;
       }
+      const showMessageExcerpt =
+        plannedTarget.surface === "approver-dm" && approvalKind === "plugin";
+      const assertCurrent = createSlackApprovalDeliveryAssertion({
+        cfg,
+        accountId: resolved.accountId,
+        context: resolved.context,
+        request,
+        approvalKind,
+        reviewerTarget: showMessageExcerpt ? plannedTarget.target.to : undefined,
+      });
+      assertCurrent();
       const client = resolveApprovalClient(resolved.context, preparedTarget.teamId);
       const to = await resolveApprovalChannel(client, preparedTarget.to, preparedTarget.teamId);
+      assertCurrent();
+      const writeClient =
+        preparedTarget.teamId || showMessageExcerpt
+          ? getSlackListenerWriteClient({
+              listenerClient: client,
+              teamId: preparedTarget.teamId,
+              clientOptions: resolved.context.app.webClientOptions,
+              ...(showMessageExcerpt ? { assertCurrent } : {}),
+            })
+          : undefined;
+      if (showMessageExcerpt && !writeClient) {
+        throw new Error("Slack approval delivery is no longer authorized");
+      }
       const eventScope = preparedTarget.teamId
         ? {
             teamId: preparedTarget.teamId,
             client,
-            writeClient: getSlackListenerWriteClient({
-              listenerClient: client,
-              teamId: preparedTarget.teamId,
-              clientOptions: resolved.context.app.webClientOptions,
-            }),
+            writeClient,
           }
         : undefined;
-      const showMessageExcerpt = plannedTarget.surface === "approver-dm";
       const payload = showMessageExcerpt
         ? buildSlackApprovalPayload({ phase: "pending", view, showMessageExcerpt })
         : pendingPayload;
@@ -397,8 +467,9 @@ export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdap
         accountId: resolved.accountId,
         threadTs: preparedTarget.threadTs,
         blocks: payload.blocks,
-        client,
+        client: showMessageExcerpt ? writeClient : client,
         eventScope,
+        onPlatformSendDispatch: async () => assertCurrent(),
       });
       await setSlackSessionStatus({
         client,
@@ -412,16 +483,49 @@ export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdap
         threadTs: preparedTarget.threadTs,
         teamId: preparedTarget.teamId,
         showMessageExcerpt,
+        ...(showMessageExcerpt ? { reviewerTarget: plannedTarget.target.to } : {}),
       };
     },
-    updateEntry: async ({ cfg, accountId, context, entry, payload, phase }) => {
+    updateEntry: async ({
+      cfg,
+      accountId,
+      context,
+      request,
+      approvalKind,
+      entry,
+      payload,
+      phase,
+    }) => {
       const resolved = resolveHandlerContext({ cfg, accountId, context });
       if (!resolved) {
         return;
       }
       const client = resolveApprovalClient(resolved.context, entry.teamId);
+      const assertCurrent = createSlackApprovalDeliveryAssertion({
+        cfg,
+        accountId: resolved.accountId,
+        context: resolved.context,
+        request,
+        approvalKind,
+        reviewerTarget: entry.showMessageExcerpt ? entry.reviewerTarget : undefined,
+      });
+      if (entry.showMessageExcerpt && !entry.reviewerTarget) {
+        throw new Error("Slack approval delivery is no longer authorized");
+      }
+      assertCurrent();
+      const writeClient = entry.showMessageExcerpt
+        ? getSlackListenerWriteClient({
+            listenerClient: client,
+            teamId: entry.teamId,
+            clientOptions: resolved.context.app.webClientOptions,
+            assertCurrent,
+          })
+        : client;
+      if (!writeClient) {
+        throw new Error("Slack approval delivery is no longer authorized");
+      }
       await updateMessage({
-        client,
+        client: writeClient,
         accountId: resolved.accountId,
         channelId: entry.channelId,
         messageTs: entry.messageTs,

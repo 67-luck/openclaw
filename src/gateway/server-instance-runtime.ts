@@ -303,6 +303,7 @@ export function createGatewayInstanceRuntime(
     createAgentTurnFacade,
     approvalEvents: {
       publishRequested: (kind, request) => {
+        // SAFETY: Gateway approval publishers pair the plugin kind with a plugin request.
         const pluginRequest = kind === "plugin" ? (request as PluginApprovalRequest) : null;
         const source = pluginRequest?.request.approvalSource;
         const sourceAccountId = normalizeOptionalAccountId(
@@ -328,6 +329,7 @@ export function createGatewayInstanceRuntime(
               (subscriberAccountId === sourceAccountId ||
                 (pluginRequest.request.turnSourceAccountId == null &&
                   subscriberAccountId === DEFAULT_ACCOUNT_ID));
+            // SAFETY: native subscribers normalize the trusted legacy request before use.
             subscriber.onRequested(
               (ownsSlackSource ? pluginRequest : publicRequest) as GatewayApprovalRequest,
             );

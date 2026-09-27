@@ -8,5 +8,6 @@ export function projectApprovalRequestForExternal<TRequest extends object>(
   }
   const approvalSource = { ...source };
   delete approvalSource.userMessageExcerpt;
+  // SAFETY: Gateway approval requests make the source excerpt optional; removing it preserves the request type.
   return { ...request, approvalSource } as TRequest;
 }

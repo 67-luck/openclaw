@@ -79,7 +79,7 @@ const resolveSlackOriginTarget = createChannelNativeOriginTargetResolver({
   resolveFallbackTarget: resolveSlackFallbackOriginTarget,
 });
 
-function resolveSlackApproverDmTargets(params: {
+export function resolveSlackApproverDmTargets(params: {
   cfg: Parameters<typeof shouldHandleSlackNativeApprovalRequest>[0]["cfg"];
   accountId?: string | null;
   approvalKind: ChannelApprovalKind;

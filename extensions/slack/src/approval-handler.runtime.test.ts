@@ -536,6 +536,16 @@ describe("slackApprovalNativeRuntime", () => {
   });
 
   it("shows the original message only on the approver DM card and its updates", async () => {
+    const cfg = {
+      channels: {
+        slack: {
+          botToken: "xoxb-approval-card",
+          appToken: "xapp-approval-card",
+          allowFrom: ["U123"],
+          execApprovals: { enabled: true, target: "dm" },
+        },
+      },
+    } as never;
     const excerpt = "Please render <@U999OTHER> & show the *diff*.";
     const approvalSource = {
       channel: "slack",
@@ -566,16 +576,27 @@ describe("slackApprovalNativeRuntime", () => {
     };
     const request = {
       ...SCREEN_SHARE_REQUEST,
-      request: { ...SCREEN_SHARE_REQUEST.request, approvalSource },
+      request: {
+        ...SCREEN_SHARE_REQUEST.request,
+        turnSourceChannel: "slack",
+        turnSourceAccountId: "default",
+        approvalSource,
+      },
     };
     sendMessageSlackMock.mockReset().mockResolvedValue({
       channelId: "D123APPROVER",
       messageId: "1712345678.999999",
     });
-    const context = { app: { client: {} }, config: {} } as never;
+    const context = {
+      app: { client: { token: "xoxb-approval-card" } },
+      config: {},
+      readConfig: () => cfg,
+      assertCurrent: () => {},
+    } as never;
     const deliver = async (surface: "origin" | "approver-dm") => {
       const entry = await slackApprovalNativeRuntime.transport.deliverPending({
         ...APPROVAL_CONTEXT,
+        cfg,
         context,
         request,
         approvalKind: "plugin",
