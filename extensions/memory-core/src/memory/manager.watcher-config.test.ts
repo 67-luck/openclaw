@@ -24,7 +24,10 @@ const observer = await vi.hoisted(async () => {
   const { createMemoryObservationHarness } = await import("./watcher-test-support.js");
   return createMemoryObservationHarness();
 });
-vi.mock("@openclaw/fs-safe/watch", () => ({ watch: observer.watch }));
+vi.mock("openclaw/plugin-sdk/file-access-runtime", async (original) => ({
+  ...(await original<typeof import("openclaw/plugin-sdk/file-access-runtime")>()),
+  watch: observer.watch,
+}));
 
 describe("Memory watch configuration", () => {
   let state: Awaited<ReturnType<typeof createOpenClawTestState>>;

@@ -2,8 +2,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import * as observation from "@openclaw/fs-safe/watch";
+import type { WatchSubscription } from "@openclaw/fs-safe/watch";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import * as observation from "openclaw/plugin-sdk/file-access-runtime";
 import {
   resolveMemorySearchConfig,
   type OpenClawConfig,
@@ -18,8 +19,8 @@ import {
 import { MemoryIndexManager } from "./manager.js";
 
 // Real observation and indexing; only the application-owned settling clock is advanced.
-vi.mock("@openclaw/fs-safe/watch", async (original) => ({
-  ...(await original<typeof import("@openclaw/fs-safe/watch")>()),
+vi.mock("openclaw/plugin-sdk/file-access-runtime", async (original) => ({
+  ...(await original<typeof import("openclaw/plugin-sdk/file-access-runtime")>()),
 }));
 vi.mock("openclaw/plugin-sdk/runtime-env", async (original) => ({
   ...(await original<typeof import("openclaw/plugin-sdk/runtime-env")>()),
@@ -31,7 +32,7 @@ it("indexes real edits, deletion and root replacement, then joins every subscrip
   const state = await createOpenClawTestState({ label: "memory-watch-filesystem" });
   const turn = new AsyncLocalStorage<string>();
   const contexts: Array<string | undefined> = [];
-  const subscriptions: observation.WatchSubscription[] = [];
+  const subscriptions: WatchSubscription[] = [];
   const bootstrap = createDeferred<void>();
   const originalWatch = observation.watch;
   const observed = vi.spyOn(observation, "watch").mockImplementation((authority, options) => {
