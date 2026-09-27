@@ -387,25 +387,27 @@ function createSharedStateWorkerOwner() {
           if (!matches(candidate, admission.identity)) {
             continue;
           }
-          try {
-            // Other scopes can share this actor; an inode match cannot renew its original admission.
-            candidate.context.admission.assertCurrent();
-          } catch (error) {
-            if (
-              !isStateDatabaseReadAdmissionInvalidatedError(error) ||
-              hasActiveActorOperations(candidate)
-            ) {
-              throw error;
-            }
-            await (candidate.actor
-              ? retireActor(candidate.actor, candidate.context.admission.identity)
-              : retire(candidate));
-            return this.open(context, options);
-          }
-          if (
+          const needsRetirement =
             candidate.context.existingSchemaPath !== context.existingSchemaPath ||
-            candidate.source.moduleUrl.href !== source.moduleUrl.href
-          ) {
+            candidate.source.moduleUrl.href !== source.moduleUrl.href;
+          // Idle replacements need retirement; reused or active actors still need live authority.
+          if (!needsRetirement || hasActiveActorOperations(candidate)) {
+            try {
+              candidate.context.admission.assertCurrent();
+            } catch (error) {
+              if (
+                !isStateDatabaseReadAdmissionInvalidatedError(error) ||
+                hasActiveActorOperations(candidate)
+              ) {
+                throw error;
+              }
+              await (candidate.actor
+                ? retireActor(candidate.actor, candidate.context.admission.identity)
+                : retire(candidate));
+              return this.open(context, options);
+            }
+          }
+          if (needsRetirement) {
             await retire(candidate);
             assertAdmission();
           }
