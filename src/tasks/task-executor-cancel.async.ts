@@ -10,6 +10,7 @@ import {
 } from "./task-cancellation-context.js";
 import { captureTaskCancellationSelection } from "./task-cancellation-selection.capture.js";
 import { matchesTaskCancellationSelection } from "./task-cancellation-selection.js";
+import { captureTaskMutationContext } from "./task-executor-mutation-effects.async.js";
 import { cancelTaskById, type TaskCancellationResult } from "./task-registry-cancel.js";
 import { tasks } from "./task-registry-state.js";
 import type { TaskRecord } from "./task-registry.types.js";
@@ -21,6 +22,7 @@ export async function cancelDetachedTaskRunByIdAsync(
   authority: { selectedTask: TaskRecord | undefined; assertCurrent: () => void },
 ): Promise<TaskCancellationResult> {
   const owner = captureDetachedTaskRuntimeOwner({ settlement: true });
+  const core = owner.runtime ? undefined : captureTaskMutationContext();
   const selection =
     authority.selectedTask && captureTaskCancellationSelection(authority.selectedTask);
   const selected = selection?.task;
@@ -30,7 +32,12 @@ export async function cancelDetachedTaskRunByIdAsync(
     if (!active) {
       throw new Error("Task cancellation is no longer active.");
     }
-    owner.assertCurrent();
+    // A core producer may enter its admitting registry while retaining this task's custody.
+    if (core) {
+      core.assertStores();
+    } else {
+      owner.assertCurrent();
+    }
     authority.assertCurrent();
   };
   try {
