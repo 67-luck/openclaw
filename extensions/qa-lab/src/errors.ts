@@ -1,5 +1,5 @@
-// Qa Lab plugin module defines shared suite errors.
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { asOptionalObjectRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 const QA_SUITE_INFRA_RETRY_NETWORK_ERROR_CODES = new Set([
   "ECONNRESET",
@@ -86,11 +86,10 @@ export function isQaSuiteInfraRetryableError(error: unknown) {
   }
   let current: unknown = error;
   for (let depth = 0; depth < 4 && current; depth += 1) {
-    if (typeof current !== "object") {
+    const record = asOptionalObjectRecord(current);
+    if (!record) {
       return false;
     }
-    // SAFETY: The loop excludes null; these optional fields remain unknown until checked.
-    const record = current as { cause?: unknown; code?: unknown };
     if (
       typeof record.code === "string" &&
       QA_SUITE_INFRA_RETRY_NETWORK_ERROR_CODES.has(record.code.toUpperCase())

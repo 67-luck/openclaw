@@ -2,11 +2,9 @@ import path from "node:path";
 import {
   defaultQaSuiteConcurrencyForTransport,
   normalizeQaTransportId,
-  prepareQaTransportAdapterFactories,
   qaTransportSupportsModuleFlows,
 } from "./qa-transport-registry.js";
 import { readQaBootstrapScenarioCatalog } from "./scenario-catalog.js";
-import { expandQaScenarioExecutionCells } from "./scenario-lane.js";
 import { invalidateQaSuiteArtifactGeneration } from "./suite-artifacts.js";
 import { resolveRequestedQaSuiteModels } from "./suite-model-selection.js";
 import {
@@ -24,8 +22,6 @@ import { shouldCaptureGatewayHeapCheckpoints } from "./suite-support.js";
 import type { QaSuiteResolvedRunContext, QaSuiteResult, QaSuiteRunParams } from "./suite-types.js";
 import {
   formatQaSuiteRunStartProgress,
-  isQaSuiteNestedRun,
-  markQaSuiteNestedRun,
   runQaSuiteScenarioDefinitionForRuntime,
   shouldLogQaSuiteProgress,
   shouldRunQaSuiteWithIsolatedScenarioWorkers,
@@ -33,7 +29,6 @@ import {
 } from "./suite.js";
 
 export async function runQaFlowSuiteFromRuntime(params?: QaSuiteRunParams): Promise<QaSuiteResult> {
-  params?.signal?.throwIfAborted();
   const startedAt = new Date();
   const repoRoot = path.resolve(params?.repoRoot ?? process.cwd());
   const scenarios = params?.scenarioDefinitions ?? readQaBootstrapScenarioCatalog().scenarios;
@@ -76,24 +71,6 @@ export async function runQaFlowSuiteFromRuntime(params?: QaSuiteRunParams): Prom
     throw new Error("QA round-trip probes are not supported with runtime-pair runs.");
   }
   await invalidateQaSuiteArtifactGeneration(outputDir);
-  const preparedParams = {
-    ...params,
-    adapterFactories: await prepareQaTransportAdapterFactories({
-      factories: params?.adapterFactories,
-      driver: channelDriver,
-      cells: expandQaScenarioExecutionCells({
-        scenarios: selectedScenarios,
-        channelDriver: channelDriver ?? transportId,
-        channel: params?.channelId,
-        expandChannels: false,
-      }),
-    }),
-  };
-  params?.signal?.throwIfAborted();
-  // Preparation copies params, so carry the child's publication ownership to the new object.
-  if (isQaSuiteNestedRun(params)) {
-    markQaSuiteNestedRun(preparedParams);
-  }
   const enabledPluginIds = [
     ...new Set([
       ...collectQaSuitePluginIds(selectedScenarios),
@@ -153,43 +130,15 @@ export async function runQaFlowSuiteFromRuntime(params?: QaSuiteRunParams): Prom
   });
   if (params?.runtimePair) {
     return await runQaRuntimeParitySuite({
-      signal: params.signal,
-      forwardParentSignals: params.forwardParentSignals,
+      ...params,
+      ...context,
       runQaFlowSuite: runQaFlowSuiteFromRuntime,
-      adapterFactories: preparedParams.adapterFactories,
-      adapterOptions: params.adapterOptions,
-      evidenceMode: params.evidenceMode,
-      repoRoot,
-      outputDir,
-      startedAt,
-      providerMode,
-      transportId,
-      channelDriver: params.channelDriver,
-      channelId: params.channelId,
-      primaryModel,
-      alternateModel,
-      fastMode,
-      controlUiEnabled: params.controlUiEnabled,
-      thinkingDefault: params.thinkingDefault,
-      claudeCliAuthMode: params.claudeCliAuthMode,
+      // Each parity child adds its scenario plugins during its own preparation.
       enabledPluginIds: params.enabledPluginIds,
-      concurrency,
-      selectedScenarios,
-      startLab: params.startLab,
-      lab: params.lab,
-      progressEnabled,
-      scenarioIds: params.scenarioIds,
       runtimePair: params.runtimePair,
-      sutOpenClawCommand: params.sutOpenClawCommand,
-      mutateConfig: params.mutateConfig,
-      writeEvidenceFile: params.writeEvidenceFile,
-      evidenceAnchors: params.evidenceAnchors,
-      evidenceContinuation: params.evidenceContinuation,
-      onEvidence: params.onEvidence,
-      onScenarioStarted: params.onScenarioStarted,
     });
   }
   return useIsolatedScenarioWorkers
-    ? await runQaFlowSuiteIsolated(preparedParams, context, runQaFlowSuiteFromRuntime)
-    : await runQaFlowSuiteStandard(preparedParams, context, runQaSuiteScenarioDefinitionForRuntime);
+    ? await runQaFlowSuiteIsolated(params, context, runQaFlowSuiteFromRuntime)
+    : await runQaFlowSuiteStandard(params, context, runQaSuiteScenarioDefinitionForRuntime);
 }

@@ -4,7 +4,7 @@ import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { withCommandProcessScope } from "openclaw/plugin-sdk/process-runtime";
 import { runPluginCommandWithTimeout } from "openclaw/plugin-sdk/run-command";
 import { toRepoRelativePath } from "./cli-paths.js";
-import { isQaSuiteInfraRetryableError, QaSuiteCleanupError } from "./errors.js";
+import { combineQaSuiteErrors, QaSuiteCleanupError } from "./errors.js";
 import { captureQaEvidenceLaunchIdentity } from "./evidence-environment.js";
 import { resolveQaEvidenceContainment } from "./evidence-summary-schema.js";
 import {
@@ -41,6 +41,7 @@ import {
   describeQaSuiteInterruption,
   type QaUnifiedPartitionResult,
 } from "./suite-evidence.js";
+import { QA_SUITE_INFRA_RETRY_LIMIT, runQaSuiteWithInfraRetry } from "./suite-infra-retry.js";
 import {
   mapQaSuiteWithConcurrency,
   normalizeQaSuiteConcurrency,
@@ -113,7 +114,6 @@ const MAX_ISOLATED_FLOW_CONCURRENCY = 8;
 // Raising it risks cleanup overlap and shared port/listener contention.
 const MAX_PARALLEL_SCRIPT_CONCURRENCY = 3;
 const ISOLATED_FLOW_WORKER_START_STAGGER_MS = 1_500;
-const QA_SUITE_INFRA_RETRY_LIMIT = 1;
 const CREDENTIAL_POOL_UNAVAILABLE_CODES = new Set(["NO_CREDENTIAL_AVAILABLE", "POOL_EXHAUSTED"]);
 
 type QaUnifiedPartitionTask = {
@@ -151,6 +151,7 @@ function summarizeQaEvidenceChannel(
 type QaFlowChannelGroup = {
   channel: string | undefined;
   channelId: string | undefined;
+  exclusiveKey?: string;
   isolatesAdapterInstances?: boolean;
   scenarios: QaSeedScenarioWithSource[];
 };
@@ -181,39 +182,6 @@ function groupQaScenariosByExecutionCell(
     groups.set(channel, group);
   }
   return groups;
-}
-
-export async function runQaSuiteWithInfraRetry<Result>(
-  run: (attempt: number) => Promise<Result>,
-  maxRetries = QA_SUITE_INFRA_RETRY_LIMIT,
-  signal?: AbortSignal,
-  options?: {
-    canRetry?: () => boolean;
-    onAttemptFailure?: (error: unknown, final: boolean) => void;
-  },
-) {
-  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-    signal?.throwIfAborted();
-    try {
-      return await run(attempt);
-    } catch (error) {
-      const retry =
-        !signal?.aborted &&
-        isQaSuiteInfraRetryableError(error) &&
-        attempt < maxRetries &&
-        options?.canRetry?.() !== false;
-      // Retry admission and evidence selection share one synchronous decision;
-      // a sibling cleanup failure must not leave this attempt nonterminal.
-      options?.onAttemptFailure?.(error, !retry);
-      if (!retry) {
-        throw error;
-      }
-      process.stderr.write(
-        `[qa-suite] infra retry ${attempt + 1}/${maxRetries}: ${formatErrorMessage(error)}\n`,
-      );
-    }
-  }
-  throw new Error("unreachable qa suite retry state");
 }
 
 async function loadQaFlowSuiteRuntime() {
@@ -360,6 +328,19 @@ async function resolveSuiteExecutionPlan(
   const channelGroups = (await resolveQaFlowChannelGroups(params, flowScenarios)).filter(
     (group) => group.scenarios.length > 0,
   );
+  for (const group of channelGroups) {
+    const channelId = group.channelId;
+    const usesContributedChannelDriver =
+      params?.channelDriver === "live" &&
+      channelId !== undefined &&
+      params.adapterFactories?.some((factory) => factory.matches({ channelId, driver: "live" }));
+    if (
+      (params?.channelDriver === "crabline" || usesContributedChannelDriver) &&
+      !group.isolatesAdapterInstances
+    ) {
+      group.exclusiveKey = `channel:${group.channel ?? group.channelId ?? "default"}`;
+    }
+  }
   const expectedCells = [
     ...channelGroups.flatMap((group) =>
       expandQaScenarioExecutionCells({
@@ -377,6 +358,7 @@ async function resolveSuiteExecutionPlan(
   ];
   const requiresFlowPartitions =
     channelGroups.length > 1 ||
+    channelGroups.some((group) => group.exclusiveKey !== undefined && group.scenarios.length > 1) ||
     channelGroups.some(
       (group) => group.channelId !== undefined && group.channelId !== params?.channelId,
     ) ||
@@ -622,11 +604,7 @@ async function runUnifiedQaSuite(params: {
   const repoRoot = path.resolve(params.runParams?.repoRoot ?? process.cwd());
   const outputDir = await resolveQaSuiteOutputDir(repoRoot, params.runParams?.outputDir);
   await invalidateQaSuiteArtifactGeneration(outputDir);
-  const adapterFactories = await prepareQaTransportAdapterFactories({
-    factories: params.runParams?.adapterFactories,
-    driver: params.runParams?.channelDriver,
-    cells: params.plan.expectedCells,
-  });
+  let adapterFactories = params.runParams?.adapterFactories;
   // Only an explicitly selected single flow may replace the unified suite's mock default.
   const [selectedScenario] = params.plan.scenarios;
   const selectedProviderMode =
@@ -646,7 +624,6 @@ async function runUnifiedQaSuite(params: {
         startedAt: startedAt.toISOString(),
       })
     : undefined;
-  progress?.start();
   const { primaryModel, alternateModel } = resolveQaRuntimeModelPair({
     providerMode,
     primaryModel: params.runParams?.primaryModel,
@@ -737,7 +714,6 @@ async function runUnifiedQaSuite(params: {
   let preparedDockerEvidence: dockerBatch.QaPreparedDockerEvidence | undefined;
   if (params.plan.channelGroups.length > 0) {
     const channelGroups = params.plan.channelGroups;
-    const runFlowSuite = await loadQaFlowSuiteRuntime();
     for (const channelGroup of channelGroups) {
       const formatScenarioResult = (result: QaSuiteScenarioResult) =>
         params.runParams?.expandScenarioChannels && channelGroup.channel
@@ -758,34 +734,24 @@ async function runUnifiedQaSuite(params: {
       const ordinaryIsolatedFlowScenarios = isolatedFlowScenarios.filter(
         (scenario) => !runtimeScenarioSet.has(scenario),
       );
-      const channelId = channelGroup.channelId;
-      const usesContributedChannelDriver = Boolean(
-        channelId &&
-        params.runParams?.channelDriver === "live" &&
-        adapterFactories?.find((factory) => factory.matches({ channelId, driver: "live" })),
-      );
+      const flowExclusiveKey = channelGroup.exclusiveKey;
       // Isolated adapters may use the caller's full suite budget; every partition
       // still has weight one in the global scheduler below.
       // A rejected worker cannot return its completed prefix or active scenario.
       // Single-scenario fail-fast tasks keep retries and failure evidence attributable.
       const sharedFlowPartitions = failFast
         ? sharedFlowScenarios.map((scenario) => [scenario])
-        : partitionSharedFlowScenarios(
-            sharedFlowScenarios,
-            usesContributedChannelDriver && !channelGroup.isolatesAdapterInstances
-              ? 1
-              : concurrency,
-            channelGroup.isolatesAdapterInstances ? concurrency : MAX_SHARED_FLOW_PARTITIONS,
-          );
+        : flowExclusiveKey
+          ? [sharedFlowScenarios]
+          : partitionSharedFlowScenarios(
+              sharedFlowScenarios,
+              concurrency,
+              channelGroup.isolatesAdapterInstances ? concurrency : MAX_SHARED_FLOW_PARTITIONS,
+            );
       // Channel-driver flow workers each launch a gateway plus transport harness.
       // Serializing their isolated workers keeps state-mutating smoke checks from
       // flaking under concurrent child gateways while preserving non-driver speed.
-      const channelDriverFlowRequiresExclusiveWorkers =
-        (params.runParams?.channelDriver === "crabline" || usesContributedChannelDriver) &&
-        !channelGroup.isolatesAdapterInstances;
-      const isolatedFlowConcurrencyLimit = channelDriverFlowRequiresExclusiveWorkers
-        ? 1
-        : MAX_ISOLATED_FLOW_CONCURRENCY;
+      const isolatedFlowConcurrencyLimit = flowExclusiveKey ? 1 : MAX_ISOLATED_FLOW_CONCURRENCY;
       const isolatedFlowConcurrency = Math.min(
         concurrency,
         isolatedFlowConcurrencyLimit,
@@ -858,13 +824,12 @@ async function runUnifiedQaSuite(params: {
           channelId: taskChannelId,
           // One channel's credential and Gateway state stay serial unless each adapter create()
           // owns an isolated runtime. Distinct channels may always run together.
-          exclusiveKey: channelDriverFlowRequiresExclusiveWorkers
-            ? `channel:${channelGroup.channel ?? channelGroup.channelId ?? "default"}`
-            : undefined,
+          exclusiveKey: flowExclusiveKey,
           scenarios: partition.scenarios,
           evidenceOwners: [owner],
           weight: partition.concurrency,
           run: async () => {
+            const runFlowSuite = await loadQaFlowSuiteRuntime();
             const unavailableDetails = channelGroup.channelId
               ? unavailableChannelCredentialDetails.get(channelGroup.channelId)
               : undefined;
@@ -874,6 +839,7 @@ async function runUnifiedQaSuite(params: {
             const result = await runFlowSuite({
               ...params.runParams,
               ...owner.input(),
+              onArtifactsPublished: undefined,
               adapterFactories,
               ...(progress
                 ? {
@@ -911,7 +877,7 @@ async function runUnifiedQaSuite(params: {
               // Preserve other channels' evidence, but keep the suite failed: maturity
               // docs must not publish until every required channel can run.
               const details = `channel credential unavailable: ${formatErrorMessage(error)}`;
-              if (channelDriverFlowRequiresExclusiveWorkers && channelGroup.channelId) {
+              if (flowExclusiveKey && channelGroup.channelId) {
                 unavailableChannelCredentialDetails.set(channelGroup.channelId, details);
               }
               return buildCredentialUnavailableResult(details);
@@ -1004,6 +970,7 @@ async function runUnifiedQaSuite(params: {
               ...params.runParams,
               ...owner.input(),
               adapterFactories,
+              onArtifactsPublished: undefined,
               outputDir: suitePartitionOutputDir(outputDir, kind),
               writeEvidenceFile: false,
               providerMode,
@@ -1133,7 +1100,11 @@ async function runUnifiedQaSuite(params: {
         let failure: QaUnifiedPartitionResult | undefined;
         try {
           return await runQaSuiteWithInfraRetry(
-            () => task.run(),
+            () => {
+              // A later recording failure cannot reuse a prior attempt's result.
+              failure = undefined;
+              return task.run();
+            },
             QA_SUITE_INFRA_RETRY_LIMIT,
             params.runParams?.signal,
             {
@@ -1179,18 +1150,29 @@ async function runUnifiedQaSuite(params: {
   };
   // Native children opt out of their destructive global build only after this
   // scheduler has established the shared runtime they consume concurrently.
+  // Preparation failures reach progress observers only after terminal artifacts.
   let nativePreparationFailure: QaUnifiedPartitionResult[] | undefined;
-  if (concurrentTestFileScenariosByKind.has("vitest")) {
-    try {
+  try {
+    params.runParams?.signal?.throwIfAborted();
+    progress?.start();
+    adapterFactories = await prepareQaTransportAdapterFactories({
+      factories: adapterFactories,
+      driver: params.runParams?.channelDriver,
+      cells: params.plan.expectedCells,
+    });
+    params.runParams?.signal?.throwIfAborted();
+    if (concurrentTestFileScenariosByKind.has("vitest")) {
       await prepareQaSuiteNativeRuntime(repoRoot, params.runParams?.signal);
-    } catch (error) {
-      nativePreparationFailure = concurrentPartitionTasks.map((task) =>
-        capturePartitionFailure(task, error, false),
-      );
-      progress?.recordResults(
-        progressEntries(nativePreparationFailure.flatMap((partition) => partition.scenarioResults)),
-      );
     }
+  } catch (error) {
+    nativePreparationFailure =
+      params.runParams?.signal?.aborted && error === params.runParams.signal.reason
+        ? []
+        : [
+            ...concurrentPartitionTasks,
+            ...serialScriptPartitionTasks,
+            ...parallelScriptPartitionTasks,
+          ].map((task) => capturePartitionFailure(task, error, false));
   }
   const concurrentPartitionResults =
     nativePreparationFailure ?? (await runPartitionTasks(concurrentPartitionTasks, concurrency));
@@ -1235,7 +1217,6 @@ async function runUnifiedQaSuite(params: {
         new Error(`Docker candidate preparation failed: ${formatErrorMessage(error)}`),
         false,
       );
-      progress?.recordResults(progressEntries(scriptPreparationFailure.scenarioResults));
     }
   }
   // Unmarked scripts may rebuild shared checkout state. Run them exclusively
@@ -1340,6 +1321,7 @@ async function runUnifiedQaSuite(params: {
       scenarios,
       startedAt,
     });
+    params.runParams?.onArtifactsPublished?.(unifiedResult);
     const resultsByIndex = new Map<number, QaSuiteScenarioResult[]>();
     for (const { scenarioIndex, result } of progressEntries(
       partitionResults.flatMap((partition) => partition.scenarioResults),
@@ -1391,10 +1373,8 @@ async function runUnifiedQaSuite(params: {
 
 export async function runQaSuite(...args: [QaSuiteRunParams?]): Promise<QaSuiteRuntimeResult> {
   const runParams = args[0];
-  runParams?.signal?.throwIfAborted();
   rejectRemovedQaChannelDriverSelection(runParams);
   const plan = await resolveSuiteExecutionPlan(runParams);
-  runParams?.signal?.throwIfAborted();
   if (plan.kind === "unified") {
     const { observedCells, ...result } = await runUnifiedQaSuite({
       runParams,
@@ -1413,11 +1393,18 @@ export async function runQaSuite(...args: [QaSuiteRunParams?]): Promise<QaSuiteR
   );
   let continuation = runParams?.evidenceContinuation;
   const startedInstanceIds = new Set<string>();
-  const result = await runQaSuiteWithInfraRetry(
-    () =>
-      runQaFlowSuiteFromRuntime({
+  let publication: Parameters<NonNullable<QaSuiteRunParams["onArtifactsPublished"]>>[0] | undefined;
+  const settled = await runQaSuiteWithInfraRetry(
+    () => {
+      // A retry owns a new generation at the same paths. Only its final
+      // completed publication may escape to the accepted Lab run.
+      publication = undefined;
+      return runQaFlowSuiteFromRuntime({
         ...runParams,
         outputDir,
+        onArtifactsPublished: (artifacts) => {
+          publication = artifacts;
+        },
         ...(continuation
           ? {
               evidenceAnchors: resolveQaEvidenceContainment(
@@ -1439,10 +1426,29 @@ export async function runQaSuite(...args: [QaSuiteRunParams?]): Promise<QaSuiteR
             runParams?.onScenarioStarted?.(instanceId);
           }
         },
-      }),
+      });
+    },
     QA_SUITE_INFRA_RETRY_LIMIT,
     runParams?.signal,
+  ).then(
+    (result) => ({ result }),
+    (error: unknown) => ({ error }),
   );
+  try {
+    if (publication) {
+      runParams?.onArtifactsPublished?.(publication);
+    }
+  } catch (error) {
+    throw "error" in settled
+      ? combineQaSuiteErrors([settled.error, error], "QA run and artifact notification failed", {
+          cause: settled.error,
+        })
+      : error;
+  }
+  if ("error" in settled) {
+    throw settled.error;
+  }
+  const { result } = settled;
   for (const id of result.startedScenarioInstanceIds ?? []) {
     startedInstanceIds.add(id);
   }

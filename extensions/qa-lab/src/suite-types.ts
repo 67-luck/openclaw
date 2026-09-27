@@ -109,7 +109,15 @@ export type QaSuiteRunParams = {
   // Unified suite partitions consume child evidence in memory; only the
   // parent should write the aggregate qa-evidence.json artifact.
   writeEvidenceFile?: boolean;
+  // Synchronous notification of a complete root generation, including a run
+  // that subsequently rejects. Retry owners forward only their final attempt.
+  onArtifactsPublished?: (artifacts: QaSuitePublishedArtifacts) => void;
 };
+
+export type QaSuitePublishedArtifacts = Pick<
+  QaSuiteResult,
+  "outputDir" | "evidencePath" | "reportPath" | "summaryPath" | "report"
+>;
 
 export type QaSuiteResult = {
   evidence?: QaEvidenceSummaryJson;

@@ -29,6 +29,41 @@ afterEach(async () => {
 });
 
 describe("qa test file scenario runner", () => {
+  it("retains native I/O and cleanup errors in both the fatal chain and scenario details", async () => {
+    const repoRoot = await makeTempRepo("qa-native-io-cleanup-");
+    const io = new Error("native stdout read failed");
+    const cleanup = new Error("native process termination unconfirmed");
+    const failureMessage = `${io.message}; settlement: ${cleanup.message}`;
+    const committed = vi.fn();
+    const scenario = makeTestFileScenario("vitest", "test/native.test.ts");
+    const runCommand = vi.fn(async () => ({
+      exitCode: 1,
+      stdout: "",
+      stderr: "",
+      error: io,
+      cleanupFailure: cleanup,
+      failureMessage,
+    }));
+    const result = await runQaTestFileScenarios({
+      ...QA_TEST_RUNNER_DEFAULTS,
+      repoRoot,
+      outputDir: path.join(repoRoot, "out"),
+      scenarios: [scenario, scenario],
+      runCommand,
+      onResultCommitted: committed,
+    }).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(QaSuiteCleanupError);
+    if (!(result instanceof QaSuiteCleanupError)) {
+      throw new Error("expected fatal cleanup", { cause: result });
+    }
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toMatchObject({ cause: io, errors: [io, cleanup] });
+    expect(runCommand).toHaveBeenCalledOnce();
+    expect(committed).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ status: "fail", failureMessage }),
+    );
+  });
+
   it.each([
     { kind: "vitest", phase: "attempts root", failure: "cancel" },
     { kind: "vitest", phase: "attempt", failure: "cancel" },
@@ -432,14 +467,9 @@ describe("qa test file scenario runner", () => {
     });
   });
 
-  it.each([
-    { executionKind: "vitest" as const, passed: 0, expectedStatus: "fail" as const },
-    { executionKind: "playwright" as const, passed: 0, expectedStatus: "fail" as const },
-    { executionKind: "vitest" as const, passed: 1, expectedStatus: "pass" as const },
-    { executionKind: "playwright" as const, passed: 1, expectedStatus: "pass" as const },
-  ])(
-    "requires an actually passed $executionKind test when the native child exits successfully ($passed passed)",
-    async ({ executionKind, expectedStatus, passed }) => {
+  it.each(["vitest", "playwright"] as const)(
+    "rejects a %s child that exits successfully without passing any tests",
+    async (executionKind) => {
       const repoRoot = await makeTempRepo(`qa-${executionKind}-executed-tests-`);
       const outputDir = path.join(repoRoot, ".artifacts", "qa-e2e", `scenario-${executionKind}`);
       const scenarioPath =
@@ -454,21 +484,19 @@ describe("qa test file scenario runner", () => {
         scenarios: [makeTestFileScenario(executionKind, scenarioPath)],
         runCommand: async (command) => {
           commands.push(command);
-          await writeNativeVitestReport(command, { passed });
+          await writeNativeVitestReport(command, { passed: 0 });
           return { exitCode: 0, stdout: "child exited successfully\n", stderr: "" };
         },
       });
 
-      expect(result.results[0]).toMatchObject({ status: expectedStatus });
-      expect(result.evidence.entries[0]?.result.status).toBe(expectedStatus);
+      expect(result.results[0]).toMatchObject({ status: "fail" });
+      expect(result.evidence.entries[0]?.result.status).toBe("fail");
       expect(
         commands.filter((command) => command.args[0] === "scripts/run-vitest.mjs"),
       ).toHaveLength(1);
-      if (expectedStatus === "fail") {
-        expect(result.results[0]?.failureMessage).toBe(
-          "Vitest exited successfully without reporting a successfully executed test.",
-        );
-      }
+      expect(result.results[0]?.failureMessage).toBe(
+        "Vitest exited successfully without reporting a successfully executed test.",
+      );
     },
   );
 

@@ -99,11 +99,9 @@ import {
   type QaScorecardChannelDriver,
   type QaScorecardEvidenceMode,
 } from "./scorecard-taxonomy.js";
-import {
-  runQaFlowSuiteFromRuntime,
-  runQaSuite,
-  runQaSuiteWithInfraRetry,
-} from "./suite-launch.runtime.js";
+import { isQaSelfCheckSuccessful } from "./self-check.js";
+import { runQaSuiteWithInfraRetry } from "./suite-infra-retry.js";
+import { runQaFlowSuiteFromRuntime, runQaSuite } from "./suite-launch.runtime.js";
 import {
   resolveQaSuiteScenarioChannel,
   resolveQaSuiteScenarioChannels,

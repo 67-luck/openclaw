@@ -8,7 +8,6 @@ import { createQaEvidenceInvocation } from "./evidence-invocation.js";
 import type { QaEvidenceSummaryJson } from "./evidence-summary.js";
 import type { QaScenarioCommandResult } from "./test-file-scenario-command-lifecycle.js";
 import {
-  dockerLaneName,
   dockerE2eLaneName,
   prepareDockerE2eEnvironment,
   type QaPreparedDockerEvidence,
@@ -33,19 +32,6 @@ const makeTempRepo = (prefix: string) => harness.makeTempRepo(prefix);
 afterEach(async () => {
   vi.unstubAllEnvs();
   await harness.cleanup();
-});
-
-it("prepares declared candidates for scripts that own their Docker invocation", () => {
-  const scenario = makeTestFileScenario("script", "scripts/e2e/qa-cli-onboarding.mjs");
-  if (scenario.execution.kind !== "script") {
-    throw new Error("expected script scenario");
-  }
-  expect(
-    dockerLaneName({
-      ...scenario,
-      execution: { ...scenario.execution, dockerLane: "onboard" },
-    }),
-  ).toBe("onboard");
 });
 
 it("only batches the canonical Docker lane argument shape", () => {
@@ -157,30 +143,6 @@ it("rejects failed Docker preparation cleanup before consuming its manifest", as
   expect(runCommand).toHaveBeenCalledOnce();
 });
 
-it("returns a sanitized bound env for a package-free candidate", async () => {
-  const repoRoot = await makeTempRepo("qa-docker-candidate-null-");
-  const env = await prepareDockerE2eEnvironment({
-    env: {
-      KEEP_ME: "yes",
-      OPENCLAW_DOCKER_ALL_BUILD: "1",
-      OPENCLAW_CURRENT_PACKAGE_TGZ: "/stale.tgz",
-    },
-    outputDir: path.join(repoRoot, "out"),
-    repoRoot,
-    runCommand: (command) =>
-      writeDockerCandidateManifest(command, {
-        schema: "openclaw.qa-docker-candidate/v1",
-        schemaVersion: 1,
-        sourceSha: "a".repeat(40),
-        candidate: null,
-      }),
-    scenarios: [makeDockerE2eScenario("one", "gateway-network")],
-  });
-
-  expect(env).toEqual({ KEEP_ME: "yes", OPENCLAW_DOCKER_E2E_REPO_ROOT: repoRoot });
-  expect(Object.isFrozen(env)).toBe(true);
-});
-
 it("retains immutable prepared Docker receipts without claiming installed or runtime proof", async () => {
   const repoRoot = await makeTempRepo("qa-docker-prepared-evidence-");
   const scenario = makeDockerE2eScenario("one", "gateway-network");
@@ -227,6 +189,8 @@ it("retains immutable prepared Docker receipts without claiming installed or run
     failFast: true,
     runCommand: async () => ({ exitCode: 0, stdout: "completed", stderr: "" }),
   });
+  expect(result.results[0]).toMatchObject({ scenario: { id: "one" }, status: "pass" });
+  expect(result.evidence.entries[0]?.result.status).toBe("pass");
   if (result.evidence.schemaVersion !== 3) {
     throw new Error("expected occurrence evidence");
   }
@@ -405,7 +369,7 @@ describe("qa test file scenario runner", () => {
     vi.stubEnv("OPENCLAW_CURRENT_PACKAGE_TGZ", "/hostile.tgz");
     vi.stubEnv("OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR", "/hostile-registry");
     const prepared = await prepareDockerE2eEnvironment({
-      env: process.env,
+      env: { ...process.env, KEEP_ME: "yes" },
       outputDir: path.join(repoRoot, "prep"),
       repoRoot,
       runCommand: (command) =>
@@ -428,6 +392,8 @@ describe("qa test file scenario runner", () => {
         }),
       scenarios: [makeDockerE2eScenario("one", "gateway-network")],
     });
+    expect(Object.isFrozen(prepared)).toBe(true);
+    expect(prepared).toHaveProperty("KEEP_ME", "yes");
 
     await runQaTestFileScenarios({
       env: prepared,
@@ -456,27 +422,6 @@ describe("qa test file scenario runner", () => {
         return { exitCode: 0, stdout: "", stderr: "" };
       },
     });
-  });
-
-  it("preserves individual Docker lane success without generic producer evidence", async () => {
-    const repoRoot = await makeTempRepo("qa-script-docker-individual-no-producer-evidence-");
-    const result = await runQaTestFileScenarios({
-      repoRoot,
-      outputDir: path.join(repoRoot, ".artifacts", "qa-e2e", "docker-individual"),
-      ...QA_TEST_RUNNER_DEFAULTS,
-      failFast: true,
-      scenarios: [makeDockerE2eScenario("docker-gateway-network", "gateway-network")],
-      runCommand: async (command) => {
-        expect(command.cleanupGraceMs).toBeUndefined();
-        return { exitCode: 0, stdout: "Docker lane passed\n", stderr: "" };
-      },
-    });
-
-    expect(result.results[0]).toMatchObject({
-      scenario: { id: "docker-gateway-network" },
-      status: "pass",
-    });
-    expect(result.evidence.entries[0]?.result.status).toBe("pass");
   });
 
   it("prioritizes serial native work while preserving catalog-ordered mixed evidence", async () => {

@@ -4,10 +4,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
-import {
-  acquireDebugProxyCaptureStore,
-  resolveDebugProxySettings,
-} from "openclaw/plugin-sdk/proxy-capture";
+import { resolveDebugProxySettings } from "openclaw/plugin-sdk/proxy-capture";
 import type { QaRunnerModelOption } from "../runner-contract.js";
 import {
   closeQaHttpServer,
@@ -28,9 +25,10 @@ import {
 } from "./evidence-gallery.js";
 import { createQaRunnerRuntime } from "./harness-runtime.js";
 import {
+  createQaCaptureLifecycle,
   isCaptureQueryPreset,
   mapCaptureEventForQa,
-  probeTcpReachability,
+  readQaCaptureStartupStatus,
 } from "./lab-server-capture.js";
 import { QaLabRunUnavailableError, writeQaLabServerError } from "./lab-server-errors.js";
 import {
@@ -193,13 +191,7 @@ export async function startQaLabServer(
   const repoRoot = path.resolve(params?.repoRoot ?? process.cwd());
   const captureSettings = resolveDebugProxySettings();
   let stopPromise: Promise<void> | null = null;
-  let captureStoreLease: ReturnType<typeof acquireDebugProxyCaptureStore> | undefined;
-  const getCaptureStore = () => {
-    if (stopPromise) {
-      throw new QaLabRunUnavailableError(503, "QA Lab is stopping");
-    }
-    return (captureStoreLease ??= acquireDebugProxyCaptureStore()).store;
-  };
+  const capture = createQaCaptureLifecycle();
   const state = createQaBusState();
   let latestReport: QaLabLatestReport | null = null;
   let latestScenarioRun: QaLabScenarioRun | null = null;
@@ -547,33 +539,17 @@ export async function startQaLabServer(
         }
         if (req.method === "GET" && url.pathname === "/api/capture/sessions") {
           writeJson(res, 200, {
-            sessions: getCaptureStore().listSessions(50),
+            sessions: await capture.withStore((store) => store.listSessions(50)),
           });
           return;
         }
         if (req.method === "GET" && url.pathname === "/api/capture/startup-status") {
-          const proxyUrl = captureSettings.proxyUrl || "http://127.0.0.1:7799";
-          const gatewayUrl = controlUiUrl || "http://127.0.0.1:18789/";
-          const [proxy, gatewayLocal] = await Promise.all([
-            probeTcpReachability(proxyUrl),
-            probeTcpReachability(gatewayUrl),
-          ]);
           writeJson(res, 200, {
-            status: {
-              proxy: {
-                ...proxy,
-                label: "Proxy",
-              },
-              gateway: {
-                ...gatewayLocal,
-                label: "Gateway",
-              },
-              qaLab: {
-                label: "QA Lab",
-                url: publicBaseUrl,
-                ok: true,
-              },
-            },
+            status: await readQaCaptureStartupStatus({
+              proxyUrl: captureSettings.proxyUrl,
+              gatewayUrl: controlUiUrl,
+              publicBaseUrl,
+            }),
           });
           return;
         }
@@ -581,7 +557,9 @@ export async function startQaLabServer(
           const sessionId = url.searchParams.get("sessionId")?.trim();
           writeJson(res, 200, {
             events: sessionId
-              ? getCaptureStore().getSessionEvents(sessionId, 200).map(mapCaptureEventForQa)
+              ? (await capture.withStore((store) => store.getSessionEvents(sessionId, 200))).map(
+                  mapCaptureEventForQa,
+                )
               : [],
           });
           return;
@@ -593,7 +571,7 @@ export async function startQaLabServer(
             return;
           }
           writeJson(res, 200, {
-            coverage: getCaptureStore().summarizeSessionCoverage(sessionId),
+            coverage: await capture.withStore((store) => store.summarizeSessionCoverage(sessionId)),
           });
           return;
         }
@@ -609,7 +587,7 @@ export async function startQaLabServer(
             return;
           }
           writeJson(res, 200, {
-            rows: getCaptureStore().queryPreset(preset, sessionId),
+            rows: await capture.withStore((store) => store.queryPreset(preset, sessionId)),
           });
           return;
         }
@@ -619,7 +597,7 @@ export async function startQaLabServer(
             writeError(res, 400, "Missing blob id");
             return;
           }
-          const content = getCaptureStore().readBlob(blobId);
+          const content = await capture.withStore((store) => store.readBlob(blobId));
           if (content == null) {
             writeError(res, 404, "Blob not found");
             return;
@@ -633,13 +611,13 @@ export async function startQaLabServer(
             ? body.sessionIds.filter((value): value is string => typeof value === "string")
             : [];
           writeJson(res, 200, {
-            result: getCaptureStore().deleteSessions(sessionIds),
+            result: await capture.withStore((store) => store.deleteSessions(sessionIds)),
           });
           return;
         }
         if (req.method === "POST" && url.pathname === "/api/capture/purge") {
           writeJson(res, 200, {
-            result: getCaptureStore().purgeAll(),
+            result: await capture.withStore((store) => store.purgeAll()),
           });
           return;
         }
@@ -748,6 +726,20 @@ export async function startQaLabServer(
                 controlUiEnabled: true,
                 repoRoot,
                 outputDir: createQaRunOutputDir(repoRoot),
+                onArtifactsPublished: (published) => {
+                  artifacts = {
+                    outputDir: published.outputDir,
+                    evidencePath: published.evidencePath,
+                    reportPath: published.reportPath,
+                    summaryPath: published.summaryPath,
+                    watchUrl: labHandle?.baseUrl ?? publicBaseUrl,
+                  };
+                  latestReport = {
+                    outputPath: published.reportPath,
+                    markdown: published.report,
+                    generatedAt: new Date().toISOString(),
+                  };
+                },
                 channelDriver: selection.channelDriver,
                 ...(adapterFactories ? { adapterFactories } : {}),
                 ...(selection.channel ? { channelId: selection.channel } : {}),
@@ -870,11 +862,6 @@ export async function startQaLabServer(
     });
   });
 
-  const releaseCaptureStore = () => {
-    captureStoreLease?.release();
-    captureStoreLease = undefined;
-  };
-
   const stopLabServerResources = async (): Promise<void> => {
     runnerModelCatalogAbort?.abort();
     const run = activeRun;
@@ -897,7 +884,7 @@ export async function startQaLabServer(
     for (const cleanup of [
       () => gateway?.stop(),
       () => (serverListening ? closeQaHttpServer(server, state) : undefined),
-      releaseCaptureStore,
+      () => capture.release(),
     ]) {
       try {
         await Promise.resolve().then(cleanup);
@@ -913,7 +900,10 @@ export async function startQaLabServer(
     }
   };
   // Fence admission synchronously, before any shutdown callback can run.
-  const stop = () => (stopPromise ??= Promise.resolve().then(stopLabServerResources));
+  const stop = () => {
+    capture.stopAdmission();
+    return (stopPromise ??= Promise.resolve().then(stopLabServerResources));
+  };
 
   try {
     await once(server.listen(params?.port ?? 0, params?.host ?? "127.0.0.1"), "listening");

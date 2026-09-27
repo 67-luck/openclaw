@@ -8,12 +8,14 @@ import * as evidenceSummary from "./evidence-summary.js";
 import type { QaLabServerHandle } from "./lab-server.types.js";
 import type { QaTestFileScenario } from "./scenario-catalog.js";
 import { createQaSuiteEvidenceInvocation } from "./suite-evidence.js";
-import { runQaSuite, runQaSuiteWithInfraRetry } from "./suite-launch.runtime.js";
+import { runQaSuiteWithInfraRetry } from "./suite-infra-retry.js";
+import { runQaSuite } from "./suite-launch.runtime.js";
 import {
   readQaSuiteFailedOrSkippedScenarioCountFromFile,
   readQaSuiteFailedScenarioCountFromFile,
 } from "./suite-summary.js";
 import { makeQaSuiteTestScenario } from "./suite-test-helpers.js";
+import type { QaSuitePublishedArtifacts } from "./suite-types.js";
 import {
   runQaFlowSuiteCleanupPlan,
   throwQaSuiteCleanupErrors,
@@ -53,6 +55,239 @@ function makeCancellationTestLab(): QaLabServerHandle {
 }
 
 describe("qa suite runtime cancellation", () => {
+  it("does not reuse a prior partition failure when the next attempt cannot record its failure", async () => {
+    const repoRoot = await makeTempRepo("qa-partition-failure-custody-");
+    const original = new QaSuiteCleanupError([new Error("child still running")], "fatal cleanup");
+    const recording = new Error("second failure recording failed");
+    const evidenceModule = await import("./suite-evidence.js");
+    const createOwner = evidenceModule.createQaPartitionEvidenceOwner;
+    const failures = vi.fn();
+    vi.spyOn(evidenceModule, "createQaPartitionEvidenceOwner").mockImplementation((params) => {
+      const owner = createOwner(params);
+      if (params.channel !== null) {
+        const record = owner.failure;
+        vi.spyOn(owner, "failure").mockImplementation((...args) => {
+          failures();
+          if (failures.mock.calls.length === 2) {
+            throw recording;
+          }
+          return record(...args);
+        });
+      }
+      return owner;
+    });
+    runQaFlowSuite
+      .mockRejectedValueOnce(
+        Object.assign(new Error("first attempt reset"), { code: "ECONNRESET" }),
+      )
+      .mockRejectedValueOnce(original);
+    const published = vi.fn();
+    const outcome = await runQaSuite({
+      repoRoot,
+      outputDir: "out",
+      concurrency: 1,
+      providerMode: "mock-openai",
+      scenarioIds: ["channel-chat-baseline", "control-ui-chat-flow-playwright"],
+      onArtifactsPublished: published,
+    }).catch((error: unknown) => error);
+    expect(outcome).toBeInstanceOf(QaSuiteCleanupError);
+    expect(outcome).toMatchObject({ cause: original, errors: [original, recording] });
+    expect(runQaFlowSuite).toHaveBeenCalledTimes(2);
+    expect(failures).toHaveBeenCalledTimes(2);
+    expect(runQaTestFileScenarios).not.toHaveBeenCalled();
+    expect(published).not.toHaveBeenCalled();
+    await expect(
+      fs.access(path.join(repoRoot, "out", "qa-suite-summary.json")),
+    ).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("records an initial progress failure before any preparation or dispatch", async () => {
+    const lab = makeCancellationTestLab();
+    const failure = new Error("initial progress delivery failed");
+    vi.mocked(lab.setScenarioRun).mockImplementationOnce(() => {
+      throw failure;
+    });
+    const prepare = vi.fn();
+    const create = vi.fn();
+    const published = vi.fn();
+    const result = await runQaSuite({
+      repoRoot: await makeTempRepo("qa-initial-progress-failure-"),
+      outputDir: "out",
+      lab,
+      scenarioIds: ["channel-chat-baseline", "control-ui-chat-flow-playwright"],
+      adapterFactories: [
+        { id: "fixture", matches: () => true, prepareSelectedScenarios: prepare, create },
+      ],
+      onArtifactsPublished: published,
+    });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    expect(runPluginCommandWithTimeout).not.toHaveBeenCalled();
+    expect(runQaFlowSuite).not.toHaveBeenCalled();
+    expect(runQaTestFileScenarios).not.toHaveBeenCalled();
+    expect(prepareDockerE2eEnvironment).not.toHaveBeenCalled();
+    expect(result.observedCells).toEqual([]);
+    expect(result.result.scenarios.map(({ status }) => status)).toEqual(["fail", "fail"]);
+    for (const scenario of result.result.scenarios) {
+      expect(scenario.details).toContain(failure.message);
+    }
+    expect(published).toHaveBeenCalledOnce();
+    await expect(fs.readFile(result.result.reportPath, "utf8")).resolves.toContain(failure.message);
+  });
+
+  it.each(["native", "Docker"] as const)(
+    "publishes %s preparation failure before failed-outcome delivery can throw",
+    async (kind) => {
+      const repoRoot = await makeTempRepo("qa-preparation-observer-failure-");
+      const outputDir = path.join(repoRoot, "out");
+      const original = new Error("preparation process cleanup unconfirmed");
+      const observer = new Error("failed outcome delivery failed");
+      const lab = makeCancellationTestLab();
+      const notifications: string[] = [];
+      vi.mocked(lab.setScenarioRun).mockImplementation((run) => {
+        if (run?.scenarios.some((scenario) => scenario.status === "fail")) {
+          notifications.push("failed outcome");
+          throw observer;
+        }
+      });
+      const published = vi.fn(() => notifications.push("artifacts"));
+      const scenarioIds =
+        kind === "native"
+          ? ["auth-profile-doctor-migration-safety", "docker-npm-onboard-channel-agent"]
+          : ["docker-npm-onboard-channel-agent"];
+      if (kind === "native") {
+        runPluginCommandWithTimeout.mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" });
+        vi.spyOn(processRuntime, "withCommandProcessScope").mockImplementationOnce(async (run) => {
+          await run(() => {});
+          throw original;
+        });
+      } else {
+        prepareDockerE2eEnvironment.mockRejectedValueOnce(
+          new QaSuiteCleanupError([original], "Docker cleanup unconfirmed"),
+        );
+      }
+      const outcome = await runQaSuite({
+        repoRoot,
+        outputDir,
+        lab,
+        forwardParentSignals: false,
+        scenarioIds,
+        onArtifactsPublished: published,
+      }).catch((error: unknown) => error);
+      expect(outcome).toBeInstanceOf(QaSuiteCleanupError);
+      const errors = (error: unknown): unknown[] => [
+        error,
+        ...(error instanceof AggregateError ? error.errors.flatMap(errors) : []),
+      ];
+      expect(errors(outcome)).toEqual(expect.arrayContaining([original, observer]));
+      expect(notifications).toEqual(["artifacts", "failed outcome"]);
+      expect(published).toHaveBeenCalledOnce();
+      expect(runQaFlowSuite).not.toHaveBeenCalled();
+      expect(runQaTestFileScenarios).not.toHaveBeenCalled();
+      expect(runPluginCommandWithTimeout).toHaveBeenCalledTimes(kind === "native" ? 1 : 0);
+      expect(prepareDockerE2eEnvironment).toHaveBeenCalledTimes(kind === "Docker" ? 1 : 0);
+      const summary = JSON.parse(
+        await fs.readFile(path.join(outputDir, "qa-suite-summary.json"), "utf8"),
+      );
+      expect(summary).toMatchObject({
+        run: { status: "completed" },
+        counts: { total: scenarioIds.length, failed: scenarioIds.length },
+      });
+      await expect(
+        fs.readFile(path.join(outputDir, "qa-suite-report.md"), "utf8"),
+      ).resolves.toContain(original.message);
+    },
+  );
+
+  it("does not expose a prior attempt's publication when its retry fails before publication", async () => {
+    const publication: QaSuitePublishedArtifacts = {
+      outputDir: "out",
+      evidencePath: "out/qa-evidence.json",
+      reportPath: "out/qa-suite-report.md",
+      summaryPath: "out/qa-suite-summary.json",
+      report: "first attempt",
+    };
+    const failure = new Error("retry artifact write failed");
+    const published = vi.fn();
+    runQaFlowSuite.mockImplementationOnce(async (params: QaSuiteRunParams) => {
+      params.onArtifactsPublished?.(publication);
+      throw Object.assign(new Error("confirmed cleanup socket reset"), { code: "ECONNRESET" });
+    });
+    runQaFlowSuite.mockRejectedValueOnce(failure);
+    await expect(
+      runQaSuite({
+        repoRoot: await makeTempRepo("qa-publication-retry-"),
+        providerMode: "mock-openai",
+        scenarioIds: ["channel-chat-baseline"],
+        onArtifactsPublished: published,
+      }),
+    ).rejects.toBe(failure);
+    expect(runQaFlowSuite).toHaveBeenCalledTimes(2);
+    expect(published).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "keeps observer errors outside retry and preserves the run failure (fatal=%s)",
+    async (fatal) => {
+      const failure = fatal
+        ? new QaSuiteCleanupError([new Error("Gateway stop unconfirmed")], "cleanup failed")
+        : new Error("run failed");
+      const observerFailure = Object.assign(new Error("observer socket reset"), {
+        code: "ECONNRESET",
+      });
+      const published = vi.fn(() => {
+        throw observerFailure;
+      });
+      runQaFlowSuite.mockImplementationOnce(async (params: QaSuiteRunParams) => {
+        params.onArtifactsPublished?.({
+          outputDir: "out",
+          evidencePath: "out/qa-evidence.json",
+          reportPath: "out/qa-suite-report.md",
+          summaryPath: "out/qa-suite-summary.json",
+          report: "failed attempt",
+        });
+        throw failure;
+      });
+      const outcome = await runQaSuite({
+        repoRoot: await makeTempRepo("qa-publication-observer-"),
+        providerMode: "mock-openai",
+        scenarioIds: ["channel-chat-baseline"],
+        onArtifactsPublished: published,
+      }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(outcome).toBeInstanceOf(fatal ? QaSuiteCleanupError : AggregateError);
+      expect(outcome).toMatchObject({ cause: failure, errors: [failure, observerFailure] });
+      expect(runQaFlowSuite).toHaveBeenCalledOnce();
+      expect(published).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("notifies only the complete mixed root, never its flow or native children", async () => {
+    const published = vi.fn();
+    const result = await runQaSuite({
+      repoRoot: await makeTempRepo("qa-publication-root-"),
+      providerMode: "mock-openai",
+      scenarioIds: ["channel-chat-baseline", "control-ui-chat-flow-playwright"],
+      onArtifactsPublished: published,
+    });
+    expect(runQaFlowSuite.mock.calls[0]![0].onArtifactsPublished).toBeUndefined();
+    expect(runQaTestFileScenarios.mock.calls[0]![0]).not.toHaveProperty(
+      "onArtifactsPublished",
+      expect.any(Function),
+    );
+    expect(published).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        evidencePath: result.result.evidencePath,
+        reportPath: result.result.reportPath,
+        summaryPath: result.result.summaryPath,
+      }),
+    );
+  });
+
   it("does not retry an infrastructure failure after cancellation", async () => {
     const controller = new AbortController();
     const failure = new QaSuiteInfraError("agent_wait_failed", "agent.wait failed");

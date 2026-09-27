@@ -7,7 +7,7 @@ import {
   resolveQaArtifactPath,
   toRepoRelativePath,
 } from "./cli-paths.js";
-import { QaSuiteCleanupError } from "./errors.js";
+import { combineQaSuiteErrors, QaSuiteCleanupError } from "./errors.js";
 import { captureQaEvidenceLaunchIdentity } from "./evidence-environment.js";
 import { createQaEvidenceInvocation } from "./evidence-invocation.js";
 import { resolveQaEvidenceContainment } from "./evidence-summary-schema.js";
@@ -137,7 +137,7 @@ export async function createQaSuiteEvidenceInvocation(
   });
   publish();
 
-  async function record(
+  async function commit(
     index: number,
     id: string,
     result: QaSuiteScenarioResult,
@@ -266,8 +266,29 @@ export async function createQaSuiteEvidenceInvocation(
     // Reporting owns the committed selection even if an external observer throws.
     // The initial snapshot above has no result to hand off.
     onResultCommitted?.(index, selectedResult);
-    publish();
     return selectedResult;
+  }
+
+  async function record(...args: Parameters<typeof commit>) {
+    const result = await commit(...args);
+    publish();
+    return result;
+  }
+
+  async function recordFailure(
+    original: unknown,
+    ...args: Parameters<typeof record>
+  ): Promise<never> {
+    try {
+      await record(...args);
+    } catch (recordError) {
+      throw combineQaSuiteErrors(
+        [original, recordError],
+        "QA attempt and evidence recording failed",
+        { cause: original },
+      );
+    }
+    throw original;
   }
 
   async function resolveSelectedResult(index: number, selectedId: string) {
@@ -284,39 +305,58 @@ export async function createQaSuiteEvidenceInvocation(
   }
 
   async function finalizeInterrupted(details: string | undefined) {
+    const observerErrors: unknown[] = [];
     if (details === undefined) {
-      return;
+      return observerErrors;
     }
-    for (const [index, scenario] of context.selectedScenarios.entries()) {
-      const selected = invocation.selectedObservation(index);
-      if (selected?.occurrence.terminalStatus != null) {
-        // Continued selections have no result in this invocation's report yet.
-        // Restore their verified artifacts without recording another attempt.
-        if (!recordedResults.has(selected.occurrence.id)) {
-          onResultCommitted?.(index, await resolveSelectedResult(index, selected.occurrence.id));
+    try {
+      for (const [index, scenario] of context.selectedScenarios.entries()) {
+        const selected = invocation.selectedObservation(index);
+        if (selected?.occurrence.terminalStatus != null) {
+          // Continued selections have no result in this invocation's report yet.
+          // Restore their verified artifacts without recording another attempt.
+          if (!recordedResults.has(selected.occurrence.id)) {
+            onResultCommitted?.(index, await resolveSelectedResult(index, selected.occurrence.id));
+          }
+          continue;
         }
-        continue;
+        // A stopped schedule owns a diagnostic, not an executed attempt or a
+        // replacement for any completed child selection.
+        const id = invocation.begin(index, undefined, { diagnostic: true });
+        await commit(
+          index,
+          id,
+          {
+            name: scenario.title,
+            status: "fail",
+            details,
+            steps: [{ name: "suite interruption", status: "fail", details }],
+          },
+          { diagnostic: true },
+        );
+        const summary = snapshot();
+        try {
+          params?.onEvidence?.(summary);
+        } catch (error) {
+          // Delivery cannot strand later accepted instances. The terminal
+          // publisher retains these errors after durable artifact publication.
+          observerErrors.push(error);
+        }
       }
-      // A stopped schedule owns a diagnostic, not an executed attempt or a
-      // replacement for any completed child selection.
-      const id = invocation.begin(index, undefined, { diagnostic: true });
-      await record(
-        index,
-        id,
-        {
-          name: scenario.title,
-          status: "fail",
-          details,
-          steps: [{ name: "suite interruption", status: "fail", details }],
-        },
-        { diagnostic: true },
-      );
+    } catch (error) {
+      throw observerErrors.length > 0
+        ? combineQaSuiteErrors([...observerErrors, error], "QA evidence finalization failed", {
+            cause: observerErrors[0],
+          })
+        : error;
     }
+    return observerErrors;
   }
 
   return {
     invocation,
     record,
+    recordFailure,
     snapshot,
     publish,
     finalizeInterrupted,

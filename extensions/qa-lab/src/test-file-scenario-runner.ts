@@ -182,11 +182,17 @@ async function runScenarioCommandSteps(params: {
         timeoutMs,
       });
       logChunks.push(formatQaScenarioCommandOutput(result));
-      cleanupFailure = result.cleanupFailure;
+      cleanupFailure =
+        result.cleanupFailure && result.error
+          ? new QaSuiteCleanupError(
+              [result.error, result.cleanupFailure],
+              result.failureMessage ?? `${result.error.message}; ${result.cleanupFailure.message}`,
+            )
+          : result.cleanupFailure;
       if (cleanupFailure || result.failureMessage || result.exitCode !== 0 || result.signal) {
         failureMessage =
-          cleanupFailure?.message ??
           result.failureMessage ??
+          cleanupFailure?.message ??
           (result.signal
             ? `${path.basename(step.command)} terminated by ${result.signal}`
             : `${path.basename(step.command)} exited with ${result.exitCode}`);

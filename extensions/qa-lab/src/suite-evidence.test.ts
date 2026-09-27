@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { QaSuiteCleanupError } from "./errors.js";
 import { createQaEvidenceInvocation } from "./evidence-invocation.js";
 import {
   getEffectiveQaEvidenceEntries,
@@ -10,15 +11,15 @@ import {
   type QaEvidenceIdentity,
 } from "./evidence-summary.js";
 import { mockBunVersion } from "./runtime-version.test-support.js";
+import { writeQaSuiteArtifacts } from "./suite-artifacts.js";
 import { createQaSuiteEvidenceInvocation, rebaseQaSuiteEvidence } from "./suite-evidence.js";
 import { makeQaSuiteTestScenario } from "./suite-test-helpers.js";
-import type { QaSuiteRunParams } from "./suite-types.js";
+import type { QaSuiteRunParams, QaSuiteScenarioResult } from "./suite-types.js";
+import { publishQaSuiteTerminalResult } from "./suite.js";
 import { createTempDirHarness } from "./temp-dir.test-helper.js";
 
 const tempDirs = createTempDirHarness();
-afterEach(async () => {
-  await tempDirs.cleanup();
-});
+afterEach(() => tempDirs.cleanup());
 const launch: QaEvidenceIdentity = {
   source: { ref: "fixture-source", integrity: "fixture-integrity" },
   runtime: { id: "node", version: "fixture-version" },
@@ -40,13 +41,13 @@ async function setup(
     channel: "qa-channel",
     launch,
   });
-  const context = {
+  const context: Parameters<typeof createQaSuiteEvidenceInvocation>[1] = {
     outputDir,
     repoRoot: outputDir,
     selectedScenarios,
     primaryModel: "mock-openai/test",
-    providerMode: "mock-openai" as const,
-    transportId: "qa-channel" as const,
+    providerMode: "mock-openai",
+    transportId: "qa-channel",
   };
   const evidence = await createQaSuiteEvidenceInvocation(
     { ...params, evidenceAnchors: parent.anchors },
@@ -57,6 +58,118 @@ async function setup(
 }
 
 describe("flow occurrence artifacts", () => {
+  it.each(["complete", "commit", "publication", "fatal cleanup"] as const)(
+    "finishes interrupted evidence despite observer failures without hiding %s failures",
+    async (mode) => {
+      const observerErrors = [
+        new Error("first observer failed"),
+        new Error("second observer failed"),
+      ];
+      const original =
+        mode === "fatal cleanup"
+          ? new QaSuiteCleanupError([new Error("child cleanup unconfirmed")], "cleanup failed")
+          : new Error("accepted run stopped");
+      const failure = new Error(`${mode} failed`);
+      const results: QaSuiteScenarioResult[] = [];
+      const { evidence, context, outputDir } = await setup(
+        {
+          onEvidence(summary) {
+            if (summary.entries.length > 0) {
+              throw observerErrors[summary.entries.length - 1];
+            }
+          },
+        },
+        (index, result) => {
+          results[index] = result;
+        },
+      );
+      const published = vi.fn();
+      const writeFile = fs.writeFile;
+      let writes = 0;
+      const writing =
+        mode === "commit"
+          ? vi.spyOn(fs, "writeFile").mockImplementation(async (...args) => {
+              if (++writes === 2) {
+                throw failure;
+              }
+              return writeFile(...args);
+            })
+          : undefined;
+      const publish = vi.fn(async () => {
+        if (mode === "publication") {
+          throw failure;
+        }
+        const artifacts = await writeQaSuiteArtifacts({
+          ...context,
+          scenarios: results,
+          scenarioDefinitions: context.selectedScenarios,
+          startedAt: new Date(),
+          finishedAt: new Date(),
+          alternateModel: context.primaryModel,
+          fastMode: true,
+          concurrency: 1,
+          channel: "qa-channel",
+          recordedEvidence: evidence.snapshot(),
+          onArtifactsPublished: published,
+        });
+        return {
+          ...artifacts,
+          outputDir,
+          scenarios: results,
+          startedScenarioIds: [],
+          watchUrl: "http://qa.invalid",
+        };
+      });
+      try {
+        const outcome = await publishQaSuiteTerminalResult({
+          cleanupFailures: [],
+          runFailed: true,
+          runError: original,
+          finalize: () => evidence.finalizeInterrupted("suite cancelled"),
+          publish,
+        }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        const errors = (error: unknown): unknown[] => [
+          error,
+          ...(error instanceof AggregateError ? error.errors.flatMap(errors) : []),
+        ];
+        expect(errors(outcome)).toEqual(
+          expect.arrayContaining([
+            original,
+            observerErrors[0],
+            ...(mode === "commit" ? [failure] : [observerErrors[1]]),
+            ...(mode === "publication" ? [failure] : []),
+          ]),
+        );
+        expect(
+          projectQaEvidenceScenarioOutcomes(evidence.snapshot()).map(({ status }) => status),
+        ).toEqual(["fail", mode === "commit" ? null : "fail"]);
+        expect(publish).toHaveBeenCalledTimes(mode === "commit" ? 0 : 1);
+        if (mode === "complete" || mode === "fatal cleanup") {
+          expect(published).toHaveBeenCalledOnce();
+          expect(
+            JSON.parse(await fs.readFile(path.join(outputDir, "qa-suite-summary.json"), "utf8")),
+          ).toMatchObject({
+            run: { status: "completed" },
+            counts: { total: 2, failed: 2 },
+          });
+        } else {
+          expect(published).not.toHaveBeenCalled();
+          await expect(
+            fs.access(path.join(outputDir, "qa-suite-summary.json")),
+          ).rejects.toMatchObject({ code: "ENOENT" });
+        }
+        if (mode === "fatal cleanup") {
+          expect(outcome).toBeInstanceOf(QaSuiteCleanupError);
+        }
+      } finally {
+        writing?.mockRestore();
+      }
+    },
+  );
+
   it.each(["pass", "fail"] as const)(
     "commits a selected %s before its evidence observer throws",
     async (status) => {
@@ -241,15 +354,6 @@ describe("flow occurrence artifacts", () => {
     expect(occurrence.receipts).toEqual([
       expect.objectContaining({ phase: "prepared", identity: occurrence.launch }),
     ]);
-
-    const supplied = await setup();
-    const explicitId = supplied.evidence.invocation.begin(0);
-    await supplied.evidence.record(0, explicitId, { name: "explicit", status: "pass", steps: [] });
-    const explicit = supplied.evidence
-      .snapshot()
-      .occurrences.find((item) => item.id === explicitId)!;
-    expect(explicit.launch).toEqual(launch);
-    expect(explicit.receipts[0]?.identity).toEqual(launch);
   });
 
   it.each(["full", "slim"] as const)(
@@ -293,6 +397,11 @@ describe("flow occurrence artifacts", () => {
       const childReceipts = child.occurrences.find((item) => item.id === id)!.receipts;
       expect(childReceipts[0]!.artifact.path).toBe(`../../${receipt.artifact.path}`);
       expect(childReceipts.slice(1).map((item) => item.artifact)).toEqual(preserved);
+      if (evidenceMode === "full") {
+        expect(child.entries[0]?.execution?.artifacts[0]?.path).toBe(
+          childReceipts[0]!.artifact.path,
+        );
+      }
       expect(rebaseQaSuiteEvidence(child, workerDir, outputDir)).toEqual(original);
       expect(JSON.stringify(original)).toBe(before);
       expect(child.entries[0]?.execution === undefined).toBe(evidenceMode === "slim");
@@ -437,28 +546,6 @@ describe("flow occurrence artifacts", () => {
     ).rejects.toMatchObject({ code: "EEXIST" });
     expect(committed).not.toHaveBeenCalled();
     expect(evidence.snapshot()).toMatchObject({ entries: summary.entries });
-  });
-
-  it("rebases raw and receipt artifacts together without changing their identity", async () => {
-    const { outputDir, evidence } = await setup();
-    const id = evidence.invocation.begin(0);
-    await evidence.record(0, id, { name: "child", status: "pass", steps: [] });
-    const summary = evidence.snapshot();
-    const parent = rebaseQaSuiteEvidence(summary, outputDir, path.dirname(outputDir));
-    expect(parent.schemaVersion).toBe(3);
-    if (parent.schemaVersion !== 3) {
-      throw new Error("expected occurrence evidence");
-    }
-    const before = summary.occurrences.find((occurrence) => occurrence.id === id)!.receipts[0]!;
-    const after = parent.occurrences.find((occurrence) => occurrence.id === id)!.receipts[0]!;
-    expect(after).toEqual({
-      ...before,
-      artifact: { ...before.artifact, path: `${path.basename(outputDir)}/${before.artifact.path}` },
-    });
-    expect(parent.entries[0]?.execution?.artifacts[0]?.path).toBe(after.artifact.path);
-    expect(summary.occurrences.find((occurrence) => occurrence.id === id)!.receipts[0]).toEqual(
-      before,
-    );
   });
 
   it.each(["pass", "fail"] as const)(

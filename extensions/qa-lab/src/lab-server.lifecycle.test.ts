@@ -47,7 +47,7 @@ vi.mock("openclaw/plugin-sdk/qa-channel", () => ({
 }));
 vi.mock("openclaw/plugin-sdk/proxy-capture", () => ({
   resolveDebugProxySettings: () => ({ proxyUrl: "" }),
-  acquireDebugProxyCaptureStore: mocks.acquireCapture,
+  acquireDebugProxyCaptureStoreAsync: mocks.acquireCapture,
 }));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -69,8 +69,8 @@ beforeEach(() => {
   mocks.gatewayStopped.mockReset();
   mocks.releaseCapture.mockReset();
   mocks.loadModels.mockResolvedValue([]);
-  mocks.acquireCapture.mockReturnValue({
-    store: { listSessions: () => [] },
+  mocks.acquireCapture.mockResolvedValue({
+    store: { listSessions: async () => [] },
     release: mocks.releaseCapture,
   });
 });
@@ -117,6 +117,88 @@ function holdReportWrite(outputPath: string) {
 }
 
 describe("QA Lab accepted-run lifecycle", () => {
+  it.each(["planning", "preparation"] as const)(
+    "publishes real cancellation artifacts after held %s and before closing the Gateway",
+    async (phase) => {
+      const { lab } = await startLab();
+      const planning = await import("./suite-planning.js");
+      const actual = await vi.importActual<typeof import("./suite-launch.runtime.js")>(
+        "./suite-launch.runtime.js",
+      );
+      const entered = createDeferred<void>();
+      const release = createDeferred<void>();
+      const gatewayStopping = createDeferred<void>();
+      const finishGateway = createDeferred<void>();
+      const create = vi.fn();
+      if (phase === "planning") {
+        const resolveOutputDir = planning.resolveQaSuiteOutputDir;
+        vi.spyOn(planning, "resolveQaSuiteOutputDir").mockImplementationOnce(async (...args) => {
+          entered.resolve();
+          await release.promise;
+          return resolveOutputDir(...args);
+        });
+      } else {
+        const live = await import("./live-transports/cli.js");
+        vi.spyOn(live, "listLiveTransportQaAdapterFactories").mockReturnValue([
+          {
+            id: "held",
+            matches: () => true,
+            create,
+            prepareSelectedScenarios: async () => {
+              entered.resolve();
+              await release.promise;
+            },
+          },
+        ]);
+      }
+      mocks.runSuite.mockImplementation(actual.runQaSuite);
+      mocks.gatewayStopped.mockImplementation(async () => {
+        gatewayStopping.resolve();
+        await finishGateway.promise;
+      });
+      const response = await post(lab, "/api/scenario/suite", {
+        ...suiteInput,
+        ...(phase === "preparation" ? { channelDriver: "live", channel: "slack" } : {}),
+      });
+      expect(response.status).toBe(202);
+      await response.json();
+      await entered.promise;
+      const stopping = lab.stop();
+      try {
+        await outcomes(lab);
+        expect(mocks.gatewayStopped).not.toHaveBeenCalled();
+        release.resolve();
+        await gatewayStopping.promise;
+        expect(create).not.toHaveBeenCalled();
+        const bootstrap = await (await fetch(`${lab.listenUrl}/api/bootstrap`)).json();
+        expect(bootstrap).toMatchObject({
+          runner: {
+            status: "failed",
+            artifacts: {
+              evidencePath: expect.any(String),
+              reportPath: expect.any(String),
+              summaryPath: expect.any(String),
+            },
+          },
+          latestReport: { markdown: expect.stringContaining("suite cancelled") },
+        });
+        expect(await outcomes(lab)).toMatchObject({
+          status: "completed",
+          scenarios: [{ status: "fail" }],
+        });
+        const gallery = await fetch(`${lab.listenUrl}/api/evidence`);
+        expect(gallery.status).toBe(200);
+        expect(await gallery.json()).toMatchObject({ evidence: { counts: { fail: 1 } } });
+        finishGateway.resolve();
+        await stopping;
+      } finally {
+        release.resolve();
+        finishGateway.resolve();
+        await Promise.allSettled([stopping]);
+      }
+    },
+  );
+
   it("drains the accepted suite and its summary read before releasing shared resources", async () => {
     const { lab, repoRoot } = await startLab();
     const suiteEntered = createDeferred<void>();

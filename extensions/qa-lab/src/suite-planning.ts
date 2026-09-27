@@ -2,7 +2,10 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { runTasksWithConcurrency } from "openclaw/plugin-sdk/concurrency-runtime";
 import { parseStrictNonNegativeInteger } from "openclaw/plugin-sdk/number-runtime";
-import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
+import {
+  isRecord,
+  normalizeLowercaseStringOrEmpty,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import { createQaArtifactRunId } from "./artifact-run-id.js";
 import { ensureRepoBoundDirectory, resolveRepoRelativeOutputDir } from "./cli-paths.js";
 import type { QaCliBackendAuthMode } from "./gateway-child.js";
@@ -13,11 +16,7 @@ import {
   scenarioMatchesQaProviderLane,
 } from "./scenario-lane.js";
 import type { QaScorecardChannelDriver } from "./scorecard-taxonomy.js";
-import {
-  applyQaMergePatch,
-  isQaMergePatchBlockedKey,
-  isQaMergePatchObject,
-} from "./suite-merge-patch.js";
+import { applyQaMergePatch, isQaMergePatchBlockedKey } from "./suite-merge-patch.js";
 
 const DEFAULT_QA_SUITE_CONCURRENCY = 64;
 const DEFAULT_QA_SUITE_WORKER_START_STAGGER_MS = 1_500;
@@ -222,7 +221,7 @@ function resolveQaGatewayConfigPatchSelectedAccount(
       resolveQaGatewayConfigPatchSelectedAccount(entry, selectedAccountId),
     );
   }
-  if (!isQaMergePatchObject(patch)) {
+  if (!isRecord(patch)) {
     return patch;
   }
   const resolved: Record<string, unknown> = {};
@@ -253,14 +252,14 @@ function collectQaSuiteGatewayConfigPatches(
   const resolvedSelectedAccountId = selectedAccountId.trim() || "sut";
   const patches: Record<string, unknown>[] = [];
   for (const scenario of scenarios) {
-    if (!isQaMergePatchObject(scenario.gatewayConfigPatch)) {
+    if (!isRecord(scenario.gatewayConfigPatch)) {
       continue;
     }
     const resolvedPatch = resolveQaGatewayConfigPatchSelectedAccount(
       scenario.gatewayConfigPatch,
       resolvedSelectedAccountId,
     );
-    if (isQaMergePatchObject(resolvedPatch)) {
+    if (isRecord(resolvedPatch)) {
       patches.push(resolvedPatch);
     }
   }
@@ -356,7 +355,7 @@ function scenarioRequiresIsolatedQaSuiteWorker(scenario: QaSeedScenario) {
     // Transport policy is fixed when the gateway starts; sharing it would leak routing rules.
     scenario.execution.transportPolicy !== undefined ||
     scenario.execution.config?.agentE2e === true ||
-    isQaMergePatchObject(scenario.gatewayConfigPatch) ||
+    isRecord(scenario.gatewayConfigPatch) ||
     scenario.gatewayRuntime !== undefined ||
     (Array.isArray(scenario.plugins) && scenario.plugins.length > 0) ||
     normalizeLowercaseStringOrEmpty(scenario.surface) === "memory" ||

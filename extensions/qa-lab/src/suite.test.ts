@@ -23,7 +23,7 @@ import {
   shouldLogQaSuiteProgress,
   shouldRunQaSuiteWithIsolatedScenarioWorkers,
   throwQaSuiteCleanupErrors,
-  waitForQaLabReadyOrStopOwned,
+  waitForQaLabReady,
 } from "./suite.js";
 
 const fetchWithSsrFGuardMock = vi.hoisted(() => vi.fn());
@@ -321,29 +321,19 @@ describe("qa suite", () => {
     );
   });
 
-  it("stops an owned lab when readiness never becomes healthy", async () => {
-    const stop = vi.fn(async () => {});
+  it("rejects when lab readiness never becomes healthy", async () => {
     fetchWithSsrFGuardMock.mockResolvedValue({
       response: { ok: false },
       release: vi.fn(async () => {}),
     });
 
-    await expect(
-      waitForQaLabReadyOrStopOwned({
-        lab: {
-          listenUrl: "http://127.0.0.1:43123",
-          stop,
-        },
-        ownsLab: true,
-        timeoutMs: 1,
-      }),
-    ).rejects.toThrow("timed out after 1ms waiting for qa-lab ready");
-    expect(stop).toHaveBeenCalledTimes(1);
+    await expect(waitForQaLabReady("http://127.0.0.1:43123", 1)).rejects.toThrow(
+      "timed out after 1ms waiting for qa-lab ready",
+    );
   });
 
   it("cancels a successful lab readiness body before releasing its guard", async () => {
     const events: string[] = [];
-    const stop = vi.fn(async () => {});
     fetchWithSsrFGuardMock.mockResolvedValue({
       response: new Response(
         new ReadableStream<Uint8Array>({
@@ -358,23 +348,13 @@ describe("qa suite", () => {
       },
     });
 
-    await expect(
-      waitForQaLabReadyOrStopOwned({
-        lab: {
-          listenUrl: "http://127.0.0.1:43123",
-          stop,
-        },
-        ownsLab: false,
-      }),
-    ).resolves.toBeUndefined();
+    await expect(waitForQaLabReady("http://127.0.0.1:43123")).resolves.toBeUndefined();
 
     expect(events).toEqual(["cancel", "release"]);
-    expect(stop).not.toHaveBeenCalled();
   });
 
   it("bounds a hung lab readiness request by the remaining startup deadline", async () => {
     vi.useFakeTimers();
-    const stop = vi.fn(async () => {});
     fetchWithSsrFGuardMock.mockImplementation(
       async ({ timeoutMs }: { timeoutMs: number }) =>
         await new Promise((_, reject) => {
@@ -382,14 +362,7 @@ describe("qa suite", () => {
         }),
     );
 
-    const readiness = waitForQaLabReadyOrStopOwned({
-      lab: {
-        listenUrl: "http://127.0.0.1:43123",
-        stop,
-      },
-      ownsLab: true,
-      timeoutMs: 1_000,
-    });
+    const readiness = waitForQaLabReady("http://127.0.0.1:43123", 1_000);
     const rejection = expect(readiness).rejects.toThrow(
       "timed out after 1000ms waiting for qa-lab ready",
     );
@@ -399,27 +372,6 @@ describe("qa suite", () => {
     expect(fetchWithSsrFGuardMock).toHaveBeenCalledWith(
       expect.objectContaining({ timeoutMs: 1_000 }),
     );
-    expect(stop).toHaveBeenCalledTimes(1);
-  });
-
-  it("leaves caller-owned labs running when readiness never becomes healthy", async () => {
-    const stop = vi.fn(async () => {});
-    fetchWithSsrFGuardMock.mockResolvedValue({
-      response: { ok: false },
-      release: vi.fn(async () => {}),
-    });
-
-    await expect(
-      waitForQaLabReadyOrStopOwned({
-        lab: {
-          listenUrl: "http://127.0.0.1:43123",
-          stop,
-        },
-        ownsLab: false,
-        timeoutMs: 1,
-      }),
-    ).rejects.toThrow("timed out after 1ms waiting for qa-lab ready");
-    expect(stop).not.toHaveBeenCalled();
   });
 
   it("defaults progress logging from CI when no override is set", () => {
