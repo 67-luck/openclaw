@@ -156,6 +156,14 @@ type ProxyResponseResult = {
   statusCode?: number;
 };
 
+function captureMethodCall<Key extends PropertyKey, Args extends unknown[], Result>(
+  owner: Record<Key, (...args: Args) => Result>,
+  key: Key,
+) {
+  const method = owner[key];
+  return (receiver: typeof owner, ...args: Args): Result => method.apply(receiver, args);
+}
+
 async function getThroughProxy(proxyUrl: string, targetUrl: string): Promise<ProxyResponseResult> {
   const proxy = new URL(proxyUrl);
   return await new Promise<ProxyResponseResult>((resolve) => {
@@ -496,7 +504,7 @@ describe("startDebugProxyServer", () => {
     const abortController = new AbortController();
     // Origin writes include kernel TCP buffers. Observe the proxy's owned
     // pause/drain boundary without changing any stream operation.
-    let upstreamResponse: IncomingMessage | undefined;
+    let isUpstreamPaused: (() => boolean) | undefined;
     let waitingForDrain = false;
     let writesWhileBackpressured = 0;
     let backpressuredWrites = 0;
@@ -506,17 +514,17 @@ describe("startDebugProxyServer", () => {
     const firstDrain = new Promise<void>((resolve) => {
       resolveFirstDrain = resolve;
     });
-    const originalOn = IncomingMessage.prototype.on;
+    const callOn = captureMethodCall(IncomingMessage.prototype, "on");
     vi.spyOn(IncomingMessage.prototype, "on").mockImplementation(function (
       this: IncomingMessage,
       ...args: Parameters<IncomingMessage["on"]>
     ) {
       if (args[0] === "data" && this.statusCode === 200 && this.socket.remotePort === originPort) {
-        upstreamResponse = this;
+        isUpstreamPaused = () => this.isPaused();
       }
-      return originalOn.apply(this, args);
+      return callOn(this, ...args);
     });
-    const originalWrite = ServerResponse.prototype.write;
+    const callWrite = captureMethodCall(ServerResponse.prototype, "write");
     vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
       this: ServerResponse,
       ...args: Parameters<ServerResponse["write"]>
@@ -525,27 +533,27 @@ describe("startDebugProxyServer", () => {
       if (isProxyResponse && waitingForDrain) {
         writesWhileBackpressured++;
       }
-      const accepted = originalWrite.apply(this, args);
+      const accepted = callWrite(this, ...args);
       if (isProxyResponse && !accepted) {
         backpressuredWrites++;
         waitingForDrain = true;
       }
       return accepted;
     });
-    const originalEmit = ServerResponse.prototype.emit;
+    const callEmit = captureMethodCall(ServerResponse.prototype, "emit");
     vi.spyOn(ServerResponse.prototype, "emit").mockImplementation(function (
       this: ServerResponse,
       ...args: Parameters<ServerResponse["emit"]>
     ) {
       if (this.req.url !== targetUrl || args[0] !== "drain" || !waitingForDrain) {
-        return originalEmit.apply(this, args);
+        return callEmit(this, ...args);
       }
       // Observe the real drain synchronously: nextTick can start another pause
       // cycle before a later promise callback inspects the readable state.
-      const pausedBefore = upstreamResponse?.isPaused();
+      const pausedBefore = isUpstreamPaused?.();
       waitingForDrain = false;
-      const emitted = originalEmit.apply(this, args);
-      drainStates.push({ pausedBefore, pausedAfter: upstreamResponse?.isPaused() });
+      const emitted = callEmit(this, ...args);
+      drainStates.push({ pausedBefore, pausedAfter: isUpstreamPaused?.() });
       resolveFirstDrain();
       return emitted;
     });
@@ -556,6 +564,7 @@ describe("startDebugProxyServer", () => {
       targetUrl,
     });
 
+    const failures: unknown[] = [];
     try {
       await Promise.race([firstDrain, forwarding]);
       expect(drainStates[0]).toEqual({ pausedBefore: true, pausedAfter: false });
@@ -580,16 +589,20 @@ describe("startDebugProxyServer", () => {
       expect(captureEvents.filter((event) => event.kind === "response")).toEqual([
         expect.objectContaining({ direction: "inbound", status: 200 }),
       ]);
+    } catch (error) {
+      failures.push(error);
     } finally {
       abortController.abort();
       const cleanup = await Promise.allSettled([forwarding, proxy.stop(), origin.stop()]);
-      const failures = cleanup.filter((result) => result.status === "rejected");
-      if (failures.length > 0) {
-        throw new AggregateError(
-          failures.map((result) => result.reason),
-          "Backpressure fixture cleanup failed",
-        );
-      }
+      failures.push(
+        ...cleanup.filter((result) => result.status === "rejected").map((result) => result.reason),
+      );
+    }
+    if (failures.length === 1) {
+      throw failures[0];
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Backpressure test and cleanup failed");
     }
   });
 
