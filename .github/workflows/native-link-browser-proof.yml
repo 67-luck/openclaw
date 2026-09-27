@@ -1,0 +1,62 @@
+name: Native link browser proof
+on:
+  push:
+    branches: [openclaw/native-link-proof-159887]
+permissions:
+  contents: read
+jobs:
+  macos-proof:
+    runs-on: blacksmith-6vcpu-macos-26
+    timeout-minutes: 35
+    env:
+      SOURCE_SHA: 375ab9bc5a63e55e9639c7ee4a68e8bf24716880
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify unchanged product source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code "$SOURCE_SHA" HEAD -- ui apps/macos/Sources apps/macos/Package.swift apps/shared package.json pnpm-lock.yaml
+      - name: Select supported Xcode toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          source scripts/lib/swift-toolchain.sh
+          select_xcode_toolchain
+          require_swift_toolchain
+      - uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.21.0"
+          install-bun: "false"
+          cache-mode: restore
+      - name: Prepare native assets and test bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/prepare-apple-mermaid.mjs
+          swift build --package-path apps/macos --build-system native --build-tests --disable-index-store -Xswiftc -gline-tables-only
+      - name: Exercise real WebKit to system browser handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/native-link-proof
+          node --import ./scripts/tsx.mjs scripts/native-link-proof-server.mts "$SOURCE_SHA" > .artifacts/native-link-proof/server.log 2>&1 &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid" 2>/dev/null || true; wait "$fixture_pid" || true' EXIT
+          for attempt in {1..60}; do
+            test ! -f .artifacts/native-link-proof/current.json || break
+            kill -0 "$fixture_pid"
+            sleep 1
+          done
+          test -f .artifacts/native-link-proof/current.json
+          node scripts/test-macos-native.mts default --package-path apps/macos --build-system native --skip-build --filter NativeExternalBrowserProofTests 2>&1 | tee .artifacts/native-link-proof/native-test.log
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: native-link-browser-proof
+          path: .artifacts/native-link-proof/
+          if-no-files-found: warn
+          retention-days: 7
