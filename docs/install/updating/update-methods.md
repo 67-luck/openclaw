@@ -108,6 +108,13 @@ continues serving. This check observes current services; it does not prevent a
 service from starting during compilation, and unavailable inspection does not
 prove that no Gateway is running.
 
+Discovery uses installed service definitions and the invoking service selector.
+A bare systemd template is checked for the current OS account. Other active
+template instances without an installed instance definition or an explicit
+selector are not enumerated. Stop those instances with their native service
+commands before building. System LaunchDaemon runtime inspection is also outside
+this check.
+
 Teams running a gateway directly from a git checkout on a server can update it
 with `scripts/update-gateway.sh` from inside that checkout. It is the reference
 for a source-server update: it fails closed on all tracked local changes,
