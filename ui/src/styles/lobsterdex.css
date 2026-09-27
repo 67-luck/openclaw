@@ -78,6 +78,40 @@
   color: color-mix(in srgb, #f4b840 75%, var(--text));
 }
 
+.lobsterdex-page__downloads {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lobsterdex-page__downloads h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.lobsterdex-page__downloads p {
+  max-width: 54ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.lobsterdex-page__downloads .btn {
+  flex-shrink: 0;
+  white-space: normal;
+}
+
+.lobsterdex-page__export-status {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.lobsterdex-page__download {
+  align-self: end;
+  min-height: 36px;
+}
+
 .lobsterdex-page__grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -87,7 +121,7 @@
 .lobsterdex-page__card {
   position: relative;
   display: grid;
-  grid-template-rows: 94px auto minmax(42px, auto) auto;
+  grid-template-rows: 94px auto minmax(42px, auto) auto auto;
   gap: 7px;
   justify-items: center;
   min-width: 0;
@@ -211,6 +245,11 @@
 }
 
 @media (max-width: 560px) {
+  .lobsterdex-page__downloads {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .lobsterdex-page__header {
     align-items: flex-start;
     flex-direction: column;

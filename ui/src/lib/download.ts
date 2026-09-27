@@ -7,7 +7,11 @@ export function downloadBlobFile(filename: string, content: Blob): void {
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
-  link.click();
-  // Let the browser consume the click before releasing the download payload.
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+  try {
+    link.click();
+  } finally {
+    // Let the browser consume the click before releasing the download payload,
+    // including when dispatch fails and the caller offers a retry.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
 }

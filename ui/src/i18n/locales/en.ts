@@ -6,6 +6,7 @@ import * as agentEn from "./en-agents.ts";
 export const en: TranslationMap & {
   linkReader: TranslationMap;
   agentTools: TranslationMap;
+  quickSettings: TranslationMap & { appearance: TranslationMap };
   board: TranslationMap & { widget: TranslationMap };
   browser: TranslationMap & { errors: TranslationMap };
   shortcutsOverlay: TranslationMap & { title: string };

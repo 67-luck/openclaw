@@ -6,15 +6,25 @@ import type { LobsterPetPaletteId } from "../../components/lobster-pet-contract.
 import { LOBSTER_PET_PALETTES } from "../../components/lobster-pet-palettes.ts";
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import { copyToClipboard } from "../../lib/clipboard.ts";
+import { downloadBlobFile } from "../../lib/download.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
-import { renderLobsterdex, type LobsterdexCopyFeedback } from "./view.ts";
+import {
+  renderLobsterdex,
+  type LobsterdexCopyFeedback,
+  type LobsterdexExportFeedback,
+} from "./view.ts";
 
 class LobsterdexPage extends OpenClawLightDomElement {
   @state() private copyFeedback: LobsterdexCopyFeedback | null = null;
+  @state() private exportFeedback: LobsterdexExportFeedback | null = null;
+  private exportController: AbortController | null = null;
   private copyAttempt = 0;
   private copyResetTimer: number | null = null;
 
   override disconnectedCallback(): void {
+    this.exportController?.abort();
+    this.exportController = null;
+    this.exportFeedback = null;
     this.copyAttempt += 1;
     this.copyFeedback = null;
     if (this.copyResetTimer !== null) {
@@ -79,6 +89,40 @@ class LobsterdexPage extends OpenClawLightDomElement {
     }, 1_500);
   };
 
+  private readonly download = async (target: LobsterPetPaletteId | "all"): Promise<void> => {
+    if (this.exportController) {
+      return;
+    }
+    const controller = new AbortController();
+    this.exportController = controller;
+    this.exportFeedback = {
+      status: "working",
+      completed: 0,
+      total: target === "all" ? LOBSTER_PET_PALETTES.length : 1,
+    };
+    try {
+      const { createColoringDownload } = await import("./coloring-export.ts");
+      const result = await createColoringDownload(target, controller.signal, (completed, total) => {
+        if (!controller.signal.aborted) {
+          this.exportFeedback = { status: "working", completed, total };
+        }
+      });
+      if (controller.signal.aborted || !this.isConnected) {
+        return;
+      }
+      downloadBlobFile(result.filename, result.blob);
+      this.exportFeedback = { status: "downloaded" };
+    } catch {
+      if (!controller.signal.aborted && this.isConnected) {
+        this.exportFeedback = { status: "error" };
+      }
+    } finally {
+      if (this.exportController === controller) {
+        this.exportController = null;
+      }
+    }
+  };
+
   override render() {
     return html`
       <section class="content-header">
@@ -86,6 +130,8 @@ class LobsterdexPage extends OpenClawLightDomElement {
       </section>
       ${renderSettingsWorkspace(
         renderLobsterdex(getLobsterdexEntries(), {
+          exportFeedback: this.exportFeedback,
+          onDownload: (target) => void this.download(target),
           copyFeedback: this.copyFeedback,
           onCopyLink: (paletteId) => void this.copyLink(paletteId),
         }),

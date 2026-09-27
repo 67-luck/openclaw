@@ -103,6 +103,8 @@ allowBuilds:
   "@openclaw/crabline": true
   rastermill: true
   node-pty: true
+  # jsPDF's optional polyfill only prints a funding notice at install time.
+  core-js: false
 
 packageExtensions:
   # The transient npm lock generator also needs the peer marked optional.

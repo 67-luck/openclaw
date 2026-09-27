@@ -23,6 +23,7 @@ import { registerFilePreviewEnglish } from "../../ui/src/i18n/locales/en-file-pr
 import { registerGitHubEnglish } from "../../ui/src/i18n/locales/en-github.ts";
 import { registerLabsEnglish } from "../../ui/src/i18n/locales/en-labs.ts";
 import { registerLinkReaderEnglish } from "../../ui/src/i18n/locales/en-link-reader.ts";
+import { registerLobsterdexEnglish } from "../../ui/src/i18n/locales/en-lobsterdex.ts";
 import { registerLoginEnglish } from "../../ui/src/i18n/locales/en-login.ts";
 import { registerMcpEnglish } from "../../ui/src/i18n/locales/en-mcp.ts";
 import { registerMeetingsEnglish } from "../../ui/src/i18n/locales/en-meetings.ts";
@@ -83,6 +84,7 @@ const sourceFiles = [
   "en-file-preview.ts",
   "en-labs.ts",
   "en-login.ts",
+  "en-lobsterdex.ts",
   "en-link-reader.ts",
   "en-github.ts",
   "en-mcp.ts",
@@ -189,6 +191,7 @@ export function loadControlUiSourceCatalog(): TranslationMap {
     registerFilePreviewEnglish.catalog,
     registerLabsEnglish.catalog,
     registerLoginEnglish.catalog,
+    registerLobsterdexEnglish.catalog,
     registerLinkReaderEnglish.catalog,
     registerMcpEnglish.catalog,
     registerMeetingsEnglish.catalog,

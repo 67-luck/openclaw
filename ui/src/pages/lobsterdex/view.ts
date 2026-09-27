@@ -9,8 +9,11 @@ import {
 import { LOBSTER_PALETTE_LORE, lobsterPaletteName } from "../../components/lobster-pet-lore.ts";
 import { LOBSTER_PET_PALETTES } from "../../components/lobster-pet-palettes.ts";
 import { i18n, t } from "../../i18n/index.ts";
+import { registerLobsterdexEnglish } from "../../i18n/locales/en-lobsterdex.ts";
 // Page stars must override the shared mini-star rules loaded by lobster-pet-look.
 import "../../styles/lobsterdex.css";
+
+registerLobsterdexEnglish();
 
 type LobsterdexViewEntry = {
   firstSeenAt: number | null;
@@ -25,7 +28,13 @@ export type LobsterdexCopyFeedback = {
   status: "copied" | "error";
 };
 
+export type LobsterdexExportFeedback =
+  | { status: "working"; completed: number; total: number }
+  | { status: "downloaded" | "error" };
+
 type LobsterdexViewProps = {
+  exportFeedback?: LobsterdexExportFeedback | null;
+  onDownload?: (target: LobsterPetPaletteId | "all") => void;
   copyFeedback?: LobsterdexCopyFeedback | null;
   onCopyLink?: (paletteId: LobsterPetPaletteId) => void;
 };
@@ -35,6 +44,7 @@ function formatLobsterdexDate(timestamp: number): string {
 }
 
 export function renderLobsterdex(entries: LobsterdexViewEntries, props: LobsterdexViewProps = {}) {
+  const exporting = props.exportFeedback?.status === "working";
   const seenCount = LOBSTER_PET_PALETTES.filter((palette) => entries.has(palette.id)).length;
   const complete = seenCount === LOBSTER_PET_PALETTES.length;
   const countLabel = t("quickSettings.appearance.lobsterdexSeen", {
@@ -52,6 +62,43 @@ export function renderLobsterdex(entries: LobsterdexViewEntries, props: Lobsterd
         </div>
         <span class="lobsterdex-page__count">${countLabel}</span>
       </header>
+      <div class="lobsterdex-page__downloads">
+        <div>
+          <h3>${t("quickSettings.appearance.lobsterdexColoringTitle")}</h3>
+          <p>${t("quickSettings.appearance.lobsterdexColoringDescription")}</p>
+        </div>
+        <button
+          type="button"
+          class="btn"
+          ?disabled=${exporting}
+          @click=${() => props.onDownload?.("all")}
+        >
+          ${t("quickSettings.appearance.lobsterdexColoringAll")}
+        </button>
+      </div>
+      <div
+        role="status"
+        class="lobsterdex-page__export-status"
+        ?hidden=${!props.exportFeedback || props.exportFeedback.status === "error"}
+      >
+        ${
+          props.exportFeedback?.status === "working"
+            ? t("quickSettings.appearance.lobsterdexColoringProgress", {
+                completed: String(props.exportFeedback.completed),
+                total: String(props.exportFeedback.total),
+              })
+            : props.exportFeedback?.status === "downloaded"
+              ? t("quickSettings.appearance.lobsterdexColoringDownloaded")
+              : nothing
+        }
+      </div>
+      ${
+        props.exportFeedback?.status === "error"
+          ? html`<div class="callout danger" role="alert">
+              ${t("quickSettings.appearance.lobsterdexColoringError")}
+            </div>`
+          : nothing
+      }
       <span class="sr-only" role="status">
         ${props.copyFeedback?.status === "copied" ? t("common.copied") : nothing}
       </span>
@@ -130,6 +177,15 @@ export function renderLobsterdex(entries: LobsterdexViewEntries, props: Lobsterd
                     : nothing
                 }
               </div>
+              <button
+                type="button"
+                class="btn btn--sm lobsterdex-page__download"
+                ?disabled=${exporting}
+                aria-label=${t("quickSettings.appearance.lobsterdexColoringDownloadLabel", { name: lobsterPaletteName(palette.id) })}
+                @click=${() => props.onDownload?.(palette.id)}
+              >
+                ${t("quickSettings.appearance.lobsterdexColoringDownload")}
+              </button>
             </article>
           `;
         })}
