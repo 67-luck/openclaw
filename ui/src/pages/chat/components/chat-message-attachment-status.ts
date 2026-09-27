@@ -1,6 +1,8 @@
 import { html, nothing } from "lit";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
+import { formatBytes } from "../../../lib/agents/display.ts";
+import type { MessageContentItem } from "../../../lib/chat/chat-types.ts";
 import { renderAttachmentFileIcon } from "./chat-attachment-file-icon.ts";
 
 type AttachmentFailureCode = "file-not-found" | "unsupported-format" | "delivery-failed";
@@ -108,4 +110,25 @@ export function renderAssistantAttachmentStatusCard(params: {
       </div>
     </div>
   `;
+}
+
+type OmittedMediaItem = Extract<MessageContentItem, { type: "omitted_media" }>;
+
+export function renderOmittedMedia(items: OmittedMediaItem[]) {
+  if (items.length === 0) {
+    return nothing;
+  }
+  return html`${items.map((item) => {
+    const reason =
+      item.media.sizeBytes === undefined
+        ? t("chat.attachments.omittedFromHistory")
+        : t("chat.attachments.omittedFromHistoryWithSize", {
+            size: formatBytes(item.media.sizeBytes),
+          });
+    return renderAssistantAttachmentStatusCard({
+      label: t("chat.attachments.image"),
+      badge: t("chat.attachments.history"),
+      reason,
+    });
+  })}`;
 }
