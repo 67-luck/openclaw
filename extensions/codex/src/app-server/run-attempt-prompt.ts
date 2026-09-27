@@ -14,6 +14,7 @@ import {
   resolveCodexDeliveryHintPreservedInputRange,
   resolveContextEngineBootstrapProjectionDecision,
 } from "./attempt-context.js";
+import { readCodexContinuationMessages } from "./attempt-continuation.js";
 import { isNonEmptyString } from "./attempt-workspace-context.js";
 import {
   CODEX_TURN_START_TEXT_INPUT_MAX_CHARS,
@@ -124,7 +125,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     (await params.userTurnTranscriptRecorder?.resolveMessage());
   assertProjectionCurrent();
   // A refreshed native thread receives the original admitted user as historical context.
-  const currentUserTurnIdempotencyKey = params.pluginRuntimeRefreshMessages
+  const currentUserTurnIdempotencyKey = readCodexContinuationMessages(params)
     ? undefined
     : admittedMessage?.idempotencyKey;
   const prepareFileContext: NonNullable<
@@ -164,7 +165,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       prompt: params.prompt,
       maxRenderedContextChars: codexContinuityProjectionMaxChars,
       toolPayloadMode:
-        params.pluginRuntimeRefreshMessages || preserveForkedToolResults ? "preserve" : "elide",
+        readCodexContinuationMessages(params) || preserveForkedToolResults ? "preserve" : "elide",
       prepareFileContext,
       currentUserTurnIdempotencyKey,
     });
@@ -202,6 +203,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
         degradedReason: usesSupervisionConnection ? undefined : params.degradedReason,
         runtimeContext: buildActiveContextEngineRuntimeContext(),
         transcriptReadFence: params.userTurnTranscriptRecorder?.getAdmissionReceipt(),
+        currentTurnMessages: readCodexContinuationMessages(params),
         prompt: params.prompt,
       });
       if (!assembled) {
@@ -229,7 +231,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
         maxRenderedContextChars: codexContextProjectionMaxChars,
         toolPayloadMode:
           contextEngineProjection ||
-          params.pluginRuntimeRefreshMessages ||
+          readCodexContinuationMessages(params) ||
           preserveForkedToolResults
             ? "preserve"
             : "elide",
@@ -268,7 +270,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     } catch (assembleErr) {
       if (
         assembleErr instanceof CodexContextAttachmentError ||
-        params.pluginRuntimeRefreshMessages
+        readCodexContinuationMessages(params)
       ) {
         throw assembleErr;
       }
@@ -287,7 +289,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
   const buildPromptFromCurrentInputs = () =>
     resolveAgentHarnessBeforePromptBuildResult({
       currentUserMessage:
-        admittedMessage ?? (params.pluginRuntimeRefreshMessages ? "" : params.prompt),
+        admittedMessage ?? (readCodexContinuationMessages(params) ? "" : params.prompt),
       prompt: prependCurrentInboundContext(promptState.promptText, params.currentInboundContext),
       developerInstructions: {
         build: ({ hasToolRestrictions }) => {
@@ -544,7 +546,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
             (message.role === "assistant" &&
               message.content.some((part) => part.type === "text" && part.text.trim())))),
     );
-    if (activeContextEngine || (!hasContinuity && !params.pluginRuntimeRefreshMessages?.length)) {
+    if (activeContextEngine || (!hasContinuity && !readCodexContinuationMessages(params)?.length)) {
       return false;
     }
     if (action === "resumed" && promptState.precomputedStaleBindingContinuityProjectionApplied) {

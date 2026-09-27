@@ -9,7 +9,10 @@ import {
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.test-support.js";
-import { COMMAND_OWNER_OUTBOUND_DELIVERY_QUEUE_NAME } from "./delivery-queue-namespaces.js";
+import {
+  COMMAND_OWNER_OUTBOUND_DELIVERY_QUEUE_NAME,
+  outboundDeliveryQueueName,
+} from "./delivery-queue-namespaces.js";
 import { loadPendingDeliveries } from "./delivery-queue.test-helpers.js";
 
 const storeSpy = vi.hoisted(() => ({
@@ -142,8 +145,10 @@ describe("retention", () => {
   });
 
   it("retains media from generation-bound and migration namespaces in one inventory", async () => {
+    const reconcileOnlyQueueName = outboundDeliveryQueueName({ recoveryMode: "reconcile-only" });
     const queueNames = [
       COMMAND_OWNER_OUTBOUND_DELIVERY_QUEUE_NAME,
+      reconcileOnlyQueueName,
       OUTBOUND_DELIVERY_QUEUE_NAME,
       "outbound-session-generation-v1",
       LEGACY_OUTBOUND_DELIVERY_QUEUE_NAME,
@@ -154,14 +159,16 @@ describe("retention", () => {
       queueNames.map(async (queueName, index) => {
         const generationBound = queueName === "outbound-session-generation-v1";
         const artifact = await seedArtifact(
-          `${queueName === COMMAND_OWNER_OUTBOUND_DELIVERY_QUEUE_NAME ? "c1-" : generationBound ? "g1-" : ""}00000000-0000-4000-8000-${String(index + 10).padStart(12, "0")}.ogg`,
+          `${queueName === reconcileOnlyQueueName ? "r1-" : queueName === COMMAND_OWNER_OUTBOUND_DELIVERY_QUEUE_NAME ? "c1-" : generationBound ? "g1-" : ""}00000000-0000-4000-8000-${String(index + 10).padStart(12, "0")}.ogg`,
           30 * DAY_MS,
         );
         const entry = {
           id: `retained-${index}`,
           enqueuedAt: Date.now(),
           retryCount: 0,
-          ...(generationBound || queueName === COMMAND_OWNER_OUTBOUND_DELIVERY_QUEUE_NAME
+          ...(generationBound ||
+          queueName === COMMAND_OWNER_OUTBOUND_DELIVERY_QUEUE_NAME ||
+          queueName === reconcileOnlyQueueName
             ? {
                 preparedBatch: {
                   entries: [{ status: "accepted", payload: { mediaUrl: artifact } }],
@@ -185,7 +192,7 @@ describe("retention", () => {
 
     await expect(
       Promise.all(retained.map(async (artifact) => await exists(artifact))),
-    ).resolves.toEqual([true, true, true, true, true, true]);
+    ).resolves.toEqual([true, true, true, true, true, true, true]);
     expect(await exists(orphan)).toBe(false);
     expect(await exists(generationOrphan)).toBe(false);
     expect(await exists(ownerOrphan)).toBe(false);
@@ -356,7 +363,7 @@ describe("staging", () => {
     ).rejects.toThrow();
   });
 
-  it.each([undefined, "session-generation-v1", "command-owner-v1"] as const)(
+  it.each([undefined, "session-generation-v1", "command-owner-v1", "reconcile-only-v1"] as const)(
     "publishes complete media with older-reader-compatible custody (%s)",
     async (artifactFormat) => {
       const source = path.join(sourceDir, "voice.ogg");
@@ -369,9 +376,11 @@ describe("staging", () => {
         expect(from).toBe(`${to}.part`);
         if (artifactFormat) {
           expect(to).toMatch(
-            artifactFormat === "command-owner-v1"
-              ? /^c1-[0-9a-f-]{36}\.ogg$/
-              : /^g1-[0-9a-f-]{36}\.ogg$/,
+            artifactFormat === "reconcile-only-v1"
+              ? /^r1-[0-9a-f-]{36}\.ogg$/
+              : artifactFormat === "command-owner-v1"
+                ? /^c1-[0-9a-f-]{36}\.ogg$/
+                : /^g1-[0-9a-f-]{36}\.ogg$/,
           );
         }
         atMove.push({

@@ -7,6 +7,7 @@ import { combineGatewayLocalUserIngress } from "../../../gateway/local-user-ingr
 import { channelRouteDedupeKey } from "../../../plugin-sdk/channel-route.js";
 import { resolveGlobalSingleton } from "../../../shared/global-singleton.js";
 import { normalizeMessageChannel } from "../../../utils/message-channel.js";
+import type { InternalFollowupRun } from "../agent-runner-execution.types.js";
 import {
   resolveReplyOperatorAuthorityKey,
   resolveReplyScreenToolTarget,
@@ -249,11 +250,31 @@ function collectCurrentInboundContext(items: FollowupRun[]): FollowupRun["curren
 export function collectRuntimeMetadata(
   items: FollowupRun[],
   abortSignal?: AbortSignal,
-): FollowupRuntimeMetadata {
+): FollowupRuntimeMetadata & Pick<InternalFollowupRun, "groupParticipation"> {
   const currentTurnSource = items.find(hasCurrentTurnRuntimeMetadata);
   // Delivery-key equality proves every source has the same turn authority.
   // Preserve the exact carrier (including hidden intersections); never derive it from identity evidence.
   const authoritySource = items.at(-1);
+  const groupSources: InternalFollowupRun[] = items;
+  const groupParticipation =
+    groupSources.length > 0 && groupSources.every((item) => item.groupParticipation)
+      ? {
+          ...groupSources.at(-1)?.groupParticipation,
+          sources: groupSources.flatMap(
+            (item) =>
+              item.groupParticipation?.sources ??
+              (item.userTurnTranscriptRecorder
+                ? [
+                    {
+                      recorder: item.userTurnTranscriptRecorder,
+                      sourceMessageId: item.messageId,
+                      replyToText: item.groupParticipation?.replyToText,
+                    },
+                  ]
+                : []),
+          ),
+        }
+      : undefined;
   const deliveryCorrelations = items.flatMap((item) => item.deliveryCorrelations ?? []);
   const explicitSkillSelections = [
     ...new Map(
@@ -263,6 +284,7 @@ export function collectRuntimeMetadata(
     ).values(),
   ];
   return {
+    ...(groupParticipation ? { groupParticipation } : {}),
     sourceTurnId: authoritySource?.sourceTurnId,
     operatorAuthority: authoritySource?.operatorAuthority,
     ...(items.length > 0 && items.every((item) => item.personalBootstrapEligible === true)
@@ -299,8 +321,10 @@ export function resolveOverflowSummaryInboundEventKind(
     : undefined;
 }
 
-export function createOverflowSummaryRetrySource(source: FollowupRun): FollowupRun {
+export function createOverflowSummaryRetrySource(source: FollowupRun): InternalFollowupRun {
+  const internalSource: InternalFollowupRun = source;
   return {
+    groupParticipation: internalSource.groupParticipation,
     prompt: source.prompt,
     sourceTurnId: source.sourceTurnId,
     admissionSessionId: source.admissionSessionId,
