@@ -156,7 +156,9 @@ describe("explicit repository move to Gateway", () => {
               await expect(operation).rejects.toBe(cloneFailure);
             }
             const token = `synthetic-${scenario === "agent" ? "agent" : "system"}-token`;
-            expect(verify).toHaveBeenCalledWith(token);
+            expect(verify).toHaveBeenCalledWith(token, {
+              apiBaseUrl: "https://api.github.com",
+            });
             expect(clone).toHaveBeenCalledWith(
               { cfg, gitUrl: repository.url, requiredCommit: repository.baseCommit },
               expect.objectContaining({ token }),
