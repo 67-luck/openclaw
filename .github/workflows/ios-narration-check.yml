@@ -14,11 +14,11 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 60
     env:
-      CANDIDATE_SHA: 75f97b5a11e467308c599417d11bf7d786449e2e
+      CANDIDATE_SHA: 217fd2c5ddfce982a4a4280179168cbe500bd3c7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 75f97b5a11e467308c599417d11bf7d786449e2e
+          ref: 217fd2c5ddfce982a4a4280179168cbe500bd3c7
           persist-credentials: false
       - name: Pin exact integrated product source
         run: |
@@ -58,6 +58,7 @@ jobs:
             apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatViewModel+TransportEvents.swift
             apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatViewModel.swift
             apps/shared/OpenClawKit/Tests/OpenClawKitTests/ChatAssistantRunGroupTests.swift
+            apps/shared/OpenClawKit/Tests/OpenClawKitTests/ChatDynamicTypeSourceGuardTests.swift
             apps/shared/OpenClawKit/Tests/OpenClawKitTests/ChatStreamReplayTests.swift
             apps/shared/OpenClawKit/Tests/OpenClawKitTests/ChatViewModelSessionActionTests.swift
           )

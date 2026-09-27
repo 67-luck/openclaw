@@ -25,13 +25,13 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 120
     env:
-      CANDIDATE_SHA: 75f97b5a11e467308c599417d11bf7d786449e2e
+      CANDIDATE_SHA: 217fd2c5ddfce982a4a4280179168cbe500bd3c7
       DEVICE_FAMILY: ${{ matrix.device }}
     steps:
       - name: Checkout exact product candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 75f97b5a11e467308c599417d11bf7d786449e2e
+          ref: 217fd2c5ddfce982a4a4280179168cbe500bd3c7
           fetch-depth: 3
           persist-credentials: false
       - name: Checkout verification-only helpers
