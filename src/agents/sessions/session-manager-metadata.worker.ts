@@ -66,6 +66,7 @@ import type {
   SqliteWorkerBackend,
   SqliteWorkerCommand,
 } from "../../infra/sqlite-worker-contract.js";
+import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
 import { requestSqliteWorkerHostStep } from "../../infra/sqlite-worker-native-scope.js";
 import { deferSqliteWorkerCommitReceipt } from "../../infra/sqlite-worker-operation-admission.js";
 import { getSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
@@ -73,6 +74,7 @@ import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-tur
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import {
   getOpenClawAgentDatabaseIfOpen,
+  resolveOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
 import { isIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
@@ -409,6 +411,8 @@ export function bindSqliteWorkerBackend(
           "identity" in result && result.identity
             ? prepareSessionEntryReplacementPublication({
                 ...result.identity,
+                // Metadata patches do not request replacement archive recovery.
+                pendingArchiveRecovery: false,
                 maintenancePlans: [],
                 membershipInvalidatedKeys: [],
               })
@@ -458,9 +462,15 @@ export function bindSqliteWorkerBackend(
     const scope = { ...command.input.scope, env: getSqliteWorkerStateContext().environment };
     const resolved = resolveSqliteTranscriptScope(scope);
     const options = toDatabaseOptions(resolved);
-    if (options.path !== context.databasePath) {
+    if (
+      readDatabasePathIdentitySync(resolveOpenClawAgentSqlitePath(options)).canonicalPath !==
+      context.databasePath
+    ) {
       throw new Error("Session metadata target changed its database owner");
     }
+    scope.storePath = context.databasePath;
+    resolved.path = context.databasePath;
+    options.path = context.databasePath;
     if (command.type === "session.metadata.activeAnchor") {
       return {
         ok: true,
@@ -543,18 +553,28 @@ export function bindSqliteWorkerBackend(
           : undefined,
       );
       if (command.type === "session.metadata.initialize") {
-        const result = ensureSessionEntryInTransaction(
+        const physical = readOpenClawAgentDatabaseIdentity(database);
+        const committed = ensureSessionEntryInTransaction(
           database,
           resolved,
           scope,
           command.input.entry,
           command.input.initialWriterRunId,
         );
+        const result = {
+          ...committed,
+          identity: committed.identity && {
+            ...committed.identity,
+            databaseIdentity:
+              typeof physical.identity === "string" ? physical.identity : physical.incarnation,
+          },
+        };
         const receipt = {
           kind: command.type,
           sessionKey: resolved.sessionKey,
           sessionId: scope.sessionId,
           created: result.identity !== undefined,
+          databaseIdentity: result.identity?.databaseIdentity,
         };
         context.admit("commit", receipt);
         deferSqliteWorkerCommitReceipt(context.database, receipt);

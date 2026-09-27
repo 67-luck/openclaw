@@ -3,6 +3,10 @@ import { getEnvironmentData, type Worker } from "node:worker_threads";
 import { afterEach, assert, expect, it, vi } from "vitest";
 import type { AgentMessage } from "../../../packages/agent-core/src/types.js";
 import {
+  onSessionIdentityMutation,
+  type SessionIdentityMutation,
+} from "../../config/sessions/session-accessor.js";
+import {
   bindSessionPendingInputWorkerAuthority,
   joinSessionPendingInputReceipt,
   type SessionPendingInputReceipt,
@@ -11,10 +15,12 @@ import { stageSessionPendingInput } from "../../config/sessions/session-accessor
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
 import { readSessionTranscriptContextMessages } from "../../config/sessions/session-accessor.sqlite-model-context.js";
 import * as pendingInputOwners from "../../config/sessions/session-accessor.sqlite-pending-inputs.js";
+import { resolveSqliteTranscriptScope } from "../../config/sessions/session-accessor.sqlite-scope.js";
 import type { SessionPendingInputOwner } from "../../config/sessions/session-pending-input.types.js";
 import {
   captureSessionTranscriptExecution,
   captureSessionTranscriptReadExecution,
+  retainSessionTranscriptRead,
 } from "../../config/sessions/session-transcript-execution.js";
 import { captureSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import { captureGatewayDeviceRevocation } from "../../gateway/device-revocation.js";
@@ -33,10 +39,14 @@ import { SharedGatewaySessionGenerationState } from "../../gateway/server-shared
 import { createOperatorWsClient } from "../../gateway/server/ws-connection/authenticated-request-dispatch.test-support.js";
 import { resolveSessionMutationAuthorization } from "../../gateway/session-sharing.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
+import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import * as operationAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import * as workerStore from "../../infra/sqlite-worker-store.js";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import * as agentDatabase from "../../state/openclaw-agent-db.js";
+import type { AgentDatabaseRequestExecutionSource } from "../../state/openclaw-agent-execution-contract.js";
 import {
   captureOpenClawAgentDatabaseExecution,
   retainGatewaySessionBroker,
@@ -48,7 +58,10 @@ import {
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { installSessionToolResultGuard } from "../session-tool-result-guard.js";
 import { createSessionToolResultPending } from "../session-tool-result-pending.js";
+import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
 import * as messageRuntime from "./session-manager-message-runtime.js";
+import type { SessionMetadataWorkerOperations } from "./session-manager-metadata-contract.js";
+import * as metadataRuntime from "./session-manager-metadata-runtime.js";
 import {
   createScopedWorkerFixture,
   runReadyPredecessorChild,
@@ -374,6 +387,208 @@ it("keeps cold durable OPEN unscoped while retaining the message append callback
   expect(publish).toHaveBeenCalledExactlyOnceWith(outcome.value);
   expect(persisted).toEqual([message]);
 });
+
+it("retires the logical volatile owner after requested native failure cleanup", async () => {
+  await withReadyManager(async ({ target }) => {
+    const execution = captureOpenClawAgentDatabaseExecution({
+      agentId: target.agentId,
+      path: target.storePath,
+      env: target.env,
+    });
+    expect(execution.backend).toBe("volatile");
+    const source: AgentDatabaseRequestExecutionSource = {
+      assertCurrent: () => execution.assertCurrent(),
+      requiresHostContinuation: false,
+      createAdmission: (binding) => () => ({
+        nativeLocations: binding.nativeLocations,
+        admission: operationAdmission.createSqliteWorkerOperationAdmission((request, grant) => {
+          binding.authorize(request);
+          execution.assertCurrent();
+          if (!grant()) {
+            throw new Error("Volatile retirement admission was refused");
+          }
+        }, binding.attachment),
+      }),
+    };
+    const failure = new Error("Original volatile operation failed");
+    const failedOperation = vi.fn(async () => {
+      throw failure;
+    });
+    const successorOperation = vi.fn(async () => undefined);
+    try {
+      await expect(
+        execution.runExisting(source, failedOperation, { retireNativeOnFailure: true }),
+      ).rejects.toBe(failure);
+      expect(failedOperation).toHaveBeenCalledOnce();
+      expect(() => execution.assertCurrent()).toThrow();
+      await expect(execution.runExisting(source, successorOperation)).rejects.toThrow();
+      expect(successorOperation).not.toHaveBeenCalled();
+      expect(fs.existsSync(target.storePath)).toBe(false);
+    } finally {
+      await execution.release();
+    }
+  });
+});
+
+it.each(
+  (["message", "metadata"] as const).flatMap((first) =>
+    (["commit", "rollback"] as const).map((boundary) => ({ first, boundary })),
+  ),
+)(
+  "publishes the original volatile identity for $first-first initialization after outer $boundary",
+  async ({ first, boundary }) => {
+    await withReadyManager(async ({ target }) => {
+      const selected = {
+        ...target,
+        sessionId: "initial-identity",
+        sessionKey: "agent:main:initial-identity",
+      };
+      const manager = SessionManager.open(selected);
+      const capturedTarget = manager.getSessionTarget();
+      assert(capturedTarget);
+      const readOwner = retainSessionTranscriptRead(capturedTarget, () => {});
+      const metadataModule = resolveRuntimeWorkerUrl(
+        runtimeProcessEntrypoints.sessionManagerMetadata,
+      );
+      const events: SessionIdentityMutation[] = [];
+      const stop = onSessionIdentityMutation((event) => {
+        if (event.kind !== "delete" && event.current.sessionKeys.includes(selected.sessionKey)) {
+          events.push(event);
+        }
+      });
+      const sourceIdentity = () => {
+        const { env: _env, ...scope } = resolveSqliteTranscriptScope(capturedTarget);
+        const reply = readOwner.executeReady(
+          readOwner.command(metadataModule, {
+            type: "session.metadata.entryRead",
+            input: { scope, query: { kind: "row" } },
+          }),
+        ) as SessionMetadataWorkerOperations["session.metadata.entryRead"]["output"];
+        assert(reply.ok);
+        expect(reply.value.result.kind).toBe("row");
+        return reply.value.physical.identity;
+      };
+      const appendInitial = () =>
+        first === "message"
+          ? manager.appendMessage({ role: "user", content: "initial identity", timestamp: 2 })
+          : manager.appendCustomEntry("initial identity", { retained: true });
+      const failure = new Error("Original initialization rolled back");
+      let originalIdentity: string | undefined;
+      try {
+        const initialize = () =>
+          SessionManager.readSessionContext(selected, () => {
+            appendInitial();
+            originalIdentity = sourceIdentity();
+            expect(events).toEqual([]);
+            if (boundary === "rollback") {
+              throw failure;
+            }
+          });
+        if (boundary === "rollback") {
+          expect(initialize).toThrow(failure);
+          expect(events).toEqual([]);
+          appendInitial();
+        } else {
+          initialize();
+        }
+        expect(originalIdentity).toEqual(expect.any(String));
+        expect(sourceIdentity()).toBe(originalIdentity);
+        expect(events).toEqual([
+          expect.objectContaining({
+            kind: "create",
+            agentId: selected.agentId,
+            databaseIdentity: originalIdentity,
+            current: { sessionId: selected.sessionId, sessionKeys: [selected.sessionKey] },
+          }),
+        ]);
+        manager.appendMessage({ role: "user", content: "warm identity", timestamp: 3 });
+        manager.appendCustomEntry("warm metadata", {});
+        expect(events).toHaveLength(1);
+        expect(sourceIdentity()).toBe(originalIdentity);
+      } finally {
+        stop();
+        await readOwner.close();
+      }
+    });
+  },
+);
+
+it.each(["message", "metadata"] as const)(
+  "publishes the original durable identity for async %s-first initialization",
+  async (first) => {
+    await withOpenClawTestState({ label: "durable-initial-identity" }, async (state) => {
+      const database = agentDatabase.openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+      const originalIdentity = readOpenClawAgentDatabaseIdentity(database).identity;
+      const target = {
+        agentId: "main",
+        sessionId: "durable-initial-identity",
+        sessionKey: "agent:main:durable-initial-identity",
+        storePath: database.path,
+        env: state.env,
+      };
+      const manager = SessionManager.open(target);
+      const events: SessionIdentityMutation[] = [];
+      const outcomes: SessionMessageAppendOutcome[] = [];
+      const createRuntime = messageRuntime.createSessionManagerMessageRuntime;
+      const messageSpy = vi
+        .spyOn(messageRuntime, "createSessionManagerMessageRuntime")
+        .mockImplementation((params) => {
+          const runtime = createRuntime(params);
+          return {
+            ...runtime,
+            async append(...args) {
+              const outcome = await runtime.append(...args);
+              outcomes.push(outcome);
+              return outcome;
+            },
+          };
+        });
+      const metadataSpy = vi.spyOn(metadataRuntime, "withSessionMetadataWorker");
+      const stop = onSessionIdentityMutation((event) => {
+        if (event.kind !== "delete" && event.current.sessionKeys.includes(target.sessionKey)) {
+          events.push(event);
+        }
+      });
+      const assistant = () =>
+        makeAgentAssistantMessage({
+          content: [{ type: "text", text: "worker initialization identity" }],
+        });
+      try {
+        expect(events).toEqual([]);
+        if (first === "message") {
+          await manager.appendMessageAsync(assistant());
+          expect(outcomes).toHaveLength(1);
+          expect(outcomes[0]).toMatchObject({
+            kind: "committed",
+            facts: {
+              kind: "manager",
+              initial: { identity: { databaseIdentity: originalIdentity } },
+            },
+          });
+        } else {
+          await manager.appendModelChange("openai", "fixture-model");
+          expect(metadataSpy).toHaveBeenCalledOnce();
+        }
+        expect(events).toEqual([
+          expect.objectContaining({
+            kind: "create",
+            agentId: target.agentId,
+            databaseIdentity: originalIdentity,
+            current: { sessionId: target.sessionId, sessionKeys: [target.sessionKey] },
+          }),
+        ]);
+        await manager.appendMessageAsync(assistant());
+        await manager.appendModelChange("openai", "fixture-warm-model");
+        expect(events).toHaveLength(1);
+        expect(readOpenClawAgentDatabaseIdentity(database).identity).toBe(originalIdentity);
+      } finally {
+        stop();
+        messageSpy.mockRestore();
+        metadataSpy.mockRestore();
+      }
+    });
+  },
+);
 
 it.each(["resolved", "retained"] as const)(
   "retains the resolved logical read identity when agentId is omitted (%s)",

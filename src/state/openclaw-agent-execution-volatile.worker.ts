@@ -9,6 +9,8 @@ import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator
 import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
 import {
   SQLITE_WORKER_PREPARE_NATIVE,
+  SQLITE_WORKER_PREPARE_ADMITTED,
+  SQLITE_WORKER_OPERATION_CLEANUP,
   SQLITE_WORKER_EXECUTE_SCOPED,
   type SqliteWorkerCommand,
   type SqliteWorkerPreparedBackend,
@@ -107,6 +109,9 @@ export function createVolatileAgentDatabaseBackend(
         options,
         getPreparedDatabase: () => assertCurrent().db,
         assertCurrent,
+        assertCleanupCurrent() {
+          assertCurrent();
+        },
         admit(stage, admitted) {
           requestSqliteWorkerOperationAdmission({
             stage,
@@ -145,7 +150,8 @@ export function createVolatileAgentDatabaseBackend(
     },
     [SQLITE_WORKER_PREPARE_NATIVE](request) {
       if (request.type === "database.volatile.execute") {
-        prepareLogical(request.input.target, request.input.createIfMissing);
+        const current = prepareLogical(request.input.target, request.input.createIfMissing);
+        current?.commands.beginRequest();
       }
     },
     async prepare(request) {
@@ -165,6 +171,36 @@ export function createVolatileAgentDatabaseBackend(
         return;
       }
       await current.commands.prepare(command);
+    },
+    [SQLITE_WORKER_PREPARE_ADMITTED](request) {
+      if (request.type !== "database.volatile.execute") {
+        return undefined;
+      }
+      const current = find(request.input.target);
+      const command = request.input.command;
+      if (current && command.type === "database.domain.publish") {
+        return current.commands.preparePublication(command.input);
+      }
+      return undefined;
+    },
+    [SQLITE_WORKER_OPERATION_CLEANUP](request) {
+      if (request.type !== "database.volatile.execute") {
+        return;
+      }
+      const current = find(request.input.target);
+      const command = request.input.command;
+      if (current) {
+        try {
+          if (
+            command.type === "database.domain.publish" ||
+            command.type === "database.domain.run"
+          ) {
+            current.commands.cleanupPublication(command.input.id);
+          }
+        } finally {
+          current.commands.endRequest();
+        }
+      }
     },
     execute(request) {
       if (request.type === "database.volatile.close") {

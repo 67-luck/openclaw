@@ -331,7 +331,7 @@ export function createSessionMessageAppendOperation(bindings: {
                 throw new Error("Session message admission expired");
               }
             },
-            attachment,
+            { ...binding.attachment, domain: attachment },
             hostScope,
           );
           native = admission;

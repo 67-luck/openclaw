@@ -44,6 +44,8 @@ export type SqliteWorkerCloseReceipt = {
 export const SQLITE_WORKER_PREPARE_COMMAND = Symbol.for("openclaw.sqliteWorkerPrepareCommand");
 export const SQLITE_WORKER_PREPARE_NATIVE = Symbol.for("openclaw.sqliteWorkerPrepareNative");
 export const SQLITE_WORKER_EXECUTE_SCOPED = Symbol.for("openclaw.sqliteWorkerExecuteScoped");
+export const SQLITE_WORKER_PREPARE_ADMITTED = Symbol.for("openclaw.sqliteWorkerPrepareAdmitted");
+export const SQLITE_WORKER_OPERATION_CLEANUP = Symbol.for("openclaw.sqliteWorkerOperationCleanup");
 export const SQLITE_WORKER_CLOSE_RECEIPT = Symbol.for("openclaw.sqliteWorkerCloseReceipt");
 
 /** Internal preparation and cleanup facts; public SDK operation and close contracts stay unchanged. */
@@ -57,6 +59,10 @@ export type SqliteWorkerPreparedBackend<Operations extends SqliteWorkerOperation
       command: SqliteWorkerCommand<Operations>,
       retain: (database: DatabaseSync) => void,
     ): unknown;
+    [SQLITE_WORKER_PREPARE_ADMITTED]?(
+      command: SqliteWorkerCommand<Operations>,
+    ): void | Promise<void>;
+    [SQLITE_WORKER_OPERATION_CLEANUP]?(command: SqliteWorkerCommand<Operations>): void;
     [SQLITE_WORKER_CLOSE_RECEIPT]?(): SqliteWorkerCloseReceipt | undefined;
   };
 
@@ -68,6 +74,9 @@ export type SqliteWorkerStore<Operations extends SqliteWorkerOperations> = {
   close(): Promise<void>;
 };
 
+/** Optional maintenance budget; ordinary operations keep the database's default lock wait. */
+export type SqliteWorkerStateLifecycle = boolean | { waitMs: number; maxPollIntervalMs?: number };
+
 export type SqliteWorkerRequest = {
   id: number;
   actor: number;
@@ -75,7 +84,7 @@ export type SqliteWorkerRequest = {
   gatewaySchemaFence?: MessagePort;
   maintenanceSchemaFence?: MessagePort;
   stateLifecycle?: MessagePort;
-  workerStateLifecycle?: { deadlineNs: bigint };
+  workerStateLifecycle?: { deadlineNs: bigint; maxPollIntervalMs?: number };
   lifecyclePreparation?: MessagePort;
   operationAdmission?: MessagePort;
   stateDatabasePath?: string;

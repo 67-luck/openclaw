@@ -146,7 +146,7 @@ it("preserves pending tool growth from a native fresh-message callback", async (
     expect(fresh).toHaveBeenCalledOnce();
     expect(observed.mock.calls.map(([message]) => message)).toEqual([child, parent]);
     expect(pending.capture(owner).facts).toEqual([
-      { token: 0, originId: childId, callIndex: 0, id: "shared", name: "read" },
+      { token: 0, originId: childId, callIndex: 0, id: "shared", name: "read", responseIds: [] },
     ]);
     expect(manager.getEntry(parentId)).toMatchObject({ message: parent });
     expect(SessionManager.open(target).getEntries()).toEqual(manager.getEntries());

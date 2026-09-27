@@ -161,7 +161,7 @@ describe("shared GitHub publication requester alias bindings", () => {
           scopes: guestScopes,
           ...f.guestSource.session,
         });
-        const claim = holdWorkerTurn(f);
+        const claim = await holdWorkerTurn(f);
         const input = f.request("interrupted-visitor-identity", original.requester);
         const queued = await f.coordinator.requestForSession(input);
         const staff =
@@ -211,7 +211,7 @@ describe("shared GitHub publication requester alias bindings", () => {
         });
         expect(await visitors.store.lookup(email)).toEqual(grant);
         expect(f.readRequester(queued.requestId)).toEqual(original.requester.snapshot);
-        f.placements.releaseTurn(claim);
+        await f.placements.releaseTurn(claim);
         original.release();
         await visitors.reopen();
         await visitors.start();
@@ -264,8 +264,8 @@ describe("shared GitHub publication requester alias bindings", () => {
         });
         const claim =
           backend === "repository"
-            ? holdWorkerTurn(f)
-            : f.placements.claimTurn({
+            ? await holdWorkerTurn(f)
+            : await f.placements.claimTurn({
                 ...f.session,
                 agentId: "main",
                 owner: { kind: "local" },
@@ -305,7 +305,7 @@ describe("shared GitHub publication requester alias bindings", () => {
         if (backend === "repository") {
           f.placements.completeWorkspaceResultAndReleaseTurn(claim);
         } else {
-          f.placements.releaseTurn(claim);
+          await f.placements.releaseTurn(claim);
         }
         const prepare = mocks.prepareIdentity.getMockImplementation()!;
         let preparations = 0;
@@ -368,7 +368,7 @@ describe("shared GitHub publication requester alias bindings", () => {
           scopes: guestScopes,
           ...f.guestSource.session,
         });
-        const claim = holdWorkerTurn(f);
+        const claim = await holdWorkerTurn(f);
         const queued = await f.coordinator.requestForSession(
           f.request("profile-preparation-recovery", original.requester),
         );
@@ -386,7 +386,7 @@ describe("shared GitHub publication requester alias bindings", () => {
           });
           f.placements.completeWorkspaceResultAndReleaseTurn(claim);
         } else {
-          f.placements.releaseTurn(claim);
+          await f.placements.releaseTurn(claim);
         }
         original.release();
         const restarted = f.restart();
@@ -483,7 +483,7 @@ describe("shared GitHub publication requester alias bindings", () => {
         scopes: guestScopes,
         ...f.guestSource.session,
       });
-      const claim = holdWorkerTurn(f);
+      const claim = await holdWorkerTurn(f);
       const input = f.request("concurrent-alias-retry", original.requester);
       const later = "publication-later-alias@example.test";
       let winner: Awaited<ReturnType<typeof f.coordinator.requestForSession>> | undefined;
@@ -512,7 +512,7 @@ describe("shared GitHub publication requester alias bindings", () => {
       );
       await linkCanonicalUserProfileEmail(later, other.id);
       expect(original.requester.assertCurrent).not.toThrow();
-      f.placements.releaseTurn(claim);
+      await f.placements.releaseTurn(claim);
       original.release();
       const restarted = f.restart();
       await restarted.resumeSessionRequests();

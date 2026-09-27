@@ -377,7 +377,7 @@ function createSessionMessageRuntime(
                 if (!grant()) {
                   throw new Error("Input settlement admission expired");
                 }
-              });
+              }, binding.attachment);
               return { nativeLocations: binding.nativeLocations, admission };
             };
           },

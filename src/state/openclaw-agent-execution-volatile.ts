@@ -257,6 +257,7 @@ export function createVolatileAgentDatabaseGeneration(
         source.requiresHostContinuation,
         source.createAdmission({
           operation: "execute",
+          attachment: { kind: "agent-execution", startupJournal: false },
           nativeLocations: [
             context.admission.databasePath,
             context.admission.identity.canonicalPath,

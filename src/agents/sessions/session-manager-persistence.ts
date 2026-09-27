@@ -195,8 +195,13 @@ export class SessionManagerPersistence extends SessionManagerCore {
 
   protected publishMessageInitialization(facts: SessionMessageCommitFacts): void {
     if (facts.kind === "manager" && facts.initial?.identity) {
-      const { previous, current } = facts.initial.identity;
-      publishCommittedSessionIdentity(facts.receipt.anchor!.agentId, previous, current);
+      const { databaseIdentity, previous, current } = facts.initial.identity;
+      publishCommittedSessionIdentity(
+        facts.receipt.anchor!.agentId,
+        databaseIdentity,
+        previous,
+        current,
+      );
     }
   }
 
@@ -459,6 +464,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
         worker!.publish(() =>
           publishCommittedSessionIdentity(
             _execution!.scope.agentId,
+            initial.identity!.databaseIdentity,
             initial.identity!.previous,
             initial.identity!.current,
           ),

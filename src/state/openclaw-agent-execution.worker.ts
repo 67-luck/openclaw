@@ -1,20 +1,18 @@
 import { serialize } from "node:v8";
 import { MessageChannel, receiveMessageOnPort, type MessagePort } from "node:worker_threads";
+import { expectDefined } from "@openclaw/normalization-core";
 import type { Result } from "@openclaw/normalization-core/result";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
-import { sqliteReaderDatabasePathKey } from "../infra/sqlite-reader-lifecycle.js";
 import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
-import {
-  onSqliteWalCheckpoint,
-  type SqliteWalCheckpointSnapshot,
-} from "../infra/sqlite-wal-checkpoint.js";
 import {
   SQLITE_WORKER_CLOSE_RECEIPT,
   SQLITE_WORKER_PREPARE_NATIVE,
-  type SqliteWorkerCloseReceipt,
-  type SqliteWorkerPreparedBackend,
   SQLITE_WORKER_MAX_MESSAGE_BYTES,
   SqliteWorkerError,
+  SQLITE_WORKER_OPERATION_CLEANUP,
+  SQLITE_WORKER_PREPARE_ADMITTED,
+  type SqliteWorkerCloseReceipt,
+  type SqliteWorkerPreparedBackend,
 } from "../infra/sqlite-worker-contract.js";
 import {
   assertExistingDatabaseIdentity,
@@ -24,22 +22,21 @@ import {
   requestSqliteWorkerOperationAdmission,
   SqliteWorkerOpenRefusedError,
 } from "../infra/sqlite-worker-operation-admission.js";
+import { readAgentDeletionJournalStatusInDatabase } from "./agent-deletion-journal.read.js";
 import type {
   OpenClawAgentDatabase,
   OpenClawAgentDatabaseRegistrationCommit,
 } from "./openclaw-agent-db-contract.js";
 import { readOpenClawAgentDatabaseIdentity } from "./openclaw-agent-db-identity.js";
 import { prepareOpenClawAgentDatabaseWorkerLease } from "./openclaw-agent-db-lease.js";
-import {
-  closeOpenClawAgentDatabaseByPath,
-  retainAgentDatabase,
-} from "./openclaw-agent-db-lifecycle.js";
+import { retainAgentDatabase } from "./openclaw-agent-db-lifecycle.js";
 import { ensureOpenClawAgentDatabasePermissions } from "./openclaw-agent-db-permissions.js";
 import {
   getOpenClawAgentDatabaseValidation,
   type OpenClawAgentDatabaseValidation,
 } from "./openclaw-agent-db-validation-cache.js";
 import { getOpenClawAgentDatabaseIfOpen, openOpenClawAgentDatabase } from "./openclaw-agent-db.js";
+import { closeAgentDatabaseExecution } from "./openclaw-agent-execution-close.js";
 import { createAgentDatabaseCommandOwner } from "./openclaw-agent-execution-commands.js";
 import type {
   AgentDatabaseExecutionIdentity,
@@ -166,6 +163,13 @@ function openAgentDatabaseBackend(
   let releaseBorrow: (() => void) | undefined;
   let identity: AgentDatabaseExecutionIdentity | undefined;
   let openingFailure: { error: unknown } | undefined;
+  let startupJournalRequested = false;
+  // This request-local flag is installed only for the synchronous native command below.
+  const readDeletionJournal = () =>
+    readAgentDeletionJournalStatusInDatabase(
+      expectDefined(shared, "Agent execution shared-state owner").db,
+      input.agentId,
+    ) !== "absent";
   const requirePreparedDatabase = () => {
     if (!database || !database.db.isOpen || getOpenClawAgentDatabaseIfOpen(options) !== database) {
       throw new Error("Agent execution lost its retained native database");
@@ -216,8 +220,15 @@ function openAgentDatabaseBackend(
       let registration: OpenClawAgentDatabaseRegistrationCommit | undefined;
       let openingResult: Result<OpenClawAgentDatabase, unknown>;
       try {
-        const opened = openOpenClawAgentDatabase(options, lease, (receipt) => {
-          registration = receipt;
+        const opened = openOpenClawAgentDatabase(options, lease, {
+          starting: () =>
+            requestSqliteWorkerOperationAdmission({
+              stage: "prepare",
+              facts: { kind: "agent-registration-start", lease: lease.receipt },
+            }),
+          committed(receipt) {
+            registration = receipt;
+          },
         });
         database = opened;
         releaseBorrow = retainAgentDatabase(opened.db);
@@ -278,9 +289,18 @@ function openAgentDatabaseBackend(
       };
       validation = getOpenClawAgentDatabaseValidation(opened);
     }
-    const current = requirePreparedDatabase();
-    requestSqliteWorkerOperationAdmission({ stage: "prepare", facts: { identity, validation } });
-    return current;
+    if (!database || !database.db.isOpen || getOpenClawAgentDatabaseIfOpen(options) !== database) {
+      throw new Error("Agent execution lost its retained native database");
+    }
+    requestSqliteWorkerOperationAdmission({
+      stage: "prepare",
+      facts: {
+        identity,
+        validation,
+        ...(startupJournalRequested ? { agentDeletionJournalPresent: readDeletionJournal() } : {}),
+      },
+    });
+    return database;
   };
   const admit = (
     stage: "transaction" | "commit",
@@ -289,6 +309,7 @@ function openAgentDatabaseBackend(
     assertFileIdentity();
     const facts = {
       identity,
+      ...(startupJournalRequested ? { agentDeletionJournalPresent: readDeletionJournal() } : {}),
       ...(admitted?.domain === undefined ? {} : { domain: admitted.domain }),
       ...(admitted?.publication === undefined ? {} : { publication: admitted.publication }),
     };
@@ -316,6 +337,18 @@ function openAgentDatabaseBackend(
       assertFileIdentity();
       return current;
     },
+    assertCleanupCurrent() {
+      if (
+        !database ||
+        !identity ||
+        !database.db.isOpen ||
+        database.db.location() !== identity.nativeLocation ||
+        getOpenClawAgentDatabaseIfOpen(options) !== database
+      ) {
+        throw new Error("Agent cleanup lost its retained native database");
+      }
+      assertFileIdentity();
+    },
     admit,
   });
   let closed = false;
@@ -327,13 +360,42 @@ function openAgentDatabaseBackend(
   };
   return {
     [SQLITE_WORKER_PREPARE_NATIVE](command) {
-      // A composite domain binds after async loading; promotion must happen
-      // here under the original command's admission, never in that async phase.
-      if (command.type === "database.domain.run") {
+      commands.beginRequest();
+      if (command.type !== "database.domain.run") {
+        return;
+      }
+      // Promotion and later execution consume one request-local attachment.
+      // Async preparation never inherits the synchronous admission authority.
+      startupJournalRequested = commands.startupJournal();
+      try {
         commands.execute({ type: "database.prepareWrite", input: undefined });
+      } finally {
+        startupJournalRequested = false;
       }
     },
     prepare: commands.prepare,
+    [SQLITE_WORKER_PREPARE_ADMITTED](command) {
+      if (command.type !== "database.domain.publish") {
+        return undefined;
+      }
+      startupJournalRequested = commands.startupJournal();
+      try {
+        return commands.preparePublication(command.input);
+      } finally {
+        startupJournalRequested = false;
+      }
+    },
+    [SQLITE_WORKER_OPERATION_CLEANUP](command) {
+      try {
+        if (command.type === "database.domain.publish" || command.type === "database.domain.run") {
+          startupJournalRequested = commands.hasRequest() ? commands.startupJournal() : false;
+          commands.cleanupPublication(command.input.id);
+        }
+      } finally {
+        startupJournalRequested = false;
+        commands.endRequest();
+      }
+    },
     assertSettled() {
       if (openingFailure) {
         // A failed promotion requires native retirement, including custody retained by the opener.
@@ -349,7 +411,24 @@ function openAgentDatabaseBackend(
     },
     execute(command) {
       assertOpen();
-      return commands.execute(command);
+      // Creating OPEN executes directly, without the ordinary preparation and
+      // cleanup hooks. Its attachment belongs only to that opening job.
+      const openingRequest = !commands.hasRequest();
+      if (openingRequest) {
+        if (command.type !== "database.prepareWrite") {
+          throw new Error("Agent command lost its request-local preparation facts");
+        }
+        commands.beginRequest();
+      }
+      startupJournalRequested = commands.startupJournal();
+      try {
+        return commands.execute(command);
+      } finally {
+        startupJournalRequested = false;
+        if (openingRequest) {
+          commands.endRequest();
+        }
+      }
     },
     [SQLITE_WORKER_CLOSE_RECEIPT]() {
       return closeReceipt;
@@ -357,58 +436,13 @@ function openAgentDatabaseBackend(
     close() {
       closed = true;
       closeReceipt = undefined;
-      let checkpoint: SqliteWalCheckpointSnapshot | undefined;
-      const errors: unknown[] = [];
-      for (const cleanup of [
-        () => commands.close(),
-        () => {
-          if (!database) {
-            return;
-          }
-          const closingPath = sqliteReaderDatabasePathKey(database.path);
-          const stopObserving = onSqliteWalCheckpoint((observation) => {
-            if (observation.databasePath === closingPath) {
-              checkpoint = {
-                health: observation.health,
-                observedAtNs: observation.observedAtNs,
-              };
-            }
-          });
-          try {
-            closeOpenClawAgentDatabaseByPath(database.path, database.agentId);
-          } finally {
-            stopObserving();
-          }
-        },
-        () => releaseBorrow?.(),
-        () => sharedBorrow?.release(),
-      ]) {
-        try {
-          cleanup();
-        } catch (error) {
-          errors.push(error);
-        }
-      }
-      if (errors.length === 1) {
-        throw errors[0];
-      }
-      if (errors.length > 1) {
-        throw createSqliteLifecycleAggregateError(
-          errors,
-          "Agent database cleanup failed",
-          errors[0],
-        );
-      }
-      if (identity && checkpoint) {
-        closeReceipt = {
-          identity: {
-            key: `file:${identity.physicalIdentity}`,
-            canonicalPath: identity.nativeLocation,
-          },
-          incarnation: identity.incarnation,
-          checkpoint,
-        };
-      }
+      closeReceipt = closeAgentDatabaseExecution({
+        database,
+        identity,
+        closeDomain: () => commands.close(),
+        releaseBorrow,
+        releaseSharedBorrow: () => sharedBorrow?.release(),
+      });
     },
   };
 }

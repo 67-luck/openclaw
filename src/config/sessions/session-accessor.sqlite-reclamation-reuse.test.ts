@@ -202,7 +202,7 @@ test.each([
           if (!grant()) {
             throw new Error("Native reclamation fixture lost admission");
           }
-        }),
+        }, binding.attachment),
       });
     },
   };

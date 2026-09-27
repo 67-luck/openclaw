@@ -1,6 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { TranscriptMessageAppendResult } from "../../config/sessions/session-accessor.sqlite-contract.js";
-import type { InitialSessionEntryCommit } from "../../config/sessions/session-accessor.sqlite-initial-entry.js";
 import type { captureSessionPendingInputWorkerAppend } from "../../config/sessions/session-accessor.sqlite-pending-inputs.js";
 import type { TranscriptWriteSnapshot } from "../../config/sessions/session-accessor.sqlite-transcript-write-guard.js";
 import type { SessionPendingInputWorkerFacts } from "../../config/sessions/session-pending-input.types.js";
@@ -9,6 +8,7 @@ import type {
   PendingToolResultDelta,
   SessionToolResultPending,
 } from "../session-tool-result-pending.js";
+import type { SessionWorkerInitialEntryCommit } from "./session-manager-metadata-contract.js";
 
 type SessionMessageOwnerIdentity = {
   databasePath: string;
@@ -40,7 +40,7 @@ export type SessionMessageCommitFacts = {
       kind: "manager";
       delta: PendingToolResultDelta;
       pendingInput?: SessionPendingInputWorkerFacts;
-      initial?: InitialSessionEntryCommit;
+      initial?: SessionWorkerInitialEntryCommit;
     }
   | { kind: "target-note" }
 );

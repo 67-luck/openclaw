@@ -393,7 +393,7 @@ export function captureSessionEntryPatchExecution(
                 throw new Error("Session entry patch admission expired");
               }
             },
-            undefined,
+            owner.attachment,
             hostScope,
           );
           const retainedGrant: (typeof grants)[number] = { admission: original };
@@ -472,7 +472,7 @@ export function captureSessionEntryPatchExecution(
                 if (!grant()) {
                   throw new Error("Session entry preparation expired");
                 }
-              });
+              }, owner.attachment);
               const retainedGrant: (typeof grants)[number] = { admission: preparation };
               grants.push(retainedGrant);
               return {
@@ -581,12 +581,17 @@ export function captureSessionEntryPatchExecution(
       callbacks: Pick<SessionEntryPatchOptions, "assertCommitAllowed"> & {
         shouldCommit?: () => boolean;
       },
-      publish: (result: Mutation, publication: SettledPublication) => void,
+      publish: (
+        result: Mutation,
+        publication: SettledPublication,
+        databaseIdentity: string,
+      ) => void,
     ) {
       if (!prepared) {
         throw new Error("Session entry patch has no original snapshot");
       }
       assertCurrent();
+      const databaseIdentity = prepared.physical.identity;
       const result = await execute(
         "session.metadata.entryPatch",
         {
@@ -603,7 +608,7 @@ export function captureSessionEntryPatchExecution(
       if (mutation) {
         // Nested results stay tentative; read the canonical filtered identity only
         // when the original outer receipt has settled and publication can run.
-        const publishCommitted = () => publish(mutation, result.publication());
+        const publishCommitted = () => publish(mutation, result.publication(), databaseIdentity);
         if (result.tentative) {
           if (!deferSqliteWorkerCallerPublication(publishCommitted)) {
             throw new Error("Tentative session entry patch lost its original caller scope");

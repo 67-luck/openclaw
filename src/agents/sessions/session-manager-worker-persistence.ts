@@ -16,6 +16,7 @@ import {
   withOwnedSessionTranscriptWriterFence,
 } from "../../config/sessions/transcript-write-context.js";
 import { runInDetachedAsyncContext } from "../../shared/async-work-scope.js";
+import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
 import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import {
@@ -127,6 +128,7 @@ export class SessionManagerWorkerPersistence extends SessionManagerPersistence {
     const identity = { ...target };
     const sessionId = this.getSessionId();
     const { database, options } = writeAdmission;
+    const databaseIdentity = readOpenClawAgentDatabaseIdentity(database).identity;
     const { env: _env, ...writeTarget } = withOwnedSessionTranscriptWriterFence(target);
     const captured: SessionMetadataWorkerOperations["session.metadata.append"]["input"]["scope"] = {
       ...writeTarget,
@@ -178,6 +180,7 @@ export class SessionManagerWorkerPersistence extends SessionManagerPersistence {
           if (committed.identity) {
             publishCommittedSessionIdentity(
               captured.agentId,
+              databaseIdentity,
               committed.identity.previous,
               committed.identity.current,
             );

@@ -34,9 +34,7 @@ export type GatewayChatUserTurnPersist = (options?: {
 
 type GatewayChatUserTurnController = {
   baseInput: UserTurnInput;
-  persist: (
-    ...args: Parameters<GatewayChatUserTurnPersist>
-  ) => ReturnType<UserTurnTranscriptRecorder["persistFallback"]>;
+  persist: GatewayChatUserTurnPersist;
   persistBestEffort: GatewayChatUserTurnPersist;
   recorder: UserTurnTranscriptRecorder;
   replyContextFieldsPromise?: Promise<ChatSendReplyContextFields>;

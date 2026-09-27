@@ -91,6 +91,14 @@ function fixture(noEmit = false, outputRoot = "dist", tempRoots = roots) {
       run.startedAt,
       ownedOutputRoot,
     );
+  const matches = (record: ReturnType<typeof seal>) =>
+    new BoundaryInputSnapshot(root).matches(
+      record,
+      config,
+      args,
+      Object.keys(record.outputs),
+      ownedOutputRoot,
+    );
   return {
     root,
     write,
@@ -99,6 +107,7 @@ function fixture(noEmit = false, outputRoot = "dist", tempRoots = roots) {
     compilerArgs,
     prepare,
     seal,
+    matches,
     outputRoot: ownedOutputRoot,
   };
 }
@@ -143,25 +152,9 @@ describe("native owner content records", () => {
 
     const record = f.seal(f.prepare());
     expect(record.outputs["packages/sdk/dist/src/api.d.ts"]).toBeDefined();
-    expect(
-      new BoundaryInputSnapshot(f.root).matches(
-        record,
-        f.config,
-        f.args,
-        Object.keys(record.outputs),
-        f.outputRoot,
-      ),
-    ).toBe(true);
+    expect(f.matches(record)).toBe(true);
     fs.unlinkSync(path.join(f.root, "node_modules/fixture-sdk"));
-    expect(
-      new BoundaryInputSnapshot(f.root).matches(
-        record,
-        f.config,
-        f.args,
-        Object.keys(record.outputs),
-        f.outputRoot,
-      ),
-    ).toBe(false);
+    expect(f.matches(record)).toBe(false);
   });
 
   it("retains upstream output topology when a producer snapshot is reused by a consumer", () => {
@@ -226,28 +219,20 @@ describe("native owner content records", () => {
     f.write("node_modules/fixture-package/value.d.ts", "export declare const value: 1;");
     f.write("src/api.ts", 'export { value } from "fixture-package";');
     const record = f.seal(f.prepare());
-    const matches = () =>
-      new BoundaryInputSnapshot(f.root).matches(
-        record,
-        f.config,
-        f.args,
-        Object.keys(record.outputs),
-        f.outputRoot,
-      );
 
-    expect(matches()).toBe(true);
+    expect(f.matches(record)).toBe(true);
     f.write(
       "node_modules/.modules.yaml",
       manifest("/home/runner/.local/share/pnpm/store/v11", "consumer"),
     );
-    expect(matches()).toBe(true);
+    expect(f.matches(record)).toBe(true);
 
     f.write("node_modules/fixture-package/value.d.ts", "export declare const value: 2;");
-    expect(matches()).toBe(false);
+    expect(f.matches(record)).toBe(false);
     f.write("node_modules/fixture-package/value.d.ts", "export declare const value: 1;");
-    expect(matches()).toBe(true);
+    expect(f.matches(record)).toBe(true);
     f.write("node_modules/fixture-package/value.ts", "export const value = 3;");
-    expect(matches()).toBe(false);
+    expect(f.matches(record)).toBe(false);
   });
 
   it.each(["node_modules", "package", "source"])(
@@ -313,25 +298,18 @@ describe("native owner content records", () => {
     const link = path.join(f.root, "missing");
     fs.symlinkSync(target, link, kind === "directory" ? "dir" : "file");
     const record = f.seal(f.prepare());
-    const matches = () =>
-      new BoundaryInputSnapshot(f.root).matches(
-        record,
-        f.config,
-        f.args,
-        Object.keys(record.outputs),
-      );
-    expect(matches()).toBe(true);
+    expect(f.matches(record)).toBe(true);
     if (kind === "directory") {
       fs.mkdirSync(target);
     } else {
       fs.writeFileSync(target, "");
     }
-    expect(matches()).toBe(false);
+    expect(f.matches(record)).toBe(false);
     fs.rmSync(target, { recursive: true });
-    expect(matches()).toBe(true);
+    expect(f.matches(record)).toBe(true);
     fs.unlinkSync(link);
     fs.symlinkSync(`${target}-other`, link, kind === "directory" ? "dir" : "file");
-    expect(matches()).toBe(false);
+    expect(f.matches(record)).toBe(false);
   });
 
   it("ignores tool scratch churn under installed roots", () => {
@@ -341,19 +319,12 @@ describe("native owner content records", () => {
     // Sibling config loads mint these between the before and seal walks.
     f.write("node_modules/.vite-temp/vitest.config.ts.timestamp-1-a.mjs", "export default {};");
     const record = f.seal(run);
-    const matches = () =>
-      new BoundaryInputSnapshot(f.root).matches(
-        record,
-        f.config,
-        f.args,
-        Object.keys(record.outputs),
-      );
-    expect(matches()).toBe(true);
+    expect(f.matches(record)).toBe(true);
     fs.rmSync(path.join(f.root, "node_modules/.vite-temp"), { recursive: true });
     f.write("node_modules/.cache/jiti/config.deadbeef.mjs", "export default {};");
-    expect(matches()).toBe(true);
+    expect(f.matches(record)).toBe(true);
     f.write("node_modules/.pnpm/pkg@1.0.0/node_modules/pkg/index.js", "export const value = 1;");
-    expect(matches()).toBe(false);
+    expect(f.matches(record)).toBe(false);
   });
 
   it("ignores native PR checkout churn while retaining aliased resolution candidates", () => {
@@ -370,22 +341,15 @@ describe("native owner content records", () => {
     const run = f.prepare();
     f.write(".worktrees/pr-unrelated/src/new.ts", "export const unrelated = 1;");
     const record = f.seal(run);
-    const matches = () =>
-      new BoundaryInputSnapshot(f.root).matches(
-        record,
-        f.config,
-        f.args,
-        Object.keys(record.outputs),
-      );
-    expect(matches()).toBe(true);
+    expect(f.matches(record)).toBe(true);
     fs.rmSync(path.join(f.root, ".worktrees/pr-unrelated"), { recursive: true });
-    expect(matches()).toBe(true);
+    expect(f.matches(record)).toBe(true);
     f.write("nested/.worktrees/candidate.ts", "export {};");
-    expect(matches()).toBe(false);
+    expect(f.matches(record)).toBe(false);
     fs.rmSync(path.join(f.root, "nested/.worktrees"), { recursive: true });
-    expect(matches()).toBe(true);
+    expect(f.matches(record)).toBe(true);
     f.write(`${dependency}/value.ts`, 'export const value = "changed";');
-    expect(matches()).toBe(false);
+    expect(f.matches(record)).toBe(false);
     const compiled = spawnSync(process.execPath, f.args, { cwd: f.root, encoding: "utf8" });
     expect(compiled.status, compiled.stdout + compiled.stderr).toBe(1);
     expect(compiled.stderr).toContain("TS2322");
@@ -665,22 +629,15 @@ describe("native owner content records", () => {
     f.write(declaration, "export interface Value { value: 1 }");
     f.write("src/api.ts", 'export type { Value } from "../.artifacts/declared/value.js";');
     const record = f.seal(f.prepare());
-    const matches = () =>
-      new BoundaryInputSnapshot(f.root).matches(
-        record,
-        f.config,
-        f.args,
-        Object.keys(record.outputs),
-      );
     expect(record.inputs).toContain(declaration);
-    expect(matches()).toBe(true);
+    expect(f.matches(record)).toBe(true);
     const external = path.join(fs.realpathSync(roots.make("external-declaration-")), "value.d.ts");
     fs.copyFileSync(path.join(f.root, declaration), external);
     fs.unlinkSync(path.join(f.root, declaration));
     // This consumed path is outside topology discovery, so byte equality alone
     // would accept the old receipt after the file starts resolving elsewhere.
     fs.symlinkSync(external, path.join(f.root, declaration), "file");
-    expect(matches()).toBe(false);
+    expect(f.matches(record)).toBe(false);
   });
 
   it("rejects an inherited config outside the checkout before compilation", () => {

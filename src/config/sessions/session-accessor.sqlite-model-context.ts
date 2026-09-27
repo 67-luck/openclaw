@@ -17,6 +17,7 @@ import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import { chunkItems } from "../../utils/chunk-items.js";
 import type {
   SessionTranscriptContextVersion,
   SessionTranscriptReadScope,
@@ -544,12 +545,7 @@ function withTranscriptContextSnapshot<T>(
             },
             readModelEntrySizes: (requests) => {
               const sizes = new Map<ContextEntry, number>();
-              for (
-                let offset = 0;
-                offset < requests.length;
-                offset += MODEL_CONTEXT_PAYLOAD_BATCH_SIZE
-              ) {
-                const batch = requests.slice(offset, offset + MODEL_CONTEXT_PAYLOAD_BATCH_SIZE);
+              for (const batch of chunkItems(requests, MODEL_CONTEXT_PAYLOAD_BATCH_SIZE)) {
                 const bySeq = new Map(batch.map(({ entry }) => [entry.seq, entry]));
                 const omitted = batch
                   .filter(({ omitCheckpoint }) => omitCheckpoint)
@@ -589,12 +585,7 @@ function withTranscriptContextSnapshot<T>(
             },
             readModelEntries: (requests) => {
               const payloads = new Map<ContextEntry, SessionTreeEntry>();
-              for (
-                let offset = 0;
-                offset < requests.length;
-                offset += MODEL_CONTEXT_PAYLOAD_BATCH_SIZE
-              ) {
-                const batch = requests.slice(offset, offset + MODEL_CONTEXT_PAYLOAD_BATCH_SIZE);
+              for (const batch of chunkItems(requests, MODEL_CONTEXT_PAYLOAD_BATCH_SIZE)) {
                 const bySeq = new Map(batch.map(({ entry }) => [entry.seq, entry]));
                 const omitted = batch
                   .filter(({ omitCheckpoint }) => omitCheckpoint)

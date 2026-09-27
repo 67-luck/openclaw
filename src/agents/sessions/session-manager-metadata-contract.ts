@@ -45,6 +45,10 @@ import type {
 export type MetadataTarget = Omit<SessionTranscriptWriteScope, "env"> &
   SessionTranscriptRuntimeTarget;
 
+export type SessionWorkerInitialEntryCommit = Omit<InitialSessionEntryCommit, "identity"> & {
+  identity?: NonNullable<InitialSessionEntryCommit["identity"]> & { databaseIdentity: string };
+};
+
 export type SessionEntryReadQuery =
   | {
       kind: "resolve";
@@ -204,7 +208,7 @@ export type SessionMetadataOperations = {
       entry: InternalSessionEntry;
       initialWriterRunId?: string;
     };
-    output: InitialSessionEntryCommit;
+    output: SessionWorkerInitialEntryCommit;
   };
   "session.metadata.append": {
     input: {

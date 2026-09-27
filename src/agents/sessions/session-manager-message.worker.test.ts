@@ -568,7 +568,7 @@ it.each(["commit", "rollback"] as const)(
         });
         expect(independent.facts.delta).toEqual({
           remove: [],
-          add: [{ originId: "b-call", callIndex: 0, id: "shared", name: "write" }],
+          add: [{ originId: "b-call", callIndex: 0, id: "shared", name: "write", responseIds: [] }],
         });
         const bRows = b.rows();
         expect(bRows.slice(0, beforeB.length)).toEqual(beforeB);

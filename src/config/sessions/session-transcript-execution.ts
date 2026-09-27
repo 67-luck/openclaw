@@ -247,7 +247,7 @@ function retainSessionTranscriptOperation(
               throw new Error("Session transcript read admission expired");
             }
           },
-          undefined,
+          native.attachment,
           scope,
         );
         admission = original;

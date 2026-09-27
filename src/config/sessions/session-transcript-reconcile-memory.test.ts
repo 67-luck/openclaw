@@ -6,6 +6,7 @@ import {
   getOpenClawAgentDatabaseIfOpen,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import * as agentExecution from "../../state/openclaw-agent-execution.js";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   createSessionEntryWithTranscript,
@@ -34,6 +35,17 @@ import {
 } from "./session-transcript-reconcile.js";
 import { useReconcileWorkerObserver } from "./session-transcript-reconcile.test-support.js";
 import { transcriptMessage } from "./transcript-message.test-support.js";
+const warnings = vi.hoisted(() => vi.fn());
+vi.mock("../../logging/subsystem.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../logging/subsystem.js")>();
+  return {
+    ...actual,
+    createSubsystemLogger(name: string) {
+      const logger = actual.createSubsystemLogger(name);
+      return name === "sessions/transcript-index" ? { ...logger, warn: warnings } : logger;
+    },
+  };
+});
 vi.mock("node:worker_threads", async () =>
   (await import("./session-transcript-reconcile.test-support.js")).createObservedWorkerThreads(),
 );
@@ -46,6 +58,42 @@ describe("incognito transcript reconciliation", () => {
     ambient = ambientState;
     explicit = explicitState;
   });
+
+  it.each(["direct", "scheduled"] as const)(
+    "refuses a missing incognito owner before %s work is admitted",
+    async (mode) => {
+      const { options } = target(explicit.env);
+      const capture = vi.spyOn(agentExecution, "captureOpenClawAgentDatabaseExecution");
+      const onTask = vi.fn();
+      observer.onTask = onTask;
+      warnings.mockClear();
+      try {
+        expect(getOpenClawAgentDatabaseIfOpen(options)).toBeUndefined();
+        if (mode === "direct") {
+          await expect(reconcileSessionTranscriptIndexes(options)).rejects.toThrow(
+            "Incognito transcript reconciliation requires its original live native database",
+          );
+          expect(warnings).not.toHaveBeenCalled();
+        } else {
+          expect(() => startSessionTranscriptIndexReconcile(options)).not.toThrow();
+          await waitForSessionTranscriptIndexReconcile(options);
+          expect(warnings).toHaveBeenCalledExactlyOnceWith(
+            expect.stringContaining(
+              "Incognito transcript reconciliation requires its original live native database",
+            ),
+          );
+        }
+        expect(capture).not.toHaveBeenCalled();
+        expect(onTask).not.toHaveBeenCalled();
+        expect(observer.workers.size).toBe(0);
+        expect(getOpenClawAgentDatabaseIfOpen(options)).toBeUndefined();
+        expectNoDiskState();
+      } finally {
+        capture.mockRestore();
+        observer.onTask = undefined;
+      }
+    },
+  );
 
   it.each(["ambient", "explicit"] as const)(
     "repairs a supported branch through the scheduled worker (%s environment)",

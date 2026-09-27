@@ -6,6 +6,7 @@ import type {
   SqliteWorkerRequest,
   SqliteWorkerReply,
   SqliteWorkerCloseReceipt,
+  SqliteWorkerStateLifecycle,
 } from "./sqlite-worker-contract.js";
 import type {
   SqliteWorkerAdmissionFactory,
@@ -47,7 +48,7 @@ export type Job = {
   preparedAtNs?: bigint;
   dispatchPrepared?: () => void;
   readyReply?: true;
-  requireStateLifecycle?: boolean;
+  requireStateLifecycle?: SqliteWorkerStateLifecycle;
   maintenanceScope?: OpenClawDatabaseMaintenanceScope;
   maintenanceSchemaFence?: { actor: Actor; delegate: StateLifecycleDelegate };
   gatewaySchemaFence?: { actor: Actor; delegate: StateLifecycleDelegate };
@@ -130,7 +131,7 @@ export type Actor = {
   pendingStateLifecycles: Set<StateLifecycleDelegate>;
 };
 export type OperationScope = {
-  requireStateLifecycle?: boolean;
+  requireStateLifecycle?: SqliteWorkerStateLifecycle;
   createAdmission?: SqliteWorkerAdmissionFactory;
   assertCurrent?: (commandType: PropertyKey) => void;
   active: boolean;
@@ -210,6 +211,7 @@ export type SqliteWorkerOpenCustody = Pick<
   | "volatile"
   | "backendService"
 > & { preparation?: unknown };
+export type SqliteWorkerInputRetention = "snapshot" | "stream";
 export type SqliteWorkerInputPreparation = {
   assertCurrent: () => void;
   /** Transfer to a dispatch that reaches enqueue synchronously, before returning its Promise. */

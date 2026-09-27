@@ -12,6 +12,7 @@ import type {
 import { readSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
 import {
   resolveSqliteTranscriptScope,
+  transcriptWriteScopeIsCurrent,
   type ResolvedTranscriptScope,
 } from "./session-accessor.sqlite-scope.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
@@ -77,14 +78,7 @@ export function resolveTranscriptAppendRefusal(
   resolved: ResolvedTranscriptScope,
   scope: SessionTranscriptWriteScope,
 ): TranscriptAppendRefusal | undefined {
-  if (
-    entry &&
-    entry.sessionId === resolved.sessionId &&
-    (scope.expectedLifecycleRevision === undefined ||
-      entry.lifecycleRevision === scope.expectedLifecycleRevision) &&
-    (scope.expectedWriterRunId === undefined ||
-      entry.activeWriterRunId === scope.expectedWriterRunId)
-  ) {
+  if (transcriptWriteScopeIsCurrent(entry, resolved.sessionId, scope)) {
     return undefined;
   }
   const identity = {

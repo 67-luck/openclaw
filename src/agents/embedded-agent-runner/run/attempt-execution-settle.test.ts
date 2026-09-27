@@ -621,18 +621,22 @@ describe("runEmbeddedAttemptSettledPhase", () => {
         const createAdmission = workerAdmission.createSqliteWorkerOperationAdmission;
         const admissionSpy = vi
           .spyOn(workerAdmission, "createSqliteWorkerOperationAdmission")
-          .mockImplementation((admit) => {
-            const admission = createAdmission((request, grant) => {
-              if (
-                transition === "cancel before commit" &&
-                noteInFlight &&
-                request.stage === "commit"
-              ) {
-                cancelledGrants++;
-                fixture.input.runAbortController.abort(cancellation);
-              }
-              admit(request, grant);
-            });
+          .mockImplementation((admit, attachment, scope) => {
+            const admission = createAdmission(
+              (request, grant) => {
+                if (
+                  transition === "cancel before commit" &&
+                  noteInFlight &&
+                  request.stage === "commit"
+                ) {
+                  cancelledGrants++;
+                  fixture.input.runAbortController.abort(cancellation);
+                }
+                admit(request, grant);
+              },
+              attachment,
+              scope,
+            );
             nativeAdmissions.push(admission);
             return admission;
           });

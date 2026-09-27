@@ -88,7 +88,11 @@ export function createSessionPendingInputReceipt(
   owner: SessionPendingInputOwner,
 ): SessionPendingInputReceipt {
   const receipt: SessionPendingInputReceipt = {
-    state: "queued",
+    get state() {
+      return owner.consumed || owner.sources?.every((source) => source.consumed)
+        ? "consumed"
+        : "queued";
+    },
     inputId: owner.inputId,
     message: parseSessionPendingInputMessage(owner.messageJson),
     run: (operation) => runWithSessionPendingInput(owner, operation),

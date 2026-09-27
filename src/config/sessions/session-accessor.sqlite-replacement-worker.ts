@@ -11,7 +11,10 @@ import {
 import type { RetainedWorkerTransactionAdmission } from "../../infra/sqlite-worker-operation-settlement.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
-import type { AgentDatabaseRequestExecutionSource } from "../../state/openclaw-agent-execution-contract.js";
+import type {
+  AgentDatabaseOperations,
+  AgentDatabaseRequestExecutionSource,
+} from "../../state/openclaw-agent-execution-contract.js";
 import {
   captureOpenClawAgentDatabaseExecution,
   type OpenClawAgentDatabaseExecution,
@@ -23,11 +26,8 @@ import {
   type SessionTranscriptInitializationPublication,
 } from "./session-accessor.sqlite-entry-cache.js";
 import { publishCommittedSessionIdentity } from "./session-accessor.sqlite-identity.js";
-import {
-  prepareSessionEntryReplacementPublication,
-  type SessionEntryReplacementCommit,
-  type SessionEntryReplacementCommitted,
-} from "./session-accessor.sqlite-replacement-state.js";
+import { prepareSessionEntryReplacementPublication } from "./session-accessor.sqlite-replacement-state.js";
+import type { SessionEntryReplacementCommitted } from "./session-accessor.sqlite-replacement-types.js";
 import type { SessionEntryCommitContext } from "./session-accessor.types.js";
 
 type ReplacementDatabaseOptions = OpenClawAgentDatabaseOptions & { path: string };
@@ -123,7 +123,7 @@ export async function withSessionEntryWorker<T>(
           if (!grant()) {
             throw new Error("Session replacement authority expired");
           }
-        });
+        }, binding.attachment);
         return { nativeLocations: binding.nativeLocations, admission };
       };
     },
@@ -241,12 +241,12 @@ export async function initializeSessionTranscriptInWorker(
 export async function commitSessionEntryReplacementsInWorker(
   options: ReplacementDatabaseOptions,
   databaseIdentity: string,
-  input: SessionEntryReplacementCommit,
+  input: AgentDatabaseOperations["session.entries.replace"]["input"],
   assertCurrent: () => void,
   lifecycle: {
     identityAgentId: string;
     afterCommitted?: (context: SessionEntryCommitContext) => Promise<void>;
-    onLifecycleCommitted?: () => void;
+    onLifecycleCommitted?: (pendingArchiveRecovery: boolean) => void;
   },
   retainedExecution?: OpenClawAgentDatabaseExecution,
 ) {
@@ -273,7 +273,7 @@ export async function commitSessionEntryReplacementsInWorker(
       receipt = prepareSessionEntryReplacementPublication(committed);
     }
     if (receipt) {
-      lifecycle.onLifecycleCommitted?.();
+      lifecycle.onLifecycleCommitted?.(receipt.pendingArchiveRecovery);
     }
     const unknown = admitted.admission.settlement?.kind !== "completed" || !receipt;
     const published = publication.settle(receipt, unknown);
@@ -281,6 +281,7 @@ export async function commitSessionEntryReplacementsInWorker(
     if (published?.identity) {
       publishCommittedSessionIdentity(
         lifecycle.identityAgentId,
+        databaseIdentity,
         published.identity.previous,
         published.identity.current,
       );

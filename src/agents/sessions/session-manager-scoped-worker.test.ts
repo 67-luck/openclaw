@@ -12,7 +12,10 @@ import {
   runOpenClawAgentWriteAdmission,
 } from "../../state/openclaw-agent-write-admission.js";
 import { installSessionToolResultGuard } from "../session-tool-result-guard.js";
-import { createSessionToolResultPending } from "../session-tool-result-pending.js";
+import {
+  createSessionToolResultPending,
+  sessionToolResultPending,
+} from "../session-tool-result-pending.js";
 import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
 import { SessionTranscriptMessageCommittedError } from "./session-manager-message-error.js";
 import * as messageRuntime from "./session-manager-message-runtime.js";
@@ -341,7 +344,26 @@ it.each([
           last,
           parent,
         ]);
-        expect(guard.getPendingIds()).toEqual(["settled-before-observation"]);
+        if (privateFailure) {
+          // Committed ledger facts survive private cleanup failure, but an
+          // unadopted manager view cannot select active calls or authorize replay.
+          for (const readView of [guard.getPendingIds, () => manager.getEntries()]) {
+            let failure: { error: unknown } | undefined;
+            try {
+              readView();
+            } catch (error) {
+              failure = { error };
+            }
+            assert(failure);
+            expect(failure.error).toBe(caught.error);
+          }
+          const owner = manager[sessionToolResultPending];
+          expect(owner.pending.calls(owner.owner).map((call) => call.id)).toEqual([
+            "settled-before-observation",
+          ]);
+        } else {
+          expect(guard.getPendingIds()).toEqual(["settled-before-observation"]);
+        }
         expect(observed).toEqual([first]);
       } finally {
         runtimeSpy.mockRestore();

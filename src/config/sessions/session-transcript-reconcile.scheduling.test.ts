@@ -1,19 +1,116 @@
-import { expect, it, vi } from "vitest";
+import { setImmediate as checkpoint } from "node:timers/promises";
+import { expect, it, vi, type MockInstance } from "vitest";
+import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
   closeOpenClawAgentDatabasesAsync,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import * as agentExecution from "../../state/openclaw-agent-execution.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { persistSessionTranscriptTurn } from "./session-accessor.js";
 import {
   closeSessionTranscriptReconcileWorkerPool,
   getSessionTranscriptReconcileWorkerPoolSnapshot,
 } from "./session-transcript-reconcile-pool.js";
 import {
+  isSessionTranscriptIndexReconcileRunning,
   startSessionTranscriptIndexReconcile,
   waitForSessionTranscriptIndexReconcile,
+  waitForSessionTranscriptIndexReconcilesInStateDir,
 } from "./session-transcript-reconcile.js";
+
+it.each(["final", "superseded"] as const)(
+  "joins late waits and successor demand while a %s borrow is releasing",
+  async (mode) => {
+    await withOpenClawTestState({ label: "reconcile-borrow-retirement" }, async (state) => {
+      const options = {
+        agentId: "main",
+        env: state.env,
+        path: state.path("custom", "transcripts.sqlite"),
+      };
+      const database = openOpenClawAgentDatabase(options);
+      const originalCapture = agentExecution.captureOpenClawAgentDatabaseExecution;
+      const previous = createDeferred();
+      const successor = createDeferred();
+      const retiring = createDeferred();
+      const successorRetiring = createDeferred();
+      const firstFinal = mode === "final" ? 0 : 2;
+      const successorIndex = firstFinal + 1;
+      const blockedIndex = mode === "final" ? 0 : 1;
+      const releases: MockInstance<() => Promise<void>>[] = [];
+      const capture = vi
+        .spyOn(agentExecution, "captureOpenClawAgentDatabaseExecution")
+        .mockImplementation((input) => {
+          const execution = originalCapture(input);
+          const index = releases.length;
+          const release = execution.release.bind(execution);
+          const observed = vi.spyOn(execution, "release").mockImplementation(async () => {
+            if (index === firstFinal) {
+              retiring.resolve();
+            }
+            if (index === blockedIndex) {
+              await previous.promise;
+            }
+            if (index === successorIndex) {
+              successorRetiring.resolve();
+              await successor.promise;
+            }
+            await release();
+          });
+          releases.push(observed);
+          return execution;
+        });
+      const waits: Promise<void>[] = [];
+      let keyDrained = false;
+      let rootDrained = false;
+      try {
+        startSessionTranscriptIndexReconcile(options);
+        if (mode === "superseded") {
+          startSessionTranscriptIndexReconcile(options);
+          startSessionTranscriptIndexReconcile(options);
+        }
+        await withTestTimeout(retiring.promise, 10_000, "Original borrow did not retire");
+        await checkpoint();
+        expect(isSessionTranscriptIndexReconcileRunning(options)).toBe(true);
+        waits.push(
+          waitForSessionTranscriptIndexReconcile(options).then(() => {
+            keyDrained = true;
+          }),
+          waitForSessionTranscriptIndexReconcilesInStateDir(state.stateDir).then(() => {
+            rootDrained = true;
+          }),
+        );
+        await checkpoint();
+        expect([keyDrained, rootDrained]).toEqual([false, false]);
+
+        startSessionTranscriptIndexReconcile(options);
+        await withTestTimeout(successorRetiring.promise, 10_000, "Successor demand was lost");
+        previous.resolve();
+        await checkpoint();
+        expect(isSessionTranscriptIndexReconcileRunning(options)).toBe(true);
+        expect([keyDrained, rootDrained]).toEqual([false, false]);
+        successor.resolve();
+        await withTestTimeout(Promise.all(waits), 10_000, "Accepted owners did not drain");
+        expect([keyDrained, rootDrained]).toEqual([true, true]);
+        expect(isSessionTranscriptIndexReconcileRunning(options)).toBe(false);
+        expect(releases).toHaveLength(successorIndex + 1);
+        for (const release of releases) {
+          expect(release).toHaveBeenCalledOnce();
+        }
+        expect(database.db.isOpen).toBe(true);
+      } finally {
+        previous.resolve();
+        successor.resolve();
+        await waitForSessionTranscriptIndexReconcilesInStateDir(state.stateDir);
+        await Promise.all(waits);
+        capture.mockRestore();
+      }
+    });
+  },
+  30_000,
+);
 
 it("drains deferred reconciliation after the caller retires its timer queue", async ({
   onTestFinished,

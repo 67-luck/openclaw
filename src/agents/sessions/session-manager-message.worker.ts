@@ -9,10 +9,7 @@ import type {
   SessionTranscriptContextVersion,
 } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import { readSessionEntryRow } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
-import {
-  ensureSessionEntryInTransaction,
-  type InitialSessionEntryCommit,
-} from "../../config/sessions/session-accessor.sqlite-initial-entry.js";
+import { ensureSessionEntryInTransaction } from "../../config/sessions/session-accessor.sqlite-initial-entry.js";
 import {
   readSessionInputCompletion,
   readSessionPendingInputAppendInTransaction,
@@ -44,11 +41,9 @@ import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { assertTransactionUsable } from "../../infra/sqlite-transaction.js";
 import type { SqliteWorkerBackend } from "../../infra/sqlite-worker-contract.js";
 import { requestSqliteWorkerHostStep } from "../../infra/sqlite-worker-native-scope.js";
-import {
-  deferSqliteWorkerCommitReceipt,
-  takeSqliteWorkerOperationAdmissionAttachment,
-} from "../../infra/sqlite-worker-operation-admission.js";
+import { deferSqliteWorkerCommitReceipt } from "../../infra/sqlite-worker-operation-admission.js";
 import { getSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
+import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import {
   resolveOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
@@ -58,6 +53,7 @@ import {
   preparePendingToolResultDelta,
   type PendingToolResultFact,
 } from "../session-tool-result-pending-facts.js";
+import type { SessionWorkerInitialEntryCommit } from "./session-manager-metadata-contract.js";
 import type { SessionMessageEntry } from "./session-manager-types.js";
 import type {
   SessionManagerBoundedContextLimits,
@@ -124,6 +120,7 @@ export function bindSqliteWorkerBackend(
   context: {
     databasePath: string;
     database: DatabaseSync;
+    takePreparation(): unknown;
     admit(stage: "transaction" | "commit", facts?: unknown): void;
     assertTransactionBoundary?(): void;
   },
@@ -151,10 +148,9 @@ export function bindSqliteWorkerBackend(
       const input = command.input;
       // This attachment was captured when the original FIFO job dispatched,
       // after its predecessor's private custody settled, not at Promise delivery.
-      const attachment =
-        input.kind === "manager" ? takeSqliteWorkerOperationAdmissionAttachment() : undefined;
+      const attachment = input.kind === "manager" ? context.takePreparation() : undefined;
       // The manager factory captured this attachment for this original FIFO admission.
-      // SAFETY: the private port is consume-once; operationId is checked below.
+      // SAFETY: the bound owner consumes the domain payload once; operationId is checked below.
       const pending = attachment as SessionMessagePendingPreparation | undefined;
       if (pending && pending.operationId !== input.operationId) {
         throw new Error("Session pending preparation belongs to another operation");
@@ -316,7 +312,7 @@ export function bindSqliteWorkerBackend(
       };
       let commitFacts: SessionMessageCommitFacts | undefined;
       let pendingFacts: SessionPendingInputWorkerFacts | undefined;
-      let initial: InitialSessionEntryCommit | undefined;
+      let initial: SessionWorkerInitialEntryCommit | undefined;
       let boundDatabase: Parameters<typeof readSessionMutationFactsInWorker>[0] | undefined;
       const nestedTransaction = context.database.isTransaction;
       const admitCommit = () => {
@@ -389,13 +385,23 @@ export function bindSqliteWorkerBackend(
             pendingInput: pendingFacts,
           });
           if (manager?.initialize) {
-            initial = ensureSessionEntryInTransaction(
+            const physical = readOpenClawAgentDatabaseIdentity(database);
+            const committed = ensureSessionEntryInTransaction(
               database,
               resolved,
               scope,
               { sessionId: resolved.sessionId, updatedAt: input.options.now },
               manager.initialize.initialWriterRunId,
             );
+            // Publish the admitted incarnation, never a path reopened after worker settlement.
+            initial = {
+              ...committed,
+              identity: committed.identity && {
+                ...committed.identity,
+                databaseIdentity:
+                  typeof physical.identity === "string" ? physical.identity : physical.incarnation,
+              },
+            };
             if (!initial.owned) {
               throw new SessionTranscriptWriterClaimReboundError();
             }

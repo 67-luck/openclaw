@@ -14,6 +14,7 @@ import {
   SqliteWorkerError,
   type SqliteWorkerOperations,
   type SqliteWorkerStore,
+  type SqliteWorkerStateLifecycle,
 } from "./sqlite-worker-contract.js";
 import { executeSqliteWorkerScopedCommand } from "./sqlite-worker-host-context.js";
 import {
@@ -33,7 +34,7 @@ export function runSqliteWorkerClientOperation<Operations extends SqliteWorkerOp
   track: (pending: Promise<void>) => () => void,
   assertCurrent?: (commandType: PropertyKey) => void,
   createAdmission?: SqliteWorkerAdmissionFactory,
-  requireStateLifecycle = false,
+  requireStateLifecycle: SqliteWorkerStateLifecycle = false,
 ): Promise<T> {
   let retained: ReturnType<typeof retainSqliteWorkerClientOperation<Operations>>;
   try {
@@ -67,7 +68,7 @@ export function retainSqliteWorkerClientOperation<Operations extends SqliteWorke
   track: (pending: Promise<void>) => () => void,
   assertCurrent?: (commandType: PropertyKey) => void,
   createAdmission?: SqliteWorkerAdmissionFactory,
-  requireStateLifecycle = false,
+  requireStateLifecycle: SqliteWorkerStateLifecycle = false,
 ) {
   if (!client || client.sealed) {
     throw new SqliteWorkerError("SQLite worker store is closed", "closed");

@@ -26,6 +26,7 @@ import {
 import { extractTextFromChatContent } from "../../shared/chat-content.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { SkillWorkshopProposalRevisionConstraint } from "../../skills/workshop/types.js";
+import { resolveChatAbortDiagnosticReason } from "../chat-abort-diagnostics.js";
 import { discardPreparedInboundMedia } from "../chat-attachments.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import {
@@ -314,8 +315,33 @@ async function handleChatSendWithOptions(
     admitted.value.setPendingInputCleanup(
       createChatSendPendingInputCleanup({
         activeRunAbort,
-        finishPendingInput: (disposition) =>
-          finishUserTurnPendingInput(userTurnRecorder, disposition),
+        finishPendingInput: (disposition) => {
+          const pending =
+            userTurnRecorder.getPendingInputMessage?.() &&
+            !userTurnRecorder.isPendingInputConsumed?.();
+          const joined = finishUserTurnPendingInput(userTurnRecorder, disposition);
+          const publish = () => {
+            if (pending && activeRunAbort.controller.signal.aborted) {
+              const reason = resolveChatAbortDiagnosticReason(
+                activeRunAbort.controller.signal,
+                activeRunAbort.entry,
+              );
+              context.logGateway.info(`chat pending input aborted: ${reason} (${disposition})`, {
+                runId: clientRunId,
+                sessionKey,
+                sessionId: admittedSessionId,
+                agentId: selectedAgent.agentId,
+                disposition,
+                reason,
+              });
+            }
+          };
+          if (joined) {
+            return joined.then(publish);
+          }
+          publish();
+          return undefined;
+        },
         discard: () =>
           preparedUserTurn
             .discardUnreferencedMedia(userTurnRecorder.getPendingInputMessage?.())

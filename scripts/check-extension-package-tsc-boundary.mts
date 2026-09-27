@@ -465,7 +465,7 @@ function cleanupCanaryArtifacts(extensionId: string, rootDir = repoRoot) {
 /**
  * Removes canary artifacts for multiple extensions.
  */
-export function cleanupCanaryArtifactsForExtensions(extensionIds: string[], rootDir = repoRoot) {
+function cleanupCanaryArtifactsForExtensions(extensionIds: string[], rootDir = repoRoot) {
   for (const extensionId of extensionIds) {
     cleanupCanaryArtifacts(extensionId, rootDir);
   }

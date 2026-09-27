@@ -10,7 +10,6 @@ import {
 } from "../../infra/kysely-sync.js";
 import { redactSecrets } from "../../logging/redact.js";
 import { canonicalizePersistedUserMessageMedia } from "../../media/media-facts.js";
-import { readOpenClawAgentDatabaseOwnerEnvironment } from "../../state/openclaw-agent-db-lifecycle.js";
 import {
   deferOpenClawAgentPostCommitPublication,
   type OpenClawAgentDatabase,
@@ -263,12 +262,9 @@ export function scheduleTranscriptProjectionReconcile(
     return;
   }
   // Dirty state is durable: a missed post-commit kick is recovered by startup/search reconciliation.
-  const env = readOpenClawAgentDatabaseOwnerEnvironment(database);
-  deferOpenClawAgentPostCommitPublication(database, () =>
+  deferOpenClawAgentPostCommitPublication(database, (databaseOptions) =>
     startSessionTranscriptIndexReconcile({
-      agentId: database.agentId,
-      env,
-      path: database.path,
+      ...databaseOptions,
       preferredSessionId: sessionId,
     }),
   );

@@ -146,6 +146,7 @@ export function createAgentRunExecutionCleanup(params: {
   context: AgentTurnContext;
   resolvedSessionKey?: string;
   activeSessionAgentId: string;
+  onInputSettlementError: (error: unknown) => void;
 }) {
   const { prepared } = params;
   const state: {
@@ -202,9 +203,7 @@ export function createAgentRunExecutionCleanup(params: {
         cleanupFailure = { error };
         throw error;
       }
-      params.context.logGateway.warn(
-        `failed to settle pending agent input: ${formatForLog(error)}`,
-      );
+      params.onInputSettlementError(error);
       release();
     };
     let joined: void | Promise<void>;

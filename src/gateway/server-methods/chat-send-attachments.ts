@@ -84,15 +84,10 @@ async function prestageMediaPathOffloads(params: {
         fileName: ref.label,
         workspaceDir: path.dirname(ref.path),
       }));
-    const passThroughRefs: OffloadedRef[] = [];
-    const refsToStage: OffloadedRef[] = [];
-    for (const ref of mediaPathRefs) {
-      // Host-readable managed PDFs above the staging cap do not need a sandbox copy.
-      (ref.sizeBytes > SANDBOX_MEDIA_MAX_BYTES && isManagedInboundPdfOffloadRef(ref)
-        ? passThroughRefs
-        : refsToStage
-      ).push(ref);
-    }
+    // Host-readable managed PDFs above the staging cap do not need a sandbox copy.
+    const refsToStage = mediaPathRefs.filter(
+      (ref) => !(ref.sizeBytes > SANDBOX_MEDIA_MAX_BYTES && isManagedInboundPdfOffloadRef(ref)),
+    );
     if (refsToStage.length === 0) {
       return refsByManagedPath(mediaPathRefs);
     }
@@ -172,9 +167,6 @@ async function prestageMediaPathOffloads(params: {
         mimeType: stagedMedia[index]?.contentType ?? ref.mimeType,
       });
     });
-    for (const ref of passThroughRefs) {
-      resolvedByRef.set(ref, { path: ref.path, mimeType: ref.mimeType });
-    }
     return mediaPathRefs.map((ref) => {
       const resolved = resolvedByRef.get(ref) ?? { path: ref.path, mimeType: ref.mimeType };
       return {
@@ -252,6 +244,8 @@ export async function prepareChatSendAttachments(params: {
             log: context.logGateway,
             supportsImages: imageSupport.value ?? resolveSupportsImages,
             acceptNonImage: true,
+            signal: activeRunAbort.controller.signal,
+            assertCurrent: admission.assertWorkAdmissionCurrent,
           });
           // The parser owns MIME classification. An unresolved capability means no image was seen,
           // so post-processing must not trigger catalog discovery for a non-image attachment.
@@ -328,3 +322,8 @@ export async function prepareChatSendAttachments(params: {
     },
   };
 }
+
+export type PreparedChatSendAttachments = Extract<
+  Awaited<ReturnType<typeof prepareChatSendAttachments>>,
+  { ok: true }
+>["value"];

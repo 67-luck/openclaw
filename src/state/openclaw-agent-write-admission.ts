@@ -1,3 +1,8 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import {
+  readDatabasePathIdentitySync,
+  type DatabasePathIdentity,
+} from "../infra/sqlite-worker-identity.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import {
   runQueuedStoreWrite,
@@ -8,7 +13,10 @@ import {
   type StoreWriterTiming,
 } from "../shared/store-writer-queue.js";
 import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
-import { resolveOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
+import {
+  isIncognitoOpenClawAgentSqlitePath,
+  resolveOpenClawAgentSqlitePath,
+} from "./openclaw-agent-db.paths.js";
 
 // Native and SDK module graphs share the same queue and worker reservation.
 // A second queue would admit a foreground writer while reclamation owns SQLite.
@@ -22,37 +30,139 @@ const admission = resolveGlobalSingleton(
 
 export const SQLITE_SESSION_WRITER_QUEUES = admission.queues;
 
+type WriteTarget = {
+  pathname: string;
+  identity: DatabasePathIdentity;
+  assertCurrent(): void;
+};
+type WriteTargetScope = { target: WriteTarget; active: boolean; parent?: WriteTargetScope };
+const writeTargets = resolveGlobalSingleton(
+  Symbol.for("openclaw.agentDatabaseWriteTargets"),
+  () => new AsyncLocalStorage<WriteTargetScope>(),
+);
+
+function captureWriteTarget(options: OpenClawAgentDatabaseOptions): WriteTarget {
+  const pathname = resolveOpenClawAgentSqlitePath(options);
+  for (let scope = writeTargets.getStore(); scope; scope = scope.parent) {
+    if (scope.active && scope.target.pathname === pathname) {
+      scope.target.assertCurrent();
+      return scope.target;
+    }
+  }
+  const volatile = isIncognitoOpenClawAgentSqlitePath(pathname, options);
+  const identity: DatabasePathIdentity = volatile
+    ? { key: `path:${pathname}`, canonicalPath: pathname }
+    : readDatabasePathIdentitySync(pathname);
+  let original: WriteTarget | undefined;
+  for (let scope = writeTargets.getStore(); scope; scope = scope.parent) {
+    if (scope.active && scope.target.identity.canonicalPath === identity.canonicalPath) {
+      original = scope.target;
+      break;
+    }
+  }
+  return {
+    pathname,
+    identity: original?.identity ?? identity,
+    assertCurrent() {
+      original?.assertCurrent();
+      if (volatile) {
+        return;
+      }
+      const current = readDatabasePathIdentitySync(pathname);
+      if (
+        current.canonicalPath !== identity.canonicalPath ||
+        (identity.key.startsWith("file:") &&
+          (current.key !== identity.key || current.birthtime !== identity.birthtime))
+      ) {
+        throw new Error("Agent database target changed before write admission");
+      }
+    },
+  };
+}
+
+function retainHostTarget(
+  target: WriteTarget,
+  host: ReturnType<typeof captureStoreWriterHostExecution>,
+) {
+  return {
+    run<T>(run: () => T): T {
+      return host.run(() => {
+        target.assertCurrent();
+        return run();
+      });
+    },
+    beginNative() {
+      target.assertCurrent();
+      const native = host.beginNative();
+      return {
+        ...native,
+        runHostStep<T>(this: void, run: () => T): T {
+          return native.runHostStep(() => {
+            target.assertCurrent();
+            return run();
+          });
+        },
+      };
+    },
+  };
+}
+
 /** Capability capture and ready reentry share the ordinary canonical store lane. */
 export function captureOpenClawAgentHostExecution(options: OpenClawAgentDatabaseOptions) {
-  return captureStoreWriterHostExecution(admission.queues, resolveOpenClawAgentSqlitePath(options));
+  const target = captureWriteTarget(options);
+  target.assertCurrent();
+  return retainHostTarget(
+    target,
+    captureStoreWriterHostExecution(admission.queues, target.identity.canonicalPath),
+  );
 }
 
 export function captureActiveOpenClawAgentHostExecution(options: OpenClawAgentDatabaseOptions) {
-  return captureActiveStoreWriterHostExecution(
+  const target = captureWriteTarget(options);
+  const host = captureActiveStoreWriterHostExecution(
     admission.queues,
-    resolveOpenClawAgentSqlitePath(options),
+    target.identity.canonicalPath,
   );
+  if (!host) {
+    return undefined;
+  }
+  target.assertCurrent();
+  return retainHostTarget(target, host);
 }
 
 export function runReadyOpenClawAgentWriteAdmission<T>(
   options: OpenClawAgentDatabaseOptions,
   fn: () => T,
 ): T {
-  return runReadyStoreWrite({
-    queues: admission.queues,
-    storePath: resolveOpenClawAgentSqlitePath(options),
-    fn,
-  });
+  const target = captureWriteTarget(options);
+  const scope = { target, active: true, parent: writeTargets.getStore() };
+  // This scope carries the original target, not writer authority. The shared
+  // queue still owns all active, native, and detached-continuation checks.
+  try {
+    return runReadyStoreWrite({
+      queues: admission.queues,
+      storePath: target.identity.canonicalPath,
+      fn: () =>
+        writeTargets.run(scope, () => {
+          target.assertCurrent();
+          return fn();
+        }),
+    });
+  } finally {
+    scope.active = false;
+  }
 }
 
 export function runOpenClawAgentWriteAdmission<T>(
   options: OpenClawAgentDatabaseOptions,
-  run: () => Promise<T> | T,
+  run: (identity: DatabasePathIdentity, assertCurrent: () => void) => Promise<T> | T,
   reentrant = false,
   timing?: StoreWriterTiming,
   signal?: AbortSignal,
 ): Promise<T> {
-  const storePath = resolveOpenClawAgentSqlitePath(options);
+  const target = captureWriteTarget(options);
+  const { identity, assertCurrent } = target;
+  const storePath = identity.canonicalPath;
   return runQueuedStoreWrite({
     queues: admission.queues,
     storePath,
@@ -60,7 +170,15 @@ export function runOpenClawAgentWriteAdmission<T>(
     // Worker callbacks inherit their parent's async context, but not its native
     // writer lock. Their foreground writes must queue, never reenter that owner.
     reentrant: reentrant && !admission.workers.has(storePath),
-    fn: async () => await run(),
+    fn: async () => {
+      assertCurrent();
+      const scope = { target, active: true, parent: writeTargets.getStore() };
+      try {
+        return await writeTargets.run(scope, () => run(identity, assertCurrent));
+      } finally {
+        scope.active = false;
+      }
+    },
     timing,
     signal,
   });
@@ -73,10 +191,9 @@ export function runOpenClawAgentWorkerWrite<T>(
   timing?: StoreWriterTiming,
   signal?: AbortSignal,
 ): Promise<T> {
-  const storePath = resolveOpenClawAgentSqlitePath(options);
   return runOpenClawAgentWriteAdmission(
     options,
-    async () => {
+    async ({ canonicalPath: storePath }) => {
       const owner = {};
       admission.workers.set(storePath, owner);
       try {

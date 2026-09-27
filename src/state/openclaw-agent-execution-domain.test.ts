@@ -13,6 +13,11 @@ import {
   runSqliteImmediateTransactionSync,
 } from "../infra/sqlite-transaction.js";
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
+import {
+  createSqliteWorkerOperationAdmission,
+  takeSqliteWorkerOperationAdmissionAttachment,
+  withSqliteWorkerOperationAdmission,
+} from "../infra/sqlite-worker-operation-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createAgentDatabaseCommandOwner } from "./openclaw-agent-execution-commands.js";
 import type { AgentDatabaseOperations } from "./openclaw-agent-execution-contract.js";
@@ -27,6 +32,7 @@ const fixture = {
   staged: [] as string[],
   order: [] as string[],
   prepareRead: undefined as (() => Promise<void>) | undefined,
+  prepareDomain: undefined as ((take: () => unknown) => void) | undefined,
 };
 const moduleUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sessionManagerMetadata).href;
 
@@ -37,11 +43,15 @@ vi.doMock(moduleUrl, async () => {
   const postCommit = await import("../infra/sqlite-post-commit.js");
   const transaction = await import("../infra/sqlite-transaction.js");
   return {
-    bindSqliteWorkerBackend(_input: unknown, context: { database: DatabaseSync }) {
+    bindSqliteWorkerBackend(
+      _input: unknown,
+      context: { database: DatabaseSync; takePreparation(): unknown },
+    ) {
       fixture.order.push("bind");
       let id: string | undefined;
       return {
         prepare(command: { type: string }) {
+          fixture.prepareDomain?.(() => context.takePreparation());
           if (command.type === "fixture.read") {
             return fixture.prepareRead?.();
           }
@@ -99,6 +109,7 @@ vi.doMock(moduleUrl, async () => {
 
 afterEach(() => {
   fixture.prepareRead = undefined;
+  fixture.prepareDomain = undefined;
   vi.restoreAllMocks();
 });
 
@@ -114,6 +125,10 @@ it.each(["settlement", "close"] as const)(
       databasePath: ":memory:",
       getPreparedDatabase: () => db,
       assertCurrent: () => db,
+      assertCleanupCurrent() {
+        expect(db.isOpen).toBe(true);
+      },
+      takePreparation: () => undefined,
       admit() {},
     });
     try {
@@ -226,6 +241,10 @@ it.each(["current", "revoked"] as const)(
       databasePath: ":memory:",
       getPreparedDatabase,
       assertCurrent,
+      assertCleanupCurrent() {
+        expect(db.isOpen).toBe(true);
+      },
+      takePreparation: () => undefined,
       admit,
     });
     const command = (id: string) => ({
@@ -323,6 +342,10 @@ it("retains admission for separate domain bind, execute and close", async () => 
     databasePath: ":memory:",
     getPreparedDatabase,
     assertCurrent,
+    assertCleanupCurrent() {
+      expect(db.isOpen).toBe(true);
+    },
+    takePreparation: () => undefined,
     admit() {},
   });
   const input = { id: "separate", moduleUrl, input: undefined };
@@ -375,6 +398,10 @@ it("refuses domain preparation without a retained database before binding", asyn
     databasePath: ":memory:",
     getPreparedDatabase,
     assertCurrent,
+    assertCleanupCurrent() {
+      throw failure;
+    },
+    takePreparation: () => undefined,
     admit() {},
   });
   try {
@@ -408,6 +435,7 @@ it.each(["unknown", "unprepared"] as const)(
       options: { agentId: "main", path: ":memory:" },
       getPreparedDatabase: forbidden,
       assertCurrent: forbidden,
+      assertCleanupCurrent: forbidden,
       admit: forbidden,
     });
     const command =
@@ -434,3 +462,183 @@ it.each(["unknown", "unprepared"] as const)(
     }
   },
 );
+
+it("retains execution and consume-once domain facts across preparation failure and the next job", async () => {
+  const db = new (requireNodeSqlite().DatabaseSync)(":memory:");
+  db.exec("CREATE TABLE entries (id TEXT PRIMARY KEY)");
+  const forbidden = (): never => {
+    throw new Error("Unexpected WAL maintenance");
+  };
+  const database = {
+    agentId: "main",
+    path: ":memory:",
+    db,
+    walMaintenance: { checkpoint: forbidden, reclaimFreePages: forbidden, close: forbidden },
+  };
+  const owner = createAgentDatabaseCommandOwner({
+    options: database,
+    getPreparedDatabase: () => db,
+    assertCurrent: () => database,
+    assertCleanupCurrent: () => expect(db.isOpen).toBe(true),
+    admit() {},
+  });
+  const failure = new Error("Original asynchronous preparation failed");
+  try {
+    const missingOwner = createSqliteWorkerOperationAdmission(() => {}, { domain: "orphan" });
+    try {
+      withSqliteWorkerOperationAdmission({ port: missingOwner.port }, () => {
+        expect(() => owner.beginRequest()).toThrow("requires its request-local preparation facts");
+        expect(owner.hasRequest()).toBe(false);
+        expect(() => takeSqliteWorkerOperationAdmissionAttachment()).toThrow(
+          "attachment is unavailable",
+        );
+      });
+    } finally {
+      missingOwner.finish();
+    }
+    for (const [index, startupJournal] of [false, true, false].entries()) {
+      const payload = { operationId: `request-${index}` };
+      const domain = index === 2 ? undefined : payload;
+      const admission = createSqliteWorkerOperationAdmission(() => {}, {
+        kind: "agent-execution",
+        startupJournal,
+        ...(domain === undefined ? {} : { domain }),
+      });
+      fixture.prepareDomain = (take) => {
+        expect(take()).toEqual(domain);
+        expect(() => take()).toThrow("domain preparation is unavailable");
+      };
+      fixture.prepareRead = startupJournal
+        ? async () => {
+            throw failure;
+          }
+        : undefined;
+      const command = {
+        type: "database.domain.run" as const,
+        input: {
+          id: payload.operationId,
+          moduleUrl,
+          input: undefined,
+          command: { type: "fixture.read", input: { id: payload.operationId } },
+        },
+      };
+      try {
+        withSqliteWorkerOperationAdmission({ port: admission.port }, () => {
+          owner.beginRequest();
+          expect(() => takeSqliteWorkerOperationAdmissionAttachment()).toThrow(
+            "attachment is unavailable",
+          );
+        });
+        expect(owner.startupJournal()).toBe(startupJournal);
+        if (startupJournal) {
+          await expect(owner.prepare(command)).rejects.toBe(failure);
+        } else {
+          await owner.prepare(command);
+          expect(owner.execute(command)).toEqual([]);
+        }
+        owner.assertSettled();
+      } finally {
+        owner.cleanupPublication(payload.operationId);
+        owner.endRequest();
+        admission.finish();
+      }
+      expect(owner.hasRequest()).toBe(false);
+      expect(() => owner.startupJournal()).toThrow("lost its request-local");
+    }
+  } finally {
+    owner.close();
+    db.close();
+  }
+});
+
+it("restores parent request facts after a nested child's SQL and domain preparation roll back", async () => {
+  fixture.phase = "settlement";
+  fixture.staged.length = 0;
+  const db = new (requireNodeSqlite().DatabaseSync)(":memory:");
+  db.exec("CREATE TABLE entries (id TEXT PRIMARY KEY)");
+  const forbidden = (): never => {
+    throw new Error("Unexpected WAL maintenance");
+  };
+  const database = {
+    agentId: "main",
+    path: ":memory:",
+    db,
+    walMaintenance: { checkpoint: forbidden, reclaimFreePages: forbidden, close: forbidden },
+  };
+  const owner = createAgentDatabaseCommandOwner({
+    options: database,
+    getPreparedDatabase: () => db,
+    assertCurrent: () => database,
+    assertCleanupCurrent: () => expect(db.isOpen).toBe(true),
+    admit() {},
+  });
+  const parent = createSqliteWorkerOperationAdmission(() => {}, {
+    kind: "agent-execution",
+    startupJournal: true,
+    domain: "parent",
+  });
+  const child = createSqliteWorkerOperationAdmission(() => {}, {
+    kind: "agent-execution",
+    startupJournal: false,
+    domain: "child",
+  });
+  let parentTake: (() => unknown) | undefined;
+  const command = {
+    type: "database.domain.run" as const,
+    input: {
+      id: "parent",
+      moduleUrl,
+      input: undefined,
+      command: { type: "fixture.read", input: { id: "parent" } },
+    },
+  };
+  try {
+    await prepareAgentDatabaseScopedDomains();
+    withSqliteWorkerOperationAdmission({ port: parent.port }, () => owner.beginRequest());
+    fixture.prepareDomain = (take) => {
+      parentTake = take;
+      expect(take()).toBe("parent");
+    };
+    await owner.prepare(command);
+    fixture.prepareDomain = (take) => {
+      expect(owner.startupJournal()).toBe(false);
+      expect(take()).toBe("child");
+      expect(() => take()).toThrow("domain preparation is unavailable");
+    };
+    withSqlitePostCommitPublications(db, () =>
+      runSqliteDeferredTransactionSync(db, () => {
+        withSqliteWorkerOperationAdmission({ port: child.port }, () => {
+          expect(() =>
+            owner.executeScoped(
+              {
+                type: "database.domain.run",
+                input: {
+                  id: "child",
+                  moduleUrl,
+                  input: undefined,
+                  command: { type: "fixture.write", input: { id: "failed" } },
+                },
+              },
+              (retained) => expect(retained).toBe(db),
+            ),
+          ).toThrow(fixture.failure);
+          expect(() => takeSqliteWorkerOperationAdmissionAttachment()).toThrow(
+            "attachment is unavailable",
+          );
+        });
+        expect(owner.startupJournal()).toBe(true);
+        expect(parentTake).toBeTypeOf("function");
+        expect(() => parentTake!()).toThrow("domain preparation is unavailable");
+        expect(owner.execute(command)).toEqual([]);
+      }),
+    );
+    expect(fixture.staged).toEqual([]);
+    owner.assertSettled();
+  } finally {
+    owner.endRequest();
+    owner.close();
+    child.finish();
+    parent.finish();
+    db.close();
+  }
+});
