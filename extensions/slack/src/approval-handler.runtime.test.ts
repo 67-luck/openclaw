@@ -593,7 +593,7 @@ describe("slackApprovalNativeRuntime", () => {
       installationIdentity: { kind: "workspace", teamId: "T123ABC45" },
       readConfig: () => cfg,
       assertCurrent: () => {},
-    } as never;
+    };
     const deliver = async (
       surface: "origin" | "approver-dm",
       deliveryContext: Record<string, unknown> = context,
