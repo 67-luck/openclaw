@@ -1287,6 +1287,7 @@ describe("mirrorCodexAppServerTranscript", () => {
     );
 
     expect(mirrorOutcome.assistantTranscriptOwned).toBe(true);
+    expect(terminalEvent?.id).toEqual(expect.any(String));
     expect(mirrorOutcome.terminalAnchor?.entryId).toBe(terminalEvent?.id);
   });
 
@@ -1307,6 +1308,7 @@ describe("mirrorCodexAppServerTranscript", () => {
     );
 
     expect(mirrorOutcome.assistantTranscriptOwned).toBe(false);
+    expect(terminalEvent?.id).toEqual(expect.any(String));
     expect(mirrorOutcome.terminalAnchor?.entryId).toBe(terminalEvent?.id);
   });
 
