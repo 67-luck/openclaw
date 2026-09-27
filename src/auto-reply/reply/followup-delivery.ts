@@ -3,21 +3,23 @@ import { hasOutboundReplyContent } from "openclaw/plugin-sdk/reply-payload";
 import {
   hasCommittedSourceReplyDeliveryEvidence,
   hasCompletedSourceReplyDeliveryEvidence,
+  hasVisibleCommittedMessagingToolDeliveryEvidence,
   resolveExplicitFinalSourceReplyDeliveryEvidence,
   resolveSourceReplyDelivery,
-  hasVisibleCommittedMessagingToolDeliveryEvidence,
 } from "../../agents/embedded-agent-runner/delivery-evidence.js";
-import { resolveReplyCompletion } from "../../agents/reply-completion.js";
+import {
+  isSyntheticSourceReplyTurn,
+  resolveReplyCompletion,
+} from "../../agents/reply-completion.js";
 import { buildAgentRuntimeDeliveryPlan } from "../../agents/runtime-plan/build.js";
 import { logVerbose } from "../../globals.js";
 import { defaultRuntime } from "../../runtime.js";
-import { sessionDeliveryChannel } from "../../utils/delivery-context.shared.js";
+import { sessionDeliveryChannel } from "../../utils/delivery-context.read.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import {
   getReplyPayloadMetadata,
   isReplyPayloadTerminalContent,
   markReplyPayloadForSourceSuppressionDelivery,
-  setReplyPayloadMetadata,
 } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import {
@@ -41,7 +43,6 @@ import { enqueueFollowupRun, resolveQueueSettings, type FollowupRun } from "./qu
 import type { ReplyDispatchKind } from "./reply-dispatcher.types.js";
 import { isRoutableChannel, routeReply } from "./route-reply.js";
 import {
-  isSyntheticSourceReplyTurn,
   resolveSourceReplyExpectation,
   resolveSourceReplyVisibilityPolicy,
 } from "./source-reply-delivery-mode.js";
@@ -349,27 +350,6 @@ export async function resolveFollowupDeliveryDecision(params: {
     );
     if (payloads.length === 0) {
       return { kind: "suppress", reason: "message-tool-only" };
-    }
-  }
-  if (result.meta?.yielded === true && result.acceptedSessionSpawns?.length) {
-    const statusPayload = payloads.find(
-      (payload) => getReplyPayloadMetadata(payload)?.continuationStatus === true,
-    );
-    const requesterSessionKey =
-      turn.session.kind === "session" ? turn.session.key : turn.queued.run.sessionKey;
-    if (statusPayload && requesterSessionKey) {
-      // Only accepted waiting replies need the task presentation runtime.
-      const { createTaskProgressContinuation } =
-        await import("../../tasks/task-progress-requester.js");
-      const progressContinuation = await createTaskProgressContinuation({
-        requesterSessionKey,
-        requesterAgentId: turn.queued.run.agentId,
-        requesterTurnRunId: execution.runId,
-        acceptedSessionSpawns: result.acceptedSessionSpawns,
-      });
-      if (progressContinuation) {
-        setReplyPayloadMetadata(statusPayload, { progressContinuation });
-      }
     }
   }
   return payloads.length > 0

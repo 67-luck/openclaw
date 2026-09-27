@@ -1,3 +1,4 @@
+import { asNonArrayRecord } from "@openclaw/normalization-core/record-coerce";
 import type {
   SessionSuggestionEvent,
   SessionTypingEvent,
@@ -12,20 +13,17 @@ import {
 } from "../../app/question-prompt.ts";
 import { readPresenceEntries } from "../../app/user-profile.ts";
 import { BROWSER_ANNOTATION_EVENT } from "../../components/browser/browser-annotation.ts";
+import {
+  WIDGET_PROMPT_EVENT,
+  type WidgetPromptEventDetail,
+} from "../../components/mcp-app-security.ts";
 import { matchesShortcutCombo } from "../../lib/keyboard-shortcut-contract.ts";
 import { parseCatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
 import { resolveSessionKey } from "../../lib/sessions/index.ts";
-import {
-  areUiSessionKeysEquivalent,
-  parseAgentSessionKey,
-} from "../../lib/sessions/session-key.ts";
+import { parseAgentSessionKey } from "../../lib/sessions/session-key.ts";
 import * as chatAvatars from "./chat-avatar.ts";
 import { CHAT_ROUTE_READY_EVENT } from "./chat-history-events.ts";
-import {
-  chatHistoryRequests,
-  retireInitialChatSnapshot,
-  type InitialChatSnapshotHydration,
-} from "./chat-history-state.ts";
+import { retireInitialChatSnapshot } from "./chat-history-state.ts";
 import { syncSelectedSessionMessageSubscription } from "./chat-history-subscription.ts";
 import {
   type ChatAttachmentGatewayOwner,
@@ -41,7 +39,7 @@ import {
 } from "./chat-pane-browser-annotation.ts";
 import { SIDEBAR_PANEL_SHORTCUTS } from "./chat-pane-panel-shortcuts.ts";
 import { openPreferredSidebarPanel, releaseAttachmentWorkspaceOwner } from "./chat-pane-rails.ts";
-import { ChatPaneSessionCreation } from "./chat-pane-session-creation.ts";
+import { ChatPaneSessionObservation } from "./chat-pane-session-observation.ts";
 import { ChatPaneSessionPanelToggleController } from "./chat-pane-session-panel-toggle.ts";
 import {
   CHAT_COMPOSER_TEXTAREA_SELECTOR,
@@ -67,21 +65,14 @@ import {
 import { resetChatViewState } from "./chat-view-state.ts";
 import { publishChatWorkContext } from "./chat-work-context.ts";
 import { dismissConfirmedActionPopovers } from "./components/chat-message.ts";
-import { resetTaskDetail } from "./components/chat-task-detail-state.ts";
-import { WIDGET_PROMPT_EVENT, type WidgetPromptEventDetail } from "./components/chat-tool-cards.ts";
 import { CHAT_COMPOSER_DRAFT_STORAGE_ERROR } from "./composer-persistence.ts";
 import { exportChatMarkdown } from "./export.ts";
 import { admitChatSubmission } from "./history-merge.ts";
 import { admitInitialTurnHandoff, subscribeInitialTurnHandoff } from "./initial-turn-handoff.ts";
-import {
-  applyChatCacheSnapshot,
-  cacheChatSessionSnapshot,
-  readChatSessionSnapshot,
-  resolveChatSnapshotKey,
-} from "./session-message-cache.ts";
+import { applyChatCacheSnapshot, readChatSessionSnapshot } from "./session-message-cache.ts";
 import { closeSlot, isSidebarSlotVisible } from "./sidebar-layout.ts";
 
-export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
+export abstract class ChatPaneLifecycle extends ChatPaneSessionObservation {
   private readonly sessionPanelToggles = new ChatPaneSessionPanelToggleController({
     current: () => {
       const state = this.state;
@@ -108,59 +99,6 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     if (this.selected && this.presented) {
       this.composerPresentation?.claim();
     }
-  }
-
-  private hydrateStoredChatSnapshot(
-    state: NonNullable<ChatPaneLifecycle["state"]>,
-    sessionKey: string,
-  ): void {
-    const store = this.sessionSnapshotStore;
-    if (!store) {
-      return;
-    }
-    const cacheKey = resolveChatSnapshotKey(state, { sessionKey });
-    const requests = chatHistoryRequests(state);
-    let startedBeforeReady = this.context.gateway.snapshot.phase !== "connected";
-    let readyAt: number | undefined;
-    const reading = store.read(cacheKey, (prewarmReadyAt) => {
-      startedBeforeReady = true;
-      readyAt = prewarmReadyAt;
-    });
-    const hydration: InitialChatSnapshotHydration = {
-      sessionKey,
-      startedBeforeReady,
-      readyAt,
-      promise: reading
-        .then((snapshot) => {
-          if (
-            !snapshot ||
-            requests.initialSnapshotHydration !== hydration ||
-            this.state !== state ||
-            !areUiSessionKeysEquivalent(state.sessionKey, sessionKey) ||
-            readChatSessionSnapshot(state.chatMessagesBySession, state, { sessionKey })
-          ) {
-            return;
-          }
-          // The memory miss fences network replacement; the pane projection merges
-          // live and pending rows that arrived while IndexedDB was pending.
-          applyChatCacheSnapshot(state, snapshot);
-          const mergedSnapshot = { ...snapshot, messages: state.chatMessages };
-          cacheChatSessionSnapshot(
-            state.chatMessagesBySession,
-            state,
-            { sessionKey },
-            mergedSnapshot,
-          );
-          state.requestUpdate?.();
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          if (requests.initialSnapshotHydration === hydration && !hydration.wait) {
-            delete requests.initialSnapshotHydration;
-          }
-        }),
-    };
-    requests.initialSnapshotHydration = hydration;
   }
 
   public discardStagedAttachments(): void {
@@ -333,7 +271,6 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     );
     pageState.chatMetadataIsPresented = () =>
       this.presented && document.visibilityState !== "hidden";
-    pageState.chatSecondaryReadsReady = (explicit) => this.secondarySessionReadsReady(explicit);
     const refreshPresentedReads = () => {
       this.requestUpdate();
       if (pageState.chatMetadataIsPresented?.()) {
@@ -356,6 +293,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     // Task tabs can precede main chat in DOM order; viewport reads and commands
     // must resolve through the same transcript owner.
     pageState.chatIsProgrammaticScroll = () => this.transcript.isProgrammaticScroll;
+    pageState.chatIsManualScroll = () => this.transcript.isManualScroll;
     pageState.chatIsMaintenanceScroll = () => this.transcript.isMaintenanceScroll;
     pageState.chatScrollElement = () => this.transcript.scrollElement;
     pageState.chatScrollToEnd = (options) => this.transcript.scrollToEnd(options);
@@ -401,6 +339,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
       }
     }
     chatState.attach(pageState);
+    chatState.addCleanup(() => this.retireSessionObservation());
     chatState.addCleanup(
       subscribeInitialTurnHandoff(() => {
         if (admitInitialTurnHandoff(pageState, pageState.sessionKey)) {
@@ -413,10 +352,10 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     chatState.addCleanup(
       this.context.agentIdentity.subscribe(() => void pageState.loadAssistantIdentity()),
     );
-    chatState.restoreComposer({ preserveCurrent: true });
+    chatState.composerPersistence.restore({ preserveCurrent: true });
     const sessionHandoff = this.takeSessionHandoff(pageState.sessionKey);
     restorePaneStagedAttachments(this.context, this.paneId, pageState, mountGatewayOwner);
-    chatState.startComposerPersistence();
+    chatState.composerPersistence.start();
     if (sessionHandoff) {
       this.applySessionHandoff(pageState.sessionKey, sessionHandoff);
     }
@@ -461,6 +400,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
       this.context.agentSelection.subscribe((next) => {
         const previousAgentId = this.state?.assistantAgentId;
         applySelectedChatAgent(this.state, this.agentId ?? next.selectedId);
+        this.synchronizeSessionObservation();
         const agentChanged = this.state?.assistantAgentId !== previousAgentId;
         if (agentChanged) {
           this.swarmHydrator?.dispose();
@@ -480,10 +420,24 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     chatState.addCleanup(
       this.context.gateway.subscribeEvents((event) => {
         const state = this.state;
+        if (
+          state &&
+          event.event === "sessions.changed" &&
+          asNonArrayRecord(event.payload).reason === "sharing"
+        ) {
+          // Revoked readers receive only a redacted catalog invalidation. Retire
+          // preview admission before the roster refresh can publish access loss.
+          state.mediaPolicyEpoch = (state.mediaPolicyEpoch ?? 0) + 1;
+          state.requestUpdate?.();
+        }
+        if (event.event === "sessions.changed" || event.event === "session.message") {
+          return;
+        }
         if (event.event === "presence") {
           const hadMultipleIdentities = this.hasMultipleIdentities();
           const presence = readPresenceEntries(event.payload);
           this.presencePayload = presence ? { presence } : undefined;
+          this.pruneTypingActors();
           if (!this.hasMultipleIdentities()) {
             this.resetSessionSuggestions();
             this.clearTypingActors();
@@ -510,10 +464,11 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
           if (event.event === "session.typing" && event.payload) {
             this.handleSessionTypingEvent(event.payload as SessionTypingEvent);
           }
-          if (event.event === "session.message") {
-            this.clearTypingActorForSessionMessage(event.payload);
-          }
           handlePageGatewayEvent(state, event, () => this.presented);
+          if (event.event === "node.runnerInventory.changed") {
+            this.activeSessionResources.invalidate();
+            this.requestUpdate();
+          }
         }
       }),
     );
@@ -530,12 +485,14 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
       owner: () => this.stagedAttachmentGatewayOwner,
       region: () => this.inputRegion,
       presented: () => this.selected && this.presented,
-      pause: () => this.chatState.pauseComposerPersistence(),
+      pause: () => this.chatState.composerPersistence.stop(),
+      takeAttachmentReads: () => this.chatState.takeAttachmentReads(),
+      adoptAttachmentReads: (reads) => this.chatState.adoptAttachmentReads(reads, pageState),
       resume: (restore) => {
         if (restore) {
-          this.chatState.restoreComposer();
+          this.chatState.composerPersistence.restore();
         }
-        this.chatState.startComposerPersistence();
+        this.chatState.composerPersistence.start();
       },
     });
     this.composerPresentation = composerPresentation;
@@ -573,6 +530,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
         if (nextAgentId) {
           applyChatAgentOwnerTransition(this.state, nextAgentId);
         }
+        this.synchronizeSessionObservation();
         // A pane routed straight onto the created session never runs the switch
         // path, so its one-shot handoffs would expire unclaimed: the rejected turn
         // would vanish instead of offering a retry, and the accepted prompt would
@@ -634,6 +592,16 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     const board = this.resolveBoardView();
     this.syncRetainedBoardSession(board);
     this.sessionPanelToggles.flush();
+    this.activeSessionResources.syncPane({
+      state: () => this.state,
+      observation: () => this.resourceSessionObservation(),
+      gateway: this.context.gateway.snapshot,
+      isConnected: () => this.isConnected,
+      isPresented: () => this.presented && this.visuallyPresented,
+      commit: (layout, automaticResource) =>
+        this.commitSidebarLayout(layout, { persist: false, automaticResource }),
+      requestUpdate: () => this.requestUpdate(),
+    });
     if (this.state) {
       const layout = this.initializeBrowserSidebarLayout(this.state.sidebarLayout);
       if (layout !== this.state.sidebarLayout) {
@@ -656,13 +624,13 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
   }
 
   override disconnectedCallback() {
+    this.activeSessionResources.sync(null);
     this.syncSessionCompanionPresentation(false);
     this.composerPresentation?.dispose();
     this.composerPresentation = undefined;
     if (this.state) {
       cancelChatModelRecovery(this.state);
       retireInitialChatSnapshot(this.state);
-      resetTaskDetail(this.state);
       chatAvatars.invalidateChatAvatarCache(this.state);
       retireChatMetadataRequests(this.state);
       if (this.suppressStagedAttachmentHandoffOnDisconnect) {
@@ -675,7 +643,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
           this.paneId,
           this.state,
           this.stagedAttachmentGatewayOwner,
-          this.chatState.composerDraftRevision,
+          this.chatState.composerPersistence.draftRevision,
         );
       }
     }

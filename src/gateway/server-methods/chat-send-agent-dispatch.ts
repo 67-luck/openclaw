@@ -171,6 +171,8 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     hasCronCreatorAuthority: cronCreatorAuthority !== undefined,
     suppressReplies: progressRefresh,
     retainWorkAdmission: retainGatewayWorkAdmission,
+    armOperatorRunCancellation: admission.armOperatorRunCancellation,
+    retireOperatorRunCancellation: admission.retireOperatorRunCancellation,
   });
   let acceptedMessageInjection = false;
   const classifyDispatchFailure = (error: unknown) =>
@@ -316,6 +318,8 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                   ? { admittedSessionSettings: admission.admittedSessionSettings }
                   : {}),
                 runId: clientRunId,
+                operatorAuthority: admission.operatorAuthority,
+                providerReviewAcknowledgment: request.providerReviewAcknowledgment,
                 dashboardReadAdmission,
                 skillWorkshopProposalRevision,
                 skillLibraryAuthoring,
@@ -377,11 +381,12 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                 onAgentRunStart: (runId, _identity, options) => {
                   replyDispatchRun = options;
                   if (activeRunAbort.markExecutionStarted()) {
-                    emitSessionsChanged(context, {
-                      sessionKey,
-                      agentId,
-                      reason: "agent.run.started",
-                    });
+                    admission.armOperatorRunCancellation();
+                    emitSessionsChanged(
+                      context,
+                      { sessionKey, agentId, reason: "agent.run.started" },
+                      { accessChanged: false },
+                    );
                   }
                   agentRunStarted = replyDispatch.captureAgentTranscriptStart(runId);
                   emitServerTiming(
@@ -663,7 +668,11 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     } finally {
       await dispatchErrorLifecycle.finalize();
       // Terminal lifecycle can precede owner release; publish exact liveness after cleanup.
-      emitSessionsChanged(context, { sessionKey, agentId, reason: "agent.input.settled" });
+      emitSessionsChanged(
+        context,
+        { sessionKey, agentId, reason: "agent.input.settled" },
+        { accessChanged: false },
+      );
       if (userTurnRecorder.isBlocked() && attachments.offloadedRefs.length > 0) {
         // A blocked turn persists only the redacted block reason — no media
         // markers — so the prepared inbound media stays unreferenced forever
@@ -683,7 +692,6 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     context,
     request,
     sessionKey,
-    sessionLoadOptions: session.sessionLoadOptions,
     storePath: session.storePath,
   });
 }

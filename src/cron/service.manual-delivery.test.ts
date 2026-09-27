@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   captureActivePluginRegistrySnapshot,
   restoreActivePluginRegistrySnapshot,
   setActivePluginRegistry,
 } from "../plugins/runtime.js";
-import { resetTaskRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../test-utils/channel-plugins.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { resolveCronDeliveryPlan } from "./delivery-plan.js";
 import { dispatchCronDelivery } from "./isolated-agent/delivery-dispatch.js";
@@ -41,14 +42,15 @@ describe("manual cron delivery occurrence", () => {
               },
             ]),
           );
-          resetTaskRegistryForTests({ persist: false });
           let now = Date.now() - FOUR_HOURS_MS;
           const cfg: OpenClawConfig = {
             agents: { entries: { main: { workspace: state.workspaceDir } } },
           };
           await state.writeConfig(cfg);
           const events: CronEvent[] = [];
+          const finished = createDeferred<CronEvent>();
           const cron = new CronService({
+            scheduler: createTestGatewayScheduler(),
             storePath: state.path("cron", "jobs.json"),
             cronEnabled: false,
             defaultAgentId: "main",
@@ -56,7 +58,12 @@ describe("manual cron delivery occurrence", () => {
             log: createNoopLogger(),
             enqueueSystemEvent: vi.fn(),
             requestHeartbeat: vi.fn(),
-            onEvent: (event) => events.push(event),
+            onEvent: (event) => {
+              events.push(event);
+              if (event.action === "finished") {
+                finished.resolve(event);
+              }
+            },
             runIsolatedAgentJob: async ({ job, abortSignal }) => {
               const text = "Fresh result from this invocation.";
               const sessionKey = `agent:main:cron:${job.id}`;
@@ -121,9 +128,7 @@ describe("manual cron delivery occurrence", () => {
                 ok: true,
                 enqueued: true,
               });
-              await vi.waitFor(() => {
-                expect(events.some((event) => event.action === "finished")).toBe(true);
-              });
+              expect(await finished.promise).toMatchObject({ jobId: job.id });
               await cron.status();
             } else {
               await expect(cron.run(job.id, mode)).resolves.toMatchObject({ ok: true, ran: true });
@@ -143,7 +148,6 @@ describe("manual cron delivery occurrence", () => {
             }
           } finally {
             cron.stop();
-            resetTaskRegistryForTests({ persist: false });
             restoreActivePluginRegistrySnapshot(registry);
           }
         },

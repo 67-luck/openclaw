@@ -9,8 +9,10 @@ import {
 import { collectRegistryInvocationInstances } from "../plugins/plugin-invocation-scope.js";
 import { getPluginRegistryInspectionResources } from "../plugins/registry-inspection-resources.js";
 import {
+  bindPluginRegistryLifetime,
   capturePluginRegistryLifecycleEpoch,
   capturePluginRegistryLifecycleSignal,
+  getPluginRegistryLifetime,
   getPluginRegistryResourceOwner,
   markPluginRegistryActive,
   isPluginRegistryRetired,
@@ -24,6 +26,7 @@ import { disposePluginRegistryInstances } from "../plugins/runtime.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import { PreparedModelRuntimePluginGenerationRetiredError } from "./prepared-model-runtime.errors.js";
 import {
   registerPreparedPluginRetirement,
   retirePreparedModelRuntimeGeneration,
@@ -42,17 +45,13 @@ const log = createSubsystemLogger("agents/prepared-model-runtime");
 type Lifetime = ReturnType<typeof createLifetime>;
 // Source and compiled consumers can share the same generation and registry objects.
 // Share only cleanup ownership; model/auth snapshots keep their existing module identity.
-const { generations, registries, active, retirements, publications } = resolveGlobalSingleton(
+const { generations, active, retirements, publications } = resolveGlobalSingleton(
   Symbol.for("openclaw.preparedPluginLifetimes"),
   () => ({
     generations: new WeakMap<PreparedModelRuntimePluginGeneration, Lifetime>(),
-    registries: new WeakMap<PluginRegistry, Lifetime>(),
     active: new Set<Lifetime>(),
     retirements: new Set<Promise<void>>(),
-    publications: new WeakMap<
-      object,
-      { generation: PreparedModelRuntimePluginGeneration; release: () => Promise<void> }
-    >(),
+    publications: new WeakMap<object, { release: () => Promise<void> }>(),
   }),
 );
 
@@ -67,7 +66,9 @@ function createLifetime(dispose: () => Promise<unknown>, retainWork?: () => () =
     },
     retain(work = false) {
       if (closing) {
-        throw new Error("Prepared plugin generation has retired");
+        throw new PreparedModelRuntimePluginGenerationRetiredError(
+          "Prepared plugin generation has retired",
+        );
       }
       const releaseWork = work ? retainWork?.() : undefined;
       const reference = {};
@@ -133,14 +134,16 @@ export function retainPreparedPluginRegistry(
     return inspection.retain().release;
   }
   const registry = getPluginRegistryResourceOwner(registryView);
-  let lifetime = registries.get(registry);
+  let lifetime = getPluginRegistryLifetime(registry);
   if (!lifetime) {
     // Gateway-root and other externally activated registries remain borrowed.
     if (capturePluginRegistryLifecycleEpoch(registry)) {
       return undefined;
     }
     if (isPluginRegistryRetired(registry)) {
-      throw new Error("Prepared plugin registry has retired");
+      throw new PreparedModelRuntimePluginGenerationRetiredError(
+        "Prepared plugin registry has retired",
+      );
     }
     markPluginRegistryActive(registry);
     lifetime = createLifetime(async () => {
@@ -151,7 +154,7 @@ export function retainPreparedPluginRegistry(
         throw new PluginRuntimeCloseRetainedError(error);
       }
     });
-    registries.set(registry, lifetime);
+    bindPluginRegistryLifetime(registry, lifetime);
   }
   return lifetime.retain();
 }
@@ -242,7 +245,9 @@ export function publishPreparedPluginGeneration(
   const isCurrent = () =>
     !cacheSignal.aborted && [...instances].every((instance) => instance.acceptingCalls);
   if (!isCurrent()) {
-    throw new Error("Prepared plugin generation retired before publication");
+    throw new PreparedModelRuntimePluginGenerationRetiredError(
+      "Prepared plugin generation retired before publication",
+    );
   }
   const release = ownPreparedPluginGeneration(generation).retain();
   const version = owner.generation;
@@ -282,7 +287,6 @@ export function publishPreparedPluginGeneration(
     signal.addEventListener("abort", observe, { once: true });
   };
   publications.set(owner, {
-    generation,
     release: () => {
       unsubscribe();
       return Promise.resolve(release());

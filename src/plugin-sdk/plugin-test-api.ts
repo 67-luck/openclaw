@@ -27,6 +27,7 @@ export function createTestPluginApi(api: TestPluginApiInput = {}): OpenClawPlugi
     registerMcpServerConnectionResolver() {},
     registerChannel() {},
     registerGatewayMethod() {},
+    registerGatewayAccessPolicy() {},
     registerSessionCatalog() {},
     registerCli() {},
     registerNodeCliFeature() {},
@@ -64,7 +65,6 @@ export function createTestPluginApi(api: TestPluginApiInput = {}): OpenClawPlugi
     registerAgentHarness() {},
     registerCodexAppServerExtensionFactory() {},
     registerAgentToolResultMiddleware() {},
-    registerDetachedTaskRuntime() {},
     registerSessionExtension() {},
     enqueueNextTurnInjection: async (injection) => ({
       enqueued: false,

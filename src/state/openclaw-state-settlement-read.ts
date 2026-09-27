@@ -1,10 +1,6 @@
-import { throwSqliteLifecycleErrors } from "../infra/sqlite-coordinator.js";
+import { throwSqliteLifecycleErrors } from "../infra/sqlite-lifecycle-errors.js";
 import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
 import type { SqliteWorkerOperationSettlement } from "../infra/sqlite-worker-operation-settlement.js";
-import {
-  acquireStateDatabaseHandleLease,
-  withStateDatabaseCoordinatorRuntimeDirectory,
-} from "../infra/state-database-coordinator.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   registerOpenClawStateDatabaseAsyncResource,
@@ -17,20 +13,23 @@ import type {
   OpenClawStateReadOutcome,
 } from "./openclaw-state-read.types.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
-import type { ProfileDisplayRow } from "./user-profiles.types.js";
+import type { ProfileDisplayRow, UserProfileEmailBinding } from "./user-profiles.types.js";
 
-type SettlementReadCommand = Extract<
-  OpenClawStateReadCommand,
-  { type: "userProfiles.avatar.reconcile" }
->;
+type SettlementReadCommand = Extract<OpenClawStateReadCommand, { type: "userProfiles.reconcile" }>;
 type SettlementRead = {
   bind(
     command: SettlementReadCommand,
     settlement: Promise<SqliteWorkerOperationSettlement>,
-    publish: (profile: ProfileDisplayRow | undefined) => void,
+    publish: (
+      profile: ProfileDisplayRow | undefined,
+      bindings?: readonly UserProfileEmailBinding[],
+    ) => void,
     release: () => void,
   ): void;
-  acknowledge(profile: ProfileDisplayRow | undefined): void;
+  acknowledge(
+    profile: ProfileDisplayRow | undefined,
+    bindings?: readonly UserProfileEmailBinding[],
+  ): void;
 };
 
 /** A fixed read completes an accepted mutation; it grants no new write or path admission. */
@@ -43,11 +42,6 @@ export async function withOpenClawStateSettlementRead<T>(
   const pathname = context.admission.databasePath;
   const identity = { ...context.admission.identity };
   let borrowed = retainOpenClawStateDatabaseForIndependentRead(pathname);
-  let pin = borrowed
-    ? undefined
-    : withStateDatabaseCoordinatorRuntimeDirectory(context.coordinatorRuntime, () =>
-        acquireStateDatabaseHandleLease({ databasePath: pathname }),
-      );
   const producer = createDeferredCore();
   const controller = new AbortController();
   let active = true;
@@ -56,7 +50,10 @@ export async function withOpenClawStateSettlementRead<T>(
     | {
         command: SettlementReadCommand;
         settlement: Promise<SqliteWorkerOperationSettlement>;
-        publish: (profile: ProfileDisplayRow | undefined) => void;
+        publish: (
+          profile: ProfileDisplayRow | undefined,
+          bindings?: readonly UserProfileEmailBinding[],
+        ) => void;
         release: () => void;
       }
     | undefined;
@@ -117,10 +114,10 @@ export async function withOpenClawStateSettlementRead<T>(
       }
       throwSqliteLifecycleErrors(errors, "Shared-state settlement read and cleanup failed");
       authority.assertCurrent();
-      if (!result || "error" in result || result.value.type !== "userProfiles.avatar.reconcile") {
+      if (!result || "error" in result || result.value.type !== "userProfiles.reconcile") {
         throw new Error("Unexpected shared-state settlement read reply");
       }
-      selected.publish(result.value.profile);
+      selected.publish(result.value.profile, result.value.emailBindings);
       pending = false;
     })().finally(() => {
       recovery = undefined;
@@ -136,8 +133,6 @@ export async function withOpenClawStateSettlementRead<T>(
       }
       borrowed?.release();
       borrowed = undefined;
-      pin?.release();
-      pin = undefined;
       selected?.release();
       active = false;
       unregister();
@@ -168,15 +163,15 @@ export async function withOpenClawStateSettlementRead<T>(
         selected = { command: { ...command }, settlement, publish, release };
         pending = true;
       },
-      acknowledge(profile) {
+      acknowledge(profile, bindings) {
         authority.assertCurrent();
         if (selected) {
           if (!profile || profile.id !== selected.command.profileId) {
-            throw new Error("Avatar commit differs from its retained settlement read");
+            throw new Error("Profile commit differs from its retained settlement read");
           }
-          selected.publish(profile);
+          selected.publish(profile, bindings);
         } else if (profile) {
-          throw new Error("Avatar commit did not retain its catalog publication");
+          throw new Error("Profile commit did not retain its catalog publication");
         }
         pending = false;
       },

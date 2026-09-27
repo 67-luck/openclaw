@@ -84,7 +84,10 @@ import {
   resolvePlannedAllowlistArgv,
   resolveSystemRunExecArgv,
 } from "./invoke-system-run-allowlist.js";
-import { hardenApprovedExecutionPaths } from "./invoke-system-run-plan.js";
+import {
+  buildEnvOverrideRejectionMessage,
+  hardenApprovedExecutionPaths,
+} from "./invoke-system-run-plan.js";
 import type {
   ExecEventPayload,
   ExecFinishedResult,
@@ -152,8 +155,6 @@ type SystemRunPolicyPhase = SystemRunParsePhase & {
   strictInlineEval: boolean;
   inlineEvalHit: InterpreterInlineEvalHit | null;
   allowlistMatches: ExecAllowlistEntry[];
-  analysisOk: boolean;
-  allowlistSatisfied: boolean;
   allowlistAuthorizationSatisfied: boolean;
   segments: ExecCommandSegment[];
   segmentSatisfiedBy: ExecSegmentSatisfiedBy[];
@@ -374,7 +375,6 @@ async function parseSystemRunPhase(
     return null;
   }
 
-  const shellPayload = command.shellPayload;
   const shellWrapperInvocation = isShellWrapperInvocation(command.argv);
   const commandText = command.commandText;
   const approvalPlan =
@@ -487,22 +487,11 @@ async function parseSystemRunPhase(
     envOverrideDiagnostics.rejectedOverrideBlockedKeys.length > 0 ||
     envOverrideDiagnostics.rejectedOverrideInvalidKeys.length > 0
   ) {
-    const details: string[] = [];
-    if (envOverrideDiagnostics.rejectedOverrideBlockedKeys.length > 0) {
-      details.push(
-        `blocked override keys: ${envOverrideDiagnostics.rejectedOverrideBlockedKeys.join(", ")}`,
-      );
-    }
-    if (envOverrideDiagnostics.rejectedOverrideInvalidKeys.length > 0) {
-      details.push(
-        `invalid non-portable override keys: ${envOverrideDiagnostics.rejectedOverrideInvalidKeys.join(", ")}`,
-      );
-    }
     await opts.sendInvokeResult({
       ok: false,
       error: {
         code: "INVALID_REQUEST",
-        message: `SYSTEM_RUN_DENIED: environment override rejected (${details.join("; ")})`,
+        message: buildEnvOverrideRejectionMessage(envOverrideDiagnostics),
       },
     });
     return null;
@@ -513,7 +502,7 @@ async function parseSystemRunPhase(
   });
   return {
     argv: command.argv,
-    shellPayload,
+    shellPayload: command.shellPayload,
     shellWrapperInvocation,
     commandText,
     commandPreview: command.previewText,
@@ -915,8 +904,6 @@ async function evaluateSystemRunPolicyPhase(
     strictInlineEval,
     inlineEvalHit,
     allowlistMatches,
-    analysisOk,
-    allowlistSatisfied,
     allowlistAuthorizationSatisfied,
     segments,
     segmentSatisfiedBy,

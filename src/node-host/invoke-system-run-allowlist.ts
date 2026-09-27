@@ -40,9 +40,6 @@ import type { RunResult } from "./invoke-types.js";
  * This module keeps command approval analysis separate from process execution,
  * and only rewrites shell transports when the rebuilt command still satisfies policy.
  */
-const POSIX_PARSEABLE_SHELL_WRAPPER_NAMES: ReadonlySet<string> = POSIX_PARSEABLE_SHELL_WRAPPERS;
-const POSIX_SHELL_WRAPPER_NAMES: ReadonlySet<string> = POSIX_SHELL_WRAPPERS;
-
 type SystemRunAllowlistAnalysis = {
   analysisOk: boolean;
   allowlistMatches: ExecAllowlistEntry[];
@@ -197,28 +194,20 @@ export async function resolveSystemRunExecArgv(params: {
   authorizationPlan: ExecAuthorizationPlan | undefined;
 }): Promise<string[] | null> {
   let execArgv = params.plannedAllowlistArgv ?? params.argv;
-  const transportKind = params.shellCommand
-    ? resolvePosixShellInlineCommandTransportKind(params.argv)
-    : "none";
   if (
-    params.security === "allowlist" &&
-    !params.policy.approvedByAsk &&
-    params.shellCommand &&
-    params.policy.analysisOk &&
-    params.policy.allowlistSatisfied &&
-    transportKind === "opaque"
+    params.security !== "allowlist" ||
+    params.policy.approvedByAsk ||
+    !params.shellCommand ||
+    !params.policy.analysisOk ||
+    !params.policy.allowlistSatisfied
   ) {
+    return execArgv;
+  }
+  const transportKind = resolvePosixShellInlineCommandTransportKind(params.argv);
+  if (transportKind === "opaque") {
     return null;
   }
-  if (
-    params.security === "allowlist" &&
-    params.isWindows &&
-    !params.policy.approvedByAsk &&
-    params.shellCommand &&
-    params.policy.analysisOk &&
-    params.policy.allowlistSatisfied &&
-    params.segments.length === 1
-  ) {
+  if (params.isWindows && params.segments.length === 1) {
     // Exact-path matches stay bound to the resolved executable, while the bare
     // wildcard contract can still authorize unresolved Windows commands.
     const plannedArgv = resolvePlannedSegmentArgv(
@@ -229,14 +218,7 @@ export async function resolveSystemRunExecArgv(params: {
     }
     execArgv = plannedArgv;
   }
-  if (
-    params.security === "allowlist" &&
-    !params.isWindows &&
-    !params.policy.approvedByAsk &&
-    params.shellCommand &&
-    params.policy.analysisOk &&
-    params.policy.allowlistSatisfied
-  ) {
+  if (!params.isWindows) {
     if (
       transportKind !== "parseable" ||
       !params.segmentSatisfiedBy.some((entry) => entry === "safeBins" || entry === "inlineChain")
@@ -275,10 +257,10 @@ function resolvePosixShellInlineCommandTransportKind(
     return "none";
   }
   const executable = normalizeExecutableToken(transportArgv[0] ?? "");
-  if (!POSIX_SHELL_WRAPPER_NAMES.has(executable)) {
+  if (!POSIX_SHELL_WRAPPERS.has(executable)) {
     return "none";
   }
-  return POSIX_PARSEABLE_SHELL_WRAPPER_NAMES.has(executable) ? "parseable" : "opaque";
+  return POSIX_PARSEABLE_SHELL_WRAPPERS.has(executable) ? "parseable" : "opaque";
 }
 
 function findSubsequence(haystack: readonly string[], needle: readonly string[]): number {
@@ -308,7 +290,7 @@ function replacePosixShellInlineCommand(params: {
   const transportArgv = resolveShellWrapperTransportArgv(params.argv);
   if (
     !transportArgv ||
-    !POSIX_PARSEABLE_SHELL_WRAPPER_NAMES.has(normalizeExecutableToken(transportArgv[0] ?? ""))
+    !POSIX_PARSEABLE_SHELL_WRAPPERS.has(normalizeExecutableToken(transportArgv[0] ?? ""))
   ) {
     return null;
   }

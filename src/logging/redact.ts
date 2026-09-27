@@ -1,5 +1,4 @@
 import { isSensitiveUrlQueryParamName } from "@openclaw/net-policy/redact-sensitive-url";
-// Redaction helpers scrub secrets and sensitive identifiers from log output.
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   findStructuredAuthParamRanges,
@@ -272,7 +271,8 @@ function splitSecretValueForMask(token: string): {
   maskEnd: number;
 } {
   const openingQuote = token[0] ?? "";
-  if (SECRET_VALUE_QUOTE_CHARS.has(openingQuote)) {
+  const contentStart = SECRET_VALUE_QUOTE_CHARS.has(openingQuote) ? 1 : 0;
+  if (contentStart) {
     const closingQuoteIndex = token.lastIndexOf(openingQuote);
     if (closingQuoteIndex > 0) {
       const suffix = token.slice(closingQuoteIndex + 1);
@@ -285,35 +285,19 @@ function splitSecretValueForMask(token: string): {
         };
       }
     }
-
-    const tokenWithoutLeadingQuote = token.slice(1);
-    const trailingDelimiter =
-      tokenWithoutLeadingQuote.match(SECRET_VALUE_TRAILING_DELIMITER_RE)?.[1] ?? "";
-    const maskable =
-      trailingDelimiter && trailingDelimiter.length < tokenWithoutLeadingQuote.length
-        ? tokenWithoutLeadingQuote.slice(0, -trailingDelimiter.length)
-        : tokenWithoutLeadingQuote;
-    return {
-      maskable,
-      suffix:
-        trailingDelimiter && trailingDelimiter.length < tokenWithoutLeadingQuote.length
-          ? trailingDelimiter
-          : "",
-      maskStart: 0,
-      maskEnd: 1 + maskable.length,
-    };
   }
 
-  const trailingDelimiter = token.match(SECRET_VALUE_TRAILING_DELIMITER_RE)?.[1] ?? "";
+  const content = token.slice(contentStart);
+  const trailingDelimiter = content.match(SECRET_VALUE_TRAILING_DELIMITER_RE)?.[1] ?? "";
   const maskable =
-    trailingDelimiter && trailingDelimiter.length < token.length
-      ? token.slice(0, -trailingDelimiter.length)
-      : token;
+    trailingDelimiter && trailingDelimiter.length < content.length
+      ? content.slice(0, -trailingDelimiter.length)
+      : content;
   return {
     maskable,
-    suffix: maskable === token ? "" : trailingDelimiter,
+    suffix: maskable === content ? "" : trailingDelimiter,
     maskStart: 0,
-    maskEnd: maskable.length,
+    maskEnd: contentStart + maskable.length,
   };
 }
 
@@ -509,7 +493,8 @@ function redactFormBodyLine(text: string, onEdits?: PreparationEditSink): string
 }
 
 function redactFormBody(text: string, onEdits?: PreparationEditSink): string {
-  if (!text) {
+  // Every form grammar requires a literal assignment separator, including encoded keys.
+  if (!text.includes("=")) {
     return text;
   }
   if (FORM_BODY_LINE_BREAK_SPLIT_RE.test(text)) {
@@ -632,6 +617,9 @@ function prepareRedactionCapture(
     };
   }
   const selected = selectSecretCapture(match, groups);
+  if (selected.value === "***") {
+    return undefined;
+  }
   const tokenIndex =
     selected.value === match ? 0 : getSecretCaptureStart(pattern, input, match, offset, selected);
   if (tokenIndex < 0) {
@@ -816,13 +804,7 @@ function resolveConfigRedaction(): RedactOptions {
 export function resolveRedactOptions(options?: RedactOptions): ResolvedRedactOptions {
   const resolved = options ?? resolveConfigRedaction();
   const mode = normalizeMode(resolved.mode);
-  if (mode === "off") {
-    return {
-      mode,
-      patterns: [],
-    };
-  }
-  return { mode, patterns: resolvePatterns(resolved.patterns) };
+  return { mode, patterns: mode === "off" ? [] : resolvePatterns(resolved.patterns) };
 }
 
 export function redactSensitiveText(text: string, options?: RedactOptions): string {
@@ -1291,6 +1273,18 @@ export function resolveFileLogRedactOptions(): ResolvedRedactOptions {
   return resolveRedactOptions(resolveToolPayloadRedaction());
 }
 
+function* redactionEditMatches(input: string, edits: RedactionEdit[]): Iterable<RedactMatch> {
+  for (const edit of edits) {
+    yield {
+      match: input.slice(edit.start, edit.end),
+      groups: [],
+      input,
+      offset: edit.start,
+      replacement: edit.replacement,
+    };
+  }
+}
+
 const preparationPatterns: ResolvedRedactPattern[] = [
   {
     source: "registered secret values",
@@ -1322,15 +1316,7 @@ const preparationPatterns: ResolvedRedactPattern[] = [
     *exec(input) {
       const edits: RedactionEdit[] = [];
       redactAssignmentValues(input, "url", (added) => edits.push(...added));
-      for (const edit of edits) {
-        yield {
-          match: input.slice(edit.start, edit.end),
-          groups: [],
-          input,
-          offset: edit.start,
-          replacement: edit.replacement,
-        };
-      }
+      yield* redactionEditMatches(input, edits);
     },
   },
   {
@@ -1340,15 +1326,7 @@ const preparationPatterns: ResolvedRedactPattern[] = [
       redactFormBody(input, (added) => {
         edits = composeRedactionEdits(input.length, edits, added);
       });
-      for (const edit of edits) {
-        yield {
-          match: input.slice(edit.start, edit.end),
-          groups: [],
-          input,
-          offset: edit.start,
-          replacement: edit.replacement,
-        };
-      }
+      yield* redactionEditMatches(input, edits);
     },
   },
 ];

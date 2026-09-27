@@ -5,10 +5,6 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import { isAcpRuntimeSpawnAvailable } from "../../acp/runtime/availability.js";
-import {
-  formatActiveNodeContextLabel,
-  getCurrentActiveNodeContext,
-} from "../../infra/active-node-context.js";
 import { getMachineDisplayName } from "../../infra/machine-name.js";
 import { resolveRuntimeOsLabel } from "../../infra/os-summary.js";
 import { listRegisteredPluginAgentPromptGuidance } from "../../plugins/command-registry-state.js";
@@ -260,7 +256,7 @@ export async function buildPreparedCompactionRuntime(
         workspaceDir: effectiveWorkspace,
         agentDir,
         agentId: sessionAgentId,
-        thinkingLevel: mapThinkingLevelForProvider(thinkLevel),
+        thinkingLevel: mapThinkingLevelForProvider(thinkLevel, effectiveModel),
       });
     const runtimePlan = reuseFullRuntimePlan
       ? preparedRuntimePlan
@@ -472,16 +468,24 @@ export async function buildPreparedCompactionRuntime(
           agentId: sessionAgentId,
         }),
       }),
-      activeNode: formatActiveNodeContextLabel(getCurrentActiveNodeContext()),
     };
-    const sandboxInfoExecPolicy = resolveEmbeddedSandboxInfoExecPolicy({
-      config: params.config,
-      agentId: sessionAgentId,
-      sessionKey: params.sessionKey,
-      permissionMode: sessionPermissionPolicy?.mode,
-      sandboxAvailable: sandbox?.enabled === true,
-      execOverrides,
-    });
+    if (sandbox?.enabled) {
+      params.abortSignal?.throwIfAborted();
+    }
+    const sandboxInfoExecPolicy =
+      sandbox?.enabled && params.bashElevated?.enabled === true
+        ? await resolveEmbeddedSandboxInfoExecPolicy(
+            {
+              config: params.config,
+              agentId: sessionAgentId,
+              sessionKey: params.sessionKey,
+              permissionMode: sessionPermissionPolicy?.mode,
+              sandboxAvailable: sandbox.enabled,
+              execOverrides,
+            },
+            { signal: params.abortSignal },
+          )
+        : undefined;
     const sandboxInfo = buildEmbeddedSandboxInfo(
       sandbox,
       params.bashElevated,

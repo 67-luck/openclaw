@@ -22,8 +22,8 @@ import {
   reserveQueuedCronRun,
 } from "./run-admission.js";
 import { skipCronJobsWithoutOwners } from "./run-owner.js";
-import { recomputeUnownedCronSchedules } from "./run-recovery.js";
 import { applyCronRuntimeRowsToState, commitCronRuntimeRows } from "./runtime-store.js";
+import { recomputeUnownedCronSchedules } from "./schedule-maintenance.js";
 import type { CronServiceState, DeferredCronNotifications } from "./state.js";
 import { ensureLoaded, runPostPersistCronNotifications } from "./store.js";
 import {
@@ -149,7 +149,7 @@ function commitStartupCatchupRows(params: {
     state: params.state,
     jobIds: [...reservationByJobId.keys(), ...deferredByJobId.keys()],
     operationLabel: "cron.startup-catchup-state",
-    mutate: ({ database, jobs }) => {
+    mutate: ({ database, jobs, receiptSchema }) => {
       const committed: CronJob[] = [];
       for (const [jobId, job] of jobs) {
         let changed = false;
@@ -157,6 +157,7 @@ function commitStartupCatchupRows(params: {
         const ownership = params.state.queuedRunReservationsByJobId.get(jobId);
         if (reservation && ownership?.identity === reservation.reservationIdentity) {
           finishCronRunReceiptInDatabase({
+            receiptSchema,
             database,
             handle: ownership.runReceipt,
             status: "skipped",
@@ -315,13 +316,13 @@ async function planStartupCatchup(
     state.deps.maxMissedJobsPerRestart ?? DEFAULT_MAX_MISSED_JOBS_PER_RESTART,
   );
   return locked(state, async () => {
-    await ensureLoaded(state, { skipRecompute: true });
+    await ensureLoaded(state);
     if (state.stopped || !state.store) {
       return { candidates: [], deferredJobs: [] };
     }
 
     const now = state.deps.nowMs();
-    const missed = skipCronJobsWithoutOwners(
+    const missed = await skipCronJobsWithoutOwners(
       state,
       collectStartupCatchupJobs(state, now, { skipJobIds: opts?.skipJobIds }),
       now,
@@ -462,7 +463,7 @@ async function applyStartupCatchupOutcomes(
   await locked(state, async () => {
     // Each completed run is already durable. Reload before releasing or
     // staggering sibling reservations so their current rows stay authoritative.
-    await ensureLoaded(state, { forceReload: true, skipRecompute: true });
+    await ensureLoaded(state, { forceReload: true });
     if (!state.store) {
       return;
     }
@@ -482,11 +483,9 @@ async function applyStartupCatchupOutcomes(
       deferredJobs: plan.deferredJobs,
       staggerMs,
     });
-    const maintenance = recomputeUnownedCronSchedules(state, {
+    await recomputeUnownedCronSchedules(state, {
       repairFutureCronNextRunAtMs: false,
     });
-    runPostPersistCronNotifications(state, maintenance.notifications);
-    applyCronRuntimeRowsToState(state, maintenance.jobs);
   });
   return outcomes;
 }

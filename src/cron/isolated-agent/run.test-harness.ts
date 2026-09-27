@@ -345,7 +345,7 @@ vi.mock("../../browser-lifecycle-cleanup.js", () => ({
   cleanupBrowserSessionsForLifecycleEnd: cleanupBrowserSessionsForLifecycleEndMock,
 }));
 
-vi.mock("../../tasks/cron-run-continuation-cleanup.js", () => ({
+vi.mock("../run-continuation-cleanup.js", () => ({
   removeCronRunContinuationSessionIfIdle: removeCronRunContinuationSessionIfIdleMock,
 }));
 
@@ -405,7 +405,7 @@ vi.mock("../../channels/plugins/index.js", () => ({
 
 vi.mock("./session.js", () => ({
   loadCronSessionEntryLatest: loadSessionEntryMock,
-  resolveCronSession: resolveCronSessionMock,
+  prepareCronSession: resolveCronSessionMock,
 }));
 
 export function makeCronSessionEntry(overrides?: Record<string, unknown>): CronSessionEntry {

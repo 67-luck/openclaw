@@ -3,6 +3,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { nothing } from "lit";
 import { classifySessionKind } from "../../../../../src/sessions/classify-session-kind.js";
 import { markdownGitHubAliasSignature } from "../../../components/markdown-github-repositories.ts";
+import { currentThemeBranding } from "../../../components/neutral-mark.ts";
 import { i18n } from "../../../i18n/index.ts";
 import type { MessageGroup } from "../../../lib/chat/chat-types.ts";
 import { extractTextCached } from "../../../lib/chat/message-extract.ts";
@@ -17,16 +18,12 @@ import {
   parseAgentSessionKey,
   resolveUiGlobalAliasAgentId,
 } from "../../../lib/sessions/session-key.ts";
-import { agentRunFrameActiveStatusParts } from "../chat-agent-run-grouping.ts";
 import { messageRecoveryKey } from "../chat-message-recovery.ts";
 import { resolveTurnRecap, type TurnRecap } from "../chat-progress.ts";
 import {
   assistantGroupCanOwnActiveRunStatus,
   buildCachedChatItems,
-  coalesceAgentRunFrames,
-  coalesceActivityRuns,
-  coalesceStreamRuns,
-  collapseCompletedTurnWork,
+  type coalesceAgentRunFrames,
   getExpansionStateVersion,
   getExpandedToolCards,
   getExpandedUserMessages,
@@ -38,7 +35,6 @@ import {
 import { hasForwardedSource } from "../chat-turn-boundary.ts";
 import { renderAgentRunFrame } from "./chat-agent-run-frame.ts";
 import { resolveChatDefaultAvatarPlacement } from "./chat-author-avatar.ts";
-import { renderBackgroundTasksStatusRow } from "./chat-background-tasks-status.ts";
 import { buildChatArchiveNotice, renderChatDivider, renderChatNotice } from "./chat-divider.ts";
 import { resolveMessageReplyText } from "./chat-message-markdown.ts";
 import { assistantMediaPolicyKey } from "./chat-message-media.ts";
@@ -51,9 +47,8 @@ import {
   type StreamGroupOptions,
   type StreamGroupPart,
 } from "./chat-message.ts";
-import { projectChatPositions } from "./chat-position-projection.ts";
 import { renderRealtimeTalkConversation } from "./chat-realtime-controls.ts";
-import { createReplyPreviewResolver, type LoadedReplySource } from "./chat-reply-preview.ts";
+import { createReplyPreviewResolver } from "./chat-reply-preview.ts";
 import {
   closeTranscriptSearch,
   getTranscriptState,
@@ -62,7 +57,11 @@ import {
 import { renderBrowserTabPreviews } from "./chat-tool-cards.ts";
 import { latestTranscriptAnnouncement } from "./chat-transcript-announcement.ts";
 import type { TranscriptRow } from "./chat-transcript-layout.ts";
-import { projectTranscriptMessageIndex } from "./chat-transcript-message-index.ts";
+import {
+  expandReplyTargetWork,
+  projectTranscriptChain,
+  projectTranscriptIndex,
+} from "./chat-transcript-message-index.ts";
 import {
   guardChatRenderItems,
   trackTranscriptRenderDependencies,
@@ -85,7 +84,6 @@ export function projectChatTranscript(
   const state = getTranscriptState(props.paneId);
   const asyncQuestions = props.asyncQuestions;
   const requestUpdate = props.onRequestUpdate ?? (() => {});
-  const displayStream = props.stream ?? null;
   const sessionHost = props.sessionHost ?? null;
   const activeSession = props.selectedSession;
   // Use unfiltered history and retained participants so searching or paging away
@@ -153,7 +151,7 @@ export function projectChatTranscript(
     toolMessages: props.toolMessages,
     guardianNotices: props.guardianNotices,
     streamSegments: props.streamSegments,
-    stream: displayStream,
+    stream: props.stream ?? null,
     streamStartedAt: props.streamStartedAt,
     queue: props.queue,
     initialTurnId: props.initialTurnId,
@@ -197,6 +195,20 @@ export function projectChatTranscript(
   );
   const expandedToolCards = getExpandedToolCards(props.sessionKey);
   const expandedUserMessages = getExpandedUserMessages(props.sessionKey);
+  const transcriptChain = projectTranscriptChain(chatItems, {
+    sessionKey: props.sessionKey,
+    runWorking: Boolean(props.runWorking),
+    searchActive: searchFiltering,
+    session: activeSession,
+    stream: props.stream ?? null,
+  });
+  const { collapsedItems, transcriptItems } = transcriptChain;
+  const replyNavigationId = props.replyMessageAccess?.navigationId;
+  if (replyNavigationId) {
+    expandReplyTargetWork(transcriptItems, expandedToolCards, replyNavigationId);
+  }
+  const { messageRowKeysById, transcriptMessageKeys, loadedReplySources, positionIndex, rows } =
+    projectTranscriptIndex(transcriptChain, expandedToolCards, props);
   const questionPrompts = new Map(
     (props.questionPrompts ?? []).map((prompt) => [prompt.id, prompt]),
   );
@@ -286,7 +298,6 @@ export function projectChatTranscript(
     { parts: StreamGroupPart[]; options: StreamGroupOptions }
   >();
   const turnRecapByGroupKey = new Map<string, TurnRecap>();
-  const loadedReplySources = new Map<string, LoadedReplySource>();
   const resolveReplyPreview = createReplyPreviewResolver(loadedReplySources, props);
   const sharedMessageRenderOptions = {
     entryRefFor: transcript.entryAnimations.refFor,
@@ -321,6 +332,7 @@ export function projectChatTranscript(
   } satisfies StreamGroupOptions;
   const streamGroupOptions = {
     ...sharedMessageRenderOptions,
+    branding: props.branding,
     assistant: assistantIdentity,
     startupLabel: props.startupLabel,
     waitingApproval: props.waitingApproval,
@@ -391,11 +403,12 @@ export function projectChatTranscript(
       activeContinuation: activeContinuationByGroupKey.get(item.key),
       turnRecap: turnRecapByGroupKey.get(item.key),
       latestAssistant: item.key === latestAssistantItemKey,
+      searchResult: searchFiltering,
     } satisfies Parameters<typeof renderMessageGroup>[1];
   };
   // Only the working indicator shows live usage, so rows without one keep
   // memoizing across usage patches.
-  const workingUsageKey = `usage:${runOutputTokens ?? ""}`;
+  const workingUsageKey = JSON.stringify([runOutputTokens]);
   const liveStatusSignature = (item: ChatRenderItem): string => {
     if (item.kind === "agent-run-frame") {
       const hasWorkingIndicator = item.parts.some(
@@ -425,7 +438,7 @@ export function projectChatTranscript(
     const recapKey = recap ? `${recap.runtimeMs}:${recap.outputTokens ?? ""}` : "";
     return `${continuationKey}|${recapKey}|${
       item.key === latestAssistantItemKey ? "latest-assistant" : ""
-    }`;
+    }|${searchFiltering ? "search-result" : ""}`;
   };
   const renderItem = guardChatRenderItems(state, liveStatusSignature, (item) => {
     if (item.kind === "divider") {
@@ -478,15 +491,6 @@ export function projectChatTranscript(
     }
     return nothing;
   });
-  const semanticItems = coalesceActivityRuns(
-    collapseCompletedTurnWork(coalesceStreamRuns(chatItems), {
-      sessionKey: props.sessionKey,
-      runWorking: Boolean(props.runWorking),
-      searchActive: searchFiltering,
-    }),
-    { searchActive: searchFiltering },
-  );
-  const collapsedItems = coalesceAgentRunFrames(semanticItems, { searchActive: searchFiltering });
   const resolvedRecap = resolveTurnRecap(state, {
     sessionKey: props.sessionKey,
     agentId: props.currentAgentId,
@@ -495,34 +499,9 @@ export function projectChatTranscript(
     row: activeSession,
     usageByRun: props.runUsageById,
   });
-  const transcriptItems = collapsedItems.filter((item, index) => {
-    const previous = collapsedItems[index - 1];
-    const activeStatusParts =
-      item.kind === "stream-run" && item.parts.every((part) => part.kind === "reading-indicator")
-        ? item.parts
-        : item.kind === "agent-run-frame"
-          ? agentRunFrameActiveStatusParts(item)
-          : undefined;
-    const activeStatusRunId =
-      item.kind === "stream-run" || item.kind === "agent-run-frame" ? item.runId : undefined;
-    if (
-      previous?.kind !== "group" ||
-      !activeStatusParts ||
-      !assistantGroupCanOwnActiveRunStatus(previous) ||
-      (previous.runId !== undefined &&
-        activeStatusRunId !== undefined &&
-        previous.runId !== activeStatusRunId)
-    ) {
-      return true;
-    }
-    // A reply and its still-running state are one turn-level presentation.
-    // Keeping the status in the reply avoids a second claw/assistant row.
-    activeContinuationByGroupKey.set(previous.key, {
-      parts: activeStatusParts,
-      options: streamGroupOptions,
-    });
-    return false;
-  });
+  for (const [key, parts] of transcriptChain.continuations) {
+    activeContinuationByGroupKey.set(key, { parts, options: streamGroupOptions });
+  }
   // Default disclosure belongs only to a settled assistant at the transcript
   // tail; any newer visible row returns the prior answer to hover/tap behavior.
   const lastTranscriptItem = transcriptItems.at(-1);
@@ -548,13 +527,6 @@ export function projectChatTranscript(
     (tailStatusOwner.kind !== "group" || !tailStatusOwner.isStreaming)
       ? tailStatusOwner.key
       : null;
-  const { messageRowKeysById, transcriptMessageKeys, expandReplyTargetWork } =
-    projectTranscriptMessageIndex(transcriptItems, expandedToolCards, props, loadedReplySources);
-  const positionIndex = projectChatPositions(
-    transcriptItems,
-    expandedToolCards,
-    messageRowKeysById,
-  );
   transcript.entryAnimations.project(chatItems);
   transcript.syncMessageRows(messageRowKeysById, transcriptMessageKeys);
   let turnRecapOwnerKey: string | null = null;
@@ -562,18 +534,20 @@ export function projectChatTranscript(
     turnRecapByGroupKey.set(tailStatusOwner.key, turnRecap);
     turnRecapOwnerKey = tailStatusOwner.key;
   }
-  // New row keys measure expanded work immediately; existing keys keep their
-  // cached height until ResizeObserver reports the changed layout.
-  const transcriptRows: TranscriptRow<ChatRenderItem>[] = [];
-  for (const item of transcriptItems) {
-    transcriptRows.push({ kind: "item", key: item.key, item });
-    if (item.kind === "work-group" && expandedToolCards.get(item.key)) {
-      for (const group of item.groups) {
-        transcriptRows.push({ kind: "item", key: `${item.key}:${group.key}`, item: group });
+  const transcriptRows: TranscriptRow<ChatRenderItem>[] = [...rows];
+  // Only ID-bearing voice captions need a history scan. Keep membership local
+  // to this projection so history replacement and search cannot stale it.
+  let persistedIds: Set<string | null> | undefined;
+  const realtimeConversation = renderRealtimeTalkConversation({
+    ...props,
+    realtimeTalkConversation: props.realtimeTalkConversation?.filter((entry) => {
+      if (!entry.transcriptId) {
+        return true;
       }
-    }
-  }
-  const realtimeConversation = renderRealtimeTalkConversation(props);
+      persistedIds ??= new Set(props.messages.map(persistedMessageEntryId));
+      return !persistedIds.has(entry.transcriptId);
+    }),
+  });
   if (realtimeConversation !== nothing) {
     transcriptRows.push({
       kind: "content",
@@ -588,23 +562,20 @@ export function projectChatTranscript(
       content: renderTurnRecapRow(turnRecap),
     });
   }
-  const backgroundTasks =
-    !props.runWorking && !isEmpty && !showLoadingSkeleton
-      ? renderBackgroundTasksStatusRow(props.backgroundTasks)
-      : nothing;
-  if (backgroundTasks !== nothing) {
-    transcriptRows.push({
-      kind: "content",
-      key: "background-tasks",
-      content: backgroundTasks,
-    });
-  }
   const typingIndicator = renderChatTypingIndicator(props.typingActors, avatarPlacement);
   if (typingIndicator) {
     transcriptRows.push({ kind: "content", key: "presence:typing", content: typingIndicator });
   }
+  // Deferred palettes apply leaf branding after the preference snapshot.
+  const appliedBranding = currentThemeBranding();
   trackTranscriptRenderDependencies(state, [
     locale,
+    props.branding?.mascot,
+    props.branding?.avatarHat,
+    props.branding?.artwork,
+    props.branding?.workingPhrases,
+    appliedBranding.mascot,
+    appliedBranding.avatarHat,
     expandedToolCards,
     getExpansionStateVersion(expandedToolCards),
     expandedUserMessages,
@@ -679,7 +650,7 @@ export function projectChatTranscript(
     if (loaded && resolveMessageReplyText(loaded.message)) {
       // Loaded targets also serve read-only views without reply-message access.
       // Reveal waits for this expansion to commit before locating the bubble.
-      expandReplyTargetWork(replyToId);
+      expandReplyTargetWork(transcriptItems, expandedToolCards, replyToId);
       transcript.revealMessage(replyToId);
       return;
     }

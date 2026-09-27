@@ -8,7 +8,6 @@ import { formatCliCommand } from "../cli/command-format.js";
 import { isAgentRunStaleLifecycleError } from "../infra/agent-lifecycle-error.js";
 import { copyErrorDiagnostic } from "../infra/error-diagnostics.js";
 import { collectErrorGraphCandidates, formatErrorMessage, readErrorName } from "../infra/errors.js";
-import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { failoverReasonFromClassification } from "./failover/classification-rules.js";
 import {
   classifyFailoverSignal,
@@ -31,10 +30,13 @@ import {
   AgentHarnessSessionSupersededError,
   isAgentHarnessPreflightError,
 } from "./harness/errors.js";
+import { isRecordedModelFallbackStop } from "./model-fallback-stop.js";
+import { PreparedModelRuntimeOwnerNotPublishedError } from "./prepared-model-runtime.errors.js";
 import {
   isSessionPlacementSettlementClosedError,
   isAgentRunSupersededAbortReason,
 } from "./run-termination.js";
+import { isSessionTranscriptTurnMismatchErrorMessage } from "./sessions/transcript-turn-error.js";
 
 export {
   FailoverError,
@@ -56,15 +58,10 @@ const RUNTIME_COORDINATION_ERROR_NAMES = new Set([
   "ActiveTurnClaimError",
 ]);
 
-// Failed owned cleanup stops replay even for frozen errors crossing bundled chunks.
-// Keep the fact weakly keyed to the original error, never inferred from display text.
-const modelFallbackStops = resolveGlobalSingleton(
-  Symbol.for("openclaw.modelFallbackStops"),
-  () => new WeakSet<Error>(),
-);
+export { recordModelFallbackStop } from "./model-fallback-stop.js";
 
-export function recordModelFallbackStop(error: Error): void {
-  modelFallbackStops.add(error);
+export function hasRecordedModelFallbackStop(error: unknown): boolean {
+  return collectErrorGraphCandidates(error, resolveNestedErrors).some(isRecordedModelFallbackStop);
 }
 
 export function hasModelFallbackStop(error: unknown): boolean {
@@ -73,7 +70,8 @@ export function hasModelFallbackStop(error: unknown): boolean {
     isAgentRunSupersededAbortReason(error) ||
     collectErrorGraphCandidates(error, resolveNestedErrors).some(
       (candidate) =>
-        (candidate instanceof Error && modelFallbackStops.has(candidate)) ||
+        isRecordedModelFallbackStop(candidate) ||
+        isSessionTranscriptTurnMismatchErrorMessage(readDirectErrorMessage(candidate)) ||
         (isFailoverError(candidate) && isCliTerminalStopCode(candidate.code)),
     )
   );
@@ -322,6 +320,12 @@ function hasRuntimeCoordinationFailure(err: unknown): boolean {
   );
 }
 
+function hasPreparedModelRuntimeOwnerNotPublished(err: unknown): boolean {
+  return collectErrorGraphCandidates(err, resolveNestedErrors).some(
+    (candidate) => candidate instanceof PreparedModelRuntimeOwnerNotPublishedError,
+  );
+}
+
 function hasDirectProviderFailureIdentity(err: unknown): boolean {
   if (isFailoverError(err)) {
     return true;
@@ -413,6 +417,13 @@ function resolveFailoverClassificationFromErrorInternal(
     seen.add(err);
   }
   if (isFailoverError(err)) {
+    const classification = classifyFailoverSignal({
+      ...normalizeErrorSignal(err, providerHint),
+      message: err.rawError ?? err.message,
+    });
+    if (classification?.kind === "reason" && classification.sameModelRetry === false) {
+      return { kind: "reason", reason: err.reason, sameModelRetry: false };
+    }
     return {
       kind: "reason",
       reason: err.reason,
@@ -466,7 +477,7 @@ function resolveFailoverClassificationFromErrorInternal(
   return null;
 }
 
-function resolveFailoverClassificationFromError(
+export function resolveFailoverClassificationFromError(
   err: unknown,
   providerHint?: string,
 ): FailoverClassification | null {
@@ -669,6 +680,11 @@ export function resolveModelFallbackError(
   context?: FailoverErrorContext,
 ): ModelFallbackErrorResolution {
   if (err instanceof AgentHarnessSessionSupersededError) {
+    return { kind: "coordination", error: err };
+  }
+  // Prepared-owner publication is an OpenClaw runtime fact, not a provider
+  // failure. Changing models cannot republish the current owner (#156975).
+  if (hasPreparedModelRuntimeOwnerNotPublished(err)) {
     return { kind: "coordination", error: err };
   }
   // Gateway admission can fail before any provider turn starts. Preserve that

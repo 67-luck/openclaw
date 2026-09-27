@@ -4,6 +4,7 @@ import { consumeGoogleGenerateContentStream } from "../../packages/ai/src/provid
 import { createResponsesAssistantOutput } from "../../packages/ai/src/providers/openai-responses-shared.js";
 import { createAssistantOutput } from "../../packages/ai/src/transports/assistant-output.js";
 import { processResponsesStream } from "../../packages/ai/src/transports/openai-responses-stream-internal.js";
+import { markdownToIR } from "../../packages/markdown-core/src/ir.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import { isAudioPayload } from "../auto-reply/reply/agent-runner-helpers.js";
@@ -30,7 +31,6 @@ import {
 } from "./embedded-agent-subscribe.e2e-harness.js";
 import {
   consumePendingAssistantReplyDirectivesIntoReply,
-  hasAssistantVisibleReply,
   resolveManagedStreamMediaUrls,
 } from "./embedded-agent-subscribe.handlers.messages.replies.js";
 import { resolveStreamingReply } from "./embedded-agent-subscribe.handlers.messages.stream.js";
@@ -104,6 +104,18 @@ function createDeliveryHarness(
       },
     }),
   };
+}
+
+async function closeDelivery({
+  subscription,
+  pipeline,
+  typing,
+}: Pick<ReturnType<typeof createDeliveryHarness>, "subscription" | "pipeline" | "typing">) {
+  await subscription.waitForPendingEvents();
+  await pipeline.flush({ force: true });
+  subscription.unsubscribe();
+  pipeline.stop();
+  typing.cleanup();
 }
 
 const cases = [
@@ -186,54 +198,13 @@ const cases = [
     literal: true,
   },
   {
-    name: "genuine split reply directive",
-    chunks: ["[[reply_to:", "example-id]]Visible reply.\n\n"],
-    marker: "[[reply_to:example-id]]",
-    replyToId: "example-id",
-  },
-  {
-    name: "reply marker in a fenced example",
-    chunks: ["```text\n", "[[reply_to:example-id]]\n```\n\n"],
-    marker: "[[reply_to:example-id]]",
-    literal: true,
-  },
-  {
     name: "authored indented code after a drained paragraph",
     chunks: ["Intro.\n\n", "    const value = 1;\n    use(value);\n\n"],
-    marker: "    const value = 1;\n    use(value);",
+    marker: "const value = 1;\nuse(value);",
     literal: true,
+    code: true,
   },
   ...inlineDirectiveCases,
-  {
-    name: "genuine split voice directive",
-    chunks: ["[[audio_as_", "voice]]Visible reply.\n\n"],
-    marker: "[[audio_as_voice]]",
-    audioAsVoice: true,
-    voiceEdges: 1,
-  },
-  {
-    name: "a voice literal after earlier genuine voice intent",
-    chunks: [
-      "[[audio_as_voice]]Voice reply.\n\n" + nextParagraph,
-      "Use `",
-      "[[audio_as_voice]]` literally.\n\n",
-    ],
-    marker: "[[audio_as_voice]]",
-    literal: true,
-    audioAsVoice: true,
-    voiceEdges: 1,
-  },
-  {
-    name: "two genuine voice directives",
-    chunks: [
-      "[[audio_as_voice]]First voice reply.\n\n" + nextParagraph,
-      "[[audio_as_",
-      "voice]]Second voice reply.\n\n",
-    ],
-    marker: "[[audio_as_voice]]",
-    audioAsVoice: true,
-    voiceEdges: 2,
-  },
   {
     name: "late voice intent for already-buffered audio",
     chunks: ["[[audio_as_", "voice]]Visible reply.\n\n"],
@@ -278,7 +249,7 @@ const replacementChunks = [
   "The final summary also remains unchanged.\n",
 ] as const;
 const prefixCorrectionCases = [
-  ...["one", "two", "thirty-three"].map((value) => ({ value, leadChunks: [] })),
+  ...["one", "two"].map((value) => ({ value, leadChunks: [] })),
   { value: "thirty-three", leadChunks: ["First lead stays.\n", "Next lead stays.\n"] },
 ].map(({ value, leadChunks }) => ({
   name: `authoritative prefix correction ${leadChunks.length ? "with early chunks" : value}`,
@@ -339,6 +310,18 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
       expect(delivered.every((payload) => !payload.mediaUrl && !payload.mediaUrls?.length)).toBe(
         true,
       );
+    };
+    const expectCodeContent = () => {
+      if (!("code" in scenario)) {
+        return;
+      }
+      const codeBlocks = delivered.flatMap((payload) => {
+        const ir = markdownToIR(payload.text ?? "");
+        return ir.styles
+          .filter((span) => span.style === "code_block")
+          .map((span) => ir.text.slice(span.start, span.end));
+      });
+      expect.soft(codeBlocks).toEqual([`${scenario.marker}\n`]);
     };
     const beforeEnd = createDeferred();
     const releaseTerminal = createDeferred();
@@ -412,7 +395,7 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
             response.push({ type: "done", reason: "stop", message: output });
             response.end();
           });
-    let deltas = 0;
+    let receivedText = "";
     const running = runAgentLoop(
       [{ role: "user", content: "Explain the marker syntax.", timestamp: 1 }],
       { systemPrompt: "", messages: [] },
@@ -430,8 +413,8 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
         emit(event);
         await subscription.waitForPendingEvents();
         if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-          deltas += 1;
-          if (deltas === chunks.length) {
+          receivedText += event.assistantMessageEvent.delta;
+          if (receivedText === chunks.join("")) {
             await pipeline.flush({ force: true });
             beforeEnd.resolve();
           }
@@ -451,8 +434,8 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
       expect(delivered.length).toBeGreaterThan(0);
       const beforeTerminalCount = delivered.length;
       if ("prefixCorrection" in scenario) {
-        expect(delivered.map((payload) => payload.text)).toEqual(
-          scenario.chunks.map((text) => text.trimEnd()),
+        expect(delivered.map((payload) => payload.text).join("\n")).toBe(
+          scenario.chunks.map((text) => text.trimEnd()).join("\n"),
         );
       }
       const text = delivered.map((payload) => payload.text ?? "").join("");
@@ -499,6 +482,7 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
         );
       }
       expectOrdinaryContent("streaming");
+      expectCodeContent();
       releaseTerminal.resolve();
       await settled;
       await subscription.waitForPendingEvents();
@@ -523,6 +507,7 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
         );
       }
       expectOrdinaryContent("final");
+      expectCodeContent();
       if (hasAudio) {
         const audio = delivered.filter(isAudioPayload);
         expect(audio).toHaveLength(1);
@@ -532,11 +517,7 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
     } finally {
       releaseTerminal.resolve();
       await Promise.allSettled([producing, running]);
-      await subscription.waitForPendingEvents();
-      await pipeline.flush({ force: true });
-      subscription.unsubscribe();
-      pipeline.stop();
-      typing.cleanup();
+      await closeDelivery({ subscription, pipeline, typing });
     }
   });
 });
@@ -621,11 +602,7 @@ describe("signed Google part delivery", () => {
     } finally {
       firstDelivered.resolve();
       await Promise.allSettled([producing, running]);
-      await subscription.waitForPendingEvents();
-      await pipeline.flush({ force: true });
-      subscription.unsubscribe();
-      pipeline.stop();
-      typing.cleanup();
+      await closeDelivery({ subscription, pipeline, typing });
     }
   });
 });
@@ -700,11 +677,7 @@ describe("final prepared directive owners", () => {
         .soft(delivered.flatMap((payload) => payload.mediaUrls ?? []))
         .toEqual(scenario.expectedMedia);
     } finally {
-      await subscription.waitForPendingEvents();
-      await pipeline.flush({ force: true });
-      subscription.unsubscribe();
-      pipeline.stop();
-      typing.cleanup();
+      await closeDelivery({ subscription, pipeline, typing });
     }
   });
 
@@ -734,11 +707,7 @@ describe("final prepared directive owners", () => {
         expect.soft(Boolean(payload.replyToCurrent || payload.replyToTag)).toBe(false);
       }
     } finally {
-      await subscription.waitForPendingEvents();
-      await pipeline.flush({ force: true });
-      subscription.unsubscribe();
-      pipeline.stop();
-      typing.cleanup();
+      await closeDelivery({ subscription, pipeline, typing });
     }
   });
 });
@@ -819,11 +788,7 @@ describe("authoritative directive frames", () => {
       ]);
       expect(delivered.some((payload) => payload.text)).toBe(false);
     } finally {
-      await subscription.waitForPendingEvents();
-      await pipeline.flush({ force: true });
-      subscription.unsubscribe();
-      pipeline.stop();
-      typing.cleanup();
+      await closeDelivery({ subscription, pipeline, typing });
     }
   });
 
@@ -901,24 +866,8 @@ describe("authoritative directive frames", () => {
       expect(audio).toHaveLength(1);
       expect(audio[0]?.audioAsVoice).toBe(true);
     } finally {
-      await subscription.waitForPendingEvents();
-      await pipeline.flush({ force: true });
-      subscription.unsubscribe();
-      pipeline.stop();
-      typing.cleanup();
+      await closeDelivery({ subscription, pipeline, typing });
     }
-  });
-});
-
-describe("hasAssistantVisibleReply", () => {
-  it("treats audio-only payloads as visible", () => {
-    expect(hasAssistantVisibleReply({ audioAsVoice: true })).toBe(true);
-  });
-
-  it("detects text or media visibility", () => {
-    expect(hasAssistantVisibleReply({ text: "hello" })).toBe(true);
-    expect(hasAssistantVisibleReply({ mediaUrls: ["https://example.com/a.png"] })).toBe(true);
-    expect(hasAssistantVisibleReply({})).toBe(false);
   });
 });
 

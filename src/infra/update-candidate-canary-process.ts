@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { redactSupportDiagnosticLine } from "../logging/diagnostic-support-redaction.js";
 import { signalProcessTree } from "../process/kill-tree.js";
+import { UPDATE_CANARY_PROGRESS_PREFIX } from "./update-candidate-canary-progress.js";
 
 export function launchCanary(params: {
   entry: string;
@@ -11,7 +12,6 @@ export function launchCanary(params: {
   stateDir: string;
   assertCurrent?: () => void;
   capture: (line: string) => void;
-  onSpawn: () => void;
   onLine?: (line: string) => void;
   onStdout?: (stdout: string) => void;
 }) {
@@ -24,12 +24,11 @@ export function launchCanary(params: {
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
-  params.onSpawn();
   let stdout = "";
   let firstStderrLine: string | undefined;
   let cliReason: string | undefined;
   const captureStderr = (line: string) => {
-    if (!line.trim()) {
+    if (!line.trim() || line.startsWith(UPDATE_CANARY_PROGRESS_PREFIX)) {
       return;
     }
     const safe = redactSupportDiagnosticLine(line, { env, stateDir: params.stateDir });
