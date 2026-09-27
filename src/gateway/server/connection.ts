@@ -6,6 +6,7 @@ import { GATEWAY_SERVER_CAPS } from "../../../packages/gateway-protocol/src/serv
 import { GATEWAY_STARTUP_PENDING_CLOSE_CAUSE } from "../../../packages/gateway-protocol/src/startup-unavailable.js";
 import { getRuntimeConfig } from "../../config/io.js";
 import { recordPairedNodeDisconnection } from "../../infra/device-pairing-node.js";
+import { formatErrorMessage as formatError } from "../../infra/errors.js";
 import { upsertPresence } from "../../infra/system-presence.js";
 import { logRejectedLargePayload } from "../../logging/diagnostic-payload.js";
 import type { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -27,18 +28,16 @@ import {
 import type { GatewayConnectionWork } from "../server-connection-work.js";
 import { MAX_BUFFERED_BYTES, WEBSOCKET_OPEN_READY_STATE } from "../server-constants.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../server-methods/types.js";
-import { formatError } from "../server-utils.js";
 import { cleanupTalkConnection } from "../talk/session-registry.js";
 import type { WebSocketHeartbeatDiagnostics } from "../websocket-keepalive.js";
 import { formatForLog, logWs } from "../ws-log.js";
 import { refreshClientPresence } from "./client-presence.js";
+import type { GatewayClientRegistry } from "./client-registry.js";
 import { closeGatewayTransportWithGrace } from "./connection-transport-close.js";
 import type {
   GatewayConnectionTransport,
   PrepareGatewayAuthenticatedReceive,
 } from "./connection-transport.js";
-import { getHealthVersion, incrementPresenceVersion } from "./health-state.js";
-import { broadcastPresenceSnapshot } from "./presence-events.js";
 import { sanitizeWsLogValue, stringMetaValue } from "./ws-connection-diagnostics.js";
 import {
   buildHandshakeAuthLogKey,
@@ -61,7 +60,7 @@ type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
 const unauthorizedCloseBeforeConnectLogLimiter = new HandshakeAuthLogLimiter();
 export type GatewayConnectionOptions = {
   bootId: string;
-  clients: Set<GatewayWsClient>;
+  clients: GatewayClientRegistry;
   connectionWork: GatewayConnectionWork;
   getPluginNodeCapabilities?: () => PluginNodeCapabilitySurface[];
   // Read per connection so reloads cannot leave a stale auth snapshot.
@@ -163,7 +162,6 @@ export function attachGatewayConnection(params: AttachGatewayConnectionParams) {
     logWsControl,
     extraHandlers,
     getMethodRegistry,
-    broadcast,
     buildRequestContext,
   } = params;
   if (connectionWork.isClosing) {
@@ -484,7 +482,7 @@ export function attachGatewayConnection(params: AttachGatewayConnectionParams) {
           reason: "disconnect",
           watchedSessions: undefined,
         });
-        broadcastPresenceSnapshot({ broadcast, incrementPresenceVersion, getHealthVersion });
+        buildRequestContext().publishPresence();
       }
       if (currentDisconnectedNodeId) {
         removeRemoteNodeInfo(currentDisconnectedNodeId);
@@ -614,6 +612,7 @@ export function attachGatewayConnection(params: AttachGatewayConnectionParams) {
   }
 
   attachGatewayWsMessageHandlerOnDemand({
+    clients,
     ...connectionLifecycle,
     socket,
     prepareAuthenticatedReceive: params.prepareAuthenticatedReceive,

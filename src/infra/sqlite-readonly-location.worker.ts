@@ -8,7 +8,10 @@ import {
   isSqliteLockError,
 } from "./sqlite-error-diagnostics.js";
 import { encodeSqliteAuthTransferFrame } from "./sqlite-readonly-auth-transfer.js";
-import { releaseSnapshotTempDirectory } from "./sqlite-readonly-location-cleanup.js";
+import {
+  releaseSnapshotTempDirectory,
+  retireSqliteSnapshotPayload,
+} from "./sqlite-readonly-location-cleanup.js";
 import {
   createOnlineReadOnlyBackup,
   prepareSqliteReadOnlyLocationInProcess,
@@ -21,19 +24,17 @@ import {
   isSqliteSnapshotStagingMode,
   type SqliteReadOnlyWorkerResult,
 } from "./sqlite-readonly-worker-protocol.js";
+import { beginSqliteSnapshotRetirement } from "./sqlite-snapshot-retirement.js";
 import {
   createSqliteSnapshotStagingTokenSync,
   reclaimAbandonedSqliteSnapshots,
   reconcileSqliteSnapshotRetirement,
 } from "./sqlite-snapshot-staging.js";
+import type { SqliteStagingToken } from "./sqlite-staging-token.js";
 import { assertExistingDatabaseIdentity } from "./sqlite-worker-identity.js";
 import { createSqliteWorkerTransferOwner } from "./sqlite-worker-transfer.js";
-import {
-  acquireStateDatabaseHandleLease,
-  withStateDatabaseCoordinatorRuntimeDirectory,
-} from "./state-database-coordinator.js";
 
-const stagingTokens = new Map<string, (retiring?: boolean) => void>();
+const stagingTokens = new Map<string, SqliteStagingToken>();
 
 // Artifact-preserving sync requests must not open SQLite on the source. Live
 // async backups pin committed pages with a read transaction and may update SHM.
@@ -72,8 +73,13 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
       if (!token) {
         throw new Error("SQLite snapshot token is not owned by this worker");
       }
-      token(true);
-      stagingTokens.delete(pathname);
+      const retirement = beginSqliteSnapshotRetirement(pathname, { token });
+      try {
+        retireSqliteSnapshotPayload(retirement);
+        stagingTokens.delete(pathname);
+      } finally {
+        retirement.release();
+      }
       return { ok: true, location: pathname };
     }
     if (mode === "reclaim") {
@@ -139,7 +145,6 @@ function runSession(): void {
   let busy = false;
   let closeRequested = false;
   const transfers = createSqliteWorkerTransferOwner();
-  const sourceLeases = new Set<ReturnType<typeof acquireStateDatabaseHandleLease>>();
   let activeTransfer: { requestId: number; transferId: number } | undefined;
   const send = (id: number, result: unknown, failed = false) => {
     process.send?.({ id, result }, (error) => {
@@ -216,36 +221,17 @@ function runSession(): void {
         if (
           !isRecord(auth) ||
           typeof auth.expectedIdentity !== "string" ||
-          !auth.expectedIdentity.startsWith("file:") ||
-          !isRecord(auth.coordinatorRuntime) ||
-          typeof auth.coordinatorRuntime.directory !== "string" ||
-          typeof auth.coordinatorRuntime.keepAlive !== "boolean"
+          !auth.expectedIdentity.startsWith("file:")
         ) {
           throw new Error("Auth profile read requires captured physical ownership");
         }
         const { expectedIdentity } = auth;
-        const runtime = {
-          directory: auth.coordinatorRuntime.directory,
-          keepAlive: auth.coordinatorRuntime.keepAlive,
-        };
         // Domain code stays child-only; importing it from the host would reverse storage ownership.
         const { readAuthProfileRowsReadOnly } =
           await import("../agents/auth-profiles/sqlite-json.js");
-        const rows = withStateDatabaseCoordinatorRuntimeDirectory(runtime, () => {
-          const lease = acquireStateDatabaseHandleLease({
-            databasePath: pathname,
-            busyTimeoutMs: 0,
-          });
-          sourceLeases.add(lease);
-          assertExistingDatabaseIdentity(pathname, expectedIdentity);
-          const result = readAuthProfileRowsReadOnly(pathname);
-          assertExistingDatabaseIdentity(pathname, expectedIdentity);
-          // Parent loss cannot retire admission during a synchronous query. A failed
-          // kernel close retains this child's lease until its existing error exit.
-          lease.release();
-          sourceLeases.delete(lease);
-          return result;
-        });
+        assertExistingDatabaseIdentity(pathname, expectedIdentity);
+        const rows = readAuthProfileRowsReadOnly(pathname);
+        assertExistingDatabaseIdentity(pathname, expectedIdentity);
         const handle = transfers.start(
           [
             { kind: "store", value: rows.store },

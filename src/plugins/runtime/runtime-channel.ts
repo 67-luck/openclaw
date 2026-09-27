@@ -44,6 +44,11 @@ import {
   resolveInboundMentionDecision,
 } from "../../channels/mention-gating.js";
 import {
+  createChannelIngressPolicyResolver,
+  resolveChannelIngressPolicy,
+  resolveStableChannelIngressPolicy,
+} from "../../channels/message-access/runtime.js";
+import {
   setChannelConversationBindingIdleTimeoutBySessionKey,
   setChannelConversationBindingIdleTimeoutBySessionKeyAsync,
   setChannelConversationBindingMaxAgeBySessionKey,
@@ -137,6 +142,11 @@ export function createRuntimeChannel(options?: {
       },
     });
   const inboundRuntime = {
+    ingress: {
+      createResolver: createChannelIngressPolicyResolver,
+      resolve: resolveChannelIngressPolicy,
+      resolveStable: resolveStableChannelIngressPolicy,
+    },
     buildContext: buildChannelInboundEventContext,
     run: runInbound,
     runPreparedReply: runPreparedChannelTurn,
@@ -195,15 +205,7 @@ export function createRuntimeChannel(options?: {
           env,
           pairingAdapter,
         }),
-      upsertPairingRequest: ({ channel, id, accountId, meta, env, pairingAdapter }) =>
-        upsertChannelPairingRequest({
-          channel,
-          id,
-          accountId,
-          meta,
-          env,
-          pairingAdapter,
-        }),
+      upsertPairingRequest: upsertChannelPairingRequest,
     },
     media: {
       readRemoteMediaBuffer,
@@ -252,20 +254,8 @@ export function createRuntimeChannel(options?: {
     threadBindings: {
       setIdleTimeoutBySessionKeyAsync: setChannelConversationBindingIdleTimeoutBySessionKeyAsync,
       setMaxAgeBySessionKeyAsync: setChannelConversationBindingMaxAgeBySessionKeyAsync,
-      setIdleTimeoutBySessionKey: ({ channelId, targetSessionKey, accountId, idleTimeoutMs }) =>
-        setChannelConversationBindingIdleTimeoutBySessionKey({
-          channelId,
-          targetSessionKey,
-          accountId,
-          idleTimeoutMs,
-        }),
-      setMaxAgeBySessionKey: ({ channelId, targetSessionKey, accountId, maxAgeMs }) =>
-        setChannelConversationBindingMaxAgeBySessionKey({
-          channelId,
-          targetSessionKey,
-          accountId,
-          maxAgeMs,
-        }),
+      setIdleTimeoutBySessionKey: setChannelConversationBindingIdleTimeoutBySessionKey,
+      setMaxAgeBySessionKey: setChannelConversationBindingMaxAgeBySessionKey,
     },
     runtimeContexts: createChannelRuntimeContextRegistry(),
   } satisfies PluginRuntime["channel"];

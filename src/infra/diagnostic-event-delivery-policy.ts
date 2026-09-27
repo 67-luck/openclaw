@@ -20,6 +20,7 @@ export const ASYNC_DIAGNOSTIC_EVENT_TYPES = [
   "model.call.error",
   "run.progress",
   "run.execution_phase",
+  "agent.commentary",
   "harness.run.completed",
   "harness.run.error",
   "context.assembled",

@@ -3,6 +3,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
+import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -18,15 +20,11 @@ import { TranscriptsStore } from "../../transcripts/store.js";
 import { summarizeTranscripts } from "../../transcripts/summary.js";
 import { createTranscriptsTool } from "./transcripts-tool.js";
 
-const { getProvider } = vi.hoisted(() => ({ getProvider: vi.fn() }));
-vi.mock("../../transcripts/provider-registry.js", () => ({
-  getTranscriptSourceProvider: getProvider,
-  listTranscriptSourceProviders: () => [],
-}));
 const tempDirs = createTempDirTracker();
 
 afterEach(async () => {
   await clearTranscriptCapturesForTest();
+  setActivePluginRegistry(createEmptyPluginRegistry());
   vi.restoreAllMocks();
   vi.useRealTimers();
   await closeOpenClawStateDatabaseAsync();
@@ -51,7 +49,13 @@ function harness() {
       sessionId: request.sessionId,
     })),
   };
-  getProvider.mockReturnValue(provider);
+  const registry = createEmptyPluginRegistry();
+  registry.transcriptSourceProviders.push({
+    pluginId: provider.id,
+    provider,
+    source: import.meta.url,
+  });
+  setActivePluginRegistry(registry);
   const createTool = (assertCallerActive?: () => void) =>
     createTranscriptsTool({
       config: { transcripts: { enabled: true } },
@@ -872,42 +876,37 @@ describe("transcript capture ownership", () => {
     await h.execute({ action: "stop", sessionId: "notes" });
   });
 
-  it.each([
-    { phase: "active", fault: "missing" },
-    { phase: "active", fault: "unreadable" },
-    { phase: "terminal", fault: "missing" },
-    { phase: "terminal", fault: "unreadable" },
-  ] as const)("keeps $phase status visible with a $fault stored row", async ({ phase, fault }) => {
-    const h = harness();
-    await h.start();
-    const session = await h.session();
-    if (phase === "terminal") {
-      const write = vi
-        .spyOn(TranscriptsStore.prototype, "writeSession")
-        .mockRejectedValueOnce(new Error("store unavailable"));
-      await expect(h.requests[0]!.onStatus?.({ active: false })).rejects.toThrow(
-        "store unavailable",
-      );
-      write.mockRestore();
-    }
-    const read = vi.spyOn(TranscriptsStore.prototype, "readSessionEntry");
-    if (fault === "missing") {
-      read.mockResolvedValue(undefined);
-    } else {
-      read.mockRejectedValue(new Error("row unreadable"));
-    }
-    await expect.soft(h.execute({ action: "status" })).resolves.toMatchObject({
-      details: {
-        [phase === "terminal" ? "pendingFinalization" : "active"]: [
-          {
-            sessionId: "notes",
-            selector: `${session.startedAt.slice(0, 10)}/notes`,
-          },
-        ],
-      },
-    });
-    expect.soft(read).not.toHaveBeenCalled();
-    read.mockRestore();
-    await h.execute({ action: "stop", sessionId: "notes" });
-  });
+  it.each(["active", "terminal"] as const)(
+    "keeps %s status visible without reading its stored row",
+    async (phase) => {
+      const h = harness();
+      await h.start();
+      const session = await h.session();
+      if (phase === "terminal") {
+        const write = vi
+          .spyOn(TranscriptsStore.prototype, "writeSession")
+          .mockRejectedValueOnce(new Error("store unavailable"));
+        await expect(h.requests[0]!.onStatus?.({ active: false })).rejects.toThrow(
+          "store unavailable",
+        );
+        write.mockRestore();
+      }
+      const read = vi
+        .spyOn(TranscriptsStore.prototype, "readSessionEntry")
+        .mockRejectedValue(new Error("row unreadable"));
+      await expect.soft(h.execute({ action: "status" })).resolves.toMatchObject({
+        details: {
+          [phase === "terminal" ? "pendingFinalization" : "active"]: [
+            {
+              sessionId: "notes",
+              selector: `${session.startedAt.slice(0, 10)}/notes`,
+            },
+          ],
+        },
+      });
+      expect.soft(read).not.toHaveBeenCalled();
+      read.mockRestore();
+      await h.execute({ action: "stop", sessionId: "notes" });
+    },
+  );
 });

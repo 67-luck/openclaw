@@ -8,6 +8,7 @@ import {
 import { agentCommandFromGatewayIngress } from "../commands/agent.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import * as profileReader from "../state/user-profile-list.js";
 import { ensureProfileForEmail, setUserProfileRole } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
@@ -257,6 +258,36 @@ describe("OpenAI-compatible operator run authority", () => {
     },
   );
 
+  it("does not enter the command when its request ends during profile preparation", async () => {
+    await withOpenClawTestState({ label: "compat-run-preparation" }, async () => {
+      const fixture = createOperatorRunFixture();
+      const entered = createDeferred();
+      const resume = createDeferred();
+      const prepare = profileReader.prepareUserProfileIdentity;
+      const held = vi
+        .spyOn(profileReader, "prepareUserProfileIdentity")
+        .mockImplementationOnce(async (...args) => {
+          const identity = await prepare(...args);
+          entered.resolve();
+          await resume.promise;
+          return identity;
+        });
+      const running = runOpenAiCompatibleAgentCommand(fixture.params);
+      const rejected = expect(running).rejects.toThrow();
+      try {
+        await entered.promise;
+        fixture.request.abort(new Error("Request ended during preparation"));
+        resume.resolve();
+        await rejected;
+        expect(agentCommandFromGatewayIngress).not.toHaveBeenCalled();
+      } finally {
+        resume.resolve();
+        await running.catch(() => {});
+        held.mockRestore();
+      }
+    });
+  });
+
   it.each(["owner", "system"] as const)(
     "preserves %s authority without requiring a person-bound Gateway capture",
     async (actor) => {
@@ -280,6 +311,58 @@ describe("OpenAI-compatible operator run authority", () => {
           completedResult,
         );
       });
+    },
+  );
+});
+
+describe("OpenAI-compatible command admission", () => {
+  it.each([false, true])(
+    "keeps authority until custody transfers (already admitted=%s)",
+    async (alreadyAdmitted) => {
+      const prepared = createDeferred();
+      const proceed = createDeferred();
+      const executed = vi.fn();
+      let current = true;
+      vi.mocked(agentCommandFromGatewayIngress).mockImplementationOnce(async (opts) => {
+        const context = {
+          operationalRunInstance: { runId: "http-run", instanceId: "http-instance" },
+        };
+        if (alreadyAdmitted) {
+          await opts.onAdmittedRunContext?.(context);
+        }
+        prepared.resolve();
+        await proceed.promise;
+        opts.assertSourceCurrent?.();
+        if (!alreadyAdmitted) {
+          await opts.onAdmittedRunContext?.(context);
+        }
+        executed();
+        return { payloads: [{ text: "settled", mediaUrl: null }], meta: { durationMs: 0 } };
+      });
+      const pending = runOpenAiCompatibleAgentCommand({
+        message: "probe",
+        sessionKey: "agent:main:main",
+        runId: "http-run",
+        messageChannel: "webchat",
+        senderIsOwner: true,
+        requestAuth: {
+          authMethod: "token",
+          trustDeclaredOperatorScopes: false,
+          operatorRoleActor: { kind: "system" },
+        },
+        operatorScopes: ["operator.admin"],
+        hasCurrentClientAuthority: () => current,
+      });
+      await prepared.promise;
+      current = false;
+      proceed.resolve();
+      if (alreadyAdmitted) {
+        await expect(pending).resolves.toMatchObject({ payloads: [{ text: "settled" }] });
+        expect(executed).toHaveBeenCalledOnce();
+      } else {
+        await expect(pending).rejects.toThrow("Gateway requester authority changed");
+        expect(executed).not.toHaveBeenCalled();
+      }
     },
   );
 });

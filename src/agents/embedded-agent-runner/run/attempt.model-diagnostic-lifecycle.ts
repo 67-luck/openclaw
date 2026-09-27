@@ -1,3 +1,4 @@
+import { modelRequestBodyState } from "@openclaw/ai/internal/openai";
 import { withProviderAcceptanceObserver, type ProviderAcceptance } from "@openclaw/ai/transports";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
@@ -40,6 +41,7 @@ import type { StreamFn } from "../../runtime/index.js";
 export type ModelCallDiagnosticContext = {
   config?: OpenClawConfig;
   runId: string;
+  agentId?: string;
   sessionKey?: string;
   sessionId?: string;
   provider: string;
@@ -68,18 +70,11 @@ type ModelCallErrorFields = Pick<
   Extract<DiagnosticEventInput, { type: "model.call.error" }>,
   "errorCategory" | "failureKind" | "memory" | "upstreamRequestIdHash"
 >;
-type ModelCallEndedHookFields = Pick<
+type ModelCallEndedHookFields = Omit<
   PluginHookModelCallEndedEvent,
-  | "durationMs"
-  | "outcome"
-  | "errorCategory"
-  | "requestPayloadBytes"
-  | "responseStreamBytes"
-  | "timeToFirstByteMs"
-  | "failureKind"
-  | "upstreamRequestIdHash"
+  keyof PluginHookModelCallStartedEvent
 >;
-export type ModelCallSizeTimingFields = Pick<
+type ModelCallSizeTimingFields = Pick<
   Extract<DiagnosticEventInput, { type: "model.call.completed" }>,
   "requestPayloadBytes" | "responseStreamBytes" | "timeToFirstByteMs"
 >;
@@ -133,6 +128,7 @@ function baseModelCallEvent(
 ): ModelCallEventBase {
   return {
     runId: ctx.runId,
+    ...(ctx.agentId ? { agentId: ctx.agentId } : {}),
     callId,
     ...(ctx.sessionKey && { sessionKey: ctx.sessionKey }),
     ...(ctx.sessionId && { sessionId: ctx.sessionId }),
@@ -252,6 +248,7 @@ function modelCallHookEventBase(eventBase: ModelCallEventBase): PluginHookModelC
 function modelCallHookContext(eventBase: ModelCallEventBase): PluginHookAgentContext {
   return Object.freeze({
     runId: eventBase.runId,
+    ...(eventBase.agentId ? { agentId: eventBase.agentId } : {}),
     trace: eventBase.trace,
     ...(eventBase.sessionKey ? { sessionKey: eventBase.sessionKey } : {}),
     ...(eventBase.sessionId ? { sessionId: eventBase.sessionId } : {}),
@@ -264,7 +261,7 @@ function modelCallHookContext(eventBase: ModelCallEventBase): PluginHookAgentCon
     ...(eventBase.contextWindowReferenceTokens
       ? { contextWindowReferenceTokens: eventBase.contextWindowReferenceTokens }
       : {}),
-  }) as PluginHookAgentContext;
+  });
 }
 
 function dispatchModelCallStartedHook(eventBase: ModelCallEventBase): void {
@@ -272,7 +269,7 @@ function dispatchModelCallStartedHook(eventBase: ModelCallEventBase): void {
   if (!hookRunner?.hasHooks("model_call_started")) {
     return;
   }
-  const event = Object.freeze(modelCallHookEventBase(eventBase)) as PluginHookModelCallStartedEvent;
+  const event = Object.freeze(modelCallHookEventBase(eventBase));
   const hookCtx = modelCallHookContext(eventBase);
   fireAndForgetBoundedHook(
     () => hookRunner.runModelCallStarted(event, hookCtx),
@@ -291,7 +288,7 @@ function dispatchModelCallEndedHook(
   const event = Object.freeze({
     ...modelCallHookEventBase(eventBase),
     ...fields,
-  }) as PluginHookModelCallEndedEvent;
+  });
   const hookCtx = modelCallHookContext(eventBase);
   fireAndForgetBoundedHook(
     () => hookRunner.runModelCallEnded(event, hookCtx),
@@ -367,6 +364,9 @@ function withDiagnosticRequestContext(
   const originalOnPayload = options?.onPayload;
   const originalOnResponse = options?.onResponse;
   const onPayload: NonNullable<ModelCallStreamOptions>["onPayload"] = (payload, model) => {
+    if (modelRequestBodyState(requestOptions).enabled) {
+      return originalOnPayload?.(payload, model);
+    }
     if (!originalOnPayload) {
       observer.assignRequestPayloadBytes(payload);
       return undefined;
@@ -407,6 +407,9 @@ function withDiagnosticRequestContext(
     ...((options?.headers || traceparent) && { headers }),
     onPayload,
     onResponse,
+  };
+  modelRequestBodyState(requestOptions).onBytes = (bytes) => {
+    observer.state.requestPayloadBytes = bytes;
   };
   return withProviderAcceptanceObserver(requestOptions, (acceptance) => {
     if (observer.state.terminalEventEmitted) {

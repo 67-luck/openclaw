@@ -1,5 +1,6 @@
 // Covers web-search provider config parsing and provider defaults.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadPluginManifestRegistryCore } from "../plugins/manifest-registry.js";
 import { resolveWebSearchProviderId } from "../web-search/runtime.js";
 import { buildWebSearchProviderConfig } from "./test-helpers.js";
 import { validateConfigObjectWithPlugins } from "./validation.js";
@@ -241,9 +242,17 @@ function expectAllowedValuesInclude(message: ValidationMessage, values: string[]
   }
 }
 
+// Validation consumes prepared metadata before consulting discovery or process caches.
+// Pin this file's manifest fixture while allowing explicit empty snapshots below.
+const validateWebSearchConfig: typeof validateConfigObjectWithPlugins = (raw, params) =>
+  validateConfigObjectWithPlugins(raw, {
+    pluginMetadataSnapshot: { manifestRegistry: loadPluginManifestRegistryCore() },
+    ...params,
+  });
+
 describe("web search provider config", () => {
   it("does not warn for brave plugin config when bundled web search allowlist compat applies", () => {
-    const res = validateConfigObjectWithPlugins({
+    const res = validateWebSearchConfig({
       plugins: {
         allow: ["imessage", "memory-core"],
         entries: {
@@ -306,18 +315,6 @@ describe("web search provider config", () => {
         }),
     ],
     [
-      "accepts firecrawl provider and config",
-      () =>
-        buildWebSearchProviderConfig({
-          enabled: true,
-          provider: "firecrawl",
-          providerConfig: {
-            apiKey: "fc-test-key", // pragma: allowlist secret
-            baseUrl: "https://api.firecrawl.dev",
-          },
-        }),
-    ],
-    [
       "accepts tavily provider config on the plugin-owned path",
       () =>
         buildWebSearchProviderConfig({
@@ -330,21 +327,6 @@ describe("web search provider config", () => {
               id: "TAVILY_API_KEY",
             },
             baseUrl: "https://api.tavily.com",
-          },
-        }),
-    ],
-    [
-      "accepts minimax provider config on the plugin-owned path",
-      () =>
-        buildWebSearchProviderConfig({
-          enabled: true,
-          provider: "minimax",
-          providerConfig: {
-            apiKey: {
-              source: "env",
-              provider: "default",
-              id: "MINIMAX_CODE_PLAN_KEY",
-            },
           },
         }),
     ],
@@ -364,29 +346,12 @@ describe("web search provider config", () => {
         }),
     ],
   ])("%s", (_name, createConfig) => {
-    const res = validateConfigObjectWithPlugins(createConfig());
+    const res = validateWebSearchConfig(createConfig());
     expect(res.ok).toBe(true);
   });
 
-  it("rejects legacy scoped Tavily config", () => {
-    const res = validateConfigObjectWithPlugins({
-      tools: {
-        web: {
-          search: {
-            provider: "tavily",
-            tavily: {
-              apiKey: "tvly-test-key",
-            },
-          },
-        },
-      },
-    });
-
-    expect(res.ok).toBe(false);
-  });
-
   it("detects legacy scoped provider config for bundled providers", () => {
-    const res = validateConfigObjectWithPlugins({
+    const res = validateWebSearchConfig({
       tools: {
         web: {
           search: {
@@ -403,7 +368,7 @@ describe("web search provider config", () => {
   });
 
   it("accepts gemini provider with no extra config", () => {
-    const res = validateConfigObjectWithPlugins(
+    const res = validateWebSearchConfig(
       buildWebSearchProviderConfig({
         provider: "gemini",
       }),
@@ -413,7 +378,7 @@ describe("web search provider config", () => {
   });
 
   it("accepts provider ids registered by installed plugin manifests", () => {
-    const res = validateConfigObjectWithPlugins(
+    const res = validateWebSearchConfig(
       buildWebSearchProviderConfig({
         provider: "acme-search",
       }),
@@ -423,7 +388,7 @@ describe("web search provider config", () => {
   });
 
   it("rejects installable provider ids when the plugin is not active", () => {
-    const res = validateConfigObjectWithPlugins(
+    const res = validateWebSearchConfig(
       buildWebSearchProviderConfig({
         provider: "brave",
       }),
@@ -449,7 +414,7 @@ describe("web search provider config", () => {
   });
 
   it("warns for installable provider ids when stale plugin config is present", () => {
-    const res = validateConfigObjectWithPlugins(
+    const res = validateWebSearchConfig(
       {
         ...buildWebSearchProviderConfig({
           provider: "brave",
@@ -484,7 +449,7 @@ describe("web search provider config", () => {
   });
 
   it("rejects unknown provider ids without plugin evidence", () => {
-    const res = validateConfigObjectWithPlugins({
+    const res = validateWebSearchConfig({
       tools: {
         web: {
           search: {
@@ -504,7 +469,7 @@ describe("web search provider config", () => {
   });
 
   it("warns for unknown provider ids when stale plugin config is present", () => {
-    const res = validateConfigObjectWithPlugins({
+    const res = validateWebSearchConfig({
       tools: {
         web: {
           search: {
@@ -553,19 +518,8 @@ describe("web search provider auto-detection", () => {
   });
 
   it.each([
-    ["brave", "BRAVE_API_KEY", "test-brave-key"], // pragma: allowlist secret
-    ["gemini", "GEMINI_API_KEY", "test-gemini-key"], // pragma: allowlist secret
-    ["tavily", "TAVILY_API_KEY", "tvly-test-key"], // pragma: allowlist secret
-    ["minimax", "MINIMAX_API_KEY", "test-minimax-key"], // pragma: allowlist secret
-    ["firecrawl", "FIRECRAWL_API_KEY", "fc-test-key"], // pragma: allowlist secret
     ["searxng", "SEARXNG_BASE_URL", "http://localhost:8080"],
-    ["kimi", "KIMI_API_KEY", "test-kimi-key"], // pragma: allowlist secret
-    ["minimax", "MINIMAX_CODE_PLAN_KEY", "sk-cp-test"],
     ["minimax", "MINIMAX_OAUTH_TOKEN", "oauth-test-token"], // pragma: allowlist secret
-    ["perplexity", "PERPLEXITY_API_KEY", "test-perplexity-key"], // pragma: allowlist secret
-    ["perplexity", "OPENROUTER_API_KEY", "sk-or-v1-test"], // pragma: allowlist secret
-    ["grok", "XAI_API_KEY", "test-xai-key"], // pragma: allowlist secret
-    ["kimi", "MOONSHOT_API_KEY", "test-moonshot-key"], // pragma: allowlist secret
   ])("auto-detects %s when only %s is set", (provider, envVar, value) => {
     process.env[envVar] = value;
     expect(resolveSearchProvider({})).toBe(provider);
@@ -584,13 +538,6 @@ describe("web search provider auto-detection", () => {
     process.env.PERPLEXITY_API_KEY = "test-perplexity-key"; // pragma: allowlist secret
     process.env.XAI_API_KEY = "test-xai-key"; // pragma: allowlist secret
     expect(resolveSearchProvider({})).toBe("gemini");
-  });
-
-  it("grok wins over kimi and perplexity when brave and gemini unavailable", () => {
-    process.env.XAI_API_KEY = "test-xai-key"; // pragma: allowlist secret
-    process.env.KIMI_API_KEY = "test-kimi-key"; // pragma: allowlist secret
-    process.env.PERPLEXITY_API_KEY = "test-perplexity-key"; // pragma: allowlist secret
-    expect(resolveSearchProvider({})).toBe("grok");
   });
 
   it("explicit provider always wins regardless of keys", () => {

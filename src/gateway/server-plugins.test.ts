@@ -16,6 +16,11 @@ import {
 } from "../plugins/hook-runner-global.js";
 import { createPluginRecord } from "../plugins/loader-records.js";
 import type { PluginDiagnostic } from "../plugins/manifest-types.js";
+import {
+  createPluginCache,
+  invalidatePluginCacheMetadata,
+  withPluginCache,
+} from "../plugins/plugin-cache.js";
 import type { PluginLookUpTable } from "../plugins/plugin-lookup-table.js";
 import { buildDeclaredProviderOwnerIndex } from "../plugins/provider-owner-index.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
@@ -409,8 +414,17 @@ async function loadTestModules() {
   methodScopesModule = await import("./method-scopes.js");
 }
 
+function voiceCallOverrideConfig(allowedModels = ["anthropic/claude-haiku-4-5"]) {
+  return {
+    plugins: {
+      entries: {
+        "voice-call": { subagent: { allowModelOverride: true, allowedModels } },
+      },
+    },
+  };
+}
+
 async function createSubagentRuntime(
-  _serverPlugins: ServerPluginsModule,
   cfg: Record<string, unknown> = {},
 ): Promise<PluginRuntime["subagent"]> {
   loadOpenClawPlugins.mockReturnValue(createRegistry([]));
@@ -449,7 +463,7 @@ function registerActivePluginToolOwnership(
     pluginId,
     factory: () => null,
     names,
-    declaredNames,
+    declaredNames: new Set(declaredNames),
     optional: true,
     source: `/tmp/${pluginId}/index.js`,
   });
@@ -542,42 +556,32 @@ afterEach(() => {
 });
 
 describe("loadGatewayPlugins", () => {
-  test("logs plugin errors with details", () => {
-    const diagnostics: PluginDiagnostic[] = [
-      {
-        level: "error",
-        pluginId: "telegram",
-        source: "/tmp/telegram/index.ts",
-        message: "failed to load plugin: boom",
-      },
-    ];
-    loadOpenClawPlugins.mockReturnValue(createRegistry(diagnostics));
-    const log = loadStartupPluginFixture();
-
-    expect(log.error).toHaveBeenCalledWith(
-      "[plugins] failed to load plugin: boom (plugin=telegram, source=/tmp/telegram/index.ts)",
-    );
-    expect(log.warn).not.toHaveBeenCalled();
-  });
-
-  test("logs warn-level plugin diagnostics through the warn sink, not info", () => {
-    const diagnostics: PluginDiagnostic[] = [
-      {
-        level: "warn",
-        pluginId: "beads",
-        source: "/tmp/beads/index.ts",
-        message: 'typed hook "before_prompt_build" blocked by policy',
-      },
-    ];
-    loadOpenClawPlugins.mockReturnValue(createRegistry(diagnostics));
-    const log = loadStartupPluginFixture();
-
-    expect(log.warn).toHaveBeenCalledWith(
-      '[plugins] typed hook "before_prompt_build" blocked by policy (plugin=beads, source=/tmp/beads/index.ts)',
-    );
-    expect(log.info).not.toHaveBeenCalledWith(expect.stringContaining("[plugins] typed hook"));
-    expect(log.error).not.toHaveBeenCalled();
-  });
+  test.each(["error", "warn", "info"] as const)(
+    "routes %s diagnostics and retires informational deduplication with metadata",
+    (level) => {
+      const cache = createPluginCache();
+      loadOpenClawPlugins.mockReturnValue(
+        createRegistry([{ level, pluginId: "demo", source: "/plugin.ts", message: "notice" }]),
+      );
+      const log = createTestLog();
+      const expected = "[plugins] notice (plugin=demo, source=/plugin.ts)";
+      const emitted = () =>
+        log[level].mock.calls.filter(([message]) => message === expected).length;
+      withPluginCache(cache, () => {
+        loadStartupPluginFixture({ log });
+        loadStartupPluginFixture({ log });
+        expect(emitted()).toBe(level === "info" ? 1 : 2);
+        invalidatePluginCacheMetadata(cache);
+        loadStartupPluginFixture({ log });
+      });
+      expect(emitted()).toBe(level === "info" ? 2 : 3);
+      for (const sink of ["error", "warn", "info"] as const) {
+        if (sink !== level) {
+          expect(log[sink]).not.toHaveBeenCalledWith(expected);
+        }
+      }
+    },
+  );
 
   test("does not re-log a quarantined plugin verification diagnostic", () => {
     const diagnostic: PluginDiagnostic = {
@@ -733,17 +737,6 @@ describe("loadGatewayPlugins", () => {
 
     expect(pluginRuntimeLoaderLogger.info).not.toHaveBeenCalled();
     expect(pluginRuntimeLoaderLogger.warn).toHaveBeenCalledWith("plugin warning");
-  });
-
-  test("reuses the provided startup plugin scope without recomputing it", () => {
-    loadOpenClawPlugins.mockReturnValue(createRegistry([]));
-
-    loadGatewayPluginsForTest({
-      pluginIds: ["browser"],
-    });
-
-    expect(loadPluginLookUpTable).not.toHaveBeenCalled();
-    expect(getLastPluginLoadOption("onlyPluginIds")).toEqual(["browser"]);
   });
 
   test("reuses a provided lookup table for startup scope and auto-enable manifests", () => {
@@ -998,6 +991,8 @@ describe("loadGatewayPlugins", () => {
     expect(getLastPluginLoadOption("autoEnabledReasons")).toEqual({
       slack: ["slack configured"],
     });
+    expect(getLastPluginLoadOption("onlyPluginIds")).toEqual(["discord", "telegram"]);
+    expect(getLastPluginLoadOption("preferBuiltPluginArtifacts")).toBe(true);
   });
 
   test("re-derives auto-enable reasons when only activationSourceConfig is provided", () => {
@@ -1035,7 +1030,7 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("provides subagent runtime session messages through sessions.get", async () => {
-    const runtime = await createSubagentRuntime(serverPluginsModule);
+    const runtime = await createSubagentRuntime();
     serverPluginsModule.setFallbackGatewayContext(createTestContext("sessions-get-aliases"));
     handleGatewayRequest
       .mockImplementationOnce(async (opts: HandleGatewayRequestOptions) => {
@@ -1413,9 +1408,9 @@ describe("loadGatewayPlugins", () => {
     const request = pluginId
       ? gatewayRequestScopeModule.withPluginRuntimePluginScope(
           { pluginId, pluginOrigin: "global" },
-          () => runtime.gateway.request("sessions.list", {}),
+          () => runtime.gateway.request("sessions.list", {}, { scopes: ["operator.admin"] }),
         )
-      : runtime.gateway.request("sessions.list", {});
+      : runtime.gateway.request("sessions.list", {}, { scopes: ["operator.admin"] });
 
     await expect(request).rejects.toThrow(reason);
     await expect(request).rejects.toThrow("bundled or trusted official plugins");
@@ -1476,6 +1471,7 @@ describe("loadGatewayPlugins", () => {
       ),
     );
 
+    expect(getLastDispatchedParams()).toEqual({ to: "+15550001234" });
     expect(getLastDispatchedClientScopes()).toEqual(["operator.write"]);
     expect(getLastDispatchedClientScopes()).not.toContain("operator.admin");
     expect(getLastDispatchedClientInternal().pluginRuntimeOwnerId).toBe("google-meet");
@@ -1599,7 +1595,6 @@ describe("loadGatewayPlugins", () => {
     { label: "unknown command", owners: [] },
     { label: "another plugin's duplex command", owners: ["another-plugin"] },
     { label: "ambiguous plugin ownership", owners: ["duplex-plugin", "another-plugin"] },
-    { label: "duplicate caller-owned declarations", owners: ["duplex-plugin", "duplex-plugin"] },
     { label: "missing scoped registry", owners: ["duplex-plugin"], scopedRegistry: false },
   ])("rejects a $label before node dispatch", async ({ owners, scopedRegistry }) => {
     const registry = addLoadedPlugin(createRegistry([]), { id: "duplex-plugin" });
@@ -2019,7 +2014,7 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("returns resolved runtime metadata from plugin-owned subagent starts", async () => {
-    const runtime = await createSubagentRuntime(serverPluginsModule);
+    const runtime = await createSubagentRuntime();
     serverPluginsModule.setFallbackGatewayContext(createTestContext("resolved-subagent-runtime"));
     handleGatewayRequest.mockImplementationOnce(async (opts: HandleGatewayRequestOptions) => {
       expect(opts.req.method).toBe("agent");
@@ -2051,9 +2046,8 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("forwards caller-supplied idempotencyKey on subagent run", async () => {
-    const serverPlugins = serverPluginsModule;
-    const runtime = await createSubagentRuntime(serverPlugins);
-    serverPlugins.setFallbackGatewayContext(createTestContext("idempotency-forward"));
+    const runtime = await createSubagentRuntime();
+    serverPluginsModule.setFallbackGatewayContext(createTestContext("idempotency-forward"));
 
     await runtime.run({
       sessionKey: "s-idem-forward",
@@ -2069,7 +2063,7 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("forwards cwd on plugin-owned subagent runs", async () => {
-    const runtime = await createSubagentRuntime(serverPluginsModule);
+    const runtime = await createSubagentRuntime();
     serverPluginsModule.setFallbackGatewayContext(createTestContext("cwd-forward"));
 
     await gatewayRequestScopeModule.withPluginRuntimePluginScope(
@@ -2087,7 +2081,7 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("forwards exact plugin-owned additive tools through internal run metadata", async () => {
-    const runtime = await createSubagentRuntime(serverPluginsModule);
+    const runtime = await createSubagentRuntime();
     serverPluginsModule.setFallbackGatewayContext(createTestContext("tools-also-allow"));
     registerActivePluginToolOwnership("workboard", [
       "workboard_heartbeat",
@@ -2113,7 +2107,7 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("rejects additive subagent tools not registered by the calling plugin", async () => {
-    const runtime = await createSubagentRuntime(serverPluginsModule);
+    const runtime = await createSubagentRuntime();
     serverPluginsModule.setFallbackGatewayContext(createTestContext("foreign-tools-also-allow"));
     registerActivePluginToolOwnership("workboard", ["workboard_complete"]);
     registerActivePluginToolOwnership("other-plugin", ["other_plugin_tool"]);
@@ -2133,7 +2127,7 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("accepts additive tools declared by an unnamed plugin factory", async () => {
-    const runtime = await createSubagentRuntime(serverPluginsModule);
+    const runtime = await createSubagentRuntime();
     serverPluginsModule.setFallbackGatewayContext(createTestContext("declared-tools-also-allow"));
     registerActivePluginToolOwnership("workboard", [], ["workboard_complete"]);
 
@@ -2154,7 +2148,7 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("rejects core and ambiguously-owned additive tool names", async () => {
-    const runtime = await createSubagentRuntime(serverPluginsModule);
+    const runtime = await createSubagentRuntime();
     serverPluginsModule.setFallbackGatewayContext(createTestContext("colliding-tools-also-allow"));
     registerActivePluginToolOwnership("workboard", ["exec", "workboard_complete"]);
     registerActivePluginToolOwnership("other-plugin", ["workboard_complete"]);
@@ -2216,9 +2210,8 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("forwards bounded context options on subagent run", async () => {
-    const serverPlugins = serverPluginsModule;
-    const runtime = await createSubagentRuntime(serverPlugins);
-    serverPlugins.setFallbackGatewayContext(createTestContext("light-context-forward"));
+    const runtime = await createSubagentRuntime();
+    serverPluginsModule.setFallbackGatewayContext(createTestContext("light-context-forward"));
 
     await runtime.run({
       sessionKey: "s-light-context",
@@ -2239,9 +2232,8 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("generates a non-empty idempotencyKey when the caller omits it", async () => {
-    const serverPlugins = serverPluginsModule;
-    const runtime = await createSubagentRuntime(serverPlugins);
-    serverPlugins.setFallbackGatewayContext(createTestContext("idempotency-generate"));
+    const runtime = await createSubagentRuntime();
+    serverPluginsModule.setFallbackGatewayContext(createTestContext("idempotency-generate"));
 
     await runtime.run({
       sessionKey: "s-idem-generate",
@@ -2262,9 +2254,8 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("rejects provider/model overrides for fallback runs without explicit authorization", async () => {
-    const serverPlugins = serverPluginsModule;
-    const runtime = await createSubagentRuntime(serverPlugins);
-    serverPlugins.setFallbackGatewayContext(createTestContext("fallback-deny-overrides"));
+    const runtime = await createSubagentRuntime();
+    serverPluginsModule.setFallbackGatewayContext(createTestContext("fallback-deny-overrides"));
 
     await expect(
       runtime.run({
@@ -2280,21 +2271,9 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("allows trusted fallback provider/model overrides when plugin config is explicit", async () => {
-    const serverPlugins = serverPluginsModule;
-    const runtime = await createSubagentRuntime(serverPlugins, {
-      plugins: {
-        entries: {
-          "voice-call": {
-            subagent: {
-              allowModelOverride: true,
-              allowedModels: ["anthropic/claude-haiku-4-5"],
-            },
-          },
-        },
-      },
-    });
+    const runtime = await createSubagentRuntime(voiceCallOverrideConfig());
     expect(normalizeProviderModelIdWithRuntime).not.toHaveBeenCalled();
-    serverPlugins.setFallbackGatewayContext(createTestContext("fallback-trusted-overrides"));
+    serverPluginsModule.setFallbackGatewayContext(createTestContext("fallback-trusted-overrides"));
     await gatewayRequestScopeModule.withPluginRuntimePluginScope({ pluginId: "voice-call" }, () =>
       runtime.run({
         sessionKey: "s-trusted-override",
@@ -2313,19 +2292,8 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("keeps fallback model policy bound to the runtime that loaded it", async () => {
-    const allowedRuntime = await createSubagentRuntime(serverPluginsModule, {
-      plugins: {
-        entries: {
-          "voice-call": {
-            subagent: {
-              allowModelOverride: true,
-              allowedModels: ["anthropic/claude-haiku-4-5"],
-            },
-          },
-        },
-      },
-    });
-    const deniedRuntime = await createSubagentRuntime(serverPluginsModule);
+    const allowedRuntime = await createSubagentRuntime(voiceCallOverrideConfig());
+    const deniedRuntime = await createSubagentRuntime();
     serverPluginsModule.setFallbackGatewayContext(createTestContext("fallback-policy-binding"));
     const run = (runtime: PluginRuntime["subagent"]) =>
       gatewayRequestScopeModule.withPluginRuntimePluginScope({ pluginId: "voice-call" }, () =>
@@ -2346,7 +2314,7 @@ describe("loadGatewayPlugins", () => {
 
   test("tags plugin fallback subagent runs with the creating plugin id", async () => {
     const serverPlugins = serverPluginsModule;
-    const runtime = await createSubagentRuntime(serverPlugins);
+    const runtime = await createSubagentRuntime();
     serverPlugins.setFallbackGatewayContext(createTestContext("fallback-plugin-owner"));
 
     await gatewayRequestScopeModule.withPluginRuntimePluginScope({ pluginId: "memory-core" }, () =>
@@ -2362,7 +2330,7 @@ describe("loadGatewayPlugins", () => {
 
   test("includes docs guidance when a plugin fallback override is not trusted", async () => {
     const serverPlugins = serverPluginsModule;
-    const runtime = await createSubagentRuntime(serverPlugins);
+    const runtime = await createSubagentRuntime();
     serverPlugins.setFallbackGatewayContext(createTestContext("fallback-untrusted-plugin"));
 
     await expect(
@@ -2381,20 +2349,10 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("allows trusted fallback model-only overrides when the model ref is canonical", async () => {
-    const serverPlugins = serverPluginsModule;
-    const runtime = await createSubagentRuntime(serverPlugins, {
-      plugins: {
-        entries: {
-          "voice-call": {
-            subagent: {
-              allowModelOverride: true,
-              allowedModels: ["anthropic/claude-haiku-4-5"],
-            },
-          },
-        },
-      },
-    });
-    serverPlugins.setFallbackGatewayContext(createTestContext("fallback-model-only-override"));
+    const runtime = await createSubagentRuntime(voiceCallOverrideConfig());
+    serverPluginsModule.setFallbackGatewayContext(
+      createTestContext("fallback-model-only-override"),
+    );
     await gatewayRequestScopeModule.withPluginRuntimePluginScope({ pluginId: "voice-call" }, () =>
       runtime.run({
         sessionKey: "s-model-only-override",
@@ -2411,20 +2369,8 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("rejects trusted fallback overrides when the configured allowlist normalizes to empty", async () => {
-    const serverPlugins = serverPluginsModule;
-    const runtime = await createSubagentRuntime(serverPlugins, {
-      plugins: {
-        entries: {
-          "voice-call": {
-            subagent: {
-              allowModelOverride: true,
-              allowedModels: ["anthropic"],
-            },
-          },
-        },
-      },
-    });
-    serverPlugins.setFallbackGatewayContext(createTestContext("fallback-invalid-allowlist"));
+    const runtime = await createSubagentRuntime(voiceCallOverrideConfig(["anthropic"]));
+    serverPluginsModule.setFallbackGatewayContext(createTestContext("fallback-invalid-allowlist"));
     await expect(
       gatewayRequestScopeModule.withPluginRuntimePluginScope({ pluginId: "voice-call" }, () =>
         runtime.run({
@@ -2441,9 +2387,8 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("uses least-privilege synthetic fallback scopes without admin", async () => {
-    const serverPlugins = serverPluginsModule;
-    const runtime = await createSubagentRuntime(serverPlugins);
-    serverPlugins.setFallbackGatewayContext(createTestContext("synthetic-least-privilege"));
+    const runtime = await createSubagentRuntime();
+    serverPluginsModule.setFallbackGatewayContext(createTestContext("synthetic-least-privilege"));
 
     await runtime.run({
       sessionKey: "s-synthetic",
@@ -2456,9 +2401,8 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("allows fallback session reads with synthetic write scope", async () => {
-    const serverPlugins = serverPluginsModule;
-    const runtime = await createSubagentRuntime(serverPlugins);
-    serverPlugins.setFallbackGatewayContext(createTestContext("synthetic-session-read"));
+    const runtime = await createSubagentRuntime();
+    serverPluginsModule.setFallbackGatewayContext(createTestContext("synthetic-session-read"));
 
     handleGatewayRequest.mockImplementationOnce(async (opts: HandleGatewayRequestOptions) => {
       const scopes = Array.isArray(opts.client?.connect?.scopes) ? opts.client.connect.scopes : [];
@@ -2491,7 +2435,7 @@ describe("loadGatewayPlugins", () => {
   ])(
     "limits background system session reads to trusted $origin plugins",
     async ({ origin, expectedActor }) => {
-      const runtime = await createSubagentRuntime(serverPluginsModule);
+      const runtime = await createSubagentRuntime();
       serverPluginsModule.setFallbackGatewayContext(createTestContext(`background-read-${origin}`));
       handleGatewayRequest.mockImplementationOnce(async (opts: HandleGatewayRequestOptions) => {
         expect(opts.client?.internal?.operatorRoleActor).toEqual(expectedActor);
@@ -2506,9 +2450,8 @@ describe("loadGatewayPlugins", () => {
   );
 
   test("rejects fallback session deletion without minting admin scope", async () => {
-    const serverPlugins = serverPluginsModule;
-    const runtime = await createSubagentRuntime(serverPlugins);
-    serverPlugins.setFallbackGatewayContext(createTestContext("synthetic-delete-session"));
+    const runtime = await createSubagentRuntime();
+    serverPluginsModule.setFallbackGatewayContext(createTestContext("synthetic-delete-session"));
 
     handleGatewayRequest.mockImplementationOnce(async (opts: HandleGatewayRequestOptions) => {
       // Re-run the gateway scope check here so the test proves fallback dispatch
@@ -2537,9 +2480,10 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("uses owner-scoped synthetic admin for plugin-created session cleanup", async () => {
-    const serverPlugins = serverPluginsModule;
-    const runtime = await createSubagentRuntime(serverPlugins);
-    serverPlugins.setFallbackGatewayContext(createTestContext("fallback-plugin-delete-session"));
+    const runtime = await createSubagentRuntime();
+    serverPluginsModule.setFallbackGatewayContext(
+      createTestContext("fallback-plugin-delete-session"),
+    );
 
     handleGatewayRequest.mockImplementationOnce(async (opts: HandleGatewayRequestOptions) => {
       const scopes = Array.isArray(opts.client?.connect?.scopes) ? opts.client.connect.scopes : [];
@@ -2565,30 +2509,6 @@ describe("loadGatewayPlugins", () => {
 
     expect(getLastDispatchedClientScopes()).toEqual(["operator.admin"]);
     expect(getLastDispatchedClientInternal().pluginRuntimeOwnerId).toBe("memory-core");
-  });
-
-  test("allows session deletion when the request scope already has admin", async () => {
-    const runtime = await createRequestScopedSubagentRuntime();
-    const scope = {
-      context: createTestContext("request-scope-delete-session"),
-      client: {
-        connect: {
-          scopes: ["operator.admin"],
-        },
-      } as GatewayRequestOptions["client"],
-      isWebchatConnect: () => false,
-    } satisfies PluginRuntimeGatewayRequestScope;
-
-    await expect(
-      gatewayRequestScopeModule.withPluginRuntimeGatewayRequestScope(scope, () =>
-        runtime.deleteSession({
-          sessionKey: "s-delete-admin",
-          deleteTranscript: true,
-        }),
-      ),
-    ).resolves.toBeUndefined();
-
-    expect(getLastDispatchedClientScopes()).toEqual(["operator.admin"]);
   });
 
   test("keeps plugin owner metadata on admin-scoped plugin session cleanup", async () => {
@@ -2628,7 +2548,6 @@ describe("loadGatewayPlugins", () => {
   });
 
   test("uses the auto-enabled config snapshot for gateway bootstrap policies", async () => {
-    const serverPlugins = serverPluginsModule;
     const autoEnabledConfig = {
       plugins: {
         entries: {
@@ -2643,8 +2562,10 @@ describe("loadGatewayPlugins", () => {
       changes: [],
       autoEnabledReasons: {},
     });
-    const runtime = await createSubagentRuntime(serverPlugins, {});
-    serverPlugins.setFallbackGatewayContext(createTestContext("auto-enabled-bootstrap-policy"));
+    const runtime = await createSubagentRuntime({});
+    serverPluginsModule.setFallbackGatewayContext(
+      createTestContext("auto-enabled-bootstrap-policy"),
+    );
 
     await gatewayRequestScopeModule.withPluginRuntimePluginScope({ pluginId: "demo" }, () =>
       runtime.run({

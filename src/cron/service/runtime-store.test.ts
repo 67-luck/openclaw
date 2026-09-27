@@ -11,7 +11,8 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
-import { resetTaskRegistryForTests } from "../../tasks/task-runtime.test-helpers.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
+import { readCronRunHistoryPageForTests } from "../run-history.test-support.js";
 import { CronService } from "../service.js";
 import { loadCronJobsStoreWithConfigJobs, loadCronStore, saveCronStore } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
@@ -22,7 +23,7 @@ import {
   finishCronRunReceipt,
   prepareCronRunReceiptClaim,
 } from "../store/run-receipt-store.js";
-import { readCronTaskRunHistoryPage } from "../task-run-history.js";
+import { prepareCronRunReceiptWriteSchema } from "../store/run-receipt-write-admission.js";
 import type { CronStoredJob } from "../types.js";
 import { stop } from "./ops-lifecycle.js";
 import { applyCronRuntimeRowsToState, commitCronRuntimeRows } from "./runtime-store.js";
@@ -131,6 +132,12 @@ describe("cron runtime row publication", () => {
     const after = database
       .prepare("SELECT * FROM cron_jobs WHERE store_key = ? ORDER BY sort_order")
       .all(storeKey);
+    const grantDefinitionProjection = (row: Record<string, unknown>) => ({
+      revision: row.grant_definition_revision,
+      generation: row.grant_definition_generation,
+      updatedAt: row.grant_definition_updated_at,
+    });
+    expect(after.map(grantDefinitionProjection)).toEqual(before.map(grantDefinitionProjection));
     expect(after.filter((row) => !committed.includes(row.job_id as string))).toEqual(
       before.filter((row) => !committed.includes(row.job_id as string)),
     );
@@ -186,6 +193,7 @@ describe("cron runtime row publication", () => {
     const handle = runOpenClawStateWriteTransaction(({ db }) =>
       claimCronRunReceiptInDatabase({
         database: db,
+        receiptSchema: prepareCronRunReceiptWriteSchema(db),
         prepared,
         resolveAgentId: (current) => current.agentId ?? "main",
       }),
@@ -210,7 +218,6 @@ describe("cron runtime row publication", () => {
   });
 
   it("hands persisted authority to the runner and records its revocation failure", async () => {
-    resetTaskRegistryForTests();
     const store = runtimeStoreFixtures.makeStorePath();
     const dueAt = Date.parse("2026-02-06T10:05:03.000Z");
     const job: CronStoredJob = createDueIsolatedJob({
@@ -232,6 +239,7 @@ describe("cron runtime row publication", () => {
     const runIsolatedAgentJob = vi.fn().mockRejectedValue(new AgentHarnessPreflightError(error));
     const onEvent = vi.fn();
     const cron = new CronService({
+      scheduler: createTestGatewayScheduler(),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
@@ -253,7 +261,7 @@ describe("cron runtime row publication", () => {
         expect.objectContaining({ action: "finished", jobId: job.id, status: "error", error }),
       );
       expect(
-        readCronTaskRunHistoryPage({
+        readCronRunHistoryPageForTests({
           storeKey: cronStoreKey(store.storePath),
           jobId: job.id,
           limit: 1,
@@ -269,7 +277,6 @@ describe("cron runtime row publication", () => {
       ]);
     } finally {
       cron.stop();
-      resetTaskRegistryForTests();
     }
   });
 

@@ -96,7 +96,7 @@ it("keeps incognito Board mutations on the process-held database without creatin
 });
 
 it("executes Board mutations off the host and publishes each committed change once", async () => {
-  const { database, env, store, target } = fixture();
+  const { database, store, target } = fixture();
   const changes: Array<{ change: SessionRowChange; inTransaction: boolean; revision: number }> = [];
   const unsubscribe = sessionChanges.subscribe((change) => {
     if ("sessionKey" in change && change.sessionKey === target.sessionKey) {
@@ -109,7 +109,7 @@ it("executes Board mutations off the host and publishes each committed change on
     }
   });
   clearNodeSqliteKyselyCacheForDatabase(database.db);
-  const host = observeHostDataSql(env);
+  const host = observeHostDataSql();
   const expectPublication = (revision: number) => {
     expect(changes).toEqual([
       {
@@ -244,7 +244,7 @@ it("preserves committed Boards and admits followers after publication cleanup is
   let refusals = 0;
   const interception = vi
     .spyOn(admission, "createSqliteWorkerOperationAdmission")
-    .mockImplementation((admit) =>
+    .mockImplementation((admit, attachment) =>
       create((request, grant) => {
         if (refuseCleanup && request.stage === "prepare") {
           refuseCleanup = false;
@@ -255,7 +255,7 @@ it("preserves committed Boards and admits followers after publication cleanup is
         if (request.stage === "commit" && refusals === 0) {
           refuseCleanup = true;
         }
-      }),
+      }, attachment),
     );
   const put = (name: string) =>
     store.putWidget({ ...target, name, content: { kind: "html", html: `<p>${name}</p>` } });

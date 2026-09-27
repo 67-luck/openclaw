@@ -39,7 +39,7 @@ export function renderChatThread(
   props: ChatThreadProps,
   transcript: ChatTranscriptController,
 ): TemplateResult {
-  return transcript.renderSession(props.paneId, props.sessionKey, (session) =>
+  return transcript.renderSession(props.sessionKey, (session) =>
     renderTranscriptShell(props, session),
   );
 }
@@ -172,10 +172,11 @@ function renderTranscriptShell(
       })}
       ${transcriptContents}
       ${
-        props.commentAttachments?.attachments?.some((attachment) => attachment.selectionAnnotation)
+        props.commentAttachments?.some((attachment) => attachment.selectionAnnotation)
           ? html`<openclaw-chat-comment-pins
-              .props=${props.commentAttachments}
+              .attachments=${props.commentAttachments}
               .sessionKey=${props.sessionKey}
+              .disabled=${props.commentsDisabled ?? false}
             ></openclaw-chat-comment-pins>`
           : nothing
       }

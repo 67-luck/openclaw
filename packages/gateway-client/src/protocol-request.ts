@@ -14,7 +14,7 @@ export type GatewayProtocolRequestOptions = {
   traceparent?: string;
   timeoutMs?: number | null;
   expectFinal?: boolean;
-  onSent?: () => void;
+  onSent?: (requestId: string) => void;
   onAccepted?: (payload: unknown) => void;
   signal?: AbortSignal;
 };

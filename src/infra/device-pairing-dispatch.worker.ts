@@ -10,7 +10,7 @@ import { executeDevicePairingNodeMutation } from "./device-pairing-node.worker.j
 import type { DevicePairingCommitReceipt } from "./device-pairing-read.types.js";
 import { resolveDevicePairingStoreRevision } from "./device-pairing-store-cache.js";
 import {
-  readDevicePairingStoreStateFromDatabase,
+  readPairedDevicePairingRecordsFromDatabase,
   withDevicePairingStoreDatabase,
 } from "./device-pairing-store.js";
 import type { DevicePairingMutationCommand } from "./device-pairing-worker-contract.js";
@@ -22,6 +22,9 @@ function execute(
   database: OpenClawStateDatabase,
   recordTokenReplacement: (
     facts: NonNullable<DevicePairingCommitReceipt["tokensReplaced"]>,
+  ) => void,
+  recordWorkerEnvironment: (
+    facts: NonNullable<DevicePairingCommitReceipt["workerEnvironment"]>,
   ) => void,
 ) {
   switch (command.type) {
@@ -60,7 +63,7 @@ function execute(
     case "node.rename":
       return executeDevicePairingNodeMutation(command, database);
     default:
-      return executeDeviceBootstrapMutation(command, database);
+      return executeDeviceBootstrapMutation(command, database, recordWorkerEnvironment);
   }
 }
 
@@ -72,12 +75,20 @@ export function executeDevicePairingMutationInWorker(
     () =>
       withDevicePairingStoreDatabase(database, () =>
         withDevicePairingMutationAdmission(() => {
-          const before = readDevicePairingStoreStateFromDatabase(database.db).pairedByDeviceId;
+          const before = readPairedDevicePairingRecordsFromDatabase(database.db);
           let tokensReplaced: DevicePairingCommitReceipt["tokensReplaced"];
-          const result = execute(command, database, (facts) => {
-            tokensReplaced = facts;
-          });
-          const after = readDevicePairingStoreStateFromDatabase(database.db).pairedByDeviceId;
+          let workerEnvironment: DevicePairingCommitReceipt["workerEnvironment"];
+          const result = execute(
+            command,
+            database,
+            (facts) => {
+              tokensReplaced = facts;
+            },
+            (facts) => {
+              workerEnvironment = facts;
+            },
+          );
+          const after = readPairedDevicePairingRecordsFromDatabase(database.db);
           const changed: DevicePairingCommitReceipt["changed"] = [];
           for (const deviceId of new Set([...Object.keys(before), ...Object.keys(after)])) {
             if (JSON.stringify(before[deviceId]) !== JSON.stringify(after[deviceId])) {
@@ -90,6 +101,7 @@ export function executeDevicePairingMutationInWorker(
             revision: resolveDevicePairingStoreRevision(after),
             changed,
             ...(tokensReplaced ? { tokensReplaced } : {}),
+            ...(workerEnvironment ? { workerEnvironment } : {}),
           } satisfies DevicePairingCommitReceipt);
           return result;
         }),

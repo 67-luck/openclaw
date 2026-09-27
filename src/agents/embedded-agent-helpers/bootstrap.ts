@@ -399,7 +399,7 @@ function clampToBudget(content: string, budget: number): string {
 }
 
 export function buildBootstrapContextFiles(
-  files: WorkspaceBootstrapFile[],
+  files: (Omit<WorkspaceBootstrapFile, "name"> & { name: string })[],
   opts?: { warn?: (message: string) => void; maxChars?: number; totalMaxChars?: number },
 ): EmbeddedContextFile[] {
   const maxChars = opts?.maxChars ?? DEFAULT_BOOTSTRAP_MAX_CHARS;
@@ -444,9 +444,7 @@ export function buildBootstrapContextFiles(
       : maxChars;
     const fileMaxChars = Math.max(1, Math.min(fileBudget, remainingTotalChars));
     // Personal instructions are indivisible: never turn a cut-off directive into new policy.
-    const personalUser =
-      isUserBootstrapFile(file.name) && /[\\/]users[\\/][^\\/]+[\\/]USER\.md$/.test(pathValue);
-    if (personalUser && (file.content ?? "").trimEnd().length > fileMaxChars) {
+    if (file.personalUser && (file.content ?? "").trimEnd().length > fileMaxChars) {
       opts?.warn?.("Personal USER.md exceeds the bootstrap budget; using shared defaults.");
       continue;
     }
@@ -464,6 +462,7 @@ export function buildBootstrapContextFiles(
     result.push({
       path: pathValue,
       content: contentWithinBudget,
+      ...(file.personalUser ? { personalUser: file.personalUser } : {}),
     });
   }
   return result;

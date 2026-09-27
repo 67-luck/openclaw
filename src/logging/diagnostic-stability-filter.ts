@@ -1,8 +1,9 @@
 import type { InternalDiagnosticEventInterest } from "../infra/diagnostic-event-listener-presence.js";
 import type { DiagnosticEventPayload } from "../infra/diagnostic-events.js";
 
-/** Support bundles exclude exporter-only traffic and private owner/admission observations. */
 export const DIAGNOSTIC_STABILITY_EVENT_INTEREST = {
+  // Recovery needs model-call telemetry; other trusted events have dedicated owners.
+  includeTrusted: ["model.call.started", "model.call.completed", "model.call.error"],
   exclude: [
     "log.record",
     "telemetry.exporter",

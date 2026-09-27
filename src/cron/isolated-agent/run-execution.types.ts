@@ -24,6 +24,8 @@ export type CronRunExecutionParams = Pick<
   | "suppressExecNotifyOnExit"
   | "resolvedDelivery"
   | "deliveryRequested"
+  | "deliverySystemPrompt"
+  | "messageToolFormatPrompt"
   | "sourceDelivery"
   | "skillsSnapshot"
   | "agentPayload"
@@ -36,7 +38,10 @@ export type CronRunExecutionParams = Pick<
   | "inputProvenance"
   | "persistSessionEntry"
 > &
-  Pick<RunCronAgentTurnParams, "cfg" | "job" | "lane" | "onLaneWait" | "executionIdentity"> & {
+  Pick<
+    RunCronAgentTurnParams,
+    "cfg" | "job" | "lane" | "onLaneWait" | "executionIdentity" | "admissionSource"
+  > & {
     runId: string;
     agentVerboseDefault: AgentDefaultsConfig["verboseDefault"];
     immutableThinkLevel: ThinkLevel | undefined;
