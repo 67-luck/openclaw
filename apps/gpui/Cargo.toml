@@ -6,6 +6,11 @@ rust-version = "1.98"
 publish = false
 description = "Native OpenClaw Gateway chat client"
 
+[[test]]
+name = "webview_lifecycle"
+path = "tests/webview_lifecycle.rs"
+harness = false
+
 [workspace]
 
 [dependencies]

@@ -1,9 +1,7 @@
 use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
 use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
-use wry::{WebView, WebViewExtMacOS, WryWebView};
-
-use super::SurfaceBounds;
+use objc2_web_kit::WKWebView;
 
 define_class!(
     #[unsafe(super(NSView))]
@@ -31,30 +29,32 @@ define_class!(
     }
 );
 
-pub(super) fn configure(view: &WebView) -> Result<(), String> {
+pub(super) fn configure(native: &WKWebView) -> Result<(), String> {
     let main = MainThreadMarker::new().ok_or("Webview presentation requires the main thread")?;
-    let native = view.webview();
     let parent = unsafe { native.superview() }.ok_or("Webview parent is missing")?;
+    if parent.window().is_none() {
+        return Err("Webview parent is not attached to a window".into());
+    }
     let frame = native.frame();
     let container: Retained<PresentationView> = unsafe {
         msg_send![super(PresentationView::alloc(main).set_ivars(())), initWithFrame: frame]
     };
     container.setAlphaValue(0.0);
     container.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
-    native.removeFromSuperview();
     native.setAutoresizingMask(NSAutoresizingMaskOptions::empty());
-    native.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), frame.size));
-    container.addSubview(&native);
+    // Attach the complete responder chain before changing WebKit's viewport.
     parent.addSubview(&container);
+    container.addSubview(native);
+    native.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), frame.size));
     Ok(())
 }
 
-fn container(native: &WryWebView) -> Option<Retained<NSView>> {
+fn container(native: &WKWebView) -> Option<Retained<NSView>> {
     // Presentation and hierarchy access stay on GPUI's main thread.
     unsafe { native.superview() }.filter(|view| view.isKindOfClass(PresentationView::class()))
 }
 
-pub(super) fn hide(native: &WryWebView) {
+pub(super) fn hide(native: &WKWebView) {
     if let Some(container) = container(native) {
         container.setAlphaValue(0.0);
         if let Some(window) = container.window()
@@ -69,40 +69,48 @@ pub(super) fn hide(native: &WryWebView) {
     }
 }
 
-pub(super) fn present(view: &WebView, render: bool, reveal: bool) {
-    let native = view.webview();
-    if let Some(container) = container(&native) {
+pub(super) fn present(native: &WKWebView, render: bool, reveal: bool) {
+    if let Some(container) = container(native) {
         if reveal {
             container.setAlphaValue(1.0);
         } else {
-            hide(&native);
+            hide(native);
         }
         native.setHidden(!render);
         container.setHidden(!render);
     }
 }
 
-pub(super) fn set_bounds(view: &WebView, bounds: SurfaceBounds) -> Result<(), String> {
-    let native = view.webview();
-    let container = container(&native).ok_or("Webview presentation container is missing")?;
-    let parent = unsafe { container.superview() }.ok_or("Webview parent is missing")?;
+pub(super) fn set_bounds(native: &WKWebView, bounds: NSRect) -> Result<bool, String> {
+    let Some(container) = container(native) else {
+        return Ok(false);
+    };
+    let Some(parent) = (unsafe { container.superview() }) else {
+        return Ok(false);
+    };
+    let Some(window) = parent.window() else {
+        return Ok(false);
+    };
+    // Hidden pooled views are valid, but retained detached trees are not.
+    if native.window().as_ref() != Some(&window) || container.window().as_ref() != Some(&window) {
+        return Ok(false);
+    }
     // Match wry's window_position conversion against GPUI's original parent;
     // the WKWebView itself now fills the container in local coordinates.
     let y = if parent.isFlipped() {
-        bounds.y
+        bounds.origin.y
     } else {
-        parent.frame().size.height - bounds.y - bounds.height
+        parent.frame().size.height - bounds.origin.y - bounds.size.height
     };
-    let size = NSSize::new(bounds.width, bounds.height);
-    container.setFrame(NSRect::new(NSPoint::new(bounds.x, y), size));
+    let size = NSSize::new(bounds.size.width, bounds.size.height);
+    container.setFrame(NSRect::new(NSPoint::new(bounds.origin.x, y), size));
     native.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), size));
-    Ok(())
+    Ok(true)
 }
 
-pub(super) fn detach(view: &WebView) {
-    let native = view.webview();
-    hide(&native);
-    if let Some(container) = container(&native) {
+pub(super) fn detach(native: &WKWebView) {
+    hide(native);
+    if let Some(container) = container(native) {
         native.removeFromSuperview();
         container.removeFromSuperview();
     }

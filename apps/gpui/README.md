@@ -727,3 +727,8 @@ These macOS 14+ commands open no window and load no Gateway config. Listing
 intersects WebKit's identifiers with this root's records; removal verifies the
 removed identifiers are absent from WebKit before success. Remove stores before
 deleting a temporary state root: the record is the authority for cleanup.
+
+On macOS, webview bounds are committed only while the view, presentation container,
+and parent share a live window. Hidden attached pool views can resize; detached
+views leave geometry unacknowledged so reattachment retries it. The container
+preserves WebKit's native Objective-C class identity.
