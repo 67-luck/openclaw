@@ -1,12 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { createManagedHandoffLeaseStore } from "../infra/update-managed-service-handoff-lease.js";
-import { seedRetainedBorrower } from "../infra/update-retained-custody.test-support.js";
 import { drainFileLockStateForTest, resetFileLockStateForTest } from "../plugin-sdk/file-lock.js";
 import {
   composeConfigWriteAssertions,
@@ -170,94 +167,6 @@ it.each([new Error("outer only"), undefined])(
     expect(result).toEqual({ ok: false, error: failure });
   },
 );
-
-it("joins a rejecting admitted child before refusing unresolved-custody release", async () => {
-  const store = createManagedHandoffLeaseStore();
-  const installRoot = path.join(fixture.root, "install");
-  fs.mkdirSync(installRoot);
-  const parent = store.acquire(installRoot, "run", { kind: "update" });
-  if (parent.kind !== "acquired") {
-    throw new Error("fixture parent unavailable");
-  }
-  const rows = () => {
-    const db = new DatabaseSync(path.join(fixture.root, "managed-update-handoffs.sqlite"), {
-      readOnly: true,
-    });
-    try {
-      return JSON.stringify(db.prepare("SELECT * FROM managed_update_handoffs").all());
-    } finally {
-      db.close();
-    }
-  };
-  const entered = createDeferred();
-  const reserved = createDeferred();
-  const finish = createDeferred();
-  const failure = new Error("child failed but custody is unresolved");
-  let childSettled = false;
-  let ownerSettled = false;
-  let child: ReturnType<typeof outcome> | undefined;
-  const owner = outcome(
-    withConfigWriteLock(configPath, async () => {
-      child = outcome(
-        withConfigWriteLock(configPath, async () => {
-          entered.resolve();
-          await finish.promise;
-          childSettled = true;
-          throw failure;
-        }),
-      );
-      await entered.promise;
-      seedRetainedBorrower(
-        path.join(fixture.root, "managed-update-handoffs.sqlite"),
-        parent.lease,
-        {
-          runId: "run",
-          transactionId: "transaction",
-          claimId: "claim",
-          revision: 1,
-          recordSha256: "a".repeat(64),
-          lifetimeId: "lifetime",
-          serviceKey: path.join(fixture.root, "service"),
-          configPaths: [configPath],
-        },
-        "reserved",
-      );
-      reserved.resolve();
-    }),
-  ).then((result) => {
-    ownerSettled = true;
-    return result;
-  });
-  await reserved.promise;
-  const beforeRows = rows();
-  const beforeLock = sidecar();
-  try {
-    await setImmediate();
-    expect(ownerSettled).toBe(false);
-    expect(childSettled).toBe(false);
-    expect(rows()).toBe(beforeRows);
-    expect(sidecar()).toEqual(beforeLock);
-  } finally {
-    finish.resolve();
-  }
-  const result = await owner;
-  expect(await child).toEqual({ ok: false, error: failure });
-  expect(childSettled).toBe(true);
-  expect(result.ok).toBe(false);
-  if (!result.ok) {
-    // The shared file-lock release guard is authoritative; no new settlement.
-    expect(result.error).toMatchObject({
-      name: "AggregateError",
-      errors: [
-        expect.objectContaining({ name: "AggregateError", errors: [failure] }),
-        expect.objectContaining({ message: "Source resource has unresolved native custody." }),
-      ],
-    });
-  }
-  expect(rows()).toBe(beforeRows);
-  expect(sidecar()).toEqual(beforeLock);
-  expect(store.release(parent.lease)).toBe(false);
-});
 
 it("checks shared nested authority once per assertion and revalidates after awaits", async () => {
   const includePath = path.join(fixture.root, "include.json");

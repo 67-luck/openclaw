@@ -16,13 +16,10 @@ import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
 
 // Changed-base composition only. The actual scopes, dispatch and read lifetime run;
-// external file/lease owners and the native command are inert. No custody proof.
+// external file owners and the native command are inert. No custody proof.
 vi.mock("../../infra/file-lock.js", () => ({
   withFileLock: async (_file: string, _options: unknown, operation: () => Promise<unknown>) =>
     operation(),
-}));
-vi.mock("../../infra/update-managed-service-handoff-lease.js", () => ({
-  createManagedHandoffLeaseStore: () => ({ assertSourceUnborrowed() {} }),
 }));
 vi.mock("../../infra/tmp-openclaw-dir.js", () => ({
   resolvePreferredOpenClawTmpDir: () => "/inert-native-placement",

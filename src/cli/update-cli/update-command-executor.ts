@@ -375,11 +375,6 @@ export async function withUpdateCommandExecutor<T>(
       };
       const assertCurrent = () => {
         assertBase();
-        if (lease?.version === 3 || serviceLease?.version === 3) {
-          throw new UpdateCommandRecoveryPendingError(
-            "Parent executor has unresolved native custody.",
-          );
-        }
         children.assertIdle();
       };
       const fence = { assertCurrent };
@@ -689,7 +684,7 @@ export async function withUpdateCommandExecutor<T>(
         );
       }
       try {
-        if (serviceLease && store && (serviceLease.version === 3 || !store.release(serviceLease))) {
+        if (serviceLease && store && !store.release(serviceLease)) {
           throw new UpdateCommandRecoveryPendingError(
             "Managed service executor release could not be confirmed.",
           );
@@ -703,12 +698,11 @@ export async function withUpdateCommandExecutor<T>(
         if (
           lease &&
           store &&
-          (lease.version === 3 ||
-            (!borrowed &&
-              (lease.version === 1 ||
-                !(options?.legacyPackageParent
-                  ? releaseLegacyPackageUpdateParent(store, lease)
-                  : store.release(lease)))))
+          !borrowed &&
+          (lease.version === 1 ||
+            !(options?.legacyPackageParent
+              ? releaseLegacyPackageUpdateParent(store, lease)
+              : store.release(lease)))
         ) {
           throw new UpdateCommandRecoveryPendingError(
             "Update executor release could not be confirmed.",

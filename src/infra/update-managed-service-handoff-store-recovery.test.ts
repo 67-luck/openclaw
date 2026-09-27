@@ -2,7 +2,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { withConfigWriteLock } from "../config/write-lock.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { createManagedHandoffLeaseStore } from "./update-managed-service-handoff-lease.js";
 
@@ -13,13 +12,13 @@ vi.mock("./tmp-openclaw-dir.js", () => ({ resolvePreferredOpenClawTmpDir: () => 
 // permission bits on win32, where fs.chmodSync does not implement them.
 const unix = process.platform === "win32" ? it.skip : it;
 
-let configPath: string;
+let installRoot: string;
 let databasePath: string;
 
 beforeEach(() => {
   fixture.root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "handoff-store-")));
   fs.chmodSync(fixture.root, 0o700);
-  configPath = path.join(fixture.root, "openclaw.json");
+  installRoot = path.join(fixture.root, "install");
   databasePath = path.join(fixture.root, "managed-update-handoffs.sqlite");
 });
 afterEach(() => {
@@ -34,20 +33,15 @@ function interruptFirstWrite() {
 }
 const fileMode = () => fs.statSync(databasePath).mode & 0o777;
 
-function writeConfig() {
-  const callback = vi.fn(async () => {
-    fs.writeFileSync(configPath, "{}");
-  });
-  return { callback, done: withConfigWriteLock(configPath, callback, {}) };
+function acquireLease() {
+  return createManagedHandoffLeaseStore().acquire(installRoot, "owner", { kind: "update" });
 }
 
-unix("recovers a store left world-readable by an interrupted first write", async () => {
+unix("recovers a store left world-readable by an interrupted first write", () => {
   interruptFirstWrite();
   expect(fileMode()).toBe(0o644);
 
-  const { callback, done } = writeConfig();
-  await expect(done).resolves.toBeUndefined();
-  expect(callback).toHaveBeenCalledTimes(1);
+  expect(acquireLease().kind).toBe("acquired");
   // Repaired in place, not merely tolerated: the next reader finds the invariant.
   expect(fileMode()).toBe(0o600);
 });
@@ -72,14 +66,12 @@ unix.each([0o664, 0o666, 0o602])(
     // the caller continues against a store that replaces them.
     fs.chmodSync(databasePath, mode);
 
-    const { callback, done } = writeConfig();
-    await expect(done).resolves.toBeUndefined();
-    expect(callback).toHaveBeenCalledTimes(1);
+    expect(acquireLease().kind).toBe("acquired");
     expect(retainedStores()).toHaveLength(1);
   },
 );
 
-unix("recovers a store owned by another user without adopting it", async () => {
+unix("recovers a store owned by another user without adopting it", () => {
   interruptFirstWrite();
   const foreignIno = fs.lstatSync(databasePath).ino;
   const realLstatSync = fs.lstatSync.bind(fs);
@@ -93,9 +85,7 @@ unix("recovers a store owned by another user without adopting it", async () => {
       : stat;
   }) as typeof fs.lstatSync);
 
-  const { callback, done } = writeConfig();
-  await expect(done).resolves.toBeUndefined();
-  expect(callback).toHaveBeenCalledTimes(1);
+  expect(acquireLease().kind).toBe("acquired");
   vi.restoreAllMocks();
   expect(retainedStores()).toHaveLength(1);
   expect(fileMode()).toBe(0o600);
@@ -110,7 +100,7 @@ unix("restores a directory that stopped being private", () => {
   expect(store.acquire(install, "owner", { kind: "update" }).kind).toBe("acquired");
   fs.chmodSync(fixture.root, 0o755);
 
-  expect(() => store.assertSourceUnborrowed(configPath)).not.toThrow();
+  expect(store.read(installRoot).kind).not.toBe("unreadable");
   expect(fs.statSync(fixture.root).mode & 0o777).toBe(0o700);
 });
 
@@ -124,7 +114,7 @@ unix("converges on one live store and one retained copy", () => {
   fs.chmodSync(databasePath, 0o666);
 
   for (const store of [createManagedHandoffLeaseStore(), createManagedHandoffLeaseStore()]) {
-    expect(() => store.assertSourceUnborrowed(configPath)).not.toThrow();
+    expect(store.read(installRoot).kind).not.toBe("unreadable");
   }
 
   expect(retainedStores()).toHaveLength(1);

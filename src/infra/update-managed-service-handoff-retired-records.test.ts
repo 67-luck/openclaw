@@ -9,7 +9,6 @@ const fixture = vi.hoisted(() => ({ root: "" }));
 vi.mock("./tmp-openclaw-dir.js", () => ({ resolvePreferredOpenClawTmpDir: () => fixture.root }));
 
 let store: ReturnType<typeof createManagedHandoffLeaseStore>;
-let unrelatedConfig: string;
 
 function databasePath() {
   return path.join(fixture.root, "managed-update-handoffs.sqlite");
@@ -30,8 +29,6 @@ function seedRow(installRoot: string, owner: string, payload: string) {
 beforeEach(() => {
   fixture.root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "handoff-retired-")));
   fs.chmodSync(fixture.root, 0o700);
-  unrelatedConfig = path.join(fixture.root, "openclaw.json");
-  fs.writeFileSync(unrelatedConfig, "{}");
   store = createManagedHandoffLeaseStore();
   // Acquiring one lease creates the shared table every install root writes into.
   const acquired = store.acquire(path.join(fixture.root, "install"), "owner", { kind: "update" });
@@ -43,24 +40,55 @@ afterEach(() => {
   fs.rmSync(fixture.root, { recursive: true, force: true });
 });
 
-it("keeps an unrelated source usable beside a retired lease record", () => {
-  seedRow(
-    path.join(fixture.root, "legacy-install"),
-    "systemd-boundary",
-    JSON.stringify({ version: 1, pid: 4242, startIdentity: "1788399465" }),
-  );
+it.each([3, 9])(
+  "refuses unsupported v%s leases without replacing them or admitting children",
+  (version) => {
+    const installRoot = path.join(fixture.root, "future-install");
+    const identity = store.processIdentity();
+    const payload = JSON.stringify({
+      version,
+      helper: identity,
+      executor: identity,
+      action: { kind: "update" },
+      nativeBorrower: {
+        id: "11111111-1111-4111-8111-111111111111",
+        phase: "reserved",
+        source: {
+          runId: "run",
+          transactionId: "transaction",
+          claimId: "claim",
+          revision: 1,
+          recordSha256: "a".repeat(64),
+          serviceKey: path.join(fixture.root, "service"),
+          configPaths: [path.join(fixture.root, "config.json")],
+          lifetimeId: "lifetime",
+        },
+      },
+    });
+    seedRow(installRoot, "future-owner", payload);
 
-  expect(() => store.assertSourceUnborrowed(unrelatedConfig)).not.toThrow();
-});
-
-it("still refuses an unrelated source beside an undecodable lease record", () => {
-  seedRow(
-    path.join(fixture.root, "unknown-install"),
-    "unknown",
-    JSON.stringify({ version: 9, borrows: "something this build cannot read" }),
-  );
-
-  expect(() => store.assertSourceUnborrowed(unrelatedConfig)).toThrow(
-    /existing managed handoff lease is incompatible/u,
-  );
-});
+    expect(store.read(installRoot)).toEqual({ kind: "unreadable" });
+    expect(store.readLegacyParent(installRoot)).toBeNull();
+    expect(() => store.acquire(installRoot, "replacement", { kind: "update" })).toThrow(
+      /existing managed handoff lease is incompatible/u,
+    );
+    const childRoot = `${installRoot}/.openclaw-update-child-future`;
+    expect(() => store.acquire(childRoot, "child", { kind: "update" })).toThrow(
+      /existing managed handoff lease is incompatible/u,
+    );
+    expect(store.read(childRoot)).toEqual({ kind: "absent" });
+    const db = new DatabaseSync(databasePath(), { readOnly: true });
+    try {
+      expect(
+        db
+          .prepare("SELECT owner, payload_json FROM managed_update_handoffs WHERE install_root=?")
+          .get(installRoot),
+      ).toEqual({
+        owner: "future-owner",
+        payload_json: payload,
+      });
+    } finally {
+      db.close();
+    }
+  },
+);

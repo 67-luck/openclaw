@@ -56,8 +56,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 // Git/GitHub stubs and the shell supervisor do not open handoff stores.
-// The managed provisioner path can reach config write-lock admission.
-// Native Git paths need no config write; verify injection in every helper anyway.
+// Verify injection in every helper independently of its runtime workload.
 const entry = process.argv[1];
 if (entry?.endsWith("/scripts/pr-lib/worktree-provision.mts")) {
   const sourceRoot = path.resolve(path.dirname(realpathSync(entry)), "../..");
@@ -91,13 +90,13 @@ if (entry?.endsWith("/scripts/pr-lib/worktree-provision.mts")) {
   assert.equal(resolveManagedUpdateLeaseDatabasePath(), databasePath);
   observe("injected");
   // Verify injected production resolver/store before the helper executes. This
-  // is a preflight check, not evidence of later workload access, even when provisioning
-  // does not need a config write. Explicit options cannot select a live fallback.
+  // is a preflight check, not evidence of later workload access.
+  // Explicit options cannot select a live fallback.
   const store = createManagedHandoffLeaseStore({
     databasePath: resolveManagedUpdateLeaseDatabasePath(),
     serviceManagerEnv: process.env,
   });
-  store.assertSourceUnborrowed(path.join(storeRoot, "provisioner-preflight-config.json"));
+  assert.deepEqual(store.read(path.join(storeRoot, "provisioner-preflight")), { kind: "absent" });
   observe("preflight-store-verified");
   phase = "runtime";
 }

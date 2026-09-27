@@ -3,7 +3,6 @@ import path from "node:path";
 import { sha256Hex } from "../infra/crypto-digest.js";
 import { withFileLock } from "../infra/file-lock.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
-import { createManagedHandoffLeaseStore } from "../infra/update-managed-service-handoff-lease.js";
 import { ABSOLUTE_DEADLINE_EXPIRED, awaitWithinDeadline } from "../utils/absolute-deadline.js";
 import { resolveLaunchAgentLabel } from "./launchd-label.js";
 import { resolveLaunchAgentGuiDomain } from "./launchd-runtime.js";
@@ -89,9 +88,6 @@ export async function withGatewayServiceOperationLock<T>(
 ): Promise<T> {
   assertGatewayServiceUpdateCurrent();
   const file = resolveGatewayServiceOperationLockPath(env);
-  const assertResourceUnborrowed = (targetPath: string) =>
-    createManagedHandoffLeaseStore().assertSourceUnborrowed(targetPath);
-  assertResourceUnborrowed(file);
   const inherited = scopes.getStore();
   const parent = inherited?.get(file);
   const assertScope = (scope: Scope) => {
@@ -99,9 +95,6 @@ export async function withGatewayServiceOperationLock<T>(
     if (!scope.active) {
       throw new Error("Native service operation ownership has closed.");
     }
-    // A reservation can arise inside this interval. Holding the file lock
-    // remains exclusion, not permission for ordinary service mutations.
-    assertResourceUnborrowed(file);
   };
   if (parent?.active) {
     let active = true;
@@ -131,10 +124,9 @@ export async function withGatewayServiceOperationLock<T>(
       retries: { retries: 120, factor: 1.1, minTimeout: 25, maxTimeout: 250 },
       stale: 30_000,
       // Reacquire only a definitely retired process, never from age alone. The
-      // provider pins the stale bytes/inode and rechecks custody before unlink.
+      // provider pins and rechecks the stale bytes/inode before unlink.
       // This restores client exclusion, not evidence that native work completed.
       staleRecovery: "remove-if-definitely-stale",
-      assertResourceUnborrowed,
     },
     async () =>
       scopes.run(next, async () => {

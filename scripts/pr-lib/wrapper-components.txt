@@ -829,7 +829,6 @@ src/infra/update-managed-service-handoff-database.ts
 src/infra/update-managed-service-handoff-lease.ts
 src/infra/update-managed-service-handoff-legacy-parent.ts
 src/infra/update-managed-service-handoff-process.ts
-src/infra/update-managed-service-handoff-retained-custody.ts
 src/infra/update-managed-service-handoff-schema.ts
 src/infra/update-managed-service-handoff-scope.ts
 src/infra/update-managed-service-handoff-source-inspection.ts

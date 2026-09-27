@@ -20,9 +20,6 @@ vi.mock("../shared/pid-alive.js", async (original) => ({
   getProcessStartTime: () => 100,
   isPidAlive: () => true,
 }));
-vi.mock("../infra/update-managed-service-handoff-lease.js", () => ({
-  createManagedHandoffLeaseStore: () => ({ assertSourceUnborrowed: () => {} }),
-}));
 vi.mock("./systemd-system.js", async (original) => ({
   ...(await original<typeof import("./systemd-system.js")>()),
   assertNoSystemSystemdOwnership: async () => {},

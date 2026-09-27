@@ -8,7 +8,6 @@ import {
   getUpdateDoctorConfigWriteAuthority,
   recordUpdateDoctorConfigWriteRefusal,
 } from "../infra/update-doctor-result.js";
-import { createManagedHandoffLeaseStore } from "../infra/update-managed-service-handoff-lease.js";
 import { KeyedAsyncQueue } from "../plugin-sdk/keyed-async-queue.js";
 import { assertConfigWriteAllowedInCurrentMode } from "./config-write-guard.js";
 import { composeConfigWriteAssertions } from "./write-authority.js";
@@ -109,9 +108,6 @@ export async function withConfigWriteLock<T>(
 ): Promise<T> {
   const configPath = path.resolve(pathname);
   assertConfigWriteAllowedInCurrentMode({ configPath, env });
-  const assertResourceUnborrowed = (targetPath: string) =>
-    createManagedHandoffLeaseStore().assertSourceUnborrowed(targetPath);
-  assertResourceUnborrowed(configPath);
   const inherited = activeConfigMutationLocks.getStore();
   const guardedParent = [...(inherited?.paths.entries() ?? [])].find(
     ([, scope]) => scope.assertCurrent,
@@ -133,9 +129,6 @@ export async function withConfigWriteLock<T>(
   const inheritedScope = inherited?.paths.get(configPath);
   if (inheritedScope?.active) {
     const running = Promise.resolve().then(() => {
-      // Borrower custody may have changed since this nested call was queued,
-      // including for ordinary config writers without an explicit source guard.
-      assertResourceUnborrowed(configPath);
       captureConfigWriteLockGuard(configPath)?.();
       return guard ? runConfigLockScope(configPath, fn, guard) : fn();
     });
@@ -150,10 +143,8 @@ export async function withConfigWriteLock<T>(
   await fs.mkdir(configDir, { recursive: true, mode: 0o700 });
   return await configMutationQueue
     .enqueue(configPath, async () => {
-      return await withFileLock(
-        configPath,
-        { ...CONFIG_MUTATION_LOCK_OPTIONS, assertResourceUnborrowed },
-        () => runConfigLockScope(configPath, fn, guard),
+      return await withFileLock(configPath, CONFIG_MUTATION_LOCK_OPTIONS, () =>
+        runConfigLockScope(configPath, fn, guard),
       );
     })
     .catch(async (error: unknown) => {

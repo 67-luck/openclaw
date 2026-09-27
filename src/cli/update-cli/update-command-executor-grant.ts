@@ -90,13 +90,11 @@ export function resolveUpdateCommandChildBinding(
         !isDeepStrictEqual(retained.lease, grant.retainedParent) ||
         retained.lease.key === original.key ||
         retained.lease.action.kind !== "update" ||
-        retained.lease.version === 3 ||
         !isDeepStrictEqual(retained.lease.executor, original.executor) ||
         !isDeepStrictEqual(retained.lease.helper, original.executor) ||
         retainedChild?.kind !== "current" ||
         retainedChild.lease.owner !== runId ||
         retainedChild.lease.action.kind !== "update" ||
-        retainedChild.lease.version === 3 ||
         !isDeepStrictEqual(retainedChild.lease.helper, spawner.executor))) ||
     (!legacyGrant && databasePath !== grant.databasePath) ||
     grant.runId !== runId ||
@@ -105,13 +103,10 @@ export function resolveUpdateCommandChildBinding(
     !parent.lease ||
     !isDeepStrictEqual(parent.lease, grant.parent) ||
     parent.lease.action.kind !== "update" ||
-    parent.lease.version === 3 ||
     !store.current(original) ||
     original.action.kind !== "update" ||
-    original.version === 3 ||
     !store.current(spawner) ||
     spawner.action.kind !== "update" ||
-    spawner.version === 3 ||
     (spawner.key !== original.key &&
       (!spawner.key.startsWith(childPrefix) || spawner.owner !== runId)) ||
     process.ppid !== spawner.executor.pid ||
@@ -122,12 +117,10 @@ export function resolveUpdateCommandChildBinding(
     originalChild.kind !== "current" ||
     originalChild.lease.owner !== runId ||
     originalChild.lease.action.kind !== "update" ||
-    originalChild.lease.version === 3 ||
     !isDeepStrictEqual(originalChild.lease.helper, spawner.executor) ||
     child.kind !== "current" ||
     child.lease.owner !== runId ||
     child.lease.action.kind !== "update" ||
-    child.lease.version === 3 ||
     !isDeepStrictEqual(child.lease.helper, spawner.executor)
   ) {
     throw new UpdateCommandRecoveryPendingError(
