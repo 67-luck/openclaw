@@ -1657,15 +1657,31 @@ extension OpenClawSnapshotUITests {
         let expectation = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "enabled == true"),
             object: element)
+        if ProcessInfo.processInfo.environment["OPENCLAW_IOS_COMPOSER_PROBE"] == "1" {
+            let stage = self.composerProbeStage
+            expectation.handler = {
+                Self.recordComposerProbe("enabled-predicate-true", stage: stage)
+                return true
+            }
+        }
         let result = XCTWaiter.wait(for: [expectation], timeout: 5)
         self.composerProbe("enabled-wait-finished", result: result == .completed, code: result.rawValue)
         XCTAssertEqual(result, .completed)
     }
 
     private func composerProbe(_ event: String, result: Bool? = nil, code: Int? = nil) {
+        Self.recordComposerProbe(event, stage: self.composerProbeStage, result: result, code: code)
+    }
+
+    private nonisolated static func recordComposerProbe(
+        _ event: String,
+        stage: String,
+        result: Bool? = nil,
+        code: Int? = nil)
+    {
         guard ProcessInfo.processInfo.environment["OPENCLAW_IOS_COMPOSER_PROBE"] == "1" else { return }
         var fields: [String: Any] = [
-            "event": event, "stage": self.composerProbeStage,
+            "event": event, "stage": stage,
             "uptimeMs": ProcessInfo.processInfo.systemUptime * 1000,
         ]
         if let result { fields["result"] = result }

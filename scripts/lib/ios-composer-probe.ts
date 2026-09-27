@@ -19,6 +19,7 @@ const APP_EVENTS = new Set([
 const TEST_EVENTS = new Set([
   "message-start",
   "before-enabled-wait",
+  "enabled-predicate-true",
   "enabled-wait-finished",
   "before-tap",
   "before-type",
