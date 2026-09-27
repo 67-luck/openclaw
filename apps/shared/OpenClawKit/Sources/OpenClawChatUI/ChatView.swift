@@ -112,7 +112,9 @@ public struct OpenClawChatView: View {
         }
     }
 
-    @State private var viewModel: OpenClawChatViewModel
+    // The caller owns model lifetime; transport replacement can preserve presentation identity.
+    private let viewModel: OpenClawChatViewModel
+    private let resolveComposerModel: (@MainActor () -> OpenClawChatViewModel?)?
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openClawChatDesktopLayout) private var isDesktopLayout
     @State private var contentWidth: CGFloat = 0
@@ -202,6 +204,7 @@ public struct OpenClawChatView: View {
     /// `showsAssistantTrace` remains as a source-compatible convenience that sets both display options.
     public init(
         viewModel: OpenClawChatViewModel,
+        resolveComposerModel: (@MainActor () -> OpenClawChatViewModel?)? = nil,
         drawsBackground: Bool = true,
         showsSessionSwitcher: Bool = false,
         style: Style = .standard,
@@ -226,7 +229,8 @@ public struct OpenClawChatView: View {
         speech: OpenClawChatSpeechController? = nil,
         mediaPlaybackAllowed: @escaping @MainActor @Sendable () -> Bool = { true })
     {
-        _viewModel = State(initialValue: viewModel)
+        self.viewModel = viewModel
+        self.resolveComposerModel = resolveComposerModel
         self.drawsBackground = drawsBackground
         self.showsSessionSwitcher = showsSessionSwitcher
         self.style = style
@@ -264,6 +268,9 @@ public struct OpenClawChatView: View {
         .onAppear {
             self.viewModel.refreshSourceContext()
             self.viewModel.load()
+        }
+        .onChange(of: ObjectIdentifier(self.viewModel)) { _, _ in
+            self.viewModel.refreshSourceContext()
         }
         .onChange(of: self.turnRecapObservation, initial: true) { _, observation in
             self.updateTurnRecap(observation)
@@ -374,7 +381,8 @@ extension OpenClawChatView {
             talkControl: self.talkControl,
             dictationControl: self.dictationControl,
             voiceNoteControl: self.voiceNoteControl,
-            focusRequest: self.composerFocusRequest)
+            focusRequest: self.composerFocusRequest,
+            resolveInputModel: self.resolveComposerModel)
     }
 
     @ViewBuilder
@@ -541,8 +549,13 @@ extension OpenClawChatView {
                 text: introText,
                 prompts: self.emptyAssistantPrompts,
                 onPrompt: { prompt in
-                    self.viewModel.input = prompt.prompt
-                    self.viewModel.send()
+                    let model: OpenClawChatViewModel? = if let resolveComposerModel {
+                        resolveComposerModel()
+                    } else {
+                        self.viewModel
+                    }
+                    model?.input = prompt.prompt
+                    model?.send()
                 })
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -945,10 +958,7 @@ extension OpenClawChatView {
     }
 
     private var hasVisibleMessageListContent: Bool {
-        if !self.transcriptRows.isEmpty {
-            return true
-        }
-        return self.hasVisibleTransientContent
+        !self.transcriptRows.isEmpty || self.hasVisibleTransientContent
     }
 
     private var hasVisibleStreamingAssistantText: Bool {
@@ -1216,7 +1226,7 @@ extension OpenClawChatView {
                 continue
             }
 
-            let toolText = self.toolResultText(from: message)
+            let toolText = self.primaryText(in: message)
             var content = last.content
             // Preserve empty results too: receiving a result owns the outcome,
             // independently of whether it contains display text.
@@ -1273,7 +1283,7 @@ extension OpenClawChatView {
 
     private func shouldDisplayMessage(_ message: OpenClawChatMessage) -> Bool {
         let primaryText = self.primaryText(in: message)
-        if self.hasInlineAttachments(in: message) {
+        if message.content.contains(where: \.isInlineAttachment) {
             return true
         }
 
@@ -1294,7 +1304,7 @@ extension OpenClawChatView {
         }
 
         return self.displayOptions.contains(.toolActivity) &&
-            (!self.toolCalls(in: message).isEmpty || !self.inlineToolResults(in: message).isEmpty)
+            message.content.contains { $0.isToolCall || $0.isToolResult }
     }
 
     private func primaryText(in message: OpenClawChatMessage) -> String {
@@ -1303,33 +1313,12 @@ extension OpenClawChatView {
             includeThinking: self.displayOptions.contains(.reasoning))
     }
 
-    private func hasInlineAttachments(in message: OpenClawChatMessage) -> Bool {
-        message.content.contains(where: \.isInlineAttachment)
-    }
-
-    private func toolCalls(in message: OpenClawChatMessage) -> [OpenClawChatMessageContent] {
-        message.content.filter(\.isToolCall)
-    }
-
-    private func inlineToolResults(in message: OpenClawChatMessage) -> [OpenClawChatMessageContent] {
-        message.content.filter(\.isToolResult)
-    }
-
     private func toolCallIds(in message: OpenClawChatMessage) -> Set<String> {
-        var ids = Set<String>()
-        for content in self.toolCalls(in: message) {
-            if let id = content.id {
-                ids.insert(id)
-            }
-        }
+        var ids = Set(message.content.filter(\.isToolCall).compactMap(\.id))
         if let toolCallId = message.toolCallId {
             ids.insert(toolCallId)
         }
         return ids
-    }
-
-    private func toolResultText(from message: OpenClawChatMessage) -> String {
-        self.primaryText(in: message)
     }
 
     @ViewBuilder
@@ -1468,8 +1457,6 @@ private struct ChatAssistantIntroCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Rendered as a grey assistant bubble so the greeting reads like the
-            // agent's first message, matching the in-conversation bubble style.
             Text(self.text)
                 .font(OpenClawChatTypography.body)
                 .foregroundStyle(OpenClawChatTheme.assistantText)
@@ -1535,7 +1522,6 @@ private struct ChatNoticeCard: View {
     let action: (() -> Void)?
 
     var body: some View {
-        // Native empty/error state: SwiftUI's standard ContentUnavailableView, not a custom card.
         ContentUnavailableView {
             Label(self.title, systemImage: self.systemImage)
                 .font(OpenClawChatTypography.headline)

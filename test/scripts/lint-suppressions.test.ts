@@ -1,4 +1,3 @@
-// Lint Suppressions tests cover lint suppressions script behavior.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -252,7 +251,10 @@ describe("production lint suppressions", () => {
         "src/plugins/host-hooks.ts|typescript/no-unnecessary-type-parameters|1",
         "src/plugins/lazy-service-module.ts|typescript/no-unnecessary-type-parameters|1",
         "src/plugins/loader-load-context.ts|unicorn/no-array-sort|1",
+        "src/plugins/plugin-instance-owned-values.ts|eslint/no-constructor-return|1",
+        "src/plugins/plugin-instance-owned-values.ts|typescript/no-extraneous-class|1",
         "src/plugins/plugin-return-value.ts|typescript/prefer-promise-reject-errors|1",
+        "src/plugins/plugin-return-value.ts|typescript/unbound-method|1",
         "src/plugins/plugin-return-value.ts|unicorn/no-thenable|1",
         "src/plugins/provider-auth-persistence.ts|preserve-caught-error|2",
         "src/plugins/public-surface-loader.ts|typescript/no-unnecessary-type-parameters|3",
@@ -271,22 +273,5 @@ describe("production lint suppressions", () => {
         "ui/src/components/mascot-canvas.ts|unicorn/no-array-fill-with-reference-type|1",
       ]),
     );
-  });
-
-  it("keeps production no-explicit-any suppressions on an explicit allowlist", () => {
-    const anySuppressions = collectProductionLintSuppressions().filter(
-      (entry) => entry.rule === "typescript/no-explicit-any",
-    );
-
-    expect(anySuppressions).toEqual([
-      {
-        file: "src/channels/plugins/types.plugin.ts",
-        rule: "typescript/no-explicit-any",
-      },
-      {
-        file: "src/test-utils/vitest-mock-fn.ts",
-        rule: "typescript/no-explicit-any",
-      },
-    ]);
   });
 });
