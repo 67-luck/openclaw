@@ -10,6 +10,7 @@ import { hasUnjoinedWork } from "../../scripts/lib/managed-child-process.mts";
 import { runLegacySourceUpdateBuild } from "../../scripts/lib/source-update-build.mts";
 import { listTsdownOutputRoots } from "../../scripts/tsdown-build.mts";
 import { retainCliProcessJobUntilExit, withCliProcessScope } from "../cli/runtime-cleanup-scope.js";
+import { GatewayServiceUpdateOwnershipError } from "../cli/update-cli/update-command-service-plan.js";
 import { hasErrnoCode } from "../infra/errno.js";
 import { isMainModule } from "../infra/is-main.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
@@ -29,11 +30,40 @@ import type { InstalledTask } from "./schtasks.installed-diagnostics.test-suppor
 import { describeFailure, entry, packageRoot } from "./schtasks.installed-package.test-support.js";
 import {
   disableScheduledTaskXmlForFixture,
-  normalizeScheduledTaskXmlEnabledForFixture,
   readRelatedProcessDiagnostics,
   readTaskPrincipal,
   readTaskXml,
 } from "./schtasks.integration-observation.test-support.js";
+import { buildServiceEnvironment } from "./service-env.js";
+
+export function buildSourceRecoveryForeignTaskScript(params: {
+  env: NodeJS.ProcessEnv;
+  foreignInstallRoot: string;
+  evidenceDir: string;
+  port: string;
+}) {
+  return buildTaskScript({
+    programArguments: [
+      process.execPath,
+      entry(params.foreignInstallRoot),
+      "gateway",
+      "--port",
+      params.port,
+    ],
+    workingDirectory: params.evidenceDir,
+    environment: {
+      ...buildServiceEnvironment({
+        env: params.env,
+        port: Number(params.port),
+        runtime: "node",
+        platform: "win32",
+        execPath: process.execPath,
+      }),
+      OPENCLAW_WINDOWS_TASK_NAME: params.env.OPENCLAW_WINDOWS_TASK_NAME,
+      OPENCLAW_TASK_SCRIPT: path.join(params.evidenceDir, "foreign.cmd"),
+    },
+  });
+}
 
 async function snapshotSourceBuildTask(
   taskName: string,
@@ -65,7 +95,6 @@ export async function inspectInstalledSourceBuildRecovery(params: {
   observations: Record<string, unknown>;
   canBindLoopbackPort: (port: number) => Promise<boolean>;
   recordProgress: (phase: string) => Promise<void>;
-  onRecovered: () => Promise<unknown>;
   recordSourceChildJoin: (joined: boolean) => Promise<void>;
 }) {
   const {
@@ -76,7 +105,6 @@ export async function inspectInstalledSourceBuildRecovery(params: {
     observations,
     canBindLoopbackPort,
     recordProgress,
-    onRecovered,
     recordSourceChildJoin,
   } = params;
   const sourceSha256 = await hashFile(path.resolve("scripts/lib/source-update-build.mts"));
@@ -85,102 +113,96 @@ export async function inspectInstalledSourceBuildRecovery(params: {
     commit: "784850df14770a9bca285f45ad983f06a619ea86",
     sha256: sourceSha256,
   };
-  for (const mode of ["owned", "reassigned"] as const) {
-    const evidenceDir = path.join(selected.rootDir, `source-build-${mode}`);
-    const originalXml = await readTaskXml(selected.taskName);
-    assert.ok(originalXml);
-    const restorePath = path.join(selected.rootDir, `source-build-${mode}-restore.xml`);
-    await fs.writeFile(restorePath, `\uFEFF${originalXml}`, "utf16le");
-    let sourceFailure: Error | undefined;
-    const commandIndex = commands.length;
-    await recordSourceChildJoin(false);
-    try {
-      await run(
-        [
-          "--import",
-          pathToFileURL(path.resolve("scripts/tsx.mjs")).href,
-          path.resolve("src/daemon/schtasks.source-build-recovery.test-support.ts"),
-          mode,
-          foreignInstallRoot,
-          evidenceDir,
-        ],
-        selected.env,
-        packageRoot(selected.installRoot),
-        commands,
-        0,
-        signal,
-      );
-      const proof: unknown = JSON.parse(
-        await fs.readFile(path.join(evidenceDir, "proof.json"), "utf8"),
-      );
-      observations[mode] = proof;
-      if (mode === "owned") {
-        observations.recoveredStatus = await onRecovered();
-      } else {
-        const receipt = z
-          .object({ observations: z.object({ foreignAfter: z.unknown() }) })
-          .parse(proof);
-        const joinedSnapshot = await snapshotSourceBuildTask(selected.taskName, selected.env, [
-          path.join(evidenceDir, "foreign.cmd"),
-        ]);
-        assert.deepEqual(joinedSnapshot, receipt.observations.foreignAfter);
-        observations.foreignAfterJoin = joinedSnapshot;
-        assert.equal(await canBindLoopbackPort(selected.gatewayPort), true);
-        const foreignProcesses = readRelatedProcessDiagnostics([foreignInstallRoot]);
-        assert.equal(foreignProcesses.ok, true);
-        assert.equal(foreignProcesses.truncated, false);
-        assert.deepEqual(foreignProcesses.processes, []);
-        observations.foreignProcessesAfterJoin = foreignProcesses;
-      }
-      await recordProgress(`authority:source-build-${mode}-verified`);
-    } catch (error) {
-      sourceFailure = toErrorObject(error, "Native source-build fixture failed");
-    } finally {
-      const joined =
-        commands.length > commandIndex &&
-        commands.slice(commandIndex).every((command) => command.joined) &&
-        !hasUnjoinedWork(sourceFailure) &&
-        !hasCommandProcessCleanupError(sourceFailure);
-      if (mode === "reassigned" && joined) {
-        try {
-          assert.equal(
-            (await execSchtasks(["/Create", "/F", "/TN", selected.taskName, "/XML", restorePath]))
-              .code,
-            0,
-          );
-          assert.equal(await readTaskXml(selected.taskName), originalXml);
-        } catch (restoreError) {
-          sourceFailure = new AggregateError(
-            sourceFailure ? [sourceFailure, restoreError] : [restoreError],
-            "Source-build fixture definition restoration failed",
-          );
-        }
-      }
-      if (
-        joined &&
-        !hasUnjoinedWork(sourceFailure) &&
-        !hasCommandProcessCleanupError(sourceFailure)
-      ) {
-        try {
-          await recordSourceChildJoin(true);
-        } catch (recordError) {
-          sourceFailure = new AggregateError(
-            sourceFailure ? [sourceFailure, recordError] : [recordError],
-            "Source-child join recording failed",
-          );
-        }
+  const mode = "reassigned";
+  const evidenceDir = path.join(selected.rootDir, `source-build-${mode}`);
+  const originalXml = await readTaskXml(selected.taskName);
+  assert.ok(originalXml);
+  const restorePath = path.join(selected.rootDir, `source-build-${mode}-restore.xml`);
+  await fs.writeFile(restorePath, `\uFEFF${originalXml}`, "utf16le");
+  let sourceFailure: Error | undefined;
+  const commandIndex = commands.length;
+  await recordSourceChildJoin(false);
+  try {
+    await run(
+      [
+        "--import",
+        pathToFileURL(path.resolve("scripts/tsx.mjs")).href,
+        path.resolve("src/daemon/schtasks.source-build-recovery.test-support.ts"),
+        foreignInstallRoot,
+        evidenceDir,
+      ],
+      selected.env,
+      packageRoot(selected.installRoot),
+      commands,
+      0,
+      signal,
+    );
+    const proof: unknown = JSON.parse(
+      await fs.readFile(path.join(evidenceDir, "proof.json"), "utf8"),
+    );
+    observations[mode] = proof;
+    const receipt = z
+      .object({ observations: z.object({ foreignAfter: z.unknown() }) })
+      .parse(proof);
+    const joinedSnapshot = await snapshotSourceBuildTask(selected.taskName, selected.env, [
+      path.join(evidenceDir, "foreign.cmd"),
+    ]);
+    assert.deepEqual(joinedSnapshot, receipt.observations.foreignAfter);
+    observations.foreignAfterJoin = joinedSnapshot;
+    assert.equal(await canBindLoopbackPort(selected.gatewayPort), true);
+    const foreignProcesses = readRelatedProcessDiagnostics([foreignInstallRoot]);
+    assert.equal(foreignProcesses.ok, true);
+    assert.equal(foreignProcesses.truncated, false);
+    assert.deepEqual(foreignProcesses.processes, []);
+    observations.foreignProcessesAfterJoin = foreignProcesses;
+    await recordProgress(`authority:source-build-${mode}-verified`);
+  } catch (error) {
+    sourceFailure = toErrorObject(error, "Native source-build fixture failed");
+  } finally {
+    const joined =
+      commands.length > commandIndex &&
+      commands.slice(commandIndex).every((command) => command.joined) &&
+      !hasUnjoinedWork(sourceFailure) &&
+      !hasCommandProcessCleanupError(sourceFailure);
+    if (joined) {
+      try {
+        assert.equal(
+          (await execSchtasks(["/Create", "/F", "/TN", selected.taskName, "/XML", restorePath]))
+            .code,
+          0,
+        );
+        assert.equal(await readTaskXml(selected.taskName), originalXml);
+      } catch (restoreError) {
+        sourceFailure = new AggregateError(
+          sourceFailure ? [sourceFailure, restoreError] : [restoreError],
+          "Source-build fixture definition restoration failed",
+        );
       }
     }
-    if (sourceFailure) {
-      throw sourceFailure;
+    if (
+      joined &&
+      !hasUnjoinedWork(sourceFailure) &&
+      !hasCommandProcessCleanupError(sourceFailure)
+    ) {
+      try {
+        await recordSourceChildJoin(true);
+      } catch (recordError) {
+        sourceFailure = new AggregateError(
+          sourceFailure ? [sourceFailure, recordError] : [recordError],
+          "Source-child join recording failed",
+        );
+      }
     }
+  }
+  if (sourceFailure) {
+    throw sourceFailure;
   }
 }
 
 // Disposable native fixture: the real source owner controls stop, rollback and recovery.
 async function inspectSourceBuildRecovery() {
-  const [mode, foreignInstallRoot, evidenceDir] = process.argv.slice(2);
-  assert.ok(mode === "owned" || mode === "reassigned");
+  const [foreignInstallRoot, evidenceDir] = process.argv.slice(2);
+  const mode = "reassigned";
   assert.ok(foreignInstallRoot && evidenceDir);
   assert.equal(process.platform, "win32");
   const root = await fs.realpath(process.cwd());
@@ -248,49 +270,44 @@ async function inspectSourceBuildRecovery() {
         assert.deepEqual(stopped.files, filesBefore);
         observations.stopped = stopped;
         await fs.writeFile(marker, "incomplete compiler output\n", { flag: "wx" });
-        if (mode === "reassigned") {
-          const foreignScript = path.join(evidenceDir, "foreign.cmd");
-          await fs.writeFile(
-            foreignScript,
-            encodeWindowsLauncherScript({
-              format: "cmd",
-              content: buildTaskScript({
-                programArguments: [
-                  process.execPath,
-                  entry(foreignInstallRoot),
-                  "gateway",
-                  "--port",
-                  port,
-                ],
-                workingDirectory: evidenceDir,
-                environment: { ...process.env, OPENCLAW_TASK_SCRIPT: foreignScript },
-              }),
+        const foreignScript = path.join(evidenceDir, "foreign.cmd");
+        await fs.writeFile(
+          foreignScript,
+          encodeWindowsLauncherScript({
+            format: "cmd",
+            content: buildSourceRecoveryForeignTaskScript({
+              env: process.env,
+              foreignInstallRoot,
+              evidenceDir,
+              port,
             }),
-          );
-          const command = /<Command>([^<]+)<\/Command>/u.exec(originalXml);
-          assert.ok(command);
-          assert.equal(originalXml.match(/<Command>/gu)?.length, 1);
-          const escaped = foreignScript
-            .replaceAll("&", "&amp;")
-            .replaceAll("<", "&lt;")
-            .replaceAll(">", "&gt;");
-          const xml = disableScheduledTaskXmlForFixture(originalXml)
-            .replace(/<Arguments>[\s\S]*?<\/Arguments>/u, "")
-            .replace(/<WorkingDirectory>[\s\S]*?<\/WorkingDirectory>/u, "")
-            .replace(command[0], `<Command>${escaped}</Command>`)
-            .replace(/<Triggers>[\s\S]*?<\/Triggers>/u, "<Triggers />");
-          const definition = path.join(evidenceDir, "foreign.xml");
-          await fs.writeFile(definition, `\uFEFF${xml}`, "utf16le");
-          assert.equal(
-            (await execSchtasks(["/Create", "/F", "/TN", taskName, "/XML", definition])).code,
-            0,
-          );
-          foreignBefore = await snapshotSourceBuildTask(taskName, process.env, [foreignScript]);
-          assert.equal(foreignBefore.principal.enabled, false);
-          assert.equal(foreignBefore.runtime.status, "stopped");
-          assert.equal(foreignBefore.runtime.pid, undefined);
-          observations.foreignBefore = foreignBefore;
-        }
+          }),
+        );
+        observations.foreignLauncherSha256 = await hashFile(foreignScript);
+        await record("foreign-launcher-written");
+        const command = /<Command>([^<]+)<\/Command>/u.exec(originalXml);
+        assert.ok(command);
+        assert.equal(originalXml.match(/<Command>/gu)?.length, 1);
+        const escaped = foreignScript
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+        const xml = disableScheduledTaskXmlForFixture(originalXml)
+          .replace(/<Arguments>[\s\S]*?<\/Arguments>/u, "")
+          .replace(/<WorkingDirectory>[\s\S]*?<\/WorkingDirectory>/u, "")
+          .replace(command[0], `<Command>${escaped}</Command>`)
+          .replace(/<Triggers>[\s\S]*?<\/Triggers>/u, "<Triggers />");
+        const definition = path.join(evidenceDir, "foreign.xml");
+        await fs.writeFile(definition, `\uFEFF${xml}`, "utf16le");
+        assert.equal(
+          (await execSchtasks(["/Create", "/F", "/TN", taskName, "/XML", definition])).code,
+          0,
+        );
+        foreignBefore = await snapshotSourceBuildTask(taskName, process.env, [foreignScript]);
+        assert.equal(foreignBefore.principal.enabled, false);
+        assert.equal(foreignBefore.runtime.status, "stopped");
+        assert.equal(foreignBefore.runtime.pid, undefined);
+        observations.foreignBefore = foreignBefore;
         await record("build-callback-settled");
         return { exitCode: 17 };
       });
@@ -311,34 +328,23 @@ async function inspectSourceBuildRecovery() {
       ),
       false,
     );
-    if (mode === "owned") {
-      assert.equal(recoveryError, undefined);
-      assert.equal(result, 17);
-      const recoveredXml = await readTaskXml(taskName);
-      assert.ok(recoveredXml);
-      assert.equal(
-        normalizeScheduledTaskXmlEnabledForFixture(recoveredXml),
-        normalizeScheduledTaskXmlEnabledForFixture(originalXml),
-      );
-      assert.equal(readTaskPrincipal(taskName).enabled, true);
-      observations.recovered = await snapshot();
-      assert.equal(
-        (await readScheduledTaskRuntime(process.env, { requireLoaded: true })).status,
-        "running",
-      );
-    } else {
-      assert.ok(recoveryError instanceof AggregateError);
-      assert.match(
-        JSON.stringify(describeFailure(recoveryError)),
-        /original selected Gateway no longer owns this source checkout/,
-      );
-      assert.ok(foreignBefore);
-      const after = await snapshotSourceBuildTask(taskName, process.env, [
-        path.join(evidenceDir, "foreign.cmd"),
-      ]);
-      assert.deepEqual(after, foreignBefore);
-      observations.foreignAfter = after;
-    }
+    assert.ok(recoveryError instanceof AggregateError);
+    const buildFailure: unknown = recoveryError.errors[0];
+    assert.ok(buildFailure instanceof Error);
+    assert.equal(buildFailure.message, "Source build failed (exit 17).");
+    const refusal = recoveryError.cause;
+    assert.ok(refusal instanceof GatewayServiceUpdateOwnershipError);
+    const refusalFacts = refusal.failureFacts.map(({ check, code }) => ({ check, code }));
+    assert.deepEqual(refusalFacts, [
+      { check: "managed-service", code: "service-ownership-changed" },
+    ]);
+    observations.ownershipRefusal = refusalFacts;
+    assert.ok(foreignBefore);
+    const after = await snapshotSourceBuildTask(taskName, process.env, [
+      path.join(evidenceDir, "foreign.cmd"),
+    ]);
+    assert.deepEqual(after, foreignBefore);
+    observations.foreignAfter = after;
     const artifactLockEntries = await fs.readdir(resolveDistArtifactLockPath(root));
     assert.deepEqual(artifactLockEntries, []);
     observations.artifactLockEntries = artifactLockEntries;

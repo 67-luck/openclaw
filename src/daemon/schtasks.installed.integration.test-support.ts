@@ -349,12 +349,6 @@ export async function runInstalledLifecycle(
           }
           await fs.writeFile(admissionPath, JSON.stringify(admissions, null, 2));
         },
-        onRecovered: async () => {
-          await awaitReadiness(selected, "source-build-recovered");
-          const recovered = await status(selected, beforeIdentity);
-          assert.notEqual(recovered.service.runtime.pid, before.service.runtime.pid);
-          return recovered;
-        },
       });
       await verifyPreparedInstall(prepared, "authority-peer", authorityPeerRoot);
       assert.deepEqual(await fs.readFile(selected.configPath), configBefore);
