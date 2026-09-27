@@ -4,8 +4,8 @@ import type {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { isSilentReplyText } from "openclaw/plugin-sdk/reply-runtime";
 import { resolveCodexAppServerPreparedAuthHandoff } from "./auth-bridge.js";
-import { runBoundedCodexAppServerTurn, type CodexBoundedTurnOptions } from "./bounded-turn.js";
 import { resolveCodexBoundedTurnIsolation } from "./bounded-turn-isolation.js";
+import { runBoundedCodexAppServerTurn, type CodexBoundedTurnOptions } from "./bounded-turn.js";
 import { createAttributedCodexAssistantMessage } from "./event-projector-assistant-message.js";
 import { resolveCodexLocalRuntimeAttribution } from "./local-runtime-attribution.js";
 import { assertCodexPassiveTurnItems } from "./protocol-validators.js";
@@ -79,7 +79,10 @@ export async function runCodexSettledTurnFinalization(
     developerInstructions: FINALIZER_DEVELOPER_INSTRUCTIONS,
     input: [{ type: "text", text: attempt.prompt, text_elements: [] }],
     requiredModalities: ["text"],
-    isolation: resolveCodexBoundedTurnIsolation(options),
+    isolation: resolveCodexBoundedTurnIsolation({
+      ...options,
+      requireIsolatedAuth: Boolean(authHandoff.preparedAuth || authHandoff.authProfileId),
+    }),
     historyItems,
     requireNoExternalCapabilities: true,
     allowEmptyText: true,
