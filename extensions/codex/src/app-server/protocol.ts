@@ -46,13 +46,8 @@ export type {
 } from "./protocol-control-plane.js";
 export type { CodexListMcpServerStatusResponse, CodexMcpServerStatus } from "./protocol-mcp.js";
 export { isRpcResponse } from "./protocol-json.js";
-export type {
-  JsonObject,
-  JsonValue,
-  RpcMessage,
-  RpcRequest,
-  RpcResponse,
-} from "./protocol-json.js";
+export type { JsonObject, JsonValue } from "./protocol-json.js";
+export type { RpcMessage, RpcRequest, RpcResponse } from "./protocol-json.js";
 
 export type CodexServiceTier = string;
 export type CodexApprovalPolicy =
@@ -620,6 +615,7 @@ export type CodexModel = {
   hidden: boolean;
   isDefault: boolean;
   inputModalities: string[];
+  serviceTiers?: { id: string; name: string; description: string }[];
   supportedReasoningEfforts: CodexReasoningEffortOption[];
   defaultReasoningEffort?: string | null;
   multiAgentVersion?: "disabled" | "v1" | "v2" | null;
