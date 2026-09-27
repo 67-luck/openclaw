@@ -30,6 +30,43 @@ function rejectSubagentSpawnRequest(status: "error" | "forbidden", error: string
   return { ok: false as const, result: { status, error } satisfies SpawnSubagentResult };
 }
 
+function rejectSubagentRequesterRead(error: unknown) {
+  return rejectSubagentSpawnRequest(
+    "error",
+    `sessions_spawn could not read the requester session: ${summarizeSpawnError(error)}`,
+  );
+}
+
+export async function resolveSubagentSpawnRequester(params: {
+  cfg: ReturnType<typeof getRuntimeConfig>;
+  ctx: SpawnSubagentContext;
+  completionRequesterSessionKey: string;
+  completionTarget: SpawnSubagentParams["completionTarget"];
+}) {
+  // Capture the requester window before launch; a reset must not move child
+  // progress receipts or private results to a replacement session at the same key.
+  let completionRequesterSessionId: string | undefined;
+  try {
+    const target = await resolveGatewaySessionStoreTargetInWorker({
+      cfg: params.cfg,
+      key: params.completionRequesterSessionKey,
+      agentId: params.ctx.requesterAgentIdOverride,
+      assertActive: params.ctx.assertActive,
+    });
+    params.ctx.assertActive?.();
+    completionRequesterSessionId = target.store[target.canonicalKey]?.sessionId;
+  } catch (error) {
+    return rejectSubagentRequesterRead(error);
+  }
+  if (params.completionTarget === "parent" && !completionRequesterSessionId) {
+    return rejectSubagentSpawnRequest(
+      "error",
+      "Private completion requires an existing requester session. Retry from an active session.",
+    );
+  }
+  return { ok: true as const, completionRequesterSessionId };
+}
+
 export async function resolveSubagentSpawnRequest(
   params: SpawnSubagentParams,
   ctx: SpawnSubagentContext,
@@ -116,29 +153,18 @@ export async function resolveSubagentSpawnRequest(
   });
   const requesterInternalKey = ownership.controllerSessionKey;
 
-  // Capture the requester window before launch; a reset must not move child
-  // progress receipts or private results to a replacement session at the same key.
-  let completionRequesterSessionId: string | undefined;
-  try {
-    const target = await resolveGatewaySessionStoreTargetInWorker({
-      cfg,
-      key: ownership.completionRequesterSessionKey,
-      agentId: ctx.requesterAgentIdOverride,
-      assertActive: ctx.assertActive,
-    });
-    ctx.assertActive?.();
-    completionRequesterSessionId = target.store[target.canonicalKey]?.sessionId;
-  } catch (error) {
-    return rejectSubagentSpawnRequest(
-      "error",
-      `sessions_spawn could not read the requester session: ${summarizeSpawnError(error)}`,
-    );
-  }
-  if (params.completionTarget === "parent" && !completionRequesterSessionId) {
-    return rejectSubagentSpawnRequest(
-      "error",
-      "Private completion requires an existing requester session. Retry from an active session.",
-    );
+  // Collector FIFO belongs ahead of awaited preparation; the executor captures
+  // its requester after taking custody of the reservation below.
+  const requester = params.collect
+    ? undefined
+    : await resolveSubagentSpawnRequester({
+        cfg,
+        ctx,
+        completionRequesterSessionKey: ownership.completionRequesterSessionKey,
+        completionTarget: params.completionTarget,
+      });
+  if (requester && !requester.ok) {
+    return requester;
   }
 
   const requesterAgentId = resolveSessionAgentId({
@@ -224,7 +250,11 @@ export async function resolveSubagentSpawnRequest(
       additionalActiveChildren: pendingChildren,
     });
   };
-  ctx.assertActive?.();
+  try {
+    ctx.assertActive?.();
+  } catch (error) {
+    return rejectSubagentRequesterRead(error);
+  }
   const admissionReservation = params.collect
     ? undefined
     : reserveChildAdmissionSlot({
@@ -295,7 +325,7 @@ export async function resolveSubagentSpawnRequest(
         spawnMode,
         cleanup,
         expectsCompletionMessage,
-        completionRequesterSessionId,
+        completionRequesterSessionId: requester?.completionRequesterSessionId,
       },
       runtime: {
         hookRunner,

@@ -51,7 +51,10 @@ import {
 import { callNativeSubagentGateway, readGatewayRunId } from "./subagent-spawn-gateway.js";
 import { buildSubagentLaunchRequest } from "./subagent-spawn-launch-request.js";
 import { createSubagentSpawnLifecycleEmitter } from "./subagent-spawn-lifecycle.js";
-import { resolveSubagentSpawnRequest } from "./subagent-spawn-request.js";
+import {
+  resolveSubagentSpawnRequest,
+  resolveSubagentSpawnRequester,
+} from "./subagent-spawn-request.js";
 import { createInitialSubagentSession } from "./subagent-spawn-session-patch.js";
 import { bindThreadForSubagentSpawn } from "./subagent-spawn-thread-binding.js";
 import { emitSessionLifecycleEvent, mergeDeliveryContext } from "./subagent-spawn.runtime.js";
@@ -63,13 +66,12 @@ export async function spawnSubagentDirect(
   params: SpawnSubagentParams,
   ctx: SpawnSubagentContext,
 ): Promise<SpawnSubagentResult> {
-  const assertActive = ctx.assertActive;
+  const { assertActive, agentSessionKey: requesterSessionKey } = ctx;
   const promptedAt = Date.now();
   const task = params.task;
   const label = params.label?.trim() || "";
   const requestThreadBinding = params.thread === true;
   const sandboxMode = params.sandbox === "require" ? "require" : "inherit";
-  const requesterSessionKey = ctx.agentSessionKey;
   const gatewayCaller = getGatewayToolCallerIdentity();
   const gatewayScope = getPluginRuntimeGatewayRequestScope();
   const gatewayContextResolver =
@@ -83,13 +85,7 @@ export async function spawnSubagentDirect(
     return requestResolution.result;
   }
   const {
-    request: {
-      taskName,
-      spawnMode,
-      cleanup,
-      expectsCompletionMessage,
-      completionRequesterSessionId,
-    },
+    request: { taskName, spawnMode, cleanup, expectsCompletionMessage },
     runtime: {
       hookRunner,
       cfg,
@@ -117,6 +113,7 @@ export async function spawnSubagentDirect(
     },
     childIdem,
   } = requestResolution.resolved;
+  let { completionRequesterSessionId } = requestResolution.resolved.request;
   let threadBindingReady = false;
   let hasBoundThreadDeliveryOrigin = false;
   let childRunId: string = childIdem;
@@ -138,6 +135,18 @@ export async function spawnSubagentDirect(
     if (params.collect && operatorAuthority) {
       operatorAuthority.assertCurrent();
       releaseOperatorAuthority = operatorAuthority.retain?.();
+    }
+    if (params.collect) {
+      const requester = await resolveSubagentSpawnRequester({
+        cfg,
+        ctx,
+        completionRequesterSessionKey: ownership.completionRequesterSessionKey,
+        completionTarget: params.completionTarget,
+      });
+      if (!requester.ok) {
+        return requester.result;
+      }
+      completionRequesterSessionId = requester.completionRequesterSessionId;
     }
     const childPlan = await resolveSubagentChildPlan({
       request: params,

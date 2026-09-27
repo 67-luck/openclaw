@@ -7,6 +7,7 @@ import path from "node:path";
 import { isMainThread } from "node:worker_threads";
 import type { AcpRuntime } from "@openclaw/acp-core/runtime/types";
 import { expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../../../test/helpers/sqlite-statement-execution-counter.js";
 import {
   getAcpSessionManager,
@@ -31,13 +32,16 @@ import { LegacyContextEngine } from "../../../context-engine/legacy.js";
 import { runOpenClawAgentWriteTransaction } from "../../../state/openclaw-agent-db.js";
 import { normalizeSessionDeliveryState } from "../../../utils/delivery-context.shared.js";
 import { maybeSpawnVisibleSession } from "../../tools/sessions-spawn-visible.js";
+import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import {
   settleSubagentRegistryPersistenceWork,
   writeSubagentSessionEntry,
 } from "../registry/subagent-registry.persistence.test-support.js";
 import { loadSubagentRunsByRunIdsFromSqlite } from "../registry/subagent-registry.store.sqlite.js";
+import { closeSwarmScheduler, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
 import { spawnAcpDirect } from "./acp-spawn.js";
 import { spawnSubagentDirect } from "./subagent-spawn.js";
+import * as spawnRuntime from "./subagent-spawn.runtime.js";
 import { testing as spawnTesting } from "./subagent-spawn.test-support.js";
 
 const fixture = installSpawnAuthorityFixture();
@@ -130,6 +134,116 @@ it("rejects a spawn cancelled during requester acquisition before starting effec
   });
   expect(effectsStarted).not.toHaveBeenCalled();
 });
+
+it("rejects an already-cancelled collector before reserving FIFO or starting effects", async () => {
+  const abort = new AbortController();
+  abort.abort(new Error("requester already cancelled"));
+  const effectsStarted = vi.fn();
+  const result = await spawnSubagentDirect(
+    { task: "cancel before collector admission", collect: true, context: "isolated" },
+    {
+      agentSessionKey: fixture.parentSessionKey,
+      requesterRunId: "cancelled-parent",
+      assertActive: () => abort.signal.throwIfAborted(),
+      onSpawnEffectsStart: effectsStarted,
+    },
+  );
+  expect(result).toEqual({
+    status: "error",
+    error: "sessions_spawn could not read the requester session: requester already cancelled",
+  });
+  expect(effectsStarted).not.toHaveBeenCalled();
+  expect(subagentRuns.size).toBe(0);
+});
+
+it.each(["ready", "failed", "cancelled"] as const)(
+  "preserves collector FIFO when the first requester lookup is %s after the second completes",
+  async (firstOutcome) => {
+    await writeSubagentSessionEntry({
+      stateDir: fixture.stateDir,
+      agentId: "main",
+      sessionKey: fixture.parentSessionKey,
+      defaultSessionId: "fifo-requester",
+    });
+    const firstReadEntered = createDeferred();
+    const releaseFirstRead = createDeferred();
+    const firstLaunch = createDeferred();
+    const nextLaunch = createDeferred();
+    const launchedRunIds: string[] = [];
+    const abort = new AbortController();
+    const readRequester = spawnRuntime.resolveGatewaySessionStoreTargetInWorker;
+    let readCount = 0;
+    const requesterRead = vi
+      .spyOn(spawnRuntime, "resolveGatewaySessionStoreTargetInWorker")
+      .mockImplementation(async (params) => {
+        if (readCount++ === 0) {
+          firstReadEntered.resolve();
+          await releaseFirstRead.promise;
+          if (firstOutcome === "failed") {
+            throw new Error("first requester lookup failed");
+          }
+        }
+        return await readRequester(params);
+      });
+    spawnTesting.setDepsForTest({
+      hasInProcessGatewayContext: () => true,
+      dispatchGatewayMethodInProcess: async <T>(
+        method: string,
+        params: Record<string, unknown>,
+      ) => {
+        expect(method).toBe("agent");
+        const runId = String(params.idempotencyKey);
+        launchedRunIds.push(runId);
+        (launchedRunIds.length === 1 ? firstLaunch : nextLaunch).resolve();
+        return { runId, status: "accepted" } as T;
+      },
+    });
+    const spawn = (label: string, assertActive?: () => void) =>
+      spawnSubagentDirect(
+        { task: label, label, collect: true, context: "isolated", lightContext: true },
+        {
+          agentSessionKey: fixture.parentSessionKey,
+          requesterRunId: "fifo-parent",
+          assertActive,
+        },
+      );
+    const firstPending = spawn("First collector", () => abort.signal.throwIfAborted());
+    let secondPending: ReturnType<typeof spawn> | undefined;
+    try {
+      await firstReadEntered.promise;
+      secondPending = spawn("Second collector");
+      const second = await secondPending;
+      expect(second.status).toBe("accepted");
+      expect(subagentRuns.get(second.runId!)).toMatchObject({ collect: true });
+      if (firstOutcome === "cancelled") {
+        abort.abort(new Error("first requester lookup cancelled"));
+      }
+      releaseFirstRead.resolve();
+      const first = await firstPending;
+      if (firstOutcome === "ready") {
+        expect(first.status).toBe("accepted");
+        expect(subagentRuns.get(first.runId!)).toMatchObject({ collect: true });
+      } else {
+        expect(first).toEqual({
+          status: "error",
+          error: `sessions_spawn could not read the requester session: first requester lookup ${firstOutcome}`,
+        });
+      }
+      await firstLaunch.promise;
+      expect(launchedRunIds).toEqual([firstOutcome === "ready" ? first.runId : second.runId]);
+      if (firstOutcome === "ready") {
+        expect(releaseSwarmRun(first.runId!)).toBe(true);
+        await nextLaunch.promise;
+        expect(launchedRunIds).toEqual([first.runId, second.runId]);
+      }
+    } finally {
+      releaseFirstRead.resolve();
+      await Promise.allSettled([firstPending, secondPending]);
+      await closeSwarmScheduler();
+      requesterRead.mockRestore();
+    }
+  },
+);
 
 it("retains dirty-sibling validation when a spawn reads its selected requester", async () => {
   const sibling = "agent:main:matrix:channel:!mixed:example.org";
