@@ -18,7 +18,7 @@ struct NativeExternalBrowserProofTests {
 
     @Test(.timeLimit(.minutes(3)))
     func externalPreferenceOpensTheSystemBrowser() async throws {
-        _ = AppKitTestSupport.application
+        try await AppKitTestSupport.startApplication()
         var root = URL(fileURLWithPath: #filePath)
         for _ in 0..<5 { root.deleteLastPathComponent() }
         let config = try JSONDecoder().decode(Configuration.self, from: Data(contentsOf:
@@ -57,7 +57,7 @@ struct NativeExternalBrowserProofTests {
         controller.window?.setContentSize(NSSize(width: 1280, height: 900))
         _ = try await wait("settings")
         try #require(try await controller.webView.evaluateJavaScript("""
-        Boolean(window.webkit?.messageHandlers?.openclawLink && window.webkit?.messageHandlers?.openclawBrowser)
+        Boolean(document.visibilityState === 'visible' && window.webkit?.messageHandlers?.openclawLink && window.webkit?.messageHandlers?.openclawBrowser)
         """) as? Bool == true)
         let enabled = try await controller.webView.callAsyncJavaScript("""
         const row = [...document.querySelectorAll('.settings-row')].find(e =>
@@ -78,7 +78,7 @@ struct NativeExternalBrowserProofTests {
             _ = try await wait("chat")
         } catch {
             let diagnostic = try? await controller.webView.evaluateJavaScript("""
-            JSON.stringify({url:location.href,ready:document.readyState,body:document.body.innerText,
+            JSON.stringify({url:location.href,ready:document.readyState,visibility:document.visibilityState,body:document.body.innerText,
               errors:window.__nativeProofErrors,
               sockets:window.openclawControlUiE2eGateway?.socketStates(),
               requests:window.openclawControlUiE2eGateway?.requests.map(request => ({method:request.method,sessionKey:request.params?.sessionKey})),
