@@ -5,8 +5,9 @@ import type { MSTeamsInboundMedia } from "./types.js";
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 /**
- * Callers supply an already-guarded fetch so Teams auth fallback owns the
- * request sequence while `safeFetchWithPolicy` retains redirect and DNS pinning.
+ * Direct save path used when the caller supplies the already-guarded fetch
+ * implementation. This lets Teams-specific auth fallback own the request
+ * sequence while keeping redirect and DNS pinning inside `safeFetchWithPolicy`.
  */
 export async function downloadAndStoreMSTeamsRemoteMedia(params: {
   url: string;

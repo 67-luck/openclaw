@@ -19,7 +19,6 @@ import { useAutoCleanupTempDirTracker, useIsolatedStateGuard } from "openclaw/pl
 import { afterAll, afterEach, aroundAll, beforeEach, vi } from "vitest";
 import type { OpenClawConfig, PluginRuntime, RuntimeEnv } from "../runtime-api.js";
 import type { MSTeamsConversationStore } from "./conversation-store.js";
-import type { MSTeamsActivityHandler } from "./monitor-handler.js";
 import type { MSTeamsMessageHandlerDeps } from "./monitor-handler.types.js";
 import type { MSTeamsPollStore } from "./polls.js";
 import { setMSTeamsRuntime } from "./runtime.js";
@@ -204,31 +203,16 @@ export function installMSTeamsTestRuntime(options: MSTeamsTestRuntimeOptions = {
   return { resolveStorePath };
 }
 
-export function createActivityHandler(
-  run = vi.fn(async () => undefined),
-): MSTeamsActivityHandler & {
-  run: NonNullable<MSTeamsActivityHandler["run"]>;
-} {
-  const handler: MSTeamsActivityHandler & {
-    run: NonNullable<MSTeamsActivityHandler["run"]>;
-  } = {
-    onMessage: () => handler,
-    onMembersAdded: () => handler,
-    onReactionsAdded: () => handler,
-    onReactionsRemoved: () => handler,
-    run,
-  };
-  return handler;
-}
-
 export function createMSTeamsMessageHandlerDeps(params?: {
   cfg?: OpenClawConfig;
   runtime?: RuntimeEnv;
 }): MSTeamsMessageHandlerDeps {
   const app = {
-    tokenManager: {
-      getBotToken: async () => ({ toString: () => "bot-token" }),
-      getGraphToken: async () => ({ toString: () => "graph-token" }),
+    tokenProvider: {
+      getAppToken: async (scope: string) => ({
+        toString: () =>
+          scope === "https://graph.microsoft.com/.default" ? "graph-token" : "bot-token",
+      }),
     },
     api: {},
     graph: {},

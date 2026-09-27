@@ -9,6 +9,7 @@ import {
 } from "./agent-tools.before-tool-call.js";
 import { runWithToolExecutionValidation } from "./agent-tools.execution-validation.js";
 import { getChannelAgentToolMeta } from "./channel-tool-metadata.js";
+import { setMcpCodeModeGuestResultFromAgentResult } from "./mcp-content.js";
 import { captureAgentPluginRuntimeRefresh } from "./plugin-runtime-refresh.js";
 import type { AgentToolResult } from "./runtime/index.js";
 import {
@@ -61,7 +62,6 @@ import type {
   ToolSearchConfig,
   ToolSearchToolContext,
   UnknownToolErrorOptions,
-  UnknownToolRecoverySurface,
 } from "./tool-search-types.js";
 import { textResult, ToolInputError } from "./tools/common.js";
 
@@ -379,9 +379,7 @@ export class ToolSearchRuntime {
   };
 
   all = (options?: CatalogVisibilityOptions) =>
-    visibleCatalogEntries(resolveCatalog(this.ctx), options).map((entry) =>
-      compactToolSearchCatalogEntry(entry),
-    );
+    visibleCatalogEntries(resolveCatalog(this.ctx), options).map(compactToolSearchCatalogEntry);
 
   namespaceEntries = () =>
     // Snapshot host metadata without rendering hints or retaining the executable tool.
@@ -417,12 +415,10 @@ export class ToolSearchRuntime {
   callExactId = async (
     id: string,
     input?: unknown,
-    options?: {
-      parentToolCallId?: string;
-      signal?: AbortSignal;
-      onUpdate?: ToolSearchCallOptions["onUpdate"];
-      recoverySurface?: UnknownToolRecoverySurface;
-    },
+    options?: Pick<
+      ToolSearchCallOptions,
+      "parentToolCallId" | "signal" | "onUpdate" | "recoverySurface" | "mcpNamespaceGuest"
+    >,
   ) => {
     const catalog = resolveCatalog(this.ctx);
     return await this.callEntry(
@@ -496,11 +492,10 @@ export class ToolSearchRuntime {
     catalog: ToolSearchCatalogSession,
     entry: ToolSearchCatalogEntry,
     input?: unknown,
-    options?: {
-      parentToolCallId?: string;
-      signal?: AbortSignal;
-      onUpdate?: ToolSearchCallOptions["onUpdate"];
-    },
+    options?: Pick<
+      ToolSearchCallOptions,
+      "parentToolCallId" | "signal" | "onUpdate" | "mcpNamespaceGuest"
+    >,
   ) => {
     this.pluginRuntimeRefresh.assertCurrent();
     catalog.callCount += 1;
@@ -534,6 +529,19 @@ export class ToolSearchRuntime {
       if (isPreExecutionBlockedToolResult(candidate)) {
         // The JSON-safe snapshot drops the private blocked-result marker.
         preExecutionBlocked = true;
+        if (entry.source === "mcp") {
+          const operation = entry.mcp?.operation ?? "tool";
+          if (operation === "tool") {
+            setMcpCodeModeGuestResultFromAgentResult(candidate);
+          } else if (options?.mcpNamespaceGuest) {
+            const details = isRecord(candidate.details) ? candidate.details : undefined;
+            const reason =
+              typeof details?.reason === "string" && details.reason.trim()
+                ? details.reason.trim()
+                : "Tool call blocked by policy";
+            throw new Error(`Tool "${entry.id}" was blocked before execution: ${reason}`);
+          }
+        }
         await assertCatalogOutputMatchesSchema(entry, candidate);
       }
       const snapshot =

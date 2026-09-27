@@ -267,7 +267,6 @@ export async function writeSessionStore(params: {
     }
     upsertsByAgentId.set(agentId, upserts);
   }
-  clearSessionStoreCacheForTest();
   await persistTestSessionConfig();
   await fs.mkdir(path.dirname(storePath), { recursive: true });
   if (upsertsByAgentId.size === 0) {
@@ -305,7 +304,6 @@ export async function writeSessionStore(params: {
       events,
     );
   }
-  clearSessionStoreCacheForTest();
 }
 
 async function setupGatewayTestHome() {
@@ -468,11 +466,12 @@ async function cleanupGatewayTestHome(options: { restoreEnv: boolean }) {
   await disposeSessionReadContexts();
   await resetGatewayLifecycleTestState({ preserveRuntimeBindings: false });
   resetLogger();
-  resetTaskRegistryForTests({ persist: false });
-  resetTaskFlowRegistryForTests({ persist: false });
   if (tempHome) {
+    // Join native borrowers before registry reset attempts its synchronous close.
     await closeGatewayTestHomeDatabases(tempHome, options);
   }
+  resetTaskRegistryForTests({ persist: false });
+  resetTaskFlowRegistryForTests({ persist: false });
   if (options.restoreEnv) {
     gatewayEnvSnapshot?.restore();
     gatewayEnvSnapshot = undefined;

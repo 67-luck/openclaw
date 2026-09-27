@@ -281,6 +281,23 @@ export type CodexAppServerThreadBinding = z.infer<typeof threadBindingSchema>;
 /** Persisted source snapshot and orphan-cleanup state for a supervised native branch. */
 export type CodexAppServerPendingSupervisionBranch = z.infer<typeof pendingSupervisionBranchSchema>;
 
+export function matchesPendingSupervisionBranch(
+  binding: CodexAppServerThreadBinding | undefined,
+  expected: CodexAppServerPendingSupervisionBranch,
+): boolean {
+  const pending = binding?.pendingSupervisionBranch;
+  const cleanup = pending?.cleanupThreadIds ?? [];
+  const expectedCleanup = expected.cleanupThreadIds ?? [];
+  return (
+    binding?.threadId === expected.sourceThreadId &&
+    pending?.sourceThreadId === expected.sourceThreadId &&
+    pending.connectionFingerprint === expected.connectionFingerprint &&
+    pending.lastTurnId === expected.lastTurnId &&
+    cleanup.length === expectedCleanup.length &&
+    cleanup.every((threadId, index) => threadId === expectedCleanup[index])
+  );
+}
+
 /** Context-engine state persisted with a Codex app-server thread binding. */
 export type CodexAppServerContextEngineBinding = z.infer<typeof contextEngineSchema>;
 /** Context-engine projection metadata used to guard resumed native threads. */
@@ -569,36 +586,8 @@ export function readPluginAppPolicyContext(
       entry.mcpServerNames.every((serverName) => typeof serverName === "string")
         ? entry.mcpServerNames
         : undefined;
-    if (entry.source === "account") {
-      if (
-        "appId" in entry ||
-        typeof entry.appName !== "string" ||
-        typeof entry.allowDestructiveActions !== "boolean" ||
-        (entry.allowOpenWorld !== undefined && typeof entry.allowOpenWorld !== "boolean") ||
-        destructiveApprovalMode === "invalid" ||
-        !mcpServerNames
-      ) {
-        return undefined;
-      }
-      parsedApps[appId] = {
-        source: "account",
-        appName: entry.appName,
-        allowDestructiveActions: entry.allowDestructiveActions,
-        ...(typeof entry.allowOpenWorld === "boolean"
-          ? { allowOpenWorld: entry.allowOpenWorld }
-          : {}),
-        ...(destructiveApprovalMode ? { destructiveApprovalMode } : {}),
-        mcpServerNames,
-      };
-      continue;
-    }
     if (
       "appId" in entry ||
-      (entry.source !== undefined && entry.source !== "plugin") ||
-      typeof entry.configKey !== "string" ||
-      typeof entry.marketplaceName !== "string" ||
-      !CODEX_PLUGIN_MARKETPLACE_NAME_PATTERN.test(entry.marketplaceName) ||
-      typeof entry.pluginName !== "string" ||
       typeof entry.allowDestructiveActions !== "boolean" ||
       (entry.allowOpenWorld !== undefined && typeof entry.allowOpenWorld !== "boolean") ||
       destructiveApprovalMode === "invalid" ||
@@ -606,16 +595,39 @@ export function readPluginAppPolicyContext(
     ) {
       return undefined;
     }
-    parsedApps[appId] = {
-      configKey: entry.configKey,
-      marketplaceName: entry.marketplaceName,
-      pluginName: entry.pluginName,
+    const policy = {
       allowDestructiveActions: entry.allowDestructiveActions,
       ...(typeof entry.allowOpenWorld === "boolean"
         ? { allowOpenWorld: entry.allowOpenWorld }
         : {}),
       ...(destructiveApprovalMode ? { destructiveApprovalMode } : {}),
       mcpServerNames,
+    };
+    if (entry.source === "account") {
+      if (typeof entry.appName !== "string") {
+        return undefined;
+      }
+      parsedApps[appId] = {
+        source: "account",
+        appName: entry.appName,
+        ...policy,
+      };
+      continue;
+    }
+    if (
+      (entry.source !== undefined && entry.source !== "plugin") ||
+      typeof entry.configKey !== "string" ||
+      typeof entry.marketplaceName !== "string" ||
+      !CODEX_PLUGIN_MARKETPLACE_NAME_PATTERN.test(entry.marketplaceName) ||
+      typeof entry.pluginName !== "string"
+    ) {
+      return undefined;
+    }
+    parsedApps[appId] = {
+      configKey: entry.configKey,
+      marketplaceName: entry.marketplaceName,
+      pluginName: entry.pluginName,
+      ...policy,
     };
   }
   const parsedPluginAppIds: PluginAppPolicyContext["pluginAppIds"] = {};

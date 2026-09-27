@@ -8,9 +8,6 @@ const publications: Record<string, string | symbol> = {
   "src/agents/agent-hooks/compaction-safeguard.ts": Symbol.for(
     "openclaw.compactionSafeguardTestApi",
   ),
-  "src/agents/agent-tools.before-tool-call.wrapper.ts": Symbol.for(
-    "openclaw.beforeToolCallBlockedErrorTestApi",
-  ),
   "src/agents/apply-patch.ts": Symbol.for("openclaw.applyPatchTestApi"),
   "src/agents/auth-profiles/external-auth.ts": Symbol.for("openclaw.externalAuthTestApi"),
   "src/agents/auth-profiles/oauth.ts": Symbol.for("openclaw.oauthTestApi"),
@@ -30,7 +27,6 @@ const publications: Record<string, string | symbol> = {
     "openclaw.contextEngineMaintenanceTestApi",
   ),
   "src/agents/embedded-agent-runner/runs.ts": Symbol.for("openclaw.embeddedRunsTestApi"),
-  "src/agents/embedded-agent-tool-media.ts": Symbol.for("openclaw.embeddedSubscribeToolsTestApi"),
   "src/agents/mcp-ui-resource.ts": Symbol.for("openclaw.mcpUiResourceTestApi"),
   "src/agents/media-generation-task-status-shared.ts": Symbol.for(
     "openclaw.mediaGenerationDuplicateGuardTestApi",
@@ -53,9 +49,6 @@ const publications: Record<string, string | symbol> = {
   "src/agents/tools/image-tool.ts": Symbol.for("openclaw.imageToolTestApi"),
   "src/agents/workspace-legacy-state.ts": Symbol.for("openclaw.workspaceLegacyStateTestApi"),
   "src/agents/worktrees/run-lease.ts": Symbol.for("openclaw.worktreeRunLeaseTestApi"),
-  "src/auto-reply/reply/agent-runner-session-reset.ts": Symbol.for(
-    "openclaw.agentRunnerSessionResetTestApi",
-  ),
   "src/auto-reply/reply/commands-login.ts": Symbol.for("openclaw.commandsLoginTestApi"),
   "src/auto-reply/reply/queue/enqueue.ts": Symbol.for("openclaw.queueEnqueueTestApi"),
   "src/auto-reply/reply/reply-run-registry.registry.ts": Symbol.for(

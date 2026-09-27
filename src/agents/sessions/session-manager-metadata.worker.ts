@@ -41,13 +41,18 @@ import type {
   SqliteWorkerBackend,
   SqliteWorkerCommand,
 } from "../../infra/sqlite-worker-contract.js";
+import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
 import { getSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
-import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
+import {
+  resolveOpenClawAgentSqlitePath,
+  runOpenClawAgentWriteTransaction,
+} from "../../state/openclaw-agent-db.js";
 import {
   encodeOpenClawStateWorkerError,
   type OpenClawStateWorkerErrorPayload,
 } from "../../state/openclaw-state-worker-error.js";
+import type { CustomMessage } from "./messages.js";
 import type {
   ModelChangeEntry,
   SessionHeader,
@@ -62,6 +67,13 @@ import type {
 type MetadataTarget = Omit<SessionTranscriptWriteScope, "env"> & SessionTranscriptRuntimeTarget;
 
 export type SessionMetadataOperations = {
+  "session.transcript.appendMessage": {
+    input: { scope: MetadataTarget; message: CustomMessage; cwd: string };
+    output: {
+      snapshot: ReturnType<typeof appendTranscriptMessageSnapshotSync<CustomMessage>>;
+      projectionNeedsReconcile: boolean;
+    };
+  };
   "session.metadata.initialize": {
     input: {
       scope: MetadataTarget;
@@ -202,13 +214,44 @@ export function bindSqliteWorkerBackend(
     const scope = { ...command.input.scope, env: getSqliteWorkerStateContext().environment };
     const resolved = resolveSqliteTranscriptScope(scope);
     const options = toDatabaseOptions(resolved);
-    if (options.path !== context.databasePath) {
+    if (
+      readDatabasePathIdentitySync(resolveOpenClawAgentSqlitePath(options)).canonicalPath !==
+      context.databasePath
+    ) {
       throw new Error("Session metadata target changed its database owner");
     }
+    scope.storePath = context.databasePath;
+    resolved.path = context.databasePath;
+    options.path = context.databasePath;
     if (command.type === "session.metadata.mutation") {
       return { ok: true, value: readTranscriptMutationAtSync(scope) };
     }
     assertCanonicalSessionKeyWrite(resolved.sessionKey, resolved.agentId);
+    if (command.type === "session.transcript.appendMessage") {
+      return runOpenClawAgentWriteTransaction<
+        SessionMetadataWorkerOperations["session.transcript.appendMessage"]["output"]
+      >((database) => {
+        if (database.db !== context.database) {
+          throw new Error("Session message lost its borrowed canonical connection");
+        }
+        context.admit("transaction");
+        let projectionNeedsReconcile = false;
+        const snapshot = appendTranscriptMessageSnapshotSync(
+          scope,
+          { message: command.input.message, cwd: command.input.cwd },
+          undefined,
+          {
+            messageAlreadyRedacted: true,
+            scheduleProjectionReconcile: false,
+            onProjectionReconcileNeeded: () => {
+              projectionNeedsReconcile = true;
+            },
+          },
+        );
+        context.admit("commit");
+        return { ok: true, value: { snapshot, projectionNeedsReconcile } };
+      }, options);
+    }
     if (command.type === "session.metadata.append" && command.input.event.type === "message") {
       const { event, message } = command.input;
       if (!message) {

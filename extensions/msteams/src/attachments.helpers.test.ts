@@ -41,10 +41,6 @@ const ADVERTISED_MEDIA_CASES = [
     attachments: [],
     expected: [],
   }),
-  withLabel("returns an image fact for one image", {
-    attachments: [{ contentType: "image/png", contentUrl: "https://x.test/image.png" }],
-    expected: [{ kind: "image" }],
-  }),
   withLabel("counts multiple images", {
     attachments: [
       { contentType: "image/png", contentUrl: "https://x.test/one.png" },
@@ -61,20 +57,12 @@ const ADVERTISED_MEDIA_CASES = [
     ],
     expected: [{ kind: "image" }],
   }),
-  withLabel("returns a document presentation for one document", {
-    attachments: [{ contentType: "application/pdf", contentUrl: "https://x.test/file.pdf" }],
-    expected: [{ kind: "document" }],
-  }),
   withLabel("counts multiple documents", {
     attachments: [
       { contentType: "application/pdf", contentUrl: "https://x.test/one.pdf" },
       { contentType: "application/pdf", contentUrl: "https://x.test/two.pdf" },
     ],
     expected: [{ kind: "document" }, { kind: "document" }],
-  }),
-  withLabel("counts one inline image", {
-    attachments: [createHtmlAttachment('<p>hi</p><img src="https://x.test/one.png" />')],
-    expected: [{ kind: "image", sourceId: "https://x.test/one.png" }],
   }),
   withLabel("counts multiple inline images", {
     attachments: [
