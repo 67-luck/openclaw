@@ -5,8 +5,9 @@ import { runPluginCleanup } from "../plugins/plugin-instance-scope.js";
 import { normalizeCapabilityProviderId } from "../plugins/provider-registry-shared.js";
 import { truncateUtf16Safe } from "../utils.js";
 import { ABSOLUTE_DEADLINE_EXPIRED, awaitWithinDeadline } from "../utils/absolute-deadline.js";
+import { createTranscriptAutoStartRetry } from "./auto-start-retry.js";
 import { createTranscriptsStore, stopTranscriptCapture } from "./capture-operations.js";
-import { retainTranscriptStartRetry, TranscriptStartError } from "./capture-startup.js";
+import { TranscriptStartError } from "./capture-startup.js";
 import {
   activeSessions,
   createTranscriptSessionId,
@@ -21,7 +22,6 @@ import { resolveTranscriptsConfig, type ResolvedTranscriptsAutoStartConfig } fro
 import { beginConfiguredTranscriptStarts } from "./configured-start-status.js";
 import type { TranscriptOccupancyWatchHandle, TranscriptSourceLocator } from "./provider-types.js";
 import { sanitizeTranscriptSourceLocator, sourceFromParams } from "./source-locator.js";
-import { TranscriptsSummaryChangedError } from "./store-errors.js";
 import { transcriptSessionSelector } from "./store.js";
 
 const AUTO_START_RETRY_ATTEMPTS = 12;
@@ -220,52 +220,14 @@ function startTranscriptsAutoStartEntry(
   const controllers = new Set<AbortController>();
   const pendingStarts = new Set<Promise<void>>();
   let stopping: Promise<void> | undefined;
-  let startRetry: ReturnType<typeof retainTranscriptStartRetry> | undefined;
-  const clearRetry = () => {
-    startRetry?.release();
-    startRetry = undefined;
-  };
-  const discardRetry = async () => {
-    const retry = startRetry;
-    if (!retry) {
-      return;
-    }
-    try {
-      if (retry.discardOnAbandon) {
-        await store.deleteEmptySessionCandidate(retry.session, {
-          expectedInputRevision: retry.revision,
-          assertCurrent: () => {
-            retry.assertCurrent();
-            if (
-              startRetry !== retry ||
-              activeSessions.has(retry.session.sessionId) ||
-              isTranscriptSessionStarting(retry.session.sessionId)
-            ) {
-              throw new TranscriptStartError(
-                "id-conflict",
-                new Error("transcript candidate has a new capture owner"),
-              );
-            }
-          },
-        });
-      }
-    } catch (error) {
-      // Operator stop, another writer, or a new capture retires discard authority.
-      // Storage failures are visible but never reject an unobserved timer callback.
-      if (
-        !(error instanceof TranscriptStartError || error instanceof TranscriptsSummaryChangedError)
-      ) {
-        ctx.logger.warn(
-          `transcripts autoStart empty candidate cleanup failed: ${formatAutoStopDiagnostic(error)}`,
-        );
-      }
-    } finally {
-      retry.release();
-      if (startRetry === retry) {
-        startRetry = undefined;
-      }
-    }
-  };
+  const retries = createTranscriptAutoStartRetry({
+    stateDir: ctx.stateDir,
+    store,
+    warn: (error) =>
+      ctx.logger.warn(
+        `transcripts autoStart empty candidate cleanup failed: ${formatAutoStopDiagnostic(error)}`,
+      ),
+  });
   const futureTitle = () => {
     const latest = getConfig();
     const config = hasSameTranscriptCaptureIntent(
@@ -382,7 +344,7 @@ function startTranscriptsAutoStartEntry(
     >,
   ) => {
     recordDiagnostic(capture.lifecycleToken, "starting");
-    const retry = startRetry;
+    const retry = retries.current;
     try {
       const result = await startTranscripts({
         ...params,
@@ -396,35 +358,14 @@ function startTranscriptsAutoStartEntry(
         lifecycleToken: capture.lifecycleToken,
         rawParams: { ...params.rawParams, sessionId: capture.sessionId },
       });
-      clearRetry();
+      retries.clear();
       if (!stopped) {
         recordDiagnostic(capture.lifecycleToken, result.status === "ended" ? "ended" : undefined);
       }
       return result;
     } catch (error) {
       if (error instanceof TranscriptStartError) {
-        try {
-          if (error.retry) {
-            // A retry writes an existing row. Carry its original insertion provenance
-            // only while that same admission remains live, including during shutdown.
-            retry?.assertCurrent();
-            const discardOnAbandon =
-              error.retry.discardOnAbandon ||
-              (retry?.discardOnAbandon === true &&
-                retry.session.sessionId === error.retry.session.sessionId &&
-                retry.session.startedAt === error.retry.session.startedAt);
-            clearRetry();
-            startRetry = retainTranscriptStartRetry(ctx.stateDir, {
-              ...error.retry,
-              discardOnAbandon,
-            });
-          } else {
-            clearRetry();
-          }
-        } catch (revoked) {
-          clearRetry();
-          throw revoked;
-        }
+        retries.retain(error.retry, retry);
       }
       throw error;
     } finally {
@@ -442,7 +383,8 @@ function startTranscriptsAutoStartEntry(
       return;
     }
     const capture: OwnedCapture = {
-      sessionId: startRetry?.session.sessionId ?? entry.sessionId ?? createTranscriptSessionId(),
+      sessionId:
+        retries.current?.session.sessionId ?? entry.sessionId ?? createTranscriptSessionId(),
       lifecycleToken: Symbol(entry.sessionId),
     };
     void runPending(async (controller) => {
@@ -469,7 +411,7 @@ function startTranscriptsAutoStartEntry(
         const terminal = terminalDiagnostic(error);
         const cleanupPending = ownsCapture(capture);
         if (terminal || cleanupPending || attempt >= AUTO_START_RETRY_ATTEMPTS) {
-          await discardRetry();
+          await retries.discard();
           if (stopped) {
             return;
           }
@@ -508,7 +450,7 @@ function startTranscriptsAutoStartEntry(
       }
       const terminal = terminalDiagnostic(error);
       if (terminal || attempt >= AUTO_START_RETRY_ATTEMPTS) {
-        await discardRetry();
+        await retries.discard();
         if (stopped) {
           return;
         }
@@ -548,7 +490,7 @@ function startTranscriptsAutoStartEntry(
             return;
           }
           const now = Date.now();
-          const retained = startRetry;
+          const retained = retries.current;
           const recent = retained
             ? { session: retained.session, inputRevision: retained.revision }
             : await store.readRecentStoppedSession(
@@ -633,7 +575,7 @@ function startTranscriptsAutoStartEntry(
         await starting;
         // Failed startup may restore its candidate while settling. Abandon only
         // a new, unaccepted row; reopened history still belongs to the library.
-        await discardRetry();
+        await retries.discard();
         if (capture) {
           await stopCapture(capture);
           if (!ownsCapture(capture)) {
@@ -670,7 +612,7 @@ function startTranscriptsAutoStartEntry(
             );
             return;
           }
-          clearRetry();
+          retries.clear();
           source = resolveTranscriptSourceOwnership({
             ctx,
             operation: "start",
@@ -773,7 +715,7 @@ function startTranscriptsAutoStartEntry(
     await Promise.allSettled(pendingStarts);
     await Promise.allSettled(stopping ? [stopping] : []);
     // A failed late startup can restore its row after the caller's stop deadline.
-    await discardRetry();
+    await retries.discard();
     for (const [sessionId, lifecycleToken] of startedSessions) {
       try {
         await stopCapture({ sessionId, lifecycleToken }, strict);
