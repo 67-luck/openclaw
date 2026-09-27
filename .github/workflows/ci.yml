@@ -193,7 +193,7 @@ jobs:
       run_lint_core: ${{ steps.manifest.outputs.run_lint_core }}
       run_lint_extensions: ${{ steps.manifest.outputs.run_lint_extensions }}
       run_changed_core_type_stripes: ${{ steps.manifest.outputs.run_changed_core_type_stripes }}
-      type_graph_boundary_checked: ${{ steps.manifest.outputs.type_graph_boundary_checked }}
+      type_graph_boundary_owner: ${{ steps.manifest.outputs.type_graph_boundary_owner }}
       run_check_additional: ${{ steps.manifest.outputs.run_check_additional }}
       check_additional_matrix: ${{ steps.manifest.outputs.check_additional_matrix }}
       run_check_docs: ${{ steps.manifest.outputs.run_check_docs }}
@@ -2275,6 +2275,13 @@ jobs:
             return row.task === "lint" ? narrowCheckScope.lint : narrowCheckScope.checkTasks.includes(row.task);
           });
 
+          // The guards row runs this exact command; keep the standalone owner
+          // only for fast-only selections that do not admit guards.
+          if (runCheck && checkTasks.some(({ task }) => task === "guards")) {
+            const coercionTask = checksFastCoreTasks.findIndex(({ task }) => task === "coercion-helpers");
+            if (coercionTask >= 0) checksFastCoreTasks.splice(coercionTask, 1);
+          }
+
           const manifest = {
             release_scope: releaseScope,
             release_fast_lane: releaseFastLane,
@@ -2343,7 +2350,7 @@ jobs:
             run_lint_core: runCheck && coreLintRows.length > 0,
             run_lint_extensions: runCheck && extensionLintRows.length > 0,
             run_changed_core_type_stripes: Boolean(narrowCheckScope?.types && usesHostedRunnerProfile),
-            type_graph_boundary_checked: false,
+            type_graph_boundary_owner: runCheckPlan && narrowCheckScope.types ? "check-plan" : "",
             startup_corpus_node_revision: startupCorpusNodeRevision,
             startup_corpus_test_files_json: startupCorpusTestFiles ? JSON.stringify(startupCorpusTestFiles) : "",
             changed_core_test_paths_json: changedCoreTestPaths ? JSON.stringify(changedCoreTestPaths) : "",
@@ -4603,7 +4610,6 @@ jobs:
       run_lint_core: ${{ steps.plan.outputs.run_lint_core }}
       run_lint_extensions: ${{ steps.plan.outputs.run_lint_extensions }}
       run_changed_core_type_stripes: ${{ steps.plan.outputs.run_changed_core_type_stripes }}
-      type_graph_boundary_checked: ${{ steps.plan.outputs.type_graph_boundary_checked }}
     steps:
       - *linux_node_checkout_step
       - name: Setup Node environment
@@ -5364,8 +5370,9 @@ jobs:
     permissions:
       contents: read
     name: ${{ matrix.check_name || 'check-additional-shard' }}
-    needs: [preflight, check-plan]
-    if: ${{ !cancelled() && always() && (needs.preflight.outputs.run_check_plan != 'true' || needs.check-plan.result == 'success') && needs.preflight.outputs.run_check_additional == 'true' }}
+    # These checks consume preflight's complete matrix, not the compiler/lint plan.
+    needs: [preflight]
+    if: ${{ !cancelled() && always() && needs.preflight.outputs.run_check_additional == 'true' }}
     runs-on: ${{ (github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') && vars.OPENCLAW_RELEASE_RUNNER_GROUP || '') != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON((github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') && vars.OPENCLAW_RELEASE_RUNNER_GROUP || '')), toJSON((contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt == 1 && needs.preflight.outputs.hybrid_hosted_checks == 'true' && (matrix.group == 'extension-package-boundary' || matrix.group == 'runtime-topology-architecture')) && 'ubuntu-24.04' || (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && (github.run_attempt > 1 || (matrix.group != 'extension-package-boundary' && matrix.group != 'runtime-topology-architecture' && matrix.group != 'plugin-sdk-api-diff'))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04')))) || ((contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt == 1 && needs.preflight.outputs.hybrid_hosted_checks == 'true' && (matrix.group == 'extension-package-boundary' || matrix.group == 'runtime-topology-architecture')) && 'ubuntu-24.04' || (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && (github.run_attempt > 1 || (matrix.group != 'extension-package-boundary' && matrix.group != 'runtime-topology-architecture' && matrix.group != 'plugin-sdk-api-diff'))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04')) }}
     timeout-minutes: 20
     strategy:
@@ -5478,7 +5485,7 @@ jobs:
       - name: Run additional check shard
         env:
           ADDITIONAL_CHECK_GROUP: ${{ matrix.group }}
-          TYPE_GRAPH_BOUNDARY_CHECKED: ${{ (needs.preflight.outputs.run_check_plan == 'true' && needs.check-plan.outputs.type_graph_boundary_checked || needs.preflight.outputs.type_graph_boundary_checked) }}
+          TYPE_GRAPH_BOUNDARY_OWNER: ${{ needs.preflight.outputs.type_graph_boundary_owner }}
           CHANGED_CORE_TEST_PATHS_JSON: ${{ needs.preflight.outputs.changed_core_test_paths_json }}
           COMPATIBILITY_TARGET: ${{ needs.preflight.outputs.compatibility_target }}
           RUN_PROMPT_SNAPSHOTS: ${{ needs.preflight.outputs.run_prompt_snapshots }}
@@ -5519,7 +5526,7 @@ jobs:
                 if [[ ! -f scripts/run-additional-boundary-checks.mts ]]; then
                   boundary_runner=(node scripts/run-additional-boundary-checks.mjs)
                 fi
-                if [ -n "${CHANGED_CORE_TEST_PATHS_JSON:-}" ] || [ "${TYPE_GRAPH_BOUNDARY_CHECKED:-}" = "true" ]; then
+                if [ -n "${CHANGED_CORE_TEST_PATHS_JSON:-}" ] || [ "${TYPE_GRAPH_BOUNDARY_OWNER:-}" = "check-plan" ]; then
                   boundary_runner+=(--core-test-boundary-owner=test-types)
                 fi
                 "${boundary_runner[@]}"

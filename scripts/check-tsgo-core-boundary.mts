@@ -2,11 +2,14 @@
 
 // Enforces core tsgo project boundaries and sparse-checkout safety.
 import { realpathSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import path from "node:path";
+import { runTasksWithConcurrency } from "../src/utils/run-with-concurrency.ts";
 import { reportLimitViolations } from "./lib/check-limits.mts";
 import { isDirectRunUrl } from "./lib/direct-run.mjs";
 import { resolveRepoToolBinPath } from "./lib/local-check-runtime.mts";
 import { runManagedCommand, signalExitCode } from "./lib/managed-child-process.mts";
+import { readProcessMemoryCapacity } from "./lib/process-memory.mts";
 import { resolveRepoRoot } from "./lib/repo-root.mjs";
 import {
   findOversizedTsgoCoreTestShards,
@@ -18,6 +21,39 @@ import {
 const repoRoot = resolveRepoRoot(import.meta.url);
 const tsgoPath = resolveRepoToolBinPath("tsgo", { cwd: repoRoot });
 const canonicalCoreTestConfig = "test/tsconfig/tsconfig.core.test.json";
+
+type QueryContext = { env: NodeJS.ProcessEnv; interrupted?: NodeJS.Signals };
+
+async function queryGraphs<T, R>(
+  graphs: readonly T[],
+  query: (graph: T, context: QueryContext) => Promise<R>,
+): Promise<R[]> {
+  // Discovery retains complete compiler inventories while sharing a four-CPU budget.
+  const queryThreads = Number(process.env.GOMAXPROCS || "2");
+  const parallel =
+    Number.isSafeInteger(queryThreads) &&
+    queryThreads > 0 &&
+    availableParallelism() >= Math.max(4, 2 * queryThreads) &&
+    (readProcessMemoryCapacity({}).limitBytes ?? 0) >= 8 * 1024 ** 3;
+  const context: QueryContext = {
+    env: parallel && !process.env.GOMAXPROCS ? { ...process.env, GOMAXPROCS: "2" } : process.env,
+  };
+  const result = await runTasksWithConcurrency({
+    tasks: graphs.map((graph) => async () => {
+      if (context.interrupted) {
+        throw new CoreTsgoBoundaryInterruptedError(context.interrupted);
+      }
+      return await query(graph, context);
+    }),
+    limit: parallel ? 2 : 1,
+    errorMode: "stop",
+  });
+  // Stop admission on error, but join every admitted query before rejecting.
+  if (result.hasError) {
+    throw result.firstError;
+  }
+  return result.results;
+}
 
 function normalizeFilePath(filePath: string, cwd: string) {
   const normalized = filePath.trim().replaceAll("\\", "/");
@@ -42,6 +78,7 @@ async function runTsgoQuery(
   query: string,
   label: string,
   cwd: string,
+  context?: QueryContext,
 ): Promise<string> {
   const outputs: Buffer[][] = [[], []];
   const overflow = new AbortController();
@@ -53,11 +90,15 @@ async function runTsgoQuery(
       bin: tsgoPath,
       args: ["-p", config, "--pretty", "false", query],
       cwd,
+      env: context?.env,
       stdio: ["ignore", "pipe", "pipe"],
       signal: overflow.signal,
       requireProcessTreeExit: process.platform !== "win32",
       onSignal(signal) {
         receivedSignal = signal;
+        if (context) {
+          context.interrupted = signal;
+        }
       },
       onReady(child) {
         for (const [index, stream] of [child.stdout!, child.stderr!].entries()) {
@@ -97,12 +138,13 @@ async function runTsgoQuery(
 async function readGraphConfig(
   config: string,
   cwd: string,
+  context?: QueryContext,
 ): Promise<{
   compilerOptions?: { tsBuildInfoFile?: string };
   files?: string[];
 }> {
   return JSON.parse(
-    await runTsgoQuery(config, "--showConfig", `${config} config expansion`, cwd),
+    await runTsgoQuery(config, "--showConfig", `${config} config expansion`, cwd, context),
   ) as {
     compilerOptions?: { tsBuildInfoFile?: string };
     files?: string[];
@@ -126,10 +168,10 @@ export async function checkCoreTsgoGraphBoundary(
   const canonicalRoots = ((await readGraphConfig(canonicalCoreTestConfig, cwd)).files ?? [])
     .map(normalize)
     .filter((file) => testRootPattern.test(file));
-  const shardConfigs = [];
-  for (const shard of TSGO_CORE_TEST_SHARDS) {
-    shardConfigs.push({ ...shard, expanded: await readGraphConfig(shard.config, cwd) });
-  }
+  const shardConfigs = await queryGraphs(TSGO_CORE_TEST_SHARDS, async (shard, context) => ({
+    ...shard,
+    expanded: await readGraphConfig(shard.config, cwd, context),
+  }));
   const shardRoots = shardConfigs.map((shard) => ({
     name: shard.name,
     roots: (shard.expanded.files ?? []).map(normalize).filter((file) => testRootPattern.test(file)),
@@ -175,22 +217,29 @@ export async function checkCoreTsgoGraphBoundary(
   }
 
   const violations: string[] = [];
-  const graphs: CoreTsgoGraph[] = [];
-  for (const graph of TSGO_CORE_GRAPHS) {
+  const graphs = await queryGraphs(TSGO_CORE_GRAPHS, async (graph, context) => {
     const files = (
-      await runTsgoQuery(graph.config, "--listFilesOnly", `${graph.name} file listing`, cwd)
+      await runTsgoQuery(
+        graph.config,
+        "--listFilesOnly",
+        `${graph.name} file listing`,
+        cwd,
+        context,
+      )
     )
       .split(/\r?\n/u)
       .map(normalize)
       .filter(Boolean);
-    graphs.push({
+    return {
       ...graph,
       files,
       roots: (shardConfigs.find((shard) => shard.config === graph.config)?.expanded.files ?? [])
         .map((file) => normalize(path.resolve(cwd, path.dirname(graph.config), file)))
         .filter((file) => testRootPattern.test(file)),
-    });
-    const extensionFiles = files.filter((file) => file.startsWith("extensions/"));
+    };
+  });
+  for (const graph of graphs) {
+    const extensionFiles = graph.files.filter((file) => file.startsWith("extensions/"));
     for (const file of extensionFiles) {
       violations.push(`${graph.name}: ${file}`);
     }
@@ -215,16 +264,22 @@ export async function inspectCiTsgoCheckGraphs(
 ): Promise<CoreTsgoGraph[]> {
   const cwd = realpathSync(options.cwd ?? repoRoot);
   const graphs = await checkCoreTsgoGraphBoundary({ cwd });
-  for (const graph of TSGO_CI_ADDITIONAL_GRAPHS) {
+  const additional = await queryGraphs(TSGO_CI_ADDITIONAL_GRAPHS, async (graph, context) => {
     const files = (
-      await runTsgoQuery(graph.config, "--listFilesOnly", `${graph.name} file listing`, cwd)
+      await runTsgoQuery(
+        graph.config,
+        "--listFilesOnly",
+        `${graph.name} file listing`,
+        cwd,
+        context,
+      )
     )
       .split(/\r?\n/u)
       .map((file) => normalizeFilePath(file, cwd))
       .filter(Boolean);
-    graphs.push({ ...graph, files, roots: [] });
-  }
-  return graphs;
+    return { ...graph, files, roots: [] };
+  });
+  return [...graphs, ...additional];
 }
 
 if (isDirectRunUrl(process.argv[1], import.meta.url)) {

@@ -36,6 +36,8 @@ The [Testbox check workflow](/ci/local-proof#testbox-validation) defaults to a f
 
 Full GitHub and hybrid type checks run the five core stripes independently, retaining two compiler children per job. Current hybrid runs also split extension lint across six hosted jobs. Trusted hybrid first attempts place the heavy first packed core-lint row on the Blacksmith 16-class, the second on the 8-class, and the final gate on the 4-class to avoid serial hosted assignment delays. Frozen targets keep their earlier layout; see [static checks](/ci/runners#runner-backend-modes).
 
+Additional static checks start after preflight while lint/compiler selection runs independently. Compiler graph discovery uses bounded parallel queries, and selected guards absorb the duplicate coercion-helper job; see [pipeline ordering](/ci/pipeline#fail-fast-order).
+
 Core lint discovers separate source and UI TypeScript projects, retaining shared ambient declarations and imported dependencies. The source project also includes `src/**/*.test-support.cjs`; unrelated JavaScript files are not added as roots. See [local checks](/ci/local-proof#local-equivalents).
 
 Runtime topology checks inherit the existing [Go memory defaults](/ci/local-proof#local-equivalents), with caller overrides and the full architecture check sequence retained.

@@ -359,6 +359,12 @@ it.runIf(process.platform !== "win32")(
         write(`scripts/${name}`, fs.readFileSync(path.join(sourceRoot, "scripts", name), "utf8"));
       }
       fs.symlinkSync(path.join(sourceRoot, "scripts/lib"), path.join(root, "scripts/lib"), "dir");
+      fs.mkdirSync(path.join(root, "src/utils"), { recursive: true });
+      fs.symlinkSync(
+        path.join(sourceRoot, "src/utils/run-with-concurrency.ts"),
+        path.join(root, "src/utils/run-with-concurrency.ts"),
+        "file",
+      );
       const leaf = "src/agents/nested/leaf.test.ts";
       const consumer = "src/agents/tools/consumer.test.ts";
       const helper = "test/helpers/value.ts";
@@ -461,6 +467,15 @@ process.exit(result.status??1);
         expect(calls.filter((args) => args.includes("--listFilesOnly"))).toHaveLength(
           expectedGraphListings,
         );
+        if (expectedGraphListings > 0) {
+          expect(
+            new Set(
+              calls
+                .filter((args) => args.includes("--listFilesOnly"))
+                .map((args) => args[args.indexOf("-p") + 1]),
+            ),
+          ).toEqual(new Set(TSGO_CORE_GRAPHS.map((graph) => graph.config)));
+        }
         // Discovery and diagnostic checks both use project mode.
         const builds = calls
           .filter((args) => !args.includes("--listFilesOnly") && !args.includes("--showConfig"))

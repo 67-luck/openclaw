@@ -1272,8 +1272,8 @@ describe("ci workflow guards", () => {
           (candidate: WorkflowStep) => candidate.name === "Run additional check shard",
         );
         expect(
-          evaluateWorkflowExpression(boundaryStep.env.TYPE_GRAPH_BOUNDARY_CHECKED, context),
-        ).toBe(String(tasks.includes("test-types")));
+          evaluateWorkflowExpression(boundaryStep.env.TYPE_GRAPH_BOUNDARY_OWNER, context),
+        ).toBe(tasks.includes("test-types") ? "check-plan" : "");
         expect(
           evaluateWorkflowExpression(
             workflow.jobs["check-test-types-hosted-core-shard"].if,
@@ -1395,7 +1395,6 @@ describe("ci workflow guards", () => {
         };
         for (const job of [
           "check-shard",
-          "check-additional-shard",
           "check-test-types-hosted-core-shard",
           "check-lint-hosted-core-shard",
           "check-lint-hosted-extension-shard",
@@ -1406,6 +1405,17 @@ describe("ci workflow guards", () => {
             `${job}: ${result}`,
           ).toBe(result === "success");
         }
+        // Independent checks start before compiler planning finishes, but their
+        // delegated graph boundary still has to pass the final required gate.
+        const additional = workflow.jobs["check-additional-shard"];
+        expect(additional.needs).toEqual(["preflight"]);
+        expect(evaluateWorkflowExpression(additional.if, context)).toBe(true);
+        const additionalStep = additional.steps.find(
+          (step: WorkflowStep) => step.name === "Run additional check shard",
+        );
+        expect(
+          evaluateWorkflowExpression(additionalStep.env.TYPE_GRAPH_BOUNDARY_OWNER, context),
+        ).toBe("check-plan");
         const gate = runCiGateFixture(renderCiGateEnvironment(context, { "check-plan": result }));
         expect(gate.status, `${gate.stdout}${gate.stderr}`).toBe(result === "success" ? 0 : 1);
       }
@@ -1569,7 +1579,7 @@ describe("ci workflow guards", () => {
         expect(manifest.outputs.changed_core_test_paths_json).toBe(
           changedCorePaths ? JSON.stringify(paths) : "",
         );
-        expect(manifest.checkPlanOutputs.type_graph_boundary_checked).toBe("true");
+        expect(manifest.outputs.type_graph_boundary_owner).toBe("check-plan");
         const workflow = readCiWorkflow();
         const context: Parameters<typeof evaluateWorkflowExpression>[1] = {
           eventName: "pull_request" as const,
