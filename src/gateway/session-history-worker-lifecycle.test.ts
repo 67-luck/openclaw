@@ -476,65 +476,77 @@ it.each(Object.entries(historyReads))(
   },
 );
 
-it.each(selectedReads)(
-  "settles cancelled %s reads before reuse and closes their database handles",
-  async (kind, read) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const fixture = await seed(state, "main", "cancel-message-read");
+// Each raw kind uses the same worker lifecycle. Reuse seeded state within each
+// loop while retaining every kind's dispatch, settlement, and handle assertions.
+it("settles cancelled raw reads before reuse and closes their database handles", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const fixture = await seed(state, "main", "cancel-message-read");
+    for (const [kind, read] of selectedReads) {
       const controller = new AbortController();
       const cancelled = new Error("history consumer closed");
       let dispatched = false;
-      observed.dispatch = (message) => {
-        const input = asOptionalRecord(asOptionalRecord(message)?.input);
-        if (asOptionalRecord(input?.request)?.kind === kind) {
-          observed.dispatch = undefined;
-          dispatched = true;
-          controller.abort(cancelled);
-        }
-      };
-      const pending = read.read(fixture, controller.signal);
-      await expect(pending).rejects.toBe(cancelled);
-      expect(dispatched).toBe(true);
-      const worker = observed.workers.at(-1)!;
-      const threadId = worker.threadId;
-      expect((await fixture.read()).messages.map(readChatHistoryMessageId)).toEqual([
-        "cancel-message-read-message",
-      ]);
-      expect(observed.workers.at(-1)).toBe(worker);
-      await closeOpenClawAgentDatabaseByPathAsync(fixture.path, "main");
-      expect(worker.threadId).toBe(process.versions.bun ? -1 : threadId);
-      expect((await fixture.read()).messages.map(readChatHistoryMessageId)).toEqual([
-        "cancel-message-read-message",
-      ]);
-      if (process.versions.bun) {
-        expect(observed.workers.at(-1)).not.toBe(worker);
-      } else {
-        expect(observed.workers.at(-1)).toBe(worker);
-      }
-    });
-  },
-);
-
-it.each(selectedReads)(
-  "rejects %s when selected database custody is revoked during dispatch",
-  async (kind, read) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const fixture = await seed(state, "main", "revoked-selected");
       let closing: Promise<boolean> | undefined;
-      observed.dispatch = (message) => {
-        const input = asOptionalRecord(asOptionalRecord(message)?.input);
-        if (asOptionalRecord(input?.request)?.kind === kind) {
-          observed.dispatch = undefined;
-          closing = closeOpenClawAgentDatabaseByPathAsync(fixture.path, "main");
+      try {
+        observed.dispatch = (message) => {
+          const input = asOptionalRecord(asOptionalRecord(message)?.input);
+          if (asOptionalRecord(input?.request)?.kind === kind) {
+            observed.dispatch = undefined;
+            dispatched = true;
+            controller.abort(cancelled);
+          }
+        };
+        const pending = read.read(fixture, controller.signal);
+        await expect(pending).rejects.toBe(cancelled);
+        expect(dispatched).toBe(true);
+        const worker = observed.workers.at(-1)!;
+        const threadId = worker.threadId;
+        expect((await fixture.read()).messages.map(readChatHistoryMessageId)).toEqual([
+          "cancel-message-read-message",
+        ]);
+        expect(observed.workers.at(-1)).toBe(worker);
+        closing = closeOpenClawAgentDatabaseByPathAsync(fixture.path, "main");
+        await closing;
+        expect(worker.threadId).toBe(process.versions.bun ? -1 : threadId);
+        expect((await fixture.read()).messages.map(readChatHistoryMessageId)).toEqual([
+          "cancel-message-read-message",
+        ]);
+        if (process.versions.bun) {
+          expect(observed.workers.at(-1)).not.toBe(worker);
+        } else {
+          expect(observed.workers.at(-1)).toBe(worker);
         }
-      };
-      await expect(read.read(fixture)).rejects.toThrow("revoked");
-      expect(closing).toBeDefined();
-      await closing;
-      expect(observed.workers.at(-1)?.threadId).toBe(-1);
-    });
-  },
-);
+      } finally {
+        observed.dispatch = undefined;
+        await closing;
+      }
+    }
+  });
+});
+
+it("rejects raw reads when selected database custody is revoked during dispatch", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const fixture = await seed(state, "main", "revoked-selected");
+    for (const [kind, read] of selectedReads) {
+      let closing: Promise<boolean> | undefined;
+      try {
+        observed.dispatch = (message) => {
+          const input = asOptionalRecord(asOptionalRecord(message)?.input);
+          if (asOptionalRecord(input?.request)?.kind === kind) {
+            observed.dispatch = undefined;
+            closing = closeOpenClawAgentDatabaseByPathAsync(fixture.path, "main");
+          }
+        };
+        await expect(read.read(fixture)).rejects.toThrow("revoked");
+        expect(closing).toBeDefined();
+        await closing;
+        expect(observed.workers.at(-1)?.threadId).toBe(-1);
+      } finally {
+        observed.dispatch = undefined;
+        await closing;
+      }
+    }
+  });
+});
 
 it.each([
   { phase: "discovery", mode: "no-commit" },
