@@ -10,6 +10,9 @@ pub struct HistoryParams {
     pub limit: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    pub max_bytes: usize,
 }
 
 /// sessions.ts:590 creates a fork before the persisted user entry.

@@ -51,6 +51,9 @@ impl Render for AppView {
                 .child(self.composer_view(window, cx))
                 .into_any_element()
         };
+        if !self.web.settings_open && !self.new_session.active && !self.show_connect_form {
+            self.record_transcript_frame(window);
+        }
         div()
             .id("openclaw-app")
             .role(Role::Group)

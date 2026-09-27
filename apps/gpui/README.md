@@ -83,6 +83,19 @@ transcripts through the Gateway. Opening a message match loads the conversation
 and, when the message ID can be resolved, pages backward and reveals that message.
 A message's Fork action is available when its history entry ID is present.
 
+Recently opened conversations remain in memory with their parsed transcript,
+prepared Markdown, tool cards, live-run snapshot, and scroll position. Returning
+to one displays it immediately while `chat.history` catches up with its forward
+cursor; a cursor reset replaces the transcript from a fresh page. First opens
+use `chat.startup`. The session owner retains at most 20 conversations, with a
+24 MiB approximate cache budget and a 12 MiB admission limit per conversation;
+the selected working transcript remains available even when too large to retain.
+Up to two inactive conversations are warmed after the selected history settles.
+Reconnects preserve content and catch up; profile/account changes and session
+deletion, reset, sharing changes, or compaction retire affected entries. Cached
+background sessions catch up on reopening because live subscriptions follow the
+selected session. Composer drafts retain their existing separate draft lifecycle.
+
 Slash completion loads agent commands before a conversation is persisted, then
 refreshes session commands when history or the conversation list confirms it exists.
 Command metadata failures retain available commands without interrupting the draft.

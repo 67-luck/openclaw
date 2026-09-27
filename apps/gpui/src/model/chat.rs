@@ -8,6 +8,8 @@ use super::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::VecDeque;
+pub mod cache;
+mod history;
 mod message;
 mod send;
 mod time;
@@ -44,6 +46,9 @@ pub struct RequestScope {
 pub struct HistoryRequest {
     pub scope: RequestScope,
     pub offset: Option<usize>,
+    pub cursor: Option<String>,
+    pub startup: bool,
+    pub rebase_offset: bool,
     request: u64,
     revision: u64,
     message_count: usize,
@@ -71,9 +76,13 @@ pub struct SessionInfo {
 #[derive(Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct HistoryPayload {
+    kind: Option<String>,
+    delta_cursor: Option<String>,
+    session_id: Option<String>,
     messages: Option<Vec<Value>>,
     has_more: bool,
     next_offset: Option<usize>,
+    total_messages: Option<usize>,
     in_flight_run: Option<InFlightRun>,
     session_info: Option<SessionInfo>,
 }
@@ -100,6 +109,7 @@ pub struct ChatState {
     pub history_error: Option<String>,
     pub loading: bool,
     pub loading_older: bool,
+    pub history_pending: bool,
     pub has_more: bool,
     pub next_offset: Option<usize>,
     pub phase_label: String,
@@ -110,6 +120,12 @@ pub struct ChatState {
     pub manual_compaction: Option<ManualCompaction>,
     pub session_info: SessionInfo,
     pub dirty_from: Option<usize>,
+    pub loaded: bool,
+    startup_loaded: bool,
+    pub delta_cursor: Option<String>,
+    replace_history: bool,
+    history_total: Option<usize>,
+    history_offset_dirty: bool,
     generation: u64,
     history_request: u64,
     revision: u64,
@@ -175,119 +191,6 @@ impl ChatState {
         self.selected_session.as_deref() == Some(&scope.session_key)
             && self.selected_agent == scope.agent_id
             && self.generation == scope.generation
-    }
-    pub fn begin_history(&mut self) -> Option<HistoryRequest> {
-        self.begin_history_page(None)
-    }
-    pub fn begin_older(&mut self) -> Option<HistoryRequest> {
-        if self.loading || self.loading_older || !self.has_more {
-            return None;
-        }
-        self.begin_history_page(Some(self.next_offset?))
-    }
-    fn begin_history_page(&mut self, offset: Option<usize>) -> Option<HistoryRequest> {
-        let scope = self.scope()?;
-        self.history_request = self.history_request.wrapping_add(1);
-        self.loading = offset.is_none();
-        self.loading_older = offset.is_some();
-        self.history_error = None;
-        Some(HistoryRequest {
-            scope,
-            offset,
-            request: self.history_request,
-            revision: self.revision,
-            message_count: self.messages.len(),
-        })
-    }
-    pub fn apply_history(&mut self, request: &HistoryRequest, payload: &Value) -> bool {
-        if !self.is_current(&request.scope) || request.request != self.history_request {
-            return false;
-        }
-        let Ok(payload) = serde_json::from_value::<HistoryPayload>(payload.clone()) else {
-            return self.history_failed(request, "Gateway returned invalid chat history".into());
-        };
-        let Some(values) = payload.messages else {
-            return self.history_failed(request, "Gateway returned invalid chat history".into());
-        };
-        let mut messages: Vec<_> = values
-            .iter()
-            .filter_map(Message::from_value)
-            .filter(Message::visible)
-            .collect();
-        for tool in messages.iter_mut().flat_map(|message| &mut message.tools) {
-            tool.receipt = request.revision;
-        }
-        pair_history(&mut messages);
-        if request.offset.is_some() {
-            messages.retain(|message| !self.messages.iter().any(|held| held.same_message(message)));
-            messages.append(&mut self.messages);
-        } else if self.revision != request.revision {
-            let mut current_tools = self
-                .messages
-                .iter()
-                .flat_map(|message| message.tools.iter().cloned())
-                .collect();
-            reconcile_live_history(&mut messages, &mut current_tools);
-            let live = &self.messages[request.message_count.min(self.messages.len())..];
-            for message in live {
-                if !messages.iter().any(|held| held.same_message(message)) {
-                    messages.push(message.clone());
-                }
-            }
-        } else {
-            let run = payload
-                .in_flight_run
-                .as_ref()
-                .filter(|run| !self.completed_runs.contains(&run.run_id));
-            if self.active_run.as_deref() != run.map(|run| run.run_id.as_str()) || run.is_none() {
-                self.clear_stream();
-            }
-            if run.is_some() && self.active_run.as_deref() != run.map(|run| run.run_id.as_str()) {
-                self.turn_recap = None;
-            }
-            self.active_run = run.map(|run| run.run_id.clone());
-            self.stream_text = run.map(|run| run.text.clone()).unwrap_or_default();
-            self.started_at = run.and_then(|run| run.started_at);
-            self.sequence = None;
-        }
-        // Unconfirmed input belongs to this client until an authoritative match arrives.
-        for pending in &self.messages {
-            if pending.send_id.is_some() && !messages.iter().any(|held| held.same_message(pending))
-            {
-                messages.push(pending.clone());
-            }
-        }
-        pair_history(&mut messages);
-        self.messages = messages;
-        self.has_more = payload.has_more;
-        self.next_offset = payload.next_offset;
-        if let Some(info) = payload.session_info {
-            self.session_info = info;
-        }
-        if let Some(run) = payload
-            .in_flight_run
-            .filter(|run| self.active_run.as_deref() == Some(&run.run_id))
-        {
-            for event in run.events {
-                self.apply_agent_event(&event);
-            }
-        }
-        reconcile_live_history(&mut self.messages, &mut self.live_tools);
-        pair_history(&mut self.messages);
-        settle_history_tools(&mut self.messages, self.active_run.as_deref());
-        self.loading = false;
-        self.loading_older = false;
-        self.history_error = None;
-        true
-    }
-    pub fn history_failed(&mut self, request: &HistoryRequest, error: String) -> bool {
-        if !self.is_current(&request.scope) || request.request != self.history_request {
-            return false;
-        }
-        self.loading = false;
-        self.loading_older = false;
-        self.history_error = Some(error);
-        true
     }
     pub fn apply_event(&mut self, payload: &Value) -> EventOutcome {
         let state = payload

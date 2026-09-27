@@ -287,7 +287,6 @@ impl AppView {
         });
     }
     pub(super) fn delete_session(&mut self, row: SessionRow, cx: &mut Context<Self>) {
-        let source = self.chat.scope();
         // operator.write may delete only an archived row; the Gateway rechecks identity at both writes.
         self.patch_session_then(
             row,
@@ -306,16 +305,24 @@ impl AppView {
                     cx,
                     move |this, result, cx| match result {
                         Ok(_) => {
+                            let selected = this.chat.selected_session.as_deref() == Some(&row.key)
+                                && this.chat.selected_agent == agent
+                                && this
+                                    .chat
+                                    .session_info
+                                    .session_id
+                                    .as_ref()
+                                    .is_none_or(|id| Some(id) == row.session_id.as_ref());
+                            this.chat.invalidate_generation(
+                                &row.key,
+                                row.agent(),
+                                row.session_id.as_deref(),
+                            );
                             this.rows.retain(|candidate| candidate.key != row.key);
                             for children in this.sidebar_state.children.values_mut() {
                                 children.retain(|candidate| candidate.key != row.key);
                             }
-                            if this.chat.scope() == source
-                                && source
-                                    .as_ref()
-                                    .is_some_and(|scope| scope.session_key == row.key)
-                                && this.sidebar_state.selected_agent == agent
-                            {
+                            if selected && this.sidebar_state.selected_agent == agent {
                                 this.queue_session_selection(this.agent_home());
                             }
                             this.sidebar_state
