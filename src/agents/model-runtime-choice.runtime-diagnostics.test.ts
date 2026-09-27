@@ -11,7 +11,7 @@ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 import { createPreparedConfiguredRuntimeModelLookup } from "./embedded-agent-runner/model.static-id.js";
 import { prepareModelChoice, preparePublishedModelRuntimeChoice } from "./model-runtime-choice.js";
-import { setPreparedModelRuntimeAuthStore } from "./prepared-model-runtime-auth.js";
+import { bindPreparedModelRuntimeAuth } from "./prepared-model-runtime-auth.js";
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.types.js";
 import { AuthStorage, ModelRegistry } from "./sessions/index.js";
 
@@ -68,10 +68,12 @@ function publish(isCurrent = () => true, config = cfg, auth = true) {
     },
   };
   if (auth) {
-    setPreparedModelRuntimeAuthStore(owner, {
-      version: 1,
-      profiles: {
-        "fixture:account": { type: "api_key", provider: "fixture", key: "synthetic-credential" },
+    bindPreparedModelRuntimeAuth(owner, {
+      store: {
+        version: 1,
+        profiles: {
+          "fixture:account": { type: "api_key", provider: "fixture", key: "synthetic-credential" },
+        },
       },
     });
   }
@@ -241,7 +243,7 @@ describe("published runtime choice", () => {
       kind: "unavailable",
     });
     const owner = publish();
-    setPreparedModelRuntimeAuthStore(owner, { version: 1, profiles: {} });
+    bindPreparedModelRuntimeAuth(owner, { store: { version: 1, profiles: {} } });
     expect(
       await preparePublishedModelRuntimeChoice({ ...request, model: "off-catalog" }),
     ).toMatchObject({ kind: "unavailable" });
@@ -288,7 +290,7 @@ describe("published runtime choice", () => {
       },
     };
     const owner = publish(() => true, config);
-    setPreparedModelRuntimeAuthStore(owner, { version: 1, profiles: {} });
+    bindPreparedModelRuntimeAuth(owner, { store: { version: 1, profiles: {} } });
     expect(
       await preparePublishedModelRuntimeChoice({ ...request, cfg: config, model: "off-catalog" }),
     ).toMatchObject({ kind: "unavailable" });
@@ -318,7 +320,7 @@ describe("published runtime choice", () => {
         },
       },
     };
-    setPreparedModelRuntimeAuthStore(owner, auth);
+    bindPreparedModelRuntimeAuth(owner, { store: auth });
     const before = structuredClone(auth);
     const choice = await preparePublishedModelRuntimeChoice({
       ...request,
@@ -390,7 +392,7 @@ describe("published runtime choice", () => {
       };
       published.owner = nativeOwner;
       const auth: AuthProfileStore = { version: 1, profiles: {} };
-      setPreparedModelRuntimeAuthStore(nativeOwner, auth);
+      bindPreparedModelRuntimeAuth(nativeOwner, { store: auth });
       const choice = await preparePublishedModelRuntimeChoice({
         ...request,
         runtimeId: selection === "explicit" ? "fixture-native" : undefined,

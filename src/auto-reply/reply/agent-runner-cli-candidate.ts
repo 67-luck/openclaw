@@ -15,6 +15,10 @@ import {
 } from "../../agents/cli-session.js";
 import { resolveDelegationCapability } from "../../agents/delegation-capability.js";
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
+import {
+  getGeneratedMediaTaskIdsForSessionKey,
+  hasNewGeneratedMediaTaskForSessionKey,
+} from "../../agents/media-generation-activity.js";
 import { findModelInCatalog } from "../../agents/model-catalog-lookup.js";
 import type { ModelFallbackResultClassification } from "../../agents/model-fallback-attempt.js";
 import { createAgentRunSupersededAbortError } from "../../agents/run-termination.js";
@@ -23,10 +27,6 @@ import { normalizeChatType } from "../../channels/chat-type.js";
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
 import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../sessions/input-provenance.js";
-import {
-  getGeneratedMediaTaskIdsForSessionKey,
-  hasNewGeneratedMediaTaskForSessionKey,
-} from "../../tasks/task-status-access.js";
 import type { BlockReplyContext, ReplyPayload } from "../types.js";
 import { createAgentLifecycleTerminalBackstop } from "./agent-lifecycle-terminal.js";
 import { resolveRunAuthProfile } from "./agent-runner-auth-profile.js";
@@ -129,14 +129,7 @@ export async function runCliFallbackCandidate(
   // from the shared agent-event handler; without it a failed CLI command renders
   // exactly like one that succeeded.
   const deliverCliCommandOutcome = async (
-    payload: {
-      name: string | undefined;
-      phase: "start" | "update" | "result";
-      args: Record<string, unknown> | undefined;
-      toolCallId?: string;
-      isError?: boolean;
-      result?: unknown;
-    },
+    payload: Parameters<typeof cliToolSummaryTracker.noteToolEvent>[0],
     commandBearing: boolean,
   ) => {
     const onCommandOutput = turn.opts?.onCommandOutput;
@@ -194,7 +187,10 @@ export async function runCliFallbackCandidate(
               config: params.runtimeConfig,
             }).authProfileId;
         const diagnosticOwner = params.deferredLifecycle.handoffToCli();
-        const mediaTaskIdsBefore = getGeneratedMediaTaskIdsForSessionKey(turn.sessionKey);
+        const mediaTaskIdsBefore = getGeneratedMediaTaskIdsForSessionKey(
+          turn.sessionKey,
+          turn.followupRun.run.agentId,
+        );
         let droppedCliSessionReplacement = false;
         const candidateResult = await runCliAgentWithLifecycle({
           runId: params.runId,
@@ -215,6 +211,7 @@ export async function runCliFallbackCandidate(
                       hasNewGeneratedMediaTask: hasNewGeneratedMediaTaskForSessionKey(
                         turn.sessionKey,
                         mediaTaskIdsBefore,
+                        turn.followupRun.run.agentId,
                       ),
                     })
                   ) {
@@ -264,45 +261,32 @@ export async function runCliFallbackCandidate(
           onCompactionStart: turn.opts?.onCompactionStart,
           onCompactionEnd: turn.opts?.onCompactionEnd,
           onToolEvent: async (payload) => {
-            if (!params.preserveProgressCallbackStartOrder) {
-              const commandBearing = await cliToolSummaryTracker.noteToolEvent(payload);
-              if (payload.phase === "result") {
-                await deliverCliCommandOutcome(payload, commandBearing);
-                return;
-              }
-              const { name, phase, args, toolCallId } = payload;
-              await Promise.all([
-                turn.typingSignals.signalToolStart(),
-                turn.opts?.onToolStart?.({
-                  ...(toolCallId ? { toolCallId } : {}),
-                  name,
-                  phase,
-                  args,
-                  detailMode: turn.toolProgressDetail,
-                }),
-              ]);
-              return;
-            }
             const summaryPromise = cliToolSummaryTracker.noteToolEvent(payload);
             if (payload.phase === "result") {
-              const commandBearing = await summaryPromise;
-              await deliverCliCommandOutcome(payload, commandBearing);
+              await deliverCliCommandOutcome(payload, await summaryPromise);
               return;
             }
             const { name, phase, args, toolCallId } = payload;
+            const deliverToolStart = () =>
+              turn.opts?.onToolStart?.({
+                ...(toolCallId ? { toolCallId } : {}),
+                name,
+                phase,
+                args,
+                detailMode: turn.toolProgressDetail,
+              });
+            if (!params.preserveProgressCallbackStartOrder) {
+              await summaryPromise;
+              await Promise.all([turn.typingSignals.signalToolStart(), deliverToolStart()]);
+              return;
+            }
             // Tool and assistant bridges drain independently. Preserve source order.
             await Promise.all([
               summaryPromise,
               params.presentation.presentWithTyping(
                 turn.typingSignals.signalToolStart(),
                 async () => {
-                  await turn.opts?.onToolStart?.({
-                    ...(toolCallId ? { toolCallId } : {}),
-                    name,
-                    phase,
-                    args,
-                    detailMode: turn.toolProgressDetail,
-                  });
+                  await deliverToolStart();
                 },
               ),
             ]);

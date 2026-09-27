@@ -203,6 +203,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
           if (instance.scrollElement !== this.scrollElement || !rect.width || !rect.height) {
             return;
           }
+          this.commitComposerResize(true);
           const previousHeight = this.observedHeight;
           const widthChanged = this.observedWidth !== null && this.observedWidth !== rect.width;
           const heightChanged = previousHeight !== null && previousHeight !== rect.height;
@@ -235,6 +236,10 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
             isProgrammaticScroll: () => this.isProgrammaticScroll,
             cancelScroll: () => this.cancelScroll(),
             requestUpdate: () => this.host.requestUpdate(),
+            onOffset: () => this.endAnchor.recordViewport(this.scrollElement),
+            onComposerInput: () => this.endAnchor.invalidateComposerResize(this.canAutoFollow()),
+            onComposerLayout: (changed) => this.commitComposerResize(changed),
+            cancelComposerResize: () => this.endAnchor.cancelComposerResize(),
             onReaderScroll: (towardEnd) => {
               this.endAnchor.releaseCommit();
               this.callbacks.onReaderScroll?.(towardEnd);
@@ -342,7 +347,26 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     }
   }
 
+  private commitComposerResize(changed: boolean): void {
+    const correction = this.endAnchor.commitComposerResize(
+      this.scrollElement,
+      changed,
+      this.canAutoFollow(),
+      this.offsetState.pendingScrollOffset !== null ||
+        this.offsetState.pendingInteractionAnchor !== null ||
+        (this.offsetState.scrollCommand !== null &&
+          this.offsetState.scrollCommand.target !== "end") ||
+        this.offsetState.touchActive,
+    );
+    if (correction?.resumeFollow) {
+      this.callbacks.onReaderScroll?.(true);
+    }
+  }
+
   prepareUpdate(): void {
+    // Native editing can precede a structural footer commit in this task.
+    // Settle its known displacement before checking for reader departure.
+    this.commitComposerResize(true);
     this.endAnchor.prepareUpdate(this.scrollElement, this.canAutoFollow(), this.offsetState);
   }
 
@@ -355,8 +379,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     const interactionResizePending = this.offsetState.pendingInteractionAnchor !== null;
     this.reconcileInteractionResize();
     if (
-      !this.offsetState.touching &&
-      !this.offsetState.touchScrolling &&
+      !this.offsetState.touchActive &&
       this.prependAnchor.update(
         this.scrollElement,
         this.virtualizerController.getVirtualizer(),
@@ -373,13 +396,12 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     } else if (this.connected) {
       this.endAnchor.scheduleReconcile(() => {
         if (this.connected && !this.offsetState.pendingInteractionAnchor) {
+          this.commitComposerResize(true);
           this.reconcileImplicitEndAnchor();
           this.endAnchor.reconcile(
             this.scrollElement,
             this.canAutoFollow(),
-            this.offsetState.pendingScrollOffset !== null ||
-              this.offsetState.touching ||
-              this.offsetState.touchScrolling,
+            this.offsetState.pendingScrollOffset !== null || this.offsetState.touchActive,
             this.followEnd,
           );
         }
@@ -442,12 +464,15 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     overlay: unknown = nothing,
     header: TranscriptHeader | null = null,
   ): TemplateResult {
+    this.offsetState.renderedScrollState = this.offsetState.renderState(
+      this.scrollElement !== null && this.endAnchor.atEnd,
+    );
     const virtualizer = this.virtualizerController.getVirtualizer();
     // Keep old geometry during the gesture, while still virtualizing that old
     // row model as the reader moves. Only the history insertion is held back.
     if (
       this.prependAnchor.hasPrepend &&
-      (this.offsetState.touching || this.offsetState.touchScrolling || virtualizer.isScrolling) &&
+      (this.offsetState.touchActive || virtualizer.isScrolling) &&
       !this.offsetState.scrollCommand &&
       !this.offsetState.pendingScrollOffset &&
       this.renderPreviousRows

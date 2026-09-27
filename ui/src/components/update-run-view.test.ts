@@ -26,6 +26,25 @@ afterEach(() => {
 });
 
 describe("update run projection", () => {
+  it.each(["running", "succeeded", "skipped", "failed"] as const)(
+    "keeps native phase and verification claims out of an OCM %s result",
+    (status) => {
+      const view = projectUpdateRun(
+        run({
+          status,
+          phase: status === "running" ? "requested" : "finished",
+          target: { kind: "package", installationMethod: "ocm" },
+        }),
+      );
+      expect(view.compactLabel).toBe("");
+      expect(view.phases).toEqual([]);
+      expect(view.oracles).toEqual([]);
+      if (status === "running") {
+        expect(view.headline).toContain("managed by OCM");
+      }
+    },
+  );
+
   it("keeps recorded failure and skipped phases distinct when a run ends early", () => {
     const view = projectUpdateRun(
       run({
@@ -236,8 +255,11 @@ describe("update run view", () => {
       scrollHeight: { configurable: true, value: 1000 },
       clientHeight: { value: 160 },
     });
+    const opened = new Promise<void>((resolve) => {
+      disclosure.addEventListener("toggle", () => resolve(), { once: true });
+    });
     disclosure.open = true;
-    disclosure.dispatchEvent(new Event("toggle"));
+    await opened;
     await vi.runOnlyPendingTimersAsync();
     expect(list.scrollTop).toBe(1000);
 

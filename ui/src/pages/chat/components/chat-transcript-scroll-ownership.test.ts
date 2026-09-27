@@ -14,6 +14,10 @@ import { ChatTranscriptController } from "./chat-transcript-controller.ts";
 import { TranscriptEndAnchor } from "./chat-transcript-end-anchor.ts";
 import { createTranscriptOffsetState } from "./chat-transcript-offset-observer.ts";
 import {
+  publishTranscriptScroll,
+  subscribeTranscriptScroll,
+} from "./chat-transcript-scroll-events.ts";
+import {
   installTranscriptDomMocks,
   mountTestTranscript,
   resetTranscriptTestDom,
@@ -194,9 +198,117 @@ describe("chat transcript scroll ownership", () => {
     expect(follow).not.toHaveBeenCalled();
   });
 
-  it.each(["following", "reading", "wheel", "key", "pointer", "touch"] as const)(
-    "preserves %s ownership across an intermediate footer clamp and late row growth",
-    async (intent) => {
+  it.each(["resize clamp", "native return"] as const)(
+    "distinguishes a %s after same-range reader scrolling before composer layout",
+    async (movement) => {
+      // The frame fixture must restore native rAF after the fake clock is uninstalled.
+      vi.useFakeTimers({ toNotFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+      const flushFrames = stubAnimationFrames();
+      transcriptDomState.measuredRowHeight = 1000;
+      const container = document.body.appendChild(document.createElement("div"));
+      let viewportHeight = 400;
+      Object.defineProperties(container, {
+        clientHeight: { configurable: true, get: () => viewportHeight },
+        scrollHeight: { configurable: true, value: 1000 },
+      });
+      container.scrollTo = (options?: ScrollToOptions | number, y?: number) => {
+        const offset = typeof options === "number" ? (y ?? 0) : (options?.top ?? 0);
+        container.scrollTop = Math.min(offset, 1000 - viewportHeight);
+      };
+      let updateRequested = true;
+      const onReaderScroll = vi.fn();
+      const transcript = new ChatTranscriptController(
+        {
+          addController: vi.fn(),
+          removeController: vi.fn(),
+          requestUpdate: () => {
+            updateRequested = true;
+          },
+          updateComplete: Promise.resolve(true),
+        },
+        () => `composer-reader-${movement}`,
+        { canFollowEnd: () => false, onReaderScroll },
+      );
+      const rows: TestContentRow[] = [
+        { kind: "content", key: "long-run", content: html`<div>Long transcript run</div>` },
+      ];
+      const commitRequestedUpdate = async () => {
+        // TanStack queues its host notification behind updateComplete.
+        await Promise.resolve();
+        if (updateRequested) {
+          updateRequested = false;
+          transcript.hostUpdate();
+          render(
+            transcript.renderSession(`agent:main:composer-reader-${movement}`, (session) => {
+              session.setContentReady(true);
+              return session.render(
+                rows,
+                (row) => (row.kind === "content" ? row.content : nothing),
+                null,
+                false,
+              );
+            }),
+            container,
+          );
+          transcript.hostUpdated();
+        }
+        // Connected row refs measure after their two owned microtask checkpoints.
+        await Promise.resolve();
+        await Promise.resolve();
+        flushFrames();
+      };
+      transcript.hostConnected();
+      try {
+        await commitRequestedUpdate();
+        await commitRequestedUpdate();
+        transcript.scrollToOffset(100);
+        await commitRequestedUpdate();
+        await commitRequestedUpdate();
+
+        container.scrollTop = 200;
+        container.dispatchEvent(new Event("scroll"));
+        await commitRequestedUpdate();
+        // Both offsets stay in one long row and away from the physical end.
+        container.scrollTop = 550;
+        container.dispatchEvent(new Event("scroll"));
+        await commitRequestedUpdate();
+        onReaderScroll.mockClear();
+
+        publishTranscriptScroll(container, { type: "composer-input" });
+        if (movement === "resize clamp") {
+          viewportHeight = 500;
+          container.scrollTop = 500;
+        } else {
+          // Native movement can reach the old end before its scroll event.
+          container.scrollTop = 600;
+          viewportHeight = 300;
+        }
+        container.dispatchEvent(new Event("scroll"));
+
+        expect(container.scrollTop).toBe(movement === "resize clamp" ? 500 : 700);
+        if (movement === "resize clamp") {
+          expect(onReaderScroll).not.toHaveBeenCalled();
+        } else {
+          expect(onReaderScroll).toHaveBeenCalledExactlyOnceWith(true);
+        }
+      } finally {
+        transcript.hostDisconnected();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    ...(["following", "reading", "wheel", "key", "pointer", "touch"] as const).map((intent) => ({
+      intent,
+      nativeResize: "none" as const,
+    })),
+    ...(["following", "reading", "wheel"] as const).flatMap((intent) =>
+      (["growth", "shrink"] as const).map((nativeResize) => ({ intent, nativeResize })),
+    ),
+  ])(
+    "preserves $intent ownership across native $nativeResize, a footer clamp and late row growth",
+    async ({ intent, nativeResize }) => {
       const flushFrames = stubAnimationFrames();
       const policy = makeChatHost({ chatHasAutoScrolled: true });
       const transcript = new ChatTranscriptController(
@@ -234,8 +346,34 @@ describe("chat transcript scroll ownership", () => {
           policy.chatFollowLocked = true;
           policy.chatReadingHistory = true;
         }
+        const corrections: Array<{ before: number; after: number }> = [];
+        const stopObserving = subscribeTranscriptScroll(container, (observation) => {
+          if (observation.type === "resize" && observation.scrollCorrection) {
+            corrections.push(observation.scrollCorrection);
+          }
+        });
+        if (nativeResize !== "none") {
+          // beforeinput records intent without measuring. The native edit then
+          // changes the viewport before either the overflow or resize observer.
+          publishTranscriptScroll(container, { type: "composer-input" });
+          Object.defineProperty(container, "clientHeight", {
+            configurable: true,
+            value: nativeResize === "growth" ? 350 : 450,
+          });
+          container.scrollTop = nativeResize === "growth" ? 1572 : 1550;
+        }
         const controller: ReactiveController = transcript;
         controller.hostUpdate?.();
+        stopObserving();
+        if (nativeResize !== "none") {
+          const follows = intent !== "reading";
+          const nativeOffset = nativeResize === "growth" ? 1572 : 1550;
+          const endOffset = nativeResize === "growth" ? 1650 : 1550;
+          expect(container.scrollTop).toBe(follows ? endOffset : nativeOffset);
+          expect(corrections).toEqual(
+            follows ? [{ before: nativeResize === "growth" ? 1572 : 1600, after: endOffset }] : [],
+          );
+        }
         // The empty footer briefly enlarges the viewport. The browser clamps
         // against that geometry before the final footer and row sizes commit.
         Object.defineProperty(container, "clientHeight", { configurable: true, value: 650 });
@@ -483,7 +621,13 @@ describe("chat transcript scroll ownership", () => {
     ],
     ["transcript text", "PageUp", html`<span>History</span>`, false],
     ["readonly content", "End", html`<div contenteditable="false">History</div>`, false],
-    ...nativeControlNavigationCases,
+    // The pane keyboard suite covers native-control/platform variants.
+    // Retain downward nested scrolling and media boundaries in restoration.
+    ["native video", "End", html`<video controls></video>`, true],
+    ["native audio paging", "PageDown", html`<audio controls></audio>`, false],
+    ...nativeControlNavigationCases.filter(
+      ([name, key]) => name.startsWith("Mac textarea ") && (key === "End" || key === "PageDown"),
+    ),
   ] as const)(
     "resolves pending restoration ownership for %s",
     async (command, key, content, preservesRestore, fixture = {}) => {

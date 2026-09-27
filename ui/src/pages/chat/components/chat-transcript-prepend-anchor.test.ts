@@ -152,7 +152,11 @@ describe("transcript prepend anchor", () => {
       isProgrammaticScroll: () => false,
       cancelScroll: () => anchor.clear(),
       requestUpdate: vi.fn(),
+      onOffset: vi.fn(() => false),
       onReaderScroll: vi.fn(),
+      onComposerInput: vi.fn(),
+      onComposerLayout: vi.fn(),
+      cancelComposerResize: vi.fn(),
     };
     const controller = new VirtualizerController<HTMLDivElement, HTMLElement>(
       {

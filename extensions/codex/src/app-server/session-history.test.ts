@@ -994,7 +994,6 @@ it("prepares an oversized mirrored tool frame without losing the incoming reques
   const currentRequest = "Newest request: report the earlier operation without repeating it.";
   const projection = await projectContextEngineAssemblyForCodex({
     assembledMessages: prepared ?? [],
-    originalHistoryMessages: prepared ?? [],
     prompt: currentRequest,
     toolPayloadMode: "preserve",
   });
