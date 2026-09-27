@@ -7,7 +7,10 @@ import { resolveSessionWorkerPlacementContext } from "../session-worker-placemen
 import { createAgentRuntimeAuthorityGuard } from "./agent-runtime-authority.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
-import { launchSessionRecoveryContinuation } from "./session-recovery-continuation.js";
+import {
+  launchSessionRecoveryContinuation,
+  prepareSessionRecoveryContinuationAuthorization,
+} from "./session-recovery-continuation.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -46,6 +49,17 @@ export const sessionRecoverHandlers: GatewayRequestHandlers = {
       authorizedPluginId: client?.internal?.pluginRuntimeOwnerId,
       ...(commitGuard ? { commitGuard } : {}),
       workerPlacementContext: resolveSessionWorkerPlacementContext(context),
+      prepareContinuationAuthorization: (target) => {
+        const prepared = prepareSessionRecoveryContinuationAuthorization({
+          ...target,
+          client,
+          context,
+          sessionScope: readGatewayRequestMutationAuthority(options).sessionScope,
+        });
+        return prepared.ok
+          ? { ok: true, assertCurrent: () => prepared.authorization.assertCurrent() }
+          : prepared;
+      },
       launchContinuation: async (continuation) =>
         await launchSessionRecoveryContinuation({
           ...continuation,

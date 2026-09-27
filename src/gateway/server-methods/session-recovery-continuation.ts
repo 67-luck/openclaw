@@ -10,13 +10,11 @@ import { handleTrustedInternalChatSend } from "./chat-send-handler.js";
 import { withSessionMutationCommitGuard } from "./session-mutation-guards.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
+// Existing successor retries must retain the input paired with their durable idempotency key.
 const RECOVERY_CONTINUATION_TEXT =
-  "Continue the interrupted work in this session. Check current state and reconcile tool calls " +
-  "whose outcomes are unknown before repeating side effects. Do not recreate the session or " +
-  "assume an interrupted action succeeded.";
+  "Continue from the recovered transcript and finish the interrupted work.";
 
-/** Starts the fixed recovery continuation as trusted system input. */
-export async function launchSessionRecoveryContinuation(params: {
+type SessionRecoveryContinuationParams = {
   agentId: string;
   client: GatewayRequestHandlerOptions["client"];
   commitGuard?: () => void;
@@ -28,36 +26,57 @@ export async function launchSessionRecoveryContinuation(params: {
   sessionId: string;
   sessionKey: string;
   storePath: string;
-}): Promise<SessionRecoveryContinuationOutcome> {
-  let outcome: SessionRecoveryContinuationOutcome | undefined;
-  try {
-    const destination = resolveSessionMutationAuthorization({
-      client: params.client,
-      context: params.context,
-      method: "chat.send",
-      requestParams: { agentId: params.agentId, sessionKey: params.sessionKey },
-      expectedTarget: {
-        agentId: params.agentId,
-        sessionKey: params.sessionKey,
-        sessionId: params.sessionId,
-        storePath: params.storePath,
-      },
-      sessionScope: params.sessionScope,
-    });
-    if (destination.error) {
-      return { status: "rejected", error: destination.error };
-    }
-    const destinationAuthorization = withSessionMutationCommitGuard(
-      destination.authorization,
-      params.commitGuard,
-      undefined,
-    );
-    if (!destinationAuthorization) {
-      return {
-        status: "rejected",
+};
+
+type ContinuationAuthorizationParams = Omit<
+  SessionRecoveryContinuationParams,
+  "idempotencyKey" | "req" | "hasCurrentClientAuthority"
+>;
+
+/** Checks the same run-start policy before recovery consumes its stopped state. */
+export function prepareSessionRecoveryContinuationAuthorization(
+  params: ContinuationAuthorizationParams,
+) {
+  const destination = resolveSessionMutationAuthorization({
+    client: params.client,
+    context: params.context,
+    method: "chat.send",
+    requestParams: { agentId: params.agentId, sessionKey: params.sessionKey },
+    expectedTarget: {
+      agentId: params.agentId,
+      sessionKey: params.sessionKey,
+      sessionId: params.sessionId,
+      storePath: params.storePath,
+    },
+    sessionScope: params.sessionScope,
+  });
+  if (destination.error) {
+    return { ok: false as const, error: destination.error };
+  }
+  const authorization = withSessionMutationCommitGuard(
+    destination.authorization,
+    params.commitGuard,
+    undefined,
+  );
+  return authorization
+    ? { ok: true as const, authorization }
+    : {
+        ok: false as const,
         error: errorShape(ErrorCodes.UNAVAILABLE, "Continuation authorization was not prepared."),
       };
+}
+
+/** Starts the fixed recovery continuation as trusted system input. */
+export async function launchSessionRecoveryContinuation(
+  params: SessionRecoveryContinuationParams,
+): Promise<SessionRecoveryContinuationOutcome> {
+  let outcome: SessionRecoveryContinuationOutcome | undefined;
+  try {
+    const prepared = prepareSessionRecoveryContinuationAuthorization(params);
+    if (!prepared.ok) {
+      return { status: "rejected", error: prepared.error };
     }
+    const destinationAuthorization = prepared.authorization;
     await handleTrustedInternalChatSend(
       {
         req: params.req,

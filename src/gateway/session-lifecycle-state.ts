@@ -13,6 +13,7 @@ import {
 } from "../agents/main-session-recovery/main-session-recovery-lifecycle.js";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions.js";
 import { buildUpdatedSessionGoalStatus } from "../config/sessions/goals-transitions.js";
+import { buildRestartRecoveryResumeRetirementPatch } from "../config/sessions/restart-recovery-state.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { getAgentEventLifecycleGeneration, type AgentEventPayload } from "../infra/agent-events.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -77,6 +78,7 @@ type PersistedLifecycleSessionShape = Pick<
   | keyof LifecycleSessionShape
   | "restartRecoveryRuns"
   | "restartRecoveryForceSafeTools"
+  | "restartRecoveryResumeRunId"
   | "mainRestartRecovery"
   | "lifecycleRunId"
 >;
@@ -271,7 +273,11 @@ function derivePersistedSessionLifecyclePatch(params: {
   return {
     ...projection.patch,
     ...(phase === "start"
-      ? { lifecycleRunId: runId, lastRunId: undefined }
+      ? {
+          lifecycleRunId: runId,
+          lastRunId: undefined,
+          ...buildRestartRecoveryResumeRetirementPatch(params.entry, clientRunId),
+        }
       : projection.patch.status && projection.patch.status !== "running"
         ? { lifecycleRunId: undefined, lastRunId: clientRunId }
         : {}),
@@ -283,6 +289,7 @@ export function deriveGatewaySessionLifecycleProjectionPatch(params: {
   event: LifecycleEventLike;
 }): GatewaySessionLifecycleSnapshot {
   const {
+    restartRecoveryResumeRunId: _restartRecoveryResumeRunId,
     restartRecoveryRuns: _restartRecoveryRuns,
     restartRecoveryForceSafeTools: _restartRecoveryForceSafeTools,
     lifecycleRunId: _lifecycleRunId,

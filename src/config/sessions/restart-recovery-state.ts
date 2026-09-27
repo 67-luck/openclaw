@@ -580,3 +580,13 @@ export function buildRestartRecoveryClaimCleanupPatch(params: {
     ...(terminalRunIds ? { restartRecoveryTerminalRunIds: terminalRunIds } : {}),
   };
 }
+
+/** A newer admitted run supersedes an unconsumed explicit-resume request. */
+export function buildRestartRecoveryResumeRetirementPatch(
+  entry: Pick<SessionEntry, "restartRecoveryResumeRunId"> | null | undefined,
+  runId: string | undefined,
+): Pick<SessionEntry, "restartRecoveryResumeRunId"> {
+  return entry?.restartRecoveryResumeRunId && runId && runId !== entry.restartRecoveryResumeRunId
+    ? { restartRecoveryResumeRunId: undefined }
+    : {};
+}

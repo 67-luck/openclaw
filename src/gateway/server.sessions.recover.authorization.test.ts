@@ -343,3 +343,81 @@ test("sessions.recover retains source revocation when resuming the same session"
     })?.createdActor,
   ).toEqual({ type: "human", source: "profile", id: owner.authenticatedUserProfile!.profileId });
 });
+
+test("newer admitted work retires a rejected resume before another recovery request", async () => {
+  const { storePath } = await createSessionStoreDir();
+  const sourceKey = "agent:main:dashboard:superseded-recovery";
+  const sourceSessionId = "superseded-recovery-session";
+  const owner = roleClient("write", "superseded-recovery-owner");
+  const target = { agentId: "main", sessionKey: sourceKey, storePath };
+  await seedRecoverableSession({
+    sourceKey,
+    sourceSessionId,
+    storePath,
+    ownerProfileId: owner.authenticatedUserProfile!.profileId,
+  });
+  const context = createDirectChatContext({
+    getRuntimeConfig: () => recoveryConfig(storePath),
+    validateAgentRuntimeApprovalAuthority: () =>
+      !loadSessionEntry(target)?.restartRecoveryResumeRunId,
+  });
+  const operationalRunInstance = { instanceId: "recovery-instance", runId: "recovery-request" };
+  const runtimeClient = {
+    ...owner,
+    internal: {
+      agentRuntimeIdentity: {
+        kind: "agentRuntime" as const,
+        agentId: "main",
+        sessionKey: sourceKey,
+        operationalRunInstance,
+        delegatedAuthority: {
+          kind: "local" as const,
+          operationalRunInstance,
+          lifecycleGeneration: "recovery-generation",
+          claimId: "recovery-claim",
+        },
+      },
+    },
+  };
+  const rejected = await registeredSessionRecover({
+    client: runtimeClient,
+    context,
+    key: sourceKey,
+    id: "initial-rejected-resume",
+  });
+  expect(rejected).toMatchObject({ ok: true, payload: { continuation: { status: "rejected" } } });
+  expect(loadSessionEntry(target)?.restartRecoveryResumeRunId).toBeTruthy();
+  let accepted = false;
+  await handleGatewayRequest({
+    req: {
+      type: "req",
+      id: "newer-work",
+      method: "chat.send",
+      params: {
+        sessionKey: sourceKey,
+        sessionId: sourceSessionId,
+        message: "Do this newer work instead.",
+        idempotencyKey: "newer-work",
+        deliver: false,
+      },
+    },
+    client: owner,
+    context,
+    respond: (ok, _payload, error) => {
+      expect(error).toBeUndefined();
+      accepted = ok;
+    },
+    isWebchatConnect: () => false,
+  });
+  expect(accepted).toBe(true);
+  expect(loadSessionEntry(target)?.restartRecoveryResumeRunId).toBeUndefined();
+  const runCount = vi.mocked(context.addChatRun).mock.calls.length;
+  const stale = await registeredSessionRecover({
+    client: owner,
+    context,
+    key: sourceKey,
+    id: "stale-recovery-after-newer-work",
+  });
+  expect(stale).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
+  expect(vi.mocked(context.addChatRun).mock.calls.length).toBe(runCount);
+});

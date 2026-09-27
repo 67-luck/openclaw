@@ -140,6 +140,12 @@ export async function recoverGatewaySession(params: {
   requestingOperatorProfileId?: string;
   operatorRoleActor?: GatewayOperatorRoleActor;
   workerPlacementContext: SessionWorkerPlacementContext;
+  prepareContinuationAuthorization: (target: {
+    agentId: string;
+    sessionId: string;
+    sessionKey: string;
+    storePath: string;
+  }) => { ok: true; assertCurrent: () => void } | { ok: false; error: ErrorShape };
   launchContinuation: (params: {
     agentId: string;
     idempotencyKey: string;
@@ -171,11 +177,29 @@ export async function recoverGatewaySession(params: {
   if (ownershipError) {
     return { ok: false, error: ownershipError };
   }
+  const continuationAuthority = initialSource.mainRestartRecovery?.tombstone?.recoveredSessionKey
+    ? undefined
+    : params.prepareContinuationAuthorization({
+        agentId: sourceTarget.agentId,
+        sessionId: initialSource.sessionId,
+        sessionKey: sourceTarget.canonicalKey,
+        storePath: sourceTarget.storePath,
+      });
+  if (continuationAuthority && !continuationAuthority.ok) {
+    return { ok: false, error: continuationAuthority.error };
+  }
+  const assertContinuationCurrent = () => {
+    params.commitGuard?.();
+    if (continuationAuthority?.ok) {
+      continuationAuthority.assertCurrent();
+    }
+  };
   if (isMainSessionRecoveryReconciliationCandidate(initialSource)) {
     const repaired = await reconcileOrphanedGatewaySessionRecovery({
       ...params,
       target: sourceTarget,
       entry: initialSource,
+      commitGuard: assertContinuationCurrent,
     });
     if (!repaired) {
       return invalidSessionRequest(
@@ -259,6 +283,9 @@ export async function recoverGatewaySession(params: {
       )
     ) {
       return { ok: false as const, error: recoveryConflictError("source-changed") };
+    }
+    if (continuationAuthority?.ok) {
+      continuationAuthority.assertCurrent();
     }
     if (currentSource.archivedAt !== undefined) {
       return invalidSessionRequest("Session is archived. Restore it before resuming.");

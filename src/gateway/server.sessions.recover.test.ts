@@ -733,23 +733,26 @@ test.each([
       },
     };
     type RecoveryPayload = { key: string; continuation: { status: string } };
+    const sourceScope = { agentId: "main", sessionKey: sourceKey, storePath };
+    const beforeRecovery = loadSessionEntry(sourceScope);
     const recovered = await directSessionReq<RecoveryPayload>(
       "sessions.recover",
       { agentId: "main", key: sourceKey },
       request,
     );
+    if (identity === "operator" && required) {
+      expect(recovered).toMatchObject({
+        ok: false,
+        error: {
+          message: expect.stringContaining("requires a sandboxed session"),
+        },
+      });
+      expect(loadSessionEntry(sourceScope)).toEqual(beforeRecovery);
+      return;
+    }
     expect(recovered).toMatchObject({
       ok: true,
-      payload: {
-        key: sourceKey,
-        continuation:
-          identity === "operator" && required
-            ? {
-                status: "rejected",
-                error: { message: expect.stringContaining("requires a sandboxed session") },
-              }
-            : { status: "started" },
-      },
+      payload: { key: sourceKey, continuation: { status: "started" } },
     });
     const scope = { agentId: "main", sessionKey: recovered.payload?.key ?? "", storePath };
     const successor = loadSessionEntry(scope);

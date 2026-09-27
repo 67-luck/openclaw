@@ -1,4 +1,5 @@
 import {
+  buildRestartRecoveryResumeRetirementPatch,
   mergeRestartRecoveryTerminalRunIds,
   sameRestartRecoveryTerminalRunIds,
 } from "./restart-recovery-state.js";
@@ -110,6 +111,12 @@ export function buildExpectedTranscriptTurnSessionPatch(params: {
     : undefined;
   return {
     ...(acceptedMessage ? params.sessionLifecyclePatch : undefined),
+    ...(acceptedMessage
+      ? buildRestartRecoveryResumeRetirementPatch(
+          params.currentEntry,
+          params.sessionLifecyclePatch?.lifecycleRunId,
+        )
+      : {}),
     ...(acceptedMessage && restartRecoveryTerminalRunIds ? { restartRecoveryTerminalRunIds } : {}),
     ...(touchUpdatedAt > 0
       ? {

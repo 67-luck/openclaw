@@ -341,6 +341,35 @@ describe("session lifecycle state", () => {
     expect(completed.lastRunId).toBe("client-run");
   });
 
+  it.each([
+    { clientRunId: "resume-run", expected: "resume-run" },
+    { clientRunId: "new-work", expected: undefined },
+  ])(
+    "retires resume eligibility only for newer client work ($clientRunId)",
+    async ({ clientRunId, expected }) => {
+      const entry: SessionEntry = {
+        sessionId: "session-id",
+        updatedAt: 900,
+        restartRecoveryResumeRunId: "resume-run",
+      };
+      const event: LifecycleEvent = {
+        ts: 1_000,
+        sessionId: entry.sessionId,
+        runId: "provider-run",
+        clientRunId,
+        data: { phase: "start", startedAt: 1_000 },
+      };
+      const started = await persistLifecycle(entry, event);
+      expect(started.restartRecoveryResumeRunId).toBe(expected);
+      expect(started.lifecycleRunId).toBe("provider-run");
+      expect(deriveGatewaySessionLifecycleProjectionPatch({ entry, event })).not.toHaveProperty(
+        "restartRecoveryResumeRunId",
+      );
+      const stale = await persistLifecycle(entry, { ...event, sessionId: "retired-session-id" });
+      expect(stale.restartRecoveryResumeRunId).toBe("resume-run");
+    },
+  );
+
   it("clears inherited run ownership when a start event has no run id", async () => {
     const started = await persistLifecycle(
       {
