@@ -1,9 +1,5 @@
-/**
- * nodes built-in tool.
- *
- * Manages node pairing, notifications, device state, media capture, and approved command invocation.
- */
 import crypto from "node:crypto";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { Type } from "typebox";
 import { readConnectPairingRequiredMessage } from "../../../packages/gateway-protocol/src/connect-error-details.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -33,10 +29,11 @@ import {
   callGatewayTool,
   readGatewayCallOptions,
   shouldUseInProcessGatewayTool,
+  type GatewayCallOptions,
 } from "./gateway.js";
 import { executeNodeCommandAction } from "./nodes-tool-commands.js";
 import { callNodesToolNodeInvoke } from "./nodes-tool-invoke.js";
-import { executeNodeMediaAction, MEDIA_INVOKE_ACTIONS } from "./nodes-tool-media.js";
+import { executeNodeMediaAction } from "./nodes-tool-media.js";
 import { listNodes, resolveAgentNodeId } from "./nodes-utils.js";
 
 const NODES_TOOL_ACTIONS = [
@@ -72,7 +69,6 @@ const NOTIFICATIONS_ACTIONS = ["open", "dismiss", "reply"] as const;
 const CAMERA_FACING = ["front", "back", "both"] as const;
 const CAMERA_PTZ_OPERATIONS = ["status", "set", "move", "home"] as const;
 const LOCATION_ACCURACY = ["coarse", "balanced", "precise"] as const;
-type GatewayCallOptions = ReturnType<typeof readGatewayCallOptions>;
 
 async function resolveNodePairApproveScopes(
   gatewayOpts: GatewayCallOptions,
@@ -210,7 +206,7 @@ export function createNodesTool(options?: {
     description:
       "Paired nodes: status/list with active-computer presence; pass node to describe/control. Pairing lifecycle (pending/approve/reject), notify, camera_snap/camera_list/camera_clip (with audio), camera_ptz for physical camera pan/tilt/zoom, photos_latest, screen_snapshot, screen_record video, location_get, notifications_list + notifications_action (open/dismiss/reply), device_status/device_info/device_permissions/device_health, executable lookup (which + bins), generic invoke. app_list: read eligible installed apps on an exact node (optional query). app_launch: launch an exact Linux installed app using full node ID and appId/appRevision from app_list, without arguments or Gateway override; success means process started, not window ready. File transfer is a separate capability.",
     parameters: NodesToolSchema,
-    execute: async (_toolCallId, args) => {
+    execute: async (_toolCallId, args, signal) => {
       const params = args as Record<string, unknown>;
       const action = readToolStringParam(params, "action", { required: true });
       const gatewayOpts = readGatewayCallOptions(params);
@@ -275,6 +271,7 @@ export function createNodesTool(options?: {
                       sessionKey: options?.agentSessionKey,
                       idempotencyKey: crypto.randomUUID(),
                     },
+                    { signal },
                   ),
               ),
             );
@@ -371,19 +368,14 @@ export function createNodesTool(options?: {
               gatewayOpts,
               agentSessionKey: options?.agentSessionKey,
               allowMediaInvokeCommands: options?.allowMediaInvokeCommands,
-              mediaInvokeActions: MEDIA_INVOKE_ACTIONS,
             });
           }
           default:
             throw new Error(`Unknown action: ${action}`);
         }
       } catch (err) {
-        const nodeLabel =
-          typeof params.node === "string" && params.node.trim() ? params.node.trim() : "auto";
-        const gatewayLabel =
-          gatewayOpts.gatewayUrl && gatewayOpts.gatewayUrl.trim()
-            ? gatewayOpts.gatewayUrl.trim()
-            : "default";
+        const nodeLabel = normalizeOptionalString(params.node) ?? "auto";
+        const gatewayLabel = normalizeOptionalString(gatewayOpts.gatewayUrl) ?? "default";
         const agentLabel = agentId ?? "unknown";
         let message = formatErrorMessage(err);
         const pairing =

@@ -214,6 +214,7 @@ export async function prepareDelegatedSystemAgentApproval(params: {
       ): Promise<Awaited<ReturnType<DelegatedProposalResolver>> | undefined> => {
         if (
           proposal.operation.kind !== "config-set" &&
+          proposal.operation.kind !== "config-unset" &&
           proposal.operation.kind !== "config-set-ref"
         ) {
           return undefined;

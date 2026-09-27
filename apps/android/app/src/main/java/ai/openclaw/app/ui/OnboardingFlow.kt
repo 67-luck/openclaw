@@ -379,84 +379,56 @@ internal fun onboardingFormUsesStackedLayout(
   fontScale: Float,
 ): Boolean = availableWidthDp < OnboardingFormStackBreakpointDp || fontScale >= OnboardingLargeFontScale
 
-internal data class OnboardingBackDestination(
-  val step: OnboardingStep,
-  val inlineQrScannerActive: Boolean = false,
-)
-
 internal data class OnboardingBackState(
   val step: OnboardingStep,
   val inlineQrScannerActive: Boolean = false,
-  val setupCodeEntryOpenedFromScanner: Boolean = false,
 )
-
-internal fun onboardingBackDestination(
-  step: OnboardingStep,
-  lastGatewayInputSource: OnboardingGatewayInputSource = OnboardingGatewayInputSource.SetupScanner,
-  accessStage: OnboardingAccessStage = OnboardingAccessStage.InitialApproval,
-): OnboardingBackDestination? =
-  when (step) {
-    OnboardingStep.Welcome -> {
-      null
-    }
-
-    OnboardingStep.Gateway -> {
-      OnboardingBackDestination(OnboardingStep.Welcome)
-    }
-
-    OnboardingStep.SetupCode -> {
-      OnboardingBackDestination(OnboardingStep.Gateway)
-    }
-
-    OnboardingStep.EnterSetupCode -> {
-      OnboardingBackDestination(OnboardingStep.SetupCode)
-    }
-
-    OnboardingStep.Manual -> {
-      OnboardingBackDestination(OnboardingStep.Gateway)
-    }
-
-    OnboardingStep.Recovery -> {
-      when (lastGatewayInputSource) {
-        OnboardingGatewayInputSource.SetupScanner -> OnboardingBackDestination(OnboardingStep.SetupCode, inlineQrScannerActive = true)
-
-        OnboardingGatewayInputSource.SetupGallery,
-        OnboardingGatewayInputSource.SetupEntry,
-        -> OnboardingBackDestination(OnboardingStep.SetupCode)
-
-        OnboardingGatewayInputSource.Manual -> OnboardingBackDestination(OnboardingStep.Manual)
-      }
-    }
-
-    OnboardingStep.NodeApproval -> {
-      OnboardingBackDestination(accessStage.nodeApprovalBackStep)
-    }
-
-    OnboardingStep.Permissions -> {
-      OnboardingBackDestination(accessStage.permissionsBackStep)
-    }
-  }
 
 internal fun onboardingBackStateAfterBack(
   step: OnboardingStep,
   lastGatewayInputSource: OnboardingGatewayInputSource = OnboardingGatewayInputSource.SetupScanner,
   setupCodeEntryOpenedFromScanner: Boolean = false,
   accessStage: OnboardingAccessStage = OnboardingAccessStage.InitialApproval,
-): OnboardingBackState? {
-  if (step == OnboardingStep.EnterSetupCode) {
-    return OnboardingBackState(
-      step = OnboardingStep.SetupCode,
-      inlineQrScannerActive = setupCodeEntryOpenedFromScanner,
-    )
+): OnboardingBackState? =
+  when (step) {
+    OnboardingStep.Welcome -> {
+      null
+    }
+
+    OnboardingStep.Gateway -> {
+      OnboardingBackState(OnboardingStep.Welcome)
+    }
+
+    OnboardingStep.SetupCode,
+    OnboardingStep.Manual,
+    -> {
+      OnboardingBackState(OnboardingStep.Gateway)
+    }
+
+    OnboardingStep.EnterSetupCode -> {
+      OnboardingBackState(OnboardingStep.SetupCode, inlineQrScannerActive = setupCodeEntryOpenedFromScanner)
+    }
+
+    OnboardingStep.Recovery -> {
+      when (lastGatewayInputSource) {
+        OnboardingGatewayInputSource.SetupScanner -> OnboardingBackState(OnboardingStep.SetupCode, inlineQrScannerActive = true)
+
+        OnboardingGatewayInputSource.SetupGallery,
+        OnboardingGatewayInputSource.SetupEntry,
+        -> OnboardingBackState(OnboardingStep.SetupCode)
+
+        OnboardingGatewayInputSource.Manual -> OnboardingBackState(OnboardingStep.Manual)
+      }
+    }
+
+    OnboardingStep.NodeApproval -> {
+      OnboardingBackState(accessStage.nodeApprovalBackStep)
+    }
+
+    OnboardingStep.Permissions -> {
+      OnboardingBackState(accessStage.permissionsBackStep)
+    }
   }
-  val destination =
-    onboardingBackDestination(
-      step = step,
-      lastGatewayInputSource = lastGatewayInputSource,
-      accessStage = accessStage,
-    ) ?: return null
-  return OnboardingBackState(step = destination.step, inlineQrScannerActive = destination.inlineQrScannerActive)
-}
 
 /** First-run Android onboarding flow for gateway pairing and permission setup. */
 @Composable
@@ -495,7 +467,6 @@ fun OnboardingFlow(
     var password by rememberSaveable { mutableStateOf("") }
     var setupErrorCode by rememberSaveable(stateSaver = OnboardingErrorCodeSaver) { mutableStateOf(OnboardingErrorCode.None) }
     var setupScanErrorCode by rememberSaveable(stateSaver = OnboardingErrorCodeSaver) { mutableStateOf(OnboardingErrorCode.None) }
-    var attemptedConnect by rememberSaveable { mutableStateOf(false) }
     var attemptedGatewayName by rememberSaveable { mutableStateOf<String?>(null) }
     var lastGatewayInputSource by rememberSaveable { mutableStateOf(OnboardingGatewayInputSource.SetupScanner) }
     var inlineQrScannerActive by rememberSaveable { mutableStateOf(false) }
@@ -550,13 +521,13 @@ fun OnboardingFlow(
           accessStage = accessStage,
         ) ?: return
       inlineQrScannerActive = next.inlineQrScannerActive
-      setupCodeEntryOpenedFromScanner = next.setupCodeEntryOpenedFromScanner
+      setupCodeEntryOpenedFromScanner = false
       step = next.step
     }
 
     BackHandler(
       enabled =
-        onboardingBackDestination(
+        onboardingBackStateAfterBack(
           step = step,
           lastGatewayInputSource = lastGatewayInputSource,
           accessStage = accessStage,
@@ -680,7 +651,6 @@ fun OnboardingFlow(
       setupErrorCode = OnboardingErrorCode.None
       setupScanErrorCode = OnboardingErrorCode.None
       attemptedGatewayName = attemptedName
-      attemptedConnect = true
       lastGatewayInputSource = inputSource
       viewModel.saveGatewayConfigAndConnect(plan)
       step = OnboardingStep.Recovery
@@ -905,7 +875,6 @@ fun OnboardingFlow(
       OnboardingStep.Gateway -> {
         GatewaySetupScreen(
           modifier = modifier,
-          nearbyGateway = gateways.firstOrNull(),
           onBack = ::goBack,
           onSetupCode = {
             setupErrorCode = OnboardingErrorCode.None
@@ -1250,7 +1219,6 @@ private fun SoftPanel(
 
 @Composable
 internal fun GatewaySetupScreen(
-  nearbyGateway: GatewayEndpoint?,
   onBack: () -> Unit,
   onSetupCode: () -> Unit,
   onManualSetup: () -> Unit,
@@ -1382,13 +1350,11 @@ private fun SetupCodeInstructionsScreen(
               step = nativeString("Step 1"),
               title = nativeString("Start your Gateway."),
               body = "openclaw gateway",
-              monospaceBody = true,
             )
             SetupInstruction(
               step = nativeString("Step 2"),
               title = nativeString("Generate a QR code."),
               body = "openclaw qr",
-              monospaceBody = true,
             )
           }
         }
@@ -1537,7 +1503,7 @@ internal fun SetupQrScanner(
               Icon(imageVector = Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(28.dp))
             }
           }
-          Text(text = nativeString("Scan QR code"), style = ClawTheme.type.title.copy(fontSize = 20.sp, lineHeight = 25.sp), color = ClawTheme.colors.text, textAlign = TextAlign.Center)
+          Text(text = nativeString("Scan QR code"), style = ClawTheme.type.title.copy(lineHeight = 25.sp), color = ClawTheme.colors.text, textAlign = TextAlign.Center)
           Text(
             text = nativeString("Open the camera and frame the code from openclaw qr."),
             style = ClawTheme.type.caption,
@@ -1947,22 +1913,17 @@ private fun SetupInstruction(
   title: String,
   body: String,
   modifier: Modifier = Modifier,
-  monospaceBody: Boolean = false,
 ) {
   Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
     Text(text = step, style = ClawTheme.type.caption, color = ClawTheme.colors.textSubtle)
     Text(text = title, style = ClawTheme.type.section, color = ClawTheme.colors.text)
-    if (monospaceBody) {
-      Surface(
-        modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
-        shape = RoundedCornerShape(ClawTheme.radii.control),
-        color = ClawTheme.colors.surfaceRaised,
-        border = BorderStroke(1.dp, ClawTheme.colors.border),
-      ) {
-        Text(text = body, modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp), style = ClawTheme.type.mono, color = ClawTheme.colors.text)
-      }
-    } else {
-      Text(text = body, style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
+    Surface(
+      modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
+      shape = RoundedCornerShape(ClawTheme.radii.control),
+      color = ClawTheme.colors.surfaceRaised,
+      border = BorderStroke(1.dp, ClawTheme.colors.border),
+    ) {
+      Text(text = body, modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp), style = ClawTheme.type.mono, color = ClawTheme.colors.text)
     }
   }
 }
@@ -2547,7 +2508,7 @@ private fun PermissionSetupScreen(
         verticalArrangement = Arrangement.spacedBy(6.dp),
       ) {
         item {
-          PermissionTopBar(onBack = onBack)
+          OnboardingHeader(title = nativeText("Permissions"), onBack = onBack)
         }
         item {
           Box(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
@@ -2588,25 +2549,21 @@ private fun PermissionSetupScreen(
 private fun OnboardingHeader(
   title: NativeText,
   modifier: Modifier = Modifier,
-  subtitle: NativeText? = null,
-  onBack: (() -> Unit)? = null,
-  action: (@Composable () -> Unit)? = null,
+  onBack: () -> Unit,
 ) {
   Surface(modifier = modifier.fillMaxWidth(), color = ClawTheme.colors.canvas, contentColor = ClawTheme.colors.text) {
     Box(modifier = Modifier.fillMaxWidth().height(ClawTheme.spacing.touchTarget), contentAlignment = Alignment.Center) {
-      onBack?.let {
-        Surface(
-          onClick = it,
-          modifier =
-            Modifier
-              .align(Alignment.CenterStart)
-              .size(ClawTheme.spacing.touchTarget),
-          color = Color.Transparent,
-          contentColor = ClawTheme.colors.text,
-        ) {
-          Box(contentAlignment = Alignment.CenterStart) {
-            Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = nativeString("Back"), modifier = Modifier.size(23.dp))
-          }
+      Surface(
+        onClick = onBack,
+        modifier =
+          Modifier
+            .align(Alignment.CenterStart)
+            .size(ClawTheme.spacing.touchTarget),
+        color = Color.Transparent,
+        contentColor = ClawTheme.colors.text,
+      ) {
+        Box(contentAlignment = Alignment.CenterStart) {
+          Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = nativeString("Back"), modifier = Modifier.size(23.dp))
         }
       }
       Column(
@@ -2617,14 +2574,6 @@ private fun OnboardingHeader(
         val resolvedTitle = title.resolveNativeTextResource()
         if (resolvedTitle.isNotBlank()) {
           Text(text = resolvedTitle, style = ClawTheme.type.title, color = ClawTheme.colors.text, textAlign = TextAlign.Center)
-        }
-        subtitle?.let {
-          Text(text = it.resolveNativeTextResource(), style = ClawTheme.type.body, color = ClawTheme.colors.textMuted, textAlign = TextAlign.Center)
-        }
-      }
-      action?.let {
-        Box(modifier = Modifier.align(Alignment.CenterEnd), contentAlignment = Alignment.Center) {
-          it()
         }
       }
     }
@@ -2656,11 +2605,6 @@ private fun TogglePill(
 }
 
 @Composable
-private fun PermissionTopBar(onBack: () -> Unit) {
-  OnboardingHeader(title = nativeText("Permissions"), onBack = onBack)
-}
-
-@Composable
 private fun PermissionRow(row: PermissionRowModel) {
   Surface(
     onClick = row.onClick,
@@ -2688,12 +2632,12 @@ private fun PermissionRow(row: PermissionRowModel) {
       Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
           text = row.title.resolveNativeTextResource(),
-          style = ClawTheme.type.title.copy(fontSize = 18.sp, lineHeight = 23.sp),
+          style = ClawTheme.type.title.copy(fontSize = ClawTheme.type.section.fontSize, lineHeight = 23.sp),
           color = ClawTheme.colors.text,
         )
         Text(
           text = row.subtitle.resolveNativeTextResource(),
-          style = ClawTheme.type.body,
+          style = ClawTheme.type.body.copy(fontSize = ClawTheme.type.caption.fontSize),
           color = ClawTheme.colors.textMuted,
         )
       }
@@ -2723,10 +2667,6 @@ internal enum class GatewayRecoveryUiState(
   ApprovalRequired(
     title = nativeText("Pairing Gateway"),
     message = nativeText("Approve this phone on the gateway.\nThen retry the connection."),
-  ),
-  NodeCapabilityApprovalPending(
-    title = nativeText("Node Approval Pending"),
-    message = nativeText("Gateway pairing worked.\nApprove this phone's node capabilities from an operator UI."),
   ),
   Pairing(
     title = nativeText("Pairing Gateway"),
@@ -2779,7 +2719,6 @@ internal fun gatewayRecoveryPrimaryAction(
       GatewayRecoveryPrimaryAction.Retry
     }
 
-    GatewayRecoveryUiState.NodeCapabilityApprovalPending,
     GatewayRecoveryUiState.Pairing,
     GatewayRecoveryUiState.Finishing,
     -> {
@@ -2866,10 +2805,6 @@ internal fun gatewayRecoveryProgressItems(
       )
     }
 
-    GatewayRecoveryUiState.NodeCapabilityApprovalPending -> {
-      emptyList()
-    }
-
     GatewayRecoveryUiState.Connected,
     GatewayRecoveryUiState.Failed,
     -> {
@@ -2881,7 +2816,6 @@ private fun finishingGatewayProgressItems(
   statusText: String,
 ): List<GatewayRecoveryProgressItem> {
   val gatewayAccessComplete = gatewayStatusLooksLikePartialConnect(statusText)
-  val nodeAccessCurrent = gatewayAccessComplete
   return listOf(
     GatewayRecoveryProgressItem(
       label = nativeText("Opening Gateway connection"),
@@ -2904,7 +2838,7 @@ private fun finishingGatewayProgressItems(
       label = nativeText("Checking node access"),
       status =
         when {
-          nodeAccessCurrent -> GatewayRecoveryProgressStatus.Current
+          gatewayAccessComplete -> GatewayRecoveryProgressStatus.Current
           else -> GatewayRecoveryProgressStatus.Pending
         },
     ),
@@ -3289,7 +3223,9 @@ private fun rememberPermissionState(
       )
   val callLogAvailable = SensitiveFeatureConfig.callLogEnabled
   var motionGranted by rememberSaveable { mutableStateOf(!motionAvailable || hasPermission(context, Manifest.permission.ACTIVITY_RECOGNITION)) }
-  var smsGranted by rememberSaveable { mutableStateOf(currentSmsGranted) }
+  var smsReadGranted by rememberSaveable { mutableStateOf(hasPermission(context, Manifest.permission.READ_SMS)) }
+  var smsSendGranted by rememberSaveable { mutableStateOf(hasPermission(context, Manifest.permission.SEND_SMS)) }
+  val smsGranted = !smsAvailable || (smsReadGranted && smsSendGranted)
   var callLogGranted by rememberSaveable { mutableStateOf(!callLogAvailable || hasPermission(context, Manifest.permission.READ_CALL_LOG)) }
   val lifecycleOwner = LocalLifecycleOwner.current
   val requestScope = rememberCoroutineScope()
@@ -3310,7 +3246,8 @@ private fun rememberPermissionState(
           notificationsGranted = Build.VERSION.SDK_INT < 33 || hasPermission(context, Manifest.permission.POST_NOTIFICATIONS)
           notificationListenerGranted = DeviceNotificationListenerService.isAccessEnabled(context)
           motionGranted = !motionAvailable || hasPermission(context, Manifest.permission.ACTIVITY_RECOGNITION)
-          smsGranted = !smsAvailable || (hasPermission(context, Manifest.permission.SEND_SMS) && hasPermission(context, Manifest.permission.READ_SMS))
+          smsReadGranted = hasPermission(context, Manifest.permission.READ_SMS)
+          smsSendGranted = hasPermission(context, Manifest.permission.SEND_SMS)
           callLogGranted = !callLogAvailable || hasPermission(context, Manifest.permission.READ_CALL_LOG)
         }
       }
@@ -3348,13 +3285,8 @@ private fun rememberPermissionState(
           true
         }
       motionGranted = permissions[Manifest.permission.ACTIVITY_RECOGNITION] ?: motionGranted
-      smsGranted =
-        !smsAvailable ||
-        mergedRequiredPermissionGrantState(
-          permissions = permissions,
-          requiredPermissions = listOf(Manifest.permission.SEND_SMS, Manifest.permission.READ_SMS),
-          currentlyGranted = { permission -> hasPermission(context, permission) },
-        )
+      smsReadGranted = permissions[Manifest.permission.READ_SMS] ?: hasPermission(context, Manifest.permission.READ_SMS)
+      smsSendGranted = permissions[Manifest.permission.SEND_SMS] ?: hasPermission(context, Manifest.permission.SEND_SMS)
       callLogGranted = permissions[Manifest.permission.READ_CALL_LOG] ?: callLogGranted
       requestScope.launch { requester.showSettingsForPermanentDenials(permissions) }
     }
@@ -3435,7 +3367,18 @@ private fun rememberPermissionState(
         null
       },
       if (smsAvailable) {
-        PermissionRowModel(PermissionRowId.Sms, nativeText("SMS"), nativeText("Device access; Gateway opt-in still required"), Icons.Default.Notifications, smsGranted) {
+        PermissionRowModel(
+          PermissionRowId.Sms,
+          nativeText("SMS"),
+          when {
+            smsReadGranted && !smsSendGranted -> nativeText("Read allowed; send not granted. Gateway opt-in still required.")
+            smsSendGranted && !smsReadGranted -> nativeText("Send allowed; read not granted. Gateway opt-in still required.")
+            else -> nativeText("Device access; Gateway opt-in still required")
+          },
+          Icons.Default.Notifications,
+          smsGranted,
+          if (smsReadGranted != smsSendGranted) nativeText("Partial") else permissionRowStatusText(smsGranted),
+        ) {
           request(Manifest.permission.SEND_SMS, Manifest.permission.READ_SMS)
         }
       } else {

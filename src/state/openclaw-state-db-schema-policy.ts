@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { hasErrnoCode } from "../infra/errno.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import { StateDatabaseReadAdmissionInvalidatedError } from "./openclaw-state-db-async-lifecycle.js";
 
 type ExistingSchemaScope = { path: string; canonicalPath: string; active: boolean };
 const schemaPolicies = resolveGlobalSingleton(
@@ -62,12 +63,28 @@ export function withExistingOpenClawStateSchema<T>(
   }
 }
 
+function assertSchemaScopeActive(scope: ExistingSchemaScope | undefined): void {
+  if (scope && !scope.active) {
+    throw new StateDatabaseReadAdmissionInvalidatedError(
+      "Existing shared-state schema admission has ended.",
+    );
+  }
+}
+
 export function getExistingOpenClawStateSchemaPath(): string | undefined {
   const scope = schemaPolicies.scopes.getStore();
-  if (scope && !scope.active) {
-    throw new Error("Existing shared-state schema admission has ended.");
-  }
+  assertSchemaScopeActive(scope);
   return scope?.path;
+}
+
+/** Admit this source once; retained reads only need the original scope's live lifetime. */
+export function captureOpenClawStateSchemaReadAdmission(pathname: string) {
+  const scope = schemaPolicies.scopes.getStore();
+  if (!scope) {
+    return undefined;
+  }
+  isExistingOpenClawStateSchema(pathname);
+  return { path: scope.path, assertCurrent: () => assertSchemaScopeActive(scope) };
 }
 
 /** Check supplied and cached handles before exposing them to another admission policy. */
