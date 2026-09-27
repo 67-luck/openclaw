@@ -152,11 +152,9 @@ describe("tree row snapshots", () => {
                 });
                 read.resolve(
                   sessionsResult(
-                    [settledChild, settledParent, settledGrandparent].map((row) => ({
-                      ...row,
-                      totalTokensFresh: false,
-                      snapshotAt,
-                    })),
+                    [settledChild, settledParent, settledGrandparent].map((row) =>
+                      Object.assign({}, row, { totalTokensFresh: false, snapshotAt }),
+                    ),
                     snapshotAt,
                   ),
                 );
