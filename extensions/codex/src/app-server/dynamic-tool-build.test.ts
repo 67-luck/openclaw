@@ -71,6 +71,14 @@ const {
 let tempDir: string;
 const hostCapabilityClosers: Array<() => void> = [];
 
+function createEnabledToolFixture(sessionName = "session.jsonl") {
+  const workspaceDir = path.join(tempDir, "workspace");
+  const params = createParams(path.join(tempDir, sessionName), workspaceDir);
+  params.disableTools = false;
+  params.runtimePlan = createCodexRuntimePlanFixture();
+  return { params, workspaceDir };
+}
+
 function shellTestToolNames(tools: readonly { name: string }[]): string[] {
   return tools
     .map((tool) => tool.name)
@@ -79,10 +87,7 @@ function shellTestToolNames(tools: readonly { name: string }[]): string[] {
 
 describe("Codex app-server dynamic tool build", () => {
   it("forwards private yield context and acknowledgment to the lifecycle owner", async () => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     let capturedOnYield:
       | ((message: string, acknowledgment?: string) => Promise<void> | void)
       | undefined;
@@ -626,10 +631,7 @@ describe("Codex app-server dynamic tool build", () => {
   });
 
   it("removes managed web_search when domain-restricted Codex hosted search is active", async () => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     params.config = {
       tools: {
         web: {
@@ -678,10 +680,7 @@ describe("Codex app-server dynamic tool build", () => {
       toolsAllow: ["web_fetch"],
     },
   ])("leaves web_fetch unrestricted when $name", async ({ search, toolsAllow }) => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     params.toolsAllow = toolsAllow;
     params.config = { tools: { web: { search } } } as never;
     let receivedOptions: Record<string, unknown> | undefined;
@@ -753,10 +752,7 @@ describe("Codex app-server dynamic tool build", () => {
     // Regression: capability-gated tools (requiredClientCaps) vanished on the
     // Codex app-server path because this harness dropped params.clientCaps.
     // Keep that fact composed with the operation-local message context.
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     params.clientCaps = ["tool-events", "inline-widgets"];
     params.pinnedWidgetAuthoring = true;
     params.toolBindings = { browser: { kind: "tab", tabId: 7, target: "host" } };
@@ -786,10 +782,7 @@ describe("Codex app-server dynamic tool build", () => {
   it("forwards the task-suggestion delivery mode", async () => {
     // Regression: suggest_task/dismiss_task silently never existed on the Codex
     // app-server path because this harness dropped params.taskSuggestionDeliveryMode.
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     params.taskSuggestionDeliveryMode = "gateway";
     let receivedOptions: unknown;
     setCodexTestToolFactory(params, (options) => {
@@ -805,10 +798,7 @@ describe("Codex app-server dynamic tool build", () => {
   it.each([{ toolsAllow: undefined }, { toolsAllow: ["read"] }, { toolsAllow: [] }])(
     "preserves the collector handoff and dynamic tool through allowlist %j",
     async ({ toolsAllow }) => {
-      const workspaceDir = path.join(tempDir, "workspace");
-      const params = createParams(path.join(tempDir, "collector-session.jsonl"), workspaceDir);
-      params.disableTools = false;
-      params.runtimePlan = createCodexRuntimePlanFixture();
+      const { params, workspaceDir } = createEnabledToolFixture("collector-session.jsonl");
       params.toolsAllow = toolsAllow;
       params.swarmCollector = true;
       params.pluginHarnessToolPolicyRestricted = true;
@@ -875,10 +865,7 @@ describe("Codex app-server dynamic tool build", () => {
   it.each(["searchable", "direct"] as const)(
     "keeps regular delegation model-only with %s loading while ordinary tools stay scriptable",
     async (loading) => {
-      const workspaceDir = path.join(tempDir, "workspace");
-      const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-      params.disableTools = false;
-      params.runtimePlan = createCodexRuntimePlanFixture();
+      const { params, workspaceDir } = createEnabledToolFixture();
       params.config = { tools: { exec: { mode: "ask" } } };
       setCodexTestToolFactory(params, (options) =>
         createOpenClawCodingTools(options).filter((tool) =>
@@ -928,10 +915,7 @@ describe("Codex app-server dynamic tool build", () => {
   it.each(["core policy", "Codex excludes", "turn allowlist"])(
     "filters the real regular delegate when denied by %s",
     async (policy) => {
-      const workspaceDir = path.join(tempDir, "workspace");
-      const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-      params.disableTools = false;
-      params.runtimePlan = createCodexRuntimePlanFixture();
+      const { params, workspaceDir } = createEnabledToolFixture();
       params.config = policy === "core policy" ? { tools: { deny: ["openclaw"] } } : {};
       params.toolsAllow = policy === "turn allowlist" ? ["message"] : ["openclaw", "message"];
       setCodexTestToolFactory(params, (options) =>
@@ -951,10 +935,7 @@ describe("Codex app-server dynamic tool build", () => {
   );
 
   it("preserves the host-provided OpenClaw tool through the Codex allowlist", async () => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     params.toolsAllow = ["openclaw"];
     setCodexTestToolFactory(params, () => [
       { ...createRuntimeDynamicTool("openclaw"), catalogMode: "direct-only" },
@@ -976,10 +957,7 @@ describe("Codex app-server dynamic tool build", () => {
       toolsAllow: ["openclaw", "read"],
     },
   ])("does not bypass Codex excludes when $label", async ({ hostActive, toolsAllow }) => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     params.toolsAllow = toolsAllow;
     setCodexTestToolFactory(params, () => [
       { ...createRuntimeDynamicTool("openclaw"), catalogMode: "direct-only" },
@@ -994,10 +972,7 @@ describe("Codex app-server dynamic tool build", () => {
   });
 
   it("shares the computer context epoch with dynamic tool assembly", async () => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     const computerContextEpoch = { value: 0 };
     let receivedEpoch: { value: number } | undefined;
     setCodexTestToolFactory(params, (options) => {
@@ -1012,10 +987,7 @@ describe("Codex app-server dynamic tool build", () => {
   });
 
   it("reports hosted search denied when effective tool policy removes web_search", async () => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     setCodexTestToolFactory(params, () => [createRuntimeDynamicTool("message")]);
     let webSearchAllowed = true;
 
@@ -1030,10 +1002,7 @@ describe("Codex app-server dynamic tool build", () => {
   });
 
   it("separates persistent search policy from a runtime toolsAllow restriction", async () => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     params.toolsAllow = ["message"];
     setCodexTestToolFactory(params, () => [
       createRuntimeDynamicTool("web_search"),
@@ -1058,10 +1027,7 @@ describe("Codex app-server dynamic tool build", () => {
   });
 
   it("keeps persistent search denied when runtime toolsAllow also excludes it", async () => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     params.toolsAllow = ["message"];
     setCodexTestToolFactory(params, () => [createRuntimeDynamicTool("message")]);
     let persistentWebSearchAllowed = true;
@@ -1082,10 +1048,7 @@ describe("Codex app-server dynamic tool build", () => {
   });
 
   it("treats sender-scoped web_search denial as transient", async () => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     params.senderId = "restricted-sender";
     params.config = {
       tools: {
@@ -1113,10 +1076,7 @@ describe("Codex app-server dynamic tool build", () => {
   });
 
   it("forwards trusted completion and scheduled authority to policy construction", async () => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     params.inputProvenance = {
       kind: "inter_session",
       sourceSessionKey: "agent:main:subagent:codex-child",
@@ -1166,10 +1126,7 @@ describe("Codex app-server dynamic tool build", () => {
   });
 
   it("keeps persistent search denied when global and sender policy both deny it", async () => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     params.senderId = "restricted-sender";
     params.config = {
       tools: {
@@ -1192,10 +1149,7 @@ describe("Codex app-server dynamic tool build", () => {
   });
 
   it("keeps managed web_search when a managed provider is explicitly selected", async () => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     params.config = {
       tools: {
         web: {
@@ -1214,10 +1168,7 @@ describe("Codex app-server dynamic tool build", () => {
   });
 
   it("keeps managed web_search when the active Codex provider lacks hosted search", async () => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     setCodexTestToolFactory(params, () => [
       createRuntimeDynamicTool("web_search"),
       createRuntimeDynamicTool("message"),
@@ -1455,10 +1406,7 @@ describe("Codex app-server dynamic tool build", () => {
   });
 
   it("keeps a pinned Gateway shell path beside Codex native shell", async () => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "gateway-session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture("gateway-session.jsonl");
     params.execOverrides = { host: "gateway" };
     await bindProductionCodexHostCapabilities(params, hostCapabilityClosers);
 
@@ -1527,10 +1475,7 @@ describe("Codex app-server dynamic tool build", () => {
     { excluded: "exec", expected: ["message"] },
     { excluded: "gateway_exec", expected: ["message"] },
   ])("applies the partial Gateway shell exclusion for $excluded", async (testCase) => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "gateway-exclusion.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture("gateway-exclusion.jsonl");
     params.execOverrides = { host: "gateway" };
     await bindProductionCodexHostCapabilities(params, hostCapabilityClosers);
 
@@ -2806,10 +2751,7 @@ describe("Codex app-server dynamic tool build", () => {
   ])(
     "publishes the constructed target requirement for $sessionKey / $required",
     async ({ sessionKey, required, expected }) => {
-      const workspaceDir = path.join(tempDir, "workspace");
-      const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-      params.disableTools = false;
-      params.runtimePlan = createCodexRuntimePlanFixture();
+      const { params, workspaceDir } = createEnabledToolFixture();
       params.sessionKey = sessionKey;
       params.requireExplicitMessageTarget = required;
       const factory = vi.fn((_options: Parameters<typeof createOpenClawCodingTools>[0]) => []);
@@ -2822,10 +2764,7 @@ describe("Codex app-server dynamic tool build", () => {
   );
 
   it("preserves the core final delivery control across delivery-mode schemas", async () => {
-    const workspaceDir = path.join(tempDir, "workspace");
-    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
+    const { params, workspaceDir } = createEnabledToolFixture();
     setCodexTestToolFactory(params, (options) =>
       createOpenClawCodingTools(options).filter((tool) => tool.name === "message"),
     );
