@@ -377,7 +377,7 @@ export function getOpenClawAgentDatabaseIfOpen(
   return database;
 }
 
-export function findOpenClawAgentDatabaseIfOpen(
+function findOpenClawAgentDatabaseIfOpen(
   options: OpenClawAgentDatabaseOptions,
 ): OpenClawAgentDatabase | undefined {
   const agentId = normalizeAgentId(options.agentId);

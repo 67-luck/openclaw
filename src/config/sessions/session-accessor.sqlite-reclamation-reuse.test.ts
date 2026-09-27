@@ -76,6 +76,7 @@ import {
   runSqliteSessionReclamation,
 } from "./session-accessor.sqlite-reclamation.js";
 import { appendTranscriptEventSync } from "./session-accessor.sqlite-transcript-write.js";
+import type { SqliteReclamationWorkerMessage } from "./session-accessor.sqlite-worker-request.js";
 
 const validation = vi.hoisted(() => ({
   checks: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
@@ -460,16 +461,13 @@ test("warm Worker results cannot revive proof invalidated after a competing pare
     parent?: OpenClawAgentDatabaseValidation;
   } = {};
   const spawned = observeReclamationWorkers((worker) => {
-    worker.prependListener(
-      "message",
-      (message: reclamationWorker.SqliteReclamationWorkerMessage) => {
-        if (message.type === "reclaimed" && message.operationId === 1) {
-          observed.worker = message.validation;
-          // A concurrent canonical opener can finish before the first Worker result is adopted.
-          observed.parent = setOpenClawAgentDatabaseValidation(database);
-        }
-      },
-    );
+    worker.prependListener("message", (message: SqliteReclamationWorkerMessage) => {
+      if (message.type === "reclaimed" && message.operationId === 1) {
+        observed.worker = message.validation;
+        // A concurrent canonical opener can finish before the first Worker result is adopted.
+        observed.parent = setOpenClawAgentDatabaseValidation(database);
+      }
+    });
   });
   await runSqliteSessionReclamation({ forceInProcess: false, plan: plans[0]! });
   expect(observed.worker).toBeDefined();
@@ -916,7 +914,7 @@ test("retains a crashed Worker's mismatched lease and retries only its restored 
   );
   const received: { receipt?: OpenClawAgentDatabaseWorkerLeaseReceipt } = {};
   const spawned = observeReclamationWorkers((worker) => {
-    worker.on("message", (message: reclamationWorker.SqliteReclamationWorkerMessage) => {
+    worker.on("message", (message: SqliteReclamationWorkerMessage) => {
       if (message.type === "lease") {
         received.receipt = message.receipt;
       }

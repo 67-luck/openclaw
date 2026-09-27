@@ -4,8 +4,9 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { writeSessionEntry } from "../config/sessions/session-accessor.sqlite-entry-store.js";
 import * as sqlite from "../infra/node-sqlite.js";
 import * as integrityWorker from "../infra/sqlite-integrity-worker.js";
+import * as integrity from "../infra/sqlite-integrity.js";
 import { closeCachedOpenClawAgentDatabase } from "./openclaw-agent-db-lifecycle.js";
-import { getOpenClawAgentDatabaseValidationForTransfer } from "./openclaw-agent-db-validation-cache.js";
+import * as validationCache from "./openclaw-agent-db-validation-cache.js";
 import {
   closeOpenClawAgentDatabaseByPath,
   closeOpenClawAgentDatabasesAsync,
@@ -17,7 +18,10 @@ import {
   withOpenClawAgentDatabaseAsync,
 } from "./openclaw-agent-db.js";
 import * as verifier from "./openclaw-database-verify.js";
-import { clearOpenClawAgentIntegrityVerification } from "./openclaw-quarantine-store.js";
+import {
+  clearOpenClawAgentIntegrityVerification,
+  readOpenClawAgentIntegrityVerification,
+} from "./openclaw-quarantine-store.js";
 import { closeOpenClawStateDatabaseForTest } from "./openclaw-state-db.js";
 import { createUnsafeIndexDrift } from "./sqlite-index-drift.test-support.js";
 
@@ -153,6 +157,55 @@ it("retains integrity verification until durable evidence is invalidated", () =>
   );
 });
 
+it("does not hide a fresh preparation failure behind a clean restart receipt", async () => {
+  const options = {
+    agentId: "integrity-preparation-failure",
+    env: { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-preparation-failure-") },
+  };
+  const first = openOpenClawAgentDatabase(options);
+  const pathname = first.path;
+  expect(closeOpenClawAgentDatabaseByPath(pathname)).toBe(true);
+  expect(readOpenClawAgentIntegrityVerification(pathname, options.env)?.clean_close).toBe(1);
+  // A new Worker has no process-local verification but can observe the clean restart receipt.
+  vi.spyOn(validationCache, "getOpenClawAgentDatabaseValidation").mockReturnValue(undefined);
+  const readers = new WeakSet<object>();
+  const open = sqlite.openNodeSqliteDatabase;
+  vi.spyOn(sqlite, "openNodeSqliteDatabase").mockImplementation((...args) => {
+    const database = open(...args);
+    if (database.location() === pathname && args[1]?.readOnly) {
+      readers.add(database);
+    }
+    return database;
+  });
+  const failure = new Error("fresh read-only integrity check failed");
+  const check = integrity.runSqliteIntegrityCheckSync;
+  let preparationChecks = 0;
+  vi.spyOn(integrity, "runSqliteIntegrityCheckSync").mockImplementation((input) => {
+    check(input);
+    if (readers.has(input.database)) {
+      preparationChecks += 1;
+      throw failure;
+    }
+  });
+  const operation = vi.fn();
+  let admissions = 0;
+  const outcome = await withOpenClawAgentDatabaseAdmission(
+    options,
+    async (run) => {
+      admissions += 1;
+      return run(() => {});
+    },
+    operation,
+  ).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  expect(preparationChecks).toBe(1);
+  expect(admissions).toBe(1);
+  expect(outcome).toBe(failure);
+  expect(operation).not.toHaveBeenCalled();
+});
+
 it("runs a canonical convergence check even when local proof skipped preparation scanning", async () => {
   const options = {
     agentId: "integrity-convergence",
@@ -160,7 +213,7 @@ it("runs a canonical convergence check even when local proof skipped preparation
   };
   const first = openOpenClawAgentDatabase(options);
   const pathname = first.path;
-  const validation = getOpenClawAgentDatabaseValidationForTransfer(first);
+  const validation = validationCache.getOpenClawAgentDatabaseValidationForTransfer(first);
   expect(validation).toBeDefined();
   expect(closeOpenClawAgentDatabaseByPath(pathname)).toBe(true);
   const raw = sqlite.openNodeSqliteDatabase(pathname);
@@ -169,7 +222,7 @@ it("runs a canonical convergence check even when local proof skipped preparation
   } finally {
     raw.close();
   }
-  expect(getOpenClawAgentDatabaseValidationForTransfer(first)).toBe(validation);
+  expect(validationCache.getOpenClawAgentDatabaseValidationForTransfer(first)).toBe(validation);
 
   let admitted = false;
   let readonlyOpened = 0;

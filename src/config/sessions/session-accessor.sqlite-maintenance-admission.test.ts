@@ -244,6 +244,7 @@ test("maintenance prepares before FIFO and retains admitted finalization through
   await archiveEntered.promise;
   const finalization = runSqliteSessionReclamation({
     forceInProcess: false,
+    onWorkerResult: () => order.push("published"),
     plan: {
       kind: "maintenance-finalize",
       agentId: "main",
@@ -304,7 +305,7 @@ test("maintenance prepares before FIFO and retains admitted finalization through
     await laterWriter;
     expect(admissions).toEqual([1]);
     expect(laterObservedCommit).toBe(true);
-    expect(order).toEqual(["preceding-writer", "preparation-writer", "later-writer"]);
+    expect(order).toEqual(["preceding-writer", "preparation-writer", "published", "later-writer"]);
     expect(storage.release).toHaveBeenCalledOnce();
   } finally {
     releaseArchive.resolve();

@@ -260,14 +260,8 @@ export function createOpenClawAgentDatabaseAdmissionOwner(
       }
       return await withAdmission(async (assertCurrent, validation) => {
         const assertAdmittedCurrent = (database?: DatabaseSync) => {
-          try {
-            assertCurrent();
-            assertOpenClawAgentDatabaseAdmissionCurrent(options, pending, database);
-          } catch (error) {
-            throw new Error(error instanceof Error ? error.message : String(error), {
-              cause: error,
-            });
-          }
+          assertCurrent();
+          assertOpenClawAgentDatabaseAdmissionCurrent(options, pending, database);
         };
         assertAdmittedCurrent();
         pending.validation = validation;

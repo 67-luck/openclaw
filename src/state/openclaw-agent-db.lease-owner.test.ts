@@ -154,7 +154,7 @@ describe("agent database lease acquisition owner", () => {
           }),
         operation,
       ),
-    ).rejects.toMatchObject({ message: denied.message, cause: denied });
+    ).rejects.toBe(denied);
 
     expect(operation).not.toHaveBeenCalled();
     expect(fs.readdirSync(directory)).toEqual([]);
@@ -214,7 +214,7 @@ describe("agent database lease acquisition owner", () => {
 
     await expect(
       withOpenClawAgentDatabaseAdmission(options, withAdmission, operation),
-    ).rejects.toMatchObject({ cause: lostScheduler });
+    ).rejects.toBe(lostScheduler);
 
     expect(permits).toBe(1);
     expect(operation).not.toHaveBeenCalled();

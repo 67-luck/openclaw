@@ -114,7 +114,8 @@ class PreparedAgentIntegrity {
   }
 
   get requiresFreshVerification(): boolean {
-    return this.freshVerificationRequired;
+    // A cached restart receipt must not bypass the retained check's current failure.
+    return this.freshVerificationRequired || this.outcome?.failure !== undefined;
   }
 
   private assertPhysicalCurrent(): void {

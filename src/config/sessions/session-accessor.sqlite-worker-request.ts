@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
+import type { SqliteWalCheckpointSnapshot } from "../../infra/sqlite-wal-checkpoint.js";
 import { createDeferredCore, type Deferred } from "../../shared/deferred.js";
+import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "../../state/openclaw-agent-db-lease.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-lifecycle.js";
 import type { OpenClawAgentReadOnlyDatabase } from "../../state/openclaw-agent-db-readonly.js";
 import {
@@ -14,7 +16,13 @@ import {
 } from "../../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import type { SqliteSessionReclamationAdmissionDiagnostics } from "./session-accessor.sqlite-contract.js";
+import type {
+  ReclamationDatabaseOptions,
+  SqliteSessionReclamationPlan,
+  SqliteSessionReclamationResult,
+} from "./session-accessor.sqlite-lifecycle-types.js";
 import { revokeSqliteReclamationCommit } from "./session-accessor.sqlite-reclamation-commit.js";
+import type { SqliteMutationWorkerCoordination } from "./session-accessor.sqlite-worker-coordination.js";
 import {
   observeSqliteMutationWorkerEnd,
   terminateSqliteMutationWorker,
@@ -89,6 +97,7 @@ export type SqliteMutationWorkerValidationOwner = {
 };
 
 export type SqliteMutationWorkerMessage<Result> =
+  | { type: "refused"; operationId: number; settled: true }
   | { type: "commit-request"; operationId: number }
   | { type: "admission-request" | "admission-release"; operationId: number; admissionId: number }
   | {
@@ -98,6 +107,43 @@ export type SqliteMutationWorkerMessage<Result> =
       settled: true;
       validation?: OpenClawAgentDatabaseValidation;
     };
+
+export type SqliteReclamationWorkerRequest = {
+  type: "reclaim";
+  operationId: number;
+  commitGate: SharedArrayBuffer;
+  plan: SqliteSessionReclamationPlan;
+  coordination: SqliteMutationWorkerCoordination;
+  preparationValidation?: OpenClawAgentDatabaseValidation;
+};
+export type SqliteReclamationWorkerCloseRequest = {
+  type: "close";
+  operationId: number;
+  coordination: SqliteMutationWorkerCoordination;
+};
+export type SqliteCanonicalValidationWorkerRequest = {
+  type: "canonical-validation";
+  operationId: number;
+  commitGate: SharedArrayBuffer;
+  databaseOptions: ReclamationDatabaseOptions;
+  maxRows: number;
+  maxBytes: number;
+  initializeCanonicalValidation: boolean;
+  coordination: SqliteMutationWorkerCoordination;
+  preparationValidation?: OpenClawAgentDatabaseValidation;
+};
+export type SqliteReclamationWorkerMessage =
+  | SqliteMutationWorkerMessage<SqliteSessionReclamationResult>
+  | { type: "lease"; receipt: OpenClawAgentDatabaseWorkerLeaseReceipt }
+  | { type: "checkpoint"; operationId: number; snapshot: SqliteWalCheckpointSnapshot }
+  | { type: "closed"; cleanupWarnings: string[]; settled: boolean };
+
+/** Transport settlement is separate from the caller's refused authority. */
+export class SqliteMutationWorkerSettledRefusal extends Error {
+  constructor(cause: Error) {
+    super(cause.message, { cause });
+  }
+}
 
 /** Share request authority, not connection lifetime: cold mutations join exit; sweeps join each result. */
 export function runSqliteMutationWorkerRequest<Result>(params: {
@@ -131,6 +177,7 @@ export function runSqliteMutationWorkerRequest<Result>(params: {
       | undefined;
     let admissionId = 0;
     let completed = false;
+    let settledRefusal = false;
     const admissionTasks: Promise<void>[] = [];
     const terminate = () => {
       void terminateSqliteMutationWorker(transport).catch((failure: unknown) => {
@@ -172,7 +219,7 @@ export function runSqliteMutationWorkerRequest<Result>(params: {
         .then(() => {
           const failure = workerError ?? transportError ?? params.getFailure?.();
           if (failure) {
-            reject(failure);
+            reject(settledRefusal ? new SqliteMutationWorkerSettledRefusal(failure) : failure);
           } else if (code !== undefined && code !== 0) {
             reject(new Error(`SQLite transcript archive worker exited with code ${code}`));
           } else if (result === undefined) {
@@ -287,6 +334,14 @@ export function runSqliteMutationWorkerRequest<Result>(params: {
         admission = undefined;
         released.diagnostics.releaseCause = "worker-release";
         released.released.resolve();
+      } else if (message.type === "refused") {
+        if (!message.settled || params.completion !== "result") {
+          fail(new Error("SQLite reclamation Worker omitted refusal settlement"));
+          return;
+        }
+        settledRefusal = true;
+        workerError ??= new Error("SQLite reclamation Worker request was refused");
+        finish();
       } else if (message.type === "reclaimed") {
         if (!message.settled) {
           fail(new Error("SQLite reclamation Worker omitted operation settlement"));

@@ -17,9 +17,9 @@ import {
   runSqliteSessionReclamation,
 } from "./session-accessor.sqlite-reclamation.js";
 
-test.each([false, true])(
-  "joins native exit after dispatch authority is revoked (warm: %s)",
-  async (warm) => {
+test.each([false, true].flatMap((warm) => ["revoked", "ended"].map((phase) => ({ warm, phase }))))(
+  "joins native exit around dispatch preparation (warm: $warm, phase: $phase)",
+  async ({ warm, phase }) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const scope = {
         agentId: "main",
@@ -127,6 +127,11 @@ test.each([false, true])(
         await Promise.race([preparing.promise, operation.then(() => assert.fail("missing hold"))]);
         assert.ok(owner);
         assert.ok(child);
+        if (phase === "ended") {
+          allowTermination.resolve();
+          await child.terminate();
+          await exit;
+        }
         let closed = false;
         closing = owner.close().then(() => {
           closed = true;
@@ -137,19 +142,28 @@ test.each([false, true])(
           terminationRequested.promise,
           operation.then(() => assert.fail("missing native termination")),
         ]);
-        await yieldToEventLoop();
-        expect({ completed, closed, exited }).toEqual({
-          completed: false,
-          closed: false,
-          exited: false,
-        });
-        expect(child.threadId).toBeGreaterThan(0);
+        if (phase === "revoked") {
+          await yieldToEventLoop();
+          expect({ completed, closed, exited }).toEqual({
+            completed: false,
+            closed: false,
+            exited: false,
+          });
+          expect(child.threadId).toBeGreaterThan(0);
+        } else {
+          expect(exited).toBe(true);
+          expect(child.threadId).toBe(-1);
+        }
         expect(attempted).toEqual(priorAttempts);
         expect(priorAttempts.includes("reclaim")).toBe(warm);
         allowTermination.resolve();
         await exit;
         await expect(operation).resolves.toMatchObject({
-          message: expect.stringContaining("database owner is no longer current"),
+          message: expect.stringContaining(
+            phase === "ended"
+              ? "Worker ended without confirmed cleanup"
+              : "database owner is no longer current",
+          ),
         });
         await closing;
         expect(closed).toBe(true);
