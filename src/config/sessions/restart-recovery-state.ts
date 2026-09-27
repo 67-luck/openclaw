@@ -405,6 +405,7 @@ export function normalizeRestartRecoveryEntryFields(
       : undefined,
   );
   for (const key of [
+    "restartRecoveryResumeRunId",
     "restartRecoveryDeliveryToolCallId",
     "restartRecoveryDeliveryRequestFingerprint",
     "restartRecoveryDeliveryRunId",

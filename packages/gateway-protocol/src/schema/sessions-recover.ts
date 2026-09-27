@@ -3,7 +3,7 @@ import { closedObject } from "./closed-object.js";
 import { ErrorShapeSchema } from "./frames.js";
 import { NonEmptyString } from "./primitives.js";
 
-/** Recovers one restart-tombstoned session into a fresh same-agent session. */
+/** Resumes a restart-tombstoned session without replacing its identity or transcript. */
 export const SessionsRecoverParamsSchema = closedObject({
   key: NonEmptyString,
   agentId: Type.Optional(NonEmptyString),

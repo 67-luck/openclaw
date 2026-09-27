@@ -46,6 +46,7 @@ const MAIN_SESSION_RECOVERY_TRANSACTION_FIELDS = [
   "restartRecoveryRuns",
   "restartRecoveryForceSafeTools",
   "mainRestartRecovery",
+  "restartRecoveryResumeRunId",
 ] as const satisfies ReadonlyArray<keyof SessionEntry>;
 
 function anySessionFieldChanged(
@@ -60,6 +61,7 @@ function mainSessionRecoveryTransactionChanged(before: SessionEntry, after: Sess
   const beforeState = before.mainRestartRecovery;
   const afterState = after.mainRestartRecovery;
   return (
+    before.restartRecoveryResumeRunId !== after.restartRecoveryResumeRunId ||
     before.abortedLastRun !== after.abortedLastRun ||
     !isDeepStrictEqual(before.restartRecoveryRuns, after.restartRecoveryRuns) ||
     before.restartRecoveryForceSafeTools !== after.restartRecoveryForceSafeTools ||

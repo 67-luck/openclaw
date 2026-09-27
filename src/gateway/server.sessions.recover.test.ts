@@ -109,7 +109,7 @@ async function seedRecoverableSession(params: {
   });
 }
 
-test("sessions.recover settles its active placement before archiving a real session-owned worktree", async () => {
+test("sessions.recover settles its active placement before resuming its real session-owned worktree", async () => {
   const { dir, storePath } = await createSessionStoreDir();
   const sourceKey = "agent:main:dashboard:recovery-cloud-active";
   const sourceSessionId = "recovery-cloud-active-source";
@@ -232,21 +232,21 @@ test("sessions.recover settles its active placement before archiving a real sess
   expect(recovered).toMatchObject({ ok: true, payload: { key: expect.any(String) } });
   expect(placement.state).toBe("reclaimed");
   expect(loadSessionEntry({ agentId: "main", sessionKey: sourceKey, storePath })).toMatchObject({
-    archivedAt: expect.any(Number),
+    sessionId: sourceSessionId,
     worktree: { id: worktree.id },
   });
   expect(managedWorktrees.findLiveByOwner("session", sourceKey)).toMatchObject({
     id: worktree.id,
     ownerId: sourceKey,
   });
-  expect(managedWorktrees.findLiveByOwner("session", recovered.payload?.key ?? "")).toBeUndefined();
+  expect(recovered.payload).toMatchObject({ key: sourceKey, sessionId: sourceSessionId });
   expect(
     loadSessionEntry({
       agentId: "main",
       sessionKey: recovered.payload?.key ?? "",
       storePath,
     })?.worktree,
-  ).toBeUndefined();
+  ).toMatchObject({ id: worktree.id });
   await expect(fs.readFile(unsyncedPath, "utf8")).resolves.toBe(
     "preserve local work\nfinal worker sync\n",
   );
@@ -458,7 +458,7 @@ test.each(["requested", "failed"] as const)(
   },
 );
 
-test.each(["session-id", "lifecycle-revision"] as const)(
+test.each(["session-id", "lifecycle-revision", "recovery-cycle"] as const)(
   "sessions.recover rejects a source %s changed while its placement is reclaiming",
   async (changedIdentity) => {
     const { storePath } = await createSessionStoreDir();
@@ -486,7 +486,13 @@ test.each(["session-id", "lifecycle-revision"] as const)(
           ...current,
           ...(changedIdentity === "session-id"
             ? { sessionId: "replacement-session" }
-            : { lifecycleRevision: "replacement-lifecycle" }),
+            : changedIdentity === "lifecycle-revision"
+              ? { lifecycleRevision: "replacement-lifecycle" }
+              : {
+                  mainRestartRecovery: { ...current.mainRestartRecovery!, cycleId: "new-cycle" },
+                  restartRecoveryResumeRunId:
+                    "restart-recovery-resume:" + sourceSessionId + ":cycle-" + sourceSessionId,
+                }),
         },
       );
       placement = recoveryWorkerPlacement({
@@ -518,7 +524,7 @@ test.each(["session-id", "lifecycle-revision"] as const)(
   },
 );
 
-test("sessions.recover rolls over one tombstone and returns its continuation outcome", async () => {
+test("sessions.recover resumes the same session and returns its continuation outcome", async () => {
   const { storePath } = await createSessionStoreDir();
   testState.sessionConfig = { dmScope: "main", scope: "per-sender" };
   const sourceKey = "agent:main:dashboard:tombstoned";
@@ -574,8 +580,8 @@ test("sessions.recover rolls over one tombstone and returns its continuation out
 
   expect(recovered.ok, JSON.stringify(recovered.error)).toBe(true);
   expect(recovered.payload).toMatchObject({
-    key: expect.stringMatching(/^agent:main:dashboard:/),
-    sessionId: expect.any(String),
+    key: sourceKey,
+    sessionId: sourceSessionId,
     continuation: { status: "started", runId: expect.any(String) },
   });
   const successorKey = recovered.payload?.key ?? "";
@@ -593,31 +599,21 @@ test("sessions.recover rolls over one tombstone and returns its continuation out
     agentRuntimeOverride: "codex",
     modelSelectionLocked: true,
     modelOverride: "gpt-5.6-sol",
-    previousSessionId: sourceSessionId,
     providerOverride: "openai",
     sandbox: "required",
     spawnedCwd: "/tmp/recovered-worktree",
   });
-  const archivedSource = loadSessionEntry({ agentId: "main", sessionKey: sourceKey, storePath });
-  expect(archivedSource).toMatchObject({
-    archivedAt: expect.any(Number),
-    mainRestartRecovery: {
-      revision: 5,
-      tombstone: {
-        recoveredSessionId: successorSessionId,
-        recoveredSessionKey: successorKey,
-      },
-    },
+  const resumedSource = loadSessionEntry({ agentId: "main", sessionKey: sourceKey, storePath });
+  expect(resumedSource?.archivedAt).toBeUndefined();
+  expect(resumedSource?.mainRestartRecovery).toBeUndefined();
+  expect(resumedSource?.pinnedAt).toBe(1);
+  const resumedTranscript = await loadTranscriptEvents({
+    agentId: "main",
+    sessionId: sourceSessionId,
+    sessionKey: sourceKey,
+    storePath,
   });
-  expect(archivedSource).not.toHaveProperty("pinnedAt");
-  await expect(
-    loadTranscriptEvents({
-      agentId: "main",
-      sessionId: sourceSessionId,
-      sessionKey: sourceKey,
-      storePath,
-    }),
-  ).resolves.toEqual(sourceTranscriptBefore);
+  expect(resumedTranscript.slice(0, sourceTranscriptBefore.length)).toEqual(sourceTranscriptBefore);
   expect(
     JSON.stringify(
       await loadTranscriptEvents({
@@ -744,7 +740,16 @@ test.each([
     );
     expect(recovered).toMatchObject({
       ok: true,
-      payload: { key: expect.any(String), continuation: { status: "started" } },
+      payload: {
+        key: sourceKey,
+        continuation:
+          identity === "operator" && required
+            ? {
+                status: "rejected",
+                error: { message: expect.stringContaining("requires a sandboxed session") },
+              }
+            : { status: "started" },
+      },
     });
     const scope = { agentId: "main", sessionKey: recovered.payload?.key ?? "", storePath };
     const successor = loadSessionEntry(scope);
@@ -752,15 +757,9 @@ test.each([
       createdVia: "operator",
       createdAt: expect.any(Number),
     });
-    expect(successor?.createdActor).toEqual(
-      recovering
-        ? { type: "human", source: "profile", id: recovering.id }
-        : sourceStamp.sandbox === "required"
-          ? sourceStamp.createdActor
-          : undefined,
-    );
-    expect(successor?.sandbox).toBe((systemActor ? !required : required) ? "required" : undefined);
-    expect(successor?.createdAt).not.toBe(sourceStamp.createdAt);
+    expect(successor?.createdActor).toEqual(sourceStamp.createdActor);
+    expect(successor?.sandbox).toBe(sourceStamp.sandbox);
+    expect(successor?.createdAt).toBe(sourceStamp.createdAt);
     const repeated = await directSessionReq<RecoveryPayload>(
       "sessions.recover",
       { agentId: "main", key: sourceKey },
@@ -777,7 +776,7 @@ test.each([
   },
 );
 
-test("sessions.recover cannot create a successor on an agent excluded by the caller's role", async () => {
+test("sessions.recover cannot resume on an agent excluded by the caller's role", async () => {
   const { storePath } = await createSessionStoreDir();
   const profile = ensureProfileForEmail("restricted-session-recovery@example.com");
   setUserProfileRole(profile.id, "guest");
@@ -993,7 +992,7 @@ test("sessions.recover rejects continuation launch after runtime authority close
       context: {
         validateAgentRuntimeApprovalAuthority: () =>
           !loadSessionEntry({ agentId: "main", sessionKey: sourceKey, storePath })
-            ?.mainRestartRecovery?.tombstone?.recoveredSessionKey,
+            ?.restartRecoveryResumeRunId,
       },
       client: {
         connect: { scopes: ["operator.write"] },

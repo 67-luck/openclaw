@@ -47,7 +47,9 @@ export function createSessionScopedOperations(host: SessionScopedOperationsHost)
       if (!host.connection.isCurrent(scope)) {
         return null;
       }
-      host.notifyCreated(result.key);
+      if (!areUiSessionKeysEquivalent(params.key, result.key)) {
+        host.notifyCreated(result.key);
+      }
       await host.reconcileMutation(params.agentId);
       return host.connection.isCurrent(scope) ? result : null;
     } catch (error) {

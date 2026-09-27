@@ -160,7 +160,7 @@ export function resolveSessionWorkStartError(
       return undefined;
     }
     return entry?.modelSelectionLocked === true
-      ? `Session "${sessionKey}" ended during restart recovery and cannot be replaced while model selection is locked. Open it in WebChat and use Resume in new session.`
+      ? `Session "${sessionKey}" paused after automatic restart recovery stopped. Open it in WebChat and use Resume session.`
       : `Session "${sessionKey}" ended during restart recovery. Use /new or /reset to start a replacement session.`;
   }
   if (entry?.archivedAt !== undefined) {

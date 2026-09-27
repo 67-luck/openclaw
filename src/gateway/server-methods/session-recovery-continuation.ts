@@ -11,7 +11,9 @@ import { withSessionMutationCommitGuard } from "./session-mutation-guards.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 const RECOVERY_CONTINUATION_TEXT =
-  "Continue from the recovered transcript and finish the interrupted work.";
+  "Continue the interrupted work in this session. Check current state and reconcile tool calls " +
+  "whose outcomes are unknown before repeating side effects. Do not recreate the session or " +
+  "assume an interrupted action succeeded.";
 
 /** Starts the fixed recovery continuation as trusted system input. */
 export async function launchSessionRecoveryContinuation(params: {

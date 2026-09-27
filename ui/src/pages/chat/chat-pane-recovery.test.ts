@@ -233,7 +233,7 @@ describe("chat pane session recovery", () => {
     }
   });
 
-  it("recovers a tombstoned session into a fresh continuing session", async () => {
+  it("resumes a tombstoned session without navigation or clearing its draft", async () => {
     const created = createDeferred<Awaited<ReturnType<SessionCapability["recover"]>>>();
     const sessions = {
       recover: vi.fn(() => created.promise),
@@ -245,27 +245,28 @@ describe("chat pane session recovery", () => {
     advertiseSessionRecovery(pane);
 
     expect(pane.restartRecoveryComposerBanner()).toMatchObject({
-      title: "This session ended during a restart.",
-      text: "Its transcript is safe.",
+      title: "Automatic recovery stopped after a restart.",
+      text: "Resume this session to continue from its transcript.",
       tone: "neutral",
       icon: "warning",
-      actionLabel: "Resume in new session",
+      actionLabel: "Resume session",
       actionStyle: "primary",
       busy: false,
     });
 
+    state.chatMessage = "keep my draft";
     const pending = pane.recoverSession();
     await vi.waitFor(() => expect(sessions.recover).toHaveBeenCalledOnce());
     expect(pane.restartRecoveryComposerBanner()).toMatchObject({
-      actionLabel: "Resume in new session",
+      actionLabel: "Resume session",
       actionStyle: "primary",
       busy: true,
       busyLabel: "Resuming…",
     });
     created.resolve({
       ok: true,
-      key: "agent:main:dashboard:recovered",
-      sessionId: "recovered-session",
+      key: state.sessionKey,
+      sessionId: "current-session",
       continuation: { status: "started", runId: "recovery-run" },
     });
 
@@ -275,7 +276,8 @@ describe("chat pane session recovery", () => {
       agentId: "main",
       key: "agent:main:current",
     });
-    expect(navigate).toHaveBeenCalledWith(pane.paneId, "agent:main:dashboard:recovered");
+    expect(navigate).not.toHaveBeenCalled();
+    expect(state.chatMessage).toBe("keep my draft");
     expect(state.sessionKey).toBe("agent:main:current");
   });
 

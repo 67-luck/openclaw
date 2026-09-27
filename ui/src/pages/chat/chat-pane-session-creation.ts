@@ -89,9 +89,6 @@ export abstract class ChatPaneSessionCreation extends ChatPaneRetainedPresentati
         },
       };
     }
-    if (params.restartRecoveryTombstoned) {
-      return this.restartRecoveryComposerBanner();
-    }
     if (params.selectedSessionArchived) {
       return {
         kind: "composer-replacement" as const,
@@ -109,6 +106,9 @@ export abstract class ChatPaneSessionCreation extends ChatPaneRetainedPresentati
           }
         },
       };
+    }
+    if (params.restartRecoveryTombstoned) {
+      return this.restartRecoveryComposerBanner();
     }
     return params.modelSetupRequired
       ? createChatModelSetupBanner(() =>
@@ -139,7 +139,7 @@ export abstract class ChatPaneSessionCreation extends ChatPaneRetainedPresentati
       text: t("chat.restartRecoveryDisabled"),
       tone: "neutral" as const,
       icon: "warning" as const,
-      actionLabel: t("chat.resumeInNewSession"),
+      actionLabel: t("chat.resumeSession"),
       actionStyle: "primary" as const,
       busy: this.recoveringSession,
       busyLabel: t("chat.resumingSession"),
@@ -197,6 +197,9 @@ export abstract class ChatPaneSessionCreation extends ChatPaneRetainedPresentati
         return false;
       }
       const nextSessionKey = recovery.key;
+      if (areUiSessionKeysEquivalent(sourceSessionKey, nextSessionKey)) {
+        return true;
+      }
       if (this.onPaneSessionChange?.(this.paneId, nextSessionKey) === false) {
         return false;
       }

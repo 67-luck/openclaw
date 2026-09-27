@@ -5,8 +5,7 @@ import {
 import { recoverGatewaySession } from "../session-recovery-service.js";
 import { resolveSessionWorkerPlacementContext } from "../session-worker-placement-context.js";
 import { createAgentRuntimeAuthorityGuard } from "./agent-runtime-authority.js";
-import { emitSessionArchived, emitSessionsChanged } from "./session-change-event.js";
-import { resolveOperatorSessionCreation } from "./session-creation-provenance.js";
+import { emitSessionsChanged } from "./session-change-event.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
 import { launchSessionRecoveryContinuation } from "./session-recovery-continuation.js";
 import type { GatewayRequestHandlers } from "./types.js";
@@ -34,12 +33,10 @@ export const sessionRecoverHandlers: GatewayRequestHandlers = {
             sessionMutationAuthorization?.assertCurrent();
           }
         : undefined;
-    const creation = resolveOperatorSessionCreation(client);
     const recovered = await recoverGatewaySession({
       cfg: context.getRuntimeConfig(),
       key: params.key,
       ...(params.agentId ? { agentId: params.agentId } : {}),
-      ...(creation.actor ? { actor: creation.actor } : {}),
       ...(client?.authenticatedUserProfile
         ? { requestingOperatorProfileId: client.authenticatedUserProfile.profileId }
         : {}),
@@ -68,16 +65,9 @@ export const sessionRecoverHandlers: GatewayRequestHandlers = {
       return;
     }
 
-    if (recovered.sourceKey !== recovered.successorKey) {
-      emitSessionArchived(
-        context,
-        recovered.sourceKey,
-        recovered.sourceKey === "global" ? recovered.agentId : undefined,
-      );
-    }
     emitSessionsChanged(context, {
       sessionKey: recovered.successorKey,
-      reason: recovered.created ? "create" : "recovery",
+      reason: "recovery",
       ...(recovered.successorKey === "global" ? { agentId: recovered.agentId } : {}),
     });
     const result: SessionsRecoverResult = {

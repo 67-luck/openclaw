@@ -149,6 +149,7 @@ const SESSION_ENTRY_RESERVED_SLOT_KEY_LIST = [
   "restartRecoveryTerminalDeliveryEvidence",
   "restartRecoveryHarnessCompletion",
   "restartRecoveryTerminalRunIds",
+  "restartRecoveryResumeRunId",
   "totalTokensFresh",
   "totalTokensVersion",
   "estimatedCostUsd",

@@ -3490,9 +3490,9 @@ export const en: TranslationMap & {
     incognitoExpiredBody:
       "Incognito sessions last for 24 hours or until the Gateway restarts. Your unsent input stays in this tab.",
     newIncognitoSession: "New Incognito session",
-    restartRecoveryTitle: "This session ended during a restart.",
-    restartRecoveryDisabled: "Its transcript is safe.",
-    resumeInNewSession: "Resume in new session",
+    restartRecoveryTitle: "Automatic recovery stopped after a restart.",
+    restartRecoveryDisabled: "Resume this session to continue from its transcript.",
+    resumeSession: "Resume session",
     resumingSession: "Resuming…",
     systemNotice: {
       guardian: {

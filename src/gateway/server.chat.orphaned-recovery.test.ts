@@ -101,6 +101,70 @@ it("chat.send recovers failed and statusless work for new messages and retained 
     });
     await gateway.server.startupSettled;
     const client = gateway.client;
+    const created = await client.request<{ key: string; sessionId: string }>("sessions.create", {
+      agentId: "main",
+      label: "Restart recovery identity",
+    });
+    const resumeTarget = {
+      agentId: "main",
+      sessionKey: created.key,
+      storePath: state.statePath("agents", "main", "sessions", "sessions.json"),
+    };
+    const createdEntry = loadSessionEntry(resumeTarget);
+    expect(createdEntry?.sessionId).toBe(created.sessionId);
+    if (!createdEntry) {
+      throw new Error("sessions.create did not publish its session");
+    }
+    await appendTranscriptMessage(
+      { ...resumeTarget, sessionId: created.sessionId },
+      {
+        cwd: state.workspaceDir,
+        message: { role: "user", content: priorMessage },
+      },
+    );
+    await replaceSessionEntry(resumeTarget, {
+      ...createdEntry,
+      status: "failed",
+      abortedLastRun: false,
+      mainRestartRecovery: {
+        cycleId: "exhausted-cycle",
+        revision: 4,
+        chargedAttempts: 3,
+        tombstone: { reason: "automatic recovery exhausted" },
+      },
+    });
+    type Recovery = {
+      key: string;
+      sessionId: string;
+      continuation: { status: string; runId: string };
+    };
+    const resumed = await client.request<Recovery>("sessions.recover", { key: created.key });
+    expect(resumed).toMatchObject({
+      key: created.key,
+      sessionId: created.sessionId,
+      continuation: { status: "started" },
+    });
+    await expect(
+      client.request("agent.wait", {
+        runId: resumed.continuation.runId,
+        timeoutMs: 30_000,
+      }),
+    ).resolves.toMatchObject({ status: "ok" });
+    expect(loadSessionEntry(resumeTarget)).toMatchObject({ sessionId: created.sessionId });
+    expect(loadSessionEntry(resumeTarget)?.archivedAt).toBeUndefined();
+    const requestsAfterResume = targetRequests.length;
+    expect(requestsAfterResume).toBe(1);
+    await expect(client.request("sessions.recover", { key: created.key })).resolves.toMatchObject({
+      key: created.key,
+      sessionId: created.sessionId,
+      continuation: { runId: resumed.continuation.runId },
+    });
+    expect(targetRequests).toHaveLength(requestsAfterResume);
+    const resumedHistory = await client.request<{ messages: unknown[] }>("chat.history", {
+      sessionKey: created.key,
+    });
+    expect(JSON.stringify(resumedHistory.messages)).toContain("RECOVERY_OK");
+
     for (const { status, retry } of [
       { status: "failed", retry: false },
       { status: undefined, retry: false },

@@ -12,7 +12,7 @@ outbound messages live on disk. After a gateway restart, eligible work interrupt
 mid-turn is detected and resumed automatically. Recovery is always on and
 normally needs no manual intervention. Exhausted infrastructure retries, or a
 missing durable message-action authority claim, may tombstone one session
-until you inspect or replace it.
+until you explicitly resume it.
 
 This page describes what survives a restart, how interrupted work is detected,
 and what the automatic resume looks like.
@@ -489,7 +489,9 @@ and starts a continuation in the same session. A new Control UI message also rec
 state before admission, so a rejected send cannot trap the conversation in a
 "conversation changed" retry loop. Both paths preserve the session key and
 transcript. A live run or cloud worker still prevents this repair. Tombstoned
-sessions retain their separate recovery path into a new session.
+sessions resume in place through **Resume session** in the Control UI. The
+session key, transcript, owner, permissions, goal, and workspace stay attached to
+the original conversation. Restoring an archived session remains a separate action.
 
 If recovery fails during preparation before the agent starts, the Gateway restores
 the interrupted state and releases that attempt's delivery claim. The next recovery
@@ -549,7 +551,12 @@ Foreground work that already owns the session keeps automatic recovery out
 until that work settles.
 
 After the durable budget is exhausted, the session is tombstoned instead of
-looping forever. Inspect the failed session and use `/new` or `/reset` to start a
+looping forever. Use **Resume session** in the Control UI to explicitly continue
+that conversation. Recovery fences old work and reclaims an attached cloud worker
+before admitting a new continuation; it does not reuse pre-restart execution
+authority or copy the transcript. Repeated requests reuse the same continuation
+identifier. Existing successors created by older releases remain linked rather
+than being copied again. In messaging channels, use `/new` or `/reset` to start a
 replacement. `openclaw doctor --fix` can repair a stale aborted flag that
 conflicts with a tombstone, but it does not re-enable that recovery cycle.
 
@@ -558,7 +565,7 @@ recovery reminder through that channel and logs each rejected message at warn
 level with the session key, recovery reason, and recovery command. Repeated
 reminders are suppressed in a bounded memory cache. Resetting or deleting the
 session, or restarting the Gateway, clears that suppression. Sessions with locked
-model selection instead direct you to **Resume in new session** in WebChat.
+model selection instead direct you to **Resume session** in WebChat.
 
 Every retry reuses one durable dispatch identifier, so an ambiguous connection
 failure cannot start the same recovery twice. Completed Control UI turns also
@@ -750,7 +757,7 @@ channels.start --params '{"channel":"<id>"}'`
 
 - **Main-session attempt budget:** three charged automatic dispatch attempts
   per interrupted cycle. Exhaustion tombstones that session until it is
-  inspected and replaced.
+  explicitly resumed.
 - **Metrics:** recovery activity is exported via
   [Prometheus](/gateway/prometheus) as `openclaw_session_recovery_total` and
   `openclaw_session_recovery_age_seconds`.

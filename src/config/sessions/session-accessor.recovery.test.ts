@@ -4,7 +4,7 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import {
   loadSessionEntry,
   loadTranscriptEvents,
-  recoverSessionEntryFromRestartTombstone,
+  resumeSessionEntryFromRestartTombstone,
   replaceSessionEntry,
   replaceTranscriptEvents,
 } from "./session-accessor.js";
@@ -66,113 +66,62 @@ async function createFixture() {
   return { root, sourceKey, sourceSessionId, storePath, successorKey };
 }
 
-describe("recoverSessionEntryFromRestartTombstone", () => {
-  it("copies the full transcript and atomically records the archived successor transition", async () => {
+describe("resumeSessionEntryFromRestartTombstone", () => {
+  it("preserves the transcript and metadata while clearing failed execution ownership", async () => {
     const fixture = await createFixture();
-    const successorEntry = { sessionId: "successor-session", updatedAt: 20, spawnDepth: 0 };
-    const params = {
-      agentId: "main",
-      expected: {
-        cycleId: "cycle-1",
-        revision: 4,
-        sessionId: fixture.sourceSessionId,
-        pluginOwnerId: "codex",
-      },
-      sourceTarget: { canonicalKey: fixture.sourceKey, storeKeys: [fixture.sourceKey] },
-      storePath: fixture.storePath,
-      successorEntry,
-      successorTarget: { canonicalKey: fixture.successorKey, storeKeys: [fixture.successorKey] },
-    };
+    const scope = { agentId: "main", sessionKey: fixture.sourceKey, storePath: fixture.storePath };
+    const expected = loadSessionEntry(scope)!;
+    const transcriptScope = { ...scope, sessionId: fixture.sourceSessionId };
+    const before = await loadTranscriptEvents(transcriptScope);
+    const resumed = await resumeSessionEntryFromRestartTombstone({
+      ...scope,
+      expected,
+      commitGuard: () => {},
+    });
+    expect(resumed).toMatchObject({
+      sessionId: fixture.sourceSessionId,
+      pinnedAt: 5,
+      pluginOwnerId: "codex",
+    });
+    expect(resumed.mainRestartRecovery).toBeUndefined();
+    expect(resumed.archivedAt).toBeUndefined();
+    expect(resumed.restartRecoveryResumeRunId).toBeTruthy();
+    await expect(loadTranscriptEvents(transcriptScope)).resolves.toEqual(before);
+    expect(loadSessionEntry({ ...scope, sessionKey: fixture.successorKey })).toBeUndefined();
+  });
 
-    const created = await recoverSessionEntryFromRestartTombstone(params);
-    expect(created).toMatchObject({ status: "created", successorKey: fixture.successorKey });
-    expect(
-      loadSessionEntry({
+  it.each(["recovery", "lifecycle", "archive", "authority"] as const)(
+    "leaves the session unchanged after a %s conflict",
+    async (conflict) => {
+      const fixture = await createFixture();
+      const scope = {
         agentId: "main",
         sessionKey: fixture.sourceKey,
         storePath: fixture.storePath,
-      }),
-    ).toMatchObject({
-      archivedAt: expect.any(Number),
-      archiveReason: "restart-recovery",
-      mainRestartRecovery: {
-        cycleId: "cycle-1",
-        revision: 5,
-        tombstone: {
-          recoveredSessionId: "successor-session",
-          recoveredSessionKey: fixture.successorKey,
-        },
-      },
-    });
-    expect(
-      loadSessionEntry({
-        agentId: "main",
-        sessionKey: fixture.successorKey,
-        storePath: fixture.storePath,
-      }),
-    ).toMatchObject(successorEntry);
-    const recoveredEvents = await loadTranscriptEvents({
-      agentId: "main",
-      sessionId: successorEntry.sessionId,
-      sessionKey: fixture.successorKey,
-      storePath: fixture.storePath,
-    });
-    expect(recoveredEvents).toHaveLength(4);
-    expect(recoveredEvents[0]).toMatchObject({
-      type: "session",
-      id: successorEntry.sessionId,
-      version: 3,
-    });
-    expect(JSON.stringify(recoveredEvents)).toContain("preserve the whole transcript");
-
-    const repeated = await recoverSessionEntryFromRestartTombstone({
-      ...params,
-      successorEntry: { sessionId: "unused-session", updatedAt: 30 },
-      successorTarget: {
-        canonicalKey: "agent:main:dashboard:unused",
-        storeKeys: ["agent:main:dashboard:unused"],
-      },
-    });
-    expect(repeated).toMatchObject({
-      status: "existing",
-      successorKey: fixture.successorKey,
-      successorEntry: { sessionId: successorEntry.sessionId },
-    });
-  });
-
-  it.each([
-    { name: "recovery", revision: 3 },
-    { name: "lifecycle", revision: 4, lifecycleRevision: "different-generation" },
-  ])("does not archive or copy when the $name revision changed", async (expected) => {
-    const fixture = await createFixture();
-    const result = await recoverSessionEntryFromRestartTombstone({
-      agentId: "main",
-      expected: {
-        cycleId: "cycle-1",
-        revision: expected.revision,
-        ...(expected.lifecycleRevision ? { lifecycleRevision: expected.lifecycleRevision } : {}),
-        sessionId: fixture.sourceSessionId,
-        pluginOwnerId: "codex",
-      },
-      sourceTarget: { canonicalKey: fixture.sourceKey, storeKeys: [fixture.sourceKey] },
-      storePath: fixture.storePath,
-      successorEntry: { sessionId: "successor-session", updatedAt: 20 },
-      successorTarget: { canonicalKey: fixture.successorKey, storeKeys: [fixture.successorKey] },
-    });
-    expect(result).toEqual({ status: "conflict", reason: "source-changed" });
-    expect(
-      loadSessionEntry({
-        agentId: "main",
-        sessionKey: fixture.sourceKey,
-        storePath: fixture.storePath,
-      })?.archivedAt,
-    ).toBeUndefined();
-    expect(
-      loadSessionEntry({
-        agentId: "main",
-        sessionKey: fixture.successorKey,
-        storePath: fixture.storePath,
-      }),
-    ).toBeUndefined();
-  });
+      };
+      const expected = loadSessionEntry(scope)!;
+      const current = {
+        ...expected,
+        ...(conflict === "lifecycle" ? { lifecycleRevision: "new-lifecycle" } : {}),
+        ...(conflict === "archive" ? { archivedAt: 100 } : {}),
+        ...(conflict === "recovery"
+          ? { mainRestartRecovery: { ...expected.mainRestartRecovery!, revision: 5 } }
+          : {}),
+      };
+      await replaceSessionEntry(scope, current);
+      const before = loadSessionEntry(scope);
+      await expect(
+        resumeSessionEntryFromRestartTombstone({
+          ...scope,
+          expected,
+          commitGuard: () => {
+            if (conflict === "authority") {
+              throw new Error("revoked");
+            }
+          },
+        }),
+      ).rejects.toThrow(conflict === "authority" ? "revoked" : "changed before recovery");
+      expect(loadSessionEntry(scope)).toEqual(before);
+    },
+  );
 });

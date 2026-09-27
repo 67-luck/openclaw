@@ -430,6 +430,7 @@ describe("session snapshot merge", () => {
     const current: SessionEntry = {
       ...initialRecovery,
       updatedAt: 3,
+      restartRecoveryResumeRunId: "explicit-resume",
       restartRecoveryRuns: [
         ...(initialRecovery.restartRecoveryRuns ?? []),
         { runId: "run-1", lifecycleGeneration: "generation-2" },
@@ -438,6 +439,7 @@ describe("session snapshot merge", () => {
 
     const merged = mergeSessionSnapshotChanges({ initial: initialRecovery, next, current });
 
+    expect(merged.restartRecoveryResumeRunId).toBe("explicit-resume");
     expect(merged.abortedLastRun).toBe(true);
     expect(merged.restartRecoveryRuns).toEqual(current.restartRecoveryRuns);
     expect(merged.mainRestartRecovery).toEqual(current.mainRestartRecovery);

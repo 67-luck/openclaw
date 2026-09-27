@@ -175,35 +175,6 @@ export function isMainSessionRecoveryReconciliationCandidate(entry: SessionEntry
   );
 }
 
-type MainRestartRecoveryRolloverEligibility =
-  | { eligible: true }
-  | {
-      eligible: false;
-      reason: "already_recovered";
-      recoveredSessionId?: string;
-      recoveredSessionKey?: string;
-    }
-  | { eligible: false; reason: "not_tombstoned" };
-
-export function inspectMainRestartRecoveryRolloverEligibility(
-  entry: SessionEntry,
-): MainRestartRecoveryRolloverEligibility {
-  if (!entry.mainRestartRecovery?.tombstone) {
-    return { eligible: false, reason: "not_tombstoned" };
-  }
-  const recoveredSessionId = entry.mainRestartRecovery.tombstone.recoveredSessionId;
-  const recoveredSessionKey = entry.mainRestartRecovery.tombstone.recoveredSessionKey;
-  if (recoveredSessionId || recoveredSessionKey) {
-    return {
-      eligible: false,
-      reason: "already_recovered",
-      ...(recoveredSessionId ? { recoveredSessionId } : {}),
-      ...(recoveredSessionKey ? { recoveredSessionKey } : {}),
-    };
-  }
-  return { eligible: true };
-}
-
 // A recovery aggregate stops owning work once every recorded run has a durable
 // terminal fact and no reservation, foreground claim, tombstone, or delivery
 // claim remains. Such terminal-only residue previously stayed authoritative

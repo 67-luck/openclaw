@@ -1,6 +1,10 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { getRuntimeConfig } from "../config/io.js";
-import { loadSessionEntry, loadTranscriptEvents } from "../config/sessions/session-accessor.js";
+import {
+  loadSessionEntry,
+  loadTranscriptEvents,
+  replaceSessionEntry,
+} from "../config/sessions/session-accessor.js";
 import { addSessionMember } from "../config/sessions/session-sharing-store.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import {
@@ -164,46 +168,49 @@ test("sessions.recover denies a narrow continuation into a linked foreign succes
   const broadWriter = roleClient("write", "linked-recovery-writer");
   broadWriter.connect.scopes = ["operator.write"];
   const cfg = recoveryConfig(storePath);
-  const revokedRole = rolePolicyConfig().gateway!.roles!;
-  const writeRole = revokedRole.definitions.write;
-  if (!writeRole) {
-    throw new Error("role policy fixture has no write role");
-  }
-  writeRole.sessions = { others: "view" };
-  const revokedCfg = { ...cfg, gateway: { ...cfg.gateway, roles: revokedRole } };
   await seedRecoverableSession({
     sourceKey,
     sourceSessionId,
     storePath,
     ownerProfileId: sourceOwner.authenticatedUserProfile!.profileId,
   });
-  const context = createDirectChatContext({
-    getRuntimeConfig: () =>
-      loadSessionEntry({ agentId: "main", sessionKey: sourceKey, storePath })?.mainRestartRecovery
-        ?.tombstone?.recoveredSessionKey
-        ? revokedCfg
-        : cfg,
+  // Preserve the destination contract of rollovers already committed by older releases.
+  const successorKey = "agent:main:dashboard:legacy-linked-successor";
+  const successorSessionId = "legacy-linked-successor";
+  const sourceScope = { agentId: "main", sessionKey: sourceKey, storePath };
+  const source = loadSessionEntry(sourceScope);
+  if (!source?.mainRestartRecovery?.tombstone) {
+    throw new Error("missing recovery source fixture");
+  }
+  await replaceSessionEntry(sourceScope, {
+    ...source,
+    archivedAt: 1,
+    mainRestartRecovery: {
+      ...source.mainRestartRecovery,
+      tombstone: {
+        ...source.mainRestartRecovery.tombstone,
+        recoveredSessionKey: successorKey,
+        recoveredSessionId: successorSessionId,
+      },
+    },
   });
-
-  const initial = await registeredSessionRecover({
-    client: broadWriter,
-    context,
-    id: "linked-recovery-create",
-    key: sourceKey,
-  });
-  expect(initial.ok, JSON.stringify(initial)).toBe(true);
-  expect(initial).toMatchObject({
-    ok: true,
-    payload: { key: expect.any(String), continuation: { status: "rejected" } },
-  });
-  const successorKey = initial.payload?.key ?? "";
-  const successorSessionId = initial.payload?.sessionId ?? "";
   const successorScope = { agentId: "main", sessionKey: successorKey, storePath };
-  expect(loadSessionEntry(successorScope)?.createdActor).toEqual({
-    type: "human",
-    source: "profile",
-    id: broadWriter.authenticatedUserProfile!.profileId,
+  await replaceSessionEntry(
+    successorScope,
+    sessionStoreEntry(successorSessionId, {
+      createdActor: {
+        type: "human",
+        source: "profile",
+        id: broadWriter.authenticatedUserProfile!.profileId,
+      },
+    }),
+  );
+  await seedSessionTranscript({
+    ...successorScope,
+    sessionId: successorSessionId,
+    messages: [{ role: "user", content: "finish the interrupted work" }],
   });
+  const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
   const transcriptBefore = await loadTranscriptEvents({
     ...successorScope,
     sessionId: successorSessionId,
@@ -260,7 +267,7 @@ test("sessions.recover denies a narrow continuation into a linked foreign succes
   expect(allowedContext.addChatRun).toHaveBeenCalledOnce();
 });
 
-test("sessions.recover retains source revocation for its accepted own successor", async () => {
+test("sessions.recover retains source revocation when resuming the same session", async () => {
   const { storePath } = await createSessionStoreDir();
   const sourceKey = "agent:main:dashboard:narrow-own-recovery";
   const sourceSessionId = "narrow-own-recovery-source";

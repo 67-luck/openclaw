@@ -23,7 +23,7 @@ import {
 
 const TOMBSTONED_SESSION_NOTICE =
   "I couldn't continue this session after a gateway restart. " +
-  "Your transcript is safe. In WebChat, use Resume in new session to continue it; " +
+  "Your transcript is safe. In WebChat, use Resume session to continue it; " +
   "in other channels, use /new or /reset to start a replacement session.";
 
 function buildRestartRecoveryTombstoneNoticeKey(entry: SessionEntry): string {

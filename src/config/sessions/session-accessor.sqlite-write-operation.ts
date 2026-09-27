@@ -39,7 +39,6 @@ export type SqliteSessionWriteOperation =
   | "session.reclamation.in-process"
   | "session.reclamation.retain"
   | "session.reclamation.worker-commit"
-  | "session.restart.recover"
   | "session.store-projection"
   | "session.transcript.batch"
   | "session.transcript.branch"

@@ -70,6 +70,8 @@ export type RestartRecoveryTerminalDeliveryEvidence =
 
 /** Durable ownership and idempotency state for gateway restart recovery. */
 export type SessionRestartRecoveryState = {
+  /** Durable correlation for explicit recovery; never execution authority. */
+  restartRecoveryResumeRunId?: string;
   restartRecoveryBeforeAgentReplyState?: RestartRecoveryBeforeAgentReplyState;
   /** Durable pre/post boundary around the terminal external send. */
   restartRecoveryDeliveryReceiptState?: "terminal-pending" | "delivered-terminal";
