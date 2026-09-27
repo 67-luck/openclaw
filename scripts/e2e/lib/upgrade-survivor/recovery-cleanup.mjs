@@ -595,7 +595,16 @@ try {
         !files.some((file) => file.includes(".pre-doctor-") && !known.has(file)),
         "public migration created an extra raw pre-Doctor copy",
       );
-      const destinations = [...new Set(readRecoveryMoves(stateDir).map((move) => move.sqlitePath))];
+      // Shared legacy-index receipts also name agents with no rows and no database.
+      // Require destinations for this fixture's sources; base assertions cover main history.
+      const sources = new Set(fixture.originals.map((original) => original.source));
+      const destinations = [
+        ...new Set(
+          readRecoveryMoves(stateDir)
+            .filter((move) => sources.has(move.sourcePath))
+            .map((move) => move.sqlitePath),
+        ),
+      ];
       saveEvidence({
         originals,
         spec: fixture.spec,
