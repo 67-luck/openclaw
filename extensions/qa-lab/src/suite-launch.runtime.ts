@@ -714,6 +714,9 @@ async function runUnifiedQaSuite(params: {
   let preparedDockerEvidence: dockerBatch.QaPreparedDockerEvidence | undefined;
   if (params.plan.channelGroups.length > 0) {
     const channelGroups = params.plan.channelGroups;
+    // Share module initialization across partitions, but defer it until their
+    // evidence owners exist. Each invocation still receives fresh child params.
+    let flowRuntime: ReturnType<typeof loadQaFlowSuiteRuntime> | undefined;
     for (const channelGroup of channelGroups) {
       const formatScenarioResult = (result: QaSuiteScenarioResult) =>
         params.runParams?.expandScenarioChannels && channelGroup.channel
@@ -829,7 +832,7 @@ async function runUnifiedQaSuite(params: {
           evidenceOwners: [owner],
           weight: partition.concurrency,
           run: async () => {
-            const runFlowSuite = await loadQaFlowSuiteRuntime();
+            const runFlowSuite = await (flowRuntime ??= loadQaFlowSuiteRuntime());
             const unavailableDetails = channelGroup.channelId
               ? unavailableChannelCredentialDetails.get(channelGroup.channelId)
               : undefined;
