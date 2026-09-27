@@ -252,9 +252,9 @@ it.each([
           try {
             candidateDatabase
               .prepare(
-                "UPDATE update_runs SET status = 'failed', reason = 'plugin-convergence-failed' WHERE run_id = ?",
+                "UPDATE update_runs SET status = 'failed', phase = 'finished', finished_at_ms = ?, reason = 'plugin-convergence-failed' WHERE run_id = ?",
               )
-              .run(runId);
+              .run(Date.now(), runId);
           } finally {
             candidateDatabase.close();
           }
