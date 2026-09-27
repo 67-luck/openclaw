@@ -7,7 +7,7 @@ use crate::ui::theme::{
 };
 use gpui_kit::{
     assets::IconName,
-    base::{Align, ElementExt, POPUP_PRIORITY, Placement, Positioner, actions},
+    base::{Align, POPUP_PRIORITY, Placement, Positioner, actions},
     component::{Icon, Side, StyledExt, Theme, button::Button},
     prelude::FluentBuilder,
     *,
@@ -15,8 +15,16 @@ use gpui_kit::{
 use std::rc::Rc;
 
 type Handler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+type OpenHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 type Content = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 type Builder = Rc<dyn Fn(ActionMenu, &mut Window, &mut Context<ActionMenu>) -> ActionMenu>;
+
+fn observe_bounds(
+    callback: impl FnOnce(Bounds<Pixels>, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    // Explicit edges keep the observer out of the parent's padded content flow.
+    canvas(callback, |_, _, _, _| {}).absolute().inset_0()
+}
 
 #[derive(Clone)]
 enum Entry {
@@ -133,6 +141,7 @@ pub(crate) struct ActionMenu {
     focus: FocusHandle,
     return_focus: Option<FocusHandle>,
     initial_focus: Option<FocusHandle>,
+    on_open: Option<OpenHandler>,
     parent: Option<WeakEntity<ActionMenu>>,
     selected: Option<usize>,
     selection_display: SelectionDisplay,
@@ -163,6 +172,7 @@ impl ActionMenu {
             focus: cx.focus_handle(),
             return_focus: None,
             initial_focus: None,
+            on_open: None,
             parent: None,
             selected: None,
             selection_display: SelectionDisplay::Hidden,
@@ -203,6 +213,10 @@ impl ActionMenu {
     }
     pub fn check_side(mut self, side: Side) -> Self {
         self.check_side = side;
+        self
+    }
+    pub fn on_open(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_open = Some(Rc::new(handler));
         self
     }
     pub fn initial_focus(mut self, focus: FocusHandle) -> Self {
@@ -357,6 +371,24 @@ impl ActionMenu {
             cx.notify();
         }
     }
+    fn open_submenu(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<Self>> {
+        let submenu = self.submenu_at(index)?;
+        let opening = self.selected != Some(index) || !self.submenu_open;
+        self.selected = Some(index);
+        self.submenu_open = true;
+        if opening {
+            let on_open = submenu.read(cx).on_open.clone();
+            if let Some(on_open) = on_open {
+                on_open(window, cx);
+            }
+        }
+        Some(submenu)
+    }
     fn activate(
         &mut self,
         index: usize,
@@ -364,12 +396,15 @@ impl ActionMenu {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(item) = self.items.get(index).filter(|item| item.selectable()) else {
+        let Some(item) = self
+            .items
+            .get(index)
+            .filter(|item| item.selectable())
+            .cloned()
+        else {
             return;
         };
-        if let Some(submenu) = self.submenu_at(index) {
-            self.selected = Some(index);
-            self.submenu_open = true;
+        if let Some(submenu) = self.open_submenu(index, window, cx) {
             let keyboard = self.selection_display == SelectionDisplay::Keyboard;
             submenu.update(cx, |menu, cx| {
                 menu.focus_first(window, cx);
@@ -505,7 +540,7 @@ impl ActionMenu {
             .when_some(item.title.clone(), |row, title| {
                 row.aria_description(title.clone()).element_tooltip(title)
             })
-            .on_prepaint({
+            .child(observe_bounds({
                 let menu = cx.entity().downgrade();
                 move |bounds, _, cx| {
                     let _ = menu.update(cx, |menu, _| {
@@ -514,7 +549,7 @@ impl ActionMenu {
                         }
                     });
                 }
-            })
+            }))
             .when(selectable, |row| {
                 row.cursor_pointer()
                     .on_hover(cx.listener(move |menu, hovered, window, cx| {
@@ -523,9 +558,13 @@ impl ActionMenu {
                                 || (submenu && !menu.submenu_open)
                                 || menu.selection_display != SelectionDisplay::Pointer)
                         {
-                            menu.selected = Some(index);
                             menu.selection_display = SelectionDisplay::Pointer;
-                            menu.submenu_open = submenu;
+                            if submenu {
+                                menu.open_submenu(index, window, cx);
+                            } else {
+                                menu.selected = Some(index);
+                                menu.submenu_open = false;
+                            }
                             menu.focus.focus(window, cx);
                             cx.notify();
                         }
@@ -633,6 +672,7 @@ impl Render for ActionMenu {
         }
         let mut menu = div()
             .id("action-menu")
+            .relative()
             .role(Role::Menu)
             .key_context("ActionMenu")
             .track_focus(&self.focus)
@@ -673,12 +713,12 @@ impl Render for ActionMenu {
                 cx.stop_propagation();
                 this.confirm(window, cx);
             }))
-            .on_prepaint({
+            .child(observe_bounds({
                 let view = cx.entity().downgrade();
                 move |bounds, _, cx| {
                     let _ = view.update(cx, |menu, _| menu.bounds = bounds);
                 }
-            })
+            }))
             .when(self.parent.is_none(), |menu| {
                 menu.on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     if !this.contains_point(&event.position, cx) {
@@ -751,6 +791,10 @@ impl MenuHost {
             });
             cx.notify(current_view);
         });
+        let on_open = menu.read(cx).on_open.clone();
+        if let Some(on_open) = on_open {
+            on_open(window, cx);
+        }
         menu.update(cx, |menu, cx| {
             menu.focus_first(window, cx);
             if !keyboard {
@@ -852,9 +896,9 @@ impl<E: InteractiveElement + ParentElement + Styled + IntoElement + 'static> Ren
             .relative()
             .track_focus(&focus)
             .tab_index(0)
-            .on_prepaint(move |bounds, _, cx| {
+            .child(observe_bounds(move |bounds, _, cx| {
                 host.update(cx, |host, _| host.context_bounds = bounds);
-            })
+            }))
             .on_key_down(move |event, window, cx| {
                 if event.keystroke.key == "f10" && event.keystroke.modifiers.shift {
                     cx.stop_propagation();
@@ -917,9 +961,9 @@ impl RenderOnce for ActionDropdownMenu {
         div()
             .id(self.id)
             .relative()
-            .on_prepaint(move |bounds, _, cx| {
+            .child(observe_bounds(move |bounds, _, cx| {
                 host.update(cx, |host, _| host.trigger_bounds = Some(bounds));
-            })
+            }))
             .child(self.trigger.on_click(move |event, window, cx| {
                 cx.stop_propagation();
                 let current = open_host.read(cx).menu.clone();

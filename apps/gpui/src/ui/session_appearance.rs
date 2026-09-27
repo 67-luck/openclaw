@@ -73,10 +73,14 @@ pub(super) fn appearance_menu(
     }]
     .clone();
     let width = t::APPEARANCE_WIDTH + (t::ACTION_SUBMENU_PADDING + space::HAIRLINE) * 2.;
-    menu.initial_focus(focus)
-        .min_w(width)
-        .max_w(width)
-        .item(PopupMenuItem::element(move |_, _| picker.clone()).disabled(true))
+    let opening_picker = picker.clone();
+    menu.on_open(move |window, cx| {
+        opening_picker.update(cx, |picker, cx| picker.reset_custom_icon(false, window, cx));
+    })
+    .initial_focus(focus)
+    .min_w(width)
+    .max_w(width)
+    .item(PopupMenuItem::element(move |_, _| picker.clone()).disabled(true))
 }
 
 struct AppearancePicker {
@@ -96,9 +100,7 @@ impl AppearancePicker {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| {
-            InputState::new(window, cx).default_value(row.icon.clone().unwrap_or_default())
-        });
+        let input = cx.new(|cx| InputState::new(window, cx));
         let mut subscriptions =
             vec![
                 cx.subscribe_in(&input, window, |this, _, event, _, cx| match event {
@@ -185,9 +187,8 @@ impl AppearancePicker {
         }
         self.icon_focus[index].focus(window, cx);
         if index == CUSTOM_INDEX {
-            self.custom = true;
+            self.reset_custom_icon(true, window, cx);
             self.input.focus_handle(cx).focus(window, cx);
-            cx.notify();
             return;
         }
         let value = if index < EMOJI.len() {
@@ -461,10 +462,16 @@ impl AppearancePicker {
             .child(glyphs)
     }
 
-    fn show_icon_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.custom = false;
-        self.icon_focus[CUSTOM_INDEX].focus(window, cx);
+    fn reset_custom_icon(&mut self, custom: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.custom = custom;
+        self.input
+            .update(cx, |input, cx| input.set_value("", window, cx));
         cx.notify();
+    }
+
+    fn show_icon_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reset_custom_icon(false, window, cx);
+        self.icon_focus[CUSTOM_INDEX].focus(window, cx);
     }
 
     fn custom_entry(&self, cx: &mut Context<Self>) -> Div {
