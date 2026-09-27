@@ -13,5 +13,6 @@ export const DIAGNOSTIC_STABILITY_EVENT_INTEREST = {
     "gateway.event_loop.sample",
     "diagnostic.gc",
     "diagnostic.child_process.spawn",
+    "model.runtime_choice",
   ],
 } as const satisfies InternalDiagnosticEventInterest<DiagnosticEventPayload["type"]>;

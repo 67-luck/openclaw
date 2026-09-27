@@ -4,6 +4,7 @@ import type { EmbeddedAgentExecutionPhase } from "../agents/embedded-agent-runne
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { TalkBrain, TalkEventType, TalkMode, TalkTransport } from "../talk/talk-events.js";
 import type { DiagnosticBaseEvent } from "./diagnostic-base-event.types.js";
+import type { DiagnosticModelRuntimeChoiceEvent } from "./diagnostic-control-plane-events.js";
 import {
   ASYNC_DIAGNOSTIC_EVENT_TYPES as ASYNC_EVENT_TYPES,
   PRIORITY_ASYNC_DIAGNOSTIC_EVENT_TYPES as PRIORITY_EVENT_TYPES,
@@ -886,7 +887,8 @@ export type DiagnosticEventPayload =
   | DiagnosticSecurityEvent
   | DiagnosticTelemetryExporterEvent
   | DiagnosticAsyncQueueDroppedEvent
-  | DiagnosticFailoverEvent;
+  | DiagnosticFailoverEvent
+  | DiagnosticModelRuntimeChoiceEvent;
 
 type DiagnosticNonSecurityEventPayload = Exclude<DiagnosticEventPayload, DiagnosticSecurityEvent>;
 
@@ -1334,8 +1336,13 @@ function emitDiagnosticEventWithTrust(
     ...(options.coreGatewayOwner === true ? { coreGatewayOwner: true } : {}),
     ...(trustedTraceContext ? { trustedTraceContext } : {}),
   };
+  // Runtime-choice facts are observational, never outbound trace parents. Even an
+  // exporter prepare/filter callback must not reenter between the guard and write.
   const prepareTracePropagation =
-    trusted && !options.queuedPhase && shouldPrepareDiagnosticTracePropagation(enriched);
+    trusted &&
+    !options.queuedPhase &&
+    enriched.type !== "model.runtime_choice" &&
+    shouldPrepareDiagnosticTracePropagation(enriched);
 
   if (options.queuedPhase || ASYNC_DIAGNOSTIC_EVENT_TYPES.has(enriched.type)) {
     if (state.asyncQueue.length >= MAX_ASYNC_DIAGNOSTIC_EVENTS) {

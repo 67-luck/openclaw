@@ -15,6 +15,8 @@ export const ASYNC_DIAGNOSTIC_EVENT_TYPES = [
   "message.delivery.completed",
   "message.delivery.error",
   "talk.event",
+  // Runtime-choice observers must not reenter between the guard and its caller's write.
+  "model.runtime_choice",
   "model.call.started",
   "model.call.completed",
   "model.call.error",

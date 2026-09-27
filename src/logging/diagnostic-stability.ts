@@ -139,7 +139,8 @@ function sanitizeDiagnosticEvent(event: DiagnosticEventPayload): DiagnosticStabi
     case "gateway.event_loop.sample":
     case "diagnostic.gc":
     case "diagnostic.child_process.spawn":
-      // Runtime measurements are exporter-only and excluded by the subscription.
+    case "model.runtime_choice":
+      // Exporter measurements and runtime guard facts stay outside the stability ring.
       break;
     case "model.usage":
       copy(event, "channel", "provider", "model");

@@ -39,6 +39,7 @@ export function createDiagnosticsEventHandler(params: {
         case "gateway.admission":
         case "gateway.run.owner":
         case "diagnostic.child_process.spawn":
+        case "model.runtime_choice":
           // Child-launch counts currently export through Prometheus.
           return;
         case "diagnostic.gc":
