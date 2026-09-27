@@ -273,7 +273,7 @@ export async function proveReleasedScheduledTask(params: {
     eventsPath: params.eventsPath,
     probePath: params.probe.probePath,
     run: ownedRun,
-    scriptPath: params.scriptPath,
+    launcherPath: params.launcherPath,
     readRelatedProcessDiagnostics,
   });
   const owned = processIdentity(ownedRun.pid, params.probe.probePath);
