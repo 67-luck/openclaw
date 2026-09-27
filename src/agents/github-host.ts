@@ -4,7 +4,7 @@ const DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com";
 function normalizeGitHubHost(value: string | undefined): string {
   const host = value?.trim().toLowerCase() || DEFAULT_GITHUB_HOST;
   if (!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/u.test(host) || host.includes("..")) {
-    throw new Error("OPENCLAW_GITHUB_HOST must be a hostname");
+    throw new Error("GITHUB_HOST must be a hostname");
   }
   return host;
 }
@@ -20,15 +20,15 @@ function normalizeGitHubApiBaseUrl(value: string | undefined): string {
     parsed.hash ||
     !["", "/", "/api/v3", "/api/v3/"].includes(parsed.pathname)
   ) {
-    throw new Error("OPENCLAW_GITHUB_API_BASE_URL must be an HTTPS origin or /api/v3 endpoint");
+    throw new Error("GITHUB_API_BASE_URL must be an HTTPS origin or /api/v3 endpoint");
   }
   return parsed.pathname.startsWith("/api/v3") ? `${parsed.origin}/api/v3` : parsed.origin;
 }
 
 export function resolveGitHubHost(env: NodeJS.ProcessEnv = process.env): string {
-  return normalizeGitHubHost(env.OPENCLAW_GITHUB_HOST);
+  return normalizeGitHubHost(env.GITHUB_HOST);
 }
 
 export function resolveGitHubApiBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
-  return normalizeGitHubApiBaseUrl(env.OPENCLAW_GITHUB_API_BASE_URL);
+  return normalizeGitHubApiBaseUrl(env.GITHUB_API_BASE_URL);
 }

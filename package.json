@@ -444,7 +444,8 @@
     "!dist/plugin-sdk/text-grapheme.d.ts",
     "!dist/plugin-sdk/agent-harness-session-runtime.d.ts",
     "!dist/plugin-sdk/agent-harness-attempt-runtime.d.ts",
-    "!dist/plugin-sdk/secret-egress-runtime.d.ts"
+    "!dist/plugin-sdk/secret-egress-runtime.d.ts",
+    "!dist/plugin-sdk/github-worker-runtime.d.ts"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -874,7 +875,6 @@
       "default": "./dist/plugin-sdk/gateway-runtime.js"
     },
     "./plugin-sdk/github-worker-runtime": {
-      "types": "./dist/plugin-sdk/github-worker-runtime.d.ts",
       "default": "./dist/plugin-sdk/github-worker-runtime.js"
     },
     "./plugin-sdk/websocket-runtime": {
