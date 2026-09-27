@@ -1932,147 +1932,85 @@ describe("AcpxRuntime fresh reset wrapper", () => {
     ]);
   });
 
-  it("does not clean up a stale close pid reused by another wrapper root", async () => {
-    const baseStore: TestSessionStore = {
-      load: vi.fn(async () => ({
-        acpxRecordId: "agent:codex:acp:binding:test",
-        agentCommand: 'node "/tmp/openclaw/acpx/codex-acp-wrapper.mjs"',
-        pid: 920,
-      })),
-      save: vi.fn(async () => {}),
-    };
-    const killed: Array<{ pid: number; signal: NodeJS.Signals }> = [];
-    const { runtime, delegate } = makeRuntime(
-      baseStore,
-      {
-        openclawWrapperRoot: "/tmp/openclaw/acpx",
-      },
-      {
-        openclawProcessCleanup: {
-          listProcesses: vi.fn(async () => [
-            {
-              pid: 920,
-              ppid: 1,
-              command: 'node "/tmp/other-gateway/acpx/codex-acp-wrapper.mjs"',
-            },
-          ]),
-          killProcess: vi.fn((pid, signal) => {
-            killed.push({ pid, signal });
-          }),
-          sleep: vi.fn(async () => {}),
-        },
-      },
-    );
-    vi.spyOn(delegate, "close").mockResolvedValue(undefined);
-
-    await runtime.close({
-      handle: {
-        sessionKey: "agent:codex:acp:binding:test",
-        backend: "acpx",
-        runtimeSessionName: "agent:codex:acp:binding:test",
-      },
-      reason: "user-close",
-    });
-
-    expect(killed).toStrictEqual([]);
-  });
-
-  it("cleans up non-lease-aware wrapper commands through fallback close cleanup", async () => {
-    const baseStore: TestSessionStore = {
-      load: vi.fn(async () => ({
-        acpxRecordId: "agent:codex:acp:binding:test",
-        agentCommand: CODEX_ACP_WRAPPER_COMMAND,
-        pid: 920,
-      })),
-      save: vi.fn(async () => {}),
-    };
-    const killed: Array<{ pid: number; signal: NodeJS.Signals }> = [];
-    const { runtime, delegate } = makeRuntime(
-      baseStore,
-      {
-        openclawGatewayInstanceId: "gateway-test",
-        openclawWrapperRoot: "/tmp/openclaw/acpx",
-      },
-      {
-        openclawProcessCleanup: {
-          listProcesses: vi.fn(async () => [
-            {
-              pid: 920,
-              ppid: 1,
-              command: CODEX_ACP_WRAPPER_COMMAND,
-            },
-            { pid: 921, ppid: 920, command: "node child.js" },
-          ]),
-          killProcess: vi.fn((pid, signal) => {
-            killed.push({ pid, signal });
-          }),
-          sleep: vi.fn(async () => {}),
-        },
-      },
-    );
-    vi.spyOn(delegate, "close").mockResolvedValue(undefined);
-
-    await runtime.close({
-      handle: {
-        sessionKey: "agent:codex:acp:binding:test",
-        backend: "acpx",
-        runtimeSessionName: "agent:codex:acp:binding:test",
-      },
-      reason: "user-close",
-    });
-
-    expect(killed.slice(0, 2)).toEqual([
-      { pid: 921, signal: "SIGTERM" },
-      { pid: 920, signal: "SIGTERM" },
-    ]);
-  });
-
-  it("uses session lease metadata for fallback close cleanup identity checks", async () => {
-    const baseStore: TestSessionStore = {
-      load: vi.fn(async () => ({
-        acpxRecordId: "agent:codex:acp:binding:test",
+  for (const testCase of [
+    {
+      title: "does not clean up a stale close pid reused by another wrapper root",
+      record: { agentCommand: 'node "/tmp/openclaw/acpx/codex-acp-wrapper.mjs"', pid: 920 },
+      options: {},
+      processes: [
+        { pid: 920, ppid: 1, command: 'node "/tmp/other-gateway/acpx/codex-acp-wrapper.mjs"' },
+      ],
+    },
+    {
+      title: "cleans up non-lease-aware wrapper commands through fallback close cleanup",
+      record: { agentCommand: CODEX_ACP_WRAPPER_COMMAND, pid: 920 },
+      options: { openclawGatewayInstanceId: "gateway-test" },
+      processes: [
+        { pid: 920, ppid: 1, command: CODEX_ACP_WRAPPER_COMMAND },
+        { pid: 921, ppid: 920, command: "node child.js" },
+      ],
+      expectedKillPrefix: [
+        { pid: 921, signal: "SIGTERM" },
+        { pid: 920, signal: "SIGTERM" },
+      ],
+    },
+    {
+      title: "uses session lease metadata for fallback close cleanup identity checks",
+      record: {
         agentCommand: 'node "/tmp/openclaw/acpx/codex-acp-wrapper.mjs"',
         openclawGatewayInstanceId: "gateway-test",
         openclawLeaseId: "lease-record",
         pid: 920,
-      })),
-      save: vi.fn(async () => {}),
-    };
-    const killed: Array<{ pid: number; signal: NodeJS.Signals }> = [];
-    const { runtime, delegate } = makeRuntime(
-      baseStore,
-      {
-        openclawGatewayInstanceId: "gateway-test",
-        openclawWrapperRoot: "/tmp/openclaw/acpx",
       },
-      {
-        openclawProcessCleanup: {
-          listProcesses: vi.fn(async () => [
-            {
-              pid: 920,
-              ppid: 1,
-              command: `${CODEX_ACP_WRAPPER_COMMAND} ${OPENCLAW_ACPX_LEASE_ID_ARG} other-lease ${OPENCLAW_GATEWAY_INSTANCE_ID_ARG} gateway-test`,
-            },
-          ]),
-          killProcess: vi.fn((pid, signal) => {
-            killed.push({ pid, signal });
-          }),
-          sleep: vi.fn(async () => {}),
+      options: { openclawGatewayInstanceId: "gateway-test" },
+      processes: [
+        {
+          pid: 920,
+          ppid: 1,
+          command: `${CODEX_ACP_WRAPPER_COMMAND} ${OPENCLAW_ACPX_LEASE_ID_ARG} other-lease ${OPENCLAW_GATEWAY_INSTANCE_ID_ARG} gateway-test`,
         },
-      },
-    );
-    vi.spyOn(delegate, "close").mockResolvedValue(undefined);
+      ],
+    },
+  ]) {
+    it(testCase.title, async () => {
+      const baseStore: TestSessionStore = {
+        load: vi.fn(async () => ({
+          acpxRecordId: "agent:codex:acp:binding:test",
+          ...testCase.record,
+        })),
+        save: vi.fn(async () => {}),
+      };
+      const killed: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+      const { runtime, delegate } = makeRuntime(
+        baseStore,
+        { ...testCase.options, openclawWrapperRoot: "/tmp/openclaw/acpx" },
+        {
+          openclawProcessCleanup: {
+            listProcesses: vi.fn(async () => testCase.processes.map((process) => ({ ...process }))),
+            killProcess: vi.fn((pid, signal) => {
+              killed.push({ pid, signal });
+            }),
+            sleep: vi.fn(async () => {}),
+          },
+        },
+      );
+      vi.spyOn(delegate, "close").mockResolvedValue(undefined);
 
-    await runtime.close({
-      handle: {
-        sessionKey: "agent:codex:acp:binding:test",
-        backend: "acpx",
-        runtimeSessionName: "agent:codex:acp:binding:test",
-      },
-      reason: "user-close",
+      await runtime.close({
+        handle: {
+          sessionKey: "agent:codex:acp:binding:test",
+          backend: "acpx",
+          runtimeSessionName: "agent:codex:acp:binding:test",
+        },
+        reason: "user-close",
+      });
+
+      if ("expectedKillPrefix" in testCase) {
+        expect(killed.slice(0, 2)).toEqual(testCase.expectedKillPrefix);
+      } else {
+        expect(killed).toStrictEqual([]);
+      }
     });
-
-    expect(killed).toStrictEqual([]);
-  });
+  }
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
