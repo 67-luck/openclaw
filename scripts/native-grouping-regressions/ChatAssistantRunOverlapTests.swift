@@ -110,7 +110,8 @@ struct ChatAssistantRunGroupTests {
                 if case .run = group.id { Issue.record("Metadata-free input must not acquire inferred ownership") }
             }
         }
-        let live = try #require(groups.first(where: \.includesLive))
+        let liveGroup = groups.first { $0.includesLive }
+        let live = try #require(liveGroup)
         #expect(live.runID == (liveRunID == "run" || secondInputHasRun ? liveRunID : nil))
         #expect(!groups.contains { group in
             group.parts.contains { firstRunParts.contains($0.id) } && group.parts.contains {
