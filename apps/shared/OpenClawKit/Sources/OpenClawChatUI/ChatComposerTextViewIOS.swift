@@ -24,6 +24,9 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
 
     func makeUIView(context: Context) -> ChatComposerUITextView {
         let textView = ChatComposerTextViewIOSFactory.makeConfiguredTextView()
+        textView.probeDesired = self.isEnabled
+        textView.probeEnvironment = self.effectiveEnvironmentEnabled
+        textView.probeRecord("created")
         textView.delegate = context.coordinator
         textView.text = self.text
         self.configureHistoryHandlers(textView)
@@ -31,6 +34,9 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
     }
 
     func updateUIView(_ textView: ChatComposerUITextView, context: Context) {
+        textView.probeDesired = self.isEnabled
+        textView.probeEnvironment = self.effectiveEnvironmentEnabled
+        textView.probeRecord("update")
         context.coordinator.parent = self
         context.coordinator.scheduleInteractionUpdate(textView)
         self.configureHistoryHandlers(textView)
@@ -96,6 +102,7 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
                 self.interactionUpdateScheduled = false
                 guard let textView else { return }
                 let isEnabled = self.parent.interactionEnabled
+                textView.probeRecord("interaction-before")
                 if textView.isEditable != isEnabled {
                     textView.isEditable = isEnabled
                 }
@@ -110,6 +117,7 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
                 } else if !isEnabled, textView.isFirstResponder {
                     textView.resignFirstResponder()
                 }
+                textView.probeRecord("interaction-after")
             }
         }
 
@@ -122,10 +130,12 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
+            (textView as? ChatComposerUITextView)?.probeRecord("editing-began")
             self.parent.onFocusChange(true)
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
+            (textView as? ChatComposerUITextView)?.probeRecord("editing-ended")
             self.parent.onFocusChange(false)
         }
 
@@ -142,13 +152,63 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
 
 @MainActor
 final class ChatComposerUITextView: UITextView {
+    private let probeID = ChatComposerProbe.editorID()
+    var probeDesired = false
+    var probeEnvironment = true
+    private var probeLastTraits: UInt64?
+    private var probeTraitsReads = 0
+    private var probeRecording = false
+
+    func probeRecord(_ event: String, traits: UInt64? = nil) {
+        guard ChatComposerProbe.enabled, !self.probeRecording else { return }
+        self.probeRecording = true
+        defer { self.probeRecording = false }
+        let base = super.accessibilityTraits
+        ChatComposerProbe.record(event, fields: [
+            "editor": self.probeID,
+            "desired": self.probeDesired,
+            "environment": self.probeEnvironment,
+            "editable": self.isEditable,
+            "selectable": self.isSelectable,
+            "interactive": self.isUserInteractionEnabled,
+            "focused": self.isFirstResponder,
+            "attached": self.window != nil,
+            "hidden": self.isHidden,
+            "textLength": min(self.text.utf16.count, 1_000_000),
+            "baseTraits": String(base.rawValue),
+            "baseDisabled": base.contains(.notEnabled),
+            "traitReads": self.probeTraitsReads,
+            "traits": String(traits ?? (self.isEditable ? base : base.union(.notEnabled)).rawValue),
+            "effectiveDisabled": !self.isEditable || base.contains(.notEnabled),
+        ])
+    }
+
     var onHistoryUp: ((Bool) -> Bool)?
     var onHistoryDown: (() -> Bool)?
 
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        self.probeRecord("window-changed")
+    }
+
     override var accessibilityTraits: UIAccessibilityTraits {
         // Preserve UIKit's dynamic keyboard-focus traits when exposing disabled input.
-        get { self.isEditable ? super.accessibilityTraits : super.accessibilityTraits.union(.notEnabled) }
-        set { super.accessibilityTraits = newValue }
+        get {
+            let result = self.isEditable ? super.accessibilityTraits : super.accessibilityTraits.union(.notEnabled)
+            if ChatComposerProbe.enabled {
+                self.probeTraitsReads += 1
+                if self.probeLastTraits != result.rawValue || self.probeTraitsReads.isMultiple(of: 32) {
+                    self.probeLastTraits = result.rawValue
+                    self.probeRecord("traits-read", traits: result.rawValue)
+                }
+            }
+            return result
+        }
+        set {
+            self.probeRecord("traits-set-before", traits: newValue.rawValue)
+            super.accessibilityTraits = newValue
+            self.probeRecord("traits-set-after", traits: newValue.rawValue)
+        }
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {

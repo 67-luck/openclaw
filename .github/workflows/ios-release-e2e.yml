@@ -27,6 +27,8 @@ jobs:
     env:
       TARGET_SHA: ${{ inputs.target_sha || github.sha }}
       E2E_MODE: ${{ inputs.mode }}
+      # Temporary investigation branch: publish projected facts only.
+      OPENCLAW_IOS_COMPOSER_PROBE: "1"
     steps:
       - name: Initialize failure proof and validate inputs
         id: start

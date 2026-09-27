@@ -32,6 +32,7 @@ final class OpenClawSnapshotUITests: XCTestCase {
     private static let appReadinessAccessibilityIdentifier = "RootTabs.Ready"
 
     private var app: XCUIApplication?
+    private var composerProbeStage = "setup"
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -1652,10 +1653,27 @@ extension OpenClawSnapshotUITests {
     }
 
     private func waitForEnabled(_ element: XCUIElement) {
+        self.composerProbe("before-enabled-wait")
         let expectation = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "enabled == true"),
             object: element)
-        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 5), .completed)
+        let result = XCTWaiter.wait(for: [expectation], timeout: 5)
+        self.composerProbe("enabled-wait-finished", result: result == .completed, code: result.rawValue)
+        XCTAssertEqual(result, .completed)
+    }
+
+    private func composerProbe(_ event: String, result: Bool? = nil, code: Int? = nil) {
+        guard ProcessInfo.processInfo.environment["OPENCLAW_IOS_COMPOSER_PROBE"] == "1" else { return }
+        var fields: [String: Any] = [
+            "event": event, "stage": self.composerProbeStage,
+            "uptimeMs": ProcessInfo.processInfo.systemUptime * 1000,
+        ]
+        if let result { fields["result"] = result }
+        if let code { fields["code"] = code }
+        guard let data = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8)
+        else { return }
+        print("IOS_COMPOSER_PROBE \(text)")
     }
 
     private func waitForHittable(_ isHittable: Bool, of element: XCUIElement) {
@@ -1823,6 +1841,9 @@ extension OpenClawSnapshotUITests {
             "--openclaw-initial-destination",
             initialDestination,
         ]
+        if ProcessInfo.processInfo.environment["OPENCLAW_IOS_COMPOSER_PROBE"] == "1" {
+            app.launchArguments.append("--openclaw-composer-probe")
+        }
         app.launch()
         self.app = app
 
@@ -1854,6 +1875,9 @@ extension OpenClawSnapshotUITests {
             "--openclaw-initial-destination",
             initialDestination,
         ]
+        if ProcessInfo.processInfo.environment["OPENCLAW_IOS_COMPOSER_PROBE"] == "1" {
+            app.launchArguments.append("--openclaw-composer-probe")
+        }
         app.launch()
         self.app = app
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 8))
@@ -1874,11 +1898,16 @@ extension OpenClawSnapshotUITests {
         dismissKeyboard: Bool,
         in app: XCUIApplication) throws
     {
+        self.composerProbeStage = stage
+        self.composerProbe("message-start")
         let input = self.chatMessageInput(in: app)
         XCTAssertTrue(input.waitForExistence(timeout: 8))
         self.waitForEnabled(input)
+        self.composerProbe("before-tap")
         input.tap()
+        self.composerProbe("before-type")
         input.typeText(text)
+        self.composerProbe("after-type")
 
         let send = app.buttons["chat-send-message"]
         XCTAssertTrue(send.waitForExistence(timeout: 3))

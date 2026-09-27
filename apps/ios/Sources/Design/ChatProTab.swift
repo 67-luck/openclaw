@@ -54,6 +54,16 @@ struct ChatProTab: View {
     var body: some View {
         self.content
             .disabled(self.isGatewayTransitionPending)
+            .onChange(of: self.composerProbeReadiness, initial: true) { _, facts in
+                guard let facts else { return }
+                ChatComposerProbe.readiness(
+                    picker: facts[0],
+                    handoff: facts[1],
+                    ownerMismatch: facts[2],
+                    connected: facts[3],
+                    offline: facts[4],
+                    attachment: facts[5])
+            }
             .task {
                 if self.speech == nil {
                     let gateway = self.appModel.operatorSession
@@ -62,6 +72,19 @@ struct ChatProTab: View {
                     }
                 }
             }
+    }
+
+    private var composerProbeReadiness: [Bool]? {
+        guard ChatComposerProbe.enabled else { return nil }
+        return [
+            self.appModel.isGatewayPickerRequestInFlight,
+            self.gatewayController.hasPendingConnectionHandoff,
+            !self.isAttachmentOwnerPinned && self.appModel.chatPresentation.ownerID != self.appModel
+                .chatViewModelOwnerID,
+            self.gatewayConnected,
+            self.canQueueOffline,
+            self.viewModel?.isSendingAttachmentDraft == true,
+        ]
     }
 
     private var isGatewayTransitionPending: Bool {

@@ -20,6 +20,10 @@ import {
   type Operation,
   type TrialDependencies,
 } from "../ios-release-e2e.js";
+import {
+  collectComposerAppProjection,
+  createComposerTestProjection,
+} from "./ios-composer-probe.js";
 import { hasUnjoinedWork, runManagedCommand } from "./managed-child-process.mjs";
 
 const DEVICE_TYPE = "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro";
@@ -41,6 +45,15 @@ export async function createNativeDependencies(options: {
     throw new Error("macos-arm64-required");
   }
   const cwd = process.cwd();
+  const composerProbeEnabled = process.env.OPENCLAW_IOS_COMPOSER_PROBE === "1";
+  const composerCaptures: Record<string, unknown>[] = [];
+  if (composerProbeEnabled) {
+    options.proof.composerProbe = {
+      schema: 1,
+      investigationOnly: true,
+      captures: composerCaptures,
+    };
+  }
   let retainRoot = false;
   const preserveResources = () => {
     if (!retainRoot) {
@@ -58,14 +71,28 @@ export async function createNativeDependencies(options: {
       timeoutMs?: number;
       cleanup?: boolean;
       captureChatFailure?: () => Promise<string[]>;
+      composerProbe?: {
+        feed: (stream: "stdout" | "stderr", chunk: Buffer) => void;
+        capture: (phase: "assertion" | "completion") => Promise<void>;
+      };
     } = {},
   ) => {
     let stdout = "";
     let stderr = "";
     const started = performance.now();
     let failureContext: Promise<string[]> | undefined;
+    let composerFailureContext: Promise<void> | undefined;
     const observeChatFailure = () => {
       const capture = config.captureChatFailure;
+      if (
+        !composerFailureContext &&
+        config.composerProbe &&
+        !`${stdout}\n${stderr}`.matchAll(IOS_RELEASE_TEST_FAILURE_LOCATION).next().done
+      ) {
+        // The collector projects fixed facts and catches its own failures; join before cleanup.
+        composerFailureContext = config.composerProbe.capture("assertion");
+        void composerFailureContext.catch(() => {});
+      }
       if (
         !failureContext &&
         capture &&
@@ -94,10 +121,12 @@ export async function createNativeDependencies(options: {
         signal: config.cleanup ? undefined : options.signal,
         onReady(child) {
           child.stdout?.on("data", (chunk: Buffer) => {
+            config.composerProbe?.feed("stdout", chunk);
             stdout = (stdout + chunk.toString()).slice(-16 * 1024 * 1024);
             observeChatFailure();
           });
           child.stderr?.on("data", (chunk: Buffer) => {
+            config.composerProbe?.feed("stderr", chunk);
             stderr = (stderr + chunk.toString()).slice(-4096);
             observeChatFailure();
           });
@@ -110,6 +139,9 @@ export async function createNativeDependencies(options: {
       const failure = operationError(operation, error, `${stderr}\n${stdout}`);
       failure.diagnostic.context.push(...((await failureContext) ?? []));
       throw failure;
+    } finally {
+      await composerFailureContext;
+      await config.composerProbe?.capture("completion");
     }
     const context = (await failureContext) ?? [];
     if (code !== 0) {
@@ -415,6 +447,61 @@ export async function createNativeDependencies(options: {
               }
               const resultBundle = path.join(root, `trial-${index}.xcresult`);
               const fixture = instance;
+              const composerTest = createComposerTestProjection();
+              const captureComposer = async (phase: "assertion" | "completion") => {
+                const capture: Record<string, unknown> = {
+                  trial: index,
+                  phase,
+                  uptimeMs: Math.round(os.uptime() * 1000),
+                  test: composerTest.snapshot(),
+                };
+                composerCaptures.push(capture);
+                const deadline = performance.now() + 30_000;
+                const remaining = () => {
+                  const ms = Math.floor(deadline - performance.now());
+                  if (ms <= 0) {
+                    throw new OperationError("app-diagnostics", "timeout");
+                  }
+                  return ms;
+                };
+                try {
+                  const bundleID = await command(
+                    "app-diagnostics",
+                    "/usr/bin/plutil",
+                    [
+                      "-extract",
+                      "CFBundleIdentifier",
+                      "raw",
+                      "-o",
+                      "-",
+                      path.join(
+                        root,
+                        "DerivedData/Build/Products/Debug-iphonesimulator/OpenClaw.app/Info.plist",
+                      ),
+                    ],
+                    { timeoutMs: remaining() },
+                  );
+                  const container = await command(
+                    "app-diagnostics",
+                    "xcrun",
+                    ["simctl", "get_app_container", udid!, bundleID, "data"],
+                    { timeoutMs: remaining() },
+                  );
+                  capture.app = await collectComposerAppProjection(container);
+                } catch (error) {
+                  const code = error instanceof OperationError ? error.diagnostic.code : "failed";
+                  capture.app = {
+                    status: "unavailable",
+                    reason:
+                      code === "timeout"
+                        ? "collection-timeout"
+                        : code === "cancelled"
+                          ? "cancelled"
+                          : "collection-failed",
+                  };
+                }
+                capture.finishedUptimeMs = Math.round(os.uptime() * 1000);
+              };
               await command(
                 "native-test",
                 "xcodebuild",
@@ -430,8 +517,19 @@ export async function createNativeDependencies(options: {
                   "test-without-building",
                 ],
                 {
-                  env: testRunnerEnv(setupCode.trim()),
+                  env: {
+                    ...testRunnerEnv(setupCode.trim()),
+                    ...(composerProbeEnabled
+                      ? { TEST_RUNNER_OPENCLAW_IOS_COMPOSER_PROBE: "1" }
+                      : {}),
+                  },
                   timeoutMs: 600_000,
+                  composerProbe: composerProbeEnabled
+                    ? {
+                        feed: (stream, chunk) => composerTest.feed(stream, chunk),
+                        capture: captureComposer,
+                      }
+                    : undefined,
                   captureChatFailure:
                     test === IOS_RELEASE_TESTS[1]
                       ? async () => {
