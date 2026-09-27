@@ -489,6 +489,7 @@ describe("findSettingsSearchBlocks", () => {
     ["chat prose", "Typography", "#settings-appearance-typography"],
     ["sidebar", "Sidebar", "#settings-appearance-sidebar"],
     ["camera", "Chat", "#settings-appearance-chat"],
+    ["external browser", "Chat", "#settings-appearance-chat"],
     ["show task progress cards", "Chat", "#settings-appearance-chat"],
   ])("finds the appearance control for %s", (query, label, hash) => {
     const matches = findSettingsSearchBlocks({

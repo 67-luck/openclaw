@@ -28,6 +28,17 @@ import {
 describe("settings preference persistence", () => {
   installSettingsStorageLifecycle();
 
+  it("persists external link opt-in per browser Gateway and restores the existing default", () => {
+    setTestLocation({ protocol: "https:", host: "gateway.example", pathname: "/" });
+    expect(loadSettings().openLinksExternally).not.toBe(true);
+    const gatewayUrl = loadSettings().gatewayUrl;
+    patchSettings({ openLinksExternally: true });
+    expect(loadUiPreferences(gatewayUrl).openLinksExternally).toBe(true);
+    expect(loadUiPreferences("wss://other.example").openLinksExternally).not.toBe(true);
+    patchSettings({ openLinksExternally: false });
+    expect(loadUiPreferences(gatewayUrl).openLinksExternally).not.toBe(true);
+  });
+
   it.each([false, true])(
     "keeps the live connection URL when a same-scope spelling was persisted (private storage: %s)",
     (privateStorage) => {
