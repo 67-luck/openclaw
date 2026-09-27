@@ -107,6 +107,8 @@ describe("CI changed lint", () => {
       .selectShards(full)
       .flatMap(({ args }) => args.slice(2));
     expect(rootTargets.toSorted()).toEqual(["scripts/helper.ts", "src/callee.ts"]);
+    write("src/globals.ts", "export {}; declare /* contract */ global { interface Window {} }\n");
+    expect(await resolveChangedOxlintFileScope(["src/globals.ts"], cwd)).toBeUndefined();
     expect(
       await resolveChangedOxlintFileScope(["packages/example/deleted.ts"], cwd),
     ).toBeUndefined();
@@ -270,7 +272,7 @@ describe("CI changed lint", () => {
         "ui/src/app-navigation.ts",
         "extensions/telegram/src/send.ts",
         "scripts/lib/arg-utils.mts",
-        "test/scripts/ci-changed-lint.test.ts",
+        "test/scripts/ci-check-plan.test.ts",
       ];
       const result = detectChangedLanes(paths);
       const plan = await createChangedCiLintPlan(result, { runnerProfile });

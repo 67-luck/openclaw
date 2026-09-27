@@ -1168,11 +1168,10 @@ export async function resolveChangedOxlintFileScope(
   if (!changedFiles.every((file) => isOxlintSourcePath(file, cwd) || rootTest(file))) {
     return undefined;
   }
-  // Ambient/module augmentations can affect consumers without an import edge.
+  // Declarations can affect consumers without import edges. Match the keyword
+  // so comments between declare and global/module cannot hide an augmentation.
   if (
-    changedFiles.some((file) =>
-      /\bdeclare\s+(?:global|module)\b/u.test(readFileSync(path.join(cwd, file), "utf8")),
-    )
+    changedFiles.some((file) => /\bdeclare\b/u.test(readFileSync(path.join(cwd, file), "utf8")))
   ) {
     return undefined;
   }
