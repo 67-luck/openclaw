@@ -126,12 +126,12 @@ final class NativeNarrationUITests: XCTestCase {
 
         XCTAssertTrue(read.waitForExistence(timeout: 5), "Recovered tool result must remain interactive")
         XCTAssertTrue(read.isHittable)
-        read.click()
+        self.clickToolHeader(read)
         let toolResult = self.narration("Layout checked.", in: app)
         XCTAssertTrue(toolResult.waitForExistence(timeout: 5))
         self.assertRunPresentation(in: app.windows.firstMatch, stage: stage)
         try await self.capture(app, stage: stage, state: "tool-expanded")
-        read.click()
+        self.clickToolHeader(read)
         XCTAssertTrue(toolResult.waitForNonExistence(timeout: 5))
 
         _ = try await self.control("complete", method: "POST")
@@ -199,6 +199,14 @@ final class NativeNarrationUITests: XCTestCase {
             frames.count,
             stage == "after" ? 1 : 0,
             "Grouped candidate must expose exactly one run container in each native chat surface")
+    }
+
+    @MainActor
+    private func clickToolHeader(_ tool: XCUIElement) {
+        // macOS reports the expanded result inside this button's AX frame, so
+        // its center falls below the actual header. Click the observed chevron.
+        tool.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+            .withOffset(CGVector(dx: 20, dy: 23)).click()
     }
 
     @MainActor
