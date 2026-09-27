@@ -5,6 +5,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { loadCodexToolOutcomeFixture } from "../extensions/codex/test-api.js";
 import { createAgentToolExecutionBudget } from "../src/agents/agent-tool-source-execution-guard.js";
 import { createHostWorkspaceWriteTool } from "../src/agents/agent-tools.read.js";
+import { createExecTool } from "../src/agents/bash-tools.exec-run.js";
+import { replaceSessionEntry } from "../src/config/sessions/session-accessor.js";
 import { emitAgentEvent } from "../src/infra/agent-events.js";
 import {
   onTrustedToolExecutionEvent,
@@ -12,6 +14,7 @@ import {
   waitForDiagnosticEventsDrained,
   emitTrustedDiagnosticEvent,
 } from "../src/infra/diagnostic-events.js";
+import { saveExecApprovals } from "../src/infra/exec-approvals.js";
 import {
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
@@ -19,8 +22,13 @@ import {
 import { createMockPluginRegistry } from "../src/plugins/hooks.test-helpers.js";
 import { createEmptyPluginRegistry } from "../src/plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../src/plugins/runtime.js";
+import {
+  authorizeObservedClientVoiceConfirmation,
+  bindAuthorizedClientVoiceConfirmation,
+} from "../src/talk/client-voice-confirmation.js";
 import { resetClientVoiceConfirmationStateForTest } from "../src/talk/client-voice-confirmation.test-support.js";
 import {
+  appendClientVoiceTranscript,
   createOrResumeClientVoiceSession,
   registerClientVoiceConsultRun,
 } from "../src/talk/client-voice-session.js";
@@ -41,7 +49,11 @@ describe("source execution through native presentation and voice effects", () =>
   beforeEach(async () => {
     tempDir = tempDirs.make("openclaw-source-outcome-");
     setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
-    voiceSessionId = createOrResumeClientVoiceSession({ ...context, origin: "client" });
+    voiceSessionId = createOrResumeClientVoiceSession({
+      ...context,
+      origin: "client",
+      transcriptCapable: true,
+    });
     registerClientVoiceConsultRun({ ...context, voiceSessionId });
   });
   afterEach(async () => {
@@ -54,6 +66,88 @@ describe("source execution through native presentation and voice effects", () =>
     vi.useRealTimers();
     setDiagnosticsEnabledForProcess(true);
   });
+
+  it.each(["yes", "no", "host-deny"] as const)(
+    "composes a real exec challenge, finalized %s transcript, and native dispatch",
+    async (answer) => {
+      await replaceSessionEntry(
+        { agentId: context.agentId, sessionKey: context.sessionKey },
+        { sessionId: "voice-exec", updatedAt: Date.now() },
+      );
+      saveExecApprovals({ version: 1, defaults: { security: "full", ask: "off" }, agents: {} });
+      const target = path.join(tempDir, "confirmed-effect.txt");
+      const args = { command: "printf x >> " + JSON.stringify(target) };
+      const tool = createExecTool({
+        agentId: context.agentId,
+        runId: context.runId,
+        cwd: tempDir,
+        host: "gateway",
+        mode: "full",
+        notifyOnExit: false,
+        allowBackground: false,
+      });
+      const fixture = createCodexToolOutcomeFixture({ hookContext: context, tool });
+      const challenge = await fixture.call(args, "challenge");
+      expect(challenge).toMatchObject({ success: false });
+      expect(JSON.stringify(challenge)).toContain("VOICE_CONFIRMATION_REQUIRED:");
+      await expect(fs.stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+      // Host-observed utterance must be later than the challenge, not a client timestamp.
+      // Only Date is faked; filesystem, SQLite and exec remain the real implementations.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(Date.now() + 10);
+      const transcript = {
+        agentId: context.agentId,
+        voiceSessionId,
+        sessionKey: context.sessionKey,
+        sessionTarget: { sessionKey: context.sessionKey },
+        entryId: "answer",
+        role: "user" as const,
+        text: answer === "no" ? "no" : "yes",
+      };
+      await appendClientVoiceTranscript(transcript);
+      const scope = { agentId: context.agentId, voiceSessionId };
+      const grant = authorizeObservedClientVoiceConfirmation(scope);
+      if (answer === "no") {
+        expect(grant).toBeUndefined();
+        expect(await fixture.call(args, "after-no")).toMatchObject({ success: false });
+        await expect(fs.stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.effects).toEqual([]);
+        return;
+      }
+      expect(grant).toBeDefined();
+      if (!grant) {
+        throw new Error("persisted yes did not authorize the challenged action");
+      }
+      expect(bindAuthorizedClientVoiceConfirmation({ grant, runId: context.runId })).toBe(true);
+      expect(bindAuthorizedClientVoiceConfirmation({ grant, runId: context.runId })).toBe(false);
+      if (answer === "host-deny") {
+        saveExecApprovals({ version: 1, defaults: { security: "deny", ask: "off" }, agents: {} });
+      }
+      const execution = await fixture.call(args, "confirmed");
+      expect(execution, JSON.stringify(execution)).toMatchObject({ success: answer === "yes" });
+      if (answer === "host-deny") {
+        expect(JSON.stringify(execution)).toContain("security=deny");
+        await expect(fs.stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+      } else {
+        expect(await fs.readFile(target, "utf8")).toBe("x");
+        expect(await fixture.call(args, "confirmed")).toEqual(execution);
+        expect(await fs.readFile(target, "utf8")).toBe("x");
+        expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.effects).toEqual([
+          expect.objectContaining({
+            toolName: "exec",
+            toolCallId: "confirmed",
+            status: "succeeded",
+          }),
+        ]);
+      }
+      expect(await fixture.call(args, "consumed-grant")).toMatchObject({ success: false });
+      await appendClientVoiceTranscript(transcript);
+      expect(authorizeObservedClientVoiceConfirmation(scope)).toBeUndefined();
+      if (answer === "yes") {
+        expect(await fs.readFile(target, "utf8")).toBe("x");
+      }
+    },
+  );
 
   it.each(["blocked", "failed", "throw"])(
     "keeps a real successful write when native presentation becomes %s",

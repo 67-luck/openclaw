@@ -149,10 +149,6 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
   const projectorRef: { current?: CodexAppServerEventProjector } = {};
   const emitNativePreToolUseFailure = (failure: CodexNativePreToolUseFailure) => {
     emitCodexNativePreToolUseFailureDiagnostic({
-      agentId: sessionAgentId,
-      sessionId: params.sessionId,
-      sessionKey: contextSessionKey,
-      runId: params.runId,
       signal: runAbortController.signal,
       failure,
       ...(state.nativePreToolUseFailureFallbackActive

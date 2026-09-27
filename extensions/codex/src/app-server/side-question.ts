@@ -177,6 +177,9 @@ export async function runCodexAppServerSideQuestion(
     config: params.cfg,
   });
   const hostCapabilities = params.hostCapabilities;
+  if (!hostCapabilities.bindToolExecution) {
+    throw new Error("Codex requires host execution reporting; update OpenClaw.");
+  }
   const { binding, assertCurrent } = await resolveCodexSessionBinding({
     bindingStore: options.bindingStore,
     identity: bindingIdentity,
@@ -387,10 +390,6 @@ export async function runCodexAppServerSideQuestion(
     | undefined;
   const emitNativePreToolUseFailure = (failure: CodexNativePreToolUseFailure) => {
     emitCodexNativePreToolUseFailureDiagnostic({
-      agentId: sessionAgentId,
-      sessionId: params.sessionId,
-      sessionKey: params.sessionKey,
-      runId: sideRunParams.runId,
       signal: runAbortController.signal,
       failure,
       ...(nativePreToolUseFailureFallbackActive
@@ -647,7 +646,8 @@ export async function runCodexAppServerSideQuestion(
           turnStartTimeoutMs: appServer.requestTimeoutMs,
         }),
         signal: runAbortController.signal,
-        runBeforeToolCall: sideRunParams.hostCapabilities.runBeforeToolCall,
+        runBeforeToolCall: hostCapabilities.runBeforeToolCall,
+        bindToolExecution: hostCapabilities.bindToolExecution,
         assertActive: assertCurrent,
         onPreToolUseFailure: (failure) => {
           if (nativePreToolUseFailureFallbackActive) {
@@ -900,17 +900,16 @@ export async function runCodexAppServerSideQuestion(
     turnId = turnResponse.turn.id;
     assertCurrent();
     nativeToolLifecycleProjector = new CodexNativeToolLifecycleProjector(
-      { ...sideRunParams, agentId: sessionAgentId },
+      sideRunParams,
       sideThreadId,
       turnId,
       {
         runAbortSignal: runAbortController.signal,
       },
     );
-    for (const failure of pendingNativePreToolUseFailures) {
+    for (const failure of pendingNativePreToolUseFailures.splice(0)) {
       nativeToolLifecycleProjector.recordPreToolUseFailure(failure);
     }
-    pendingNativePreToolUseFailures.length = 0;
     if (!collector) {
       throw new Error("Codex side thread route was not reserved");
     }
@@ -1130,6 +1129,7 @@ async function createCodexSideToolBridge(input: {
   );
   return {
     toolBridge: createCodexDynamicToolBridge({
+      bindToolExecution: params.hostCapabilities.bindToolExecution,
       tools: exposedTools,
       signal: input.runAbortController.signal,
       loading: resolveCodexDynamicToolsLoading(input.pluginConfig),

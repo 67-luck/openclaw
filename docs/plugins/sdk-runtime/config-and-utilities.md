@@ -307,16 +307,16 @@ queue behavior.
 
 ### Tool execution facts
 
-Execution-owning adapters use `emitTrustedToolExecutionEvent(event, options?)`
-from `openclaw/plugin-sdk/diagnostic-runtime` for raw source starts, outcomes,
-and pre-execution denials. These metadata-only facts remain available to
-operational consumers when optional diagnostics are disabled. A start means
-the source callback was entered, not that an OS side effect occurred.
+Native execution-owning adapters use the admitted harness host
+`bindToolExecution({ toolName, toolCallId })` capability for raw source starts,
+outcomes, and pre-execution denials. The action handle fixes run, agent, session,
+and plugin identity. See [host execution reporting](/plugins/sdk-agent-harness/user-input-and-execution).
+These metadata-only facts remain available when optional diagnostics are disabled.
+A start describes source execution, not proof of an OS side effect.
 
-The emitter also publishes optional diagnostics unless `emitDiagnostics: false`
-is set. Optional `privateData` stays on the diagnostic channel; it is never
-included in the operational event. Existing diagnostic and audit collection
-settings still apply. Neither channel grants execution authority.
+The core emitter is internal. Private diagnostic content stays on the diagnostic
+channel and is never accepted by the operational reporter. Existing diagnostic
+and audit collection settings still apply. Neither channel grants execution authority.
 
 Use `emitTrustedDiagnosticEvent` or `emitTrustedDiagnosticEventWithPrivateData`
 for presentation observations, including results rewritten by middleware.
