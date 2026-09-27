@@ -1,9 +1,14 @@
 // Native task/process inspection and sanitized proof rendering.
-import { spawnSync } from "node:child_process";
+import childProcess, { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
+import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
+import { isErrno } from "../infra/errno.js";
+import { resolveEnvironmentValue } from "../infra/process-env.js";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
 import { execSchtasks } from "./schtasks-exec.js";
 import { probeScheduledTaskState } from "./schtasks-state-probe.js";
@@ -42,10 +47,137 @@ export async function readTaskXml(taskName: string): Promise<string | null> {
 
 type TaskDefinitionSnapshot = { exists: false; taskXml: null } | { exists: true; taskXml: string };
 
+// Temporary proof-only observation of the first real Task Scheduler probe; remove after diagnosis.
+let observedInitialDefinitionProbe = false;
+function observeInitialDefinitionProbe(
+  taskName: string,
+): ReturnType<typeof probeScheduledTaskState> {
+  if (observedInitialDefinitionProbe) {
+    return probeScheduledTaskState(taskName);
+  }
+  observedInitialDefinitionProbe = true;
+  const accountHome = os.userInfo().homedir;
+  const replacements = resolveDiagnosticReplacements({
+    rootDir: process.cwd(),
+    stateDir: accountHome,
+  });
+  const boundedText = (value: unknown) => {
+    const raw =
+      typeof value === "string" ? value : Buffer.isBuffer(value) ? value.toString("utf8") : "";
+    const sanitized = sanitizeDiagnosticText(raw, replacements) ?? "";
+    return {
+      characters: raw.length,
+      truncated: sanitized.length > 4096,
+      text: sanitized.slice(0, 4096),
+    };
+  };
+  const originalSpawnSync = childProcess.spawnSync;
+  const nativeDurationsMs: number[] = [];
+  const observer = vi.spyOn(childProcess, "spawnSync").mockImplementation((...args) => {
+    const startedAt = performance.now();
+    try {
+      return originalSpawnSync(...args);
+    } finally {
+      nativeDurationsMs.push(performance.now() - startedAt);
+    }
+  });
+  let normalizedOutcome: ReturnType<typeof probeScheduledTaskState> | undefined;
+  try {
+    syncBuiltinESMExports();
+    normalizedOutcome = probeScheduledTaskState(taskName);
+    return normalizedOutcome;
+  } finally {
+    const calls = observer.mock.calls.map((args, index) => ({
+      args,
+      outcome: observer.mock.results[index],
+      elapsedMs: nativeDurationsMs[index],
+    }));
+    observer.mockRestore();
+    syncBuiltinESMExports();
+    console.log(
+      `[windows-task-preflight] ${JSON.stringify(
+        {
+          phase: "first-task-definition-probe",
+          normalizedOutcome:
+            normalizedOutcome?.status === "unknown"
+              ? { ...normalizedOutcome, detail: boundedText(normalizedOutcome.detail) }
+              : normalizedOutcome,
+          nativeCallCount: calls.length,
+          calls: calls.map(({ args: [command, args, options], outcome, elapsedMs }) => {
+            const encodedIndex = args?.indexOf("-EncodedCommand") ?? -1;
+            const result = outcome?.type === "return" ? outcome.value : undefined;
+            const readEnv = (key: string) => resolveEnvironmentValue(options?.env, key, "win32");
+            const matchesHome = (key: string) => {
+              const value = readEnv(key);
+              return Boolean(
+                value &&
+                path.win32.resolve(value).toLowerCase() ===
+                  path.win32.resolve(accountHome).toLowerCase(),
+              );
+            };
+            return {
+              command: boundedText(command),
+              argvSha256: createHash("sha256")
+                .update(JSON.stringify(args ?? []))
+                .digest("hex"),
+              argv: args?.map((arg, index) =>
+                index === encodedIndex + 1 && encodedIndex >= 0
+                  ? "<decoded-command>"
+                  : boundedText(arg),
+              ),
+              decodedCommand:
+                encodedIndex >= 0
+                  ? boundedText(
+                      Buffer.from(args?.[encodedIndex + 1] ?? "", "base64").toString("utf16le"),
+                    )
+                  : undefined,
+              options: {
+                timeout: options?.timeout,
+                encoding: options?.encoding,
+                windowsHide: options?.windowsHide,
+              },
+              environment: {
+                homeMatchesAccountHome: matchesHome("HOME"),
+                userProfileMatchesAccountHome: matchesHome("USERPROFILE"),
+                present: Object.fromEntries(
+                  [
+                    "HOME",
+                    "USERPROFILE",
+                    "APPDATA",
+                    "LOCALAPPDATA",
+                    "TEMP",
+                    "TMP",
+                    "PSMODULEANALYSISCACHEPATH",
+                  ].map((key) => [key, Boolean(readEnv(key))]),
+                ),
+              },
+              elapsedMs,
+              resultType: outcome?.type,
+              pid: result?.pid,
+              status: result?.status,
+              signal: result?.signal,
+              error: result?.error && {
+                name: result.error.name,
+                code: isErrno(result.error) ? result.error.code : undefined,
+                message: boundedText(result.error.message),
+              },
+              thrown: outcome?.type === "throw" ? boundedText(String(outcome.value)) : undefined,
+              stdout: boundedText(result?.stdout),
+              stderr: boundedText(result?.stderr),
+            };
+          }),
+        },
+        (_key, value: unknown) =>
+          typeof value === "string" ? sanitizeDiagnosticText(value, replacements) : value,
+      )}`,
+    );
+  }
+}
+
 export async function readTaskDefinitionSnapshot(
   taskName: string,
 ): Promise<TaskDefinitionSnapshot> {
-  const probe = probeScheduledTaskState(taskName);
+  const probe = observeInitialDefinitionProbe(taskName);
   if (probe.status === "unknown") {
     const detail = sanitizeDiagnosticText(probe.detail, [[os.userInfo().homedir, "<user-home>"]]);
     throw new Error(`Could not determine whether Scheduled Task ${taskName} exists: ${detail}`, {
