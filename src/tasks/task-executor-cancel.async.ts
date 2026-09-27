@@ -116,7 +116,7 @@ export async function cancelDetachedTaskRunByIdAsync(
     if (hasSqliteWorkerOutcomeUnknown(error)) {
       throw error;
     }
-    return { found: true, cancelled: false, reason: formatErrorMessage(error) };
+    return { found: selected !== undefined, cancelled: false, reason: formatErrorMessage(error) };
   } finally {
     active = false;
     selection?.release();

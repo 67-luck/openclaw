@@ -88,6 +88,7 @@ const patternFiles = createPatternFileHelper("openclaw-vitest-projects-config-")
 const scopedGatewayMethodsIsolatedTestFiles = [
   "server-methods/chat-metadata-runtime.cache.test.ts",
   "server-methods/tasks.access.test.ts",
+  "server-methods/tasks.cancel.test.ts",
   "server-methods/tasks.test.ts",
   "server-methods/agent.task-runtime.test.ts",
   "server-methods/agent.test.ts",

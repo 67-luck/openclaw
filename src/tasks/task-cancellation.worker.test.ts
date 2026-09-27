@@ -241,8 +241,10 @@ it.each([
   "owned externally with later core arrival",
   "later core arrival",
   "delegates to later core arrival",
+  "runtime failure",
 ] as const)("preserves external-only cancellation selection for %s", async (outcome) => {
   await withOpenClawTestState({ layout: "state-only" }, async () => {
+    const coreArrives = outcome !== "owned externally" && outcome !== "runtime failure";
     const entered = createDeferred();
     const release = createDeferred();
     let retained: TaskCancellationControl | undefined;
@@ -253,6 +255,9 @@ it.each([
       entered.resolve();
       await release.promise;
       retained!.assertCurrent();
+      if (outcome === "runtime failure") {
+        throw new Error("External runtime unavailable.");
+      }
       if (outcome === "delegates to later core arrival") {
         return cancelTaskById({ cfg: {}, taskId: task.taskId });
       }
@@ -276,21 +281,23 @@ it.each([
           throw new Error(`External owner was not reached: ${JSON.stringify(result)}`);
         }),
       ]);
-      if (outcome !== "owned externally") {
+      if (coreArrives) {
         upsertTaskWithDeliveryStateToSqlite({ task });
         await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
         expect((await prepareTaskRegistryRead())?.getTaskById(task.taskId)).toEqual(task);
       }
       release.resolve();
       expect(await pending).toMatchObject(
-        outcome.startsWith("owned externally")
-          ? { found: true, cancelled: true }
-          : { found: outcome === "delegates to later core arrival", cancelled: false },
+        outcome === "runtime failure"
+          ? { found: false, cancelled: false, reason: "External runtime unavailable." }
+          : outcome.startsWith("owned externally")
+            ? { found: true, cancelled: true }
+            : { found: outcome === "delegates to later core arrival", cancelled: false },
       );
       expect(externalCancel).toHaveBeenCalledOnce();
       expect(() => retained!.assertCurrent()).toThrow("no longer active");
       expect(loadTaskRegistryStateFromSqliteReadOnly().tasks.get(task.taskId)).toEqual(
-        outcome !== "owned externally" ? task : undefined,
+        coreArrives ? task : undefined,
       );
     } finally {
       release.resolve();
