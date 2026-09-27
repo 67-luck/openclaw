@@ -52,16 +52,22 @@ describe("PR failure cancellation", () => {
     }
   });
 
-  it.each(["blacksmith", "github", "hybrid"] as const)(
-    "reconciles installed check selection with the full %s PR graph",
-    (runnerProfile) => {
+  it.each([
+    { runnerProfile: "blacksmith", runnerBackend: "blacksmith", inline: true },
+    { runnerProfile: "github", runnerBackend: "github", inline: true },
+    { runnerProfile: "hybrid", runnerBackend: "hybrid", inline: true },
+    { runnerProfile: "hybrid", runnerBackend: "runson", inline: false },
+  ] as const)(
+    "reconciles installed check selection with the full $runnerBackend PR graph",
+    ({ runnerProfile, runnerBackend, inline }) => {
       const manifest = runCiManifestFixture({
         bundledPlanner: true,
         checkFamilyScope: true,
         historicalCompatibility: false,
         eventName: "pull_request",
         runnerProfile,
-        runnerBackend: runnerProfile,
+        runnerBackend,
+        nodeRunnerBackend: runnerBackend,
         changedPaths: ["src/agents/example.ts"],
         ciTypeGraphNames: ["core-test-agents-root"],
         changedPlannerSource: `
@@ -80,15 +86,23 @@ describe("PR failure cancellation", () => {
         eventName: "pull_request",
         repository: "openclaw/openclaw",
         runAttempt: 1,
-        runnerBackend: runnerProfile,
+        runnerBackend,
         runnerProfile,
-        preflightOutputs: manifest.outputs,
+        preflightOutputs: { ...manifest.outputs, baseline_ratchets_result: "success" },
         additionalNeeds: {
           "check-plan": { outputs: manifest.checkPlanOutputs, result: "success" },
         },
       };
       const evaluate = (value: string) =>
         evaluateWorkflowExpression(value.startsWith("${{") ? value : `\${{ ${value} }}`, context);
+      expect(evaluate(workflow.jobs["checks-baseline-ratchets"].if)).toBe(!inline);
+      expect(manifest.outputs.baseline_ratchets_in_preflight).toBe(
+        inline ? manifest.outputs.run_baseline_ratchets : "false",
+      );
+      if (!inline) {
+        expect(evaluate(workflow.jobs["checks-baseline-ratchets"]["runs-on"])).toBe("ubuntu-24.04");
+        expect(evaluate(workflow.jobs["check-plan"]["runs-on"])).toBe("ubuntu-24.04");
+      }
       let admitted = 0;
       for (const [name, job] of Object.entries(workflow.jobs) as Array<
         [
@@ -209,50 +223,55 @@ describe("PR failure cancellation", () => {
     ).toBe(true);
   });
 
-  it.skipIf(process.platform === "win32")(
-    "does not reuse a previous attempt's failure cause or monitor result",
-    () => {
-      const workflow = readCiWorkflow();
-      const gate = workflow.jobs["ci-gate"];
-      const context = {
-        eventName: "pull_request" as const,
-        repository: "openclaw/openclaw",
-        runAttempt: 2,
-        failFastOutputs: { failure_job_id: "42", failure_run_attempt: "1" },
-        failFastResult: "failure",
-        preflightOutputs: { run_checks_node_core_nondist: "true" },
-      };
-      expect(evaluateWorkflowExpression(workflow.jobs["pr-fail-fast"].if, context)).toBe(false);
-      expect(evaluateWorkflowExpression(gate.if, { ...context, cancelled: true })).toBe(false);
-      const report = gate.steps.find(
-        (entry: WorkflowStep) => entry.name === "Report originating PR failure",
+  it.skipIf(process.platform === "win32").each([
+    { runAttempt: 1, label: "a retired successful monitor" },
+    { runAttempt: 2, label: "a previous attempt's failure cause and monitor result" },
+  ])("gates the final workload independently of $label", ({ runAttempt }) => {
+    const workflow = readCiWorkflow();
+    const gate = workflow.jobs["ci-gate"];
+    const context: Parameters<typeof evaluateWorkflowExpression>[1] = {
+      eventName: "pull_request" as const,
+      repository: "openclaw/openclaw",
+      runAttempt,
+      failFastOutputs: runAttempt === 1 ? {} : { failure_job_id: "42", failure_run_attempt: "1" },
+      failFastResult: runAttempt === 1 ? "success" : "failure",
+      preflightOutputs: { run_checks_node_core_nondist: "true" },
+    };
+    expect(evaluateWorkflowExpression(workflow.jobs["pr-fail-fast"].if, context)).toBe(
+      runAttempt === 1,
+    );
+    expect(gate.needs).toContain("checks-node-core-test-nondist-shard");
+    expect(evaluateWorkflowExpression(gate.if, { ...context, cancelled: true })).toBe(false);
+    const report = gate.steps.find(
+      (entry: WorkflowStep) => entry.name === "Report originating PR failure",
+    );
+    expect(evaluateWorkflowExpression(`\${{ ${report.if} }}`, context)).toBe(false);
+    const verify = gate.steps.find(
+      (entry: WorkflowStep) => entry.name === "Verify selected CI lanes",
+    );
+    const monitorRow = verify.env.JOB_RESULTS.split("\n")
+      .find((line: string) => line.startsWith("pr-fail-fast="))
+      .replace(/\$\{\{[\s\S]*?\}\}/gu, (expression: string) =>
+        String(evaluateWorkflowExpression(expression, context)),
       );
-      expect(evaluateWorkflowExpression(`\${{ ${report.if} }}`, context)).toBe(false);
-      const verify = gate.steps.find(
-        (entry: WorkflowStep) => entry.name === "Verify selected CI lanes",
-      );
-      const monitorRow = verify.env.JOB_RESULTS.split("\n")
-        .find((line: string) => line.startsWith("pr-fail-fast="))
-        .replace(/\$\{\{[\s\S]*?\}\}/gu, (expression: string) =>
-          String(evaluateWorkflowExpression(expression, context)),
-        );
-      expect(monitorRow).toBe("pr-fail-fast=skipped|false");
-      for (const [result, exit] of [
-        ["success", 0],
-        ["failure", 1],
-        ["cancelled", 1],
-      ] as const) {
-        const run = spawnSync("/bin/bash", ["-c", verify.run], {
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            JOB_RESULTS: `preflight=success|true\nsecurity-fast=success|true\nchecks-node-core-test-nondist-shard=${result}|true\n${monitorRow}`,
-          },
-        });
-        expect(run.status, run.stdout).toBe(exit);
-      }
-    },
-  );
+    expect(monitorRow).toBe(
+      runAttempt === 1 ? "pr-fail-fast=success|true" : "pr-fail-fast=skipped|false",
+    );
+    for (const [result, exit] of [
+      ["success", 0],
+      ["failure", 1],
+      ["cancelled", 1],
+    ] as const) {
+      const run = spawnSync("/bin/bash", ["-c", verify.run], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          JOB_RESULTS: `preflight=success|true\nsecurity-fast=success|true\nchecks-node-core-test-nondist-shard=${result}|true\n${monitorRow}`,
+        },
+      });
+      expect(run.status, run.stdout).toBe(exit);
+    }
+  });
 
   it.skipIf(process.platform === "win32")(
     "reports the originating failure after cancelling other jobs",
