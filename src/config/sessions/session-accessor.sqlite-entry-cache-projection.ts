@@ -59,7 +59,6 @@ export function loadSessionEntrySnapshot(
   return {
     entries,
     keys,
-    entryOwnership: "caller",
   };
 }
 
