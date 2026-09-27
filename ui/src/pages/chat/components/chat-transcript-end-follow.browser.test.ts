@@ -35,18 +35,20 @@ class EndFollowFixture extends LitElement {
     ];
     return html`
       <div
-        class="chat-thread"
-        style=${`height: ${this.viewportHeight}px; flex: none; padding: 0 0 60px; overflow-anchor: none`}
+        class="chat-thread-viewport"
+        style=${`height: ${this.viewportHeight}px; flex: none; padding: 0 0 60px`}
       >
-        ${this.transcript.renderSession("agent:main:end-follow", (session) => {
-          session.setContentReady(true);
-          return session.render(
-            rows,
-            (row) => (row.kind === "content" ? row.content : null),
-            null,
-            false,
-          );
-        })}
+        <div class="chat-thread" style="overflow-anchor: none">
+          ${this.transcript.renderSession("agent:main:end-follow", (session) => {
+            session.setContentReady(true);
+            return session.render(
+              rows,
+              (row) => (row.kind === "content" ? row.content : null),
+              null,
+              false,
+            );
+          })}
+        </div>
       </div>
       <div class="chat-prs" style="position: relative; height: 38px; margin-top: -38px">
         Pull request
@@ -234,7 +236,7 @@ it("does not turn a resize-clamped reader into permission to follow", async () =
     host.followEnabled = false;
     thread.dispatchEvent(new WheelEvent("wheel", { deltaY: -32 }));
     thread.scrollTop -= 32;
-    thread.style.height = "600px";
+    host.viewportHeight = 600;
   });
   await expect.poll(distance).toBe(0);
   const clamped = thread.scrollTop;
@@ -273,7 +275,7 @@ it("preserves compensation provenance for later native scroll listeners", async 
     host.followEnabled = false;
     thread.dispatchEvent(new WheelEvent("wheel", { deltaY: -32 }));
     thread.scrollTop -= 32;
-    thread.style.height = "600px";
+    host.viewportHeight = 600;
   });
   await readerIdle;
   await expect.poll(distance).toBe(0);
@@ -297,4 +299,68 @@ it("preserves compensation provenance for later native scroll listeners", async 
   expect(observations[0]).toEqual({ trusted: true, programmatic: true });
   thread.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
   expect(host.transcript.isProgrammaticScroll).toBe(false);
+});
+
+it.each([
+  { readerMovement: 0, beforeClamp: false },
+  { readerMovement: 8, beforeClamp: false },
+  { readerMovement: 8, beforeClamp: true },
+])(
+  "preserves layout clamps versus $readerMovement px reader movement (before clamp: $beforeClamp)",
+  async ({ readerMovement, beforeClamp }) => {
+    const { host, thread, sizer, distance } = await mountEndFollowFixture();
+    host.transcript.scrollToEnd();
+    await expect.poll(distance).toBe(0);
+    await settleFrames();
+    const original = thread.scrollTop;
+    if (beforeClamp) {
+      thread.scrollTop -= readerMovement;
+    }
+
+    host.viewportHeight = 500;
+    host.requestUpdate();
+    await expect.poll(() => thread.clientHeight).toBe(500);
+    expect(thread.scrollTop).toBe(original - 100);
+    if (!beforeClamp) {
+      thread.scrollTop -= readerMovement;
+    }
+    const readerPosition = thread.scrollTop;
+
+    host.viewportHeight = 400;
+    host.requestUpdate();
+    await expect.poll(() => thread.clientHeight).toBe(400);
+    await settleFrames();
+    expect(thread.scrollTop).toBe(readerMovement ? readerPosition : original);
+
+    host.lastRowHeight += 48;
+    host.requestUpdate();
+    await expect.poll(() => sizer.offsetHeight).toBe(1348);
+    await settleFrames();
+    expect(thread.scrollTop).toBe(readerMovement ? readerPosition : original + 48);
+  },
+);
+
+it("does not expose unmeasured intrinsic overflow as an independent scroll range", async () => {
+  const { host, thread, row, sizer, distance } = await mountEndFollowFixture();
+  host.transcript.scrollToEnd();
+  await expect.poll(distance).toBe(0);
+  await settleFrames();
+  const original = thread.scrollTop;
+  const range = thread.scrollHeight;
+  const body = row.firstElementChild;
+  expect(body).toBeInstanceOf(HTMLElement);
+  if (!(body instanceof HTMLElement)) {
+    throw new Error("Missing growing row body");
+  }
+
+  body.style.height = "1100px";
+  expect(thread.scrollHeight).toBe(range);
+  expect(thread.scrollTop).toBe(original);
+  thread.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
+  host.lastRowHeight = 1100;
+  host.requestUpdate();
+  await expect.poll(() => sizer.offsetHeight).toBe(1500);
+  await settleFrames();
+  expect(thread.scrollTop).toBe(original);
+  expect(distance()).toBe(200);
 });
