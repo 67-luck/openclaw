@@ -905,8 +905,8 @@ describe("spawnSubagentDirect seam flow", () => {
         },
       },
     });
-    hoisted.listSwarmRunsForGroupMock.mockReturnValueOnce([
-      { runId: "live", collect: true, groupId: "group" },
+    hoisted.listSwarmRunsForGroupMock.mockReturnValue([
+      { runId: "live", collect: true, groupId: "group", execution: { status: "running" } },
     ]);
     const liveRejected = await spawnSubagentDirect(
       { task: "second live child", collect: true, groupId: "group" },
@@ -920,9 +920,19 @@ describe("spawnSubagentDirect seam flow", () => {
       "main",
     );
 
-    hoisted.listSwarmRunsForGroupMock.mockReturnValueOnce([
-      { runId: "done", collect: true, collectorCompletion: { status: "done" } },
-      { runId: "failed", collect: true, collectorCompletion: { status: "failed" } },
+    hoisted.listSwarmRunsForGroupMock.mockReturnValue([
+      {
+        runId: "done",
+        collect: true,
+        execution: { status: "terminal" },
+        collectorCompletion: { status: "done" },
+      },
+      {
+        runId: "failed",
+        collect: true,
+        execution: { status: "terminal" },
+        collectorCompletion: { status: "failed" },
+      },
     ]);
     const totalRejected = await spawnSubagentDirect(
       { task: "third lifetime child", collect: true, groupId: "group" },
