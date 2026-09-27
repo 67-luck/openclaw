@@ -102,8 +102,12 @@ impl WebViewSurface {
                         state.events.mask();
                         match native::set_bounds(view, bounds) {
                             Ok(true) => {}
-                            // Do not acknowledge geometry skipped during native detach/reattach.
-                            Ok(false) => return,
+                            Ok(false) => {
+                                // A masked view must retry even if reattachment restores its old bounds.
+                                state.bounds = None;
+                                state.scale_factor = None;
+                                return;
+                            }
                             Err(error) => {
                                 state.events.push(WebViewEvent::Error(error.clone()));
                                 state.error = Some(error);
