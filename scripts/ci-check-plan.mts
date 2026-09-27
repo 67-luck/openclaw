@@ -142,7 +142,6 @@ export async function createCiCheckPlan(input: CiCheckPlanInput) {
     run_lint_core: coreLint.length > 0,
     run_lint_extensions: extensionLint.length > 0,
     run_changed_core_type_stripes: coreRows.length > 0,
-    type_graph_boundary_checked: typePlan !== null,
   };
 }
 
