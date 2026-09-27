@@ -70,7 +70,9 @@ export function assertRestoredRestartRequesterEntry(
   entry: InternalSessionEntry,
 ): void {
   const snapshot = authority && restoredRequesters.get(authority);
-  if (!snapshot) return;
+  if (!snapshot) {
+    return;
+  }
   authority.assertCurrent();
   if (
     entry.sessionId !== snapshot.sessionId ||
@@ -132,7 +134,9 @@ export async function restoreRestartRecoveryRequester(params: {
   const assertPolicy = () => {
     params.assertCurrent();
     revoked.signal.throwIfAborted();
-    if (references === 0 || !identity || !facts) return deny();
+    if (references === 0 || !identity || !facts) {
+      return deny();
+    }
     let current;
     try {
       current = identity.readCurrentFacts(snapshot.aliasBindingIds);
@@ -149,12 +153,17 @@ export async function restoreRestartRecoveryRequester(params: {
       } catch (error) {
         throw new RestartRequesterPendingError({ cause: error });
       }
-      if (currentDevice !== snapshot.device.identity) return deny();
+      if (currentDevice !== snapshot.device.identity) {
+        return deny();
+      }
     }
     const cfg = params.getConfig();
-    if (resolveGatewayAuthPolicyGeneration(cfg) !== snapshot.authPolicy) return deny();
-    if (snapshot.browserOrigin && !checkGatewayWsBrowserOrigin(snapshot.browserOrigin, cfg).ok)
+    if (resolveGatewayAuthPolicyGeneration(cfg) !== snapshot.authPolicy) {
       return deny();
+    }
+    if (snapshot.browserOrigin && !checkGatewayWsBrowserOrigin(snapshot.browserOrigin, cfg).ok) {
+      return deny();
+    }
     const role = resolveOperatorRolePolicyForAssignment(
       snapshot.profileId,
       current.profile.assignedRole,
@@ -170,8 +179,9 @@ export async function restoreRestartRecoveryRequester(params: {
           requestedScopes: snapshot.scopes,
           allowedScopes: role.scopes,
         }))
-    )
+    ) {
       return deny();
+    }
     let currentFacts;
     try {
       currentFacts = facts.readCurrent(cfg);
@@ -191,8 +201,9 @@ export async function restoreRestartRecoveryRequester(params: {
         currentFacts,
         { policy: role, aliases: current.aliases },
       )
-    )
+    ) {
       return deny();
+    }
     const metadata = getProcessGatewayPluginMetadataSnapshot();
     if (modelConfig !== cfg || modelMetadata !== metadata) {
       const next = prepareOperatorModelPolicy({
@@ -200,16 +211,31 @@ export async function restoreRestartRecoveryRequester(params: {
         policy: role?.modelPolicy,
         manifestPlugins: metadata ?? [],
       });
-      if (readOperatorModelPolicyMembership(next) !== snapshot.modelPolicyMembership) return deny();
+      if (readOperatorModelPolicyMembership(next) !== snapshot.modelPolicyMembership) {
+        return deny();
+      }
       modelPolicy = next;
       modelConfig = cfg;
       modelMetadata = metadata;
     }
     return { profile: current.profile, cfg, entry };
   };
+  const assertAccessCurrent = () => {
+    if (!access) {
+      return;
+    }
+    try {
+      access.signal.throwIfAborted();
+      access.assertCurrent();
+    } catch (error) {
+      if (access.signal.aborted || error instanceof GatewayOperatorAccessDeniedError) {
+        deny();
+      }
+      throw new RestartRequesterPendingError({ cause: error });
+    }
+  };
   const assertCurrent = () => {
-    access?.signal.throwIfAborted();
-    access?.assertCurrent();
+    assertAccessCurrent();
     const current = assertPolicy();
     try {
       const restored = resumeGatewayOperatorAccessGrant(
@@ -217,15 +243,18 @@ export async function restoreRestartRecoveryRequester(params: {
         current.cfg,
         snapshot.grant,
       );
-      if (!prepared) access = restored;
+      if (!prepared) {
+        access = restored;
+      }
     } catch (error) {
-      if (error instanceof GatewayOperatorAccessDeniedError) return deny();
+      if (error instanceof GatewayOperatorAccessDeniedError) {
+        deny();
+      }
       throw new RestartRequesterPendingError({ cause: error });
     }
     // Access-policy callbacks can change role, identity, sharing, or config synchronously.
     assertPolicy();
-    access?.signal.throwIfAborted();
-    access?.assertCurrent();
+    assertAccessCurrent();
   };
   const assertAdmissionCurrent = () => {
     params.assertRecordCurrent();
@@ -234,20 +263,30 @@ export async function restoreRestartRecoveryRequester(params: {
     return access;
   };
   const recheck = () => {
-    if (!prepared || references === 0 || revoked.signal.aborted) return;
+    if (!prepared || references === 0 || revoked.signal.aborted) {
+      return;
+    }
     try {
       assertCurrent();
     } catch (error) {
-      if (error instanceof RestartRequesterDeniedError) revoked.abort(error);
+      if (error instanceof RestartRequesterDeniedError) {
+        revoked.abort(error);
+      }
     }
   };
   const releaseHold = () => {
     let released = false;
     return () => {
-      if (released) return;
+      if (released) {
+        return;
+      }
       released = true;
-      if (--references !== 0) return;
-      for (const unsubscribe of subscriptions.splice(0)) unsubscribe();
+      if (--references !== 0) {
+        return;
+      }
+      for (const unsubscribe of subscriptions.splice(0)) {
+        unsubscribe();
+      }
       facts?.release();
       identity?.release();
     };
@@ -273,11 +312,15 @@ export async function restoreRestartRecoveryRequester(params: {
       }),
       onUserProfilesChanged(recheck),
       sessionChanges.subscribe((change) => {
-        if (!("sessionKey" in change) || change.sessionKey === snapshot.sessionKey) recheck();
+        if (!("sessionKey" in change) || change.sessionKey === snapshot.sessionKey) {
+          recheck();
+        }
       }),
     );
     try {
-      if (snapshot.device) await getPairedDevice(snapshot.device.deviceId);
+      if (snapshot.device) {
+        await getPairedDevice(snapshot.device.deviceId);
+      }
       identity = await prepareUserProfileIdentity(snapshot.profileId);
       params.assertCurrent();
       revoked.signal.throwIfAborted();
@@ -287,7 +330,9 @@ export async function restoreRestartRecoveryRequester(params: {
         sessionKey: snapshot.sessionKey,
       });
     } catch (error) {
-      if (error instanceof RestartRequesterDeniedError) throw error;
+      if (error instanceof RestartRequesterDeniedError) {
+        throw error;
+      }
       throw new RestartRequesterPendingError({ cause: error });
     }
     const admittedAccess = assertAdmissionCurrent();

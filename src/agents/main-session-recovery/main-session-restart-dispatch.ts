@@ -245,7 +245,9 @@ export async function resumeMainSession(
             return "failed";
           }
           if (error instanceof RestartRequesterDeniedError) {
-            if (!recoveryAdmission.shouldContinue()) return "skipped";
+            if (!recoveryAdmission.shouldContinue()) {
+              return "skipped";
+            }
             const result = await tombstoneMainRestartRecoveryWithNotice({
               ...params,
               reason: "original continuation requester authority is unavailable",
@@ -642,7 +644,12 @@ async function resumeMainSessionWithinAdmission(
     );
     return resumeResult;
   } catch (error) {
-    const explicitlyRejected = error instanceof GatewayClientRequestError && !dispatchAccepted;
+    const requesterRejected =
+      !dispatchAccepted &&
+      (error instanceof RestartRequesterDeniedError ||
+        error instanceof RestartRequesterPendingError);
+    const explicitlyRejected =
+      !dispatchAccepted && (error instanceof GatewayClientRequestError || requesterRejected);
     const canRestoreAcceptedFailure = !preStartAbortAttempted || preStartAbortConfirmed;
     if (
       dispatchAccepted &&
@@ -707,7 +714,9 @@ async function resumeMainSessionWithinAdmission(
     if (params.shouldContinue?.() === false) {
       return "skipped";
     }
-    if (!dispatchStarted && error instanceof RestartRequesterDeniedError) throw error;
+    if (requesterRejected) {
+      throw error;
+    }
     log.warn(
       `failed to resume interrupted main session ${params.sessionKey}: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
     );

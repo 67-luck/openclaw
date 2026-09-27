@@ -17,6 +17,7 @@ import {
   type SqliteSessionOwnerRow,
 } from "./session-accessor.sqlite-owner-projection.js";
 import {
+  decodeSqliteSessionEntryRecord,
   hasValidSessionEntryIdentity,
   parseSqliteSessionEntryRecord,
 } from "./session-entry-json.js";
@@ -110,7 +111,10 @@ export function parseSessionEntryJson(
     delete record.skillsSnapshot;
     delete record.systemPromptReport;
   }
-  return projectSqliteSessionOwner(projectCanonicalSessionEntryShape(record), row);
+  return projectSqliteSessionOwner(
+    projectCanonicalSessionEntryShape(decodeSqliteSessionEntryRecord(record)),
+    row,
+  );
 }
 
 export function hasSessionEntriesByStatus(

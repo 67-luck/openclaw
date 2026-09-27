@@ -1,6 +1,7 @@
 import { setImmediate as nextTurn } from "node:timers/promises";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
+import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { writeSessionStore } from "./test-helpers.js";
@@ -21,7 +22,7 @@ afterEach(() => {
 });
 
 test.each([false, true])(
-  "concurrent cloud recovery waits for its canonical successor and rechecks queued authority (revoked: %s)",
+  "concurrent cloud recovery waits for its original session and rechecks queued authority (revoked: %s)",
   async (revokeAuthority) => {
     const { storePath } = await createSessionStoreDir();
     const sourceKey = "agent:main:dashboard:concurrent-cloud-recovery";
@@ -126,7 +127,7 @@ test.each([false, true])(
       authorityActive = !revokeAuthority;
       startReclaim.resolve();
       await reclaimed.promise;
-      // The placement queue is free, but the winner has not published its successor.
+      // The placement queue is free, but the winner has not published its resume receipt.
       await nextTurn();
       settledBeforeCommit = secondSettled;
     } finally {
@@ -148,16 +149,61 @@ test.each([false, true])(
         payload: { key: winner.payload?.key, sessionId: winner.payload?.sessionId },
       });
     }
-    expect(loadSessionEntry({ agentId: "main", sessionKey: sourceKey, storePath })).toMatchObject({
-      mainRestartRecovery: {
-        tombstone: {
-          recoveredSessionKey: winner.payload?.key,
-          recoveredSessionId: winner.payload?.sessionId,
+    expect(winner.payload).toMatchObject({
+      key: sourceKey,
+      sessionId: sourceSessionId,
+    });
+    const resumed = loadSessionEntry({ agentId: "main", sessionKey: sourceKey, storePath });
+    expect(resumed?.mainRestartRecovery).toBeUndefined();
+    expect(resumed?.previousSessionId).toBeUndefined();
+    expect(resumed?.restartRecoveryResumeRunId).toBe(
+      `restart-recovery-resume:${sourceSessionId}:concurrent-recovery-cycle`,
+    );
+  },
+);
+
+test("unaccepted resume retries cannot interrupt newer admitted work", async () => {
+  const { storePath } = await createSessionStoreDir();
+  const sessionKey = "agent:main:dashboard:resume-retry";
+  const sessionId = "resume-retry-source";
+  const runId = "restart-recovery-resume:resume-retry-source:cycle";
+  await writeSessionStore({
+    entries: {
+      [sessionKey]: sessionStoreEntry(sessionId, { restartRecoveryResumeRunId: runId }),
+    },
+  });
+  await seedSessionTranscript({
+    agentId: "main",
+    sessionId,
+    sessionKey,
+    storePath,
+    messages: [{ role: "user", content: "finish original work" }],
+  });
+  const interrupted = vi.fn();
+  const admission = await beginSessionWorkAdmission({
+    scope: storePath,
+    identities: [sessionKey, sessionId],
+    assertAllowed: () => {},
+    onInterrupt: interrupted,
+  });
+  try {
+    expect(await directSessionReq("sessions.recover", { key: sessionKey })).toMatchObject({
+      ok: true,
+      payload: {
+        key: sessionKey,
+        sessionId,
+        continuation: {
+          status: "rejected",
+          error: { message: expect.stringContaining("active work") },
         },
       },
     });
-    expect(
-      loadSessionEntry({ agentId: "main", sessionKey: winner.payload!.key, storePath }),
-    ).toMatchObject({ sessionId: winner.payload?.sessionId, previousSessionId: sourceSessionId });
-  },
-);
+    expect(interrupted).not.toHaveBeenCalled();
+  } finally {
+    admission.release();
+  }
+  expect(await directSessionReq("sessions.recover", { key: sessionKey })).toMatchObject({
+    ok: true,
+    payload: { key: sessionKey, sessionId, continuation: { status: "started", runId } },
+  });
+});

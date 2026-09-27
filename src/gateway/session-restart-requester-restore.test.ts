@@ -14,6 +14,7 @@ import {
   persistSessionTranscriptTurn,
   replaceSessionEntry,
 } from "../config/sessions/session-accessor.js";
+import { readSessionEntryRow } from "../config/sessions/session-accessor.sqlite-entry-store.js";
 import { projectPublicSessionEntry } from "../config/sessions/session-entry-projection.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -22,6 +23,7 @@ import { approveDevicePairing } from "../infra/device-pairing-approval.js";
 import { revokeDeviceToken, rotateDeviceToken } from "../infra/device-pairing-tokens.js";
 import { requestDevicePairing, removePairedDevice } from "../infra/device-pairing.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import {
   ensureCanonicalUserProfileForEmail,
   setCanonicalUserProfileRole,
@@ -31,6 +33,7 @@ import { prepareAgentRunUserTurn } from "./agent-turn/agent-run-user-turn.js";
 import type { AgentTurnContext } from "./agent-turn/types.js";
 import { resolveGatewayOperatorAccessAuthority } from "./operator-access-policy.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
+import type { GatewayRecoveryRuntime } from "./server-instance-runtime.types.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
 import {
   RestartRequesterDeniedError,
@@ -93,7 +96,9 @@ async function prepareFixture(
       signal: captured.signal,
       assertCurrent: () => {
         captured.signal.throwIfAborted();
-        if (capturedId !== grantId) throw new Error("original grant ended");
+        if (capturedId !== grantId) {
+          throw new Error("original grant ended");
+        }
       },
     };
   };
@@ -106,7 +111,9 @@ async function prepareFixture(
       api.registerGatewayAccessPolicy({
         authorize: () => liveGrant(),
         resume: (request) => {
-          if (unavailable) throw new Error("policy preparation pending");
+          if (unavailable) {
+            throw new Error("policy preparation pending");
+          }
           return request.grantId === grantId && !grant.signal.aborted ? liveGrant() : undefined;
         },
       });
@@ -158,7 +165,9 @@ async function prepareFixture(
     client: originalClient,
     context: { getRuntimeConfig: () => cfg },
   });
-  if (!source) throw new Error("missing authenticated operator fixture");
+  if (!source) {
+    throw new Error("missing authenticated operator fixture");
+  }
   const operationalRunInstance = { instanceId: "original-instance", runId: "original-run" };
   const client = {
     ...originalClient,
@@ -243,6 +252,14 @@ async function prepareFixture(
     admittedMessage: admitted!.message,
     restore,
     oldAuthority: source.authority,
+    readStored: () => {
+      const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+      const stored = readSessionEntryRow(database, scope.sessionKey);
+      if (!stored) {
+        throw new Error("missing stored requester fixture");
+      }
+      return JSON.parse(stored.row.entry_json) as Record<string, unknown>;
+    },
     setConfig: (value: OpenClawConfig) => {
       cfg = value;
     },
@@ -255,7 +272,9 @@ async function prepareFixture(
       grant = new AbortController();
     },
     release: () => {
-      for (const lease of leases) lease.release();
+      for (const lease of leases) {
+        lease.release();
+      }
       source.release();
     },
   };
@@ -268,15 +287,17 @@ describe("restart requester restoration", () => {
       await withRequester(async (f) => {
         const restored = await f.restore();
         expect(() => restored.authority.assertCurrent()).not.toThrow();
-        if (action === "remove") await removePairedDevice(f.deviceId);
-        else if (action === "revoke")
+        if (action === "remove") {
+          await removePairedDevice(f.deviceId);
+        } else if (action === "revoke") {
           await revokeDeviceToken({ deviceId: f.deviceId, role: "operator" });
-        else
+        } else {
           await rotateDeviceToken({
             deviceId: f.deviceId,
             role: "operator",
             scopes: ["operator.write"],
           });
+        }
         expect(() => restored.authority.assertCurrent()).toThrow();
         await expect(f.restore()).rejects.toBeInstanceOf(RestartRequesterDeniedError);
       }, true);
@@ -313,6 +334,16 @@ describe("restart requester restoration", () => {
 
   it("reconstructs the original constrained operator after old execution custody closes", async () => {
     await withRequester(async (f) => {
+      // Released public projections already omit mainRestartRecovery, but pass
+      // through unknown top-level fields. Keep custody private across downgrade.
+      const stored = f.readStored();
+      expect(stored).not.toHaveProperty("restartRecoveryRequester");
+      expect(stored).toHaveProperty("mainRestartRecovery.requester", f.snapshot);
+      expect(stored.mainRestartRecovery).toMatchObject({
+        cycleId: expect.any(String),
+        revision: 1,
+        chargedAttempts: 0,
+      });
       expect(() => f.oldAuthority.assertCurrent()).toThrow();
       const restored = await f.restore();
       expect(restored.authority.profileId).toBe(f.profile.id);
@@ -382,10 +413,16 @@ describe("restart requester restoration", () => {
         const reservation = vi
           .spyOn(recoveryStore, "commitMainSessionRecovery")
           .mockImplementation(async (params) => {
-            if (params.command.kind !== "prepare_attempt") return await commit(params);
-            if (boundary === "before reservation") f.setUnavailable(true);
+            if (params.command.kind !== "prepare_attempt") {
+              return await commit(params);
+            }
+            if (boundary === "before reservation") {
+              f.setUnavailable(true);
+            }
             const result = await commit(params);
-            if (boundary === "after reservation") f.setUnavailable(true);
+            if (boundary === "after reservation") {
+              f.setUnavailable(true);
+            }
             return result;
           });
         const gatewayRuntime = {
@@ -427,6 +464,67 @@ describe("restart requester restoration", () => {
     },
   );
 
+  it.for(["revoked", "revoked grant", "pending"] as const)(
+    "refunds unaccepted dispatch with %s requester authority",
+    async (boundary) => {
+      await withRequester(async (f) => {
+        setRuntimeConfigSnapshot(f.cfg, f.cfg);
+        const entry = {
+          ...loadSessionEntry(f.scope)!,
+          mainRestartRecovery: { cycleId: "dispatch-revocation", revision: 1, chargedAttempts: 0 },
+        };
+        await replaceSessionEntry(f.scope, entry);
+        const dispatchAgent = vi.fn(
+          async (
+            ...[_request, _timeoutMs, options]: Parameters<GatewayRecoveryRuntime["dispatchAgent"]>
+          ) => {
+            if (boundary === "revoked") {
+              await setCanonicalUserProfileRole(f.profile.id, "revoked");
+            } else if (boundary === "revoked grant") {
+              f.replaceInvitation();
+            } else {
+              f.setUnavailable(true);
+            }
+            options?.assertAdmissionCurrent?.();
+            throw new Error("Revoked requester reached execution");
+          },
+        );
+        const gatewayRuntime = {
+          dispatchSessionMethod: vi.fn(),
+          dispatchAgent,
+          waitForAgent: vi.fn(),
+          sendRecoveryNotice: vi.fn(),
+        };
+        expect(
+          await resumeMainSession({
+            ...f.scope,
+            cfg: f.cfg,
+            entry,
+            requester: f.snapshot,
+            recoveryAttempt: 1,
+            observation: {
+              sessionId: entry.sessionId,
+              cycleId: "dispatch-revocation",
+              revision: 1,
+            },
+            lifecycleGeneration: getAgentEventLifecycleGeneration(),
+            gatewayRuntime,
+          }),
+        ).toBe(boundary === "pending" ? "failed" : "skipped");
+        expect(dispatchAgent).toHaveBeenCalledOnce();
+        expect(gatewayRuntime.waitForAgent).not.toHaveBeenCalled();
+        const current = loadSessionEntry(f.scope)!;
+        expect(current.mainRestartRecovery?.chargedAttempts).toBe(0);
+        expect(current.mainRestartRecovery?.reservation).toBeUndefined();
+        expect(current.mainRestartRecovery?.tombstone?.reason).toBe(
+          boundary === "pending"
+            ? undefined
+            : "original continuation requester authority is unavailable",
+        );
+      });
+    },
+  );
+
   it("distinguishes unavailable original policy from a replacement invitation", async () => {
     await withRequester(async (f) => {
       f.setUnavailable(true);
@@ -454,12 +552,16 @@ describe("restart requester restoration", () => {
   it("keeps requester records private and retires them when the conversation is archived", async () => {
     await withRequester(async (f) => {
       const stored = loadSessionEntry(f.scope);
-      if (!stored) throw new Error("missing stored continuation");
+      if (!stored) {
+        throw new Error("missing stored continuation");
+      }
       expect(projectPublicSessionEntry(stored)).not.toHaveProperty("restartRecoveryRequester");
       await replaceSessionEntry(f.scope, { ...stored, archivedAt: 2 });
       const archived = loadSessionEntry(f.scope);
       expect(archived).not.toHaveProperty("restartRecoveryRequester");
-      if (!archived) throw new Error("missing archived continuation");
+      if (!archived) {
+        throw new Error("missing archived continuation");
+      }
       await replaceSessionEntry(f.scope, { ...archived, archivedAt: undefined });
       await expect(f.restore()).rejects.toBeInstanceOf(RestartRequesterDeniedError);
     });

@@ -90,7 +90,10 @@ export function assertChatSendExclusiveAdmission(
   request: NormalizedChatSendRequest,
   session: PreparedChatSendSession,
 ): void {
-  if (!request.goalOperation && !request.providerReviewAcknowledgment) {
+  const recoveryContinuation =
+    request.systemInputProvenance?.kind === "internal_system" &&
+    request.systemInputProvenance.sourceTool === "sessions.recover";
+  if (!request.goalOperation && !request.providerReviewAcknowledgment && !recoveryContinuation) {
     return;
   }
   const { storePath, sessionKey, backingSessionId, activeRunScopeKey } = session;
@@ -100,7 +103,7 @@ export function assertChatSendExclusiveAdmission(
     replyRunRegistry.isActive(activeRunScopeKey)
   ) {
     throw new Error(
-      request.providerReviewAcknowledgment
+      request.providerReviewAcknowledgment || recoveryContinuation
         ? "The session still has active work. Review its status before continuing."
         : "goal-session-busy",
     );

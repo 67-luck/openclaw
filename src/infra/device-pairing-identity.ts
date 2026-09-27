@@ -133,11 +133,15 @@ export function resolveNodePairingState(device: PairedDevice | null): NodePairin
 
 /** Original operator pairing, including its approved and active scope ceilings. */
 export function resolveOperatorPairingIdentity(device: PairedDevice | null): string | null {
-  if (!device || !hasEffectivePairedDeviceRole(device, "operator")) return null;
+  if (!device || !hasEffectivePairedDeviceRole(device, "operator")) {
+    return null;
+  }
   const token = device.tokens?.operator;
   // Issuer generations belong to the live shared-auth owner and cannot be
   // reconstructed from pairing alone after a restart.
-  if (!token || token.issuer) return null;
+  if (!token || token.issuer) {
+    return null;
+  }
   return createHash("sha256")
     .update(
       JSON.stringify([
@@ -147,8 +151,8 @@ export function resolveOperatorPairingIdentity(device: PairedDevice | null): str
         token.token,
         token.createdAtMs,
         token.rotatedAtMs ?? null,
-        [...(device.approvedScopes ?? device.scopes ?? [])].sort(),
-        [...token.scopes].sort(),
+        (device.approvedScopes ?? device.scopes ?? []).toSorted(),
+        token.scopes.toSorted(),
       ]),
     )
     .digest("hex");

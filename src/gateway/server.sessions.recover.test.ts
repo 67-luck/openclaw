@@ -573,9 +573,22 @@ test("sessions.recover resumes the same session and returns its continuation out
     sessionId: string;
     continuation: { status: string; runId?: string };
   };
+  const context = {
+    dedupe: new Map(),
+    chatAbortControllers: new Map(),
+    chatQueuedTurns: new Map(),
+  };
   const [recovered, concurrentRetry] = await Promise.all([
-    directSessionReq<RecoveryPayload>("sessions.recover", { agentId: "main", key: sourceKey }),
-    directSessionReq<RecoveryPayload>("sessions.recover", { agentId: "main", key: sourceKey }),
+    directSessionReq<RecoveryPayload>(
+      "sessions.recover",
+      { agentId: "main", key: sourceKey },
+      { context },
+    ),
+    directSessionReq<RecoveryPayload>(
+      "sessions.recover",
+      { agentId: "main", key: sourceKey },
+      { context },
+    ),
   ]);
 
   expect(recovered.ok, JSON.stringify(recovered.error)).toBe(true);
@@ -625,10 +638,14 @@ test("sessions.recover resumes the same session and returns its continuation out
     ),
   ).toContain("finish the interrupted implementation");
 
-  const repeated = await directSessionReq<typeof recovered.payload>("sessions.recover", {
-    agentId: "main",
-    key: sourceKey,
-  });
+  const repeated = await directSessionReq<typeof recovered.payload>(
+    "sessions.recover",
+    {
+      agentId: "main",
+      key: sourceKey,
+    },
+    { context },
+  );
   expect(repeated).toMatchObject({
     ok: true,
     payload: {

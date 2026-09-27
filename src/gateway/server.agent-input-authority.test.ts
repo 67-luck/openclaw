@@ -82,7 +82,9 @@ describe("spawn input ownership transfer", () => {
         context,
         ...(requester === "opaque" ? { hasCurrentClientAuthority: () => true } : {}),
       });
-      if (!captured) throw new Error("missing original operator");
+      if (!captured) {
+        throw new Error("missing original operator");
+      }
       const methodRegistry = kernel.getAttachedGatewayMethodRegistry();
       const created = await dispatchGatewayRequestInProcess<{ key: string; sessionId: string }>(
         "sessions.create",
@@ -106,7 +108,9 @@ describe("spawn input ownership transfer", () => {
         agentId: "main",
         sessionKey: created.key,
       });
-      if (!caller) throw new Error("missing source caller");
+      if (!caller) {
+        throw new Error("missing source caller");
+      }
       caller.gatewayContextResolver = () => context;
       const entered = createDeferred<PreparedAgentRunDispatch>();
       const release = createDeferred();
@@ -150,7 +154,9 @@ describe("spawn input ownership transfer", () => {
         expect(sessionAccessor.loadSessionEntry(scope)?.restartRecoveryRequester).toBeUndefined();
         const recorder = prepared.userTurn.recorder!;
         const message = await recorder.resolveMessage();
-        if (!message) throw new Error("missing accepted source input");
+        if (!message) {
+          throw new Error("missing accepted source input");
+        }
         const manager = guardSessionManager(
           await SessionManager.openAsync({
             ...scope,

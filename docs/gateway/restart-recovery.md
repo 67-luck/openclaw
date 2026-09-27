@@ -575,6 +575,13 @@ admission and tool execution. A rotated, revoked, or removed device cannot regai
 access through recovery. Temporary authorization unavailability leaves the
 attempt pending; definitive revocation ends automatic recovery.
 
+The private requester is stored inside the existing private recovery envelope,
+which released session projections already omit. Runtime readers unwrap it only
+for the recovery owner. Downgrading does not expose the requester as an unknown
+public session field. Missing, malformed, or unsupported requester records remain
+ineligible for automatic continuation; an older version cannot grant new restart
+authority for the upgraded runtime.
+
 Missing or legacy requester records do not grant authority. Sources with
 process-only restrictions, shared-secret authentication generations, or device
 tokens whose issuer depends on those generations remain ineligible for automatic

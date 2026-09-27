@@ -17,7 +17,9 @@ const BINDING = "60a8365e-152e-4a36-9523-ea3cbfdd262b";
 function fixture() {
   let revoked = false;
   const assertCurrent = vi.fn(() => {
-    if (revoked) throw new Error("original caller revoked");
+    if (revoked) {
+      throw new Error("original caller revoked");
+    }
   });
   const release = vi.fn();
   const profile: PreparedUserProfileIdentity = {

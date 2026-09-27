@@ -430,7 +430,9 @@ export async function captureGatewayOperatorRunAuthority(input: {
         await getPairedDevice(deviceId);
         assertCurrent();
         const identity = getPublishedPairedOperatorIdentity(deviceId);
-        if (identity) restartDevice = { deviceId, identity };
+        if (identity) {
+          restartDevice = { deviceId, identity };
+        }
       } else {
         restartDevice = null;
       }

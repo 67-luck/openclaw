@@ -219,7 +219,9 @@ export function resolvePreparedGatewayOperatorAccessAuthority(
         ? Object.freeze({ pluginId: original.pluginId, grantId: original.authority.grantId })
         : undefined,
     };
-    if (captured.gatewayAccessGrant) restartAccessGrants.set(captured, captured.gatewayAccessGrant);
+    if (captured.gatewayAccessGrant) {
+      restartAccessGrants.set(captured, captured.gatewayAccessGrant);
+    }
     return captured;
   } catch {
     releaseProfiles();

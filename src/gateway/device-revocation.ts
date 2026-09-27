@@ -272,13 +272,16 @@ export function readGatewayDeviceRestartAuthPolicy(
   expectedSharedGeneration?: string,
 ): string | undefined {
   const dependencies = guard ? captures.get(guard)?.restartDependencies : undefined;
-  if (!dependencies) return undefined;
+  if (!dependencies) {
+    return undefined;
+  }
   if (
     (dependencies.sharedGenerationOwner !== undefined ||
       dependencies.sharedGeneration !== undefined) &&
     (expectedSharedGeneration === undefined ||
       dependencies.sharedGeneration !== expectedSharedGeneration)
-  )
+  ) {
     return undefined;
+  }
   return dependencies.authPolicyGeneration;
 }
