@@ -69,7 +69,7 @@ function createRecordingTelegramApi(state: TelegramTraceWireState): Bot["api"] {
   let messageCount = 1000;
   const api = new Api("trace-token", {
     buildUrl: (_root, _token, method) => "https://telegram-trace.invalid/" + method,
-    fetch: asTelegramClientFetch(async (input, init) => {
+    fetch: asTelegramClientFetch(async (input: unknown, init?: { body?: unknown }) => {
       if (typeof input !== "string" || typeof init?.body !== "string") {
         throw new Error("Expected a JSON Telegram trace request");
       }
