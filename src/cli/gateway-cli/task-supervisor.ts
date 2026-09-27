@@ -1,6 +1,5 @@
-// Windows Task Scheduler bridge: retain the Job Object owner until the Gateway exits.
+// Windows Task Scheduler bridge: supervise the Gateway until its tree is settled.
 import { randomInt } from "node:crypto";
-import { quoteCmdScriptArg } from "../../daemon/cmd-argv.js";
 import {
   formatWindowsTaskSupervisorChildArgument,
   isWindowsTaskSupervisorChildArgument,
@@ -17,7 +16,7 @@ import { getProcessSupervisor, type ManagedRun } from "../../process/supervisor/
 const log = createSubsystemLogger("gateway/task-supervisor");
 const STDERR_TAIL_CHARS = 8192;
 
-function renderGatewayTaskCommand(restartExitCode: number): string {
+function buildGatewayTaskArgv(restartExitCode: number): string[] {
   const childArgs = [...process.execArgv, ...process.argv.slice(1)].filter(
     (argument) =>
       argument !== WINDOWS_TASK_SUPERVISOR_FLAG && !isWindowsTaskSupervisorChildArgument(argument),
@@ -25,15 +24,17 @@ function renderGatewayTaskCommand(restartExitCode: number): string {
   if (childArgs.length === 0) {
     throw new Error("Windows task supervisor could not resolve the Gateway command");
   }
-  return [process.execPath, ...childArgs, formatWindowsTaskSupervisorChildArgument(restartExitCode)]
-    .map((argument) => quoteCmdScriptArg(argument))
-    .join(" ");
+  return [
+    process.execPath,
+    ...childArgs,
+    formatWindowsTaskSupervisorChildArgument(restartExitCode),
+  ];
 }
 
 /**
- * Runs the real Gateway inside the Windows Job Object owned by ProcessSupervisor.
- * The hidden task launcher owns an outer Job containing this supervisor. The
- * command anchor owns the inner Job used for cancellation and extinction joins.
+ * The hidden task launcher owns an outer Job containing this supervisor.
+ * Child admission requires an inner Job, and required cleanup gates each restart
+ * and successful completion.
  */
 export async function runWindowsGatewayTaskSupervisor(): Promise<void> {
   if (process.platform !== "win32") {
@@ -41,6 +42,7 @@ export async function runWindowsGatewayTaskSupervisor(): Promise<void> {
   }
   let stderr = "";
   let managed: ManagedRun | null = null;
+  let cleanupScope: (() => Promise<void>) | undefined;
   let cancelled = false;
   const cancel = () => {
     cancelled = true;
@@ -58,6 +60,8 @@ export async function runWindowsGatewayTaskSupervisor(): Promise<void> {
       ]);
       bindWindowsTaskLauncher(koffi);
     }
+    const supervisor = getProcessSupervisor();
+    const scopeKey = `gateway-task-supervisor:${process.pid}`;
     while (true) {
       stderr = "";
       // A fresh high-entropy outcome correlates this child-to-supervisor handoff.
@@ -66,10 +70,14 @@ export async function runWindowsGatewayTaskSupervisor(): Promise<void> {
         WINDOWS_TASK_SUPERVISOR_RESTART_EXIT_CODE_MIN,
         WINDOWS_TASK_SUPERVISOR_RESTART_EXIT_CODE_MAX + 1,
       );
-      managed = await getProcessSupervisor().spawn({
-        mode: "anchored-shell",
-        command: renderGatewayTaskCommand(restartExitCode),
-        scopeKey: `gateway-task-supervisor:${process.pid}`,
+      const closeScope = supervisor.acquireScopeCleanup(scopeKey, { processTree: "required-all" });
+      cleanupScope = closeScope;
+      managed = await supervisor.spawn({
+        mode: "child",
+        argv: buildGatewayTaskArgv(restartExitCode),
+        stdinMode: "pipe-closed",
+        requireWindowsJob: true,
+        scopeKey,
         captureOutput: false,
         onStderr: (chunk) => {
           stderr = (stderr + chunk).slice(-STDERR_TAIL_CHARS);
@@ -100,7 +108,8 @@ export async function runWindowsGatewayTaskSupervisor(): Promise<void> {
         process.exitCode = result.exitCode ?? 1;
         log.error("Gateway child failed", diagnostic);
       }
-      await managed.waitForExtinction?.();
+      cleanupScope = undefined;
+      await closeScope();
       managed = null;
       if (restartRequested && !cancelled) {
         // The child has released its Gateway lock and extinguished descendants.
@@ -116,6 +125,13 @@ export async function runWindowsGatewayTaskSupervisor(): Promise<void> {
   } finally {
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);
+    try {
+      await cleanupScope?.();
+    } catch (error) {
+      // Preserve the original spawn/wait failure while reporting its cleanup separately.
+      process.exitCode = 1;
+      log.error(`Gateway task supervisor cleanup failed: ${String(error)}`, { stderr });
+    }
     await flushLogger();
   }
 }

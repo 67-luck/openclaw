@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { parseCmdScriptCommandLine } from "../../daemon/cmd-argv.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import {
   readWindowsTaskSupervisorRestartExitCode,
   WINDOWS_TASK_SUPERVISOR_CHILD_FLAG,
@@ -8,12 +8,15 @@ import {
 } from "../../daemon/windows-task-supervisor-contract.js";
 import type { SpawnInput } from "../../process/supervisor/types.js";
 
-const { spawn, log, flushLogger, bindWindowsTaskLauncher } = vi.hoisted(() => ({
-  spawn: vi.fn(),
-  log: { info: vi.fn(), error: vi.fn() },
-  flushLogger: vi.fn(async () => {}),
-  bindWindowsTaskLauncher: vi.fn(),
-}));
+const { spawn, acquireScopeCleanup, cleanupScope, log, flushLogger, bindWindowsTaskLauncher } =
+  vi.hoisted(() => ({
+    spawn: vi.fn(),
+    acquireScopeCleanup: vi.fn(),
+    cleanupScope: vi.fn(),
+    log: { info: vi.fn(), error: vi.fn() },
+    flushLogger: vi.fn(async () => {}),
+    bindWindowsTaskLauncher: vi.fn(),
+  }));
 
 vi.mock("koffi", () => ({ default: {} }));
 vi.mock("../../process/supervisor/service-child-windows-task-launcher.js", () => ({
@@ -27,16 +30,14 @@ vi.mock("../../logging/subsystem.js", () => ({
 vi.mock("../../logging/logger.js", () => ({ flushLogger }));
 
 vi.mock("../../process/supervisor/index.js", () => ({
-  getProcessSupervisor: () => ({ spawn }),
+  getProcessSupervisor: () => ({ spawn, acquireScopeCleanup }),
 }));
 
 function readSpawnRestartExitCode(input: SpawnInput): number {
-  if (input.mode !== "anchored-shell") {
-    throw new Error("Expected anchored shell input");
+  if (input.mode !== "child") {
+    throw new Error("Expected structured child input");
   }
-  const exitCode = readWindowsTaskSupervisorRestartExitCode(
-    parseCmdScriptCommandLine(input.command),
-  );
+  const exitCode = readWindowsTaskSupervisorRestartExitCode(input.argv);
   if (exitCode === undefined) {
     throw new Error("Expected a correlated task-supervisor restart code");
   }
@@ -60,6 +61,8 @@ describe("Windows Gateway task supervisor", () => {
     ];
     process.execArgv = ["--import", "tsx"];
     process.exitCode = undefined;
+    acquireScopeCleanup.mockReturnValue(cleanupScope);
+    cleanupScope.mockResolvedValue(undefined);
     delete process.env.OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER;
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
   });
@@ -76,6 +79,8 @@ describe("Windows Gateway task supervisor", () => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
     spawn.mockReset();
+    acquireScopeCleanup.mockReset();
+    cleanupScope.mockReset();
     bindWindowsTaskLauncher.mockReset();
   });
 
@@ -113,33 +118,51 @@ describe("Windows Gateway task supervisor", () => {
     expect(process.env.OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER).toBeUndefined();
   });
 
-  it("runs the Gateway child through the anchored Job Object and waits for its tree", async () => {
+  it("preserves literal child argv and joins required cleanup before returning", async () => {
     // A direct Startup fallback inherits the install preference, without a live WScript owner.
     process.env.OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER = "1";
-    const waitForExtinction = vi.fn(async () => {});
-    spawn.mockResolvedValue({
-      cancel: vi.fn(),
-      wait: async () => ({ exitCode: 0, exitSignal: null }),
-      waitForExtinction,
+    const entry = "C:\\réseau %% ^!\\dist\\entry.js";
+    const loader = "C:\\réseau %PATH% ^!\\loader.mjs";
+    process.argv = [
+      process.execPath,
+      entry,
+      "gateway",
+      "--task-supervisor",
+      WINDOWS_TASK_SUPERVISOR_CHILD_FLAG,
+      `${WINDOWS_TASK_SUPERVISOR_CHILD_FLAG}=65536`,
+    ];
+    process.execArgv = ["--import", loader];
+    spawn.mockImplementation(async (input: SpawnInput) => {
+      expect(acquireScopeCleanup).toHaveBeenCalledWith(input.scopeKey, {
+        processTree: "required-all",
+      });
+      return {
+        cancel: vi.fn(),
+        wait: async () => ({ exitCode: 0, exitSignal: null }),
+      };
     });
     const { runWindowsGatewayTaskSupervisor } = await import("./task-supervisor.js");
     await runWindowsGatewayTaskSupervisor();
 
     expect(bindWindowsTaskLauncher).not.toHaveBeenCalled();
-    expect(spawn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mode: "anchored-shell",
-        command: expect.stringContaining("gateway"),
-        scopeKey: `gateway-task-supervisor:${process.pid}`,
-        captureOutput: false,
-      }),
-    );
-    expect(spawn.mock.calls[0]?.[0].command).not.toMatch(/"--task-supervisor"(?:\s|$)/u);
-    expect(spawn.mock.calls[0]?.[0].command).toContain(`${WINDOWS_TASK_SUPERVISOR_CHILD_FLAG}=`);
-    expect(spawn.mock.calls[0]?.[0].command).toContain("--import");
-    expect(spawn.mock.calls[0]?.[0].command).toContain("tsx");
-    readSpawnRestartExitCode(spawn.mock.calls[0]?.[0]);
-    expect(waitForExtinction).toHaveBeenCalledOnce();
+    const input: SpawnInput = spawn.mock.calls[0]?.[0];
+    const restartExitCode = readSpawnRestartExitCode(input);
+    expect(input).toMatchObject({
+      mode: "child",
+      argv: [
+        process.execPath,
+        "--import",
+        loader,
+        entry,
+        "gateway",
+        `${WINDOWS_TASK_SUPERVISOR_CHILD_FLAG}=${restartExitCode}`,
+      ],
+      stdinMode: "pipe-closed",
+      requireWindowsJob: true,
+      scopeKey: `gateway-task-supervisor:${process.pid}`,
+      captureOutput: false,
+    });
+    expect(cleanupScope).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -153,7 +176,6 @@ describe("Windows Gateway task supervisor", () => {
       return {
         cancel: vi.fn(),
         wait: async () => result,
-        waitForExtinction: async () => {},
       };
     });
 
@@ -185,7 +207,6 @@ describe("Windows Gateway task supervisor", () => {
       return {
         cancel: vi.fn(),
         wait: async () => ({ exitCode: 1, exitSignal: null, reason: "exit" }),
-        waitForExtinction: async () => {},
       };
     });
 
@@ -202,45 +223,66 @@ describe("Windows Gateway task supervisor", () => {
     expect(JSON.stringify(log.error.mock.calls)).not.toContain("unretained stdout");
   });
 
-  it("records a spawn failure and fails the task", async () => {
+  it.each([false, true])("retains a spawn failure when cleanup fails=%s", async (cleanupFails) => {
     spawn.mockRejectedValue(new Error("synthetic Job Object spawn failure"));
+    if (cleanupFails) {
+      cleanupScope.mockRejectedValue(new Error("synthetic startup cleanup failure"));
+    }
 
     const { runWindowsGatewayTaskSupervisor } = await import("./task-supervisor.js");
     await runWindowsGatewayTaskSupervisor();
 
     expect(process.exitCode).toBe(1);
     expect(JSON.stringify(log.error.mock.calls)).toContain("synthetic Job Object spawn failure");
+    if (cleanupFails) {
+      expect(JSON.stringify(log.error.mock.calls)).toContain("synthetic startup cleanup failure");
+    }
+    expect(cleanupScope).toHaveBeenCalledOnce();
     expect(flushLogger).toHaveBeenCalledOnce();
   });
 
-  it("preserves the child diagnostic when its tree cleanup fails", async () => {
-    const stderr = "synthetic child startup failure";
-    spawn.mockImplementation(async (input: SpawnInput) => {
-      input.onStderr?.(stderr);
-      return {
-        cancel: vi.fn(),
-        wait: async () => ({ exitCode: 23, exitSignal: null, reason: "exit" }),
-        waitForExtinction: async () => {
-          expect(log.error).toHaveBeenCalledWith(
-            expect.any(String),
-            expect.objectContaining({ exitCode: 23, stderr }),
-          );
-          throw new Error("synthetic Job Object cleanup failure");
-        },
-      };
-    });
+  it.each(["failure", "restart", "clean-stop"] as const)(
+    "fails closed when required cleanup is uncertain after a child %s",
+    async (outcome) => {
+      const stderr = "synthetic child diagnostic";
+      let childExitCode = 0;
+      spawn.mockImplementation(async (input: SpawnInput) => {
+        input.onStderr?.(stderr);
+        childExitCode =
+          outcome === "restart" ? readSpawnRestartExitCode(input) : outcome === "failure" ? 23 : 0;
+        return {
+          cancel: vi.fn(),
+          wait: async () => ({ exitCode: childExitCode, exitSignal: null, reason: "exit" }),
+        };
+      });
+      cleanupScope.mockImplementation(async () => {
+        const diagnostic = outcome === "failure" ? log.error : log.info;
+        expect(diagnostic).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({ exitCode: childExitCode, stderr }),
+        );
+        throw new Error("Process-tree cleanup is uncertain: job-unavailable");
+      });
 
-    const { runWindowsGatewayTaskSupervisor } = await import("./task-supervisor.js");
-    await runWindowsGatewayTaskSupervisor();
+      const { runWindowsGatewayTaskSupervisor } = await import("./task-supervisor.js");
+      await runWindowsGatewayTaskSupervisor();
 
-    expect(process.exitCode).toBe(1);
-    expect(JSON.stringify(log.error.mock.calls)).toContain("synthetic Job Object cleanup failure");
-    expect(flushLogger).toHaveBeenCalledOnce();
-  });
+      expect(spawn).toHaveBeenCalledOnce();
+      expect(process.exitCode).toBe(1);
+      expect(JSON.stringify(log.error.mock.calls)).toContain("Process-tree cleanup is uncertain");
+      expect(flushLogger).toHaveBeenCalledOnce();
+    },
+  );
 
   it("replaces only a child that requests an ordinary Gateway restart", async () => {
-    const firstExtinction = vi.fn(async () => {});
-    const secondExtinction = vi.fn(async () => {});
+    const firstExtinction = createDeferred();
+    const cleanupEntered = createDeferred();
+    const firstCleanup = vi.fn(() => {
+      cleanupEntered.resolve();
+      return firstExtinction.promise;
+    });
+    const secondCleanup = vi.fn(async () => {});
+    acquireScopeCleanup.mockReturnValueOnce(firstCleanup).mockReturnValueOnce(secondCleanup);
     spawn
       .mockImplementationOnce(async (input: SpawnInput) => ({
         cancel: vi.fn(),
@@ -248,19 +290,25 @@ describe("Windows Gateway task supervisor", () => {
           exitCode: readSpawnRestartExitCode(input),
           exitSignal: null,
         }),
-        waitForExtinction: firstExtinction,
       }))
       .mockResolvedValueOnce({
         cancel: vi.fn(),
         wait: async () => ({ exitCode: 0, exitSignal: null }),
-        waitForExtinction: secondExtinction,
       });
     const { runWindowsGatewayTaskSupervisor } = await import("./task-supervisor.js");
-    await runWindowsGatewayTaskSupervisor();
+    const running = runWindowsGatewayTaskSupervisor();
+    try {
+      await Promise.race([cleanupEntered.promise, running]);
+      expect(firstCleanup).toHaveBeenCalledOnce();
+      expect(spawn).toHaveBeenCalledOnce();
+    } finally {
+      firstExtinction.resolve();
+      await running;
+    }
 
     expect(spawn).toHaveBeenCalledTimes(2);
-    expect(firstExtinction).toHaveBeenCalledOnce();
-    expect(secondExtinction).toHaveBeenCalledOnce();
+    expect(firstCleanup).toHaveBeenCalledOnce();
+    expect(secondCleanup).toHaveBeenCalledOnce();
     expect(process.exitCode).toBeUndefined();
   });
 
@@ -268,7 +316,6 @@ describe("Windows Gateway task supervisor", () => {
     spawn.mockResolvedValue({
       cancel: vi.fn(),
       wait: async () => ({ exitCode: 75, exitSignal: null, reason: "exit" }),
-      waitForExtinction: vi.fn(async () => {}),
     });
 
     const { runWindowsGatewayTaskSupervisor } = await import("./task-supervisor.js");
@@ -292,9 +339,9 @@ describe("Windows Gateway task supervisor", () => {
         exitCode: readSpawnRestartExitCode(input),
         exitSignal: null,
       }),
-      waitForExtinction: async () => shutdown?.(),
     }));
 
+    cleanupScope.mockImplementation(async () => shutdown?.());
     const { runWindowsGatewayTaskSupervisor } = await import("./task-supervisor.js");
     await runWindowsGatewayTaskSupervisor();
 
@@ -318,7 +365,6 @@ describe("Windows Gateway task supervisor", () => {
           exitSignal: null,
         };
       },
-      waitForExtinction: vi.fn(async () => {}),
     }));
 
     const { runWindowsGatewayTaskSupervisor } = await import("./task-supervisor.js");
@@ -342,15 +388,22 @@ describe("Windows Gateway task supervisor", () => {
       }
       return process;
     }) as typeof process.once);
-    spawn.mockReturnValue(pendingSpawn);
+    let signalSpawnEntered: (() => void) | undefined;
+    const spawnEntered = new Promise<void>((resolve) => {
+      signalSpawnEntered = resolve;
+    });
+    spawn.mockImplementation(() => {
+      signalSpawnEntered?.();
+      return pendingSpawn;
+    });
     const { runWindowsGatewayTaskSupervisor } = await import("./task-supervisor.js");
     const running = runWindowsGatewayTaskSupervisor();
-    await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
+    await Promise.race([spawnEntered, running]);
+    expect(spawn).toHaveBeenCalledOnce();
     shutdown?.();
     resolveSpawn?.({
       cancel,
       wait: async () => ({ exitCode: 0, exitSignal: null }),
-      waitForExtinction: vi.fn(async () => {}),
     });
     await running;
 

@@ -418,6 +418,7 @@ export function createProcessSupervisor(): ProcessSupervisor & {
                 argv: resolvedArgs ? [...input.argv, ...resolvedArgs] : input.argv,
                 argv0: input.argv0,
                 exactEnv: input.exactEnv,
+                requireWindowsJob: input.requireWindowsJob,
                 windowsVerbatimArguments: input.windowsVerbatimArguments,
                 input: input.input,
                 stdinMode: input.stdinMode,

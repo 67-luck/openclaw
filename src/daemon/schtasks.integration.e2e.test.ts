@@ -10,6 +10,7 @@ import { findVitestResourceOwner } from "../../scripts/lib/vitest-resource-owner
 import { nativeSchtasksIntegrationEnabled } from "../../scripts/lib/vitest-worker-declarations.mts";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { cliRecoveryEntrypoints } from "../cli/cli-entrypoint.test-support.js";
+import { resolveProfileStateDir } from "../cli/profile-utils.js";
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -22,6 +23,7 @@ import { probeScheduledTaskExists } from "./schtasks-state-probe.js";
 import {
   assertInteractiveLeastPrivilegeTask,
   DIAGNOSTIC_TEXT_LIMIT,
+  readDiagnosticLogTail,
   readRelatedProcessDiagnostics,
   readTaskDefinitionSnapshot,
   readTaskPrincipal,
@@ -179,6 +181,7 @@ async function forceKillActiveProcess(params: {
 
 async function readFailureDiagnosticSnapshot(params: {
   eventsPath: string;
+  launcherPath: string;
   probePath: string;
   replacements: Array<[string, string]>;
   scriptPath: string;
@@ -195,6 +198,7 @@ async function readFailureDiagnosticSnapshot(params: {
   }
   const processCapture = readRelatedProcessDiagnostics([
     params.scriptPath,
+    params.launcherPath,
     params.probePath,
     params.eventsPath,
   ]);
@@ -244,6 +248,10 @@ async function writeFailureDiagnostics(params: {
         postEnd: params.postEnd,
         postEndError: sanitizeDiagnosticText(params.postEndError, params.replacements),
         serviceOutput: sanitizeDiagnosticText(params.serviceOutput, params.replacements),
+        taskSupervisorLog: await readDiagnosticLogTail(
+          path.join(params.rootDir, "task-supervisor.log"),
+          params.replacements,
+        ),
       },
       null,
       2,
@@ -255,6 +263,7 @@ async function writeFailureDiagnostics(params: {
 async function cleanupNativeTask(params: {
   activePidPath: string;
   eventsPath: string;
+  launcherPath: string;
   preserveEvidence: boolean;
   probePath: string;
   rootDir: string;
@@ -270,6 +279,7 @@ async function cleanupNativeTask(params: {
   });
   const snapshotParams = {
     eventsPath: params.eventsPath,
+    launcherPath: params.launcherPath,
     probePath: params.probePath,
     replacements,
     scriptPath: params.scriptPath,
@@ -466,9 +476,7 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
     const rootDir = await proof.createIntegrationRoot(configuredRoot, id);
     const accountHome = os.userInfo().homedir;
     const profile = `schtasks-int-${id}`;
-    const stateDir = releasedBindingPath
-      ? path.join(rootDir, "state")
-      : path.join(accountHome, `.openclaw-${profile}`);
+    const stateDir = resolveProfileStateDir(profile, { HOME: accountHome }, () => accountHome);
     const activePidPath = path.join(rootDir, "active-pid.txt");
     const eventsPath = path.join(rootDir, "runs.txt");
     const probe = createGatewayTaskSupervisorProbe(rootDir);
@@ -534,12 +542,19 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
         OPENCLAW_SERVICE_MARKER: "openclaw",
       },
     };
+    // Admit cleanup only after this run owns a new profile directory and no existing task.
+    if ((await readTaskDefinitionSnapshot(taskName)).exists) {
+      throw new Error(`Native Scheduled Task profile already has a registered task: ${taskName}`);
+    }
+    await fs.mkdir(stateDir);
     try {
-      await fs.mkdir(stateDir);
-      await fs.writeFile(path.join(stateDir, "openclaw.json"), "{}\n");
+      await fs.writeFile(
+        path.join(stateDir, "openclaw.json"),
+        `${JSON.stringify(releasedBindingPath ? {} : { logging: { file: path.join(rootDir, "task-supervisor.log") } })}\n`,
+      );
       pendingProof = await withEnvAsync(env, async () => {
-        const defaultTaskBefore = await readTaskDefinitionSnapshot("OpenClaw Gateway");
         if (releasedBindingPath) {
+          const defaultTaskBefore = await readTaskDefinitionSnapshot("OpenClaw Gateway");
           const released = await proveReleasedScheduledTask({
             bindingPath: releasedBindingPath,
             env,
@@ -578,6 +593,7 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
           lifetime,
           signal,
         });
+        const defaultTaskBefore = await readTaskDefinitionSnapshot("OpenClaw Gateway");
         const service = resolveGatewayService();
         const readRuntime = () => service.readRuntime(env);
 
@@ -653,11 +669,11 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
           expectProbeProcessAlive(externalRun.pid);
           expectProbeProcessAlive(externalProcesses.childPid);
           expectGatewayTaskSupervisorProcessAlive(externalProcesses.supervisorPid, probe.probePath);
-          expectScheduledTaskProbeOrigin({
+          const launcherPid = expectScheduledTaskProbeOrigin({
             eventsPath,
             probePath: probe.probePath,
             run: externalRun,
-            scriptPath,
+            launcherPath,
             readRelatedProcessDiagnostics,
           });
           expect(await canBindLoopbackPort(gatewayPort)).toBe(false);
@@ -678,6 +694,7 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
               externalRun.pid,
               externalProcesses.childPid,
               externalProcesses.supervisorPid,
+              launcherPid,
               ...processCapture.processes.flatMap((entry) =>
                 entry.ProcessId === undefined ? [] : [entry.ProcessId],
               ),
@@ -726,7 +743,7 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
           eventsPath,
           probePath: probe.probePath,
           run: startedRun,
-          scriptPath,
+          launcherPath,
           readRelatedProcessDiagnostics,
         });
         expect(await canBindLoopbackPort(gatewayPort)).toBe(false);
@@ -754,7 +771,7 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
           eventsPath,
           probePath: probe.probePath,
           run: restartedRun,
-          scriptPath,
+          launcherPath,
           readRelatedProcessDiagnostics,
         });
         await waitForProcessExit(startedPid);
@@ -959,6 +976,7 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
           activePidPath,
           eventsPath,
           preserveEvidence: testFailed,
+          launcherPath,
           probePath: probe.probePath,
           rootDir,
           scriptPath,

@@ -3,16 +3,22 @@ import { once } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { spawnWindowsJobChild } from "../../scripts/lib/managed-windows-job.mts";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { stopChildProcess } from "../../test/helpers/stop-child-process.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { isErrno } from "../infra/errno.js";
 import { resolveDiagnosticProcessEnv } from "../infra/process-env.js";
-import { getWindowsCmdExePath } from "../infra/windows-install-roots.js";
+import { getWindowsCmdExePath, getWindowsSystem32ExePath } from "../infra/windows-install-roots.js";
 import { createProcessSupervisor } from "../process/supervisor/supervisor.js";
 import { quoteCmdScriptArg } from "./cmd-argv.js";
 import { renderCmdSetAssignment } from "./cmd-set.js";
-import { buildTaskScript, encodeWindowsLauncherScript } from "./schtasks-layout.js";
+import {
+  buildHiddenLauncherScript,
+  buildStartupLauncherScript,
+  buildTaskScript,
+  encodeWindowsLauncherScript,
+} from "./schtasks-layout.js";
 import { findInstalledProcessPid, readWindowsProcessSnapshot } from "./schtasks-process.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -203,6 +209,156 @@ it
       } finally {
         context.signal.removeEventListener("abort", cancel);
         await lifetime.verifyCleanup(closeScope);
+      }
+    });
+  },
+);
+
+it.skipIf(process.platform !== "win32").for(["cmd", "vbs"] as const)(
+  "runs the generated Startup wrapper without expanding a literal environment-token path (%s)",
+  { timeout: 30_000 },
+  async (format, context) => {
+    const lifetime = createFixtureLifetime();
+    context.onTestFinished(() => lifetime.cleanup());
+    return lifetime.run(async () => {
+      const directory = lifetime.createTempDir("openclaw-startup-percent-");
+      const root = await fs.realpath(directory);
+      expect(root, "Startup percent proof requires an ASCII fixture root").toMatch(
+        /^[\x20-\x7e]+$/u,
+      );
+      expect(root, "Only the target directory should contain CMD syntax").not.toMatch(
+        /[&|<>^%!()"]/u,
+      );
+      const markerPath = path.join(root, "target-marker.txt");
+      const decoyMarkerPath = path.join(root, "decoy-marker.txt");
+      const literalTarget = path.join(root, "%OPENCLAW_STARTUP_PROBE%", "target.cmd");
+      const expandedTarget = path.join(root, "expanded", "target.cmd");
+      for (const [target, marker] of [
+        [literalTarget, "literal"],
+        [expandedTarget, "expanded"],
+      ] as const) {
+        await fs.mkdir(path.dirname(target));
+        const outputPath = marker === "literal" ? markerPath : decoyMarkerPath;
+        await fs.writeFile(target, `@echo off\r\n> "${outputPath}" echo ${marker}\r\n`, "ascii");
+      }
+      const wrapperPath = path.join(root, `startup-entry.${format}`);
+      const wrapper = encodeWindowsLauncherScript({
+        format,
+        content:
+          format === "cmd"
+            ? buildStartupLauncherScript({ scriptPath: literalTarget })
+            : buildHiddenLauncherScript({ scriptPath: literalTarget }),
+      });
+      await fs.writeFile(wrapperPath, wrapper);
+      const host =
+        format === "cmd" ? getWindowsCmdExePath() : getWindowsSystem32ExePath("wscript.exe");
+      const hostArgs =
+        format === "cmd"
+          ? ["/d", "/s", "/v:off", "/c", '""%OPENCLAW_STARTUP_WRAPPER%""']
+          : ["//B", "//NoLogo", wrapperPath];
+      context.signal.throwIfAborted();
+      const owned = spawnWindowsJobChild(host, hostArgs, {
+        cwd: root,
+        env: {
+          ...resolveDiagnosticProcessEnv(),
+          OPENCLAW_STARTUP_PROBE: "expanded",
+          OPENCLAW_STARTUP_WRAPPER: wrapperPath,
+        },
+        stdio: ["ignore", "ignore", "ignore"],
+        // Retain START descendants after the launcher exits.
+        detached: true,
+        windowsHide: true,
+        windowsVerbatimArguments: format === "cmd",
+      });
+      if (!owned) {
+        throw new Error("Generated Startup wrapper proof requires the native Windows Job owner");
+      }
+      const { child, job } = owned;
+      const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+        (resolve) => {
+          child.once("close", (code, signal) => resolve({ code, signal }));
+        },
+      );
+      const stopErrors: unknown[] = [];
+      const stop = () => {
+        try {
+          job.stop();
+        } catch (error) {
+          stopErrors.push(error);
+        }
+      };
+      context.signal.addEventListener("abort", stop, { once: true });
+      if (context.signal.aborted) {
+        stop();
+      }
+      try {
+        await lifetime.track(job.ready);
+        const exit = await lifetime.track(closed);
+        // Join the native Job before reading the target marker.
+        const extinction = await lifetime.track(job.certify());
+        let marker: string | undefined;
+        let markerReadError: unknown;
+        let decoyExecuted: boolean | undefined;
+        let decoyReadError: unknown;
+        if (extinction.status === "confirmed") {
+          try {
+            marker = (await fs.readFile(markerPath, "ascii")).trim();
+          } catch (error) {
+            markerReadError = error;
+          }
+          try {
+            await fs.access(decoyMarkerPath);
+            decoyExecuted = true;
+          } catch (error) {
+            if (isErrno(error) && error.code === "ENOENT") {
+              decoyExecuted = false;
+            } else {
+              decoyReadError = error;
+            }
+          }
+        }
+        const observed = {
+          format,
+          exit,
+          extinction,
+          marker: marker?.slice(0, 128) ?? null,
+          markerLength: marker?.length ?? null,
+          markerReadErrorCode: isErrno(markerReadError) ? markerReadError.code : null,
+          decoyExecuted: decoyExecuted ?? null,
+          decoyReadErrorCode: isErrno(decoyReadError) ? decoyReadError.code : null,
+        };
+        const diagnostic = JSON.stringify({
+          ...observed,
+          host,
+          hostArgs,
+          sentinel: "expanded",
+          wrapperBase64: wrapper.toString("base64"),
+        });
+        console.info(
+          "[windows-startup-wrapper-percent]",
+          Buffer.byteLength(diagnostic) <= 8 * 1024
+            ? diagnostic
+            : JSON.stringify({ ...observed, diagnosticTruncated: true }),
+        );
+        expect(exit).toEqual({ code: 0, signal: null });
+        expect(extinction).toEqual({ status: "confirmed" });
+        if (markerReadError !== undefined) {
+          throw markerReadError;
+        }
+        if (decoyReadError !== undefined) {
+          throw decoyReadError;
+        }
+        expect(marker, "Startup must execute the literal target").toBe("literal");
+        expect(decoyExecuted, "Startup must leave the expanded decoy untouched").toBe(false);
+      } finally {
+        context.signal.removeEventListener("abort", stop);
+        await lifetime.verifyCleanup(async () => {
+          stop();
+          const extinction = await job.certify();
+          await closed;
+          expect(extinction).toEqual({ status: "confirmed" });
+          expect(stopErrors).toEqual([]);
+        });
       }
     });
   },

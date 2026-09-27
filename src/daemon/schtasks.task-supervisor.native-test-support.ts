@@ -4,6 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect } from "vitest";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
+import { splitArgsPreservingQuotes } from "./arg-split.js";
 import { readWindowsProcessSnapshot, terminateGatewayProcessTree } from "./schtasks-process.js";
 import { launchFallbackTaskScript, resolveFallbackRuntime } from "./schtasks-runtime.js";
 import { resolveDiagnosticReplacements } from "./schtasks.integration-observation.test-support.js";
@@ -388,33 +389,52 @@ export async function proveStartupFallbackGatewayControl(params: {
 
 export function expectScheduledTaskProbeOrigin(params: {
   eventsPath: string;
+  launcherPath: string;
   probePath: string;
   run: { pid: number; ppid: number };
-  scriptPath: string;
   readRelatedProcessDiagnostics: (needles: string[]) => {
     ok: boolean;
     processes: WindowsProcessDiagnostic[];
     truncated: boolean;
   };
-}): void {
+}): number {
   expect(params.run.ppid).not.toBe(process.pid);
   const capture = params.readRelatedProcessDiagnostics([
     params.eventsPath,
     params.probePath,
-    params.scriptPath,
+    params.launcherPath,
   ]);
   expect(capture.ok).toBe(true);
   expect(capture.truncated).toBe(false);
   const processEntry = capture.processes.find((entry) => entry.ProcessId === params.run.pid);
   expect(processEntry?.ParentProcessId).toBe(params.run.ppid);
-  const normalizeCommandLine = (value: string | null | undefined) =>
-    (value ?? "").replaceAll("/", "\\").toLowerCase();
-  const processCommandLine = normalizeCommandLine(processEntry?.CommandLine);
-  expect(processCommandLine.includes(normalizeCommandLine(params.probePath))).toBe(true);
-  expect(processCommandLine.includes(normalizeCommandLine(params.eventsPath))).toBe(true);
-  expect(
-    capture.processes.some((entry) =>
-      normalizeCommandLine(entry.CommandLine).includes(normalizeCommandLine(params.scriptPath)),
-    ),
-  ).toBe(true);
+  const normalizeArgument = (value: string) => value.replaceAll("/", "\\").toLowerCase();
+  const processArguments = splitArgsPreservingQuotes(processEntry?.CommandLine ?? "", {
+    escapeMode: "backslash-quote-only",
+  }).map(normalizeArgument);
+  expect(processArguments).toContain(normalizeArgument(params.probePath));
+  expect(processArguments).toContain(normalizeArgument(params.eventsPath));
+  const visited = new Set<number>();
+  for (let parentPid = params.run.ppid; !visited.has(parentPid);) {
+    visited.add(parentPid);
+    const parent = capture.processes.find((entry) => entry.ProcessId === parentPid);
+    if (!parent) {
+      break;
+    }
+    const [executable, script] = splitArgsPreservingQuotes(parent.CommandLine ?? "", {
+      escapeMode: "backslash-quote-only",
+    });
+    if (
+      path.win32.basename(executable ?? "").toLowerCase() === "wscript.exe" &&
+      script !== undefined &&
+      normalizeArgument(script) === normalizeArgument(params.launcherPath)
+    ) {
+      return parentPid;
+    }
+    if (parent.ParentProcessId === undefined) {
+      break;
+    }
+    parentPid = parent.ParentProcessId;
+  }
+  throw new Error(`Scheduled Task probe ${params.run.pid} has no connected WScript launcher`);
 }

@@ -140,6 +140,8 @@ type SpawnBaseInput = {
 type SpawnChildInput = SpawnBaseInput & {
   mode: "child";
   argv: string[];
+  /** Refuse Windows payload admission unless the native Job owns its process tree. */
+  requireWindowsJob?: true;
   /** Append invocation arguments after queued scope admission, immediately before child construction. */
   resolveArgs?: () => string[];
   /** Preserve a distinct invocation name while executing argv[0]. */

@@ -12,6 +12,9 @@ const native = vi.hoisted(() => ({
   terminate: vi.fn(),
   close: vi.fn(() => true),
 }));
+vi.mock("./supervisor/supervisor-log.runtime.js", () => ({
+  warnProcessSupervisorSpawnFailure: vi.fn(),
+}));
 vi.mock("node:child_process", async (original) => ({
   ...(await original<typeof import("node:child_process")>()),
   spawn: native.spawn,
@@ -58,20 +61,28 @@ vi.mock("node:fs", async (original) => {
   };
 });
 
-function rejectJobAdmission(cause: Error, abort?: AbortController) {
+function rejectJobAdmission(cause: Error, abort?: AbortController, closeGate?: Promise<void>) {
   const launcher = createStubChild(4321);
   native.spawn.mockImplementationOnce((_command, args) => {
     queueMicrotask(() => {
       launcher.child.emit("spawn");
       abort?.abort();
       launcher.child.emit("message", { job: args[1], type: "job-error", error: cause.message });
-      launcher.emitExit(1);
-      launcher.emitClose(1);
+      const close = () => {
+        launcher.emitExit(1);
+        launcher.emitClose(1);
+      };
+      if (closeGate) {
+        void closeGate.then(close);
+      } else {
+        close();
+      }
     });
     return launcher.child;
   });
   native.terminate.mockImplementationOnce(() => true);
   native.inspect.mockReturnValue([]);
+  return launcher;
 }
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -277,6 +288,80 @@ it.each(["create", "configuration", "admission"] as const)(
       cause: expect.objectContaining({ message: cause.message }),
     });
     await expect(closeOwnedStdioProcess(child)).resolves.toBeUndefined();
+  },
+);
+
+it.each(["koffi", "launcher", "create", "configuration", "admission"] as const)(
+  "refuses required Job payload admission after %s failure",
+  async (phase) => {
+    vi.useFakeTimers();
+    const cause = new Error(`Job ${phase} failed`);
+    const launcherClosed = createDeferred();
+    const admissionFailed = createDeferred();
+    const admissionFailureObserved = vi.fn(() => admissionFailed.resolve());
+    let launcher: ReturnType<typeof rejectJobAdmission> | undefined;
+    if (phase === "koffi") {
+      native.koffiAvailable = false;
+    } else if (phase === "launcher") {
+      native.launcherAvailable = false;
+    } else if (phase === "create") {
+      native.create.mockImplementationOnce(() => {
+        throw cause;
+      });
+    } else if (phase === "configuration") {
+      native.configure.mockImplementationOnce(() => {
+        throw cause;
+      });
+    } else {
+      launcher = rejectJobAdmission(cause, undefined, launcherClosed.promise);
+      launcher.child.once("error", admissionFailureObserved);
+    }
+    const supervisor = createProcessSupervisor();
+    const scopeKey = "scope:required-windows-job";
+    const cleanup = supervisor.acquireScopeCleanup(scopeKey, { processTree: "required-all" });
+    const starting = supervisor.spawn({
+      mode: "child",
+      argv: [process.execPath, "fixture"],
+      exactEnv: true,
+      requireWindowsJob: true,
+      scopeKey,
+    });
+    const settled = vi.fn();
+    void starting.then(settled, settled);
+    try {
+      if (launcher) {
+        await Promise.race([admissionFailed.promise, starting.catch(() => undefined)]);
+        expect(admissionFailureObserved).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(settled).not.toHaveBeenCalled();
+        expect(launcher.sendMock).not.toHaveBeenCalled();
+        launcherClosed.resolve();
+      }
+      if (phase === "koffi" || phase === "launcher") {
+        await expect(starting).rejects.toThrow("Windows Job Object is required but unavailable");
+      } else {
+        await expect(starting).rejects.toMatchObject({
+          reason: `job-${phase}-failed`,
+          cause: expect.objectContaining({ message: cause.message }),
+        });
+      }
+      expect(native.spawn).toHaveBeenCalledTimes(phase === "admission" ? 1 : 0);
+      if (launcher) {
+        expect(launcher.sendMock).not.toHaveBeenCalled();
+      }
+      if (phase === "configuration" || phase === "admission") {
+        expect(native.close).toHaveBeenCalledOnce();
+      }
+      await cleanup();
+      await supervisor.shutdown();
+    } finally {
+      launcherClosed.resolve();
+      await Promise.allSettled([starting]);
+      stub.emitExit(0);
+      stub.emitClose(0);
+      await Promise.allSettled([cleanup(), supervisor.shutdown()]);
+      vi.useRealTimers();
+    }
   },
 );
 

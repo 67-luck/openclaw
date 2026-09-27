@@ -888,6 +888,21 @@ jobs:
       - *windows_node_path
       - *windows_install
 
+      - name: Time task supervisor and Windows Job admission tests
+        if: ${{ inputs.run_windows_ci }}
+        shell: bash
+        env:
+          CI: true
+          OPENCLAW_TEST_SKIP_FULL_EXTENSIONS_SHARD: 1
+          OPENCLAW_VITEST_MAX_WORKERS: 1
+        run: |
+          set -euo pipefail
+          export PATH="$NODE_BIN:$PATH"
+          TIMEFORMAT='task-supervisor.wall_seconds=%3R'
+          time pnpm test src/cli/gateway-cli/task-supervisor.test.ts --maxWorkers=1
+          TIMEFORMAT='owned-stdio.windows.wall_seconds=%3R'
+          time pnpm test src/process/owned-stdio.windows.test.ts --maxWorkers=1
+
       - name: Install authenticated released Scheduled Task driver
         if: ${{ inputs.run_windows_ci }}
         shell: pwsh
@@ -1069,13 +1084,7 @@ jobs:
             ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\failure-diagnostics.json
             ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\cleanup-summary.txt
             ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\startup-fallback-proof\direct-unchanged-stdio-control.observation.json
-            ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\startup-fallback-proof\direct-file-backed-diagnostic.observation.json
-            ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\startup-fallback-proof\direct-parent-retained-diagnostic.observation.json
             ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\startup-fallback-proof\batch-unchanged-stdio-control.observation.json
-            ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\startup-fallback-proof\batch-file-backed-diagnostic.observation.json
-            ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\startup-fallback-proof\batch-parent-retained-diagnostic.observation.json
-            ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\startup-fallback-proof\batch-exit-tag-pathological-diagnostic.observation.json
-            ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\startup-fallback-proof\batch-exit-tag-ascii-path-diagnostic.observation.json
             ${{ runner.temp }}\openclaw-schtasks-legacy-${{ github.run_id }}-${{ github.run_attempt }}\failure-diagnostics.json
           if-no-files-found: warn
           retention-days: 7

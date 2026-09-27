@@ -20,10 +20,17 @@ export type PackagedOwnerEvidence = {
 export async function verifyPackageMember(packageRoot: string, tarball: string, file: string) {
   const relative = path.relative(packageRoot, file).replaceAll(path.sep, "/");
   assert.ok(relative.startsWith("dist/") && !relative.split("/").includes(".."));
-  const bytes = execFileSync("tar", ["-xOf", tarball, `package/${relative}`], {
-    maxBuffer: 32 * 1024 * 1024,
-    windowsHide: true,
-  });
+  // GNU tar treats a Windows drive prefix as a remote archive.
+  const archivePath = path.resolve(tarball);
+  const bytes = execFileSync(
+    "tar",
+    ["-xOf", `./${path.basename(archivePath)}`, `package/${relative}`],
+    {
+      cwd: path.dirname(archivePath),
+      maxBuffer: 32 * 1024 * 1024,
+      windowsHide: true,
+    },
+  );
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   assert.equal(
     createHash("sha256")

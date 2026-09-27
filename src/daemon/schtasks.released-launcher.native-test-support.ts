@@ -208,11 +208,14 @@ export async function proveReleasedScheduledTask(params: {
     "const packageRoot = " + JSON.stringify(binding.packageRoot) + ";",
     "const tarball = " + JSON.stringify(binding.tarball) + ";",
     "const packageOwnerUrl = " + JSON.stringify(params.packageOwnerUrl.href) + ";",
+    // Keep import authentication active until the owner process exits, including late callbacks.
     "if (process.argv.includes('--install-released')) {",
-    "  const { loadPackagedOwner } = await import(packageOwnerUrl);",
+    "  const { createPackagedOwnerLoader } = await import(packageOwnerUrl);",
+    "  const loadOwner = await createPackagedOwnerLoader(packageRoot, tarball);",
+    "  process.once('exit', () => loadOwner[Symbol.dispose]());",
     "  const members = [];",
-    "  const owner = await loadPackagedOwner(packageRoot, tarball, 'schtasks', ['installScheduledTask'], members);",
-    "  const layout = await loadPackagedOwner(packageRoot, tarball, 'schtasks-layout', ['readScheduledTaskCommand'], members);",
+    "  const owner = await loadOwner('schtasks', ['installScheduledTask'], members);",
+    "  const layout = await loadOwner('schtasks-layout', ['readScheduledTaskCommand'], members);",
     "  await owner.installScheduledTask({ env: process.env, stdout: process.stdout,",
     "    programArguments: " + JSON.stringify(programArguments) + ",",
     "    workingDirectory: " + JSON.stringify(params.rootDir) + ",",
@@ -222,9 +225,11 @@ export async function proveReleasedScheduledTask(params: {
       JSON.stringify(installerEvidence) +
       ", JSON.stringify({ members, command }));",
     "} else if (process.argv.includes('--task-supervisor')) {",
-    "  const { loadPackagedOwner } = await import(packageOwnerUrl);",
+    "  const { createPackagedOwnerLoader } = await import(packageOwnerUrl);",
+    "  const loadOwner = await createPackagedOwnerLoader(packageRoot, tarball);",
+    "  process.once('exit', () => loadOwner[Symbol.dispose]());",
     "  const members = [];",
-    "  const owner = await loadPackagedOwner(packageRoot, tarball, 'task-supervisor', ['runWindowsGatewayTaskSupervisor'], members);",
+    "  const owner = await loadOwner('task-supervisor', ['runWindowsGatewayTaskSupervisor'], members);",
     "  fs.writeFileSync(" +
       JSON.stringify(params.probe.supervisorPidPath) +
       ", String(process.pid));",
@@ -273,7 +278,7 @@ export async function proveReleasedScheduledTask(params: {
     eventsPath: params.eventsPath,
     probePath: params.probe.probePath,
     run: ownedRun,
-    scriptPath: params.scriptPath,
+    launcherPath: params.launcherPath,
     readRelatedProcessDiagnostics,
   });
   const owned = processIdentity(ownedRun.pid, params.probe.probePath);
