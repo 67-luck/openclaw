@@ -2924,7 +2924,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     }
   });
 
-  it("spends the hybrid CLI budget only on complete affordable non-build bins", () => {
+  it("packs complete serial CLI children within each backend's non-build budget", () => {
     const originalShards = fullSuiteVitestShards.slice();
     const originalProcessFiles = cliProcessTestFiles.slice();
     const configs = new Set([
@@ -3024,27 +3024,69 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           }))
           .filter((shard) => shard.projects.length > 0),
       );
-      timings.mockImplementation((profile) => ({
-        "agentic-cli-process": profile === "github" ? 200 : 120,
+      timings.mockImplementation((profile, timingOptions) => ({
+        "agentic-cli-process":
+          profile === "github" ? (timingOptions?.pullRequest ? 130 : 200) : 120,
         "core-tooling-isolated": 20,
       }));
-      const cheaper = createNodeTestShardBundles(options);
-      const cliJob = cheaper.find((job) =>
+      const hostedOverBudgetTimings: Record<string, number> = { "agentic-cli-process": 160 };
+      for (const runnerBackend of ["hybrid", "github-pr"] as const) {
+        const cheaper = createNodeTestShardBundles({ ...options, runnerBackend });
+        const cliJob = cheaper.find((job) =>
+          job.groups.some((group) =>
+            group.configs.includes("test/vitest/vitest.cli-process.config.ts"),
+          ),
+        )!;
+        expect(cliJob).toMatchObject({ planConcurrency: 1, requiresDist: false });
+        expect(cliJob.pretestBuildMode).toBeUndefined();
+        expect(cliJob.groups).toHaveLength(2);
+        expect(cliJob.groups.flatMap((group) => group.includePatterns ?? []).toSorted()).toEqual(
+          processFiles.toSorted(),
+        );
+        for (const group of cliJob.groups) {
+          expect(group.env?.OPENCLAW_VITEST_MAX_WORKERS).toBe("2");
+          if (runnerBackend === "github-pr") {
+            hostedOverBudgetTimings[
+              expectDefined(
+                shardMetadata.compactGroupMembershipTimingKey(group),
+                "hosted CLI child membership",
+              )
+            ] = 80;
+          }
+        }
+        const unrelated = cheaper.find((job) =>
+          job.groups.some((group) => group.shard_name === "core-tooling-isolated"),
+        )!;
+        expect(unrelated).toMatchObject({ runner: cliJob.runner, requiresDist: false });
+        expect(unrelated.groups).toHaveLength(1);
+        expect(unrelated.pretestBuildMode).toBeUndefined();
+        expect(cliJob.predictedSeconds! + unrelated.predictedSeconds!).toBeLessThanOrEqual(150);
+      }
+      // Hosted PRs share CLI siblings without inheriting hybrid's 250s budget.
+      fullSuiteVitestShards.splice(
+        0,
+        fullSuiteVitestShards.length,
+        ...fullSuiteVitestShards
+          .map((shard) => ({
+            ...shard,
+            projects: shard.projects.filter(
+              (config) => config === "test/vitest/vitest.cli-process.config.ts",
+            ),
+          }))
+          .filter((shard) => shard.projects.length > 0),
+      );
+      timings.mockReturnValue(hostedOverBudgetTimings);
+      const hostedOverBudget = createNodeTestShardBundles({
+        ...options,
+        runnerBackend: "github-pr",
+      }).filter((job) =>
         job.groups.some((group) =>
           group.configs.includes("test/vitest/vitest.cli-process.config.ts"),
         ),
-      )!;
-      expect(cliJob.groups).toHaveLength(2);
-      expect(cliJob.groups.flatMap((group) => group.includePatterns ?? []).toSorted()).toEqual(
-        processFiles.toSorted(),
       );
-      const unrelated = cheaper.find((job) =>
-        job.groups.some((group) => group.shard_name === "core-tooling-isolated"),
-      )!;
-      expect(unrelated).toMatchObject({ runner: cliJob.runner, requiresDist: false });
-      expect(unrelated.groups).toHaveLength(1);
-      expect(unrelated.pretestBuildMode).toBeUndefined();
-      expect(cliJob.predictedSeconds! + unrelated.predictedSeconds!).toBeLessThanOrEqual(150);
+      expect(hostedOverBudget).toHaveLength(2);
+      expect(hostedOverBudget.every((job) => job.groups.length === 1)).toBe(true);
+      expect(hostedOverBudget.reduce((sum, job) => sum + job.predictedSeconds!, 0)).toBe(160);
     } finally {
       fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...originalShards);
       cliProcessTestFiles.splice(0, cliProcessTestFiles.length, ...originalProcessFiles);
@@ -4547,17 +4589,26 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect({ anchor, unsplit, split }).toEqual(original);
   });
 
-  it("keeps precise tooling selection through hosted overflow refusal", () => {
-    const tooling = defaultShards.filter((shard) => /^core-tooling-\d+$/u.test(shard.shardName));
-    const selected = tooling.flatMap((shard) => shard.includePatterns ?? []).slice(0, 96);
-    expect(selected).toHaveLength(96);
-    vi.spyOn(shardMetadata, "estimateVitestToolingFileSeconds").mockReturnValue(20_000);
-    // Every selected file is now indivisible above the admission cap. Overflow
-    // must retain these 96 files without adding unrelated dist owners or the full suite.
-    expect(() => createSelectedNodeTestShardBundles(selected, { runnerBackend: "github" })).toThrow(
-      "exceeds 90 jobs (96 planned)",
-    );
-  });
+  it.each([
+    { runnerBackend: "github", files: 96, cap: 90 },
+    { runnerBackend: "github-pr", files: 225, cap: 224 },
+  ] as const)(
+    "keeps precise tooling selection through $runnerBackend overflow refusal",
+    ({ runnerBackend, files, cap }) => {
+      const tooling = defaultShards.filter((shard) => /^core-tooling-\d+$/u.test(shard.shardName));
+      const selected = tooling
+        .flatMap((shard) => shard.includePatterns ?? [])
+        .filter((file) => !isCiProofTestFile(file))
+        .slice(0, files);
+      expect(selected).toHaveLength(files);
+      vi.spyOn(shardMetadata, "estimateVitestToolingFileSeconds").mockReturnValue(20_000);
+      // Every selected file is indivisible above the admission cap. Overflow
+      // must retain that selection without adding dist owners or the full suite.
+      expect(() => createSelectedNodeTestShardBundles(selected, { runnerBackend })).toThrow(
+        `exceeds ${cap} jobs (${files} planned)`,
+      );
+    },
+  );
 
   it("keeps the private runtime prerequisite on precise tooling readers", () => {
     const shards = createSelectedNodeTestShardBundles([PRIVATE_QA_TOOLING_TEST]);
