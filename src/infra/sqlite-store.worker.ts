@@ -17,6 +17,7 @@ import {
   SQLITE_WORKER_PREPARE_ADMITTED,
   SQLITE_WORKER_OPERATION_CLEANUP,
   SQLITE_WORKER_CLOSE_RECEIPT,
+  assertSqliteWorkerBackendHooks,
   sqliteWorkerHostFailure,
   type SqliteWorkerCloseReceipt,
   type SqliteWorkerPreparedBackend,
@@ -559,29 +560,7 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
           ...(request.existingIdentity ? { existingIdentity: request.existingIdentity } : {}),
         });
       });
-      if (
-        !isRecord(backend) ||
-        typeof backend.execute !== "function" ||
-        typeof backend.close !== "function" ||
-        (SQLITE_WORKER_PREPARE_COMMAND in backend &&
-          backend[SQLITE_WORKER_PREPARE_COMMAND] !== undefined &&
-          typeof backend[SQLITE_WORKER_PREPARE_COMMAND] !== "function") ||
-        (SQLITE_WORKER_PREPARE_ADMITTED in backend &&
-          backend[SQLITE_WORKER_PREPARE_ADMITTED] !== undefined &&
-          (typeof backend[SQLITE_WORKER_PREPARE_ADMITTED] !== "function" ||
-            typeof backend.assertSettled !== "function")) ||
-        (SQLITE_WORKER_OPERATION_CLEANUP in backend &&
-          backend[SQLITE_WORKER_OPERATION_CLEANUP] !== undefined &&
-          (typeof backend[SQLITE_WORKER_OPERATION_CLEANUP] !== "function" ||
-            typeof backend.assertSettled !== "function")) ||
-        (SQLITE_WORKER_CLOSE_RECEIPT in backend &&
-          backend[SQLITE_WORKER_CLOSE_RECEIPT] !== undefined &&
-          typeof backend[SQLITE_WORKER_CLOSE_RECEIPT] !== "function") ||
-        (backend.assertSettled !== undefined && typeof backend.assertSettled !== "function") ||
-        (backend.prepare !== undefined && typeof backend.prepare !== "function")
-      ) {
-        throw new Error("SQLite worker module returned an invalid backend");
-      }
+      assertSqliteWorkerBackendHooks(backend);
       actors.set(request.actor, {
         // Callable hooks were checked, not the shape of arbitrary backend results.
         // SAFETY: the selected backend and typed client own this actor's command/result contract.

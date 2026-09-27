@@ -1,9 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { inspectTranscriptEventsSync } from "../../config/sessions/session-accessor.js";
-import {
-  readSessionTranscriptBoundedActiveContextCore,
-  type SessionTranscriptBoundedActiveContext,
-} from "../../config/sessions/session-accessor.sqlite-active-context.js";
+import type { SessionTranscriptBoundedActiveContext } from "../../config/sessions/session-accessor.sqlite-active-context.js";
 import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import {
   resolveSqliteTranscriptScope,
@@ -40,6 +36,11 @@ import {
   partitionSessionFileEntries,
 } from "./session-manager-codec.js";
 import { createManagedSessionId } from "./session-manager-id.js";
+import {
+  assertCommittedSessionTranscriptReload,
+  prepareCommittedSessionTranscriptReload,
+  type SessionTranscriptAppendExpectation,
+} from "./session-manager-reload.js";
 import type { FileEntry } from "./session-manager-types.js";
 import type {
   SessionManagerPersistenceTarget,
@@ -683,41 +684,16 @@ export class SessionManagerCore extends SessionManagerView {
     if (!this.persistenceTarget) {
       return;
     }
-    const target = this.persistenceTarget;
-    if (this.boundedContextLimits) {
-      this.adoptPreparedTranscriptReload(
-        {
-          kind: "bounded",
-          snapshot: readSessionTranscriptBoundedActiveContextCore(target, {
-            ...this.boundedContextLimits,
-            ignoreReadFence: true,
-          }),
-        },
-        { expectedMutationAt, expectedEntryId, admittedUserId },
-      );
-    } else {
-      const inspected = inspectTranscriptEventsSync(target);
-      this.adoptPreparedTranscriptReload(
-        {
-          kind: "full",
-          snapshot: {
-            events: inspected.events,
-            version: {
-              generation: inspected.snapshot.generation,
-              rawSeq: inspected.snapshot.lastSeq,
-              updatedAt: inspected.snapshot.transcriptUpdatedAt,
-            },
-          },
-        },
-        { expectedMutationAt, expectedEntryId, admittedUserId },
-      );
-    }
+    this.adoptPreparedTranscriptReload(
+      prepareCommittedSessionTranscriptReload(this.persistenceTarget, this.boundedContextLimits),
+      { expectedMutationAt, expectedEntryId, admittedUserId },
+    );
   }
 
   /** Adopt owner-prepared bytes without reading SQLite again on the receiving thread. */
   protected adoptPreparedTranscriptReload(
     prepared: PreparedSessionTranscriptReload,
-    append?: { expectedMutationAt: number | null; expectedEntryId: string; admittedUserId: string },
+    append?: SessionTranscriptAppendExpectation,
   ): void {
     const target = this.persistenceTarget;
     if (!target) {
@@ -727,19 +703,11 @@ export class SessionManagerCore extends SessionManagerView {
     const previousView = append ? structuredClone(this.captureTranscriptView()) : undefined;
     let reloaded = false;
     try {
+      assertCommittedSessionTranscriptReload(prepared, append);
       if (prepared.kind === "bounded") {
         const bounded = prepared.snapshot;
         // SAFETY: SQLite transcript readers return the same persisted entry union used by SessionManager.
         const entries = bounded.events as FileEntry[];
-        if (
-          append &&
-          bounded.transcriptMutationAt !== append.expectedMutationAt &&
-          !entries.some(
-            (entry) => isIndexedSessionEntry(entry) && entry.id === append.expectedEntryId,
-          )
-        ) {
-          throw new Error("SQLite transcript changed before adopting the committed append");
-        }
         this.boundedContextIncomplete = true;
         this.persistedBoundaryCount = bounded.boundaryCount;
         this.persistedSuffixStartSeq = bounded.persistedSuffixStartSeq;
@@ -750,15 +718,6 @@ export class SessionManagerCore extends SessionManagerView {
         const snapshot = prepared.snapshot;
         // SAFETY: SQLite transcript readers return the same persisted entry union used by SessionManager.
         const entries = snapshot.events as FileEntry[];
-        if (
-          append &&
-          snapshot.version.updatedAt !== append.expectedMutationAt &&
-          !entries.some(
-            (entry) => isIndexedSessionEntry(entry) && entry.id === append.expectedEntryId,
-          )
-        ) {
-          throw new Error("SQLite transcript changed before adopting the committed append");
-        }
         this.transcriptMutationAt = snapshot.version.updatedAt;
         this.setLoadedSessionTarget(target, entries, undefined, snapshot.version);
         reloaded = true;

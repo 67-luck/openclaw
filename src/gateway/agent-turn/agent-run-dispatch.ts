@@ -6,13 +6,11 @@ import {
   classifyAgentRunTerminalOutcome,
   type AgentRunTerminalOutcome,
 } from "../../agents/agent-run-terminal-outcome.js";
-import type { PreparedAgentCommandRuntimeContext } from "../../agents/command/prepare.js";
 import {
   createCronCreatorAuthorityCapability,
   runWithCronCreatorAuthorityCapability,
 } from "../../agents/cron-creator-authority-context.js";
 import { isTimeoutError } from "../../agents/failover-error.js";
-import type { MainSessionRecoveryPendingTarget } from "../../agents/main-session-recovery/main-session-recovery-store.js";
 import { runWithCanonicalSkillWorkspace } from "../../agents/skill-workshop-workspace-context.js";
 import type {
   FollowupExecution,
@@ -44,7 +42,6 @@ import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import { errorShapeFromError } from "../error-shape.js";
 import { tryFinalizeTrackedAgentTask } from "../server-methods/agent-task-tracking.js";
-import type { GatewayCronCreatorAuthorityAdmission } from "../server-methods/cron-creator-authority-admission.js";
 import { setGatewayDedupeEntries } from "./agent-dedupe.js";
 import { captureAgentJobSession } from "./agent-job.js";
 import { createGatewayAgentRunCancellation } from "./agent-run-cancellation.js";
@@ -63,49 +60,14 @@ import {
   createGatewayTaskCancellation,
   createGatewayTaskExecutionBinding,
 } from "./agent-run-task-binding.js";
-import type { GatewayAgentDispatchTaskTracking } from "./agent-run-task-tracking.js";
 import { bindGatewayAgentTerminalProducer } from "./agent-run-terminal-producer.js";
-import type { AgentTurnContext, AgentTurnIo } from "./types.js";
+import type { AgentRunDispatchParams } from "./types.js";
 
 export function resolveAbortedAgentStopReason(entry?: ChatAbortControllerEntry): string {
   return entry?.abortStopReason?.trim() || "rpc";
 }
 
-type TaskSettlementAdmission =
-  | { taskTrackingMode: "none"; assertSettlementCurrent?: () => void }
-  | {
-      taskTrackingMode: Exclude<GatewayAgentDispatchTaskTracking, "none">;
-      assertSettlementCurrent: () => void;
-    };
-
-export function dispatchAgentRunFromGateway(
-  params: {
-    assertCurrent?: () => void;
-    admittedRunEntry: ChatAbortControllerEntry | undefined;
-    ingressOpts: Parameters<typeof agentCommandFromGatewayIngress>[0];
-    runId: string;
-    cronCreatorAuthority?: GatewayCronCreatorAuthorityAdmission;
-    dedupeKeys: readonly string[];
-    /**
-     * Controller whose signal is wired into `ingressOpts.abortSignal`. Used on
-     * completion to drop the matching `chatAbortControllers` entry without
-     * touching a same-runId entry owned by a concurrent chat.send.
-     */
-    abortController: AbortController;
-    cleanupAbortController: () => void | Promise<void>;
-    io: AgentTurnIo;
-    context: AgentTurnContext;
-    canonicalSkillWorkspaceDir?: string;
-    restoreAdmittedRecovery?: () => Promise<MainSessionRecoveryPendingTarget | undefined>;
-    commandRuntimeContext?: PreparedAgentCommandRuntimeContext;
-    /** Privacy classification carried from the resolved session entry. */
-    isIncognito?: boolean;
-    onSettled?: (outcome: {
-      terminalOutcome: AgentRunTerminalOutcome;
-      onRecovered?: () => void;
-    }) => Promise<boolean> | boolean;
-  } & TaskSettlementAdmission,
-) {
+export function dispatchAgentRunFromGateway(params: AgentRunDispatchParams) {
   const diagnostics = createAgentRunDiagnostics(
     params.ingressOpts.sessionKey,
     params.isIncognito,

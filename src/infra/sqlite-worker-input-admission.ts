@@ -1,4 +1,5 @@
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
+import { getChildLogger } from "../logging/logger.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import type {
   Slot,
@@ -13,6 +14,7 @@ export class SqliteWorkerInputAdmission {
   private inputPreparationGeneration = {};
   private readonly inputPreparations = new Set<Promise<void>>();
   private openTail: Promise<void> = Promise.resolve();
+  private nextAdmissionWarning = 0;
 
   constructor(
     private readonly owner: {
@@ -70,12 +72,24 @@ export class SqliteWorkerInputAdmission {
     signal?: AbortSignal;
     timeoutMs: number;
     maxRequests: number;
-    warn(waitMs: number): void;
     dispatch(): Promise<unknown>;
   }): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const started = Date.now();
       const { signal } = params;
+      const warn = (waitMs: number) => {
+        const now = Date.now();
+        if (now >= this.nextAdmissionWarning) {
+          this.nextAdmissionWarning = now + params.timeoutMs;
+          getChildLogger({ subsystem: "infra/sqlite-worker" }).warn(
+            "SQLite worker admission delayed",
+            {
+              queueDepth: params.waiters.get(params.slot)?.size ?? 0,
+              waitMs,
+            },
+          );
+        }
+      };
       const waiters = params.waiters.get(params.slot) ?? new Set<(error?: unknown) => void>();
       const resume = (error?: unknown) => {
         if (!waiters.delete(resume)) {
@@ -89,7 +103,7 @@ export class SqliteWorkerInputAdmission {
         releaseInput();
         let failure = error;
         if (failure === undefined && Date.now() - started >= params.timeoutMs) {
-          params.warn(Date.now() - started);
+          warn(Date.now() - started);
           failure = new SqliteWorkerError("SQLite worker queue capacity reached", "overloaded");
         }
         if (failure !== undefined) {
@@ -100,7 +114,7 @@ export class SqliteWorkerInputAdmission {
       };
       const abort = () => resume(signal?.reason ?? new Error("SQLite worker operation canceled"));
       const timer = setTimeout(() => {
-        params.warn(Date.now() - started);
+        warn(Date.now() - started);
         resume(new SqliteWorkerError("SQLite worker queue capacity reached", "overloaded"));
       }, params.timeoutMs);
       const releaseInput = this.retain(params.bytes);
@@ -110,7 +124,7 @@ export class SqliteWorkerInputAdmission {
       if (signal?.aborted) {
         abort();
       } else if (waiters.size >= params.maxRequests) {
-        params.warn(0);
+        warn(0);
       }
     });
   }

@@ -7,10 +7,8 @@ import {
   type SessionGoalOperationResult,
 } from "../../config/sessions/goals-operations.js";
 import type { PrepareAssistantTranscriptMessage } from "../../config/sessions/transcript-assistant-delivery.js";
-import { logVerbose } from "../../globals.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { emitDiagnosticsTimelineEvent } from "../../infra/diagnostics-timeline.js";
-import { formatErrorMessage } from "../../infra/errors.js";
 // chat.send owns admission, ACK timing, and detached dispatch handoff.
 import { isProgressCardRefreshInputProvenance } from "../../sessions/input-provenance.js";
 import {
@@ -24,7 +22,6 @@ import {
   type UserTurnTranscriptRecorder,
 } from "../../sessions/user-turn-transcript.js";
 import { extractTextFromChatContent } from "../../shared/chat-content.js";
-import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { SkillWorkshopProposalRevisionConstraint } from "../../skills/workshop/types.js";
 import { resolveChatAbortDiagnosticReason } from "../chat-abort-diagnostics.js";
 import { discardPreparedInboundMedia } from "../chat-attachments.js";
@@ -48,6 +45,7 @@ import { handleChatSendSetupError } from "./chat-send-dispatch-errors.js";
 import type { ChatSendExternalAuthorityAdmission } from "./chat-send-external-authority-contract.js";
 import {
   createChatSendMessageInjectionStarter,
+  renderChatSendInjectionDocumentContext,
   settleChatSendPreAckMessageInjection,
 } from "./chat-send-message-injection.js";
 import { applyChatSendReplyContextFields } from "./chat-send-reply-context.js";
@@ -78,10 +76,6 @@ type ChatSendInternalOptions = {
   toolsAllow?: string[];
   skillWorkshopProposalRevision?: SkillWorkshopProposalRevisionConstraint;
 };
-
-const mediaDocumentContextLoader = createLazyImportLoader(
-  () => import("../../media-understanding/file-context.js"),
-);
 
 async function handleChatSendWithOptions(
   handlerOptions: GatewayRequestHandlerOptions,
@@ -512,23 +506,7 @@ async function handleChatSendWithOptions(
     // Rendering can fail independently of admission; preserve the raw steer on failure.
     const steerDocumentContext =
       messageInjectionTarget && !isInternalTextSlashCommandTurn && ctx.media?.length
-        ? await mediaDocumentContextLoader
-            .load()
-            .then(async (runtime) => ({
-              status: "rendered" as const,
-              ...(await runtime.renderInboundDocumentContext({
-                ctx,
-                cfg: preparedSession.value.cfg,
-              })),
-            }))
-            .catch((err: unknown) => {
-              // A poisoned lazy import must not be served to later steers.
-              mediaDocumentContextLoader.clear();
-              logVerbose(
-                `steer document render failed, injecting raw content: ${formatErrorMessage(err)}`,
-              );
-              return { status: "failed" as const };
-            })
+        ? await renderChatSendInjectionDocumentContext(ctx, preparedSession.value.cfg)
         : undefined;
     if (activeRunAbort.controller.signal.aborted) {
       return finishAbortedChatSend();

@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { isNativeError, isProxy } from "node:util/types";
 import type { MessagePort } from "node:worker_threads";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Result } from "@openclaw/normalization-core/result";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { OpenClawStateWorkerErrorPayload } from "../state/openclaw-state-worker-error.js";
@@ -65,6 +66,32 @@ export type SqliteWorkerPreparedBackend<Operations extends SqliteWorkerOperation
     [SQLITE_WORKER_OPERATION_CLEANUP]?(command: SqliteWorkerCommand<Operations>): void;
     [SQLITE_WORKER_CLOSE_RECEIPT]?(): SqliteWorkerCloseReceipt | undefined;
   };
+
+export function assertSqliteWorkerBackendHooks(backend: unknown): void {
+  if (
+    !isRecord(backend) ||
+    typeof backend.execute !== "function" ||
+    typeof backend.close !== "function" ||
+    (SQLITE_WORKER_PREPARE_COMMAND in backend &&
+      backend[SQLITE_WORKER_PREPARE_COMMAND] !== undefined &&
+      typeof backend[SQLITE_WORKER_PREPARE_COMMAND] !== "function") ||
+    (SQLITE_WORKER_PREPARE_ADMITTED in backend &&
+      backend[SQLITE_WORKER_PREPARE_ADMITTED] !== undefined &&
+      (typeof backend[SQLITE_WORKER_PREPARE_ADMITTED] !== "function" ||
+        typeof backend.assertSettled !== "function")) ||
+    (SQLITE_WORKER_OPERATION_CLEANUP in backend &&
+      backend[SQLITE_WORKER_OPERATION_CLEANUP] !== undefined &&
+      (typeof backend[SQLITE_WORKER_OPERATION_CLEANUP] !== "function" ||
+        typeof backend.assertSettled !== "function")) ||
+    (SQLITE_WORKER_CLOSE_RECEIPT in backend &&
+      backend[SQLITE_WORKER_CLOSE_RECEIPT] !== undefined &&
+      typeof backend[SQLITE_WORKER_CLOSE_RECEIPT] !== "function") ||
+    (backend.assertSettled !== undefined && typeof backend.assertSettled !== "function") ||
+    (backend.prepare !== undefined && typeof backend.prepare !== "function")
+  ) {
+    throw new Error("SQLite worker module returned an invalid backend");
+  }
+}
 
 export type SqliteWorkerStore<Operations extends SqliteWorkerOperations> = {
   execute<Key extends keyof Operations>(

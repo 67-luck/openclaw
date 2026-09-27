@@ -1,6 +1,5 @@
 import { availableParallelism } from "node:os";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
-import { getChildLogger } from "../logging/logger.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   assertSqliteWorkerActorReusable,
@@ -66,7 +65,6 @@ export class SqliteWorkerBroker {
   private readonly maxWorkers = Math.min(8, Math.max(2, Math.floor(availableParallelism() / 8)));
   private readonly waiters = new Map<Slot, Set<(error?: unknown) => void>>();
   private readonly resuming = new Set<Slot>();
-  private nextAdmissionWarning = 0;
   private readonly actors = new Map<string, Actor>();
   private readonly slots = new Set<Slot>();
   private readonly clients = new Set<object>();
@@ -543,7 +541,6 @@ export class SqliteWorkerBroker {
         signal,
         timeoutMs: ADMISSION_TIMEOUT_MS,
         maxRequests: SQLITE_WORKER_MAX_REQUESTS_PER_WORKER,
-        warn: (waitMs) => this.warnAdmission(slot, waitMs),
         dispatch: () => this.enqueue(slot, body, bytes, options, true),
       });
     }
@@ -595,17 +592,6 @@ export class SqliteWorkerBroker {
     }
     this.dispatch(slot);
     return result.promise;
-  }
-
-  private warnAdmission(slot: Slot, waitMs: number): void {
-    const now = Date.now();
-    if (now >= this.nextAdmissionWarning) {
-      this.nextAdmissionWarning = now + ADMISSION_TIMEOUT_MS;
-      getChildLogger({ subsystem: "infra/sqlite-worker" }).warn("SQLite worker admission delayed", {
-        queueDepth: this.waiters.get(slot)?.size ?? 0,
-        waitMs,
-      });
-    }
   }
 
   private dispatch(slot: Slot): void {

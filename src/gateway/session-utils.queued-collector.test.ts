@@ -33,13 +33,11 @@ import { onAgentEvent } from "../infra/agent-events.js";
 import { clearAgentRunContext } from "../infra/agent-run-registry.js";
 import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import { handleChatAbortRequest } from "./server-methods/chat-abort-handler.js";
-import { chatHistoryHandlers } from "./server-methods/chat-history-handler.js";
 import { handleChatSend } from "./server-methods/chat-send-handler.js";
 import { prepareAndAdmitChatSend } from "./server-methods/chat-send-setup.js";
 import { resolveVisibleActiveSessionRunState } from "./server-methods/session-active-runs.js";
 import { sessionAbortHandlers } from "./server-methods/sessions-abort.js";
 import { sessionMutationHandlers } from "./server-methods/sessions-mutations.js";
-import type { GatewayRequestContext } from "./server-methods/types.js";
 import { createLifecycleEventBroadcastHandler } from "./server-session-events.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
 import * as sessionStoreWorker from "./session-utils-store-worker.js";
@@ -54,43 +52,8 @@ const {
   listChildren,
   spawnCollectors,
   createQueuedReservation,
+  expectUnstartedChildHistory,
 } = useQueuedCollectorFixture();
-
-async function expectUnstartedChildHistory(
-  context: GatewayRequestContext,
-  sessionKey: string,
-  activeRunIds: string[],
-) {
-  const respond = vi.fn();
-  await expectDefined(
-    chatHistoryHandlers["chat.history"],
-    "chat.history handler",
-  )({
-    req: { type: "req", id: "queued-history", method: "chat.history" },
-    params: { sessionKey, agentId: "main", offset: 0, limit: 20 },
-    client: operatorClient(),
-    isWebchatConnect: () => false,
-    respond,
-    context,
-  });
-  expect(respond).toHaveBeenCalledWith(
-    true,
-    expect.objectContaining({
-      messages: [],
-      hasMore: false,
-      totalMessages: 0,
-      sessionInfo: expect.objectContaining({
-        hasActiveRun: activeRunIds.length > 0,
-        activeRunIds,
-        status: activeRunIds.length > 0 ? "queued" : "killed",
-      }),
-    }),
-  );
-  const payload = respond.mock.calls[0]?.[1];
-  expect(payload).not.toHaveProperty("inFlightRun");
-  expect(payload?.sessionInfo.startedAt).toBeUndefined();
-  expect(payload?.sessionInfo.runtimeMs).toBeUndefined();
-}
 
 describe("queued collector session projection", () => {
   it("rejects an already-cancelled collector before starting spawn effects", async () => {

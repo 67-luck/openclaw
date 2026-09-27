@@ -25,12 +25,15 @@ import type { RuntimeMsgContext } from "../../auto-reply/templating.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { resolveRestartRecoverySteeringBlockReason } from "../../config/sessions/restart-recovery-receipt.js";
 import { loadSessionEntry, updateSessionEntry } from "../../config/sessions/session-accessor.js";
+import { logVerbose } from "../../globals.js";
 import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { logMessageProcessed, logMessageReceived } from "../../logging/diagnostic.js";
 import type { InboundDocumentContext } from "../../media-understanding/file-context.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { isProgressCardRefreshInputProvenance } from "../../sessions/input-provenance.js";
 import { recordAcceptedSessionParticipantInput } from "../../sessions/session-participant-input-recording.js";
+import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import type { ChatImageContent } from "../chat-attachments.js";
@@ -40,6 +43,28 @@ import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import type { PreparedChatSendSession } from "./chat-send-session.js";
 import type { prepareChatSendUserTurn } from "./chat-send-user-turn.js";
 import type { GatewayRequestContext } from "./types.js";
+
+const mediaDocumentContextLoader = createLazyImportLoader(
+  () => import("../../media-understanding/file-context.js"),
+);
+
+export function renderChatSendInjectionDocumentContext(
+  ctx: ReturnType<typeof prepareChatSendUserTurn>["ctx"],
+  cfg: PreparedChatSendSession["cfg"],
+) {
+  return mediaDocumentContextLoader
+    .load()
+    .then(async (runtime) => ({
+      status: "rendered" as const,
+      ...(await runtime.renderInboundDocumentContext({ ctx, cfg })),
+    }))
+    .catch((err: unknown) => {
+      // A poisoned lazy import must not be served to later steers.
+      mediaDocumentContextLoader.clear();
+      logVerbose(`steer document render failed, injecting raw content: ${formatErrorMessage(err)}`);
+      return { status: "failed" as const };
+    });
+}
 
 /** Captures the prepared request data used by both pre-ACK and detached injection attempts. */
 export function createChatSendMessageInjectionStarter(params: {
