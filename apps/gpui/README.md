@@ -240,6 +240,9 @@ tunnel restarts without being shared with another SSH profile using the same
 remote port.
 
 The manager can save an optional Gateway token or password for each profile.
+On Unix, `SIGTERM`, `SIGINT`, and `SIGHUP` also stop tunnel process groups before
+requesting the normal application shutdown. A second signal exits immediately
+after repeating tunnel cleanup if the application has not finished quitting.
 Saved credentials take precedence. Otherwise an SSH profile inherits literal
 `gateway.remote.token` / `gateway.remote.password` only when the configured
 transport is `ssh`, the parsed `gateway.remote.sshTarget` matches, and
