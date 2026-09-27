@@ -65,7 +65,7 @@ export async function requestPluginApproval(params: {
   severity: "info" | "warning";
   toolName: string;
   toolCallId?: string;
-  policySubject?: { pluginKey: string; appId?: string; tool?: string };
+  policySubject?: { pluginKey: string; appId?: string; tool?: string; mcpServer?: string };
   allowedDecisions?: ExecApprovalDecision[];
   mcpTool?: { server: string; tool: string };
   isMcpToolApprovalActive?: () => boolean;

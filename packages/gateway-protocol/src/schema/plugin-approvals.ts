@@ -57,6 +57,7 @@ export const PluginApprovalRequestParamsSchema = closedObject({
     closedObject({
       pluginKey: NonEmptyString,
       tool: Type.Optional(NonEmptyString),
+      mcpServer: Type.Optional(NonEmptyString),
     }),
   ),
   mcpTool: Type.Optional(

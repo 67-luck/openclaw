@@ -109,7 +109,7 @@ describe("CodexAppServerEventProjector native tool finalization", () => {
     const appItem = {
       ...mcpItem,
       server: "codex_apps",
-      appContext: { connectorId: "connector_calendar" },
+      appContext: { connectorId: "connector_calendar", actionName: "lookup" },
     };
     await projector.handleNotification(forCurrentTurn("item/started", { item: appItem }));
     expect(projector.getActiveMcpToolCall("codex_apps")).toBeUndefined();
@@ -117,6 +117,7 @@ describe("CodexAppServerEventProjector native tool finalization", () => {
     expect(projector.getActiveMcpToolCall("codex_apps", "connector_calendar")).toMatchObject({
       id: appItem.id,
       tool: appItem.tool,
+      actionName: "lookup",
     });
     expect(projector.getActiveMcpToolCall("codex_apps", "connector_other")).toBeUndefined();
 
