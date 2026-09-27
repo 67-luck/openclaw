@@ -186,6 +186,23 @@ argument list, eligibility, cancellation, and its execution authority. The Gatew
 sends an invocation-bound, short-lived permit only after checking current caller
 and confirmation authority. Native launch errors remain actionable results.
 
+The allow permit is the Gateway's final admission point for this exact launch,
+not a promise of instantaneous distributed revocation. The node accepts it only
+within its bounded validity (at most five seconds measured from the node's
+readiness request, including the round trip). Closing the caller or revoking its
+device token after the permit was issued does not guarantee stopping that admitted
+launch; cancellation must reach the node before its final spawn check.
+A caller cancellation is forwarded to the node; if the node observes it before
+its final spawn check, no process starts. If cancellation is still in transit,
+a process may start even though the Gateway has already returned a cancellation
+error. Cancellation cannot undo an already-started app. Local executable-policy
+revocation and expired permits are still rejected at the native boundary.
+
+Do not interpret a cancelled request alone as proof that no application started.
+A second confirmation RPC would merely move, not eliminate, the cross-process
+race. A stronger revocation-commit guarantee would require a different admission
+contract, not an extra retry or a longer timeout.
+
 A successful result is `{status: "process-started", appId, appRevision, pid}`.
 It acknowledges OS process creation promptly, even when the app keeps running;
 it does **not** mean the process exited successfully or a window became visible.

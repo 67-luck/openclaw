@@ -210,7 +210,7 @@ export function createNodesTool(options?: {
     description:
       "Paired nodes: status/list with active-computer presence; pass node to describe/control. Pairing lifecycle (pending/approve/reject), notify, camera_snap/camera_list/camera_clip (with audio), camera_ptz for physical camera pan/tilt/zoom, photos_latest, screen_snapshot, screen_record video, location_get, notifications_list + notifications_action (open/dismiss/reply), device_status/device_info/device_permissions/device_health, executable lookup (which + bins), generic invoke. app_list: read eligible installed apps on an exact node (optional query). app_launch: launch an exact Linux installed app using full node ID and appId/appRevision from app_list, without arguments or Gateway override; success means process started, not window ready. File transfer is a separate capability.",
     parameters: NodesToolSchema,
-    execute: async (_toolCallId, args) => {
+    execute: async (_toolCallId, args, signal) => {
       const params = args as Record<string, unknown>;
       const action = readToolStringParam(params, "action", { required: true });
       const gatewayOpts = readGatewayCallOptions(params);
@@ -275,6 +275,7 @@ export function createNodesTool(options?: {
                       sessionKey: options?.agentSessionKey,
                       idempotencyKey: crypto.randomUUID(),
                     },
+                    { signal },
                   ),
               ),
             );

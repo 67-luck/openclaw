@@ -14,9 +14,11 @@ export function createInstalledAppLoopbackTransport(
     beforeProgress,
     onAllowPermit,
     beforeResult,
+    holdCancellation = false,
   }: {
     beforeProgress?: () => void;
-    onAllowPermit?: () => void;
+    onAllowPermit?: () => void | Promise<void>;
+    holdCancellation?: boolean;
     beforeResult?: (command: string, result: unknown) => void;
   } = {},
 ) {
@@ -26,6 +28,9 @@ export function createInstalledAppLoopbackTransport(
   >();
   const nativeCommands: string[] = [];
   const permits: unknown[] = [];
+  const cancellations: string[] = [];
+  const cancellationDeliveries: string[] = [];
+  const heldCancellations: string[] = [];
   const pending = new Set<Promise<void>>();
   const failures: unknown[] = [];
   class Transport extends EventEmitter {
@@ -45,14 +50,30 @@ export function createInstalledAppLoopbackTransport(
       if (event.event === "node.invoke.input") {
         const permit = JSON.parse(event.payload.payloadJSON);
         permits.push(permit);
-        if (permit.type === "installed-app-launch.allow") {
-          onAllowPermit?.();
+        const deliver = () => invocations.get(event.payload.id)?.input?.(event.payload.payloadJSON);
+        const hold = permit.type === "installed-app-launch.allow" ? onAllowPermit?.() : undefined;
+        if (hold) {
+          // Model transport delay after the real Gateway issued the permit, not a fake native effect.
+          void hold.then(deliver).catch((error: unknown) => {
+            failures.push(error);
+            invocations.get(event.payload.id)?.controller.abort(error);
+          });
+        } else {
+          deliver();
         }
-        invocations.get(event.payload.id)?.input?.(event.payload.payloadJSON);
         return;
       }
       if (event.event === "node.invoke.cancel") {
-        invocations.get(event.payload.invokeId)?.controller.abort();
+        cancellations.push(event.payload.invokeId);
+        if (holdCancellation) {
+          heldCancellations.push(event.payload.invokeId);
+        } else {
+          const active = invocations.get(event.payload.invokeId);
+          if (active) {
+            cancellationDeliveries.push(event.payload.invokeId);
+            active.controller.abort();
+          }
+        }
         return;
       }
       if (event.event !== "node.invoke.request") {
@@ -141,6 +162,13 @@ export function createInstalledAppLoopbackTransport(
     node,
     nativeCommands,
     permits,
+    cancellations,
+    cancellationDeliveries,
+    releaseCancellation: () => {
+      for (const id of heldCancellations.splice(0)) {
+        invocations.get(id)?.controller.abort();
+      }
+    },
     drain: async () => {
       await Promise.all(pending);
       if (failures.length) {

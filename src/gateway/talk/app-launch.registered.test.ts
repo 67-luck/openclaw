@@ -5,7 +5,10 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { prepareSystemAgentRunAdmission } from "../../agents/admitted-run-context.js";
+import {
+  getAdmittedRunDelegatedAuthority,
+  prepareSystemAgentRunAdmission,
+} from "../../agents/admitted-run-context.js";
 import { wrapToolWithBeforeToolCallHook } from "../../agents/agent-tools.before-tool-call.js";
 import {
   createAdmittedGatewayToolCallerIdentity,
@@ -16,6 +19,9 @@ import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { approveDevicePairing } from "../../infra/device-pairing-approval.js";
+import { ensureDeviceToken, verifyDeviceToken } from "../../infra/device-pairing-tokens.js";
+import { requestDevicePairing } from "../../infra/device-pairing.js";
 import { saveExecApprovals } from "../../infra/exec-approvals.js";
 import { prepareLinuxInstalledApp } from "../../infra/installed-apps-linux.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
@@ -35,10 +41,16 @@ import {
 } from "../../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../../talk/client-voice-session.test-support.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import {
+  captureGatewayDeviceRevocation,
+  invalidateGatewayDeviceRevocation,
+} from "../device-revocation.js";
 import { NodeRegistry } from "../node-registry.js";
 import { resetNodeWakeStateForTest } from "../node-wake-state.test-support.js";
+import { deviceHandlers } from "../server-methods/devices.js";
 import { nodeInvokeHandlers } from "../server-methods/nodes.invoke.js";
 import type { GatewayRequestHandlerOptions } from "../server-methods/types.js";
+import { sharingPolicyClient } from "../session-sharing.test-utils.js";
 import { createInstalledAppLoopbackTransport } from "./installed-app-loopback.test-support.js";
 
 const mocks = vi.hoisted(() => ({ rpc: vi.fn() }));
@@ -71,6 +83,12 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
     "caller-closed",
     "eligibility-changed",
     "os-error",
+    "caller-revoked-after-permit",
+    "source-revoked-after-permit",
+    "cancel-after-permit",
+    "cancel-in-flight-after-permit",
+    "expired-after-permit",
+    "exec-revoked-after-permit",
   ] as const)("preserves final outcome and independent gates: %s", async (mode) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       setActivePluginRegistry(createEmptyPluginRegistry());
@@ -121,21 +139,79 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
         resolveCurrentPairingState: async () => ({ identity: "pairing", generation: "generation" }),
         isPairingStateCurrent: () => true,
       });
-      let callerActive = true;
-      const { node, nativeCommands, permits, drain } = createInstalledAppLoopbackTransport(
-        registry,
-        {
-          beforeProgress: () => {
-            expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(1);
-            if (mode === "caller-closed") {
-              callerActive = false;
-            }
-            if (mode === "eligibility-changed") {
-              fs.appendFileSync(entry, "Hidden=true\n");
-            }
-          },
+      const trace: string[] = [];
+      const invocation = new AbortController();
+      const {
+        node,
+        nativeCommands,
+        permits,
+        cancellations,
+        cancellationDeliveries,
+        releaseCancellation,
+        drain,
+      } = createInstalledAppLoopbackTransport(registry, {
+        beforeProgress: () => {
+          trace.push("node-ready");
+          expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(1);
+          if (mode === "caller-closed") {
+            admission.close();
+            trace.push("caller-revoked-before-permit");
+          }
+          if (mode === "eligibility-changed") {
+            fs.appendFileSync(entry, "Hidden=true\n");
+          }
         },
-      );
+        holdCancellation: mode === "cancel-in-flight-after-permit",
+        onAllowPermit: async () => {
+          trace.push("allow-issued");
+          expect(appSpawns()).toHaveLength(0);
+          if (mode === "caller-revoked-after-permit") {
+            admission.close();
+            expect(getAdmittedRunDelegatedAuthority(admitted)).toBeUndefined();
+            trace.push("caller-revoked-after-permit");
+          }
+          if (mode === "source-revoked-after-permit") {
+            const respond = vi.fn();
+            await deviceHandlers["device.token.revoke"]!({
+              req: { type: "req", id: "revoke-source", method: "device.token.revoke" },
+              params: { deviceId: "app-requester", role: "operator" },
+              context,
+              client: sharingPolicyClient({ scopes: ["operator.admin"] }),
+              isWebchatConnect: () => false,
+              respond,
+            });
+            expect(respond).toHaveBeenCalledWith(
+              true,
+              expect.objectContaining({ role: "operator" }),
+              undefined,
+            );
+            expect(
+              await verifyDeviceToken({
+                deviceId: "app-requester",
+                role: "operator",
+                scopes: ["operator.read"],
+                token: sourceToken!,
+              }),
+            ).toMatchObject({ ok: false });
+            expect(source.isCurrent()).toBe(false);
+            expect(getAdmittedRunDelegatedAuthority(admitted)).toBeUndefined();
+            trace.push("source-revocation-committed");
+          }
+          if (mode === "cancel-after-permit" || mode === "cancel-in-flight-after-permit") {
+            invocation.abort(new Error("app request cancelled"));
+            trace.push("caller-cancellation-requested");
+          }
+          if (mode === "expired-after-permit") {
+            vi.spyOn(performance, "now").mockReturnValue(performance.now() + 5001);
+            trace.push("permit-expired");
+          }
+          if (mode === "exec-revoked-after-permit") {
+            saveExecApprovals({ version: 1, agents: { main: { security: "deny", ask: "off" } } });
+            trace.push("node-exec-policy-revoked");
+          }
+          trace.push("permit-delivery-released");
+        },
+      });
       registry.register(node, {
         pairingIdentity: "pairing",
         pairingGeneration: "generation",
@@ -145,9 +221,18 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
         nodeRegistry: registry,
         getRuntimeConfig: () => config,
         logGateway: { info: vi.fn(), warn: vi.fn() },
+        // Same post-commit source invalidation used by the live request context, without a socket.
+        invalidateClientsForDevice: (deviceId: string, options?: { role?: string }) => {
+          invalidateGatewayDeviceRevocation(context, deviceId, options?.role);
+        },
       } as unknown as GatewayRequestHandlerOptions["context"];
       mocks.rpc.mockImplementation(
-        async (method: string, _options: unknown, params: Record<string, unknown>) => {
+        async (
+          method: string,
+          _options: unknown,
+          params: Record<string, unknown>,
+          options?: { signal?: AbortSignal },
+        ) => {
           if (method === "node.list") {
             return {
               nodes: registry
@@ -163,6 +248,7 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
               nodeInvokeHandlers["node.invoke"]!({
                 req: { type: "req", id: "app-rpc", method },
                 params,
+                signal: options?.signal,
                 context,
                 client: null,
                 isWebchatConnect: () => false,
@@ -185,8 +271,51 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
         origin: "client",
         transcriptCapable: true,
       });
-      const admission = prepareSystemAgentRunAdmission(config, "app-run", "main", "app-test");
-      const spawn = vi.spyOn(childProcess, "spawn");
+      const source = captureGatewayDeviceRevocation(
+        context,
+        { deviceId: "app-requester", role: "operator" },
+        () => true,
+      );
+      let sourceToken: string | undefined;
+      if (mode === "source-revoked-after-permit") {
+        const requested = await requestDevicePairing({
+          deviceId: "app-requester",
+          publicKey: "fixture-public-key",
+          role: "operator",
+          scopes: ["operator.read"],
+        });
+        await approveDevicePairing(requested.request.requestId, {
+          callerScopes: ["operator.admin"],
+        });
+        sourceToken = (
+          await ensureDeviceToken({
+            deviceId: "app-requester",
+            role: "operator",
+            scopes: ["operator.read"],
+          })
+        )?.token;
+        expect(sourceToken).toBeDefined();
+      }
+      const admission = prepareSystemAgentRunAdmission(
+        config,
+        "app-run",
+        "main",
+        "app-test",
+        () => {
+          if (!source.isCurrent()) {
+            throw new Error("app source authority revoked");
+          }
+        },
+      );
+      const admitted = await admission.admit("embedded");
+      const originalSpawn = childProcess.spawn;
+      const spawn = vi.spyOn(childProcess, "spawn").mockImplementation((...args) => {
+        const child = originalSpawn(...args);
+        if (args[0] === executable) {
+          child.once("spawn", () => trace.push("os-spawn pid=" + child.pid));
+        }
+        return child;
+      });
       syncBuiltinESMExports();
       const appSpawns = () =>
         spawn.mock.calls.flatMap(([file], index) =>
@@ -195,7 +324,6 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
             : [],
         );
       try {
-        const admitted = await admission.admit("embedded");
         registerClientVoiceConsultRun({
           agentId: "main",
           sessionKey,
@@ -211,7 +339,6 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
             admittedRunContext: admitted,
             agentId: "main",
             sessionKey,
-            receiptAuthority: () => callerActive,
           }),
           async () => {
             const listing = await tool.execute("inventory", {
@@ -258,31 +385,49 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
                 bindAuthorizedClientVoiceConfirmation({ grant: grant!, runId: "app-run" }),
               ).toBe(true);
             }
-            const result = await tool.execute("launch", { ...launchParams }).then(
-              (value) => ({ value, error: undefined }),
-              (error: unknown) => ({ value: undefined, error: String(error) }),
-            );
-            if (mode === "yes") {
-              expect(result.error).toBeUndefined();
+            const result = await tool
+              .execute("launch", { ...launchParams }, invocation.signal)
+              .then(
+                (value) => ({ value, error: undefined }),
+                (error: unknown) => ({ value: undefined, error: String(error) }),
+              );
+            await drain();
+            trace.push(result.error ? "tool-result-rejected" : "tool-result-resolved");
+            const admittedAfterPermit =
+              mode === "caller-revoked-after-permit" ||
+              mode === "source-revoked-after-permit" ||
+              mode === "cancel-in-flight-after-permit";
+            if (mode === "yes" || admittedAfterPermit) {
+              if (mode === "yes") {
+                expect(result.error).toBeUndefined();
+              }
+              if (mode === "cancel-in-flight-after-permit") {
+                expect(result.error).toMatch(/cancel/);
+                expect(cancellationDeliveries).toHaveLength(0);
+              }
               const child = appSpawns()[0]!;
-              expect(result.value?.details).toMatchObject({
-                payload: {
-                  status: "process-started",
-                  appId: app.appId,
-                  appRevision: app.appRevision,
-                  pid: child.pid,
-                },
-              });
+              if (mode === "yes") {
+                expect(result.value?.details).toMatchObject({
+                  payload: {
+                    status: "process-started",
+                    appId: app.appId,
+                    appRevision: app.appRevision,
+                    pid: child.pid,
+                  },
+                });
+              }
               expect(appSpawns()).toHaveLength(1);
               expect(child.exitCode).toBeNull();
               expect(child.signalCode).toBeNull();
               expect(() => process.kill(child.pid!, 0)).not.toThrow();
               expect(permits).toEqual([{ type: "installed-app-launch.allow", validForMs: 5000 }]);
-              const replay = await tool
-                .execute("replay", { ...launchParams })
-                .catch((error: unknown) => String(error));
-              expect(JSON.stringify(replay)).toContain("VOICE_CONFIRMATION_REQUIRED");
-              expect(appSpawns()).toHaveLength(1);
+              if (mode === "yes") {
+                const replay = await tool
+                  .execute("replay", { ...launchParams })
+                  .catch((error: unknown) => String(error));
+                expect(JSON.stringify(replay)).toContain("VOICE_CONFIRMATION_REQUIRED");
+                expect(appSpawns()).toHaveLength(1);
+              }
             } else {
               const reasons = {
                 no: /VOICE_CONFIRMATION_REQUIRED/,
@@ -291,9 +436,19 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
                 "caller-closed": /authority.*active/,
                 "eligibility-changed": /INSTALLED_APP_CHANGED/,
                 "os-error": /ENOENT/,
+                "cancel-after-permit": /cancel/,
+                "expired-after-permit": /expired/,
+                "exec-revoked-after-permit": /exec approval changed/,
+                "caller-revoked-after-permit": /authority/,
+                "source-revoked-after-permit": /authority/,
+                "cancel-in-flight-after-permit": /cancel/,
               };
               expect(result.error ?? JSON.stringify(result.value)).toMatch(reasons[mode]);
               expect(appSpawns()).toHaveLength(mode === "os-error" ? 1 : 0);
+              if (mode === "cancel-after-permit") {
+                expect(cancellations).toHaveLength(1);
+                expect(cancellationDeliveries).toHaveLength(1);
+              }
             }
           },
         );
@@ -304,11 +459,25 @@ describe.runIf(process.platform === "linux")("ordinary installed-app launch", ()
             child.kill("SIGKILL");
             await exited;
             expect(() => process.kill(child.pid!, 0)).toThrow();
+            trace.push("cleanup-joined pid=" + child.pid);
           }
         }
+        releaseCancellation();
         admission.close();
+        source.release();
         registry.unregister("node-connection");
         await drain();
+        console.log(
+          "APP_LAUNCH_HANDOFF_PROOF " +
+            JSON.stringify({
+              mode,
+              trace,
+              permitCount: permits.length,
+              cancelCount: cancellations.length,
+              nodeObservedCancellationCount: cancellationDeliveries.length,
+              pids: appSpawns().flatMap((child) => (child.pid ? [child.pid] : [])),
+            }),
+        );
       }
     });
   });
