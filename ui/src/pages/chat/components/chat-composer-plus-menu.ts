@@ -600,16 +600,10 @@ function renderChatComposerPlusMenuContent(props: ChatComposerPlusMenuProps) {
       @wa-select=${(event: CustomEvent<{ item: { value?: string } }>) =>
         handleMenuSelection(event, props)}
       @wa-show=${() => {
-        if (!props.open) {
-          props.onOpenChange(true);
-        }
+        props.onOpenChange(true);
         props.onLoadSkills();
       }}
-      @wa-hide=${() => {
-        if (props.open) {
-          props.onOpenChange(false);
-        }
-      }}
+      @wa-hide=${() => props.onOpenChange(false)}
       data-view=${view}
       ${guard([view], () =>
         ref((menu) => {

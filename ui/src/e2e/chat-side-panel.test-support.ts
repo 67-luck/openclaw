@@ -1,3 +1,4 @@
+import type { LitElement } from "lit";
 import type { Page } from "playwright";
 
 export async function failNextDeviceIdentityMint(page: Page): Promise<void> {
@@ -23,6 +24,12 @@ export async function failNextDeviceIdentityMint(page: Page): Promise<void> {
 }
 
 export async function openChatSidePanelType(page: Page, label: string): Promise<void> {
+  await page
+    .locator("openclaw-chat-pane.chat-pane-cache__pane--active")
+    .evaluate(async (pane: LitElement) => {
+      await pane.updateComplete;
+      await pane.querySelector<LitElement>("openclaw-chat-sidebar-region")?.updateComplete;
+    });
   const panel = page.locator(".sidebar-region__right-runtime .side-panel");
   if (
     !(await panel.locator('[data-region-header="side"]').isVisible()) &&
@@ -38,10 +45,15 @@ export async function openChatSidePanelType(page: Page, label: string): Promise<
   const emptyChoice = panel.locator(".side-panel-empty__type").filter({ hasText: label });
   if ((await emptyChoice.count()) > 0) {
     await emptyChoice.click();
-    return;
+  } else {
+    await panel.getByRole("button", { name: "Add side panel tab" }).click();
+    await panel.locator("wa-dropdown-item").filter({ hasText: label }).click();
   }
-  await panel.getByRole("button", { name: "Add side panel tab" }).click();
-  await panel.locator("wa-dropdown-item").filter({ hasText: label }).click();
+  // A following selection must see this type's committed panel controls.
+  await panel
+    .getByRole("region", { name: label, exact: true })
+    .and(panel.locator(".side-panel__panel"))
+    .waitFor();
 }
 
 export async function focusChatSidePanel(page: Page): Promise<void> {

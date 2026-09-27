@@ -59,10 +59,11 @@ suite.define(() => {
           },
         },
       });
+      await page.clock.runFor(16);
       await expect
         .poll(() => page.locator(".chat-pr").first().getAttribute("data-state"))
         .toBe("open");
-      await page.clock.runFor(60_000);
+      await page.clock.runFor(60_000 - 16);
       expect(await gateway.getRequests(SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD, scope)).toHaveLength(
         2,
       );

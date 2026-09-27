@@ -134,6 +134,7 @@ suite.define(() => {
         expect(await work.textContent()).not.toContain("Sign in to GitHub");
         await summary.click();
         const activityBody = work.locator(".chat-activity-group__body");
+        await activityBody.waitFor({ state: "visible" });
         await page.screenshot({ path: path.join(artifactDir, "02-operation-list.png") });
         expect(await activityBody.locator(".chat-tool-row").count()).toBe(1);
         const wrapper = activityBody.locator(".chat-tool-msg-summary", {
@@ -148,15 +149,16 @@ suite.define(() => {
         expect(await activityBody.getByText("gh: command not found").count()).toBe(0);
         await login.click();
         await activityBody.getByText(command, { exact: true }).first().waitFor();
-        expect(
-          await activityBody
-            .locator(".chat-tool-msg-body", { hasText: "gh: command not found" })
-            .isVisible(),
-        ).toBe(true);
+        const failureBody = activityBody.locator(".chat-tool-msg-body", {
+          hasText: "gh: command not found",
+        });
+        await failureBody.waitFor();
+        expect(await failureBody.isVisible()).toBe(true);
         await activityBody.locator(".chat-tool-wrapper-details > summary").click();
         await activityBody.getByText(wrapperCode, { exact: false }).first().waitFor();
         await page.screenshot({ path: path.join(artifactDir, "02-expanded.png") });
         await summary.click();
+        await activityBody.waitFor({ state: "hidden" });
         expect(await summary.getAttribute("aria-expanded")).toBe("false");
         await page.reload();
         await gateway.waitForRequest("chat.startup");

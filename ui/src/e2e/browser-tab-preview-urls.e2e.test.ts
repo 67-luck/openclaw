@@ -159,6 +159,7 @@ suite.define(() => {
           for (const summary of await page.locator(selector).all()) {
             if ((await summary.getAttribute("aria-expanded")) !== "true") {
               await summary.click();
+              await summary.and(page.locator('[aria-expanded="true"]')).waitFor();
             }
           }
         }

@@ -145,6 +145,7 @@ suite.define(() => {
         await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(command);
 
         await dialog.getByRole("button", { name: "Close" }).click();
+        await dialog.waitFor({ state: "detached" });
         await menuTrigger.press("Enter");
         await openSessionMenuSubmenu(page, "Open in");
         await action.click();

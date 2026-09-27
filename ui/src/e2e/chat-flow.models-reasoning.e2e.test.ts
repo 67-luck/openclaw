@@ -553,8 +553,8 @@ suite.define(() => {
         model: null,
         agentRuntime: null,
       });
-      expect(await modelSelect.textContent()).toContain("Claude Opus 4.5");
       await expect.poll(() => defaultModel.getAttribute("aria-selected")).toBe("true");
+      expect(await modelSelect.textContent()).toContain("Claude Opus 4.5");
     } finally {
       await suite.closeBrowserContext(context);
     }

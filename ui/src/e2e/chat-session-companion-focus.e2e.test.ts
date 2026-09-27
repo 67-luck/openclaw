@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { LitElement } from "lit";
 import { expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
@@ -352,8 +353,14 @@ suite.define(() => {
           await mainInput.click();
         } else if (intent === "history") {
           await page.keyboard.press("ArrowUp");
+          await mainInput.evaluate(
+            (element) => element.closest<LitElement>("openclaw-chat-pane")!.updateComplete,
+          );
           expect(await mainInput.inputValue()).toBe("/btw what is this?");
           await page.keyboard.press("ArrowDown");
+          await mainInput.evaluate(
+            (element) => element.closest<LitElement>("openclaw-chat-pane")!.updateComplete,
+          );
           expect(await mainInput.inputValue()).toBe("");
         } else if (intent === "command palette") {
           await page.keyboard.press("ControlOrMeta+k");

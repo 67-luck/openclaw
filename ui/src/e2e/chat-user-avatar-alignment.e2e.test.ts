@@ -18,6 +18,15 @@ suite.define(() => {
         hasMultipleSessionSharingIdentities: true,
         sessions: [{ key: "agent:main:main", visibility: "shared", sharingRole: "owner" }],
         presenceUsers: [{ ...viewer, identity: viewer, self: true }],
+        methodResponses: {
+          "session.members.listEvidence": {
+            sessionKey: "agent:main:main",
+            members: [],
+            identities: [],
+            role: "owner",
+            allowedVisibilities: ["shared", "draft"],
+          },
+        },
         historyMessages: [
           {
             role: "user",

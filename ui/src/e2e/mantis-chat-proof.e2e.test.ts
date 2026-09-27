@@ -100,7 +100,7 @@ describeMantisWebUiChat("Mantis Control UI web chat proof", () => {
       await page.getByText("Mantis web UI proof is ready.").waitFor({ timeout: 10_000 });
       await page.locator(".agent-chat__composer-combobox textarea").fill(prompt);
       // The working timer starts at the send click; pause first so the elapsed
-      // reading is exactly the fastForward below, not inflated by real time.
+      // reading includes only the virtual advancement below, not real time.
       await pauseVirtualClock(page);
       await page.getByRole("button", { name: "Send message" }).click();
 
@@ -114,13 +114,15 @@ describeMantisWebUiChat("Mantis Control UI web chat proof", () => {
       expect(params.idempotencyKey).toEqual(expect.any(String));
 
       await page.getByText("saved 875.3k tokens", { exact: true }).waitFor();
+      // Deliver the pending pane commit before observing its working indicator.
+      await page.clock.runFor(16);
       await page.locator(".chat-working-indicator").waitFor();
       const workingLabel = page.locator(".chat-working-indicator__status > .sr-only");
       expect(await workingLabel.textContent()).toBe("Working…");
       expect(
         await page.locator(".chat-working-indicator__status > span:not(.sr-only)").count(),
       ).toBe(0);
-      await page.clock.fastForward(177_000);
+      await page.clock.fastForward(177_000 - 16);
       await expect
         .poll(() => page.locator(".chat-working-indicator__elapsed").textContent())
         .toBe("2m 57s");
@@ -131,6 +133,7 @@ describeMantisWebUiChat("Mantis Control UI web chat proof", () => {
         ]),
       );
 
+      await page.clock.resume();
       await gateway.emitChatFinal({ runId: params.idempotencyKey ?? "", text: reply });
       await page.locator(".chat-thread-inner").getByText(reply).waitFor({ timeout: 10_000 });
       await writeFile(
