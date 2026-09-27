@@ -151,6 +151,7 @@ export async function runProvisionWarmup(
     timeoutMs: () => number;
     signal?: AbortSignal;
     assertCurrent?: () => void;
+    onDispatch?: () => void;
   },
 ): Promise<void> {
   params.assertCurrent?.();
