@@ -41,6 +41,7 @@ describe("invokeDeviceApps", () => {
         count: 1,
         totalMatched: 1,
         truncated: false,
+        inventoryComplete: true,
         apps: [
           {
             label: "Notes App",
@@ -50,6 +51,17 @@ describe("invokeDeviceApps", () => {
           },
         ],
       },
+    });
+  });
+  it("does not claim a complete scan when the bounded native inventory is partial", async () => {
+    const result = await invokeDeviceApps({
+      sharingEnabled: true,
+      platform: "linux",
+      scan: async () => ({ status: "ok", apps: [], complete: false }),
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      payload: { inventoryComplete: false, truncated: true, totalMatched: 0 },
     });
   });
 });

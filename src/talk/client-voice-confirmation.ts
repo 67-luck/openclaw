@@ -1,5 +1,6 @@
 /** In-memory spoken confirmation binding for high-impact Talk actions. */
 import { randomUUID } from "node:crypto";
+import { InstalledAppLaunchToolParamsSchema } from "../infra/installed-app-launch.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
 import {
   requiresHighImpactVoiceConfirmation,
@@ -326,6 +327,7 @@ export function noteClientVoiceConfirmationUtterance(params: {
 }
 
 type ClientVoiceToolConfirmationPolicyParams = {
+  appLaunchEffectBoundary?: boolean;
   agentId?: string;
   voiceSessionId?: string;
   runId?: string;
@@ -360,7 +362,13 @@ function resolveClientVoiceToolConfirmationPolicy(
   const now = params.now ?? Date.now();
   const fingerprint = stableToolFingerprint(params.toolName, params.toolParams);
   const scopeKey = confirmationScopeKey(params.agentId, params.voiceSessionId);
-  if (resolveApprovedFingerprint(scopeKey, params.runId, fingerprint, now, consume)) {
+  const appLaunch =
+    params.toolName === "nodes" &&
+    InstalledAppLaunchToolParamsSchema.safeParse(params.toolParams).success;
+  // Installed-app preparation still crosses target and independent node policy awaits.
+  // Its effect owner consumes the one-shot grant at readiness, not in the tool wrapper.
+  const consumeHere = consume && (!appLaunch || params.appLaunchEffectBoundary === true);
+  if (resolveApprovedFingerprint(scopeKey, params.runId, fingerprint, now, consumeHere)) {
     return { allowed: true };
   }
   const state = getPrunedConfirmationScope(scopeKey, now) ?? getOrCreateConfirmationScope(scopeKey);

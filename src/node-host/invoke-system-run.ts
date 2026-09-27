@@ -15,12 +15,10 @@ import {
   createExecApprovalPolicySnapshot,
   hasDurableExecApproval,
   isExecApprovalPolicySnapshotCurrent,
-  maxAsk,
   minSecurity,
   resolveApprovalAuditTrustPath,
   resolveAllowAlwaysPersistenceDecision,
   resolveDurableExecApprovalRequirement,
-  resolveExecApprovalsLocked,
   type ExecAllowlistEntry,
   type ExecApprovalUsageAuthorization,
   type ExecApprovalPolicySnapshot,
@@ -76,7 +74,7 @@ import type { NodeHostClient } from "./client.js";
 import {
   evaluateSystemRunPolicy,
   resolveExecApprovalDecision,
-  resolveNodeExecConfigPolicy,
+  resolveEffectiveSystemRunExecPolicy,
 } from "./exec-policy.js";
 import {
   applyOutputTruncation,
@@ -174,15 +172,6 @@ const APPROVAL_STATE_WRITE_FAILED_MESSAGE =
   "SYSTEM_RUN_DENIED: approval state could not be persisted";
 type ExecToolConfig = NonNullable<NonNullable<OpenClawConfig["tools"]>["exec"]>;
 
-type EffectiveSystemRunExecPolicy = {
-  agentExec: ExecToolConfig | undefined;
-  globalExec: ExecToolConfig | undefined;
-  approvals: ExecApprovalsResolved;
-  security: ExecSecurity;
-  ask: ExecAsk;
-  autoReview: boolean;
-};
-
 function warnWritableTrustedDirOnce(message: string): void {
   if (safeBinTrustedDirWarningCache.check(message)) {
     return;
@@ -203,31 +192,6 @@ function normalizeDeniedReason(reason: string | null | undefined): SystemRunDeni
     default:
       return "approval-required";
   }
-}
-
-/** Resolves the effective exec security/ask policy for one system.run request. */
-export async function resolveEffectiveSystemRunExecPolicy(params: {
-  cfg: OpenClawConfig;
-  agentId: string | undefined;
-  defaultSecurity: ExecSecurity;
-  defaultAsk: ExecAsk;
-  requireSocket: boolean;
-}): Promise<EffectiveSystemRunExecPolicy> {
-  const modePolicy = resolveNodeExecConfigPolicy(params);
-  const { agentExec, globalExec } = modePolicy;
-  const approvals = await resolveExecApprovalsLocked(params.agentId, {
-    security: modePolicy.security,
-    ask: modePolicy.ask,
-    requireSocket: params.requireSocket,
-  });
-  return {
-    agentExec,
-    globalExec,
-    approvals,
-    security: minSecurity(modePolicy.security, approvals.agent.security),
-    ask: maxAsk(modePolicy.ask, approvals.agent.ask),
-    autoReview: modePolicy.autoReview,
-  };
 }
 
 async function resolveSystemRunAutoReviewer(params: {
@@ -1142,6 +1106,10 @@ async function executeSystemRunPhase(
   const assertCurrent = () => {
     try {
       assertCommittedAuthorization();
+      // A launch adapter can await final remote confirmation after initial preparation.
+      if (phase.approvedCwdSnapshot && !revalidateApprovedCwdSnapshot(phase.approvedCwdSnapshot)) {
+        throw new Error(APPROVAL_CWD_DRIFT_DENIED_MESSAGE);
+      }
     } catch (error) {
       authorizationDenied = true;
       throw error;

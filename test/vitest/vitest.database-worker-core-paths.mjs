@@ -64,6 +64,8 @@ export const databaseWorkerCoreTestFiles = [
   "src/node-host/invoke-agent-cli-claude.test.ts",
   "src/node-host/invoke-system-run.test.ts",
   "src/node-host/invoke.test.ts",
+  "src/node-host/installed-app-launch.invoke.test.ts",
+  "src/gateway/talk/app-launch.registered.test.ts",
   "src/node-host/worker-runtime.test.ts",
   "src/skills/workshop/store.test.ts",
   "src/channels/message-access/operator-authority.test.ts",

@@ -9,7 +9,14 @@ import { readConnectPairingRequiredMessage } from "../../../packages/gateway-pro
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { OperatorScope } from "../../gateway/method-scopes.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import {
+  InstalledAppLaunchToolParamsSchema,
+  InstalledAppListToolParamsSchema,
+  NODE_INSTALLED_APP_LAUNCH_COMMAND,
+} from "../../infra/installed-app-launch.js";
 import { resolveNodePairApprovalScopes } from "../../infra/node-pairing-authz.js";
+import { withClientVoiceAppLaunchExecution } from "../../talk/client-voice-app-launch-execution.js";
+import { resolveClientVoiceRunBinding } from "../../talk/client-voice-session.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
 import { resolveImageSanitizationLimits } from "../image-sanitization.js";
 import {
@@ -20,12 +27,17 @@ import {
   stringEnum,
 } from "../schema/typebox.js";
 import { type AnyAgentTool, jsonResult, readToolStringParam } from "./common.js";
+import { getGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import { gatewayCallOptionSchemaProperties } from "./gateway-schema.js";
-import { callGatewayTool, readGatewayCallOptions } from "./gateway.js";
+import {
+  callGatewayTool,
+  readGatewayCallOptions,
+  shouldUseInProcessGatewayTool,
+} from "./gateway.js";
 import { executeNodeCommandAction } from "./nodes-tool-commands.js";
 import { callNodesToolNodeInvoke } from "./nodes-tool-invoke.js";
 import { executeNodeMediaAction, MEDIA_INVOKE_ACTIONS } from "./nodes-tool-media.js";
-import { resolveAgentNodeId } from "./nodes-utils.js";
+import { listNodes, resolveAgentNodeId } from "./nodes-utils.js";
 
 const NODES_TOOL_ACTIONS = [
   "status",
@@ -50,6 +62,8 @@ const NODES_TOOL_ACTIONS = [
   "device_health",
   "which",
   "invoke",
+  "app_list",
+  "app_launch",
 ] as const;
 
 const NOTIFY_PRIORITIES = ["passive", "active", "timeSensitive"] as const;
@@ -160,6 +174,17 @@ const NodesToolSchema = Type.Object({
   invokeCommand: Type.Optional(Type.String()),
   invokeParamsJson: Type.Optional(Type.String()),
   invokeTimeoutMs: optionalPositiveIntegerSchema(),
+  query: Type.Optional(
+    Type.String({ description: "app_list: filter installed applications by name." }),
+  ),
+  appId: Type.Optional(
+    Type.String({ description: "Exact installed appId returned by device.apps." }),
+  ),
+  appRevision: Type.Optional(
+    Type.String({
+      description: "Exact appRevision returned by device.apps; refresh after installation changes.",
+    }),
+  ),
 });
 
 export function createNodesTool(options?: {
@@ -183,7 +208,7 @@ export function createNodesTool(options?: {
     label: "Nodes",
     name: "nodes",
     description:
-      "Paired nodes: status/list with active-computer presence; pass node to describe/control. Pairing lifecycle (pending/approve/reject), notify, camera_snap/camera_list/camera_clip (with audio), camera_ptz for physical camera pan/tilt/zoom, photos_latest, screen_snapshot, screen_record video, location_get, notifications_list + notifications_action (open/dismiss/reply), device_status/device_info/device_permissions/device_health, executable lookup (which + bins), generic invoke. File transfer is a separate capability.",
+      "Paired nodes: status/list with active-computer presence; pass node to describe/control. Pairing lifecycle (pending/approve/reject), notify, camera_snap/camera_list/camera_clip (with audio), camera_ptz for physical camera pan/tilt/zoom, photos_latest, screen_snapshot, screen_record video, location_get, notifications_list + notifications_action (open/dismiss/reply), device_status/device_info/device_permissions/device_health, executable lookup (which + bins), generic invoke. app_list: read eligible installed apps on an exact node (optional query). app_launch: launch an exact Linux installed app using full node ID and appId/appRevision from app_list, without arguments or Gateway override; success means process started, not window ready. File transfer is a separate capability.",
     parameters: NodesToolSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
@@ -192,6 +217,68 @@ export function createNodesTool(options?: {
 
       try {
         switch (action) {
+          case "app_list": {
+            const listing = InstalledAppListToolParamsSchema.parse(params);
+            const node = (await listNodes({})).find(
+              (candidate) => candidate.nodeId === listing.node,
+            );
+            if (!node?.commands?.includes("device.apps")) {
+              throw new Error(
+                "Exact paired node does not advertise installed-app inventory; enable Installed Apps on the node",
+              );
+            }
+            return jsonResult(
+              await callNodesToolNodeInvoke(
+                {},
+                {
+                  nodeId: node.nodeId,
+                  command: "device.apps",
+                  // The constrained inventory includes eligible apps from both user and system roots.
+                  params: { query: listing.query, limit: listing.limit ?? 20, includeSystem: true },
+                  idempotencyKey: crypto.randomUUID(),
+                },
+              ),
+            );
+          }
+          case "app_launch": {
+            const launch = InstalledAppLaunchToolParamsSchema.parse(params);
+            const run = getGatewayToolCallerIdentity()?.operationalRunInstance;
+            const voiceRun = resolveClientVoiceRunBinding(run?.runId);
+            if (!run || !shouldUseInProcessGatewayTool({})) {
+              throw new Error("Installed-app launch requires an admitted Gateway agent run");
+            }
+            const node = (await listNodes({})).find(
+              (candidate) => candidate.nodeId === launch.node,
+            );
+            if (!node?.commands?.includes(NODE_INSTALLED_APP_LAUNCH_COMMAND)) {
+              throw new Error(
+                "Exact paired node does not advertise installed-app launch; update the node and enable Installed Apps",
+              );
+            }
+            return jsonResult(
+              await withClientVoiceAppLaunchExecution(
+                {
+                  runId: run.runId,
+                  toolCallId: _toolCallId,
+                  nodeId: node.nodeId,
+                  request: { appId: launch.appId, appRevision: launch.appRevision },
+                  voiceRun,
+                },
+                () =>
+                  callGatewayTool(
+                    "node.invoke",
+                    {},
+                    {
+                      nodeId: node.nodeId,
+                      command: NODE_INSTALLED_APP_LAUNCH_COMMAND,
+                      params: { appId: launch.appId, appRevision: launch.appRevision },
+                      sessionKey: options?.agentSessionKey,
+                      idempotencyKey: crypto.randomUUID(),
+                    },
+                  ),
+              ),
+            );
+          }
           case "status":
             return jsonResult(await callGatewayTool("node.list", gatewayOpts, {}));
           case "describe": {

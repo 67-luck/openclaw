@@ -1,12 +1,10 @@
 /** Node-host command dispatcher for system commands, approvals, env policy, and plugin commands. */
-import fs from "node:fs";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
-import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { DEFAULT_ASK, DEFAULT_SECURITY } from "../infra/exec-approvals-config.js";
 import {
@@ -35,6 +33,7 @@ import {
 } from "../infra/exec-host.js";
 import { extractShellWrapperCommand } from "../infra/exec-wrapper-resolution.js";
 import { sanitizeHostExecEnv } from "../infra/host-env-security.js";
+import { NODE_INSTALLED_APP_LAUNCH_COMMAND } from "../infra/installed-app-launch.js";
 import {
   NODE_AGENT_CLI_CLAUDE_RUN_COMMAND,
   NODE_DEVICE_APPS_COMMAND,
@@ -50,6 +49,8 @@ import {
 } from "./client.js";
 import { invokeNodeWorkerComputerCommand, type NodeWorkerComputer } from "./computer-command.js";
 import { invokeNodeDesktopStream } from "./desktop-stream-command.js";
+import { resolveEffectiveSystemRunExecPolicy } from "./exec-policy.js";
+import { prepareInstalledAppLaunch } from "./installed-app-launch.js";
 import {
   handleClaudeCliNodeInvoke,
   type NodeHostInvokeRuntime,
@@ -60,11 +61,8 @@ import { boundMcpToolResultPayload } from "./invoke-mcp-result.js";
 import { withNodeHostPluginInvocation } from "./invoke-plugin-context.js";
 import { runCommand } from "./invoke-run-command.js";
 import { buildSystemRunPrepareCoverageEnv } from "./invoke-system-run-plan.js";
-import {
-  buildSystemRunApprovalPlan,
-  handleSystemRunInvoke,
-  resolveEffectiveSystemRunExecPolicy,
-} from "./invoke-system-run.js";
+import { buildSystemRunApprovalPlan, handleSystemRunInvoke } from "./invoke-system-run.js";
+import { handleSystemWhich, type SystemWhichParams } from "./invoke-system-which.js";
 import type {
   ExecEventPayload,
   ExecFinishedEventParams,
@@ -84,7 +82,6 @@ import { resolveNodeHostedSkillDirectory } from "./skills.js";
 const MCP_ERROR_MESSAGE_MAX_CHARS = 1_024;
 
 const OUTPUT_EVENT_TAIL = 20_000;
-const DEFAULT_NODE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 type NodeHostPrivateInvokeRuntime = NodeHostInvokeRuntime & {
   canReportAbortedFailure?: (error: unknown) => boolean;
@@ -100,10 +97,6 @@ const execHostEnforced =
 const execHostFallbackAllowed =
   normalizeLowercaseStringOrEmpty(process.env.OPENCLAW_NODE_EXEC_FALLBACK ?? "") !== "0";
 const preferMacAppExecHost = process.platform === "darwin" && execHostEnforced;
-
-type SystemWhichParams = {
-  bins: string[];
-};
 
 type McpToolsCallParams = {
   server: string;
@@ -247,56 +240,6 @@ function requireExecApprovalsBaseHash(
   if (baseHash !== snapshot.hash) {
     throw new Error("INVALID_REQUEST: exec approvals changed; reload and retry");
   }
-}
-
-function resolveEnvPath(env?: Record<string, string>): string[] {
-  const raw =
-    env?.PATH ??
-    (env as Record<string, string>)?.Path ??
-    process.env.PATH ??
-    process.env.Path ??
-    DEFAULT_NODE_PATH;
-  return raw.split(path.delimiter).filter(Boolean);
-}
-
-function resolveExecutable(bin: string, env?: Record<string, string>) {
-  if (bin.includes("/") || bin.includes("\\")) {
-    return null;
-  }
-  const extensions =
-    process.platform === "win32"
-      ? (
-          env?.PATHEXT ??
-          env?.PathExt ??
-          env?.Pathext ??
-          process.env.PATHEXT ??
-          process.env.PathExt ??
-          ".EXE;.CMD;.BAT;.COM"
-        )
-          .split(";")
-          .map((ext) => normalizeLowercaseStringOrEmpty(ext))
-      : [""];
-  for (const dir of resolveEnvPath(env)) {
-    for (const ext of extensions) {
-      const candidate = path.join(dir, bin + ext);
-      if (fs.existsSync(candidate)) {
-        return candidate;
-      }
-    }
-  }
-  return null;
-}
-
-async function handleSystemWhich(params: SystemWhichParams, env?: Record<string, string>) {
-  const bins = normalizeStringEntries(params.bins);
-  const found: Record<string, string> = {};
-  for (const bin of bins) {
-    const pathLocal = resolveExecutable(bin, env);
-    if (pathLocal) {
-      found[bin] = pathLocal;
-    }
-  }
-  return { bins: found };
 }
 
 function buildExecEventPayload(payload: ExecEventPayload): ExecEventPayload {
@@ -721,17 +664,32 @@ async function dispatchInvoke(
     return;
   }
 
-  if (command !== "system.run") {
+  if (command !== "system.run" && command !== NODE_INSTALLED_APP_LAUNCH_COMMAND) {
     await response.error("UNAVAILABLE", "command not supported");
     return;
   }
 
   let params: SystemRunParams;
+  let installedLaunch: ReturnType<typeof prepareInstalledAppLaunch> | undefined;
   try {
-    params = resolveNodeSkillCwdParam(
-      decodeParams<SystemRunParams>(frame.paramsJSON),
-      frame.nodeId,
-    );
+    if (command === NODE_INSTALLED_APP_LAUNCH_COMMAND) {
+      installedLaunch = prepareInstalledAppLaunch({
+        io: runtime.pluginCommandIo,
+        paramsJSON: frame.paramsJSON,
+        sharingEnabled: runtime.installedAppsSharingEnabled === true,
+        platform: runtime.installedAppsPlatform ?? process.platform,
+      });
+      params = {
+        command: [installedLaunch.executable],
+        agentId: installedLaunch.agentId,
+        sessionKey: frame.sessionKey,
+      };
+    } else {
+      params = resolveNodeSkillCwdParam(
+        decodeParams<SystemRunParams>(frame.paramsJSON),
+        frame.nodeId,
+      );
+    }
   } catch (err) {
     await response.invalid(err);
     return;
@@ -742,27 +700,46 @@ async function dispatchInvoke(
     return;
   }
 
-  await handleSystemRunInvoke({
-    client,
-    params,
-    skillBins,
-    signal: runtime.signal,
-    execHostEnforced,
-    execHostFallbackAllowed,
-    resolveExecSecurity,
-    resolveExecAsk,
-    isCmdExeInvocation,
-    sanitizeEnv,
-    runCommand,
-    runViaMacAppExecHost,
-    sendNodeEvent,
-    buildExecEventPayload,
-    sendInvokeResult: response.send,
-    sendExecFinishedEvent: async (event) => {
-      await sendExecFinishedEvent({ ...event, client });
-    },
-    preferMacAppExecHost,
-  });
+  try {
+    await handleSystemRunInvoke({
+      client,
+      params,
+      skillBins,
+      signal: runtime.signal,
+      execHostEnforced,
+      execHostFallbackAllowed,
+      resolveExecSecurity,
+      resolveExecAsk,
+      isCmdExeInvocation,
+      sanitizeEnv,
+      runCommand: installedLaunch?.run ?? runCommand,
+      runViaMacAppExecHost,
+      // App results remain owned by this app invocation, not system.run lifecycle events.
+      sendNodeEvent: installedLaunch ? async () => {} : sendNodeEvent,
+      buildExecEventPayload,
+      sendInvokeResult: async (result) => {
+        await response.send(
+          installedLaunch?.started ? { ok: true, payload: installedLaunch.started } : result,
+        );
+      },
+      sendExecFinishedEvent: async (event) => {
+        if (!installedLaunch) {
+          await sendExecFinishedEvent({ ...event, client });
+        }
+      },
+      preferMacAppExecHost,
+    });
+  } catch (error) {
+    if (!installedLaunch) {
+      throw error;
+    }
+    // Final app identity, authorization and OS spawn failures belong to the app request.
+    // Do not let the outer unexpected-error fence erase the actionable refusal.
+    await response.error(
+      "INSTALLED_APP_LAUNCH_FAILED",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
 }
 
 function decodeMcpToolsCallParams(raw?: string | null): McpToolsCallParams {

@@ -5,17 +5,14 @@ import type { scanInstalledApps } from "../infra/installed-apps.js";
 import type { OpenClawPluginNodeHostCommandIo } from "../plugins/types.js";
 import type { OpenClawPluginNodeHostCommandContext } from "../plugins/types.node-host.js";
 import type { NodeHostClient, NodeInvokeResponder } from "./client.js";
+import { resolveEffectiveSystemRunExecPolicy } from "./exec-policy.js";
 import {
   decodeClaudeCliNodeRunParams,
   type ClaudeCliNodeRunParams,
   type ClaudeCliNodeRunResult,
 } from "./invoke-agent-cli-claude-params.js";
 import { runClaudeCliNodeCommand } from "./invoke-agent-cli-claude.js";
-import {
-  buildSystemRunApprovalPlan,
-  handleSystemRunInvoke,
-  resolveEffectiveSystemRunExecPolicy,
-} from "./invoke-system-run.js";
+import { buildSystemRunApprovalPlan, handleSystemRunInvoke } from "./invoke-system-run.js";
 import type { NodeInvokeRequestPayload, RunResult, SkillBinsProvider } from "./invoke-types.js";
 
 export type NodeHostInvokeRuntime = {

@@ -6,6 +6,7 @@ import {
   validateNodeInvokeParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { captureNodePairingGeneration } from "../../infra/device-pairing-node-state.js";
+import { NODE_INSTALLED_APP_LAUNCH_COMMAND } from "../../infra/installed-app-launch.js";
 import {
   isAdminOnlyNodeInvokeCommand,
   isBrowserProxyNodeInvokeCommand,
@@ -20,6 +21,7 @@ import { sanitizeNodeInvokeParamsForForwarding } from "../node-invoke-sanitize.j
 import { enqueuePendingNodeAction, removePendingNodeAction } from "../node-runtime-state.js";
 import { captureNodeWakeLifecycle, releaseNodeWakeLifecycle } from "../node-wake-state.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
+import { prepareTalkAppLaunchInvocation } from "../talk/app-launch-dispatch.js";
 import { buildNodeCommandRejectionHint } from "./node-command-rejection-hint.js";
 import { nodeInvokePolicy } from "./nodes-policy.js";
 import { handleNodeInvokeProgress } from "./nodes.handlers.invoke-progress.js";
@@ -484,12 +486,23 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
           );
           return;
         }
+        const appLaunch =
+          command === NODE_INSTALLED_APP_LAUNCH_COMMAND
+            ? prepareTalkAppLaunchInvocation({
+                nodeId,
+                rawParams: forwardedParams.params,
+                context,
+                client,
+                connId: nodeSession.connId,
+                approvalAuthority: forwardedParams.approvalAuthority,
+              })
+            : undefined;
         const res = await invokeNodeWithReadinessRetry(context.nodeRegistry, {
           nodeId,
           expectedConnId: nodeSession.connId,
           expectedPairingGeneration: generation.key,
           command,
-          params: forwardedParams.params,
+          params: appLaunch?.dispatchParams ?? forwardedParams.params,
           timeoutMs: dispatchTimeoutMs,
           deadlineAtMs: invokeDeadlineAtMs,
           signal: invocationLifecycle,
@@ -499,18 +512,25 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
             onProgress: nodeInvokeStream.onProgress,
             idleTimeoutMs: nodeInvokeStream.idleTimeoutMs,
           }),
+          ...(appLaunch ? { onProgress: appLaunch.onReady, idleTimeoutMs: 30_000 } : {}),
           isDispatchAuthorized: () =>
             (nodeInvokeStream?.isRuntimeCurrent() ?? true) &&
             resolveNodeInvokeRuntimeAuthorityError({
               context,
               client,
               approvalAuthority: forwardedParams.approvalAuthority,
-            }) === undefined,
+            }) === undefined &&
+            (appLaunch?.isCurrent() ?? true),
           onDispatchReady: (invokeId) => {
+            appLaunch?.onDispatchReady(invokeId);
             nodeCommandDispatched = true;
             nodeInvokeStream?.onDispatchReady(invokeId);
           },
         });
+        if (appLaunch?.reason()) {
+          respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, appLaunch.reason()!));
+          return;
+        }
         if (!(await continuePairingWork())) {
           return;
         }
