@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 mod message;
 mod send;
 mod time;
-pub use time::{exact_time, relative_timestamp};
+pub use time::{exact_time, relative_timestamp, sidebar_timestamp};
 pub mod notice;
 pub use message::{MediaRef, Message, MessageContent, ReplyTarget};
 

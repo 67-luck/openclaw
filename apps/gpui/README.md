@@ -135,10 +135,18 @@ Markdown images use explicit external-image cards rather than fetching remote UR
 
 Managed image references resolve through the current Gateway connection and use bounded macOS thumbnails. Session changes and reconnects cancel pending loads. Managed files and inline file attachments offer Download through a native save dialog; each managed download requests fresh authority. Source downloads are limited to 12 MiB. Saves run off the UI thread and may finish at the chosen path once admitted, even if the conversation changes. Managed image decoding on other platforms and arbitrary plugin canvas widgets remain unverified or unsupported native surfaces.
 
-Deleting a conversation first archives it, then requests deletion with its
-session identity and `archivedOnly:true`, as required for `operator.write`.
-If deletion fails after archiving, an error explains that the conversation
-remains archived. Archive Undo restores the previous pin preference.
+Session menus use the same action order, icons, shortcut hints, ownership grants,
+and lifecycle rules as the Control UI. Right-click or Shift+F10 opens the row
+menu; arrows, Enter, Escape, and the displayed mnemonic keys navigate it. Owner
+assignment and appearance stay in submenus, and directory search uses the shared
+avatar cache. Conversation Markdown export reads a stable paginated history
+snapshot. New window opens the chosen session; conversation tabs and splits are
+currently shown disabled because the native window does not yet provide them.
+
+Deleting a conversation requires confirmation and sends its captured session
+identity. Archived rows use `archivedOnly:true` with write access; active rows
+require administrator access, matching the Control UI. Running active rows cannot
+be deleted. Archive Undo restores the previous pin preference.
 
 The layout follows Control UI density: single-line conversation rows, a compact
 breadcrumb title bar, right-aligned user bubbles, and a 112px composer with its
@@ -232,6 +240,9 @@ if SSH reports an unknown host. An optional identity file is passed as one
 argument, including paths containing spaces. Tunnel readiness is checked before
 connecting; failures and exits use the connection actor's retry/backoff path.
 The child process group is terminated when the window closes or the app quits.
+On Unix, `SIGTERM`, `SIGINT`, and `SIGHUP` also stop tunnel process groups before
+requesting the normal application shutdown. A second signal exits immediately
+after repeating tunnel cleanup if the application has not finished quitting.
 
 An SSH profile's stable Gateway identity is
 `ws://127.0.0.1:<remote-gateway-port>/`, scoped by profile ID. The temporary local
@@ -724,3 +735,8 @@ These macOS 14+ commands open no window and load no Gateway config. Listing
 intersects WebKit's identifiers with this root's records; removal verifies the
 removed identifiers are absent from WebKit before success. Remove stores before
 deleting a temporary state root: the record is the authority for cleanup.
+
+On macOS, webview bounds are committed only while the view, presentation container,
+and parent share a live window. Hidden attached pool views can resize; detached
+views leave geometry unacknowledged so reattachment retries it. The container
+preserves WebKit's native Objective-C class identity.

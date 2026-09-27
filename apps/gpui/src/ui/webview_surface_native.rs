@@ -1,4 +1,6 @@
 use gpui_kit::{Bounds, Pixels, Window};
+#[cfg(target_os = "macos")]
+use wry::WebViewExtMacOS;
 use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder};
 
 use super::{
@@ -51,7 +53,7 @@ impl PresentationMask {
 pub(super) fn present(view: &WebView, render: bool, reveal: bool) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        macos::present(view, render, reveal);
+        macos::present(&view.webview(), render, reveal);
     }
     #[cfg(target_os = "windows")]
     {
@@ -60,16 +62,29 @@ pub(super) fn present(view: &WebView, render: bool, reveal: bool) -> Result<(), 
     Ok(())
 }
 
-pub(super) fn set_bounds(view: &WebView, bounds: SurfaceBounds) {
+pub(super) fn set_bounds(view: &WebView, bounds: SurfaceBounds) -> Result<bool, String> {
     #[cfg(target_os = "macos")]
-    let _ = macos::set_bounds(view, bounds);
+    {
+        use objc2_foundation::{NSPoint, NSRect, NSSize};
+        macos::set_bounds(
+            &view.webview(),
+            NSRect::new(
+                NSPoint::new(bounds.x, bounds.y),
+                NSSize::new(bounds.width, bounds.height),
+            ),
+        )
+    }
     #[cfg(target_os = "windows")]
-    let _ = view.set_bounds(rect(bounds));
+    {
+        view.set_bounds(rect(bounds))
+            .map(|()| true)
+            .map_err(|error| error.to_string())
+    }
 }
 
 pub(super) fn detach(view: &WebView) {
     #[cfg(target_os = "macos")]
-    macos::detach(view);
+    macos::detach(&view.webview());
     #[cfg(target_os = "windows")]
     windows::detach(view);
 }
@@ -419,7 +434,7 @@ fn build_view(
     }
     navigate(&view, spec)?;
     #[cfg(target_os = "macos")]
-    macos::configure(&view)?;
+    macos::configure(&view.webview())?;
     #[cfg(target_os = "windows")]
     windows::configure(&view)?;
     events.mask.borrow_mut().attach(&view);

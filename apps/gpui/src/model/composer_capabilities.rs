@@ -2,20 +2,33 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 pub fn has_operator_scope(hello: &Value, requested: &str) -> bool {
+    let requested = requested.trim();
+    if !requested.starts_with("operator.") {
+        return false;
+    }
     let Some(auth) = hello.get("auth") else {
         return false;
     };
-    if auth["role"].as_str().unwrap_or("operator") != "operator" {
+    if auth["role"].as_str().unwrap_or("operator").trim() != "operator" {
         return false;
     }
     auth.get("scopes")
         .and_then(Value::as_array)
         .is_some_and(|scopes| {
-            scopes.iter().any(|scope| {
-                scope.as_str() == Some(requested)
-                    || scope.as_str() == Some("operator.admin")
-                    || (requested == "operator.sessions.write"
-                        && scope.as_str() == Some("operator.write"))
+            scopes.iter().filter_map(Value::as_str).any(|scope| {
+                let scope = scope.trim();
+                scope == requested
+                    || scope == "operator.admin"
+                    || (scope == "operator.write"
+                        && matches!(
+                            requested,
+                            "operator.read"
+                                | "operator.talk"
+                                | "operator.sessions.read"
+                                | "operator.sessions.write"
+                        ))
+                    || (requested == "operator.sessions.read"
+                        && matches!(scope, "operator.read" | "operator.sessions.write"))
             })
         })
 }

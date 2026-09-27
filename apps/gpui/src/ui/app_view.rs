@@ -303,7 +303,7 @@ impl AppView {
         }
     }
 
-    pub(super) fn select_session(
+    pub(crate) fn select_session(
         &mut self,
         key: String,
         window: &mut Window,

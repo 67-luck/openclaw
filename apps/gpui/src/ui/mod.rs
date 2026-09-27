@@ -22,6 +22,7 @@ mod new_session_view;
 mod palette;
 mod panel_dock;
 mod session_actions;
+mod session_transfer;
 mod sidebar;
 mod sidebar_agent_picker;
 mod sidebar_state;
@@ -40,6 +41,7 @@ mod webview_surface;
 
 pub use app_view::AppView;
 
+mod session_appearance;
 mod session_menu;
 mod session_organization;
 mod sidebar_activity;
@@ -52,4 +54,3 @@ mod sidebar_people;
 mod sidebar_preferences;
 mod sidebar_rows;
 mod sidebar_sections;
-pub(crate) use session_menu::init_session_menu_shortcuts;

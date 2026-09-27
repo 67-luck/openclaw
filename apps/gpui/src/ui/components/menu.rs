@@ -13,6 +13,22 @@ use gpui_kit::{
 };
 use std::rc::Rc;
 
+/// Session actions share the measured renderer and keyboard metadata.
+pub(crate) fn action_item(
+    label: impl Into<SharedString>,
+    icon: IconName,
+    hint: Option<&str>,
+    destructive: bool,
+) -> super::action_menu::ActionMenuItem {
+    super::action_menu::ActionMenuItem::new(label)
+        .icon(super::icons::icon(
+            icon,
+            crate::ui::theme::tokens::menu::ACTION_ICON_SIZE,
+        ))
+        .destructive(destructive)
+        .when_some(hint, |item, hint| item.hint(hint.to_owned()))
+}
+
 pub fn popover(
     id: impl Into<ElementId>,
     anchor: Anchor,

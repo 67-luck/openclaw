@@ -88,17 +88,36 @@ impl WebViewSurface {
                         }
                     }
                     let mut state = state.borrow_mut();
+                    if state.retired || !state.present {
+                        return;
+                    }
                     let bounds = SurfaceBounds::from(bounds).pixel_aligned(window.scale_factor());
                     if state.bounds != Some(bounds)
                         || state.scale_factor != Some(window.scale_factor())
                     {
+                        let Some(view) = &state.view else {
+                            return;
+                        };
+                        state.events.presentation.borrow_mut().ready = false;
+                        state.events.mask();
+                        match native::set_bounds(view, bounds) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                // A masked view must retry even if reattachment restores its old bounds.
+                                state.bounds = None;
+                                state.scale_factor = None;
+                                return;
+                            }
+                            Err(error) => {
+                                state.events.push(WebViewEvent::Error(error.clone()));
+                                state.error = Some(error);
+                                return;
+                            }
+                        }
                         state.bounds = Some(bounds);
                         state.scale_factor = Some(window.scale_factor());
                         state.events.viewport.set((bounds.width, bounds.height));
-                        state.events.presentation.borrow_mut().ready = false;
-                        state.events.mask();
                         if let Some(view) = &state.view {
-                            native::set_bounds(view, bounds);
                             native::request_presentation(view);
                         }
                     }

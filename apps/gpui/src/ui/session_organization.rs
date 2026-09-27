@@ -1,21 +1,29 @@
+use super::components::action_menu::{ActionMenu as PopupMenu, ActionMenuItem as PopupMenuItem};
 use super::{
     AppView,
+    session_menu::MenuTarget,
     theme::{
         Palette,
-        tokens::{dialog, space},
+        tokens::{TypographyExt, menu as tokens, text},
     },
 };
-use crate::model::sessions::SessionRow;
+use crate::model::{
+    avatars::{self, AvatarSpec},
+    people::{Person, PersonIdentity},
+    session_menu::{MenuAction, disabled_reason},
+    sessions::SessionRow,
+};
 use gpui_kit::{
     component::{
-        Sizable, StyledExt, WindowExt,
+        Disableable, Sizable, StyledExt, WindowExt,
         button::{Button, ButtonVariants},
         dialog::DialogButtonProps,
-        input::{Input, InputState},
+        input::{Input, InputEvent, InputState},
     },
     *,
 };
 use serde_json::{Value, json};
+use std::{cell::RefCell, rc::Rc};
 
 impl AppView {
     pub(super) fn show_session_group_dialog(
@@ -79,6 +87,17 @@ impl AppView {
             self.mutation_error("Reconnect before moving conversations.".into());
             return;
         }
+        for row in &rows {
+            if let Some(reason) = crate::model::session_menu::disabled_reason(
+                crate::model::session_menu::MenuAction::Group,
+                row,
+                self.session.as_ref().map(|session| session.hello()),
+                &self.agent_home(),
+            ) {
+                self.mutation_error(reason);
+                return;
+            }
+        }
         let Some(name) = category else {
             self.patch_organization_rows(rows, json!({"category":null}), cx);
             return;
@@ -102,6 +121,17 @@ impl AppView {
                 if names.contains(&name) {
                     this.patch_organization_rows(rows, json!({"category":name}), cx);
                     return;
+                }
+                for row in &rows {
+                    if let Some(reason) = crate::model::session_menu::disabled_reason(
+                        crate::model::session_menu::MenuAction::NewGroup,
+                        row,
+                        this.session.as_ref().map(|session| session.hello()),
+                        &this.agent_home(),
+                    ) {
+                        this.mutation_error(reason);
+                        return;
+                    }
                 }
                 names.push(name.clone());
                 this.request(
@@ -140,166 +170,19 @@ impl AppView {
         }
     }
 
-    pub(super) fn show_session_icon_dialog(
-        &mut self,
-        row: SessionRow,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(row.icon.clone().unwrap_or_default())
-                .placeholder("Emoji, named icon, or SVG data URL")
-        });
-        let view = cx.entity().downgrade();
-        let epoch = self.epoch;
-        window.open_dialog(cx, move |dialog, _, _| {
-            let mut colors = div().h_flex().flex_wrap().gap(space::WIDGET_GAP);
-            for color in ["red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan"] {
-                let view = view.clone();
-                let row = row.clone();
-                colors = colors.child(Button::new(color).ghost().small().label(color).on_click(move |_, _, cx| {
-                    let _ = view.update(cx, |this, cx| {
-                        if this.epoch == epoch {
-                            this.patch_session(row.clone(), json!({"color":color}), cx);
-                        } else { this.mutation_error("Connection changed. Open appearance again.".into()); }
-                    });
-                }));
-            }
-            let input_ok = input.clone();
-            let row = row.clone();
-            let view = view.clone();
-            dialog.title("Icon & color")
-                .child(colors)
-                .child("Choose an emoji, a named icon, or an SVG data URL. Leave blank for the default.")
-                .child(Input::new(&input).aria_label("Custom session icon"))
-                .button_props(DialogButtonProps::default().ok_text("Set icon").show_cancel(true))
-                .on_ok(move |_, _, cx| {
-                    let icon = input_ok.read(cx).value().trim().to_owned();
-                    let _ = view.update(cx, |this, cx| {
-                        if this.epoch != epoch { this.mutation_error("Connection changed. Open the icon action again.".into()); return; }
-                        this.patch_session(row.clone(), json!({"icon":(!icon.is_empty()).then_some(icon)}), cx);
-                    });
-                    true
-                })
-        });
-    }
-
-    pub(super) fn show_session_owner_dialog(
-        &mut self,
-        row: SessionRow,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.session.is_none() {
-            self.mutation_error("Reconnect before assigning a conversation.".into());
-            return;
-        }
-        let mut owners: Vec<OwnerChoice> = self
-            .sidebar_state
-            .agents
-            .iter()
-            .map(|agent| OwnerChoice {
-                kind: "agent",
-                id: agent.id.clone(),
-                label: agent.name().to_owned(),
-            })
-            .collect();
-        if let Some(owner) = row.owner.as_ref().and_then(|value| value.get("actor"))
-            && owner.get("type").and_then(Value::as_str) == Some("human")
-            && let Some(id) = owner
-                .pointer("/identity/id")
-                .or_else(|| owner.get("id"))
-                .and_then(Value::as_str)
-        {
-            owners.push(OwnerChoice {
-                kind: "human",
-                id: id.into(),
-                label: owner
-                    .get("label")
-                    .and_then(Value::as_str)
-                    .unwrap_or(id)
-                    .into(),
-            });
-        }
-        let view = cx.entity().downgrade();
-        let picker = cx.new(|_| OwnerPicker {
-            view,
-            row: row.clone(),
-            epoch: self.epoch,
-            revision: self.sidebar_state.agent_revision,
-            owners: owners.clone(),
-            loading: true,
-            error: None,
-        });
-        let shown = picker.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog.title("Assign conversation to…").child(shown.clone())
-        });
-        self.request("users.list", json!({}), cx, move |_, result, cx| {
-            picker.update(cx, |picker, cx| {
-                picker.loading = false;
-                match result {
-                    Ok(value) => {
-                        if let Some(profiles) = value.get("profiles").and_then(Value::as_array) {
-                            picker.owners.retain(|owner| owner.kind == "agent");
-                            picker.owners.extend(
-                                profiles
-                                    .iter()
-                                    .filter(|profile| {
-                                        profile.get("mergedInto").is_none_or(Value::is_null)
-                                    })
-                                    .filter_map(|profile| {
-                                        let id = profile.get("id")?.as_str()?;
-                                        let label = profile
-                                            .get("displayName")
-                                            .and_then(Value::as_str)
-                                            .filter(|name| !name.trim().is_empty())
-                                            .or_else(|| {
-                                                profile
-                                                    .pointer("/githubIdentity/login")
-                                                    .and_then(Value::as_str)
-                                            })
-                                            .or_else(|| {
-                                                profile.pointer("/emails/0").and_then(Value::as_str)
-                                            })
-                                            .unwrap_or(id);
-                                        Some(OwnerChoice {
-                                            kind: "human",
-                                            id: id.into(),
-                                            label: label.into(),
-                                        })
-                                    }),
-                            );
-                            picker.owners.sort_by(|a, b| {
-                                a.kind.cmp(b.kind).then_with(|| {
-                                    a.label.to_lowercase().cmp(&b.label.to_lowercase())
-                                })
-                            });
-                        } else {
-                            picker.error =
-                                Some("Gateway did not return the user directory.".into());
-                        }
-                    }
-                    Err(error) => {
-                        picker.error = Some(format!(
-                            "Could not load users: {error}. Close and reopen to retry."
-                        ))
-                    }
-                }
-                cx.notify();
-            });
-        });
-    }
-
     fn assign_session_owner(
         &mut self,
         row: SessionRow,
         owner: OwnerChoice,
         cx: &mut Context<Self>,
     ) {
-        if self.session.is_none() {
-            self.mutation_error("Reconnect before assigning a conversation.".into());
+        if let Some(reason) = disabled_reason(
+            MenuAction::Owner,
+            &row,
+            self.session.as_ref().map(|session| session.hello()),
+            &self.agent_home(),
+        ) {
+            self.mutation_error(reason);
             return;
         }
         if self
@@ -366,69 +249,476 @@ struct OwnerChoice {
     kind: &'static str,
     id: String,
     label: String,
+    avatar: AvatarSpec,
+    is_self: bool,
 }
 
-struct OwnerPicker {
-    view: WeakEntity<AppView>,
+struct OwnerMenu {
     row: SessionRow,
-    epoch: u64,
-    revision: u64,
+    target: MenuTarget,
     owners: Vec<OwnerChoice>,
+    input: Entity<InputState>,
+    page: usize,
+    generation: u64,
     loading: bool,
     error: Option<String>,
+    _search: Option<Subscription>,
+    _avatars: Option<Subscription>,
+    avatar_lease: Option<Rc<Vec<AvatarSpec>>>,
 }
 
-impl Render for OwnerPicker {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = Palette::get(cx);
-        let mut body = div()
-            .id("session-owner-options")
-            .v_flex()
-            .gap(space::WIDGET_GAP)
-            .max_h(dialog::OWNER_OPTIONS_MAX_HEIGHT)
-            .overflow_y_scroll();
-        if self.loading {
-            body = body.child("Loading people…");
-        }
-        if let Some(error) = &self.error {
-            body = body.child(div().text_color(p.danger).child(error.clone()));
-        }
-        for owner in &self.owners {
-            let view = self.view.clone();
-            let row = self.row.clone();
-            let owner = owner.clone();
-            let epoch = self.epoch;
-            let revision = self.revision;
-            body = body.child(
-                Button::new(SharedString::from(format!(
-                    "owner:{}:{}",
-                    owner.kind, owner.id
-                )))
-                .ghost()
-                .small()
-                .label(format!(
-                    "{}{}",
-                    owner.label,
-                    if owner.kind == "agent" {
-                        " · Agent"
-                    } else {
-                        ""
-                    }
-                ))
-                .on_click(move |_, window, cx| {
-                    let _ = view.update(cx, |this, cx| {
-                        if this.epoch != epoch || this.sidebar_state.agent_revision != revision {
-                            this.mutation_error(
-                                "Connection or agent changed. Open assignment again.".into(),
-                            );
-                            return;
-                        }
-                        this.assign_session_owner(row.clone(), owner.clone(), cx);
-                    });
-                    window.close_dialog(cx);
-                }),
-            );
-        }
-        body
+type OwnerMenuState = Rc<RefCell<OwnerMenu>>;
+const PEOPLE_PAGE_SIZE: usize = 20;
+
+pub(super) fn session_owner_menu(
+    menu: PopupMenu,
+    row: SessionRow,
+    target: MenuTarget,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let Some(entity) = target.view.upgrade() else {
+        return menu;
+    };
+    let app = entity.read(cx);
+    if let Some(reason) = crate::model::session_menu::disabled_reason(
+        crate::model::session_menu::MenuAction::Owner,
+        &row,
+        app.session.as_ref().map(|session| session.hello()),
+        &app.agent_home(),
+    ) {
+        return menu.item(PopupMenuItem::new(reason).disabled(true));
     }
+    let gateway = app
+        .web
+        .auth
+        .as_ref()
+        .map(|auth| auth.gateway_url.as_str())
+        .unwrap_or("");
+    let mut owners: Vec<_> = app
+        .sidebar_state
+        .agents
+        .iter()
+        .map(|agent| OwnerChoice {
+            kind: "agent",
+            id: agent.id.clone(),
+            label: agent.name().to_owned(),
+            avatar: avatars::agent_avatar(
+                &agent.id,
+                agent.identity.avatar.as_deref(),
+                agent.identity.avatar_url.as_deref(),
+                agent.identity.emoji.as_deref(),
+                gateway,
+            ),
+            is_self: false,
+        })
+        .collect();
+    if let Some(person) = app.sidebar_state.people.self_user.clone() {
+        owners.push(person_choice(person, true, gateway));
+    }
+    if let Some(actor) = row.owner.as_ref().and_then(|owner| owner.get("actor"))
+        && actor.get("type").and_then(Value::as_str) == Some("human")
+        && let Some(person) = Person::from_actor(actor)
+        && !owners
+            .iter()
+            .any(|owner| owner.kind == "human" && owner.id == person.id)
+    {
+        owners.push(person_choice(person, false, gateway));
+    }
+    sort_owners(&mut owners);
+    let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search people and agents…"));
+    let state = Rc::new(RefCell::new(OwnerMenu {
+        row,
+        target,
+        owners,
+        input: input.clone(),
+        page: 0,
+        generation: 0,
+        loading: true,
+        error: None,
+        _search: None,
+        _avatars: Some(cx.observe(&entity, |_, _, cx| cx.notify())),
+        avatar_lease: None,
+    }));
+    let weak_state = Rc::downgrade(&state);
+    let subscription = cx.subscribe_in(&input, window, move |menu, _, event, window, cx| {
+        if matches!(event, InputEvent::Change)
+            && let Some(state) = weak_state.upgrade()
+        {
+            state.borrow_mut().page = 0;
+            menu.rebuild(window, cx, move |menu, _, cx| owner_items(menu, state, cx));
+        }
+    });
+    state.borrow_mut()._search = Some(subscription);
+    load_owners(
+        state.clone(),
+        window.window_handle(),
+        cx.entity().downgrade(),
+        cx,
+    );
+    owner_items(menu, state, cx)
+}
+
+fn person_choice(mut person: Person, is_self: bool, gateway: &str) -> OwnerChoice {
+    person.identity = Some(PersonIdentity {
+        kind: "profile".into(),
+        id: person.id.clone(),
+    });
+    OwnerChoice {
+        kind: "human",
+        id: person.id.clone(),
+        label: person.label().to_owned(),
+        avatar: avatars::person_avatar(&person, gateway),
+        is_self,
+    }
+}
+
+fn sort_owners(owners: &mut [OwnerChoice]) {
+    owners.sort_by(|a, b| {
+        b.is_self
+            .cmp(&a.is_self)
+            .then_with(|| a.kind.cmp(b.kind))
+            .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+}
+
+fn load_owners(
+    state: OwnerMenuState,
+    window: AnyWindowHandle,
+    menu: WeakEntity<PopupMenu>,
+    cx: &mut App,
+) {
+    let target = state.borrow().target.clone();
+    let generation = {
+        let mut state = state.borrow_mut();
+        state.generation += 1;
+        state.loading = true;
+        state.error = None;
+        state.generation
+    };
+    // The submenu owns this request; closing it or changing connection/agent retires the reply.
+    cx.defer(move |cx| {
+        let _ = target.update(cx, |app, cx| {
+            let revision = app.sidebar_state.agent_revision;
+            app.request("users.list", json!({}), cx, move |app, result, cx| {
+                if app.sidebar_state.agent_revision != revision
+                    || menu.upgrade().is_none()
+                    || state.borrow().generation != generation
+                {
+                    return;
+                }
+                {
+                    let mut state = state.borrow_mut();
+                    state.loading = false;
+                    let gateway = app
+                        .web
+                        .auth
+                        .as_ref()
+                        .map(|auth| auth.gateway_url.as_str())
+                        .unwrap_or("");
+                    match result {
+                        Ok(value) => {
+                            if let Some(profiles) = value.get("profiles").and_then(Value::as_array)
+                            {
+                                state
+                                    .owners
+                                    .retain(|owner| owner.kind == "agent" || owner.is_self);
+                                let self_id = state
+                                    .owners
+                                    .iter()
+                                    .find(|owner| owner.is_self)
+                                    .map(|owner| owner.id.clone());
+                                state.owners.extend(
+                                    profiles
+                                        .iter()
+                                        .filter(|profile| {
+                                            profile.get("mergedInto").is_none_or(Value::is_null)
+                                        })
+                                        .filter_map(|profile| {
+                                            let id = profile.get("id")?.as_str()?;
+                                            if self_id.as_deref() == Some(id) {
+                                                return None;
+                                            }
+                                            let label = profile
+                                                .get("displayName")
+                                                .and_then(Value::as_str)
+                                                .map(str::trim)
+                                                .filter(|name| !name.is_empty())
+                                                .or_else(|| {
+                                                    profile
+                                                        .pointer("/githubIdentity/login")
+                                                        .and_then(Value::as_str)
+                                                })
+                                                .or_else(|| {
+                                                    profile
+                                                        .pointer("/emails/0")
+                                                        .and_then(Value::as_str)
+                                                })
+                                                .unwrap_or(id);
+                                            Some(person_choice(
+                                                Person {
+                                                    id: id.into(),
+                                                    name: Some(label.into()),
+                                                    avatar_url: Some(format!(
+                                                        "/api/users/{}/avatar?v={}",
+                                                        percent_encoding::utf8_percent_encode(
+                                                            id,
+                                                            percent_encoding::NON_ALPHANUMERIC
+                                                        ),
+                                                        profile
+                                                            .get("updatedAt")
+                                                            .and_then(Value::as_u64)
+                                                            .unwrap_or_default()
+                                                    )),
+                                                    ..Default::default()
+                                                },
+                                                false,
+                                                gateway,
+                                            ))
+                                        }),
+                                );
+                                sort_owners(&mut state.owners);
+                            } else {
+                                state.error =
+                                    Some("Gateway did not return the user directory.".into());
+                            }
+                        }
+                        Err(error) => state.error = Some(error),
+                    }
+                }
+                let _ = window.update(cx, |_, window, cx| rebuild_owners(state, menu, window, cx));
+            });
+        });
+    });
+}
+
+fn rebuild_owners(
+    state: OwnerMenuState,
+    menu: WeakEntity<PopupMenu>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let _ = menu.update(cx, |menu, cx| {
+        menu.rebuild(window, cx, move |menu, _, cx| owner_items(menu, state, cx));
+    });
+}
+
+fn owner_items(
+    mut menu: PopupMenu,
+    state: OwnerMenuState,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let current = state.borrow();
+    let input = current.input.clone();
+    let query = input.read(cx).value().to_lowercase();
+    let terms: Vec<_> = query.split_whitespace().collect();
+    let matches: Vec<_> = current
+        .owners
+        .iter()
+        .filter(|owner| {
+            let text = format!(
+                "{} {} {} {}",
+                owner.label,
+                owner.id,
+                owner.kind,
+                if owner.is_self { "Me" } else { "" }
+            )
+            .to_lowercase();
+            terms.iter().all(|term| text.contains(term))
+        })
+        .cloned()
+        .collect();
+    let page = current
+        .page
+        .min(matches.len().saturating_sub(1) / PEOPLE_PAGE_SIZE);
+    let start = page * PEOPLE_PAGE_SIZE;
+    let end = (start + PEOPLE_PAGE_SIZE).min(matches.len());
+    let menu_entity = cx.entity().downgrade();
+    let focus_menu = menu_entity.clone();
+    let search_state = state.clone();
+    menu = menu
+        .min_w(tokens::OWNER_WIDTH)
+        .max_w(tokens::OWNER_WIDTH)
+        .max_h(tokens::OWNER_MAX_HEIGHT)
+        .scrollable(true)
+        .check_side(gpui_kit::component::Side::Right)
+        .item(
+            PopupMenuItem::element(move |_, cx| {
+                let focus_menu = focus_menu.clone();
+                let input = search_state.borrow().input.clone();
+                div()
+                    .id("owner-search")
+                    .w_full()
+                    .py(tokens::OWNER_EDITOR_PADDING_Y)
+                    .text_color(Palette::get(cx).text)
+                    .capture_key_down(move |event, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "down" | "enter") {
+                            cx.stop_propagation();
+                            if let Some(menu) = focus_menu.upgrade() {
+                                menu.update(cx, |menu, cx| menu.focus_first(window, cx));
+                            }
+                        }
+                    })
+                    .child(
+                        Input::new(&input)
+                            .small()
+                            .aria_label("Search people and agents…"),
+                    )
+            })
+            .disabled(true),
+        );
+    let current_owner = current
+        .row
+        .owner
+        .as_ref()
+        .and_then(|owner| owner.get("actor"));
+    let current_kind = current_owner
+        .and_then(|owner| owner.get("type"))
+        .and_then(Value::as_str);
+    let current_id = current_owner
+        .and_then(|owner| owner.pointer("/identity/id").or_else(|| owner.get("id")))
+        .and_then(Value::as_str);
+    for owner in &matches[start..end] {
+        let checked = current_kind == Some(owner.kind) && current_id == Some(owner.id.as_str());
+        let choice = owner.clone();
+        let avatar = owner.avatar.clone();
+        let target = current.target.clone();
+        let view = target.view.clone();
+        let row = current.row.clone();
+        let label = if owner.is_self {
+            "Me".to_owned()
+        } else {
+            owner.label.clone()
+        };
+        menu = menu.item(
+            PopupMenuItem::element(move |_, cx| {
+                let avatar = view
+                    .upgrade()
+                    .map(|entity| {
+                        let app = entity.read(cx);
+                        super::components::avatar::Avatar::new(
+                            &avatar,
+                            &app.sidebar_state.avatars,
+                            tokens::OWNER_AVATAR,
+                        )
+                        .into_any_element()
+                    })
+                    .unwrap_or_else(|| {
+                        div().size(tokens::OWNER_AVATAR.diameter).into_any_element()
+                    });
+                div()
+                    .h_flex()
+                    .w_full()
+                    .min_h(tokens::ROW_HEIGHT)
+                    .gap(tokens::ICON_GAP)
+                    .typography(text::MENU)
+                    .text_color(Palette::get(cx).text)
+                    .child(avatar)
+                    .child(div().flex_1().truncate().child(label.clone()))
+            })
+            .checked(checked)
+            .disabled(checked)
+            .on_click(move |_, _, cx| {
+                let _ = target.update(cx, |app, cx| {
+                    app.assign_session_owner(row.clone(), choice.clone(), cx)
+                });
+            }),
+        );
+    }
+    if matches.is_empty() || current.owners.len() > PEOPLE_PAGE_SIZE || !query.is_empty() {
+        let label = if matches.is_empty() {
+            "No matching people or agents".to_owned()
+        } else {
+            format!("{}–{} of {}", start + 1, end, matches.len())
+        };
+        let pages = matches.len() > PEOPLE_PAGE_SIZE;
+        let count = matches.len();
+        let pagination = state.clone();
+        menu = menu.item(
+            PopupMenuItem::element(move |_, cx| {
+                let mut controls = div()
+                    .h_flex()
+                    .w_full()
+                    .py(tokens::OWNER_EDITOR_PADDING_Y)
+                    .gap(tokens::OWNER_EDITOR_PADDING_Y)
+                    .text_size(tokens::OWNER_RANGE_TEXT_SIZE)
+                    .text_color(Palette::get(cx).muted)
+                    .child(div().flex_1().child(label.clone()));
+                if pages {
+                    for (label, next, disabled) in [
+                        ("Previous", page.saturating_sub(1), page == 0),
+                        ("Next", page + 1, end >= count),
+                    ] {
+                        let state = pagination.clone();
+                        let menu = menu_entity.clone();
+                        controls = controls.child(
+                            Button::new(label)
+                                .ghost()
+                                .small()
+                                .label(label)
+                                .disabled(disabled)
+                                .on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    state.borrow_mut().page = next;
+                                    rebuild_owners(state.clone(), menu.clone(), window, cx);
+                                }),
+                        );
+                    }
+                }
+                controls
+            })
+            .disabled(true),
+        );
+    }
+    if current.loading {
+        menu = menu.item(PopupMenuItem::new("Loading…").disabled(true));
+    }
+    if let Some(error) = current.error.clone() {
+        let retry_state = state.clone();
+        let retry_menu = cx.entity().downgrade();
+        menu = menu
+            .item(
+                PopupMenuItem::element(move |_, cx| {
+                    div()
+                        .py(tokens::OWNER_EDITOR_PADDING_Y)
+                        .text_color(Palette::get(cx).danger)
+                        .whitespace_normal()
+                        .child(error.clone())
+                })
+                .disabled(true),
+            )
+            .item(
+                PopupMenuItem::element(move |_, _| {
+                    let state = retry_state.clone();
+                    let menu = retry_menu.clone();
+                    Button::new("retry-owners")
+                        .ghost()
+                        .small()
+                        .label("Retry")
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            load_owners(state.clone(), window.window_handle(), menu.clone(), cx);
+                            rebuild_owners(state.clone(), menu.clone(), window, cx);
+                        })
+                })
+                .disabled(true),
+            );
+    }
+    let lease: Rc<Vec<AvatarSpec>> = Rc::new(
+        matches[start..end]
+            .iter()
+            .map(|owner| owner.avatar.clone())
+            .collect(),
+    );
+    let target = current.target.clone();
+    drop(current);
+    state.borrow_mut().avatar_lease = Some(lease.clone());
+    cx.defer(move |cx| {
+        let _ = target.update(cx, |app, cx| {
+            app.sidebar_state.avatars.retain_specs(&lease);
+            app.refresh_sidebar_avatars(cx);
+        });
+    });
+    menu
 }

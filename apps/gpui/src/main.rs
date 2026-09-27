@@ -6,6 +6,8 @@ mod gateway_windows;
 #[cfg(target_os = "macos")]
 mod macos_app_icon;
 mod model;
+#[cfg(unix)]
+mod shutdown;
 mod ui;
 mod web_data_store;
 
@@ -143,13 +145,15 @@ fn main() {
         }
     };
     let initial = initial_gateway(&args, &store);
+    #[cfg(unix)]
+    let termination =
+        shutdown::watch_signals(&handle).expect("register application termination signals");
     gpui_kit::application()
         .with_assets(assets::AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             #[cfg(target_os = "macos")]
             macos_app_icon::install();
-            ui::init_session_menu_shortcuts(cx);
             if let Err(error) = cx.text_system().add_fonts(vec![
                 std::borrow::Cow::Borrowed(include_bytes!(
                     "../assets/fonts/instrument-sans-400.ttf"
@@ -182,6 +186,13 @@ fn main() {
             cx.on_app_quit(|_| {
                 gateway::remote_tunnel::shutdown_all();
                 gateway::connection::shutdown_all()
+            })
+            .detach();
+            #[cfg(unix)]
+            cx.spawn(async move |cx| {
+                if termination.recv().await.is_ok() {
+                    cx.update(|cx| cx.quit());
+                }
             })
             .detach();
             cx.bind_keys([

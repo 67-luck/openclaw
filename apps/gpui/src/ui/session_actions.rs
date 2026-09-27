@@ -16,7 +16,7 @@ use gpui_kit::{
 };
 use serde_json::{Value, json};
 
-pub(super) use super::session_menu::{SessionMenuShortcut, session_menu};
+pub(super) use super::session_menu::session_menu;
 
 impl AppView {
     pub(super) fn mutation_error(&mut self, error: String) {
@@ -287,47 +287,58 @@ impl AppView {
         });
     }
     pub(super) fn delete_session(&mut self, row: SessionRow, cx: &mut Context<Self>) {
+        let current = self
+            .rows
+            .iter()
+            .chain(self.sidebar_state.children.values().flatten())
+            .find(|current| current.key == row.key);
+        if current.is_some_and(|current| current.session_id != row.session_id) {
+            self.mutation_error("This conversation was replaced. Open its menu again.".into());
+            return;
+        }
+        let row = current.cloned().unwrap_or(row);
+        if let Some(reason) = crate::model::session_menu::disabled_reason(
+            crate::model::session_menu::MenuAction::Delete,
+            &row,
+            self.session.as_ref().map(|session| session.hello()),
+            &self.agent_home(),
+        ) {
+            self.mutation_error(reason);
+            return;
+        }
         let source = self.chat.scope();
-        // operator.write may delete only an archived row; the Gateway rechecks identity at both writes.
-        self.patch_session_then(
-            row,
-            json!({"archived":true,"pinned":false}),
+        let agent = self.sidebar_state.selected_agent.clone();
+        let identity = SessionIdentity::from_row(&row, agent.as_deref());
+        self.request(
+            "sessions.delete",
+            rpc::params(DeleteParams {
+                identity,
+                delete_transcript: true,
+                archived_only: row.archived.then_some(true),
+            }),
             cx,
-            move |this, row, cx| {
-                let agent = this.sidebar_state.selected_agent.clone();
-                let identity = SessionIdentity::from_row(&row, agent.as_deref());
-                this.request(
-                    "sessions.delete",
-                    rpc::params(DeleteParams {
-                        identity,
-                        delete_transcript: true,
-                        archived_only: true,
-                    }),
-                    cx,
-                    move |this, result, cx| match result {
-                        Ok(_) => {
-                            this.rows.retain(|candidate| candidate.key != row.key);
-                            for children in this.sidebar_state.children.values_mut() {
-                                children.retain(|candidate| candidate.key != row.key);
-                            }
-                            if this.chat.scope() == source
-                                && source
-                                    .as_ref()
-                                    .is_some_and(|scope| scope.session_key == row.key)
-                                && this.sidebar_state.selected_agent == agent
-                            {
-                                this.queue_session_selection(this.agent_home());
-                            }
-                            this.sidebar_state
-                                .notifications
-                                .push(Notification::new().message("Conversation deleted"));
-                            this.refresh_sessions(cx);
-                        }
-                        Err(error) => this.mutation_error(format!(
-                            "Conversation was archived, but deletion failed: {error}"
-                        )),
-                    },
-                );
+            move |this, result, cx| match result {
+                Ok(_) => {
+                    this.rows.retain(|candidate| candidate.key != row.key);
+                    for children in this.sidebar_state.children.values_mut() {
+                        children.retain(|candidate| candidate.key != row.key);
+                    }
+                    if this.chat.scope() == source
+                        && source
+                            .as_ref()
+                            .is_some_and(|scope| scope.session_key == row.key)
+                        && this.sidebar_state.selected_agent == agent
+                    {
+                        this.queue_session_selection(this.agent_home());
+                    }
+                    this.sidebar_state
+                        .notifications
+                        .push(Notification::new().message("Conversation deleted"));
+                    this.refresh_sessions(cx);
+                }
+                Err(error) => {
+                    this.mutation_error(format!("Could not delete conversation: {error}"))
+                }
             },
         );
     }

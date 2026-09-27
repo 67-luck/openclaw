@@ -266,6 +266,24 @@ pub fn open(
     config: Result<ConnectionConfig, String>,
     cx: &mut App,
 ) {
+    open_target(profile, config, None, cx);
+}
+
+pub fn open_session(
+    profile: Option<GatewayProfile>,
+    config: Result<ConnectionConfig, String>,
+    session_key: String,
+    cx: &mut App,
+) {
+    open_target(profile, config, Some(session_key), cx);
+}
+
+fn open_target(
+    profile: Option<GatewayProfile>,
+    config: Result<ConnectionConfig, String>,
+    session_key: Option<String>,
+    cx: &mut App,
+) {
     let runtime = cx.global::<GatewayWindows>().runtime.clone();
     let title = profile.as_ref().map_or("OpenClaw", |p| &p.name).to_owned();
     let id = profile.as_ref().map(|p| p.id.clone());
@@ -283,6 +301,9 @@ pub fn open(
             window.set_window_title(&title);
             crate::ui::theme::apply(window, cx);
             let view = cx.new(|cx| crate::ui::AppView::new(runtime, config, profile, window, cx));
+            if let Some(key) = session_key {
+                view.update(cx, |view, cx| view.select_session(key, window, cx));
+            }
             view_id = Some(view.entity_id());
             cx.new(|cx| Root::new(view, window, cx))
         },
