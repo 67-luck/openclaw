@@ -21,6 +21,7 @@ import { mergeCodexThreadConfigs } from "./plugin-thread-config.js";
 import { buildCodexProjectDocThreadConfig } from "./project-doc-thread-config.js";
 import {
   CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE,
+  flattenCodexDynamicToolFunctions,
   isJsonObject,
   type CodexConfigReadResponse,
   type CodexConfigRequirementsReadResponse,
@@ -367,6 +368,7 @@ export function buildCodexRuntimeThreadConfigForRun(
     nativeProviderWebSearchSupport?: CodexNativeWebSearchSupport;
     nativeCodeModeOnlyEnabled?: boolean;
     directOnlyToolNamespaces?: readonly string[];
+    dynamicTools?: readonly CodexDynamicToolSpec[];
     webSearchAllowed?: boolean;
     appServer?: Pick<CodexAppServerRuntimeOptions, "networkProxy">;
     hostSystemAgentActive?: boolean;
@@ -411,6 +413,13 @@ export function buildCodexRuntimeThreadConfigForRun(
     mergeCodexThreadConfigs(
       baseConfig,
       options.appServer?.networkProxy?.configPatch,
+      // OpenClaw owns blocking questions when ask_user is available; Codex's
+      // duplicate request_user_input rejects turns in Default mode.
+      flattenCodexDynamicToolFunctions(options.dynamicTools).some(
+        (tool) => tool.name === "ask_user",
+      )
+        ? { "tools.experimental_request_user_input.enabled": false }
+        : undefined,
       isCodexResponsesOAuthRun(params)
         ? {
             ...CODEX_DELEGATION_DISABLED_THREAD_CONFIG,
