@@ -86,13 +86,17 @@ it.runIf(process.platform === "linux").each(["SIGTERM", "success", "failed"] as 
         },
         meta: {},
       });
-      if (started.status !== "started" || !started.pid) throw new Error("expected owned helper");
+      if (started.status !== "started" || !started.pid) {
+        throw new Error("expected owned helper");
+      }
       helperStart = getFileLockProcessStartTime(started.pid);
       await expect(
         transferManagedServiceUpdateHandoff({ kind: "managed-update-handoff", ...started }),
       ).resolves.toBe(true);
       [updater] = await connected;
-      if (!updater) throw new Error("expected connected updater");
+      if (!updater) {
+        throw new Error("expected connected updater");
+      }
       const [pid] = await once(updater, "data");
       updaterPid = Number(String(pid));
       updaterStart = getFileLockProcessStartTime(updaterPid);
@@ -107,7 +111,9 @@ it.runIf(process.platform === "linux").each(["SIGTERM", "success", "failed"] as 
         },
         (error: unknown) => error,
       );
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
       expect(settled).toBe(false);
       if (outcome === "SIGTERM") {
         process.kill(started.pid, "SIGTERM");
@@ -151,9 +157,9 @@ it.runIf(process.platform === "linux").each(["SIGTERM", "success", "failed"] as 
         await cancelManagedServiceUpdateHandoff({ kind: "managed-update-handoff", ...started });
         await fs.rm(path.dirname(started.logPath), { recursive: true, force: true });
       }
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
     }
   },
 );

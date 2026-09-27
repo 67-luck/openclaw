@@ -64,7 +64,9 @@ export function observeManagedServiceUpdateHandoffClose(
     while ((newline = buffered.indexOf("\n")) >= 0) {
       const line = buffered.slice(0, newline + 1);
       buffered = buffered.slice(newline + 1);
-      if (line === SYSTEM_SERVICE_UPDATE_SETTLED_MARKER) cleanupSettled = true;
+      if (line === SYSTEM_SERVICE_UPDATE_SETTLED_MARKER) {
+        cleanupSettled = true;
+      }
     }
   };
   child.stdout.on("data", onData);
