@@ -110,6 +110,61 @@ export function assertPendingNavigation(
   return observed;
 }
 
+export function assertPendingDiscardNavigation(
+  manager: SessionManager,
+  navigation: "branch" | "resetLeaf",
+  boundary: "user" | "flush",
+) {
+  const observed = vi.fn();
+  const guard = installSessionToolResultGuard(manager, {
+    allowSyntheticToolResults: false,
+    onMessagePersisted: observed,
+  });
+  const root = manager.appendMessage({ role: "user", content: "branch root", timestamp: 1 });
+  const originalEntry = manager.appendMessage(assistant("original"));
+  const { pending, owner } = manager[sessionToolResultPending];
+  const original = pending.calls(owner)[0];
+  assert(original);
+  if (navigation === "branch") {
+    manager.branch(root);
+  } else {
+    manager.resetLeaf();
+  }
+  const nextEntry = manager.appendMessage(assistant("new-path"));
+  expect(guard.getPendingIds()).toEqual(["shared"]);
+  expect(pending.calls(owner)).toHaveLength(2);
+  if (boundary === "user") {
+    manager.appendMessage({ role: "user", content: "retire selected calls", timestamp: 2 });
+  } else {
+    guard.flushPendingToolResults();
+  }
+  expect(guard.getPendingIds()).toEqual([]);
+  expect(pending.calls(owner)).toEqual([original]);
+  expect(pending.calls(owner)[0]).toBe(original);
+  expect(pending.calls(owner).some((call) => call.originId === nextEntry)).toBe(false);
+  expect(
+    manager
+      .getEntries()
+      .filter((entry) => entry.type === "message" && entry.message.role === "toolResult"),
+  ).toEqual([]);
+  manager.branch(originalEntry);
+  expect(guard.getPendingIds()).toEqual(["shared"]);
+  manager.appendMessage({ ...result(), toolName: "" });
+  expect(manager.getLeafEntry()).toMatchObject({
+    parentId: originalEntry,
+    message: { toolCallId: "shared", toolName: "original", isError: false },
+  });
+  expect(pending.calls(owner)).toEqual([]);
+  expect(guard.getPendingIds()).toEqual([]);
+  guard.flushPendingToolResults();
+  expect(
+    manager
+      .getEntries()
+      .filter((entry) => entry.type === "message" && entry.message.role === "toolResult"),
+  ).toHaveLength(1);
+  return observed;
+}
+
 export function committed(
   outcome: SessionMessageAppendOutcome,
   diagnostic?: { phase: string; native?: number[] },

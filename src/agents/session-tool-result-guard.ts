@@ -440,7 +440,7 @@ export function installSessionToolResultGuard(
       }
     }
     if (!allowSyntheticToolResults) {
-      pending.clear();
+      sessionManager[sessionToolResultPending].retireSelected(calls);
     }
   }
   const flushPendingToolResults = () =>

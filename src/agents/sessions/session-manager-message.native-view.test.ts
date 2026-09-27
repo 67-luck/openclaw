@@ -7,9 +7,11 @@ import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { installSessionToolResultGuard } from "../session-tool-result-guard.js";
+import { SessionToolResultPendingConflictError } from "../session-tool-result-pending-facts.js";
 import { sessionToolResultPending } from "../session-tool-result-pending.js";
 import {
   assistant,
+  assertPendingDiscardNavigation,
   assertPendingNavigation,
   result,
 } from "./session-manager-message.worker.test-support.js";
@@ -108,6 +110,115 @@ it.each(
     });
   }
 });
+
+it.each(
+  (["branch", "resetLeaf"] as const).flatMap((navigation) =>
+    (["detached", "native"] as const).flatMap((mode) =>
+      (["user", "flush"] as const).map((boundary) => ({ navigation, mode, boundary })),
+    ),
+  ),
+)(
+  "retains inactive pending custody with disabled synthesis after $navigation/$boundary on $mode",
+  async ({ navigation, mode, boundary }) => {
+    if (mode === "detached") {
+      assertPendingDiscardNavigation(SessionManager.inMemory(), navigation, boundary);
+      return;
+    }
+    await withNativeMessages(({ manager, target }) => {
+      assertPendingDiscardNavigation(manager, navigation, boundary);
+      expect(SessionManager.open(target).getEntries()).toEqual(manager.getEntries());
+      expect(loadTranscriptReadSnapshotSync(target).events).toEqual(manager.getPersistedEntries());
+    });
+  },
+);
+
+it.each([
+  { navigation: "branch", outcome: "commit" },
+  { navigation: "resetLeaf", outcome: "commit" },
+  { navigation: "resetLeaf", outcome: "rollback" },
+  { navigation: "branch", outcome: "cohort-conflict" },
+] as const)(
+  "joins native pending retirement with disabled synthesis to $outcome after $navigation",
+  async ({ navigation, outcome }) => {
+    await withNativeMessages(({ manager, target, database }) => {
+      const observed = vi.fn();
+      const guard = installSessionToolResultGuard(manager, {
+        allowSyntheticToolResults: false,
+        onMessagePersisted: observed,
+      });
+      const root = manager.getLeafId()!;
+      const originalEntry = manager.appendMessage(nativeCalls("first", "second"));
+      const { pending, owner } = manager[sessionToolResultPending];
+      const original = pending.calls(owner);
+      if (navigation === "branch") {
+        manager.branch(root);
+      } else {
+        manager.resetLeaf();
+      }
+      const before = { view: nativeView(manager), sql: loadTranscriptReadSnapshotSync(target) };
+      observed.mockClear();
+      const failure = new Error("rollback policy-only retirement");
+      let childId: string | undefined;
+      let reached = false;
+      let caught: unknown;
+      try {
+        manager.appendMessage(
+          { role: "user", content: "parent boundary", timestamp: 2 },
+          {
+            beforeFreshMessageCommit: () => {
+              expect(database.db.isTransaction).toBe(true);
+              if (outcome === "cohort-conflict") {
+                manager.branch(originalEntry);
+                guard.flushPendingToolResults();
+                expect(pending.calls(owner)).toEqual([]);
+                reached = true;
+                return;
+              }
+              childId = manager.appendMessage(nativeCalls("tentative"));
+              guard.flushPendingToolResults();
+              expect(pending.calls(owner)).toEqual(original);
+              original.forEach((call, index) => expect(pending.calls(owner)[index]).toBe(call));
+              expect(observed).not.toHaveBeenCalled();
+              reached = true;
+              if (outcome === "rollback") {
+                throw failure;
+              }
+            },
+          },
+        );
+      } catch (error) {
+        caught = error;
+      }
+      if (outcome === "cohort-conflict") {
+        expect(caught).toBeInstanceOf(SessionToolResultPendingConflictError);
+      } else {
+        expect(caught).toBe(outcome === "rollback" ? failure : undefined);
+      }
+      expect(reached).toBe(true);
+      if (outcome !== "commit") {
+        expect(nativeView(manager)).toEqual(before.view);
+        expect(loadTranscriptReadSnapshotSync(target)).toEqual(before.sql);
+        expect(pending.calls(owner)).toEqual(original);
+        original.forEach((call, index) => expect(pending.calls(owner)[index]).toBe(call));
+        if (childId) {
+          expect(manager.getEntry(childId)).toBeUndefined();
+        }
+        expect(observed).not.toHaveBeenCalled();
+      } else {
+        expect(pending.calls(owner)).toEqual(original);
+        original.forEach((call, index) => expect(pending.calls(owner)[index]).toBe(call));
+        expect(manager.getEntry(childId!)).toMatchObject({ type: "message" });
+        expect(observed.mock.calls.map(([message]) => message.role)).toEqual(["assistant", "user"]);
+      }
+      expect(
+        manager
+          .getEntries()
+          .filter((entry) => entry.type === "message" && entry.message.role === "toolResult"),
+      ).toEqual([]);
+      expect(SessionManager.open(target).getEntries()).toEqual(manager.getEntries());
+    });
+  },
+);
 
 it("preserves pending tool growth from a native fresh-message callback", async () => {
   await withOpenClawTestState({ label: "native-pending-growth" }, async (state) => {

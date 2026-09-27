@@ -22,6 +22,7 @@ import { SharedGatewaySessionGenerationState } from "../../gateway/server-shared
 import type { GatewayWsClient } from "../../gateway/server/ws-types.js";
 import { sharingPolicyClient } from "../../gateway/session-sharing.test-utils.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import * as operationAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import * as agentDatabase from "../../state/openclaw-agent-db.js";
@@ -29,9 +30,13 @@ import { retainUserProfileCatalog } from "../../state/user-profile-list.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { guardSessionManager } from "../session-tool-result-guard-wrapper.js";
 import { installSessionToolResultGuard } from "../session-tool-result-guard.js";
+import { SessionToolResultPendingConflictError } from "../session-tool-result-pending-facts.js";
 import { sessionToolResultPending } from "../session-tool-result-pending.js";
 import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
-import { assertPendingNavigation } from "./session-manager-message.worker.test-support.js";
+import {
+  assertPendingDiscardNavigation,
+  assertPendingNavigation,
+} from "./session-manager-message.worker.test-support.js";
 import * as metadataRuntime from "./session-manager-metadata-runtime.js";
 import { isSqliteTranscriptMutationConflict } from "./session-manager-persistence.js";
 import {
@@ -120,6 +125,141 @@ it.each(["branch", "resetLeaf"] as const)(
         "toolResult",
         "toolResult",
       ]);
+      expect(SessionManager.open(target).getEntries()).toEqual(manager.getEntries());
+    });
+  },
+);
+
+it.each(
+  (["branch", "resetLeaf"] as const).flatMap((navigation) =>
+    (["user", "flush"] as const).map((boundary) => ({ navigation, boundary })),
+  ),
+)(
+  "retains inactive pending custody with disabled synthesis after $navigation/$boundary on enrolled-ready",
+  async ({ navigation, boundary }) => {
+    await withReadyManager(async ({ manager, target, read }) => {
+      let observed: ReturnType<typeof assertPendingDiscardNavigation> | undefined;
+      SessionManager.readSessionContext(target, () => {
+        observed = assertPendingDiscardNavigation(manager, navigation, boundary);
+        expect(observed).not.toHaveBeenCalled();
+      });
+      expect(observed?.mock.calls.at(-1)?.[0]).toMatchObject({
+        role: "toolResult",
+        toolName: "original",
+        isError: false,
+      });
+      expect(read().filter((message) => message.role === "toolResult")).toHaveLength(1);
+      expect(SessionManager.open(target).getEntries()).toEqual(manager.getEntries());
+    });
+  },
+);
+
+it.each([
+  { navigation: "branch", outcome: "commit" },
+  { navigation: "resetLeaf", outcome: "commit" },
+  { navigation: "resetLeaf", outcome: "rollback" },
+  { navigation: "branch", outcome: "cohort-conflict" },
+] as const)(
+  "joins enrolled pending retirement with disabled synthesis to $outcome after $navigation",
+  async ({ navigation, outcome }) => {
+    await withReadyManager(async ({ manager, target, read }) => {
+      const observed = vi.fn();
+      const guard = installSessionToolResultGuard(manager, {
+        allowSyntheticToolResults: false,
+        onMessagePersisted: observed,
+      });
+      const root = manager.getLeafId()!;
+      const originalEntry = manager.appendMessage(assistant("original"));
+      const { pending, owner } = manager[sessionToolResultPending];
+      const original = pending.calls(owner);
+      if (navigation === "branch") {
+        manager.branch(root);
+      } else {
+        manager.resetLeaf();
+      }
+      const before = { entries: manager.getEntries(), leaf: manager.getLeafId(), rows: read() };
+      observed.mockClear();
+      const failure = new Error("rollback policy-only retirement");
+      let childId: string | undefined;
+      let reached = false;
+      let caught: unknown;
+      const admissions: operationAdmission.SqliteWorkerOperationAdmission[] = [];
+      const createAdmission = operationAdmission.createSqliteWorkerOperationAdmission;
+      const admissionObserver =
+        outcome === "cohort-conflict"
+          ? vi
+              .spyOn(operationAdmission, "createSqliteWorkerOperationAdmission")
+              .mockImplementation((...args) => {
+                const admission = createAdmission(...args);
+                admissions.push(admission);
+                return admission;
+              })
+          : undefined;
+      try {
+        SessionManager.readSessionContext(target, () => {
+          manager.appendMessage(
+            { role: "user", content: "parent boundary", timestamp: 2 },
+            {
+              beforeFreshMessageCommit: () => {
+                if (outcome === "cohort-conflict") {
+                  manager.branch(originalEntry);
+                  guard.flushPendingToolResults();
+                  expect(pending.calls(owner)).toEqual([]);
+                  reached = true;
+                  return;
+                }
+                childId = manager.appendMessage(assistant("tentative"));
+                guard.flushPendingToolResults();
+                expect(pending.calls(owner)).toEqual(original);
+                original.forEach((call, index) => expect(pending.calls(owner)[index]).toBe(call));
+                expect(observed).not.toHaveBeenCalled();
+                reached = true;
+              },
+            },
+          );
+          expect(observed).not.toHaveBeenCalled();
+          if (outcome === "rollback") {
+            throw failure;
+          }
+        });
+      } catch (error) {
+        caught = error;
+      } finally {
+        admissionObserver?.mockRestore();
+      }
+      if (outcome === "cohort-conflict") {
+        expect(caught).toBeInstanceOf(Error);
+        expect(caught).toMatchObject({
+          name: "SqliteWorkerError",
+          code: "closed",
+          message: "SQLite transaction admission was refused",
+        });
+        expect(
+          admissions.some(
+            (admission) => admission.failure instanceof SessionToolResultPendingConflictError,
+          ),
+        ).toBe(true);
+      } else {
+        expect(caught).toBe(outcome === "rollback" ? failure : undefined);
+      }
+      expect(reached).toBe(true);
+      if (outcome !== "commit") {
+        expect(manager.getEntries()).toEqual(before.entries);
+        expect(manager.getLeafId()).toBe(before.leaf);
+        expect(read()).toEqual(before.rows);
+        expect(pending.calls(owner)).toEqual(original);
+        original.forEach((call, index) => expect(pending.calls(owner)[index]).toBe(call));
+        if (childId) {
+          expect(manager.getEntry(childId)).toBeUndefined();
+        }
+        expect(observed).not.toHaveBeenCalled();
+      } else {
+        expect(pending.calls(owner)).toEqual(original);
+        original.forEach((call, index) => expect(pending.calls(owner)[index]).toBe(call));
+        expect(manager.getEntry(childId!)).toMatchObject({ type: "message" });
+        expect(observed.mock.calls.map(([message]) => message.role)).toEqual(["assistant", "user"]);
+      }
+      expect(read().filter((message) => message.role === "toolResult")).toEqual([]);
       expect(SessionManager.open(target).getEntries()).toEqual(manager.getEntries());
     });
   },

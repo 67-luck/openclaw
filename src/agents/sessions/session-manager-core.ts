@@ -25,8 +25,15 @@ import {
   captureSqliteTransactionState,
   type CapturedSqliteTransactionState,
 } from "../../infra/sqlite-post-commit.js";
-import { captureSqliteWorkerCallerViewRollback } from "../../infra/sqlite-worker-host-context.js";
+import {
+  captureSqliteWorkerCallerTransaction,
+  captureSqliteWorkerCallerViewRollback,
+} from "../../infra/sqlite-worker-host-context.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
+import {
+  sessionToolResultPending,
+  type PendingToolResult,
+} from "../session-tool-result-pending.js";
 import {
   isIndexedSessionEntry,
   migrateToCurrentVersion,
@@ -55,6 +62,52 @@ export class SessionManagerCore extends SessionManagerView {
   private nativeViewOwner: NativeTranscriptViewOwner | undefined;
   private readonly nativePublicFresh: NativeTranscriptViewOwner[] = [];
   protected cwd: string;
+
+  override get [sessionToolResultPending]() {
+    return {
+      ...super[sessionToolResultPending],
+      retireSelected: (calls: readonly PendingToolResult[]) => this.retirePendingToolResults(calls),
+    };
+  }
+
+  private retirePendingToolResults(calls: readonly PendingToolResult[]): void {
+    this.assertTranscriptViewAvailable();
+    const target = this.persistenceTarget;
+    const boundary = super[sessionToolResultPending];
+    const native = [this.nativeViewOwner, ...this.nativePublicFresh.toReversed()].find(
+      (owner) =>
+        owner?.disposition.live && sameSessionTranscriptTargetBinding(owner.target, target),
+    );
+    const rollback = captureSqliteWorkerCallerViewRollback(
+      target?.[sessionTranscriptExecution]?.execution.incarnation,
+    );
+    const transaction = native
+      ? captureSqliteTransactionState(native.database)?.transaction
+      : rollback
+        ? captureSqliteWorkerCallerTransaction()
+        : undefined;
+    if ((native && transaction !== native.journal.transaction) || (rollback && !transaction)) {
+      throw new Error("Pending retirement lost its original transaction");
+    }
+    const captured = boundary.pending.capture(boundary.owner, transaction);
+    const change = captured.stage({ remove: calls.map(captured.token), add: [] });
+    if (native) {
+      // Policy-only retirement shares the real journal; rollback restores the
+      // original occurrences without erasing another branch's committed work.
+      if (!native.journal.stage(change)) {
+        throw new Error("Pending retirement lost its original transaction");
+      }
+    } else if (rollback) {
+      // Capture the matching execution's inverse before changing its host ledger.
+      if (!rollback(change.rollback)) {
+        throw new Error("Pending retirement lost its original transaction");
+      }
+      change.stage(transaction);
+    } else {
+      change.stage();
+      change.commit();
+    }
+  }
 
   constructor(
     cwd: string,
