@@ -92,10 +92,9 @@ it.each(["openclaw", "existing-session"] as const)(
         expect(
           (await request(b, "POST", "/tabs/open", { url: "about:blank", label: "theirs" }))[0],
         ).toBe(true);
-        expect((await request(a, "GET", "/tabs"))[1]).toMatchObject({
-          tabs: [{ targetId: "native-1" }],
-        });
-        expect((await request(a, "GET", "/tabs"))[1].tabs).toHaveLength(1);
+        expect((await request(a, "GET", "/tabs"))[1].tabs).toEqual([
+          expect.objectContaining({ targetId: "native-1" }),
+        ]);
         expect(
           (await request(b, "GET", "/tabs"))[1].tabs.map(
             (tab: { targetId: string }) => tab.targetId,

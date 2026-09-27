@@ -2380,39 +2380,6 @@ describe("browser tool url alias support", () => {
     expect(firstResultText(result)).toContain('"running": false');
   });
 
-  it("touches tracked tabs for direct tab activity", async () => {
-    browserClientMocks.browserSnapshot.mockResolvedValueOnce({
-      ok: true,
-      format: "ai",
-      targetId: "RAW-LIVE",
-      url: "https://example.com",
-      snapshot: "ok",
-    });
-    const tool = createBrowserTool({ agentSessionKey: "agent:main:main" });
-    await tool.execute?.("call-1", {
-      action: "snapshot",
-      targetId: "docs",
-    });
-
-    expect(sessionTabRegistryMocks.touchSessionBrowserTab).not.toHaveBeenCalled();
-  });
-
-  it("prefers the canonical console result target when touching an input alias", async () => {
-    browserActionsMocks.browserConsoleMessages.mockResolvedValueOnce({
-      ok: true,
-      targetId: "RAW-CONSOLE",
-      messages: [],
-    });
-    const tool = createBrowserTool({ agentSessionKey: "agent:main:main" });
-
-    await tool.execute?.("call-1", {
-      action: "console",
-      targetId: "docs",
-    });
-
-    expect(sessionTabRegistryMocks.touchSessionBrowserTab).not.toHaveBeenCalled();
-  });
-
   it("accepts url alias for navigate", async () => {
     const tool = createBrowserTool();
     await tool.execute?.("call-1", {
@@ -2712,7 +2679,7 @@ describe("browser tool url alias support", () => {
     );
   });
 
-  it("untracks explicit tab close for tracked sessions", async () => {
+  it("returns the canonical target after an explicit alias close without duplicating tracking", async () => {
     browserClientMocks.browserCloseTab.mockResolvedValueOnce({
       ok: true,
       targetId: "RAW-DOCS",
@@ -2736,7 +2703,7 @@ describe("browser tool url alias support", () => {
     });
   });
 
-  it("untracks the selected tab when close omits targetId", async () => {
+  it("returns the selected tab when close omits targetId without duplicating tracking", async () => {
     browserActionsMocks.browserAct.mockResolvedValueOnce({
       ok: true,
       targetId: "selected-tab",
@@ -2790,36 +2757,6 @@ describe("browser tool url alias support", () => {
 
 describe("browser tool act compatibility", () => {
   registerBrowserToolAfterEachReset();
-
-  it.each([
-    {
-      name: "close",
-      request: { kind: "close", targetId: "closed-tab" },
-      result: { ok: true, targetId: "closed-tab", url: "https://example.com" },
-    },
-    {
-      name: "batch close",
-      request: {
-        kind: "batch",
-        targetId: "closed-tab",
-        actions: [{ kind: "close" }],
-      },
-      result: {
-        ok: true,
-        targetId: "closed-tab",
-        results: [{ ok: true }],
-        aborted: { reason: "closed", afterAction: 1, url: "https://example.com", skipped: 0 },
-      },
-    },
-  ])("retires session ownership after act:$name", async ({ request, result }) => {
-    browserActionsMocks.browserAct.mockResolvedValueOnce(result);
-    const tool = createBrowserTool({ agentSessionKey: "agent:main:main" });
-
-    await tool.execute?.("call-1", { action: "act", request });
-
-    expect(sessionTabRegistryMocks.untrackSessionBrowserTab).not.toHaveBeenCalled();
-    expect(sessionTabRegistryMocks.touchSessionBrowserTab).not.toHaveBeenCalled();
-  });
 
   it("adds a clear note when a batch aborts after navigation", async () => {
     browserActionsMocks.browserAct.mockResolvedValueOnce({
