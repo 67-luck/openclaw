@@ -1,8 +1,13 @@
-const DEFAULT_GITHUB_HOST = "github.com";
-const DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com";
+export const GITHUB_PUBLIC_HOST = "github.com";
+export const GITHUB_PUBLIC_API_BASE_URL = "https://api.github.com";
+
+export function isGitHubCloudHost(host: string): boolean {
+  const normalized = host.toLowerCase();
+  return normalized === GITHUB_PUBLIC_HOST || normalized.endsWith(".ghe.com");
+}
 
 function normalizeGitHubHost(value: string | undefined): string {
-  const host = value?.trim().toLowerCase() || DEFAULT_GITHUB_HOST;
+  const host = value?.trim().toLowerCase() || GITHUB_PUBLIC_HOST;
   if (!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/u.test(host) || host.includes("..")) {
     throw new Error("GITHUB_HOST must be a hostname");
   }
@@ -10,7 +15,7 @@ function normalizeGitHubHost(value: string | undefined): string {
 }
 
 function normalizeGitHubApiBaseUrl(value: string | undefined): string {
-  const raw = value?.trim() || DEFAULT_GITHUB_API_BASE_URL;
+  const raw = value?.trim() || GITHUB_PUBLIC_API_BASE_URL;
   const parsed = new URL(raw);
   if (
     parsed.protocol !== "https:" ||

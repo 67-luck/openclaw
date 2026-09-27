@@ -18,7 +18,7 @@ import type { GitHubToolIdentityConfig } from "../config/types.tools.js";
 import { hasErrnoCode } from "../infra/errno.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { resolveAgentConfig, resolveAgentWorkspaceDir } from "./agent-scope.js";
-import { resolveGitHubApiBaseUrl, resolveGitHubHost } from "./github-host.js";
+import { GITHUB_PUBLIC_API_BASE_URL, GITHUB_PUBLIC_HOST } from "./github-host.js";
 import { verifyGitHubCredential } from "./github-oauth-client.js";
 import { inspectGitHubOAuthRecord } from "./github-oauth-records.js";
 import {
@@ -275,7 +275,7 @@ async function readManagedGitHubToken(profileDir: string): Promise<string | unde
         hosts = value;
       }
     }
-    const host = isRecord(hosts) ? hosts[resolveGitHubHost()] : undefined;
+    const host = isRecord(hosts) ? hosts[GITHUB_PUBLIC_HOST] : undefined;
     // gh reads the active host token before considering the global keyring.
     // User-keyed entries alone cannot prove isolation from native auth.
     return isRecord(host) && typeof host.oauth_token === "string"
@@ -518,7 +518,7 @@ async function prepareSharedGitHubIdentity(
     GH_PROMPT_DISABLED: "1",
   });
   const env = currentEnvironment();
-  const apiBaseUrl = resolveGitHubApiBaseUrl(env);
+  const apiBaseUrl = GITHUB_PUBLIC_API_BASE_URL;
   const readToken = () =>
     managed
       ? readManagedGitHubToken(identity.profileDir)
@@ -648,7 +648,7 @@ async function verifyManagedGitHubCredential(token: string) {
 
 function managedGitHubHosts(identity: { login: string; token: string; host?: string }): string {
   return stringifyYaml({
-    [identity.host ?? resolveGitHubHost()]: {
+    [identity.host ?? GITHUB_PUBLIC_HOST]: {
       user: identity.login,
       oauth_token: identity.token,
       users: { [identity.login]: { oauth_token: identity.token } },
