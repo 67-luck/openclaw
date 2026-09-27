@@ -53,7 +53,11 @@ function outcome(result) {
 
 async function receive(spec) {
   const record = recorder(spec.receiverProof, spec);
-  record.save("receiver-started", { pid: process.pid, parentPid: process.ppid });
+  record.save("receiver-started", {
+    pid: process.pid,
+    parentPid: process.ppid,
+    node: process.version,
+  });
   try {
     let text = "";
     for await (const chunk of process.stdin) {
@@ -133,7 +137,11 @@ async function control(spec) {
       record.save("published-parent-admitted");
       // Preserve the published two-argument child API and its real beforeInput binding.
       const child = await owner.withUpdateCommandExecutorChild(fence, async (grant, bindChild) => {
-        record.save("published-child-grant-created");
+        record.save("published-child-grant-created", {
+          parentVersion: grant.parent.version,
+          parentIdentity: grant.parent.executor,
+          helperIdentity: grant.parent.helper,
+        });
         const result = await runUtf8CommandWithTimeout(
           [process.execPath, "--import", tsx, fixture, "--receiver", spec.specPath],
           {
