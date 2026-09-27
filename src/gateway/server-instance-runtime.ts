@@ -305,6 +305,31 @@ export function createGatewayInstanceRuntime(
           (subscriber) => subscriber.shouldHandle(request as GatewayApprovalRequest),
         ),
       publishResolved: (kind, resolved) => {
+        if (
+          kind === "plugin" &&
+          resolved !== null &&
+          typeof resolved === "object" &&
+          "id" in resolved &&
+          typeof resolved.id === "string"
+        ) {
+          const terminalStatus = "terminalStatus" in resolved ? resolved.terminalStatus : undefined;
+          const decision = "decision" in resolved ? resolved.decision : undefined;
+          void routeCoordinator
+            .publishPluginTerminal({
+              approvalId: resolved.id,
+              status:
+                terminalStatus === "expired"
+                  ? "expired"
+                  : terminalStatus === "cancelled"
+                    ? "cancelled"
+                    : decision === "deny"
+                      ? "denied"
+                      : "allowed",
+            })
+            .catch((error: unknown) => {
+              options.logError?.(`plugin approval origin notice failed: ${String(error)}`);
+            });
+        }
         publish(kind, (subscriber) => subscriber.onResolved(resolved as GatewayApprovalResolved));
       },
     },

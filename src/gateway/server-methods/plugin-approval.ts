@@ -163,6 +163,11 @@ export function createPluginApprovalHandlers(
         normalizeTrimmedString(value) === null
           ? null
           : sanitizeExecApprovalDisplayText(normalizeTrimmedString(value)!);
+      const approvalSource =
+        trustedAgentRuntime?.approvalSource &&
+        trustedAgentRuntime.approvalSource.channel === trustedAgentRuntime.turnSourceChannel
+          ? trustedAgentRuntime.approvalSource
+          : undefined;
       const request: PluginApprovalRequestPayload = {
         pluginId: trustedAgentRuntime?.approvalOwnerPluginId ?? sanitizeMeta(p.pluginId),
         title: sanitizedTitle,
@@ -188,6 +193,7 @@ export function createPluginApprovalHandlers(
           (sessionOwner?.ok ? sessionOwner.agentId : sanitizeMeta(p.agentId)),
         sessionKey,
         runId: trustedAgentRuntime?.operationalRunInstance.runId ?? null,
+        ...(approvalSource ? { approvalSource } : {}),
         turnSourceChannel: trustedAgentRuntime
           ? normalizeTrimmedString(trustedAgentRuntime.turnSourceChannel)
           : normalizeTrimmedString(p.turnSourceChannel),
@@ -198,7 +204,9 @@ export function createPluginApprovalHandlers(
           ? normalizeTrimmedString(trustedAgentRuntime.turnSourceAccountId)
           : normalizeTrimmedString(p.turnSourceAccountId),
         turnSourceThreadId: trustedAgentRuntime
-          ? (trustedAgentRuntime.turnSourceThreadId ?? null)
+          ? approvalSource && trustedAgentRuntime.pluginApprovalOriginThreadId !== undefined
+            ? trustedAgentRuntime.pluginApprovalOriginThreadId
+            : (trustedAgentRuntime.turnSourceThreadId ?? null)
           : (p.turnSourceThreadId ?? null),
       };
 

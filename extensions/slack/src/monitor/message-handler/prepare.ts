@@ -1621,6 +1621,15 @@ export async function prepareSlackMessage(params: {
     },
   }) satisfies FinalizedMsgContext;
   ctxPayload.ReplyToMode = replyToMode;
+  if (senderId && !isBotMessage) {
+    ctxPayload.ApprovalSource = {
+      channel: "slack",
+      senderId,
+      senderName,
+      ...(workspaceId ? { workspaceId } : {}),
+      conversationKind: chatType,
+    };
+  }
 
   const pinnedMainDmOwner = isDirectMessage
     ? resolvePinnedMainDmOwnerFromAllowlist({

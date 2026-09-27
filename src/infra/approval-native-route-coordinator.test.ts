@@ -5,6 +5,7 @@ import {
   createApprovalNativeRouteReporter as createApprovalNativeRouteReporterRaw,
 } from "./approval-native-route-coordinator.js";
 import type { ExecApprovalRequest } from "./exec-approvals.js";
+import type { PluginApprovalRequest } from "./plugin-approvals.js";
 
 const approvalRouteReporters: Array<ReturnType<typeof createApprovalNativeRouteReporterRaw>> = [];
 const defaultRouteSelector = {
@@ -43,6 +44,23 @@ function createRequest(
   };
 }
 
+function createPluginRequest(id: string): PluginApprovalRequest {
+  return {
+    approvalKind: "plugin",
+    id,
+    request: {
+      title: "Run report",
+      description: "Render a diff",
+      turnSourceChannel: "slack",
+      turnSourceTo: "channel:C123",
+      turnSourceAccountId: "work",
+      turnSourceThreadId: "1712345678.123456",
+    },
+    createdAtMs: Date.now(),
+    expiresAtMs: Date.now() + 60_000,
+  };
+}
+
 afterEach(async () => {
   await Promise.all(approvalRouteReporters.splice(0).map((reporter) => reporter.stop()));
   vi.useRealTimers();
@@ -58,6 +76,137 @@ function createGatewayRequestMock() {
 function approverDm(to: string) {
   return { surface: "approver-dm" as const, target: { to }, reason: "preferred" as const };
 }
+
+describe("plugin approval requester outcome", () => {
+  it.each([
+    ["denied", "was denied"],
+    ["expired", "timed out"],
+  ] as const)("reports a %s DM-only approval once to its exact origin", async (status, wording) => {
+    const coordinator = createApprovalNativeRouteCoordinator();
+    const requestGateway = createGatewayRequestMock();
+    const reporter = coordinator.createReporter(
+      reporterOptions({
+        handledKinds: new Set(["plugin"]),
+        channel: "slack",
+        channelLabel: "Slack",
+        accountId: "work",
+        requestGateway,
+      }),
+    );
+    const request = createPluginRequest(`plugin:${status}`);
+    reporter.start();
+    reporter.selectRequest({ approvalKind: "plugin", request });
+    await reporter.reportDelivery({
+      approvalKind: "plugin",
+      request,
+      deliveryPlan: {
+        targets: [approverDm("user:reviewer")],
+        originTarget: { to: "channel:C123", threadId: "1712345678.123456" },
+        notifyOriginWhenDmOnly: true,
+      },
+      deliveredTargets: [approverDm("user:reviewer")],
+    });
+    // The channel's own card expiry/settlement must not retire the Gateway outcome route.
+    reporter.completeRequest(request.id);
+    await coordinator.publishPluginTerminal({ approvalId: request.id, status });
+    await coordinator.publishPluginTerminal({ approvalId: request.id, status });
+
+    expect(requestGateway).toHaveBeenCalledTimes(2);
+    expect(requestGateway).toHaveBeenLastCalledWith("send", {
+      channel: "slack",
+      to: "channel:C123",
+      accountId: "work",
+      threadId: "1712345678.123456",
+      message: `Approval ${request.id} ${wording}. The requested action did not run.`,
+      idempotencyKey: `approval-terminal-notice:${request.id}`,
+    });
+    coordinator.close();
+  });
+
+  it("waits for the actual DM delivery report when the Gateway resolves first", async () => {
+    const coordinator = createApprovalNativeRouteCoordinator();
+    const requestGateway = createGatewayRequestMock();
+    const reporter = coordinator.createReporter(
+      reporterOptions({
+        handledKinds: new Set(["plugin"]),
+        channel: "slack",
+        channelLabel: "Slack",
+        accountId: "work",
+        requestGateway,
+      }),
+    );
+    const request = createPluginRequest("plugin:early-deny");
+    reporter.start();
+    reporter.selectRequest({ approvalKind: "plugin", request });
+    await coordinator.publishPluginTerminal({ approvalId: request.id, status: "denied" });
+    reporter.completeRequest(request.id);
+    await reporter.reportDelivery({
+      approvalKind: "plugin",
+      request,
+      deliveryPlan: {
+        targets: [approverDm("user:reviewer")],
+        originTarget: { to: "channel:C123", threadId: "1712345678.123456" },
+        notifyOriginWhenDmOnly: true,
+      },
+      deliveredTargets: [approverDm("user:reviewer")],
+    });
+
+    expect(requestGateway.mock.calls.map((call) => call[1].idempotencyKey)).toEqual([
+      `approval-route-notice:${request.id}`,
+      `approval-terminal-notice:${request.id}`,
+    ]);
+    coordinator.close();
+  });
+
+  it.each(["origin-card", "forwarded-only", "dm-without-origin-notice"] as const)(
+    "does not duplicate the %s outcome in the origin",
+    async (route) => {
+      const coordinator = createApprovalNativeRouteCoordinator();
+      const requestGateway = createGatewayRequestMock();
+      const reporter = coordinator.createReporter(
+        reporterOptions({
+          handledKinds: new Set(["plugin"]),
+          channel: "slack",
+          channelLabel: "Slack",
+          accountId: "work",
+          requestGateway,
+        }),
+      );
+      const request = createPluginRequest(`plugin:${route}`);
+      const deliveredTargets =
+        route === "origin-card"
+          ? [
+              {
+                surface: "origin" as const,
+                target: { to: "channel:C123", threadId: "1712345678.123456" },
+                reason: "preferred" as const,
+              },
+            ]
+          : route === "dm-without-origin-notice"
+            ? [approverDm("user:reviewer")]
+            : [];
+      reporter.start();
+      reporter.selectRequest({ approvalKind: "plugin", request });
+      await reporter.reportDelivery({
+        approvalKind: "plugin",
+        request,
+        deliveryPlan: {
+          targets: deliveredTargets,
+          originTarget: { to: "channel:C123", threadId: "1712345678.123456" },
+          notifyOriginWhenDmOnly: route !== "dm-without-origin-notice",
+        },
+        deliveredTargets,
+      });
+      await coordinator.publishPluginTerminal({ approvalId: request.id, status: "denied" });
+
+      expect(requestGateway).not.toHaveBeenCalledWith(
+        "send",
+        expect.objectContaining({ idempotencyKey: `approval-terminal-notice:${request.id}` }),
+      );
+      coordinator.close();
+    },
+  );
+});
 
 describe("createApprovalNativeRouteReporter", () => {
   it("keeps the local approval route visible when an unbound request has multiple runtimes", () => {

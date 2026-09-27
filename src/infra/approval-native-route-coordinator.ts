@@ -75,9 +75,21 @@ type RouteNoticeTarget = {
   threadId?: string | number | null;
 };
 
+type PluginTerminalStatus = "allowed" | "denied" | "expired" | "cancelled";
+
+type PluginTerminalNotice = {
+  requestGateway?: GatewayRequestFn;
+  target?: RouteNoticeTarget;
+  initialNotice?: Promise<void>;
+  status?: "denied" | "expired";
+  sent: boolean;
+  cleanupTimeout: NodeJS.Timeout;
+};
+
 type ApprovalNativeRouteCoordinatorState = {
   activeRuntimes: Map<string, ApprovalRouteRuntimeRecord>;
   pendingNotices: Map<string, PendingApprovalRouteNotice>;
+  pluginTerminalNotices: Map<string, PluginTerminalNotice>;
   selections: Map<string, ApprovalRouteSelection>;
   runtimeSeq: number;
   closed: boolean;
@@ -87,6 +99,7 @@ function createApprovalNativeRouteCoordinatorState(): ApprovalNativeRouteCoordin
   return {
     activeRuntimes: new Map(),
     pendingNotices: new Map(),
+    pluginTerminalNotices: new Map(),
     selections: new Map(),
     runtimeSeq: 0,
     closed: false,
@@ -198,6 +211,69 @@ function resolveApprovalRouteSelection(
 
 const defaultCoordinatorState = createApprovalNativeRouteCoordinatorState();
 const MAX_APPROVAL_ROUTE_NOTICE_TTL_MS = 5 * 60_000;
+
+function clearPluginTerminalNotice(
+  state: ApprovalNativeRouteCoordinatorState,
+  approvalId: string,
+): void {
+  const entry = state.pluginTerminalNotices.get(approvalId);
+  if (!entry) {
+    return;
+  }
+  state.pluginTerminalNotices.delete(approvalId);
+  clearTimeout(entry.cleanupTimeout);
+}
+
+function getPluginTerminalNotice(
+  state: ApprovalNativeRouteCoordinatorState,
+  request: ApprovalRequest,
+): PluginTerminalNotice {
+  const existing = state.pluginTerminalNotices.get(request.id);
+  if (existing) {
+    return existing;
+  }
+  // Retain the actual native route until the Gateway's expiry can publish its
+  // terminal outcome, even if the channel's local card timer fires first.
+  const timeoutMs = Math.min(Math.max(0, request.expiresAtMs - Date.now()) + 60_000, 0x7fffffff);
+  const cleanupTimeout = setTimeout(() => clearPluginTerminalNotice(state, request.id), timeoutMs);
+  cleanupTimeout.unref?.();
+  const entry: PluginTerminalNotice = { sent: false, cleanupTimeout };
+  state.pluginTerminalNotices.set(request.id, entry);
+  return entry;
+}
+
+async function maybeSendPluginTerminalNotice(
+  state: ApprovalNativeRouteCoordinatorState,
+  approvalId: string,
+): Promise<void> {
+  const notice = state.pluginTerminalNotices.get(approvalId);
+  if (state.closed || !notice?.status || !notice.requestGateway || !notice.target || notice.sent) {
+    return;
+  }
+  notice.sent = true;
+  const { target } = notice;
+  const requestGateway = notice.requestGateway;
+  try {
+    await notice.initialNotice;
+    if (state.closed || state.pluginTerminalNotices.get(approvalId) !== notice) {
+      return;
+    }
+    await requestGateway("send", {
+      channel: target.channel,
+      to: target.to,
+      accountId: target.accountId ?? undefined,
+      threadId: target.threadId ?? undefined,
+      message:
+        notice.status === "expired"
+          ? `Approval ${approvalId} timed out. The requested action did not run.`
+          : `Approval ${approvalId} was denied. The requested action did not run.`,
+      idempotencyKey: `approval-terminal-notice:${approvalId}`,
+    });
+  } catch (error) {
+    notice.sent = false;
+    throw error;
+  }
+}
 
 function normalizeChannel(value?: string | null): string {
   return normalizeLowercaseStringOrEmpty(value);
@@ -417,6 +493,38 @@ function resolveApprovalRouteNotice(params: {
   };
 }
 
+function isPluginDmOnlyRoute(params: {
+  approvalKind: ChannelApprovalKind;
+  reports: readonly ApprovalRouteReport[];
+  missingSelectedRuntime: boolean;
+  target: RouteNoticeTarget;
+}): boolean {
+  if (params.approvalKind !== "plugin" || params.missingSelectedRuntime) {
+    return false;
+  }
+  const originChannel = normalizeChannel(params.target.channel);
+  const originAccountId = normalizeOptionalString(params.target.accountId);
+  const matchingReports = params.reports.filter((report) => {
+    if (normalizeChannel(report.channel) !== originChannel) {
+      return false;
+    }
+    const reportAccountId = normalizeOptionalString(report.accountId);
+    return (
+      originAccountId === undefined ||
+      reportAccountId === undefined ||
+      originAccountId === reportAccountId
+    );
+  });
+  return (
+    !matchingReports.some((report) => didReportDeliverToOrigin(report, originAccountId)) &&
+    matchingReports.some(
+      (report) =>
+        report.deliveryPlan.notifyOriginWhenDmOnly &&
+        report.deliveredTargets.some((target) => target.surface === "approver-dm"),
+    )
+  );
+}
+
 /** Returns whether a native approval runtime is active for the requested channel/account scope. */
 export function hasActiveApprovalNativeRouteRuntime(params: {
   approvalKind: ChannelApprovalKind;
@@ -486,22 +594,48 @@ async function maybeFinalizeApprovalRouteNotice(
     reports,
     missingSelectedRuntime,
   });
+  const terminalNotice =
+    notice &&
+    isPluginDmOnlyRoute({
+      approvalKind: entry.approvalKind,
+      reports,
+      missingSelectedRuntime,
+      target: notice.target,
+    })
+      ? getPluginTerminalNotice(state, entry.request)
+      : undefined;
+  if (terminalNotice && notice) {
+    terminalNotice.requestGateway = notice.requestGateway;
+    terminalNotice.target = notice.target;
+  }
   clearPendingApprovalRouteNotice(state, approvalId);
   if (!notice) {
     return;
   }
-
-  try {
-    await notice.requestGateway("send", {
-      channel: notice.target.channel,
-      to: notice.target.to,
-      accountId: notice.target.accountId ?? undefined,
-      threadId: notice.target.threadId ?? undefined,
-      message: notice.text,
-      idempotencyKey: `approval-route-notice:${approvalId}`,
-    });
-  } catch {
-    // The approval delivery already succeeded; the follow-up notice is best-effort.
+  const initialNotice = Promise.resolve().then(async () => {
+    try {
+      await notice.requestGateway("send", {
+        channel: notice.target.channel,
+        to: notice.target.to,
+        accountId: notice.target.accountId ?? undefined,
+        threadId: notice.target.threadId ?? undefined,
+        message: notice.text,
+        idempotencyKey: `approval-route-notice:${approvalId}`,
+      });
+    } catch {
+      // The approval delivery already succeeded; the follow-up notice is best-effort.
+    }
+  });
+  if (terminalNotice) {
+    terminalNotice.initialNotice = initialNotice;
+  }
+  await initialNotice;
+  if (terminalNotice) {
+    try {
+      await maybeSendPluginTerminalNotice(state, approvalId);
+    } catch {
+      // The card was delivered; a failed origin follow-up cannot undo it.
+    }
   }
 }
 
@@ -623,6 +757,12 @@ function createApprovalNativeRouteReporterForState(
       await report(paramsLocal);
     },
     completeRequest(approvalId: string): void {
+      // A Gateway terminal can overtake delivery reporting. Keep the selection
+      // until its route is known so the durable outcome reaches the origin.
+      const terminalNotice = state.pluginTerminalNotices.get(approvalId);
+      if (terminalNotice?.status && !terminalNotice.target) {
+        return;
+      }
       clearApprovalRouteSelection(state, approvalId);
       clearPendingApprovalRouteNotice(state, approvalId);
     },
@@ -654,6 +794,10 @@ function createApprovalNativeRouteReporterForState(
 export type ApprovalNativeRouteCoordinator = {
   createReporter: typeof createApprovalNativeRouteReporter;
   hasActiveRuntime: typeof hasActiveApprovalNativeRouteRuntime;
+  publishPluginTerminal: (params: {
+    approvalId: string;
+    status: PluginTerminalStatus;
+  }) => Promise<void>;
   close: () => void;
 };
 
@@ -671,6 +815,26 @@ export function createApprovalNativeRouteCoordinator(): ApprovalNativeRouteCoord
   return {
     createReporter: (params) => createApprovalNativeRouteReporterForState(state, params),
     hasActiveRuntime: (params) => hasActiveApprovalNativeRouteRuntimeForState(state, params),
+    publishPluginTerminal: async ({ approvalId, status }) => {
+      if (state.closed) {
+        return;
+      }
+      if (status === "allowed" || status === "cancelled") {
+        clearPluginTerminalNotice(state, approvalId);
+        return;
+      }
+      const pending = state.pendingNotices.get(approvalId);
+      const notice =
+        state.pluginTerminalNotices.get(approvalId) ??
+        (pending?.approvalKind === "plugin"
+          ? getPluginTerminalNotice(state, pending.request)
+          : undefined);
+      if (!notice || notice.sent) {
+        return;
+      }
+      notice.status = status;
+      await maybeSendPluginTerminalNotice(state, approvalId);
+    },
     close: () => {
       // Closing retires this Gateway-owned coordinator permanently. Delayed channel
       // startup must not repopulate routes belonging to the retired instance.
@@ -680,6 +844,9 @@ export function createApprovalNativeRouteCoordinator(): ApprovalNativeRouteCoord
       }
       for (const approvalId of Array.from(state.selections.keys())) {
         clearApprovalRouteSelection(state, approvalId);
+      }
+      for (const approvalId of Array.from(state.pluginTerminalNotices.keys())) {
+        clearPluginTerminalNotice(state, approvalId);
       }
       state.activeRuntimes.clear();
     },

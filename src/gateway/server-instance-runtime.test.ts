@@ -49,6 +49,28 @@ function createRegistry(handlers: GatewayRequestHandlers) {
 }
 
 describe("createGatewayInstanceRuntime", () => {
+  it.each([
+    [{ decision: "deny" as const }, "denied"],
+    [{ decision: "deny" as const, terminalStatus: "expired" as const }, "expired"],
+    [{ decision: "deny" as const, terminalStatus: "cancelled" as const }, "cancelled"],
+    [{ decision: "allow-once" as const }, "allowed"],
+  ])("passes the plugin approval terminal outcome to the native route owner", (event, status) => {
+    const context = createContext();
+    const runtime = createGatewayInstanceRuntime({
+      getContext: () => context,
+      getMethodRegistry: () => createRegistry({}),
+      isDispatchAvailable: () => true,
+    });
+    const publishTerminal = vi
+      .spyOn(runtime.nativeApprovals.routeCoordinator, "publishPluginTerminal")
+      .mockResolvedValue();
+
+    runtime.approvalEvents.publishResolved("plugin", { id: "plugin:1", ts: 1, ...event });
+
+    expect(publishTerminal).toHaveBeenCalledWith({ approvalId: "plugin:1", status });
+    runtime.close();
+  });
+
   it("uses the typed recovery path and fails closed when the owning instance closes", async () => {
     let available = false;
     const rawAgent = vi.fn<NonNullable<GatewayRequestHandlers["agent"]>>(({ respond }) => {

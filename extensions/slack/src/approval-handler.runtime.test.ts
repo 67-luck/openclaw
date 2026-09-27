@@ -3,6 +3,7 @@ import type {
   ApprovalActionView,
   ChannelApprovalKind,
   ApprovalMetadataView,
+  PluginApprovalPendingView,
 } from "openclaw/plugin-sdk/approval-handler-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { decodeSlackApprovalAction } from "./approval-actions.js";
@@ -122,13 +123,18 @@ async function buildPluginPendingPayload(params: {
   toolName: string;
   metadata?: ApprovalMetadataView[];
   decisions?: ApprovalDecision[];
+  approvalSource?: PluginApprovalPendingView["approvalSource"];
 }): Promise<SlackPayload> {
   const decisions = params.decisions ?? ["deny"];
   return (await slackApprovalNativeRuntime.presentation.buildPendingPayload({
     ...APPROVAL_CONTEXT,
     request: {
       id: params.approvalId,
-      request: { title: params.title, description: params.description },
+      request: {
+        title: params.title,
+        description: params.description,
+        ...(params.approvalSource ? { approvalSource: params.approvalSource } : {}),
+      },
       ...APPROVAL_TIMING,
     },
     approvalKind: "plugin",
@@ -142,6 +148,7 @@ async function buildPluginPendingPayload(params: {
       severity: params.severity,
       pluginId: params.pluginId,
       toolName: params.toolName,
+      ...(params.approvalSource ? { approvalSource: params.approvalSource } : {}),
       metadata: params.metadata ?? [],
       actions: decisions.map((decision) =>
         buildApprovalAction("plugin", params.approvalId, decision),
@@ -526,6 +533,43 @@ describe("slackApprovalNativeRuntime", () => {
       expect.objectContaining({ approvalKind: "plugin", decision: "allow-always" }),
       expect.objectContaining({ approvalKind: "plugin", decision: "deny" }),
     ]);
+  });
+
+  it("shows the requester, source, and literal original-message excerpt on a plugin card", async () => {
+    const excerpt = "Please render <@U999OTHER> & show the *diff*.";
+    const payload = await buildPluginPendingPayload({
+      ...SCREEN_SHARE_APPROVAL,
+      approvalSource: {
+        channel: "slack",
+        senderId: "U0C5KQJEE56",
+        senderName: "Lightning <McQueen> & Friends",
+        workspaceId: "T123ABC45",
+        conversationKind: "direct",
+        userMessageExcerpt: excerpt,
+      },
+    });
+
+    expect(payload.text).toContain(
+      "*Requested by:* Lightning &lt;McQueen&gt; &amp; Friends (U0C5KQJEE56)",
+    );
+    expect(payload.text).not.toContain("<@U0C5KQJEE56>");
+    expect(payload.text).toContain("*Source:* Slack DM in T123ABC45");
+    expect(payload.text).toContain(
+      "*Original message (excerpt)*\n```\nPlease render &lt;@U999OTHER&gt; &amp; show the *diff*.\n```",
+    );
+    const excerptBlock = (payload.blocks as Array<{ text?: { type: string; text: string } }>).find(
+      (block) => block.text?.type === "plain_text",
+    );
+    expect(excerptBlock?.text?.text).toBe(`Original message (excerpt)\n${excerpt}`);
+
+    for (const senderName of [undefined, "U0C5KQJEE56"]) {
+      const idOnlyPayload = await buildPluginPendingPayload({
+        ...SCREEN_SHARE_APPROVAL,
+        approvalSource: { channel: "slack", senderId: "U0C5KQJEE56", senderName },
+      });
+      expect(idOnlyPayload.text).toContain("*Requested by:* U0C5KQJEE56");
+      expect(idOnlyPayload.text).not.toContain("U0C5KQJEE56 (U0C5KQJEE56)");
+    }
   });
 
   it("renders resolved updates without interactive blocks", async () => {

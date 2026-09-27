@@ -236,6 +236,15 @@ describe("worker turn launcher remote handoff", () => {
       },
       {
         ...turn("run-worker-turn", true),
+        messageChannel: "slack",
+        currentMessagingTarget: "Dworker",
+        messageThreadId: "actual-thread-worker",
+        approvalSource: {
+          channel: "slack",
+          senderId: "Urequester",
+          senderName: "Requester",
+          userMessageExcerpt: "Run the requested tool",
+        },
         gatewayUiCommandTarget: { connId: "requesting-ui", profileId: "requester" },
         toolsAllow: ["browser"],
         workspaceDir: path.join(root, "stale-caller-workspace"),
@@ -297,10 +306,16 @@ describe("worker turn launcher remote handoff", () => {
     expect(verifiedRuntimeIdentity).toMatchObject({
       agentId: sessionTarget.agentId,
       sessionKey: sessionTarget.sessionKey,
-      turnSourceChannel: "telegram",
-      turnSourceTo: "chat-worker",
+      turnSourceChannel: "slack",
+      turnSourceTo: "Dworker",
       turnSourceAccountId: "worker-account",
-      turnSourceThreadId: "thread-worker",
+      turnSourceThreadId: "actual-thread-worker",
+      approvalSource: {
+        channel: "slack",
+        senderId: "Urequester",
+        senderName: "Requester",
+        userMessageExcerpt: "Run the requested tool",
+      },
       gatewayUiCommandTarget: { connId: "requesting-ui", profileId: "requester" },
     });
     expect(descriptor?.assignment.agentId).toBe(verifiedRuntimeIdentity?.agentId);

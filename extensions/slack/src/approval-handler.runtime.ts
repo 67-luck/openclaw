@@ -26,6 +26,7 @@ import {
 import { getSlackListenerWriteClient } from "./client.js";
 import { normalizeSlackApproverId } from "./exec-approvals.js";
 import { SLACK_EDIT_TEXT_MAX_BYTES } from "./limits.js";
+import { escapeSlackMrkdwn } from "./monitor/mrkdwn.js";
 import { resolveSlackReplyBlocks } from "./reply-blocks.js";
 import { sendMessageSlack } from "./send.js";
 import { setSlackSessionStatus } from "./session-status.js";
@@ -142,7 +143,25 @@ function buildSlackMetadataContextBlocks(metadata: readonly SlackMetadataItem[])
 }
 
 function buildSlackPluginMetadata(view: SlackPluginApprovalView): SlackMetadataItem[] {
-  return [{ label: "Approval ID", value: view.approvalId }, ...view.metadata];
+  const source = view.approvalSource;
+  const senderId = normalizeOptionalString(source?.senderId);
+  const senderName = normalizeOptionalString(source?.senderName);
+  const requester = senderId
+    ? senderName && senderName !== senderId
+      ? `${senderName} (${senderId})`
+      : senderId
+    : undefined;
+  const channel = source?.channel === "slack" ? "Slack" : source?.channel;
+  const kind = source?.conversationKind === "direct" ? "DM" : source?.conversationKind;
+  const sourceLabel = channel
+    ? `${channel}${kind ? ` ${kind}` : ""}${source?.workspaceId ? ` in ${source.workspaceId}` : ""}`
+    : undefined;
+  return [
+    { label: "Approval ID", value: view.approvalId },
+    ...(requester ? [{ label: "Requested by", value: escapeSlackMrkdwn(requester) }] : []),
+    ...(sourceLabel ? [{ label: "Source", value: escapeSlackMrkdwn(sourceLabel) }] : []),
+    ...view.metadata,
+  ];
 }
 
 function resolveSlackPluginDescription(view: SlackPluginApprovalView): string {
@@ -182,6 +201,9 @@ function buildSlackApprovalPayload(input: SlackApprovalRenderInput): SlackPendin
   const metadata = isPlugin ? buildSlackPluginMetadata(view) : view.metadata;
   const bodyLabel = isPlugin ? "*Request*" : isSystemAgent ? "*Change*" : "*Command*";
   const bodyText = isPlugin ? view.title : buildSlackCodeBlock(view.commandText);
+  const userMessageExcerpt = isPlugin
+    ? normalizeOptionalString(view.approvalSource?.userMessageExcerpt)
+    : undefined;
   const includeMetadata = isPlugin || phase === "pending";
   const text = [
     heading,
@@ -189,6 +211,13 @@ function buildSlackApprovalPayload(input: SlackApprovalRenderInput): SlackPendin
     "",
     bodyLabel,
     bodyText,
+    ...(userMessageExcerpt
+      ? [
+          "",
+          "*Original message (excerpt)*",
+          buildSlackCodeBlock(truncateSlackMrkdwn(escapeSlackMrkdwn(userMessageExcerpt), 2600)),
+        ]
+      : []),
     ...(includeMetadata ? buildSlackMetadataLines(metadata) : []),
   ].join("\n");
 
@@ -214,6 +243,18 @@ function buildSlackApprovalPayload(input: SlackApprovalRenderInput): SlackPendin
         }`,
       },
     },
+    ...(userMessageExcerpt
+      ? [
+          {
+            type: "section",
+            text: {
+              type: "plain_text",
+              text: `Original message (excerpt)\n${truncateSlackMrkdwn(userMessageExcerpt, 2600)}`,
+              emoji: false,
+            },
+          } satisfies SlackBlock,
+        ]
+      : []),
     ...(includeMetadata ? buildSlackMetadataContextBlocks(metadata) : []),
   ];
   if (phase === "pending") {
