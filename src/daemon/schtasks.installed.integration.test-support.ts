@@ -21,7 +21,6 @@ import {
   doctorReportSchema,
   inspectDisabledDiscoveryTasks,
   inspectInstalledUpdateFailure,
-  runInstalledPublishedUpdate,
   type InstalledTask as Task,
 } from "./schtasks.installed-diagnostics.test-support.js";
 import {
@@ -42,6 +41,7 @@ import {
   samePath,
   verifyPreparedInstall,
 } from "./schtasks.installed-package.test-support.js";
+import { runInstalledPublishedUpdateWithRecovery } from "./schtasks.installed-recovery.test-support.js";
 import {
   inspectInstalledSelectedStartupFallback,
   inspectInstalledStartupAliasBuildRefusal,
@@ -131,7 +131,7 @@ export async function runInstalledLifecycle(
         expectedExit,
         signal,
         {
-          observeService:
+          observeCommand:
             args[0] === "gateway" && (args[1] === "install" || args[1] === "status")
               ? args[1]
               : undefined,
@@ -365,7 +365,7 @@ export async function runInstalledLifecycle(
         installed: await hashInstall(installRoot),
       };
       await recordProgress("published-driver:hash-verified");
-      observations.update = await runInstalledPublishedUpdate({
+      observations.update = await runInstalledPublishedUpdateWithRecovery({
         task: selected,
         input,
         inputPath,
@@ -374,6 +374,18 @@ export async function runInstalledLifecycle(
         signal,
         observations,
         recordProgress,
+        recovery: {
+          selected,
+          peer,
+          configBefore,
+          peerXml,
+          peerConfig,
+          peerInstallBefore,
+          peerIdentity,
+          peerPid: peerBefore.service.runtime.pid,
+          awaitReadiness,
+          readStatus: status,
+        },
       });
       await prepareInstalledPackage({ ...input, installRoot });
       await recordProgress("updated-candidate:hash-verified");

@@ -11,10 +11,10 @@ import {
 import { redactSupportString } from "../logging/diagnostic-support-redaction.js";
 import { formatCommandOutput } from "../process/command-error.js";
 
-type ServiceObservation = "install" | "status";
+type CommandObservation = "install" | "status" | "start" | "repair";
 
 function captureCommandOutput(
-  kind: ServiceObservation | "published-update",
+  kind: CommandObservation | "published-update",
   stdout: string,
   truncated: boolean,
   diagnostic: (value: string) => string,
@@ -48,6 +48,46 @@ function captureCommandOutput(
       }),
     );
   };
+  const strings = (input: unknown, limit: number) =>
+    Array.isArray(input)
+      ? input
+          .filter((entry): entry is string => typeof entry === "string")
+          .slice(0, limit)
+          .map(diagnostic)
+      : undefined;
+  if (kind === "repair") {
+    const postUpdate = asOptionalRecord(value.postUpdate);
+    const doctor = asOptionalRecord(postUpdate?.doctor);
+    const plugins = asOptionalRecord(postUpdate?.plugins);
+    return {
+      kind,
+      ...fields(value, [
+        "status",
+        "mode",
+        "root",
+        "restart",
+        "deferred",
+        "reason",
+        "message",
+        "error",
+      ]),
+      reconciledRuns: strings(value.reconciledRuns, 100),
+      doctor: { ...fields(doctor, ["status"]), warnings: strings(doctor?.warnings, 16) },
+      plugins: {
+        ...fields(plugins, ["status", "changed"]),
+        errors: strings(asOptionalRecord(plugins?.sync)?.errors, 16),
+        warnings: Array.isArray(plugins?.warnings)
+          ? plugins.warnings
+              .slice(0, 16)
+              .map((warning: unknown) =>
+                typeof warning === "string"
+                  ? diagnostic(warning)
+                  : fields(warning, ["reason", "message"]),
+              )
+          : undefined,
+      },
+    };
+  }
   if (kind === "published-update") {
     return {
       kind,
@@ -82,7 +122,7 @@ function captureCommandOutput(
   }
   const service = asOptionalRecord(value.service);
   const common = { kind };
-  if (kind === "install") {
+  if (kind === "install" || kind === "start") {
     return {
       ...common,
       ...fields(value, ["action", "ok", "result", "message", "error"]),
@@ -130,12 +170,14 @@ export type CommandRecord = {
   launcherPid: number | null;
   beforeCleanup: ReturnType<typeof inspectManagedProcessGroup> | undefined;
   code: number | null;
+  managedResult: number | null;
   signal: string | null;
   joined: boolean;
   elapsedMs: number;
   failureOutput?: { stdout: string; stderr: string; captureTruncated: boolean };
   serviceOutput?: ReturnType<typeof captureCommandOutput>;
   publishedUpdate?: ReturnType<typeof captureCommandOutput>;
+  repairOutput?: ReturnType<typeof captureCommandOutput>;
 };
 export async function run(
   args: string[],
@@ -146,11 +188,11 @@ export async function run(
   signal?: AbortSignal,
   options: {
     expectedStderr?: readonly string[];
-    observeService?: ServiceObservation;
+    observeCommand?: CommandObservation;
     commandBudget?: "published-update";
   } = {},
 ) {
-  const { expectedStderr = [], observeService } = options;
+  const { expectedStderr = [], observeCommand } = options;
   const started = performance.now();
   let child: ChildProcess | undefined;
   let stdout = "";
@@ -236,13 +278,17 @@ export async function run(
     args,
     launcherPid: child?.pid ?? null,
     code,
+    managedResult: failure ? null : (result ?? null),
     signal: exitSignal,
     beforeCleanup,
     joined: afterCleanup === "dead" && !hasUnjoinedWork(failure),
     elapsedMs: performance.now() - started,
     ...(failureOutput ? { failureOutput } : {}),
-    ...(observeService
-      ? { serviceOutput: captureCommandOutput(observeService, stdout, truncated, diagnostic) }
+    ...(observeCommand && observeCommand !== "repair"
+      ? { serviceOutput: captureCommandOutput(observeCommand, stdout, truncated, diagnostic) }
+      : {}),
+    ...(observeCommand === "repair"
+      ? { repairOutput: captureCommandOutput("repair", stdout, truncated, diagnostic) }
       : {}),
     ...(options.commandBudget === "published-update"
       ? { publishedUpdate: captureCommandOutput("published-update", stdout, truncated, diagnostic) }

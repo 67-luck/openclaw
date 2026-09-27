@@ -56,6 +56,7 @@ export async function readInstalledUpdateProgress({
         : value;
     // Retain only the facts needed to distinguish update progress from failed native verification.
     return {
+      runId: record.runId,
       phase: record.phase,
       status: record.status,
       createdAtMs: record.createdAtMs,
@@ -108,7 +109,7 @@ export async function inspectInstalledUpdateFailure(params: {
     commands,
     0,
     signal,
-    { observeService: "status" },
+    { observeCommand: "status" },
   );
 }
 

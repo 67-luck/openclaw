@@ -3,7 +3,9 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import { z } from "zod";
+import * as installedArtifact from "../../scripts/lib/gateway-bench-installed-package.ts";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { collectNestedErrorCandidates } from "../infra/error-graph-internal.js";
 import { resolveEnvironmentValue } from "../infra/process-env.js";
 import * as updateRunReader from "../infra/update-run-reader.js";
 import type { UpdateRunRecord } from "../infra/update-run-record.js";
@@ -22,6 +24,7 @@ import {
   resolveInstalledCellBodyTimeoutMs,
   keys,
 } from "./schtasks.installed-package.test-support.js";
+import { runInstalledPublishedUpdateWithRecovery } from "./schtasks.installed-recovery.test-support.js";
 
 const temporary = useAutoCleanupTempDirTracker(afterEach);
 const candidateCheckNames = [
@@ -442,6 +445,88 @@ describe("published installed update progress", () => {
     vi.useRealTimers();
   });
 
+  it.each(["aborted", "unjoined", "transport", "capped", "succeeded", "missing-run"] as const)(
+    "refuses explicit recovery before effects for %s work",
+    async (kind) => {
+      const task = installedTask();
+      const controller = new AbortController();
+      const aborted = new Error("Fixture body cancelled");
+      if (kind === "aborted") {
+        controller.abort(aborted);
+      }
+      vi.spyOn(updateRunReader, "listUpdateRunsAsync").mockResolvedValue(
+        kind === "transport" ? [recordedRun([])] : [],
+      );
+      const prepare = vi
+        .spyOn(installedArtifact, "prepareInstalledPackage")
+        .mockRejectedValue(new Error("Recovery must not inspect the candidate"));
+      const originalFailure = new Error("Original published failure");
+      const command = vi.spyOn(installedCommand, "run").mockRejectedValue(originalFailure);
+      const readStatus =
+        vi.fn<
+          Parameters<typeof runInstalledPublishedUpdateWithRecovery>[0]["recovery"]["readStatus"]
+        >();
+      const observations: Record<string, unknown> = {};
+      const pending = runInstalledPublishedUpdateWithRecovery({
+        task,
+        input,
+        inputPath: "C:\\synthetic-input.json",
+        key: "2026.9.4",
+        commands: [
+          {
+            args: [task.entry, "--profile", task.profile, "update", "--yes"],
+            launcherPid: 1234,
+            beforeCleanup: "dead",
+            code: kind === "succeeded" ? 0 : 1,
+            managedResult: kind === "transport" ? null : 1,
+            signal: null,
+            joined: kind !== "unjoined",
+            elapsedMs: kind === "capped" ? 360_000 : 1_000,
+          },
+        ],
+        signal: controller.signal,
+        observations,
+        recordProgress: vi.fn().mockResolvedValue(undefined),
+        recovery: {
+          selected: task,
+          peer: task,
+          configBefore: Buffer.from("{}"),
+          peerXml: "",
+          peerConfig: Buffer.from("{}"),
+          peerInstallBefore: { sha256: "synthetic", files: 0 },
+          peerIdentity: { version: "synthetic", buildId: "synthetic" },
+          peerPid: 1234,
+          awaitReadiness: vi.fn().mockResolvedValue(undefined),
+          readStatus,
+        },
+      });
+      const failure: unknown = await pending.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      const failures = collectNestedErrorCandidates(failure);
+      expect(failures).toContain(originalFailure);
+      if (kind === "aborted") {
+        expect(failures).toContain(aborted);
+      } else {
+        const message = {
+          unjoined: "Recovery requires joined commands",
+          transport: "Recovery requires a normal managed command return",
+          capped: "Recovery observation requires an uncapped failure",
+          succeeded: "Recovery observation requires a failed published command",
+          "missing-run": "Recovery requires the original recorded update run",
+        }[kind];
+        expect(
+          failures.some((error) => error instanceof Error && error.message.includes(message)),
+        ).toBe(true);
+      }
+      expect(command).toHaveBeenCalledTimes(1);
+      expect(readStatus).not.toHaveBeenCalled();
+      expect(prepare).not.toHaveBeenCalled();
+      expect(observations).toEqual({});
+    },
+  );
+
   it.each(["ready", "aborted", "unjoined", "failed-status"] as const)(
     "keeps post-failure status on the selected context and admitted lifetime (%s)",
     async (kind) => {
@@ -466,6 +551,7 @@ describe("published installed update progress", () => {
                 launcherPid: 1234,
                 beforeCleanup: "indeterminate",
                 code: 1,
+                managedResult: null,
                 signal: null,
                 joined: false,
                 elapsedMs: 360_000,
@@ -504,7 +590,7 @@ describe("published installed update progress", () => {
           commands,
           0,
           controller.signal,
-          { observeService: "status" },
+          { observeCommand: "status" },
         );
       }
     },

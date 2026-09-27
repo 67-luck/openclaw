@@ -6,6 +6,66 @@ import { installedStatusSchema } from "./schtasks.installed-package.test-support
 
 const temporary = useAutoCleanupTempDirTracker(afterEach);
 
+it.each([0, 1])(
+  "retains a sanitized repair deferral before exit or semantic rejection (exit=%s)",
+  async (exitCode) => {
+    const root = temporary.make("schtasks-repair-observation-");
+    const records: CommandRecord[] = [];
+    const secret = "synthetic-repair-credential-do-not-report";
+    const payload = {
+      status: exitCode === 0 ? "warning" : "error",
+      mode: "finalize",
+      deferred: true,
+      reason: "maintenance-owner-active",
+      message: "Wait for the recorded owner to settle. token=" + secret,
+      config: { token: secret },
+      auth: { token: secret },
+      postUpdate: { doctor: { warnings: ["token=" + secret] } },
+    };
+    const command = run(
+      [
+        "-e",
+        "process.stdout.write(process.env.FIXTURE_JSON); process.exitCode = Number(process.env.FIXTURE_EXIT);",
+      ],
+      {
+        SystemRoot: process.env.SystemRoot,
+        WINDIR: process.env.WINDIR,
+        FIXTURE_JSON: JSON.stringify(payload),
+        FIXTURE_EXIT: String(exitCode),
+      },
+      root,
+      records,
+      0,
+      undefined,
+      { observeCommand: "repair" },
+    );
+    if (exitCode === 0) {
+      const response = JSON.parse(await command);
+      expect(response.deferred).toBe(true);
+      expect(response.reconciledRuns).toBeUndefined();
+    } else {
+      await expect(command).rejects.toThrow();
+    }
+    expect(records[0]).toMatchObject({
+      code: exitCode,
+      managedResult: exitCode,
+      joined: true,
+      repairOutput: {
+        kind: "repair",
+        status: payload.status,
+        mode: "finalize",
+        deferred: true,
+        reason: "maintenance-owner-active",
+      },
+    });
+    const observation = JSON.stringify(records[0]?.repairOutput);
+    expect(observation).toContain("Wait for the recorded owner to settle");
+    expect(observation).not.toContain(secret);
+    expect(observation).not.toContain('"config"');
+    expect(observation).not.toContain('"auth"');
+  },
+);
+
 it.each(
   (["stdout", "stderr"] as const).flatMap((stream) =>
     [false, true].map((coloredLabel) => ({ stream, coloredLabel })),
@@ -219,7 +279,7 @@ it("retains safe native and RPC facts before an exit-zero status fails semantic 
     records,
     0,
     undefined,
-    { observeService: "status", expectedStderr: [secret] },
+    { observeCommand: "status", expectedStderr: [secret] },
   );
   expect(() => installedStatusSchema.parse(JSON.parse(stdout))).toThrow();
   expect(records[0]).toMatchObject({
@@ -282,7 +342,7 @@ it("retains bounded sanitized install outcome without private response fields", 
     records,
     0,
     undefined,
-    { observeService: "install" },
+    { observeCommand: "install" },
   );
   expect(JSON.parse(stdout).ok).toBe(true);
   expect(records[0]?.serviceOutput).toMatchObject({
