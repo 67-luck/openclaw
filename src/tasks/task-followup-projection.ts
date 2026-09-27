@@ -8,7 +8,7 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { CreatedDetachedTaskRun } from "./detached-task-runtime-contract.js";
-import { captureTaskCancellationControl } from "./task-cancellation-context.js";
+import { captureTaskCancellationControl } from "./task-cancellation-context-state.js";
 import { mapAgentRunTerminalOutcomeToTaskStatus } from "./task-registry-common.js";
 import type { TaskRecord } from "./task-registry.types.js";
 import { getTaskRunOwner } from "./task-run-owner.js";

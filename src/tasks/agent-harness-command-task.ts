@@ -13,7 +13,7 @@ import {
 } from "./detached-task-runtime-contract.js";
 import { captureDetachedTaskRuntimeOwner } from "./detached-task-runtime-state.js";
 import { prepareRunningTaskRun } from "./detached-task-runtime.js";
-import { captureTaskCancellationControl } from "./task-cancellation-context.js";
+import { captureTaskCancellationControl } from "./task-cancellation-context-state.js";
 import { backgroundCommandTaskSummary } from "./task-content.js";
 import { getTaskById } from "./task-registry-query.js";
 import {

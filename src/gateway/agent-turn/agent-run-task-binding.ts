@@ -7,7 +7,7 @@ import {
 import type { SubsystemLogger } from "../../logging/subsystem.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { getTaskById } from "../../tasks/runtime-internal.js";
-import { captureTaskCancellationControl } from "../../tasks/task-cancellation-context.js";
+import { captureTaskCancellationControl } from "../../tasks/task-cancellation-context-state.js";
 import { bindTaskFlowExecution } from "../../tasks/task-flow-registry.store.sqlite.js";
 import { bindTaskRunExecution } from "../../tasks/task-registry.store.sqlite.js";
 import type { TaskRecord } from "../../tasks/task-registry.types.js";

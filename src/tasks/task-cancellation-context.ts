@@ -1,30 +1,19 @@
-import { AsyncLocalStorage } from "node:async_hooks";
-import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { readTaskBackingInstance, sameTaskBackingInstance } from "./task-backing-records.js";
+import {
+  taskCancellationContexts as contexts,
+  type TaskCancellationContext,
+  type TaskCancellationControl,
+  type TaskCancellationTarget,
+} from "./task-cancellation-context-state.js";
 import { captureTaskCancellationSelection } from "./task-cancellation-selection.capture.js";
 import { matchesTaskCancellationCreatedAt } from "./task-cancellation-selection.js";
 import type { TaskRecord } from "./task-registry.types.js";
 
-export type TaskCancellationTarget = Readonly<
-  Pick<TaskRecord, "taskId" | "scopeKind" | "ownerKey" | "requesterAgentId">
->;
-
-export type TaskCancellationControl = {
-  prepareRead?: () => Promise<void> | undefined;
-  assertCurrent: () => void;
-};
-
-type TaskCancellationContext = {
-  isActive: () => boolean;
-  assertSelected: (task: TaskRecord | undefined) => void;
-  assertCurrent: (task: TaskCancellationTarget) => void;
-  prepareRead: () => Promise<void> | undefined;
-};
-
-const contexts = resolveGlobalSingleton(Symbol.for("openclaw.taskCancellationContext"), () => ({
-  caller: new AsyncLocalStorage<TaskCancellationContext>(),
-  prepared: new AsyncLocalStorage<TaskCancellationControl>(),
-}));
+export {
+  captureTaskCancellationControl,
+  type TaskCancellationControl,
+  type TaskCancellationTarget,
+} from "./task-cancellation-context-state.js";
 
 /** Carry caller authority through runtime handoffs without extending the public cancel request. */
 export async function withTaskCancellationContext<T>(
@@ -131,8 +120,4 @@ export function withTaskCancellationControl<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
   return control ? contexts.prepared.run(control, operation) : operation();
-}
-
-export function captureTaskCancellationControl(): TaskCancellationControl | undefined {
-  return contexts.prepared.getStore();
 }

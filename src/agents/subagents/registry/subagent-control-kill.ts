@@ -13,7 +13,7 @@ import { SUBAGENT_KILL_TASK_ERROR } from "../../../tasks/detached-task-runtime-c
 import {
   captureTaskCancellationControl,
   type TaskCancellationControl,
-} from "../../../tasks/task-cancellation-context.js";
+} from "../../../tasks/task-cancellation-context-state.js";
 import type {
   SubagentAdminKillResult,
   SubagentAdminKillParams,

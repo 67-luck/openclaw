@@ -1,6 +1,6 @@
 /** Cancellation path for active ACP turns and idle runtime handles. */
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { captureTaskCancellationControl } from "../../tasks/task-cancellation-context.js";
+import { captureTaskCancellationControl } from "../../tasks/task-cancellation-context-state.js";
 import {
   AcpRuntimeError,
   toAcpRuntimeError,
