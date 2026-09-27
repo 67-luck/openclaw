@@ -88,8 +88,9 @@ describe("Lobsterdex coloring artwork", () => {
             );
           }
           if (palette.id === "portal") {
-            expect(light.svg.querySelector("ellipse")?.getAttribute("stroke")).toBe(
-              "rgb(74, 157, 248)",
+            expect(light.svg.querySelector("ellipse")?.getAttribute("stroke")).toBe("black");
+            expect(light.svg.querySelector('path[d^="M31 30"]')?.getAttribute("fill")).toBe(
+              "rgb(176, 67, 47)",
             );
           }
         } finally {
@@ -103,6 +104,76 @@ describe("Lobsterdex coloring artwork", () => {
         document.documentElement.removeAttribute("data-theme-mode");
       } else {
         document.documentElement.setAttribute("data-theme-mode", previous);
+      }
+    }
+  });
+  it("keeps every guide's geometry and opaque black linework identical to its blank sheet", () => {
+    const linework = (svg: SVGSVGElement) => {
+      const view = svg.ownerDocument.defaultView!;
+      return [
+        ...svg.querySelectorAll<SVGElement>("path,rect,circle,ellipse,polygon,polyline,line,text"),
+      ]
+        .filter((shape) => {
+          for (let node: Element | null = shape; node; node = node.parentElement) {
+            if (view.getComputedStyle(node).display === "none") {
+              return false;
+            }
+          }
+          return true;
+        })
+        .map((shape) => {
+          const paint = view.getComputedStyle(shape);
+          let opacity = 1;
+          for (let node: Element | null = shape; node; node = node.parentElement) {
+            opacity *= Number(view.getComputedStyle(node).opacity);
+          }
+          return {
+            tag: shape.localName,
+            geometry: [...shape.attributes]
+              .filter((attr) =>
+                [
+                  "d",
+                  "points",
+                  "x",
+                  "y",
+                  "cx",
+                  "cy",
+                  "r",
+                  "rx",
+                  "ry",
+                  "width",
+                  "height",
+                  "transform",
+                ].includes(attr.name),
+              )
+              .map((attr) => [attr.name, attr.value])
+              .toSorted(([a], [b]) => a!.localeCompare(b!)),
+            stroke: paint.stroke,
+            width: paint.strokeWidth,
+            linecap: paint.strokeLinecap,
+            linejoin: paint.strokeLinejoin,
+            dash: paint.strokeDasharray,
+            opacity: opacity * Number(paint.strokeOpacity),
+            empty: paint.fill === "none",
+          };
+        });
+    };
+    for (const palette of LOBSTER_PET_PALETTES) {
+      const blank = createColoringArt(palette, "outline");
+      const guide = createColoringArt(palette, "color");
+      try {
+        const coloredLines = linework(guide.svg);
+        expect(coloredLines, palette.id).toEqual(linework(blank.svg));
+        expect(guide.svg.getAttribute("viewBox"), palette.id).toBe(
+          blank.svg.getAttribute("viewBox"),
+        );
+        expect(
+          coloredLines.every((line) => line.stroke === "rgb(0, 0, 0)" && line.opacity === 1),
+          palette.id,
+        ).toBe(true);
+      } finally {
+        blank.dispose();
+        guide.dispose();
       }
     }
   });
