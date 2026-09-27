@@ -133,6 +133,11 @@ describe("createComputerTool node resolution", () => {
       expect(schema.properties).not.toHaveProperty(selector);
     }
 
+    await expect(tool.execute("invalid-click", { action: "left_click" })).rejects.toThrow(
+      "coordinate [x, y] required for left_click",
+    );
+    expect(resolveNode).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
     const screenshot = await tool.execute("observe", { action: "wait", duration: 0 });
     expect(sleepMock).toHaveBeenCalledWith(0, undefined);
     expect(screenshot.details).toMatchObject({ node: "session-desktop" });
