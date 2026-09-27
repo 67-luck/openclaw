@@ -52,6 +52,7 @@ import { logMessageQueuedWithBacklogPolicy } from "../../logging/diagnostic-runt
 import { diagnosticLogger as diag, logSessionStateChange } from "../../logging/diagnostic.js";
 import { hasPromptImageInput } from "../../media/prompt-image-input.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
 import { QuestionAnswerUnconfirmedError } from "../harness/gateway-question-dispatch.js";
 import { resolveSessionPlacementForcedTerminalSettlement } from "../session-placement-forced-terminal-settlement.js";
@@ -82,6 +83,11 @@ import {
   type EmbeddedRunWaiter,
   type EmbeddedAgentQueueFailureReason,
 } from "./run-state.js";
+import {
+  canSteerEmbeddedRunDuringCompaction,
+  isEmbeddedRunHandleAbortable,
+  isEmbeddedRunHandleSupersedable,
+} from "./runs.probes.js";
 
 export type { EmbeddedAgentQueueHandle, EmbeddedAgentQueueMessageOptions } from "./run-state.js";
 
@@ -485,32 +491,6 @@ function resolveEmbeddedInjection(
   }
 }
 
-function isEmbeddedRunHandleAbortable(
-  sessionId: string,
-  handle: EmbeddedAgentQueueHandle,
-): boolean {
-  try {
-    return handle.isAbortable?.() !== false;
-  } catch (err) {
-    diag.warn(
-      `abort failed: sessionId=${sessionId} reason=abortable_check_failed err=${String(err)}`,
-    );
-    return false;
-  }
-}
-
-function isEmbeddedRunHandleSupersedable(runId: string, handle: EmbeddedAgentQueueHandle): boolean {
-  if (!isEmbeddedRunHandleAbortable(runId, handle)) {
-    return false;
-  }
-  try {
-    return handle.isStopped?.() !== true && handle.isAborted?.() !== true;
-  } catch (err) {
-    diag.warn(`supersede failed: runId=${runId} reason=lifecycle_check_failed err=${String(err)}`);
-    return false;
-  }
-}
-
 export function isEmbeddedAgentRunAbortableForRunId(runId: string): boolean {
   const normalizedRunId = runId.trim();
   if (!normalizedRunId) {
@@ -775,7 +755,7 @@ function prepareEmbeddedAgentQueueMessage(
     diag.debug(`queue message failed: sessionId=${sessionId} reason=stale_run`);
     return reject("stale_run");
   }
-  if (handle.isCompacting()) {
+  if (!canSteerEmbeddedRunDuringCompaction(sessionId, handle)) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=compacting`);
     return reject("compacting");
   }
@@ -902,10 +882,7 @@ export function abortEmbeddedAgentRun(
   });
   let aborted = false;
   for (const [id, handle] of ACTIVE_EMBEDDED_RUNS) {
-    if (replyOwnedSessionIds.has(id) || (mode === "compacting" && !handle.isCompacting())) {
-      continue;
-    }
-    if (!isEmbeddedRunHandleAbortable(id, handle)) {
+    if (replyOwnedSessionIds.has(id) || !isEmbeddedRunHandleAbortable(id, handle, mode)) {
       continue;
     }
     diag.debug(`aborting ${mode === "compacting" ? "compacting " : ""}run: sessionId=${id}`);
@@ -1382,20 +1359,14 @@ export async function abortAndDrainEmbeddedAgentRun(params: {
   ) {
     return { aborted: false, drained: false, forceCleared: false };
   }
-  let releaseStaleExpiryBarrier: (() => void) | undefined;
-  const staleExpiryBarrier =
-    params.reason === "stuck_recovery"
-      ? new Promise<void>((resolve) => {
-          releaseStaleExpiryBarrier = resolve;
-        })
-      : undefined;
+  const staleExpiryBarrier = params.reason === "stuck_recovery" ? createDeferredCore() : undefined;
   // Recovery is a staleness expiry: stamp run_stalled on the reply operation
   // BEFORE any handle abort, or the run loop's abort handler re-enters
   // abortByUser and misattributes the watchdog kill to the user.
   const expiredReplyRun =
     params.reason === "stuck_recovery" &&
     expireStaleReplyRunBySessionId(params.sessionId, "stuck_recovery", {
-      afterClearBarrier: staleExpiryBarrier,
+      afterClearBarrier: staleExpiryBarrier?.promise,
       followupAdmissionBarrierTimeout: settleMs + 1_000,
     });
   const stampedStaleReplyRun =
@@ -1461,7 +1432,7 @@ export async function abortAndDrainEmbeddedAgentRun(params: {
   } finally {
     // Queue drains registered on the stale owner must not start while its
     // backend can still claim the same session and requeue the adopted turn.
-    releaseStaleExpiryBarrier?.();
+    staleExpiryBarrier?.resolve();
   }
 }
 

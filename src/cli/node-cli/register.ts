@@ -11,6 +11,18 @@ import { addNodeCommandOptions, createNodeWorkerCommand } from "./command-option
 import { resolveNodeGatewayOptions, resolveNodePairGatewayOptions } from "./gateway-options.js";
 import { runNodeIdentityShow } from "./identity.js";
 
+function addNodeGatewayOptions(command: Command): Command {
+  return command
+    .option("--host <host>", "Gateway host")
+    .option("--port <port>", "Gateway port")
+    .option("--context-path <path>", "Gateway WebSocket context path (e.g. /openclaw-gw)")
+    .option("--tls", "Use TLS for the gateway connection")
+    .option("--no-tls", "Disable TLS for the gateway connection")
+    .option("--tls-fingerprint <sha256>", "Expected TLS certificate fingerprint (sha256)")
+    .option("--node-id <id>", "Override the generated node instance id")
+    .option("--display-name <name>", "Override node display name");
+}
+
 export function registerNodeCli(program: Command) {
   const node = addNodeCommandOptions(
     program.command("node").description("Run and manage the headless node host service"),
@@ -34,25 +46,21 @@ export function registerNodeCli(program: Command) {
     { hidden: true },
   );
 
-  addNodeCommandOptions(node.command("run").description("Run the headless node host (foreground)"))
-    .option(
-      "--pair <code-or-url>",
-      "Pair with a setup code or oc-pair URL; explicit gateway flags take precedence",
+  addNodeGatewayOptions(
+    addNodeCommandOptions(
+      node.command("run").description("Run the headless node host (foreground)"),
     )
-    .addOption(
-      new Option(
-        "--pair-if-needed <code-or-url>",
-        "Use the saved device token when available; otherwise pair with this setup code",
-      ).conflicts("pair"),
-    )
-    .option("--host <host>", "Gateway host")
-    .option("--port <port>", "Gateway port")
-    .option("--context-path <path>", "Gateway WebSocket context path (e.g. /openclaw-gw)")
-    .option("--tls", "Use TLS for the gateway connection")
-    .option("--no-tls", "Disable TLS for the gateway connection")
-    .option("--tls-fingerprint <sha256>", "Expected TLS certificate fingerprint (sha256)")
-    .option("--node-id <id>", "Override the generated node instance id")
-    .option("--display-name <name>", "Override node display name")
+      .option(
+        "--pair <code-or-url>",
+        "Pair with a setup code or oc-pair URL; explicit gateway flags take precedence",
+      )
+      .addOption(
+        new Option(
+          "--pair-if-needed <code-or-url>",
+          "Use the saved device token when available; otherwise pair with this setup code",
+        ).conflicts("pair"),
+      ),
+  )
     .option("--session-host", "Host worker sessions for this foreground process")
     .addOption(new Option("--ephemeral").hideHelp())
     .addOption(new Option("--desktop-sharing").hideHelp())
@@ -69,7 +77,11 @@ export function registerNodeCli(program: Command) {
       let gatewayOptions;
       try {
         const setupCode = opts.pair ?? opts.pairIfNeeded;
-        pair = setupCode ? resolveNodePairGatewayOptions(setupCode) : undefined;
+        pair = setupCode
+          ? resolveNodePairGatewayOptions(setupCode, {
+              allowExpired: opts.pairIfNeeded !== undefined,
+            })
+          : undefined;
         const existing = await loadNodeHostConfig();
         gatewayOptions = resolveNodeGatewayOptions(opts, existing, pair);
       } catch (error) {
@@ -99,6 +111,7 @@ export function registerNodeCli(program: Command) {
         gatewayCloudflareAccess: cloudflareAccess,
         gatewayCandidates,
         gatewayBootstrapToken: pair?.bootstrapToken,
+        gatewayBootstrapExpiresAtMs: pair?.expiresAtMs,
         preferGatewayBootstrapToken: opts.pair !== undefined,
         ...(opts.ephemeral === true || opts.sessionHost === true ? { forceWorkerRuns: true } : {}),
         ...(opts.ephemeral === true ? { ephemeral: true } : {}),
@@ -130,17 +143,13 @@ export function registerNodeCli(program: Command) {
       await runNodeIdentityShow(opts);
     });
 
-  addNodeCommandOptions(
-    node.command("install").description("Install the node host service (launchd/systemd/schtasks)"),
+  addNodeGatewayOptions(
+    addNodeCommandOptions(
+      node
+        .command("install")
+        .description("Install the node host service (launchd/systemd/schtasks)"),
+    ),
   )
-    .option("--host <host>", "Gateway host")
-    .option("--port <port>", "Gateway port")
-    .option("--context-path <path>", "Gateway WebSocket context path (e.g. /openclaw-gw)")
-    .option("--tls", "Use TLS for the gateway connection")
-    .option("--no-tls", "Disable TLS for the gateway connection")
-    .option("--tls-fingerprint <sha256>", "Expected TLS certificate fingerprint (sha256)")
-    .option("--node-id <id>", "Override the generated node instance id")
-    .option("--display-name <name>", "Override node display name")
     .option(
       "--share-installed-apps",
       "Share installed apps (macOS/Linux; enables Linux app-launch capability)",

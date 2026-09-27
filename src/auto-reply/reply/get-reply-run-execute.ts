@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { normalizeArrayBackedTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { resolveAgentConfig, resolveAgentRunCwd } from "../../agents/agent-scope-config.js";
 import {
   hasLegacyAutoFallbackWithoutOrigin,
@@ -59,6 +60,7 @@ import {
 import {
   buildChannelSourceTurnId,
   readChannelSourceTurnId,
+  resolveReplySourceTurnId,
   setChannelSourceTurnId,
   shouldMintChannelSourceTurnId,
 } from "./source-turn-id.js";
@@ -88,7 +90,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     queueKey,
     shouldSteer,
     shouldFollowup,
-    queueAdmissionState,
+    hasQueuedFollowups,
     isActive,
     authProfileId,
     authProfileIdSource,
@@ -386,6 +388,12 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
   });
   const followupRun = {
     prompt: queuedBody,
+    sourceTurnId: resolveReplySourceTurnId({
+      sourceTurnId,
+      admissionRunId: sourceMessageId,
+      ingressProvider: ctx.Provider ?? ctx.Surface ?? promptSessionCtx.Provider,
+      entry: preparedSessionState.sessionEntry,
+    }),
     personalBootstrapEligible,
     operatorAuthority: opts?.operatorAuthority,
     transcriptPrompt: transcriptCommandBody,
@@ -459,11 +467,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
         normalizeOptionalString(sessionCtx.GroupChannel) ??
         normalizeOptionalString(sessionCtx.GroupSubject),
       groupSpace: normalizeOptionalString(sessionCtx.GroupSpace),
-      memberRoleIds: Array.isArray(sessionCtx.MemberRoleIds)
-        ? sessionCtx.MemberRoleIds.map((roleId) => normalizeOptionalString(roleId)).filter(
-            (roleId): roleId is string => Boolean(roleId),
-          )
-        : undefined,
+      memberRoleIds: normalizeArrayBackedTrimmedStringList(sessionCtx.MemberRoleIds),
       // Parent lineage authenticates inherited group policy for queued CLI/MCP runs.
       spawnedBy: normalizeOptionalString(preparedSessionState.sessionEntry?.spawnedBy),
       senderId: normalizeOptionalString(sessionCtx.SenderId),
@@ -647,7 +651,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       resolvedQueue,
       shouldSteer,
       shouldFollowup,
-      queueAdmissionState,
+      hasQueuedFollowups,
       isActive,
       isRunActive: () => {
         const latestSessionState = resolvePreparedSessionState();
