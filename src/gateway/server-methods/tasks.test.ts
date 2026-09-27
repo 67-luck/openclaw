@@ -16,10 +16,7 @@ import { emitAgentEvent } from "../../infra/agent-events.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import * as taskRuntime from "../../tasks/runtime-internal.js";
-import {
-  markTaskTerminalById,
-  recordTaskProgressByRunId,
-} from "../../tasks/runtime-internal.js";
+import { markTaskTerminalById, recordTaskProgressByRunId } from "../../tasks/runtime-internal.js";
 import { reloadTaskRegistryFromStoreAsync } from "../../tasks/task-registry-state.js";
 import { configureTaskRegistryRuntime } from "../../tasks/task-registry.store.js";
 import { createTaskFixture } from "../../tasks/task-registry.test-support.js";
