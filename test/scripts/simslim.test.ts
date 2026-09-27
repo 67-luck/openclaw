@@ -163,12 +163,12 @@ describe.skipIf(process.platform === "win32")("simslim installer", () => {
 });
 
 describe.skipIf(process.platform === "win32")("iOS simulator preparation", () => {
-  it("applies and verifies the same conservative profile on the explicit simulator", () => {
+  it("finishes cold boot before applying and verifying the conservative profile", () => {
     const { result, commands } = runFixture("ios-simulator-prepare.sh");
     expect(result.status, result.stderr).toBe(0);
     expect(commands).toEqual([
-      { tool: "simslim", args: ["on", simulatorId, "--except", keptCategories] },
       { tool: "xcrun", args: ["simctl", "bootstatus", simulatorId, "-b"] },
+      { tool: "simslim", args: ["on", simulatorId, "--except", keptCategories] },
       { tool: "simslim", args: ["verify", simulatorId, "--except", keptCategories] },
     ]);
   });
@@ -197,8 +197,8 @@ describe.skipIf(process.platform === "win32")("iOS simulator preparation", () =>
   });
 
   it.each([
-    ["on", 1],
-    ["readiness", 2],
+    ["readiness", 1],
+    ["on", 2],
     ["verify", 3],
   ] as const)("preserves %s failure without subsequent calls", (failure, count) => {
     const { result, commands } = runFixture("ios-simulator-prepare.sh", { failure });
