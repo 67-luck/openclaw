@@ -1,4 +1,4 @@
-name: macOS native agent grouping before-after capture
+name: macOS native grouped candidate capture
 
 on:
   push:
@@ -6,7 +6,6 @@ on:
     paths:
       - .github/workflows/mac-narration-capture.yml
       - scripts/mac-narration-proof/**
-      - scripts/ios-agent-grouping.patch
       - scripts/test-ios-shell-gateway.mjs
 
 permissions:
@@ -19,18 +18,16 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        stage: [before, after]
+        stage: [after]
     runs-on: xcode-27
     timeout-minutes: 90
     env:
-      CANDIDATE_SHA: b9ae24aec6ad8ef987f904d3ed2fb748daac4892
-      BASELINE_SHA: b9ae24aec6ad8ef987f904d3ed2fb748daac4892
-      GROUPING_PATCH_SHA256: b80dff99f29e45f1ad887f7d882f2a2ec3fec1a9dee3426419a2e4b917cdb549
+      CANDIDATE_SHA: 75f97b5a11e467308c599417d11bf7d786449e2e
     steps:
       - name: Checkout exact product candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: b9ae24aec6ad8ef987f904d3ed2fb748daac4892
+          ref: 75f97b5a11e467308c599417d11bf7d786449e2e
           fetch-depth: 3
           persist-credentials: false
       - name: Checkout verification-only helpers
@@ -63,13 +60,11 @@ jobs:
           key: ${{ runner.os }}-swiftpm-${{ hashFiles('apps/macos/Package.resolved') }}
           restore-keys: |
             ${{ runner.os }}-swiftpm-
-      - name: Capture native Mac grouping comparison
-        env:
-          CAPTURE_STAGE: ${{ matrix.stage }}
+      - name: Capture exact native Mac candidate
         run: |
           /bin/bash .proof/scripts/mac-narration-proof/run.sh \
             "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/.proof" \
-            "$RUNNER_TEMP/mac-narration-capture" "$CAPTURE_STAGE"
+            "$RUNNER_TEMP/mac-narration-capture"
       - name: Upload native screenshots and XCTest evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

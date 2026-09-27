@@ -1,11 +1,10 @@
-name: Apple grouping focused regression proof
+name: Apple grouping focused GREEN proof
 
 on:
   push:
     branches: [roboclaw/ios-narration-proof-156944]
     paths:
       - .github/workflows/ios-narration-check.yml
-      - scripts/native-grouping-regressions/**
 
 permissions:
   contents: read
@@ -15,35 +14,18 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 60
     env:
-      CANDIDATE_SHA: b9ae24aec6ad8ef987f904d3ed2fb748daac4892
-      GROUPING_PATCH_SHA256: b80dff99f29e45f1ad887f7d882f2a2ec3fec1a9dee3426419a2e4b917cdb549
+      CANDIDATE_SHA: 75f97b5a11e467308c599417d11bf7d786449e2e
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: b9ae24aec6ad8ef987f904d3ed2fb748daac4892
+          ref: 75f97b5a11e467308c599417d11bf7d786449e2e
           persist-credentials: false
-      - name: Checkout verification-only helpers
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-          path: .proof
-          persist-credentials: false
-      - name: Pin original prototype and transplant regression tests only
+      - name: Pin exact integrated product source
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
-          test "$(shasum -a 256 .proof/scripts/ios-agent-grouping.patch | awk '{print $1}')" = "$GROUPING_PATCH_SHA256"
-          git apply --index .proof/scripts/ios-agent-grouping.patch
-          # Neutral relocation exposes the existing display merger; it does not repair it.
-          cp .proof/scripts/native-grouping-regressions/ChatTranscriptRows.swift apps/shared/OpenClawKit/Sources/OpenClawChatUI/
-          git add apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatTranscriptRows.swift
           mkdir -p "$RUNNER_TEMP/grouping-regressions"
-          { git rev-parse HEAD; git write-tree; } > "$RUNNER_TEMP/grouping-regressions/source-identity.txt"
-          cp .proof/scripts/native-grouping-regressions/ChatAssistantRunGroupTests.swift apps/shared/OpenClawKit/Tests/OpenClawKitTests/
-          git add --intent-to-add apps/shared/OpenClawKit/Tests/OpenClawKitTests/ChatAssistantRunGroupTests.swift
-          git apply .proof/scripts/native-grouping-regressions/settlement-test.patch
-          git diff --exit-code -- apps/shared/OpenClawKit/Sources
-          git diff -- apps/shared/OpenClawKit/Tests > "$RUNNER_TEMP/grouping-regressions/tests-only.patch"
+          { git rev-parse HEAD; git rev-parse HEAD^{tree}; } > "$RUNNER_TEMP/grouping-regressions/source-identity.txt"
           source scripts/lib/swift-toolchain.sh
           select_xcode_toolchain 27.0
           { xcodebuild -version; swift --version; } > "$RUNNER_TEMP/grouping-regressions/toolchain.txt"
@@ -53,28 +35,50 @@ jobs:
           install-bun: "false"
           install-deps: "false"
           cache-mode: "off"
+      - name: Check changed shared Swift files with pinned native tools
+        run: |
+          set -euo pipefail
+          scripts/install-swift-tools.sh "$RUNNER_TEMP/apple-tools/bin"
+          files=(
+            apps/ios/Sources/Design/ChatProTab.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatAssistantRunGroup.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatCompletedWork.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatCompletedWorkDisclosure.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatMessageViews.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatModels.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatNarration.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatToolActivityViews.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatTranscriptRows.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatView.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatViewModel+HistoryReconciliation.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatViewModel+RunSnapshot.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatViewModel+SessionActions.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatViewModel+ToolActivity.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatViewModel+TranscriptCache.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatViewModel+TransportEvents.swift
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatViewModel.swift
+            apps/shared/OpenClawKit/Tests/OpenClawKitTests/ChatAssistantRunGroupTests.swift
+            apps/shared/OpenClawKit/Tests/OpenClawKitTests/ChatStreamReplayTests.swift
+            apps/shared/OpenClawKit/Tests/OpenClawKitTests/ChatViewModelSessionActionTests.swift
+          )
+          "$RUNNER_TEMP/apple-tools/bin/swiftformat" --lint "${files[@]}" --config config/swiftformat --unexclude apps/shared/OpenClawKit,apps/ios
+          PATH="$RUNNER_TEMP/apple-tools/bin:$PATH" node scripts/run-swiftlint.mts --strict --config apps/ios/.swiftlint.yml "${files[@]}"
       - name: Prepare native renderer resources
         run: |
           pnpm install --frozen-lockfile --prefer-offline --optional --filter '@openclaw/mermaid-renderer...' --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true
           node scripts/prepare-apple-mermaid.mjs
-      - name: Require settlement and display regressions to fail on the original prototype
+      - name: Verify grouping settlement and sibling transcript behavior
         run: |
           set -euo pipefail
           status=0
-          /usr/bin/time -p swift test --package-path apps/shared/OpenClawKit --filter 'ChatAssistantRunGroupTests|ChatStreamReplayTests' > "$RUNNER_TEMP/grouping-regressions/red-tests.log" 2>&1 || status=$?
-          tail -n 150 "$RUNNER_TEMP/grouping-regressions/red-tests.log"
-          test "$status" -ne 0
-          grep -F 'settled history retires unsaved narration without erasing live or lagging work' "$RUNNER_TEMP/grouping-regressions/red-tests.log"
-          grep -E 'recorded tool results merge across narration.*Expectation failed:.*rows.count' "$RUNNER_TEMP/grouping-regressions/red-tests.log"
-          boundary_line="$(awk '/#expect\(groups.contains/ {print NR}' apps/shared/OpenClawKit/Tests/OpenClawKitTests/ChatAssistantRunGroupTests.swift)"
-          [[ "$boundary_line" =~ ^[0-9]+$ ]]
-          grep -E "input boundaries split repeated run IDs.*ChatAssistantRunGroupTests.swift:${boundary_line}:[0-9]+: Expectation failed:" "$RUNNER_TEMP/grouping-regressions/red-tests.log"
-          grep -E 'settled history retires unsaved narration.*Expectation failed: !.*hasNarration' "$RUNNER_TEMP/grouping-regressions/red-tests.log"
-          git diff --exit-code -- apps/shared/OpenClawKit/Sources
+          /usr/bin/time -p swift test --package-path apps/shared/OpenClawKit --filter 'ChatAssistantRunGroupTests|ChatStreamReplayTests|ChatCompletedWorkTests|ChatTranscriptRowTests|ChatViewModelSessionActionTests' > "$RUNNER_TEMP/grouping-regressions/green-tests.log" 2>&1 || status=$?
+          tail -n 150 "$RUNNER_TEMP/grouping-regressions/green-tests.log"
+          test "$status" -eq 0
+          git diff --exit-code -- apps/shared/OpenClawKit/Sources apps/shared/OpenClawKit/Tests
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: apple-grouping-red-regressions
+          name: apple-grouping-green-regressions
           path: ${{ runner.temp }}/grouping-regressions
           if-no-files-found: error
           retention-days: 7

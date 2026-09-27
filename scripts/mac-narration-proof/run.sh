@@ -5,13 +5,8 @@ set -euo pipefail
 source_repo="$(cd "$1" && pwd)"
 proof_repo="$(cd "$2" && pwd)"
 output="$3"
-stage="$4"
-[[ "$stage" == before || "$stage" == after ]]
-[[ "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ && "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
-[[ "$BASELINE_SHA" == "$CANDIDATE_SHA" ]]
-[[ "${GROUPING_PATCH_SHA256:-}" =~ ^[0-9a-f]{64}$ ]]
-grouping_patch="$proof_repo/scripts/ios-agent-grouping.patch"
-test "$(shasum -a 256 "$grouping_patch" | awk '{print $1}')" = "$GROUPING_PATCH_SHA256"
+stage=after
+[[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
 mkdir -p "$output"
 scratch="$(mktemp -d "$RUNNER_TEMP/mac-narration.XXXXXX")"
 fixture_pid=""
@@ -24,19 +19,15 @@ cleanup() {
 }
 trap cleanup EXIT
 revision="$CANDIDATE_SHA"
-[[ "$stage" == after ]] || revision="$BASELINE_SHA"
 test "$(git -C "$source_repo" rev-parse HEAD)" = "$CANDIDATE_SHA"
 git -C "$source_repo" cat-file -e "$revision^{commit}"
 checkout="$scratch/product"
 git -C "$source_repo" worktree add --detach "$checkout" "$revision"
-if [[ "$stage" == after ]]; then
-  git -C "$checkout" apply --index "$grouping_patch"
-fi
 # Freeze all product bytes, including new files. Helpers cannot mutate native sources.
 expected_tree="$(git -C "$checkout" write-tree)"
 {
   printf 'Product revision: %s\nStage: %s\nProof revision: %s\n' "$revision" "$stage" "$(git -C "$proof_repo" rev-parse HEAD)"
-  printf 'Grouping patch SHA256: %s\nSource tree: %s\n' "$GROUPING_PATCH_SHA256" "$expected_tree"
+  printf 'Source tree: %s\n' "$expected_tree"
   sw_vers
   xcodebuild -version
   swift --version

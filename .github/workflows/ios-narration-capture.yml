@@ -6,7 +6,6 @@ on:
     paths:
       - .github/workflows/ios-narration-capture.yml
       - scripts/test-ios-narration-proof.sh
-      - scripts/ios-agent-grouping.patch
       - scripts/test-ios-shell-gateway.mjs
       - apps/ios/UITests/OpenClawSnapshotUITests.swift
 
@@ -26,15 +25,13 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 120
     env:
-      CANDIDATE_SHA: b9ae24aec6ad8ef987f904d3ed2fb748daac4892
-      BASELINE_SHA: b9ae24aec6ad8ef987f904d3ed2fb748daac4892
-      GROUPING_PATCH_SHA256: b80dff99f29e45f1ad887f7d882f2a2ec3fec1a9dee3426419a2e4b917cdb549
+      CANDIDATE_SHA: 75f97b5a11e467308c599417d11bf7d786449e2e
       DEVICE_FAMILY: ${{ matrix.device }}
     steps:
       - name: Checkout exact product candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: b9ae24aec6ad8ef987f904d3ed2fb748daac4892
+          ref: 75f97b5a11e467308c599417d11bf7d786449e2e
           fetch-depth: 3
           persist-credentials: false
       - name: Checkout verification-only helpers
@@ -59,7 +56,6 @@ jobs:
         run: |
           set -euo pipefail
           scripts/install-xcodegen.sh "$RUNNER_TEMP/ios-tools/bin"
-          scripts/install-swift-tools.sh "$RUNNER_TEMP/ios-tools/bin"
           echo "$RUNNER_TEMP/ios-tools/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.cargo/bin:$PATH"
           toolchain="$(awk -F '"' '/^channel =/ { print $2; exit }' apps/shared/OpenClawWatchRTC/rust-toolchain.toml)"
@@ -69,14 +65,11 @@ jobs:
           config="$RUNNER_TEMP/ios-simulator.xcconfig"
           printf 'ARCHS = %s\nCOMPILER_INDEX_STORE_ENABLE = NO\n' "$(uname -m)" > "$config"
           echo "XCODE_XCCONFIG_FILE=$config" >> "$GITHUB_ENV"
-      - name: Compare current PR and grouped iPhone interaction
-        env:
-          CAPTURE_STAGE: ${{ matrix.stage }}
+      - name: Capture exact grouped mobile candidate
         run: |
           bash .proof/scripts/test-ios-narration-proof.sh \
             "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/.proof" \
-            "$RUNNER_TEMP/ios-narration-capture" "$BASELINE_SHA" "$CANDIDATE_SHA" "$CAPTURE_STAGE" "$DEVICE_FAMILY" \
-            "$GITHUB_WORKSPACE/.proof/scripts/ios-agent-grouping.patch"
+            "$RUNNER_TEMP/ios-narration-capture" "$CANDIDATE_SHA" "$DEVICE_FAMILY"
       - name: Upload raw native evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
