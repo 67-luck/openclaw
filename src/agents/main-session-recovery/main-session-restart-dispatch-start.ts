@@ -1,6 +1,7 @@
 import type { AgentTurnStartOwner } from "../../gateway/agent-turn/internal-facade.types.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
 import type { AgentRunRequest } from "../../gateway/server-methods/agent-request-types.js";
+import type { RestartRequesterLease } from "../../gateway/session-restart-requester-restore.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 
 const RESTART_RECOVERY_START_OBSERVATION_MS = 10_000;
@@ -36,6 +37,7 @@ export type RestartRecoveryDispatchStartOutcome =
 export async function dispatchRestartRecoveryUntilStarted(params: {
   agentParams: AgentRunRequest;
   gatewayRuntime: GatewayRecoveryRuntime;
+  requesterLease?: RestartRequesterLease;
   onSettled?: () => void;
 }): Promise<RestartRecoveryDispatchStartOutcome> {
   let dispatchAccepted = false;
@@ -106,6 +108,12 @@ export async function dispatchRestartRecoveryUntilStarted(params: {
       params.agentParams,
       undefined,
       {
+        ...(params.requesterLease
+          ? {
+              operatorAuthority: params.requesterLease.authority,
+              assertAdmissionCurrent: params.requesterLease.assertAdmissionCurrent,
+            }
+          : {}),
         expectFinal: true,
         onAccepted: () => {
           dispatchAccepted = true;

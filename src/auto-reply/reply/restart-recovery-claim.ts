@@ -101,6 +101,7 @@ export async function retireTerminalRestartRecoverySourceClaim(params: {
 export function createReplyRestartRecoveryClaimController(params: {
   agentId: string;
   admissionRunId?: unknown;
+  assertEntryCurrent?: (entry: SessionEntry) => void;
   lifecycleGeneration: string | undefined;
   getEntry: () => SessionEntry | undefined;
   getSessionId: () => string;
@@ -140,6 +141,7 @@ export function createReplyRestartRecoveryClaimController(params: {
     sessionKey: string;
     storePath: string;
   }): Promise<SessionEntry> => {
+    params.assertEntryCurrent?.(options.entry);
     const expectedSessionState = buildRestartRecoveryExpectedState(options.entry);
     if (options.recorder && !options.recorder.hasPersisted()) {
       const result = await options.recorder.persistApproved({
@@ -215,6 +217,7 @@ export function createReplyRestartRecoveryClaimController(params: {
     if (!entry || entry.sessionId !== sessionId || params.getSessionId() !== sessionId) {
       throw new Error("session changed before durable user-turn admission");
     }
+    params.assertEntryCurrent?.(entry);
     const admissionRunId = normalizeOptionalString(params.admissionRunId);
     const sourceTurnId = normalizeOptionalString(params.sourceTurnId);
     const activeClaimRunId = normalizeOptionalString(entry.restartRecoveryDeliveryRunId);

@@ -1,5 +1,6 @@
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
 import type { AgentRunRequest } from "../../gateway/server-methods/agent-request-types.js";
+import type { RestartRequesterLease } from "../../gateway/session-restart-requester-restore.js";
 import { hasLiveAgentRunContext } from "../../infra/agent-run-registry.js";
 import { sleepWithAbort } from "../../infra/backoff.js";
 import type { MainSessionRecoveryCapacity } from "./main-session-recovery-capacity.js";
@@ -12,6 +13,7 @@ export async function dispatchRestartRecoveryWithinCapacity(params: {
   agentParams: AgentRunRequest;
   capacity?: MainSessionRecoveryCapacity;
   gatewayRuntime: GatewayRecoveryRuntime;
+  requesterLease?: RestartRequesterLease;
   onSettled?: () => void;
   beginDispatch: () => boolean;
   shouldContinue: () => boolean;
@@ -40,6 +42,7 @@ export async function dispatchRestartRecoveryWithinCapacity(params: {
     const outcome = await dispatchRestartRecoveryUntilStarted({
       agentParams: params.agentParams,
       gatewayRuntime: params.gatewayRuntime,
+      requesterLease: params.requesterLease,
       onSettled,
     });
     if (outcome.kind !== "started") {

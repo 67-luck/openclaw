@@ -211,22 +211,30 @@ export function installSessionToolResultGuard(
       options?: AppendMessageOptions,
     ) => T,
   ): T =>
-    withRuntimeUserTurnTranscriptRecorder(request.message, (beforeFreshMessageCommit) => {
-      const appendOptions =
-        opts?.config || beforeFreshMessageCommit
-          ? copyCodeModeSourceAppendOptions(request.options, {
-              ...request.options,
-              ...(opts?.config ? { config: opts.config } : {}),
-              ...(beforeFreshMessageCommit ? { beforeFreshMessageCommit } : {}),
-            })
-          : request.options;
-      return append(
-        request.message as never,
-        request.sourceAppend
-          ? prepareCodeModeSourceAppend(appendOptions ?? {}, request.message, request.sourceAppend)
-          : appendOptions,
-      );
-    });
+    withRuntimeUserTurnTranscriptRecorder(
+      request.message,
+      (beforeFreshMessageCommit, restartRecoveryRequester) => {
+        const appendOptions =
+          opts?.config || beforeFreshMessageCommit || restartRecoveryRequester
+            ? copyCodeModeSourceAppendOptions(request.options, {
+                ...request.options,
+                ...(opts?.config ? { config: opts.config } : {}),
+                ...(restartRecoveryRequester ? { restartRecoveryRequester } : {}),
+                ...(beforeFreshMessageCommit ? { beforeFreshMessageCommit } : {}),
+              })
+            : request.options;
+        return append(
+          request.message as never,
+          request.sourceAppend
+            ? prepareCodeModeSourceAppend(
+                appendOptions ?? {},
+                request.message,
+                request.sourceAppend,
+              )
+            : appendOptions,
+        );
+      },
+    );
   const runSync = <T>(operation: Generator<AppendRequest, T, AppendReceipt>): T => {
     let next = operation.next();
     while (!next.done) {

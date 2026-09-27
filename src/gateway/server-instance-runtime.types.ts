@@ -1,4 +1,5 @@
 import type { AgentWaitParams } from "../../packages/gateway-protocol/src/index.js";
+import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import type { RuntimeContextFragment } from "../agents/internal-runtime-context.js";
 import type { SubagentCompletionToolHandoffRegistration } from "../agents/subagents/announce/subagent-announce-handoff.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -11,6 +12,8 @@ import type {
 import type { AgentRunRequest } from "./server-methods/agent-request-types.js";
 
 export type GatewayInstanceAgentDispatchOptions = {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
+  assertAdmissionCurrent?: () => void;
   allowModelOverride?: boolean;
   allowSyntheticModelOverride?: boolean;
   allowSyntheticCronRunContinuation?: boolean;

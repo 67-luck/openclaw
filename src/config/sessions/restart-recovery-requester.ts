@@ -15,6 +15,17 @@ const requesterSchema = z.strictObject({
   aliasBindingIds: z.array(z.uuid()).max(128),
   role: identifier.nullable(),
   rolePolicy: z.string().max(32 * 1024),
+  authPolicy: z.string().max(32 * 1024),
+  device: z
+    .strictObject({ deviceId: identifier, identity: z.string().regex(/^[a-f0-9]{64}$/) })
+    .nullable(),
+  browserOrigin: z
+    .strictObject({
+      requestHost: z.string().max(4096).optional(),
+      origin: z.string().max(4096).optional(),
+      isLocalClient: z.boolean().optional(),
+    })
+    .nullable(),
   modelPolicyMembership: z
     .string()
     .min(1)

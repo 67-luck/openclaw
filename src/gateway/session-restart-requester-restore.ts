@@ -12,7 +12,10 @@ import {
   normalizeRestartRecoveryRequester,
   type RestartRecoveryRequester,
 } from "../config/sessions/restart-recovery-requester.js";
+import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { getPublishedPairedOperatorIdentity } from "../infra/device-pairing-publication.js";
+import { getPairedDevice } from "../infra/device-pairing.js";
 import { getProcessGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
@@ -21,6 +24,7 @@ import {
   UserProfileMutationUnsettledError,
 } from "../state/user-profile-events.js";
 import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
+import { resolveGatewayAuthPolicyGeneration } from "./auth-policy.js";
 import {
   GatewayOperatorAccessDeniedError,
   resumeGatewayOperatorAccessGrant,
@@ -31,6 +35,7 @@ import {
 } from "./operator-role-policy.js";
 import { sourceRolePolicy } from "./operator-role-source-policy.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
+import { checkGatewayWsBrowserOrigin } from "./server/ws-origin-policy.js";
 import { authorizePreparedSessionMutation } from "./session-sharing-policy.js";
 import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
 
@@ -56,6 +61,26 @@ export type RestartRequesterLease = {
   assertAdmissionCurrent: () => void;
   release: () => void;
 };
+
+const restoredRequesters = new WeakMap<AdmittedRunOperatorAuthority, RestartRecoveryRequester>();
+
+/** The recovery transaction, not the public sharing projection, fences the private record. */
+export function assertRestoredRestartRequesterEntry(
+  authority: AdmittedRunOperatorAuthority | undefined,
+  entry: InternalSessionEntry,
+): void {
+  const snapshot = authority && restoredRequesters.get(authority);
+  if (!snapshot) return;
+  authority.assertCurrent();
+  if (
+    entry.sessionId !== snapshot.sessionId ||
+    (entry.lifecycleRevision ?? null) !== snapshot.lifecycleRevision ||
+    entry.archivedAt !== undefined ||
+    !isDeepStrictEqual(entry.restartRecoveryRequester, snapshot)
+  ) {
+    throw new RestartRequesterDeniedError();
+  }
+}
 
 type RestartRequesterTarget = Pick<
   RestartRecoveryRequester,
@@ -117,7 +142,19 @@ export async function restoreRestartRecoveryRequester(params: {
       }
       return deny();
     }
+    if (snapshot.device) {
+      let currentDevice;
+      try {
+        currentDevice = getPublishedPairedOperatorIdentity(snapshot.device.deviceId);
+      } catch (error) {
+        throw new RestartRequesterPendingError({ cause: error });
+      }
+      if (currentDevice !== snapshot.device.identity) return deny();
+    }
     const cfg = params.getConfig();
+    if (resolveGatewayAuthPolicyGeneration(cfg) !== snapshot.authPolicy) return deny();
+    if (snapshot.browserOrigin && !checkGatewayWsBrowserOrigin(snapshot.browserOrigin, cfg).ok)
+      return deny();
     const role = resolveOperatorRolePolicyForAssignment(
       snapshot.profileId,
       current.profile.assignedRole,
@@ -240,6 +277,7 @@ export async function restoreRestartRecoveryRequester(params: {
       }),
     );
     try {
+      if (snapshot.device) await getPairedDevice(snapshot.device.deviceId);
       identity = await prepareUserProfileIdentity(snapshot.profileId);
       params.assertCurrent();
       revoked.signal.throwIfAborted();
@@ -261,6 +299,9 @@ export async function restoreRestartRecoveryRequester(params: {
       profileId: snapshot.profileId,
       scopes: snapshot.scopes,
       gatewayAccessGrant: snapshot.grant,
+      restartDevice: snapshot.device,
+      restartAuthPolicy: snapshot.authPolicy,
+      restartBrowserOrigin: snapshot.browserOrigin,
       source: Object.freeze({}),
       assertCurrent,
       signal,
@@ -278,6 +319,7 @@ export async function restoreRestartRecoveryRequester(params: {
         return releaseHold();
       },
     });
+    restoredRequesters.set(authority, snapshot);
     return { authority, assertAdmissionCurrent, release };
   } catch (error) {
     release();

@@ -4,6 +4,10 @@ import { resolveTimestampMsToIsoString } from "@openclaw/normalization-core/numb
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { canonicalizePersistedUserMessageMedia } from "../../media/media-facts.js";
 import {
+  isMainSessionRestartRecoveryInputProvenance,
+  normalizeInputProvenance,
+} from "../../sessions/input-provenance.js";
+import {
   isOpenClawDeliveryMirrorAssistantMessage,
   OPENCLAW_TRANSCRIPT_ARTIFACT_API,
 } from "../../shared/transcript-only-openclaw-assistant.js";
@@ -14,7 +18,7 @@ import type {
   TranscriptMessageAppendOptions,
   TranscriptMessageAppendResult,
 } from "./session-accessor.sqlite-contract.js";
-import { readSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
+import { readSessionEntryRow, writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import {
   consumeSessionPendingInput,
   resolveSessionPendingInputAppend,
@@ -294,6 +298,29 @@ export function appendTranscriptMessageInTransaction<TMessage>(
     preparedMessage?.persistedMessage ??
     // SAFETY: Receipt custody comes from this event's exact committed JSON after storage normalization.
     (JSON.parse(appended) as typeof event).message;
+  if (
+    isRecord(persistedMessage) &&
+    persistedMessage.role === "user" &&
+    !isMainSessionRestartRecoveryInputProvenance(
+      normalizeInputProvenance(persistedMessage.provenance),
+    )
+  ) {
+    const current = readSessionEntryRow(database, resolved.sessionKey);
+    if (
+      current?.entry.sessionId === resolved.sessionId &&
+      (current.entry.restartRecoveryRequester || options.restartRecoveryRequester)
+    ) {
+      writeSessionEntry(
+        database,
+        current.row.session_key,
+        {
+          ...current.entry,
+          restartRecoveryRequester: options.restartRecoveryRequester,
+        },
+        { canonicalPreviousEntry: current.entry },
+      );
+    }
+  }
   const anchor = readAnchor({ message: persistedMessage, messageId });
   if (pending) {
     if (pending.stageRelocation) {

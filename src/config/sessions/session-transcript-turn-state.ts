@@ -96,7 +96,7 @@ export function sessionMatchesExpectedTranscriptTurn<T extends { entry: SessionE
 }
 
 export function buildExpectedTranscriptTurnSessionPatch(params: {
-  appendedMessages: readonly { appended: boolean }[];
+  appendedMessages: readonly { appended: boolean; message?: unknown }[];
   currentEntry: SessionEntry;
   expectedSessionState?: SessionTranscriptTurnExpectedState;
   sessionFile: string;
@@ -117,6 +117,11 @@ export function buildExpectedTranscriptTurnSessionPatch(params: {
     : undefined;
   return {
     ...(acceptedMessage ? params.sessionLifecyclePatch : undefined),
+    // The append owner has already settled requester custody with the exact user
+    // bytes. Lifecycle updates and duplicate replay must preserve that decision.
+    ...(params.sessionLifecyclePatch && "restartRecoveryRequester" in params.sessionLifecyclePatch
+      ? { restartRecoveryRequester: params.currentEntry.restartRecoveryRequester }
+      : {}),
     ...(acceptedMessage
       ? buildRestartRecoveryResumeRetirementPatch(
           params.currentEntry,

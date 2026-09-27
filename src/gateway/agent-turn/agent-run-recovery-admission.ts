@@ -1,7 +1,9 @@
+import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import {
   commitMainSessionRecovery,
   type MainSessionRecoveryPendingTarget,
 } from "../../agents/main-session-recovery/main-session-recovery-store.js";
+import { assertRestoredRestartRequesterEntry } from "../session-restart-requester-restore.js";
 
 /** Bind durable recovery admission to the exact restoration needed if execution never starts. */
 export async function admitAgentRestartRecovery(params: {
@@ -10,6 +12,7 @@ export async function admitAgentRestartRecovery(params: {
   sessionId: string;
   sessionKey: string;
   storePath: string;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
 }): Promise<() => Promise<MainSessionRecoveryPendingTarget | undefined>> {
   const admission = await commitMainSessionRecovery({
     command: {
@@ -20,6 +23,8 @@ export async function admitAgentRestartRecovery(params: {
       sessionId: params.sessionId,
     },
     requireWriteSuccess: true,
+    assertEntryCurrent: (entry) =>
+      assertRestoredRestartRequesterEntry(params.operatorAuthority, entry),
     target: { sessionKey: params.sessionKey, storePath: params.storePath },
   });
   if (admission.transition.kind !== "admitted_recovery") {

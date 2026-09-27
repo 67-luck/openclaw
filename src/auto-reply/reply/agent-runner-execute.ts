@@ -2,8 +2,10 @@ import crypto from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { assertRestoredRestartRequesterEntry } from "../../gateway/session-restart-requester-restore.js";
 import { withBeforeAgentReplyObserver } from "../../plugins/before-agent-reply.js";
 import { getGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
+import { isMainSessionRestartRecoveryInputProvenance } from "../../sessions/input-provenance.js";
 import { readPendingUserTurnTranscriptAdmission } from "../../sessions/user-turn-transcript-admission.js";
 import { setReplyPayloadMetadata } from "../reply-payload.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -362,6 +364,9 @@ export function createReplyAgentRestartRecoveryController(
     isArmed: isRestartRecoveryArmed,
   } = createReplyRestartRecoveryClaimController({
     agentId: followupRun.run.agentId,
+    assertEntryCurrent: isMainSessionRestartRecoveryInputProvenance(followupRun.run.inputProvenance)
+      ? (entry) => assertRestoredRestartRequesterEntry(followupRun.operatorAuthority, entry)
+      : undefined,
     lifecycleGeneration: replyOperation.lifecycleGeneration,
     admissionRunId,
     getEntry: () =>

@@ -5,17 +5,30 @@ import {
   createPluginRegistryFixture,
   registerVirtualTestPlugin,
 } from "openclaw/plugin-sdk/plugin-test-contracts";
-import { describe, expect, it } from "vitest";
-import { loadSessionEntry, replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import { describe, expect, it, vi } from "vitest";
+import * as recoveryStore from "../agents/main-session-recovery/main-session-recovery-store.js";
+import { resumeMainSession } from "../agents/main-session-recovery/main-session-restart-dispatch.js";
+import { setRuntimeConfigSnapshot } from "../config/io.js";
+import {
+  loadSessionEntry,
+  persistSessionTranscriptTurn,
+  replaceSessionEntry,
+} from "../config/sessions/session-accessor.js";
 import { projectPublicSessionEntry } from "../config/sessions/session-entry-projection.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
+import { approveDevicePairing } from "../infra/device-pairing-approval.js";
+import { revokeDeviceToken, rotateDeviceToken } from "../infra/device-pairing-tokens.js";
+import { requestDevicePairing, removePairedDevice } from "../infra/device-pairing.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import {
   ensureCanonicalUserProfileForEmail,
   setCanonicalUserProfileRole,
 } from "../state/user-profile-writes.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { prepareAgentRunUserTurn } from "./agent-turn/agent-run-user-turn.js";
+import type { AgentTurnContext } from "./agent-turn/types.js";
 import { resolveGatewayOperatorAccessAuthority } from "./operator-access-policy.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
@@ -25,15 +38,15 @@ import {
   restoreRestartRecoveryRequester,
   type RestartRequesterLease,
 } from "./session-restart-requester-restore.js";
-import { captureRestartRecoveryRequester } from "./session-restart-requester.js";
 
 async function withRequester(
   run: (fixture: Awaited<ReturnType<typeof prepareFixture>>) => Promise<void>,
+  pairedDevice = false,
 ) {
   await withOpenClawTestState(
     { label: "restart-requester", scenario: "minimal" },
     async (state) => {
-      const fixture = await prepareFixture(state);
+      const fixture = await prepareFixture(state, pairedDevice);
       try {
         await run(fixture);
       } finally {
@@ -44,11 +57,15 @@ async function withRequester(
   );
 }
 
-async function prepareFixture(state: Parameters<Parameters<typeof withOpenClawTestState>[1]>[0]) {
+async function prepareFixture(
+  state: Parameters<Parameters<typeof withOpenClawTestState>[1]>[0],
+  pairedDevice = false,
+) {
   const profile = await ensureCanonicalUserProfileForEmail("restart-requester@example.test");
-  const cfg: OpenClawConfig = {
+  let cfg: OpenClawConfig = {
     agents: { ownership: "explicit", entries: { main: { workspace: state.workspaceDir } } },
     gateway: {
+      controlUi: { allowedOrigins: ["https://gateway.example.test"] },
       roles: {
         default: "writer",
         definitions: {
@@ -115,6 +132,28 @@ async function prepareFixture(state: Parameters<Parameters<typeof withOpenClawTe
     operatorAccessAuthority: resolveGatewayOperatorAccessAuthority(profile.id, cfg),
     scopes: ["operator.write"],
   });
+  originalClient.browserOrigin = {
+    requestHost: "gateway.example.test",
+    origin: "https://gateway.example.test",
+    isLocalClient: false,
+  };
+  const deviceId = "restart-operator-device";
+  if (pairedDevice) {
+    const request = await requestDevicePairing({
+      deviceId,
+      publicKey: "restart-public-key",
+      role: "operator",
+      scopes: ["operator.write"],
+    });
+    await approveDevicePairing(request.request.requestId, { callerScopes: ["operator.write"] });
+    originalClient.connect.device = {
+      id: deviceId,
+      publicKey: "restart-public-key",
+      signature: "fixture-signature",
+      signedAt: 1,
+      nonce: "fixture-nonce",
+    };
+  }
   const source = await captureGatewayOperatorRunAuthority({
     client: originalClient,
     context: { getRuntimeConfig: () => cfg },
@@ -140,25 +179,42 @@ async function prepareFixture(state: Parameters<Parameters<typeof withOpenClawTe
       },
     },
   };
-  const snapshot = await captureRestartRecoveryRequester({
-    ...scope,
+  const userTurn = await prepareAgentRunUserTurn({
     client,
     inputProvenance: {
       kind: "inter_session",
       sourceTool: "sessions_send",
       sourceSessionKey: scope.sessionKey,
     },
-    sessionId: entry.sessionId,
-    lifecycleRevision: entry.lifecycleRevision,
+    admittedSessionId: entry.sessionId,
+    admittedStorePath: scope.storePath,
+    resolvedSessionKey: scope.sessionKey,
+    activeSessionAgentId: scope.agentId,
+    sessionEntry: entry,
+    request: { message: "Continue the original task.", idempotencyKey: "accepted-continuation" },
+    message: "Continue the original task.",
+    effectiveTranscriptInputText: "Continue the original task.",
+    images: [],
+    offloadedRefs: [],
+    suppressVisibleSessionEffects: false,
+    requestedPromptPersistenceSuppression: false,
+    canUseInternalRuntimeHandoff: false,
+    cfg,
     runId: "accepted-continuation",
-    getConfig: () => cfg,
+    context: {
+      getRuntimeConfig: () => cfg,
+      logGateway: { warn: () => {} },
+    } as unknown as AgentTurnContext,
     assertCurrent: source.authority.assertCurrent,
   });
+  expect(loadSessionEntry(scope)?.restartRecoveryRequester).toBeUndefined();
+  const admitted = await userTurn.recorder?.persistApproved();
+  expect(admitted?.appended).toBe(true);
+  const snapshot = loadSessionEntry(scope)?.restartRecoveryRequester;
   if (!snapshot) {
     source.release();
     throw new Error("missing captured requester");
   }
-  await replaceSessionEntry(scope, { ...entry, restartRecoveryRequester: snapshot });
   source.release();
   const leases: RestartRequesterLease[] = [];
   const restore = async () => {
@@ -179,12 +235,17 @@ async function prepareFixture(state: Parameters<Parameters<typeof withOpenClawTe
   };
   return {
     profile,
+    deviceId,
     cfg,
     scope,
     entry,
     snapshot,
+    admittedMessage: admitted!.message,
     restore,
     oldAuthority: source.authority,
+    setConfig: (value: OpenClawConfig) => {
+      cfg = value;
+    },
     setUnavailable: (value: boolean) => {
       unavailable = value;
     },
@@ -201,6 +262,55 @@ async function prepareFixture(state: Parameters<Parameters<typeof withOpenClawTe
 }
 
 describe("restart requester restoration", () => {
+  it.for(["revoke", "rotate", "remove"] as const)(
+    "rejects the original device after %s before cold restoration and final use",
+    async (action) => {
+      await withRequester(async (f) => {
+        const restored = await f.restore();
+        expect(() => restored.authority.assertCurrent()).not.toThrow();
+        if (action === "remove") await removePairedDevice(f.deviceId);
+        else if (action === "revoke")
+          await revokeDeviceToken({ deviceId: f.deviceId, role: "operator" });
+        else
+          await rotateDeviceToken({
+            deviceId: f.deviceId,
+            role: "operator",
+            scopes: ["operator.write"],
+          });
+        expect(() => restored.authority.assertCurrent()).toThrow();
+        await expect(f.restore()).rejects.toBeInstanceOf(RestartRequesterDeniedError);
+      }, true);
+    },
+  );
+
+  it("retires old requester custody on a later input and cannot recreate it by replay", async () => {
+    await withRequester(async (f) => {
+      const stored = loadSessionEntry(f.scope)!;
+      const append = (message: unknown, requester: typeof f.snapshot | undefined) =>
+        persistSessionTranscriptTurn(
+          { ...f.scope, sessionId: stored.sessionId, sessionEntry: stored },
+          {
+            expectedSessionId: stored.sessionId,
+            messages: [{ message }],
+            sessionLifecyclePatch: { restartRecoveryRequester: requester },
+          },
+        );
+      await append(
+        {
+          role: "user",
+          content: "A later explicit task.",
+          idempotencyKey: "later-input:user",
+        },
+        undefined,
+      );
+      expect(loadSessionEntry(f.scope)?.restartRecoveryRequester).toBeUndefined();
+      await expect(f.restore()).rejects.toBeInstanceOf(RestartRequesterDeniedError);
+      const duplicate = await append(f.admittedMessage, f.snapshot);
+      expect(duplicate?.appendedCount).toBe(0);
+      expect(loadSessionEntry(f.scope)?.restartRecoveryRequester).toBeUndefined();
+    });
+  });
+
   it("reconstructs the original constrained operator after old execution custody closes", async () => {
     await withRequester(async (f) => {
       expect(() => f.oldAuthority.assertCurrent()).toThrow();
@@ -216,6 +326,33 @@ describe("restart requester restoration", () => {
     });
   });
 
+  it.for(["authentication", "browser origin"] as const)(
+    "rejects changed %s policy before and after restoring the operator",
+    async (policy) => {
+      await withRequester(async (f) => {
+        const restored = await f.restore();
+        f.setConfig({
+          ...f.cfg,
+          gateway: {
+            ...f.cfg.gateway,
+            ...(policy === "browser origin"
+              ? { controlUi: { allowedOrigins: [] } }
+              : {
+                  auth: {
+                    mode: "trusted-proxy" as const,
+                    trustedProxy: { userHeader: "x-user", allowUsers: [] },
+                  },
+                }),
+          },
+        });
+        expect(() => restored.authority.assertCurrent()).toThrow();
+        await expect(f.restore()).rejects.toBeInstanceOf(RestartRequesterDeniedError);
+        f.setConfig(f.cfg);
+        expect(() => restored.authority.assertCurrent()).toThrow();
+      });
+    },
+  );
+
   it("keeps a revoked live role capture closed after its assignment is restored", async () => {
     await withRequester(async (f) => {
       const restored = await f.restore();
@@ -226,6 +363,69 @@ describe("restart requester restoration", () => {
       expect(restored.authority.signal?.aborted).toBe(true);
     });
   });
+
+  it.for(["before reservation", "after reservation"] as const)(
+    "keeps temporary authorization failure pending without charging an attempt: %s",
+    async (boundary) => {
+      await withRequester(async (f) => {
+        setRuntimeConfigSnapshot(f.cfg, f.cfg);
+        const entry = {
+          ...loadSessionEntry(f.scope)!,
+          mainRestartRecovery: {
+            cycleId: "pending-authorization",
+            revision: 1,
+            chargedAttempts: 0,
+          },
+        };
+        await replaceSessionEntry(f.scope, entry);
+        const commit = recoveryStore.commitMainSessionRecovery;
+        const reservation = vi
+          .spyOn(recoveryStore, "commitMainSessionRecovery")
+          .mockImplementation(async (params) => {
+            if (params.command.kind !== "prepare_attempt") return await commit(params);
+            if (boundary === "before reservation") f.setUnavailable(true);
+            const result = await commit(params);
+            if (boundary === "after reservation") f.setUnavailable(true);
+            return result;
+          });
+        const gatewayRuntime = {
+          dispatchSessionMethod: vi.fn(),
+          dispatchAgent: vi.fn(),
+          waitForAgent: vi.fn(),
+          sendRecoveryNotice: vi.fn(),
+        };
+        try {
+          expect(
+            await resumeMainSession({
+              ...f.scope,
+              cfg: f.cfg,
+              entry,
+              requester: f.snapshot,
+              recoveryAttempt: 1,
+              observation: {
+                sessionId: entry.sessionId,
+                cycleId: "pending-authorization",
+                revision: 1,
+              },
+              lifecycleGeneration: getAgentEventLifecycleGeneration(),
+              gatewayRuntime,
+            }),
+          ).toBe("failed");
+          expect(reservation).toHaveBeenCalled();
+          expect(gatewayRuntime.dispatchAgent).not.toHaveBeenCalled();
+          expect(gatewayRuntime.sendRecoveryNotice).not.toHaveBeenCalled();
+          expect(loadSessionEntry(f.scope)).toMatchObject({
+            restartRecoveryRequester: f.snapshot,
+            mainRestartRecovery: { chargedAttempts: 0 },
+          });
+          expect(loadSessionEntry(f.scope)?.mainRestartRecovery?.reservation).toBeUndefined();
+          expect(loadSessionEntry(f.scope)?.mainRestartRecovery?.tombstone).toBeUndefined();
+        } finally {
+          reservation.mockRestore();
+        }
+      });
+    },
+  );
 
   it("distinguishes unavailable original policy from a replacement invitation", async () => {
     await withRequester(async (f) => {

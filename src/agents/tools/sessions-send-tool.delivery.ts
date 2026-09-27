@@ -2,6 +2,7 @@
 import crypto from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { createAgentRuntimeIdentity } from "../../gateway/agent-runtime-identity-token.js";
 import type { GatewaySessionStoreTarget } from "../../gateway/session-utils-store.types.js";
 import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
@@ -19,7 +20,11 @@ import {
   queueEmbeddedAgentMessageWithOutcomeAsync,
 } from "../embedded-agent-runner/runs.js";
 import { jsonResult } from "./common.js";
-import type { AgentToolGatewayRequestCaller } from "./in-process-gateway.js";
+import { getGatewayToolCallerIdentity } from "./gateway-caller-context.js";
+import {
+  withAgentToolGatewayRuntimeIdentity,
+  type AgentToolGatewayRequestCaller,
+} from "./in-process-gateway.js";
 
 function isRunScopedAgentSessionKey(sessionKey: string): boolean {
   const parsed = parseAgentSessionKey(normalizeOptionalString(sessionKey));
@@ -177,17 +182,38 @@ export async function startSessionsSendAgentRun(params: {
           threadId: stringifyRouteThreadId(sourceOrigin.threadId),
         }
       : params.sendParams;
-    const response = await params.callGateway<{ runId: string; admissionPending?: boolean }>({
-      method: "agent",
-      params: fallbackSessionKey
-        ? {
-            ...sendParams,
-            sessionKey: fallbackSessionKey,
-            idempotencyKey: crypto.randomUUID(),
-          }
-        : sendParams,
-      timeoutMs: 10_000,
-    });
+    const caller = getGatewayToolCallerIdentity();
+    const selfContinuation =
+      !fallbackSessionKey &&
+      caller?.operatorAuthority &&
+      caller.agentId === params.sessionStoreTarget.agentId &&
+      caller.sessionKey === params.sessionStoreTarget.canonicalKey;
+    const runtimeIdentity =
+      selfContinuation && caller.operationalRunInstance
+        ? await createAgentRuntimeIdentity({
+            ...caller,
+            operationalRunInstance: caller.operationalRunInstance,
+          })
+        : undefined;
+    if (selfContinuation && !runtimeIdentity) {
+      throw new Error("Self-continuation requires its admitted source execution.");
+    }
+    const response = await params.callGateway<{ runId: string; admissionPending?: boolean }>(
+      withAgentToolGatewayRuntimeIdentity(
+        {
+          method: "agent",
+          params: fallbackSessionKey
+            ? {
+                ...sendParams,
+                sessionKey: fallbackSessionKey,
+                idempotencyKey: crypto.randomUUID(),
+              }
+            : sendParams,
+          timeoutMs: 10_000,
+        },
+        runtimeIdentity,
+      ),
+    );
     const responseRunId =
       typeof response?.runId === "string" && response.runId ? response.runId : params.runId;
     if (response?.admissionPending === true) {

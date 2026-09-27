@@ -10,6 +10,7 @@ import {
 } from "../audit/execution-identity-admission.js";
 import { executionIdentitySpawnAdmission } from "../audit/execution-identity-spawn-admission.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { GatewayWsBrowserOrigin } from "../gateway/server/client-identity-types.js";
 import {
   claimAgentRunDelegatedAuthority,
   getAgentRunLifecycleGeneration,
@@ -41,6 +42,11 @@ export type AdmittedRunOperatorAuthority = Readonly<{
   scopes: readonly string[];
   /** Original access dependency; null is proven independent, undefined is unclassified. */
   gatewayAccessGrant?: GatewayAccessGrantRef | null;
+  /** Original durable device dependency; undefined means source recovery is unsupported. */
+  restartDevice?: Readonly<{ deviceId: string; identity: string }> | null;
+  /** Original classified ingress policy, never inferred from the recovery receiver. */
+  restartAuthPolicy?: string;
+  restartBrowserOrigin?: Readonly<GatewayWsBrowserOrigin> | null;
   assertCurrent: () => void;
   signal?: AbortSignal;
   /** Opaque original source identity used only to compare compatible queued input. */
@@ -82,6 +88,13 @@ export function createAdmittedRunOperatorAuthority(
     gatewayAccessGrant: source.gatewayAccessGrant
       ? Object.freeze({ ...source.gatewayAccessGrant })
       : source.gatewayAccessGrant,
+    restartAuthPolicy: source.restartAuthPolicy,
+    restartBrowserOrigin: source.restartBrowserOrigin
+      ? Object.freeze({ ...source.restartBrowserOrigin })
+      : source.restartBrowserOrigin,
+    restartDevice: source.restartDevice
+      ? Object.freeze({ ...source.restartDevice })
+      : source.restartDevice,
     source: source.source ?? Object.freeze({}),
     signal,
     retain: source.retain,

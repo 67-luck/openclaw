@@ -47,6 +47,7 @@ export type AgentTurnContext = Pick<
   | "dedupe"
   | "deps"
   | "getRuntimeConfig"
+  | "getCommittedRuntimeConfig"
   | "getSessionEventSubscriberConnIds"
   | "loadGatewayModelCatalog"
   | "loadGatewayModelCatalogSnapshot"

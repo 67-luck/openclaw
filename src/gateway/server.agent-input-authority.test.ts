@@ -6,10 +6,13 @@ import {
   prepareAgentRunAdmission,
 } from "../agents/admitted-run-context.js";
 import { captureAgentToolSourceExecutionGuard } from "../agents/agent-tool-source-execution-guard.js";
+import { guardSessionManager } from "../agents/session-tool-result-guard-wrapper.js";
+import { SessionManager } from "../agents/sessions/session-manager.js";
 import {
   createAdmittedGatewayToolCallerIdentity,
   withGatewayToolCallerIdentity,
 } from "../agents/tools/gateway-caller-context.js";
+import { createSessionsSendTool } from "../agents/tools/sessions-send-tool.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import { listSessionPendingInputs } from "../config/sessions/session-accessor.pending-inputs.js";
 import {
@@ -17,7 +20,11 @@ import {
   runExclusiveSqliteSessionWrite,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { registerInternalHook, unregisterInternalHook } from "../hooks/internal-hooks.js";
+import { ensureCanonicalUserProfileForEmail } from "../state/user-profile-writes.js";
 import type { PreparedAgentRunDispatch } from "./agent-turn/agent-run-admission-types.js";
+import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
+import { dispatchGatewayRequestInProcess } from "./server-in-process-dispatch.js";
+import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugins.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
 import { loadSessionEntry } from "./session-utils.js";
@@ -51,6 +58,137 @@ describe("spawn input ownership transfer", () => {
       await harness?.close();
     },
   });
+
+  it.for(["original", "missing", "opaque", "opaque-access"] as const)(
+    "records only surviving original operator authority through registered self-send: %s",
+    async (requester, { signal }) => {
+      await prepareGatewayReplyRuntimeForTest();
+      const context = kernel.gatewayRequestContext;
+      const profile = await ensureCanonicalUserProfileForEmail("restart-input@example.test");
+      const original = createSyntheticPluginRuntimeClient({
+        operatorRoleActor: { kind: "operator", profileId: profile.id },
+        operatorAccessAuthority:
+          requester === "opaque-access"
+            ? {
+                assertCurrent: () => {},
+                signal: new AbortController().signal,
+                gatewayAccessGrant: { pluginId: "fixture-access", grantId: randomUUID() },
+              }
+            : null,
+        scopes: ["operator.write"],
+      });
+      const captured = await captureGatewayOperatorRunAuthority({
+        client: original,
+        context,
+        ...(requester === "opaque" ? { hasCurrentClientAuthority: () => true } : {}),
+      });
+      if (!captured) throw new Error("missing original operator");
+      const methodRegistry = kernel.getAttachedGatewayMethodRegistry();
+      const created = await dispatchGatewayRequestInProcess<{ key: string; sessionId: string }>(
+        "sessions.create",
+        { agentId: "main", label: `Restart input ${requester}` },
+        { client: original, context, methodRegistry },
+      );
+      const runId = randomUUID();
+      const admission = prepareAgentRunAdmission({
+        cfg: context.getRuntimeConfig(),
+        operationalRunInstance: createOperationalRunInstanceRef(`source-${runId}`),
+        operatorAuthority: requester !== "missing" ? captured.authority : undefined,
+        facts: {
+          runId: `source-${runId}`,
+          agentId: "main",
+          ingress: { kind: "system", boundary: "restart-input-proof", state: "present" },
+        },
+      });
+      const admitted = await admission.admit("embedded");
+      const caller = createAdmittedGatewayToolCallerIdentity({
+        admittedRunContext: admitted,
+        agentId: "main",
+        sessionKey: created.key,
+      });
+      if (!caller) throw new Error("missing source caller");
+      caller.gatewayContextResolver = () => context;
+      const entered = createDeferred<PreparedAgentRunDispatch>();
+      const release = createDeferred();
+      const unblock = () => release.resolve();
+      signal.addEventListener("abort", unblock, { once: true });
+      const executionModule = await import("./agent-turn/agent-run-execution-phase.js");
+      const execute = executionModule.startAgentRunExecution;
+      let execution: Promise<void> | undefined;
+      const spy = vi
+        .spyOn(executionModule, "startAgentRunExecution")
+        .mockImplementationOnce((params) => {
+          entered.resolve(params.prepared);
+          execution = release.promise.then(() => execute(params));
+          return execution;
+        });
+      try {
+        const response = await withGatewayToolCallerIdentity(caller, () =>
+          createSessionsSendTool({
+            agentId: "main",
+            agentSessionKey: created.key,
+            agentSessionId: created.sessionId,
+            config: context.getRuntimeConfig(),
+            expectedTargetSessionId: created.sessionId,
+            idempotencyKey: runId,
+          }).execute("restart-self-send", {
+            sessionKey: created.key,
+            message: "Continue this original conversation.",
+            mode: "followup",
+            timeoutSeconds: 0,
+          }),
+        );
+        expect(response, JSON.stringify(response)).toMatchObject({
+          details: { status: "accepted" },
+        });
+        const prepared = await entered.promise;
+        const scope = {
+          agentId: "main",
+          sessionKey: created.key,
+          storePath: prepared.lifecycleStorePath,
+        };
+        expect(sessionAccessor.loadSessionEntry(scope)?.restartRecoveryRequester).toBeUndefined();
+        const recorder = prepared.userTurn.recorder!;
+        const message = await recorder.resolveMessage();
+        if (!message) throw new Error("missing accepted source input");
+        const manager = guardSessionManager(
+          await SessionManager.openAsync({
+            ...scope,
+            sessionId: created.sessionId,
+          }),
+          {
+            preparedUserTurnMessage: message,
+            preparedUserTurnTranscriptRecorder: recorder,
+          },
+        );
+        await manager.appendMessageAsync({
+          role: "user",
+          content: "Continue this original conversation.",
+          timestamp: Date.now(),
+        });
+        expect(recorder.hasPersisted()).toBe(true);
+        const stored = sessionAccessor.loadSessionEntry(scope);
+        expect(stored?.sessionId).toBe(created.sessionId);
+        if (requester === "original") {
+          expect(stored?.restartRecoveryRequester).toMatchObject({
+            profileId: profile.id,
+            sourceRunId: runId,
+            sessionId: created.sessionId,
+            sessionKey: created.key,
+          });
+        } else {
+          expect(stored?.restartRecoveryRequester).toBeUndefined();
+        }
+      } finally {
+        release.resolve();
+        await execution;
+        spy.mockRestore();
+        admission.close();
+        captured.release();
+        signal.removeEventListener("abort", unblock);
+      }
+    },
+  );
 
   it.for([
     "before staging",

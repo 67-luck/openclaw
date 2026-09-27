@@ -462,7 +462,10 @@ export function createUserTurnTranscriptRecorder(
             message: candidate,
             sessionTurnMutation: params.sessionTurnMutation,
             expectedSessionId: options.expectedSessionId || resolvedTarget.expectedSessionId,
-            sessionLifecyclePatch: options.sessionLifecyclePatch ?? params.sessionLifecyclePatch,
+            sessionLifecyclePatch:
+              params.sessionLifecyclePatch || options.sessionLifecyclePatch
+                ? { ...options.sessionLifecyclePatch, ...params.sessionLifecyclePatch }
+                : undefined,
             expectedSessionState: options.expectedSessionState ?? params.expectedSessionState,
             updateMode: candidateUpdateMode,
             beforeMessageWrite: params.beforeMessageWrite ?? resolvedTarget.beforeMessageWrite,
@@ -647,6 +650,7 @@ export function createUserTurnTranscriptRecorder(
         handlePersistenceError(error);
       }
     },
+    getRestartRecoveryRequester: () => params.sessionLifecyclePatch?.restartRecoveryRequester,
     getPersistedMessage: () =>
       admittedMessage ?? runtimePersistedMessage ?? persistedResult?.message,
     getAdmissionReceipt: () => admissionReceipt,

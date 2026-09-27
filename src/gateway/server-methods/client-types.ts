@@ -67,6 +67,8 @@ export type GatewayClient = {
   pluginNodeCapabilitySurfaces?: Record<string, PluginNodeCapabilitySurface>;
   pluginNodeCapabilities?: Record<string, { capability: string; expiresAtMs: number }>;
   isDeviceTokenAuth?: boolean;
+  /** Transport-attested shared-secret dependency; cold recovery cannot reconstruct it. */
+  usesSharedGatewayAuth?: boolean;
   internal?: {
     /** Handshake-attested direct-local transport; never accepted from wire params. */
     isLocalClient?: true;

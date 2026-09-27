@@ -61,6 +61,7 @@ export async function commitMainSessionRecovery(params: {
   requireWriteSuccess?: boolean;
   scanAliases?: boolean;
   shouldContinue?: () => boolean;
+  assertEntryCurrent?: (entry: SessionEntry) => void;
   target: MainSessionRecoveryStoreTarget;
 }): Promise<MainSessionRecoveryStoreResult> {
   const reservationCleanup =
@@ -153,6 +154,7 @@ export async function commitMainSessionRecovery(params: {
         };
       }
       const entry = candidate.entry;
+      params.assertEntryCurrent?.(entry);
       const previousRecoveryState = entry.mainRestartRecovery;
       const command =
         (params.command.kind === "claim_foreground" ||

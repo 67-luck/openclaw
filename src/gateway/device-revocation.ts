@@ -36,6 +36,7 @@ type CapturedRevocation = {
   isSourceCurrent: CurrentCaller;
   isRevocationCurrent: CurrentCaller;
   sourceIdentity: object;
+  restartDependencies?: Omit<SourceDependencies, "client" | "context">;
   releaseSourceIdentity?: () => void;
   releaseClientRevocation?: () => void;
 };
@@ -172,6 +173,9 @@ export function captureGatewayDeviceRevocation(
   if (sourceAuthority?.dependencies) {
     const source = retainSourceIdentity(sourceAuthority.dependencies);
     capture.sourceIdentity = source.token;
+    const { authPolicyGeneration, sharedGenerationOwner, sharedGeneration } =
+      sourceAuthority.dependencies;
+    capture.restartDependencies = { authPolicyGeneration, sharedGenerationOwner, sharedGeneration };
     capture.releaseSourceIdentity = source.release;
   }
   return { isCurrent, release: releaseHold(capture) };
@@ -260,4 +264,21 @@ export function closeGatewayDeviceRevocation(context: object): void {
     bucket.clear();
   }
   owner.devices.clear();
+}
+
+/** Classify only the original ingress-owned policy; unknown process guards cannot be restored. */
+export function readGatewayDeviceRestartAuthPolicy(
+  guard: (() => unknown) | undefined,
+  expectedSharedGeneration?: string,
+): string | undefined {
+  const dependencies = guard ? captures.get(guard)?.restartDependencies : undefined;
+  if (!dependencies) return undefined;
+  if (
+    (dependencies.sharedGenerationOwner !== undefined ||
+      dependencies.sharedGeneration !== undefined) &&
+    (expectedSharedGeneration === undefined ||
+      dependencies.sharedGeneration !== expectedSharedGeneration)
+  )
+    return undefined;
+  return dependencies.authPolicyGeneration;
 }

@@ -341,6 +341,8 @@ export type TranscriptMessageAppendOptions<TMessage> = {
   prepareMessageAfterIdempotencyCheck?: (message: TMessage) => TMessage | undefined;
   /** Synchronous assertion after replay, custody, preparation, and redaction, before insertion. */
   beforeFreshMessageCommit?: () => void;
+  /** Private original-requester custody; committed only with a fresh user append. */
+  restartRecoveryRequester?: import("./restart-recovery-requester.js").RestartRecoveryRequester;
   /** Allow append without parent-link migration for large legacy linear transcripts. */
   useRawWhenLinear?: boolean;
 };

@@ -118,6 +118,8 @@ export type AppendPersistenceOptions = {
   appendIntent?: "active-branch";
   /** Synchronous fresh SQLite message assertion; never serialized into an entry. */
   beforeFreshMessageCommit?: () => void;
+  /** Private original-requester custody; committed only with a fresh user append. */
+  restartRecoveryRequester?: import("../../config/sessions/restart-recovery-requester.js").RestartRecoveryRequester;
   config?: OpenClawConfig;
   idempotencyLookup?: "scan" | "scan-assistant" | "caller-checked";
   invalidateSerializedPrefixCache?: boolean;

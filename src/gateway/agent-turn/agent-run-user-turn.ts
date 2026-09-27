@@ -17,6 +17,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { deleteMediaBuffer } from "../../media/store.js";
 import {
   isCompletionReportInputProvenance,
+  isMainSessionRestartRecoveryInputProvenance,
   isSubagentCoordinationInputProvenance,
   normalizeInputProvenance,
   type InputProvenance,
@@ -38,6 +39,7 @@ import type { AgentRunRequest } from "../server-methods/agent-request-types.js";
 import { resolveSessionRuntimeCwd } from "../server-methods/agent-session-reset.js";
 import { gatewayClientSenderFields } from "../server-methods/gateway-client-identity.js";
 import { resolveGatewayInputParticipant } from "../session-input-participant.js";
+import { captureRestartRecoveryRequester } from "../session-restart-requester.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
 import {
@@ -144,6 +146,7 @@ export async function prepareAgentRunUserTurn(params: {
   resolvedSessionKey?: string;
   requestedSessionKeyRaw?: string;
   admittedSessionId: string;
+  admittedStorePath?: string;
   activeSessionAgentId: string;
   resolvedThreadId?: string | number;
   suppressVisibleSessionEffects: boolean;
@@ -283,7 +286,26 @@ export async function prepareAgentRunUserTurn(params: {
         ...(media.length > 0 ? { media } : {}),
         ...(slots.length > 0 ? { mediaImageLayout: { slots } } : {}),
       };
+      const requester = params.admittedStorePath
+        ? await captureRestartRecoveryRequester({
+            client: params.client,
+            inputProvenance: params.inputProvenance,
+            agentId: params.activeSessionAgentId,
+            sessionKey: params.resolvedSessionKey,
+            sessionId: params.admittedSessionId,
+            storePath: params.admittedStorePath,
+            lifecycleRevision: params.sessionEntry?.lifecycleRevision,
+            runId: params.runId,
+            getConfig: () =>
+              (params.context.getCommittedRuntimeConfig ?? params.context.getRuntimeConfig)(),
+            assertCurrent: params.assertCurrent,
+          })
+        : undefined;
+      params.assertCurrent();
       recorder = createUserTurnTranscriptRecorder({
+        ...(!isMainSessionRestartRecoveryInputProvenance(params.inputProvenance)
+          ? { sessionLifecyclePatch: { restartRecoveryRequester: requester } }
+          : {}),
         trackInputCompletion: params.privateCompletion,
         pendingInputReplaySourceSessionKeys: settleWakeReplay?.sourceSessionKeys,
         input,
@@ -297,7 +319,13 @@ export async function prepareAgentRunUserTurn(params: {
           const loadedSessionId = latestEntry?.sessionId?.trim();
           // Session creation is persisted before this phase. No matching entry
           // means the admitted lifecycle instance changed and must fail closed.
-          if (!latestEntry || loadedSessionId !== params.admittedSessionId) {
+          if (
+            !latestEntry ||
+            loadedSessionId !== params.admittedSessionId ||
+            (requester &&
+              ((latestEntry.lifecycleRevision ?? null) !== requester.lifecycleRevision ||
+                loaded.storePath !== params.admittedStorePath))
+          ) {
             return undefined;
           }
           return {

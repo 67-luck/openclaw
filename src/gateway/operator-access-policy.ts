@@ -31,6 +31,15 @@ export class GatewayOperatorAccessUnavailableError extends Error {
 // A retained signal keeps its identity check alive without pinning abandoned HTTP captures.
 // An abort listener on AbortSignal.any would itself keep the composite signal alive in Node.
 const profileAccessChecks = new WeakMap<AbortSignal, () => void>();
+const restartAccessGrants = new WeakMap<object, GatewayAccessGrantRef>();
+
+/** Only this owner can attest that a live source has one reconstructible grant. */
+export function readGatewayOperatorRestartAccessGrant(
+  authority: object,
+): GatewayAccessGrantRef | undefined {
+  return restartAccessGrants.get(authority);
+}
+
 const profileAccessCleanup = new FinalizationRegistry<() => void>((release) => release());
 
 function watchProfileAccess(reference: WeakRef<() => void>, token: object): () => void {
@@ -203,13 +212,15 @@ export function resolvePreparedGatewayOperatorAccessAuthority(
     profileAccessChecks.set(signal, assertCurrent);
     assertCurrent();
     const original = authorities.length === 1 ? authorities[0] : undefined;
-    return {
+    const captured = {
       assertCurrent,
       signal,
       gatewayAccessGrant: original?.authority.grantId
         ? Object.freeze({ pluginId: original.pluginId, grantId: original.authority.grantId })
         : undefined,
     };
+    if (captured.gatewayAccessGrant) restartAccessGrants.set(captured, captured.gatewayAccessGrant);
+    return captured;
   } catch {
     releaseProfiles();
     // Policy errors can contain private configuration; only the generic denial crosses ingress.

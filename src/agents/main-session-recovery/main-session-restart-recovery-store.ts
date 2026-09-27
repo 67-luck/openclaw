@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
-  type InternalSessionEntry as SessionEntry,
   resolveSessionWorkStartError,
+  type InternalSessionEntry as SessionEntry,
 } from "../../config/sessions.js";
 import { buildRestartRecoveryClaimCleanupPatch } from "../../config/sessions/restart-recovery-state.js";
 import {
@@ -18,7 +18,7 @@ import { findDeliveryIntentOwners } from "../../infra/outbound/delivery-queue-st
 import {
   getOwedHarnessCompletionTask,
   readAdmittedHarnessCompletionInput,
-} from "../../tasks/agent-harness-completion-recovery.js";
+} from "../agent-harness-completion-recovery.js";
 import { resolveExecDefaults } from "../exec-defaults.js";
 import type { MainSessionRecoveryAdmission } from "./main-session-recovery-admission.js";
 import type { MainSessionRecoveryCapacity } from "./main-session-recovery-capacity.js";
@@ -344,6 +344,7 @@ export async function recoverStore(params: {
     const expectedRecoverySourceRunId = normalizeOptionalString(
       entry.restartRecoveryDeliverySourceRunId,
     );
+    let requesterMatched = false;
     const resumeCurrent = async (
       options: Pick<
         Parameters<typeof resumeMainSession>[0],
@@ -363,6 +364,7 @@ export async function recoverStore(params: {
           recoveryAttempt: recoveryView.nextAttempt,
           recoveryAdmission: params.recoveryAdmission,
           gatewayRuntime: params.gatewayRuntime,
+          ...(requesterMatched ? { requester: entry.restartRecoveryRequester } : {}),
           ...options,
           lifecycleGeneration: params.lifecycleGeneration,
           recoveryCapacity: params.recoveryCapacity,
@@ -490,8 +492,12 @@ export async function recoverStore(params: {
         maxMessages: 20,
         maxBytes: 256 * 1024,
       });
-      const checkpoint = await readMainSessionRecoveryCheckpoint(transcriptScope);
+      const checkpoint = await readMainSessionRecoveryCheckpoint(
+        transcriptScope,
+        entry.restartRecoveryRequester,
+      );
       source = checkpoint.source;
+      requesterMatched = checkpoint.requesterMatched;
       replaySafeCheckpoint = fullAccess && !entry.pendingFinalDelivery && checkpoint.replaySafe;
     } catch (err) {
       if (stopped()) {
@@ -507,6 +513,7 @@ export async function recoverStore(params: {
     }
     if (
       !recoverableHarnessCompletion &&
+      !requesterMatched &&
       (source === "inter_session" ||
         ((source === undefined ||
           source === "internal_system" ||

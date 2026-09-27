@@ -66,7 +66,12 @@ function readRuntimeUserTurnTranscriptRecorder(
 /** A steered message retains its own live custody while another turn owns the runtime. */
 export function withRuntimeUserTurnTranscriptRecorder<T>(
   runtimeMessage: AgentMessage,
-  append: (beforeFreshMessageCommit?: () => void) => T,
+  append: (
+    beforeFreshMessageCommit?: () => void,
+    restartRecoveryRequester?: ReturnType<
+      NonNullable<UserTurnTranscriptRecorder["getRestartRecoveryRequester"]>
+    >,
+  ) => T,
 ): T {
   const recorder = readRuntimeUserTurnTranscriptRecorder(runtimeMessage);
   const assertCommit = recorder?.assertOriginalInputCommit;
@@ -78,7 +83,7 @@ export function withRuntimeUserTurnTranscriptRecorder<T>(
         return true;
       })
     : undefined;
-  const persist = () => append(beforeFreshMessageCommit);
+  const persist = () => append(beforeFreshMessageCommit, recorder?.getRestartRecoveryRequester?.());
   return recorder?.withPendingInput ? recorder.withPendingInput(persist) : persist();
 }
 

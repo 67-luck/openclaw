@@ -216,6 +216,8 @@ export type UserTurnTranscriptRecorder = {
   replaceTextBeforePersistence?: (text: string) => void;
   /** Confirms exact-run steering provenance after transcript commitment is proven. */
   confirmSteerTargetRunIdForPersistence?: (targetRunId: string) => Promise<void>;
+  /** Private source custody carried into the runtime's original atomic append. */
+  getRestartRecoveryRequester?: () => SessionTranscriptTurnLifecyclePatch["restartRecoveryRequester"];
   getPersistedMessage?: () => PersistedUserTurnMessage | undefined;
   getAdmissionReceipt: () => UserTurnTranscriptAdmissionReceipt | undefined;
   /** Persistence and `waitForRuntimePersistence` settle the handler's write and reject on its failure. */

@@ -12,6 +12,7 @@ export function resolveGatewayAuthPolicyGeneration(config: OpenClawConfig): stri
     const gateway = config.gateway;
     const trustedProxy = gateway?.auth?.trustedProxy;
     generation = stableStringify({
+      mode: gateway?.auth?.mode,
       roles: sourceRolePolicies(gateway?.roles),
       trustedProxies: gateway?.trustedProxies?.toSorted(),
       allowRealIpFallback: gateway?.allowRealIpFallback,

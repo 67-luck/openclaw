@@ -528,6 +528,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
     const appendOptions = copyCodeModeSourceAppendOptions(options, {
       cwd: this.cwd,
       eventId: entry.id,
+      restartRecoveryRequester: options?.restartRecoveryRequester,
       ...(options?.beforeFreshMessageCommit
         ? { beforeFreshMessageCommit: options.beforeFreshMessageCommit }
         : {}),

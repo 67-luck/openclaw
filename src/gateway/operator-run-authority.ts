@@ -9,16 +9,21 @@ import {
   prepareOperatorModelPolicy,
   readOperatorModelPolicyMembership,
 } from "../agents/operator-model-policy.js";
+import { getPublishedPairedOperatorIdentity } from "../infra/device-pairing-publication.js";
+import { getPairedDevice } from "../infra/device-pairing.js";
 import { getProcessGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
 import { intersectOperatorScopes, roleScopesAllow } from "../shared/operator-scope-compat.js";
 import { onUserProfilesChanged } from "../state/user-profile-events.js";
 import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
+import { resolveGatewayAuthPolicyGeneration } from "./auth-policy.js";
 import {
   onGatewayDeviceSourceRevoked,
   readGatewayDeviceSourceAuthority,
+  readGatewayDeviceRestartAuthPolicy,
   readGatewayDeviceSourceIdentity,
   retainGatewayDeviceRevocation,
 } from "./device-revocation.js";
+import { readGatewayOperatorRestartAccessGrant } from "./operator-access-policy.js";
 import {
   onOperatorRolePolicyChanged,
   resolveGatewayOperatorRoleActor,
@@ -26,6 +31,7 @@ import {
 } from "./operator-role-policy.js";
 import { sourceRolePolicy } from "./operator-role-source-policy.js";
 import type { GatewayClient, GatewayRequestContext } from "./server-methods/shared-types.js";
+import { resolveSharedGatewaySessionGeneration } from "./server/ws-shared-generation.js";
 
 type OperatorSource = {
   owners: readonly [
@@ -398,6 +404,37 @@ export async function captureGatewayOperatorRunAuthority(input: {
       manifestPlugins: modelPolicyMetadata ?? [],
     });
     modelPolicy = originalModelPolicy;
+    // A custom process guard is not recoverable from a profile or device alone.
+    // Transport guards must expose their original committed policy dependency.
+    const gatewayAuth = modelPolicyConfig.gateway?.auth;
+    const proxyGeneration =
+      gatewayAuth?.mode === "trusted-proxy"
+        ? resolveSharedGatewaySessionGeneration(
+            {
+              mode: "trusted-proxy",
+              allowTailscale: false,
+              trustedProxy: gatewayAuth.trustedProxy,
+            },
+            modelPolicyConfig.gateway?.trustedProxies,
+          )
+        : undefined;
+    const restartAuthPolicy = params.hasCurrentClientAuthority
+      ? readGatewayDeviceRestartAuthPolicy(params.hasCurrentClientAuthority, proxyGeneration)
+      : client.usesSharedGatewayAuth
+        ? undefined
+        : resolveGatewayAuthPolicyGeneration(modelPolicyConfig);
+    let restartDevice: AdmittedRunOperatorAuthority["restartDevice"];
+    if (restartAuthPolicy !== undefined && !authenticatedOwner && !params.invocationAuthority) {
+      const deviceId = client.connect.device?.id;
+      if (deviceId) {
+        await getPairedDevice(deviceId);
+        assertCurrent();
+        const identity = getPublishedPairedOperatorIdentity(deviceId);
+        if (identity) restartDevice = { deviceId, identity };
+      } else {
+        restartDevice = null;
+      }
+    }
     preparationConfigs.length = 0;
     const source = retainOperatorSource(
       client,
@@ -413,7 +450,15 @@ export async function captureGatewayOperatorRunAuthority(input: {
           assertCurrent();
           return assertProfileCurrent().assignedRole;
         },
-        gatewayAccessGrant: sourceAuthority === null ? null : sourceAuthority?.gatewayAccessGrant,
+        gatewayAccessGrant:
+          sourceAuthority === null
+            ? null
+            : sourceAuthority
+              ? readGatewayOperatorRestartAccessGrant(sourceAuthority)
+              : undefined,
+        restartDevice,
+        restartAuthPolicy,
+        restartBrowserOrigin: client.browserOrigin ?? null,
         source: source.token,
         assertCurrent,
         signal: revocation.signal,

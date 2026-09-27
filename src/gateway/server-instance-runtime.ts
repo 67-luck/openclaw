@@ -176,6 +176,7 @@ export function createGatewayInstanceRuntime(
         ? registerSubagentCompletionToolHandoff(dispatchOptions.delegatedToolPolicyHandoff)
         : undefined;
       const needsDedicatedPrincipal = Boolean(
+        dispatchOptions.operatorAuthority ||
         dispatchOptions.allowModelOverride === true ||
         dispatchOptions.allowSyntheticModelOverride === true ||
         dispatchOptions.allowSyntheticCronRunContinuation === true ||
@@ -189,7 +190,10 @@ export function createGatewayInstanceRuntime(
       const agentTurns = needsDedicatedPrincipal
         ? createAgentTurnFacade({
             client: createSyntheticPluginRuntimeClient({
-              operatorRoleActor: { kind: "system" },
+              operatorRoleActor: dispatchOptions.operatorAuthority
+                ? { kind: "operator", profileId: dispatchOptions.operatorAuthority.profileId }
+                : { kind: "system" },
+              operatorRunAuthority: dispatchOptions.operatorAuthority,
               allowModelOverride:
                 dispatchOptions.allowModelOverride === true ||
                 dispatchOptions.allowSyntheticModelOverride === true,
@@ -198,12 +202,17 @@ export function createGatewayInstanceRuntime(
               runtimeContextFragments: dispatchOptions.runtimeContextFragments,
               internalDeliverySuppressText: dispatchOptions.internalDeliverySuppressText,
               delegatedToolPolicyHandoffId,
-              scopes: dispatchOptions.scopes ?? dispatchOptions.syntheticScopes,
+              scopes: dispatchOptions.operatorAuthority
+                ? [...dispatchOptions.operatorAuthority.scopes]
+                : (dispatchOptions.scopes ?? dispatchOptions.syntheticScopes),
             }),
           })
         : recoveryAgentTurns;
+      let releaseOperator: (() => void) | undefined;
       try {
+        releaseOperator = dispatchOptions.operatorAuthority?.retain?.();
         return await agentTurns.dispatch<T>(payload, {
+          assertAdmissionCurrent: dispatchOptions.assertAdmissionCurrent,
           expectFinal: dispatchOptions.expectFinal,
           onAccepted: dispatchOptions.onAccepted,
           onStartOwner: dispatchOptions.onStartOwner,
@@ -213,6 +222,7 @@ export function createGatewayInstanceRuntime(
           timeoutMs,
         });
       } finally {
+        releaseOperator?.();
         cancelSubagentCompletionToolHandoff(delegatedToolPolicyHandoffId);
       }
     },

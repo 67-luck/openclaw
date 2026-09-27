@@ -282,6 +282,7 @@ export async function appendExpectedSessionTranscriptTurn(
           const appended = appendTranscriptMessageInTransaction(transactionDb, resolved, {
             ...appendOptions,
             message,
+            restartRecoveryRequester: options.sessionLifecyclePatch?.restartRecoveryRequester,
             messageAlreadyRedacted: options.atomicGroup === true,
             ...((append.cwd ?? options.cwd) ? { cwd: append.cwd ?? options.cwd } : {}),
             ...((append.config ?? options.config)

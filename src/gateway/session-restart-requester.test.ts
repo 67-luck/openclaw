@@ -4,6 +4,7 @@ import { createAdmittedRunOperatorAuthority } from "../agents/admitted-run-conte
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PreparedUserProfileIdentity } from "../state/user-profiles.types.js";
 import type { AgentTurnPrincipal } from "./agent-turn/types.js";
+import { resolveGatewayAuthPolicyGeneration } from "./auth-policy.js";
 import { captureRestartRecoveryRequester } from "./session-restart-requester.js";
 
 const { prepareProfile } = vi.hoisted(() => ({ prepareProfile: vi.fn() }));
@@ -33,6 +34,9 @@ function fixture() {
     profileId: "original-person",
     scopes: ["operator.read", "operator.write", "operator.approvals"],
     gatewayAccessGrant: { pluginId: "access-policy", grantId: GRANT },
+    restartDevice: null,
+    restartBrowserOrigin: null,
+    restartAuthPolicy: resolveGatewayAuthPolicyGeneration({}),
     readCurrentRoleAssignment: () => null,
     assertCurrent,
   });
@@ -131,15 +135,23 @@ describe("restart requester capture", () => {
     expect(prepareProfile).not.toHaveBeenCalled();
   });
 
-  it("refuses an unknown access basis rather than treating it as independent", async () => {
-    const f = fixture();
-    f.client.internal!.operatorRunAuthority = createAdmittedRunOperatorAuthority({
-      ...f.authority,
-      gatewayAccessGrant: undefined,
-    });
-    await expect(captureRestartRecoveryRequester(f.params)).resolves.toBeUndefined();
-    expect(prepareProfile).not.toHaveBeenCalled();
-  });
+  it.for([
+    "gatewayAccessGrant",
+    "restartDevice",
+    "restartAuthPolicy",
+    "restartBrowserOrigin",
+  ] as const)(
+    "refuses an unknown %s basis rather than treating it as independent",
+    async (basis) => {
+      const f = fixture();
+      f.client.internal!.operatorRunAuthority = createAdmittedRunOperatorAuthority({
+        ...f.authority,
+        [basis]: undefined,
+      });
+      await expect(captureRestartRecoveryRequester(f.params)).resolves.toBeUndefined();
+      expect(prepareProfile).not.toHaveBeenCalled();
+    },
+  );
 
   it("refuses an unissued operator object even when its identifiers match", async () => {
     const f = fixture();

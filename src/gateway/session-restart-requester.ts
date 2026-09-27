@@ -11,6 +11,7 @@ import type { InputProvenance } from "../sessions/input-provenance.js";
 import { intersectOperatorScopes } from "../shared/operator-scope-compat.js";
 import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
 import type { AgentTurnPrincipal } from "./agent-turn/types.js";
+import { resolveGatewayAuthPolicyGeneration } from "./auth-policy.js";
 import { resolveOperatorRolePolicyForAssignment } from "./operator-role-policy.js";
 import { sourceRolePolicy } from "./operator-role-source-policy.js";
 
@@ -53,7 +54,13 @@ export async function captureRestartRecoveryRequester(params: {
   source.assertCurrent();
   // An absent basis is unknown, not an unrestricted grant. Custom model
   // predicates likewise cannot be reconstructed from their visible choices.
-  if (source.gatewayAccessGrant === undefined || !source.readCurrentRoleAssignment) {
+  if (
+    source.gatewayAccessGrant === undefined ||
+    source.restartDevice === undefined ||
+    source.restartAuthPolicy === undefined ||
+    source.restartBrowserOrigin === undefined ||
+    !source.readCurrentRoleAssignment
+  ) {
     return undefined;
   }
   const modelPolicyMembership = readOperatorModelPolicyMembership(source.modelPolicy);
@@ -68,6 +75,9 @@ export async function captureRestartRecoveryRequester(params: {
     const role = source.readCurrentRoleAssignment();
     if (current.profile.profileId !== source.profileId || current.profile.assignedRole !== role) {
       throw new Error("Restart continuation requester changed during admission.");
+    }
+    if (source.restartAuthPolicy !== resolveGatewayAuthPolicyGeneration(params.getConfig())) {
+      throw new Error("Restart continuation authentication policy changed during admission.");
     }
     const policy = resolveOperatorRolePolicyForAssignment(
       source.profileId,
@@ -85,9 +95,12 @@ export async function captureRestartRecoveryRequester(params: {
       profileId: source.profileId,
       scopes: intersectOperatorScopes(source.scopes, params.client?.connect.scopes ?? []),
       grant: source.gatewayAccessGrant,
+      device: source.restartDevice,
+      browserOrigin: source.restartBrowserOrigin,
       aliasBindingIds: profile.emailBindingIds,
       role,
       rolePolicy: JSON.stringify(sourceRolePolicy(policy) ?? null),
+      authPolicy: source.restartAuthPolicy,
       modelPolicyMembership,
     });
     params.assertCurrent();
