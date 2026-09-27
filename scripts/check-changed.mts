@@ -6,6 +6,7 @@ import {
   constants,
   existsSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -41,7 +42,10 @@ import { readNativeTypeScriptConfig } from "./lib/native-typescript-config.mts";
 import { listGeneratedExtensionAssetSources } from "./lib/static-extension-assets.mts";
 import { createSparseTsgoSkipEnv } from "./lib/tsgo-sparse-guard.mts";
 import type { createChangedCoreTestCheck } from "./run-tsgo-core-test-shards.mts";
-import { hasImportGraphImpactOnTargets } from "./test-projects.test-support.mts";
+import {
+  hasImportGraphImpactOnTargets,
+  resolveImportGraphDependents,
+} from "./test-projects.test-support.mts";
 
 type ChangedCheckCommand = {
   coreTestCheck?: "checkBoundary" | "checkTypes";
@@ -1150,6 +1154,41 @@ function createCiLintCommands(
   ];
 }
 
+/** Expand changes once; executing rows consume these prepared file facts. */
+export async function resolveChangedOxlintFileScope(
+  changedFiles: readonly string[],
+  cwd = process.cwd(),
+) {
+  const { createOxlintFileScope, isOxlintSourcePath } = await import("./run-oxlint-shards.mts");
+  const rootTest = (file: string) =>
+    /^test\/.+\.[cm]?[jt]sx?$/u.test(file) &&
+    !/\.d\.[cm]?ts$/u.test(file) &&
+    !file.split("/").includes("..") &&
+    existsSync(path.join(cwd, file));
+  if (!changedFiles.every((file) => isOxlintSourcePath(file, cwd) || rootTest(file))) {
+    return undefined;
+  }
+  // Ambient/module augmentations can affect consumers without an import edge.
+  if (
+    changedFiles.some((file) =>
+      /\bdeclare\s+(?:global|module)\b/u.test(readFileSync(path.join(cwd, file), "utf8")),
+    )
+  ) {
+    return undefined;
+  }
+  const consumers = changedFiles.length
+    ? resolveImportGraphDependents(changedFiles, cwd, { tooling: true, resolveAliases: true })
+    : [];
+  const selected = [...new Set([...changedFiles, ...consumers])];
+  return {
+    ...createOxlintFileScope(
+      selected.filter((file) => isOxlintSourcePath(file, cwd)),
+      cwd,
+    ),
+    rootTestFiles: selected.filter(rootTest).toSorted((left, right) => left.localeCompare(right)),
+  };
+}
+
 /** PRs keep changed files and all transitive consumers on their existing lint owners. */
 export async function createChangedCiLintPlan(
   result: ChangedLaneResult,
@@ -1164,12 +1203,8 @@ export async function createChangedCiLintPlan(
   ) {
     return null;
   }
-  const {
-    createOxlintShards,
-    resolveChangedOxlintFileScope,
-    selectCoreOxlintStripe,
-    selectExtensionOxlintStripe,
-  } = await import("./run-oxlint-shards.mts");
+  const { createOxlintShards, selectCoreOxlintStripe, selectExtensionOxlintStripe } =
+    await import("./run-oxlint-shards.mts");
   const changedFiles = result.paths.filter((file) => /\.[cm]?[jt]sx?$/u.test(file));
   const fileScope = await resolveChangedOxlintFileScope(changedFiles);
   if (!fileScope) {

@@ -86,7 +86,7 @@ const SCRIPTS_SHARD = {
 
 const LINT_SOURCE_PATH = /^(?:src|ui|packages|extensions|scripts)\/.+\.[cm]?[jt]sx?$/u;
 
-function isLintSourcePath(file: string, cwd: string) {
+export function isOxlintSourcePath(file: string, cwd: string) {
   return (
     file === file.trim() &&
     !file.split("/").includes("..") &&
@@ -96,44 +96,12 @@ function isLintSourcePath(file: string, cwd: string) {
   );
 }
 
-/** Expand changes once; executing rows consume these prepared file facts. */
-export async function resolveChangedOxlintFileScope(
-  changedFiles: readonly string[],
-  cwd = process.cwd(),
-) {
-  const rootTest = (file: string) =>
-    /^test\/.+\.[cm]?[jt]sx?$/u.test(file) &&
-    !/\.d\.[cm]?ts$/u.test(file) &&
-    !file.split("/").includes("..") &&
-    fs.existsSync(path.join(cwd, file));
-  if (!changedFiles.every((file) => isLintSourcePath(file, cwd) || rootTest(file))) {
-    return undefined;
-  }
-  // Ambient/module augmentations can affect consumers without an import edge.
-  if (
-    changedFiles.some((file) =>
-      /\bdeclare\s+(?:global|module)\b/u.test(fs.readFileSync(path.join(cwd, file), "utf8")),
-    )
-  ) {
-    return undefined;
-  }
-  const { resolveImportGraphDependents } = await import("./test-projects.test-support.mts");
-  const consumers = changedFiles.length
-    ? resolveImportGraphDependents(changedFiles, cwd, { tooling: true, resolveAliases: true })
-    : [];
-  const selected = [...new Set([...changedFiles, ...consumers])];
-  return {
-    ...createOxlintFileScope(
-      selected.filter((file) => isLintSourcePath(file, cwd)),
-      cwd,
-    ),
-    rootTestFiles: selected.filter(rootTest).toSorted((left, right) => left.localeCompare(right)),
-  };
-}
-
 /** Filtering follows canonical stripe assignment, so a narrowed row cannot steal another row's files. */
 export function createOxlintFileScope(files: readonly string[], cwd = process.cwd()) {
-  if (new Set(files).size !== files.length || !files.every((file) => isLintSourcePath(file, cwd))) {
+  if (
+    new Set(files).size !== files.length ||
+    !files.every((file) => isOxlintSourcePath(file, cwd))
+  ) {
     throw new Error("Oxlint file selection requires unique, present canonical source paths");
   }
   const selected = files.toSorted((left, right) => left.localeCompare(right));

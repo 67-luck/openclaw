@@ -4,7 +4,11 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { detectChangedLanes } from "../../scripts/changed-lanes.mts";
-import { createChangedCheckPlan, createChangedCiLintPlan } from "../../scripts/check-changed.mts";
+import {
+  createChangedCheckPlan,
+  createChangedCiLintPlan,
+  resolveChangedOxlintFileScope,
+} from "../../scripts/check-changed.mts";
 import {
   createOxlintShards,
   selectExtensionOxlintStripe,
@@ -12,7 +16,6 @@ import {
   createOxlintFileScope,
   filterOxlintShards,
   parseShardRunnerArgs,
-  resolveChangedOxlintFileScope,
 } from "../../scripts/run-oxlint-shards.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
