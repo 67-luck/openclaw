@@ -494,7 +494,7 @@ async function runAgentHarnessOperation<T>(
   params: EmbeddedRunAttemptParams,
   execute: () => Promise<T>,
 ): Promise<T> {
-  await prepareActiveNodeContext();
+  await prepareActiveNodeContext(readRunOperatorAuthority(params)?.profileId);
   resolveAdmittedRunActiveAssertion(params.admittedRunContext, params.abortSignal)?.();
   const activeTrace = getActiveDiagnosticTraceContext();
   const harnessTrace = freezeDiagnosticTraceContext(
@@ -607,6 +607,7 @@ function withoutPluginHarnessPrivateState(
   // separate projections can drift and expose authority on less common operations.
   const {
     admittedRunContext: _admittedRunContext,
+    runtimePluginToolGrant: _runtimePluginToolGrant,
     assistantErrorTranscript: _assistantErrorTranscript,
     compactionCountOwner: _compactionCountOwner,
     onContextAccountingEvent: _onContextAccountingEvent,

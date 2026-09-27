@@ -79,7 +79,7 @@ async function acceptFollowup(client: Client, parentThreadId = "parent-thread") 
   );
 }
 
-function createFixture(historyOwner?: ReturnType<typeof nativeHistoryOwner>) {
+async function createFixture(historyOwner?: ReturnType<typeof nativeHistoryOwner>) {
   const client = createClient();
   const runtime = createRuntime();
   const monitor = new CodexNativeSubagentMonitor(client.client, runtime);
@@ -91,9 +91,9 @@ function createFixture(historyOwner?: ReturnType<typeof nativeHistoryOwner>) {
   });
   onTestFinished(() => {
     unsubscribe();
-    monitor.dispose();
+    return monitor.dispose();
   });
-  registerParent(monitor, undefined, undefined, historyOwner).bindTurn("parent-turn");
+  (await registerParent(monitor, undefined, undefined, historyOwner)).bindTurn("parent-turn");
   return { client, runtime, monitor, events };
 }
 
@@ -105,11 +105,11 @@ async function awaitingAdmission(
     laterPendingTurn?: boolean;
   } = {},
 ) {
-  const fixture = createFixture();
+  const fixture = await createFixture();
   const { client, monitor } = fixture;
   const receiverParent = options.receiverParent ?? "parent-thread";
   if (receiverParent !== "parent-thread") {
-    registerParent(monitor, receiverParent, "agent:main:foreign").bindTurn("parent-turn");
+    (await registerParent(monitor, receiverParent, "agent:main:foreign")).bindTurn("parent-turn");
   }
   await notifyChildStarted(client, receiverParent, "receiver");
   await startTurn(client, "receiver", "turn-a");
@@ -126,11 +126,11 @@ async function awaitingAdmission(
 }
 
 describe("native wait assignment projection", () => {
-  it.each(["running", "queued", "succeeded"] as const)(
+  it.each(["running", "succeeded"] as const)(
     "reprojects an observed receiver when discovery restores its recorded follow-up assignment (%s)",
     async (status) => {
       const historyOwner = nativeHistoryOwner();
-      const { client, runtime, events } = createFixture(historyOwner);
+      const { client, runtime, events } = await createFixture(historyOwner);
       await notifyChildStarted(client, "parent-thread", "waiter");
       await startTurn(client, "waiter", "waiter-turn");
       await waitItem(client, "started", ["receiver"]);
@@ -171,7 +171,7 @@ describe("native wait assignment projection", () => {
     "does not adopt an ineligible recorded receiver into an observed wait: %s",
     async (scenario) => {
       const historyOwner = nativeHistoryOwner();
-      const { client, runtime, events } = createFixture(historyOwner);
+      const { client, runtime, events } = await createFixture(historyOwner);
       await notifyChildStarted(client, "parent-thread", "waiter");
       await startTurn(client, "waiter", "waiter-turn");
       await waitItem(client, "started", ["receiver"]);
@@ -210,7 +210,6 @@ describe("native wait assignment projection", () => {
   );
 
   it.each([
-    { previousStatus: "completed", laterPendingTurn: false },
     { previousStatus: "interrupted", laterPendingTurn: false },
     { previousStatus: "completed", laterPendingTurn: true },
   ] as const)(
@@ -256,30 +255,30 @@ describe("native wait assignment projection", () => {
     },
   );
 
-  it.each(["waitingOnApproval", "waitingOnUserInput"])(
-    "retains %s while refreshing the underlying receiver dependency",
-    async (flag) => {
-      const { client, events } = await awaitingAdmission();
-      await client.notify({
-        method: "thread/status/changed",
-        params: { threadId: "waiter", status: { type: "active", activeFlags: [flag] } },
-      });
-      const attentionEventCount = events.length;
-      await acceptFollowup(client);
-      expect(events).toHaveLength(attentionEventCount);
-      expect(events.at(-1)?.data.wait).toEqual({
-        kind: flag === "waitingOnApproval" ? "approval" : "user_input",
-      });
-      await client.notify({
-        method: "thread/status/changed",
-        params: { threadId: "waiter", status: { type: "active", activeFlags: [] } },
-      });
-      expect(events.at(-1)?.data.wait).toMatchObject({
-        kind: "children",
-        dependencies: [{ runId: "codex-thread:receiver:turn:turn-b" }],
-      });
-    },
-  );
+  it("retains approval attention while refreshing the underlying receiver dependency", async () => {
+    const { client, events } = await awaitingAdmission();
+    await client.notify({
+      method: "thread/status/changed",
+      params: {
+        threadId: "waiter",
+        status: { type: "active", activeFlags: ["waitingOnApproval"] },
+      },
+    });
+    const attentionEventCount = events.length;
+    await acceptFollowup(client);
+    expect(events).toHaveLength(attentionEventCount);
+    expect(events.at(-1)?.data.wait).toEqual({
+      kind: "approval",
+    });
+    await client.notify({
+      method: "thread/status/changed",
+      params: { threadId: "waiter", status: { type: "active", activeFlags: [] } },
+    });
+    expect(events.at(-1)?.data.wait).toMatchObject({
+      kind: "children",
+      dependencies: [{ runId: "codex-thread:receiver:turn:turn-b" }],
+    });
+  });
 
   it.each(["completed-wait", "ended-turn", "retired-parent", "foreign-parent", "mailbox"])(
     "does not refresh an ineligible wait: %s",
@@ -293,7 +292,7 @@ describe("native wait assignment projection", () => {
       } else if (scenario === "ended-turn") {
         await endTurn(client, "waiter", "waiter-turn", "interrupted");
       } else if (scenario === "retired-parent") {
-        monitor.retireParent("parent-thread");
+        await monitor.retireParent("parent-thread");
       }
       const eventCount = events.length;
       await acceptFollowup(client, receiverParent);

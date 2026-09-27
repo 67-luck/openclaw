@@ -1,6 +1,5 @@
 // Owns process-local agent run context, ownership, and projection state.
 import { randomUUID } from "node:crypto";
-import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { registerListener } from "../shared/listeners.js";
 import { recordAgentEventRouting } from "./agent-event-execution-context.js";
 import {
@@ -14,6 +13,7 @@ import {
   buildAgentRunProjectionIndex,
   projectedAgentRunInputKey,
   projectedRunIdentity,
+  resolveAgentRunProjectionProgressState,
 } from "./agent-run-projection.js";
 import {
   getAgentRunRegistryState,
@@ -603,41 +603,15 @@ export function buildProjectedAgentRunIndex(): ProjectedAgentRunIndex {
   return buildAgentRunProjectionIndex({ contexts: contexts.values(), lifecycleGeneration });
 }
 
-export function resolveProjectedAgentRunProgressState(params: {
-  sessionKeys: readonly string[];
-  sessionId?: string;
-  agentId?: string;
-  defaultAgentId?: string;
-  index?: ProjectedAgentRunIndex;
-}): ProjectedAgentRunState | undefined {
-  const index = params.index ?? buildProjectedAgentRunIndex();
-  const agentId =
-    params.agentId ??
-    params.sessionKeys.flatMap((key) => parseAgentSessionKey(key)?.agentId ?? [])[0] ??
-    params.defaultAgentId;
-  if (!agentId) {
-    return undefined;
-  }
-  const mayAdoptOwnerless =
-    params.defaultAgentId !== undefined &&
-    normalizeAgentId(agentId) === normalizeAgentId(params.defaultAgentId);
-  const statuses = params.sessionKeys.flatMap((sessionKey) => [
-    index.sessionKeys.get(projectedRunIdentity(agentId, sessionKey)),
-    ...(mayAdoptOwnerless ? [index.ownerlessSessionKeys.get(sessionKey)] : []),
-  ]);
-  if (params.sessionId !== undefined) {
-    statuses.push(index.sessionIds.get(projectedRunIdentity(agentId, params.sessionId)));
-    if (mayAdoptOwnerless) {
-      statuses.push(index.ownerlessSessionIds.get(params.sessionId));
-    }
-  }
-  return statuses.includes("running")
-    ? "running"
-    : statuses.includes("queued")
-      ? "queued"
-      : statuses.includes("capacity-wait")
-        ? "capacity-wait"
-        : undefined;
+export function resolveProjectedAgentRunProgressState(
+  params: Parameters<typeof resolveAgentRunProjectionProgressState>[0] & {
+    index?: ProjectedAgentRunIndex;
+  },
+): ProjectedAgentRunState | undefined {
+  return resolveAgentRunProjectionProgressState(
+    params,
+    params.index ?? buildProjectedAgentRunIndex(),
+  );
 }
 
 /** Clears context state for a run that has ended or been discarded. */

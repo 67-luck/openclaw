@@ -11,11 +11,19 @@ import {
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { readSessionColdTranscript } from "../config/sessions/session-cold-storage-state.js";
 import { runSessionColdStorageMaintenance } from "../config/sessions/session-cold-storage.js";
+import type { SessionHistoryWorkerRequest } from "../config/sessions/session-history-types.js";
 import {
   createSessionColdStorageFixture,
   maintenanceConfig,
 } from "../config/sessions/session-cold-storage.test-support.js";
 import { readSessionHistoryPageInWorker } from "../config/sessions/session-history-worker-runtime.js";
+import * as targetInventory from "../config/sessions/session-store-target-inventory.js";
+import {
+  historyClearTimeout,
+  historyLane,
+  maintenanceLane,
+  rotateDatabaseWorkers,
+} from "../config/sessions/session-transcript-worker-resources.js";
 import {
   prepareSessionEntryPresenceRead,
   withSessionHistoryWorkerDatabase,
@@ -26,20 +34,29 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../state/openclaw-agent-db-lifecycle.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
-import { captureOpenClawAgentDatabaseRegistration } from "../state/openclaw-agent-db-registry-listing.js";
+import * as registryListing from "../state/openclaw-agent-db-registry-listing.js";
+import {
+  captureOpenClawAgentDatabaseRegistration,
+  invalidateRegisteredAgentDatabasesMemo,
+} from "../state/openclaw-agent-db-registry-listing.js";
 import { registerOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
 import {
   resolveIncognitoOpenClawAgentSqlitePath,
   resolveOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.paths.js";
-import { captureOpenClawStateDatabaseReadAdmission } from "../state/openclaw-state-db-cache.js";
+import {
+  captureOpenClawStateDatabaseReadAdmission,
+  closeOpenClawStateDatabaseAsync,
+} from "../state/openclaw-state-db-cache.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import {
   withOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { readChatHistoryPage } from "./server-methods/chat-history-pages.js";
+import type { SessionArtifactReadQuery } from "./session-artifact-read.js";
 import { readChatHistoryMessageId } from "./session-history-tail.js";
+import * as storeSources from "./session-utils-store-sources.js";
 
 const observed = vi.hoisted(() => ({
   timers: vi.spyOn(globalThis, "setTimeout"),
@@ -88,9 +105,15 @@ vi.mock("../config/sessions/session-cold-storage-read.js", async (importOriginal
 
 afterAll(() => observed.timers.mockRestore());
 
-afterEach(() => {
+afterEach(async () => {
   observed.dispatch = undefined;
   observed.restoration = undefined;
+  await Promise.all(
+    [historyLane, maintenanceLane].map(async (lane) => {
+      historyClearTimeout(lane.idleTimer);
+      await rotateDatabaseWorkers(lane);
+    }),
+  );
   for (const worker of observed.workers.splice(0)) {
     expect(worker.threadId).toBe(-1);
   }
@@ -157,6 +180,30 @@ it("retains the prepared metadata target when caller scope and environment chang
   });
 });
 
+it("keeps fresh fixture roots isolated while reusing idle reader execution", async () => {
+  let previousWorker: Worker | undefined;
+  for (const sessionId of ["first-fixture", "second-fixture"]) {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const fixture = await seed(state, "main", sessionId);
+      expect((await fixture.read()).messages.map(readChatHistoryMessageId)).toEqual([
+        `${sessionId}-message`,
+      ]);
+      const worker = observed.workers.at(-1)!;
+      if (previousWorker) {
+        if (process.versions.bun) {
+          expect(previousWorker.threadId).toBe(-1);
+          expect(worker).not.toBe(previousWorker);
+        } else {
+          expect(worker).toBe(previousWorker);
+        }
+      }
+      previousWorker = worker;
+    });
+  }
+  await closeOpenClawStateDatabaseAsync();
+  expect(previousWorker?.threadId).toBe(-1);
+});
+
 it("joins native worker exit when metadata-read custody is revoked during dispatch", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const target = {
@@ -219,37 +266,213 @@ async function seed(state: OpenClawTestState, agentId: string, sessionId: string
   };
   return {
     target,
+    params,
     path: resolveOpenClawAgentSqlitePath({ agentId, env: state.env }),
     read: () => readChatHistoryPage(params),
   };
 }
 
-const rawHistoryKinds = ["message-by-id", "message-count", "message-lookup", "recent"] as const;
+type HistoryReadCase = {
+  auxiliary: boolean;
+  read: (fixture: Awaited<ReturnType<typeof seed>>, signal?: AbortSignal) => Promise<unknown>;
+};
+const historyReads = {
+  artifacts: {
+    auxiliary: false,
+    read: async ({ target }, signal) => {
+      const selection = { sessionKey: target.sessionKey, artifactId: "missing-artifact" };
+      const queries = [
+        { kind: "list", sessionKey: target.sessionKey },
+        { kind: "image-page", sessionKey: target.sessionKey, limit: 10 },
+        { kind: "image", ...selection, includeData: true },
+        { kind: "download-grant", ...selection },
+        {
+          kind: "download-response",
+          ...selection,
+          response: { expectedDigest: "missing", method: "GET", headers: {} },
+        },
+      ] satisfies SessionArtifactReadQuery[];
+      const results: unknown[] = [];
+      for (const query of queries) {
+        results.push(
+          await readSessionHistoryPageInWorker(
+            { kind: "artifacts", params: { target, query } },
+            signal,
+          ),
+        );
+      }
+      return results;
+    },
+  },
+  "message-page": {
+    auxiliary: false,
+    read: ({ target }, signal) =>
+      readSessionHistoryPageInWorker(
+        {
+          kind: "message-page",
+          params: { target, options: { offset: 0, maxMessages: 20, maxBytes: 100_000 } },
+        },
+        signal,
+      ),
+  },
+  "around-id": {
+    auxiliary: false,
+    read: ({ target }, signal) =>
+      readSessionHistoryPageInWorker(
+        {
+          kind: "around-id",
+          params: { target, options: { messageId: `${target.sessionId}-message`, maxMessages: 20 } },
+        },
+        signal,
+      ),
+  },
+  "source-messages": {
+    auxiliary: false,
+    read: ({ target }, signal) =>
+      readSessionHistoryPageInWorker(
+        {
+          kind: "source-messages",
+          params: { target, options: { mode: "full", reason: "topology parity" } },
+        },
+        signal,
+      ),
+  },
+  "recent-page": {
+    auxiliary: false,
+    read: ({ target }, signal) =>
+      readSessionHistoryPageInWorker(
+        {
+          kind: "recent-page",
+          params: { target, options: { maxMessages: 20, maxLines: 100 } },
+        },
+        signal,
+      ),
+  },
+  "transcript-binding": {
+    auxiliary: false,
+    read: ({ target }, signal) =>
+      readSessionHistoryPageInWorker({ kind: "transcript-binding", params: { target } }, signal),
+  },
+  "message-by-id": {
+    auxiliary: false,
+    read: ({ target }, signal) =>
+      readSessionHistoryPageInWorker(
+        { kind: "message-by-id", params: { target, messageId: `${target.sessionId}-message` } },
+        signal,
+      ),
+  },
+  "message-count": {
+    auxiliary: false,
+    read: ({ target }, signal) =>
+      readSessionHistoryPageInWorker({ kind: "message-count", params: { target } }, signal),
+  },
+  "message-lookup": {
+    auxiliary: false,
+    read: ({ target }, signal) =>
+      readSessionHistoryPageInWorker(
+        { kind: "message-lookup", params: { target, messageId: `${target.sessionId}-message` } },
+        signal,
+      ),
+  },
+  recent: {
+    auxiliary: false,
+    read: ({ target }, signal) =>
+      readSessionHistoryPageInWorker(
+        { kind: "recent", params: { target, maxMessages: 20, maxLines: 100 } },
+        signal,
+      ),
+  },
+  rpc: {
+    auxiliary: true,
+    read: ({ params }, signal) => readSessionHistoryPageInWorker({ kind: "rpc", params }, signal),
+  },
+  http: {
+    auxiliary: true,
+    read: ({ target }, signal) =>
+      readSessionHistoryPageInWorker({ kind: "http", params: { target, limit: 20 } }, signal),
+  },
+  delta: {
+    auxiliary: true,
+    read: async ({ target }, signal) => {
+      const { assertCurrent, ...result } = await readSessionHistoryPageInWorker(
+        { kind: "delta", params: { target, limits: { maxBytes: 100_000, maxEvents: 20 } } },
+        signal,
+      );
+      assertCurrent();
+      return result;
+    },
+  },
+} satisfies Record<SessionHistoryWorkerRequest["kind"], HistoryReadCase>;
+const selectedReads = Object.entries(historyReads).filter(([, read]) => !read.auxiliary);
 
-function readRawHistory(
-  fixture: Awaited<ReturnType<typeof seed>>,
-  kind: (typeof rawHistoryKinds)[number],
-  signal?: AbortSignal,
-) {
-  const target = fixture.target;
-  if (kind === "message-count") {
-    return readSessionHistoryPageInWorker({ kind, params: { target } }, signal);
-  }
-  if (kind === "recent") {
-    return readSessionHistoryPageInWorker(
-      { kind, params: { target, maxMessages: 20, maxLines: 20 } },
-      signal,
-    );
-  }
-  const params = { target, messageId: `${target.sessionId}-message` };
-  return kind === "message-by-id"
-    ? readSessionHistoryPageInWorker({ kind, params }, signal)
-    : readSessionHistoryPageInWorker({ kind, params }, signal);
-}
+it.each(Object.entries(historyReads))(
+  "preserves %s output and prepares only the topology it consumes",
+  async (kind, read) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const fixture = await seed(state, "main", "topology-work");
+      await seed(state, "unrelated", "unrelated-history");
+      const prepare = storeSources.prepareGatewaySessionStoreReadSourcesAsync;
+      const full = vi
+        .spyOn(storeSources, "prepareGatewaySessionStoreReadSourcesAsync")
+        .mockImplementation((params) => prepare({ ...params, includeAuxiliarySources: true }));
+      let expected: unknown;
+      try {
+        expected = await read.read(fixture);
+      } finally {
+        full.mockRestore();
+      }
+      if (kind === "message-count") {
+        expect(expected).toBe(1);
+      } else if (kind === "transcript-binding") {
+        expect(expected).toEqual({
+          sessionKey: fixture.target.sessionKey,
+          sessionId: fixture.target.sessionId,
+        });
+      } else if (kind === "artifacts") {
+        expect(expected).toEqual([
+          { kind: "list", artifacts: [] },
+          { kind: "image-page", artifacts: [] },
+          { kind: "image" },
+          { kind: "download-grant" },
+          { kind: "download-response", response: undefined },
+        ]);
+      } else {
+        expect(JSON.stringify(expected)).toContain('"topology-work-message"');
+      }
+      const inventory = vi.spyOn(targetInventory, "prepareSessionStoreTargetInventory");
+      const registry = vi.spyOn(registryListing, "prepareOpenClawAgentDatabaseRegistrySnapshotRead");
+      const inputs: Record<string, unknown>[] = [];
+      observed.dispatch = (message) => {
+        const input = asOptionalRecord(asOptionalRecord(message)?.input);
+        if (asOptionalRecord(input?.request)?.kind === kind) {
+          inputs.push(asOptionalRecord(input?.target)!);
+        }
+      };
+      try {
+        expect(await read.read(fixture)).toEqual(expected);
+        expect(inputs.length).toBe(kind === "artifacts" ? 5 : 1);
+        expect(inventory).toHaveBeenCalledTimes(read.auxiliary ? 1 : 0);
+        expect(registry).toHaveBeenCalledTimes(read.auxiliary ? 1 : 0);
+        for (const input of inputs) {
+          if (read.auxiliary) {
+            expect(input.sourceDiscovery).toBeDefined();
+          } else {
+            expect(input.sourceDiscovery).toBeUndefined();
+            expect(input.sourceDatabases).toEqual({});
+          }
+        }
+      } finally {
+        observed.dispatch = undefined;
+        registry.mockRestore();
+        inventory.mockRestore();
+      }
+    });
+  },
+);
 
-it.each(rawHistoryKinds)(
-  "settles cancelled %s reads before reuse and joins their worker on close",
-  async (kind) => {
+it.each(selectedReads)(
+  "settles cancelled %s reads before reuse and closes their database handles",
+  async (kind, read) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const fixture = await seed(state, "main", "cancel-message-read");
       const controller = new AbortController();
@@ -263,29 +486,34 @@ it.each(rawHistoryKinds)(
           controller.abort(cancelled);
         }
       };
-      const pending = readRawHistory(fixture, kind, controller.signal);
+      const pending = read.read(fixture, controller.signal);
       await expect(pending).rejects.toBe(cancelled);
       expect(dispatched).toBe(true);
       const worker = observed.workers.at(-1)!;
+      const threadId = worker.threadId;
       expect((await fixture.read()).messages.map(readChatHistoryMessageId)).toEqual([
         "cancel-message-read-message",
       ]);
       expect(observed.workers.at(-1)).toBe(worker);
       await closeOpenClawAgentDatabaseByPathAsync(fixture.path, "main");
-      expect(worker.threadId).toBe(-1);
+      expect(worker.threadId).toBe(process.versions.bun ? -1 : threadId);
       expect((await fixture.read()).messages.map(readChatHistoryMessageId)).toEqual([
         "cancel-message-read-message",
       ]);
-      expect(observed.workers.at(-1)).not.toBe(worker);
+      if (process.versions.bun) {
+        expect(observed.workers.at(-1)).not.toBe(worker);
+      } else {
+        expect(observed.workers.at(-1)).toBe(worker);
+      }
     });
   },
 );
 
-it.each(rawHistoryKinds)(
-  "rejects selected database revocation during raw %s dispatch and joins native exit",
-  async (kind) => {
+it.each(selectedReads)(
+  "rejects %s when selected database custody is revoked during dispatch",
+  async (kind, read) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const fixture = await seed(state, "main", "revoked-raw-read");
+      const fixture = await seed(state, "main", "revoked-selected");
       let closing: Promise<boolean> | undefined;
       observed.dispatch = (message) => {
         const input = asOptionalRecord(asOptionalRecord(message)?.input);
@@ -294,52 +522,70 @@ it.each(rawHistoryKinds)(
           closing = closeOpenClawAgentDatabaseByPathAsync(fixture.path, "main");
         }
       };
-      await expect(readRawHistory(fixture, kind)).rejects.toThrow("revoked");
+      await expect(read.read(fixture)).rejects.toThrow("revoked");
       expect(closing).toBeDefined();
       await closing;
       expect(observed.workers.at(-1)?.threadId).toBe(-1);
-      expect((await fixture.read()).messages.map(readChatHistoryMessageId)).toEqual([
-        "revoked-raw-read-message",
-      ]);
     });
   },
 );
 
-it.each(["no-commit", "metadata-refresh"] as const)(
-  "keeps history readable across unchanged sibling registration (%s)",
-  async (mode) => {
+it.each([
+  { phase: "discovery", mode: "no-commit" },
+  { phase: "discovery", mode: "metadata-refresh" },
+  { phase: "revalidation", mode: "no-commit" },
+  { phase: "revalidation", mode: "metadata-refresh" },
+])(
+  "keeps history readable across unchanged sibling registration during $phase ($mode)",
+  async ({ phase, mode }) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const a = await seed(state, "main", "registration-a");
       const b = await seed(state, "other", "registration-b");
       await a.read();
       await b.read();
-      let dispatched = false;
+      const registryPath = openOpenClawStateDatabase().path;
+      const registration = captureOpenClawAgentDatabaseRegistration({
+        agentId: "other",
+        agentPath: b.path,
+        admission: captureOpenClawStateDatabaseReadAdmission(registryPath),
+      });
+      invalidateRegisteredAgentDatabasesMemo({ path: registryPath });
+      let started = false;
+      let finished = false;
       observed.dispatch = (message) => {
         const input = asOptionalRecord(asOptionalRecord(message)?.input);
         const params = asOptionalRecord(asOptionalRecord(input?.request)?.params);
-        if (params?.sessionId !== "registration-a") {
+        const registryRead =
+          asOptionalRecord(input?.command)?.type === "agentDatabaseRegistry.read";
+        if (!started) {
+          if (phase === "discovery" ? registryRead : params?.sessionId === "registration-a") {
+            started = true;
+            registration.begin();
+          }
+          return;
+        }
+        if (!registryRead) {
           return;
         }
         observed.dispatch = undefined;
-        dispatched = true;
-        const registration = captureOpenClawAgentDatabaseRegistration({
-          agentId: "other",
-          agentPath: b.path,
-          admission: captureOpenClawStateDatabaseReadAdmission(openOpenClawStateDatabase().path),
-        });
-        registration.begin();
         if (mode === "metadata-refresh") {
           registerOpenClawAgentDatabase(
             { agentId: "other", path: b.path, env: state.env },
-            (receipt) => registration.recordCommitted(receipt),
+            { committed: (receipt) => registration.recordCommitted(receipt) },
           );
         }
         registration.finish();
+        finished = true;
       };
-      expect((await a.read()).messages.map(readChatHistoryMessageId)).toEqual([
-        "registration-a-message",
-      ]);
-      expect(dispatched).toBe(true);
+      try {
+        expect((await a.read()).messages.map(readChatHistoryMessageId)).toEqual([
+          "registration-a-message",
+        ]);
+        expect(started && finished).toBe(true);
+      } finally {
+        observed.dispatch = undefined;
+        registration.finish();
+      }
     });
   },
 );
@@ -380,14 +626,15 @@ it.each(["new-agent", "new-path", "schema", "physical-replacement"] as const)(
   },
 );
 
-it("closes A through native exit while active and queued B pages survive, then reopens replaced A", async () => {
+it("closes idle A while active and queued B pages survive, then reads replaced A", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const a = await seed(state, "main", "close-a");
     const b = await seed(state, "other", "active-b");
     const c = await seed(state, "other", "queued-b");
-    await a.read();
+    expect((await a.read()).messages.map(readChatHistoryMessageId)).toEqual(["close-a-message"]);
     await b.read();
     const oldWorker = observed.workers.at(-1)!;
+    const threadId = oldWorker.threadId;
     let closing: Promise<boolean> | undefined;
     observed.dispatch = (message) => {
       const input = asOptionalRecord(asOptionalRecord(message)?.input);
@@ -404,13 +651,28 @@ it("closes A through native exit while active and queued B pages survive, then r
       ["active-b-message"],
       ["queued-b-message"],
     ]);
-    expect(oldWorker.threadId).toBe(-1);
+    expect(oldWorker.threadId).toBe(process.versions.bun ? -1 : threadId);
     // This also exercises Windows replacement while the unrelated agent remains usable.
     fs.copyFileSync(a.path, `${a.path}.replacement`);
     fs.renameSync(a.path, `${a.path}.previous`);
     fs.renameSync(`${a.path}.replacement`, a.path);
-    expect((await a.read()).messages.map(readChatHistoryMessageId)).toEqual(["close-a-message"]);
+    await replaceTranscriptEvents(a.target, [
+      { type: "session", version: 3, id: "close-a" },
+      {
+        type: "message",
+        id: "replacement-a-message",
+        parentId: null,
+        message: { role: "user", content: "replacement content" },
+      },
+    ]);
+    await waitForSessionTranscriptProjection(a.target);
+    expect((await a.read()).messages.map(readChatHistoryMessageId)).toEqual([
+      "replacement-a-message",
+    ]);
     expect((await b.read()).messages.map(readChatHistoryMessageId)).toEqual(["active-b-message"]);
+    if (!process.versions.bun) {
+      expect(observed.workers.at(-1)).toBe(oldWorker);
+    }
   });
 });
 
@@ -437,11 +699,20 @@ it("evicts the least recently used of 64 retained targets without charging missi
       expect(fs.existsSync(target.storePath)).toBe(false);
     }
     await targets[64]!.read();
-    // Only the confirmed eviction releases custody without retiring this worker.
-    await closeOpenClawAgentDatabaseByPathAsync(targets[1]!.path, "retained-1");
-    expect(worker.threadId).toBe(threadId);
-    await closeOpenClawAgentDatabaseByPathAsync(targets[0]!.path, "retained-0");
-    expect(worker.threadId).toBe(-1);
+    const closeResources = vi.spyOn(historyLane.pool, "closeResources");
+    try {
+      // The evicted target has no retained native custody; the hot target still does.
+      await closeOpenClawAgentDatabaseByPathAsync(targets[1]!.path, "retained-1");
+      expect(worker.threadId).toBe(threadId);
+      expect(closeResources).not.toHaveBeenCalled();
+      await closeOpenClawAgentDatabaseByPathAsync(targets[0]!.path, "retained-0");
+      expect(worker.threadId).toBe(process.versions.bun ? -1 : threadId);
+      if (!process.versions.bun) {
+        expect(closeResources).toHaveBeenCalledWith(JSON.stringify([{ path: targets[0]!.path }]));
+      }
+    } finally {
+      closeResources.mockRestore();
+    }
     expect((await targets[64]!.read()).messages.map(readChatHistoryMessageId)).toEqual([
       "history-64-message",
     ]);

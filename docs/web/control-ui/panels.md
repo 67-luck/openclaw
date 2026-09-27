@@ -95,6 +95,8 @@ Closing a connecting tab cancels that opening or attachment request. Other tabs 
 
 Conversation-owned sessions opened from a Chat session's Terminal panel are not bound to a browser connection. `terminal.attach` adds each browser as a viewer without taking ownership, and closing an established viewer tab detaches only that browser. Conversation-owned PTYs remain until the exact-session agent closes them, their shell exits, the session is archived, policy disables them, or the Gateway shuts down. `terminal.list` marks each entry as connection- or agent-owned.
 
+Resetting an Incognito session closes its conversation-owned terminals and cancels pending terminal opens before deleting the session.
+
 All Gateway terminal PTYs are process-local. A Gateway restart ends them; the
 PTY sessions and their scrollback are not recovered after the new process starts.
 
@@ -159,6 +161,9 @@ same item from chat selects its existing tab. Links inside the reader and URLs
 entered in the address bar navigate the current tab, with independent Back and
 Forward history. The **+** button opens a new tab. Up to ten tabs stay in memory,
 including their loaded documents while you switch between them.
+
+Opening or loading an item keeps keyboard focus where you are typing. The
+**+** button focuses the address bar so you can enter a new URL.
 
 The reader shows descriptions, issue and pull-request discussion comments,
 commit comments, published inline PR review comments with file/line and diff

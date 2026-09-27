@@ -4,7 +4,7 @@ import type { AdmittedRunContext } from "../../agents/admitted-run-context.js";
 import { isRetainedExecutionOwnerBinding } from "../../audit/execution-owner-binding.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
-import { recordSubagentTerminalState } from "../../sessions/session-state-events.js";
+import { recordSubagentTerminalState } from "../../sessions/subagent-terminal-state.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import {
   createRunningTaskRun,
@@ -227,13 +227,15 @@ export function createBackgroundTaskRecord(
 }
 
 /** Mirrors a cancelled actor wait without replacing a same-id predecessor's task. */
-export function recordQueuedBackgroundTaskCancellation(params: {
+export async function recordQueuedBackgroundTaskCancellation(params: {
   input: AcpRunTurnInput;
   deps: AcpSessionManagerDeps;
   sessionKey: string;
   agentId: string;
   startedAt: number;
-}): void {
+  assertCurrent: () => void;
+}): Promise<void> {
+  params.assertCurrent();
   if (params.input.mode !== "prompt") {
     return;
   }
@@ -275,12 +277,16 @@ export function recordQueuedBackgroundTaskCancellation(params: {
     progressSummary: null,
     terminalSummary: null,
   });
-  recordSubagentTerminalState({
-    childSessionKey: sessionKey,
-    runId: context.runId,
-    requesterSessionKey: context.requesterSessionKey,
-    outcomeStatus: "cancelled",
-  });
+  await recordSubagentTerminalState(
+    {
+      childSessionKey: sessionKey,
+      runId: context.runId,
+      requesterSessionKey: context.requesterSessionKey,
+      outcomeStatus: "cancelled",
+    },
+    params.assertCurrent,
+  );
+  params.assertCurrent();
 }
 
 /** Links ACP owner rows only when the runtime reaches its prompt-submitted boundary. */
@@ -355,31 +361,27 @@ export function markBackgroundTaskTerminal(
   },
 ): void {
   try {
+    const terminal = {
+      runId: record.runId,
+      taskId: record.taskId,
+      runtime: "acp" as const,
+      sessionKey: record.childSessionKey,
+      endedAt: params.endedAt,
+      lastEventAt: params.lastEventAt,
+      progressSummary: params.progressSummary,
+      terminalSummary: params.terminalSummary,
+    };
     if (params.status === "succeeded") {
       completeTaskRunByRunId({
-        runId: record.runId,
-        taskId: record.taskId,
-        runtime: "acp",
-        sessionKey: record.childSessionKey,
-        endedAt: params.endedAt,
-        lastEventAt: params.lastEventAt,
-        progressSummary: params.progressSummary,
-        terminalSummary: params.terminalSummary,
+        ...terminal,
         terminalOutcome: params.terminalOutcome,
       });
       return;
     }
     failTaskRunByRunId({
-      runId: record.runId,
-      taskId: record.taskId,
-      runtime: "acp",
-      sessionKey: record.childSessionKey,
+      ...terminal,
       status: params.status,
-      endedAt: params.endedAt,
-      lastEventAt: params.lastEventAt,
       error: params.error,
-      progressSummary: params.progressSummary,
-      terminalSummary: params.terminalSummary,
     });
   } catch (error) {
     logVerbose(

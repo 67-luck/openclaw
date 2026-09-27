@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -13,10 +14,12 @@ import {
   sessionHistoryCleanupError,
 } from "../config/sessions/session-history-worker-errors.js";
 import { readSessionHistoryPageInWorker } from "../config/sessions/session-history-worker-runtime.js";
+import { SessionTranscriptProjectionUnavailableError } from "../config/sessions/session-transcript-projection-error.js";
+import * as reconcile from "../config/sessions/session-transcript-reconcile.js";
 import type { SessionTranscriptHistoryWorkerInput } from "../config/sessions/session-transcript-worker.types.js";
 import { DEFAULT_WORKER_PENDING_TASKS } from "../infra/worker-task-capacity.js";
 import * as stateContext from "../state/openclaw-state-worker-context.js";
-import * as storeSources from "./session-utils-store-sources.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 
 const { runWorker, readerAdmitted } = vi.hoisted(() => ({
   runWorker: vi.fn(),
@@ -31,9 +34,17 @@ vi.mock("../config/sessions/session-transcript-worker-runtime.js", () => ({
       assertCurrent: () => void;
     }) => unknown,
   ) => {
-    const result = operation({ generation: 1, run: runWorker, assertCurrent: () => {} });
-    readerAdmitted();
-    return result;
+    let admitted = false;
+    return operation({
+      generation: 1,
+      run: runWorker,
+      assertCurrent: () => {
+        if (!admitted) {
+          admitted = true;
+          readerAdmitted();
+        }
+      },
+    });
   },
 }));
 vi.mock("../config/sessions/session-cold-storage-read.js", () => ({
@@ -94,6 +105,123 @@ beforeEach(() => {
 
 afterEach(() => vi.restoreAllMocks());
 
+it.each(["timeout", "cancel"] as const)(
+  "bounds projection recovery and preserves caller %s",
+  async (boundary) => {
+    vi.useFakeTimers();
+    const waiting = createDeferred();
+    const controller = new AbortController();
+    const unavailable = new SessionTranscriptProjectionUnavailableError("history-worker");
+    vi.spyOn(reconcile, "startSessionTranscriptIndexReconcile").mockImplementation(() => {});
+    vi.spyOn(reconcile, "waitForSessionTranscriptProjection").mockImplementation(
+      async (_scope, signal) => {
+        if (!signal) {
+          throw new Error("Projection recovery requires a bounded signal");
+        }
+        waiting.resolve();
+        return new Promise((_, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              const reason: unknown = signal.reason;
+              reject(reason instanceof Error ? reason : new Error(String(reason)));
+            },
+            { once: true },
+          );
+        });
+      },
+    );
+    let settled = false;
+    const pending = readSessionHistoryPageInWorker(request(), controller.signal)
+      .then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      )
+      .finally(() => {
+        settled = true;
+      });
+    try {
+      await waitForReaderAdmission(1);
+      queued[0]!.prepare();
+      queued[0]!.result.reject(unavailable);
+      expect(
+        await Promise.race([waiting.promise.then(() => "waiting"), pending.then(() => "refused")]),
+      ).toBe("waiting");
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(settled).toBe(false);
+      const cancelled = new Error("history caller disconnected");
+      if (boundary === "cancel") {
+        controller.abort(cancelled);
+      } else {
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      expect(await pending).toEqual({ error: boundary === "cancel" ? cancelled : unavailable });
+      expect(queued).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      controller.abort();
+      await pending;
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("does not schedule projection writes for read-only history", async () => {
+  const start = vi
+    .spyOn(reconcile, "startSessionTranscriptIndexReconcile")
+    .mockImplementation(() => {});
+  const wait = vi.spyOn(reconcile, "waitForSessionTranscriptProjection");
+  const rpc = request().params;
+  const pending = readSessionHistoryPageInWorker({
+    kind: "message-page",
+    params: {
+      target: {
+        agentId: rpc.sessionAgentId,
+        sessionId: rpc.sessionId,
+        sessionKey: rpc.canonicalKey,
+        storePath: rpc.storePath,
+      },
+      options: { offset: 0, maxMessages: 20, maxBytes: 100_000, readOnly: true },
+    },
+  });
+  const unavailable = new SessionTranscriptProjectionUnavailableError("history-worker");
+  const rejected = expect(pending).rejects.toBe(unavailable);
+  await waitForReaderAdmission(1);
+  queued[0]!.prepare();
+  queued[0]!.result.reject(unavailable);
+  await rejected;
+  expect(start).not.toHaveBeenCalled();
+  expect(wait).not.toHaveBeenCalled();
+});
+
+it("rejects selected physical replacement after dispatch without revocation or registry changes", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const parent = state.path("selected-history");
+    fs.mkdirSync(parent);
+    const databasePath = path.join(parent, "openclaw-agent.sqlite");
+    fs.writeFileSync(databasePath, "original");
+    const pending = readSessionHistoryPageInWorker({
+      kind: "message-count",
+      params: {
+        target: {
+          agentId: "main",
+          sessionId: "selected-history",
+          storePath: path.join(parent, "sessions.json"),
+          env: state.env,
+        },
+      },
+    });
+    const rejected = expect(pending).rejects.toThrow("Session store changed");
+    await waitForReaderAdmission(1);
+    queued[0]!.prepare();
+    fs.renameSync(databasePath, `${databasePath}.previous`);
+    fs.writeFileSync(databasePath, "replacement");
+    queued[0]!.result.resolve({ kind: "message-count", count: 1 });
+    await rejected;
+    expect(runWorker).toHaveBeenCalledOnce();
+  });
+});
+
 function request(overrides: Partial<RpcRequest["params"]> = {}): RpcRequest {
   return {
     kind: "rpc",
@@ -124,7 +252,6 @@ function page(text: string): SessionHistoryWorkerResult {
 it.each(["rpc", "http"] as const)(
   "captures %s request identity and selectors before target preparation and queue dispatch",
   async (kind) => {
-    const prepareSources = vi.spyOn(storeSources, "prepareGatewaySessionStoreReadSources");
     const makeRequest = (
       includeUnrelatedEnv = false,
     ): Extract<SessionHistoryWorkerRequest, { kind: "rpc" | "http" }> => {
@@ -238,10 +365,8 @@ it.each(["rpc", "http"] as const)(
     expect.soft(outcomes.every((outcome) => outcome.status === "fulfilled")).toBe(true);
     expect.soft(outcomes[0]).toEqual(outcomes[1]);
     expect.soft(dispatched).toHaveLength(1);
-    expect.soft(prepareSources).toHaveBeenCalledTimes(2);
     for (const { input, bytes } of dispatched) {
       expect.soft(input.request).toEqual(expected);
-      expect.soft(input.target.sourceDatabases).toBeDefined();
       expect.soft(input.target.transcript).toMatchObject({
         agentId: "main",
         sessionId: "history-worker",
@@ -254,9 +379,8 @@ it.each(["rpc", "http"] as const)(
 );
 
 it.each(["delta", "message-lookup", "recent", "message-by-id", "message-count"] as const)(
-  "captures %s selectors and prepares only required display topology",
+  "captures %s selectors and target before asynchronous dispatch",
   async (kind) => {
-    const prepareSources = vi.spyOn(storeSources, "prepareGatewaySessionStoreReadSources");
     const target = {
       agentId: "main",
       sessionId: "history-worker",
@@ -334,8 +458,6 @@ it.each(["delta", "message-lookup", "recent", "message-by-id", "message-count"] 
             : { kind, messages: [] },
     );
     await pending;
-    expect(prepareSources).toHaveBeenCalledTimes(kind === "delta" ? 1 : 0);
-    expect(input.target.sourceDatabases === undefined).toBe(kind !== "delta");
     expect(input.request).toMatchObject({
       kind,
       params: {

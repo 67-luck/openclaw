@@ -55,10 +55,7 @@ import {
   prepareCronPromptRunAdmission,
 } from "./run-admission.js";
 import { createCronCandidateExecutionResolver } from "./run-candidate-runtime.js";
-import {
-  appendCronDeliveryInstruction,
-  buildCronDeliveryTargetRuntimeContext,
-} from "./run-delivery-trace.js";
+import { finalizeCronPromptForResolvedTools } from "./run-delivery-trace.js";
 import {
   getCliSessionBinding,
   LiveSessionModelSwitchError,
@@ -195,30 +192,15 @@ function createCronPromptExecutor(
   }: {
     prompt: string;
     messageToolAvailable: boolean;
-  }) => {
-    const deliveryMessageToolAvailable = sourceDelivery.messageTool.enabled && messageToolAvailable;
-    if (sourceReplyDeliveryMode === "message_tool_only" && !deliveryMessageToolAvailable) {
-      throw new Error(
-        "Cron source delivery requires the message tool, but the selected runtime does not expose it. Allow the message tool, choose a compatible runtime, or use automatic delivery.",
-      );
-    }
-    const promptWithDeliveryGuidance = appendCronDeliveryInstruction({
-      commandBody: prompt,
+  }) =>
+    finalizeCronPromptForResolvedTools({
+      prompt,
+      messageToolAvailable,
       deliveryRequested: params.deliveryRequested,
-      messageToolEnabled: deliveryMessageToolAvailable,
-      resolvedDeliveryOk: params.resolvedDelivery.ok,
-      requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
-    });
-    const deliveryTargetRuntimeContext = buildCronDeliveryTargetRuntimeContext({
-      resolvedDeliveryOk: params.resolvedDelivery.ok,
-      messageToolAvailable: deliveryMessageToolAvailable,
       resolvedDelivery: params.resolvedDelivery,
       sourceDelivery,
+      messageToolFormatPrompt: params.messageToolFormatPrompt,
     });
-    return deliveryTargetRuntimeContext
-      ? `${promptWithDeliveryGuidance}\n\n${deliveryTargetRuntimeContext}`.trim()
-      : promptWithDeliveryGuidance;
-  };
   let pendingUserTurn:
     | {
         promptText: string;
@@ -478,6 +460,7 @@ function createCronPromptExecutor(
             skillsSnapshot: params.skillsSnapshot,
             messageChannel,
             agentAccountId: params.resolvedDelivery.accountId,
+            extraSystemPrompt: params.deliverySystemPrompt,
             sourceReplyDeliveryMode,
             requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
             scheduledToolPolicy,
@@ -570,6 +553,7 @@ function createCronPromptExecutor(
                   cliSessionId: cliSessionBinding?.sessionId,
                   cliSessionBinding: guardedCliSessionBinding,
                   cliSessionBindingFacts: {
+                    extraSystemPromptStatic: params.deliverySystemPrompt,
                     sourceReplyDeliveryMode,
                     requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
                   },

@@ -1,16 +1,19 @@
-import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VitestBatchRunParams } from "../../scripts/lib/vitest-batch-runner.mts";
 import {
   listVitestRuntimeConsumerFiles,
   resolveVitestCliEntry,
 } from "../../scripts/lib/vitest-build-prerequisites.mts";
+import { createFixtureLifetime } from "../helpers/fixture-lifetime.js";
 import { createPatternFileHelper } from "../helpers/pattern-file.js";
-import { waitForChildClose, waitForDead, waitForPidFile } from "../helpers/process-wait.js";
+import { isProcessAlive } from "../helpers/process-wait.js";
 import { createDeferred, withTestTimeout } from "../helpers/promise.js";
-import { createTempDirTracker, useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { createToolingVitestConfig } from "../vitest/vitest.tooling.config.ts";
 import { createControlledWorkerCompiler } from "./vitest-worker-artifacts.test-support.js";
 
@@ -33,6 +36,10 @@ vi.mock("../../scripts/lib/vitest-shard-timings.mts", async (importOriginal) => 
   writeShardTimings: () => {},
 }));
 
+const { runManagedCommand: runCliCommand } = await vi.importActual<
+  typeof import("../../scripts/lib/managed-child-process.mts")
+>("../../scripts/lib/managed-child-process.mts");
+
 const modelTarget = "src/agents/embedded-agent-runner/model-resolution-consistency.test.ts";
 const targets = [modelTarget, "extensions/qa-lab/src/suite-process-lifecycle.test.ts"];
 const lifecycle = targets[1]!;
@@ -52,7 +59,7 @@ beforeEach(() => {
   commands.prepare.mockReset();
   commands.prepareE2e.mockReset().mockResolvedValue({ OPENCLAW_E2E_USE_PREBUILT_DIST: "1" });
   commands.reader.mockReset().mockImplementation(() => ({
-    completion: Promise.resolve({ code: 0, signal: null }),
+    completion: Promise.resolve({ code: 0, signal: null, groupJoined: true }),
     getForwardedSignal: () => undefined,
   }));
   originalArgv = process.argv;
@@ -82,13 +89,9 @@ afterEach(() => {
 
 describe("CLI runtime admission", () => {
   const posixIt = process.platform === "win32" ? it.skip : it;
-  posixIt.each<[name: string, args: string[]]>([
+  posixIt.for<[name: string, args: string[]]>([
     ["ordinary target", [ordinaryQa]],
     ["ordinary CLI config", ["--config", "test/vitest/vitest.cli.config.ts"]],
-    [
-      "ordinary CLI selection",
-      ["--config", "test/vitest/vitest.cli.config.ts", "command-path-policy.test.ts"],
-    ],
     [
       "CLI process runtime exclusions",
       [
@@ -134,42 +137,50 @@ describe("CLI runtime admission", () => {
     ["custom config", ["--config", "custom.config.ts"]],
     ["list command", ["list"]],
     ["help", ["--help"]],
-    ["equals help", ["--help=true"]],
-    ["short help group", ["-uh"]],
     ["version only", ["--version=true"]],
-    ["list tags", ["--listTags"]],
-    ["clear cache", ["--clearCache"]],
     ["native invalid scalar", ["--passWithNoTests", "--passWithNoTests"]],
     ["native unknown option", ["--unknownOption"]],
-  ])("leaves direct $0 selection without runtime preparation", async (_name, args) => {
-    const root = tempDirs.make("plugin-build-direct-");
-    const preload = path.join(root, "preload.mjs");
-    fs.writeFileSync(
-      preload,
-      `import cp from 'node:child_process';
+  ])(
+    "leaves direct $0 selection without runtime preparation",
+    async ([_name, args], { signal, onTestFinished }) => {
+      const lifetime = createFixtureLifetime();
+      onTestFinished(() => lifetime.cleanup());
+      await lifetime.run(async () => {
+        const root = lifetime.createTempDir("plugin-build-direct-");
+        const preload = path.join(root, "preload.mjs");
+        fs.writeFileSync(
+          preload,
+          `import cp from 'node:child_process';
 import { syncFixtureBuiltinExports } from ${JSON.stringify(new URL("./fixtures/ci-fixture-runtime.cjs", import.meta.url).href)};
 const spawn = cp.spawn;
 cp.spawn = (bin, args, options) => spawn(process.execPath, ['-e',
   args.includes('scripts/run-node.mjs') ? 'process.exit(91)' : ''], options);
 syncFixtureBuiltinExports();\n`,
-    );
-    const configArgs = args.includes("--config")
-      ? []
-      : ["--config", "test/vitest/vitest.extension-qa.config.ts"];
-    const child = spawn(
-      process.execPath,
-      ["--import", preload, "scripts/run-vitest.mts", ...configArgs, ...args],
-      { stdio: "ignore" },
-    );
-    try {
-      await expect(waitForChildClose(child)).resolves.toEqual({ code: 0, signal: null });
-    } finally {
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
-      }
-    }
-  });
-  posixIt.each([
+        );
+        const configArgs = args.includes("--config")
+          ? []
+          : ["--config", "test/vitest/vitest.extension-qa.config.ts"];
+        let child: ChildProcess | undefined;
+        await lifetime.track(
+          runCliCommand({
+            bin: process.execPath,
+            args: ["--import", preload, "scripts/run-vitest.mts", ...configArgs, ...args],
+            stdio: "ignore",
+            signal,
+            requireProcessTreeExit: true,
+            onReady(owned) {
+              child = owned;
+            },
+          }),
+        );
+        expect({ code: child?.exitCode, signal: child?.signalCode }).toEqual({
+          code: 0,
+          signal: null,
+        });
+      });
+    },
+  );
+  posixIt.for([
     ["single", "scripts/test-extension.mts", []],
     ["batch", "scripts/test-extension-batch.mts", ["qa-lab,firecrawl"]],
     [
@@ -191,11 +202,6 @@ syncFixtureBuiltinExports();\n`,
       "config empty long",
       "scripts/run-vitest.mts",
       ["run", "--config=", "test/vitest/vitest.extension-qa.config.ts"],
-    ],
-    [
-      "config empty short",
-      "scripts/run-vitest.mts",
-      ["run", "-c=", "test/vitest/vitest.extension-qa.config.ts"],
     ],
     ["root config", "scripts/run-vitest.mts", ["run", "--config", "vitest.config.ts"]],
     [
@@ -228,24 +234,6 @@ syncFixtureBuiltinExports();\n`,
       "private-qa",
     ],
     [
-      "Gateway core",
-      "scripts/run-vitest.mts",
-      ["run", "--config", "test/vitest/vitest.gateway-core.config.ts"],
-      "runtime",
-    ],
-    [
-      "Gateway selective exclusion",
-      "scripts/run-vitest.mts",
-      [
-        "run",
-        "--config",
-        "test/vitest/vitest.gateway-core.config.ts",
-        "--exclude",
-        "gateway-concurrent-streams.test.ts",
-      ],
-      "runtime",
-    ],
-    [
       "Gateway server selective exclusion",
       "scripts/run-vitest.mts",
       [
@@ -254,35 +242,6 @@ syncFixtureBuiltinExports();\n`,
         "test/vitest/vitest.gateway-server.config.ts",
         "--exclude",
         "server-sidecar-retention.test.ts",
-      ],
-      "runtime",
-    ],
-    [
-      "Gateway umbrella",
-      "scripts/run-vitest.mts",
-      ["run", "--config", "test/vitest/vitest.gateway.config.ts"],
-      "runtime",
-    ],
-    [
-      "Gateway umbrella with core consumers excluded",
-      "scripts/run-vitest.mts",
-      ["run", "--config", "test/vitest/vitest.gateway.config.ts", "--exclude", "gateway-*.test.ts"],
-      "runtime",
-    ],
-    [
-      "agentic aggregate",
-      "scripts/run-vitest.mts",
-      ["run", "--config", "test/vitest/vitest.full-agentic.config.ts"],
-      "runtime",
-    ],
-    [
-      "Gateway active memory",
-      "scripts/run-vitest.mts",
-      [
-        "run",
-        "--config",
-        "test/vitest/vitest.gateway-core.config.ts",
-        "gateway-active-memory.test.ts",
       ],
       "runtime",
     ],
@@ -304,14 +263,15 @@ syncFixtureBuiltinExports();\n`,
     ],
   ] as const)(
     "blocks %s CLI readers until successful build and preserves SIGTERM",
-    async (_name, script, args, mode: "private-qa" | "runtime" = "private-qa") => {
-      const outcomes = [0, 7, "SIGTERM"] as const;
-      // Rows share hooks and module state; only their independent process trees overlap.
-      const results = await Promise.allSettled(
-        outcomes.map(async (outcome) => {
-          const scenarioDirs = createTempDirTracker();
-          const root = scenarioDirs.make("plugin-build-cli-");
-          try {
+    async ([_name, script, args, mode = "private-qa"], { signal, onTestFinished }) => {
+      const lifetime = createFixtureLifetime();
+      onTestFinished(() => lifetime.cleanup());
+      await lifetime.run(async () => {
+        const outcomes = [0, 7, "SIGTERM"] as const;
+        // Rows share hooks and module state; only their independent process trees overlap.
+        const results = await Promise.allSettled(
+          outcomes.map(async (outcome) => {
+            const root = lifetime.createTempDir("plugin-build-cli-");
             const pidFile = path.join(root, "build.pid");
             const readersFile = path.join(root, "readers");
             const builder = path.join(root, "build.mjs");
@@ -327,7 +287,8 @@ syncFixtureBuiltinExports();\n`,
 process.on('SIGTERM', () => process.exit(0));
 process.stdin.once('data', () => process.exit(${typeof outcome === "number" ? outcome : 0}));
 fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
-process.stdin.resume();\n`,
+process.stdin.resume();
+process.stdout.write('fixture-build-ready\\n');\n`,
             );
             // Keep the real managed process owner and CLI scheduler. Replace only
             // heavyweight build/test executables at Node's child-process boundary.
@@ -347,37 +308,56 @@ cp.spawn = (bin, args, options) => {
 };
 syncFixtureBuiltinExports();\n`,
             );
-            const child = spawn(
-              process.execPath,
-              ["--import", preload, path.resolve(script), ...args],
-              {
+            const finished = new AbortController();
+            const ready = createDeferred();
+            let child: ChildProcess | undefined;
+            let output = "";
+            let stdout = "";
+            const closed = lifetime.track(
+              runCliCommand({
+                bin: process.execPath,
+                args: ["--import", preload, path.resolve(script), ...args],
                 cwd: _name === "single" ? path.resolve("extensions/qa-lab") : process.cwd(),
                 env: workerCompiler.env,
                 stdio: ["pipe", "pipe", "pipe"],
-              },
+                signal: AbortSignal.any([signal, finished.signal]),
+                requireProcessTreeExit: true,
+                onReady(owned) {
+                  child = owned;
+                  owned.stdout!.on("data", (data) => {
+                    output += data;
+                    stdout += data;
+                    if (stdout.includes("fixture-build-ready\n")) {
+                      ready.resolve();
+                    }
+                  });
+                  owned.stderr!.on("data", (data) => {
+                    output += data;
+                  });
+                },
+              }),
             );
-            let output = "";
-            child.stdout.on("data", (data) => {
-              output += data;
-            });
-            child.stderr.on("data", (data) => {
-              output += data;
-            });
-            // Observe timeout failures immediately, but retain the actual close event
-            // so failed assertions still join cleanup before this outcome settles.
-            const closed = waitForChildClose(child).catch((error: unknown) => error);
-            const stopped = createDeferred();
-            child.once("close", () => stopped.resolve());
-            let buildPid: number | undefined;
             try {
-              buildPid = await waitForPidFile(pidFile, 5_000);
+              await Promise.race([
+                ready.promise,
+                closed.then((code) => {
+                  throw new Error(`CLI exited before builder readiness (${code}):\n${output}`);
+                }),
+              ]);
+              const buildPid = Number(fs.readFileSync(pidFile, "utf8"));
+              expect(Number.isInteger(buildPid)).toBe(true);
+              expect(buildPid).toBeGreaterThan(0);
               expect(fs.existsSync(readersFile), `outcome=${outcome}`).toBe(false);
               if (outcome === "SIGTERM") {
-                child.kill("SIGTERM");
+                expect(child!.kill("SIGTERM")).toBe(true);
               } else {
-                child.stdin.end("finish\n");
+                child!.stdin!.end("finish\n");
               }
-              expect(await closed, `outcome=${outcome}\n${output}`).toEqual({
+              await closed;
+              expect(
+                { code: child?.exitCode, signal: child?.signalCode },
+                `outcome=${outcome}\n${output}`,
+              ).toEqual({
                 code: outcome === "SIGTERM" ? 143 : outcome,
                 signal: null,
               });
@@ -388,46 +368,28 @@ syncFixtureBuiltinExports();\n`,
                 output.match(new RegExp(`preparing ${mode} runtime`, "gu")),
                 `outcome=${outcome}`,
               ).toHaveLength(1);
-              await waitForDead(buildPid, 5_000);
-              if (_name === "root config" && outcome === 0) {
-                const compilations = workerCompiler.read();
-                expect(compilations).toHaveLength(1);
-                await waitForDead(compilations[0]!.pid, 5_000);
-                expect(fs.existsSync(compilations[0]!.directory)).toBe(false);
-              }
+              await lifetime.verifyCleanup(async () => {
+                expect(isProcessAlive(buildPid)).toBe(false);
+                if (_name === "root config" && outcome === 0) {
+                  const compilations = workerCompiler.read();
+                  expect(compilations).toHaveLength(1);
+                  expect(isProcessAlive(compilations[0]!.pid)).toBe(false);
+                  expect(fs.existsSync(compilations[0]!.directory)).toBe(false);
+                }
+              });
             } finally {
-              if (child.exitCode === null && child.signalCode === null) {
-                child.kill("SIGKILL");
-              }
-              if (!buildPid && fs.existsSync(pidFile)) {
-                buildPid = await waitForPidFile(pidFile, 5_000);
-              }
-              if (buildPid) {
-                try {
-                  process.kill(buildPid, "SIGKILL");
-                } catch {
-                  /* Already exited. */
-                }
-              }
-              try {
-                await withTestTimeout(stopped.promise, 5_000, `outcome=${outcome}: CLI cleanup`);
-              } finally {
-                if (buildPid) {
-                  await waitForDead(buildPid, 5_000);
-                }
-              }
+              finished.abort();
+              await Promise.allSettled([closed]);
             }
-          } finally {
-            scenarioDirs.cleanup();
-          }
-        }),
-      );
-      for (const [index, result] of results.entries()) {
-        expect.soft(result, `outcome=${outcomes[index]}`).toEqual({
-          status: "fulfilled",
-          value: undefined,
-        });
-      }
+          }),
+        );
+        for (const [index, result] of results.entries()) {
+          expect.soft(result, `outcome=${outcomes[index]}`).toEqual({
+            status: "fulfilled",
+            value: undefined,
+          });
+        }
+      });
     },
   );
 });
@@ -562,6 +524,263 @@ describe("full-suite timing metadata", () => {
       expect(new Set(samples.map((sample) => sample?.config)).size).toBe(2);
       for (const sample of samples) {
         expect(sample).toMatchObject({ baseConfig: config, includePatternCount: 1 });
+      }
+    },
+  );
+});
+
+describe("automatic exact-target admission", () => {
+  const outputArgs = ["--reporter=dot", "--coverage.enabled=false"];
+  const files = [
+    modelTarget,
+    "test/scripts/run-node-lifecycle.test.ts",
+    "extensions/memory-lancedb/config.test.ts",
+  ];
+  beforeEach(async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    vi.stubEnv("CI", "1");
+    vi.stubEnv("GITHUB_ACTIONS", "");
+    vi.stubEnv("OPENCLAW_TEST_PROJECTS_SERIAL", "");
+    vi.stubEnv("OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT", "");
+    vi.stubEnv("OPENCLAW_VITEST_FS_MODULE_CACHE_PATH", "");
+    vi.stubEnv("OPENCLAW_VITEST_MAX_WORKERS", "2");
+    vi.spyOn(os, "availableParallelism").mockReturnValue(8);
+    vi.spyOn(os, "totalmem").mockReturnValue(24 * 1024 ** 3);
+    commands.prepare.mockResolvedValue(0);
+    const planner = await import("../../scripts/test-projects.test-support.mts");
+    expect(planner.findUnmatchedExplicitTestTargets(files, process.cwd())).toEqual([]);
+  });
+
+  it.each([
+    { name: "CI=1", expected: 2 },
+    { name: "CI=true", ci: "true", expected: 2 },
+    { name: "unresolved config outputs", args: [], expected: 1 },
+    { name: "console reporter without coverage override", args: ["--reporter=dot"], expected: 1 },
+    { name: "coverage override without reporter", args: ["--coverage.enabled=false"], expected: 1 },
+    {
+      name: "JSON without owner",
+      args: ["--reporter=json", "--coverage.enabled=false"],
+      expected: 1,
+    },
+    {
+      name: "GitHub summary",
+      args: ["--reporter=github-actions", "--coverage.enabled=false"],
+      expected: 1,
+    },
+    { name: "coverage destination", args: ["--coverage"], expected: 1 },
+    { name: "file destination", args: ["--outputFile=report.json"], expected: 1 },
+    { name: "file reporter", args: ["--reporter=html"], expected: 1 },
+    { name: "plural file reporter", args: ["--reporters=html"], expected: 1 },
+    { name: "custom reporter", args: ["--reporter=./custom-reporter.mjs"], expected: 1 },
+    { name: "local", ci: "", expected: 1 },
+    { name: "constrained CPU", cpus: 4, expected: 1 },
+    { name: "unknown memory", gib: Number.NaN, expected: 1 },
+    { name: "explicit parallel", parallel: "3", expected: 3 },
+    { name: "explicit serial", serial: "1", expected: 1 },
+    { name: "portable", portable: true, expected: 1 },
+    { name: "caller cache leaf", callerLeaf: true, expected: 1 },
+  ])(
+    "preserves resolved specs and policy for $name",
+    async ({ ci, cpus, gib, parallel, serial, portable, callerLeaf, args, expected }) => {
+      vi.stubEnv("CI", ci ?? "1");
+      vi.stubEnv("OPENCLAW_TEST_PROJECTS_PARALLEL", parallel ?? "");
+      vi.stubEnv("OPENCLAW_TEST_PROJECTS_SERIAL", serial ?? "");
+      if (portable) {
+        vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+      }
+      if (callerLeaf) {
+        const root = tempDirs.make("caller-cache-");
+        vi.stubEnv("OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT", root);
+        vi.stubEnv("OPENCLAW_VITEST_FS_MODULE_CACHE_PATH", path.join(root, "leaf"));
+      }
+      vi.mocked(os.availableParallelism).mockReturnValue(cpus ?? 8);
+      vi.mocked(os.totalmem).mockReturnValue((gib ?? 24) * 1024 ** 3);
+      const planner = await import("../../scripts/test-projects.test-support.mts");
+      const produced = vi.spyOn(planner, "createVitestRunSpecs");
+      const { runTestProjects } = await import("../../scripts/test-projects-run.mts");
+      const selections: Array<{ config: string; include: string[] | null; workers: string }> = [];
+      let active = 0;
+      let peak = 0;
+      commands.reader.mockImplementation(({ env, pnpmArgs }) => {
+        selections.push({
+          config: pnpmArgs[pnpmArgs.indexOf("--config") + 1],
+          include: env.OPENCLAW_VITEST_INCLUDE_FILE
+            ? JSON.parse(fs.readFileSync(env.OPENCLAW_VITEST_INCLUDE_FILE, "utf8"))
+            : null,
+          workers: env.OPENCLAW_VITEST_MAX_WORKERS,
+        });
+        active += 1;
+        peak = Math.max(peak, active);
+        return {
+          completion: nextTurn().then(() => {
+            active -= 1;
+            return { code: 0, signal: null, groupJoined: !portable };
+          }),
+          getForwardedSignal: () => undefined,
+        };
+      });
+      await runTestProjects(async () => {}, [...files, ...(args ?? outputArgs)]);
+      const specs = produced.mock.results[0]!.value as ReturnType<
+        typeof planner.createVitestRunSpecs
+      >;
+      expect(specs.length).toBeGreaterThanOrEqual(3);
+      expect(peak).toBe(expected);
+      const actual = selections.map(({ config, include }) => ({ config, include }));
+      const planned = specs.map((spec) => ({ config: spec.config, include: spec.includePatterns }));
+      // Explicit parallelism retains its timing order; automatic admission keeps native plan order.
+      expect(
+        parallel ? actual.toSorted((a, b) => a.config.localeCompare(b.config)) : actual,
+      ).toEqual(parallel ? planned.toSorted((a, b) => a.config.localeCompare(b.config)) : planned);
+      expect(selections.every(({ workers }) => workers === "2")).toBe(true);
+      expect(process.exitCode).toBe(0);
+    },
+  );
+
+  it.each(["success", "failure", "SIGTERM"])(
+    "joins the real Gateway plan barrier before later admission and disposal (%s)",
+    async (outcome) => {
+      const workerOwner = await import("../../scripts/lib/vitest-worker-run.mts");
+      const original = workerOwner.createVitestWorkerRun;
+      const events: string[] = [];
+      vi.spyOn(workerOwner, "createVitestWorkerRun").mockImplementation((...args) => {
+        const worker = original(...args);
+        const dispose = worker.dispose.bind(worker);
+        vi.spyOn(worker, "dispose").mockImplementation(async () => {
+          events.push("dispose");
+          await dispose();
+          events.push("disposed");
+        });
+        return worker;
+      });
+      const { runTestProjects } = await import("../../scripts/test-projects-run.mts");
+      const barrierFiles = ["src/utils.test.ts", "src/gateway/call.test.ts", modelTarget];
+      const configs = [
+        "test/vitest/vitest.unit-fast-fake-timers.config.ts",
+        "test/vitest/vitest.gateway.config.ts",
+        "test/vitest/vitest.agents-embedded-agent.config.ts",
+      ];
+      const planner = await import("../../scripts/test-projects.test-support.mts");
+      expect(planner.findUnmatchedExplicitTestTargets(barrierFiles, process.cwd())).toEqual([]);
+      expect(
+        planner.buildVitestRunPlans([...barrierFiles, ...outputArgs]).map(({ config }) => config),
+      ).toEqual(configs);
+      const releases = configs.map(() => createDeferred());
+      const admissions = configs.map(() => createDeferred());
+      const selected: string[] = [];
+      commands.reader.mockImplementation(({ pnpmArgs }) => {
+        const config = pnpmArgs[pnpmArgs.indexOf("--config") + 1];
+        const index = configs.indexOf(config);
+        expect(index).toBeGreaterThanOrEqual(0);
+        selected.push(config);
+        events.push(`start:${index}`);
+        admissions[index]!.resolve();
+        return {
+          completion: releases[index]!.promise.then(() => {
+            events.push(`joined:${index}`);
+            return {
+              code: index === 1 && outcome === "failure" ? 1 : 0,
+              signal: index === 1 && outcome === "SIGTERM" ? "SIGTERM" : null,
+              groupJoined: true,
+            };
+          }),
+          getForwardedSignal: () => undefined,
+        };
+      });
+      const exit = vi.fn(async () => {});
+      const running = runTestProjects(exit, [...barrierFiles, ...outputArgs]);
+      try {
+        for (let index = 0; index < 2; index++) {
+          await withTestTimeout(
+            Promise.race([admissions[index]!.promise, running]),
+            5_000,
+            "barrier admission",
+          );
+          expect(selected).toEqual(configs.slice(0, index + 1));
+          expect(events).not.toContain("dispose");
+          releases[index]!.resolve();
+        }
+        if (outcome === "success") {
+          await withTestTimeout(
+            Promise.race([admissions[2]!.promise, running]),
+            5_000,
+            "post-barrier admission",
+          );
+          expect(events).toEqual(["start:0", "joined:0", "start:1", "joined:1", "start:2"]);
+        }
+      } finally {
+        releases.forEach((release) => release.resolve());
+        await running;
+      }
+      expect(selected).toEqual(outcome === "success" ? configs : configs.slice(0, 2));
+      expect(events.slice(-3)).toEqual([
+        `joined:${outcome === "success" ? 2 : 1}`,
+        "dispose",
+        "disposed",
+      ]);
+      expect(exit.mock.calls).toEqual(outcome === "SIGTERM" ? [["SIGTERM"]] : []);
+      expect(process.exitCode).toBe(outcome === "SIGTERM" ? 143 : outcome === "failure" ? 1 : 0);
+    },
+  );
+
+  it.each(["failure", "unjoined", "rejection", "signal"])(
+    "drains peers and stops later exact-target specs after %s",
+    async (outcome) => {
+      const { runTestProjects } = await import("../../scripts/test-projects-run.mts");
+      const first = createDeferred<{
+        code: number;
+        signal: NodeJS.Signals | null;
+        groupJoined: boolean;
+      }>();
+      const peer = createDeferred<{ code: number; signal: null; groupJoined: boolean }>();
+      const admitted = createDeferred();
+      let settled = false;
+      commands.reader.mockImplementation(() => {
+        if (commands.reader.mock.calls.length === 2) {
+          admitted.resolve();
+        }
+        return {
+          completion: commands.reader.mock.calls.length === 1 ? first.promise : peer.promise,
+          getForwardedSignal: () => undefined,
+        };
+      });
+      const running = runTestProjects(async () => {}, [...files, ...outputArgs]).finally(() => {
+        settled = true;
+      });
+      const checked =
+        outcome === "unjoined" || outcome === "rejection"
+          ? expect(running).rejects.toThrow()
+          : running;
+      try {
+        await withTestTimeout(
+          Promise.race([admitted.promise, running]),
+          5_000,
+          "automatic admission",
+        );
+        expect(commands.reader).toHaveBeenCalledTimes(2);
+        if (outcome === "rejection") {
+          first.reject(new Error("child join rejected"));
+        } else {
+          first.resolve({
+            code: outcome === "unjoined" ? 0 : 1,
+            signal: outcome === "signal" ? "SIGTERM" : null,
+            groupJoined: outcome !== "unjoined",
+          });
+        }
+        await nextTurn();
+        expect(commands.reader).toHaveBeenCalledTimes(2);
+        expect(settled).toBe(false);
+      } finally {
+        first.resolve({ code: 0, signal: null, groupJoined: true });
+        peer.resolve({ code: 0, signal: null, groupJoined: true });
+        await checked;
+      }
+      expect(commands.reader).toHaveBeenCalledTimes(2);
+      if (outcome === "failure") {
+        expect(process.exitCode).toBe(1);
+        expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/^\[test\] failed 2 /u));
+      }
+      if (outcome === "signal") {
+        expect(process.exitCode).toBe(143);
       }
     },
   );

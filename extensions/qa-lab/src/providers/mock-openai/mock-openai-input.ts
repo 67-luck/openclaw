@@ -268,6 +268,12 @@ function isContinuationUserText(text: string) {
   );
 }
 
+function readFunctionCallOutputText(record: Record<string, unknown>) {
+  return [record.text, record.output_text, record.content].find(
+    (value): value is string => typeof value === "string",
+  );
+}
+
 function stringifyFunctionCallOutput(output: unknown): string {
   if (typeof output === "string") {
     return output;
@@ -281,31 +287,15 @@ function stringifyFunctionCallOutput(output: unknown): string {
         if (!entry || typeof entry !== "object") {
           return "";
         }
-        const record = entry as Record<string, unknown>;
-        if (typeof record.text === "string") {
-          return record.text;
-        }
-        if (typeof record.output_text === "string") {
-          return record.output_text;
-        }
-        if (typeof record.content === "string") {
-          return record.content;
-        }
-        return "";
+        return readFunctionCallOutputText(entry as Record<string, unknown>) ?? "";
       })
       .filter(Boolean)
       .join("\n");
   }
   if (output && typeof output === "object") {
-    const record = output as Record<string, unknown>;
-    if (typeof record.text === "string") {
-      return record.text;
-    }
-    if (typeof record.output_text === "string") {
-      return record.output_text;
-    }
-    if (typeof record.content === "string") {
-      return record.content;
+    const text = readFunctionCallOutputText(output as Record<string, unknown>);
+    if (text !== undefined) {
+      return text;
     }
     try {
       return JSON.stringify(output);
@@ -318,13 +308,6 @@ function stringifyFunctionCallOutput(output: unknown): string {
 
 function isResponsesToolCallOutput(item: ResponsesInputItem) {
   return item.type === "function_call_output" || item.type === "custom_tool_call_output";
-}
-
-function extractFunctionCallOutputText(item: ResponsesInputItem) {
-  if (!isResponsesToolCallOutput(item)) {
-    return "";
-  }
-  return stringifyFunctionCallOutput(item.output);
 }
 
 function findCurrentToolOutput(input: ResponsesInputItem[]): ResponsesInputItem | undefined {
@@ -379,17 +362,13 @@ export function extractToolOutputCallId(input: ResponsesInputItem[]) {
 }
 
 export function extractLatestToolOutput(input: ResponsesInputItem[]) {
-  for (const item of input.toReversed()) {
-    if (isResponsesToolCallOutput(item)) {
-      return stringifyFunctionCallOutput(item.output);
-    }
-  }
-  return "";
+  return stringifyFunctionCallOutput(input.findLast(isResponsesToolCallOutput)?.output);
 }
 
 export function extractAllToolOutputText(input: ResponsesInputItem[]) {
   return input
-    .map((item) => extractFunctionCallOutputText(item))
+    .filter(isResponsesToolCallOutput)
+    .map((item) => stringifyFunctionCallOutput(item.output))
     .filter(Boolean)
     .join("\n");
 }
@@ -634,26 +613,16 @@ export function countImageInputs(value: unknown): number {
 }
 
 function extractLatestImageUserTurn(input: ResponsesInputItem[]) {
-  const latestUserIndex = input.findLastIndex(isUserTurn);
-  if (latestUserIndex < 0) {
-    return { text: "", imageInputCount: 0 };
-  }
-
-  const latestUserItem = input[latestUserIndex];
+  const latestUserItem = input.findLast(isUserTurn);
   if (!latestUserItem) {
     return { text: "", imageInputCount: 0 };
   }
-
-  const imageTurnItems = [latestUserItem];
-  const imageInputCount = countImageInputs(imageTurnItems.map((item) => item.content));
+  const imageInputCount = countImageInputs([latestUserItem.content]);
   if (imageInputCount === 0) {
     return { text: "", imageInputCount: 0 };
   }
   return {
-    text: imageTurnItems
-      .map((item) => extractInputText(item.content))
-      .filter(Boolean)
-      .join("\n"),
+    text: extractInputText(latestUserItem.content),
     imageInputCount,
   };
 }

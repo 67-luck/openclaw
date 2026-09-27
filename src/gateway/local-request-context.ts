@@ -130,8 +130,10 @@ function createLocalGatewayRequestContext(
       ({}) as Awaited<ReturnType<GatewayRequestContext["refreshHealthSnapshot"]>>,
     logHealth: { error: (message) => logGateway.error(message) },
     logGateway,
-    incrementPresenceVersion: () => 0,
-    getHealthVersion: () => 0,
+    publishPresence: () => {},
+    getPresenceSnapshot: () => {
+      throw new Error("Presence requires a running Gateway connection.");
+    },
     broadcast: () => {},
     broadcastToConnIds: () => {},
     nodeSendToSession: () => {},

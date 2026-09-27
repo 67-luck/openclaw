@@ -4,6 +4,7 @@
  */
 import type { SessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
+import type { ContextEngine } from "../../../context-engine/types.js";
 import {
   attachRuntimePromptMediaFacts,
   readPersistedMediaFacts,
@@ -43,7 +44,6 @@ import { log } from "../logger.js";
 import { createEmbeddedAgentResourceLoader } from "../resource-loader.js";
 import { applySystemPromptToSession } from "../system-prompt.js";
 import { prepareEmbeddedAttemptClientTools } from "./attempt-client-tools.js";
-import type { AttemptContextEngine } from "./attempt-context-engine-helpers.js";
 import { resolveAttemptTranscriptPolicy } from "./attempt-history.js";
 import { normalizeMessagesForLlmBoundary } from "./attempt-llm-boundary.js";
 import {
@@ -83,7 +83,7 @@ type AttemptSessionManager = ReturnType<typeof guardSessionManager>;
 /** Prepares resource loading, client tools, and the active agent session. */
 export async function prepareEmbeddedAttemptAgentSession(input: {
   attempt: EmbeddedRunAttemptParams;
-  activeContextEngineInfo?: AttemptContextEngine["info"];
+  activeContextEngineInfo?: ContextEngine["info"];
   agentCoreThinkingLevel: CreateAgentSessionOptions["thinkingLevel"];
   agentDir: string;
   clientToolPreparation: ClientToolPreparation;
@@ -524,13 +524,19 @@ export async function prepareEmbeddedAttemptSessionBoundary(input: {
     const baseConvertToLlm = activeSession.agent.convertToLlm.bind(activeSession.agent);
     activeSession.agent.convertToLlm = async (messages) => {
       const normalized = normalizeMessagesForLlmBoundary(messages, buildBoundaryOptions());
-      return await baseConvertToLlm(
+      const converted = await baseConvertToLlm(
         // Persisted carriers stay after their user turn, including during tool loops;
         // moving one would change the prefix bound to later thinking signatures.
         input.appendOnlyRuntimeContext
           ? normalized
           : relocateCurrentRuntimeContextCarrierToTail(normalized),
       );
+      for (const message of converted) {
+        if (message.role === "user" && message.runtimeContextCarrier) {
+          message.runtimeContextCarrierRetained = input.appendOnlyRuntimeContext;
+        }
+      }
+      return converted;
     };
   }
 
@@ -551,7 +557,7 @@ export async function prepareEmbeddedAttemptSessionBoundary(input: {
 type WithOwnedTranscriptWrite = <T>(operation: () => Promise<T> | T) => Promise<T>;
 export async function prepareEmbeddedAttemptSessionManager(input: {
   attempt: EmbeddedRunAttemptParams;
-  activeContextEngine?: AttemptContextEngine;
+  activeContextEngine?: ContextEngine;
   agentDir: string;
   effectiveCwd: string;
   effectiveWorkspace: string;

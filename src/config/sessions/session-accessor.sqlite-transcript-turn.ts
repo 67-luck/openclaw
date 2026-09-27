@@ -42,6 +42,7 @@ import { appendTranscriptMessageInTransaction } from "./session-accessor.sqlite-
 import { rememberCommittedTranscriptMessageSequencesInTransaction } from "./session-accessor.sqlite-transcript-sequences.js";
 import type { SessionTranscriptTurnPersistOptions } from "./session-accessor.types.js";
 import { readWithCanonicalSessionAdmission } from "./session-canonical-key.js";
+import { completeSessionTranscriptCommit } from "./session-transcript-commit-completion.js";
 import type {
   SessionLifecycleRevisionExpectation,
   SessionTranscriptTurnExpectedState,
@@ -351,10 +352,11 @@ export async function appendExpectedSessionTranscriptTurn(
           if (appended) {
             previousIdentity.set(resolved.sessionKey, appended.entry);
           }
-          writeSessionEntry(transactionDb, resolved.sessionKey, next, {
+          const persisted = writeSessionEntry(transactionDb, resolved.sessionKey, next, {
             canonicalPreviousEntry: previousIdentity.get(resolved.sessionKey) ?? null,
           });
-          const currentIdentity = readSessionIdentitySnapshot(transactionDb, identityKeys);
+          const currentIdentity = new Map(previousIdentity);
+          currentIdentity.set(resolved.sessionKey, persisted);
           publishIdentity = prepareSessionIdentityPublication(
             transactionDb,
             resolved.agentId,
@@ -384,9 +386,12 @@ export async function appendExpectedSessionTranscriptTurn(
         return publishIdentity;
       }, toDatabaseOptions(resolved));
       publish?.();
-      // Complete committed custody before cancellation can run at an async return.
-      for (const message of result.appendedMessages) {
-        options.onMessageCommitted?.(message);
+      const completion = completeSessionTranscriptCommit(
+        result.appendedMessages,
+        options.onMessageCommitted,
+      );
+      if (completion) {
+        await completion;
       }
       return result;
     },

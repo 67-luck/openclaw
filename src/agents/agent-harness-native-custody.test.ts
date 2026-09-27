@@ -21,6 +21,7 @@ import {
   runOutsideGatewayRootWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
 } from "../process/gateway-work-admission.js";
+import { observeAsyncWorkScopeRuns } from "../shared/async-work-scope.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
@@ -46,6 +47,10 @@ import { withGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js
 type NativeHistoryOwner = { sessionId: string; lifecycleRevision?: string };
 type NativeNotification = { method: string; params: unknown };
 type NativeMonitorFixture = {
+  captureNativeSubagentMonitorWork(): {
+    settle(): Promise<unknown[]>;
+    [Symbol.dispose](): void;
+  };
   createClient(): {
     notify(notification: NativeNotification): Promise<void>;
     setThreadReadFactory(threadId: string, read: () => Promise<unknown>): void;
@@ -66,9 +71,9 @@ type NativeMonitorFixture = {
       taskRuntimeScope: ReturnType<typeof createAgentHarnessTaskRuntimeScope>;
       agentId: string;
       historyOwner?: NativeHistoryOwner;
-    }): { bindTurn(turnId: string): void; unregister(): Promise<void> };
-    retireParent(parentThreadId: string): void;
-    dispose(): void;
+    }): Promise<{ bindTurn(turnId: string): void; unregister(): Promise<void> }>;
+    retireParent(parentThreadId: string): Promise<void>;
+    dispose(): Promise<void>;
   };
   directSpawnItem(version: "v2", parentThreadId: string, childThreadId: string): unknown;
   nativeCompletionNotification(params: { agentPath: string; result: string }): NativeNotification;
@@ -87,6 +92,18 @@ async function loadCodexNativeSubagentMonitorTestFixture(): Promise<NativeMonito
     loadCodexNativeSubagentMonitorTestFixture(): Promise<NativeMonitorFixture>;
   }>({ pluginId: "codex", artifactBasename: "test-api.js" });
   return await artifact.loadCodexNativeSubagentMonitorTestFixture();
+}
+
+async function settleObservedScopeRuns(scopes: ReturnType<typeof observeAsyncWorkScopeRuns>) {
+  let position = scopes.startIndex;
+  while (position < scopes.mock.results.length) {
+    const results = scopes.mock.results.slice(position);
+    position = scopes.mock.results.length;
+    // The operation's caller owns its result; this joins the enclosing root cleanup.
+    await Promise.allSettled(
+      results.flatMap((result) => (result.type === "return" ? [result.value] : [])),
+    );
+  }
 }
 
 afterEach(() => {
@@ -110,8 +127,10 @@ describe("native task event custody", () => {
   ] as const)("keeps original assignment ownership through %s completion", async (ordering) => {
     const fixture = await loadCodexNativeSubagentMonitorTestFixture();
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      resetTaskRegistryForTests();
+      resetTaskRegistryForTests({ persist: false });
+      using scopes = observeAsyncWorkScopeRuns();
       using notifications = captureTaskDeliveryWork();
+      using nativeWork = fixture.captureNativeSubagentMonitorWork();
       const requesterSessionKey = "agent:main:main";
       const context = createContext();
       const resolver = () => context;
@@ -193,21 +212,26 @@ describe("native task event custody", () => {
                 receiptAuthority: () => !retired,
               },
               async () => {
-                const registration = monitor.registerParent({
+                const registration = await monitor.registerParent({
                   parentThreadId: "parent-thread",
                   requesterSessionKey,
                   taskRuntimeScope: scope,
                   agentId: "main",
                 });
                 registration.bindTurn("parent-turn");
-                await client.notify({
-                  method: "item/completed",
-                  params: {
-                    threadId: "parent-thread",
-                    turnId: "parent-turn",
-                    item: fixture.directSpawnItem("v2", "parent-thread", "child-thread"),
-                  },
-                });
+                try {
+                  await client.notify({
+                    method: "item/completed",
+                    params: {
+                      threadId: "parent-thread",
+                      turnId: "parent-turn",
+                      item: fixture.directSpawnItem("v2", "parent-thread", "child-thread"),
+                    },
+                  });
+                } catch (error) {
+                  await registration.unregister();
+                  throw error;
+                }
                 return registration;
               },
             ),
@@ -302,6 +326,7 @@ describe("native task event custody", () => {
           schedule.mockRestore();
         }
         vi.useRealTimers();
+        expect(await nativeWork.settle()).toEqual([]);
         await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
         await notifications.settle();
         const current = loadTaskRegistryStateFromSqliteReadOnly().tasks.get(original.taskId);
@@ -323,17 +348,24 @@ describe("native task event custody", () => {
             expect(warning).toHaveBeenCalledWith(expect.stringContaining("runtime owner changed"));
           }
         }
-        await closeOpenClawStateDatabaseAsync();
+        await settleObservedScopeRuns(scopes);
         expect(getActiveGatewayRootWorkCount()).toBe(0);
       } finally {
         stopPublication();
         stopActivity();
         vi.useRealTimers();
         root.release();
-        monitor.retireParent("parent-thread");
-        monitor.dispose();
-        if (ordering === "unsupported" || ordering === "runtime-retired") {
-          resetDetachedTaskLifecycleRuntimeForTests();
+        try {
+          await monitor.retireParent("parent-thread");
+          await monitor.dispose();
+          const failures = await nativeWork.settle();
+          await notifications.settle();
+          expect(failures).toEqual([]);
+        } finally {
+          if (ordering === "unsupported" || ordering === "runtime-retired") {
+            resetDetachedTaskLifecycleRuntimeForTests();
+          }
+          await closeOpenClawStateDatabaseAsync();
         }
       }
     });
@@ -351,8 +383,10 @@ describe("native task event custody", () => {
     async (historyOutcome) => {
       const fixture = await loadCodexNativeSubagentMonitorTestFixture();
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        resetTaskRegistryForTests();
+        resetTaskRegistryForTests({ persist: false });
+        using scopes = observeAsyncWorkScopeRuns();
         using deliveries = captureTaskDeliveryWork();
+        using nativeWork = fixture.captureNativeSubagentMonitorWork();
         const history = fixture.nativeHistoryOwner();
         const requesterSessionKey = "agent:main:main";
         const runId = "codex-thread:child-thread";
@@ -496,11 +530,13 @@ describe("native task event custody", () => {
           expect(tryBeginGatewayRootWorkAdmission()).toBeNull();
           if (historyOutcome !== "unavailable") {
             historyRead.resolve(fixture.threadRead({ result: "Recovered child result" }));
+            expect(await nativeWork.settle()).toEqual([]);
+            await deliveries.settle();
             if (historyOutcome === "replaced" || historyOutcome === "earlier-replaced") {
               if (historyOutcome === "replaced") {
                 expect(beforeHistory?.createdAt).toBe(task.createdAt - 1);
               }
-              await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+              expect(getActiveGatewayRootWorkCount()).toBe(0);
               expect(deliver).not.toHaveBeenCalled();
               if (historyOutcome === "earlier-replaced") {
                 expect(replacement).toBeDefined();
@@ -514,9 +550,7 @@ describe("native task event custody", () => {
                 delivered: true,
                 path: "direct",
               });
-              await deliver.mock.results[0]!.value;
             }
-            await deliveries.settle();
             expect(
               loadTaskRegistryStateFromSqliteReadOnly().tasks.get(task.taskId)?.deliveryStatus,
             ).toBe(
@@ -529,23 +563,30 @@ describe("native task event custody", () => {
                 loadTaskRegistryStateFromSqliteReadOnly().tasks.get(task.taskId)?.createdAt,
               ).toBeLessThan(task.createdAt);
             }
-            await closeOpenClawStateDatabaseAsync();
           } else {
             historyRead.reject(new Error("History temporarily unavailable"));
             await vi.advanceTimersByTimeAsync(0);
+            expect(await nativeWork.settle()).toEqual([]);
             expect(deliver).not.toHaveBeenCalled();
             expect(vi.getTimerCount()).toBe(1);
             expect(
               loadTaskRegistryStateFromSqliteReadOnly().tasks.get(task.taskId)?.deliveryStatus,
             ).toBe("pending");
           }
+          await settleObservedScopeRuns(scopes);
           expect(getActiveGatewayRootWorkCount()).toBe(0);
         } finally {
           stopPublication();
           root.release();
-          monitor.retireParent("parent-thread");
-          monitor.dispose();
+          const retirement = monitor.retireParent("parent-thread");
+          historyRead.resolve(fixture.threadRead({ result: "Recovered child result" }));
           vi.useRealTimers();
+          await retirement;
+          await monitor.dispose();
+          const failures = await nativeWork.settle();
+          await deliveries.settle();
+          expect(failures).toEqual([]);
+          await closeOpenClawStateDatabaseAsync();
         }
       });
     },
@@ -556,8 +597,10 @@ describe("native task event custody", () => {
     async (deliveryMode) => {
       const fixture = await loadCodexNativeSubagentMonitorTestFixture();
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        resetTaskRegistryForTests();
+        resetTaskRegistryForTests({ persist: false });
+        using scopes = observeAsyncWorkScopeRuns();
         using deliveries = captureTaskDeliveryWork();
+        using nativeWork = fixture.captureNativeSubagentMonitorWork();
         const requesterSessionKey = "agent:main:main";
         const context = createContext();
         const resolver = () => context;
@@ -607,7 +650,7 @@ describe("native task event custody", () => {
         );
         const warning = vi.spyOn(taskRegistryLog, "warn");
         const root = tryBeginGatewayRootWorkAdmission("test:native-parent")!;
-        let parent: ReturnType<typeof monitor.registerParent> | undefined;
+        let parent: Awaited<ReturnType<typeof monitor.registerParent>> | undefined;
         let retired = false;
         try {
           await root.run(async () => {
@@ -621,7 +664,7 @@ describe("native task event custody", () => {
                 gatewayContextResolver: resolver,
               },
               async () => {
-                parent = monitor.registerParent({
+                parent = await monitor.registerParent({
                   parentThreadId: "parent-thread",
                   requesterSessionKey,
                   taskRuntimeScope: scope,
@@ -688,13 +731,15 @@ describe("native task event custody", () => {
           expect(tryBeginGatewayRootWorkAdmission()).toBeNull();
           if (deliveryMode === "foreground") {
             await parent!.unregister();
-            expect(deliver).toHaveBeenCalledOnce();
+          } else {
+            await finishChild();
+          }
+          expect(await nativeWork.settle()).toEqual([]);
+          if (deliveryMode === "foreground") {
             await expect(deliver.mock.results[0]!.value).resolves.toMatchObject({
               delivered: true,
               path: "direct",
             });
-          } else {
-            await finishChild();
           }
           await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
           await deliveries.settle();
@@ -708,13 +753,16 @@ describe("native task event custody", () => {
           });
           expect(deliver).toHaveBeenCalledOnce();
           expect(warning).not.toHaveBeenCalled();
-          // Closing the state resources joins the accepted drain's cleanup, not its retry timer.
-          await closeOpenClawStateDatabaseAsync();
+          await settleObservedScopeRuns(scopes);
           expect(getActiveGatewayRootWorkCount()).toBe(0);
         } finally {
           root.release();
-          monitor.retireParent("parent-thread");
-          monitor.dispose();
+          await monitor.retireParent("parent-thread");
+          await monitor.dispose();
+          const failures = await nativeWork.settle();
+          await deliveries.settle();
+          expect(failures).toEqual([]);
+          await closeOpenClawStateDatabaseAsync();
         }
       });
     },
@@ -724,7 +772,7 @@ describe("native task event custody", () => {
     "rejects an old event producer after same-id %s replacement",
     async (field) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
-        resetTaskRegistryForTests();
+        resetTaskRegistryForTests({ persist: false });
         const context = createContext();
         const resolver = () => context;
         context.resolveGatewayContext = resolver;
@@ -742,7 +790,7 @@ describe("native task event custody", () => {
             gatewayContextResolver: resolver,
           },
           async () => {
-            const custody = captureAgentHarnessCompletionCustody(scope)!;
+            const custody = (await captureAgentHarnessCompletionCustody(scope))!;
             try {
               const runtime = createAgentHarnessTaskRuntime({
                 scope,
