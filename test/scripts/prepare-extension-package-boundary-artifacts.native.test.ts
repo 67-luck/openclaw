@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readArtifactRecord } from "../../scripts/lib/build-artifact-cache.mts";
 import { BOUNDARY_PLUGIN_UNITS } from "../../scripts/lib/extension-boundary-inputs.mts";
+import { runManagedCommand } from "../../scripts/lib/managed-child-process.mts";
 import { runNodeStep } from "../../scripts/prepare-extension-package-boundary-artifacts.mts";
 import { createFixtureLifetime } from "../helpers/fixture-lifetime.js";
 import {
@@ -118,6 +119,49 @@ function createPreparationFixture(mode: "package-boundary" | "all", signal: Abor
 }
 
 describe("native declaration preparation", () => {
+  it.for([false, true])(
+    "joins the native compiler before reporting a diagnostic failure (emit=%s)",
+    { timeout: 30_000 },
+    (emit, { signal }) =>
+      fixture.run(async () => {
+        const { root, write, output } = createPreparationFixture("package-boundary", signal);
+        write("src/nested.ts", 'export const value: number = "invalid";');
+        const inputReceipt = `${output}/.inputs.json`;
+        let stdout = "";
+        let stderr = "";
+        const code = await fixture.track(
+          runManagedCommand({
+            bin: process.execPath,
+            args: [
+              path.join(root, "scripts/compile-extension-boundary.mts"),
+              JSON.stringify({
+                configFile: "packages/plugin-sdk/tsconfig.json",
+                inputReceipt,
+                compilerOptions: { outDir: output, rootDir: ".", declarationMap: false },
+                emit,
+              }),
+            ],
+            cwd: root,
+            env: { ...process.env, PWD: root },
+            shell: false,
+            stdio: ["ignore", "pipe", "pipe"],
+            requireProcessTreeExit: true,
+            timeoutMs: 30_000,
+            signal,
+            onReady(child) {
+              child.stdout!.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+              child.stderr!.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
+            },
+          }),
+        );
+        expect(code).toBe(1);
+        expect(stderr).toContain("TS2322: Type 'string' is not assignable to type 'number'.");
+        expect(stderr).toContain("[extension-boundary-compiler] FAILED (exit 1)");
+        expect(stdout).not.toContain("TSFILE:");
+        expect(fs.existsSync(path.join(root, inputReceipt))).toBe(false);
+      }),
+  );
+
   it.for([
     { name: "Windows 8.3 short entry", entry: true, workspace: false },
     { name: "Windows 8.3 workspace junction", entry: false, workspace: true },

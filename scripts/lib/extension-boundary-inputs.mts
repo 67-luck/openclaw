@@ -29,6 +29,7 @@ const GENERATOR_INPUTS = [
   // Pnpm's manifest carries machine-local store metadata. Native membership,
   // installed topology, and input bytes own dependency invalidation here.
   "scripts/lib/extension-boundary-inputs.mts",
+  "scripts/lib/failed-trailer.mts",
   "scripts/lib/native-declaration-emitter.mts",
   "scripts/lib/native-declaration-filesystem.mts",
   "scripts/lib/native-typescript.mts",
