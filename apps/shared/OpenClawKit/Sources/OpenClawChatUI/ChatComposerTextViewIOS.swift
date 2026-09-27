@@ -4,6 +4,7 @@ import UIKit
 
 @MainActor
 struct ChatComposerTextViewIOS: UIViewRepresentable {
+    @Environment(\.isEnabled) private var effectiveEnvironmentEnabled
     @Binding var text: String
     var focusRequested: Bool
     var isEnabled: Bool
@@ -12,6 +13,7 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
     var onFocusChange: (Bool) -> Void
     var onHistoryUp: (Bool) -> Bool
     var onHistoryDown: () -> Bool
+    var typingProbeLog: ((String) -> Void)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -19,6 +21,11 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
 
     func makeUIView(context: Context) -> ChatComposerUITextView {
         let textView = ChatComposerTextViewIOSFactory.makeConfiguredTextView()
+        textView.installTypingProbe(
+            log: self.typingProbeLog,
+            enabled: self.isEnabled,
+            environmentEnabled: self.effectiveEnvironmentEnabled,
+            modelLength: self.text.utf16.count)
         textView.delegate = context.coordinator
         textView.text = self.text
         self.configureHistoryHandlers(textView)
@@ -26,6 +33,15 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
     }
 
     func updateUIView(_ textView: ChatComposerUITextView, context: Context) {
+        if ChatTypingProbe.enabled {
+            textView.typingProbeLog = self.typingProbeLog
+            textView.typingProbeDesiredEnabled = self.isEnabled
+            textView.typingProbeModelLength = self.text.utf16.count
+            if textView.typingProbeEnvironmentEnabled != self.effectiveEnvironmentEnabled {
+                textView.typingProbeEnvironmentEnabled = self.effectiveEnvironmentEnabled
+                ChatTypingProbe.emit("environment-changed", editor: textView)
+            }
+        }
         context.coordinator.parent = self
         context.coordinator.scheduleInteractionUpdate(textView)
         self.configureHistoryHandlers(textView)
@@ -36,6 +52,7 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
         }
 
         if textView.text != self.text {
+            ChatTypingProbe.emit("update-before", editor: textView)
             context.coordinator.isProgrammaticUpdate = true
             defer { context.coordinator.isProgrammaticUpdate = false }
             textView.text = self.text
@@ -43,6 +60,7 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
                 textView.selectedRange = NSRange(location: (self.text as NSString).length, length: 0)
             }
             textView.invalidateIntrinsicContentSize()
+            ChatTypingProbe.emit("update-value", editor: textView)
         }
         context.coordinator.lastReportedText = self.text
     }
@@ -87,6 +105,9 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
                 guard let self else { return }
                 self.interactionUpdateScheduled = false
                 guard let textView else { return }
+                let changesInteraction = textView.isEditable != self.parent.isEnabled ||
+                    textView.isSelectable != self.parent.isEnabled
+                if changesInteraction { ChatTypingProbe.emit("interaction-before", editor: textView) }
                 if textView.isEditable != self.parent.isEnabled {
                     textView.isEditable = self.parent.isEnabled
                 }
@@ -101,6 +122,7 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
                 } else if !self.parent.isEnabled, textView.isFirstResponder {
                     textView.resignFirstResponder()
                 }
+                if changesInteraction { ChatTypingProbe.emit("interaction-after", editor: textView) }
             }
         }
 
@@ -113,10 +135,16 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
+            if let editor = textView as? ChatComposerUITextView {
+                ChatTypingProbe.emit("editing-began", editor: editor)
+            }
             self.parent.onFocusChange(true)
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
+            if let editor = textView as? ChatComposerUITextView {
+                ChatTypingProbe.emit("editing-ended", editor: editor)
+            }
             self.parent.onFocusChange(false)
         }
 
@@ -124,6 +152,10 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
             guard !self.isProgrammaticUpdate, textView.isFirstResponder else { return }
             self.lastReportedText = textView.text
             self.parent.text = textView.text
+            if ChatTypingProbe.enabled, let editor = textView as? ChatComposerUITextView {
+                editor.typingProbeModelLength = self.parent.text.utf16.count
+                ChatTypingProbe.emit("text-changed", editor: editor)
+            }
             textView.invalidateIntrinsicContentSize()
         }
     }
@@ -133,6 +165,69 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
 final class ChatComposerUITextView: UITextView {
     var onHistoryUp: ((Bool) -> Bool)?
     var onHistoryDown: (() -> Bool)?
+    var typingProbeLog: ((String) -> Void)?
+    var typingProbeID = 0
+    var typingProbeDesiredEnabled = false
+    var typingProbeEnvironmentEnabled = true
+    var typingProbeModelLength = 0
+
+    func installTypingProbe(
+        log: ((String) -> Void)?, enabled: Bool, environmentEnabled: Bool, modelLength: Int)
+    {
+        guard ChatTypingProbe.enabled, self.typingProbeID == 0 else { return }
+        self.typingProbeID = ChatTypingProbe.editorID()
+        self.typingProbeLog = log
+        self.typingProbeDesiredEnabled = enabled
+        self.typingProbeEnvironmentEnabled = environmentEnabled
+        self.typingProbeModelLength = modelLength
+        for name in [
+            UIResponder.keyboardWillShowNotification, UIResponder.keyboardDidShowNotification,
+            UIResponder.keyboardWillHideNotification, UIResponder.keyboardDidHideNotification,
+        ] {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(self.typingProbeKeyboard(_:)),
+                name: name,
+                object: nil)
+        }
+        ChatTypingProbe.emit("editor-created", editor: self)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        ChatTypingProbe.emit("editor-window", editor: self)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        ChatTypingProbe.emit("focus-request", editor: self)
+        let result = super.becomeFirstResponder()
+        ChatTypingProbe.emit("focus-result", editor: self, result: result)
+        return result
+    }
+
+    override func resignFirstResponder() -> Bool {
+        ChatTypingProbe.emit("blur-request", editor: self)
+        let result = super.resignFirstResponder()
+        ChatTypingProbe.emit("blur-result", editor: self, result: result)
+        return result
+    }
+
+    @objc private func typingProbeKeyboard(_ notification: Notification) {
+        let event: String
+        switch notification.name {
+        case UIResponder.keyboardWillShowNotification: event = "keyboard-will-show"
+        case UIResponder.keyboardDidShowNotification: event = "keyboard-did-show"
+        case UIResponder.keyboardWillHideNotification: event = "keyboard-will-hide"
+        case UIResponder.keyboardDidHideNotification: event = "keyboard-did-hide"
+        default: return
+        }
+        let frame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+        ChatTypingProbe.emit(event, editor: self, keyboardHeight: frame.map { Double($0.height) })
+    }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var unhandledPresses = presses

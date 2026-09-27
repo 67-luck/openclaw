@@ -133,6 +133,7 @@ jobs:
           proof["sharedInstallerMs"] = (int(end) - int(start)) * 1000 if start and end else None
           with open(path, "w") as out:
               json.dump(proof, out, indent=2)
+          print(json.dumps(proof, indent=2))
           PY
 
       - name: Upload sanitized proof only

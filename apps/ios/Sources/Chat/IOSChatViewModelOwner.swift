@@ -34,6 +34,19 @@ final class IOSChatViewModelOwner {
         let controlUIInputs = appModel.activeGatewayConnectConfig?.controlUIInputs
         let authorityChanged = self.controlUIInputs != nil && controlUIInputs != nil &&
             self.controlUIInputs != controlUIInputs
+        let typingProbeChanges = ChatTypingProbe.enabled ? ChatTypingProbe.OwnerChanges(
+            ownerChanged: self.ownerID != ownerID,
+            authorityChanged: authorityChanged,
+            sessionChanged: self.viewModel?.sessionKey != appModel.chatSessionKey,
+            agentChanged: self.transportAgentID != agentID,
+            contractChanged: self.routingContract != routingContract) : nil
+        if let typingProbeChanges {
+            ChatTypingProbe.ownerSync(
+                changes: typingProbeChanges,
+                storedAuthAllowedBefore: self.controlUIInputs?.allowStoredDeviceAuth,
+                storedAuthAllowedAfter: controlUIInputs?.allowStoredDeviceAuth,
+                log: { GatewayDiagnostics.log($0) })
+        }
         let reconnected = connected && !self.wasConnected
         self.wasConnected = connected
         if authorityChanged { self.viewModel?.retireQuestionAuthority() }
@@ -77,6 +90,14 @@ final class IOSChatViewModelOwner {
             viewModel.input
         } else {
             nil
+        }
+        if let typingProbeChanges {
+            ChatTypingProbe.ownerSync(
+                changes: typingProbeChanges,
+                storedAuthAllowedBefore: self.controlUIInputs?.allowStoredDeviceAuth,
+                storedAuthAllowedAfter: controlUIInputs?.allowStoredDeviceAuth,
+                presentationPreserved: draft != nil,
+                log: { GatewayDiagnostics.log($0) })
         }
         // Initial route hydration changes transport, but the same draft keeps its native editor.
         if draft == nil { self.presentationID = UUID() }
