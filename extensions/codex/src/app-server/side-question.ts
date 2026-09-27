@@ -41,6 +41,7 @@ import {
   readCodexPluginConfig,
   readCodexRequirementsToml,
   resolveCodexAppServerHomeScope,
+  resolveCodexPluginsPolicy,
   resolveOpenClawExecPolicyForCodexAppServer,
   resolveCodexModelBackedReviewerPolicyContext,
   shouldAutoApproveCodexAppServerApprovals,
@@ -181,6 +182,14 @@ export async function runCodexAppServerSideQuestion(
     );
   }
   const pluginConfig = readCodexPluginConfig(options.pluginConfig);
+  const pluginPolicyEnabled = resolveCodexPluginsPolicy(pluginConfig).enabled;
+  // Legacy bindings cannot attribute a selected MCP server to its plugin. Do
+  // not fork under that stale authority; a normal turn refreshes the owner map.
+  if (pluginPolicyEnabled && !binding.pluginAppPolicyContext?.nativePlugins) {
+    throw new Error(
+      "Codex /btw cannot verify plugin ownership for this older thread. Send a normal message to refresh plugin ownership, then retry /btw.",
+    );
+  }
   const { sessionAgentId } = resolveSessionAgentIdsStrict({
     sessionKey: params.sessionKey,
     config: params.cfg,
@@ -441,7 +450,9 @@ export async function runCodexAppServerSideQuestion(
     // Native app prompts must reach their reviewer even when the side thread's
     // general policy is Never, matching normal plugin-backed turns.
     const approvalPolicy =
+      pluginPolicyEnabled ||
       Object.keys(binding.pluginAppPolicyContext?.apps ?? {}).length > 0 ||
+      Object.keys(binding.pluginAppPolicyContext?.nativePlugins ?? {}).length > 0 ||
       hasCodexMcpToolApprovalOverrides(
         params.cfg?.mcp?.servers,
         Object.keys(projectedMcpServers),
@@ -491,8 +502,10 @@ export async function runCodexAppServerSideQuestion(
           turnId,
           autoApproveMcpTools,
           projectedMcpServers,
-          getActiveMcpToolCall: (serverName) =>
-            nativeToolLifecycleProjector?.getActiveMcpToolCall(serverName),
+          getActiveMcpToolCall: (serverName, connectorId) =>
+            nativeToolLifecycleProjector?.getActiveMcpToolCall(serverName, connectorId),
+          getActiveMcpToolCallAttribution: (serverName) =>
+            nativeToolLifecycleProjector?.getActiveMcpToolCallAttribution(serverName),
           pluginAppPolicyContext,
           signal,
         });
