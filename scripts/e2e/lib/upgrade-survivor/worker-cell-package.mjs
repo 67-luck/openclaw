@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH } from "../../../lib/package-lifecycle-marker.mjs";
 
 const baselineVersion = "2026.9.4";
 const baselineCommit = "3a9d69db306cd7f081e06254cb89c4bcc14a7107";
@@ -23,11 +24,15 @@ function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-// npm owns dependency reification. Compare the immutable application payload,
-// including its complete dist inventory, separately from installed node_modules.
+// npm owns dependency reification. Inventory every non-dependency payload path,
+// including executable root helpers and scripts, not a hand-maintained entry list.
 export function readWorkerCellPackageIdentity(packageRoot) {
+  /** @type {Record<string, { sha256: string; size: number } | { symlink: string }>} */
   const files = {};
   const visit = (relative) => {
+    if (path.posix.basename(relative) === "node_modules") {
+      return;
+    }
     const file = path.join(packageRoot, relative);
     const stat = fs.lstatSync(file);
     if (stat.isSymbolicLink()) {
@@ -41,9 +46,7 @@ export function readWorkerCellPackageIdentity(packageRoot) {
       files[relative] = { sha256: hash(fs.readFileSync(file)), size: stat.size };
     }
   };
-  for (const relative of ["package.json", "openclaw.mjs", "dist"]) {
-    visit(relative);
-  }
+  visit("");
   const manifest = readJson(path.join(packageRoot, "package.json"));
   assert.equal(manifest.name, "openclaw");
   const buildInfo = readJson(path.join(packageRoot, "dist/build-info.json"));
@@ -135,20 +138,14 @@ function inspectTarball(tarball, runtimeRoot) {
   const integrity = `sha512-${hash(bytes, "sha512", "base64")}`;
   const scratch = fs.mkdtempSync(path.join(runtimeRoot, "package-identity-"));
   try {
-    execFileSync(
-      "tar",
-      [
-        "-xzf",
-        tarball,
-        "-C",
-        scratch,
-        "package/package.json",
-        "package/openclaw.mjs",
-        "package/dist",
-      ],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
-    return { sha256, integrity, ...readWorkerCellPackageIdentity(path.join(scratch, "package")) };
+    execFileSync("tar", ["-xzf", tarball, "-C", scratch, "--exclude=*/node_modules"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const identity = readWorkerCellPackageIdentity(path.join(scratch, "package"));
+    // The shipped postinstall consumes this marker. Remove it from the archive
+    // expectation only: a marker left in the installed tree must still fail.
+    delete identity.files[PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH];
+    return { sha256, integrity, ...identity };
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }
@@ -160,15 +157,29 @@ async function main() {
   const runtimeRoot = process.env.OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT;
   assert(artifacts && runtimeRoot && packageRoot, "Missing isolated worker-cell paths");
   if (mode === "baseline") {
-    const response = await fetch(baselineUrl);
+    const pin = candidateTarball
+      ? readJson(candidateTarball)
+      : {
+          url: baselineUrl,
+          integrity: baselineIntegrity,
+          version: baselineVersion,
+          commit: baselineCommit,
+        };
+    const response = await fetch(pin.url);
     assert(response.ok, `Published baseline download failed: ${response.status}`);
     const bytes = Buffer.from(await response.arrayBuffer());
-    assert.equal(`sha512-${hash(bytes, "sha512", "base64")}`, baselineIntegrity);
+    assert.equal(`sha512-${hash(bytes, "sha512", "base64")}`, pin.integrity);
+    if (pin.shasum) {
+      assert.equal(hash(bytes, "sha1"), pin.shasum);
+    }
+    if (pin.sha256) {
+      assert.equal(hash(bytes), pin.sha256);
+    }
     const tarball = path.join(runtimeRoot, "published-driver.tgz");
     fs.writeFileSync(tarball, bytes, { flag: "wx" });
     const expected = inspectTarball(tarball, runtimeRoot);
-    assert.equal(expected.version, baselineVersion);
-    assert.equal(expected.buildInfo.commit, baselineCommit);
+    assert.equal(expected.version, pin.version);
+    assert.equal(expected.buildInfo.commit, pin.commit);
     const actual = readWorkerCellPackageIdentity(packageRoot);
     assertWorkerCellPackageIdentity(actual, {
       version: expected.version,
@@ -176,7 +187,7 @@ async function main() {
       files: expected.files,
     });
     writeJson(path.join(artifacts, "baseline-package-identity.json"), {
-      url: baselineUrl,
+      url: pin.url,
       cli: fs.realpathSync(path.join(packageRoot, "openclaw.mjs")),
       ...expected,
     });

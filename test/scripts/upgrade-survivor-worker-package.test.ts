@@ -45,11 +45,41 @@ describe("worker survivor installed payload identity", () => {
     },
   );
 
+  it.each(["node-runtime-recovery.mjs", "scripts/installer.mjs", "docs/guide.md"])(
+    "rejects missing, changed, and extra non-dependency payload at %s",
+    (relative) => {
+      const root = packageFixture();
+      const file = path.join(root, relative);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "frozen payload\n");
+      const expected = readWorkerCellPackageIdentity(root);
+      expect(expected.files[relative]).toBeDefined();
+      for (const mutation of ["changed", "missing", "extra"]) {
+        if (mutation === "missing") {
+          fs.unlinkSync(file);
+        } else {
+          fs.writeFileSync(file, mutation === "changed" ? "stale payload\n" : "frozen payload\n");
+        }
+        if (mutation === "extra") {
+          fs.writeFileSync(file + ".stale", "extra payload\n");
+        }
+        expect(() =>
+          assertWorkerCellPackageIdentity(readWorkerCellPackageIdentity(root), expected),
+        ).toThrow("Installed application payload differs");
+      }
+    },
+  );
+
   it("compares application bytes while npm reifies its installed dependency tree", () => {
     const root = packageFixture();
     const expected = readWorkerCellPackageIdentity(root);
     fs.mkdirSync(path.join(root, "node_modules"));
     fs.writeFileSync(path.join(root, "node_modules/.package-lock.json"), "{}");
+    fs.mkdirSync(path.join(root, "dist/extensions/example/node_modules"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "dist/extensions/example/node_modules/dependency.mjs"),
+      "export {};\n",
+    );
     expect(() =>
       assertWorkerCellPackageIdentity(readWorkerCellPackageIdentity(root), expected),
     ).not.toThrow();

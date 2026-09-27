@@ -147,6 +147,36 @@ current contracts. Current package validators also require both npm lockfile
 formats to be absent from new tarballs. To reproduce historical acceptance
 results, select the matching historical `workflow_ref` tooling.
 
+### Unchanged legacy worker provider
+
+Use the existing **Update Migration** workflow with an authorized reviewed
+harness branch as `--ref`, its exact SHA as `workflow_ref`, the exact committed
+candidate as `package_ref`, `baselines=openclaw@2026.9.6`, and
+`scenarios=legacy-worker-provider`. This caller forwards no provider secrets and
+selects the same survivor runner through `custom` / `update-migration`. Direct
+Package Acceptance dispatch is not secretless. The fixture is not included in
+default release profiles or the `reported-issues` and `far-reaching` aliases.
+
+This cell installs an external V0 worker-provider plugin through the published
+plugin CLI, creates real native environment and lease state through Gateway RPC,
+then uses the published CLI's `openclaw update` to install the exact candidate
+artifact. Same-version candidates use an explicit tarball target and must have
+different build IDs and bytes; an already-current result is not an upgrade pass.
+The provider source and configured profile remain unchanged. After restart,
+inspection, retained-state custody, idempotent Stop, fresh provisioning, and
+cleanup must succeed without duplicate allocation or orphaned local processes.
+
+The allocation backend is a controlled local fixture; the installed OpenClaw
+plugin loader, Gateway, node enrollment, worker admission, updater, IPC, and
+SQLite state are real. The owned container LAN listener uses TLS with normal
+enrollment fingerprint trust and matching HTTPS/WSS CLI probes, without host
+networking or published host ports. This is secretless compatibility proof, not
+live cloud or inference proof. Exact application identity includes root runtime
+helpers; npm-reified dependency-tree byte identity is not claimed. Driver/package identities and before/after lifecycle receipts
+are published through the existing survivor diagnostics. Setup failures and
+incomplete cleanup are not successful upgrades. Detailed fixture contracts live
+in `scripts/e2e/lib/upgrade-survivor/legacy-worker-provider.md`.
+
 ### Examples
 
 ```bash

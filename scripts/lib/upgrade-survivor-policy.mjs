@@ -36,6 +36,7 @@ const TRUSTED_HARNESS_OWNED_SCENARIOS = new Set([
   "workshop-doctor-recovery",
   "update-report-recovery",
   "dreaming-cron-doctor",
+  "legacy-worker-provider",
 ]);
 
 export function isTrustedHarnessOwnedUpgradeSurvivorScenario(scenario) {
@@ -58,6 +59,7 @@ const aggregateScenarios = UPGRADE_SURVIVOR_SCENARIOS.filter(
     scenario !== "workshop-doctor-recovery" &&
     scenario !== "update-report-recovery" &&
     scenario !== "dreaming-cron-doctor" &&
+    scenario !== "legacy-worker-provider" &&
     scenario !== "mobile-pairing-reconnect" &&
     scenario !== "watchos-direct-node" &&
     scenario !== "prerelease-plugin-registry" &&
@@ -184,7 +186,7 @@ export function supportsUpgradeSurvivorScenarioAtBaseline(scenario, baselineSpec
     return !frozenJuly && comparison !== null && comparison >= 0;
   }
   const version = parsePublishedReleaseVersion(baselineSpec);
-  if (scenario === "dreaming-cron-doctor") {
+  if (scenario === "dreaming-cron-doctor" || scenario === "legacy-worker-provider") {
     return baselineSpec === "openclaw@2026.9.6";
   }
   if (

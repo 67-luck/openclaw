@@ -8,7 +8,13 @@ import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const selectedSha = "a".repeat(40);
 const version = "2026.9.6";
-type Change = "valid" | "stale" | "tarball-changed" | "wrong-source";
+type Change =
+  | "valid"
+  | "stale"
+  | "stale-root-helper"
+  | "pending-lifecycle"
+  | "tarball-changed"
+  | "wrong-source";
 
 function runCandidateFlow(scenario: "base" | "sqlite-volume", change: Change) {
   const root = tempDirs.make("upgrade-survivor-candidate-identity-");
@@ -31,7 +37,13 @@ function runCandidateFlow(scenario: "base" | "sqlite-volume", change: Change) {
     JSON.stringify({ version, commit: selectedSha }),
   );
   writeFileSync(path.join(candidate, "dist/entry.mjs"), "export const payload = 'candidate';\n");
+  writeFileSync(
+    path.join(candidate, "node-runtime-recovery.mjs"),
+    "export const payload = 'candidate';\n",
+  );
   cpSync(candidate, installed, { recursive: true });
+  // The real package postinstall removes this archive marker before admission.
+  writeFileSync(path.join(candidate, ".openclaw-lifecycle-pending"), "pending\n");
   writeFileSync(path.join(installed, "dist/entry.mjs"), "export const payload = 'stale';\n");
   writeFileSync(events, "");
   execFileSync("tar", ["-czf", tarball, "-C", path.dirname(candidate), "package"]);
@@ -74,6 +86,12 @@ update_candidate_for_install_mode() {
   printf 'updater\\n' >> "$UNIT_ROOT/events"
   if [ "$UNIT_CHANGE" != stale ]; then
     cp -R "$UNIT_ROOT/candidate/package/." "$UNIT_ROOT/installed/"
+  fi
+  if [ "$UNIT_CHANGE" != pending-lifecycle ]; then
+    rm -f "$UNIT_ROOT/installed/.openclaw-lifecycle-pending"
+  fi
+  if [ "$UNIT_CHANGE" = stale-root-helper ]; then
+    printf "export const payload = 'stale';\\n" > "$UNIT_ROOT/installed/node-runtime-recovery.mjs"
   fi
   if [ "$UNIT_CHANGE" = tarball-changed ]; then
     printf '\\n' >> "$CANDIDATE_SPEC"
@@ -148,6 +166,11 @@ describe.skipIf(process.platform === "win32")(
         events: [],
       },
       { change: "tarball-changed", error: "Candidate tarball changed", events: ["updater"] },
+      ...(["stale-root-helper", "pending-lifecycle"] as const).map((change) => ({
+        change,
+        error: "Installed application payload differs from the frozen tarball",
+        events: ["updater"],
+      })),
     ] as const)("refuses $change at the actual candidate boundary", ({ change, error, events }) => {
       const observed = runCandidateFlow("base", change);
       expect(observed.result.status).not.toBe(0);

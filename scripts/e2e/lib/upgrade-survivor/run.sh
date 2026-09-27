@@ -18,6 +18,8 @@ source scripts/e2e/lib/upgrade-survivor/paths.sh
 
 SCENARIO="${OPENCLAW_UPGRADE_SURVIVOR_SCENARIO:-base}"
 WORKER_CELL=0
+LEGACY_WORKER_CELL=0
+[ "$SCENARIO" != "legacy-worker-provider" ] || LEGACY_WORKER_CELL=1
 if [ "$SCENARIO" = "projects-doctor" ] || [ "$SCENARIO" = "projects-startup-migration" ] || [ "$SCENARIO" = "taskflow-restoration" ]; then
   WORKER_CELL=1
 fi
@@ -47,7 +49,7 @@ if [ "$SCENARIO" = "mobile-pairing-reconnect" ]; then
     node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))'
   )"
 fi
-if [ "$SCENARIO" = "watchos-direct-node" ] || [ "$SCENARIO" = "mobile-pairing-reconnect" ] || [ "$SCENARIO" = "dreaming-cron-doctor" ] || [ "$WORKER_CELL" = "1" ]; then
+if [ "$SCENARIO" = "watchos-direct-node" ] || [ "$SCENARIO" = "mobile-pairing-reconnect" ] || [ "$SCENARIO" = "dreaming-cron-doctor" ] || [ "$WORKER_CELL" = "1" ] || [ "$LEGACY_WORKER_CELL" = "1" ]; then
   unset OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY DISCORD_BOT_TOKEN TELEGRAM_BOT_TOKEN
 else
   export OPENAI_API_KEY="sk-openclaw-upgrade-survivor"
@@ -70,7 +72,7 @@ chmod 700 "$RUNTIME_ROOT"
 export TMPDIR="${OPENCLAW_UPGRADE_SURVIVOR_TMPDIR:-$RUNTIME_ROOT/tmp}"
 export OPENCLAW_TEST_STATE_TMPDIR="${OPENCLAW_UPGRADE_SURVIVOR_TEST_STATE_TMPDIR:-$RUNTIME_ROOT/state-tmp}"
 mkdir -p "$TMPDIR" "$OPENCLAW_TEST_STATE_TMPDIR"
-if [ "$WORKER_CELL" = "1" ] || [ "$SCENARIO" = "dreaming-cron-doctor" ]; then
+if [ "$WORKER_CELL" = "1" ] || [ "$LEGACY_WORKER_CELL" = "1" ] || [ "$SCENARIO" = "dreaming-cron-doctor" ]; then
   export XDG_CACHE_HOME="$RUNTIME_ROOT/xdg-cache"
   export OPENCLAW_SKIP_CRON=1
   export OPENCLAW_SKIP_STARTUP_MODEL_PREWARM=1
@@ -103,6 +105,7 @@ FAILURE_PHASE=""
 FAILURE_MESSAGE=""
 FAILURE_SIGNAL=""
 gateway_pid=""
+legacy_worker_backend_pid=""
 plugin_registry_pid=""
 missing_plugin_registry_pid=""
 clawhub_fixture_pid=""
@@ -170,13 +173,13 @@ WATCH_CANDIDATE_CONNECT_JSON="$ARTIFACT_ROOT/watchos-candidate-connect.json"
 WATCH_CANDIDATE_STATE_JSON="$ARTIFACT_ROOT/watchos-candidate-state.json"
 WATCH_RESTART_CONNECT_JSON="$ARTIFACT_ROOT/watchos-restart-connect.json"
 WATCH_RESTART_STATE_JSON="$ARTIFACT_ROOT/watchos-restart-state.json"
-WATCH_TLS_ROOT="$WATCH_RUNTIME_ROOT/tls"
-WATCH_TLS_CA_KEY="$WATCH_TLS_ROOT/ca-key.pem"
-WATCH_TLS_CA_CERT="$WATCH_TLS_ROOT/ca-cert.pem"
-WATCH_TLS_SERVER_KEY="$WATCH_TLS_ROOT/server-key.pem"
-WATCH_TLS_SERVER_CSR="$WATCH_TLS_ROOT/server.csr"
-WATCH_TLS_SERVER_CERT="$WATCH_TLS_ROOT/server-cert.pem"
-WATCH_TLS_SERVER_EXT="$WATCH_TLS_ROOT/server.ext"
+GATEWAY_TLS_ROOT="$RUNTIME_ROOT/gateway-tls"
+GATEWAY_TLS_CA_KEY="$GATEWAY_TLS_ROOT/ca-key.pem"
+GATEWAY_TLS_CA_CERT="$GATEWAY_TLS_ROOT/ca-cert.pem"
+GATEWAY_TLS_SERVER_KEY="$GATEWAY_TLS_ROOT/server-key.pem"
+GATEWAY_TLS_SERVER_CSR="$GATEWAY_TLS_ROOT/server.csr"
+GATEWAY_TLS_SERVER_CERT="$GATEWAY_TLS_ROOT/server-cert.pem"
+GATEWAY_TLS_SERVER_EXT="$GATEWAY_TLS_ROOT/server.ext"
 WATCH_GATEWAY_WS_URL="wss://localhost:18789"
 WATCH_GATEWAY_HTTP_URL="https://localhost:18789"
 MOBILE_PAIRING_ROOT="$RUNTIME_ROOT/mobile-pairing"
@@ -494,13 +497,24 @@ watchos_reconnect_restarted_candidate() {
 }
 
 cleanup() {
+  local cleanup_status=0
+  if [ -n "$legacy_worker_backend_pid" ] && [ -n "$gateway_pid" ]; then
+    node scripts/e2e/lib/upgrade-survivor/legacy-worker-provider.mjs cleanup || cleanup_status=1
+  fi
   stop_gateway
+  if [ -n "$legacy_worker_backend_pid" ]; then
+    # Backend drains owned nodes before the shell joins it; no ten-second kill race.
+    kill -TERM "$legacy_worker_backend_pid" 2>/dev/null || true
+    wait "$legacy_worker_backend_pid" || cleanup_status=1
+    legacy_worker_backend_pid=""
+  fi
   openclaw_e2e_stop_process "${plugin_registry_pid:-}"
   openclaw_e2e_stop_process "${missing_plugin_registry_pid:-}"
   openclaw_e2e_stop_process "${clawhub_fixture_pid:-}"
   openclaw_e2e_stop_process "${mock_openai_pid:-}"
   openclaw_e2e_stop_process "${restart_mock_pid:-}"
   openclaw_e2e_stop_process "${restart_registry_pid:-}"
+  return "$cleanup_status"
 }
 
 on_error() {
@@ -521,6 +535,12 @@ on_signal() {
   exit "$status"
 }
 
+capture_failure_diagnostics() {
+  node scripts/e2e/lib/upgrade-survivor/diagnostics.mjs capture \
+    "$ARTIFACT_ROOT" "${FAILURE_PHASE:-${CURRENT_PHASE:-unknown}}" "$1" "$FAILURE_SIGNAL" "$last_update_observation_root" ||
+    echo "Upgrade survivor diagnostics missing; preserving original phase failure." >&3
+}
+
 on_exit() {
   local status="$1"
   trap - ERR EXIT HUP INT TERM
@@ -539,11 +559,20 @@ on_exit() {
   fi
   # Capture before stop/cleanup can replace the first failing service evidence.
   if [ "$status" -ne 0 ]; then
-    node scripts/e2e/lib/upgrade-survivor/diagnostics.mjs capture \
-      "$ARTIFACT_ROOT" "${FAILURE_PHASE:-${CURRENT_PHASE:-unknown}}" "$status" "$FAILURE_SIGNAL" "$last_update_observation_root" ||
-      echo "Upgrade survivor diagnostics missing; preserving original phase failure." >&3
+    capture_failure_diagnostics "$status"
   fi
-  cleanup
+  if ! cleanup && [ "$status" -eq 0 ]; then
+    status=1
+    FAILURE_PHASE="cleanup"
+    FAILURE_MESSAGE="upgrade survivor cleanup failed"
+    if [ "$LEGACY_WORKER_CELL" = "1" ]; then
+      FAILURE_PHASE="legacy-worker-cleanup"
+      FAILURE_MESSAGE="legacy worker cleanup did not join all owned resources"
+    fi
+    # Cleanup can be the first failure. Capture it once, but never replace the
+    # pre-cleanup snapshot (or exit status) of an earlier failed phase.
+    capture_failure_diagnostics "$status"
+  fi
   if [ "$status" -eq 0 ] && [ "$run_completed" = "1" ]; then
     write_summary passed ""
   else
@@ -1182,40 +1211,39 @@ probe_legacy_operator_migration() {
   stop_gateway
 }
 
-configure_watchos_tls_fixture() {
-  [ "${SCENARIO:-}" = "watchos-direct-node" ] || return 0
+configure_gateway_tls_fixture() {
   command -v openssl >/dev/null || {
-    echo "watchOS direct-node survivor requires openssl" >&2
+    echo "TLS survivor requires openssl" >&2
     return 1
   }
-  mkdir -p "$WATCH_TLS_ROOT"
-  chmod 700 "$WATCH_TLS_ROOT"
+  mkdir -p "$GATEWAY_TLS_ROOT"
+  chmod 700 "$GATEWAY_TLS_ROOT"
   openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 \
-    -subj "/CN=OpenClaw watchOS survivor CA" \
+    -subj "/CN=OpenClaw survivor CA" \
     -addext "basicConstraints=critical,CA:TRUE" \
     -addext "keyUsage=critical,keyCertSign,cRLSign" \
-    -keyout "$WATCH_TLS_CA_KEY" \
-    -out "$WATCH_TLS_CA_CERT" >/dev/null 2>&1
+    -keyout "$GATEWAY_TLS_CA_KEY" \
+    -out "$GATEWAY_TLS_CA_CERT" >/dev/null 2>&1
   openssl req -newkey rsa:2048 -nodes -sha256 \
     -subj "/CN=localhost" \
-    -keyout "$WATCH_TLS_SERVER_KEY" \
-    -out "$WATCH_TLS_SERVER_CSR" >/dev/null 2>&1
+    -keyout "$GATEWAY_TLS_SERVER_KEY" \
+    -out "$GATEWAY_TLS_SERVER_CSR" >/dev/null 2>&1
   printf '%s\n' \
     "basicConstraints=critical,CA:FALSE" \
     "subjectAltName=DNS:localhost,IP:127.0.0.1" \
     "keyUsage=critical,digitalSignature,keyEncipherment" \
-    "extendedKeyUsage=serverAuth" >"$WATCH_TLS_SERVER_EXT"
+    "extendedKeyUsage=serverAuth" >"$GATEWAY_TLS_SERVER_EXT"
   openssl x509 -req \
-    -in "$WATCH_TLS_SERVER_CSR" \
-    -CA "$WATCH_TLS_CA_CERT" \
-    -CAkey "$WATCH_TLS_CA_KEY" \
+    -in "$GATEWAY_TLS_SERVER_CSR" \
+    -CA "$GATEWAY_TLS_CA_CERT" \
+    -CAkey "$GATEWAY_TLS_CA_KEY" \
     -CAcreateserial \
     -days 1 \
     -sha256 \
-    -extfile "$WATCH_TLS_SERVER_EXT" \
-    -out "$WATCH_TLS_SERVER_CERT" >/dev/null 2>&1
-  chmod 600 "$WATCH_TLS_CA_KEY" "$WATCH_TLS_CA_CERT" "$WATCH_TLS_SERVER_KEY" \
-    "$WATCH_TLS_SERVER_CSR" "$WATCH_TLS_SERVER_CERT" "$WATCH_TLS_SERVER_EXT"
+    -extfile "$GATEWAY_TLS_SERVER_EXT" \
+    -out "$GATEWAY_TLS_SERVER_CERT" >/dev/null 2>&1
+  chmod 600 "$GATEWAY_TLS_CA_KEY" "$GATEWAY_TLS_CA_CERT" "$GATEWAY_TLS_SERVER_KEY" \
+    "$GATEWAY_TLS_SERVER_CSR" "$GATEWAY_TLS_SERVER_CERT" "$GATEWAY_TLS_SERVER_EXT"
   local tls_config
   tls_config="$(
     node -e '
@@ -1225,10 +1253,10 @@ configure_watchos_tls_fixture() {
         certPath: process.argv[1],
         keyPath: process.argv[2],
       }));
-    ' "$WATCH_TLS_SERVER_CERT" "$WATCH_TLS_SERVER_KEY"
+    ' "$GATEWAY_TLS_SERVER_CERT" "$GATEWAY_TLS_SERVER_KEY"
   )"
   openclaw config set gateway.tls "$tls_config" --strict-json >/dev/null
-  export NODE_EXTRA_CA_CERTS="$WATCH_TLS_CA_CERT"
+  export NODE_EXTRA_CA_CERTS="$GATEWAY_TLS_CA_CERT"
 }
 
 validate_baseline_config() {
@@ -1538,6 +1566,9 @@ update_candidate() {
     update_env+=(OPENCLAW_ALLOW_ROOT=1)
   fi
   local update_node_options="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$PWD/scripts/e2e/lib/upgrade-survivor/diagnostics.mjs"
+  if [ "$LEGACY_WORKER_CELL" = "1" ]; then
+    update_node_options+=" --import=$PWD/scripts/e2e/lib/upgrade-survivor/legacy-worker-driver.mjs"
+  fi
   if [ "$SCENARIO" = "custom-plugin-siblings" ]; then
     update_node_options+=" --import=$ARTIFACT_ROOT/sibling-refusal-preload.mjs"
   fi
@@ -1967,7 +1998,7 @@ probe_gateway_endpoint() {
   local start_epoch
   local end_epoch
   local gateway_http_url="http://127.0.0.1:18789"
-  if [ "${SCENARIO:-}" = "watchos-direct-node" ]; then
+  if [ "${SCENARIO:-}" = "watchos-direct-node" ] || [ "${LEGACY_WORKER_CELL:-0}" = "1" ]; then
     gateway_http_url="$WATCH_GATEWAY_HTTP_URL"
   fi
   local args=(
@@ -1991,20 +2022,24 @@ probe_gateway_endpoint() {
 }
 
 start_gateway() {
-  local port=18789
+  local port=18789 bind=loopback ready_url=""
+  if [ "${LEGACY_WORKER_CELL:-0}" = "1" ]; then
+    bind=lan
+    ready_url="$WATCH_GATEWAY_HTTP_URL"
+  fi
   local budget
   budget="$(openclaw_e2e_read_positive_int_env OPENCLAW_UPGRADE_SURVIVOR_START_BUDGET_SECONDS 90)" || return "$?"
   local start_epoch
   local ready_epoch
   start_epoch="$(node -e "process.stdout.write(String(Date.now()))")" || return "$?"
   env -u OPENCLAW_GATEWAY_TOKEN -u OPENCLAW_GATEWAY_PASSWORD OPENCLAW_GATEWAY_STARTUP_TRACE=1 \
-    openclaw gateway --port "$port" --bind loopback --allow-unconfigured >"$GATEWAY_LOG" 2>&1 &
+    openclaw gateway --port "$port" --bind "$bind" --allow-unconfigured >"$GATEWAY_LOG" 2>&1 &
   gateway_pid="$!"
   local readiness_mode="strict"
   if [ "${SCENARIO:-}" = "watchos-direct-node" ]; then
     readiness_mode="legacy-ready-log-ok"
   fi
-  openclaw_e2e_wait_gateway_ready "$gateway_pid" "$GATEWAY_LOG" 360 "$port" "$readiness_mode" || return "$?"
+  openclaw_e2e_wait_gateway_ready "$gateway_pid" "$GATEWAY_LOG" 360 "$port" "$readiness_mode" "$ready_url" || return "$?"
   ready_epoch="$(node -e "process.stdout.write(String(Date.now()))")" || return "$?"
   start_seconds=$(((ready_epoch - start_epoch + 999) / 1000))
   if [ "$start_seconds" -gt "$budget" ]; then
@@ -2030,7 +2065,7 @@ check_gateway_probes() {
 check_gateway_status() {
   local port=18789
   local gateway_ws_url="ws://127.0.0.1:$port"
-  if [ "${SCENARIO:-}" = "watchos-direct-node" ]; then
+  if [ "${SCENARIO:-}" = "watchos-direct-node" ] || [ "${LEGACY_WORKER_CELL:-0}" = "1" ]; then
     gateway_ws_url="$WATCH_GATEWAY_WS_URL"
   fi
   local budget
@@ -2197,6 +2232,47 @@ phase validate-worker-cell validate_worker_cell
 phase reset-run-state reset_run_state
 phase install-baseline install_baseline
 phase initialize-state initialize_state
+if [ "$LEGACY_WORKER_CELL" = "1" ]; then
+  if [ "$baseline_spec" != "openclaw@2026.9.6" ] || [ "$CANDIDATE_KIND" != "tarball" ] ||
+    [ "$UPDATE_RESTART_MODE" != "manual" ] || [ "$ROOT_MANAGED_VPS" != "0" ] || [ "$LIVE_ENABLED" != "0" ]; then
+    echo "legacy-worker-provider requires pinned published 2026.9.6, candidate tarball, manual restart, and no live provider" >&2
+    exit 2
+  fi
+  legacy_worker_fixture=scripts/e2e/lib/upgrade-survivor/legacy-worker-provider.mjs
+  phase legacy-worker-baseline-identity node scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs \
+    baseline "$(package_root)" scripts/e2e/lib/upgrade-survivor/legacy-worker-baseline.json
+  node scripts/e2e/lib/upgrade-survivor/legacy-worker-backend.mjs \
+    "$(package_root)" "$RUNTIME_ROOT/legacy-worker-backend" "$ARTIFACT_ROOT" \
+    >"$ARTIFACT_ROOT/legacy-worker-backend.log" 2>&1 &
+  legacy_worker_backend_pid="$!"
+  phase legacy-worker-setup openclaw_prepublish_plugin_registry_run_published node "$legacy_worker_fixture" setup
+  phase legacy-worker-tls configure_gateway_tls_fixture
+  phase legacy-worker-config validate_baseline_config
+  GATEWAY_LOG="$ARTIFACT_ROOT/legacy-worker-baseline-gateway.log"
+  phase legacy-worker-baseline-start openclaw_prepublish_plugin_registry_run_published start_gateway
+  phase legacy-worker-baseline-control node "$legacy_worker_fixture" control
+  phase legacy-worker-baseline-stop stop_gateway
+  phase legacy-worker-baseline-restart openclaw_prepublish_plugin_registry_run_published start_gateway
+  phase legacy-worker-baseline-seed node "$legacy_worker_fixture" seed
+  phase legacy-worker-baseline-final-stop stop_gateway
+  phase legacy-worker-native-before node "$legacy_worker_fixture" storage before-update
+  phase legacy-worker-candidate-version resolve_candidate_version
+  phase legacy-worker-candidate-identity prepare_worker_cell_package
+  phase legacy-worker-update update_candidate
+  phase legacy-worker-installed-identity assert_worker_cell_update
+  phase legacy-worker-driver node "$legacy_worker_fixture" updater "$initial_update_observation_root"
+  phase legacy-worker-native-after node "$legacy_worker_fixture" storage after-update
+  GATEWAY_LOG="$ARTIFACT_ROOT/gateway.log"
+  phase legacy-worker-candidate-start start_gateway
+  phase legacy-worker-candidate-probes check_gateway_probes
+  phase legacy-worker-candidate-lifecycle node "$legacy_worker_fixture" candidate
+  phase legacy-worker-candidate-stop stop_gateway
+  phase legacy-worker-final-restart start_gateway
+  phase legacy-worker-final-state node "$legacy_worker_fixture" final
+  run_completed="1"
+  echo "Unchanged external V0 worker provider survived the published updater and native-state restart."
+  exit 0
+fi
 if [ "$SCENARIO" = "dreaming-cron-doctor" ]; then
   if [ "$baseline_spec" != "openclaw@2026.9.6" ] || [ "$CANDIDATE_KIND" != "tarball" ] ||
     [ "$UPDATE_RESTART_MODE" != "manual" ] || [ "$ROOT_MANAGED_VPS" != "0" ] || [ "$LIVE_ENABLED" != "0" ]; then
@@ -2432,7 +2508,7 @@ fi
 phase apply-baseline-config-recipe apply_baseline_config_recipe
 run_missing_load_path_fixture seed
 if [ "$SCENARIO" = "watchos-direct-node" ]; then
-  phase configure-watchos-tls configure_watchos_tls_fixture
+  phase configure-watchos-tls configure_gateway_tls_fixture
 fi
 phase validate-baseline-config validate_baseline_config
 run_missing_load_path_fixture baseline

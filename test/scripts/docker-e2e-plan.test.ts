@@ -1576,6 +1576,7 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
     { scenario: "projects-startup-migration", baseline: "2026.9.4" },
     { scenario: "taskflow-restoration", baseline: "2026.9.4" },
     { scenario: "dreaming-cron-doctor", baseline: "2026.9.6" },
+    { scenario: "legacy-worker-provider", baseline: "2026.9.6" },
   ])(
     "plans $scenario only for its exact published writer without registry or credential fixtures",
     ({ scenario, baseline }) => {

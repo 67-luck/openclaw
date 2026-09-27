@@ -3646,7 +3646,12 @@ fi
     expect(publishedRunner).toContain(
       'openclaw_e2e_maybe_timeout "$COMMAND_TIMEOUT" openclaw gateway status',
     );
-    expect(publishedRunner).toContain('openclaw gateway --port "$port" --bind loopback');
+    expectTextToIncludeAll(publishedRunner, [
+      'local port=18789 bind=loopback ready_url=""',
+      'if [ "${LEGACY_WORKER_CELL:-0}" = "1" ]; then\n    bind=lan',
+      'openclaw gateway --port "$port" --bind "$bind"',
+      '360 "$port" "$readiness_mode" "$ready_url"',
+    ]);
 
     expect(updateRestartAuth).toContain(
       'command_timeout="${OPENCLAW_UPGRADE_SURVIVOR_COMMAND_TIMEOUT:-900s}"',
@@ -4399,6 +4404,7 @@ candidate_update_spec() { printf "%s" "$OPENCLAW_CURRENT_PACKAGE_TGZ"; }
 COMMAND_TIMEOUT=900s
 command_timeout=900s
 ROOT_MANAGED_VPS=0
+LEGACY_WORKER_CELL=0
 UPDATE_RESTART_MODE=auto-auth
 baseline_spec=openclaw@2026.7.1-2
 candidate_version=2026.8.1
@@ -4535,6 +4541,7 @@ UPDATE_JSON="$ARTIFACT_ROOT/update.json"
 UPDATE_ERR="$ARTIFACT_ROOT/update.err"
 COMMAND_TIMEOUT=900s
 ROOT_MANAGED_VPS=0
+LEGACY_WORKER_CELL=0
 UPDATE_RESTART_MODE=auto-auth
 SCENARIO=base
 update_repair_required=1

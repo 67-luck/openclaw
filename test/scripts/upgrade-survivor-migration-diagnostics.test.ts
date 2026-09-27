@@ -79,6 +79,114 @@ function capture(f: ReturnType<typeof fixture>, outcome: "failed" | "passed" = "
   return JSON.parse(text);
 }
 
+it.skipIf(process.platform === "win32").each([0, 17])(
+  "publishes the first failure once when legacy cleanup fails after exit %i",
+  (incomingStatus) => {
+    const f = fixture();
+    const source = fs.readFileSync("scripts/e2e/lib/upgrade-survivor/run.sh", "utf8");
+    const owner = (start: string, end: string) => {
+      const from = source.indexOf(start);
+      const to = source.indexOf(end, from);
+      expect(from).toBeGreaterThanOrEqual(0);
+      expect(to).toBeGreaterThan(from);
+      return source.slice(from, to);
+    };
+    write(path.join(f.artifacts, "legacy-worker-proof.json"), {
+      status: "lifecycle-passed",
+      warning: `token=${secret}`,
+    });
+    write(path.join(f.artifacts, "legacy-worker-backend.json"), { closing: false });
+    fs.writeFileSync(
+      path.join(f.artifacts, "legacy-worker-backend.log"),
+      `Cleanup detail token=${secret}\n` + "Joined worker detail\n".repeat(1500),
+    );
+    fs.writeFileSync(
+      path.join(f.artifacts, "legacy-worker-baseline-control.json"),
+      "x".repeat(262145),
+    );
+    write(path.join(f.artifacts, "enrollment-code"), { privateBody });
+    write(path.join(f.root, "legacy-worker-backend/lease/enrollment-code"), { privateBody });
+    const calls = path.join(f.root, "capture-calls");
+    const beforeCleanup = path.join(f.root, "snapshot-before-cleanup.json");
+    const result = spawnSync(
+      "/bin/bash",
+      [
+        "-c",
+        [
+          "set -e",
+          "exec 3>&1",
+          owner("write_summary() {", "stop_gateway() {"),
+          owner("on_error() {", "\ntrap 'on_error"),
+          'ARTIFACT_ROOT="$OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT"',
+          'SUMMARY_JSON="$ARTIFACT_ROOT/summary.json"',
+          'PHASE_LOG="$ARTIFACT_ROOT/phases.jsonl"',
+          "SCENARIO=legacy-worker-provider; LEGACY_WORKER_CELL=1; run_completed=1",
+          'CURRENT_PHASE=legacy-worker-final-state; FAILURE_PHASE=""; FAILURE_MESSAGE=""',
+          'FAILURE_SIGNAL=""; last_update_observation_root=""',
+          'if [ "$UNIT_EXIT" != 0 ]; then FAILURE_PHASE=legacy-worker-candidate-lifecycle; fi',
+          // Observe calls without replacing the capture CLI or publisher.
+          'node() { if [ "$1" = scripts/e2e/lib/upgrade-survivor/diagnostics.mjs ]; then printf "%s\\n" "$4:$5" >> "$UNIT_CALLS"; fi; "$UNIT_NODE" "$@"; }',
+          "cleanup() {",
+          '  if [ -f "$ARTIFACT_ROOT/diagnostics/raw.json" ]; then cp "$ARTIFACT_ROOT/diagnostics/raw.json" "$UNIT_BEFORE"; fi',
+          `  printf '%s\n' '{"closing":true}' > "$ARTIFACT_ROOT/legacy-worker-backend.json"`,
+          "  return 1",
+          "}",
+          "trap 'on_exit $?' EXIT",
+          'exit "$UNIT_EXIT"',
+        ].join("\n"),
+      ],
+      {
+        encoding: "utf8",
+        timeout: 10_000,
+        env: {
+          ...f.env,
+          UNIT_NODE: node,
+          UNIT_EXIT: String(incomingStatus),
+          UNIT_CALLS: calls,
+          UNIT_BEFORE: beforeCleanup,
+        },
+      },
+    );
+    const expectedStatus = incomingStatus || 1;
+    const phase = incomingStatus ? "legacy-worker-candidate-lifecycle" : "legacy-worker-cleanup";
+    expect(result.status, result.stderr).toBe(expectedStatus);
+    expect(fs.readFileSync(calls, "utf8")).toBe(`${phase}:${expectedStatus}\n`);
+    expect(result.stdout).not.toContain("diagnostics missing");
+    const rawFile = path.join(f.artifacts, "diagnostics/raw.json");
+    if (incomingStatus) {
+      expect(fs.readFileSync(rawFile)).toEqual(fs.readFileSync(beforeCleanup));
+    } else {
+      expect(fs.existsSync(beforeCleanup)).toBe(false);
+    }
+    const summary = JSON.parse(fs.readFileSync(path.join(f.artifacts, "summary.json"), "utf8"));
+    expect(summary).toMatchObject({ status: "failed", failure: { phase } });
+    const output = path.join(f.root, "public");
+    publishDiagnostics(f.artifacts, output, redactSensitiveText, "failed");
+    const text = fs.readFileSync(path.join(output, "failure.json"), "utf8");
+    const report = JSON.parse(text);
+    expect(report).toMatchObject({ phase, outcome: "failed", exitStatus: expectedStatus });
+    expect(JSON.parse(report.logs["legacy-worker-backend.json"])).toEqual({
+      closing: !incomingStatus,
+    });
+    expect(JSON.parse(report.logs["legacy-worker-proof.json"]).status).toBe("lifecycle-passed");
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain(privateBody);
+    expect(report.logs).not.toHaveProperty("enrollment-code");
+    expect(report.logs["legacy-worker-backend.log"]).toContain("Cleanup detail");
+    expect(
+      Buffer.byteLength(JSON.stringify(report.logs["legacy-worker-backend.log"])),
+    ).toBeLessThanOrEqual(16384);
+    expect(report.omissions["legacy-worker-backend.log"]).toBe(
+      "redacted output truncated at a complete line (16 KiB)",
+    );
+    expect(report.logs["legacy-worker-baseline-control.json"]).toBeNull();
+    expect(report.omissions["legacy-worker-baseline-control.json"]).toBe(
+      "input exceeds cap; omitted whole",
+    );
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(524288);
+  },
+);
+
 function pluginPolicyReceipt() {
   return {
     baselineVersion: "2026.9.2",

@@ -6,6 +6,7 @@
     "workshop-doctor-recovery",
     "update-report-recovery",
     "dreaming-cron-doctor",
+    "legacy-worker-provider",
     "mobile-pairing-reconnect",
     "acpx-openclaw-tools-bridge",
     "feishu-channel",

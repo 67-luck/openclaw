@@ -9299,9 +9299,9 @@ describe("package artifact reuse", () => {
     expect(publishedUpgradeSurvivor).toContain("OPENCLAW_CLAWHUB_URL=%s");
     expect(publishedUpgradeSurvivor).toContain("assert-no-requests");
     expect(publishedUpgradeSurvivor).toContain("phase prepare-update-restart-probe");
-    expect(publishedUpgradeSurvivor).toContain("configure_watchos_tls_fixture");
+    expect(publishedUpgradeSurvivor).toContain("configure_gateway_tls_fixture");
     expect(publishedUpgradeSurvivor).toContain('"publicUrl":"wss://localhost:18789"');
-    expect(publishedUpgradeSurvivor).toContain('export NODE_EXTRA_CA_CERTS="$WATCH_TLS_CA_CERT"');
+    expect(publishedUpgradeSurvivor).toContain('export NODE_EXTRA_CA_CERTS="$GATEWAY_TLS_CA_CERT"');
     expect(publishedUpgradeSurvivor).not.toContain(
       "--base-url http://127.0.0.1:18789/api/nodes/watch",
     );

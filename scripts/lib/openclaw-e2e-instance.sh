@@ -450,6 +450,7 @@ openclaw_e2e_gateway_log_port_from_text() {
 }
 openclaw_e2e_wait_gateway_ready() {
   local pid="$1" log="$2" attempts="${3:-300}" ready_port="${4:-}" readiness_mode="${5:-strict}" _ saw_ready_log=false
+  local ready_base_url="${6:-}"
   local ready_scan_offset=0 ready_scan_carry="" ready_scan_carry_chars=256
   local ready_log_pattern='\[gateway\] ready'
   # Published baselines logged their listener before the modern ready marker existed.
@@ -497,7 +498,7 @@ openclaw_e2e_wait_gateway_ready() {
       if [ "$readiness_mode" = "legacy-ready-log-ok" ]; then
         openclaw_e2e_probe_tcp 127.0.0.1 "$ready_port" 400 && return 0
       else
-        openclaw_e2e_probe_http "http://127.0.0.1:${ready_port}/readyz" ok 400 && return 0
+        openclaw_e2e_probe_http "${ready_base_url:-http://127.0.0.1:${ready_port}}/readyz" ok 400 && return 0
       fi
     fi
     sleep 0.25

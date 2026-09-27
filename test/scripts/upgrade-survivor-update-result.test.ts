@@ -252,6 +252,7 @@ SCENARIO="$7"
 UPDATE_RESTART_MODE=auto-auth
 COMMAND_TIMEOUT=1
 ROOT_MANAGED_VPS=0
+LEGACY_WORKER_CELL=0
 baseline_spec=2026.9.1
 baseline_version=2026.9.1
 candidate_version=2026.9.2

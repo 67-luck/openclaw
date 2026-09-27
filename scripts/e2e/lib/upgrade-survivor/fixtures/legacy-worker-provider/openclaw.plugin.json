@@ -1,0 +1,15 @@
+{
+  "id": "legacy-worker-provider",
+  "name": "Published worker SDK compatibility fixture",
+  "activation": { "onStartup": true },
+  "contracts": {
+    "workerProviders": [
+      "survivor-legacy"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

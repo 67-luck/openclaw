@@ -51,7 +51,19 @@ const pluginPolicyLogs = [
   "webhooks-only-policy/baseline-runtime.out",
   "webhooks-only-policy/candidate-runtime.out",
 ];
+const legacyWorkerLogs = [
+  "legacy-worker-proof.json",
+  "legacy-worker-backend.json",
+  "legacy-worker-baseline-control.json",
+  "legacy-worker-baseline-retained.json",
+  "legacy-worker-candidate-retained.json",
+  "legacy-worker-candidate-destroyed.json",
+  "legacy-worker-candidate-restarted.json",
+];
 const logNames = [
+  ...legacyWorkerLogs,
+  "legacy-worker-backend.log",
+  "legacy-worker-baseline-gateway.log",
   "baseline-install.log",
   "baseline-companion.json",
   "install.log",
@@ -1789,6 +1801,7 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
             ]
           : []),
         ...(snapshot.scenario === "dreaming-cron-doctor" ? ["dreaming-cron-proof.json"] : []),
+        ...(snapshot.scenario === "legacy-worker-provider" ? legacyWorkerLogs : []),
         ...(snapshot.scenario === "legacy-operator-state" &&
         snapshot.updateRestartMode === "manual" &&
         ["2026.9.3", "2026.9.4"].includes(snapshot.baseline.version)

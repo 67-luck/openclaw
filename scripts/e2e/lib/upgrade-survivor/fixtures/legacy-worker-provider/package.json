@@ -1,0 +1,10 @@
+{
+  "name": "@openclaw-test/legacy-worker-provider",
+  "version": "0.0.0",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.mjs"
+    ]
+  }
+}
