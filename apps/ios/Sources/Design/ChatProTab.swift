@@ -34,6 +34,14 @@ struct ChatProTab: View {
         case newSessionOptions
     }
 
+    private struct TypingProbeReadiness: Equatable {
+        let pickerRequest: Bool
+        let pendingHandoff: Bool
+        let ownerMismatch: Bool
+        let gatewayConnected: Bool
+        let canQueueOffline: Bool
+    }
+
     @Environment(NodeAppModel.self) private var appModel
     @Environment(GatewayConnectionController.self) private var gatewayController
     @AppStorage("openclaw.webchat.showAssistantTrace")
@@ -56,6 +64,16 @@ struct ChatProTab: View {
     var body: some View {
         self.content
             .disabled(self.isGatewayTransitionPending)
+            .onChange(of: self.typingProbeReadiness, initial: true) { _, readiness in
+                guard let readiness else { return }
+                ChatTypingProbe.readiness(
+                    pickerRequest: readiness.pickerRequest,
+                    pendingHandoff: readiness.pendingHandoff,
+                    ownerMismatch: readiness.ownerMismatch,
+                    gatewayConnected: readiness.gatewayConnected,
+                    canQueueOffline: readiness.canQueueOffline,
+                    log: { GatewayDiagnostics.log($0) })
+            }
             .task {
                 if self.speech == nil {
                     let gateway = self.appModel.operatorSession
@@ -64,6 +82,17 @@ struct ChatProTab: View {
                     }
                 }
             }
+    }
+
+    private var typingProbeReadiness: TypingProbeReadiness? {
+        guard ChatTypingProbe.enabled else { return nil }
+        return TypingProbeReadiness(
+            pickerRequest: self.appModel.isGatewayPickerRequestInFlight,
+            pendingHandoff: self.gatewayController.hasPendingConnectionHandoff,
+            ownerMismatch: !self.isAttachmentOwnerPinned &&
+                self.appModel.chatPresentation.ownerID != self.appModel.chatViewModelOwnerID,
+            gatewayConnected: self.gatewayConnected,
+            canQueueOffline: self.canQueueOffline)
     }
 
     private var isGatewayTransitionPending: Bool {

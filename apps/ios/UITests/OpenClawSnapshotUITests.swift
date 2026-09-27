@@ -32,6 +32,7 @@ final class OpenClawSnapshotUITests: XCTestCase {
     private static let appReadinessAccessibilityIdentifier = "RootTabs.Ready"
 
     private var app: XCUIApplication?
+    private nonisolated let typingProbe = IOSTypingProbe()
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -41,6 +42,11 @@ final class OpenClawSnapshotUITests: XCTestCase {
     override func tearDownWithError() throws {
         self.terminateCurrentApp()
         try super.tearDownWithError()
+    }
+
+    override func record(_ issue: XCTIssue) {
+        self.typingProbe.record(issue)
+        super.record(issue)
     }
 
     func testReleaseControlScreenshot() {
@@ -1826,6 +1832,7 @@ extension OpenClawSnapshotUITests {
             "--openclaw-initial-destination",
             initialDestination,
         ]
+        if self.typingProbe.enabled { app.launchArguments.append("--openclaw-typing-probe") }
         app.launch()
         self.app = app
 
@@ -1857,6 +1864,7 @@ extension OpenClawSnapshotUITests {
             "--openclaw-initial-destination",
             initialDestination,
         ]
+        if self.typingProbe.enabled { app.launchArguments.append("--openclaw-typing-probe") }
         app.launch()
         self.app = app
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 8))
@@ -1877,10 +1885,19 @@ extension OpenClawSnapshotUITests {
         dismissKeyboard: Bool,
         in app: XCUIApplication) throws
     {
+        self.typingProbe.trace("before-input-lookup", stage: stage)
         let input = self.chatMessageInput(in: app)
-        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        self.typingProbe.trace("after-input-lookup")
+        self.typingProbe.trace("before-input-wait")
+        let inputExists = input.waitForExistence(timeout: 8)
+        self.typingProbe.trace("after-input-wait", result: inputExists)
+        XCTAssertTrue(inputExists)
+        self.typingProbe.trace("before-tap")
         input.tap()
+        self.typingProbe.trace("after-tap")
+        self.typingProbe.trace("before-type")
         input.typeText(text)
+        self.typingProbe.trace("after-type")
 
         let send = app.buttons["chat-send-message"]
         XCTAssertTrue(send.waitForExistence(timeout: 3))

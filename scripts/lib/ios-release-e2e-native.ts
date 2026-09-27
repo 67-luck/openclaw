@@ -20,6 +20,7 @@ import {
   type Operation,
   type TrialDependencies,
 } from "../ios-release-e2e.js";
+import { projectTypingDiagnostics } from "./ios-typing-diagnostics.js";
 import { hasUnjoinedWork, runManagedCommand } from "./managed-child-process.mjs";
 
 const DEVICE_TYPE = "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro";
@@ -41,6 +42,8 @@ export async function createNativeDependencies(options: {
     throw new Error("macos-arm64-required");
   }
   const cwd = process.cwd();
+  const typingDiagnostics: Record<string, unknown>[] = [];
+  options.proof.typingDiagnostics = typingDiagnostics;
   let retainRoot = false;
   const preserveResources = () => {
     if (!retainRoot) {
@@ -58,6 +61,7 @@ export async function createNativeDependencies(options: {
       timeoutMs?: number;
       cleanup?: boolean;
       captureChatFailure?: () => Promise<string[]>;
+      captureOutput?: (output: string) => void;
     } = {},
   ) => {
     let stdout = "";
@@ -110,6 +114,8 @@ export async function createNativeDependencies(options: {
       const failure = operationError(operation, error, `${stderr}\n${stdout}`);
       failure.diagnostic.context.push(...((await failureContext) ?? []));
       throw failure;
+    } finally {
+      config.captureOutput?.(`${stdout}\n${stderr}`);
     }
     const context = (await failureContext) ?? [];
     if (code !== 0) {
@@ -415,173 +421,213 @@ export async function createNativeDependencies(options: {
               }
               const resultBundle = path.join(root, `trial-${index}.xcresult`);
               const fixture = instance;
-              await command(
-                "native-test",
-                "xcodebuild",
-                [
-                  ...buildArgs,
-                  "-destination",
-                  `platform=iOS Simulator,id=${udid}`,
-                  "-resultBundlePath",
-                  resultBundle,
-                  "-collect-test-diagnostics",
-                  "never",
-                  `-only-testing:${test}`,
-                  "test-without-building",
-                ],
-                {
-                  env: testRunnerEnv(setupCode.trim()),
-                  timeoutMs: 600_000,
-                  captureChatFailure:
-                    test === IOS_RELEASE_TESTS[1]
-                      ? async () => {
-                          const facts = new Set<string>();
-                          const logs = fixture.logs();
-                          for (const stage of ["start", "first_event", "completed", "error"]) {
-                            if (logs.includes(`[responses] ${stage} `)) {
-                              facts.add(`model-any-request-stage:${stage}`);
-                            }
-                          }
-                          const [requests, history, appLog] = await Promise.allSettled([
-                            readFile(requestLog, "utf8"),
-                            callGateway<unknown>({
-                              config: {},
-                              configPath: fixture.configPath,
-                              url: fixture.url,
-                              token: fixture.gatewayToken,
-                              ignoreEnvUrlOverride: true,
-                              deviceIdentity: null,
-                              sharedStateMode: "read-only",
-                              method: "chat.history",
-                              params: { sessionKey: "main", limit: 20, maxBytes: 50_000 },
-                              timeoutMs: 5_000,
-                              signal: options.signal,
-                            }),
-                            (async () => {
-                              const bundleID = await command(
-                                "app-diagnostics",
-                                "/usr/bin/plutil",
-                                [
-                                  "-extract",
-                                  "CFBundleIdentifier",
-                                  "raw",
-                                  "-o",
-                                  "-",
-                                  path.join(
-                                    root,
-                                    "DerivedData/Build/Products/Debug-iphonesimulator/OpenClaw.app/Info.plist",
-                                  ),
-                                ],
-                                { timeoutMs: 5_000 },
-                              );
-                              const container = await command(
-                                "app-diagnostics",
-                                "xcrun",
-                                ["simctl", "get_app_container", udid!, bundleID, "data"],
-                                { timeoutMs: 5_000 },
-                              );
-                              return readFile(
-                                path.join(container, "Library/Caches/openclaw-gateway.log"),
-                                "utf8",
-                              );
-                            })(),
-                          ]);
-                          if (appLog.status === "fulfilled") {
-                            if (
-                              appLog.value.includes(
-                                "] chat.send skipped before dispatch: route changed",
-                              )
-                            ) {
-                              facts.add("app-send-stage:dispatch-route-changed");
-                            }
-                            for (const [event, stage] of [
-                              ["send invoked", "invoked"],
-                              ["send ignored", "ignored"],
-                              ["send queued offline", "offline-outbox"],
-                              ["send routed behind outbox", "ordered-outbox"],
-                              ["send queued sessionKey=", "optimistic-message"],
-                              ["transport send start", "transport-start"],
-                              ["transport send accepted", "transport-accepted"],
-                              ["send delivery unconfirmed", "delivery-unconfirmed"],
-                              ["send queued after route change", "route-changed"],
-                              ["send failed", "failed"],
-                            ]) {
-                              if (appLog.value.includes(`] chat.ui ${event}`)) {
-                                facts.add(`app-send-stage:${stage}`);
+              const readAppLog = async () => {
+                const bundleID = await command(
+                  "app-diagnostics",
+                  "/usr/bin/plutil",
+                  [
+                    "-extract",
+                    "CFBundleIdentifier",
+                    "raw",
+                    "-o",
+                    "-",
+                    path.join(
+                      root,
+                      "DerivedData/Build/Products/Debug-iphonesimulator/OpenClaw.app/Info.plist",
+                    ),
+                  ],
+                  { timeoutMs: 5_000 },
+                );
+                const container = await command(
+                  "app-diagnostics",
+                  "xcrun",
+                  ["simctl", "get_app_container", udid!, bundleID, "data"],
+                  { timeoutMs: 5_000 },
+                );
+                return readFile(
+                  path.join(container, "Library/Caches/openclaw-gateway.log"),
+                  "utf8",
+                );
+              };
+              try {
+                await command(
+                  "native-test",
+                  "xcodebuild",
+                  [
+                    ...buildArgs,
+                    "-destination",
+                    `platform=iOS Simulator,id=${udid}`,
+                    "-resultBundlePath",
+                    resultBundle,
+                    "-collect-test-diagnostics",
+                    "never",
+                    `-only-testing:${test}`,
+                    "test-without-building",
+                  ],
+                  {
+                    env: {
+                      ...testRunnerEnv(setupCode.trim()),
+                      TEST_RUNNER_OPENCLAW_IOS_TYPING_PROBE: "1",
+                    },
+                    captureOutput: (output) => {
+                      typingDiagnostics.push({
+                        trial: index,
+                        source: "test",
+                        phase: "completion",
+                        events: projectTypingDiagnostics(output),
+                      });
+                    },
+                    timeoutMs: 600_000,
+                    captureChatFailure:
+                      test === IOS_RELEASE_TESTS[1]
+                        ? async () => {
+                            const facts = new Set<string>();
+                            const logs = fixture.logs();
+                            for (const stage of ["start", "first_event", "completed", "error"]) {
+                              if (logs.includes(`[responses] ${stage} `)) {
+                                facts.add(`model-any-request-stage:${stage}`);
                               }
                             }
-                            facts.add("app-evidence-read");
-                          } else {
-                            facts.add("app-evidence-unavailable");
-                          }
-                          try {
-                            if (requests.status !== "fulfilled") {
-                              throw new Error("request-log-unavailable");
-                            }
-                            const lastMarker = (text: string) =>
-                              [...text.matchAll(/\bOPENCLAW_E2E_[A-Z0-9]+(?:_[A-Z0-9]+)*\b/gu)].at(
-                                -1,
-                              )?.[0];
-                            const markerStage = (marker: string | undefined) =>
-                              CHAT_MARKERS.find(([, prefix]) => marker?.startsWith(prefix))?.[0] ??
-                              "other";
-                            for (const line of requests.value.trim().split("\n").slice(-20)) {
-                              const request: unknown = JSON.parse(line);
+                            const [requests, history, appLog] = await Promise.allSettled([
+                              readFile(requestLog, "utf8"),
+                              callGateway<unknown>({
+                                config: {},
+                                configPath: fixture.configPath,
+                                url: fixture.url,
+                                token: fixture.gatewayToken,
+                                ignoreEnvUrlOverride: true,
+                                deviceIdentity: null,
+                                sharedStateMode: "read-only",
+                                method: "chat.history",
+                                params: { sessionKey: "main", limit: 20, maxBytes: 50_000 },
+                                timeoutMs: 5_000,
+                                signal: options.signal,
+                              }),
+                              readAppLog(),
+                            ]);
+                            if (appLog.status === "fulfilled") {
+                              typingDiagnostics.push({
+                                trial: index,
+                                source: "app",
+                                phase: "assertion",
+                                status: "read",
+                                events: projectTypingDiagnostics(appLog.value),
+                              });
                               if (
-                                !isRecord(request) ||
-                                request.path !== "/v1/responses" ||
-                                typeof request.body !== "string"
+                                appLog.value.includes(
+                                  "] chat.send skipped before dispatch: route changed",
+                                )
                               ) {
-                                continue;
+                                facts.add("app-send-stage:dispatch-route-changed");
                               }
-                              const body: unknown = JSON.parse(request.body);
-                              if (!isRecord(body) || body.model !== "ios-e2e") {
-                                continue;
-                              }
-                              const input = Array.isArray(body.input) ? body.input : [];
-                              const user = input
-                                .map(readMockUserText)
-                                .findLast((text) => text !== undefined);
-                              const userMarker = lastMarker(user ?? "");
-                              const tailMarker = lastMarker(request.body);
-                              facts.add(`provider-latest-user:${markerStage(userMarker)}`);
-                              facts.add(`provider-body-tail:${markerStage(tailMarker)}`);
-                              facts.add(
-                                `provider-marker-match:${userMarker !== undefined && userMarker === tailMarker}`,
-                              );
-                            }
-                            facts.add("provider-evidence-read");
-                          } catch {
-                            facts.add("provider-evidence-unavailable");
-                          }
-                          if (
-                            history.status === "fulfilled" &&
-                            isRecord(history.value) &&
-                            Array.isArray(history.value.messages)
-                          ) {
-                            for (const message of history.value.messages) {
-                              if (
-                                !isRecord(message) ||
-                                (message.role !== "user" && message.role !== "assistant")
-                              ) {
-                                continue;
-                              }
-                              const content = JSON.stringify(message.content) ?? "";
-                              for (const [stage, marker] of CHAT_MARKERS) {
-                                if (content.includes(marker)) {
-                                  facts.add(`history-${message.role}:${stage}`);
+                              for (const [event, stage] of [
+                                ["send invoked", "invoked"],
+                                ["send ignored", "ignored"],
+                                ["send queued offline", "offline-outbox"],
+                                ["send routed behind outbox", "ordered-outbox"],
+                                ["send queued sessionKey=", "optimistic-message"],
+                                ["transport send start", "transport-start"],
+                                ["transport send accepted", "transport-accepted"],
+                                ["send delivery unconfirmed", "delivery-unconfirmed"],
+                                ["send queued after route change", "route-changed"],
+                                ["send failed", "failed"],
+                              ]) {
+                                if (appLog.value.includes(`] chat.ui ${event}`)) {
+                                  facts.add(`app-send-stage:${stage}`);
                                 }
                               }
+                              facts.add("app-evidence-read");
+                            } else {
+                              facts.add("app-evidence-unavailable");
                             }
-                            facts.add("history-evidence-read");
-                          } else {
-                            facts.add("history-evidence-unavailable");
+                            try {
+                              if (requests.status !== "fulfilled") {
+                                throw new Error("request-log-unavailable");
+                              }
+                              const lastMarker = (text: string) =>
+                                [
+                                  ...text.matchAll(/\bOPENCLAW_E2E_[A-Z0-9]+(?:_[A-Z0-9]+)*\b/gu),
+                                ].at(-1)?.[0];
+                              const markerStage = (marker: string | undefined) =>
+                                CHAT_MARKERS.find(([, prefix]) =>
+                                  marker?.startsWith(prefix),
+                                )?.[0] ?? "other";
+                              for (const line of requests.value.trim().split("\n").slice(-20)) {
+                                const request: unknown = JSON.parse(line);
+                                if (
+                                  !isRecord(request) ||
+                                  request.path !== "/v1/responses" ||
+                                  typeof request.body !== "string"
+                                ) {
+                                  continue;
+                                }
+                                const body: unknown = JSON.parse(request.body);
+                                if (!isRecord(body) || body.model !== "ios-e2e") {
+                                  continue;
+                                }
+                                const input = Array.isArray(body.input) ? body.input : [];
+                                const user = input
+                                  .map(readMockUserText)
+                                  .findLast((text) => text !== undefined);
+                                const userMarker = lastMarker(user ?? "");
+                                const tailMarker = lastMarker(request.body);
+                                facts.add(`provider-latest-user:${markerStage(userMarker)}`);
+                                facts.add(`provider-body-tail:${markerStage(tailMarker)}`);
+                                facts.add(
+                                  `provider-marker-match:${userMarker !== undefined && userMarker === tailMarker}`,
+                                );
+                              }
+                              facts.add("provider-evidence-read");
+                            } catch {
+                              facts.add("provider-evidence-unavailable");
+                            }
+                            if (
+                              history.status === "fulfilled" &&
+                              isRecord(history.value) &&
+                              Array.isArray(history.value.messages)
+                            ) {
+                              for (const message of history.value.messages) {
+                                if (
+                                  !isRecord(message) ||
+                                  (message.role !== "user" && message.role !== "assistant")
+                                ) {
+                                  continue;
+                                }
+                                const content = JSON.stringify(message.content) ?? "";
+                                for (const [stage, marker] of CHAT_MARKERS) {
+                                  if (content.includes(marker)) {
+                                    facts.add(`history-${message.role}:${stage}`);
+                                  }
+                                }
+                              }
+                              facts.add("history-evidence-read");
+                            } else {
+                              facts.add("history-evidence-unavailable");
+                            }
+                            return [...facts];
                           }
-                          return [...facts];
-                        }
-                      : undefined,
-                },
-              );
+                        : undefined,
+                  },
+                );
+              } finally {
+                try {
+                  const appLog = await readAppLog();
+                  typingDiagnostics.push({
+                    trial: index,
+                    source: "app",
+                    phase: "completion",
+                    status: "read",
+                    events: projectTypingDiagnostics(appLog),
+                  });
+                } catch {
+                  typingDiagnostics.push({
+                    trial: index,
+                    source: "app",
+                    phase: "completion",
+                    status: "unavailable",
+                  });
+                }
+              }
               if (mockFailed) {
                 throw new OperationError("fixture-server", "failed");
               }
