@@ -539,13 +539,13 @@ module.exports = { stateMigrations: [{
             legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
           });
 
+      expect(result.warnings).toEqual([]);
       expect(
         result.stepReceipts.find(
           (receipt) => receipt.id === (legacyRoot ? "state-dir" : "plugin-install-index"),
         ),
       ).toMatchObject({ outcome: "completed" });
       expect(fs.realpathSync(legacyStateDir)).toBe(fs.realpathSync(stateDir));
-      expect(result.warnings).toEqual([]);
       if (legacySchema) {
         expect(result.stepReceipts.find((receipt) => receipt.id === "state-schema")).toMatchObject({
           outcome: "completed",
