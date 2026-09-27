@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import {
   request as httpRequest,
   createServer as createHttpServer,
-  type IncomingMessage,
+  IncomingMessage,
+  ServerResponse,
 } from "node:http";
 import net, { Socket, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -320,9 +321,9 @@ async function startStreamingProxyOrigin(responseBodyBytes: number): Promise<Str
 async function rawSlowGetThroughProxy(params: {
   abortAfterBytes?: number;
   abortWithReset?: boolean;
-  onResume?: () => void;
   pauseBeforeReadMs: number;
   proxyUrl: string;
+  signal?: AbortSignal;
   targetUrl: string;
 }): Promise<{
   aborted: boolean;
@@ -343,6 +344,14 @@ async function rawSlowGetThroughProxy(params: {
     let statusLine = "";
     let resumeTimeout: ReturnType<typeof setTimeout> | undefined;
     const socket = net.connect(Number(proxy.port), proxy.hostname);
+    const abort = () => {
+      aborted = true;
+      socket.destroy();
+    };
+    params.signal?.addEventListener("abort", abort, { once: true });
+    if (params.signal?.aborted) {
+      abort();
+    }
     const timeout = setTimeout(() => {
       socket.destroy();
       if (!settled) {
@@ -353,6 +362,7 @@ async function rawSlowGetThroughProxy(params: {
     const finish = () => {
       clearTimeout(timeout);
       clearTimeout(resumeTimeout);
+      params.signal?.removeEventListener("abort", abort);
       if (!settled) {
         settled = true;
         resolve({ aborted, bodyBytes, receivedBytes, resumed, statusLine });
@@ -371,7 +381,6 @@ async function rawSlowGetThroughProxy(params: {
       socket.pause();
       resumeTimeout = setTimeout(() => {
         resumed = true;
-        params.onResume?.();
         socket.resume();
       }, params.pauseBeforeReadMs);
     });
@@ -482,17 +491,75 @@ describe("startDebugProxyServer", () => {
     const responseBodyBytes = 16 * 1024 * 1024;
     const origin = await startStreamingProxyOrigin(responseBodyBytes);
     const proxy = await startDebugProxyServer({ settings });
-    let queuedBytesAtResume = 0;
+    const targetUrl = `${origin.url}/capture`;
+    const originPort = Number(new URL(origin.url).port);
+    const abortController = new AbortController();
+    // Origin writes include kernel TCP buffers. Observe the proxy's owned
+    // pause/drain boundary without changing any stream operation.
+    let upstreamResponse: IncomingMessage | undefined;
+    let waitingForDrain = false;
+    let writesWhileBackpressured = 0;
+    let backpressuredWrites = 0;
+    const drainStates: { pausedBefore: boolean | undefined; pausedAfter: boolean | undefined }[] =
+      [];
+    let resolveFirstDrain!: () => void;
+    const firstDrain = new Promise<void>((resolve) => {
+      resolveFirstDrain = resolve;
+    });
+    const originalOn = IncomingMessage.prototype.on;
+    vi.spyOn(IncomingMessage.prototype, "on").mockImplementation(function (
+      this: IncomingMessage,
+      ...args: Parameters<IncomingMessage["on"]>
+    ) {
+      if (args[0] === "data" && this.statusCode === 200 && this.socket.remotePort === originPort) {
+        upstreamResponse = this;
+      }
+      return originalOn.apply(this, args);
+    });
+    const originalWrite = ServerResponse.prototype.write;
+    vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+      this: ServerResponse,
+      ...args: Parameters<ServerResponse["write"]>
+    ) {
+      const isProxyResponse = this.req.url === targetUrl;
+      if (isProxyResponse && waitingForDrain) {
+        writesWhileBackpressured++;
+      }
+      const accepted = originalWrite.apply(this, args);
+      if (isProxyResponse && !accepted) {
+        backpressuredWrites++;
+        waitingForDrain = true;
+      }
+      return accepted;
+    });
+    const originalEmit = ServerResponse.prototype.emit;
+    vi.spyOn(ServerResponse.prototype, "emit").mockImplementation(function (
+      this: ServerResponse,
+      ...args: Parameters<ServerResponse["emit"]>
+    ) {
+      if (this.req.url !== targetUrl || args[0] !== "drain" || !waitingForDrain) {
+        return originalEmit.apply(this, args);
+      }
+      // Observe the real drain synchronously: nextTick can start another pause
+      // cycle before a later promise callback inspects the readable state.
+      const pausedBefore = upstreamResponse?.isPaused();
+      waitingForDrain = false;
+      const emitted = originalEmit.apply(this, args);
+      drainStates.push({ pausedBefore, pausedAfter: upstreamResponse?.isPaused() });
+      resolveFirstDrain();
+      return emitted;
+    });
+    const forwarding = rawSlowGetThroughProxy({
+      pauseBeforeReadMs: 0,
+      proxyUrl: proxy.proxyUrl,
+      signal: abortController.signal,
+      targetUrl,
+    });
 
     try {
-      const forwarded = await rawSlowGetThroughProxy({
-        onResume: () => {
-          queuedBytesAtResume = origin.state.queuedBytes;
-        },
-        pauseBeforeReadMs: 150,
-        proxyUrl: proxy.proxyUrl,
-        targetUrl: `${origin.url}/capture`,
-      });
+      await Promise.race([firstDrain, forwarding]);
+      expect(drainStates[0]).toEqual({ pausedBefore: true, pausedAfter: false });
+      const forwarded = await forwarding;
 
       expect(forwarded).toMatchObject({
         aborted: false,
@@ -500,7 +567,9 @@ describe("startDebugProxyServer", () => {
         resumed: true,
         statusLine: "HTTP/1.1 200 OK",
       });
-      expect(queuedBytesAtResume).toBeLessThan(responseBodyBytes);
+      expect(backpressuredWrites).toBeGreaterThan(0);
+      expect(writesWhileBackpressured).toBe(0);
+      expect(drainStates.every((state) => state.pausedBefore && !state.pausedAfter)).toBe(true);
       expect(origin.state.drainWaits).toBeGreaterThan(0);
       expect(origin.state.queuedBytes).toBe(responseBodyBytes);
       await proxy.stop();
@@ -512,8 +581,15 @@ describe("startDebugProxyServer", () => {
         expect.objectContaining({ direction: "inbound", status: 200 }),
       ]);
     } finally {
-      await proxy.stop();
-      await origin.stop();
+      abortController.abort();
+      const cleanup = await Promise.allSettled([forwarding, proxy.stop(), origin.stop()]);
+      const failures = cleanup.filter((result) => result.status === "rejected");
+      if (failures.length > 0) {
+        throw new AggregateError(
+          failures.map((result) => result.reason),
+          "Backpressure fixture cleanup failed",
+        );
+      }
     }
   });
 
