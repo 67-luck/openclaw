@@ -2980,8 +2980,9 @@ describe("ci workflow guards", () => {
       },
     );
 
-    it("runs security after preflight failures and skips a cancelled workflow", () => {
-      const job = readCiWorkflow().jobs["security-fast"];
+    it("keeps failure reporting hosted for fast pushes after preflight failures", () => {
+      const workflow = readCiWorkflow();
+      const job = workflow.jobs["security-fast"];
       expect(job.needs).toEqual(["preflight"]);
       const context = {
         eventName: "push" as const,
@@ -2989,11 +2990,23 @@ describe("ci workflow guards", () => {
         runAttempt: 1,
         runnerBackend: "hybrid" as const,
         failed: true,
+        preflightResult: "failure",
       };
       expect(evaluateWorkflowExpression(job.if, context)).toBe(true);
-      expect(evaluateWorkflowExpression(job["runs-on"], context)).toBe(
-        "blacksmith-4vcpu-ubuntu-2404",
-      );
+      for (const jobName of ["security-fast", "ci-gate"]) {
+        expect(evaluateWorkflowExpression(workflow.jobs[jobName].if, context), jobName).toBe(true);
+        expect(
+          evaluateWorkflowExpression(workflow.jobs[jobName]["runs-on"], context),
+          jobName,
+        ).toBe("ubuntu-24.04");
+        expect(
+          evaluateWorkflowExpression(workflow.jobs[jobName]["runs-on"], {
+            ...context,
+            ciOnPush: "true",
+          }),
+          jobName,
+        ).toBe("blacksmith-4vcpu-ubuntu-2404");
+      }
       expect(evaluateWorkflowExpression(job.if, { ...context, cancelled: true })).toBe(false);
     });
   });
@@ -3044,18 +3057,18 @@ describe("ci workflow guards", () => {
     { repository: "openclaw/openclaw", ref: "refs/heads/feature", expected: false },
     { repository: "fork/openclaw", ref: "refs/heads/main", expected: false },
   ])(
-    "gates only canonical main pushes admitted by CI ($repository $ref)",
+    "gates Docker survivor proof only for full canonical main pushes ($repository $ref)",
     ({ repository, ref, expected }) => {
       const push = readCiWorkflow().on.push;
       expect(push.branches).toEqual(["main"]);
       expect(push).not.toHaveProperty("paths");
-      expect(push["paths-ignore"]).toEqual(["**/*.md", "docs/**"]);
+      expect(push).not.toHaveProperty("paths-ignore");
       const result = runCiManifestFixture({
         bundledPlanner: true,
         eventName: "push",
         repository,
         changedPaths: ["scripts/e2e/docker-openai-seed.ts"],
-        scopeEnv: { GITHUB_REF: ref },
+        scopeEnv: { GITHUB_REF: ref, OPENCLAW_CI_MAIN_PUSH_GATE: "false" },
       });
       expect(result.status, result.output).toBe(0);
       expect(result.outputs.run_docker_seed_e2e).toBe(String(expected));

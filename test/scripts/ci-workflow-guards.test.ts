@@ -1284,7 +1284,7 @@ AFTER_CD
       (step: WorkflowStep) => step.name === "Detect changed scopes",
     );
     expect(changedScopeStep.if).toContain(
-      "github.event_name == 'workflow_dispatch' && inputs.release_gate",
+      "github.event_name == 'workflow_dispatch' && (inputs.release_gate || inputs.main_push_gate)",
     );
     expect(changedScopeStep.env?.OPENCLAW_ALLOW_RELEASE_GENERATED_MIX).toContain(
       "github.event_name == 'workflow_dispatch'",
@@ -1417,6 +1417,7 @@ AFTER_CD
     const workflow = readCiWorkflow();
     const push = {
       eventName: "push" as const,
+      ciOnPush: "true",
       repository: "openclaw/openclaw",
       runnerBackend: "hybrid" as const,
       runAttempt: 1,
@@ -3797,13 +3798,14 @@ setImmediate(() => {
     expect(source).not.toContain("blacksmith-");
   });
 
-  it("keeps trusted hybrid controls on Blacksmith when optional hosted admission is closed", () => {
+  it("keeps trusted hybrid full-CI controls on Blacksmith when optional hosted admission is closed", () => {
     const workflow = readCiWorkflow();
     const context = {
       eventName: "pull_request",
       repository: "openclaw/openclaw",
       runAttempt: 1,
       runnerBackend: "hybrid",
+      ciOnPush: "true",
     } as const;
     for (const jobName of ["preflight", "security-fast", "ci-gate"]) {
       const expression = workflow.jobs[jobName]["runs-on"];
@@ -4176,7 +4178,7 @@ setImmediate(() => {
       const expression = jobs[jobName]?.["runs-on"];
       const runner = expectedHybridFirstAttemptRunners[jobName];
       for (const [label, overrides, expected] of [
-        ["main", { eventName: "push" }, runner],
+        ["full main", { eventName: "push", ciOnPush: "true" }, runner],
         [
           "heavy packed core stripe",
           { runnerProfile: "hybrid", matrix: { stripe: 1 } },
@@ -4284,8 +4286,16 @@ setImmediate(() => {
       const expression = jobs[jobName]?.["runs-on"];
       for (const [label, overrides, expectedRunner] of [
         ["hybrid attempt 1", { runnerBackend: "hybrid" }, runner],
-        ["hybrid main", { eventName: "push", runnerBackend: "hybrid" }, runner],
-        ["Blacksmith main", { eventName: "push", runnerBackend: "blacksmith" }, runner],
+        [
+          "hybrid full main",
+          { eventName: "push", runnerBackend: "hybrid", ciOnPush: "true" },
+          runner,
+        ],
+        [
+          "Blacksmith full main",
+          { eventName: "push", runnerBackend: "blacksmith", ciOnPush: "true" },
+          runner,
+        ],
         ["hybrid retry", { runnerBackend: "hybrid", runAttempt: 2 }, "ubuntu-24.04"],
         ["github backend", { runnerBackend: "github" }, "ubuntu-24.04"],
         [
@@ -6173,7 +6183,7 @@ server.listen(0, "127.0.0.1", () => {
   it("publishes dependencies independently of long backend-local code warming", () => {
     const warmer = parse(readFileSync(".github/workflows/vitest-cache-warm.yml", "utf8"));
     expect(warmer).not.toHaveProperty("concurrency");
-    expect(warmer.on.push["paths-ignore"]).toEqual(readCiWorkflow().on.push["paths-ignore"]);
+    expect(warmer.on.push["paths-ignore"]).toEqual(["**/*.md", "docs/**"]);
     const dependencies = warmer.jobs.dependencies;
     const code = warmer.jobs.warm;
     expect(dependencies.concurrency["cancel-in-progress"]).toBe(false);
@@ -9996,7 +10006,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && 'true' || steps.changed_scope.outputs.strict_native_i18n }}",
     );
     expect(manifestStep.env.OPENCLAW_CI_RUN_NATIVE_I18N).toBe(
-      "${{ github.event_name == 'schedule' && 'true' || github.event_name == 'workflow_dispatch' && (steps.runner_profile.outputs.node_runner_backend != 'runson' && steps.runner_profile.outputs.ci_qualification != 'true') && 'true' || steps.changed_scope.outputs.run_native_i18n || 'false' }}",
+      "${{ github.event_name == 'schedule' && 'true' || github.event_name == 'workflow_dispatch' && !inputs.main_push_gate && (steps.runner_profile.outputs.node_runner_backend != 'runson' && steps.runner_profile.outputs.ci_qualification != 'true') && 'true' || steps.changed_scope.outputs.run_native_i18n || 'false' }}",
     );
     expect(sourceStep.run).toContain("pnpm native:i18n:verify");
     expect(sourceStep.run).toContain("Historical release targets");

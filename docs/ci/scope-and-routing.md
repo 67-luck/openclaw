@@ -10,8 +10,12 @@ This page is an index. Scope and routing is documented on four pages, one per
 reader job. Open the page that matches your task.
 
 Full main CI is [hourly by default](/ci/scheduled-workflows#hourly-main-ci), using
-ordinary full manual coverage without changed-path filtering. The following
-push-routing rules apply when `OPENCLAW_CI_ON_PUSH=true`.
+the complete main tier without changed-path filtering. Every push also runs the
+existing PR changed-set planner on its exact `before` → head range, with all
+selected jobs on GitHub-hosted runners. Production and test types, lint, boundary
+guards, and selected tests remain blocking. Ambiguous changes retain the planner's
+conservative test fallback. The following full push-routing rules apply when
+`OPENCLAW_CI_ON_PUSH=true`.
 
 Every admitted canonical `main` push run selects the published-upgrade Docker survivor;
 QA Smoke retains owner-path selection. Pull requests and exact-head PR fallbacks

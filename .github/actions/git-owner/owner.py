@@ -464,7 +464,8 @@ def checkout_harness(sha):
     evidence_scripts = ("scripts/ios-screenshot-evidence.mjs", "scripts/lib/direct-run.mjs")
     platform_scripts = ("scripts/lib/swift-toolchain.sh",)
     upgrade_scripts = ("scripts/lib/release-upgrade-baseline.mjs", "scripts/lib/release-version.mjs")
-    npm_lock_scripts = (
+    linux_check_scripts = (
+        "scripts/ci-main-push-step.sh",
         "scripts/ci-npm-lock-admission.mjs",
         "scripts/generate-npm-package-lock.mjs",
         "scripts/generate-npm-package-lock.mts",
@@ -494,7 +495,7 @@ def checkout_harness(sha):
         if kind == "platform":
             pathspecs += platform_scripts
         if kind == "linux-node":
-            pathspecs += (*upgrade_scripts, *npm_lock_scripts)
+            pathspecs += (*upgrade_scripts, *linux_check_scripts)
         paths = git_output(workspace, "ls-files", "-z", "--", *pathspecs).split("\0")[:-1]
         run_git(workspace, "checkout-index", "--force", f"--prefix={harness}/", "--", *paths)
     else:
@@ -506,7 +507,7 @@ def checkout_harness(sha):
         if kind == "platform":
             sparse_paths += [f"/{path}" for path in platform_scripts]
         if kind == "linux-node":
-            sparse_paths += [f"/{path}" for path in (*upgrade_scripts, *npm_lock_scripts)]
+            sparse_paths += [f"/{path}" for path in (*upgrade_scripts, *linux_check_scripts)]
         # Rooted non-cone patterns keep the kind-owned workflow files exact.
         # Sparse first, then blob-less avoids downloading a second repository snapshot.
         run_git(harness, "sparse-checkout", "set", "--no-cone", *sparse_paths)

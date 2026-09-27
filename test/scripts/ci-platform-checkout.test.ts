@@ -51,6 +51,7 @@ function expectedHarnessSparseCheckoutArgs(linux: boolean) {
       ? [
           "/scripts/lib/release-upgrade-baseline.mjs",
           "/scripts/lib/release-version.mjs",
+          "/scripts/ci-main-push-step.sh",
           "/scripts/ci-npm-lock-admission.mjs",
           "/scripts/generate-npm-package-lock.mjs",
           "/scripts/generate-npm-package-lock.mts",
@@ -339,6 +340,10 @@ it.concurrent.each([
     const action = ".github/actions/setup-node-env/action.yml";
     const executable = ".github/actions/tool/line\nbreak.sh";
     const link = ".github/actions/tool/link";
+    const pushGateScript = "scripts/ci-main-push-step.sh";
+    const trustedPushGateScript = "#!/bin/bash\n# trusted workflow push gate\n";
+    const candidatePushGateScript =
+      "#!/bin/bash\n# candidate must not replace the trusted push gate\n";
     const files = {
       [action]: "name: trusted $Format:%H$\n",
       ".github/actions/setup-node-env/dependency-fingerprint.mjs": readFileSync(
@@ -428,6 +433,7 @@ it.concurrent.each([
           }).trim();
         run("init");
         for (const [name, contents] of Object.entries({
+          [pushGateScript]: trustedPushGateScript,
           ...files,
           ...evidenceScripts,
           ...nodeSetupScripts,
@@ -454,6 +460,7 @@ it.concurrent.each([
         if (workflow === "previous") {
           candidateAction = "name: candidate action must not replace the trusted workflow\n";
           writeFileSync(path.join(source, action), candidateAction);
+          writeFileSync(path.join(source, pushGateScript), candidatePushGateScript);
           candidateEvidenceScripts = Object.fromEntries(
             Object.keys(evidenceScripts).map((name) => [
               name,
@@ -478,6 +485,7 @@ it.concurrent.each([
           run(
             "add",
             action,
+            pushGateScript,
             ...Object.keys(evidenceScripts),
             ...Object.keys(nodeSetupScripts),
             ...Object.keys(platformScripts),
@@ -581,6 +589,15 @@ it.concurrent.each([
         }
         const sourceStatus = expectDefined(readSourceStatus, "native source status");
         expect(sourceStatus()).toEqual([]);
+        expect(readFileSync(path.join(workspace, pushGateScript), "utf8")).toBe(
+          workflow === "previous" ? candidatePushGateScript : trustedPushGateScript,
+        );
+        expect(existsSync(path.join(harness, pushGateScript))).toBe(kind === "linux-node");
+        if (kind === "linux-node") {
+          expect(readFileSync(path.join(harness, pushGateScript), "utf8")).toBe(
+            trustedPushGateScript,
+          );
+        }
         expect(readFileSync(path.join(workspace, ".git/info/exclude"), "utf8")).toBe(
           retained ? existingExcludes : `${existingExcludes}\n/.ci-harness/\n`,
         );

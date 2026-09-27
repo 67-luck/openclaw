@@ -30,21 +30,12 @@ describe("hourly main CI admission", () => {
     ["false", false],
     ["1", false],
     ["true", true],
-  ])("opts main pushes into full CI only with %s", (ciOnPush, admitted) => {
+  ])("admits the push gate and opts into full CI only with %s", (ciOnPush, admitted) => {
     const context = { ...base, eventName: "push", ciOnPush } as const;
-    expect(evaluate(ci.jobs.preflight.if, context)).toBe(admitted);
-    expect(evaluate(ci.jobs["ci-gate"].if, context)).toBe(admitted);
-    // This job uses !cancelled(), so a skipped preflight does not skip security.
+    expect(evaluate(ci.jobs.preflight.if, context)).toBe(true);
+    expect(evaluate(ci.jobs["ci-gate"].if, context)).toBe(true);
+    expect(evaluate(ci.env.OPENCLAW_CI_MAIN_PUSH_GATE, context)).toBe(!admitted);
     expect(evaluate(ci.jobs["security-fast"].if, context)).toBe(true);
-    if (!admitted) {
-      for (const [name, job] of Object.entries(ci.jobs)) {
-        if (name !== "security-fast") {
-          expect(evaluate((job as { if: string }).if, { ...context, runCheck: false }), name).toBe(
-            false,
-          );
-        }
-      }
-    }
     for (const name of [...auxiliaryNames, "docs"]) {
       const workflow = readWorkflow(`.github/workflows/${name}.yml`);
       const entry = Object.entries(workflow.jobs).find(([id]) => id !== "scope")![1] as {
@@ -107,7 +98,7 @@ describe("hourly main CI admission", () => {
           matrix: { runner: "blacksmith-8vcpu-ubuntu-2404", check_name: "fixture", task: "lint" },
         };
         const scheduled = { ...shared, eventName: "schedule" as const };
-        const push = { ...shared, eventName: "push" as const };
+        const push = { ...shared, eventName: "push" as const, ciOnPush: "true" };
         for (const [name, raw] of Object.entries(ci.jobs)) {
           if (name === "pr-fail-fast") {
             expect(evaluate(ci.jobs[name].if, scheduled), name).toBe(false);
@@ -180,7 +171,7 @@ describe("hourly main CI admission", () => {
     }
   });
 
-  it("isolates full manual CI from a later skip-only main push", () => {
+  it("isolates full manual CI from a later main push gate", () => {
     const common = { ...base, workflow: "CI", runId: 123, runNumber: 456 } as const;
     const full = evaluate(ci.concurrency.group, { ...common, eventName: "workflow_dispatch" });
     const push = evaluate(ci.concurrency.group, { ...common, eventName: "push" });
@@ -355,6 +346,8 @@ describe("hourly main CI admission", () => {
 
   it("retains real per-push CodeQL and workflow security checks", () => {
     const context = { ...base, eventName: "push" } as const;
+    expect(ci.on.push.branches).toContain("main");
+    expect(ci.on.push["paths-ignore"]).toBeUndefined();
     const codeql = readWorkflow(".github/workflows/codeql.yml");
     expect(codeql.on.push.branches).toContain("main");
     expect(evaluate(codeql.jobs["security-high"].if, context)).toBe(true);

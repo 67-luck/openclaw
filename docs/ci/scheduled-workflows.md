@@ -60,7 +60,7 @@ and PR iOS cancellations retain their existing failure policy. A passing gate
 with this notice delegates iOS proof to a later scheduled job; it does not
 validate iOS at the canceled revision. GitHub's workflow-level conclusion can
 still be `cancelled` even when the aggregate succeeds.
-Manual/release CI stays independent, and security-only pushes cannot cancel
+Manual/release CI stays independent, and push gates cannot cancel
 scheduled work. CI remains available during release validation;
 `OPENCLAW_RELEASE_PRIORITY_RUN` does not control admission.
 
@@ -85,10 +85,10 @@ completion before CI is not guaranteed.
 
 Set the **repository Actions variable** `OPENCLAW_CI_ON_PUSH` to `true` under
 **Settings → Secrets and variables → Actions → Variables**. This restores the
-previous path-filtered full main-push admission in CI, the standalone checks,
+full main-push coverage in CI and the previous admission of standalone checks,
 plugin artifact preview, and cache warming. GitHub string comparisons are
 case-insensitive; use the documented lowercase `true`. Unset, empty, `false`,
-and other values keep hourly-only main-tier CI. Delete the variable or set it
+and other values retain the hosted changed-set push gate plus hourly main-tier CI. Delete the variable or set it
 to `false` to return to the default. Hourly runs remain enabled either way.
 No secret, commit, or protection-setting change is required.
 
@@ -110,14 +110,45 @@ frozen release target or replace an exact-head PR release gate.
 
 CodeQL retains all seven main-push security categories. CI retains
 `security-fast` (committed private keys, changed-workflow security auditing,
-and production dependency auditing) on its existing non-docs push scope.
+and production dependency auditing) on every main push.
 Default main pushes also run the baseline-growth, assertion-safety, and new
 protocol-method metadata guards there against the exact push `before` SHA,
 so scheduled CI's main-against-itself comparison cannot lose these checks;
 Workflow Sanity checks tracked conflict markers on every admitted push.
 Its workflow lint and security tools run only when workflow, action, or lint
-policy inputs change. The full CI aggregate job is
-skipped on default main pushes, **not** on runnable PRs or full manual runs.
+policy inputs change.
+
+The same `CI` workflow now admits its existing planner and check jobs on every
+main push, including docs-only pushes. It selects production and test compiler
+consumers, lint and boundary guards, and affected tests from the exact pushed
+range. All selected jobs use free GitHub-hosted runners. Native app and process
+proofs retain their hourly owner; builds needed by selected tests stay selected.
+Unknown or broad changes keep the existing conservative fallback. The objective
+is eight minutes for the changed-set gate; broad fallbacks and hosted queue time
+can exceed it. `openclaw/ci-gate` aggregates the selected push jobs without
+claiming full-release evidence.
+
+The two existing noncanceling main slots retain active runs, including any run
+that has found a failure. GitHub replaces older pending runs with a newer pending
+run in each slot; this does not cancel active healthy runs or guarantee revision
+ordering. Coalesced pushes do not accumulate a change range. The hourly tier
+checks the complete resulting tree independently.
+
+Failed check and test steps retain their original exit code and stream their
+normal logs. Their job summary includes the pushed range, available commits,
+and bounded diagnostic output; the full step log remains authoritative.
+No additional issue tracker or write permission is introduced.
+
+To qualify the same gate on an exact candidate before landing, dispatch the
+candidate branch with both full commit SHAs:
+
+```bash
+gh workflow run ci.yml --ref <candidate-branch> \
+  -f main_push_gate=true -f target_ref=<candidate-sha> -f base_ref=<base-sha>
+```
+
+The supplied base owns changed-set selection. Ordinary manual dispatches keep
+full validation unless the caller explicitly selects the push gate.
 CodeQL and Workflow Sanity also remain available during release validation.
 PR required-check names and security-review enforcement are unchanged.
 
@@ -141,7 +172,7 @@ Unrelated source pushes no longer poll for release completion. Manual recovery
 retains its existing evidence checks.
 Docs Agent verifies the exact successful full-tier CI attempt before admitting
 its automatic write job. Opted-in full main pushes qualify; hourly main-tier
-runs and security-only pushes do not. With `OPENCLAW_CI_ON_PUSH` unset,
+runs and changed-set push gates do not. With `OPENCLAW_CI_ON_PUSH` unset,
 automatic Docs Agent writes are therefore disabled. Explicit non-bot Docs Agent
 dispatch remains available, and its current-main and hourly cadence guards remain
 in place for eligible workflow-run invocations.
@@ -534,7 +565,7 @@ site renderer or cross-page link validation.
 
 ### Docs Agent
 
-The `Docs Agent` workflow keeps existing docs aligned with recently landed changes. It has no pure schedule. An opted-in full main-push CI run can admit automatic writes; hourly main-tier CI cannot. With `OPENCLAW_CI_ON_PUSH` unset, use explicit non-bot Docs Agent dispatch to run it. A read-only job verifies the canonical CI workflow, exact completed run attempt, current main SHA, successful aggregate, and successful revision-confirmation step before the write-capable job is admitted. That producer step is absent/skipped for main-tier runs, security-only pushes, failed full CI, and manual validation of another target or reduced scope. Ordinary bot pushes remain excluded.
+The `Docs Agent` workflow keeps existing docs aligned with recently landed changes. It has no pure schedule. An opted-in full main-push CI run can admit automatic writes; hourly main-tier CI cannot. With `OPENCLAW_CI_ON_PUSH` unset, use explicit non-bot Docs Agent dispatch to run it. A read-only job verifies the canonical CI workflow, exact completed run attempt, current main SHA, successful aggregate, and successful revision-confirmation step before the write-capable job is admitted. That producer step is absent/skipped for main-tier runs, changed-set push gates, failed full CI, and manual validation of another target or reduced scope. Ordinary bot pushes remain excluded.
 
 Only the admitted write job occupies the non-canceling docs concurrency slot, so a skipped push cannot displace pending eligible automatic or manual work. Workflow-run invocations recheck main freshness and inspect exact-attempt job evidence for up to 100 recent runs. A queued or active write job, or a recent attempt that actually ran the agent, counts toward the one-hour cadence. Canceled and skipped workflows, denied verification, and completed writer gates that skipped the agent do not count. When admitted, the agent reviews from the source SHA of the previous successful write job whose agent step succeeded to current `main`.
 
