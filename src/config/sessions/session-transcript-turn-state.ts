@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   buildRestartRecoveryResumeRetirementPatch,
   mergeRestartRecoveryTerminalRunIds,
@@ -26,6 +27,7 @@ export function buildRestartRecoveryExpectedState(
     restartRecoveryDeliveryToolCallId: entry.restartRecoveryDeliveryToolCallId,
     restartRecoveryDeliveryRequestFingerprint: entry.restartRecoveryDeliveryRequestFingerprint,
     restartRecoveryDeliveryRunId: entry.restartRecoveryDeliveryRunId,
+    restartRecoveryRequester: entry.restartRecoveryRequester,
     restartRecoveryDeliverySourceRunId: entry.restartRecoveryDeliverySourceRunId,
     restartRecoveryRequesterAccountId: entry.restartRecoveryRequesterAccountId,
     restartRecoveryRequesterSenderId: entry.restartRecoveryRequesterSenderId,
@@ -56,6 +58,10 @@ export function sessionMatchesExpectedTranscriptTurn<T extends { entry: SessionE
       selected.entry.activeWriterRunId === expected.expectedWriterRunId) &&
     (expectedState === undefined ||
       (selected.entry.abortedLastRun === expectedState.abortedLastRun &&
+        isDeepStrictEqual(
+          selected.entry.restartRecoveryRequester,
+          expectedState.restartRecoveryRequester,
+        ) &&
         selected.entry.mainRestartRecovery?.cycleId === expectedState.mainRestartRecoveryCycleId &&
         selected.entry.mainRestartRecovery?.revision ===
           expectedState.mainRestartRecoveryRevision &&

@@ -28,7 +28,7 @@ import { applySessionStoreMigrations } from "../config/sessions/store-migrations
 import { runExclusiveSessionStoreWrite } from "../config/sessions/store-writer.js";
 import {
   normalizeSessionRuntimeModelFields,
-  type SessionEntry,
+  type InternalSessionEntry as SessionEntry,
   type SessionOrigin,
 } from "../config/sessions/types.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -148,6 +148,8 @@ function normalizeRestartRecoveryFields(entry: SessionEntry): SessionEntry {
     assign("restartRecoveryDeliveryContext", restartContext);
   }
   normalizeRestartRecoveryEntryFields(entry, assign);
+  // Retired JSON imports never carried authenticated continuation custody.
+  assign("restartRecoveryRequester", undefined);
   return next;
 }
 

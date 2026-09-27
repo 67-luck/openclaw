@@ -8,6 +8,7 @@ export type SessionLifecycleRevisionExpectation = string | null;
 export type SessionTranscriptTurnExpectedState = {
   /** Rejects a run-owned turn after another admitted run takes writer ownership. */
   expectedWriterRunId?: string;
+  restartRecoveryRequester?: SessionEntry["restartRecoveryRequester"];
   abortedLastRun: boolean | undefined;
   /** Fences recovery-only transcript writes against concurrent ownership changes. */
   mainRestartRecoveryCycleId: string | undefined;
@@ -36,6 +37,7 @@ export type SessionTranscriptTurnLifecyclePatch = {
   lastRunError?: SessionEntry["lastRunError"];
   pendingFinalDelivery?: SessionEntry["pendingFinalDelivery"];
   mainRestartRecovery?: SessionEntry["mainRestartRecovery"];
+  restartRecoveryRequester?: SessionEntry["restartRecoveryRequester"];
   restartRecoveryBeforeAgentReplyState?: SessionRestartRecoveryState["restartRecoveryBeforeAgentReplyState"];
   restartRecoveryDeliveryReceiptState?: SessionRestartRecoveryState["restartRecoveryDeliveryReceiptState"];
   restartRecoveryDeliveryToolCallId?: SessionRestartRecoveryState["restartRecoveryDeliveryToolCallId"];

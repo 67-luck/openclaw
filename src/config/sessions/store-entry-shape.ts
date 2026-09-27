@@ -146,6 +146,8 @@ export function projectCanonicalSessionEntryShape(value: Record<string, unknown>
   setOptionalField("memoryFlush", memoryFlush);
   const archiveReason = normalizeSessionEntryArchiveReason(canonicalValue.archiveReason);
   if (canonicalValue.archivedAt !== undefined) {
+    // An archived conversation cannot later revive its old continuation grant.
+    delete canonicalValue.restartRecoveryRequester;
     setOptionalField("archiveReason", archiveReason);
   } else {
     delete canonicalValue.archivedBy;

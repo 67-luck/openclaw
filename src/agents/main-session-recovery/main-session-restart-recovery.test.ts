@@ -1536,6 +1536,23 @@ describe("main-session-restart-recovery", () => {
 
   it.each([
     {
+      label: "a same-session self-continuation",
+      sessionKey: "agent:main:dashboard:self-continuation",
+      sessionId: "self-continuation-session",
+      lifecycleRunId: "self-continuation-run",
+      restartRecoveryRuns: undefined,
+      userMessage: {
+        role: "user",
+        content: "Continue the original task in this conversation.",
+        provenance: {
+          kind: "inter_session",
+          sourceSessionKey: "agent:main:dashboard:self-continuation",
+          sourceChannel: "webchat",
+          sourceTool: "sessions_send",
+        },
+      },
+    },
+    {
       label: "an announcement interrupted during lifecycle rotation",
       lifecycleRunId: undefined,
       sessionKey: "agent:main:telegram:group:-100:topic:2",

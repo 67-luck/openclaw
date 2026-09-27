@@ -177,6 +177,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/session-message-events.test.ts",
   "src/gateway/session-repository-materialization.test.ts",
   "src/gateway/session-repository-publication-handoff.test.ts",
+  "src/gateway/session-restart-requester-restore.test.ts",
   "src/gateway/session-row-event-ancestor-placement.test.ts",
   "src/gateway/session-row-projection.accepted-facts.test.ts",
   "src/gateway/session-row-projection.archived.test.ts",

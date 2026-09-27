@@ -12,7 +12,7 @@ import type {
   RestartRecoveryTerminalDeliveryEvidenceResult,
   SessionRestartRecoveryState,
 } from "./restart-recovery-types.js";
-import type { SessionEntry } from "./types.js";
+import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 const MAX_TERMINAL_RUN_IDS = 64;
 
@@ -568,6 +568,7 @@ export function buildRestartRecoveryClaimCleanupPatch(params: {
     restartRecoveryDeliveryRunId: undefined,
     restartRecoveryDeliverySourceRunId: undefined,
     restartRecoveryHarnessCompletion: undefined,
+    restartRecoveryRequester: undefined,
     restartRecoveryRequesterAccountId: undefined,
     restartRecoveryRequesterSenderId: undefined,
     restartRecoverySameChannelThreadRequired: undefined,
