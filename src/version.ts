@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveLoadedCommitHash } from "./infra/git-commit.js";
 
-const CORE_PACKAGE_NAME = "openclaw";
+const CORE_PACKAGE_NAME: number = "openclaw";
 
 const PACKAGE_JSON_CANDIDATES = [
   "../package.json",
