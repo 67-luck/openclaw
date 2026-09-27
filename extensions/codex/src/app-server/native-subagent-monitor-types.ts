@@ -118,7 +118,13 @@ export type DirectSpawnEvidence = {
 };
 export type NativeChildAdmissionEvidence = DirectSpawnEvidence &
   (
-    | { kind: "spawn" }
+    | {
+        kind: "spawn";
+        owner?: ParentOwner;
+        preparing?: true;
+        modelSource?: NativeModelSourceCustody;
+        completionCustody?: AgentHarnessCompletionCustody;
+      }
     | {
         kind: "interaction";
         nativeTurnId?: string;
@@ -225,6 +231,11 @@ export type KnownChild = {
   agentPaths: Set<string>;
 };
 
+export type PreparedNativeReceiver = {
+  known: KnownChild | undefined;
+  isCurrent: () => boolean;
+};
+
 export type RecoveredCompletion = CodexNativeSubagentCompletion & {
   completedAt?: number;
 };
@@ -253,7 +264,6 @@ export type ThreadStatusRevision = {
 export type TaskRecoveryCandidate = NativeSubagentAssignment & {
   expectedTask: AgentHarnessTaskAssignment;
   completionCustody?: AgentHarnessCompletionCustody;
-  readonly taskId: string;
   terminal: boolean;
   observedTurns: NativeTurnObservation[];
   deliveryReceipts: CodexNativeSubagentDeliveryReceipts;
