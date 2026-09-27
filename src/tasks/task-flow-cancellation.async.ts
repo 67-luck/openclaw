@@ -20,7 +20,7 @@ import {
 import { prepareTaskRegistryRead, prepareTaskRegistryReadOwner } from "./task-registry-read.js";
 import { getTaskRegistryStore } from "./task-registry.store.js";
 
-async function cancelFlow(
+export async function cancelTaskFlowAsync(
   params: TaskFlowCancellationRequest & { callerOwnerKey?: string },
   assertInvocation?: () => void,
 ): Promise<TaskFlowCancellationResult> {
@@ -112,8 +112,16 @@ async function cancelFlow(
             () => scope.execute({ type: "flows.current", input: { flowId: flow.flowId } }),
           );
           assertCurrent();
-          if (!publicationSettled || !flowRead.isTaskFlowCurrent(flow.flowId)) {
+          if (!publicationSettled) {
             throw new Error("Flow cancellation publication did not settle.");
+          }
+          if (!flowRead.isTaskFlowCurrent(flow.flowId)) {
+            // A newer committed publication can supersede this receipt's readback.
+            const published = await prepareTaskFlowRegistryRead(context);
+            assertCurrent();
+            if (!published?.isTaskFlowCurrent(flow.flowId)) {
+              throw new Error("Flow cancellation publication did not settle.");
+            }
           }
           return result;
         };
@@ -177,15 +185,9 @@ async function cancelFlow(
   }
 }
 
-export function cancelFlowById(
-  params: TaskFlowCancellationRequest,
-): Promise<TaskFlowCancellationResult> {
-  return cancelFlow(params);
-}
-
 export function cancelFlowByIdForOwner(
   params: TaskFlowCancellationRequest & { callerOwnerKey: string },
   assertInvocation?: () => void,
 ): Promise<TaskFlowCancellationResult> {
-  return cancelFlow(params, assertInvocation);
+  return cancelTaskFlowAsync(params, assertInvocation);
 }

@@ -262,7 +262,7 @@ describe("task-executor", () => {
         terminalSummary: "completed too late",
       });
 
-      expect(cancelled).toMatchObject({ found: true, cancelled: true });
+      expect(cancelled, cancelled.reason).toMatchObject({ found: true, cancelled: true });
       expect(getTaskFlowById(flowId)?.status).toBe("cancelled");
       expect(getTaskById(child.taskId)).toMatchObject({
         status: "cancelled",
@@ -344,7 +344,7 @@ describe("task-executor", () => {
         terminalSummary: "completed too late",
       });
 
-      expect(cancelled).toMatchObject({ found: true, cancelled: true });
+      expect(cancelled, cancelled.reason).toMatchObject({ found: true, cancelled: true });
       expect(getTaskFlowById(flow.flowId)?.status).toBe("cancelled");
       expect(getTaskById(child.taskId)).toMatchObject({
         status: "cancelled",
@@ -879,7 +879,7 @@ describe("task-executor", () => {
         taskId: childTask.taskId,
       });
       expect(cancelled.found).toBe(true);
-      expect(cancelled.cancelled).toBe(true);
+      expect(cancelled.cancelled, cancelled.reason).toBe(true);
       expect(cancelled.flow?.flowId).toBe(flow.flowId);
       expect(cancelled.flow?.status).toBe("cancelled");
       expect(getTaskById(childTask.taskId)?.status).toBe("cancelled");

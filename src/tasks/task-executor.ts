@@ -323,7 +323,7 @@ export function runTaskInFlowForOwner(
 // Creation-only callers do not load cancellation and its native control stack.
 export async function cancelFlowById(params: { cfg: OpenClawConfig; flowId: string }) {
   const runtime = await import("./task-flow-cancellation.async.js");
-  return runtime.cancelFlowById(params);
+  return runtime.cancelTaskFlowAsync(params);
 }
 
 export async function cancelDetachedTaskRunById(params: {
