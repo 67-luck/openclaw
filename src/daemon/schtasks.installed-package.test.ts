@@ -234,7 +234,7 @@ it("reserves cleanup and runner time within the installed native workflow", asyn
     .parse(parse(readFileSync(".github/workflows/windows-testbox-probe.yml", "utf8")));
   const job = workflow.jobs["native-schtasks-package"];
   let totalStepMs = 0;
-  for (const cell of keys) {
+  for (const cell of [...keys, "authority"]) {
     const steps = job.steps.filter(
       (step) =>
         typeof step.env?.CI_WINDOWS_SCHTASKS_INSTALLED_INPUT === "string" &&

@@ -92,15 +92,18 @@ const inputSchema = installedPackageSchema.extend({
 });
 type Input = z.infer<typeof inputSchema>;
 export const keys = ["fresh", "2026.9.3", "2026.9.4"] as const;
+// The independent authority diagnostic cannot satisfy an installed upgrade cell.
+export const cellKeys = [...keys, "authority"] as const;
 // Aggregate serial fixture phases, including the complete published updater's stage sequence.
 const installedCellBodyTimeoutMs = {
   fresh: 360_000,
   "2026.9.3": 1_080_000,
   "2026.9.4": 1_080_000,
-} satisfies Record<(typeof keys)[number], number>;
+  authority: 360_000,
+} satisfies Record<(typeof cellKeys)[number], number>;
 export function createInstalledProgressRecorder(params: {
   input: Input;
-  key: (typeof keys)[number];
+  key: (typeof cellKeys)[number];
   rootDir: string;
   proofPath: string;
   commands: CommandRecord[];
@@ -122,6 +125,9 @@ export function createInstalledProgressRecorder(params: {
           candidate: input.candidate,
           published: input.published,
           cell: key,
+          ...(key === "authority"
+            ? { qualification: "source-owner-failed-build-recovery-only" }
+            : {}),
           cells: [
             {
               key,
@@ -176,10 +182,10 @@ export function createInstalledProgressRecorder(params: {
 }
 
 export function resolveInstalledCellBodyTimeoutMs(cell: string | undefined) {
-  return installedCellBodyTimeoutMs[z.enum(keys).parse(cell)];
+  return installedCellBodyTimeoutMs[z.enum(cellKeys).parse(cell)];
 }
 const preparedCellSchema = z.object({
-  cell: z.enum(keys),
+  cell: z.enum(cellKeys),
   inputSha256: z.string(),
   preparationRoot: z.string(),
   cells: z.array(
@@ -196,7 +202,7 @@ export function cellEvidence(inputPath: string, key: string) {
 export async function readPreparedCell(
   inputPath: string,
   input: Input,
-  key: (typeof keys)[number],
+  key: (typeof cellKeys)[number],
 ) {
   const prepared = preparedCellSchema.parse(
     JSON.parse(await fs.readFile(path.join(cellEvidence(inputPath, key), "prepared.json"), "utf8")),
@@ -294,7 +300,7 @@ async function measureOwnedDirectory(root: string): Promise<OwnedUsage | null> {
 export async function recordCapacityBoundary(
   inputPath: string,
   input: Input,
-  key: (typeof keys)[number],
+  key: (typeof cellKeys)[number],
   boundary: string,
 ) {
   const volume = await fs.statfs(path.dirname(input.installRoot));
@@ -328,10 +334,13 @@ export async function recordCapacityBoundary(
   const expectedProfileState = [];
   const id = process.env.CI_WINDOWS_SCHTASKS_TEST_ID;
   assert.ok(id && /^[a-z0-9-]{1,48}$/u.test(id));
-  for (const [index, previous] of keys.slice(0, keys.indexOf(key) + 1).entries()) {
-    for (const role of previous === "fresh"
-      ? ["selected", "non-gateway", "missing", "direct", "extra"]
-      : ["selected", "peer"]) {
+  for (const previous of key === "authority" ? [key] : keys.slice(0, keys.indexOf(key) + 1)) {
+    const index = cellKeys.indexOf(previous);
+    for (const role of previous === "authority"
+      ? ["selected"]
+      : previous === "fresh"
+        ? ["selected", "non-gateway", "missing", "direct", "extra"]
+        : ["selected", "peer"]) {
       const profile = `schtasks-int-${id}-${index}-${role}`;
       expectedProfileState.push({
         profile,
@@ -360,7 +369,7 @@ export async function recordCapacityBoundary(
   );
   return sample;
 }
-export function requiredCellSpace(key: (typeof keys)[number]) {
+export function requiredCellSpace(key: (typeof cellKeys)[number]) {
   const gib = 1024 ** 3;
   // Planning allowances, not measurements or claimed upper bounds for package scripts.
   const forecast = {
@@ -457,16 +466,16 @@ async function verifyPackage(installRoot: string, version: string, commit: strin
 
 // Preparation is a separate existing-job step: no Scheduler mutation or product CLI here.
 async function prepareInstalledLifecycle(inputPath: string) {
-  const key = z.enum(keys).parse(process.env.CI_WINDOWS_SCHTASKS_INSTALLED_CELL);
+  const key = z.enum(cellKeys).parse(process.env.CI_WINDOWS_SCHTASKS_INSTALLED_CELL);
   const input = await readInput(inputPath);
-  if (key === "fresh") {
+  if (key === "fresh" || key === "authority") {
     await fs.mkdir(input.stateRoot);
     await fs.mkdir(input.installRoot);
   } else {
     samePath(await fs.realpath(input.stateRoot), input.stateRoot);
     samePath(await fs.realpath(input.installRoot), input.installRoot);
   }
-  for (const previous of keys.slice(0, keys.indexOf(key))) {
+  for (const previous of key === "authority" ? [] : keys.slice(0, keys.indexOf(key))) {
     for (const name of previous === "fresh" ? [previous] : [previous, `${previous}-peer`]) {
       await assert.rejects(fs.lstat(prefix(input, name)), { code: "ENOENT" });
     }
@@ -584,7 +593,7 @@ async function prepareInstalledLifecycle(inputPath: string) {
 
 // The workflow invokes this only after native cleanup and a successful immutable proof upload.
 async function retireInstalledLifecycle(inputPath: string) {
-  const key = z.enum(keys).parse(process.env.CI_WINDOWS_SCHTASKS_INSTALLED_CELL);
+  const key = z.enum(cellKeys).parse(process.env.CI_WINDOWS_SCHTASKS_INSTALLED_CELL);
   const input = await readInput(inputPath);
   const prepared = await readPreparedCell(inputPath, input, key);
   const evidence = cellEvidence(inputPath, key);
@@ -592,7 +601,7 @@ async function retireInstalledLifecycle(inputPath: string) {
   const proof = z
     .object({
       result: z.literal("pass"),
-      cell: z.enum(keys),
+      cell: z.enum(cellKeys),
       head: z.string(),
       candidate: z.object({ sha256: z.string() }),
       cells: z.array(z.object({ key: z.string(), result: z.literal("passed") })).length(1),

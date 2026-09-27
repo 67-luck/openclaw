@@ -1,8 +1,8 @@
 // Native task/process inspection and sanitized proof rendering.
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
-import { expect } from "vitest";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
 import { setScheduledTaskXmlEnabled } from "./schtasks-control.js";
 import { execSchtasks } from "./schtasks-exec.js";
@@ -298,13 +298,13 @@ export function assertInteractiveLeastPrivilegeTask(params: {
   principal: ScheduledTaskPrincipal;
   taskXml: string;
 }): void {
-  expect(params.taskXml).toContain("<LogonType>InteractiveToken</LogonType>");
-  expect(params.principal.logonType).toBe(TASK_LOGON_INTERACTIVE_TOKEN);
-  expect(params.principal.runLevel).toBe(TASK_RUNLEVEL_LEAST_PRIVILEGE);
+  assert.ok(params.taskXml.includes("<LogonType>InteractiveToken</LogonType>"));
+  assert.equal(params.principal.logonType, TASK_LOGON_INTERACTIVE_TOKEN);
+  assert.equal(params.principal.runLevel, TASK_RUNLEVEL_LEAST_PRIVILEGE);
   const exportedRunLevel = params.taskXml.match(/<RunLevel>([^<]+)<\/RunLevel>/u)?.[1];
   // Task Scheduler may omit the default LeastPrivilege node when exporting XML.
   // If present, it must agree with the effective COM principal checked above.
-  expect(exportedRunLevel === undefined || exportedRunLevel === "LeastPrivilege").toBe(true);
+  assert.ok(exportedRunLevel === undefined || exportedRunLevel === "LeastPrivilege");
 }
 
 /** Wait for the service owner to report the expected native runtime and identity. */

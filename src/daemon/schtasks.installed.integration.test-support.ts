@@ -30,7 +30,7 @@ import {
   describeFailure,
   entry,
   installedStatusSchema,
-  keys,
+  cellKeys,
   packageRoot,
   parseInstalledPreview,
   prefix,
@@ -78,8 +78,8 @@ export async function runInstalledLifecycle(
     readTaskXml,
     readRelatedProcessDiagnostics,
   } = await import("./schtasks.integration-observation.test-support.js");
-  const key = z.enum(keys).parse(process.env.CI_WINDOWS_SCHTASKS_INSTALLED_CELL);
-  const cellIndex = keys.indexOf(key);
+  const key = z.enum(cellKeys).parse(process.env.CI_WINDOWS_SCHTASKS_INSTALLED_CELL);
+  const cellIndex = cellKeys.indexOf(key);
   const input = await readInput(inputPath);
   assert.equal(input.toolingSha, process.env.CI_WINDOWS_SCHTASKS_HEAD);
   const prepared = await readPreparedCell(inputPath, input, key);
@@ -102,6 +102,7 @@ export async function runInstalledLifecycle(
   const commands: CommandRecord[] = [];
   const tasks: Task[] = [];
   let authorityPeerRoot: string | undefined;
+  let sourceBuildJoined = true;
   const observations: Record<string, unknown> = {};
   let cellFailure: Error | undefined;
   const recordProgress = createInstalledProgressRecorder({
@@ -250,6 +251,7 @@ export async function runInstalledLifecycle(
     tasks.push(task);
     admissions.push({
       taskInitiallyAbsent: true,
+      ...(key === "authority" ? { sourceBuildJoined } : {}),
       cell: key,
       role,
       profile,
@@ -314,204 +316,248 @@ export async function runInstalledLifecycle(
     const selected = await createTask("selected");
     const beforeIdentity = await readInstalledBuildIdentity(
       installRoot,
-      key === "fresh" ? input.candidate.version : key,
+      key === "fresh" || key === "authority" ? input.candidate.version : key,
     );
     const before = await status(selected, beforeIdentity);
     observations.before = before;
     await recordProgress("selected-status-verified");
     const configBefore = await fs.readFile(selected.configPath);
-    if (key !== "fresh") {
-      const peer = await createTask("peer");
-      authorityPeerRoot = peer.installRoot;
-      const peerIdentity = await readInstalledBuildIdentity(peer.installRoot, key);
-      const peerBefore = await status(peer, peerIdentity);
-      const peerXml = await readTaskXml(peer.taskName);
-      const peerConfig = await fs.readFile(peer.configPath);
-      const peerInstallBefore = await hashInstall(peer.installRoot);
-      await recordProgress("peer-before-update:hash-verified");
-      if (key === "2026.9.4") {
-        observations.siblingBuildRefusal = await assertInstalledSiblingBuildRefusal({
-          toolingEntry: path.resolve("scripts/run-node.mjs"),
-          selected,
-          peer,
-          commands,
-          signal,
-          recordProgress,
-          verifyContinuity: async () => {
-            assert.equal(
-              (await status(selected, beforeIdentity)).service.runtime.pid,
-              before.service.runtime.pid,
-            );
-            assert.equal(
-              (await status(peer, peerIdentity)).service.runtime.pid,
-              peerBefore.service.runtime.pid,
-            );
-          },
-        });
-      }
-      const driverBefore = await hashFile(selected.entry);
-      observations.driver = {
-        version: key,
-        entrySha256: driverBefore,
-        installed: await hashInstall(installRoot),
-      };
-      await recordProgress("published-driver:hash-verified");
-      observations.update = await runInstalledPublishedUpdate({
-        task: selected,
-        input,
-        inputPath,
-        key,
+    if (key === "authority") {
+      authorityPeerRoot = prefix(input, "authority-peer");
+      observations.authorityPeer = await verifyPreparedInstall(
+        prepared,
+        "authority-peer",
+        authorityPeerRoot,
+      );
+      const { inspectInstalledSourceBuildRecovery } =
+        await import("./schtasks.source-build-recovery.test-support.js");
+      const sourceProofs: Record<string, unknown> = {};
+      observations.sourceBuildRecovery = sourceProofs;
+      await inspectInstalledSourceBuildRecovery({
+        selected,
+        foreignInstallRoot: authorityPeerRoot,
         commands,
         signal,
-        observations,
-        recordProgress,
-      });
-      await prepareInstalledPackage({ ...input, installRoot });
-      await recordProgress("updated-candidate:hash-verified");
-      const candidateIdentity = await readInstalledBuildIdentity(
-        installRoot,
-        input.candidate.version,
-      );
-      await awaitReadiness(selected, "candidate-startup");
-      const after = await status(selected, candidateIdentity);
-      assert.notEqual(after.service.runtime.pid, before.service.runtime.pid);
-      observations.after = after;
-      assert.deepEqual(
-        JSON.parse(await fs.readFile(selected.configPath, "utf8")).gateway,
-        JSON.parse(configBefore.toString()).gateway,
-      );
-      assert.equal(await readTaskXml(peer.taskName), peerXml);
-      assert.deepEqual(await fs.readFile(peer.configPath), peerConfig);
-      const peerAfter = await status(peer, peerIdentity);
-      assert.equal(peerAfter.service.runtime.pid, peerBefore.service.runtime.pid);
-      observations.peer = { before: peerBefore, after: peerAfter };
-      const extras = await doctor(selected, 0);
-      assert.equal(
-        extras.findings.some((finding) => finding.target === "\\" + peer.taskName),
-        false,
-      );
-      assert.equal(
-        extras.findings.some((finding) => finding.target === "\\" + selected.taskName),
-        false,
-      );
-      assert.equal(await readTaskXml(peer.taskName), peerXml);
-      assert.deepEqual(await fs.readFile(peer.configPath), peerConfig);
-      observations.extraServices = extras;
-      assert.deepEqual(await hashInstall(peer.installRoot), peerInstallBefore);
-      await recordProgress("peer-after-update:hash-verified");
-      observations.peerPreserved = true;
-      await cli(peer, ["gateway", "stop", "--force", "--json"]);
-      await owners.waitForLoopbackPortRelease(peer.gatewayPort);
-      await cli(peer, ["gateway", "uninstall", "--json"]);
-    }
-    // The packaged candidate must reach its real strict inspection preview, not exit-zero skip.
-    const preview = async (task: Task = selected) =>
-      parseInstalledPreview(
-        await cli(task, ["update", "--dry-run", "--tag", input.tarball, "--json"]),
-        task.installRoot,
-      );
-    if (key === "fresh") {
-      observations.discovery = await inspectDisabledDiscoveryTasks({
-        selected,
-        preview,
-        doctor,
-        cleanupTask,
-        owners,
-        id,
-        cellIndex,
-        key,
-        rootDir,
-        installRoot,
-        admissions,
-        admissionPath,
-        recordProgress,
-      });
-    }
-    const configBeforePreview = await fs.readFile(selected.configPath);
-    const healthy = await preview();
-    assert.equal(
-      healthy.notes.some((note) => note.includes("Gateway service inspection is unavailable")),
-      false,
-    );
-    await cli(selected, ["gateway", "stop", "--force", "--json"]);
-    await owners.waitForLoopbackPortRelease(selected.gatewayPort);
-    if (key === "2026.9.3") {
-      assert.ok(authorityPeerRoot);
-      const { inspectInstalledTaskAuthority } =
-        await import("./schtasks.installed-authority.test-support.js");
-      observations.nativeAuthority = await inspectInstalledTaskAuthority({
-        task: selected,
-        foreignInstallRoot: authorityPeerRoot,
+        observations: sourceProofs,
         canBindLoopbackPort: owners.canBindLoopbackPort,
         recordProgress,
+        recordSourceChildJoin: async (joined) => {
+          sourceBuildJoined = joined;
+          observations.sourceBuildJoined = joined;
+          for (const admission of admissions) {
+            admission.sourceBuildJoined = joined;
+          }
+          await fs.writeFile(admissionPath, JSON.stringify(admissions, null, 2));
+        },
+        onRecovered: async () => {
+          await awaitReadiness(selected, "source-build-recovered");
+          const recovered = await status(selected, beforeIdentity);
+          assert.notEqual(recovered.service.runtime.pid, before.service.runtime.pid);
+          return recovered;
+        },
       });
-    }
-    const xml = await readTaskXml(selected.taskName);
-    assert.ok(xml);
-    const canonicalScriptHash = await hashFile(selected.scriptPath);
-    const match = /<Command>([^<]+)<\/Command>/u.exec(xml);
-    assert.ok(match);
-    const empty = path.join(rootDir, "empty-registered-launcher.cmd");
-    await fs.writeFile(empty, "@echo off\r\n", "ascii");
-    const restoreXml = path.join(rootDir, "restore-task.xml");
-    const malformedXml = path.join(rootDir, "empty-task.xml");
-    const escaped = empty.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-    await fs.writeFile(restoreXml, `\uFEFF${xml}`, "utf16le");
-    await fs.writeFile(
-      malformedXml,
-      `\uFEFF${setScheduledTaskXmlEnabled(xml, false)
-        .replace(match[0], `<Command>${escaped}</Command>`)
-        .replace(/<Arguments>[\s\S]*?<\/Arguments>/u, "")}`,
-      "utf16le",
-    );
-    let previewFailure: Error | undefined;
-    try {
+      await verifyPreparedInstall(prepared, "authority-peer", authorityPeerRoot);
+      assert.deepEqual(await fs.readFile(selected.configPath), configBefore);
+    } else {
+      if (key !== "fresh") {
+        const peer = await createTask("peer");
+        authorityPeerRoot = peer.installRoot;
+        const peerIdentity = await readInstalledBuildIdentity(peer.installRoot, key);
+        const peerBefore = await status(peer, peerIdentity);
+        const peerXml = await readTaskXml(peer.taskName);
+        const peerConfig = await fs.readFile(peer.configPath);
+        const peerInstallBefore = await hashInstall(peer.installRoot);
+        await recordProgress("peer-before-update:hash-verified");
+        if (key === "2026.9.4") {
+          observations.siblingBuildRefusal = await assertInstalledSiblingBuildRefusal({
+            toolingEntry: path.resolve("scripts/run-node.mjs"),
+            selected,
+            peer,
+            commands,
+            signal,
+            recordProgress,
+            verifyContinuity: async () => {
+              assert.equal(
+                (await status(selected, beforeIdentity)).service.runtime.pid,
+                before.service.runtime.pid,
+              );
+              assert.equal(
+                (await status(peer, peerIdentity)).service.runtime.pid,
+                peerBefore.service.runtime.pid,
+              );
+            },
+          });
+        }
+        const driverBefore = await hashFile(selected.entry);
+        observations.driver = {
+          version: key,
+          entrySha256: driverBefore,
+          installed: await hashInstall(installRoot),
+        };
+        await recordProgress("published-driver:hash-verified");
+        observations.update = await runInstalledPublishedUpdate({
+          task: selected,
+          input,
+          inputPath,
+          key,
+          commands,
+          signal,
+          observations,
+          recordProgress,
+        });
+        await prepareInstalledPackage({ ...input, installRoot });
+        await recordProgress("updated-candidate:hash-verified");
+        const candidateIdentity = await readInstalledBuildIdentity(
+          installRoot,
+          input.candidate.version,
+        );
+        await awaitReadiness(selected, "candidate-startup");
+        const after = await status(selected, candidateIdentity);
+        assert.notEqual(after.service.runtime.pid, before.service.runtime.pid);
+        observations.after = after;
+        assert.deepEqual(
+          JSON.parse(await fs.readFile(selected.configPath, "utf8")).gateway,
+          JSON.parse(configBefore.toString()).gateway,
+        );
+        assert.equal(await readTaskXml(peer.taskName), peerXml);
+        assert.deepEqual(await fs.readFile(peer.configPath), peerConfig);
+        const peerAfter = await status(peer, peerIdentity);
+        assert.equal(peerAfter.service.runtime.pid, peerBefore.service.runtime.pid);
+        observations.peer = { before: peerBefore, after: peerAfter };
+        const extras = await doctor(selected, 0);
+        assert.equal(
+          extras.findings.some((finding) => finding.target === "\\" + peer.taskName),
+          false,
+        );
+        assert.equal(
+          extras.findings.some((finding) => finding.target === "\\" + selected.taskName),
+          false,
+        );
+        assert.equal(await readTaskXml(peer.taskName), peerXml);
+        assert.deepEqual(await fs.readFile(peer.configPath), peerConfig);
+        observations.extraServices = extras;
+        assert.deepEqual(await hashInstall(peer.installRoot), peerInstallBefore);
+        await recordProgress("peer-after-update:hash-verified");
+        observations.peerPreserved = true;
+        await cli(peer, ["gateway", "stop", "--force", "--json"]);
+        await owners.waitForLoopbackPortRelease(peer.gatewayPort);
+        await cli(peer, ["gateway", "uninstall", "--json"]);
+      }
+      // The packaged candidate must reach its real strict inspection preview, not exit-zero skip.
+      const preview = async (task: Task = selected) =>
+        parseInstalledPreview(
+          await cli(task, ["update", "--dry-run", "--tag", input.tarball, "--json"]),
+          task.installRoot,
+        );
+      if (key === "fresh") {
+        observations.discovery = await inspectDisabledDiscoveryTasks({
+          selected,
+          preview,
+          doctor,
+          cleanupTask,
+          owners,
+          id,
+          cellIndex,
+          key,
+          rootDir,
+          installRoot,
+          admissions,
+          admissionPath,
+          recordProgress,
+        });
+      }
+      const configBeforePreview = await fs.readFile(selected.configPath);
+      const healthy = await preview();
       assert.equal(
-        (await execSchtasks(["/Create", "/TN", selected.taskName, "/XML", malformedXml, "/F"]))
-          .code,
-        0,
+        healthy.notes.some((note) => note.includes("Gateway service inspection is unavailable")),
+        false,
       );
-      const registeredEmpty = await readTaskXml(selected.taskName);
-      assert.equal(readTaskPrincipal(selected.taskName).enabled, false);
-      const malformed = await preview();
-      assert.equal(await readTaskXml(selected.taskName), registeredEmpty);
-      assert.ok(
-        malformed.notes.some((note) => note.includes("Gateway service inspection is unavailable")),
+      await cli(selected, ["gateway", "stop", "--force", "--json"]);
+      await owners.waitForLoopbackPortRelease(selected.gatewayPort);
+      if (key === "2026.9.3") {
+        assert.ok(authorityPeerRoot);
+        const { inspectInstalledTaskAuthority } =
+          await import("./schtasks.installed-authority.test-support.js");
+        observations.nativeAuthority = await inspectInstalledTaskAuthority({
+          task: selected,
+          foreignInstallRoot: authorityPeerRoot,
+          canBindLoopbackPort: owners.canBindLoopbackPort,
+          recordProgress,
+        });
+      }
+      const xml = await readTaskXml(selected.taskName);
+      assert.ok(xml);
+      const canonicalScriptHash = await hashFile(selected.scriptPath);
+      const match = /<Command>([^<]+)<\/Command>/u.exec(xml);
+      assert.ok(match);
+      const empty = path.join(rootDir, "empty-registered-launcher.cmd");
+      await fs.writeFile(empty, "@echo off\r\n", "ascii");
+      const restoreXml = path.join(rootDir, "restore-task.xml");
+      const malformedXml = path.join(rootDir, "empty-task.xml");
+      const escaped = empty
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+      await fs.writeFile(restoreXml, `\uFEFF${xml}`, "utf16le");
+      await fs.writeFile(
+        malformedXml,
+        `\uFEFF${setScheduledTaskXmlEnabled(xml, false)
+          .replace(match[0], `<Command>${escaped}</Command>`)
+          .replace(/<Arguments>[\s\S]*?<\/Arguments>/u, "")}`,
+        "utf16le",
       );
-      assert.equal(await hashFile(selected.scriptPath), canonicalScriptHash);
-      observations.strictPreview = {
-        healthy,
-        malformed,
-        canonicalScriptHash,
-        malformedLauncherExecuted: false,
-      };
-    } catch (error) {
-      previewFailure = toErrorObject(error, "Installed Scheduled Task fixture failed");
+      let previewFailure: Error | undefined;
+      try {
+        assert.equal(
+          (await execSchtasks(["/Create", "/TN", selected.taskName, "/XML", malformedXml, "/F"]))
+            .code,
+          0,
+        );
+        const registeredEmpty = await readTaskXml(selected.taskName);
+        assert.equal(readTaskPrincipal(selected.taskName).enabled, false);
+        const malformed = await preview();
+        assert.equal(await readTaskXml(selected.taskName), registeredEmpty);
+        assert.ok(
+          malformed.notes.some((note) =>
+            note.includes("Gateway service inspection is unavailable"),
+          ),
+        );
+        assert.equal(await hashFile(selected.scriptPath), canonicalScriptHash);
+        observations.strictPreview = {
+          healthy,
+          malformed,
+          canonicalScriptHash,
+          malformedLauncherExecuted: false,
+        };
+      } catch (error) {
+        previewFailure = toErrorObject(error, "Installed Scheduled Task fixture failed");
+      }
+      try {
+        assert.equal(
+          (await execSchtasks(["/Create", "/TN", selected.taskName, "/XML", restoreXml, "/F"]))
+            .code,
+          0,
+        );
+      } catch (error) {
+        previewFailure = new AggregateError(
+          previewFailure ? [previewFailure, error] : [error],
+          "Registered launcher restoration failed",
+        );
+      }
+      if (previewFailure) {
+        throw previewFailure;
+      }
+      assert.deepEqual(await fs.readFile(selected.configPath), configBeforePreview);
     }
-    try {
-      assert.equal(
-        (await execSchtasks(["/Create", "/TN", selected.taskName, "/XML", restoreXml, "/F"])).code,
-        0,
-      );
-    } catch (error) {
-      previewFailure = new AggregateError(
-        previewFailure ? [previewFailure, error] : [error],
-        "Registered launcher restoration failed",
-      );
-    }
-    if (previewFailure) {
-      throw previewFailure;
-    }
-    assert.deepEqual(await fs.readFile(selected.configPath), configBeforePreview);
     await cli(selected, ["gateway", "uninstall", "--json"]);
     assert.equal(probeScheduledTaskExists(selected.taskName), false);
-    if (key === "fresh") {
+    if (key === "fresh" || key === "authority") {
       assert.deepEqual(await hashInstall(installRoot), initial.installed);
       await recordProgress("fresh-final:hash-verified");
     }
   } catch (error) {
     cellFailure = toErrorObject(error, "Installed Scheduled Task fixture failed");
-    if (key !== "fresh" && tasks[0]) {
+    if (key !== "fresh" && key !== "authority" && tasks[0]) {
       try {
         await inspectInstalledUpdateFailure({ task: tasks[0], commands, signal, observations });
       } catch (inspectionError) {
@@ -531,7 +577,7 @@ export async function runInstalledLifecycle(
       );
     }
   }
-  for (const task of tasks.toReversed()) {
+  for (const task of sourceBuildJoined ? tasks.toReversed() : []) {
     try {
       await lifetime.verifyCleanup(async () => {
         const registration = probeScheduledTaskState(task.taskName);
@@ -596,6 +642,9 @@ export async function runInstalledLifecycle(
         candidate: input.candidate,
         published: input.published,
         cell: key,
+        ...(key === "authority"
+          ? { qualification: "source-owner-failed-build-recovery-only" }
+          : {}),
         cells: results,
       },
       null,
