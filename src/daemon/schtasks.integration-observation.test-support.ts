@@ -57,11 +57,11 @@ export function disableScheduledTaskXmlForFixture(xml: string): string {
 
 export function normalizeScheduledTaskXmlEnabledForFixture(xml: string): string {
   // COM exports omit Enabled=true and place an explicit false in schema order.
-  // Normalize only that setting and its line; every other definition byte remains checked.
+  // Remove its whole LF/CRLF/CRCRLF export line; every other definition byte remains checked.
   return setScheduledTaskXmlEnabled(xml, false).replace(
     /(<Settings(?:\s[^>]*)?>)([\s\S]*?)(<\/Settings>)/iu,
     (_match, open: string, body: string, close: string) =>
-      `${open}<Enabled>false</Enabled>${body.replace(/(?:\r?\n[\t ]*)?<Enabled>false<\/Enabled>/u, "")}${close}`,
+      `${open}<Enabled>false</Enabled>${body.replace(/(?:\r{0,2}\n[\t ]*)?<Enabled>false<\/Enabled>/u, "")}${close}`,
   );
 }
 
