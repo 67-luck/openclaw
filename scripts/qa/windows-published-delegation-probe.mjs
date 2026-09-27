@@ -4,22 +4,19 @@ import { writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { run } from "../../src/daemon/schtasks.installed-command.test-support.ts";
-import {
-  boundedEnv,
-  cellEvidence,
-  packageRoot,
-  prefix,
-  readInput,
-  readPreparedCell,
-  verifyPreparedInstall,
-} from "../../src/daemon/schtasks.installed-package.test-support.ts";
-import { redactSupportString } from "../../src/logging/diagnostic-support-redaction.ts";
+import { tsImport } from "tsx/esm/api";
 import { prepareInstalledPackage } from "../lib/gateway-bench-installed-package.ts";
 import { createPackagedOwnerLoader, verifyPackageMember } from "../lib/windows-repair-package.mts";
 
 const fixture = fileURLToPath(import.meta.url);
-const tsx = new URL("../tsx.mjs", import.meta.url).href;
+// Scope tooling transforms to the redactor; packaged owners must retain their exact bytes.
+const { redactSupportString } = await tsImport(
+  "../../src/logging/diagnostic-support-redaction.ts",
+  {
+    parentURL: import.meta.url,
+    tsconfig: fileURLToPath(new URL("../../tsconfig.json", import.meta.url)),
+  },
+);
 const originalSource = "f919d94ee89a0f05b0de479e79fdd55a2925443c";
 const publishedExec = {
   file: "dist/exec-B2rMqfhN.mjs",
@@ -143,7 +140,7 @@ async function control(spec) {
           helperIdentity: grant.parent.helper,
         });
         const result = await runUtf8CommandWithTimeout(
-          [process.execPath, "--import", tsx, fixture, "--receiver", spec.specPath],
+          [process.execPath, fixture, "--receiver", spec.specPath],
           {
             cwd: spec.candidateRoot,
             baseEnv: {},
@@ -179,6 +176,16 @@ async function control(spec) {
 }
 
 async function main(inputPath) {
+  const { run } = await import("../../src/daemon/schtasks.installed-command.test-support.ts");
+  const {
+    boundedEnv,
+    cellEvidence,
+    packageRoot,
+    prefix,
+    readInput,
+    readPreparedCell,
+    verifyPreparedInstall,
+  } = await import("../../src/daemon/schtasks.installed-package.test-support.ts");
   const input = await readInput(inputPath);
   assert.equal(input.sourceSha, originalSource);
   const prepared = await readPreparedCell(inputPath, input, "2026.9.4");
@@ -234,7 +241,7 @@ async function main(inputPath) {
       commands,
     );
     await prepareInstalledPackage({ ...input, installRoot: candidatePrefix });
-    await run(["--import", tsx, fixture, "--controller", spec.specPath], env, root, commands);
+    await run([fixture, "--controller", spec.specPath], env, root, commands);
   } catch (error) {
     failure = redactSupportString(String(error), { env }, { maxLength: 2_000 });
   } finally {
