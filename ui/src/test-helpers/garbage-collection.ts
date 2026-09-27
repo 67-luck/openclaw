@@ -1,15 +1,12 @@
 import { setImmediate } from "node:timers/promises";
 
-declare const Bun: { gc(force: boolean): void };
-
 export async function collectGarbageForTest(collectInNode?: () => void): Promise<void> {
   // WeakRef targets stay alive for the current job, even without a strong owner.
   await setImmediate();
-  if (process.versions.bun) {
-    Bun.gc(true);
-  } else if (collectInNode) {
+  if (collectInNode && !process.versions.bun) {
     collectInNode();
   } else {
+    // Inspector collection runs after the JS entry unwinds, releasing native stack roots.
     const { Session } = await import("node:inspector");
     const session = new Session();
     session.connect();

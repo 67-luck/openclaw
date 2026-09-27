@@ -130,9 +130,14 @@ compiler assertions in mixed runtime suites; their cases remain enabled.
 The Node Code Mode executor suite also stays on Node: its warm-worker cleanup
 requires diagnostics-channel delivery to preserve sibling subscribers when a
 callback unsubscribes during publication. Bun can skip the next subscriber.
-The complete fake-timer lane also supports Bun. Control UI retains the GC-sensitive
-`usage-page-details.test.ts` on Node and runs the remaining files on Bun, including
-chat presentation retirement checks.
+The complete fake-timer and Control UI lanes also support Bun, including Usage
+details and chat presentation retirement checks. UI lifetime tests use inspector
+collection on Bun, which waits for the JavaScript entry to unwind before collecting
+native stack roots. The same lifetime assertions remain enabled on both runtimes.
+The root `ui` and `ui-isolated` configs and their exact file targets also use the
+shared Bun UI policy; mixed target selections retain Node. The measured JIT
+thresholds stay enabled: default thresholds retained a closed pane's message in
+the full shared-worker selection.
 The missing-Docker test also runs on Bun, using an empty executable directory
 instead of an empty `PATH`, which Bun resolves through its default search path.
 Other families retain Node until they pass on the pinned fork within their
@@ -158,7 +163,8 @@ the same module identity on both runtimes.
 
 The complete memory plugin config (`memory-lancedb` and `memory-wiki`) also
 supports Bun, with its existing isolated workers and database-worker exclusions.
-A paired Linux Testbox comparison with two workers passed the same 53 files,
+A paired Linux Testbox comparison using the preceding Bun fork `ddfce5d01`
+(WebKit `4429d113`) with two workers passed the same 53 files,
 474 tests, and one platform skip on each runtime. Bun reduced complete test-command
 wall time from 58.72s to 52.79s cold and from 43.51s to 38.68s with warm caches
 and reversed runtime order: 10–11% faster, with warm aggregate RSS near 3.94 GiB
@@ -180,15 +186,11 @@ and legacy compatibility targets retain Node.
 Current-runner targets use three native shards and three workers per row,
 including exact-target Full Release Validation dispatches. Historical
 compatibility targets retain their unsharded package command.
-The UI runtime partition is applied after Vitest selects each native shard, so
-files keep their original shard ownership. Compatible PR selections run Bun
-first and record Vitest's original shard inventory. After successful, joined
-completion, a shard with no Node-only files omits that Node process. Missing or
-invalid inventory evidence retains the Node run. Dual validation runs
-the complete UI selection on Node, then excludes only the usage detail file from Bun;
-Its assertions remain required on Node, with no added skips.
-Partitions without browser files retain browser discovery for native sharding
-but omit Chromium version probing and Playwright's speculative browser startup.
+Each native UI shard runs entirely on Bun for PRs. Dual validation runs the
+complete original shard on Node and then Bun, preserving native shard ownership
+and all assertions without a runtime-specific file partition.
+Selections without browser files omit Chromium version probing and Playwright's
+speculative browser startup.
 
 On both runtimes, non-isolated UI projects without cached test results group
 files by environment and options after native sharding. The sequencer targets
@@ -216,11 +218,14 @@ functions remain valid after the original cache buffer is garbage-collected.
 It also keeps allocator ownership during zero-time event-loop polls, while
 retaining the idle handoff for polls that can block.
 
-The pinned build pairs Bun `ddfce5d01f6a436203a8f41fc8bff074f9b09614` with WebKit
-`4429d11361a5f1680a9e57884ebc1941c2cc7e48`, containing the
+The pinned build pairs Bun `f8ce069047bcf0c6b1876249e55818e6133bab4b` with WebKit
+`34c56b8c6ace3b12b3066349a975cde4482b524c`, containing the
 `caa5d805b646edc59ca0d12b49a7a574f942dedb` FTL backport.
 The backport preserves string bounds checks through FTL dead-code elimination,
 fixing the CSS tokenizer's end-of-input loop.
+The fork also implements inspector collection at an idle JavaScriptCore entry,
+so released UI payloads are not retained by native call stacks. The portable
+Linux build retains ICU 78.3, matching the preceding fork and Node test runtime.
 Its prerelease tag includes both source revisions because `Bun.revision` alone
 does not distinguish builds linked against different WebKit revisions.
 

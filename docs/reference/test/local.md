@@ -101,20 +101,28 @@ for comparable results. This selects the
 actual Vitest process and workers while retaining Node for orchestration and
 compiler preparation. It does not use Bun's native test runner. `bun run` alone
 does not select Bun for tests. Node remains the local default.
+The pinned CI artifact is Linux x64; use that platform for CI-matched comparisons.
 
-For the CI Control UI comparison, run the full Node selection followed by its
-compatible Bun partition:
+For the CI Control UI comparison, run the complete package selection on Node and
+then Bun through the canonical runtime selector:
 
 ```sh
 OPENCLAW_NODE_TEST_CONFIGS_JSON='["ui/vitest.config.ts"]' \
-OPENCLAW_NODE_TEST_VITEST_ARGS_JSON='["--maxWorkers", "3"]' \
+OPENCLAW_NODE_TEST_VITEST_ARGS_JSON='["--maxWorkers=3"]' \
 OPENCLAW_CI_TEST_RUNTIME_POLICY=dual \
 node --import tsx scripts/ci-run-node-test-shard.mts
 ```
 
-The Bun partition deliberately excludes two whole GC-sensitive files, which
-remain covered by Node. Running the complete UI config directly with
-`OPENCLAW_VITEST_RUNTIME=bun` also runs those currently incompatible assertions.
+Both runtimes run every selected UI file, including the GC-sensitive lifetime
+assertions. The selector supplies the shared `BUN_UI_TEST_ENV` tuning only to Bun
+and keeps runtime caches separate. A direct `OPENCLAW_VITEST_RUNTIME=bun` override
+selects the engine without applying that qualification or UI tuning.
+
+For a root UI lane, replace the config path in that command with
+`test/vitest/vitest.ui.config.ts` or `test/vitest/vitest.ui-isolated.config.ts`.
+Keep one config per invocation. Mixed selections and unsupported argument
+combinations retain Node; the separate root browser and timing configs are not
+qualified for Bun. See [CI runtime selection](/ci/pipeline#test-runtime-selection).
 
 Test processes and their CLI fixtures keep Sparkplug baseline compilation enabled
 but run it synchronously. This avoids a Node 24 shutdown deadlock where a

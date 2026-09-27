@@ -483,9 +483,8 @@ export function executeSharedStateCommand(
     case "transcripts.summarySnapshot":
     case "transcripts.utterances":
     case "transcripts.exportDigest":
-    case "transcripts.summary": {
+    case "transcripts.summary":
       return executeTranscriptRead({ database, path: context.databasePath }, command);
-    }
     default:
       break;
   }
