@@ -314,7 +314,7 @@ export function createGatewayInstanceRuntime(
               ...pluginRequest,
               request: projectApprovalRequestForExternal(pluginRequest.request),
             }
-          : (request as GatewayApprovalRequest);
+          : (request as GatewayApprovalRequest); // SAFETY: non-plugin requests retain their Gateway shape.
         return publish(
           kind,
           (subscriber) => {
@@ -329,12 +329,14 @@ export function createGatewayInstanceRuntime(
               (subscriberAccountId === sourceAccountId ||
                 (pluginRequest.request.turnSourceAccountId == null &&
                   subscriberAccountId === DEFAULT_ACCOUNT_ID));
-            // SAFETY: native subscribers normalize the trusted legacy request before use.
             subscriber.onRequested(
+              // SAFETY: the Slack owner receives the original plugin request; others get the projection.
               (ownsSlackSource ? pluginRequest : publicRequest) as GatewayApprovalRequest,
             );
           },
-          (subscriber) => subscriber.shouldHandle(publicRequest as GatewayApprovalRequest),
+          (subscriber) =>
+            // SAFETY: the external projection preserves the approval request identity.
+            subscriber.shouldHandle(publicRequest as GatewayApprovalRequest),
         );
       },
       publishResolved: (kind, resolved) => {
@@ -376,6 +378,7 @@ export function createGatewayInstanceRuntime(
               }
             : resolved;
         publish(kind, (subscriber) =>
+          // SAFETY: the projection keeps the resolved approval's required fields.
           subscriber.onResolved(publicResolved as GatewayApprovalResolved),
         );
       },
