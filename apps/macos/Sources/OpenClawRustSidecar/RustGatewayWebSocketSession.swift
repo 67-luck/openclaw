@@ -28,6 +28,23 @@ GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Se
         return self.connectMetadata(frame)
     }
 
+    static func framePrefix(callerOwnsLifetime: Bool) -> Data {
+        Data("{\"type\":\"frame\",\"callerOwnsLifetime\":\(callerOwnsLifetime),\"frame\":".utf8)
+    }
+
+    static func prepareGatewayFrame(_ data: Data, prefix: Data) throws -> (data: Data, frame: [String: Any]) {
+        // Gateway writers produce UTF-8 JSON objects. Reject alternate encodings and
+        // non-objects before embedding their exact bytes in the authenticated envelope.
+        let start = data.drop(while: { [0x20, 0x09, 0x0A, 0x0D].contains($0) })
+        guard start.first == 0x7B, start.dropFirst().first != 0,
+              let frame = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { throw URLError(.cannotParseResponse) }
+        var payload = prefix
+        payload.append(data)
+        payload.append(0x7D)
+        return (payload, frame)
+    }
+
     fileprivate static func connectMetadata(_ frame: Any) -> (id: String?, commands: Set<String>)? {
         guard let request = frame as? [String: Any], request["method"] as? String == "connect" else {
             return nil
@@ -89,7 +106,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
     // Product IPC requires the native relay; older helpers must fail before opening a Gateway socket.
     private static let nativeTransportFeature = 1
     private let lock = NSLock()
-    private let writer = DispatchQueue(label: "ai.openclaw.sidecar.write")
+    private let writes = SidecarWriteQueue()
     private let reader = DispatchQueue(label: "ai.openclaw.sidecar.read")
     private let executableURL: URL
     private let request: URLRequest
@@ -104,8 +121,6 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
     private var failure: Error?
     private var buffered: [Data] = []
     private var bufferedBytes = 0
-    private var queuedWrites = 0
-    private var queuedWriteBytes = 0
     private var receivers: [CheckedContinuation<URLSessionWebSocketTask.Message, Error>] = []
     private var pings: [String: @Sendable (Error?) -> Void] = [:]
     private var declaredCommands = Set<String>()
@@ -154,31 +169,30 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         case let .string(value): data = Data(value.utf8)
         @unknown default: throw URLError(.unknown)
         }
-        let frame = try JSONSerialization.jsonObject(with: data)
-        if let metadata = RustGatewayWebSocketSession.connectMetadata(frame) {
-            self.lock.withLock {
-                self.declaredCommands = metadata.commands
-                self.connectID = metadata.id
-            }
-        }
-        let payload = try JSONSerialization.data(withJSONObject: [
-            "type": "frame", "frame": frame, "callerOwnsLifetime": lifetime != nil,
-        ])
-        guard let lifetime else {
-            try await self.write(payload)
-            return
-        }
-        guard let request = frame as? [String: Any], let id = request["id"] as? String else {
-            throw URLError(.cannotParseResponse)
-        }
-        let cancellation = try JSONSerialization.data(withJSONObject: ["type": "cancel-request", "id": id])
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let active = lifetime.performIfActive {
-                self.enqueueWrite(payload, continuation: continuation)
-            } onFinish: { [weak self] in
-                self?.enqueueWrite(cancellation)
-            }
-            if !active { continuation.resume(throwing: CancellationError()) }
+        let prefix = RustGatewayWebSocketSession.framePrefix(callerOwnsLifetime: lifetime != nil)
+        try await withCheckedThrowingContinuation { continuation in
+            self.writes.enqueue(
+                data, lane: .application, envelopeBytes: prefix.count + 1,
+                lifetime: lifetime, continuation: continuation,
+                prepare: { [self] data in
+                    let (payload, frame) = try RustGatewayWebSocketSession.prepareGatewayFrame(data, prefix: prefix)
+                    if let metadata = RustGatewayWebSocketSession.connectMetadata(frame) {
+                        self.lock.withLock {
+                            self.declaredCommands = metadata.commands
+                            self.connectID = metadata.id
+                        }
+                    }
+                    var cancellation: Data?
+                    if lifetime != nil {
+                        guard let id = frame["id"] as? String else {
+                            throw URLError(.cannotParseResponse)
+                        }
+                        cancellation = try JSONSerialization.data(withJSONObject: ["type": "cancel-request", "id": id])
+                    }
+                    return (payload, cancellation)
+                },
+                write: { [self] data in try self.writePayload(data) },
+                failed: { [weak self] error in self?.finish(error) })
         }
     }
 
@@ -274,7 +288,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         }
         var bootstrap = key + sessionBytes
         bootstrap.append(contentsOf: [0, 0, 0, 0, 0, 0, 0, 1])
-        try self.writer.sync { try Self.writeExactly(bootstrap, to: stdinPipe.fileHandleForWriting) }
+        try self.writes.queue.sync { try Self.writeExactly(bootstrap, to: stdinPipe.fileHandleForWriting) }
         bootstrap.resetBytes(in: bootstrap.startIndex..<bootstrap.endIndex)
         let limits: [String: Any] = [
             "maxFrameBytes": channel.maxFrameBytes, "maxInFlight": 64, "bootstrapTimeoutMs": 10000,
@@ -320,9 +334,9 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         try self.writeNow(["type": "open", "url": url.absoluteString, "privateCommands": self.privateCommands.sorted()])
         let network = NativeGatewayTransport(
             socket: self.trustOwner.makeWebSocketTask(request: self.request),
-            write: { [weak self] data in
+            write: { [weak self] data, lane in
                 guard let self else { throw URLError(.cancelled) }
-                try await self.write(data)
+                try await self.write(data, lane: lane)
             },
             failed: { [weak self] error in self?.finish(error) })
         let installedNetwork = self.lock.withLock {
@@ -481,50 +495,28 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
     }
 
     private func write(_ value: [String: Any]) async throws {
-        try await self.write(JSONSerialization.data(withJSONObject: value))
+        try await self.write(JSONSerialization.data(withJSONObject: value), lane: .control)
     }
 
-    private func write(_ data: Data) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            self.enqueueWrite(data, continuation: continuation)
+    private func write(_ data: Data, lane: SidecarWriteQueue.Lane) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            self.enqueueWrite(data, lane: lane, continuation: continuation)
         }
     }
 
-    private func enqueueWrite(_ data: Data, continuation: CheckedContinuation<Void, Error>? = nil) {
-        let accepted = self.lock.withLock {
-            guard self.taskState == .running, self.queuedWrites < 64,
-                  self.queuedWriteBytes + data.count <= 64 * 1024 * 1024
-            else { return false }
-            self.queuedWrites += 1
-            self.queuedWriteBytes += data.count
-            return true
-        }
-        guard accepted else {
-            let error: any Error = self.lock.withLock { self.failure ?? URLError(.dataLengthExceedsMaximum) }
-            self.finish(error)
-            continuation?.resume(throwing: error)
-            return
-        }
-        self.writer.async {
-            defer {
-                self.lock.withLock {
-                    self.queuedWrites -= 1
-                    self.queuedWriteBytes -= data.count
-                }
-            }
-            do {
-                try self.writePayload(data)
-                continuation?.resume()
-            } catch {
-                self.finish(error)
-                continuation?.resume(throwing: error)
-            }
-        }
+    private func enqueueWrite(
+        _ data: Data, lane: SidecarWriteQueue.Lane = .control,
+        continuation: CheckedContinuation<Void, Error>? = nil)
+    {
+        self.writes.enqueue(
+            data, lane: lane, continuation: continuation,
+            write: { [self] data in try self.writePayload(data) },
+            failed: { [weak self] error in self?.finish(error) })
     }
 
     private func writeNow(_ value: [String: Any]) throws {
         let data = try JSONSerialization.data(withJSONObject: value)
-        try self.writer.sync { try self.writePayload(data) }
+        try self.writes.queue.sync { try self.writePayload(data) }
     }
 
     private func writePayload(_ data: Data) throws {
@@ -602,10 +594,11 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         self.buffered = retainedBuffered
         self.bufferedBytes = retainedBuffered.reduce(0) { $0 + $1.count }
         self.lock.unlock()
+        self.writes.close(error)
         network?.close()
         // Closing the owned pipe retires the Rust connection before any replacement process starts.
         // Closing on the writer queue prevents a reused descriptor from reaching a late write.
-        self.writer.async { try? input?.close() }
+        self.writes.queue.async { try? input?.close() }
         if let child, child.isRunning {
             child.terminate()
             DispatchQueue.global().asyncAfter(deadline: .now() + 1) {

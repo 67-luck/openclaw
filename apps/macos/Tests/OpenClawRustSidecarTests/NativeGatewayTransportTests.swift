@@ -7,7 +7,7 @@ struct NativeGatewayTransportTests {
     @Test func `incoming backpressure does not block outgoing write receipts`() async throws {
         let socket = RelaySocket()
         let (writes, capture) = AsyncStream<Data>.makeStream()
-        let transport = NativeGatewayTransport(socket: WebSocketTaskBox(task: socket), write: { data in
+        let transport = NativeGatewayTransport(socket: WebSocketTaskBox(task: socket), write: { data, _ in
             capture.yield(data)
         }, failed: { _ in })
         defer { transport.close()
@@ -40,7 +40,7 @@ struct NativeGatewayTransportTests {
     @Test func `full gateway binary payload fits authenticated envelope even with all slashes`() async throws {
         let socket = RelaySocket()
         let (writes, capture) = AsyncStream<Data>.makeStream()
-        let transport = NativeGatewayTransport(socket: WebSocketTaskBox(task: socket), write: { data in
+        let transport = NativeGatewayTransport(socket: WebSocketTaskBox(task: socket), write: { data, _ in
             capture.yield(data)
         }, failed: { _ in })
         defer { transport.close()

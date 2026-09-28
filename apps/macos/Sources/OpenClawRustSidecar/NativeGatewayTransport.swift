@@ -8,7 +8,7 @@ final class NativeGatewayTransport: @unchecked Sendable {
     static let maximumMessageBytes = 25 * 1024 * 1024
     private let lock = NSLock()
     private let socket: WebSocketTaskBox
-    private let write: @Sendable (Data) async throws -> Void
+    private let write: @Sendable (Data, SidecarWriteQueue.Lane) async throws -> Void
     private let failed: @Sendable (any Error) -> Void
     private var stopped = false
     private var sending = false
@@ -17,7 +17,7 @@ final class NativeGatewayTransport: @unchecked Sendable {
 
     init(
         socket: WebSocketTaskBox,
-        write: @escaping @Sendable (Data) async throws -> Void,
+        write: @escaping @Sendable (Data, SidecarWriteQueue.Lane) async throws -> Void,
         failed: @escaping @Sendable (any Error) -> Void)
     {
         self.socket = socket
@@ -64,7 +64,7 @@ final class NativeGatewayTransport: @unchecked Sendable {
                                 return
                             }
                             Task {
-                                do { try await self.write(payload) } catch { self.fail(error) }
+                                do { try await self.write(payload, .transport) } catch { self.fail(error) }
                             }
                         }
                     }
@@ -109,7 +109,7 @@ final class NativeGatewayTransport: @unchecked Sendable {
                 self.lock.withLock { self.sending = false }
                 try await self.write(JSONSerialization.data(withJSONObject: [
                     "type": "transport-sent", "id": id, "ok": true,
-                ]))
+                ]), .control)
             } catch { self.fail(error) }
         }
     }

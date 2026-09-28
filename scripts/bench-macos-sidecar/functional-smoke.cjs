@@ -60,6 +60,8 @@ function deadline(p, deadlineLabel) {
   let nativeRouteRetired = false;
   const observed = new Set();
   let finished = false;
+  const mediaResultsReceived = new Set();
+  const mediaResultsValidated = new Set();
   const record = { mode, checks: [] };
   server.on("connection", (socket) => {
     ws = socket;
@@ -106,6 +108,7 @@ function deadline(p, deadlineLabel) {
         socket.send(JSON.stringify({ type: "res", id: f.id, ok: true, payload: {} }));
         if (f.method === "node.invoke.result") {
           results.set(f.params.id, f.params);
+          if (f.params.id.startsWith("parallel-media-")) mediaResultsReceived.add(f.params.id);
         }
         if (f.method === "node.invoke.progress") {
           progress.set(f.params.invokeId, f.params);
@@ -273,6 +276,41 @@ function deadline(p, deadlineLabel) {
         bytes,
         passed: true,
       });
+    }
+    // Concurrent native completions must wait for the bounded IPC writer without
+    // replacing a healthy connection. Pause reads to make byte pressure reproducible.
+    const mediaSocket = ws;
+    const bytes = gatewayPayloadLimit - 4096;
+    mediaSocket.pause();
+    const resumeMedia = setTimeout(() => mediaSocket.resume(), 1500);
+    try {
+      for (let i = 0; i < 4; i++) invoke(`parallel-media-${i}`, "benchmark.large", { bytes });
+      await until(() => mediaResultsReceived.size === 4, "concurrent native media");
+      for (let i = 0; i < 4; i++) {
+        const id = `parallel-media-${i}`;
+        const result = results.get(id);
+        const body = payload(result);
+        if (
+          !result.ok ||
+          typeof body !== "string" ||
+          body.length !== bytes ||
+          !/^x+$/u.test(body)
+        ) {
+          throw new Error("concurrent native media failed integrity: " + id);
+        }
+        mediaResultsValidated.add(id);
+        results.delete(id);
+      }
+      if (ws !== mediaSocket || nativeRouteRetired)
+        throw new Error("concurrent media replaced the native route");
+      record.checks.push({
+        scenario: "four concurrent near-limit native results survive paused Gateway reads",
+        bytes,
+        passed: true,
+      });
+    } finally {
+      clearTimeout(resumeMedia);
+      mediaSocket.resume();
     }
     if (mode !== "baseline") {
       invoke("large-rejected", "benchmark.large", { bytes: gatewayPayloadLimit + 1 });
@@ -466,6 +504,8 @@ function deadline(p, deadlineLabel) {
       await delay(20);
       remaining = remaining.filter(live);
     }
+    record.mediaResultsReceived = [...mediaResultsReceived];
+    record.mediaResultsValidated = [...mediaResultsValidated];
     record.nativeCancelEvents = Object.fromEntries(cancelEvents);
     record.cleanup = { observedPIDs: [...observed], forcedPIDs: forced, remainingPIDs: remaining };
     record.stderr = stderr;
