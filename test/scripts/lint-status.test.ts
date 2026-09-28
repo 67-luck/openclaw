@@ -19,7 +19,12 @@ type Mode = "success" | "nonzero" | "signal" | "wait" | "resist" | "throw" | "un
 
 let preparedScripts: Promise<Map<string, string | Uint8Array>> | undefined;
 
-async function createLintFixture(mode: Mode, phase: string, timeout: boolean) {
+async function createLintFixture(
+  mode: Mode,
+  phase: string,
+  timeout: boolean,
+  parentAfterDeadline = false,
+) {
   const root = fs.realpathSync(fixture.createTempDir("openclaw-lint-status-"));
   const write = (relative: string, content: string) => {
     const target = path.join(root, relative);
@@ -76,10 +81,15 @@ export function waitForFile(file) {
       );
       source += `
 export async function runManagedCommand(options: RunManagedCommandOptions): Promise<number> {
-  const status = await runFixtureManagedCommand(options);
-  if (options.env?.OPENCLAW_TEST_UNJOINED_OXLINT === "1" && options.bin.endsWith("/oxlint")) {
+  const uncertain = options.env?.OPENCLAW_TEST_UNJOINED_OXLINT === "1" && options.bin.endsWith("/oxlint");
+  const fail = () => {
     throw Object.assign(new Error("fixture cleanup unverified"), { processTreeState: "indeterminate" });
-  }
+  };
+  const status = await runFixtureManagedCommand(options).catch(error => {
+    if (uncertain) return fail();
+    throw error;
+  });
+  if (uncertain) return fail();
   return status;
 }
 `;
@@ -187,7 +197,9 @@ else if (mode === "wait" || mode === "resist") {
   }
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => {
     process.stderr.write("drained:" + name + ":" + signal + "\\n");
-    clearInterval(timer);
+    fs.writeFileSync(name + ".drained", signal);
+    if (${parentAfterDeadline}) void waitForFile("parent-forwarded").then(() => clearInterval(timer));
+    else clearInterval(timer);
   });
   fs.writeFileSync(name + ".pid.tmp", String(process.pid));
   fs.renameSync(name + ".pid.tmp", name + ".pid");
@@ -295,14 +307,22 @@ async function runLintFixture(
     multipleShards = false,
     timeout = false,
     forwarded,
+    uncertain = false,
   }: {
     phase?: string;
     multipleShards?: boolean;
     timeout?: boolean;
     forwarded?: "SIGINT" | "SIGTERM";
+    uncertain?: boolean;
   } = {},
 ) {
-  const { root, probe, env } = await createLintFixture(mode, phase, timeout);
+  const { root, probe, env } = await createLintFixture(
+    mode,
+    phase,
+    timeout,
+    timeout && !!forwarded,
+  );
+  if (uncertain) env.OPENCLAW_TEST_UNJOINED_OXLINT = "1";
   const args =
     entry === "run-oxlint.mjs"
       ? ["--tsconfig", "extensions/tsconfig.json", "extensions"]
@@ -336,7 +356,10 @@ async function runLintFixture(
           if (forwarded) {
             // The lifetime schedules this after command is initialized and joins it during cleanup.
             readiness = fixture.run(async () => {
-              const ready = path.join(root, phase === "oxlint" ? "extensions.pid" : `${phase}.pid`);
+              const ready = path.join(
+                root,
+                `${phase === "oxlint" ? "extensions" : phase}.${timeout ? "drained" : "pid"}`,
+              );
               await waitForFixtureFile(
                 ready,
                 command.then((result) => {
@@ -349,6 +372,7 @@ async function runLintFixture(
                 }),
               );
               child.kill(forwarded);
+              if (timeout) fs.writeFileSync(path.join(root, "parent-forwarded"), "1");
             });
           }
         },
@@ -368,7 +392,7 @@ async function runLintFixture(
     expect(isProcessAlive(step.pid), details).toBe(false);
   }
   expect(fs.existsSync(path.join(root, ".artifacts/dist-artifacts.lock/owner.json")), details).toBe(
-    mode === "unjoined",
+    mode === "unjoined" || uncertain,
   );
   // Every stdout line remains machine-readable, including sequential shard output.
   expect(
@@ -535,6 +559,32 @@ describe.skipIf(process.platform === "win32")("lint failure reporting boundary",
         },
       ]);
     }),
+  );
+
+  it.for(["uncertain", "parent"] as const)(
+    "preserves $0 failure precedence after a shard deadline",
+    (outcome, { signal }) =>
+      fixture.run(async () => {
+        const uncertain = outcome === "uncertain";
+        const { result, details, trailers } = await runLintFixture(
+          "run-oxlint-shards.mts",
+          "wait",
+          signal,
+          {
+            timeout: true,
+            uncertain,
+            ...(uncertain ? {} : { forwarded: "SIGTERM" }),
+          },
+        );
+        const status = uncertain ? 1 : 143;
+        expect(result.status, details).toBe(status);
+        expect(result.stderr).toContain("timed out");
+        expect(result.stdout).not.toContain("[ci-static:");
+        if (uncertain) expect(result.stderr).toContain("fixture cleanup unverified");
+        expect(trailers, details).toEqual([
+          { text: `[oxlint] FAILED (exit ${status})`, owned: uncertain, claims: [], live: [] },
+        ]);
+      }),
   );
 
   it.for(entries)(
