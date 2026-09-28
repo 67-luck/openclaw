@@ -180,6 +180,65 @@ describe("plugin approval requester notices without a local reviewer route", () 
     coordinator.close();
   });
 
+  it("uses the captured source Gateway when another channel handles the review", async () => {
+    const coordinator = createApprovalNativeRouteCoordinator();
+    const request = createPluginRequest("plugin:cross-channel-reviewer");
+    const sourceGateway = createGatewayRequestMock();
+    const reviewerGateway = createGatewayRequestMock();
+    let sourceCurrent = true;
+    coordinator.capturePluginOrigin(request, undefined, {
+      requestGateway: sourceGateway,
+      isOriginCurrent: () => sourceCurrent,
+    });
+    const reviewer = coordinator.createReporter({
+      handledKinds: new Set(["plugin"]),
+      channel: "discord",
+      channelLabel: "Discord",
+      accountId: "default",
+      requestGateway: reviewerGateway,
+      shouldHandle: () => true,
+      classifyRoute: () => "unbound",
+    });
+    reviewer.start();
+    reviewer.selectRequest({ approvalKind: "plugin", request });
+    const reviewerTarget = {
+      surface: "approver-dm" as const,
+      target: { to: "user:reviewer" },
+      reason: "preferred" as const,
+    };
+    await reviewer.reportDelivery({
+      approvalKind: "plugin",
+      request,
+      deliveryPlan: {
+        targets: [reviewerTarget],
+        originTarget: null,
+        notifyOriginWhenDmOnly: false,
+      },
+      deliveredTargets: [reviewerTarget],
+    });
+    await coordinator.finishPluginOriginRouting(request.id, true);
+    expect(sourceGateway).toHaveBeenCalledTimes(1);
+    expect(sourceGateway.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        channel: "slack",
+        accountId: "work",
+        to: "channel:C123",
+        message: `Approval ${request.id} required. I sent the approval request to Discord DMs, not this chat.`,
+      }),
+    );
+    expect(reviewerGateway).not.toHaveBeenCalled();
+
+    await coordinator.publishPluginTerminal({ approvalId: request.id, status: "denied" });
+    expect(sourceGateway).toHaveBeenCalledTimes(2);
+    expect(sourceGateway.mock.calls[1]?.[1].message).toBe(
+      `Approval ${request.id} was denied. The requested action did not run.`,
+    );
+    sourceCurrent = false;
+    expect(sourceGateway.mock.calls[1]?.[2]?.liveOnlyWhenCurrent()).toBe(false);
+    await reviewer.stop();
+    coordinator.close();
+  });
+
   it("sends expiry without a remote client report and suppresses a prior allow", async () => {
     const coordinator = createApprovalNativeRouteCoordinator();
     const { requestGateway } = createOrigin(coordinator);
@@ -226,6 +285,45 @@ describe("plugin approval requester notices without a local reviewer route", () 
     });
     await coordinator.publishPluginTerminal({ approvalId: request.id, status: "denied" });
     expect(requestGateway).not.toHaveBeenCalled();
+    coordinator.close();
+  });
+
+  it("stops requester notices when a late origin reporter replays the pending approval", async () => {
+    const coordinator = createApprovalNativeRouteCoordinator();
+    const request = createPluginRequest("plugin:late-origin-card");
+    const sourceGateway = createGatewayRequestMock();
+    coordinator.capturePluginOrigin(request, undefined, {
+      requestGateway: sourceGateway,
+      isOriginCurrent: () => true,
+    });
+    await coordinator.finishPluginOriginRouting(request.id, false);
+
+    const { reporter, requestGateway } = createOrigin(coordinator, {
+      shouldHandle: () => true,
+    });
+    expect(reporter.selectRequest({ approvalKind: "plugin", request })).toEqual({
+      kind: "selected",
+    });
+    const originTarget = {
+      surface: "origin" as const,
+      target: { to: "channel:C123", threadId: "1712345678.123456" },
+      reason: "preferred" as const,
+    };
+    await reporter.reportDelivery({
+      approvalKind: "plugin",
+      request,
+      deliveryPlan: {
+        targets: [originTarget],
+        originTarget: originTarget.target,
+        notifyOriginWhenDmOnly: false,
+      },
+      deliveredTargets: [originTarget],
+    });
+    await coordinator.publishPluginTerminal({ approvalId: request.id, status: "denied" });
+
+    expect(sourceGateway).toHaveBeenCalledTimes(1);
+    expect(requestGateway).not.toHaveBeenCalled();
+    await reporter.stop();
     coordinator.close();
   });
 

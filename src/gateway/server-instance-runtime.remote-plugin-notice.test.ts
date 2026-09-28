@@ -20,12 +20,15 @@ import { SharedGatewaySessionGenerationState } from "./server-shared-auth-genera
 import { createTestRuntimeSecretsActivator } from "./server-startup-config.test-support.js";
 
 describe("Gateway-owned remote plugin approval requester notice", () => {
-  it("reports pending and denial through the source account without trusting a remote client", async () => {
+  it("reports pending and denial through the source account with or without a local reporter", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "remote-plugin-approval-notice-" },
       async () => {
         const configForToken = (botToken: string): OpenClawConfig => ({
-          channels: { slack: { accounts: { work: { botToken } } } },
+          channels: {
+            slack: { accounts: { work: { botToken } } },
+            telegram: { accounts: { work: { botToken: "telegram-test-token" } } },
+          },
         });
         const sourceConfig = configForToken("xoxb-original");
         let currentConfig = sourceConfig;
@@ -34,6 +37,9 @@ describe("Gateway-owned remote plugin approval requester notice", () => {
         const deniedPosted = createDeferred();
         const staleHandoff = createDeferred();
         const noticeFailed = createDeferred();
+        const telegramPendingPosted = createDeferred();
+        const telegramDeniedPosted = createDeferred();
+        const telegramNoticeFailed = createDeferred();
         const sendText = vi.fn(
           async (options: {
             text: string;
@@ -59,6 +65,29 @@ describe("Gateway-owned remote plugin approval requester notice", () => {
             return { channel: "slack", messageId: `1712345678.${posts.length}` };
           },
         );
+        const telegramPosts: string[] = [];
+        const staleTelegramHandoff = createDeferred();
+        const telegramSendText = vi.fn(
+          async (options: {
+            text: string;
+            onPlatformSendDispatch?: () => Promise<void>;
+            assertDirectAdapterHandoff?: () => void;
+          }) => {
+            if (options.text.includes("plugin:stale-remote-telegram")) {
+              currentConfig = configForToken("xoxb-replacement");
+              staleTelegramHandoff.resolve();
+            }
+            await options.onPlatformSendDispatch?.();
+            options.assertDirectAdapterHandoff?.();
+            telegramPosts.push(options.text);
+            if (options.text.includes("was denied")) {
+              telegramDeniedPosted.resolve();
+            } else {
+              telegramPendingPosted.resolve();
+            }
+            return { channel: "telegram", messageId: String(telegramPosts.length) };
+          },
+        );
         const plugin: ChannelPlugin = {
           id: "slack",
           meta: {
@@ -80,9 +109,24 @@ describe("Gateway-owned remote plugin approval requester notice", () => {
             sendText,
           },
         };
+        const telegramPlugin: ChannelPlugin = {
+          ...plugin,
+          id: "telegram",
+          meta: {
+            ...plugin.meta,
+            id: "telegram",
+            label: "Telegram",
+            selectionLabel: "Telegram",
+            docsPath: "/channels/telegram",
+          },
+          outbound: { ...plugin.outbound, sendText: telegramSendText },
+        };
         const registrySnapshot = captureActivePluginRegistrySnapshot();
         stageActivePluginRegistry(
-          createTestRegistry([{ pluginId: "slack", source: "test", plugin }]),
+          createTestRegistry([
+            { pluginId: "slack", source: "test", plugin },
+            { pluginId: "telegram", source: "test", plugin: telegramPlugin },
+          ]),
           null,
           "default",
         );
@@ -106,6 +150,9 @@ describe("Gateway-owned remote plugin approval requester notice", () => {
             errors.push(message);
             if (message.includes("plugin approval origin notice failed")) {
               noticeFailed.resolve();
+              if (errors.length === 2) {
+                telegramNoticeFailed.resolve();
+              }
             }
           },
         });
@@ -141,16 +188,22 @@ describe("Gateway-owned remote plugin approval requester notice", () => {
           shouldHandle: () => false,
           classifyRoute: () => "unbound",
         });
-        const publish = async (id: string): Promise<PluginApprovalRequest> => {
+        const publish = async (
+          id: string,
+          sourceChannel: "slack" | "telegram" = "slack",
+        ): Promise<PluginApprovalRequest> => {
           const record = aux.pluginApprovalManager.create(
             {
               title: "Review action",
               description: "Approve an operation",
-              approvalSource: { channel: "slack", senderId: "U123" },
-              turnSourceChannel: "slack",
-              turnSourceTo: "channel:C123",
+              approvalSource: {
+                channel: sourceChannel,
+                senderId: sourceChannel === "telegram" ? "123" : "U123",
+              },
+              turnSourceChannel: sourceChannel,
+              turnSourceTo: sourceChannel === "telegram" ? "123" : "channel:C123",
               turnSourceAccountId: "work",
-              turnSourceThreadId: "1712345678.123456",
+              ...(sourceChannel === "slack" ? { turnSourceThreadId: "1712345678.123456" } : {}),
             },
             60_000,
             id,
@@ -204,6 +257,40 @@ describe("Gateway-owned remote plugin approval requester notice", () => {
             .publishPluginTerminal({ approvalId: stale.id, status: "denied" })
             .catch(() => undefined);
           expect(posts).toHaveLength(2);
+
+          // Telegram has no isOriginCurrent hook. A remote reviewer can still
+          // receive its card while the source Gateway has no native reporter.
+          currentConfig = sourceConfig;
+          await reporter.stop();
+          const telegramRequest = await publish("plugin:remote-telegram", "telegram");
+          await telegramPendingPosted.promise;
+          expect(telegramPosts).toEqual([
+            `Approval ${telegramRequest.id} required. An approver can review it in the Control UI or terminal UI.`,
+          ]);
+          expect(telegramSendText).toHaveBeenCalledWith(
+            expect.objectContaining({ cfg: sourceConfig, accountId: "work", to: "123" }),
+          );
+          await aux.pluginApprovalManager.resolve(telegramRequest.id, "deny");
+          runtime.approvalEvents.publishResolved("plugin", {
+            id: telegramRequest.id,
+            decision: "deny",
+            ts: Date.now(),
+            request: telegramRequest.request,
+          });
+          await telegramDeniedPosted.promise;
+          expect(telegramPosts).toEqual([
+            `Approval ${telegramRequest.id} required. An approver can review it in the Control UI or terminal UI.`,
+            `Approval ${telegramRequest.id} was denied. The requested action did not run.`,
+          ]);
+
+          const staleTelegram = await publish("plugin:stale-remote-telegram", "telegram");
+          await staleTelegramHandoff.promise;
+          await telegramNoticeFailed.promise;
+          expect(errors).toHaveLength(2);
+          expect(telegramPosts).toHaveLength(2);
+          expect(
+            await findDeliveryIntentOwner(`approval-route-notice:${staleTelegram.id}`),
+          ).toBeNull();
         } finally {
           await reporter.stop();
           await aux.stopOperatorInteractions();

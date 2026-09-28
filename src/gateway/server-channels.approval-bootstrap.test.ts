@@ -4,8 +4,10 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { ChannelId, ChannelPlugin } from "../channels/plugins/types.public.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getGatewayNativeApprovalRuntime } from "../infra/approval-gateway-runtime-context.js";
 import type { GatewayNativeApprovalRuntime } from "../infra/approval-gateway-runtime.types.js";
+import type { GatewayRequestFn } from "../infra/approval-native-route-notice.js";
 import type { PluginApprovalRequest } from "../infra/plugin-approvals.js";
 import {
   createSubsystemLogger,
@@ -101,6 +103,7 @@ function createManager(
   options?: {
     channelRuntime?: PluginRuntime["channel"];
     nativeApprovalRuntime?: GatewayNativeApprovalRuntime;
+    getRuntimeConfig?: () => OpenClawConfig;
   },
 ) {
   const log = createSubsystemLogger("gateway/server-channels-approval-bootstrap-test");
@@ -111,7 +114,7 @@ function createManager(
     RuntimeEnv
   >;
   return createChannelManager({
-    getRuntimeConfig: () => ({}),
+    getRuntimeConfig: options?.getRuntimeConfig ?? (() => ({})),
     getPluginRegistry: requireActivePluginChannelRegistry,
     channelLogs,
     channelRuntimeEnvs,
@@ -231,6 +234,7 @@ describe("server-channels approval bootstrap", () => {
   });
 
   it("keeps requester excerpts within the host-owned Slack account", async () => {
+    const cfg: OpenClawConfig = {};
     const request: PluginApprovalRequest = {
       approvalKind: "plugin",
       id: "plugin:replay-private",
@@ -250,8 +254,12 @@ describe("server-channels approval bootstrap", () => {
       expiresAtMs: Date.now() + 60_000,
     };
     const context = {
-      getRuntimeConfig: () => ({}),
-      pluginApprovalManager: { listLocalPendingRecords: () => [request] },
+      getRuntimeConfig: () => cfg,
+      pluginApprovalManager: {
+        listLocalPendingRecords: () => [request],
+        getLiveSnapshot: () => null,
+        retainForHandoff: () => () => {},
+      },
     } as unknown as GatewayRequestContext;
     const gateway = createGatewayInstanceRuntime({
       getContext: () => context,
@@ -275,6 +283,10 @@ describe("server-channels approval bootstrap", () => {
     const slackAborted = createDeferred();
     const releaseSlack = createDeferred();
     let discordRuntime: GatewayNativeApprovalRuntime | undefined;
+    let slackRuntime: GatewayNativeApprovalRuntime | undefined;
+    let sourceReporter:
+      | ReturnType<GatewayNativeApprovalRuntime["routeCoordinator"]["createReporter"]>
+      | undefined;
     const startSubscriber =
       (
         subscriber: typeof discordSubscriber,
@@ -329,6 +341,9 @@ describe("server-channels approval bootstrap", () => {
         channelId: "slack",
         accountId: "work",
         startAccount: startSubscriber(slackSubscriber, () => slackStarted.resolve(), {
+          onRuntime: (runtime) => {
+            slackRuntime = runtime;
+          },
           onAbort: () => slackAborted.resolve(),
           holdAfterAbort: releaseSlack.promise,
         }),
@@ -337,6 +352,7 @@ describe("server-channels approval bootstrap", () => {
     const manager = createManager(createChannelManager, {
       channelRuntime: createRuntimeChannel(),
       nativeApprovalRuntime: gateway.nativeApprovals,
+      getRuntimeConfig: () => cfg,
     });
     const publicRequest = {
       ...request,
@@ -361,6 +377,26 @@ describe("server-channels approval bootstrap", () => {
       expect(slackOnRequested).toHaveBeenNthCalledWith(2, liveRequest);
       expect(discordOriginCurrent).not.toHaveBeenCalled();
 
+      if (!slackRuntime) {
+        throw new Error("Slack account did not receive its Gateway approval runtime");
+      }
+      const sourceSend = vi.fn<GatewayRequestFn>(async () => {});
+      sourceReporter = slackRuntime.routeCoordinator.createReporter({
+        handledKinds: new Set(["plugin"]),
+        channel: "discord",
+        accountId: DEFAULT_ACCOUNT_ID,
+        requestGateway: sourceSend,
+        shouldHandle: () => false,
+        classifyRoute: () => "unbound",
+      });
+      sourceReporter.start();
+      const hostOwned = { ...request, id: "plugin:host-owned-origin" };
+      gateway.nativeApprovals.routeCoordinator.capturePluginOrigin(hostOwned);
+      await gateway.nativeApprovals.routeCoordinator.finishPluginOriginRouting(hostOwned.id, false);
+      expect(sourceSend).toHaveBeenCalledTimes(1);
+      const hostGuard = sourceSend.mock.calls[0]?.[2]?.liveOnlyWhenCurrent;
+      expect(hostGuard?.(cfg)).toBe(true);
+
       await manager.stopChannel("discord", DEFAULT_ACCOUNT_ID);
       if (!discordRuntime) {
         throw new Error("discord account did not receive its Gateway approval runtime");
@@ -377,6 +413,7 @@ describe("server-channels approval bootstrap", () => {
 
       const stopSlack = manager.stopChannel("slack", "work");
       await slackAborted.promise;
+      expect(hostGuard?.(cfg)).toBe(false);
       gateway.approvalEvents.publishRequested("plugin", {
         ...request,
         id: "plugin:after-slack-abort",
@@ -386,6 +423,7 @@ describe("server-channels approval bootstrap", () => {
       await stopSlack;
     } finally {
       releaseSlack.resolve();
+      await sourceReporter?.stop();
       await manager.stopChannel("discord", DEFAULT_ACCOUNT_ID);
       await manager.stopChannel("slack", "work");
       gateway.close();

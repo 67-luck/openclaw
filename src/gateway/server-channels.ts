@@ -877,20 +877,20 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
                     ...params,
                     channel: channelId,
                     accountId: id,
-                    ...(params.isOriginCurrent
-                      ? {
-                          isOriginCurrent: (request, handoffConfig) => {
-                            if (!isApprovalCurrent()) {
-                              return false;
-                            }
-                            try {
-                              return params.isOriginCurrent?.(request, handoffConfig) === true;
-                            } catch {
-                              return false;
-                            }
-                          },
-                        }
-                      : {}),
+                    isOriginCurrent: (request, handoffConfig) => {
+                      if (!isApprovalCurrent()) {
+                        return false;
+                      }
+                      try {
+                        // The host supplies account liveness when a plugin has no finer guard.
+                        return params.isOriginCurrent
+                          ? params.isOriginCurrent(request, handoffConfig) === true
+                          : getRuntimeConfig() === cfg &&
+                              (handoffConfig === undefined || handoffConfig === cfg);
+                      } catch {
+                        return false;
+                      }
+                    },
                   });
                   return {
                     ...reporter,

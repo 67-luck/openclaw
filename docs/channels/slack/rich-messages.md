@@ -170,6 +170,10 @@ Slack can act as a native approval client with interactive buttons and interacti
 A plugin approval card sent to an authorized reviewer in a separate DM by the
 Gateway-hosted Slack runtime shows the requester, the Slack source, and a bounded
 excerpt of the original user message with known secret patterns redacted.
+Configured reviewers can receive this excerpt even when they are not members
+of the originating private channel or DM. Choose reviewers who may see this
+limited source context.
+
 External approval clients that connect over the Gateway WebSocket receive the
 requester and source without the excerpt. For DM-only approval delivery, the
 requester receives a notice that review is pending and another notice if the

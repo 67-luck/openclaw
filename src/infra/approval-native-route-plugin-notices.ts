@@ -2,7 +2,10 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ChannelApprovalNativePlannedTarget } from "./approval-native-delivery.js";
-import { normalizeApprovalRouteChannel } from "./approval-native-route-notice.js";
+import {
+  normalizeApprovalRouteChannel,
+  type GatewayRequestFn,
+} from "./approval-native-route-notice.js";
 import type {
   ApprovalNativeRouteCoordinatorState,
   ApprovalRouteRuntimeRecord,
@@ -34,6 +37,10 @@ export function capturePluginOrigin(
   state: ApprovalNativeRouteCoordinatorState,
   request: PluginApprovalRequest,
   retainApprovalBinding?: () => (() => void) | null,
+  sourceGateway?: {
+    requestGateway: GatewayRequestFn;
+    isOriginCurrent: (request: PluginApprovalRequest, cfg?: OpenClawConfig) => boolean;
+  },
 ): void {
   const publicRequest = projectApprovalRouteRequest(request);
   const source = publicRequest.request;
@@ -56,18 +63,25 @@ export function capturePluginOrigin(
     (runtime) =>
       runtime.handledKinds.has("plugin") &&
       normalizeApprovalRouteChannel(runtime.channel) === channel &&
-      normalizeOptionalString(runtime.accountId) === accountId &&
-      runtime.isOriginCurrent,
+      normalizeOptionalString(runtime.accountId) === accountId,
   );
-  if (matches.length !== 1) {
+  if (matches.length > 1) {
     return;
   }
   const runtime = matches[0];
   try {
-    if (!runtime?.isOriginCurrent?.(publicRequest)) {
+    if (
+      !(runtime
+        ? runtime.isOriginCurrent?.(publicRequest)
+        : sourceGateway?.isOriginCurrent(publicRequest))
+    ) {
       return;
     }
   } catch {
+    return;
+  }
+  const requestGateway = runtime?.requestGateway ?? sourceGateway?.requestGateway;
+  if (!requestGateway) {
     return;
   }
   // The manager's resolved grace is shorter than a remote card handoff. Keep
@@ -89,6 +103,11 @@ export function capturePluginOrigin(
     state.pluginOrigins.set(publicRequest.id, {
       request: publicRequest,
       runtime,
+      requestGateway,
+      isOriginCurrent: (cfg) =>
+        runtime
+          ? runtime.isOriginCurrent?.(publicRequest, cfg) === true
+          : sourceGateway?.isOriginCurrent(publicRequest, cfg) === true,
       target: {
         channel,
         to,
@@ -108,7 +127,7 @@ export function capturePluginOrigin(
   }
 }
 
-function isPluginOriginCurrent(
+export function isPluginOriginCurrent(
   state: ApprovalNativeRouteCoordinatorState,
   binding: PluginOriginBinding,
   cfg?: OpenClawConfig,
@@ -117,12 +136,12 @@ function isPluginOriginCurrent(
   if (
     state.closed ||
     state.pluginOrigins.get(binding.request.id) !== binding ||
-    state.activeRuntimes.get(runtime.runtimeId) !== runtime
+    (runtime && state.activeRuntimes.get(runtime.runtimeId) !== runtime)
   ) {
     return false;
   }
   try {
-    return runtime.isOriginCurrent?.(binding.request, cfg) === true;
+    return binding.isOriginCurrent(cfg);
   } catch {
     return false;
   }
@@ -233,20 +252,19 @@ export async function finishPluginOriginRouting(
   if (localRouteSelected || binding.originDelivered) {
     return;
   }
-  const runtime = binding.runtime;
   const current = (cfg?: OpenClawConfig) => isPluginOriginCurrent(state, binding, cfg);
   if (binding.terminalStatus === "allowed" || binding.terminalStatus === "cancelled") {
     return;
   }
   const terminalNotice = getPluginTerminalNotice(state, binding.request);
-  terminalNotice.requestGateway = runtime.requestGateway;
+  terminalNotice.requestGateway = binding.requestGateway;
   terminalNotice.target = binding.target;
   terminalNotice.isOriginCurrent = current;
   if (binding.terminalStatus === "denied" || binding.terminalStatus === "expired") {
     terminalNotice.status = binding.terminalStatus;
   }
   if (!binding.terminalStatus && binding.request.expiresAtMs > Date.now()) {
-    terminalNotice.initialNotice = runtime.requestGateway(
+    terminalNotice.initialNotice = binding.requestGateway(
       "send",
       {
         channel: binding.target.channel,
@@ -282,18 +300,39 @@ export function markPluginOriginDelivered(
 ): void {
   const origin = state.pluginOrigins.get(approvalId);
   if (
-    origin &&
-    origin.runtime === runtime &&
-    deliveredTargets.some(
+    !origin ||
+    !runtime ||
+    !deliveredTargets.some(
       (target) =>
         target.surface === "origin" &&
         buildChannelApprovalNativeTargetKey(target.target) ===
           buildChannelApprovalNativeTargetKey(origin.target),
     )
   ) {
-    origin.originDelivered = true;
-    clearPluginTerminalNotice(state, approvalId);
+    return;
   }
+  if (origin.runtime && origin.runtime !== runtime) {
+    return;
+  }
+  if (!origin.runtime) {
+    // A channel reporter can start after the Gateway captured a remote-only
+    // route. Its actual origin card supersedes the Gateway's fallback notice.
+    if (
+      normalizeApprovalRouteChannel(runtime.channel) !== origin.target.channel ||
+      normalizeOptionalString(runtime.accountId) !== origin.target.accountId
+    ) {
+      return;
+    }
+    try {
+      if (runtime.isOriginCurrent?.(origin.request) !== true) {
+        return;
+      }
+    } catch {
+      return;
+    }
+  }
+  origin.originDelivered = true;
+  clearPluginTerminalNotice(state, approvalId);
 }
 
 export async function publishPluginTerminalForState(

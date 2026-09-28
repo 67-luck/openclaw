@@ -20,6 +20,7 @@ import {
   clearPluginTerminalNotice,
   finishPluginOriginRouting,
   getPluginTerminalNotice,
+  isPluginOriginCurrent,
   markPluginOriginDelivered,
   maybeSendPluginTerminalNotice,
   publishPluginTerminalForState,
@@ -293,6 +294,8 @@ async function maybeFinalizeApprovalRouteNotice(
   }
 
   const reports = Array.from(entry.reports.values());
+  const pluginOrigin =
+    entry.approvalKind === "plugin" ? state.pluginOrigins.get(approvalId) : undefined;
   const notice = resolveApprovalRouteNotice({
     activeRuntimes: state.activeRuntimes,
     approvalKind: entry.approvalKind,
@@ -323,11 +326,14 @@ async function maybeFinalizeApprovalRouteNotice(
         report.sourceEnvGeneration === getPublishedConfigRuntimeEnvState().generation &&
         (!cfg || (report.sourceConfig !== undefined && cfg === report.sourceConfig)),
     );
-  const terminalNotice = originReport ? getPluginTerminalNotice(state, entry.request) : undefined;
-  if (terminalNotice && notice && originReport) {
-    terminalNotice.requestGateway = originReport.requestGateway;
-    terminalNotice.target = notice.target;
-    terminalNotice.isOriginCurrent = originReport.isOriginCurrent;
+  const terminalNotice =
+    pluginOrigin || originReport ? getPluginTerminalNotice(state, entry.request) : undefined;
+  if (terminalNotice && notice) {
+    terminalNotice.requestGateway = pluginOrigin?.requestGateway ?? originReport?.requestGateway;
+    terminalNotice.target = pluginOrigin?.target ?? notice.target;
+    terminalNotice.isOriginCurrent = pluginOrigin
+      ? (cfg) => isPluginOriginCurrent(state, pluginOrigin, cfg)
+      : originReport?.isOriginCurrent;
   }
   clearPendingApprovalRouteNotice(state, approvalId);
   if (!notice) {
@@ -346,22 +352,24 @@ async function maybeFinalizeApprovalRouteNotice(
           entry.request.expiresAtMs <= Date.now()
         ) &&
         (entry.approvalKind !== "plugin" ||
-          (pendingOriginReport
-            ? pendingOriginReport.isOriginCurrent(cfg)
-            : fallbackOriginCurrent(cfg)));
+          (pluginOrigin
+            ? isPluginOriginCurrent(state, pluginOrigin, cfg)
+            : pendingOriginReport
+              ? pendingOriginReport.isOriginCurrent(cfg)
+              : fallbackOriginCurrent(cfg)));
       if (!isCurrent()) {
         return;
       }
       const payload = {
-        channel: notice.target.channel,
-        to: notice.target.to,
-        accountId: notice.target.accountId ?? undefined,
-        threadId: notice.target.threadId ?? undefined,
+        channel: pluginOrigin?.target.channel ?? notice.target.channel,
+        to: pluginOrigin?.target.to ?? notice.target.to,
+        accountId: pluginOrigin?.target.accountId ?? notice.target.accountId ?? undefined,
+        threadId: pluginOrigin?.target.threadId ?? notice.target.threadId ?? undefined,
         message: notice.text,
         idempotencyKey: `approval-route-notice:${approvalId}`,
       };
       if (entry.approvalKind === "plugin") {
-        await notice.requestGateway("send", payload, {
+        await (pluginOrigin?.requestGateway ?? notice.requestGateway)("send", payload, {
           liveOnlyWhenCurrent: isCurrent,
           approvalRequest: entry.request,
         });
@@ -589,6 +597,10 @@ export type ApprovalNativeRouteCoordinator = {
   capturePluginOrigin: (
     request: PluginApprovalRequest,
     retainApprovalBinding?: () => (() => void) | null,
+    sourceGateway?: {
+      requestGateway: ApprovalRouteRuntimeRecord["requestGateway"];
+      isOriginCurrent: (request: PluginApprovalRequest, cfg?: OpenClawConfig) => boolean;
+    },
   ) => void;
   finishPluginOriginRouting: (approvalId: string, localRouteSelected: boolean) => Promise<void>;
   publishPluginTerminal: (params: {
@@ -620,8 +632,8 @@ export function createApprovalNativeRouteCoordinator(): ApprovalNativeRouteCoord
   return {
     createReporter: (params) => createApprovalNativeRouteReporterForState(state, params),
     hasActiveRuntime: (params) => hasActiveApprovalNativeRouteRuntimeForState(state, params),
-    capturePluginOrigin: (request, retainApprovalBinding) =>
-      capturePluginOrigin(state, request, retainApprovalBinding),
+    capturePluginOrigin: (request, retainApprovalBinding, sourceGateway) =>
+      capturePluginOrigin(state, request, retainApprovalBinding, sourceGateway),
     finishPluginOriginRouting: async (approvalId, localRouteSelected) => {
       const pending = finishPluginOriginRouting(state, approvalId, localRouteSelected);
       if (state.pluginOrigins.get(approvalId)?.localRoute === "none") {

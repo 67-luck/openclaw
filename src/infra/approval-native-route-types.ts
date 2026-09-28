@@ -59,7 +59,9 @@ export type PluginTerminalNotice = {
 
 export type PluginOriginBinding = {
   request: PluginApprovalRequest;
-  runtime: ApprovalRouteRuntimeRecord;
+  runtime?: ApprovalRouteRuntimeRecord;
+  requestGateway: GatewayRequestFn;
+  isOriginCurrent: (cfg?: OpenClawConfig) => boolean;
   target: RouteNoticeTarget;
   releaseApprovalBinding?: () => void;
   terminalStatus?: PluginTerminalStatus;

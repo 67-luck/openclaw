@@ -1,6 +1,7 @@
 import { DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS } from "../../packages/gateway-client/src/timeouts.js";
 import type { AgentWaitParams } from "../../packages/gateway-protocol/src/index.js";
 import { createOutboundSendDeps } from "../cli/outbound-send-deps.js";
+import { getPublishedConfigRuntimeEnvState } from "../config/config-env-vars.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   GATEWAY_NATIVE_APPROVAL_METHODS,
@@ -317,6 +318,33 @@ export function createGatewayInstanceRuntime(
     return delivered;
   };
 
+  const requestApprovalRoute = async (
+    method: "send",
+    payload: ApprovalRouteSendParams,
+    routeOptions?: { liveOnlyWhenCurrent: (cfg?: OpenClawConfig) => boolean },
+  ): Promise<void> => {
+    if (routeOptions) {
+      await recovery.sendRecoveryNotice({
+        channel: payload.channel,
+        to: payload.to,
+        accountId: payload.accountId,
+        threadId: payload.threadId,
+        text: payload.message,
+        idempotencyKey: payload.idempotencyKey,
+        liveOnly: true,
+        isCurrent: routeOptions.liveOnlyWhenCurrent,
+      });
+      return;
+    }
+    await dispatch({
+      allowedMethods: approvalRouteMethods,
+      client: approvalRouteClient,
+      method,
+      payload,
+      timeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
+    });
+  };
+
   return {
     createAgentTurnFacade,
     approvalEvents: {
@@ -324,10 +352,29 @@ export function createGatewayInstanceRuntime(
         // SAFETY: Gateway approval publishers pair the plugin kind with a plugin request.
         const pluginRequest = kind === "plugin" ? (request as PluginApprovalRequest) : null;
         if (pluginRequest) {
-          const manager = options.getContext().pluginApprovalManager;
+          const context = options.getContext();
+          const manager = context.pluginApprovalManager;
+          const record = manager?.getLiveSnapshot(pluginRequest.id);
+          const sourceConfig = context.getRuntimeConfig();
+          const sourceEnvGeneration = getPublishedConfigRuntimeEnvState().generation;
           routeCoordinator.capturePluginOrigin(
             pluginRequest,
             manager ? () => manager.retainForHandoff(pluginRequest.id) : undefined,
+            manager && record
+              ? {
+                  requestGateway: requestApprovalRoute,
+                  isOriginCurrent: (boundRequest, cfg) =>
+                    !closed &&
+                    options.isDispatchAvailable() &&
+                    options.getContext() === context &&
+                    context.pluginApprovalManager === manager &&
+                    manager.getLiveSnapshot(pluginRequest.id) === record &&
+                    boundRequest.id === record.id &&
+                    context.getRuntimeConfig() === sourceConfig &&
+                    getPublishedConfigRuntimeEnvState().generation === sourceEnvGeneration &&
+                    (cfg === undefined || cfg === sourceConfig),
+                }
+              : undefined,
           );
         }
         const publicRequest = pluginRequest
@@ -433,32 +480,7 @@ export function createGatewayInstanceRuntime(
           payload,
           timeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
         }),
-      requestRoute: async (
-        method: "send",
-        payload: ApprovalRouteSendParams,
-        routeOptions?: { liveOnlyWhenCurrent: (cfg?: OpenClawConfig) => boolean },
-      ) => {
-        if (routeOptions) {
-          await recovery.sendRecoveryNotice({
-            channel: payload.channel,
-            to: payload.to,
-            accountId: payload.accountId,
-            threadId: payload.threadId,
-            text: payload.message,
-            idempotencyKey: payload.idempotencyKey,
-            liveOnly: true,
-            isCurrent: routeOptions.liveOnlyWhenCurrent,
-          });
-          return;
-        }
-        await dispatch({
-          allowedMethods: approvalRouteMethods,
-          client: approvalRouteClient,
-          method,
-          payload,
-          timeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
-        });
-      },
+      requestRoute: requestApprovalRoute,
       routeCoordinator,
       subscribe: (subscriber) => {
         if (closed) {
