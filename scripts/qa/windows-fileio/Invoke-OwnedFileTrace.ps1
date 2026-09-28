@@ -121,6 +121,7 @@ try {
   $loss = $null; $stopped = $false; $start = $null; $end = $null
   $threadRefresh = 'not-attempted'
   $identityRefused = $false
+  $postStopAdmission=$null; $projectionRefused=$false; $projectionStarted=$false
   $diagnosticFacts = if($diagnosticAvailable){New-FileTraceFacts}else{@{unavailable=$true}}
   $filterCensus = if($diagnosticAvailable){New-FileTraceCensus}else{@{unavailable=$true}}
   try {
@@ -144,13 +145,28 @@ try {
     $loss = Stop-OwnedTrace
     $stopped = $true
     $end = [DateTime]::UtcNow
-    # Existing threads retain native handles through target exit. New threads are
-    # usable only when their own creation/exit interval covers the request event.
-    try { $threadLease.Refresh(); $threadRefresh='completed' } catch { $threadRefresh='unavailable' }
     Write-ExclusiveJson ([IO.Path]::Combine($privateDirectory,'stopped.json')) @{ loss=$loss; stoppedAt=$end.ToString('O') }
     if ($null -eq $loss) { $null = $partial.Add('trace-ended-before-stop-loss-unknown') }
     elseif (-not $loss.statisticsKnown) { $null = $partial.Add('stop-statistics-incomplete') }
     elseif ($loss.eventsLost -or $loss.logBuffersLost -or $loss.realTimeBuffersLost) { $null = $partial.Add('etw-loss') }
+    $admission=$threadLease.ObserveProjectionAdmission()
+    $refusalReason=switch([string]$admission.State){
+      'Live' {$null}
+      'QueryFailed' {'post-stop-process-query-failed'}
+      'IdentityMismatch' {'post-stop-process-identity-mismatch'}
+      'Exited' {'post-stop-process-exited'}
+      'WaitFailed' {'post-stop-process-wait-failed'}
+      default {'post-stop-process-state-unavailable'}
+    }
+    $postStopAdmission=@{state=[string]$admission.State;admitted=$admission.Admitted;
+      nativeError=$admission.NativeError;waitStatus=$admission.WaitStatus;reason=$refusalReason}
+    if(-not $admission.Admitted){
+      $projectionRefused=$true
+      throw [InvalidOperationException]::new('Post-stop projection refused')
+    }
+    # Per-event lifetime checks remain independent; this only declines starting
+    # retrospective projection when the original target is no longer live.
+    try { $threadLease.Refresh(); $threadRefresh='completed' } catch { $threadRefresh='unavailable' }
     if (-not [IO.File]::Exists($raw)) { throw 'No ETL' }
     if ((Get-Item -LiteralPath $raw).Length -ge 8MB) { $null = $partial.Add('etl-size-cap') }
 
@@ -180,6 +196,7 @@ try {
       if ($number -eq 0) { return $null }
       return ('{0:X16}' -f $number)
     }
+    $projectionStarted=$true
     Get-WinEvent -Path $raw -Oldest -MaxEvents 20001 | ForEach-Object {
       $event = $_
       $censusRow=$null; $censusId=0; $censusReason='processing-interrupted'
@@ -330,7 +347,8 @@ try {
     $cause=$_.Exception
     while($cause.InnerException){$cause=$cause.InnerException}
     $identityRefused = $cause -is [InvalidOperationException] -and $cause.Message -eq 'Target creation identity mismatch'
-    $null = $partial.Add('capture-or-projection-incomplete')
+    if($projectionRefused){$null=$partial.Add($refusalReason)}
+    else {$null = $partial.Add('capture-or-projection-incomplete')}
   } finally {
     if (-not $stopped) {
       try { $loss = Stop-OwnedTrace; $stopped = $true } catch { $null = $partial.Add('cleanup-unverified') }
@@ -350,6 +368,8 @@ try {
     elapsedMs=$clock.ElapsedMilliseconds; rawArtifactUploadAllowed=$false }
   $result.threadCoverage = @{ before='held-native-handles'; after=$threadRefresh; maximumHandles=256 }
   $result.identityRefused = $identityRefused
+  $result.postStopAdmission=$postStopAdmission
+  $result.projectionStarted=$projectionStarted
   $encoded = $result | ConvertTo-Json -Depth 12 -Compress
   if ([Text.Encoding]::UTF8.GetByteCount($encoded) -gt 256KB) {
     $result.records=@(); $result.observation='insufficient-evidence'; $result.partial=@('projection-byte-cap')

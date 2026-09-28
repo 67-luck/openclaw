@@ -109,16 +109,36 @@ public static class OwnedFileTrace {
     uint result = EnableTraceEx2(live.Wnode.HistoricalContext, ref provider, 1, 5, ulong.MaxValue, 0, 500, IntPtr.Zero);
     if(result != 0) throw new Win32Exception((int)result);
   }
+  public enum ProcessAdmissionState { Unknown, Live, QueryFailed, IdentityMismatch, Exited, WaitFailed, WaitUnexpected }
+  public struct ProcessAdmissionObservation {
+    public ProcessAdmissionState State;
+    public uint? WaitStatus;
+    public int? NativeError;
+    public bool Admitted { get { return State == ProcessAdmissionState.Live; } }
+  }
+  static ProcessAdmissionObservation ObserveLiveProcess(IntPtr handle, long expectedCreate) {
+    FileTime c,e,k,u;
+    if(!GetProcessTimes(handle,out c,out e,out k,out u)) {
+      return new ProcessAdmissionObservation { State=ProcessAdmissionState.QueryFailed, NativeError=Marshal.GetLastWin32Error() };
+    }
+    if(Stamp(c) != expectedCreate) return new ProcessAdmissionObservation { State=ProcessAdmissionState.IdentityMismatch };
+    // Exit-time contents are undefined while alive; use the process signal.
+    uint waited=WaitForSingleObject(handle,0);
+    return new ProcessAdmissionObservation {
+      State=waited == 258 ? ProcessAdmissionState.Live : waited == 0 ? ProcessAdmissionState.Exited
+        : waited == uint.MaxValue ? ProcessAdmissionState.WaitFailed : ProcessAdmissionState.WaitUnexpected,
+      WaitStatus=waited, NativeError=waited == uint.MaxValue ? (int?)Marshal.GetLastWin32Error() : null
+    };
+  }
   public static IntPtr HoldProcess(uint pid, long expectedCreate) {
     IntPtr handle = OpenProcess(0x1000 | 0x100000, false, pid);
     if(handle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
-    FileTime c,e,k,u;
-    if(!GetProcessTimes(handle,out c,out e,out k,out u)) {
-      int error=Marshal.GetLastWin32Error(); CloseHandle(handle); throw new Win32Exception(error);
-    }
-    if(Stamp(c) != expectedCreate) { CloseHandle(handle); throw new InvalidOperationException("Target creation identity mismatch"); }
-    if(WaitForSingleObject(handle,0) != 258) { CloseHandle(handle); throw new InvalidOperationException("Target identity unavailable"); }
-    return handle;
+    ProcessAdmissionObservation observed=ObserveLiveProcess(handle,expectedCreate);
+    if(observed.Admitted) return handle;
+    CloseHandle(handle);
+    if(observed.State == ProcessAdmissionState.QueryFailed) throw new Win32Exception(observed.NativeError.Value);
+    if(observed.State == ProcessAdmissionState.IdentityMismatch) throw new InvalidOperationException("Target creation identity mismatch");
+    throw new InvalidOperationException("Target identity unavailable");
   }
   public struct ProcessTimeObservation {
     public bool QuerySucceeded;
@@ -139,6 +159,7 @@ public static class OwnedFileTrace {
       pid=target; processCreate=created; originalProcess=processHandle;
       try { Refresh(); } catch { Dispose(); throw; }
     }
+    public ProcessAdmissionObservation ObserveProjectionAdmission() { return ObserveLiveProcess(originalProcess,processCreate); }
     public ProcessTimeObservation ObserveProcessTime(long eventTime) {
       FileTime c,e,k,u;
       if(!GetProcessTimes(originalProcess,out c,out e,out k,out u)) {

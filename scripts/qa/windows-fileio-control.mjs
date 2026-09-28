@@ -398,6 +398,12 @@ async function runCell(name, fixtureMode) {
         cell.control = "natural-early-exit-without-attribution-requirement";
         assert.equal(cell.observerCode, 0);
         assert.equal(cell.targetJoinedAtObserverCompletion, true);
+        assert.equal(cell.observation?.postStopAdmission?.state, "Exited");
+        assert.equal(cell.observation.postStopAdmission.admitted, false);
+        assert.equal(cell.observation.projectionStarted, false);
+        assert.equal(cell.observation.counts.parsed, 0);
+        assert.equal(cell.observation.records.length, 0);
+        assert.equal(cell.observation.observation, "insufficient-evidence");
       } else {
         assert.equal(cell.targetJoinedAtObserverCompletion, false);
         assert.equal(await target.completion, 0);
