@@ -714,7 +714,6 @@ describe("gateway server chat", () => {
         const context = createDirectChatContext({
           workerSessionPlacementService: {
             getMany: () => new Map([[placement.sessionId, placement]]),
-            getPlacementMoves: () => new Map(),
           },
         } as unknown as Partial<GatewayRequestContext>);
         const responses: Array<{ ok: boolean; payload?: unknown }> = [];

@@ -5,7 +5,7 @@ import os from "node:os";
 import { join, matchesGlob, relative } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   createChangedExtensionFallbackShards,
   createChangedNodeTestShards,
@@ -726,10 +726,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
 
   // Only unchanged committed inputs share snapshots; every caller receives its own graph.
   const committedCompactPlans = new Map<string, CompactNodeTestShard[]>();
-  let plannerHostPinned = false;
+  let pinnedPlannerHost: PlannerHost | undefined;
   function pinPlannerHost(host: PlannerHost) {
-    plannerHostPinned = true;
-    committedCompactPlans.clear();
+    pinnedPlannerHost = host;
     vi.spyOn(os, "availableParallelism").mockReturnValue(host.logicalCpuCount);
     vi.spyOn(os, "cpus").mockReturnValue(
       Array.from({ length: host.logicalCpuCount }, () => ({
@@ -751,7 +750,15 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     compactMode: "push" | "pull-request",
     runnerBackend?: string,
   ): CompactNodeTestShard[] {
-    const key = JSON.stringify([compactMode, runnerBackend]);
+    const key = JSON.stringify([
+      pinnedPlannerHost
+        ? [pinnedPlannerHost.logicalCpuCount, pinnedPlannerHost.totalMemoryBytes]
+        : null,
+      process.env.CI,
+      process.env.OPENCLAW_CI_TEST_TIMINGS,
+      compactMode,
+      runnerBackend,
+    ]);
     let snapshot = committedCompactPlans.get(key);
     if (!snapshot) {
       snapshot = structuredClone(
@@ -768,6 +775,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
 
   beforeAll(() => {
     defaultShards = createNodeTestShards();
+  });
+
+  afterAll(() => {
+    committedCompactPlans.clear();
   });
 
   it.each(["push", "pull-request"] as const)(
@@ -2307,11 +2318,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   );
   afterEach(() => {
     vi.restoreAllMocks();
-    if (plannerHostPinned) {
+    if (pinnedPlannerHost) {
       vi.unstubAllEnvs();
       syncBuiltinESMExports();
-      committedCompactPlans.clear();
-      plannerHostPinned = false;
+      pinnedPlannerHost = undefined;
     }
   });
 
@@ -7776,19 +7786,38 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       expectTimingFamilies(after, afterInherited);
       expect(policies(after, afterInherited)).toEqual(policies(before, beforeInherited));
       if (runnerBackend === "hybrid") {
-        const serial = structuredClone(before);
-        const serialGroup = expectDefined(
-          serial
-            .filter(
-              (job) => job.planConcurrency === 1 && job.env?.OPENCLAW_VITEST_MAX_WORKERS === "2",
-            )
-            .flatMap((job) => job.groups)
-            .find((group) => group.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined),
-          "already-serial group using its job worker cap",
-        );
-        serialGroup.env = { ...serialGroup.env, OPENCLAW_VITEST_MAX_WORKERS: "2" };
+        // Inventory changes need not leave an already-serial row in the generated plan.
+        const serialGroup: Group = {
+          shard_name: "serial-policy-control",
+          configs: ["test/vitest/vitest.commands-light.config.ts"],
+          requiresDist: false,
+          runner: DEFAULT_NODE_TEST_RUNNER,
+        };
+        const serialAdmission: CompactNodeTestShard = {
+          checkName: "serial-policy-control",
+          shardName: "serial-policy-control",
+          groups: [serialGroup],
+          requiresDist: false,
+          runner: DEFAULT_NODE_TEST_RUNNER,
+          planConcurrency: 1,
+          env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+        };
+        const serialInherited = inheritedGroupsFor([serialAdmission]);
+        const expectedSerialPolicy = {
+          descriptors: [
+            {
+              shard_name: "serial-policy-control",
+              configs: ["test/vitest/vitest.commands-light.config.ts"],
+              requiresDist: false,
+            },
+          ],
+          tooling: [],
+        };
+        expect(serialInherited.has(serialGroup.shard_name)).toBe(false);
+        expect(policies([serialAdmission], serialInherited)).toEqual(expectedSerialPolicy);
+        serialGroup.env = { OPENCLAW_VITEST_MAX_WORKERS: "2" };
         expect(() =>
-          expect(policies(serial, beforeInherited)).toEqual(policies(before, beforeInherited)),
+          expect(policies([serialAdmission], serialInherited)).toEqual(expectedSerialPolicy),
         ).toThrow();
         const promoted = structuredClone(before);
         const isInheritedHostedGroup = (group: Group) =>
