@@ -46,10 +46,16 @@ describe("developer source observation", () => {
     const alias = path.join(cwd, "src", "linked");
     await directoryLink(path.join(outside, "first"), alias);
     const subscriptions: observation.WatchSubscription[] = [];
+    const reads: string[] = [];
     const targetReady = createDeferredCore<observation.WatchSubscription>();
     let invalidate: observation.WatchOptions["onInvalidate"];
     const original = observation.watch;
     vi.spyOn(observation, "watch").mockImplementation((authority, options) => {
+      const open = authority.open.bind(authority);
+      vi.spyOn(authority, "open").mockImplementation((relative, settings) => {
+        reads.push(path.resolve(authority.rootReal, relative));
+        return open(relative, settings);
+      });
       const subscription = original(authority, options);
       if (subscriptions.length === 0) {
         invalidate = options.onInvalidate;
@@ -80,12 +86,17 @@ describe("developer source observation", () => {
     expect(onLog).toHaveBeenCalledExactlyOnceWith("Watching sources (poll).");
     onChange.mockClear();
     changed = createDeferredCore<string | undefined>();
+    reads.length = 0;
 
     await fs.writeFile(path.join(cwd, "src", "first.ts"), "one");
     await fs.writeFile(path.join(cwd, "src", "second.ts"), "two");
     await repository.reconcile();
     await changed.promise;
     expect(onChange).toHaveBeenCalledOnce();
+    expect(reads.toSorted()).toEqual([
+      path.join(cwd, "src", "first.ts"),
+      path.join(cwd, "src", "second.ts"),
+    ]);
     onChange.mockClear();
     changed = createDeferredCore<string | undefined>();
     await fs.writeFile(path.join(cwd, "src", "ignored.test.ts"), "test");
@@ -109,6 +120,8 @@ describe("developer source observation", () => {
     await target.reconcile();
     await changed.promise;
     expect(onChange).toHaveBeenCalledExactlyOnceWith(path.join(alias, "main.ts"));
+    expect(reads).toContain(path.join(cwd, "package.json"));
+    expect(reads).toContain(path.join(cwd, "src", "first.ts"));
 
     const replaced = createDeferredCore();
     const setScopes = target.setScopes.bind(target);
@@ -139,6 +152,12 @@ describe("developer source observation", () => {
     invalidate!({ reason: "overflow" });
     await changed.promise;
     expect(onChange).toHaveBeenCalledExactlyOnceWith(path.join(cwd, "package.json"));
+    onChange.mockClear();
+    changed = createDeferredCore<string | undefined>();
+    await fs.writeFile(path.join(cwd, "src", "new.ts"), "new source");
+    invalidate!({ reason: "event", changes: [{ path: "src/new.ts", type: "content" }] });
+    await changed.promise;
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(path.join(cwd, "src", "new.ts"));
     expect(onError).not.toHaveBeenCalled();
 
     await observer.close();

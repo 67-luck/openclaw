@@ -1,3 +1,4 @@
+import { FsSafeError } from "@openclaw/fs-safe/errors";
 import type { Root } from "@openclaw/fs-safe/root";
 import { watch, type WatchSubscription } from "@openclaw/fs-safe/watch";
 import {
@@ -8,7 +9,9 @@ import { createDeferredCore } from "../src/shared/deferred.ts";
 import {
   createSourceTargetDiscovery,
   excludeSourceTarget,
+  hashSourceFile,
   sourceTargetPaths,
+  type SourceFile,
   type SourceTargetGroup,
 } from "./watch-node-source-targets.mts";
 
@@ -40,8 +43,9 @@ export function createSourceObserver(paths: string[], options: WatchOptions) {
   const pollIntervalMs = resolveFsObservationIntervalMs(options.env);
   let closing: Promise<void> | undefined;
   let active: Promise<void> | undefined;
-  let pending = false;
-  let files: Map<string, string> | undefined;
+  let rediscover = false;
+  const dirtyFiles = new Set<string>();
+  let files: Map<string, SourceFile> | undefined;
   let announced = false;
 
   function close(): Promise<void> {
@@ -122,12 +126,19 @@ export function createSourceObserver(paths: string[], options: WatchOptions) {
               return;
             }
             for (const change of hint.changes) {
-              const changed = sourceTargetPaths(entry.group, change.path).find(
+              const names = sourceTargetPaths(entry.group, change.path).filter(
                 (lexical) => !options.ignored(lexical),
               );
-              if (changed !== undefined) {
+              if (
+                names.length &&
+                (change.type === "structural" ||
+                  names.some((name) => files?.get(name)?.authority !== entry.group.authority))
+              ) {
                 request();
                 return;
+              }
+              if (names.length) {
+                request(names);
               }
             }
           },
@@ -143,24 +154,64 @@ export function createSourceObserver(paths: string[], options: WatchOptions) {
     }
   }
 
-  function request() {
+  function request(names?: Iterable<string>) {
     if (closing) {
       return;
     }
-    pending = true;
+    if (!names) {
+      rediscover = true;
+      dirtyFiles.clear();
+    } else if (!rediscover) {
+      for (const name of names) {
+        dirtyFiles.add(name);
+      }
+    }
     if (active) {
       return;
     }
     active = Promise.resolve()
       .then(async () => {
-        while (pending) {
+        while (rediscover || dirtyFiles.size) {
           if (closing) {
             break;
           }
-          pending = false;
-          let groups: SourceTargetGroup[];
+          const full = rediscover;
+          rediscover = false;
+          const names = [...dirtyFiles];
+          dirtyFiles.clear();
+          let groups: SourceTargetGroup[] | undefined;
+          let current: Map<string, SourceFile>;
           try {
-            groups = await discovery.discover(lifetime.signal);
+            if (full) {
+              groups = await discovery.discover(lifetime.signal);
+              current = new Map(groups.flatMap((group) => [...group.files]));
+            } else {
+              current = new Map(files);
+              for (const name of names) {
+                const file = current.get(name);
+                if (!file) {
+                  request();
+                  break;
+                }
+                try {
+                  const hash = await hashSourceFile(file.authority, file.relative, lifetime.signal);
+                  current.set(name, { ...file, hash });
+                } catch (error) {
+                  if (
+                    !(error instanceof FsSafeError) ||
+                    !["not-found", "not-file", "path-mismatch", "symlink"].includes(error.code)
+                  ) {
+                    throw error;
+                  }
+                  request();
+                  break;
+                }
+              }
+              // A structural hint can retire a selected alias while its old file is being read.
+              if (rediscover) {
+                continue;
+              }
+            }
           } catch (error) {
             if (error !== lifetime.signal.reason) {
               failures.add(error);
@@ -168,15 +219,16 @@ export function createSourceObserver(paths: string[], options: WatchOptions) {
             throw error;
           }
           lifetime.signal.throwIfAborted();
-          const current = new Map(groups.flatMap((group) => [...group.files]));
           const previous = files;
           const changed =
             previous &&
             [...new Set([...previous.keys(), ...current.keys()])].find(
-              (name) => previous.get(name) !== current.get(name),
+              (name) => previous.get(name)?.hash !== current.get(name)?.hash,
             );
           files = current;
-          await install(groups);
+          if (groups) {
+            await install(groups);
+          }
           lifetime.signal.throwIfAborted();
           if (changed !== undefined) {
             options.onChange(changed);
@@ -196,8 +248,8 @@ export function createSourceObserver(paths: string[], options: WatchOptions) {
       .catch(fail)
       .finally(() => {
         active = undefined;
-        if (pending && !closing) {
-          request();
+        if ((rediscover || dirtyFiles.size) && !closing) {
+          request(dirtyFiles);
         }
       });
   }

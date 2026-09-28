@@ -18,12 +18,30 @@ const SOURCE_OBSERVATION_LIMITS = {
 } as const;
 
 type Mapping = { physical: string; lexical: string; kind: "entry" | "tree" };
+export type SourceFile = { authority: Root; relative: string; hash: string };
 export type SourceTargetGroup = {
   authority: Root;
   mappings: Mapping[];
   scopes: WatchScope[];
-  files: Map<string, string>;
+  files: Map<string, SourceFile>;
 };
+
+export async function hashSourceFile(authority: Root, relative: string, signal: AbortSignal) {
+  signal.throwIfAborted();
+  await using opened = await authority.open("./" + relative, { hardlinks: "allow" });
+  const hash = createHash("sha256");
+  if (opened.stat.size > 0) {
+    for await (const chunk of opened.handle.createReadStream({
+      autoClose: false,
+      end: opened.stat.size - 1,
+    })) {
+      signal.throwIfAborted();
+      hash.update(chunk);
+    }
+  }
+  signal.throwIfAborted();
+  return hash.digest("hex");
+}
 
 function relativeInside(parent: string, child: string): string | undefined {
   const relative = path.relative(parent, child);
@@ -150,18 +168,11 @@ export function createSourceTargetDiscovery(
       group.mappings.push({ physical, lexical, kind: remaining ? "entry" : kind });
       const files = group.files;
       const fingerprint = async (name: string, alias: string) => {
-        await using opened = await authority.open("./" + name, { hardlinks: "allow" });
-        const hash = createHash("sha256");
-        if (opened.stat.size > 0) {
-          for await (const chunk of opened.handle.createReadStream({
-            autoClose: false,
-            end: opened.stat.size - 1,
-          })) {
-            signal.throwIfAborted();
-            hash.update(chunk);
-          }
-        }
-        files.set(alias, hash.digest("hex"));
+        files.set(alias, {
+          authority,
+          relative: name,
+          hash: await hashSourceFile(authority, name, signal),
+        });
       };
       const relative = relativeInside(authority.rootReal, physical);
       if (relative === undefined) {
