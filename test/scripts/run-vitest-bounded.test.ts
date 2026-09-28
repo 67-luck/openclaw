@@ -264,10 +264,6 @@ syncBuiltinESMExports();
       const pidPath = path.join(root, "builder.pid");
       const executable = path.join(root, "command.mjs");
       const preload = path.join(root, "preload.mjs");
-      const declarationsReady = path.join(root, "ai-declarations-ready");
-      if (outcome === "prebuilt") {
-        fs.writeFileSync(declarationsReady, "ready");
-      }
       fs.writeFileSync(
         executable,
         `import fs from "node:fs";
@@ -282,9 +278,6 @@ if (kind === "runtime" && ${JSON.stringify(outcome)} === "cancel") {
   fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
   setInterval(() => {}, 1000);
 } else {
-  if (kind === "ai" && ${JSON.stringify(outcome)} !== "ai-failure") {
-    fs.writeFileSync(${JSON.stringify(declarationsReady)}, "ready");
-  }
   record("end");
   process.exit(${JSON.stringify(outcome)} === kind + "-failure" ? 7 : 0);
 }
@@ -295,17 +288,7 @@ if (kind === "runtime" && ${JSON.stringify(outcome)} === "cancel") {
       fs.writeFileSync(
         preload,
         `import cp from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
 import { syncBuiltinESMExports } from "node:module";
-const packageRoot = ${JSON.stringify(path.join(repoRoot, "packages/ai"))};
-const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
-const declarations = new Set([manifest.types, ...Object.values(manifest.exports).map(entry => entry.types)]
-  .map(entry => path.resolve(packageRoot, entry)));
-const existsSync = fs.existsSync;
-// Substitute only the declared outputs of this fixture's synthetic AI builder.
-fs.existsSync = entry => declarations.has(entry)
-  ? existsSync(${JSON.stringify(declarationsReady)}) : existsSync(entry);
 const spawn = cp.spawn;
 cp.spawn = (bin, args, options) => {
   const kind = args.includes("scripts/run-node.mjs") ? "runtime"
