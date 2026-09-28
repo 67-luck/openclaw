@@ -1,0 +1,83 @@
+{
+  "skills": [
+    {
+      "name": "release-guide",
+      "description": "Prepare and publish a versioned software release.",
+      "instructions": "# Release\nCheck the changelog, sign the tag, and verify artifact provenance. Use staged rollout with a canary deployment. Revert to the previous build if health checks fail."
+    },
+    {
+      "name": "release-notes",
+      "description": "Write release announcements and changelog summaries.",
+      "instructions": "# Release notes\nGroup changes by user impact. Summarize breaking changes and migration steps. Do not publish packages or deploy builds."
+    },
+    {
+      "name": "database-recovery",
+      "description": "Restore a database after an operational incident.",
+      "instructions": "# Recovery\nRecover deleted rows using point-in-time recovery and a transaction log. Restore into an isolated database, validate row counts, and obtain approval before replacing production data."
+    },
+    {
+      "name": "database-migration",
+      "description": "Plan and apply database schema migrations.",
+      "instructions": "# Schema changes\nUse expand-contract migrations for zero-downtime schema changes. Check constraints and backward compatibility. This is not an incident recovery procedure."
+    },
+    {
+      "name": "presentation-builder",
+      "description": "Create presentations for stakeholder meetings.",
+      "instructions": "# Presentations\nBuild a slide deck in PowerPoint. Include speaker notes and accessible charts. Export a PDF handout."
+    },
+    {
+      "name": "pdf-review",
+      "description": "Inspect document layout and exported PDF files.",
+      "instructions": "# PDF review\nRender pages to images. Check clipping, missing fonts, page breaks, and chart labels. This does not create slide decks."
+    },
+    {
+      "name": "accessibility-audit",
+      "description": "Review web interfaces for accessibility defects.",
+      "instructions": "# Accessibility\nTest keyboard navigation, screen-reader announcements, focus order, and color contrast. Verify WCAG conformance and accessible names."
+    },
+    {
+      "name": "browser-performance",
+      "description": "Measure and improve web application performance.",
+      "instructions": "# Performance\nRecord LCP, INP, and CLS. Investigate long tasks, layout shifts, and slow rendering. Use a repeatable browser profile."
+    },
+    {
+      "name": "repository-triage",
+      "description": "Triage issues and pull requests in a software repository.",
+      "instructions": "# Triage\nIdentify duplicate bug reports, verify reproductions, and assign an owner. Preserve contributor credit. Do not close an issue based only on similar wording."
+    },
+    {
+      "name": "incident-response",
+      "description": "Coordinate an active service incident.",
+      "instructions": "# Incidents\nStop the bleeding, establish an incident commander, and maintain a timeline. Escalate an outage and communicate recovery status."
+    },
+    {
+      "name": "image-editing",
+      "description": "Edit raster images and prepare visual assets.",
+      "instructions": "# Images\nRemove the background from a product photograph. Preserve transparency in PNG exports and inspect edge artifacts."
+    },
+    {
+      "name": "invoice-processing",
+      "description": "Extract and validate accounting documents.",
+      "instructions": "# Invoices\nExtract invoice line items, tax amounts, purchase-order references, and payment terms. Flag discrepancies for review."
+    }
+  ],
+  "queries": [
+    { "id": "exact-name", "query": "release-guide", "relevant": ["release-guide"] },
+    { "id": "metadata", "query": "restore database after incident", "relevant": ["database-recovery"] },
+    { "id": "body-rollout", "query": "canary deployment", "relevant": ["release-guide"] },
+    { "id": "body-recovery", "query": "recover deleted rows transaction log", "relevant": ["database-recovery"] },
+    { "id": "body-slides", "query": "PowerPoint speaker notes", "relevant": ["presentation-builder"] },
+    { "id": "body-a11y", "query": "screen-reader focus order WCAG", "relevant": ["accessibility-audit"] },
+    { "id": "body-performance", "query": "LCP INP CLS", "relevant": ["browser-performance"] },
+    { "id": "body-triage", "query": "duplicate bug reports", "relevant": ["repository-triage"] },
+    { "id": "body-images", "query": "remove background photograph transparency", "relevant": ["image-editing"] },
+    { "id": "body-invoice", "query": "purchase-order line items payment terms", "relevant": ["invoice-processing"] },
+    { "id": "confusable-release", "query": "publish versioned software release", "relevant": ["release-guide"] },
+    { "id": "confusable-notes", "query": "write release announcements", "relevant": ["release-notes"] },
+    { "id": "multiple", "query": "prepare release and write release announcements", "relevant": ["release-guide", "release-notes"] },
+    { "id": "paraphrase", "query": "our service is down and customers cannot connect", "relevant": ["incident-response"] },
+    { "id": "multilingual", "query": "restaurar registros borrados", "relevant": ["database-recovery"] },
+    { "id": "no-match", "query": "tune violin strings", "relevant": [] },
+    { "id": "no-match-medical", "query": "diagnose migraine symptoms", "relevant": [] }
+  ]
+}
