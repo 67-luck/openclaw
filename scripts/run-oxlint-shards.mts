@@ -1,9 +1,10 @@
 // Splits oxlint into resource-aware shards with heartbeat and timeout handling.
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs, { type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isCommandCancellation, runCancelableCommand } from "./lib/cancelable-command.mts";
 import {
   distArtifactEntryArgs,
   withDistArtifactOwnership,
@@ -335,15 +336,22 @@ export async function main(
     splitCore: shardArgs.splitCore,
     splitExtensions,
   });
-  const stripedShards = selectExtensionOxlintStripe(
-    selectCoreOxlintStripe(filterOxlintShards(shards, shardArgs.only), shardArgs.coreStripe, {
-      isolateLargeTargets: true,
-      // Explicit file requests retain their intentional gitignore bypass.
-      splitLargeSelections: !shardArgs.files && hasBoundedOxlintArgs(shardArgs.oxlintArgs),
-      deadline,
-    }),
-    shardArgs.extensionStripe,
+  let coreShards = selectCoreOxlintStripe(
+    filterOxlintShards(shards, shardArgs.only),
+    shardArgs.coreStripe,
+    { isolateLargeTargets: true },
   );
+  // Discovery owns cancellation across successive children before the shard owner
+  // starts. Explicit file requests retain their intentional gitignore bypass.
+  if (shardArgs.coreStripe && !shardArgs.files && hasBoundedOxlintArgs(shardArgs.oxlintArgs)) {
+    const status = await runCancelableCommand(async (signal) => {
+      coreShards = await splitCoreOxlintSelections(coreShards, { deadline, env, signal });
+      signal.throwIfAborted();
+      return 0;
+    });
+    if (status !== 0) return status;
+  }
+  const stripedShards = selectExtensionOxlintStripe(coreShards, shardArgs.extensionStripe);
   const selectedShards = shardArgs.files
     ? createOxlintFileScope(shardArgs.files).selectShards(stripedShards)
     : stripedShards;
@@ -548,19 +556,7 @@ export function filterOxlintShards<T extends { name: string }>(shards: T[], only
 export function selectCoreOxlintStripe(
   shards: OxlintShard[],
   stripe: ShardStripe | undefined,
-  {
-    isolateLargeTargets = false,
-    splitLargeSelections = false,
-    platform = process.platform,
-    cwd = process.cwd(),
-    readDir = fs.readdirSync,
-    deadline,
-  }: DirectoryOptions &
-    PlatformOptions & {
-      isolateLargeTargets?: boolean;
-      splitLargeSelections?: boolean;
-      deadline?: number;
-    } = {},
+  { isolateLargeTargets = false }: { isolateLargeTargets?: boolean } = {},
 ) {
   if (!stripe) {
     return shards;
@@ -586,24 +582,53 @@ export function selectCoreOxlintStripe(
           },
         ]
       : []),
-    ...isolatedTargets.flatMap((target) => {
-      // Explicit root-file arguments can exceed Windows command-line limits.
-      // These measured selections are qualified only on Linux workers.
-      const parts =
-        splitLargeSelections && platform === "linux"
-          ? splitCoreTargetSelection(target, { cwd, readDir }, deadline)
-          : [[target]];
-      const name = `core:stripe:${stripe.index}:${target.replaceAll("/", ":")}`;
-      return parts.map((targets, index) => ({
-        name: parts.length === 1 ? name : `${name}:part:${index + 1}`,
-        args: ["--tsconfig", CORE_TS_CONFIG, ...targets],
-        ...(parts.length > 1 ? { canonicalTargets: [target] } : {}),
-      }));
-    }),
+    ...isolatedTargets.map((target) => ({
+      name: `core:stripe:${stripe.index}:${target.replaceAll("/", ":")}`,
+      args: ["--tsconfig", CORE_TS_CONFIG, target],
+    })),
   ];
 }
 
-function splitCoreTargetSelection(target: string, options: DirectoryLookup, deadline?: number) {
+export async function splitCoreOxlintSelections(
+  shards: OxlintShard[],
+  {
+    platform = process.platform,
+    cwd = process.cwd(),
+    readDir = fs.readdirSync,
+    env = process.env,
+    deadline,
+    signal,
+  }: DirectoryOptions & PlatformOptions & { deadline?: number; signal?: AbortSignal } = {},
+) {
+  // Explicit root-file arguments can exceed Windows command-line limits.
+  // These measured selections are qualified only on Linux workers.
+  if (platform !== "linux") return shards;
+  const selections: OxlintShard[] = [];
+  for (const shard of shards) {
+    signal?.throwIfAborted();
+    const target = shard.args.length === 3 ? shard.args[2]! : "";
+    const parts = await splitCoreTargetSelection(target, { cwd, readDir }, env, deadline, signal);
+    signal?.throwIfAborted();
+    selections.push(
+      ...(parts.length === 1
+        ? [shard]
+        : parts.map((targets, index) => ({
+            name: `${shard.name}:part:${index + 1}`,
+            args: ["--tsconfig", CORE_TS_CONFIG, ...targets],
+            canonicalTargets: [target],
+          }))),
+    );
+  }
+  return selections;
+}
+
+async function splitCoreTargetSelection(
+  target: string,
+  options: DirectoryLookup,
+  env: NodeJS.ProcessEnv,
+  deadline?: number,
+  signal?: AbortSignal,
+) {
   // These measured cuts bound checker/payload retention without changing type
   // projects. Native discovery preserves gitignore before files become explicit.
   if (
@@ -613,18 +638,47 @@ function splitCoreTargetSelection(target: string, options: DirectoryLookup, dead
     return [[target]];
   const remainingMs = deadline === undefined ? 30_000 : Math.ceil(deadline - performance.now());
   if (remainingMs <= 0) throw new Error("core stripe deadline expired before file discovery");
-  const files = execFileSync(resolveRepoToolBinPath("oxlint"), ["--debug", "files", target], {
-    cwd: options.cwd,
-    encoding: "utf8",
-    // Discovery runs the native binding in this process; it starts no checker.
-    // A blocked event loop cannot enforce the outer command's timer for us.
-    timeout: Math.min(30_000, remainingMs),
-    killSignal: "SIGKILL",
-    maxBuffer: 4 * 1024 * 1024,
-  })
-    .split(/\r?\n/u)
-    .filter(Boolean)
-    .toSorted();
+  const controller = new AbortController();
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  let overflow = false;
+  try {
+    const status = await runManagedCommand({
+      bin: resolveRepoToolBinPath("oxlint"),
+      args: ["--debug", "files", target],
+      cwd: options.cwd,
+      env,
+      stdio: ["ignore", "pipe", "inherit"],
+      requireProcessTreeExit: true,
+      timeoutMs: Math.min(30_000, remainingMs),
+      timeoutKillGraceMs: 0,
+      signalKillGraceMs: resolveShardKillGraceMs(env),
+      abortKillGraceMs: 0,
+      signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+      onReady(child) {
+        child.stdout!.on("data", (chunk: Buffer) => {
+          if (overflow) return;
+          bytes += chunk.length;
+          if (bytes > 4 * 1024 * 1024) {
+            overflow = true;
+            chunks.length = 0;
+            controller.abort();
+          } else {
+            chunks.push(chunk);
+          }
+        });
+      },
+    });
+    signal?.throwIfAborted();
+    if (status !== 0) throw new Error(`core file discovery failed (exit ${status})`);
+  } catch (error) {
+    // Report overflow only after joined cancellation; uncertain cleanup stays fatal.
+    if (overflow && isCommandCancellation(error)) {
+      throw new Error("core file discovery exceeded 4 MiB output", { cause: error });
+    }
+    throw error;
+  }
+  const files = Buffer.concat(chunks).toString("utf8").split(/\r?\n/u).filter(Boolean).toSorted();
   const selected = new Set(files);
   const entries = (root: string) =>
     readDirectoryEntries(options.readDir, path.join(options.cwd, root))

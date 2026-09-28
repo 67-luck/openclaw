@@ -1,6 +1,13 @@
 // Run Oxlint tests cover run oxlint script behavior.
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -18,6 +25,7 @@ import {
   resolveWindowsExtensionChunkSize,
   runShard,
   selectCoreOxlintStripe,
+  splitCoreOxlintSelections,
   selectExtensionOxlintStripe,
   shouldPrepareExtensionPackageBoundaryArtifactsForShards,
   shouldRunOxlintShardsSerial,
@@ -26,7 +34,12 @@ import {
   filterSparseMissingOxlintTargets,
   shouldPrepareExtensionPackageBoundaryArtifacts,
 } from "../../scripts/run-oxlint.mts";
-import { waitForDead, waitForFile, waitForPidFile } from "../helpers/process-wait.js";
+import {
+  waitForChildClose,
+  waitForDead,
+  waitForFile,
+  waitForPidFile,
+} from "../helpers/process-wait.js";
 import { startProcessWatchdogFixture } from "../helpers/process-watchdog.js";
 import { createScriptTestHarness } from "./test-helpers.js";
 
@@ -880,78 +893,78 @@ describe("run-oxlint", () => {
     ).toThrow("--core-stripe requires a non-empty core-only shard selection");
   });
 
-  it("keeps physical core selections in their canonical stripe after file projection", () => {
-    const cwd = createTempDir("openclaw-oxlint-core-parts-");
-    const files = [
-      "src/agents/root.ts",
-      "src/agents/nested/child.ts",
-      "src/agents/new-owner/another.ts",
-      "src/gateway/root.ts",
-      "src/gateway/server/child.ts",
-      "ui/src/pages/chat/view.ts",
-      "ui/src/components/view.ts",
-      "ui/src/root.ts",
-      "ui/config.ts",
-      "ui/public/sw.js",
-    ];
-    for (const file of files) {
-      mkdirSync(join(cwd, file, ".."), { recursive: true });
-      writeFileSync(join(cwd, file), "export {};\n");
-    }
-    const shards = filterOxlintShards(
-      createOxlintShards({ cwd, splitCore: true }),
-      new Set(["core"]),
-    );
-    const stripes = [1, 2, 3].map((index) =>
-      selectCoreOxlintStripe(
-        shards,
-        { index, total: 3 },
-        {
-          cwd,
-          isolateLargeTargets: true,
-          splitLargeSelections: true,
-          platform: "linux",
-        },
-      ),
-    );
-    const projected = stripes.map((stripe) =>
-      createOxlintFileScope(files, cwd).selectShards(stripe),
-    );
-    expect(
-      projected.flatMap((stripe) => stripe.flatMap((shard) => shard.args.slice(2))).toSorted(),
-    ).toEqual(files.toSorted());
-    for (const [index, stripe] of projected.entries()) {
-      const canonical = selectCoreOxlintStripe(
-        shards,
-        { index: index + 1, total: 3 },
-        { cwd, isolateLargeTargets: true },
-      );
-      for (const shard of stripe) {
-        expect(
-          canonical.some((owner) => owner.args.slice(2).includes(shard.canonicalTargets![0]!)),
-        ).toBe(true);
+  it.runIf(process.platform !== "win32")(
+    "keeps physical core selections in their canonical stripe after file projection",
+    async () => {
+      const cwd = createTempDir("openclaw-oxlint-core-parts-");
+      const files = [
+        "src/agents/root.ts",
+        "src/agents/nested/child.ts",
+        "src/agents/new-owner/another.ts",
+        "src/gateway/root.ts",
+        "src/gateway/server/child.ts",
+        "ui/src/pages/chat/view.ts",
+        "ui/src/components/view.ts",
+        "ui/src/root.ts",
+        "ui/config.ts",
+        "ui/public/sw.js",
+      ];
+      for (const file of files) {
+        mkdirSync(join(cwd, file, ".."), { recursive: true });
+        writeFileSync(join(cwd, file), "export {};\n");
       }
-    }
-    const parts = stripes.flat().filter((shard) => shard.canonicalTargets);
-    expect(parts.map((shard) => shard.canonicalTargets).sort()).toEqual([
-      ["src/agents"],
-      ["src/agents"],
-      ["src/gateway"],
-      ["src/gateway"],
-      ["ui"],
-      ["ui"],
-    ]);
-    for (const file of files) {
-      const selected = createOxlintFileScope([file], cwd).selectShards(parts);
-      expect(selected).toHaveLength(1);
-      expect(selected[0]!.args.slice(2)).toEqual([file]);
-      expect(selected[0]!.canonicalTargets).toEqual([
-        file.startsWith("ui/") ? "ui" : file.split("/").slice(0, 2).join("/"),
+      const shards = filterOxlintShards(
+        createOxlintShards({ cwd, splitCore: true }),
+        new Set(["core"]),
+      );
+      const stripes = [];
+      for (const index of [1, 2, 3]) {
+        stripes.push(
+          await splitCoreOxlintSelections(
+            selectCoreOxlintStripe(shards, { index, total: 3 }, { isolateLargeTargets: true }),
+            { cwd, platform: "linux" },
+          ),
+        );
+      }
+      const projected = stripes.map((stripe) =>
+        createOxlintFileScope(files, cwd).selectShards(stripe),
+      );
+      expect(
+        projected.flatMap((stripe) => stripe.flatMap((shard) => shard.args.slice(2))).toSorted(),
+      ).toEqual(files.toSorted());
+      for (const [index, stripe] of projected.entries()) {
+        const canonical = selectCoreOxlintStripe(
+          shards,
+          { index: index + 1, total: 3 },
+          { isolateLargeTargets: true },
+        );
+        for (const shard of stripe) {
+          expect(
+            canonical.some((owner) => owner.args.slice(2).includes(shard.canonicalTargets![0]!)),
+          ).toBe(true);
+        }
+      }
+      const parts = stripes.flat().filter((shard) => shard.canonicalTargets);
+      expect(parts.map((shard) => shard.canonicalTargets).sort()).toEqual([
+        ["src/agents"],
+        ["src/agents"],
+        ["src/gateway"],
+        ["src/gateway"],
+        ["ui"],
+        ["ui"],
       ]);
-    }
-  });
+      for (const file of files) {
+        const selected = createOxlintFileScope([file], cwd).selectShards(parts);
+        expect(selected).toHaveLength(1);
+        expect(selected[0]!.args.slice(2)).toEqual([file]);
+        expect(selected[0]!.canonicalTargets).toEqual([
+          file.startsWith("ui/") ? "ui" : file.split("/").slice(0, 2).join("/"),
+        ]);
+      }
+    },
+  );
 
-  it("projects present source files when a sparse checkout omits UI", () => {
+  it("projects present source files when a sparse checkout omits UI", async () => {
     const cwd = createTempDir("openclaw-oxlint-core-sparse-");
     const file = "src/agents/root.ts";
     mkdirSync(join(cwd, "src/agents"), { recursive: true });
@@ -960,15 +973,9 @@ describe("run-oxlint", () => {
       createOxlintShards({ cwd, splitCore: true }),
       new Set(["core"]),
     );
-    const selected = selectCoreOxlintStripe(
-      shards,
-      { index: 1, total: 1 },
-      {
-        cwd,
-        platform: "linux",
-        isolateLargeTargets: true,
-        splitLargeSelections: true,
-      },
+    const selected = await splitCoreOxlintSelections(
+      selectCoreOxlintStripe(shards, { index: 1, total: 1 }, { isolateLargeTargets: true }),
+      { cwd, platform: process.platform === "win32" ? "win32" : "linux" },
     );
     expect(
       createOxlintFileScope([file], cwd)
@@ -977,7 +984,7 @@ describe("run-oxlint", () => {
     ).toEqual([[file]]);
   });
 
-  it.each(["win32", "darwin"] as const)("retains directory arguments on %s", (platform) => {
+  it.each(["win32", "darwin"] as const)("retains directory arguments on %s", async (platform) => {
     const shards = [
       {
         name: "core:src:agents",
@@ -989,15 +996,9 @@ describe("run-oxlint", () => {
       reads++;
       throw new Error("non-Linux selections must not expand root files");
     };
-    const selected = selectCoreOxlintStripe(
-      shards,
-      { index: 1, total: 1 },
-      {
-        platform,
-        isolateLargeTargets: true,
-        splitLargeSelections: true,
-        readDir,
-      },
+    const selected = await splitCoreOxlintSelections(
+      selectCoreOxlintStripe(shards, { index: 1, total: 1 }, { isolateLargeTargets: true }),
+      { platform, readDir },
     );
     expect(selected[0]!.args).toEqual(shards[0]!.args);
     expect(reads).toBe(0);
@@ -1005,7 +1006,7 @@ describe("run-oxlint", () => {
 
   it.runIf(process.platform !== "win32")(
     "preserves native file coverage, symlinks and ignores across physical core parts",
-    () => {
+    async () => {
       const cwd = createTempDir("openclaw-oxlint-core-native-parts-");
       const included = [
         "src/agents/root.ts",
@@ -1073,19 +1074,17 @@ describe("run-oxlint", () => {
         createOxlintShards({ cwd, splitCore: true }),
         new Set(["core"]),
       );
-      for (const target of ["src/agents", "src/gateway", "ui"]) {
-        const parts = [1, 2, 3, 4, 5].flatMap((index) =>
-          selectCoreOxlintStripe(
-            shards,
-            { index, total: 5 },
-            {
-              cwd,
-              isolateLargeTargets: true,
-              splitLargeSelections: true,
-              platform: "linux",
-            },
-          ).filter((shard) => shard.canonicalTargets?.includes(target)),
+      const selections = [];
+      for (const index of [1, 2, 3, 4, 5]) {
+        selections.push(
+          ...(await splitCoreOxlintSelections(
+            selectCoreOxlintStripe(shards, { index, total: 5 }, { isolateLargeTargets: true }),
+            { cwd, platform: "linux" },
+          )),
         );
+      }
+      for (const target of ["src/agents", "src/gateway", "ui"]) {
+        const parts = selections.filter((shard) => shard.canonicalTargets?.includes(target));
         expect(parts).toHaveLength(2);
         const baseline = inventory([target]);
         const split = parts.flatMap((part) => inventory(part.args.slice(2))).toSorted();
@@ -1154,20 +1153,98 @@ describe("run-oxlint", () => {
           args: ["--tsconfig", "config/tsconfig/oxlint.core.json", "src/agents"],
         },
       ];
-      expect(() =>
-        selectCoreOxlintStripe(
-          shards,
-          { index: 1, total: 1 },
-          {
-            cwd,
-            platform: "linux",
-            isolateLargeTargets: true,
-            splitLargeSelections: true,
-            deadline: 0,
-          },
-        ),
-      ).toThrow("core stripe deadline expired before file discovery");
+      await expect(
+        splitCoreOxlintSelections(shards, {
+          cwd,
+          platform: "linux",
+          deadline: 0,
+        }),
+      ).rejects.toThrow("core stripe deadline expired before file discovery");
       expect(readFileSync(join(cwd, "discoveries"), "utf8").trim().split("\n")).toHaveLength(1);
+    },
+  );
+
+  it.runIf(process.platform === "linux").each(["signal", "overflow", "failure"])(
+    "joins physical core discovery and stops before shards on %s",
+    async (mode) => {
+      const cwd = createTempDir("openclaw-oxlint-discovery-stop-");
+      for (const owner of ["agents", "gateway"]) {
+        mkdirSync(join(cwd, "src", owner), { recursive: true });
+        writeFileSync(join(cwd, "src", owner, "root.ts"), "export {};\n");
+      }
+      mkdirSync(join(cwd, "node_modules/.bin"), { recursive: true });
+      const descendant =
+        "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); process.send('ready');";
+      writeModule(join(cwd, "node_modules/.bin/oxlint"), [
+        `#!${process.execPath}`,
+        "const fs = require('node:fs');",
+        "fs.appendFileSync('discoveries', process.pid + '\\n');",
+        mode === "failure"
+          ? "fs.writeFileSync('ready', JSON.stringify([process.pid])); process.stdout.write('src/agents/root.ts\\n', () => process.exit(7));"
+          : [
+              "process.on('SIGTERM', () => {});",
+              `const child = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });`,
+              "child.once('message', () => {",
+              "fs.writeFileSync('ready.tmp', JSON.stringify([process.pid, child.pid])); fs.renameSync('ready.tmp', 'ready');",
+              mode === "overflow" ? "process.stdout.write(Buffer.alloc(4 * 1024 * 1024 + 1));" : "",
+              "}); setInterval(() => {}, 1000);",
+            ].join("\n"),
+      ]);
+      // The discovery shim must be executable for the same native-bin entry point.
+      chmodSync(join(cwd, "node_modules/.bin/oxlint"), 0o755);
+      const child = spawn(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `import { main } from ${JSON.stringify(RUN_OXLINT_SHARDS_URL)}; process.exitCode = await main(['--only=core', '--split-core', '--core-stripe=1/1']);`,
+        ],
+        {
+          cwd,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            OPENCLAW_LOCAL_CHECK: "0",
+            OPENCLAW_CI_STATIC_EVIDENCE: "1",
+            OPENCLAW_OXLINT_SHARD_TIMEOUT_MS: "3000",
+            OPENCLAW_OXLINT_SHARD_KILL_GRACE_MS: "25",
+          },
+        },
+      );
+      const completion = waitForChildClose(child, 7_000);
+      void completion.catch(() => undefined);
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      let pids: number[] = [];
+      try {
+        await waitForFile(join(cwd, "ready"), 3_000);
+        pids = JSON.parse(readFileSync(join(cwd, "ready"), "utf8")) as number[];
+        if (mode === "signal") process.kill(child.pid!, "SIGTERM");
+        const result = await completion;
+        expect(result, stderr).toEqual({ code: mode === "signal" ? 143 : 1, signal: null });
+        if (mode === "overflow")
+          expect(stderr).toContain("core file discovery exceeded 4 MiB output");
+        if (mode === "failure") expect(stderr).toContain("core file discovery failed (exit 7)");
+        expect(stdout).not.toContain("[ci-static:oxlint:");
+        expect(stderr).not.toContain("[oxlint] shard concurrency");
+        expect(readFileSync(join(cwd, "discoveries"), "utf8").trim().split("\n")).toHaveLength(1);
+        for (const pid of pids) await waitForDead(pid, 1_000);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        await completion.catch(() => undefined);
+        if (pids.length === 0 && existsSync(join(cwd, "ready"))) {
+          pids = JSON.parse(readFileSync(join(cwd, "ready"), "utf8")) as number[];
+        }
+        for (const pid of pids) {
+          if (isProcessAlive(pid)) process.kill(pid, "SIGKILL");
+        }
+      }
     },
   );
 
