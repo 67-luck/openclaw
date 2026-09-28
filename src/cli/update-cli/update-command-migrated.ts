@@ -39,7 +39,10 @@ import {
   stripGatewayServiceMarkerEnv,
 } from "./update-command-service-env.js";
 import { createWindowsTaskAutoStartGuard } from "./update-command-service-maintenance.js";
-import { recordUpdatePackageCompletion } from "./update-command-terminal.js";
+import {
+  deferMigratedUpdateCommandTerminalResult,
+  recordUpdatePackageCompletion,
+} from "./update-command-terminal.js";
 
 export type { MigratedUpdateFinalizationResult } from "./update-command-migrated-types.js";
 
@@ -117,7 +120,7 @@ export async function continueMigratedUpdateInFreshProcess(
   Pick<
     MigratedUpdateFinalizationResult,
     "result" | "exitCode" | "automaticTriage" | "candidateStartAttempted"
-  > & { databaseRollbackAvailable?: true }
+  > & { databaseRollbackAvailable?: true; preparedFailure?: UpdateCommandFailure }
 > {
   if (params.opts.recovery) {
     throw new UpdateCommandRecoveryPendingError("Full-state checkpoint recovery is deferred.");
@@ -322,9 +325,7 @@ export async function continueMigratedUpdateInFreshProcess(
         databaseRollbackAvailable: true,
       };
     }
-    if (child.stdout) {
-      process.stdout.write(child.stdout);
-    }
+    const preparedFailure = deferMigratedUpdateCommandTerminalResult(run, response, child.stdout);
     try {
       await windowsRecovery?.complete(
         response.result.status === "ok" || isUpdateGatewayReadinessPending(response.result),
@@ -350,6 +351,7 @@ export async function continueMigratedUpdateInFreshProcess(
       exitCode: response.exitCode,
       automaticTriage: response.automaticTriage,
       candidateStartAttempted: response.candidateStartAttempted,
+      preparedFailure,
     };
   } catch (error) {
     if (error instanceof UpdateCommandRecoveryPendingError) {
