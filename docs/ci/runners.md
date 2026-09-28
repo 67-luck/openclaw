@@ -75,6 +75,12 @@ reconciliation, and producer work.
 
 ### Blacksmith runner capacity
 
+The Linux check Testbox requests `blacksmith-32vcpu-ubuntu-2404` for isolated
+validation that needs more than the observed 15.42 GiB of the 16-class. Pull
+request hydration checks remain on hosted Ubuntu. The request adds no jobs or
+worker parallelism; each workload must still check the delivered memory and CPU
+capacity before execution.
+
 Npm preflight retains `blacksmith-32vcpu-ubuntu-2404`. Main CI previously used
 the same class for test types, core type stripes, and runtime-topology checks
 to compensate for smaller delivered machines.
