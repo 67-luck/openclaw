@@ -6,7 +6,7 @@ permissions:
   contents: read
 jobs:
   macos-proof:
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: macos-26
     timeout-minutes: 35
     env:
       SOURCE_SHA: 375ab9bc5a63e55e9639c7ee4a68e8bf24716880
