@@ -5795,6 +5795,15 @@ describe("test selector native source facts", () => {
           expect(
             readTestSelectorSourceFacts(
               cwd,
+              files,
+              ["scripts/tool.mts", "scripts/tool"],
+              16 * 1024 * 1024,
+              { matchingOnly: true },
+            ),
+          ).toEqual([{ file: "large.mts", ...expectedFacts }]);
+          expect(
+            readTestSelectorSourceFacts(
+              cwd,
               [{ file: "large.mts", parseImports: false }],
               ["scripts/tool.mts"],
               16 * 1024 * 1024,

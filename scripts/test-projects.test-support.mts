@@ -2050,22 +2050,23 @@ function readImportGraphEdges(
   const requests = files
     .map((file) => ({ file, parseImports: !cachedImportGraphEdges.has(cacheKey(file)) }))
     .filter(({ parseImports }) => parseImports || terms.length > 0);
-  return readTestSelectorSourceFacts(cwd, requests, terms, GIT_LS_FILES_MAX_BUFFER_BYTES).map(
-    ({ file, imports, typeOnlyImports, matches, references }) => {
-      const edges = cachedImportGraphEdges.get(cacheKey(file)) ?? {
-        file,
-        specifiers: imports,
-        typeOnlySpecifiers: new Set(typeOnlyImports),
-        imports: resolve(file, imports),
-        references: new Set<string>(),
-      };
-      for (const reference of references) {
-        edges.references.add(reference);
-      }
-      cachedImportGraphEdges.set(cacheKey(file), edges);
-      return { edges, matches };
-    },
-  );
+  return readTestSelectorSourceFacts(cwd, requests, terms, GIT_LS_FILES_MAX_BUFFER_BYTES, {
+    // Unmatched files stay uncached so a later full-graph read still parses them.
+    matchingOnly: terms.length > 0,
+  }).map(({ file, imports, typeOnlyImports, matches, references }) => {
+    const edges = cachedImportGraphEdges.get(cacheKey(file)) ?? {
+      file,
+      specifiers: imports,
+      typeOnlySpecifiers: new Set(typeOnlyImports),
+      imports: resolve(file, imports),
+      references: new Set<string>(),
+    };
+    for (const reference of references) {
+      edges.references.add(reference);
+    }
+    cachedImportGraphEdges.set(cacheKey(file), edges);
+    return { edges, matches };
+  });
 }
 
 function listImportGraphGrepMatches(
@@ -2093,18 +2094,11 @@ function listImportGraphGrepMatches(
     ? extensions.flatMap((ext) => [`.test${ext}`, `.spec${ext}`])
     : extensions;
   const grepPaths = importGraphPathspecs(roots, suffixes);
-  // A shorter literal already selects every file selected by a containing term.
-  const grepTerms: string[] = [];
-  for (const term of missing.toSorted((left, right) => left.length - right.length)) {
-    if (!grepTerms.some((shorter) => term.includes(shorter))) {
-      grepTerms.push(term);
-    }
-  }
   const spawnOptions: SpawnSyncOptionsWithStringEncoding = {
     cwd,
     encoding: "utf8",
-    // Preserve embedded newlines because Git interprets them as separate patterns.
-    input: (missing.some((term) => term.includes("\n")) ? missing : grepTerms).join("\n"),
+    // A frontier can exceed the platform argv limit; Git accepts stdin patterns.
+    input: missing.join("\n"),
     maxBuffer: GIT_LS_FILES_MAX_BUFFER_BYTES,
     stdio: ["pipe", "pipe", "pipe"],
   };
