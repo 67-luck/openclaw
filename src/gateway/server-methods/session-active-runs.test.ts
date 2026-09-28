@@ -170,6 +170,9 @@ it("keeps prebuilt active-run indexes in parity with per-row scans", () => {
   const context = {
     chatAbortControllers: new Map([
       ["run-main", { sessionKey: "agent:main:main", sessionId: "session-main" }],
+      ["run-alias", { sessionKey: "alias", sessionId: "session-main", agentId: "main" }],
+      ["run-id", { sessionId: "session-main", agentId: "main" }],
+      ["run-other-agent", { sessionKey: "alias", sessionId: "session-main", agentId: "work" }],
       ["run-global", { sessionKey: "global", agentId: "work" }],
       ["run-hidden", { sessionKey: "agent:main:hidden", projectSessionActive: false }],
     ]),
@@ -205,6 +208,18 @@ it("keeps prebuilt active-run indexes in parity with per-row scans", () => {
       expect(project(activeCase)).toEqual(
         resolveVisibleActiveSessionRunState({ context, ...activeCase }),
       );
+    }
+    for (const requestedKey of ["agent:main:main", "alias"]) {
+      const activeCase = {
+        requestedKey,
+        canonicalKey: "agent:main:main",
+        sessionId: "session-main",
+        agentId: "main",
+      };
+      expect(project(activeCase)).toEqual({
+        active: true,
+        runIds: ["run-alias", "run-id", "run-main"],
+      });
     }
   } finally {
     clearAgentRunContext("projected-key");

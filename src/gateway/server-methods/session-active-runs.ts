@@ -213,10 +213,15 @@ export function resolveVisibleActiveSessionRunState(params: {
       sessionId,
     })
   ).filter(matchesRequestedSession);
-  const hasTerminalPersistence = matchingTrackedRuns.some((active) => active.terminalPersistence);
-  const runIds = matchingTrackedRuns
-    .filter((active) => !active.terminalPersistence)
-    .map((active) => active.runId);
+  let hasTerminalPersistence = false;
+  const runIds: string[] = [];
+  for (const active of matchingTrackedRuns) {
+    if (active.terminalPersistence) {
+      hasTerminalPersistence = true;
+    } else {
+      runIds.push(active.runId);
+    }
+  }
   const directSubagent = getLatestLiveSubagentRunByChildSessionKey(params.canonicalKey);
   const matchesDirectSubagentSession = Boolean(
     directSubagent &&
@@ -315,17 +320,24 @@ export function createVisibleActiveSessionRunProjector(
       Parameters<typeof resolveVisibleActiveSessionRunState>[0],
       "context" | "trackedActiveRuns" | "projectedAgentRunIndex" | "includeTerminalPersistence"
     >,
-  ) =>
-    resolveVisibleActiveSessionRunState({
+  ) => {
+    const trackedActiveRuns = byKey.get(params.canonicalKey)?.slice() ?? [];
+    if (params.requestedKey !== params.canonicalKey) {
+      for (const run of byKey.get(params.requestedKey) ?? []) {
+        trackedActiveRuns.push(run);
+      }
+    }
+    for (const run of byId.get(params.sessionId?.trim() ?? "") ?? []) {
+      // Each captured run belongs to one key bucket and one ID bucket.
+      if (run.sessionKey !== params.canonicalKey && run.sessionKey !== params.requestedKey) {
+        trackedActiveRuns.push(run);
+      }
+    }
+    return resolveVisibleActiveSessionRunState({
       ...params,
       context,
       projectedAgentRunIndex,
-      trackedActiveRuns: [
-        ...new Set([
-          ...(byKey.get(params.canonicalKey) ?? []),
-          ...(byKey.get(params.requestedKey) ?? []),
-          ...(byId.get(params.sessionId?.trim() ?? "") ?? []),
-        ]),
-      ],
+      trackedActiveRuns,
     });
+  };
 }
