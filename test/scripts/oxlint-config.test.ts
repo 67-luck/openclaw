@@ -32,6 +32,50 @@ function readJson(filePath: string): unknown {
   return JSON5.parse(fs.readFileSync(filePath, "utf8"));
 }
 
+// Exercise the installed compiler contract: reducing checker caches must preserve
+// both diagnostics and nearest-project discovery, including plugin test fallback.
+function compareCheckerPools<T extends ReturnType<typeof spawnSync>>(
+  root: string,
+  lint: () => T,
+): T {
+  const configPath = path.join(root, "tsconfig.json");
+  const original = fs.readFileSync(configPath, "utf8");
+  const config = JSON5.parse(original);
+  expect(config.compilerOptions.checkers).toBe(1);
+  const single = lint();
+  try {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ ...config, compilerOptions: { ...config.compilerOptions, checkers: 4 } }),
+    );
+    const parallel = lint();
+    expect(single.error).toBeUndefined();
+    expect(parallel.error).toBeUndefined();
+    expect(single.status, single.stderr?.toString()).toBe(parallel.status);
+    const diagnosticReport = (result: ReturnType<typeof spawnSync>) => {
+      const report = JSON.parse(result.stdout!.toString());
+      return {
+        files: report.number_of_files,
+        diagnostics: report.diagnostics
+          .map((diagnostic: unknown) => JSON.stringify(diagnostic))
+          .toSorted(),
+      };
+    };
+    expect(diagnosticReport(single)).toEqual(diagnosticReport(parallel));
+    const projects = (result: ReturnType<typeof spawnSync>) =>
+      result
+        .stderr!.toString()
+        .split("\n")
+        .filter((line) => line.includes("Got tsconfig for file "))
+        .map((line) => line.slice(line.indexOf("Got tsconfig for file ")))
+        .toSorted();
+    expect(projects(single)).toEqual(projects(parallel));
+    return single;
+  } finally {
+    fs.writeFileSync(configPath, original);
+  }
+}
+
 function writeSessionCompatibilityFixture(root: string) {
   const directory = path.join(root, "src/config/sessions");
   fs.mkdirSync(directory, { recursive: true });
@@ -219,32 +263,34 @@ describe("oxlint config", () => {
       "extensions/sample/src/owner.test.ts",
       "extensions/sample/src/test-support/helper.ts",
     ];
-    const result = spawnSync(
-      process.execPath,
-      [
-        path.resolve("node_modules/oxlint/bin/oxlint"),
-        "--config",
-        ".oxlintrc.json",
-        "--type-aware",
-        "--format",
-        "json",
-        "--threads=1",
-        ...selected,
-      ],
-      {
-        cwd: tempRoot,
-        encoding: "utf8",
-        timeout: 10_000,
-        env: {
-          ...process.env,
-          OXC_LOG: "debug",
-          GOMAXPROCS: "2",
-          OXLINT_TSGOLINT_PATH: path.resolve(
-            "node_modules/.bin",
-            process.platform === "win32" ? "tsgolint.CMD" : "tsgolint",
-          ),
+    const result = compareCheckerPools(tempRoot, () =>
+      spawnSync(
+        process.execPath,
+        [
+          path.resolve("node_modules/oxlint/bin/oxlint"),
+          "--config",
+          ".oxlintrc.json",
+          "--type-aware",
+          "--format",
+          "json",
+          "--threads=1",
+          ...selected,
+        ],
+        {
+          cwd: tempRoot,
+          encoding: "utf8",
+          timeout: 10_000,
+          env: {
+            ...process.env,
+            OXC_LOG: "debug",
+            GOMAXPROCS: "2",
+            OXLINT_TSGOLINT_PATH: path.resolve(
+              "node_modules/.bin",
+              process.platform === "win32" ? "tsgolint.CMD" : "tsgolint",
+            ),
+          },
         },
-      },
+      ),
     );
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(1);
@@ -328,30 +374,32 @@ describe("oxlint config", () => {
       fs.writeFileSync(target, content);
     }
     const selected = ["src/owner.ts", "ui/owner.ts"];
-    const result = spawnSync(
-      process.execPath,
-      [
-        path.resolve("node_modules/oxlint/bin/oxlint"),
-        "--type-aware",
-        "--format",
-        "json",
-        "--threads=1",
-        ...selected,
-      ],
-      {
-        cwd: tempRoot,
-        encoding: "utf8",
-        timeout: 10_000,
-        env: {
-          ...process.env,
-          OXC_LOG: "debug",
-          GOMAXPROCS: "2",
-          OXLINT_TSGOLINT_PATH: path.resolve(
-            "node_modules/.bin",
-            process.platform === "win32" ? "tsgolint.CMD" : "tsgolint",
-          ),
+    const result = compareCheckerPools(tempRoot, () =>
+      spawnSync(
+        process.execPath,
+        [
+          path.resolve("node_modules/oxlint/bin/oxlint"),
+          "--type-aware",
+          "--format",
+          "json",
+          "--threads=1",
+          ...selected,
+        ],
+        {
+          cwd: tempRoot,
+          encoding: "utf8",
+          timeout: 10_000,
+          env: {
+            ...process.env,
+            OXC_LOG: "debug",
+            GOMAXPROCS: "2",
+            OXLINT_TSGOLINT_PATH: path.resolve(
+              "node_modules/.bin",
+              process.platform === "win32" ? "tsgolint.CMD" : "tsgolint",
+            ),
+          },
         },
-      },
+      ),
     );
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(1);

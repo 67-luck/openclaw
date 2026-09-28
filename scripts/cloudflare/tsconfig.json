@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "checkers": 1,
     "lib": ["ES2022", "WebWorker"],
     "module": "ESNext",
     "moduleResolution": "Bundler",

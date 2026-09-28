@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "checkers": 1,
     "allowImportingTsExtensions": true,
     "allowSyntheticDefaultImports": true,
     "declaration": true,
