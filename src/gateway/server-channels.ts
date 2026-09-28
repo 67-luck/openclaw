@@ -884,7 +884,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
                       try {
                         // The host supplies account liveness when a plugin has no finer guard.
                         return params.isOriginCurrent
-                          ? params.isOriginCurrent(request, handoffConfig) === true
+                          ? params.isOriginCurrent(request, handoffConfig)
                           : getRuntimeConfig() === cfg &&
                               (handoffConfig === undefined || handoffConfig === cfg);
                       } catch {

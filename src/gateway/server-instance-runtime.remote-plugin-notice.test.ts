@@ -119,7 +119,11 @@ describe("Gateway-owned remote plugin approval requester notice", () => {
             selectionLabel: "Telegram",
             docsPath: "/channels/telegram",
           },
-          outbound: { ...plugin.outbound, sendText: telegramSendText },
+          outbound: {
+            deliveryMode: "direct",
+            resolveTarget: ({ to }) => ({ ok: true, to: to?.trim() ?? "" }),
+            sendText: telegramSendText,
+          },
         };
         const registrySnapshot = captureActivePluginRegistrySnapshot();
         stageActivePluginRegistry(

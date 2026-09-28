@@ -398,10 +398,11 @@ describe("server-channels approval bootstrap", () => {
       expect(hostGuard?.(cfg)).toBe(true);
 
       await manager.stopChannel("discord", DEFAULT_ACCOUNT_ID);
-      if (!discordRuntime) {
+      const stoppedDiscordRuntime = discordRuntime;
+      if (!stoppedDiscordRuntime) {
         throw new Error("discord account did not receive its Gateway approval runtime");
       }
-      expect(() => discordRuntime.subscribe(discordSubscriber)).toThrow(/no longer active/);
+      expect(() => stoppedDiscordRuntime.subscribe(discordSubscriber)).toThrow(/no longer active/);
 
       gateway.approvalEvents.publishRequested("plugin", {
         ...request,
