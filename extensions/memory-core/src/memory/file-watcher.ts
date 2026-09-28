@@ -1,9 +1,11 @@
-import type { WatchInvalidation, WatchHealth, WatchSubscription } from "@openclaw/fs-safe/watch";
 import {
   watch,
   resolveFsObservationMode,
   resolveFsObservationIntervalMs,
   ObservationSampleCloseError,
+  type WatchHealth,
+  type WatchInvalidation,
+  type WatchSubscription,
 } from "openclaw/plugin-sdk/file-access-runtime";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
 import type { MemoryWorkspaceWatchRequest } from "openclaw/plugin-sdk/memory-core-host-engine-storage";

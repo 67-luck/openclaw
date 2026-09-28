@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { root, type Root } from "@openclaw/fs-safe/root";
+import { root } from "@openclaw/fs-safe/root";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import type { ObservationRoot } from "openclaw/plugin-sdk/file-access-runtime";
 import { createOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
@@ -13,7 +14,7 @@ import {
 } from "./watch-settle.js";
 
 let state: Awaited<ReturnType<typeof createOpenClawTestState>>;
-let authority: Root;
+let authority: ObservationRoot;
 let file: MemoryWatchFile;
 beforeEach(async () => {
   state = await createOpenClawTestState({ label: "memory-settling" });

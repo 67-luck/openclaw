@@ -1,16 +1,16 @@
-import type { Root } from "@openclaw/fs-safe/root";
 import type {
+  ObservationRoot,
   WatchInvalidation,
   WatchHealth,
   WatchOptions,
   WatchSubscription,
-} from "@openclaw/fs-safe/watch";
+} from "openclaw/plugin-sdk/file-access-runtime";
 import { vi } from "vitest";
 
 /** Controlled library boundary; no directory discovery or event transport emulation. */
 export function createMemoryObservationHarness() {
   const observations: Array<{
-    root: Root;
+    root: ObservationRoot;
     options: WatchOptions;
     subscription: WatchSubscription;
     close: ReturnType<typeof vi.fn<() => Promise<void>>>;
@@ -21,7 +21,7 @@ export function createMemoryObservationHarness() {
     observations,
     closeBarrier: undefined as Promise<void> | undefined,
     created: undefined as (() => void) | undefined,
-    watch: vi.fn((authority: Root, options: WatchOptions): WatchSubscription => {
+    watch: vi.fn((authority: ObservationRoot, options: WatchOptions): WatchSubscription => {
       let health: WatchHealth = {
         state: "ready",
         mode: options.mode === "poll" ? "poll" : "events",

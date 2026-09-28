@@ -50,7 +50,16 @@ export const removePathWithinRoot: (params: {
 export { basenameFromMediaSource, safeFileURLToPath } from "@openclaw/fs-safe/advanced";
 export { isPathInside, isPathStrictlyInside } from "../infra/path-guards.js";
 export { getFileWatchCapacityCode } from "../infra/fs-watch-errors.js";
-export { watch } from "@openclaw/fs-safe/watch";
+export type { Root as ObservationRoot } from "@openclaw/fs-safe/root";
+export {
+  watch,
+  type WatchEntry,
+  type WatchHealth,
+  type WatchInvalidation,
+  type WatchOptions,
+  type WatchScope,
+  type WatchSubscription,
+} from "@openclaw/fs-safe/watch";
 export {
   resolveFsObservationMode,
   resolveFsObservationIntervalMs,

@@ -2,9 +2,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { WatchSubscription } from "@openclaw/fs-safe/watch";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import * as observation from "openclaw/plugin-sdk/file-access-runtime";
+import type { WatchSubscription } from "openclaw/plugin-sdk/file-access-runtime";
 import {
   resolveMemorySearchConfig,
   type OpenClawConfig,

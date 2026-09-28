@@ -54,9 +54,10 @@ refresh path.
 `resolveFsObservationMode(env?)` and `resolveFsObservationIntervalMs(env?)` from
 `openclaw/plugin-sdk/file-access-runtime` share the host's preserved
 [`CHOKIDAR_*` environment contract](/help/environment#filesystem-observation).
-Use `watch` from the same SDK entrypoint with SDK-admitted Roots. These operations
-share the host's fs-safe instance; a plugin's separate dependency copy cannot
-observe those Roots. Type-only imports from `@openclaw/fs-safe/watch` remain valid.
+Use `admitObservationRoot`, `watch`, and their types from the same SDK entrypoint,
+including `ObservationRoot`, `WatchOptions`, and `WatchSubscription`. These
+operations share the host's fs-safe instance; a plugin's separate dependency
+copy cannot observe those Roots.
 Pass the resolved mode and `pollIntervalMs` to `watch` so
 automatic fallback preserves the polling interval. Keep parsing, settling,
 retries, and indexing in the consumer. With fs-safe, classify native watch capacity through

@@ -1,9 +1,11 @@
 import path from "node:path";
-import type { Root } from "@openclaw/fs-safe/root";
-import { readObservationSnapshot } from "openclaw/plugin-sdk/file-access-runtime";
+import {
+  readObservationSnapshot,
+  type ObservationRoot,
+} from "openclaw/plugin-sdk/file-access-runtime";
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 
-export type MemoryWatchFile = { root: Root; relative: string; sample: boolean };
+export type MemoryWatchFile = { root: ObservationRoot; relative: string; sample: boolean };
 type MemoryWatchEventStats = { size: number; mtimeMs: number };
 type PendingFile = { file: MemoryWatchFile; snapshot: MemoryWatchEventStats | null };
 export type MemoryWatchSettleQueue = Map<string, PendingFile>;

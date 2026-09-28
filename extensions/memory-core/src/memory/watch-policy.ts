@@ -1,11 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { Root } from "@openclaw/fs-safe/root";
-import type { WatchEntry, WatchScope } from "@openclaw/fs-safe/watch";
 import {
   admitObservationRoot,
   isPathInside,
   observationPrefixKind,
+  type ObservationRoot,
+  type WatchEntry,
+  type WatchScope,
 } from "openclaw/plugin-sdk/file-access-runtime";
 import { classifyMemoryMultimodalPath } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
 import {
@@ -18,7 +19,7 @@ import type { MemoryWatchFile } from "./watch-settle.js";
 type Settings = MemoryWorkspaceWatchRequest["settings"];
 type Target = { path: string; kind: WatchScope["kind"]; core: boolean };
 type Selection = { scope: WatchScope; lexical: string; core: boolean; alias: boolean };
-export type MemoryObservation = { root: Root; selections: Selection[] };
+export type MemoryObservation = { root: ObservationRoot; selections: Selection[] };
 const IGNORED = new Set([
   ".git",
   "node_modules",
@@ -32,7 +33,7 @@ const IGNORED = new Set([
 // Lists only the configured path's prefixes, never a second recursive watcher.
 // The first symbolic entry must be observed instead of a scope through that link.
 async function firstLink(
-  authority: Root,
+  authority: ObservationRoot,
   relative: string,
   signal: AbortSignal,
 ): Promise<string | undefined> {
@@ -53,7 +54,7 @@ async function firstLink(
 }
 
 export class MemoryWatchPolicy {
-  private readonly roots = new Map<string, Root>();
+  private readonly roots = new Map<string, ObservationRoot>();
   private readonly targets: Target[];
   private readonly extras: ReturnType<typeof normalizeExtraMemoryPathEntries>;
 
@@ -72,7 +73,7 @@ export class MemoryWatchPolicy {
     ];
   }
 
-  private async admit(boundary: string, signal: AbortSignal): Promise<Root> {
+  private async admit(boundary: string, signal: AbortSignal): Promise<ObservationRoot> {
     const cached = this.roots.get(boundary);
     if (cached) {
       return cached;
@@ -84,8 +85,8 @@ export class MemoryWatchPolicy {
   }
 
   async observations(signal: AbortSignal): Promise<MemoryObservation[]> {
-    const groups = new Map<Root, MemoryObservation>();
-    const add = (authority: Root, selection: Selection) => {
+    const groups = new Map<ObservationRoot, MemoryObservation>();
+    const add = (authority: ObservationRoot, selection: Selection) => {
       const group = groups.get(authority) ?? { root: authority, selections: [] };
       group.selections.push(selection);
       groups.set(authority, group);
