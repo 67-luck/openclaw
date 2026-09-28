@@ -120,6 +120,7 @@ type AgentsProps = {
   onConfigSave: () => void;
   onIdentityFieldChange: (field: "name" | "emoji", value: string) => void;
   onIdentityAvatarSelect: (file: File) => void;
+  onIdentityClawmojiEdit: () => void;
   onIdentitySave: () => void;
   onModelChange: (agentId: string, modelId: string | null) => void;
   onDecisionModelChange: (agentId: string, modelId: string | null) => void;
@@ -309,6 +310,7 @@ export function renderAgents(props: AgentsProps) {
                             onConfigSave: props.onConfigSave,
                             onIdentityFieldChange: props.onIdentityFieldChange,
                             onIdentityAvatarSelect: props.onIdentityAvatarSelect,
+                            onIdentityClawmojiEdit: props.onIdentityClawmojiEdit,
                             onIdentitySave: props.onIdentitySave,
                             onModelChange: props.onModelChange,
                             onDecisionModelChange: props.onDecisionModelChange,

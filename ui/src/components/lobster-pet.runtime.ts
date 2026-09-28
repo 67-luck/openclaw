@@ -1,8 +1,10 @@
 import { LitElement, nothing, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
 import type { ThemeArtwork } from "../../../packages/gateway-protocol/src/theme.ts";
+import { parseClawmojiSource, type Clawmoji } from "../../../src/shared/clawmoji.js";
 import { isLobsterDay } from "../../../src/shared/lobster-day.js";
 import { patchSettings } from "../app/settings.ts";
+import { clawmojiLook } from "./clawmoji-look.ts";
 import * as dex from "./lobster-dex.ts";
 import * as contract from "./lobster-pet-contract.ts";
 import {
@@ -27,6 +29,9 @@ class LobsterPet extends LitElement {
   }
 
   @property({ attribute: false }) seed = 0;
+  @property({ attribute: false }) clawmojiSource: string | null = null;
+  @property({ attribute: false }) clawmojiName: string | null = null;
+  private clawmoji: Clawmoji | null = null;
   @property({ attribute: false }) mode: contract.LobsterPetMode = "idle";
 
   @property({ attribute: false }) visitsEnabled = true;
@@ -177,15 +182,21 @@ class LobsterPet extends LitElement {
     if (!this.isConnected) {
       return;
     }
-    const seedChanged = this.look === null || changed.has("seed");
+    const seedChanged = this.look === null || changed.has("seed") || changed.has("clawmojiSource");
     if (seedChanged) {
-      this.look = lobsterLook.createLobsterPetLook(this.seed);
+      this.interactions.suspend();
+      this.clawmoji = parseClawmojiSource(this.clawmojiSource);
+      this.look = this.clawmoji
+        ? clawmojiLook(this.clawmoji)
+        : lobsterLook.createLobsterPetLook(this.seed);
       this.rng = lobsterLook.mulberry32(this.seed ^ 0x9e3779b9);
       this.motionRng = lobsterLook.mulberry32(this.seed ^ 0xf1002);
       this.visitRng = lobsterLook.mulberry32(this.seed ^ 0x5eaf00d);
       this.entranceRng = lobsterLook.mulberry32((this.seed ^ 0xe27a) >>> 0);
-      this.identity = plans.resolveLobsterLoadIdentity(this.seed, this.look);
-      this.look = this.identity.look;
+      // Custom identity must survive rare-load, holiday, and collection variations.
+      this.identity = this.clawmoji ? null : plans.resolveLobsterLoadIdentity(this.seed, this.look);
+      this.look = this.identity?.look ?? this.look;
+      this.anniversary = false;
       this.spotPct = this.look.spotPct;
       this.facing = this.look.facing;
       // Reset the act loop inside the update pass; deferring state flips to
@@ -203,11 +214,12 @@ class LobsterPet extends LitElement {
         this.shellTimer = null;
       }
       // The Elder never molts: it is already every size it will ever need.
-      this.moltPlanned = plans.isLobsterMoltLoad(this.seed) && !this.identity.elder;
-      this.twinPlanned = plans.isLobsterTwinLoad(this.seed);
+      this.moltPlanned =
+        !this.clawmoji && plans.isLobsterMoltLoad(this.seed) && !this.identity?.elder;
+      this.twinPlanned = !this.clawmoji && plans.isLobsterTwinLoad(this.seed);
       this.geometry.scheduleMeasure();
       this.familiarity = dex.getLobsterFamiliarity();
-      this.sailorDay = isLobsterDay(new Date());
+      this.sailorDay = !this.clawmoji && isLobsterDay(new Date());
       this.greetedThisLoad = false;
       this.scheduleVisits();
       this.traffic.reset(this.seed);
@@ -296,7 +308,8 @@ class LobsterPet extends LitElement {
         // Entrance rolls burn once per arrival on their own stream, aligned
         // across scheduled visits and offline summons.
         this.entrance = plans.pickLobsterEntrance(this.entranceRng());
-        if (this.look) {
+        if (this.look && !this.clawmoji) {
+          // Custom designs do not count as sightings of their base palette.
           // Anniversary check reads the dex before this arrival records into
           // it: a first-ever visit today must not celebrate itself.
           this.anniversary = dex.isLobsterFirstVisitAnniversary(
@@ -455,6 +468,10 @@ class LobsterPet extends LitElement {
     this.clearVisitTimers();
     this.scheduledVisiting = false;
     if (!this.visitsEnabled || !this.residentEnabled) {
+      return;
+    }
+    if (this.clawmoji) {
+      this.armArrival(0);
       return;
     }
     // A shy share of loads never visits on their own; offline still summons.
@@ -711,7 +728,11 @@ class LobsterPet extends LitElement {
       seed: this.seed,
       movingDay: this.movingDay,
       sailorDay: this.sailorDay,
-      nameOverride: identity ? plans.lobsterLoadDisplayName(identity, this.seed) : null,
+      nameOverride: this.clawmoji
+        ? this.clawmojiName
+        : identity
+          ? plans.lobsterLoadDisplayName(identity, this.seed)
+          : null,
       flavor,
       bottle: this.traffic.bottle(),
       onPointerDown: this.interactions.handleHoldStart,

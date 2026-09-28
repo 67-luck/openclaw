@@ -39,6 +39,31 @@ or `openclaw claws add docs/reference/templates/roles/<role>` through the
 [`agents team create`](/cli/agents#agents-team-create) owns delegation wiring;
 the role Claws will carry those settings once separate Claw profile support lands.
 
+## Create a clawmoji
+
+A clawmoji is a customizable character that serves as an agent's avatar and
+visits its new-chat composer. It uses the existing lobster animations with your
+chosen colors, accessory, and personality.
+
+1. Open **Settings → Agents**, select the agent, and open **Overview → Identity**.
+2. Select **Create clawmoji**, choose a starting look, and customize it.
+3. Select **Use clawmoji**, then **Save** in Identity.
+4. Open a new chat with that agent to see its character on the composer.
+
+Use **Edit clawmoji** to change an existing design. **Share design** downloads a
+`.clawmoji.json` file; another person can select **Import design** in the creator
+to use or customize it. Imported designs contain character settings, not scripts.
+Creating or replacing an avatar requires administrator access and enabled uploads.
+
+Composer visits still respect appearance settings and reduced-motion preferences.
+A regular uploaded image remains a static avatar; it does not become the composer
+character.
+
+Claw packages preserve clawmoji stored in `agent.identity.avatar`, including the
+image and its character recipe. Editing an installed Claw's identity counts as
+local configuration drift under the existing update/export rules. Use **Share
+design** to share that customized character independently.
+
 ## Create a Claw package
 
 A package contains `package.json`, a `CLAW.md` manifest, and any conventional

@@ -1,0 +1,141 @@
+.clawmoji-editor-dialog {
+  --openclaw-modal-width: 680px;
+}
+.clawmoji-editor {
+  width: 100%;
+  max-height: var(--openclaw-modal-height-limit);
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  color: var(--text);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow-lg);
+}
+.clawmoji-editor h2 {
+  margin: 0 0 8px;
+  font-size: 22px;
+}
+.clawmoji-editor p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+}
+.clawmoji-editor__body {
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  min-height: 0;
+  overflow-y: auto;
+  gap: 28px;
+  margin: 24px 0;
+}
+.clawmoji-editor__preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+  padding: 20px 12px;
+  border-radius: 14px;
+  background: var(--bg-muted);
+}
+.clawmoji-editor__sprite {
+  display: inline-flex;
+  width: 100%;
+}
+.clawmoji-editor__sprite svg {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  stroke: none;
+  stroke-width: 0;
+}
+.clawmoji-editor__preview > .clawmoji-editor__sprite {
+  width: 144px;
+  margin: 12px 0;
+}
+.clawmoji-editor__badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.clawmoji-editor__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+.clawmoji-editor__presets {
+  display: flex;
+  gap: 8px;
+}
+.clawmoji-editor__presets .btn {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 6px;
+}
+.clawmoji-editor__colors {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.clawmoji-editor__colors input {
+  padding: 3px;
+  width: 100%;
+  height: 34px;
+}
+.clawmoji-editor__options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 12px;
+}
+.clawmoji-editor__checks {
+  display: flex;
+  gap: 18px;
+  font-size: 13px;
+}
+.clawmoji-editor__checks label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.clawmoji-editor footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.clawmoji-editor__sharing {
+  display: flex;
+  gap: 8px;
+  margin-right: auto;
+}
+.clawmoji-editor .clawmoji-editor__error {
+  color: var(--danger);
+  margin-bottom: 16px;
+}
+@media (max-width: 560px) {
+  .clawmoji-editor {
+    padding: 18px;
+  }
+  .clawmoji-editor__body {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+  .clawmoji-editor__preview {
+    padding: 12px;
+    gap: 8px;
+  }
+  .clawmoji-editor__preview > .clawmoji-editor__sprite {
+    width: 96px;
+    margin: 4px 0;
+  }
+  .clawmoji-editor__sharing {
+    width: 100%;
+    margin-bottom: 8px;
+  }
+}

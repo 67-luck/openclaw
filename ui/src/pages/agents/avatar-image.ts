@@ -5,7 +5,7 @@ import { assertUploadsEnabled } from "../../lib/uploads.ts";
 /** Uploaded avatars also mirror into prompt-injected IDENTITY.md. Keep their
     encoded form below the per-file bootstrap limit with room for identity text. */
 const AVATAR_TARGET_SIZE = 96;
-const AVATAR_EDITOR_MAX_DATA_URL_CHARS = 16_000;
+export const AVATAR_EDITOR_MAX_DATA_URL_CHARS = 16_000;
 /** PNG fallback edges, largest first. Browsers without canvas WebP encoding
     (e.g. WebKit) emit PNG, which is several times larger for detailed art. */
 const AVATAR_PNG_FALLBACK_SIZES = [AVATAR_TARGET_SIZE, 64, 48] as const;

@@ -32,8 +32,7 @@ export class LobsterPetInteractions implements ReactiveController {
 
   hostDisconnected() {
     document.removeEventListener("pointermove", this.handleGaze);
-    this.handleHoldCancel();
-    this.clearGrumpyTimer();
+    this.suspend();
     if (this.audioCtx) {
       this.audioCtx.close().catch(() => {});
       this.audioCtx = null;
@@ -41,6 +40,9 @@ export class LobsterPetInteractions implements ReactiveController {
   }
 
   suspend() {
+    // Pending gestures belong to this visitor, never its replacement or next visit.
+    this.pokeTimes = [];
+    this.lastGazeAt = 0;
     this.handleHoldCancel();
     this.clearGrumpyTimer();
     this.hooks.onGrumpyChange(false);

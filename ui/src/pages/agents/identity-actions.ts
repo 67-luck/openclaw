@@ -76,6 +76,29 @@ export function selectIdentityAvatar(
     });
 }
 
+export async function editIdentityClawmoji(
+  host: AgentIdentityEditorHost,
+  source: string | null,
+  config: ApplicationConfigCapability,
+  isCurrent: () => boolean,
+) {
+  const epoch = advanceAvatarSelectionEpoch(host);
+  const ownsEdit = () => avatarSelectionEpochs.get(host) === epoch && isCurrent();
+  try {
+    assertUploadsEnabled(config);
+    const { showClawmojiEditor } = await import("./clawmoji-editor.ts");
+    if (!ownsEdit()) return;
+    const avatar = await showClawmojiEditor(source);
+    // A modal or file read may outlive the selected agent, connection, or upload policy.
+    if (!ownsEdit() || avatar === null) return;
+    assertUploadsEnabled(config);
+    host.identityDraft = { ...host.identityDraft, avatar };
+    host.identityError = null;
+  } catch (error) {
+    if (ownsEdit()) host.identityError = formatUiError(error);
+  }
+}
+
 /** Persist the draft via agents.update, then refresh the roster and the
     identity cache so the sidebar chip and page pick up the new identity. */
 export async function saveIdentityDraft(params: {

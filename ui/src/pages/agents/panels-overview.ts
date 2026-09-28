@@ -1,5 +1,6 @@
 import { html, nothing } from "lit";
 import { normalizeAgentModelRefForConfig } from "../../../../src/config/model-input.js";
+import { parseClawmojiSource } from "../../../../src/shared/clawmoji.js";
 import type {
   AgentIdentityResult,
   AgentsFilesListResult,
@@ -77,6 +78,7 @@ export function renderAgentOverview(params: {
   onConfigSave: () => void;
   onIdentityFieldChange: (field: "name" | "emoji", value: string) => void;
   onIdentityAvatarSelect: (file: File) => void;
+  onIdentityClawmojiEdit: () => void;
   onIdentitySave: () => void;
   onModelChange: (agentId: string, modelId: string | null) => void;
   onDecisionModelChange: (agentId: string, modelId: string | null) => void;
@@ -173,7 +175,18 @@ export function renderAgentOverview(params: {
         <div class="settings-row settings-row--stacked">
           <div class="agent-identity-editor">
             <span class="agent-identity-editor__avatar" aria-hidden="true">
-              ${renderAgentIdentityAvatar({ id: agent.id, avatar: identityAvatarUrl, textAvatar: identityDraft.emoji ?? resolveAgentTextAvatar(agent, params.agentIdentity) }, "", persistedAvatarUrl ? params.identityAvatarLoader.imageErrorHandler(persistedAvatarUrl) : undefined)}
+              ${renderAgentIdentityAvatar(
+                {
+                  id: agent.id,
+                  avatar: identityAvatarUrl,
+                  textAvatar:
+                    identityDraft.emoji ?? resolveAgentTextAvatar(agent, params.agentIdentity),
+                },
+                "",
+                persistedAvatarUrl
+                  ? params.identityAvatarLoader.imageErrorHandler(persistedAvatarUrl)
+                  : undefined,
+              )}
             </span>
             <div class="agent-identity-editor__fields">
               <label class="field">
@@ -216,6 +229,19 @@ export function renderAgentOverview(params: {
                       type="button"
                       class="btn btn--sm"
                       ?disabled=${identityBusy}
+                      @click=${params.onIdentityClawmojiEdit}
+                    >
+                      ${
+                        parseClawmojiSource(
+                          identityDraft.avatar ?? params.agentIdentity?.avatarSource,
+                        )
+                          ? t("agents.identity.editClawmoji")
+                          : t("agents.identity.createClawmoji")
+                      }</button
+                    ><button
+                      type="button"
+                      class="btn btn--sm"
+                      ?disabled=${identityBusy}
                       @click=${(event: Event) => {
                         const button = event.currentTarget;
                         const input =
@@ -246,7 +272,12 @@ export function renderAgentOverview(params: {
             <button
               type="button"
               class="btn btn--sm primary"
-              ?disabled=${identityBusy || !identityDirty || identityInvalid || (identityDraft.avatar !== null && !uploadsEnabled(params.applicationConfig))}
+              ?disabled=${
+                identityBusy ||
+                !identityDirty ||
+                identityInvalid ||
+                (identityDraft.avatar !== null && !uploadsEnabled(params.applicationConfig))
+              }
               @click=${() => params.onIdentitySave()}
             >
               ${params.identitySaving ? t("common.saving") : t("common.save")}

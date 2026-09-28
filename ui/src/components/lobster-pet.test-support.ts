@@ -11,6 +11,8 @@ type LobsterPetMode = ReturnType<typeof resolveLobsterPetMode>;
 
 export type LobsterPetElement = HTMLElement & {
   gatewayVersion: string | null;
+  clawmojiSource: string | null;
+  clawmojiName: string | null;
   mode: LobsterPetMode;
   runOutcome: "ok" | "error" | "aborted";
   seed: number;

@@ -150,6 +150,7 @@ export function createAgentViewTestProps(
     onSetDefault: () => undefined,
     onIdentityFieldChange: () => undefined,
     onIdentityAvatarSelect: () => undefined,
+    onIdentityClawmojiEdit: () => undefined,
     onIdentitySave: () => undefined,
     onTogglePinnedAgent: () => undefined,
     onOpenAgentDefaults: () => undefined,

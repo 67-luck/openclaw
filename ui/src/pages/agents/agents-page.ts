@@ -75,6 +75,7 @@ import {
   resetIdentityDraft,
   saveIdentityDraft,
   selectIdentityAvatar,
+  editIdentityClawmoji,
   setIdentityDraftField,
   togglePinnedAgent,
 } from "./identity-actions.ts";
@@ -1174,6 +1175,27 @@ class AgentsPage
                 this.canCall("agents.update", "operator.admin")
               ) {
                 selectIdentityAvatar(this, file, this.context.config);
+              }
+            },
+            onIdentityClawmojiEdit: () => {
+              const context = this.context;
+              const client = context.gateway.snapshot.client;
+              const isCurrent = () =>
+                this.isConnected &&
+                this.context === context &&
+                context.gateway.snapshot.client === client &&
+                selectedAgentId === this.agentsSelectedId &&
+                !this.identitySaving &&
+                this.canCall("agents.update", "operator.admin");
+              if (isCurrent()) {
+                void editIdentityClawmoji(
+                  this,
+                  this.identityDraft.avatar ??
+                    context.agentIdentity.get(selectedAgentId)?.avatarSource ??
+                    null,
+                  context.config,
+                  isCurrent,
+                );
               }
             },
             onIdentitySave: () => this.saveIdentityDraft(),
