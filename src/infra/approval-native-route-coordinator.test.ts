@@ -63,6 +63,22 @@ function createPluginRequest(id: string): PluginApprovalRequest {
   };
 }
 
+function captureHostPluginOrigin(params: {
+  coordinator: ReturnType<typeof createApprovalNativeRouteCoordinator>;
+  request: PluginApprovalRequest;
+  requestGateway: ReturnType<typeof createGatewayRequestMock>;
+  isOriginCurrent?: (cfg?: OpenClawConfig) => boolean;
+}) {
+  params.request.request.approvalSource = {
+    channel: params.request.request.turnSourceChannel ?? "slack",
+    senderId: "requester",
+  };
+  params.coordinator.capturePluginOrigin(params.request, undefined, {
+    requestGateway: params.requestGateway,
+    isOriginCurrent: (_request, cfg) => params.isOriginCurrent?.(cfg) ?? true,
+  });
+}
+
 afterEach(async () => {
   await Promise.all(approvalRouteReporters.splice(0).map((reporter) => reporter.stop()));
   vi.useRealTimers();
@@ -136,7 +152,9 @@ describe("plugin approval requester outcome", () => {
     };
     const reviewerTarget = approverDm(route.channel === "telegram" ? "456" : "user:reviewer");
     reporter.start();
+    captureHostPluginOrigin({ coordinator, request, requestGateway });
     reporter.selectRequest({ approvalKind: "plugin", request });
+    await coordinator.finishPluginOriginRouting(request.id, true);
     await reporter.reportDelivery({
       approvalKind: "plugin",
       request,
@@ -201,7 +219,9 @@ describe("plugin approval requester outcome", () => {
     );
     const request = createPluginRequest("plugin:early-deny");
     reporter.start();
+    captureHostPluginOrigin({ coordinator, request, requestGateway });
     reporter.selectRequest({ approvalKind: "plugin", request });
+    await coordinator.finishPluginOriginRouting(request.id, true);
     await coordinator.publishPluginTerminal({ approvalId: request.id, status: "denied" });
     reporter.completeRequest(request.id);
     await reporter.reportDelivery({
@@ -237,7 +257,9 @@ describe("plugin approval requester outcome", () => {
     );
     const request = createPluginRequest("plugin:fallback-denied");
     reporter.start();
+    captureHostPluginOrigin({ coordinator, request, requestGateway });
     reporter.selectRequest({ approvalKind: "plugin", request });
+    await coordinator.finishPluginOriginRouting(request.id, true);
     await reporter.reportDelivery({
       approvalKind: "plugin",
       request,
@@ -274,7 +296,14 @@ describe("plugin approval requester outcome", () => {
     );
     const request = createPluginRequest("plugin:cross-channel");
     reporter.start();
+    captureHostPluginOrigin({
+      coordinator,
+      request,
+      requestGateway,
+      isOriginCurrent: (cfg) => cfg === undefined || cfg === sourceConfig,
+    });
     reporter.selectRequest({ approvalKind: "plugin", request });
+    await coordinator.finishPluginOriginRouting(request.id, true);
     await reporter.reportDelivery({
       approvalKind: "plugin",
       request,
@@ -329,8 +358,10 @@ describe("plugin approval requester outcome", () => {
       const request = createPluginRequest(`plugin:early-${status}`);
       reporter.start();
       forwarded.start();
+      captureHostPluginOrigin({ coordinator, request, requestGateway });
       reporter.selectRequest({ approvalKind: "plugin", request });
       forwarded.selectRequest({ approvalKind: "plugin", request });
+      await coordinator.finishPluginOriginRouting(request.id, true);
       await forwarded.reportDelivery({
         approvalKind: "plugin",
         request,
@@ -376,7 +407,9 @@ describe("plugin approval requester outcome", () => {
       );
       const request = createPluginRequest(`plugin:queued-${status}`);
       reporter.start();
+      captureHostPluginOrigin({ coordinator, request, requestGateway });
       reporter.selectRequest({ approvalKind: "plugin", request });
+      await coordinator.finishPluginOriginRouting(request.id, true);
       const delivery = reporter.reportDelivery({
         approvalKind: "plugin",
         request,
@@ -412,7 +445,9 @@ describe("plugin approval requester outcome", () => {
       const request = createPluginRequest(`plugin:late-${status}`);
       request.expiresAtMs = Date.now() + 100;
       reporter.start();
+      captureHostPluginOrigin({ coordinator, request, requestGateway });
       reporter.selectRequest({ approvalKind: "plugin", request });
+      await coordinator.finishPluginOriginRouting(request.id, true);
       await coordinator.publishPluginTerminal({ approvalId: request.id, status });
       await vi.advanceTimersByTimeAsync(101);
       await reporter.reportDelivery({
@@ -447,7 +482,9 @@ describe("plugin approval requester outcome", () => {
     const request = createPluginRequest("plugin:late-timeout");
     request.expiresAtMs = Date.now() + 100;
     reporter.start();
+    captureHostPluginOrigin({ coordinator, request, requestGateway });
     reporter.selectRequest({ approvalKind: "plugin", request });
+    await coordinator.finishPluginOriginRouting(request.id, true);
     await vi.advanceTimersByTimeAsync(101);
     await reporter.reportDelivery({
       approvalKind: "plugin",
@@ -501,7 +538,9 @@ describe("plugin approval requester outcome", () => {
             ? [approverDm("user:reviewer")]
             : [];
       reporter.start();
+      captureHostPluginOrigin({ coordinator, request, requestGateway });
       reporter.selectRequest({ approvalKind: "plugin", request });
+      await coordinator.finishPluginOriginRouting(request.id, true);
       await reporter.reportDelivery({
         approvalKind: "plugin",
         request,

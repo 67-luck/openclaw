@@ -213,14 +213,14 @@ const cronSelfManagementContextSchema = z.object({
 });
 const pluginApprovalSourceSchema = z.object({
   channel: z.string().min(1).max(32),
-  senderId: z.string().min(1).max(64).optional(),
+  senderId: z.string().min(1).max(255).optional(),
   senderName: z.string().max(80).optional(),
   workspaceId: z.string().min(1).max(64).optional(),
   conversationKind: z.enum(["direct", "group", "channel"]).optional(),
   userMessageExcerpt: z.string().max(320).optional(),
 });
 const pluginApprovalOriginThreadIdSchema = z
-  .union([z.string().min(1).max(64), z.number().finite(), z.null()])
+  .union([z.string().min(1).max(255), z.number().finite(), z.null()])
   .optional();
 const agentRuntimeIdentityTokenPayloadSchema = z.object({
   kind: z.literal(AGENT_RUNTIME_IDENTITY_TOKEN_KIND),

@@ -45,9 +45,6 @@ export type ApprovalRouteReport = {
   deliveryPlan: ChannelApprovalNativeDeliveryPlan;
   deliveredTargets: readonly ChannelApprovalNativePlannedTarget[];
   requestGateway: GatewayRequestFn;
-  isOriginCurrent: (cfg?: OpenClawConfig) => boolean;
-  sourceConfig?: OpenClawConfig;
-  sourceEnvGeneration?: number;
   skipReason?: ApprovalRouteSkipReason;
 };
 
@@ -304,49 +301,4 @@ export function resolveApprovalRouteNotice(params: {
     target,
     text,
   };
-}
-
-function matchingOriginReports(params: {
-  reports: readonly ApprovalRouteReport[];
-  target: RouteNoticeTarget;
-}): ApprovalRouteReport[] {
-  const originChannel = normalizeApprovalRouteChannel(params.target.channel);
-  const originAccountId = normalizeOptionalString(params.target.accountId);
-  return params.reports.filter((report) => {
-    if (normalizeApprovalRouteChannel(report.channel) !== originChannel) {
-      return false;
-    }
-    const reportAccountId = normalizeOptionalString(report.accountId);
-    return originAccountId === undefined || originAccountId === reportAccountId;
-  });
-}
-
-export function resolveUniqueOriginReport(params: {
-  reports: readonly ApprovalRouteReport[];
-  target: RouteNoticeTarget;
-}): ApprovalRouteReport | null {
-  const reports = matchingOriginReports(params);
-  return reports.length === 1 ? (reports[0] ?? null) : null;
-}
-
-export function resolvePluginDmOnlyOriginReport(params: {
-  approvalKind: ChannelApprovalKind;
-  reports: readonly ApprovalRouteReport[];
-  missingSelectedRuntime: boolean;
-  target: RouteNoticeTarget;
-}): ApprovalRouteReport | null {
-  if (params.approvalKind !== "plugin" || params.missingSelectedRuntime) {
-    return null;
-  }
-  const matchingReports = matchingOriginReports(params);
-  const originAccountId = normalizeOptionalString(params.target.accountId);
-  if (matchingReports.some((report) => didReportDeliverToOrigin(report, originAccountId))) {
-    return null;
-  }
-  const dmReports = matchingReports.filter(
-    (report) =>
-      report.deliveryPlan.notifyOriginWhenDmOnly &&
-      report.deliveredTargets.some((target) => target.surface === "approver-dm"),
-  );
-  return dmReports.length === 1 ? (dmReports[0] ?? null) : null;
 }

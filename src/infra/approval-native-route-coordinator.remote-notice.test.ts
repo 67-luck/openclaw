@@ -60,6 +60,38 @@ function createOrigin(
 }
 
 describe("plugin approval requester notices without a local reviewer route", () => {
+  it("does not send requester status to a public request's claimed origin", async () => {
+    const coordinator = createApprovalNativeRouteCoordinator();
+    const requestGateway = createGatewayRequestMock();
+    const reviewer = coordinator.createReporter({
+      handledKinds: new Set(["plugin"]),
+      channel: "telegram",
+      channelLabel: "Telegram",
+      accountId: "default",
+      requestGateway,
+      shouldHandle: () => true,
+      classifyRoute: () => "unbound",
+    });
+    reviewer.start();
+    const request = createPluginRequest("plugin:unbound-public-origin");
+    delete request.request.approvalSource;
+    reviewer.selectRequest({ approvalKind: "plugin", request });
+    const target = {
+      surface: "approver-dm" as const,
+      target: { to: "user:reviewer" },
+      reason: "preferred" as const,
+    };
+    await reviewer.reportDelivery({
+      approvalKind: "plugin",
+      request,
+      deliveryPlan: { targets: [target], originTarget: null, notifyOriginWhenDmOnly: false },
+      deliveredTargets: [target],
+    });
+
+    expect(requestGateway).not.toHaveBeenCalled();
+    coordinator.close();
+  });
+
   it("keeps the source excerpt out of route callbacks and pending notices", async () => {
     const coordinator = createApprovalNativeRouteCoordinator();
     const seen = {
@@ -236,6 +268,93 @@ describe("plugin approval requester notices without a local reviewer route", () 
     sourceCurrent = false;
     expect(sourceGateway.mock.calls[1]?.[2]?.liveOnlyWhenCurrent()).toBe(false);
     await reviewer.stop();
+    coordinator.close();
+  });
+
+  it("uses the source Gateway when the origin channel has no currentness hook", async () => {
+    const coordinator = createApprovalNativeRouteCoordinator();
+    const sourceGateway = createGatewayRequestMock();
+    const channelGateway = createGatewayRequestMock();
+    const origin = coordinator.createReporter({
+      handledKinds: new Set(["plugin"]),
+      channel: "telegram",
+      channelLabel: "Telegram",
+      accountId: "default",
+      requestGateway: channelGateway,
+      shouldHandle: () => true,
+      classifyRoute: () => "unbound",
+    });
+    origin.start();
+    const request = createPluginRequest("plugin:telegram-source-gateway");
+    request.request.approvalSource = { channel: "telegram", senderId: "123" };
+    request.request.turnSourceChannel = "telegram";
+    request.request.turnSourceTo = "123";
+    request.request.turnSourceAccountId = "default";
+    coordinator.capturePluginOrigin(request, undefined, {
+      requestGateway: sourceGateway,
+      isOriginCurrent: () => true,
+    });
+    origin.selectRequest({ approvalKind: "plugin", request });
+    await coordinator.finishPluginOriginRouting(request.id, true);
+    const target = {
+      surface: "approver-dm" as const,
+      target: { to: "456" },
+      reason: "preferred" as const,
+    };
+    await origin.reportDelivery({
+      approvalKind: "plugin",
+      request,
+      deliveryPlan: {
+        targets: [target],
+        originTarget: { to: "123" },
+        notifyOriginWhenDmOnly: true,
+      },
+      deliveredTargets: [target],
+    });
+
+    expect(sourceGateway).toHaveBeenCalledWith(
+      "send",
+      expect.objectContaining({ to: "123", channel: "telegram" }),
+      expect.objectContaining({ liveOnlyWhenCurrent: expect.any(Function) }),
+    );
+    expect(channelGateway).not.toHaveBeenCalled();
+    await origin.stop();
+    expect(sourceGateway.mock.calls[0]?.[2]?.liveOnlyWhenCurrent()).toBe(false);
+    coordinator.close();
+  });
+
+  it("keeps a rejecting origin hook authoritative over the source Gateway", async () => {
+    const coordinator = createApprovalNativeRouteCoordinator();
+    const { reporter, requestGateway } = createOrigin(coordinator, {
+      shouldHandle: () => true,
+      isOriginCurrent: () => false,
+    });
+    const sourceGateway = createGatewayRequestMock();
+    const request = createPluginRequest("plugin:rejected-origin-hook");
+    coordinator.capturePluginOrigin(request, undefined, {
+      requestGateway: sourceGateway,
+      isOriginCurrent: () => true,
+    });
+    reporter.selectRequest({ approvalKind: "plugin", request });
+    await coordinator.finishPluginOriginRouting(request.id, true);
+    const target = {
+      surface: "approver-dm" as const,
+      target: { to: "user:reviewer" },
+      reason: "preferred" as const,
+    };
+    await reporter.reportDelivery({
+      approvalKind: "plugin",
+      request,
+      deliveryPlan: {
+        targets: [target],
+        originTarget: { to: "channel:C123" },
+        notifyOriginWhenDmOnly: true,
+      },
+      deliveredTargets: [target],
+    });
+
+    expect(sourceGateway).not.toHaveBeenCalled();
+    expect(requestGateway).not.toHaveBeenCalled();
     coordinator.close();
   });
 

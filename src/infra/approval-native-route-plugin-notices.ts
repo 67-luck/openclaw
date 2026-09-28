@@ -69,19 +69,20 @@ export function capturePluginOrigin(
     return;
   }
   const runtime = matches[0];
+  // A channel runtime without a source hook uses the Gateway's exact live source task.
+  // A rejecting runtime hook remains authoritative and cannot fall back.
+  const isOriginCurrent = runtime?.isOriginCurrent ?? sourceGateway?.isOriginCurrent;
+  const requestGateway = runtime?.isOriginCurrent
+    ? runtime.requestGateway
+    : sourceGateway?.requestGateway;
+  if (!isOriginCurrent || !requestGateway) {
+    return;
+  }
   try {
-    if (
-      !(runtime
-        ? runtime.isOriginCurrent?.(publicRequest)
-        : sourceGateway?.isOriginCurrent(publicRequest))
-    ) {
+    if (!isOriginCurrent(publicRequest)) {
       return;
     }
   } catch {
-    return;
-  }
-  const requestGateway = runtime?.requestGateway ?? sourceGateway?.requestGateway;
-  if (!requestGateway) {
     return;
   }
   // The manager's resolved grace is shorter than a remote card handoff. Keep
@@ -104,10 +105,7 @@ export function capturePluginOrigin(
       request: publicRequest,
       runtime,
       requestGateway,
-      isOriginCurrent: (cfg) =>
-        runtime
-          ? runtime.isOriginCurrent?.(publicRequest, cfg) === true
-          : sourceGateway?.isOriginCurrent(publicRequest, cfg) === true,
+      isOriginCurrent: (cfg) => isOriginCurrent(publicRequest, cfg) === true,
       target: {
         channel,
         to,

@@ -10,6 +10,7 @@ import type { TemplateContext } from "../templating.js";
 const MAX_APPROVAL_MESSAGE_EXCERPT_LENGTH = 320;
 const MAX_APPROVAL_SENDER_NAME_LENGTH = 80;
 const MAX_APPROVAL_CHANNEL_LENGTH = 32;
+const MAX_APPROVAL_SENDER_ID_LENGTH = 255;
 const MAX_APPROVAL_IDENTIFIER_LENGTH = 64;
 
 function boundedDisplayIdentifier(
@@ -41,7 +42,7 @@ export function capturePluginApprovalSource(params: {
   const { context } = params;
   const source = context.ApprovalSource;
   const channel = boundedDisplayIdentifier(source?.channel, MAX_APPROVAL_CHANNEL_LENGTH);
-  const senderId = boundedDisplayIdentifier(source?.senderId, MAX_APPROVAL_IDENTIFIER_LENGTH);
+  const senderId = boundedDisplayIdentifier(source?.senderId, MAX_APPROVAL_SENDER_ID_LENGTH);
   if (
     !source ||
     !channel ||
@@ -56,7 +57,7 @@ export function capturePluginApprovalSource(params: {
   ) {
     return undefined;
   }
-  const rawBody = context.RawBody;
+  const rawBody = source.includeUserMessageExcerpt ? context.RawBody : undefined;
   const sanitized = rawBody ? sanitizeExecApprovalWarningTextWithStatus(rawBody) : undefined;
   const displayText = sanitized && !sanitized.oversized ? sanitized.text.trim() : "";
   const userMessageExcerpt =

@@ -156,6 +156,26 @@ describe("agent runtime identity token", () => {
     },
   );
 
+  it("retains Matrix sender and thread IDs through the signed approval identity", async () => {
+    useTempHome();
+    const runtimeToken = await importRuntimeTokenModule();
+    const senderId = `@${"a".repeat(52)}:example.org`;
+    const originThreadId = `$${"e".repeat(96)}:example.org`;
+    const identity = await createIdentity(runtimeToken, "signed", {
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      ...operationalRun(),
+      approvalSource: { channel: "matrix", senderId, conversationKind: "direct" },
+      pluginApprovalOriginThreadId: originThreadId,
+    });
+    expect(identity?.approvalSource).toEqual({
+      channel: "matrix",
+      senderId,
+      conversationKind: "direct",
+    });
+    expect(identity?.pluginApprovalOriginThreadId).toBe(originThreadId);
+  });
+
   it.each(["signed", "direct"] as const)(
     "retains a worker approval scope through delayed first %s use",
     async (mode) => {

@@ -10,6 +10,7 @@ const authorizedSlackMessage = {
       senderName: "Lightning McQueen",
       workspaceId: "T123",
       conversationKind: "direct" as const,
+      includeUserMessageExcerpt: true,
     },
     RawBody: "Please render alpha to beta",
   },
@@ -43,6 +44,41 @@ describe("plugin approval source snapshot", () => {
     expect(source?.senderName).toBe("Lightning McQueen");
   });
 
+  it("keeps an admitted source without an excerpt when its channel has not opted in", () => {
+    const source = capturePluginApprovalSource({
+      ...authorizedSlackMessage,
+      context: {
+        ...authorizedSlackMessage.context,
+        ApprovalSource: {
+          channel: "telegram",
+          senderId: "1234",
+          senderName: "Pat",
+          conversationKind: "direct",
+        },
+      },
+      channel: "telegram",
+    });
+    expect(source).toEqual({
+      channel: "telegram",
+      senderId: "1234",
+      senderName: "Pat",
+      conversationKind: "direct",
+    });
+  });
+
+  it("retains a valid long Matrix sender ID for the requester notice", () => {
+    const senderId = `@${"a".repeat(52)}:example.org`;
+    const source = capturePluginApprovalSource({
+      ...authorizedSlackMessage,
+      context: {
+        ...authorizedSlackMessage.context,
+        ApprovalSource: { channel: "matrix", senderId, conversationKind: "direct" },
+      },
+      channel: "matrix",
+    });
+    expect(source).toEqual({ channel: "matrix", senderId, conversationKind: "direct" });
+  });
+
   it("drops unsafe or oversized provider identifiers before they reach the approval card", () => {
     const withSource = (
       patch: Partial<NonNullable<typeof authorizedSlackMessage.context.ApprovalSource>>,
@@ -55,7 +91,7 @@ describe("plugin approval source snapshot", () => {
         },
       });
 
-    expect(withSource({ senderId: "U".repeat(65) })).toBeUndefined();
+    expect(withSource({ senderId: "U".repeat(256) })).toBeUndefined();
     expect(withSource({ senderId: "U123\n" })).toBeUndefined();
     expect(withSource({ channel: "slack\u200b" })).toBeUndefined();
     expect(withSource({ workspaceId: "T".repeat(65) })).not.toHaveProperty("workspaceId");

@@ -1,14 +1,11 @@
 // Coordinates native approval delivery routing and notices.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { getPublishedConfigRuntimeEnvState } from "../config/config-env-vars.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type {
   ChannelApprovalNativeDeliveryPlan,
   ChannelApprovalNativePlannedTarget,
 } from "./approval-native-delivery.js";
 import {
-  resolvePluginDmOnlyOriginReport,
-  resolveUniqueOriginReport,
   normalizeApprovalRouteChannel,
   resolveApprovalRouteNotice,
   type ApprovalRouteSkipReason,
@@ -272,6 +269,11 @@ async function maybeFinalizeApprovalRouteNotice(
     clearPendingApprovalRouteNotice(state, approvalId);
     return;
   }
+  if (entry.approvalKind === "plugin" && !state.pluginOrigins.has(approvalId)) {
+    // Request turn-source fields are public RPC metadata, not bot-send authority.
+    clearPendingApprovalRouteNotice(state, approvalId);
+    return;
+  }
   if (!options?.force) {
     for (const runtimeId of selection.verdicts.keys()) {
       if (!entry.reports.has(runtimeId)) {
@@ -303,37 +305,11 @@ async function maybeFinalizeApprovalRouteNotice(
     reports,
     missingSelectedRuntime,
   });
-  const originReport =
-    notice &&
-    resolvePluginDmOnlyOriginReport({
-      approvalKind: entry.approvalKind,
-      reports,
-      missingSelectedRuntime,
-      target: notice.target,
-    });
-  const pendingOriginReport =
-    notice && entry.approvalKind === "plugin"
-      ? resolveUniqueOriginReport({ reports, target: notice.target })
-      : null;
-  // Cross-channel approvals have no runtime for the originating account.
-  // Pin their notice to the reported config and managed env generation so a
-  // replacement account cannot inherit the old conversation target.
-  const fallbackOriginCurrent = (cfg?: OpenClawConfig) =>
-    reports.length > 0 &&
-    reports.every(
-      (report) =>
-        report.isOriginCurrent(cfg) &&
-        report.sourceEnvGeneration === getPublishedConfigRuntimeEnvState().generation &&
-        (!cfg || (report.sourceConfig !== undefined && cfg === report.sourceConfig)),
-    );
-  const terminalNotice =
-    pluginOrigin || originReport ? getPluginTerminalNotice(state, entry.request) : undefined;
+  const terminalNotice = pluginOrigin ? getPluginTerminalNotice(state, entry.request) : undefined;
   if (terminalNotice && notice) {
-    terminalNotice.requestGateway = pluginOrigin?.requestGateway ?? originReport?.requestGateway;
-    terminalNotice.target = pluginOrigin?.target ?? notice.target;
-    terminalNotice.isOriginCurrent = pluginOrigin
-      ? (cfg) => isPluginOriginCurrent(state, pluginOrigin, cfg)
-      : originReport?.isOriginCurrent;
+    terminalNotice.requestGateway = pluginOrigin.requestGateway;
+    terminalNotice.target = pluginOrigin.target;
+    terminalNotice.isOriginCurrent = (cfg) => isPluginOriginCurrent(state, pluginOrigin, cfg);
   }
   clearPendingApprovalRouteNotice(state, approvalId);
   if (!notice) {
@@ -352,11 +328,7 @@ async function maybeFinalizeApprovalRouteNotice(
           entry.request.expiresAtMs <= Date.now()
         ) &&
         (entry.approvalKind !== "plugin" ||
-          (pluginOrigin
-            ? isPluginOriginCurrent(state, pluginOrigin, cfg)
-            : pendingOriginReport
-              ? pendingOriginReport.isOriginCurrent(cfg)
-              : fallbackOriginCurrent(cfg)));
+          (pluginOrigin !== undefined && isPluginOriginCurrent(state, pluginOrigin, cfg)));
       if (!isCurrent()) {
         return;
       }
@@ -452,25 +424,6 @@ function createApprovalNativeRouteReporterForState(
       deliveryPlan: payload.deliveryPlan,
       deliveredTargets: payload.deliveredTargets,
       requestGateway: params.requestGateway,
-      sourceConfig: params.sourceConfig,
-      sourceEnvGeneration: getPublishedConfigRuntimeEnvState().generation,
-      isOriginCurrent: (cfg) => {
-        if (
-          state.closed ||
-          !registered ||
-          !runtimeRecord ||
-          state.activeRuntimes.get(runtimeId) !== runtimeRecord
-        ) {
-          return false;
-        }
-        try {
-          return params.isOriginCurrent
-            ? params.isOriginCurrent(publicRequest, cfg)
-            : !cfg || !params.sourceConfig || cfg === params.sourceConfig;
-        } catch {
-          return false;
-        }
-      },
       skipReason: payload.skipReason,
     });
     state.pendingNotices.set(payload.request.id, entry);
