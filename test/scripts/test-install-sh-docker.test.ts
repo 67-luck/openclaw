@@ -2707,15 +2707,24 @@ syncBuiltinESMExports();
 
   it("resolves the matching candidate AI package without changing the public registry", () => {
     const script = readFileSync(BUN_GLOBAL_SMOKE_PATH, "utf8");
+    const aiCandidate = readFileSync("scripts/e2e/lib/bun-global-install/ai-candidate.sh", "utf8");
 
-    expect(script).toContain("assert-release-versions");
+    expect(script).toContain(
+      'source "$ROOT_DIR/scripts/e2e/lib/bun-global-install/ai-candidate.sh"',
+    );
+    expect(script).toContain('prepare_ai_candidate "$PACKAGE_TGZ" "$PACK_DIR"');
+    expect(aiCandidate).toContain("assert-release-versions");
     expect(script).toContain('"$BUN_INSTALL/install/global/package.json"');
-    expect(script).toContain("package/node_modules/@openclaw/ai");
-    expect(script).toContain("--strip-components=4");
-    expect(script).toContain('npm pack --ignore-scripts --silent --pack-destination "$PACK_DIR"');
+    expect(aiCandidate).toContain("package/node_modules/@openclaw/ai");
+    expect(aiCandidate).toContain("--strip-components=4");
+    expect(aiCandidate).toContain(
+      'npm pack --ignore-scripts --silent --pack-destination "$pack_dir"',
+    );
     expect(script).toContain('overrides: { "@openclaw/ai": `file:${aiPackageTarball}` }');
-    expect(script).not.toContain("--registry");
-    expect(script).not.toContain("@openclaw:registry");
+    for (const source of [script, aiCandidate]) {
+      expect(source).not.toContain("--registry");
+      expect(source).not.toContain("@openclaw:registry");
+    }
   });
 
   it("requires root and AI candidate versions to match", () => {
