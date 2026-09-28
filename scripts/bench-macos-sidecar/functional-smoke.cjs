@@ -72,9 +72,13 @@ function deadline(p, deadlineLabel) {
         const pending = nextPing;
         nextPing = undefined;
         socket.send(JSON.stringify({ type: "event", event: "tick", payload: { ts: Date.now() } }));
-        if (pending.reply) setTimeout(() => socket.pong(data), 50);
+        if (pending.reply) {
+          setTimeout(() => socket.pong(data), 50);
+        }
         pending.resolve(socket);
-      } else socket.pong(data);
+      } else {
+        socket.pong(data);
+      }
     });
     socket.send(
       JSON.stringify({
@@ -496,12 +500,14 @@ function deadline(p, deadlineLabel) {
         () => results.get("after-ordered-pong"),
         "echo with tick preceding Pong",
       );
-      if (!echoed.ok || payload(echoed).alive !== true)
+      if (!echoed.ok || payload(echoed).alive !== true) {
         throw new Error("ordered Pong blocked native result");
+      }
       // A fabricated successful Pong could pass the echo but later retire on the real ten-second timeout.
       await delay(11000);
-      if (ws !== keepaliveSocket || nativeRouteRetired || keepaliveSocket.readyState !== 1)
+      if (ws !== keepaliveSocket || nativeRouteRetired || keepaliveSocket.readyState !== 1) {
         throw new Error("real Pong did not preserve the original native route");
+      }
       record.checks.push({
         scenario: "tick before delayed Pong preserves receive progress and native keepalive",
         passed: true,
@@ -523,7 +529,9 @@ function deadline(p, deadlineLabel) {
           () => results.get("before-missing-pong-timeout"),
           "receive while real Pong is absent",
         );
-        if (!beforeTimeout.ok) throw new Error("pending Pong blocked application delivery");
+        if (!beforeTimeout.ok) {
+          throw new Error("pending Pong blocked application delivery");
+        }
         await retired;
         await until(() => nativeRouteRetired, "native route retirement after missing Pong");
         record.checks.push({
