@@ -303,9 +303,9 @@
   max-width: min(320px, calc(100vw - 24px));
 }
 
-/* Skill rows have no leading icon; do not reserve an empty icon rail. */
+/* Only the Back row has a leading icon in the Skills view. */
 .agent-chat__capability-menu[data-view="skills"]
-  .agent-chat__capability-menu-item:not(:has([slot="icon"]))::part(icon) {
+  .agent-chat__capability-menu-item:not([value="back"])::part(icon) {
   display: none;
 }
 
@@ -424,6 +424,18 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Touch cannot use the hover hint; reveal names before a tap changes a skill. */
+@media (hover: none), (any-pointer: coarse) {
+  .agent-chat__capability-menu[data-view="skills"]
+    .agent-chat__capability-menu-label
+    > span:first-child {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
 
 .agent-chat__capability-menu-state {
@@ -2367,7 +2379,8 @@ html[dir="rtl"] .chat-attachment-loading > span {
   gap: inherit;
   min-width: 0;
   min-height: 32px;
-  flex: 1;
+  /* Long account metadata shrinks before the provider toggle's contents. */
+  flex: 1 0 auto;
   padding: 6px 0;
   border: 0;
   background: transparent;
@@ -2421,6 +2434,16 @@ html[dir="rtl"] .chat-attachment-loading > span {
 
 .chat-controls__model-option-copy > .chat-controls__auth-meta {
   margin-inline-start: 6px;
+}
+
+[data-chat-account-option] .chat-controls__model-option-copy {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+[data-chat-account-option] .chat-controls__auth-meta {
+  max-width: 100%;
+  margin-inline-start: 0;
 }
 
 .chat-controls__provider-settings {
@@ -3691,9 +3714,4 @@ html[dir="rtl"] .chat-attachment-loading > span {
   .agent-chat__suggestion {
     min-height: 44px;
   }
-}
-.chat-talk-voice-picker {
-  flex: 0 1 9rem;
-  min-width: 0;
-  max-width: 9rem;
 }
