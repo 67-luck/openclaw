@@ -542,7 +542,6 @@ enum class GatewayMethod(
   PluginApprovalRequest("plugin.approval.request"),
   PluginApprovalWaitDecision("plugin.approval.waitDecision"),
   PluginApprovalResolve("plugin.approval.resolve"),
-  PluginApprovalReportNativeDelivery("plugin.approval.reportNativeDelivery"),
   PluginsUiDescriptors("plugins.uiDescriptors"),
   PluginsSessionAction("plugins.sessionAction"),
   OpenclawChat("openclaw.chat"),
@@ -978,6 +977,7 @@ enum class GatewayMethod(
   PresenceQuery("presence.query"),
   UsersMerge("users.merge"),
   GatewayStopRequest("gateway.stop.request"),
+  PluginApprovalReportNativeDelivery("plugin.approval.reportNativeDelivery"),
 }
 
 enum class GatewayEvent(
