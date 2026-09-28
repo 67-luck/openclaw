@@ -138,31 +138,49 @@ it("retains every PR-exempt file in hourly and release plans with its canonical 
   }
 });
 
-it("opts in a PR-exempt process proof for test and opaque subject edits even on broad fallback", () => {
-  const target = "test/scripts/upgrade-survivor-plugin-registry.test.ts";
-  const source = "scripts/e2e/upgrade-survivor-docker.sh";
-  expect(listPrExemptRuntimeTestFiles()).toContain(target);
-  const options = {
-    runnerBackend: "github",
-    includeReleaseOnlyRuntimeTests: false,
-    includePrExemptRuntimeTests: false,
-    includeReleaseOnlyToolingShards: false,
-  };
-  for (const changedPath of [target, source]) {
-    const precise = createChangedNodeTestShards([changedPath], options);
-    expect(precise, changedPath).not.toBeNull();
-    expect(selectedFiles(precise), changedPath).toContain(target);
-    const fallback = createNodeTestShardBundles({
-      ...options,
-      compactMode: "pull-request",
-      changedPaths: ["tsconfig.json", changedPath],
-    });
-    expect(
-      fallback.flatMap((job) => job.groups.flatMap((group) => group.includePatterns ?? [])),
-      changedPath,
-    ).toContain(target);
-  }
-});
+it.each([
+  {
+    target: "test/scripts/upgrade-survivor-plugin-registry.test.ts",
+    sources: ["scripts/e2e/upgrade-survivor-docker.sh"],
+    preciseSubjects: true,
+  },
+  {
+    target: "src/commands/doctor-lint.native-capture.test.ts",
+    sources: [
+      "src/commands/doctor-lint.native-capture.test-support.ts",
+      "src/cli/run-main-plugin-cache.ts",
+    ],
+    preciseSubjects: false,
+  },
+])(
+  "opts in $target for test and opaque subject edits even on broad fallback",
+  ({ target, sources, preciseSubjects }) => {
+    expect(listPrExemptRuntimeTestFiles()).toContain(target);
+    const options = {
+      runnerBackend: "github",
+      includeReleaseOnlyRuntimeTests: false,
+      includePrExemptRuntimeTests: false,
+      includeReleaseOnlyToolingShards: false,
+    };
+    const fallbackFiles = (changedPaths: string[]) =>
+      createNodeTestShardBundles({
+        ...options,
+        compactMode: "pull-request",
+        changedPaths,
+      }).flatMap((job) => job.groups.flatMap((group) => group.includePatterns ?? []));
+    for (const changedPath of [target, ...sources]) {
+      const precise = createChangedNodeTestShards([changedPath], options);
+      if (preciseSubjects || changedPath === target) {
+        expect(precise, changedPath).not.toBeNull();
+      }
+      expect(
+        precise ? selectedFiles(precise) : fallbackFiles([changedPath]),
+        changedPath,
+      ).toContain(target);
+      expect(fallbackFiles(["tsconfig.json", changedPath]), changedPath).toContain(target);
+    }
+  },
+);
 
 it("keeps precise first-signin targets under exclusive Gateway admission", () => {
   const target = "src/gateway/setup-inference.first-signin.integration.test.ts";
