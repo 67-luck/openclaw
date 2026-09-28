@@ -324,6 +324,13 @@ export function createGatewayInstanceRuntime(
       publishRequested: (kind, request) => {
         // SAFETY: Gateway approval publishers pair the plugin kind with a plugin request.
         const pluginRequest = kind === "plugin" ? (request as PluginApprovalRequest) : null;
+        if (pluginRequest) {
+          const manager = options.getContext().pluginApprovalManager;
+          routeCoordinator.capturePluginOrigin(
+            pluginRequest,
+            manager ? () => manager.retainForHandoff(pluginRequest.id) : undefined,
+          );
+        }
         const publicRequest = pluginRequest
           ? {
               ...pluginRequest,

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { validatePluginApprovalRequestParams } from "./index.js";
+import {
+  validatePluginApprovalReportNativeDeliveryParams,
+  validatePluginApprovalRequestParams,
+} from "./index.js";
 
 const nullableMetadataFields = [
   "pluginId",
@@ -19,6 +22,35 @@ const nullableMetadataFields = [
 ] as const;
 
 describe("plugin approval protocol validators", () => {
+  it("bounds remote delivery reports and rejects source fields", () => {
+    const report = {
+      id: "plugin:one",
+      channel: "slack",
+      channelLabel: "Slack",
+      deliveredAny: true,
+      deliveredOnlyToApproverDms: true,
+    };
+    expect(validatePluginApprovalReportNativeDeliveryParams(report)).toBe(true);
+    expect(
+      validatePluginApprovalReportNativeDeliveryParams({
+        ...report,
+        channel: "x".repeat(65),
+      }),
+    ).toBe(false);
+    expect(
+      validatePluginApprovalReportNativeDeliveryParams({
+        ...report,
+        channelLabel: "x".repeat(65),
+      }),
+    ).toBe(false);
+    expect(
+      validatePluginApprovalReportNativeDeliveryParams({
+        ...report,
+        turnSourceTo: "channel:spoofed",
+      }),
+    ).toBe(false);
+  });
+
   it("validates bounded reviewer-only detail independently from the description", () => {
     const request = {
       title: "Apply workspace skill proposal",

@@ -361,6 +361,13 @@ export function createGatewayAuxHandlers(
         createPluginApprovalHandlers(pluginApprovalManager, {
           forwarder: execApprovalForwarder,
           iosPushDelivery: pluginApprovalIosPushDelivery,
+          reportRemoteNativeDelivery: async (report, assertReporterCurrent) => {
+            const coordinator = params.getNativeApprovalRouteCoordinator();
+            if (!coordinator) {
+              throw new Error("native approval route coordinator is unavailable");
+            }
+            await coordinator.reportRemoteNativeDelivery(report, assertReporterCurrent);
+          },
         }),
       ),
     { cacheRejections: true },
@@ -490,6 +497,10 @@ export function createGatewayAuxHandlers(
       ),
       "plugin.approval.waitDecision": createLazyHandler(
         "plugin.approval.waitDecision",
+        loadPluginApprovalHandlers,
+      ),
+      "plugin.approval.reportNativeDelivery": createLazyHandler(
+        "plugin.approval.reportNativeDelivery",
         loadPluginApprovalHandlers,
       ),
       "plugin.approval.resolve": createLazyHandler(

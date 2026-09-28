@@ -86,6 +86,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["plugin.approval.request", null, "operator.approvals", "<=2026.7"],
   ["plugin.approval.waitDecision", null, "operator.approvals", "<=2026.7"],
   ["plugin.approval.resolve", null, "operator.approvals", "<=2026.7"],
+  ["plugin.approval.reportNativeDelivery", null, "operator.approvals", "2026.9"],
   ["plugins.uiDescriptors", "plugin-host-hooks", "operator.read", "<=2026.7"],
   ["plugins.sessionAction", "plugin-host-hooks", "dynamic", "<=2026.7"],
   ["openclaw.chat", "system-agent", "operator.admin", "<=2026.7"],

@@ -1,6 +1,8 @@
 // Creates channel-native approval runtimes and delivery flows.
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { ChannelApprovalNativeAdapter } from "../channels/plugins/approval-native.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { getGatewayNativeApprovalRuntime } from "./approval-gateway-runtime-context.js";
 import {
@@ -8,8 +10,14 @@ import {
   type ChannelApprovalNativePlannedTarget,
   type ChannelApprovalNativeDeliveryPlan,
 } from "./approval-native-delivery.js";
-import { createApprovalNativeRouteReporter } from "./approval-native-route-coordinator.js";
-import type { ApprovalRouteSendParams } from "./approval-native-route-notice.js";
+import {
+  createApprovalNativeRouteReporter,
+  publishDefaultPluginTerminal,
+} from "./approval-native-route-coordinator.js";
+import {
+  normalizeApprovalRouteChannel,
+  type ApprovalRouteSendParams,
+} from "./approval-native-route-notice.js";
 import type {
   ChannelNativeApprovalDeliveryCallbacks,
   ChannelNativeApprovalTransportSpec,
@@ -27,7 +35,7 @@ import {
   type ExecApprovalChannelRuntimeAdapter,
 } from "./exec-approval-channel-runtime.js";
 import type { ExecApprovalResolved } from "./exec-approvals.js";
-import type { PluginApprovalResolved } from "./plugin-approvals.js";
+import type { PluginApprovalRequest, PluginApprovalResolved } from "./plugin-approvals.js";
 import type { SystemAgentApprovalResolved } from "./system-agent-approvals.js";
 
 type ApprovalRequest = ApprovalRequestInput;
@@ -194,8 +202,24 @@ export function createChannelNativeApprovalRuntime<
   >,
 ): ExecApprovalChannelRuntime<TRequest, TResolved> {
   const nowMs = adapter.nowMs ?? Date.now;
+  const log = createSubsystemLogger(adapter.label);
   const handledEventKinds = new Set<ChannelApprovalKind>(adapter.eventKinds ?? ["exec"]);
   const gatewayRuntime = getGatewayNativeApprovalRuntime();
+  const remoteOriginIsLocal = (request: ApprovalRequest): boolean => {
+    if (request.approvalKind !== "plugin") {
+      return false;
+    }
+    // SAFETY: the explicit approval kind selects the plugin request payload.
+    const source = (request as PluginApprovalRequest).request;
+    return (
+      source.approvalSource?.channel === source.turnSourceChannel &&
+      normalizeApprovalRouteChannel(source.turnSourceChannel) ===
+        normalizeApprovalRouteChannel(adapter.channel) &&
+      Boolean(normalizeOptionalString(source.turnSourceAccountId)) &&
+      normalizeOptionalString(source.turnSourceAccountId) ===
+        normalizeOptionalString(adapter.accountId)
+    );
+  };
   const createRouteReporter =
     gatewayRuntime?.routeCoordinator.createReporter ?? createApprovalNativeRouteReporter;
   const routeReporter = createRouteReporter({
@@ -223,14 +247,45 @@ export function createChannelNativeApprovalRuntime<
     requestGateway: async (
       method: "send",
       params: ApprovalRouteSendParams,
-      options?: { liveOnlyWhenCurrent: () => boolean },
+      options?: { liveOnlyWhenCurrent: () => boolean; approvalRequest?: ApprovalRequest },
     ): Promise<void> => {
       if (gatewayRuntime) {
         await gatewayRuntime.requestRoute(method, params, options);
         return;
       }
       if (options) {
-        throw new Error("live native approval notice requires a Gateway instance runtime");
+        const request = options.approvalRequest;
+        if (request && remoteOriginIsLocal(request) && adapter.isOriginCurrent) {
+          const assertCurrent = () => {
+            if (!options.liveOnlyWhenCurrent()) {
+              throw new Error("native approval notice owner retired before delivery");
+            }
+          };
+          assertCurrent();
+          const { sendMessage } = await import("./outbound/message.js");
+          const result = await sendMessage({
+            cfg: adapter.cfg,
+            channel: params.channel,
+            to: params.to,
+            accountId: params.accountId,
+            threadId: params.threadId,
+            content: params.message,
+            idempotencyKey: params.idempotencyKey,
+            gatewayOwnedDelivery: true,
+            bestEffort: true,
+            skipQueue: true,
+            onPlatformSendDispatch: async () => assertCurrent(),
+            assertDirectAdapterHandoff: assertCurrent,
+            abortSignal: AbortSignal.timeout(10_000),
+          });
+          if (result.deliveryStatus === "failed" || result.deliveryStatus === "partial_failed") {
+            throw new Error(result.error ?? "native approval notice delivery failed");
+          }
+          return;
+        }
+        // A separate Gateway owns cross-channel origin delivery after it receives
+        // the remote native-delivery report. This process has no source credential.
+        return;
       }
       const { callGatewayLeastPrivilege } = await import("../gateway/call.js");
       await callGatewayLeastPrivilege({
@@ -281,7 +336,18 @@ export function createChannelNativeApprovalRuntime<
       try {
         await adapter.finalizeResolved(params);
       } finally {
-        routeReporter.completeRequest(params.request.id);
+        try {
+          if (!gatewayRuntime && params.request.approvalKind === "plugin") {
+            await publishDefaultPluginTerminal({
+              approvalId: params.request.id,
+              status: params.resolved.decision === "deny" ? "denied" : "allowed",
+            });
+          }
+        } catch (error) {
+          log.warn(`remote plugin approval terminal notice failed: ${String(error)}`);
+        } finally {
+          routeReporter.completeRequest(params.request.id);
+        }
       }
     },
     finalizeExpired: adapter.finalizeExpired
@@ -289,7 +355,18 @@ export function createChannelNativeApprovalRuntime<
           try {
             await adapter.finalizeExpired?.(params);
           } finally {
-            routeReporter.completeRequest(params.request.id);
+            try {
+              if (!gatewayRuntime && params.request.approvalKind === "plugin") {
+                await publishDefaultPluginTerminal({
+                  approvalId: params.request.id,
+                  status: "expired",
+                });
+              }
+            } catch (error) {
+              log.warn(`remote plugin approval terminal notice failed: ${String(error)}`);
+            } finally {
+              routeReporter.completeRequest(params.request.id);
+            }
           }
         }
       : undefined,
@@ -368,6 +445,34 @@ export function createChannelNativeApprovalRuntime<
           deliveryPlan,
           deliveredTargets,
         });
+        if (!gatewayRuntime && approvalKind === "plugin") {
+          // SAFETY: the explicit kind selects the host-projected plugin source.
+          const source = (request as PluginApprovalRequest).request;
+          if (
+            source.approvalSource?.channel === source.turnSourceChannel &&
+            !(remoteOriginIsLocal(request) && adapter.isOriginCurrent) &&
+            adapter.channel
+          ) {
+            // The card's entries must be recorded before a remote report can wait on
+            // the Gateway; resolution may arrive while that RPC is still pending.
+            void Promise.resolve()
+              .then(() =>
+                runtime.request("plugin.approval.reportNativeDelivery", {
+                  id: request.id,
+                  channel: adapter.channel,
+                  channelLabel: adapter.channelLabel,
+                  accountId: adapter.accountId ?? undefined,
+                  deliveredAny: deliveredTargets.length > 0,
+                  deliveredOnlyToApproverDms:
+                    deliveredTargets.length > 0 &&
+                    deliveredTargets.every((target) => target.surface === "approver-dm"),
+                }),
+              )
+              .catch((error: unknown) => {
+                log.warn(`remote plugin approval origin notice failed: ${String(error)}`);
+              });
+          }
+        }
       }
     },
   });

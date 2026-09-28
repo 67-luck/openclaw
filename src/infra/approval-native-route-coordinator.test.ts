@@ -129,7 +129,7 @@ describe("plugin approval requester outcome", () => {
         message: `Approval ${request.id} required. I sent the approval request to Slack DMs, not this chat.`,
         idempotencyKey: `approval-route-notice:${request.id}`,
       },
-      { liveOnlyWhenCurrent: expect.any(Function) },
+      { liveOnlyWhenCurrent: expect.any(Function), approvalRequest: request },
     );
     expect(requestGateway.mock.calls[0]?.[2]?.liveOnlyWhenCurrent()).toBe(false);
     expect(requestGateway).toHaveBeenLastCalledWith(
@@ -142,7 +142,7 @@ describe("plugin approval requester outcome", () => {
         message: `Approval ${request.id} ${wording}. The requested action did not run.`,
         idempotencyKey: `approval-terminal-notice:${request.id}`,
       },
-      { liveOnlyWhenCurrent: expect.any(Function) },
+      { liveOnlyWhenCurrent: expect.any(Function), approvalRequest: request },
     );
     const terminalCurrent = requestGateway.mock.calls[1]?.[2]?.liveOnlyWhenCurrent;
     expect(terminalCurrent?.()).toBe(true);
@@ -257,7 +257,7 @@ describe("plugin approval requester outcome", () => {
         accountId: "work",
         message: `Approval ${request.id} required. I sent the approval request to Telegram DMs, not this chat.`,
       }),
-      { liveOnlyWhenCurrent: expect.any(Function) },
+      { liveOnlyWhenCurrent: expect.any(Function), approvalRequest: request },
     );
     const currentAtHandoff = requestGateway.mock.calls[0]?.[2]?.liveOnlyWhenCurrent;
     expect(currentAtHandoff?.(sourceConfig)).toBe(true);
@@ -432,7 +432,7 @@ describe("plugin approval requester outcome", () => {
         idempotencyKey: `approval-terminal-notice:${request.id}`,
         message: `Approval ${request.id} timed out. The requested action did not run.`,
       }),
-      { liveOnlyWhenCurrent: expect.any(Function) },
+      { liveOnlyWhenCurrent: expect.any(Function), approvalRequest: request },
     );
     coordinator.close();
   });

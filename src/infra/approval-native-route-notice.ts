@@ -28,10 +28,35 @@ export type ApprovalRouteSendParams = {
 export type GatewayRequestFn = (
   method: "send",
   params: ApprovalRouteSendParams,
-  options?: { liveOnlyWhenCurrent: (cfg?: OpenClawConfig) => boolean },
+  options?: {
+    liveOnlyWhenCurrent: (cfg?: OpenClawConfig) => boolean;
+    approvalRequest?: ApprovalRequest;
+  },
 ) => Promise<void>;
 
 export type ApprovalRouteSkipReason = "ambiguous-owner" | "ineligible" | "owner-unavailable";
+
+/** Describes one remote channel's delivery without making claims about other approval clients. */
+export function formatRemotePluginApprovalNotice(params: {
+  approvalId: string;
+  channelLabel: string;
+  deliveredAny: boolean;
+  deliveredOnlyToApproverDms: boolean;
+}): string {
+  // Reporter labels are display-only input. Slack and other transports can
+  // interpret angle markup as mentions, so keep only plain label characters.
+  const channelLabel =
+    params.channelLabel
+      .normalize("NFKC")
+      .replace(/[^\p{L}\p{N}\p{M} ._-]+/gu, " ")
+      .trim()
+      .replace(/\s+/g, " ") || "remote";
+  if (!params.deliveredAny) {
+    return `Approval ${params.approvalId} required. The ${channelLabel} reviewer card was not delivered. Open the Control UI or terminal UI to review it.`;
+  }
+  const destination = params.deliveredOnlyToApproverDms ? `${channelLabel} DMs` : channelLabel;
+  return `Approval ${params.approvalId} required. An approval request was sent to ${destination}.`;
+}
 
 export type ApprovalRouteReport = {
   runtimeId: string;
@@ -106,7 +131,9 @@ function resolveApprovalDeliveryFailedNoticeText(params: {
       : ["allow-once", "allow-always", "deny"]
   ).join("|");
   return [
-    "Approval required. I could not deliver the native approval request.",
+    params.approvalKind === "plugin"
+      ? "Approval required. A native approval delivery attempt failed."
+      : "Approval required. I could not deliver the native approval request.",
     `Reply with: /approve ${commandId} ${decisions}`,
     "If the short code is ambiguous, use the full id in /approve.",
   ].join("\n");

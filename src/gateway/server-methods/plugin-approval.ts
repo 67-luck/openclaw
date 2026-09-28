@@ -2,11 +2,17 @@
 import { randomUUID } from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
+  GATEWAY_CLIENT_CAPS,
+  GATEWAY_CLIENT_MODES,
+} from "../../../packages/gateway-protocol/src/client-info.js";
+import {
   ErrorCodes,
   errorShape,
+  validatePluginApprovalReportNativeDeliveryParams,
   validatePluginApprovalRequestParams,
   validatePluginApprovalResolveParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import type { RemoteNativeApprovalDeliveryReport } from "../../infra/approval-native-route-coordinator.js";
 import { sanitizeApprovalScope } from "../../infra/approval-scope.js";
 import type { ExecApprovalForwarder } from "../../infra/exec-approval-forwarder.js";
 import {
@@ -37,6 +43,7 @@ import {
   bindApprovalReviewerDeviceIds,
   handleApprovalResolve,
   handleApprovalWaitDecision,
+  isApprovalRecordVisibleToClient,
   listVisiblePendingApprovalRequests,
   registerPendingApprovalRecord,
   resolveApprovalDecisionParams,
@@ -53,7 +60,14 @@ type PluginApprovalIosPushDelivery = NonNullable<
 /** Create plugin approval handlers backed by the shared approval manager. */
 export function createPluginApprovalHandlers(
   manager: ExecApprovalManager<PluginApprovalRequestPayload>,
-  opts?: { forwarder?: ExecApprovalForwarder; iosPushDelivery?: PluginApprovalIosPushDelivery },
+  opts?: {
+    forwarder?: ExecApprovalForwarder;
+    iosPushDelivery?: PluginApprovalIosPushDelivery;
+    reportRemoteNativeDelivery?: (
+      report: RemoteNativeApprovalDeliveryReport,
+      assertReporterCurrent: () => void,
+    ) => Promise<void>;
+  },
 ): GatewayRequestHandlers {
   return {
     "plugin.approval.list": async (options) => {
@@ -278,6 +292,85 @@ export function createPluginApprovalHandlers(
         ...(client?.authenticatedUserProfile ? { getCfg: context.getRuntimeConfig } : {}),
         respond,
       });
+    },
+
+    "plugin.approval.reportNativeDelivery": async (options) => {
+      using authority = createApprovalRequestAuthority(options);
+      const { params, client, respond, context } = options;
+      if (
+        !assertValidParams(
+          params,
+          validatePluginApprovalReportNativeDeliveryParams,
+          "plugin.approval.reportNativeDelivery",
+          respond,
+        )
+      ) {
+        return;
+      }
+      if (
+        client?.connect.role !== "operator" ||
+        !client.connect.scopes?.includes("operator.approvals") ||
+        client.connect.client.mode !== GATEWAY_CLIENT_MODES.BACKEND ||
+        !client.connect.caps?.includes(GATEWAY_CLIENT_CAPS.APPROVALS) ||
+        !opts?.reportRemoteNativeDelivery
+      ) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, "approval runtime unavailable"),
+        );
+        return;
+      }
+      const record = await manager.getSnapshot(params.id, authority);
+      authority.assertCurrent();
+      const source = record?.request;
+      if (
+        !record ||
+        (record.resolvedAtMs !== undefined &&
+          record.status !== "denied" &&
+          record.status !== "expired") ||
+        !source?.approvalSource?.channel ||
+        source.approvalSource.channel !== source.turnSourceChannel ||
+        !normalizeOptionalString(source.turnSourceTo) ||
+        !normalizeOptionalString(source.turnSourceAccountId) ||
+        !isApprovalRecordVisibleToClient({
+          record,
+          client,
+          ...(client?.authenticatedUserProfile ? { cfg: context.getRuntimeConfig() } : {}),
+        })
+      ) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, "unknown or unbound plugin approval"),
+        );
+        return;
+      }
+      authority.assertCurrent();
+      let failed = false;
+      try {
+        await opts.reportRemoteNativeDelivery(
+          {
+            ...params,
+            ...(params.channelLabel
+              ? { channelLabel: sanitizeExecApprovalDisplayText(params.channelLabel) }
+              : {}),
+          },
+          authority.assertCurrent,
+        );
+      } catch {
+        failed = true;
+      }
+      authority.assertCurrent();
+      if (failed) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, "native approval delivery report failed"),
+        );
+        return;
+      }
+      respond(true, { reported: true }, undefined);
     },
 
     "plugin.approval.resolve": async (options) => {
