@@ -65,6 +65,7 @@ type SlackOriginContext = {
 export const isSlackApprovalOriginCurrent: NonNullable<
   ChannelApprovalNativeAvailabilityAdapter["isOriginCurrent"]
 > = (params, handoffConfig) => {
+  // SAFETY: Slack monitor origin capture supplies this context; the required fields are checked below.
   const context = params.context as SlackOriginContext | undefined;
   const accountId = normalizeOptionalString(params.accountId);
   if (
