@@ -58,7 +58,7 @@ describe("composer overflow presentation", () => {
   });
 
   it.each([390, 2048])(
-    "ellipsizes long skill names and reveals their full name and disabled reason on hover at %ipx",
+    "reveals ellipsized skill names on hover and keyboard focus at %ipx",
     async (width) => {
       onTestFinished(installTitleTooltips(document));
       await page.viewport(width, 1000);
@@ -168,6 +168,26 @@ describe("composer overflow presentation", () => {
         await page.elementLocator(longName).unhover();
         await expect.element(content).not.toBeVisible();
       }
+      await userEvent.keyboard("{Home}{ArrowDown}");
+      expect(document.activeElement).toBe(rows[3]);
+      const focusedTooltip =
+        document.querySelector<HTMLElementTagNameMap["openclaw-tooltip"]>(
+          "body > openclaw-tooltip",
+        );
+      expect(focusedTooltip).not.toBeNull();
+      await focusedTooltip!.updateComplete;
+      const focusedContent =
+        focusedTooltip!.shadowRoot!.querySelector<HTMLElement>(".tooltip-content")!;
+      await expect.element(focusedContent).toBeVisible();
+      expect(focusedContent.textContent).toBe(availableSkillName);
+      expect(props.capabilityMenu!.onPatchToolOverrides).not.toHaveBeenCalled();
+      await userEvent.keyboard("{ArrowUp}");
+      expect(document.activeElement).toBe(dropdown.querySelector('[value="back"]'));
+      await expect.element(focusedContent).not.toBeVisible();
+      await userEvent.keyboard("{ArrowDown}{Enter}");
+      expect(props.capabilityMenu!.onPatchToolOverrides).toHaveBeenCalledExactlyOnceWith({
+        skills: { [availableSkillName]: false },
+      });
       expect(menu.scrollWidth).toBeLessThanOrEqual(menu.clientWidth);
       expect(menu.getBoundingClientRect().right).toBeLessThanOrEqual(width);
     },
