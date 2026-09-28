@@ -266,9 +266,19 @@ export async function runInstalledPublishedUpdate(params: {
   let output = "";
   let failure: Error | undefined;
   try {
-    // Execute the unchanged published CLI; the observer neither injects markers nor changes state.
+    // Observe caught parent exceptions with V8; the installed driver bytes stay unchanged.
     output = await run(
-      [task.entry, "--profile", task.profile, "update", "--yes", "--tag", input.tarball, "--json"],
+      [
+        ...(key === "2026.9.4" ? ["--print-all-exceptions"] : []),
+        task.entry,
+        "--profile",
+        task.profile,
+        "update",
+        "--yes",
+        "--tag",
+        input.tarball,
+        "--json",
+      ],
       task.env,
       task.rootDir,
       commands,

@@ -466,6 +466,7 @@ describe("published installed update progress", () => {
                 args: ["update"],
                 launcherPid: 1234,
                 beforeCleanup: "indeterminate",
+                managedResult: null,
                 code: 1,
                 signal: null,
                 joined: false,
@@ -508,6 +509,36 @@ describe("published installed update progress", () => {
           { observeService: "status" },
         );
       }
+    },
+  );
+
+  it.each(["2026.9.3", "2026.9.4"] as const)(
+    "scopes exception observation to the 9.4 cell (%s)",
+    async (key) => {
+      vi.spyOn(updateRunReader, "listUpdateRunsAsync").mockResolvedValue([]);
+      const command = vi.spyOn(installedCommand, "run").mockResolvedValue(JSON.stringify(success));
+      const task = installedTask();
+      await runInstalledPublishedUpdate({
+        task,
+        input,
+        inputPath: "C:\\synthetic-input.json",
+        key,
+        commands: [],
+        signal: new AbortController().signal,
+        observations: {},
+        recordProgress: vi.fn().mockResolvedValue(undefined),
+      });
+      expect(command.mock.calls[0]?.[0]).toEqual([
+        ...(key === "2026.9.4" ? ["--print-all-exceptions"] : []),
+        task.entry,
+        "--profile",
+        task.profile,
+        "update",
+        "--yes",
+        "--tag",
+        input.tarball,
+        "--json",
+      ]);
     },
   );
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
+import path from "node:path";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { sanitizeForLog, stripAnsi } from "../../packages/terminal-core/src/ansi.js";
@@ -10,6 +11,7 @@ import {
 } from "../../scripts/lib/managed-child-process.mts";
 import { redactSupportString } from "../logging/diagnostic-support-redaction.js";
 import { formatCommandOutput } from "../process/command-error.js";
+import { createInstalledExceptionObserver } from "./schtasks.installed-exception-observer.test-support.js";
 
 type ServiceObservation = "install" | "status";
 
@@ -142,6 +144,7 @@ export type CommandRecord = {
   launcherPid: number | null;
   beforeCleanup: ReturnType<typeof inspectManagedProcessGroup> | undefined;
   code: number | null;
+  managedResult: number | null;
   signal: string | null;
   joined: boolean;
   elapsedMs: number;
@@ -149,6 +152,11 @@ export type CommandRecord = {
   failureOutput?: { stdout: string; stderr: string; captureTruncated: boolean };
   serviceOutput?: ReturnType<typeof captureCommandOutput>;
   publishedUpdate?: ReturnType<typeof captureCommandOutput>;
+  caughtExceptions?: {
+    diagnosticOnly: true;
+    stdout: ReturnType<ReturnType<typeof createInstalledExceptionObserver>["finish"]>;
+    stderr: ReturnType<ReturnType<typeof createInstalledExceptionObserver>["finish"]>;
+  };
 };
 export async function run(
   args: string[],
@@ -164,6 +172,21 @@ export async function run(
   } = {},
 ) {
   const { expectedStderr = [], observeService } = options;
+  const exceptionDiagnostic = args[0] === "--print-all-exceptions";
+  let exceptionObservers:
+    | Record<"stdout" | "stderr", ReturnType<typeof createInstalledExceptionObserver>>
+    | undefined;
+  if (exceptionDiagnostic) {
+    assert.equal(options.commandBudget, "published-update");
+    const entry = args[1];
+    assert.ok(entry && path.isAbsolute(entry));
+    assert.equal(path.basename(entry), "openclaw.mjs");
+    const installRoot = path.dirname(path.dirname(path.dirname(entry)));
+    exceptionObservers = {
+      stdout: createInstalledExceptionObserver({ installRoot }),
+      stderr: createInstalledExceptionObserver({ installRoot }),
+    };
+  }
   const started = performance.now();
   const settlement: CommandSettlement | undefined =
     options.commandBudget === "published-update"
@@ -222,6 +245,10 @@ export async function run(
           if (settlement) {
             settlement.stdout.lastDataAtMs = Date.now();
           }
+          if (exceptionObservers) {
+            exceptionObservers.stdout.write(chunk);
+            return;
+          }
           stdout += chunk.toString();
           if (stdout.length > 262144) {
             truncated = true;
@@ -231,6 +258,10 @@ export async function run(
         launched.stderr?.on("data", (chunk: Buffer) => {
           if (settlement) {
             settlement.stderr.lastDataAtMs = Date.now();
+          }
+          if (exceptionObservers) {
+            exceptionObservers.stderr.write(chunk);
+            return;
           }
           stderr += chunk.toString();
           if (stderr.length > 262144) {
@@ -281,8 +312,8 @@ export async function run(
   };
   const failureOutput = failed
     ? {
-        stdout: diagnostic(stdout),
-        stderr: diagnostic(stderr),
+        stdout: exceptionDiagnostic ? "[raw exception stdout withheld]" : diagnostic(stdout),
+        stderr: exceptionDiagnostic ? "[raw exception stderr withheld]" : diagnostic(stderr),
         captureTruncated: truncated,
       }
     : undefined;
@@ -290,6 +321,7 @@ export async function run(
     args,
     launcherPid: child?.pid ?? null,
     code,
+    managedResult: failure ? null : (result ?? null),
     signal: exitSignal,
     beforeCleanup,
     joined: afterCleanup === "dead" && !hasUnjoinedWork(failure),
@@ -299,8 +331,17 @@ export async function run(
     ...(observeService
       ? { serviceOutput: captureCommandOutput(observeService, stdout, truncated, diagnostic) }
       : {}),
-    ...(options.commandBudget === "published-update"
+    ...(options.commandBudget === "published-update" && !exceptionDiagnostic
       ? { publishedUpdate: captureCommandOutput("published-update", stdout, truncated, diagnostic) }
+      : {}),
+    ...(exceptionObservers
+      ? {
+          caughtExceptions: {
+            diagnosticOnly: true as const,
+            stdout: exceptionObservers.stdout.finish(diagnostic),
+            stderr: exceptionObservers.stderr.finish(diagnostic),
+          },
+        }
       : {}),
   });
   if (child && afterCleanup !== "dead") {
@@ -326,5 +367,6 @@ export async function run(
     true,
     `Command stderr did not match expected diagnostics.\n${details}`,
   );
+  assert.equal(exceptionDiagnostic, false, "Exception observation is diagnostic only");
   return stdout;
 }

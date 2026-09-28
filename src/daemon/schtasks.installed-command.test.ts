@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -5,6 +6,82 @@ import { run, type CommandRecord } from "./schtasks.installed-command.test-suppo
 import { installedStatusSchema } from "./schtasks.installed-package.test-support.js";
 
 const temporary = useAutoCleanupTempDirTracker(afterEach);
+
+it.each([0, 1])(
+  "withholds raw caught exceptions and stays diagnostic (exit=%s)",
+  async (exitCode) => {
+    const root = temporary.make("installed-parent-exceptions-");
+    const packageRoot = path.join(root, "node_modules", "openclaw");
+    await fs.mkdir(packageRoot, { recursive: true });
+    const entry = path.join(packageRoot, "openclaw.mjs");
+    await fs.writeFile(
+      entry,
+      [
+        'function fail() { const local = "private-local-canary"; throw new Error("Caught diagnostic token=" + process.env.FIXTURE_SECRET); }',
+        "try { fail(); } catch {}",
+        'process.stdout.write("private-stdout-canary");',
+        'process.stderr.write("private-stderr-canary");',
+        `process.exitCode = ${exitCode};`,
+      ].join("\n"),
+    );
+    const records: CommandRecord[] = [];
+    const secret = "synthetic-caught-exception-credential";
+    const rejected = await run(
+      ["--print-all-exceptions", entry],
+      {
+        SystemRoot: process.env.SystemRoot,
+        WINDIR: process.env.WINDIR,
+        HOME: root,
+        USERPROFILE: root,
+        OPENCLAW_STATE_DIR: path.join(root, "state"),
+        FIXTURE_SECRET: secret,
+      },
+      root,
+      records,
+      0,
+      undefined,
+      { commandBudget: "published-update" },
+    ).then(
+      () => false,
+      () => true,
+    );
+    // A broken collector must not print the returned raw V8 dump in an assertion.
+    expect(rejected).toBe(true);
+    expect(records).toHaveLength(1);
+    expect({
+      code: records[0]?.code,
+      managedResult: records[0]?.managedResult,
+      joined: records[0]?.joined,
+      diagnosticOnly: records[0]?.caughtExceptions?.diagnosticOnly,
+    }).toEqual({
+      code: exitCode,
+      managedResult: exitCode,
+      joined: true,
+      diagnosticOnly: true,
+    });
+    const capture = JSON.stringify(records[0]?.caughtExceptions);
+    expect(capture).toContain("Caught diagnostic");
+    expect(capture).toContain("openclaw.mjs");
+    for (const value of [
+      secret,
+      "private-local-canary",
+      "private-stdout-canary",
+      "private-stderr-canary",
+      root,
+    ]) {
+      expect(capture).not.toContain(value);
+    }
+    expect(capture).not.toMatch(/0x[0-9a-f]{8,}/iu);
+    if (exitCode === 1) {
+      expect(records[0]?.failureOutput).toEqual({
+        stdout: "[raw exception stdout withheld]",
+        stderr: "[raw exception stderr withheld]",
+        captureTruncated: false,
+      });
+    }
+    expect(records[0]?.publishedUpdate).toBeUndefined();
+  },
+);
 
 it.each(
   (["stdout", "stderr"] as const).flatMap((stream) =>
