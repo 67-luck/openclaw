@@ -115,6 +115,52 @@ it("settles a deeper subscriber's scope update when replacement startup fails", 
   expect(retry.close).not.toHaveBeenCalled();
 });
 
+it("withholds deeper coverage while resolving the expanded scope", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+  const workspaceDir = fixture.workspaceDir;
+  const root = await fixture.createFixtureDirectory("shared-source");
+  const sourcePlan = resolveWorkspaceSkillSourcePlan(workspaceDir, { workspaceOnly: true });
+  refresh.ensureSkillsWatcher({
+    workspaceDir,
+    sourcePlan: {
+      ...sourcePlan,
+      roots: [{ dir: root, source: "openclaw-extra", tier: "extra" }],
+    },
+  });
+  await observer.readyAll();
+  const observed = observer.forRoot(root);
+  const scopeUpdates = vi.spyOn(observed.subscription, "setScopes");
+  const updates = vi.spyOn(pathWatchers.get(root)!, "refreshScope");
+  const planning = await import("./refresh-observation-source.js");
+  const original = vi.mocked(planning.skillsObservationScope).getMockImplementation()!;
+  const entered = createDeferredCore();
+  const release = createDeferredCore();
+  vi.mocked(planning.skillsObservationScope).mockImplementationOnce(async (...args) => {
+    entered.resolve();
+    await release.promise;
+    return original(...args);
+  });
+  const deeper = {
+    workspaceDir,
+    sourcePlan: {
+      ...sourcePlan,
+      roots: [{ dir: root, source: "openclaw-workspace", tier: "workspace" as const }],
+    },
+  };
+  try {
+    expect(refresh.reconcileSkillsWatcherCoverage(deeper)).toBe(false);
+    await entered.promise;
+    expect(refresh.reconcileSkillsWatcherCoverage(deeper)).toBe(false);
+    expect(scopeUpdates).not.toHaveBeenCalled();
+    release.resolve();
+    await updates.mock.results[0]!.value;
+    expect(scopeUpdates).toHaveBeenCalledOnce();
+    expect(refresh.reconcileSkillsWatcherCoverage(deeper)).toBe(true);
+  } finally {
+    release.resolve();
+  }
+});
+
 it.each(["unsubscribe", "shutdown", "re-ensure"] as const)(
   "retains plan ownership when failure publication triggers %s",
   async (action) => {
