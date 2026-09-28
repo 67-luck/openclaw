@@ -20,7 +20,7 @@ type SessionRegistryMaintenanceStoreSummary = {
 };
 
 type SessionRegistryMaintenanceStoreOptions = SessionStoreTarget & {
-  /** Apply pruning to the backing store; false previews against a clone. */
+  /** Apply pruning to the backing store; false only previews the owned read result. */
   apply: boolean;
   /** Retention window for cron-run session entries. */
   retentionMs: number;
@@ -97,7 +97,7 @@ function pruneSessionRegistryStore(params: {
 
 /**
  * Runs session-registry maintenance for one resolved agent store.
- * Preview prunes a clone; apply uses one store-sized write transaction and
+ * Preview prunes the owned worker result; apply uses one store-sized write transaction and
  * skips generic session maintenance so non-cron rows stay outside this sweep.
  */
 export async function runSessionRegistryMaintenanceForStore(
@@ -122,33 +122,18 @@ export async function runSessionRegistryMaintenanceForStore(
         assertReaderCurrent();
       };
       assertCurrent();
-      const beforeStore = Object.fromEntries(
-        entries.map(({ sessionKey, entry }) => [sessionKey, entry]),
-      );
-      const beforeCount = Object.keys(beforeStore).length;
-      if (!params.apply) {
-        const previewStore = structuredClone(beforeStore);
-        return {
-          beforeCount,
-          ...pruneSessionRegistryStore({
-            retentionMs: params.retentionMs,
-            runningCronJobIds: params.runningCronJobIds,
-            storePath,
-            store: previewStore,
-          }),
-        };
-      }
-
-      const applyStore = structuredClone(beforeStore);
-      const removals: SessionEntryLifecycleRemoval[] = [];
+      // Worker transport already isolates these entries from the reader's state.
+      const store = Object.fromEntries(entries.map(({ sessionKey, entry }) => [sessionKey, entry]));
+      const beforeCount = Object.keys(store).length;
+      const removals: SessionEntryLifecycleRemoval[] | undefined = params.apply ? [] : undefined;
       const applied = pruneSessionRegistryStore({
         retentionMs: params.retentionMs,
         removals,
         runningCronJobIds: params.runningCronJobIds,
         storePath,
-        store: applyStore,
+        store,
       });
-      if (removals.length > 0) {
+      if (removals && removals.length > 0) {
         const mutation = await applySessionEntryLifecycleMutation({
           agentId,
           storePath,

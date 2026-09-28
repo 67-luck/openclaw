@@ -129,68 +129,60 @@ describe("runSessionRegistryMaintenanceForStore", () => {
     await expect(fs.stat(sqlitePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("archives the transcript when pruning stale cron-run sessions", async () => {
-    const now = Date.now();
-    const sessionKey = "agent:main:cron:done-job:run:old-run";
-    const sessionId = "run-1";
-    const storePath = await createStore({
-      [sessionKey]: sessionEntry(sessionId, now - 8 * DAY_MS),
-    });
-    appendTranscriptEventSync(
-      { sessionKey, sessionId, storePath },
-      { type: "proof-event", data: "cron transcript must survive pruning" },
-    );
-
-    const result = await runSessionRegistryMaintenanceForStore({
-      agentId: "main",
-      apply: true,
-      retentionMs: 7 * DAY_MS,
-      runningCronJobIds: new Set(),
-      storePath,
-    });
-
-    expect(result).toEqual({
-      beforeCount: 1,
-      afterCount: 0,
-      preservedRunning: 0,
-      pruned: 1,
-    });
-    expect(loadSessionEntry({ sessionKey, storePath })).toBeUndefined();
-    const archives = await listDeletedArchiveFiles(path.dirname(storePath));
-    expect(archives).toHaveLength(1);
-    expect(readSessionArchiveContentSync(archives[0] ?? "")).toContain(
-      "cron transcript must survive pruning",
-    );
-    await expect(loadTranscriptEvents({ sessionKey, sessionId, storePath })).resolves.toEqual([]);
-  });
-
-  it("does not write transcript archives during preview", async () => {
-    const now = Date.now();
-    const sessionKey = "agent:main:cron:done-job:run:old-run";
-    const sessionId = "run-1";
-    const storePath = await createStore({
-      [sessionKey]: sessionEntry(sessionId, now - 8 * DAY_MS),
-    });
-    appendTranscriptEventSync(
-      { sessionKey, sessionId, storePath },
-      { type: "proof-event", data: "cron transcript must survive preview" },
-    );
-
-    const result = await runSessionRegistryMaintenanceForStore({
-      agentId: "main",
-      apply: false,
-      retentionMs: 7 * DAY_MS,
-      runningCronJobIds: new Set(),
-      storePath,
-    });
-
-    expect(result.pruned).toBe(1);
-    expect(loadSessionEntry({ sessionKey, storePath })).toBeDefined();
-    await expect(loadTranscriptEvents({ sessionKey, sessionId, storePath })).resolves.toHaveLength(
-      1,
-    );
-    expect(await listDeletedArchiveFiles(path.dirname(storePath))).toStrictEqual([]);
-  });
+  it.each([false, true])(
+    "consumes owned worker entries without copying the store (apply=%s)",
+    async (apply) => {
+      const sessionKey = "agent:main:cron:done-job:run:old-run";
+      const sessionId = "run-1";
+      const original = {
+        ...sessionEntry(sessionId, Date.now() - 8 * DAY_MS),
+        skillsSnapshot: { prompt: "saved fixture prompt", skills: [{ name: "fixture" }] },
+      };
+      const storePath = await createStore({ [sessionKey]: original });
+      appendTranscriptEventSync(
+        { sessionKey, sessionId, storePath },
+        { type: "proof-event", data: "cron transcript must survive pruning" },
+      );
+      const clone = vi.spyOn(globalThis, "structuredClone");
+      try {
+        const result = await runSessionRegistryMaintenanceForStore({
+          agentId: "main",
+          apply,
+          retentionMs: 7 * DAY_MS,
+          runningCronJobIds: new Set(),
+          storePath,
+        });
+        expect(result).toEqual({
+          beforeCount: 1,
+          afterCount: 0,
+          preservedRunning: 0,
+          pruned: 1,
+        });
+        const archives = await listDeletedArchiveFiles(path.dirname(storePath));
+        if (apply) {
+          expect(loadSessionEntry({ sessionKey, storePath })).toBeUndefined();
+          expect(archives).toHaveLength(1);
+          expect(readSessionArchiveContentSync(archives[0] ?? "")).toContain(
+            "cron transcript must survive pruning",
+          );
+          await expect(loadTranscriptEvents({ sessionKey, sessionId, storePath })).resolves.toEqual(
+            [],
+          );
+        } else {
+          expect(loadSessionEntry({ sessionKey, storePath })).toEqual(original);
+          await expect(
+            loadTranscriptEvents({ sessionKey, sessionId, storePath }),
+          ).resolves.toHaveLength(1);
+          expect(archives).toStrictEqual([]);
+        }
+        expect(clone).not.toHaveBeenCalledWith(
+          expect.objectContaining({ [sessionKey]: expect.anything() }),
+        );
+      } finally {
+        clone.mockRestore();
+      }
+    },
+  );
 
   it("applies pruning to stale cron-run descendant rows", async () => {
     const now = Date.now();
