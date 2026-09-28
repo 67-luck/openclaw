@@ -42,6 +42,7 @@ foreach ($scenario in @('success','failed-create','unnamed-create','late-old-cre
   $rows=[Collections.Generic.List[object]]::new(); $partial=[Collections.Generic.HashSet[string]]::new()
   $pending=@{}; $objects=@{}; $ownedKeys=@{}
   $diagnosticFacts=New-FileTraceFacts
+  $filterCensus=New-FileTraceCensus
   $excludedObjects=[Collections.Generic.HashSet[string]]::new()
   $counts=@{parsed=0;ownBegins=0;unmatchedEnds=0;unresolvedTargets=0;unresolvedThreads=0;outOfScope=0}
   $events=[Collections.Generic.List[object]]::new()
@@ -79,3 +80,74 @@ foreach ($scenario in @('success','failed-create','unnamed-create','late-old-cre
   if($scenario -eq 'foreign-thread' -and $diagnosticFacts.entries.Count -ne 1){throw 'Foreign thread entered diagnostic facts'}
   [pscustomobject]@{scenario=$scenario;passed=$true;setInfoRecords=$setInfo.Count} | ConvertTo-Json -Compress
 }
+
+# Actual relevant IDs exercise the census at the original parser's early exits.
+$lookup['12:0']=@{id=12;version=0;task='Create';opcode='Info'}
+$lookup['15:0']=@{id=15;version=0;task='Read';opcode='Info'}
+$lookup['24:0']=@{id=24;version=0;task='OperationEnd';opcode='Info'}
+foreach($case in @(
+  @{name='capture-window';reason='outside-capture-window';tick=-1;id=12;fields=@{Irp='0xC0FFEE';IssuingThreadId='22';FileName='C:\foreign\PRIVATE_CANARY'}}
+  @{name='original-lifetime';reason='outside-original-lifetime';tick=2;id=12;fields=@{Irp='0xC0FFEE';IssuingThreadId='22'}}
+  @{name='zero-irp';reason='missing-or-zero-irp';tick=1;id=12;fields=@{Irp='0x0';IssuingThreadId='22'}}
+  @{name='missing-thread';reason='missing-issuing-thread';tick=1;id=12;fields=@{Irp='0xC0FFEE'}}
+  @{name='unverified-thread';reason='unverified-issuing-thread';tick=1;id=12;fields=@{Irp='0xC0FFEE';IssuingThreadId='33'}}
+  @{name='unresolved-read';reason='unresolved-target';tick=1;id=15;fields=@{Irp='0xC0FFEE';IssuingThreadId='22';FileKey='0xDEADBEEF'}}
+)) {
+  $start=[DateTime]::UtcNow;$end=$start.AddSeconds(1);$clock=[Diagnostics.Stopwatch]::StartNew()
+  $script:lifetimeEnd=if($case.name -eq 'original-lifetime'){$start.AddMilliseconds(1).ToFileTimeUtc()}else{[long]::MaxValue}
+  $rows=[Collections.Generic.List[object]]::new();$partial=[Collections.Generic.HashSet[string]]::new()
+  $pending=@{};$objects=@{};$ownedKeys=@{};$excludedObjects=[Collections.Generic.HashSet[string]]::new()
+  $counts=@{parsed=0;ownBegins=0;unmatchedEnds=0;unresolvedTargets=0;unresolvedThreads=0;outOfScope=0}
+  $diagnosticFacts=New-FileTraceFacts;$filterCensus=New-FileTraceCensus
+  $event=Event $case.id $case.fields $case.tick
+  $event | Add-Member NoteProperty ProcessId $TargetProcessId
+  @($event) | ForEach-Object $processor
+  $fact=Get-FileTraceCensus $filterCensus
+  if($fact.events.Count -ne 1 -or $fact.events[0].filterReason -ne $case.reason){throw "Census missed exclusion: $($case.name)"}
+  if($fact.filterReasonCounts[$case.reason] -ne 1 -or $fact.relevantEventCounts[[string]$case.id] -ne 1){throw 'Census counts missed early event'}
+  if($rows.Count -ne 0 -or $pending.Count -ne 0){throw 'Header census granted attribution'}
+  if($case.name -eq 'capture-window' -and ($fact.events[0].timeWindowMatched -ne $false -or $null -ne $fact.events[0].processLifetimeMatched)){throw 'Skipped lifetime test claimed a result'}
+  if($case.name -eq 'original-lifetime' -and $fact.events[0].processLifetimeMatched -ne $false){throw 'Header PID confused with process lifetime'}
+  if($case.name -eq 'unverified-thread' -and $fact.events[0].issuingThreadVerified -ne $false){throw 'Header PID confused with issuing thread'}
+  if($case.name -eq 'zero-irp' -and $fact.events[0].irpValueNonzero -ne $false){throw 'Zero IRP reported nonzero'}
+  $encoded=$fact | ConvertTo-Json -Depth 8 -Compress
+  foreach($canary in @('PRIVATE_CANARY','C0FFEE','DEADBEEF')){if($encoded.Contains($canary)){throw 'Private event value leaked'}}
+  [pscustomobject]@{scenario=$case.name;passed=$true;diagnosticOnly=$true} | ConvertTo-Json -Compress
+}
+
+# A header mismatch changes only the fixed-ID census, never creates a detail row.
+$filterCensus=New-FileTraceCensus
+$foreign=Event 12 @{Irp='0xDEADBEEF';FileName='C:\foreign\PRIVATE_CANARY'} 1
+$foreign | Add-Member NoteProperty ProcessId 9999
+Start-FileTraceCensusEvent $filterCensus $foreign $TargetProcessId | Out-Null
+Complete-FileTraceCensusEvent $filterCensus 12 $null 'processing-interrupted'
+$fact=Get-FileTraceCensus $filterCensus
+if($fact.events.Count -ne 0 -or $fact.relevantEventCounts['12'] -ne 1 -or $fact.headerPidMatchCounts['12'] -ne 0){throw 'Foreign header entered detail projection'}
+# Unknown IDs must not allocate new count keys, even on a matching header.
+$unknown=Event 9999 @{} 1
+$unknown | Add-Member NoteProperty ProcessId $TargetProcessId
+for($n=0;$n -lt 100;$n++){
+  Start-FileTraceCensusEvent $filterCensus $unknown $TargetProcessId | Out-Null
+  $own=Event 12 @{Irp='0xC0FFEE';FileName='C:\foreign\PRIVATE_CANARY'} 1
+  $own | Add-Member NoteProperty ProcessId $TargetProcessId
+  $row=Start-FileTraceCensusEvent $filterCensus $own $TargetProcessId
+  Complete-FileTraceCensusEvent $filterCensus 12 $row 'processing-interrupted'
+}
+$fact=Get-FileTraceCensus $filterCensus
+if($fact.events.Count -ne 32 -or -not $fact.truncated){throw 'Census row cap failed'}
+if($fact.relevantEventCounts.Count+$fact.headerPidMatchCounts.Count+$fact.filterReasonCounts.Count -ne 32){throw 'Census count keys grew'}
+if([Text.Encoding]::UTF8.GetByteCount(($fact | ConvertTo-Json -Depth 8 -Compress)) -gt 32768){throw 'Census byte cap failed'}
+@{scenario='header-selector-and-census-bounds';passed=$true;diagnosticOnly=$true} | ConvertTo-Json -Compress
+
+# Diagnostic capture failure cannot alter a successful parser result or partiality.
+function Start-FileTraceCensusEvent {throw 'Synthetic diagnostic failure'}
+$start=[DateTime]::UtcNow;$end=$start.AddSeconds(1);$clock=[Diagnostics.Stopwatch]::StartNew()
+$script:lifetimeEnd=[long]::MaxValue
+$rows=[Collections.Generic.List[object]]::new();$partial=[Collections.Generic.HashSet[string]]::new()
+$pending=@{};$objects=@{};$ownedKeys=@{};$excludedObjects=[Collections.Generic.HashSet[string]]::new()
+$counts=@{parsed=0;ownBegins=0;unmatchedEnds=0;unresolvedTargets=0;unresolvedThreads=0;outOfScope=0}
+$diagnosticFacts=New-FileTraceFacts;$filterCensus=New-FileTraceCensus
+@((Event 12 @{Irp='0x1';FileObject='0x9';IssuingThreadId='22';FileName='C:\owned\old.node';CreateOptions='0'} 1),
+  (Event 24 @{Irp='0x1';Status='0'} 2)) | ForEach-Object $processor
+if($rows.Count -ne 1 -or $rows[0].ntStatus -ne '0x00000000' -or $partial.Count -ne 0 -or -not $filterCensus.unavailable){throw 'Diagnostic failure changed attribution'}
+@{scenario='diagnostic-failure-keeps-parser-result';passed=$true;diagnosticOnly=$true} | ConvertTo-Json -Compress

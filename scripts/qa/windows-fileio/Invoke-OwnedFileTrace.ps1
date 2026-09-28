@@ -122,6 +122,7 @@ try {
   $threadRefresh = 'not-attempted'
   $identityRefused = $false
   $diagnosticFacts = if($diagnosticAvailable){New-FileTraceFacts}else{@{unavailable=$true}}
+  $filterCensus = if($diagnosticAvailable){New-FileTraceCensus}else{@{unavailable=$true}}
   try {
     if ($TargetProcessId -eq 0 -or $NativeStartFileTime -notmatch '^[0-9]{15,20}$') { throw 'Exact native process identity required' }
     $startIdentity = [long]::Parse($NativeStartFileTime)
@@ -181,15 +182,28 @@ try {
     }
     Get-WinEvent -Path $raw -Oldest -MaxEvents 20001 | ForEach-Object {
       $event = $_
+      $censusRow=$null; $censusId=0; $censusReason='processing-interrupted'
       try {
         $counts.parsed++
         if ($counts.parsed -gt 20000 -or $clock.ElapsedMilliseconds -ge 4500) { throw 'BoundReached' }
         if ($event.ProviderId -ne [guid]$receipt.provider) { return }
+        if($diagnosticAvailable){try {
+          $censusId=[int]$event.Id
+          $censusRow=Start-FileTraceCensusEvent $filterCensus $event $TargetProcessId
+        } catch {$filterCensus.unavailable=$true}}
         $time = $event.TimeCreated.ToUniversalTime()
-        if ($time -lt $start -or $time -gt $end) { return }
-        if (-not $threadLease.ProcessContainsTime($time.ToFileTimeUtc())) { return }
+        if ($time -lt $start -or $time -gt $end) {
+          if($null -ne $censusRow){$censusRow.timeWindowMatched=$false}
+          $censusReason='outside-capture-window'; return
+        }
+        if($null -ne $censusRow){$censusRow.timeWindowMatched=$true}
+        if (-not $threadLease.ProcessContainsTime($time.ToFileTimeUtc())) {
+          if($null -ne $censusRow){$censusRow.processLifetimeMatched=$false}
+          $censusReason='outside-original-lifetime'; return
+        }
+        if($null -ne $censusRow){$censusRow.processLifetimeMatched=$true}
         $s = $lookup[([string]$event.Id + ':' + [string]$event.Version)]
-        if (-not $s) { $null = $partial.Add('unknown-event-schema'); return }
+        if (-not $s) { $null = $partial.Add('unknown-event-schema'); $censusReason='unknown-schema'; return }
         [xml]$xml = $event.ToXml()
         $fields = @{}
         foreach ($data in $xml.Event.EventData.Data) { $fields[[string]$data.Name] = [string]$data.'#text' }
@@ -225,6 +239,7 @@ try {
           $ownedKeys.Remove($key)
         }
         if (-not $irp -and $kind -match 'NameCreate' -and $key -and $name) {
+          $censusReason='name-event'
           $ownedKeys.Remove($key)
           if ($relative) {
             if ($pending.Count + $objects.Count + $ownedKeys.Count + $excludedObjects.Count -ge 1024) { throw 'BoundReached' }
@@ -233,6 +248,7 @@ try {
           return
         }
         if ($irp -and $ntstatus) {
+          $censusReason='completion-event'
           if ($pending.ContainsKey($irp)) {
             $begin = $pending[$irp]; $pending.Remove($irp)
             $statusNumber = if ($ntstatus.StartsWith('0x')) { [Convert]::ToUInt32($ntstatus.Substring(2),16) } else { [uint32]::Parse($ntstatus) }
@@ -257,16 +273,19 @@ try {
           } else { $counts.unmatchedEnds++ }
           return
         }
-        if (-not $irp) { return }
+        if (-not $irp) { $censusReason='missing-or-zero-irp'; return }
         # A changed name cannot keep an earlier object target alive.
         if ($name -and $obj) { $objects.Remove($obj) }
         # Any second begin destroys the former correlation, including foreign IRPs.
         if ($pending.ContainsKey($irp)) { $pending.Remove($irp); $null = $partial.Add('irp-reuse-without-end') }
-        if (-not $tidText) { return }
+        if (-not $tidText) { $censusReason='missing-issuing-thread'; return }
         $threadId = [uint32]$tidText
         if (-not $threadLease.BelongsAt($threadId,$time.ToFileTimeUtc())) {
+          if($null -ne $censusRow){$censusRow.issuingThreadVerified=$false}
+          $censusReason='unverified-issuing-thread'
           $counts.unresolvedThreads++; return
         }
+        if($null -ne $censusRow){$censusRow.issuingThreadVerified=$true}
         $counts.ownBegins++
         $outside = $pathFact.scope -eq 'outside'
         # An unnamed create starts a new lifetime; an explicit non-owned name
@@ -283,13 +302,18 @@ try {
           Add-OwnFileTraceFact $diagnosticFacts $s $fields $irp $obj $key $pathFact.scope $resolvedScope `
             ([bool]($obj -and $objects.ContainsKey($obj))) ([bool]($key -and $ownedKeys.ContainsKey($key))) ([bool]$isCreate) ([bool]$isClose)
         } catch { $diagnosticFacts.unavailable=$true }}
-        if($outside){$counts.outOfScope++;if(-not $isCreate){return}}
-        if (-not $relative -and -not $outside) { $counts.unresolvedTargets++; return }
+        if($outside){$counts.outOfScope++;if(-not $isCreate){$censusReason='outside-owned-path';return}}
+        if (-not $relative -and -not $outside) { $counts.unresolvedTargets++; $censusReason='unresolved-target'; return }
         if ($pending.Count + $objects.Count + $ownedKeys.Count + $excludedObjects.Count -ge 1024) { throw 'BoundReached' }
         $pending[$irp] = @{ tid=$threadId; target=$relative; operation=$kind; time=$time;
           isCreate=$isCreate; allowObjectMapping=$true; object=$obj; key=$key; outside=$outside;
           id=[int]$event.Id; version=[int]$event.Version; infoClass=(Field $fields @('InfoClass')) }
-      } finally { $event.Dispose() }
+        $censusReason='request-retained'
+      } finally {
+        if($diagnosticAvailable){try {Complete-FileTraceCensusEvent $filterCensus $censusId $censusRow $censusReason}
+          catch {$filterCensus.unavailable=$true}}
+        $event.Dispose()
+      }
     }
   } catch {
     # No event XML, foreign path, or raw exception content crosses the boundary.
@@ -322,6 +346,8 @@ try {
   }
   try { Emit (Get-FileTraceFacts $diagnosticFacts) }
   catch { Emit @{phase='owned-begin-facts';diagnosticOnly=$true;unavailable=$true;events=@()} }
+  try { Emit (Get-FileTraceCensus $filterCensus) }
+  catch { Emit @{phase='filter-census';diagnosticOnly=$true;unavailable=$true;events=@()} }
   Emit $result
   if (-not $stopped) { exit 2 }
 } catch {
