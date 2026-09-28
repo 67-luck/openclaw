@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { evaluateShellAllowlistWithAuthorization } from "./exec-approvals-allowlist.js";
 import { commandRequiresSecurityAuditSuppressionApproval } from "./exec-approvals-policy.js";
+import { resolveCommandResolutionFromArgv } from "./exec-command-resolution.js";
 
 async function inspect(
   command: string,
@@ -24,6 +25,10 @@ describe("suppression inspection preflight", () => {
     ["cat docs/security.audit.suppressions.md", false],
     ["sed -n '1,120p' docs/security.audit.suppressions.md", false],
     ["openclaw config get security.audit.suppressions", false],
+    ["openclaw --profile --no-color config get security.audit.suppressions", false],
+    ["openclaw --unknown config get security.audit.suppressions", true],
+    ["rg -nFg'*.ts' security.audit.suppressions /etc/config.json", false],
+    ["rg security.audit.suppressions --glob", true],
     ["openclaw config set security.audit.suppressions '[]'", true],
     ["rg security.audit.suppressions src; touch output", true],
     ["cat security.audit.suppressions.json | tee openclaw.json", true],
@@ -79,11 +84,7 @@ describe("suppression inspection preflight", () => {
       { ...input, command: input.command + "; whoami" },
       {
         ...input,
-        transportExecutable: {
-          kind: "executable" as const,
-          rawExecutable: "./powershell",
-          executableName: "powershell",
-        },
+        transportResolution: resolveCommandResolutionFromArgv(["./powershell"]) ?? undefined,
       },
     ]) {
       expect(commandRequiresSecurityAuditSuppressionApproval(incomplete)).toBe(true);
@@ -107,6 +108,9 @@ describe("suppression inspection preflight", () => {
         for (const [flags, expected] of [
           ["--no-config", false],
           ["-e --no-config", true],
+          ["-e--no-config", true],
+          ["--regexp=--no-config", true],
+          ["--no-config=true", true],
           ["--", true],
         ] as const) {
           expect(

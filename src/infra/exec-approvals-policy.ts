@@ -1,3 +1,4 @@
+import { consumeRootCommandOptionToken } from "./cli-root-options.js";
 import { hasUnquotedShellExpansionSource } from "./command-analysis/risks.js";
 import type { AllowAlwaysPersistenceDecision } from "./exec-approvals-contracts.js";
 // Resolves exec approval requirements and approval-decision availability.
@@ -9,7 +10,7 @@ import {
   type ExecSecurity,
 } from "./exec-approvals-core.js";
 import type { ExecAuthorizationPlan } from "./exec-authorization-plan.js";
-import { parseExecArgvToken, type ExecutableResolution } from "./exec-command-resolution.js";
+import { parseExecArgvToken, type CommandResolution } from "./exec-command-resolution.js";
 import { getTrustedSafeBinDirs, isTrustedSafeBinPath } from "./exec-safe-bin-trust.js";
 import { resolveEnvironmentValue } from "./process-env.js";
 import { hasPosixShellStartupBeforeInlineCommand } from "./shell-wrapper-resolution.js";
@@ -57,24 +58,11 @@ function isReadOnlySecurityAuditSuppressionInspection(argv: string[]): boolean {
   }
   offset += 1;
   while (offset < argv.length) {
-    const arg = argv[offset];
-    if (["--dev", "--no-color"].includes(arg ?? "")) {
-      offset += 1;
-      continue;
+    const consumed = consumeRootCommandOptionToken(argv, offset);
+    if (!consumed) {
+      break;
     }
-    if (["--profile", "--container", "--log-level"].includes(arg ?? "")) {
-      offset += 2;
-      continue;
-    }
-    if (
-      arg?.startsWith("--profile=") ||
-      arg?.startsWith("--container=") ||
-      arg?.startsWith("--log-level=")
-    ) {
-      offset += 1;
-      continue;
-    }
-    break;
+    offset += consumed;
   }
   return (
     argv[offset] === "config" && ["get", "schema", "validate"].includes(argv[offset + 1] ?? "")
@@ -86,15 +74,12 @@ function isReadOnlySecurityAuditSuppressionInspection(argv: string[]): boolean {
 // or decompression. Do not infer read-only behavior from an executable grant.
 const RIPGREP_INSPECTION_OPTIONS = {
   boolean:
-    "-n -N -l -L -i -s -S -F -w -x -v -c -q -o -H -I -a -U -u -uu -uuu --hidden --files --no-ignore --no-ignore-vcs --fixed-strings --line-number --files-with-matches --files-without-match --count --only-matching --no-heading --heading --json --no-config --no-messages --follow",
+    "-n -N -l -L -i -s -S -F -w -x -v -c -q -o -H -I -a -U -u --hidden --files --no-ignore --no-ignore-vcs --fixed-strings --line-number --files-with-matches --files-without-match --count --only-matching --no-heading --heading --json --no-config --no-messages --follow",
   value:
     "-e -f -g -t -T -m -A -B -C --regexp --file --glob --iglob --type --type-not --max-count --after-context --before-context --context --max-depth --encoding --color --sort --sortr",
 };
 
-function isInspectionArgv(argv: string[], env?: NodeJS.ProcessEnv): boolean {
-  if (isReadOnlySecurityAuditSuppressionInspection(argv)) {
-    return true;
-  }
+function isReadOnlyFileInspection(argv: string[], env?: NodeJS.ProcessEnv): boolean {
   const command = normalizeCommandName(argv[0]);
   if (command === "sed") {
     // Only a print-only script followed by filenames, never -e/-f/-i or scripts
@@ -122,28 +107,20 @@ function isInspectionArgv(argv: string[], env?: NodeJS.ProcessEnv): boolean {
     if (token.kind !== "option") {
       continue;
     }
-    if (token.style === "long") {
-      if (valueFlags.has(token.flag)) {
-        if (token.inlineValue === undefined && ++i >= argv.length) {
-          return false;
-        }
-      } else if (!booleanFlags.has(token.flag) || token.inlineValue !== undefined) {
-        return false;
-      } else if (token.flag === "--no-config") {
-        noRipgrepConfig = true;
-      }
-      continue;
-    }
-    for (const [index, flag] of token.flags.entries()) {
+    const flags = token.style === "long" ? [token.flag] : token.flags;
+    for (const [index, flag] of flags.entries()) {
+      const attached =
+        token.style === "long" ? token.inlineValue !== undefined : index < flags.length - 1;
       if (valueFlags.has(flag)) {
-        if (index === token.flags.length - 1 && ++i >= argv.length) {
+        if (!attached && ++i >= argv.length) {
           return false;
         }
         break;
       }
-      if (!booleanFlags.has(flag)) {
+      if (!booleanFlags.has(flag) || (token.style === "long" && attached)) {
         return false;
       }
+      noRipgrepConfig ||= flag === "--no-config";
     }
   }
   return (
@@ -155,13 +132,17 @@ function isInspectionArgv(argv: string[], env?: NodeJS.ProcessEnv): boolean {
   );
 }
 
-function isTrustedInspectionExecutable(
-  executable: ExecutableResolution | undefined,
+function isTrustedInspectionCommand(
+  resolution: CommandResolution | null | undefined,
   trustedDirs?: ReadonlySet<string>,
 ): boolean {
-  const dirs =
-    trustedDirs ?? getTrustedSafeBinDirs({ safeBins: [executable?.executableName ?? ""] });
-  return [executable?.resolvedPath, executable?.resolvedRealPath].every(
+  // Effective executable identity cannot attest the dispatch wrappers that launch it.
+  if (!resolution || resolution.policyBlocked || resolution.wrapperChain?.length) {
+    return false;
+  }
+  const executable = resolution.execution;
+  const dirs = trustedDirs ?? getTrustedSafeBinDirs({ safeBins: [executable.executableName] });
+  return [executable.resolvedPath, executable.resolvedRealPath].every(
     (resolvedPath) => resolvedPath && isTrustedSafeBinPath({ resolvedPath, trustedDirs: dirs }),
   );
 }
@@ -175,7 +156,7 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
   analysisOk?: boolean;
   authorizationPlan?: ExecAuthorizationPlan;
   trustedSafeBinDirs?: ReadonlySet<string>;
-  transportExecutable?: ExecutableResolution;
+  transportResolution?: CommandResolution;
   /** Remote preflight cannot resolve node executables; the node checks trust at dispatch. */
   deferReaderTrustToNode?: boolean;
 }): boolean {
@@ -190,9 +171,9 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
   }
   if (
     hasPosixShellStartupBeforeInlineCommand(params.originalArgv ?? []) ||
-    (params.transportExecutable &&
+    (params.transportResolution &&
       !params.deferReaderTrustToNode &&
-      !isTrustedInspectionExecutable(params.transportExecutable, params.trustedSafeBinDirs))
+      !isTrustedInspectionCommand(params.transportResolution, params.trustedSafeBinDirs))
   ) {
     return true;
   }
@@ -219,6 +200,7 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
       group.candidates.every((candidate) => {
         const argv = candidate.sourceSegment.sourceArgv ?? candidate.sourceSegment.argv;
         const execution = candidate.sourceSegment.resolution?.execution;
+        const configRead = isReadOnlySecurityAuditSuppressionInspection(argv);
         const wrapper =
           candidate.transport.kind === "shell-wrapper"
             ? candidate.transport.wrapperSegment
@@ -230,16 +212,16 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
             !hasPosixShellStartupBeforeInlineCommand(wrapper.sourceArgv ?? wrapper.argv)) &&
           ((plan.dialect === "argv" && candidate.transport.kind === "direct") ||
             !hasUnquotedShellExpansionSource(candidate.sourceStep.text)) &&
-          isInspectionArgv(argv, params.env) &&
+          (configRead || isReadOnlyFileInspection(argv, params.env)) &&
           (params.deferReaderTrustToNode ||
             !wrapper ||
-            isTrustedInspectionExecutable(
-              wrapper.resolution?.execution,
-              params.trustedSafeBinDirs,
-            )) &&
-          (isReadOnlySecurityAuditSuppressionInspection(argv) ||
+            isTrustedInspectionCommand(wrapper.resolution, params.trustedSafeBinDirs)) &&
+          (configRead ||
             params.deferReaderTrustToNode ||
-            (isTrustedInspectionExecutable(execution, params.trustedSafeBinDirs) &&
+            (isTrustedInspectionCommand(
+              candidate.sourceSegment.resolution,
+              params.trustedSafeBinDirs,
+            ) &&
               normalizeCommandName(argv[0]) === normalizeCommandName(execution?.resolvedRealPath)))
         );
       }),

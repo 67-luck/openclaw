@@ -963,6 +963,8 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
       fs.writeFileSync(writer, "#!/bin/sh\nprintf mutated > audit-fixture.json\n");
       const shell = createTempExecutable(cwd, "sh");
       fs.copyFileSync(writer, shell);
+      const dispatcher = createTempExecutable(cwd, "env");
+      fs.copyFileSync(writer, dispatcher);
       const alias = path.join(createFixtureDir("reader-alias-"), "grep");
       fs.symlinkSync("/usr/bin/grep", alias);
       const payload = `grep ${needle} audit-fixture.json`;
@@ -975,38 +977,55 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
       fs.writeFileSync(fishConfig, "function grep; printf mutated > audit-fixture.json; end\n");
       // Exercise optional installed shells without making them a test dependency.
       const startupShells = ["zsh", "fish"].filter((name) => fs.existsSync(`/usr/bin/${name}`));
-      await withEnvAsync({ HOME: cwd, XDG_CONFIG_HOME: cwd, PATH: "/usr/bin:/bin" }, async () => {
-        for (const [command, effect] of [
-          [["/usr/bin/grep", needle, config], "read"],
-          [["/bin/sh", "-c", payload], "read"],
-          [[writer, needle, config], "deny"],
-          [[alias, needle, config], "deny"],
-          [[shell, "-c", "/usr/bin/grep " + needle + " " + config], "deny"],
-          [["/bin/sh", "-lc", payload], "deny"],
-          ...startupShells.map((name) => [[`/usr/bin/${name}`, "-c", payload], "deny"] as const),
-          ...startupShells.map((name) => [[`/usr/bin/${name}`, "-c", payload], "write"] as const),
-          [[writer, needle, config], "write"],
-          // Source the fixture explicitly: a machine login profile can replace HOME.
-          [["/bin/sh", "-c", `. ./.profile; ${payload}`], "write"],
-        ] as const) {
-          fs.writeFileSync(config, needle);
-          const invoke = await runLocalSystemInvoke({
-            command: [...command],
-            cwd,
-            rawCommand: formatExecCommand([...command]),
-            security: "full",
-            ask: effect === "write" ? "off" : "on-miss",
-            runCommand: realRunCommand,
-          });
-          expect(fs.readFileSync(config, "utf8")).toBe(effect === "write" ? "mutated" : needle);
-          if (effect === "deny") {
-            expect(invoke.runCommand).not.toHaveBeenCalled();
-            expectApprovalRequiredDenied(invoke.sendNodeEvent, invoke.sendInvokeResult);
-          } else {
-            expectInvokeOk(invoke.sendInvokeResult, effect === "read" ? needle : undefined);
+      await withEnvAsync(
+        {
+          HOME: cwd,
+          XDG_CONFIG_HOME: cwd,
+          PATH: "/usr/bin:/bin",
+          BASH_ENV: path.join(cwd, ".profile"),
+        },
+        async () => {
+          for (const [command, effect] of [
+            [["/usr/bin/grep", needle, config], "read"],
+            [["/bin/sh", "-c", payload], "read"],
+            [["/bin/bash", "-c", payload], "read"],
+            [[writer, needle, config], "deny"],
+            [[alias, needle, config], "deny"],
+            [[shell, "-c", "/usr/bin/grep " + needle + " " + config], "deny"],
+            [["/bin/sh", "-lc", payload], "deny"],
+            [[dispatcher, "/usr/bin/grep", needle, config], "deny"],
+            [["/usr/bin/env", dispatcher, "/usr/bin/grep", needle, config], "deny"],
+            [[dispatcher, "/bin/sh", "-c", payload], "deny"],
+            [["/usr/bin/env", "/bin/sh", "-c", payload], "deny"],
+            [["/usr/bin/env", dispatcher, "/bin/sh", "-c", payload], "deny"],
+            [[dispatcher, "/bin/sh", "-c", payload], "write"],
+            ...startupShells.map((name) => [[`/usr/bin/${name}`, "-c", payload], "deny"] as const),
+            ...startupShells.map((name) => [[`/usr/bin/${name}`, "-c", payload], "write"] as const),
+            [[writer, needle, config], "write"],
+            // Source the fixture explicitly: a machine login profile can replace HOME.
+            [["/bin/sh", "-c", `. ./.profile; ${payload}`], "write"],
+          ] as const) {
+            fs.writeFileSync(config, needle);
+            const invoke = await runLocalSystemInvoke({
+              command: [...command],
+              cwd,
+              rawCommand: formatExecCommand([...command]),
+              security: "full",
+              ask: effect === "write" ? "off" : "on-miss",
+              runCommand: realRunCommand,
+              sanitizeEnv: (overrides) =>
+                sanitizeHostExecEnv({ overrides, blockPathOverrides: true }),
+            });
+            expect(fs.readFileSync(config, "utf8")).toBe(effect === "write" ? "mutated" : needle);
+            if (effect === "deny") {
+              expect(invoke.runCommand).not.toHaveBeenCalled();
+              expectApprovalRequiredDenied(invoke.sendNodeEvent, invoke.sendInvokeResult);
+            } else {
+              expectInvokeOk(invoke.sendInvokeResult, effect === "read" ? needle : undefined);
+            }
           }
-        }
-      });
+        },
+      );
     },
   );
 
@@ -2307,76 +2326,81 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     );
   });
 
-  it("revalidates unprompted full policy before local execution", async () => {
-    await withTempApprovalsHome(createApprovals("full", "off", "deny"), async () => {
+  it.each([
+    {
+      name: "revalidates unprompted full policy before local execution",
+      ask: "off",
+      source: "current-policy",
+      tightenedPolicy: { security: "deny" },
+    },
+    {
+      name: "rejects unprompted full execution after ask policy tightens",
+      ask: "off",
+      source: "current-policy",
+      tightenedPolicy: { ask: "on-miss" },
+    },
+    {
+      name: "revalidates explicit approval against a current deny policy",
+      ask: "always",
+      source: "explicit-approval",
+      tightenedPolicy: { security: "deny" },
+    },
+    {
+      name: "rejects explicit allow-once when persisted security tightens to allowlist",
+      ask: "always",
+      source: "explicit-approval",
+      tightenedPolicy: { security: "allowlist" },
+    },
+    {
+      name: "rejects forwarded auto-review when current ask policy tightens to always",
+      ask: "on-miss",
+      source: "auto-review",
+      tightenedPolicy: { ask: "always" },
+    },
+    {
+      name: "rejects forwarded auto-review when persisted security tightens to allowlist",
+      ask: "on-miss",
+      source: "auto-review",
+      tightenedPolicy: { security: "allowlist" },
+    },
+    {
+      name: "rejects forwarded auto-review when persisted ask tightens from off to on-miss",
+      ask: "off",
+      source: "auto-review",
+      tightenedPolicy: { ask: "on-miss" },
+    },
+    {
+      name: "rejects forwarded auto-review when current security policy tightens to deny",
+      ask: "on-miss",
+      source: "auto-review",
+      tightenedPolicy: { security: "deny" },
+    },
+  ] as const)("$name", async ({ ask, source, tightenedPolicy }) => {
+    const params: Parameters<typeof runLocalSystemInvokeWithPolicy>[2] = {};
+    if (source === "auto-review") {
+      const prepared = buildSessionApprovalPlan(["echo", "ok"], "agent:main:main");
+      expect(prepared.ok).toBe(true);
+      requireApprovalPlan(prepared, "unreachable");
+      params.preparedPlan = prepared.plan;
+      params.approvalSource = "auto-review";
+    } else if (source === "explicit-approval") {
+      params.approvalDecision = "allow-once";
+      params.approved = true;
+    }
+    await withTempApprovalsHome(createApprovals("full", ask, "deny"), async () => {
       const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, security: "deny" };
+        current.defaults = { ...current.defaults, ...tightenedPolicy };
       });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "off", {
-        commitExecAuthorization: commitAuthorization,
-      });
-
-      expect(commitAuthorization).toHaveBeenCalledWith(
-        expect.objectContaining({
-          authorization: expect.objectContaining({ source: "current-policy" }),
-        }),
-      );
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalStateWriteDenied(invoke);
-    });
-  });
-
-  it("rejects unprompted full execution after ask policy tightens", async () => {
-    await withTempApprovalsHome(createApprovals("full", "off", "deny"), async () => {
-      const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, ask: "on-miss" };
-      });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "off", {
-        commitExecAuthorization: commitAuthorization,
-      });
-
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalStateWriteDenied(invoke);
-    });
-  });
-
-  it("revalidates explicit approval against a current deny policy", async () => {
-    await withTempApprovalsHome(createApprovals("full", "always", "deny"), async () => {
-      const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, security: "deny" };
-      });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "always", {
-        approvalDecision: "allow-once",
-        approved: true,
-        commitExecAuthorization: commitAuthorization,
-      });
-
-      expect(commitAuthorization).toHaveBeenCalledWith(
-        expect.objectContaining({
-          authorization: expect.objectContaining({ source: "explicit-approval" }),
-        }),
-      );
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalStateWriteDenied(invoke);
-    });
-  });
-
-  it("rejects explicit allow-once when persisted security tightens to allowlist", async () => {
-    await withTempApprovalsHome(createApprovals("full", "always", "deny"), async () => {
-      const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, security: "allowlist" };
-      });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "always", {
-        approvalDecision: "allow-once",
-        approved: true,
+      const invoke = await runLocalSystemInvokeWithPolicy("full", ask, {
+        ...params,
         commitExecAuthorization: commitAuthorization,
       });
 
       expect(commitAuthorization).toHaveBeenCalledWith(
         expect.objectContaining({
           authorization: expect.objectContaining({
-            source: "explicit-approval",
-            policySnapshot: expect.any(Object),
+            source,
+            ...(source === "current-policy" ? {} : { policySnapshot: expect.any(Object) }),
           }),
         }),
       );
@@ -2411,103 +2435,6 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
       );
       expect(invoke.runCommand).toHaveBeenCalledTimes(1);
       expectInvokeOk(invoke.sendInvokeResult);
-    });
-  });
-
-  it("rejects forwarded auto-review when current ask policy tightens to always", async () => {
-    const prepared = buildSessionApprovalPlan(["echo", "ok"], "agent:main:main");
-    expect(prepared.ok).toBe(true);
-    requireApprovalPlan(prepared, "unreachable");
-    await withTempApprovalsHome(createApprovals("full", "on-miss", "deny"), async () => {
-      const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, ask: "always" };
-      });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "on-miss", {
-        preparedPlan: prepared.plan,
-        approvalSource: "auto-review",
-        commitExecAuthorization: commitAuthorization,
-      });
-
-      expect(commitAuthorization).toHaveBeenCalledWith(
-        expect.objectContaining({
-          authorization: expect.objectContaining({ source: "auto-review" }),
-        }),
-      );
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalStateWriteDenied(invoke);
-    });
-  });
-
-  it("rejects forwarded auto-review when persisted security tightens to allowlist", async () => {
-    const prepared = buildSessionApprovalPlan(["echo", "ok"], "agent:main:main");
-    expect(prepared.ok).toBe(true);
-    requireApprovalPlan(prepared, "unreachable");
-    await withTempApprovalsHome(createApprovals("full", "on-miss", "deny"), async () => {
-      const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, security: "allowlist" };
-      });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "on-miss", {
-        preparedPlan: prepared.plan,
-        approvalSource: "auto-review",
-        commitExecAuthorization: commitAuthorization,
-      });
-
-      expect(commitAuthorization).toHaveBeenCalledWith(
-        expect.objectContaining({
-          authorization: expect.objectContaining({
-            source: "auto-review",
-            policySnapshot: expect.any(Object),
-          }),
-        }),
-      );
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalStateWriteDenied(invoke);
-    });
-  });
-
-  it("rejects forwarded auto-review when persisted ask tightens from off to on-miss", async () => {
-    const prepared = buildSessionApprovalPlan(["echo", "ok"], "agent:main:main");
-    expect(prepared.ok).toBe(true);
-    requireApprovalPlan(prepared, "unreachable");
-    await withTempApprovalsHome(createApprovals("full", "off", "deny"), async () => {
-      const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, ask: "on-miss" };
-      });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "off", {
-        preparedPlan: prepared.plan,
-        approvalSource: "auto-review",
-        commitExecAuthorization: commitAuthorization,
-      });
-
-      expect(commitAuthorization).toHaveBeenCalledWith(
-        expect.objectContaining({
-          authorization: expect.objectContaining({
-            source: "auto-review",
-            policySnapshot: expect.any(Object),
-          }),
-        }),
-      );
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalStateWriteDenied(invoke);
-    });
-  });
-
-  it("rejects forwarded auto-review when current security policy tightens to deny", async () => {
-    const prepared = buildSessionApprovalPlan(["echo", "ok"], "agent:main:main");
-    expect(prepared.ok).toBe(true);
-    requireApprovalPlan(prepared, "unreachable");
-    await withTempApprovalsHome(createApprovals("full", "on-miss", "deny"), async () => {
-      const commitAuthorization = createPolicyMutationCommit((current) => {
-        current.defaults = { ...current.defaults, security: "deny" };
-      });
-      const invoke = await runLocalSystemInvokeWithPolicy("full", "on-miss", {
-        preparedPlan: prepared.plan,
-        approvalSource: "auto-review",
-        commitExecAuthorization: commitAuthorization,
-      });
-
-      expect(invoke.runCommand).not.toHaveBeenCalled();
-      expectApprovalStateWriteDenied(invoke);
     });
   });
 
@@ -2578,47 +2505,38 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     });
   });
 
-  it("requires a canonical plan for timeout fallback provenance", async () => {
-    const invoke = await runLocalSystemInvokeWithPolicy("full", "always", {
-      approvalSource: "ask-fallback",
-    });
+  it.each([
+    {
+      provenance: "timeout fallback",
+      ask: "always",
+      params: { approvalSource: "ask-fallback" },
+      expectedMessage: "approvalSource requires matching systemRunPlan",
+    },
+    {
+      provenance: "forwarded auto-review",
+      ask: "on-miss",
+      params: { approvalSource: "auto-review", prepareDelayedApprovalPlan: false },
+      expectedMessage: "approvalSource requires matching systemRunPlan",
+    },
+    {
+      provenance: "explicit approval",
+      ask: "always",
+      params: {
+        approvalDecision: "allow-once",
+        approved: true,
+        prepareDelayedApprovalPlan: false,
+      },
+      expectedMessage: "explicit approval requires matching systemRunPlan",
+    },
+  ] as const)(
+    "requires a canonical plan for $provenance provenance",
+    async ({ ask, params, expectedMessage }) => {
+      const invoke = await runLocalSystemInvokeWithPolicy("full", ask, params);
 
-    expect(invoke.runCommand).not.toHaveBeenCalled();
-    expectInvokeErrorMessage(
-      invoke.sendInvokeResult,
-      "approvalSource requires matching systemRunPlan",
-      true,
-    );
-  });
-
-  it("requires a canonical plan for forwarded auto-review provenance", async () => {
-    const invoke = await runLocalSystemInvokeWithPolicy("full", "on-miss", {
-      approvalSource: "auto-review",
-      prepareDelayedApprovalPlan: false,
-    });
-
-    expect(invoke.runCommand).not.toHaveBeenCalled();
-    expectInvokeErrorMessage(
-      invoke.sendInvokeResult,
-      "approvalSource requires matching systemRunPlan",
-      true,
-    );
-  });
-
-  it("requires a canonical plan for explicit approval provenance", async () => {
-    const invoke = await runLocalSystemInvokeWithPolicy("full", "always", {
-      approvalDecision: "allow-once",
-      approved: true,
-      prepareDelayedApprovalPlan: false,
-    });
-
-    expect(invoke.runCommand).not.toHaveBeenCalled();
-    expectInvokeErrorMessage(
-      invoke.sendInvokeResult,
-      "explicit approval requires matching systemRunPlan",
-      true,
-    );
-  });
+      expect(invoke.runCommand).not.toHaveBeenCalled();
+      expectInvokeErrorMessage(invoke.sendInvokeResult, expectedMessage, true);
+    },
+  );
 
   it("requires a prepared policy snapshot for forwarded delayed approval", async () => {
     const prepared = buildSessionApprovalPlan(["echo", "ok"], "agent:main:main");

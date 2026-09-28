@@ -140,10 +140,10 @@ export function requiresSystemRunSuppressionApproval(params: {
     env: params.env,
     trustedSafeBinDirs: params.trustedSafeBinDirs,
     originalArgv: params.argv,
-    transportExecutable:
+    transportResolution:
       params.commandPreview === null
         ? undefined
-        : resolveCommandResolutionFromArgv(params.argv, params.cwd, params.env)?.execution,
+        : (resolveCommandResolutionFromArgv(params.argv, params.cwd, params.env) ?? undefined),
   });
 }
 
