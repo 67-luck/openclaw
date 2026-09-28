@@ -411,8 +411,11 @@ export function runSingleCheck(
       stdio: ["ignore", "pipe", "pipe"],
     });
     const ownsTermination = check.terminationOwner === "implementation";
-    const completion = Promise.withResolvers<void>();
-    activeChildren?.set(child, { ownsTermination, completion: completion.promise });
+    let complete!: () => void;
+    const completion = new Promise<void>((resolveCompletion) => {
+      complete = resolveCompletion;
+    });
+    activeChildren?.set(child, { ownsTermination, completion });
     const output = createBoundedOutputBuffer(outputMaxBytes);
     let settled = false;
     let timedOut = false;
@@ -428,7 +431,7 @@ export function runSingleCheck(
         clearTimeout(forceKillTimer);
       }
       activeChildren?.delete(child);
-      completion.resolve();
+      complete();
       resolve({
         check,
         code: timedOut || processError ? 1 : (code ?? 1),
