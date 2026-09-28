@@ -1,4 +1,4 @@
-use futures_util::{future::poll_fn, Sink, SinkExt, StreamExt};
+use futures_util::{future::poll_fn, SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -27,9 +27,10 @@ use tokio_tungstenite::{
 };
 use url::{Host, Url};
 
+use crate::transport::BoundedWebSocket;
 use crate::{
-    deferred_tls_config, pinned_tls_config, CapturedTlsCertificate, TlsCertificatePolicy,
-    TlsPeerCertificate, TlsTrust,
+    deferred_tls_config, pinned_tls_config, CapturedTlsCertificate, GatewayWebSocket,
+    GatewayWebSocketConnector, TlsCertificatePolicy, TlsPeerCertificate, TlsTrust,
 };
 
 const DEFAULT_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -46,6 +47,7 @@ type DispatchGuard =
 #[derive(Clone, Debug)]
 pub struct GatewayClientConfig {
     request: tokio_tungstenite::tungstenite::http::Request<()>,
+    connector: Option<Arc<dyn GatewayWebSocketConnector>>,
     tls_trust: TlsTrust,
     tls_certificate_policy: Option<Arc<dyn TlsCertificatePolicy>>,
     connect_timeout: Duration,
@@ -69,6 +71,7 @@ impl GatewayClientConfig {
             .map_err(|error| ClientError::InvalidUrl(error.to_string()))?;
         Ok(Self {
             request,
+            connector: None,
             tls_trust: TlsTrust::SystemRoots,
             tls_certificate_policy: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
@@ -81,6 +84,14 @@ impl GatewayClientConfig {
             event_capacity: 256,
             max_in_flight: 64,
         })
+    }
+
+    /// Use a product-owned WebSocket connection (for native proxy, DNS and TLS policy).
+    /// The connector owns the actual handshake and must enforce the supplied message limit.
+    #[must_use]
+    pub fn connector(mut self, connector: Arc<dyn GatewayWebSocketConnector>) -> Self {
+        self.connector = Some(connector);
+        self
     }
 
     /// Add an HTTP header to the WebSocket upgrade request.
@@ -501,6 +512,14 @@ where
     Fut: Future<Output = Result<Value, E>>,
     E: std::fmt::Display + Send + Sync + 'static,
 {
+    if config.connector.is_some()
+        && (matches!(config.tls_trust, TlsTrust::Pinned(_))
+            || config.tls_certificate_policy.is_some())
+    {
+        return Err(ClientError::Tls(
+            "an injected WebSocket connector must own its TLS trust policy".into(),
+        ));
+    }
     if matches!(config.tls_trust, TlsTrust::Pinned(_))
         && config.request.uri().scheme_str() != Some("wss")
     {
@@ -523,18 +542,34 @@ where
         ))),
     };
     let secure_endpoint = config.request.uri().scheme_str() == Some("wss");
-    let (mut socket, _) = tokio::time::timeout(config.connect_timeout, async {
-        if let Some(policy) = config.tls_certificate_policy {
-            connect_with_certificate_policy(config.request, websocket_config, policy).await
-        } else {
-            connect_async_tls_with_config(config.request, Some(websocket_config), false, connector)
+    let socket: Box<dyn GatewayWebSocket> = tokio::time::timeout(config.connect_timeout, async {
+        if let Some(transport) = config.connector {
+            transport
+                .connect(config.request, config.max_message_bytes)
                 .await
-                .map_err(|error| classify_connect_error(error, secure_endpoint))
+        } else {
+            let (socket, _) = if let Some(policy) = config.tls_certificate_policy {
+                connect_with_certificate_policy(config.request, websocket_config, policy).await?
+            } else {
+                connect_async_tls_with_config(
+                    config.request,
+                    Some(websocket_config),
+                    false,
+                    connector,
+                )
+                .await
+                .map_err(|error| classify_connect_error(error, secure_endpoint))?
+            };
+            Ok(Box::new(socket) as Box<dyn GatewayWebSocket>)
         }
     })
     .await
     .map_err(|_| ClientError::ConnectTimeout)??;
 
+    let mut socket = BoundedWebSocket {
+        inner: socket,
+        maximum: config.max_message_bytes,
+    };
     let challenge = tokio::time::timeout(
         config.challenge_timeout,
         wait_for_challenge(&mut socket, config.write_timeout),
@@ -1051,11 +1086,11 @@ struct GatewayErrorShape {
 }
 
 async fn wait_for_challenge<S>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    socket: &mut S,
     write_timeout: Duration,
 ) -> Result<ConnectChallenge, ClientError>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: GatewayWebSocket,
 {
     loop {
         match next_frame(socket, write_timeout).await? {
@@ -1081,13 +1116,13 @@ where
 }
 
 async fn wait_for_response<S>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    socket: &mut S,
     expected_id: &str,
     method: &str,
     write_timeout: Duration,
 ) -> Result<Value, ClientError>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: GatewayWebSocket,
 {
     loop {
         if let IncomingFrame::Response {
@@ -1105,11 +1140,11 @@ where
 }
 
 async fn next_frame<S>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    socket: &mut S,
     write_timeout: Duration,
 ) -> Result<IncomingFrame, ClientError>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: GatewayWebSocket,
 {
     loop {
         let message = socket
@@ -1132,7 +1167,7 @@ where
 }
 
 async fn send_request<S>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    socket: &mut S,
     id: &str,
     method: &str,
     params: Value,
@@ -1140,7 +1175,7 @@ async fn send_request<S>(
     guard: Option<DispatchGuard>,
 ) -> Result<(), ClientError>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: GatewayWebSocket,
 {
     let frame = json!({ "type": "req", "id": id, "method": method, "params": params });
     send_message_guarded(
@@ -1154,26 +1189,26 @@ where
 }
 
 async fn send_message<S>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    socket: &mut S,
     message: Message,
     timeout: Duration,
     operation: &str,
 ) -> Result<(), ClientError>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: GatewayWebSocket,
 {
     send_message_guarded(socket, message, timeout, operation, None).await
 }
 
 async fn send_message_guarded<S>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    socket: &mut S,
     message: Message,
     timeout: Duration,
     operation: &str,
     guard: Option<DispatchGuard>,
 ) -> Result<(), ClientError>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: GatewayWebSocket,
 {
     tokio::time::timeout(timeout, async {
         poll_fn(|context| Pin::new(&mut *socket).poll_ready(context))
@@ -1241,12 +1276,9 @@ struct SessionLimits {
     write_timeout: Duration,
 }
 
-async fn run_session<S>(
-    mut socket: tokio_tungstenite::WebSocketStream<S>,
-    channels: SessionChannels,
-    limits: SessionLimits,
-) where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+async fn run_session<S>(mut socket: S, channels: SessionChannels, limits: SessionLimits)
+where
+    S: GatewayWebSocket + 'static,
 {
     let SessionChannels {
         mut commands,
@@ -1282,7 +1314,7 @@ async fn run_session<S>(
         tokio::select! {
             changed = close.changed() => {
                 let _ = changed;
-                let _ = tokio::time::timeout(write_timeout, socket.close(None)).await;
+                let _ = tokio::time::timeout(write_timeout, socket.close()).await;
                 break SessionCloseCause::Closed("closed by client".into());
             }
             () = &mut deadline => {
@@ -1366,7 +1398,7 @@ async fn run_session<S>(
                         pending.remove(&id);
                     }
                     None => {
-                        let _ = tokio::time::timeout(write_timeout, socket.close(None)).await;
+                        let _ = tokio::time::timeout(write_timeout, socket.close()).await;
                         break SessionCloseCause::Closed("closed by client".into());
                     }
                 }
@@ -1591,6 +1623,45 @@ mod tests {
 
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn injected_connector_cannot_silently_bypass_requested_tls_trust() {
+        #[derive(Debug)]
+        struct UnreachableNativeConnector;
+        impl GatewayWebSocketConnector for UnreachableNativeConnector {
+            fn connect(
+                &self,
+                _: crate::WebSocketRequest<()>,
+                _: usize,
+            ) -> Pin<Box<dyn Future<Output = Result<Box<dyn GatewayWebSocket>, ClientError>> + Send>>
+            {
+                panic!("mixed trust ownership must be rejected before connecting");
+            }
+        }
+        #[derive(Debug)]
+        struct UnreachablePolicy;
+        impl TlsCertificatePolicy for UnreachablePolicy {
+            fn verify(
+                &self,
+                _: TlsPeerCertificate,
+            ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
+                panic!("mixed trust ownership must be rejected before connecting");
+            }
+        }
+        let native = GatewayClientConfig::new("wss://localhost:1")
+            .unwrap()
+            .connector(Arc::new(UnreachableNativeConnector));
+        for config in [
+            native.clone().tls_trust(TlsTrust::Pinned([0; 32])),
+            native.tls_certificate_policy(Arc::new(UnreachablePolicy)),
+        ] {
+            let result = GatewayClient::connect(config, |_| async {
+                Ok::<Value, std::convert::Infallible>(json!({}))
+            })
+            .await;
+            assert!(matches!(result, Err(ClientError::Tls(_))));
         }
     }
 

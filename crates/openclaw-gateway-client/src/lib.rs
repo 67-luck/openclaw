@@ -1,6 +1,13 @@
 //! Reusable transport, security, and connection policy for Rust OpenClaw Gateway clients.
 
 mod session;
+mod transport;
+pub use transport::{GatewayWebSocket, GatewayWebSocketConnector};
+
+// Transport implementations share the exact message/error contract used by the built-in socket.
+pub use tokio_tungstenite::tungstenite::{
+    http::Request as WebSocketRequest, Error as WebSocketError, Message as WebSocketMessage,
+};
 
 pub use session::{
     ClientError, ConnectAttempt, ConnectChallenge, DispatchContext, DispatchRejection, Event,
