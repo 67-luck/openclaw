@@ -1,6 +1,42 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import path from "node:path";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import {
+  createPluginExecutionFrame,
+  getPluginExecutionFrame,
+  runWithPluginExecutionFrame,
+} from "./plugin-instance-invocation.js";
+
+export type PluginSourceCaptureStorage = Readonly<{
+  stateDir: string;
+  placement: "state" | "temporary";
+}>;
+
+export function getPluginSourceCaptureStorage(): PluginSourceCaptureStorage | undefined {
+  return getPluginExecutionFrame()?.sourceCaptureStorage;
+}
+
+/** Capture storage outlives an inspection's private database and never redirects its writers. */
+export function withPluginSourceCaptureStorage<T>(
+  storage: PluginSourceCaptureStorage,
+  run: () => T,
+): T {
+  const current = getPluginExecutionFrame();
+  return runWithPluginExecutionFrame(
+    createPluginExecutionFrame(
+      {
+        ...current,
+        sourceCaptureStorage: Object.freeze({
+          ...storage,
+          stateDir: path.resolve(storage.stateDir),
+        }),
+      },
+      current,
+    ),
+    run,
+  );
+}
 
 // CLI bootstrap imports this lightweight owner before creating command scopes;
 // Gateway metadata imports it before admitting requests. Lazy capture loading must

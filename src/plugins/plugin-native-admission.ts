@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { resolveStateDir } from "../config/state-dir.js";
 import { hasErrnoCode } from "../infra/errno.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { getPluginCache } from "./plugin-cache.js";
@@ -28,13 +29,15 @@ import {
   linkPluginNativeReference,
 } from "./plugin-native-reference.js";
 import { resolvePluginModulePackageRoot } from "./plugin-package-metadata-capture.js";
-import { publishPluginSourceAdmission } from "./plugin-source-admission-store.js";
+import { createPluginSourceAdmissionPublisher } from "./plugin-source-admission-store.js";
 import type {
   PluginNativeArtifactFact,
   PluginNativeNamespaceFact,
 } from "./plugin-source-admission.types.js";
+import { getPluginSourceCaptureStorage } from "./plugin-source-capture-context.js";
 import {
   createPluginNativeCaptureRoot,
+  isPluginSourceCaptureRetained,
   retainPluginNativeCapturePath,
 } from "./plugin-source-capture-directory.js";
 import {
@@ -156,6 +159,10 @@ export function createPluginNativeAdmission(
   const state = nativeAdmissionStateFor();
   const key = `${path.resolve(rootDir)}\0${entryFile ? path.resolve(entryFile) : ""}`;
   const owner = state.owners.get(path.resolve(rootDir));
+  const captureStorage =
+    getPluginSourceCaptureStorage() ??
+    Object.freeze({ stateDir: resolveStateDir(), placement: "state" as const });
+  const publishAdmission = owner ? createPluginSourceAdmissionPublisher() : undefined;
   const prepared = recovery?.receipt ?? state.receipts.get(key);
   const selected = new Map<string, PluginNativeNamespaceFact>();
   const priorNamespaces = new Set<PluginNativeNamespaceFact>();
@@ -223,7 +230,7 @@ export function createPluginNativeAdmission(
     previous?: PluginNativeNamespaceFact,
     retainedRoot?: string,
   ) => {
-    const root = createPluginNativeCaptureRoot();
+    const root = createPluginNativeCaptureRoot(captureStorage.stateDir, captureStorage.placement);
     state.roots.add(root);
     snapshotOwners.set(root, new Set([state]));
     const { fact, changed } = capturePluginNativeNamespace({
@@ -242,6 +249,16 @@ export function createPluginNativeAdmission(
     });
     // Overlapping managed namespaces share inodes; a new hardlink changes earlier captures too.
     for (const namespace of state.namespaces.values()) {
+      if (
+        !namespace.referenceRoot &&
+        namespace !== previous &&
+        !namespaces().includes(namespace) &&
+        !priorNamespaces.has(namespace) &&
+        !isPluginSourceCaptureRetained(namespace.capturedRoot) &&
+        !fs.lstatSync(namespace.capturedRoot, { throwIfNoEntry: false })
+      ) {
+        continue;
+      }
       for (const [relative, member] of Object.entries(namespace.members)) {
         const identity = changed.get(member.source);
         const sourceChanged =
@@ -302,13 +319,19 @@ export function createPluginNativeAdmission(
     if (!owner) {
       return;
     }
-    if (unchanged) {
+    if (!publishAdmission) {
+      if (!unchanged) {
+        state.publications.set(key, null);
+      }
+      return;
+    }
+    if (unchanged && state.publications.get(key) !== null) {
       startNativeAdmissionPublication(state, key);
       return;
     }
     const roots = [...state.roots].filter((root) => used.has(root.directory));
     const publication = () =>
-      publishPluginSourceAdmission({
+      publishAdmission({
         pluginId: owner.pluginId,
         rootDir: owner.rootDir,
         installRecordHash: owner.installRecordHash,
