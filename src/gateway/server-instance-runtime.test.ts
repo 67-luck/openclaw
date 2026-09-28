@@ -657,6 +657,7 @@ describe("createGatewayInstanceRuntime", () => {
                 turnSourceTo: "channel:C123",
                 turnSourceAccountId: "work",
                 turnSourceThreadId: "1712345678.123456",
+                approvalSource: { channel: "slack", senderId: "U123" },
               },
               createdAtMs: Date.now(),
               expiresAtMs: Date.now() + 60_000,
@@ -667,6 +668,15 @@ describe("createGatewayInstanceRuntime", () => {
               target: { to: "user:U123" },
             };
             reporter.start();
+            runtime.nativeApprovals.subscribe({
+              eventKinds: new Set(["plugin"]),
+              channel: "slack",
+              accountId: "work",
+              shouldHandle: () => true,
+              onRequested: () => {},
+              onResolved: () => {},
+            });
+            expect(runtime.approvalEvents.publishRequested("plugin", request)).toBe(1);
             expect(reporter.selectRequest({ approvalKind: "plugin", request })).toEqual({
               kind: "selected",
             });
