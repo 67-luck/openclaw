@@ -343,6 +343,7 @@ export class CatalogTargetSelection {
     const hello = snapshot?.hello;
     const identity = snapshot?.selfUser?.id;
     const connection = gateway?.connection;
+    const connectionRevision = gateway?.connectionRevision;
     let destination = "";
     let finished = false;
     const isCurrent = () => {
@@ -363,6 +364,7 @@ export class CatalogTargetSelection {
         [sourceRouteKey, destination].includes(key) &&
         context?.gateway === gateway &&
         gateway?.connection === connection &&
+        gateway?.connectionRevision === connectionRevision &&
         gateway?.snapshot.phase === "connected" &&
         gateway.snapshot.client === client &&
         gateway.snapshot.hello === hello &&
@@ -487,10 +489,17 @@ export class CatalogTargetDiscovery {
     select: (id: string, isCurrent: () => boolean) => Promise<boolean | string | undefined>,
     isCurrent: () => boolean,
   ) {
-    this.selection = { catalogId, status: "loading" };
+    const selection = { catalogId, status: "loading" as const };
+    const discovery = this.state;
+    const ownsSelection = () => this.state === discovery && isCurrent();
+    this.selection = selection;
     this.notify();
-    const accepted = await select(catalogId, isCurrent);
-    if (!isCurrent()) {
+    const accepted = await select(catalogId, ownsSelection);
+    if (!ownsSelection()) {
+      if (this.selection === selection) {
+        this.clearSelection();
+        this.notify();
+      }
       return false;
     }
     this.selection =
@@ -512,6 +521,7 @@ export class CatalogTargetDiscovery {
 
   clear() {
     const previous = this.state;
+    this.clearSelection();
     this.state = { status: "idle" };
     this.requestId += 1;
     if (previous.status === "loading") {

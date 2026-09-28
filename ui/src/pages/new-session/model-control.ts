@@ -41,6 +41,7 @@ import {
 import { hasNewSessionModelPreference, type NewSessionPreference } from "./preferences.ts";
 
 type NewSessionMetadataClient = NonNullable<ApplicationContext["gateway"]["snapshot"]["client"]>;
+type TargetSelect<Result> = (value: string, isCurrent: () => boolean) => Promise<Result>;
 
 export class NewSessionModelControl extends NewSessionModelSelection {
   private selectionGeneration = 0;
@@ -67,12 +68,9 @@ export class NewSessionModelControl extends NewSessionModelSelection {
   constructor(
     private readonly notify: () => void,
     onSelectionChange: ModelSelectionChange = () => undefined,
-    private readonly onCatalogTargetSelect: (
-      catalogId: string,
-      isCurrent: () => boolean,
-    ) => Promise<boolean | string | undefined> = async () => false,
-    private readonly onModelTargetSelect: (model: string, isCurrent: () => boolean) => void = () =>
-      undefined,
+    private readonly onCatalogTargetSelect: TargetSelect<boolean | string | undefined> = async () =>
+      false,
+    private readonly onModelTargetSelect: TargetSelect<boolean> = async () => false,
     private readonly selectionLocked: () => boolean = () => false,
   ) {
     super(onSelectionChange);
@@ -298,8 +296,9 @@ export class NewSessionModelControl extends NewSessionModelSelection {
   }
 
   cancelCatalogSelection() {
-    this.selectionGeneration += 1;
+    const generation = ++this.selectionGeneration;
     this.catalogTargets.clearSelection();
+    return () => generation === this.selectionGeneration;
   }
 
   invalidate(resetSelection = false) {
@@ -348,6 +347,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
       this.metadataIdentityId !== snapshot?.selfUser?.id ||
       (this.metadataHello && this.metadataHello !== snapshot?.hello)
     ) {
+      this.cancelCatalogSelection();
       // Model preferences belong to the agent; an explicit account belongs to this connection.
       // Neither its availability nor an in-flight preview can cross an identity change.
       this.draftAccount = undefined;
@@ -364,6 +364,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
     this.metadataIdentityId = snapshot?.selfUser?.id;
     this.metadataHello = snapshot?.hello;
     if (!context || snapshot?.phase !== "connected" || !client || !normalizedAgentId || !enabled) {
+      this.cancelCatalogSelection();
       this.clearDraftAccount();
       this.clearMetadataSubscription();
       this.metadataClient = undefined;
@@ -650,13 +651,11 @@ export class NewSessionModelControl extends NewSessionModelSelection {
       selectedAgentRuntime: this.agentRuntime,
       sessionsResult: agentDefaultsAvailable ? sourceResult : null,
       stream: null,
-      onModelSelect: (value, _sessionKey, agentRuntime) => {
+      onModelSelect: async (value, _sessionKey, agentRuntime) => {
         if (this.selectionLocked()) {
           return;
         }
-        this.cancelCatalogSelection();
-        this.initialModelPending = false;
-        this.restoringPreference = false;
+        const isCurrent = this.cancelCatalogSelection();
         const selection = reconcileDraftModelSelection({
           model: value,
           agentRuntime: agentRuntime ?? undefined,
@@ -667,8 +666,14 @@ export class NewSessionModelControl extends NewSessionModelSelection {
           modelSelectionPolicy: this.metadataState.modelSelectionPolicy,
           catalog: this.catalog,
         });
-        const generation = this.selectionGeneration;
-        this.onModelTargetSelect(selection.model, () => generation === this.selectionGeneration);
+        const accepted =
+          !options.catalogTarget?.catalogId ||
+          (await this.onModelTargetSelect(selection.model, isCurrent));
+        if (!accepted || !isCurrent()) {
+          return;
+        }
+        this.initialModelPending = false;
+        this.restoringPreference = false;
         if (this.matchesSelection(selection, this.effectiveModel)) {
           return;
         }
@@ -696,12 +701,8 @@ export class NewSessionModelControl extends NewSessionModelSelection {
         if (groupId !== "cliAgents" || this.selectionLocked()) {
           return false;
         }
-        const generation = ++this.selectionGeneration;
-        return this.catalogTargets.select(
-          catalogId,
-          this.onCatalogTargetSelect,
-          () => generation === this.selectionGeneration,
-        );
+        const isCurrent = this.cancelCatalogSelection();
+        return this.catalogTargets.select(catalogId, this.onCatalogTargetSelect, isCurrent);
       },
       onModelPickerTargetRetry: (groupId) => {
         if (groupId === "cliAgents") {

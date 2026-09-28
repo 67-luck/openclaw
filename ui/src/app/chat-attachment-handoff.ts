@@ -216,7 +216,7 @@ export function createChatAttachmentHandoff(
         fallbackEntries.length === 0
       ) {
         releaseHandoff(previous);
-        return;
+        return undefined;
       }
       const retainedIds = new Set(attachments.map((attachment) => attachment.id));
       for (const fallback of Object.values(fallbacks)) {
@@ -230,9 +230,9 @@ export function createChatAttachmentHandoff(
         for (const fallback of Object.values(fallbacks)) {
           releaseChatAttachmentPayloads(fallback.attachments);
         }
-        return;
+        return undefined;
       }
-      pending.set(key, {
+      const entry: PendingChatAttachmentHandoff = {
         owner,
         reviewPrivateDraft,
         isConnectionCurrent: capturePlacementStartupConnection(gateway, {
@@ -258,7 +258,8 @@ export function createChatAttachmentHandoff(
             { ...fallback, attachments: [...fallback.attachments] },
           ]),
         ),
-      });
+      };
+      pending.set(key, entry);
       // Route handoffs normally consume immediately. Bounds make abandoned
       // split panes release their packages instead of leaking for the tab lifetime.
       for (const oldestKey of pending.keys()) {
@@ -267,6 +268,12 @@ export function createChatAttachmentHandoff(
         }
         releaseHandoff(take(oldestKey));
       }
+      return () => {
+        // A settled navigation cannot cancel a replacement or a consumed handoff.
+        if (pending.get(key) === entry) {
+          releaseHandoff(take(key), retainedPayloadIds());
+        }
+      };
     },
     consume: ({ owner, paneId, scopeKey }) => {
       const match = take(entryKey(paneId, scopeKey));

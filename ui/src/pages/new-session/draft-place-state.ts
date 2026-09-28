@@ -126,23 +126,19 @@ export class DraftPlaceState {
           this.gateway.capturePreferenceConsumption(owner.agentId, owner.workspace, expected),
       },
     );
+    const finishSelection = <Result extends boolean | string | undefined>(accepted: Result) => {
+      if (accepted === true) {
+        callbacks.onError(null);
+      }
+      return accepted;
+    };
     this.modelControl = new NewSessionModelControl(
       callbacks.requestUpdate,
       (selection) => this.persistPreference(selection),
-      async (catalogId, ownsSelection) => {
-        const accepted = await this.catalogSelection.selectCatalogTarget(catalogId, ownsSelection);
-        if (accepted === true) {
-          this.callbacks.onError(null);
-        }
-        return accepted;
-      },
-      (model, ownsSelection) => {
-        void this.catalogSelection.selectModelTarget(model, ownsSelection).then((accepted) => {
-          if (accepted) {
-            this.callbacks.onError(null);
-          }
-        });
-      },
+      (catalogId, ownsSelection) =>
+        this.catalogSelection.selectCatalogTarget(catalogId, ownsSelection).then(finishSelection),
+      (model, ownsSelection) =>
+        this.catalogSelection.selectModelTarget(model, ownsSelection).then(finishSelection),
       () => this.catalogSelection.transitionPending,
     );
   }
@@ -489,6 +485,7 @@ export class DraftPlaceState {
   selectAgentId(agentId: string) {
     const snapshot = this.snapshot();
     if (
+      this.catalogSelection.transitionPending ||
       snapshot.submitting ||
       snapshot.pendingPlacementSessionKey ||
       catalog.isTarget(snapshot.data)
@@ -603,6 +600,9 @@ export class DraftPlaceState {
   }
 
   selectDevice(deviceId: string, autoDevice = false) {
+    if (this.catalogSelection.transitionPending) {
+      return;
+    }
     const snapshot = this.snapshot();
     if (snapshot.submitting || snapshot.pendingPlacementSessionKey) {
       return;
@@ -640,6 +640,9 @@ export class DraftPlaceState {
   }
 
   selectCloudProfile(profileId: string) {
+    if (this.catalogSelection.transitionPending) {
+      return;
+    }
     const snapshot = this.snapshot();
     const profile = this.gateway.cloudProfiles.find((candidate) => candidate.id === profileId);
     if (

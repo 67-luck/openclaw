@@ -220,6 +220,9 @@ export class DraftSubmissionFlow {
   }
 
   setVisibility(visibility: NewSessionVisibility) {
+    if (this.place.catalogSelection.transitionPending) {
+      return;
+    }
     this.startedSession.current = null;
     const wasIncognito = this.visibilityValue === "incognito";
     const publish = this.callbacks.requestUpdate;

@@ -12,7 +12,7 @@ export function prepareTargetTransition(
   data: NewSessionRouteData,
   isCurrent: () => boolean,
 ) {
-  context.chatAttachmentHandoff.prepare({
+  return context.chatAttachmentHandoff.prepare({
     owner: context.gateway.snapshot.client,
     paneId: NEW_SESSION_DRAFT_PANE_ID,
     scopeKey: catalog.routeKey(data),

@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.ts";
+import { createChatAttachmentHandoff } from "../../app/chat-attachment-handoff.ts";
+import type { AgentSelect } from "../../components/agent-select.ts";
 import { t } from "../../i18n/index.ts";
+import { settleModelCatalogRequests } from "../../lib/model-catalog-store.ts";
+import { createApplicationContextProvider } from "../../test-helpers/application-context.ts";
 import { NewSessionDictationControl } from "./composer-dictation-control.ts";
+import { createDraftFixture } from "./draft-submission-flow.test-support.ts";
 import type { NewSessionRouteData } from "./location.ts";
+import { load } from "./route-loader.ts";
 import "./new-session-page-entry.ts";
 
 type NewSessionElement = HTMLElement & {
@@ -59,6 +66,131 @@ afterEach(() => {
 });
 
 describe("new session draft route ownership", () => {
+  it.each(["normal", "native", "unavailable"] as const)(
+    "keeps the canonical header for %s",
+    async (state) => {
+      const page = await mount({
+        ...routeData("main", state === "normal" ? "" : "anthropic"),
+        catalogLabel: state === "native" ? "Claude Code" : "",
+        startTerminal: state === "native",
+        terminalHosts: state === "native" ? [{ hostId: "gateway:local", label: "Gateway" }] : [],
+      });
+      expect(page.querySelector(".agent-chat__hint")?.textContent?.trim()).toBe(
+        "Pick where this session works, then say what to do.",
+      );
+    },
+  );
+
+  it.each(["rejected", "stale"] as const)(
+    "retires a %s picker handoff and accepts the next navigation with the same draft",
+    async (outcome) => {
+      const data = { ...routeData("main", "codex"), catalogLabel: "Codex", startTerminal: true };
+      window.history.replaceState({}, "", "/new?agent=main&catalog=codex");
+      const fixture = createDraftFixture({
+        data,
+        agents: ["main", "research"].map((id) => ({
+          id,
+          workspace: "/workspace",
+          model: { primary: "openai/gpt-5.6-luna" },
+        })),
+        modelCatalog: async () => ({
+          models: [{ id: "recovery", provider: "example", name: "Recovery", available: true }],
+        }),
+      });
+      const { context } = fixture;
+      const subscribe = () => () => undefined;
+      Object.assign(context.agents, { subscribe });
+      Object.assign(context.sessions, {
+        subscribe,
+        groupsGeneration: () => 0,
+        groupsStatus: () => "ready",
+      });
+      Object.assign(context.sessions.state, { groupSettings: [] });
+      Object.assign(context.config, { subscribe });
+      Object.assign(context.placementStartup, { subscribe });
+      Object.assign(context, {
+        agentIdentity: { subscribe, get: () => undefined, ensure: async () => undefined },
+        theme: { subscribe, settings: {}, branding: { mascot: "none" } },
+        runtimeConfig: { subscribe, state: { configSnapshot: null } },
+      });
+      const handoff = createChatAttachmentHandoff(context.gateway);
+      Object.assign(context, { chatAttachmentHandoff: handoff });
+      const prepare = handoff.prepare.bind(handoff);
+      const cancellations = vi.fn();
+      const prepared = vi.spyOn(handoff, "prepare").mockImplementation((entry) => {
+        const cancel = prepare(entry);
+        return () => {
+          cancellations();
+          cancel?.();
+        };
+      });
+      const navigate = vi.mocked(context.navigateAndWait);
+      if (outcome === "rejected") {
+        navigate.mockRejectedValueOnce(new Error("Navigation rejected"));
+      }
+      const provider = createApplicationContextProvider(context);
+      const page = document.createElement("openclaw-new-session-page") as NewSessionElement;
+      page.data = data;
+      provider.append(page);
+      document.body.append(provider);
+      try {
+        await settle(page);
+        await settleModelCatalogRequests(context.gateway.snapshot.client!, { agentId: "main" });
+        await settle(page);
+        await enterMessage(page, "Keep this navigation draft");
+        const choose = () => {
+          const choice = page.querySelector<HTMLButtonElement>(
+            '[data-chat-model-option="example/recovery"]',
+          );
+          expect(choice).not.toBeNull();
+          choice!.click();
+        };
+        choose();
+        await navigate.mock.results.at(-1)?.value.catch(() => undefined);
+        await settle(page);
+        await settle(page);
+        expect(prepared).toHaveBeenCalledOnce();
+        expect(cancellations).toHaveBeenCalledOnce();
+        expect(page.data?.catalogId).toBe("codex");
+        expect(message(page)).toBe("Keep this navigation draft");
+
+        const admitted = createDeferred();
+        const release = createDeferred();
+        navigate.mockImplementationOnce(async (_route, options) => {
+          admitted.resolve();
+          await release.promise;
+          const search = options?.search ?? "";
+          page.data = await load(context, search, "navigation");
+          window.history.replaceState({}, "", "/new" + search);
+          await settle(page);
+        });
+        choose();
+        await admitted.promise;
+        await settle(page);
+        try {
+          const agent = page.querySelector<AgentSelect>("openclaw-agent-select");
+          expect(agent?.disabled).toBe(true);
+          agent?.onSelect("research");
+          expect(page.querySelector(".new-session-page__incognito-toggle")).toBeNull();
+        } finally {
+          release.resolve();
+          await navigate.mock.results.at(-1)?.value;
+        }
+        await settle(page);
+        await settle(page);
+        expect(page.data?.requestedModel).toBe("example/recovery");
+        expect(message(page)).toBe("Keep this navigation draft");
+        expect(page.querySelector("[data-chat-model-select]")?.textContent).toContain("Recovery");
+      } finally {
+        provider.remove();
+        fixture.place.modelControl.reset();
+        fixture.flow.disconnect();
+        fixture.gateway.disconnect();
+        handoff.dispose();
+      }
+    },
+  );
+
   it("focuses an opened draft and refocuses without changing its message", async () => {
     const page = await mount(routeData("research"));
     const textarea = page.querySelector<HTMLTextAreaElement>(".new-session-page__message");

@@ -9,8 +9,9 @@ import type { NewSessionRouteData } from "./location.ts";
 const models = [
   { id: "first", provider: "example", name: "First", available: true },
   { id: "second", provider: "example", name: "Second", available: true },
+  { id: "remembered", provider: "example", name: "Remembered", available: true },
 ];
-const targets = ["claude", "codex"].map((id) => ({
+const targets = ["claude", "codex", "third-party-terminal"].map((id) => ({
   id,
   label: id === "claude" ? "Claude Code" : "Codex",
   capabilities: { startTerminal: true },
@@ -82,6 +83,11 @@ async function fixture(catalogId = "") {
   };
   const result = createDraftFixture(options);
   const { place, context, flow } = result;
+  const modelSelections = vi.spyOn(place.catalogSelection, "selectModelTarget");
+  const settleModelSelection = async () => {
+    await modelSelections.mock.results.at(-1)?.value;
+    await flush();
+  };
   const selections = vi.spyOn(place.catalogSelection, "selectCatalogTarget");
   const settleSelection = async () => {
     await selections.mock.results.at(-1)?.value;
@@ -115,7 +121,7 @@ async function fixture(catalogId = "") {
     expect(element).not.toBeNull();
     element!.click();
   };
-  return { ...result, options, lookup, view, choose, settleSelection };
+  return { ...result, options, lookup, view, choose, settleSelection, settleModelSelection };
 }
 
 afterEach(() => window.history.replaceState({}, "", "/"));
@@ -181,12 +187,101 @@ describe("native CLI picker admission", () => {
       "false",
     );
     f.choose('[data-chat-model-option="example/second"]');
-    await flush();
+    await f.settleModelSelection();
     expect(f.place.data?.catalogId).toBe("");
     expect(f.place.modelControl.modelForSubmission()).toBe("example/second");
   });
 
-  it.each(["claude", "codex"])(
+  it("holds the agent and visibility while an admitted model navigation retains its draft", async () => {
+    const f = await fixture("codex");
+    const attachment = registerTextPayload("admitted-model-owner");
+    f.flow.setMessage("Keep the admitted draft");
+    f.flow.attachmentDraft.replace([attachment]);
+    const release = createDeferred();
+    const entered = createDeferred();
+    const commit = f.options.onTargetSelect.getMockImplementation()!;
+    f.options.onTargetSelect.mockImplementationOnce(async (data, isCurrent) => {
+      entered.resolve();
+      await release.promise;
+      return commit(data, isCurrent);
+    });
+    f.choose('[data-chat-model-option="example/second"]');
+    await entered.promise;
+    try {
+      f.place.selectAgentId("research");
+      f.flow.setVisibility("incognito");
+      expect(f.place.agentId).toBe("main");
+      expect(f.flow.visibility).toBe("normal");
+    } finally {
+      release.resolve();
+      await f.settleModelSelection();
+    }
+    expect(f.place.data?.catalogId).toBe("");
+    expect(f.place.modelControl.modelForSubmission()).toBe("example/second");
+    expect(f.flow.message).toBe("Keep the admitted draft");
+    expect(f.flow.attachmentDraft.attachments).toEqual([attachment]);
+  });
+
+  it.each(["rejected", "stale"] as const)(
+    "preserves native draft and model preferences after %s model navigation, then recovers",
+    async (outcome) => {
+      const f = await fixture();
+      f.choose('[data-chat-model-option="example/remembered"]');
+      await flush();
+      f.lookup.mockResolvedValue(readyTarget("codex"));
+      f.choose('[data-chat-model-target="codex"]');
+      await f.settleSelection();
+      const attachment = registerTextPayload("rejected-model-" + outcome);
+      f.flow.setMessage("Keep the native draft");
+      f.flow.attachmentDraft.replace([attachment]);
+      f.place.catalogSelection.selectTerminalHost("node:builder");
+      f.place.applyFolder("/native/project");
+      const previousModel = f.place.modelControl.modelForSubmission();
+      const persist = vi.spyOn(f.gateway, "persistPreference");
+      const selectionChanged = vi.fn();
+      f.place.modelControl.onDraftSelectionChange = selectionChanged;
+      const pending = createDeferred<boolean>();
+      f.options.onTargetSelect.mockImplementationOnce(() => pending.promise);
+
+      f.choose('[data-chat-model-option="example/second"]');
+      expect(f.options.onTargetSelect).toHaveBeenCalledTimes(2);
+      expect(f.place.catalogSelection.transitionPending).toBe(true);
+      if (outcome === "stale") {
+        f.place.modelControl.cancelCatalogSelection();
+      }
+      pending.resolve(outcome === "stale");
+      await f.settleModelSelection();
+
+      expect(f.place.data?.catalogId).toBe("codex");
+      expect(f.place.modelControl.modelForSubmission()).toBe(previousModel);
+      expect(persist).not.toHaveBeenCalled();
+      expect(selectionChanged).not.toHaveBeenCalled();
+      expect(f.place.catalogSelection.terminalHostId).toBe("node:builder");
+      expect(f.place.folder).toBe("/native/project");
+      expect(f.flow.message).toBe("Keep the native draft");
+      expect(f.flow.attachmentDraft.attachments).toEqual([attachment]);
+      expect(window.location.search).toBe("?agent=main&catalog=codex");
+      expect(
+        f.view().querySelector("[data-chat-model-select]")?.getAttribute("aria-disabled"),
+      ).toBe("false");
+
+      f.choose('[data-chat-model-option="example/second"]');
+      await f.settleModelSelection();
+      expect(f.place.data?.catalogId).toBe("");
+      expect(f.place.modelControl.modelForSubmission()).toBe("example/second");
+      expect(persist).toHaveBeenCalledOnce();
+      expect(persist).toHaveBeenCalledWith(
+        "main",
+        "/workspace",
+        expect.objectContaining({ model: "example/second" }),
+      );
+      expect(selectionChanged).toHaveBeenCalledOnce();
+      expect(f.flow.message).toBe("Keep the native draft");
+      expect(f.flow.attachmentDraft.attachments).toEqual([attachment]);
+    },
+  );
+
+  it.each(["claude", "codex", "third-party-terminal"])(
     "keeps the draft and picker on unavailable %s, retries once, and recovers to a model",
     async (id) => {
       const f = await fixture();
@@ -236,7 +331,7 @@ describe("native CLI picker admission", () => {
       expect(f.lookup).toHaveBeenCalledTimes(2);
 
       f.choose('[data-chat-model-option="example/second"]');
-      await flush();
+      await f.settleModelSelection();
       expect(f.place.data?.catalogId).toBe("");
       expect(window.location.search).not.toContain("catalog=");
       expect(f.place.modelControl.modelForSubmission()).toBe("example/second");
@@ -252,6 +347,32 @@ describe("native CLI picker admission", () => {
       ).toHaveLength(1);
     },
   );
+
+  it("reports a targeted catalog read failure and retries through the admission owner", async () => {
+    const f = await fixture();
+    f.flow.setMessage("Keep the draft through a failed lookup");
+    f.lookup.mockRejectedValueOnce(new Error("target probe failed"));
+    f.choose('[data-chat-model-target="claude"]');
+    await f.settleSelection();
+    expect(f.options.onTargetSelect).not.toHaveBeenCalled();
+    expect(f.place.data?.catalogId).toBe("");
+    expect(f.flow.message).toBe("Keep the draft through a failed lookup");
+    expect(f.view().querySelector('[data-chat-model-target="claude"]')?.getAttribute("title")).toBe(
+      t("newSession.catalogUnavailable"),
+    );
+    expect(f.lookup).toHaveBeenCalledOnce();
+
+    f.lookup.mockResolvedValue(readyTarget());
+    f.choose('[data-chat-model-target="claude"]');
+    await f.settleSelection();
+    expect(f.lookup).toHaveBeenCalledTimes(2);
+    expect(f.options.onTargetSelect).toHaveBeenCalledOnce();
+    expect(f.place.data?.catalogId).toBe("claude");
+    expect(f.flow.message).toBe("Keep the draft through a failed lookup");
+    expect(f.view().querySelector('[data-chat-model-target="claude"]')?.hasAttribute("title")).toBe(
+      false,
+    );
+  });
 
   it.each(["incognito", "draft"] as const)(
     "refuses native selection without losing %s intent",
@@ -281,7 +402,7 @@ describe("native CLI picker admission", () => {
       t("newSession.nativeHostsUnavailable"),
     );
     f.choose('[data-chat-model-option="example/second"]');
-    await flush();
+    await f.settleModelSelection();
     expect(f.place.data?.catalogId).toBe("");
     expect(f.flow.message).toBe("Direct route draft");
     expect(f.lookup).not.toHaveBeenCalled();
@@ -297,6 +418,8 @@ describe("native CLI picker admission", () => {
     "hello",
     "client",
     "identity",
+    "credentials",
+    "disabled",
     "disconnect",
     "submission",
     "incognito",
@@ -330,6 +453,12 @@ describe("native CLI picker admission", () => {
         break;
       case "identity":
         Object.assign(gateway.snapshot, { selfUser: { id: "different" } });
+        break;
+      case "credentials":
+        Object.assign(gateway, { connectionRevision: gateway.connectionRevision + 1 });
+        break;
+      case "disabled":
+        f.place.modelControl.loadCatalogTargets(f.context, "main", false);
         break;
       case "disconnect":
         gateway.snapshot.phase = "offline";
