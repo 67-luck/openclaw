@@ -66,7 +66,17 @@ await fs.writeFile(
 );
 const startedAt = Date.now();
 const deadline = startedAt + 120_000;
-const evidence = { config: [], skills: [], observationsPassed: false, socketClosed: false };
+const evidence = {
+  config: [],
+  skills: [],
+  observationsPassed: false,
+  socketClosed: false,
+  activeLabel: "connect",
+  activeStage: "opening",
+  failureStage: null,
+  lastConfigAttempt: null,
+  reloadTail: [],
+};
 const scanner = createConfigReloadLogScanner(gatewayLog);
 const WebSocket = createRequire(path.join(packageRoot, "package.json"))("ws");
 const socket = new WebSocket("ws://127.0.0.1:18789");
@@ -98,24 +108,72 @@ async function writeJson(file, value, atomic = false) {
   }
 }
 
+function fixtureValue(value, allowed) {
+  return value === undefined ? null : allowed.includes(value) ? value : "other";
+}
+
+function opaqueRevision(value) {
+  return typeof value === "string" ? value.slice(0, 128) : null;
+}
+
+function captureReloadTail(scanned) {
+  evidence.reloadTail = scanned.tailLines
+    .filter((line) => /reload|error|failed|refused|superseded|invalid/iu.test(line))
+    .slice(-12)
+    .map((line) => Buffer.from(line).subarray(0, 512).toString("utf8"));
+}
+
 async function observeConfig(label, changedPath, mutate, matches) {
+  evidence.activeLabel = label;
+  evidence.activeStage = "config-before-read";
   const before = await request("config.get");
   const { reloadLines, restartLines } = scanner.scan();
   const reloadCount = reloadLines.length;
   const restartCount = restartLines.length;
   const mutationStartedAt = Date.now();
+  evidence.activeStage = "config-write";
   await mutate();
+  evidence.activeStage = "config-observe";
   while (true) {
     const snapshot = await request("config.get");
     const scanned = scanner.scan();
-    assert.equal(scanned.restartLines.length, restartCount, `${label} requested a Gateway restart`);
     const detection = scanned.reloadLines
       .slice(reloadCount)
       .find((line) => line.includes(changedPath));
+    captureReloadTail(scanned);
+    const facts = {
+      label,
+      changedPath,
+      elapsedMs: Date.now() - mutationStartedAt,
+      valid: snapshot.valid === true,
+      mode: fixtureValue(snapshot.config?.gateway?.reload?.mode, [
+        "off",
+        "hot",
+        "hybrid",
+        "restart",
+      ]),
+      seamColor: fixtureValue(snapshot.config?.ui?.seamColor, ["#112233", "#224466", "#335577"]),
+      locale: fixtureValue(snapshot.config?.ui?.prefs?.locale, ["en", "en-US"]),
+      beforeRevision: opaqueRevision(before.configRevisionHash),
+      currentRevision: opaqueRevision(snapshot.configRevisionHash),
+      appliedRevision: opaqueRevision(snapshot.appliedConfigHash),
+      detection: Boolean(detection),
+      restart: scanned.restartLines.length !== restartCount,
+      hasRevision: typeof snapshot.configRevisionHash === "string",
+      revisionChanged: snapshot.configRevisionHash !== before.configRevisionHash,
+      applied: snapshot.configRevisionHash === snapshot.appliedConfigHash,
+      valuesMatch: null,
+    };
+    evidence.lastConfigAttempt = facts;
+    assert.equal(scanned.restartLines.length, restartCount, `${label} requested a Gateway restart`);
+    // Keep predicate evaluation in its original order; diagnostics must not change the gate.
+    if (detection && snapshot.valid) {
+      facts.valuesMatch = matches(snapshot.config);
+    }
     if (
       detection &&
       snapshot.valid &&
-      matches(snapshot.config) &&
+      facts.valuesMatch &&
       typeof snapshot.configRevisionHash === "string" &&
       snapshot.configRevisionHash !== before.configRevisionHash &&
       snapshot.configRevisionHash === snapshot.appliedConfigHash
@@ -137,6 +195,8 @@ function skillContent(description) {
 }
 
 async function observeSkill(label, mutate, description) {
+  evidence.activeLabel = `skills-${label}`;
+  evidence.activeStage = "skills-write";
   const mutationStartedAt = Date.now();
   // Settle the event before reading inventory: a fresh read alone could hide a broken watcher.
   const observed = onceFrame(
@@ -151,8 +211,10 @@ async function observeSkill(label, mutate, description) {
     () => null,
   );
   await mutate();
+  evidence.activeStage = "skills-observe";
   const event = await observed;
   assert(event, `${label} did not receive a skills.changed watch event`);
+  evidence.activeStage = "skills-inventory";
   const report = await request("skills.status", { agentId: "main" });
   const skill = report.skills.find((entry) => entry.name === skillName);
   if (description === undefined) {
@@ -174,6 +236,7 @@ try {
     remainingMs(),
   );
   await Promise.all([waitForWebSocketOpen(socket, remainingMs()), challenge]);
+  evidence.activeStage = "connect-rpc";
   await request("connect", {
     minProtocol: 4,
     maxProtocol: 4,
@@ -184,6 +247,8 @@ try {
     auth: { token },
   });
 
+  evidence.activeLabel = "root-write";
+  evidence.activeStage = "prepare-config";
   await writeJson(includePath, { seamColor: "#112233" });
   config.gateway.reload = { ...config.gateway.reload, mode: "hot" };
   config.ui = { ...config.ui, $include: `./${path.basename(includePath)}` };
@@ -216,6 +281,8 @@ try {
     (current) => current.ui.seamColor === "#335577",
   );
 
+  evidence.activeLabel = "skills-initial";
+  evidence.activeStage = "skills-inventory";
   const initialSkills = await request("skills.status", { agentId: "main" });
   assert.equal(path.resolve(initialSkills.workspaceDir), path.resolve(workspace));
   assert(!initialSkills.skills.some((entry) => entry.name === skillName));
@@ -227,8 +294,14 @@ try {
     },
     "Created after upgrade",
   );
+  evidence.activeLabel = "health";
+  evidence.activeStage = "health-rpc";
   await request("health");
   evidence.observationsPassed = true;
+  evidence.activeStage = "complete";
+} catch (error) {
+  evidence.failureStage = { label: evidence.activeLabel, stage: evidence.activeStage };
+  throw error;
 } finally {
   try {
     if (socket.readyState !== WebSocket.CLOSED) {
@@ -245,6 +318,11 @@ try {
     }
     evidence.socketClosed = true;
   } finally {
+    try {
+      captureReloadTail(scanner.scan());
+    } catch {
+      evidence.reloadTailUnavailable = true;
+    }
     await fs.writeFile(
       evidencePath,
       `${JSON.stringify(

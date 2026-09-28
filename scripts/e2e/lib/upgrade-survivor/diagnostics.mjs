@@ -82,6 +82,7 @@ const logNames = [
   "recovery-update.err",
   "post-update-validate.json",
   "post-update-validate.err",
+  "file-observation.json",
   "doctor.log",
   "baseline-doctor.log",
   "workshop-doctor-recovery.json",
