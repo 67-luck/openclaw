@@ -161,6 +161,7 @@ async function runTsgo(
   label: string,
   args: string[],
   signal: AbortSignal,
+  artifactOutput?: (stream: "stdout" | "stderr", chunk: string) => void,
 ): Promise<{ elapsedMs: number; stdout: string; stderr: string }> {
   const { args: finalArgs, env } = applyLocalTsgoPolicy(args, process.env, {
     logicalCpuCount:
@@ -169,10 +170,12 @@ async function runTsgo(
   });
   const startedAt = Date.now();
   const outputAbort = new AbortController();
-  // Captures live in this supervisor, outside the compiler's cgroup. Keep
-  // each phase small enough for the minimum admitted machine's reserved half.
-  const maxBytes = 16 * 1024 * 1024;
-  let outputBytes = 0;
+  // Artifact phases retain the previous per-stream 256 MiB ceiling on disk.
+  // Supervisor captures stay small outside the compiler's memory scope.
+  const maxBytes = (artifactOutput ? 256 : 16) * 1024 * 1024;
+  const outputBytes = { stdout: 0, stderr: 0 };
+  let outputFailure: Error | undefined;
+  let capturing = true;
   let stdout = "";
   let stderr = "";
   let status: number;
@@ -191,18 +194,28 @@ async function runTsgo(
         ] as const) {
           stream.setEncoding("utf8");
           stream.on("data", (chunk: string) => {
-            if (outputAbort.signal.aborted) {
+            if (!capturing || outputAbort.signal.aborted) {
               return;
             }
-            outputBytes += Buffer.byteLength(chunk);
-            if (outputBytes > maxBytes) {
+            outputBytes[name] += Buffer.byteLength(chunk);
+            const bytes = artifactOutput
+              ? outputBytes[name]
+              : outputBytes.stdout + outputBytes.stderr;
+            try {
+              if (bytes > maxBytes) {
+                throw new Error(`${label} exceeded its ${maxBytes}-byte output limit`);
+              }
+              // Synchronous chunk writes apply backpressure without accumulating
+              // pending writes. Artifact phases keep only a diagnostic tail in RAM.
+              artifactOutput?.(name, chunk);
+              if (name === "stdout") {
+                stdout = artifactOutput ? (stdout + chunk).slice(-65536) : stdout + chunk;
+              } else {
+                stderr = artifactOutput ? (stderr + chunk).slice(-65536) : stderr + chunk;
+              }
+            } catch (error) {
+              outputFailure = error instanceof Error ? error : new Error(String(error));
               outputAbort.abort();
-              return;
-            }
-            if (name === "stdout") {
-              stdout += chunk;
-            } else {
-              stderr += chunk;
             }
           });
         }
@@ -211,18 +224,80 @@ async function runTsgo(
   } catch (error) {
     // Overflow is reported only after joined cancellation; cleanup uncertainty
     // must retain its identity for the surrounding artifact owner.
-    if (outputAbort.signal.aborted && isCommandCancellation(error)) {
-      throw new Error(`${label} exceeded its ${maxBytes}-byte output limit`, { cause: error });
+    if (outputFailure && isCommandCancellation(error)) {
+      throw new Error(outputFailure.message, { cause: error });
     }
     throw error;
+  } finally {
+    capturing = false;
   }
   signal.throwIfAborted();
+  if (outputFailure) {
+    throw outputFailure;
+  }
   const elapsedMs = Date.now() - startedAt;
   if (status !== 0) {
     const output = [stdout, stderr].filter(Boolean).join("\n");
     throw new Error(`${label} failed with exit code ${status}\n${output}`);
   }
   return { elapsedMs, stdout, stderr };
+}
+
+/** Preserve stdout-then-stderr artifact ordering without retaining either body. */
+async function runArtifactPhase(
+  label: string,
+  args: string[],
+  signal: AbortSignal,
+  artifact: string,
+  includeStderr = false,
+) {
+  const stderrArtifact = artifact + ".stderr";
+  const stdoutFd = fs.openSync(artifact, "w");
+  let stderrFd: number | undefined;
+  let completed = false;
+  const failures: unknown[] = [];
+  try {
+    stderrFd = fs.openSync(stderrArtifact, "w");
+    const result = await runTsgo(label, args, signal, (stream, chunk) => {
+      fs.writeFileSync(stream === "stdout" ? stdoutFd : stderrFd!, Buffer.from(chunk));
+    });
+    if (includeStderr) {
+      for await (const chunk of fs.createReadStream(stderrArtifact)) {
+        signal.throwIfAborted();
+        fs.writeFileSync(stdoutFd, chunk as Buffer);
+      }
+    }
+    completed = true;
+    return { elapsedMs: result.elapsedMs };
+  } catch (error) {
+    failures.push(error);
+    throw error;
+  } finally {
+    // Preserve uncertain child ownership through cleanup failures, and attempt
+    // both closes even when the first fails. Artifact ownership reads this chain.
+    for (const fd of [stdoutFd, stderrFd]) {
+      if (fd === undefined) {
+        continue;
+      }
+      try {
+        fs.closeSync(fd);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (completed && failures.length === 0) {
+      try {
+        fs.rmSync(stderrArtifact);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length) {
+      throw failures.length === 1
+        ? failures[0]
+        : new AggregateError(failures, "Profiler artifact cleanup failed");
+    }
+  }
 }
 
 function parseDiagnostics(output: string): Diagnostics {
@@ -288,20 +363,20 @@ function classifyFile(relativePath: string): string {
   return first || "(unknown)";
 }
 
-function summarizeFiles(stdout: string) {
+async function summarizeFiles(artifact: string) {
   const counts = new Map<string, number>();
   let totalFiles = 0;
   let projectRelativeFiles = 0;
   let testFiles = 0;
-  // Do not duplicate an entire inventory into several arrays of file strings.
-  for (const [line] of stdout.matchAll(/[^\n]+/gu)) {
+  // The inventory stays on disk; retain only group counts and one input line.
+  const recordFile = (line: string) => {
     const file = normalizeFilePath(line);
     if (!file || file.startsWith("Files:")) {
-      continue;
+      return;
     }
     totalFiles++;
     if (path.isAbsolute(file) || /^[A-Za-z]:/u.test(file)) {
-      continue;
+      return;
     }
     projectRelativeFiles++;
     if (/\.test\.[cm]?[tj]sx?$/u.test(file)) {
@@ -309,6 +384,18 @@ function summarizeFiles(stdout: string) {
     }
     const key = classifyFile(file);
     counts.set(key, (counts.get(key) ?? 0) + 1);
+  };
+  let pending = "";
+  for await (const chunk of fs.createReadStream(artifact, { encoding: "utf8" })) {
+    pending += chunk;
+    let end: number;
+    while ((end = pending.indexOf("\n")) !== -1) {
+      recordFile(pending.slice(0, end));
+      pending = pending.slice(end + 1);
+    }
+  }
+  if (pending) {
+    recordFile(pending);
   }
   return {
     totalFiles,
@@ -410,14 +497,16 @@ async function profileGraph(name: GraphName, options: ProfileOptions, signal: Ab
   const baseArgs = ["-p", configPath, "--pretty", "false"];
   const filesArtifact = path.join(outDir, `${name}.files.txt`);
   // Retain summaries only before starting the next admitted compiler phase.
-  const files = await runTsgo(
+  await runArtifactPhase(
     `${name}:listFilesOnly`,
     [...baseArgs, "--listFilesOnly"],
     signal,
-  ).then(({ stdout }) => {
-    fs.writeFileSync(filesArtifact, stdout);
-    return { ...summarizeFiles(stdout), artifact: path.relative(repoRoot, filesArtifact) };
-  });
+    filesArtifact,
+  );
+  const files = {
+    ...(await summarizeFiles(filesArtifact)),
+    artifact: path.relative(repoRoot, filesArtifact),
+  };
   const noCheck = await runTsgo(
     `${name}:noCheck`,
     [
@@ -455,12 +544,13 @@ async function profileGraph(name: GraphName, options: ProfileOptions, signal: Ab
   let explain: { artifact: string; elapsedMs: number } | undefined;
   if (options.explain) {
     const explainArtifact = path.join(outDir, `${name}.explain.txt`);
-    const explainResult = await runTsgo(
+    const explainResult = await runArtifactPhase(
       `${name}:explainFiles`,
       [...baseArgs, "--listFilesOnly", "--explainFiles"],
       signal,
+      explainArtifact,
+      true,
     );
-    fs.writeFileSync(explainArtifact, `${explainResult.stdout}${explainResult.stderr}`);
     explain = {
       artifact: path.relative(repoRoot, explainArtifact),
       elapsedMs: explainResult.elapsedMs,

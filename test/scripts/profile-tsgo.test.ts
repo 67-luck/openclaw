@@ -107,7 +107,9 @@ catch { process.exitCode = 1; }
         expect(fs.readFileSync(pidFile, "utf8").trim().split("\n")).toHaveLength(1);
       } finally {
         await lifetime.verifyCleanup(async () => {
-          if (child?.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+          if (child?.exitCode === null && child.signalCode === null) {
+            child.kill("SIGTERM");
+          }
           try {
             await completion;
           } finally {
@@ -137,7 +139,9 @@ catch { process.exitCode = 1; }
                 ).toMatch(/^populated 0$/mu);
               }
             }
-            if (compilerPid !== undefined) await waitForDead(compilerPid, 2_000);
+            if (compilerPid !== undefined) {
+              await waitForDead(compilerPid, 2_000);
+            }
           }
         });
       }
@@ -236,11 +240,19 @@ Date.now = () => start + (now() - start) * 10;
 
 it
   .runIf(process.platform === "linux" && hasSemanticTestBackend())
-  .for(["success", "failure", "overflow", "dense"])(
+  .for([
+    "success",
+    "failure",
+    "overflow",
+    "artifact-overflow",
+    "dense",
+    "short-writes",
+    "close-failure",
+  ])(
   "contains profiling compiler leaves and publishes only completed reports; mode=%s",
   (mode, { signal }) =>
     lifetime.run(async () => {
-      const fail = mode === "failure" || mode === "overflow";
+      const fail = mode === "failure" || mode.endsWith("overflow");
       const root = fs.realpathSync(lifetime.createTempDir("openclaw-profile-memory-"));
       fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
       fs.writeFileSync(path.join(root, "pnpm-workspace.yaml"), "packages: []\n");
@@ -257,18 +269,51 @@ const group=fs.readFileSync("/proc/self/cgroup","utf8").trim().split("::")[1];
 const max=fs.readFileSync(path.join("/sys/fs/cgroup",group,"memory.max"),"utf8").trim();
 fs.appendFileSync("profile-calls", JSON.stringify({max,pid:process.pid})+"\\n");
 if (${mode === "failure"}) process.exit(7);
-if (${mode === "overflow"}) {
+if (${mode === "artifact-overflow"}) {
+  const chunk = Buffer.alloc(1024 ** 2, 120);
+  for (let i = 0; i < 257; i++) fs.writeSync(1, chunk);
+  setInterval(() => {}, 1000);
+} else if (${mode === "overflow"} && !process.argv.includes("--listFilesOnly")) {
   process.stdout.write(Buffer.alloc(8 * 1024 ** 2, 120));
   process.stderr.write(Buffer.alloc(9 * 1024 ** 2, 121));
   setInterval(() => {}, 1000);
 } else if(process.argv.includes("--listFilesOnly")) console.log(${mode === "dense"}
-  ? ' ui/src/example.test.ts\\r\\n'.repeat(100000) + '\\nFiles: 100003\\nsrc/index.ts\\n/outside/types.d.ts\\nC:/outside/types.d.ts'
+  ? ' ui/src/example.test.ts\\r\\n'.repeat(1000000) + '\\nFiles: 1000003\\nsrc/index.ts\\n/outside/types.d.ts\\nC:/outside/types.d.ts'
   : "ui/src/example.ts");
 else console.log("Files: 1\\nMemory used: 1K\\nTotal time: 0.1s\\nCheck time: 0.1s");
+if (${mode === "dense"} && process.argv.includes("--listFilesOnly")) process.stderr.write(Buffer.alloc(17 * 1024 ** 2, 121));
+if (${mode === "short-writes"} && process.argv.includes("--explainFiles")) process.stderr.write("explanation stderr\\n");
 `,
       );
       fs.chmodSync(compiler, 0o755);
       overrideNativeFixtureExecutable(root, compiler);
+      const outputHook = path.join(root, "output-hook.mjs");
+      if (mode === "short-writes" || mode === "close-failure") {
+        fs.writeFileSync(
+          outputHook,
+          `import fs from 'node:fs';
+import {registerHooks} from 'node:module';
+const watched=new Map(),open=fs.openSync,write=fs.writeSync,close=fs.closeSync;
+fs.openSync=(file,...args)=>{const fd=open(file,...args);if(/\\.(files|explain)\\.txt(\\.stderr)?$/.test(String(file))) watched.set(fd,String(file));return fd;};
+fs.writeSync=(fd,value,...args)=>{
+  if(${mode === "short-writes"} && watched.has(fd)) {
+    const data=typeof value==='string'?Buffer.from(value):value;
+    const offset=typeof value==='string'?0:args[0],length=typeof value==='string'?data.length:args[1];
+    fs.appendFileSync('short-writes','called\\n');
+    return write(fd,data,offset,Math.max(1,Math.floor(length/2)),typeof value==='string'?null:args[2]);
+  }
+  return write(fd,value,...args);
+};
+fs.closeSync=(fd)=>{const file=watched.get(fd);watched.delete(fd);close(fd);
+  if(${mode === "close-failure"} && file){fs.appendFileSync('closed-artifacts',file+'\\n');if(file.endsWith('.files.txt')) throw new Error('fixture close failure');}
+};
+if(${mode === "close-failure"}) registerHooks({resolve(specifier,context,next){
+  if(specifier==='./lib/semantic-check-admission.mts' && context.parentURL?.endsWith('/profile-tsgo.mts')) return {shortCircuit:true,url:'data:text/javascript,'+encodeURIComponent("export async function runSemanticCheck(){throw Object.assign(new Error('fixture unjoined compiler'),{processTreeState:'indeterminate'});}")};
+  return next(specifier,context);
+}});
+`,
+        );
+      }
       let output = "";
       let errors = "";
       const status = await lifetime.track(
@@ -276,7 +321,14 @@ else console.log("Files: 1\\nMemory used: 1K\\nTotal time: 0.1s\\nCheck time: 0.
           bin: resolveTestNodeExecPath(),
           args: [path.join(root, "scripts/profile-tsgo.mts"), "ui", "--explain", "--json"],
           cwd: root,
-          env: process.env,
+          env: {
+            ...process.env,
+            ...((mode === "short-writes" || mode === "close-failure") && {
+              NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(outputHook).href}`]
+                .filter(Boolean)
+                .join(" "),
+            }),
+          },
           signal,
           requireProcessTreeExit: true,
           stdio: ["ignore", "pipe", "pipe"],
@@ -292,6 +344,20 @@ else console.log("Files: 1\\nMemory used: 1K\\nTotal time: 0.1s\\nCheck time: 0.
           },
         }),
       );
+      if (mode === "close-failure") {
+        expect(status).toBe(1);
+        expect(errors).toContain("fixture unjoined compiler");
+        expect(errors).toContain("fixture close failure");
+        expect(
+          fs.readFileSync(path.join(root, "closed-artifacts"), "utf8").trim().split("\n"),
+        ).toHaveLength(2);
+        expect(fs.existsSync(path.join(root, "profile-calls"))).toBe(false);
+        expect(fs.existsSync(path.join(root, ".artifacts/dist-artifacts.lock/owner.json"))).toBe(
+          true,
+        );
+        expect(fs.existsSync(path.join(root, ".artifacts/tsgo-profile/latest.json"))).toBe(false);
+        return;
+      }
       const calls = fs
         .readFileSync(path.join(root, "profile-calls"), "utf8")
         .trim()
@@ -302,7 +368,10 @@ else console.log("Files: 1\\nMemory used: 1K\\nTotal time: 0.1s\\nCheck time: 0.
         expect(errors).toContain("exceeded its 16777216-byte output limit");
         expect(errors.trimEnd()).toMatch(/\[tsgo-profile\] FAILED \(exit 1\)$/u);
       }
-      expect(calls).toHaveLength(fail ? 1 : 4);
+      if (mode === "artifact-overflow") {
+        expect(errors).toContain("exceeded its 268435456-byte output limit");
+      }
+      expect(calls).toHaveLength(mode === "overflow" ? 2 : fail ? 1 : 4);
       for (const call of calls) {
         expect(Number(call.max)).toBeGreaterThanOrEqual(512 * 1024 ** 2);
         expect(Number(call.max)).toBeLessThanOrEqual(8 * 1024 ** 3);
@@ -313,13 +382,34 @@ else console.log("Files: 1\\nMemory used: 1K\\nTotal time: 0.1s\\nCheck time: 0.
       if (!fail) {
         const result = JSON.parse(output);
         expect(result.graphs[0].check.diagnostics["Memory used"]).toBe(1024);
-        expect(result.graphs[0].files.totalFiles).toBe(mode === "dense" ? 100003 : 1);
+        expect(result.graphs[0].files.totalFiles).toBe(mode === "dense" ? 1000003 : 1);
+        if (mode === "short-writes") {
+          expect(fs.readFileSync(path.join(root, result.graphs[0].files.artifact), "utf8")).toBe(
+            "ui/src/example.ts\n",
+          );
+          expect(fs.readFileSync(path.join(root, result.graphs[0].explain.artifact), "utf8")).toBe(
+            "ui/src/example.ts\nexplanation stderr\n",
+          );
+          expect(fs.readFileSync(path.join(root, "short-writes"), "utf8")).toContain("called");
+        }
         if (mode === "dense") {
+          const filesArtifact = path.join(root, result.graphs[0].files.artifact);
+          const explainArtifact = path.join(root, result.graphs[0].explain.artifact);
+          expect(fs.statSync(filesArtifact).size).toBeGreaterThan(16 * 1024 ** 2);
+          const inventory = fs.readFileSync(filesArtifact);
+          const explanation = fs.readFileSync(explainArtifact);
+          expect(explanation.length).toBe(inventory.length + 17 * 1024 ** 2);
+          expect(explanation.subarray(0, inventory.length).equals(inventory)).toBe(true);
+          expect(
+            explanation.subarray(inventory.length).equals(Buffer.alloc(17 * 1024 ** 2, 121)),
+          ).toBe(true);
+          expect(fs.existsSync(filesArtifact + ".stderr")).toBe(false);
+          expect(fs.existsSync(explainArtifact + ".stderr")).toBe(false);
           expect(result.graphs[0].files).toMatchObject({
-            projectRelativeFiles: 100001,
-            testFiles: 100000,
+            projectRelativeFiles: 1000001,
+            testFiles: 1000000,
             groups: [
-              { key: "ui/src", count: 100000 },
+              { key: "ui/src", count: 1000000 },
               { key: "src/index.ts", count: 1 },
             ],
           });

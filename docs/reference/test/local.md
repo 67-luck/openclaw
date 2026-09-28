@@ -352,9 +352,12 @@ tool invocations. Different OS accounts have independent slots. Profiling wall
 time includes queueing and cleanup; compare performance on an otherwise idle
 worker.
 
-The supervising process captures at most 16 MiB of combined stdout/stderr per
-compiler phase and retains summaries before starting the next phase. Exceeding
-that bound cancels and joins the compiler, then fails without publishing a report.
+File lists and explanations stream to disk, preserving the previous 256 MiB
+limit per output stream. Inventory summaries retain group counts rather than
+complete file lists. Explanation artifacts preserve stdout followed by stderr.
+Diagnostic phases capture at most 16 MiB of combined stdout/stderr; artifact
+phases retain only short diagnostic tails in memory. Exceeding an output limit
+cancels and joins the compiler, then fails without publishing a report.
 
 Cancellation joins the active compiler and releases both owners before returning.
 A failed or canceled graph does not publish a new complete report. Incomplete
