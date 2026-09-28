@@ -453,7 +453,7 @@ export function reconcileChatInputCustody(
   receipts: ChatInputReceipts = [],
 ) {
   const acceptedRunIds = new Set(
-    [...(page?.items ?? []), ...receipts]
+    [...(page?.items ?? []), ...(page?.queue?.items ?? []), ...receipts]
       .map((item) => item.runId)
       .filter((runId) => typeof runId === "string"),
   );

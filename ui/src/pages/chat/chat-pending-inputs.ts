@@ -40,13 +40,12 @@ type PendingInputView = {
   sessionId: string | null;
   agentId: string | undefined;
   page: ChatPendingInputsPage;
-  /** Live custody receipts keep the queue independent of retained-input pagination. */
+  /** Active-input snapshots keep the queue independent of retained-history pagination. */
   queuedInputs: ChatPendingInputsPage["items"];
   receiptRunIds: string[];
-  queuedCount: number;
   queueBefore?: number;
-  /** IDs observed by the current latest-to-oldest queue discovery pass. */
-  queueScanIds?: Set<string>;
+  /** Active-only pages being assembled; retained history never determines membership. */
+  queueSnapshot: ChatPendingInputsPage["items"];
   before?: number;
   readonly loading: boolean;
   error?: string;
@@ -54,52 +53,6 @@ type PendingInputView = {
   request?: PendingInputRequest;
 };
 const pendingInputViews = new WeakMap<ChatState, PendingInputView>();
-
-function reconcileQueuedInputs(
-  queued: ChatPendingInputsPage["items"],
-  page: ChatPendingInputsPage,
-  receipts?: ChatInputReceipts,
-  queriedRunIds: readonly string[] = [],
-): ChatPendingInputsPage["items"] {
-  const completePage = page.nextBefore === undefined && page.items.length === page.total;
-  const observed = new Map(receipts?.map((receipt) => [receipt.runId, receipt]));
-  const queried = new Set(receipts === undefined ? [] : queriedRunIds);
-  const current = new Map((completePage ? [] : queued).map((input) => [input.id, input]));
-  for (const input of page.items) {
-    if (isQueuedChatInput(input)) {
-      current.set(input.id, input);
-    } else {
-      current.delete(input.id);
-    }
-  }
-  // Ordinary consumption deletes custody. An exact queried absence retires its
-  // queue projection even when the transcript has advanced beyond that message.
-  return [...current.values()].flatMap((input) => {
-    const receipt = input.runId ? observed.get(input.runId) : undefined;
-    if (
-      receipt
-        ? receipt.state !== "pending" || receipt.cancelled
-        : input.runId && queried.has(input.runId)
-    ) {
-      return [];
-    }
-    // Receipts control execution-queue actions, not forwarded display membership.
-    const executionQueued =
-      receipt?.state === "pending"
-        ? receipt.queued === true
-        : page.queuedCount === 0
-          ? false
-          : input.queued === true;
-    const { queued: previousQueued, ...rest } = input;
-    const candidate =
-      executionQueued === (previousQueued === true)
-        ? input
-        : executionQueued
-          ? { ...rest, queued: true as const }
-          : rest;
-    return isQueuedChatInput(candidate) ? [candidate] : [];
-  });
-}
 
 export function buildPendingInputQueueItems(
   inputs: ChatPendingInputsPage["items"],
@@ -304,31 +257,59 @@ function ownsPendingInputRequest(
   );
 }
 
-/** Only a latest-to-oldest pass proves queue completeness; the execution count omits agent input. */
-function observeQueuePage(
+function applyQueueSnapshot(
   view: PendingInputView,
   page: ChatPendingInputsPage,
-  before?: number,
+  append = false,
+  receipts?: ChatInputReceipts,
+  queriedRunIds: readonly string[] = [],
 ): void {
-  if (before === undefined) {
-    view.queueScanIds = new Set();
-  } else if (!view.queueScanIds || before !== view.queueBefore) {
-    return;
-  }
-  if (before !== undefined && page.nextBefore !== undefined && page.nextBefore >= before) {
+  const queue = page.queue ?? { items: page.items };
+  if (
+    append &&
+    queue.nextBefore !== undefined &&
+    view.queueBefore !== undefined &&
+    queue.nextBefore >= view.queueBefore
+  ) {
     throw new Error(t("chat.pendingInputs.paginationError"));
   }
-  for (const input of page.items) {
-    if (isQueuedChatInput(input)) {
-      view.queueScanIds.add(input.id);
+  const observed = new Map([...page.items, ...queue.items].map((input) => [input.id, input]));
+  const byRun = new Map(receipts?.map((receipt) => [receipt.runId, receipt]));
+  const queried = new Set(receipts === undefined ? [] : queriedRunIds);
+  const current = (
+    previous: ChatPendingInputsPage["items"][number],
+  ): ChatPendingInputsPage["items"] => {
+    const input = observed.get(previous.id) ?? previous;
+    const receipt = input.runId ? byRun.get(input.runId) : undefined;
+    if (
+      !isQueuedChatInput(input) ||
+      (receipt
+        ? receipt.state !== "pending" || receipt.cancelled
+        : input.runId && queried.has(input.runId))
+    ) {
+      return [];
     }
-  }
-  view.queueBefore = page.nextBefore;
-  if (view.queueBefore === undefined) {
-    // This also retires inputs whose long run IDs cannot be queried as receipts.
-    view.queuedInputs = view.queuedInputs.filter((input) => view.queueScanIds?.has(input.id));
-    view.queueScanIds = undefined;
-  }
+    // Exact receipts can settle custody or withdraw queue actions after the page was read.
+    const candidate =
+      receipt?.state === "pending" && receipt.queued !== input.queued
+        ? { ...input, queued: receipt.queued }
+        : input;
+    return isQueuedChatInput(candidate) ? [candidate] : [];
+  };
+  const snapshot = (append ? [...view.queueSnapshot, ...queue.items] : queue.items).flatMap(
+    current,
+  );
+  view.queueBefore = queue.nextBefore;
+  view.queueSnapshot = queue.nextBefore === undefined ? [] : snapshot;
+  // A failed partial read retains only rows whose status is still unknown, never settled input.
+  view.queuedInputs =
+    queue.nextBefore === undefined
+      ? snapshot
+      : [
+          ...new Map(
+            [...view.queuedInputs, ...snapshot].map((input) => [input.id, input]),
+          ).values(),
+        ].flatMap(current);
 }
 
 export function applyChatPendingInputs(
@@ -338,21 +319,15 @@ export function applyChatPendingInputs(
 ): void {
   const displayPage = reconcilePendingInputPage(state, page, options.receipts);
   let view = getChatPendingInputs(state);
-  const queuedInputs = reconcileQueuedInputs(
-    view?.queuedInputs ?? [],
-    displayPage,
-    options.receipts,
-    options.queriedRunIds,
-  );
   if (!view) {
     view = {
       sessionKey: state.sessionKey,
       sessionId: state.currentSessionId ?? null,
       agentId: resolveUiSelectedSessionAgentId(state),
       page: displayPage,
-      queuedInputs,
+      queuedInputs: [],
+      queueSnapshot: [],
       receiptRunIds: [],
-      queuedCount: displayPage.queuedCount ?? 0,
       revision: 0,
       get loading() {
         return this.request?.kind === "navigation";
@@ -360,8 +335,6 @@ export function applyChatPendingInputs(
     };
     pendingInputViews.set(state, view);
   } else {
-    view.queuedInputs = queuedInputs;
-    view.queuedCount = displayPage.queuedCount ?? 0;
     view.revision += 1;
     if (view.request && !ownsPendingInputRequest(state, view, view.request)) {
       view.request = undefined;
@@ -375,7 +348,7 @@ export function applyChatPendingInputs(
       void requestPendingInputPage(state, view.before, "refresh");
     }
   }
-  observeQueuePage(view, displayPage);
+  applyQueueSnapshot(view, displayPage, false, options.receipts, options.queriedRunIds);
   rotateInputReceipts(state, view, options.queriedRunIds);
   if (!view.request && view.queueBefore !== undefined) {
     void requestPendingInputPage(state, view.queueBefore, "discovery");
@@ -394,16 +367,6 @@ async function requestPendingInputPage(
     return;
   }
   if (view.request && ownsPendingInputRequest(state, view, view.request)) {
-    if (
-      kind === "navigation" &&
-      view.request.kind === "discovery" &&
-      view.request.before === before
-    ) {
-      // Earlier can adopt the discovery already reading that exact page.
-      view.request.kind = "navigation";
-      state.requestUpdate?.();
-      return view.request.done;
-    }
     if (kind !== "navigation" || view.request.kind === "navigation") {
       return view.request.done;
     }
@@ -432,7 +395,14 @@ async function requestPendingInputPage(
         agentId: view.agentId,
         limit: 20,
         ...(inputRunIds.length ? { inputRunIds } : {}),
-        ...(request.before === undefined ? {} : { pendingBefore: request.before }),
+        ...(request.kind === "discovery"
+          ? {
+              pendingQueueBefore: request.before,
+              ...(view.before === undefined ? {} : { pendingBefore: view.before }),
+            }
+          : request.before === undefined
+            ? {}
+            : { pendingBefore: request.before }),
       });
       if (!current() || result.sessionId !== view.sessionId) {
         return;
@@ -448,18 +418,17 @@ async function requestPendingInputPage(
         continue;
       }
       const page = reconcilePendingInputPage(state, result.pendingInputs, result.inputReceipts);
-      view.queuedInputs = reconcileQueuedInputs(
-        view.queuedInputs,
-        page,
-        result.inputReceipts,
-        inputRunIds,
-      );
-      view.queuedCount = page.queuedCount ?? view.queuedCount;
       if (request.kind !== "discovery") {
         view.page = page;
         view.before = request.before;
       }
-      observeQueuePage(view, page, request.before);
+      applyQueueSnapshot(
+        view,
+        page,
+        request.kind === "discovery",
+        result.inputReceipts,
+        inputRunIds,
+      );
       rotateInputReceipts(state, view, inputRunIds);
       if (view.queueBefore !== undefined) {
         request.kind = "discovery";

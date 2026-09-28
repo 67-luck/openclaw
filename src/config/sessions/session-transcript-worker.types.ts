@@ -20,6 +20,7 @@ import type { OpenClawRegisteredAgentDatabase } from "../../state/openclaw-agent
 import type { AgentDatabaseExecutionFileIdentity } from "../../state/openclaw-agent-execution-contract.js";
 import type { SessionLifecycleTimestamps } from "./lifecycle.types.js";
 import type { SessionTranscriptBoundedActiveContext } from "./session-accessor.sqlite-active-context.js";
+import type { listActiveSessionPendingInputs } from "./session-accessor.sqlite-active-pending-inputs.js";
 import type {
   SessionBranchSummaryReadRequest,
   SessionBranchSummaryReadResult,
@@ -289,6 +290,16 @@ type SessionPendingInputReceiptsWorkerInput = {
   env: NodeJS.ProcessEnv;
 };
 
+type SessionActivePendingInputsWorkerInput = Omit<
+  SessionPendingInputReceiptsWorkerInput,
+  "kind" | "runIds"
+> & {
+  kind: "session-active-pending-inputs";
+  inputIds: readonly string[];
+  before?: number;
+  limit: number;
+};
+
 type SessionUsageCacheWorkerInput = {
   kind: "usage-cache";
   database: { agentId: string; path: string };
@@ -464,6 +475,7 @@ export type SessionHistoryWorkerInput =
   | SessionMembershipFactsWorkerInput
   | SessionProgressCardWorkerInput
   | SessionPendingInputReceiptsWorkerInput
+  | SessionActivePendingInputsWorkerInput
   | SessionEntryListWorkerInput
   | SessionEntryReadWorkerInput
   | SessionDiagnosticTextWorkerInput
@@ -517,6 +529,10 @@ export type SessionTranscriptWorkerValues = {
   "session-members": SessionMember[];
   "session-membership-facts": SessionMembershipFacts;
   "session-progress-card": { kind: "session-progress-card"; card: ProgressCard | null };
+  "session-active-pending-inputs": {
+    kind: "session-active-pending-inputs";
+    page: ReturnType<typeof listActiveSessionPendingInputs>;
+  };
   "session-pending-input-receipts": {
     kind: "session-pending-input-receipts";
     receipts: ReturnType<typeof listSessionPendingInputReceipts>;
@@ -648,6 +664,9 @@ export type SessionHistoryWorkerDatabase = {
   readProgressCard: (
     input: Omit<SessionProgressCardWorkerInput, "kind" | "database">,
   ) => Promise<ProgressCard | null>;
+  readActivePendingInputs: (
+    input: Omit<SessionActivePendingInputsWorkerInput, "kind" | "database">,
+  ) => Promise<ReturnType<typeof listActiveSessionPendingInputs>>;
   readPendingInputReceipts: (
     input: Omit<SessionPendingInputReceiptsWorkerInput, "kind" | "database">,
   ) => Promise<ReturnType<typeof listSessionPendingInputReceipts>>;

@@ -61,6 +61,7 @@ export function renderForwardedAttribution(
           agentId: [sourceAgentPrefix, sourceName].filter(Boolean).join(" · "),
         })
       : t("chat.messages.forwardedMessage");
+    const queueHint = t("chat.messages.forwardedQueueHint");
     // The producer owns this icon and accessible label; the titler supplies only its href.
     return linkableSourceKey
       ? html`<a
@@ -69,10 +70,16 @@ export function renderForwardedAttribution(
           tabindex="0"
           data-session-key=${linkableSourceKey}
           aria-label=${label}
-          title=${label}
+          aria-description=${queueHint}
+          title=${`${label}. ${queueHint}`}
           >${icons.bot}</a
         >`
-      : html`<span class="chat-forwarded-indicator" role="img" aria-label=${label} title=${label}
+      : html`<span
+          class="chat-forwarded-indicator"
+          role="img"
+          aria-label=${label}
+          aria-description=${queueHint}
+          title=${`${label}. ${queueHint}`}
           >${icons.bot}</span
         >`;
   }

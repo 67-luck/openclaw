@@ -41,6 +41,7 @@ export const ChatHistoryParamsSchema = closedObject({
   maxBytes: Type.Optional(Type.Integer({ minimum: 1024 })),
   offset: Type.Optional(Type.Integer({ minimum: 0 })),
   pendingBefore: Type.Optional(Type.Integer({ minimum: 1 })),
+  pendingQueueBefore: Type.Optional(Type.Integer({ minimum: 1 })),
   inputRunIds: Type.Optional(
     Type.Array(Type.String({ minLength: 1, maxLength: CHAT_INPUT_RUN_ID_MAX_CHARS }), {
       minItems: 1,
@@ -65,22 +66,29 @@ export const ChatStartupParamsSchema = Type.Union([
   }),
 ]);
 
+const ChatPendingInputSchema = closedObject({
+  id: NonEmptyString,
+  runId: Type.Optional(Type.String({ minLength: 1, maxLength: CHAT_INPUT_RUN_ID_MAX_CHARS })),
+  message: Type.Unknown(),
+  acceptedAt: Type.Number(),
+  state: Type.String({ enum: ["queued", "cancelled", "interrupted"] }),
+  queued: Type.Optional(Type.Literal(true)),
+});
+
 /** Accepted input awaiting a turn, separate from canonical model history. */
 export const ChatPendingInputsPageSchema = closedObject({
-  items: Type.Array(
-    closedObject({
-      id: NonEmptyString,
-      runId: Type.Optional(Type.String({ minLength: 1, maxLength: CHAT_INPUT_RUN_ID_MAX_CHARS })),
-      message: Type.Unknown(),
-      acceptedAt: Type.Number(),
-      state: Type.String({ enum: ["queued", "cancelled", "interrupted"] }),
-      queued: Type.Optional(Type.Literal(true)),
-    }),
-    { maxItems: 20 },
-  ),
+  items: Type.Array(ChatPendingInputSchema, { maxItems: 20 }),
   total: Type.Integer({ minimum: 0 }),
   queuedCount: Type.Optional(Type.Integer({ minimum: 0 })),
   nextBefore: Type.Optional(Type.Integer({ minimum: 1 })),
+  // A complete latest retained page already contains the whole queue. Otherwise
+  // this independently paged active snapshot prevents scanning terminal history.
+  queue: Type.Optional(
+    closedObject({
+      items: Type.Array(ChatPendingInputSchema, { maxItems: 20 }),
+      nextBefore: Type.Optional(Type.Integer({ minimum: 1 })),
+    }),
+  ),
 });
 export type ChatPendingInputsPage = Static<typeof ChatPendingInputsPageSchema>;
 

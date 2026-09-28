@@ -1,3 +1,4 @@
+import type { DatabaseSync } from "node:sqlite";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { parseSqliteTableDefinition } from "../../infra/sqlite-schema-contract-assembly.js";
 import {
@@ -14,6 +15,22 @@ import {
 
 type PendingInputScope = SessionAccessScope & { agentId: string; sessionId: string };
 const receiptSchemas = new WeakMap<SqliteSchemaFacts, boolean>();
+
+export function hasReadableSessionPendingInputs(db: DatabaseSync): boolean {
+  const schema = getAdmittedSqliteSchemaFacts(db);
+  if (!schema) {
+    throw new Error("Pending input reads require admitted schema facts");
+  }
+  let present = receiptSchemas.get(schema);
+  if (present === undefined) {
+    const table = schema.tableSql.get("session_pending_inputs");
+    present =
+      table !== undefined &&
+      parseSqliteTableDefinition(table, "session_pending_inputs").columns.has("consumed_event_id");
+    receiptSchemas.set(schema, present);
+  }
+  return present;
+}
 
 /** Bounded display reconciliation; these durable correlations never authorize replay. */
 export function listSessionPendingInputReceipts(
@@ -32,21 +49,7 @@ export function listSessionPendingInputReceipts(
   }
   const resolved = resolveSqliteTranscriptScope(scope);
   const result = withOpenClawAgentDatabaseReadOnly((database) => {
-    const schema = getAdmittedSqliteSchemaFacts(database.db);
-    if (!schema) {
-      throw new Error("Pending input receipt reads require admitted schema facts");
-    }
-    let hasReceipts = receiptSchemas.get(schema);
-    if (hasReceipts === undefined) {
-      const table = schema.tableSql.get("session_pending_inputs");
-      hasReceipts =
-        table !== undefined &&
-        parseSqliteTableDefinition(table, "session_pending_inputs").columns.has(
-          "consumed_event_id",
-        );
-      receiptSchemas.set(schema, hasReceipts);
-    }
-    if (!hasReceipts) {
+    if (!hasReadableSessionPendingInputs(database.db)) {
       return [];
     }
     const rows = executeSqliteQuerySync(

@@ -89,6 +89,7 @@ export async function handleChatHistoryRequest({
     maxChars,
     maxBytes,
     pendingBefore,
+    pendingQueueBefore,
     inputRunIds,
   } = params;
   const retainedSessionId = retainedTranscript?.sessionId;
@@ -220,6 +221,7 @@ export async function handleChatHistoryRequest({
             },
             {
               before: pendingBefore,
+              queueBefore: pendingQueueBefore,
               limit: max,
               maxChars: effectiveMaxChars,
               queuedTurns: context.chatQueuedTurns,

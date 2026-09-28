@@ -315,7 +315,10 @@ it.each(["agent:main:helper", "legacy-session", undefined])(
       "compact source",
     );
     expect(indicator.getAttribute("aria-label")).toBe("Forwarded from Verification helper");
-    expect(indicator.title).toBe("Forwarded from Verification helper");
+    expect(indicator.title).toContain("Forwarded from Verification helper");
+    expect(indicator.getAttribute("aria-description")).toBe(
+      "Waiting for a turn. Human messages may take priority.",
+    );
     expect(indicator.textContent?.trim()).toBe("");
     expect(indicator.querySelector("svg")).not.toBeNull();
     if (sessionKey === "agent:main:helper") {
@@ -332,6 +335,10 @@ it.each(["agent:main:helper", "legacy-session", undefined])(
       render(template(), container);
       expect(indicator.querySelector("svg")).not.toBeNull();
       expect(indicator.getAttribute("aria-label")).toBe("Forwarded from Verification helper");
+      expect(indicator.title).toContain("Human messages may take priority");
+      expect(indicator.getAttribute("aria-description")).toContain(
+        "Human messages may take priority",
+      );
     } else {
       expect(indicator.tagName).toBe("SPAN");
       expect(indicator.hasAttribute("tabindex")).toBe(false);

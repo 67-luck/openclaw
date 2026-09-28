@@ -100,6 +100,36 @@ export function registerSessionPendingInputOwner(owner: SessionPendingInputOwner
   owners.live.set(owner.inputId, owner);
 }
 
+/** Display reads borrow current custody; they never register or resume execution. */
+export function captureActiveSessionPendingInputs(scope: {
+  databasePath: string;
+  sessionKey: string;
+  sessionId: string;
+}) {
+  const captured = new Map(
+    [...owners.live].filter(
+      ([, owner]) =>
+        owner.databasePath === scope.databasePath &&
+        owner.sessionKey === scope.sessionKey &&
+        owner.sessionId === scope.sessionId &&
+        !owner.consumed &&
+        isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration),
+    ),
+  );
+  return {
+    inputIds: [...captured.keys()],
+    isCurrent: (id: string) => {
+      const owner = captured.get(id);
+      return Boolean(
+        owner &&
+        owners.live.get(id) === owner &&
+        !owner.consumed &&
+        isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration),
+      );
+    },
+  };
+}
+
 function releaseSessionPendingInputOwner(owner: SessionPendingInputOwner): void {
   if (owners.live.get(owner.inputId) === owner) {
     owners.live.delete(owner.inputId);

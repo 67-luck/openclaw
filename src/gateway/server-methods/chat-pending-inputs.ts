@@ -5,6 +5,7 @@ import {
   listSessionPendingInputs,
   type SessionPendingInput,
 } from "../../config/sessions/session-accessor.js";
+import { readActiveSessionPendingInputsInWorker } from "../../config/sessions/session-active-pending-inputs.js";
 import { prepareForwardedMessageCronJobNameResolver } from "../chat-display-projection.history.js";
 import {
   createCurrentUserProfileMessageProjector,
@@ -55,6 +56,7 @@ export async function readChatPendingInputs(
   scope: Parameters<typeof listSessionPendingInputs>[0],
   options: {
     before?: number;
+    queueBefore?: number;
     limit: number;
     maxChars: number;
     queuedTurns?: QueuedChatTurnMap;
@@ -65,8 +67,17 @@ export async function readChatPendingInputs(
     before: options.before,
     limit: Math.min(options.limit, 20),
   });
+  const queue =
+    page.nextBefore !== undefined ||
+    options.before !== undefined ||
+    options.queueBefore !== undefined
+      ? await readActiveSessionPendingInputsInWorker(scope, {
+          before: options.queueBefore,
+          limit: 20,
+        })
+      : undefined;
   const resolveCronJobName = await prepareForwardedMessageCronJobNameResolver(
-    page.items.map((input) => input.message),
+    [...page.items, ...(queue?.items ?? [])].map((input) => input.message),
     options.cronStorePath,
   );
   let queuedCount = 0;
@@ -79,25 +90,23 @@ export async function readChatPendingInputs(
     }
   }
   const projectProfile = createCurrentUserProfileMessageProjector(resolveCurrentUserProfileDisplay);
-  const visible = page.items.flatMap((input) => {
-    const message = projectPendingInputMessage(
-      input,
-      options.maxChars,
-      projectProfile,
-      resolveCronJobName,
-    );
-    return message ? [{ input, message }] : [];
-  });
-  const messages = replaceOversizedChatHistoryMessages({
-    messages: visible.map(({ message }) => message),
-    maxSingleMessageBytes: Math.floor(
-      PENDING_INPUT_DISPLAY_MAX_BYTES / Math.max(page.items.length, 1),
-    ),
-  }).messages;
-  return {
-    ...page,
-    ...(options.queuedTurns ? { queuedCount } : {}),
-    items: visible.map(({ input: item }, index) => {
+  const project = (items: SessionPendingInput[]): ChatPendingInputsPage["items"] => {
+    const visible = items.flatMap((input) => {
+      const message = projectPendingInputMessage(
+        input,
+        options.maxChars,
+        projectProfile,
+        resolveCronJobName,
+      );
+      return message ? [{ input, message }] : [];
+    });
+    const messages = replaceOversizedChatHistoryMessages({
+      messages: visible.map(({ message }) => message),
+      maxSingleMessageBytes: Math.floor(
+        PENDING_INPUT_DISPLAY_MAX_BYTES / Math.max(items.length, 1),
+      ),
+    }).messages;
+    return visible.map(({ input: item }, index) => {
       const display: ChatPendingInputsPage["items"][number] = {
         id: item.id,
         acceptedAt: item.acceptedAt,
@@ -114,6 +123,12 @@ export async function readChatPendingInputs(
         }
       }
       return display;
-    }),
+    });
+  };
+  return {
+    ...page,
+    ...(options.queuedTurns ? { queuedCount } : {}),
+    items: project(page.items),
+    ...(queue ? { queue: { ...queue, items: project(queue.items) } } : {}),
   };
 }
