@@ -6,6 +6,7 @@ type SourceDependencies = Readonly<{
   client: object;
   context: object;
   authPolicyGeneration?: string;
+  authenticatedUserId?: string;
   sharedGenerationOwner?: object;
   sharedGeneration?: string;
 }>;
@@ -55,6 +56,7 @@ function retainSourceIdentity({ client, ...dependencies }: SourceDependencies) {
     (entry) =>
       entry.dependencies.context === dependencies.context &&
       entry.dependencies.authPolicyGeneration === dependencies.authPolicyGeneration &&
+      entry.dependencies.authenticatedUserId === dependencies.authenticatedUserId &&
       entry.dependencies.sharedGenerationOwner === dependencies.sharedGenerationOwner &&
       entry.dependencies.sharedGeneration === dependencies.sharedGeneration,
   );
@@ -173,9 +175,14 @@ export function captureGatewayDeviceRevocation(
   if (sourceAuthority?.dependencies) {
     const source = retainSourceIdentity(sourceAuthority.dependencies);
     capture.sourceIdentity = source.token;
-    const { authPolicyGeneration, sharedGenerationOwner, sharedGeneration } =
+    const { authPolicyGeneration, authenticatedUserId, sharedGenerationOwner, sharedGeneration } =
       sourceAuthority.dependencies;
-    capture.restartDependencies = { authPolicyGeneration, sharedGenerationOwner, sharedGeneration };
+    capture.restartDependencies = {
+      authPolicyGeneration,
+      authenticatedUserId,
+      sharedGenerationOwner,
+      sharedGeneration,
+    };
     capture.releaseSourceIdentity = source.release;
   }
   return { isCurrent, release: releaseHold(capture) };
@@ -270,7 +277,7 @@ export function closeGatewayDeviceRevocation(context: object): void {
 export function readGatewayDeviceRestartAuthPolicy(
   guard: (() => unknown) | undefined,
   expectedSharedGeneration?: string,
-): string | undefined {
+): { generation: string; identity?: string } | undefined {
   const dependencies = guard ? captures.get(guard)?.restartDependencies : undefined;
   if (!dependencies) {
     return undefined;
@@ -283,5 +290,7 @@ export function readGatewayDeviceRestartAuthPolicy(
   ) {
     return undefined;
   }
-  return dependencies.authPolicyGeneration;
+  return dependencies.authPolicyGeneration === undefined
+    ? undefined
+    : { generation: dependencies.authPolicyGeneration, identity: dependencies.authenticatedUserId };
 }

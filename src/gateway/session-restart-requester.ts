@@ -76,7 +76,10 @@ export async function captureRestartRecoveryRequester(params: {
     if (current.profile.profileId !== source.profileId || current.profile.assignedRole !== role) {
       throw new Error("Restart continuation requester changed during admission.");
     }
-    if (source.restartAuthPolicy !== resolveGatewayAuthPolicyGeneration(params.getConfig())) {
+    if (
+      source.restartAuthPolicy !==
+      resolveGatewayAuthPolicyGeneration(params.getConfig(), source.restartAuthIdentity)
+    ) {
       throw new Error("Restart continuation authentication policy changed during admission.");
     }
     const policy = resolveOperatorRolePolicyForAssignment(
@@ -101,6 +104,9 @@ export async function captureRestartRecoveryRequester(params: {
       role,
       rolePolicy: JSON.stringify(sourceRolePolicy(policy) ?? null),
       authPolicy: source.restartAuthPolicy,
+      ...(source.restartAuthIdentity === undefined
+        ? {}
+        : { authIdentity: source.restartAuthIdentity }),
       modelPolicyMembership,
     });
     params.assertCurrent();

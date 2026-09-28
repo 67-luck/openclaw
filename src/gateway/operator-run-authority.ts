@@ -9,6 +9,7 @@ import {
   prepareOperatorModelPolicy,
   readOperatorModelPolicyMembership,
 } from "../agents/operator-model-policy.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getPublishedPairedOperatorIdentity } from "../infra/device-pairing-publication.js";
 import { getPairedDevice } from "../infra/device-pairing.js";
 import { getProcessGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
@@ -96,6 +97,77 @@ function retainOperatorSource(
       }
     },
   };
+}
+
+/** Bridge a prepared linked principal while retaining its exact channel admission capability. */
+export function captureChannelOperatorRunAuthority(input: {
+  profileId: string;
+  assignedRole: string | null;
+  scopes: readonly string[];
+  gatewayAccessGrant: AdmittedRunOperatorAuthority["gatewayAccessGrant"];
+  getRuntimeConfig: () => OpenClawConfig;
+  assertCurrent: () => void;
+  signal?: AbortSignal;
+}): AdmittedRunOperatorAuthority {
+  const params = { ...input };
+  params.assertCurrent();
+  let modelPolicyConfig = params.getRuntimeConfig();
+  let modelPolicyMetadata = getProcessGatewayPluginMetadataSnapshot();
+  const prepareModelPolicy = (cfg: OpenClawConfig, metadata: typeof modelPolicyMetadata) =>
+    prepareOperatorModelPolicy({
+      cfg,
+      policy: resolveOperatorRolePolicyForAssignment(params.profileId, params.assignedRole, cfg)
+        ?.modelPolicy,
+      manifestPlugins: metadata ?? [],
+    });
+  const originalModelPolicy = prepareModelPolicy(modelPolicyConfig, modelPolicyMetadata);
+  let modelPolicy = originalModelPolicy;
+  return createAdmittedRunOperatorAuthority({
+    profileId: params.profileId,
+    scopes: params.scopes,
+    gatewayAccessGrant: params.gatewayAccessGrant,
+    assertCurrent: params.assertCurrent,
+    readCurrentRoleAssignment: () => {
+      params.assertCurrent();
+      return params.assignedRole;
+    },
+    get modelPolicy() {
+      const cfg = params.getRuntimeConfig();
+      const metadata = getProcessGatewayPluginMetadataSnapshot();
+      if (cfg !== modelPolicyConfig || metadata !== modelPolicyMetadata) {
+        const current = prepareModelPolicy(cfg, metadata);
+        modelPolicy =
+          originalModelPolicy &&
+          current &&
+          readOperatorModelPolicyMembership(originalModelPolicy) !==
+            readOperatorModelPolicyMembership(current)
+            ? Object.freeze({
+                models: Object.freeze(current.models.filter(originalModelPolicy.allows)),
+                allows: (ref: Parameters<typeof originalModelPolicy.allows>[0]) =>
+                  originalModelPolicy.allows(ref) && current.allows(ref),
+              })
+            : (current ?? originalModelPolicy);
+        modelPolicyConfig = cfg;
+        modelPolicyMetadata = metadata;
+      }
+      return modelPolicy;
+    },
+    onModelPolicyChanged: (listener) => {
+      const releaseProfile = onUserProfilesChanged(listener);
+      const releasePolicy = onOperatorRolePolicyChanged((change) => {
+        if (change.kind === "config" || change.profileId === params.profileId) {
+          listener();
+        }
+      });
+      // Recheck through the channel assertion so cancellation keeps its revocation error.
+      params.signal?.addEventListener("abort", listener, { once: true });
+      return () => {
+        releaseProfile();
+        releasePolicy();
+        params.signal?.removeEventListener("abort", listener);
+      };
+    },
+  });
 }
 
 /** Transfers the original operator restriction into accepted work, independently of its request. */
@@ -422,7 +494,13 @@ export async function captureGatewayOperatorRunAuthority(input: {
       ? readGatewayDeviceRestartAuthPolicy(params.hasCurrentClientAuthority, proxyGeneration)
       : client.usesSharedGatewayAuth
         ? undefined
-        : resolveGatewayAuthPolicyGeneration(modelPolicyConfig);
+        : {
+            generation: resolveGatewayAuthPolicyGeneration(
+              modelPolicyConfig,
+              client.authenticatedUserId,
+            ),
+            identity: client.authenticatedUserId,
+          };
     let restartDevice: AdmittedRunOperatorAuthority["restartDevice"];
     if (restartAuthPolicy !== undefined && !authenticatedOwner && !params.invocationAuthority) {
       const deviceId = client.connect.device?.id;
@@ -460,7 +538,8 @@ export async function captureGatewayOperatorRunAuthority(input: {
               ? readGatewayOperatorRestartAccessGrant(sourceAuthority)
               : undefined,
         restartDevice,
-        restartAuthPolicy,
+        restartAuthPolicy: restartAuthPolicy?.generation,
+        restartAuthIdentity: restartAuthPolicy?.identity,
         restartBrowserOrigin: client.browserOrigin ?? null,
         source: source.token,
         assertCurrent,

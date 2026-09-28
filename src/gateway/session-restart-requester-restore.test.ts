@@ -31,6 +31,8 @@ import {
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { prepareAgentRunUserTurn } from "./agent-turn/agent-run-user-turn.js";
 import type { AgentTurnContext } from "./agent-turn/types.js";
+import { resolveGatewayAuthPolicyGeneration } from "./auth-policy.js";
+import { captureGatewayDeviceRevocation } from "./device-revocation.js";
 import { resolveGatewayOperatorAccessAuthority } from "./operator-access-policy.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import type { GatewayRecoveryRuntime } from "./server-instance-runtime.types.js";
@@ -45,11 +47,12 @@ import {
 async function withRequester(
   run: (fixture: Awaited<ReturnType<typeof prepareFixture>>) => Promise<void>,
   pairedDevice = false,
+  authenticatedIdentity = false,
 ) {
   await withOpenClawTestState(
     { label: "restart-requester", scenario: "minimal" },
     async (state) => {
-      const fixture = await prepareFixture(state, pairedDevice);
+      const fixture = await prepareFixture(state, pairedDevice, authenticatedIdentity);
       try {
         await run(fixture);
       } finally {
@@ -63,11 +66,22 @@ async function withRequester(
 async function prepareFixture(
   state: Parameters<Parameters<typeof withOpenClawTestState>[1]>[0],
   pairedDevice = false,
+  authenticatedIdentity = false,
 ) {
   const profile = await ensureCanonicalUserProfileForEmail("restart-requester@example.test");
   let cfg: OpenClawConfig = {
     agents: { ownership: "explicit", entries: { main: { workspace: state.workspaceDir } } },
     gateway: {
+      ...(authenticatedIdentity
+        ? {
+            auth: {
+              identityScopes: {
+                "restart-requester@example.test": ["operator.write"],
+                "other@example.test": ["operator.admin"],
+              },
+            },
+          }
+        : {}),
       controlUi: { allowedOrigins: ["https://gateway.example.test"] },
       roles: {
         default: "writer",
@@ -161,10 +175,27 @@ async function prepareFixture(
       nonce: "fixture-nonce",
     };
   }
+  const ingress = authenticatedIdentity
+    ? captureGatewayDeviceRevocation({}, {}, () => true, undefined, {
+        isCurrent: () => true,
+        subscribe: () => () => {},
+        dependencies: {
+          client: originalClient,
+          context: {},
+          authenticatedUserId: "restart-requester@example.test",
+          authPolicyGeneration: resolveGatewayAuthPolicyGeneration(
+            cfg,
+            "restart-requester@example.test",
+          ),
+        },
+      })
+    : undefined;
   const source = await captureGatewayOperatorRunAuthority({
     client: originalClient,
     context: { getRuntimeConfig: () => cfg },
+    hasCurrentClientAuthority: ingress?.isCurrent,
   });
+  ingress?.release();
   if (!source) {
     throw new Error("missing authenticated operator fixture");
   }
@@ -281,6 +312,37 @@ async function prepareFixture(
 }
 
 describe("restart requester restoration", () => {
+  it.for(["other identity", "original identity", "auth mode"] as const)(
+    "preserves identity-scoped ingress custody across restart when changing %s",
+    async (change) => {
+      await withRequester(
+        async (f) => {
+          expect(f.snapshot.authIdentity).toBe("restart-requester@example.test");
+          const restored = await f.restore();
+          expect(restored.authority.restartAuthIdentity).toBe(f.snapshot.authIdentity);
+          const next = structuredClone(f.cfg);
+          if (change === "auth mode") {
+            next.gateway!.auth!.mode = "token";
+          } else {
+            delete next.gateway!.auth!.identityScopes![
+              change === "other identity" ? "other@example.test" : "restart-requester@example.test"
+            ];
+          }
+          f.setConfig(next);
+          if (change === "other identity") {
+            expect(() => restored.authority.assertCurrent()).not.toThrow();
+            const cold = await f.restore();
+            expect(() => cold.authority.assertCurrent()).not.toThrow();
+          } else {
+            expect(() => restored.authority.assertCurrent()).toThrow();
+            await expect(f.restore()).rejects.toBeInstanceOf(RestartRequesterDeniedError);
+          }
+        },
+        false,
+        true,
+      );
+    },
+  );
   it.for(["revoke", "rotate", "remove"] as const)(
     "rejects the original device after %s before cold restoration and final use",
     async (action) => {

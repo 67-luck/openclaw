@@ -48,6 +48,8 @@ export type AdmittedRunOperatorAuthority = Readonly<{
   restartDevice?: Readonly<{ deviceId: string; identity: string }> | null;
   /** Original classified ingress policy, never inferred from the recovery receiver. */
   restartAuthPolicy?: string;
+  /** Server-verified login used by the original ingress policy generation. */
+  restartAuthIdentity?: string;
   restartBrowserOrigin?: Readonly<GatewayWsBrowserOrigin> | null;
   assertCurrent: () => void;
   signal?: AbortSignal;
@@ -71,15 +73,17 @@ export function createAdmittedRunOperatorAuthority(
   const check = source.assertCurrent;
   const signal = source.signal;
   let revoked = false;
+  let revocationReason: unknown;
   const assertCurrent = () => {
     if (revoked) {
-      throw new Error("operator execution authority is no longer active");
+      throw revocationReason;
     }
     try {
       signal?.throwIfAborted();
       check();
     } catch (error) {
       revoked = true;
+      revocationReason = error;
       throw error;
     }
   };
@@ -94,6 +98,7 @@ export function createAdmittedRunOperatorAuthority(
       ? Object.freeze({ ...source.restartAccessGrant })
       : source.restartAccessGrant,
     restartAuthPolicy: source.restartAuthPolicy,
+    restartAuthIdentity: source.restartAuthIdentity,
     restartBrowserOrigin: source.restartBrowserOrigin
       ? Object.freeze({ ...source.restartBrowserOrigin })
       : source.restartBrowserOrigin,
