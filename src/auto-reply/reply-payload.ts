@@ -6,6 +6,7 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 /** Reply payload contracts and metadata helpers shared by dispatch and channel renderers. */
 import type { ProgressContinuationCapability } from "../channels/progress-continuation.js";
+import type { FailoverReason } from "../agents/failover/signal.js";
 import type { HarnessCompletionRecovery } from "../config/sessions/restart-recovery-types.js";
 import type { ReplyToMode } from "../config/types.base.js";
 import { hasReplyPayloadContent } from "../interactive/payload.js";
@@ -328,6 +329,8 @@ export type ReplyPayloadMetadata = {
   beforeAgentRunBlocked?: boolean;
   /** Payload preparation generated this provider error; it is not an authored answer. */
   terminalProviderError?: true;
+  /** Classified by the failed run owner, never inferred from rendered reply text. */
+  agentRunFailureReason?: FailoverReason;
   /** The warning owner observed this tool failure; presentation text is not evidence. */
   toolErrorWarning?: { toolName: string };
   /** Warning synthesized from an observed tool error after the run produced assistant output. */
