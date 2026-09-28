@@ -466,16 +466,6 @@ describe("createChannelNativeApprovalRuntime", () => {
 
       if (testCase.originChannel) {
         expect(hoisted.sendMessage).not.toHaveBeenCalled();
-        expect(hoisted.approvalClientRequest).toHaveBeenCalledWith(
-          "plugin.approval.reportNativeDelivery",
-          expect.objectContaining({
-            id: testCase.id,
-            channel: "slack",
-            channelLabel: "Slack",
-            deliveredAny: true,
-            deliveredOnlyToApproverDms: true,
-          }),
-        );
       } else if (testCase.approvalKind === "plugin") {
         expect(hoisted.callGatewayLeastPrivilege).not.toHaveBeenCalled();
         expect(hoisted.sendMessage).toHaveBeenCalledWith(
@@ -511,92 +501,6 @@ describe("createChannelNativeApprovalRuntime", () => {
       }
     },
   );
-
-  it("records delivered cards before a remote plugin report finishes", async () => {
-    let markReportStarted!: () => void;
-    let finishReport!: () => void;
-    const reportStarted = new Promise<void>((resolve) => {
-      markReportStarted = resolve;
-    });
-    const reportFinished = new Promise<void>((resolve) => {
-      finishReport = resolve;
-    });
-    const finalizeResolved = vi.fn().mockResolvedValue(undefined);
-    const runtime = createChannelNativeApprovalRuntime({
-      label: "test/remote-native-report",
-      clientDisplayName: "Test",
-      channel: "slack",
-      accountId: "review",
-      eventKinds: ["plugin"],
-      cfg: {} as never,
-      nativeAdapter: {
-        describeDeliveryCapabilities: () => ({
-          enabled: true,
-          preferredSurface: "approver-dm",
-          supportsOriginSurface: false,
-          supportsApproverDmSurface: true,
-        }),
-        resolveApproverDmTargets: async () => [{ to: "user:reviewer" }],
-      },
-      isConfigured: () => true,
-      shouldHandle: () => true,
-      buildPendingContent: async () => "pending plugin approval",
-      prepareTarget: ({ plannedTarget }) => ({
-        dedupeKey: plannedTarget.target.to,
-        target: { chatId: plannedTarget.target.to },
-      }),
-      deliverTarget: async () => ({ chatId: "user:reviewer", messageId: "card-1" }),
-      finalizeResolved,
-    });
-    hoisted.approvalClientRequest.mockImplementation(async (method) => {
-      if (method === "plugin.approval.list") {
-        return [];
-      }
-      if (method === "plugin.approval.reportNativeDelivery") {
-        markReportStarted();
-        await reportFinished;
-      }
-      return { ok: true };
-    });
-    await runtime.start();
-    const request = {
-      approvalKind: "plugin" as const,
-      id: "plugin:remote-report-in-flight",
-      request: {
-        title: "Plugin approval",
-        description: "Review a tool call",
-        approvalSource: { channel: "telegram", senderId: "requester" },
-        turnSourceChannel: "telegram",
-        turnSourceTo: "chat:requester",
-        turnSourceAccountId: "default",
-      },
-      createdAtMs: Date.now(),
-      expiresAtMs: Date.now() + 60_000,
-    };
-    const requested = runtime.handleRequested(request);
-    try {
-      await reportStarted;
-      const resolved = runtime.handleResolved({
-        id: request.id,
-        decision: "allow-once",
-        ts: Date.now(),
-      });
-      const settledBeforeNextTurn = await Promise.race([
-        Promise.all([requested, resolved]).then(() => true),
-        new Promise<boolean>((resolve) => {
-          setImmediate(() => resolve(false));
-        }),
-      ]);
-      expect(settledBeforeNextTurn).toBe(true);
-      expect(finalizeResolved).toHaveBeenCalledWith(
-        expect.objectContaining({ entries: [{ chatId: "user:reviewer", messageId: "card-1" }] }),
-      );
-    } finally {
-      finishReport();
-      await requested;
-      hoisted.approvalClientRequest.mockImplementation(async () => ({ ok: true }));
-    }
-  });
 
   it("runs expiration through the shared runtime factory", async () => {
     vi.useFakeTimers();

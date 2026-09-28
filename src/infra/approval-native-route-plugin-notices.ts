@@ -2,17 +2,13 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ChannelApprovalNativePlannedTarget } from "./approval-native-delivery.js";
-import {
-  formatRemotePluginApprovalNotice,
-  normalizeApprovalRouteChannel,
-} from "./approval-native-route-notice.js";
+import { normalizeApprovalRouteChannel } from "./approval-native-route-notice.js";
 import type {
   ApprovalNativeRouteCoordinatorState,
   ApprovalRouteRuntimeRecord,
   PluginOriginBinding,
   PluginTerminalNotice,
   PluginTerminalStatus,
-  RemoteNativeApprovalDeliveryReport,
 } from "./approval-native-route-types.js";
 import { buildChannelApprovalNativeTargetKey } from "./approval-native-target-key.js";
 import type { ApprovalRequestInput as ApprovalRequest } from "./approval-types.js";
@@ -98,6 +94,7 @@ export function capturePluginOrigin(
         threadId: source.turnSourceThreadId,
       },
       releaseApprovalBinding: releaseApprovalBinding ?? undefined,
+      localRoute: "pending",
       cleanupTimeout,
     });
   } catch (error) {
@@ -221,33 +218,21 @@ export async function maybeSendPluginTerminalNotice(
   }
 }
 
-export async function reportRemoteNativeDelivery(
+export async function finishPluginOriginRouting(
   state: ApprovalNativeRouteCoordinatorState,
-  report: RemoteNativeApprovalDeliveryReport,
-  assertReporterCurrent: () => void,
+  approvalId: string,
+  localRouteSelected: boolean,
 ): Promise<void> {
-  const binding = state.pluginOrigins.get(report.id);
-  if (!binding || !isPluginOriginCurrent(state, binding)) {
-    throw new Error("the originating approval account is no longer active");
-  }
-  assertReporterCurrent();
-  if (binding.reported === "delivered" || (binding.reported === "failed" && !report.deliveredAny)) {
+  const binding = state.pluginOrigins.get(approvalId);
+  if (!binding || binding.localRoute !== "pending") {
     return;
   }
-  if (binding.originDelivered) {
-    return;
-  }
-  if (
-    normalizeApprovalRouteChannel(report.channel) === binding.target.channel &&
-    normalizeOptionalString(report.accountId) &&
-    normalizeOptionalString(report.accountId) !== binding.target.accountId
-  ) {
+  binding.localRoute = localRouteSelected ? "selected" : "none";
+  if (localRouteSelected || binding.originDelivered) {
     return;
   }
   const runtime = binding.runtime;
   const current = (cfg?: OpenClawConfig) => isPluginOriginCurrent(state, binding, cfg);
-  const reportOutcome = report.deliveredAny ? "delivered" : "failed";
-  binding.reported = reportOutcome;
   if (binding.terminalStatus === "allowed" || binding.terminalStatus === "cancelled") {
     return;
   }
@@ -259,54 +244,32 @@ export async function reportRemoteNativeDelivery(
     terminalNotice.status = binding.terminalStatus;
   }
   if (!binding.terminalStatus && binding.request.expiresAtMs > Date.now()) {
-    const reporterCurrent = () => {
-      try {
-        assertReporterCurrent();
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    const previousNotice = terminalNotice.initialNotice;
-    terminalNotice.initialNotice = Promise.resolve(previousNotice)
-      .catch(() => {})
-      .then(
-        async () =>
-          await runtime.requestGateway(
-            "send",
-            {
-              channel: binding.target.channel,
-              to: binding.target.to,
-              accountId: binding.target.accountId ?? undefined,
-              threadId: binding.target.threadId ?? undefined,
-              message: formatRemotePluginApprovalNotice({
-                approvalId: report.id,
-                channelLabel: report.channelLabel || report.channel,
-                deliveredAny: report.deliveredAny,
-                deliveredOnlyToApproverDms: report.deliveredOnlyToApproverDms,
-              }),
-              idempotencyKey: `approval-remote-route-notice:${report.id}:${reportOutcome}`,
-            },
-            {
-              approvalRequest: binding.request,
-              liveOnlyWhenCurrent: (cfg) =>
-                reporterCurrent() &&
-                current(cfg) &&
-                !binding.terminalStatus &&
-                binding.request.expiresAtMs > Date.now(),
-            },
-          ),
-      );
+    terminalNotice.initialNotice = runtime.requestGateway(
+      "send",
+      {
+        channel: binding.target.channel,
+        to: binding.target.to,
+        accountId: binding.target.accountId ?? undefined,
+        threadId: binding.target.threadId ?? undefined,
+        message: `Approval ${approvalId} required. An approver can review it in the Control UI or terminal UI.`,
+        idempotencyKey: `approval-route-notice:${approvalId}`,
+      },
+      {
+        approvalRequest: binding.request,
+        liveOnlyWhenCurrent: (cfg) =>
+          current(cfg) && !binding.terminalStatus && binding.request.expiresAtMs > Date.now(),
+      },
+    );
     try {
       await terminalNotice.initialNotice;
     } catch (error) {
       // A refused or uncertain pending send must not block a later denial notice.
       terminalNotice.initialNotice = undefined;
-      await maybeSendPluginTerminalNotice(state, report.id);
+      await maybeSendPluginTerminalNotice(state, approvalId);
       throw error;
     }
   }
-  await maybeSendPluginTerminalNotice(state, report.id);
+  await maybeSendPluginTerminalNotice(state, approvalId);
 }
 
 export function markPluginOriginDelivered(

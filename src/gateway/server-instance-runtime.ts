@@ -337,7 +337,7 @@ export function createGatewayInstanceRuntime(
               request: projectApprovalRequestForExternal(pluginRequest.request),
             }
           : (request as GatewayApprovalRequest); // SAFETY: non-plugin requests retain their Gateway shape.
-        return publish(
+        const delivered = publish(
           kind,
           (subscriber) => {
             // The excerpt is only for the matching, Gateway-hosted Slack runtime.
@@ -357,6 +357,14 @@ export function createGatewayInstanceRuntime(
             // SAFETY: the external projection preserves the approval request identity.
             subscriber.shouldHandle(publicRequest as GatewayApprovalRequest),
         );
+        if (pluginRequest) {
+          void routeCoordinator
+            .finishPluginOriginRouting(pluginRequest.id, delivered > 0)
+            .catch((error: unknown) => {
+              options.logError?.(`plugin approval origin notice failed: ${String(error)}`);
+            });
+        }
+        return delivered;
       },
       publishResolved: (kind, resolved) => {
         if (

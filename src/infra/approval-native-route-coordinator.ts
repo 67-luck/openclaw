@@ -18,11 +18,11 @@ import {
   capturePluginOrigin,
   clearPluginOrigin,
   clearPluginTerminalNotice,
+  finishPluginOriginRouting,
   getPluginTerminalNotice,
   markPluginOriginDelivered,
   maybeSendPluginTerminalNotice,
   publishPluginTerminalForState,
-  reportRemoteNativeDelivery,
 } from "./approval-native-route-plugin-notices.js";
 import type {
   ApprovalNativeRouteCoordinatorState,
@@ -31,7 +31,6 @@ import type {
   ApprovalRouteSelectionVerdict,
   PendingApprovalRouteNotice,
   PluginTerminalStatus,
-  RemoteNativeApprovalDeliveryReport,
 } from "./approval-native-route-types.js";
 import type {
   ApprovalRequestChannelRouteClass,
@@ -42,7 +41,6 @@ import type { PluginApprovalRequest } from "./plugin-approvals.js";
 export type {
   ApprovalNativeRouteCoordinatorState,
   ApprovalRouteRuntimeRecord,
-  RemoteNativeApprovalDeliveryReport,
 } from "./approval-native-route-types.js";
 
 function createApprovalNativeRouteCoordinatorState(): ApprovalNativeRouteCoordinatorState {
@@ -259,6 +257,16 @@ async function maybeFinalizeApprovalRouteNotice(
     if (options?.force) {
       clearPendingApprovalRouteNotice(state, approvalId);
     }
+    return;
+  }
+  const originRoute = state.pluginOrigins.get(approvalId)?.localRoute;
+  // Local report callbacks can run during publication, before the Gateway
+  // knows whether a local reviewer accepted the request.
+  if (originRoute === "pending") {
+    return;
+  }
+  if (originRoute === "none") {
+    clearPendingApprovalRouteNotice(state, approvalId);
     return;
   }
   if (!options?.force) {
@@ -574,10 +582,7 @@ export type ApprovalNativeRouteCoordinator = {
     request: PluginApprovalRequest,
     retainApprovalBinding?: () => (() => void) | null,
   ) => void;
-  reportRemoteNativeDelivery: (
-    report: RemoteNativeApprovalDeliveryReport,
-    assertReporterCurrent: () => void,
-  ) => Promise<void>;
+  finishPluginOriginRouting: (approvalId: string, localRouteSelected: boolean) => Promise<void>;
   publishPluginTerminal: (params: {
     approvalId: string;
     status: PluginTerminalStatus;
@@ -609,8 +614,15 @@ export function createApprovalNativeRouteCoordinator(): ApprovalNativeRouteCoord
     hasActiveRuntime: (params) => hasActiveApprovalNativeRouteRuntimeForState(state, params),
     capturePluginOrigin: (request, retainApprovalBinding) =>
       capturePluginOrigin(state, request, retainApprovalBinding),
-    reportRemoteNativeDelivery: (report, assertReporterCurrent) =>
-      reportRemoteNativeDelivery(state, report, assertReporterCurrent),
+    finishPluginOriginRouting: async (approvalId, localRouteSelected) => {
+      const pending = finishPluginOriginRouting(state, approvalId, localRouteSelected);
+      if (state.pluginOrigins.get(approvalId)?.localRoute === "none") {
+        clearPendingApprovalRouteNotice(state, approvalId);
+      } else {
+        await maybeFinalizeApprovalRouteNotice(state, approvalId);
+      }
+      await pending;
+    },
     publishPluginTerminal: async (params) => await publishPluginTerminalForState(state, params),
     close: () => {
       // Closing retires this Gateway-owned coordinator permanently. Delayed channel

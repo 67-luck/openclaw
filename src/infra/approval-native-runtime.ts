@@ -283,8 +283,8 @@ export function createChannelNativeApprovalRuntime<
           }
           return;
         }
-        // A separate Gateway owns cross-channel origin delivery after it receives
-        // the remote native-delivery report. This process has no source credential.
+        // The source Gateway owns the requester notice. This process has no
+        // credential for the originating account.
         return;
       }
       const { callGatewayLeastPrivilege } = await import("../gateway/call.js");
@@ -445,34 +445,6 @@ export function createChannelNativeApprovalRuntime<
           deliveryPlan,
           deliveredTargets,
         });
-        if (!gatewayRuntime && approvalKind === "plugin") {
-          // SAFETY: the explicit kind selects the host-projected plugin source.
-          const source = (request as PluginApprovalRequest).request;
-          if (
-            source.approvalSource?.channel === source.turnSourceChannel &&
-            !(remoteOriginIsLocal(request) && adapter.isOriginCurrent) &&
-            adapter.channel
-          ) {
-            // The card's entries must be recorded before a remote report can wait on
-            // the Gateway; resolution may arrive while that RPC is still pending.
-            void Promise.resolve()
-              .then(() =>
-                runtime.request("plugin.approval.reportNativeDelivery", {
-                  id: request.id,
-                  channel: adapter.channel,
-                  channelLabel: adapter.channelLabel,
-                  accountId: adapter.accountId ?? undefined,
-                  deliveredAny: deliveredTargets.length > 0,
-                  deliveredOnlyToApproverDms:
-                    deliveredTargets.length > 0 &&
-                    deliveredTargets.every((target) => target.surface === "approver-dm"),
-                }),
-              )
-              .catch((error: unknown) => {
-                log.warn(`remote plugin approval origin notice failed: ${String(error)}`);
-              });
-          }
-        }
       }
     },
   });

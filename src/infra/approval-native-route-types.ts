@@ -57,22 +57,13 @@ export type PluginTerminalNotice = {
   cleanupTimeout: NodeJS.Timeout;
 };
 
-export type RemoteNativeApprovalDeliveryReport = {
-  id: string;
-  channel: string;
-  channelLabel?: string;
-  accountId?: string | null;
-  deliveredAny: boolean;
-  deliveredOnlyToApproverDms: boolean;
-};
-
 export type PluginOriginBinding = {
   request: PluginApprovalRequest;
   runtime: ApprovalRouteRuntimeRecord;
   target: RouteNoticeTarget;
   releaseApprovalBinding?: () => void;
   terminalStatus?: PluginTerminalStatus;
-  reported?: "failed" | "delivered";
+  localRoute: "pending" | "selected" | "none";
   originDelivered?: boolean;
   cleanupTimeout: NodeJS.Timeout;
 };

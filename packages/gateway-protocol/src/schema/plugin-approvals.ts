@@ -92,20 +92,7 @@ export const PluginApprovalResolveParamsSchema = closedObject({
   reviewer: Type.Optional(ApprovalChannelReviewerSchema),
 });
 
-/** A remote reviewer reports its bounded delivery outcome without exposing reviewer targets. */
-export const PluginApprovalReportNativeDeliveryParamsSchema = closedObject({
-  id: Type.String({ minLength: 1, maxLength: 128 }),
-  channel: Type.String({ minLength: 1, maxLength: 64 }),
-  channelLabel: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
-  accountId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
-  deliveredAny: Type.Boolean(),
-  deliveredOnlyToApproverDms: Type.Boolean(),
-});
-
 // Owner-local wire types derived directly from local schema consts so the
 // public plugin-sdk declaration graph never pulls in the ProtocolSchemas registry.
 export type PluginApprovalRequestParams = Static<typeof PluginApprovalRequestParamsSchema>;
 export type PluginApprovalResolveParams = Static<typeof PluginApprovalResolveParamsSchema>;
-export type PluginApprovalReportNativeDeliveryParams = Static<
-  typeof PluginApprovalReportNativeDeliveryParamsSchema
->;

@@ -36,28 +36,6 @@ export type GatewayRequestFn = (
 
 export type ApprovalRouteSkipReason = "ambiguous-owner" | "ineligible" | "owner-unavailable";
 
-/** Describes one remote channel's delivery without making claims about other approval clients. */
-export function formatRemotePluginApprovalNotice(params: {
-  approvalId: string;
-  channelLabel: string;
-  deliveredAny: boolean;
-  deliveredOnlyToApproverDms: boolean;
-}): string {
-  // Reporter labels are display-only input. Slack and other transports can
-  // interpret angle markup as mentions, so keep only plain label characters.
-  const channelLabel =
-    params.channelLabel
-      .normalize("NFKC")
-      .replace(/[^\p{L}\p{N}\p{M} ._-]+/gu, " ")
-      .trim()
-      .replace(/\s+/g, " ") || "remote";
-  if (!params.deliveredAny) {
-    return `Approval ${params.approvalId} required. The ${channelLabel} reviewer card was not delivered. Open the Control UI or terminal UI to review it.`;
-  }
-  const destination = params.deliveredOnlyToApproverDms ? `${channelLabel} DMs` : channelLabel;
-  return `Approval ${params.approvalId} required. An approval request was sent to ${destination}.`;
-}
-
 export type ApprovalRouteReport = {
   runtimeId: string;
   request: ApprovalRequest;

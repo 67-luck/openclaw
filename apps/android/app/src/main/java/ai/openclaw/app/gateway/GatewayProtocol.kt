@@ -977,7 +977,6 @@ enum class GatewayMethod(
   PresenceQuery("presence.query"),
   UsersMerge("users.merge"),
   GatewayStopRequest("gateway.stop.request"),
-  PluginApprovalReportNativeDelivery("plugin.approval.reportNativeDelivery"),
 }
 
 enum class GatewayEvent(

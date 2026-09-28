@@ -10163,40 +10163,6 @@ public struct PluginApprovalPresentation: Codable, Sendable {
     }
 }
 
-public struct PluginApprovalReportNativeDeliveryParams: Codable, Sendable {
-    public let id: String
-    public let channel: String
-    public let channellabel: String?
-    public let accountid: String?
-    public let deliveredany: Bool
-    public let deliveredonlytoapproverdms: Bool
-
-    public init(
-        id: String,
-        channel: String,
-        channellabel: String? = nil,
-        accountid: String? = nil,
-        deliveredany: Bool,
-        deliveredonlytoapproverdms: Bool)
-    {
-        self.id = id
-        self.channel = channel
-        self.channellabel = channellabel
-        self.accountid = accountid
-        self.deliveredany = deliveredany
-        self.deliveredonlytoapproverdms = deliveredonlytoapproverdms
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case channel
-        case channellabel = "channelLabel"
-        case accountid = "accountId"
-        case deliveredany = "deliveredAny"
-        case deliveredonlytoapproverdms = "deliveredOnlyToApproverDms"
-    }
-}
-
 public struct PluginApprovalRequestParams: Codable, Sendable {
     public let pluginid: String?
     public let title: String
