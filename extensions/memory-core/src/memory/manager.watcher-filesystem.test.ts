@@ -18,7 +18,7 @@ import {
 } from "../test-helpers.js";
 import { MemoryIndexManager } from "./manager.js";
 
-// Real observation and indexing; only the application-owned settling clock is advanced.
+// Drive real guarded scans explicitly so native hints cannot race the frozen settling clock.
 vi.mock("openclaw/plugin-sdk/file-access-runtime", async (original) => ({
   ...(await original<typeof import("openclaw/plugin-sdk/file-access-runtime")>()),
 }));
@@ -39,6 +39,8 @@ it("indexes real edits, deletion and root replacement, then joins every subscrip
     contexts.push(turn.getStore());
     const subscription = originalWatch(authority, {
       ...options,
+      mode: "poll",
+      pollIntervalMs: 2_147_483_647,
       onInvalidate(invalidation) {
         options.onInvalidate(invalidation);
         if (invalidation.reason === "reconcile" && !invalidation.changes) {
