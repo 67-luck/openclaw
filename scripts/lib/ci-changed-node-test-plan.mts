@@ -687,7 +687,7 @@ function boundChangedNodeRows(
   const fileTimings = { ...readRepoE2eFileTimings(), ...readToolingFileTimings(profile) };
   const groupTimings = readCompactGroupTimings(profile);
   const selected = new Set(selectedTargets);
-  return shards.flatMap((shard) => {
+  const bounded = shards.flatMap((shard) => {
     if (!shard.groups) {
       const files = shard.includePatterns;
       const testSeconds = (row: ChangedNodeTestShard) =>
@@ -843,6 +843,7 @@ function boundChangedNodeRows(
       }),
     );
   });
+  return packBoundedChangedNodeRows(bounded);
 }
 
 /**
@@ -911,6 +912,7 @@ export function createChangedNodeTestShards(
   options: CwdOptions &
     ChangedTargetValidation & {
       runnerBackend?: string;
+      compactNodeJobCap?: number;
       releaseFastLane?: boolean;
       includeReleaseOnlyToolingShards?: boolean;
       includeReleaseOnlyRuntimeTests?: boolean;
@@ -1156,7 +1158,11 @@ export function createChangedNodeTestShards(
     ...boundaryShards,
   ];
   // Covered source targets keep build-artifacts ownership even with no Node rows.
-  return packBoundedChangedNodeRows(
-    boundChangedNodeRows(shards, selectedTargets, options.runnerBackend, cwd),
-  );
+  const bounded = boundChangedNodeRows(shards, selectedTargets, options.runnerBackend, cwd);
+  // Time-based splitting must not make an admitted owner plan exceed the matrix
+  // budget. Retain its compact rows, including plugin work, without widening scope.
+  return options.compactNodeJobCap !== undefined &&
+    bounded.filter((shard) => !shard.requiresDist).length > options.compactNodeJobCap
+    ? shards
+    : bounded;
 }

@@ -53,7 +53,7 @@ function row(index: number, seconds: number, groups = 1): CompactNodeTestShard {
   };
 }
 
-function plan(rows: CompactNodeTestShard[], runnerBackend: string) {
+function plan(rows: CompactNodeTestShard[], runnerBackend: string, compactNodeJobCap?: number) {
   const targets = rows.flatMap((entry) => entry.groups.flatMap((group) => group.includePatterns!));
   vi.spyOn(testProjects, "buildVitestRunPlans").mockImplementation((files) => [
     {
@@ -86,6 +86,7 @@ function plan(rows: CompactNodeTestShard[], runnerBackend: string) {
   vi.spyOn(timings, "readToolingFileTimings").mockReturnValue({});
   const result = createChangedNodeTestShards(["src/infra/packing-owner.ts"], {
     runnerBackend,
+    compactNodeJobCap,
     selectedTestTargets: targets,
     dedicatedBuildArtifacts: true,
   });
@@ -104,29 +105,32 @@ afterEach(() => {
 });
 
 describe("changed Node row packing", () => {
-  it.each(["github", "hybrid"])("reclaims split-row tails within the PR cap on %s", (backend) => {
-    const rows = Array.from({ length: 127 }, (_, index) => row(index, 150));
-    // Bounding two 225-second rows yields four rows (150 + 75 apiece).
-    // Their compatible tails must share a job: 131 rows become exactly 130.
-    rows.push(row(127, 225, 3), row(128, 225, 3));
-    const before = descriptors(rows.flatMap((entry) => entry.groups));
-    const jobs = plan(rows, backend);
-    expect(jobs).toHaveLength(130);
-    expect(descriptors(jobs.flatMap((entry) => entry.groups!))).toEqual(before);
-    expect(new Set(jobs.map((entry) => entry.checkName)).size).toBe(jobs.length);
-    expect(jobs.every((entry) => entry.predictedTestSeconds! <= 150)).toBe(true);
-    expect(jobs.every((entry) => entry.groups!.length <= 10)).toBe(true);
-    for (const job of jobs) {
-      expect(job).toMatchObject({
-        runner,
-        planConcurrency: 1,
-        timeoutMinutes: 60,
-        env: rows[0]!.env,
-      });
-      expect(job.requiresDist).toBe(false);
-      expect(job.pretestBuildMode).toBeUndefined();
-    }
-  });
+  it.each(["github", "hybrid"])(
+    "packs split-row tails before the PR cap fallback on %s",
+    (backend) => {
+      const rows = Array.from({ length: 127 }, (_, index) => row(index, 150));
+      // Bounding two 225-second rows yields four rows (150 + 75 apiece).
+      // Their compatible tails must share a job: 131 rows become exactly 130.
+      rows.push(row(127, 225, 3), row(128, 225, 3));
+      const before = descriptors(rows.flatMap((entry) => entry.groups));
+      const jobs = plan(rows, backend, 130);
+      expect(jobs).toHaveLength(130);
+      expect(descriptors(jobs.flatMap((entry) => entry.groups!))).toEqual(before);
+      expect(new Set(jobs.map((entry) => entry.checkName)).size).toBe(jobs.length);
+      expect(jobs.every((entry) => entry.predictedTestSeconds! <= 150)).toBe(true);
+      expect(jobs.every((entry) => entry.groups!.length <= 10)).toBe(true);
+      for (const job of jobs) {
+        expect(job).toMatchObject({
+          runner,
+          planConcurrency: 1,
+          timeoutMinutes: 60,
+          env: rows[0]!.env,
+        });
+        expect(job.requiresDist).toBe(false);
+        expect(job.pretestBuildMode).toBeUndefined();
+      }
+    },
+  );
 
   it.each([75, 76])("never buys capacity by exceeding 150 seconds, tail %s", (tail) => {
     const rows = [
