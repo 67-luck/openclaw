@@ -42,7 +42,7 @@ import {
   prepareModelCatalogPublication,
   retainPreparedModelCatalogPublication,
 } from "./prepared-model-runtime.full-catalog.js";
-import { gatewayCatalogAcquisitionBarrier } from "./prepared-model-runtime.lifecycle.js";
+import { gatewayCatalogAcquisition } from "./prepared-model-runtime.lifecycle.js";
 import { retainPreparedPluginGeneration } from "./prepared-model-runtime.plugin-lifetime.js";
 import {
   createCatalogAttemptReporter,
@@ -525,10 +525,13 @@ export function createFullModelCatalogAccess(
       return;
     }
     // First reads discover changed providers, preserving any inventory retained across reloads.
-    if (!catalogAcquisitionStarted && params.inventoryOwner.provenance === "configured") {
-      void acquireCatalog({ changedOnly: true }, true, gatewayCatalogAcquisitionBarrier).catch(
-        () => undefined,
-      );
+    const gateway = gatewayCatalogAcquisition;
+    if (
+      !catalogAcquisitionStarted &&
+      gateway &&
+      params.inventoryOwner.provenance === "configured"
+    ) {
+      void acquireCatalog({ changedOnly: true }, true, gateway.barrier).catch(() => undefined);
     }
     if (!published.inventory) {
       return;

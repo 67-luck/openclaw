@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { gatewayCatalogAcquisitionBarrier } from "../agents/prepared-model-runtime.lifecycle.js";
+import { gatewayCatalogAcquisition } from "../agents/prepared-model-runtime.lifecycle.js";
 import type { GatewaySchedulerClock } from "../infra/gateway-scheduler.js";
 import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -100,11 +100,9 @@ describe("Gateway post-ready startup work", () => {
           sidecarStartup: "defer",
         });
         await realStartup;
-        expect(gatewayCatalogAcquisitionBarrier).toBeDefined();
-        catalogOutcome = gatewayCatalogAcquisitionBarrier!.then(
-          catalogResumed,
-          (error: unknown) => error,
-        );
+        const acquisition = gatewayCatalogAcquisition!;
+        expect(acquisition?.barrier).toBeDefined();
+        catalogOutcome = acquisition.barrier!.then(catalogResumed, (error: unknown) => error);
         // Let both production grace periods elapse while published startup is pending.
         beforeReadyWake = clock.advanceBy(600);
         expect(startMaintenance).not.toHaveBeenCalled();
@@ -117,13 +115,14 @@ describe("Gateway post-ready startup work", () => {
           expect(await catalogOutcome).toEqual(
             new Error("Gateway closed before catalog acquisition"),
           );
-          expect(gatewayCatalogAcquisitionBarrier).toBeUndefined();
+          expect(acquisition.barrier).toBeUndefined();
           expect(catalogResumed).not.toHaveBeenCalled();
           expect(resumed).toHaveBeenCalledExactlyOnceWith(true);
           startup.resolve();
           await server.startupSettled;
           expect(clock.armedAtMs).toBeNull();
           await closeOutcome;
+          expect(gatewayCatalogAcquisition).toBeUndefined();
           await beforeReadyWake;
           expect(startMaintenance).not.toHaveBeenCalled();
         } else {
@@ -135,7 +134,8 @@ describe("Gateway post-ready startup work", () => {
           await clock.advanceBy(1);
           await postReadyWork;
           await catalogOutcome;
-          expect(gatewayCatalogAcquisitionBarrier).toBeUndefined();
+          expect(acquisition.barrier).toBeUndefined();
+          expect(gatewayCatalogAcquisition).toBe(acquisition);
           expect(catalogResumed).toHaveBeenCalledOnce();
           await beforeReadyWake;
           expect(resumed).toHaveBeenCalledExactlyOnceWith(false);
@@ -146,6 +146,7 @@ describe("Gateway post-ready startup work", () => {
         try {
           await closeOutcome;
           await server?.close();
+          expect(gatewayCatalogAcquisition).toBeUndefined();
           await postReadyWork;
           await catalogOutcome;
           await beforeReadyWake;

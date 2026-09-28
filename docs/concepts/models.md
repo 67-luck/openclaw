@@ -116,6 +116,11 @@ provider discovery. Model-inventory requests return those rows immediately and
 can acquire missing or renew expired provider inventory in the background. A selected native model
 can load its own metadata while that renewal is still running.
 
+First-read account-model discovery runs only in a Gateway process, after its
+post-ready startup work settles. Local CLI turns use prepared model facts without
+starting that background discovery. Explicit catalog refresh and selected native
+model metadata loading remain available.
+
 In chat apps, `/models` and model picker buttons return the newest completed list
 without waiting for discovery. Pending providers show `checking models…`.
 Open the menu again to see newly discovered models; completing discovery does not

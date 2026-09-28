@@ -21,17 +21,18 @@ export function retirePreparedModelRuntimeGeneration(
   retirement?.abort();
 }
 
-export let gatewayCatalogAcquisitionBarrier: Promise<void> | undefined;
+/** Only Gateway startup opts its process into first-read catalog discovery. */
+export let gatewayCatalogAcquisition: { barrier?: Promise<void> } | undefined;
 
-export function setGatewayCatalogAcquisitionBarrier(barrier?: Promise<void>): void {
-  gatewayCatalogAcquisitionBarrier = barrier;
+export function setGatewayCatalogAcquisition(state?: { barrier?: Promise<void> }): void {
+  gatewayCatalogAcquisition = state;
   const clear = () => {
-    if (gatewayCatalogAcquisitionBarrier === barrier) {
-      gatewayCatalogAcquisitionBarrier = undefined;
+    if (state) {
+      state.barrier = undefined;
     }
   };
   // Release startup scope on either outcome; waiting readers still observe rejection.
-  void barrier?.then(clear, clear);
+  void state?.barrier?.then(clear, clear);
 }
 
 type ModelRuntimeClose = (error: Error) => Promise<void>;
@@ -76,7 +77,7 @@ export function closePreparedModelRuntimeSnapshots(): Promise<void> {
   if (lifetimes.closing) {
     return lifetimes.closing;
   }
-  setGatewayCatalogAcquisitionBarrier();
+  setGatewayCatalogAcquisition();
   const closed = createDeferredCore();
   lifetimes.closing = closed.promise;
   lifetimes.epoch += 1;

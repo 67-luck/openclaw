@@ -1,4 +1,4 @@
-import { setGatewayCatalogAcquisitionBarrier } from "../agents/prepared-model-runtime.lifecycle.js";
+import { setGatewayCatalogAcquisition } from "../agents/prepared-model-runtime.lifecycle.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import type { GatewayStartupTrace } from "./server-startup-trace.js";
@@ -77,7 +77,7 @@ export async function publishConfiguredModelRuntimeSnapshots(params: {
   if (params.isCurrent?.() === false) {
     return;
   }
-  setGatewayCatalogAcquisitionBarrier(params.waitForPostReadyWork?.());
+  setGatewayCatalogAcquisition({ barrier: params.waitForPostReadyWork?.() });
   await refreshPreparedModelRuntimeSnapshots(params.getConfig ?? params.cfg, {
     gatewayLifecycle: true,
     startup: true,

@@ -17,7 +17,7 @@ import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { setPreparedModelFullCatalogAuth } from "./prepared-model-runtime-auth.js";
 import {
   closePreparedModelRuntimeSnapshots,
-  setGatewayCatalogAcquisitionBarrier,
+  setGatewayCatalogAcquisition,
 } from "./prepared-model-runtime.lifecycle.js";
 import type { ModelRegistry } from "./sessions/model-registry.js";
 
@@ -313,16 +313,17 @@ beforeEach(async () => {
 
 describe("prepared model runtime Gateway catalog mode", () => {
   it.each([
-    { fails: false, nativeFirst: false, deferred: false, retires: false },
-    { fails: true, nativeFirst: false, deferred: false, retires: false },
-    { fails: false, nativeFirst: true, deferred: false, retires: false },
-    { fails: true, nativeFirst: true, deferred: false, retires: false },
-    { fails: false, nativeFirst: false, deferred: true, retires: false },
-    { fails: true, nativeFirst: false, deferred: true, retires: false },
-    { fails: false, nativeFirst: false, deferred: true, retires: true },
+    { gateway: false, fails: false, nativeFirst: false, deferred: false, retires: false },
+    { gateway: true, fails: false, nativeFirst: false, deferred: false, retires: false },
+    { gateway: true, fails: true, nativeFirst: false, deferred: false, retires: false },
+    { gateway: true, fails: false, nativeFirst: true, deferred: false, retires: false },
+    { gateway: true, fails: true, nativeFirst: true, deferred: false, retires: false },
+    { gateway: true, fails: false, nativeFirst: false, deferred: true, retires: false },
+    { gateway: true, fails: true, nativeFirst: false, deferred: true, retires: false },
+    { gateway: true, fails: false, nativeFirst: false, deferred: true, retires: true },
   ])(
-    "starts account discovery once on the first catalog read (failure=$fails, nativeFirst=$nativeFirst, deferred=$deferred, retires=$retires)",
-    async ({ fails, nativeFirst, deferred, retires }) => {
+    "starts first-read discovery only with Gateway opt-in (gateway=$gateway, failure=$fails, nativeFirst=$nativeFirst, deferred=$deferred, retires=$retires)",
+    async ({ gateway, fails, nativeFirst, deferred, retires }) => {
       const native = { provider: "openai", id: "native", name: "Native", nativeRuntime: "fixture" };
       if (nativeFirst) {
         mocks.loadAgentRuntimePluginRegistryHandle.mockImplementation(() => {
@@ -349,7 +350,9 @@ describe("prepared model runtime Gateway catalog mode", () => {
         workspaceDir: "/tmp/prepared-static-workspace",
       };
       const postReady = createDeferred();
-      setGatewayCatalogAcquisitionBarrier(deferred ? postReady.promise : undefined);
+      setGatewayCatalogAcquisition(
+        gateway ? { barrier: deferred ? postReady.promise : undefined } : undefined,
+      );
       await refreshPreparedModelRuntimeSnapshots(input.config, {
         gatewayLifecycle: true,
         catalogMode: "static",
@@ -368,6 +371,13 @@ describe("prepared model runtime Gateway catalog mode", () => {
       }
       expect(mocks.runPreparedModelCatalogWorker).not.toHaveBeenCalled();
       const published = owner.readFullModelCatalog?.() ?? owner.modelCatalog;
+      if (!gateway) {
+        expect(refreshExpiredPreparedModelCatalog(input)).toBe(published);
+        expect(published.pendingProviders).toBeUndefined();
+        await closePreparedModelRuntimeSnapshots();
+        expect(mocks.runPreparedModelCatalogWorker).not.toHaveBeenCalled();
+        return;
+      }
       const started = createDeferred();
       const reply = createDeferred<ModelCatalogSnapshot>();
       mocks.runPreparedModelCatalogWorker.mockImplementationOnce(async () => {

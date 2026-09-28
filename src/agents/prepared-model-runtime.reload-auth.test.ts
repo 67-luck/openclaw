@@ -13,6 +13,7 @@ import {
   registerPreparedModelRuntimePublicationListener,
   refreshPreparedModelRuntimeSnapshots,
 } from "./prepared-model-runtime.js";
+import { setGatewayCatalogAcquisition } from "./prepared-model-runtime.lifecycle.js";
 import { PreparedReplyDispatchPublicationOwner } from "./prepared-reply-dispatch-runtime.js";
 
 const fixture = usePreparedModelRuntimeHarness({ label: "prepared-model-runtime" });
@@ -20,6 +21,7 @@ const { mocks } = fixture;
 
 describe("prepared model runtime reload auth adoption", () => {
   it("discovers only the changed provider on the first read after a partial inventory reload", async () => {
+    setGatewayCatalogAcquisition({});
     mocks.configuredAgentIds = ["default"];
     mocks.authStorage.getAll.mockReturnValue({
       custom: { type: "api_key", key: "test-key" },
