@@ -774,9 +774,9 @@ A workflow-shape test cannot prove GitHub's runtime evaluation: confirm
 
 ### Continuous release readiness
 
-The 04:00 UTC nightly seals a direct-root manifest and per-child receipts for the exact main SHA.
-For a same-day cut, start the release train on `main` (version and changelog) before 04:00 UTC,
-then cut `release/YYYY.M.PATCH` at the nightly SHA so the Code SHA equals the validated SHA.
+The scheduled main validation (every 3 hours at :07 UTC) seals a direct-root manifest and per-child receipts for the exact main SHA.
+For a same-day cut, land the release train on `main` (version and changelog) before the next scheduled run,
+then cut `release/YYYY.M.PATCH` at that run's SHA so the Code SHA equals the validated SHA.
 Per-child adoption matches exact target SHA, role, and dispatch inputs minus `dispatch_id`:
 `productPerformance` is adopted because its inputs are context-free and match.
 A stable candidate dispatched with `--target-ref release/YYYY.M.PATCH` resolves
