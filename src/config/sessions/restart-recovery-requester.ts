@@ -11,7 +11,7 @@ const requesterSchema = z.strictObject({
   sourceRunId: identifier,
   profileId: identifier,
   scopes: z.array(identifier).min(1).max(128),
-  grant: z.strictObject({ pluginId: identifier, grantId: z.uuid() }).nullable(),
+  grant: z.strictObject({ pluginId: identifier, grantId: identifier }).nullable(),
   aliasBindingIds: z.array(z.uuid()).max(128),
   role: identifier.nullable(),
   rolePolicy: z.string().max(32 * 1024),

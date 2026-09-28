@@ -2302,6 +2302,16 @@ jobs:
                     plan.shard_name ?? plan.shardName,
                   );
                 }),
+                requires_sandbox_image: (shard.groups ?? [shard]).some((plan) => {
+                  const patterns = plan.targets ?? plan.includePatterns;
+                  if (patterns) {
+                    return patterns.some((pattern) => [
+                      "test/e2e/qa-lab/runtime/agent-sandboxed-exec-behavior.e2e.test.ts",
+                      "test/e2e/qa-lab/runtime/openclaw-sandbox-workspace-isolation.e2e.test.ts",
+                    ].some((test) => matchesGlob(test, pattern)));
+                  }
+                  return plan.configs?.includes("test/vitest/vitest.e2e.config.ts") ?? false;
+                }),
               };
             });
           const nodeTestNonDistShards = nodeTestShards.filter((shard) => !shard.requires_dist);
@@ -4539,6 +4549,14 @@ jobs:
           fi
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ripgrep
+
+      - name: Prepare Docker sandbox image
+        if: matrix.requires_sandbox_image == true && runner.os == 'Linux'
+        shell: bash
+        run: |
+          if ! docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1; then
+            scripts/sandbox-setup.sh
+          fi
 
       - name: Configure Node test resources
         env:

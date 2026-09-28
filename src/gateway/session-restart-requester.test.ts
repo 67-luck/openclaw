@@ -11,7 +11,7 @@ const { prepareProfile } = vi.hoisted(() => ({ prepareProfile: vi.fn() }));
 vi.mock("../state/user-profile-list.js", () => ({ prepareUserProfileIdentity: prepareProfile }));
 
 const SESSION = "agent:main:dashboard:original";
-const GRANT = "d951404a-55ca-4ec3-aadb-89d3f69c8037";
+const GRANT = "grant-42";
 const BINDING = "60a8365e-152e-4a36-9523-ea3cbfdd262b";
 
 function fixture() {

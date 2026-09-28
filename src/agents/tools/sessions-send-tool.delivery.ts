@@ -4,6 +4,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createAgentRuntimeIdentity } from "../../gateway/agent-runtime-identity-token.js";
 import type { GatewaySessionStoreTarget } from "../../gateway/session-utils-store.types.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
 import { isCronRunSessionKey, parseAgentSessionKey } from "../../sessions/session-key-utils.js";
@@ -12,6 +13,7 @@ import {
   createUserTurnTranscriptRecorder,
 } from "../../sessions/user-turn-transcript.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
+import { resolveSessionAgentId } from "../agent-scope.js";
 import { resolveActiveEmbeddedRunSessionId } from "../embedded-agent-runner/active-run-projections.js";
 import {
   type EmbeddedAgentQueueMessageOptions,
@@ -22,8 +24,10 @@ import {
 import { jsonResult } from "./common.js";
 import { getGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import {
-  withAgentToolGatewayRuntimeIdentity,
+  callInProcessGatewayToolWithCreation,
+  hasInProcessGatewayToolContext,
   type AgentToolGatewayRequestCaller,
+  withAgentToolGatewayRuntimeIdentity,
 } from "./in-process-gateway.js";
 
 function isRunScopedAgentSessionKey(sessionKey: string): boolean {
@@ -246,5 +250,44 @@ export async function startSessionsSendAgentRun(params: {
         sessionKey: params.sessionKey,
       }),
     };
+  }
+}
+
+export async function createConfiguredAgentMainSession(params: {
+  cfg: OpenClawConfig;
+  callGateway: AgentToolGatewayRequestCaller;
+  agentId?: string;
+  sessionKey: string;
+  requesterSessionKey?: string;
+  useTrustedInProcessCreation: boolean;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const targetAgentId =
+    params.agentId ?? resolveSessionAgentId({ config: params.cfg, sessionKey: params.sessionKey });
+  try {
+    const createParams = {
+      key: params.sessionKey,
+      agentId: targetAgentId,
+    };
+    if (
+      params.useTrustedInProcessCreation &&
+      params.requesterSessionKey &&
+      hasInProcessGatewayToolContext()
+    ) {
+      // sessions.create serializes keyed creation and adopts an existing row,
+      // so concurrent first sends can safely race after the missing resolution.
+      await callInProcessGatewayToolWithCreation("sessions.create", createParams, {
+        via: "internal",
+        actor: { type: "agent", id: params.requesterSessionKey },
+      });
+    } else {
+      await params.callGateway({
+        method: "sessions.create",
+        params: createParams,
+        timeoutMs: 10_000,
+      });
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: formatErrorMessage(err) };
   }
 }
