@@ -341,15 +341,22 @@ export async function main(
     shardArgs.coreStripe,
     { isolateLargeTargets: true },
   );
-  // Discovery owns cancellation across successive children before the shard owner
-  // starts. Explicit file requests retain their intentional gitignore bypass.
-  if (shardArgs.coreStripe && !shardArgs.files && hasBoundedOxlintArgs(shardArgs.oxlintArgs)) {
+  // Discovery owns cancellation before shards start. Explicit files retain their
+  // gitignore bypass; explicit JSON retains one native report per selection.
+  if (
+    shardArgs.coreStripe &&
+    !shardArgs.files &&
+    !shardArgs.oxlintArgs.includes("--format=json") &&
+    hasBoundedOxlintArgs(shardArgs.oxlintArgs)
+  ) {
     const status = await runCancelableCommand(async (signal) => {
       coreShards = await splitCoreOxlintSelections(coreShards, { deadline, env, signal });
       signal.throwIfAborted();
       return 0;
     });
-    if (status !== 0) return status;
+    if (status !== 0) {
+      return status;
+    }
   }
   const stripedShards = selectExtensionOxlintStripe(coreShards, shardArgs.extensionStripe);
   const selectedShards = shardArgs.files
@@ -602,7 +609,9 @@ export async function splitCoreOxlintSelections(
 ) {
   // Explicit root-file arguments can exceed Windows command-line limits.
   // These measured selections are qualified only on Linux workers.
-  if (platform !== "linux") return shards;
+  if (platform !== "linux") {
+    return shards;
+  }
   const selections: OxlintShard[] = [];
   for (const shard of shards) {
     signal?.throwIfAborted();
@@ -634,10 +643,13 @@ async function splitCoreTargetSelection(
   if (
     !["src/agents", "src/gateway", "ui"].includes(target) ||
     readDirectoryEntries(options.readDir, path.join(options.cwd, target)).length === 0
-  )
+  ) {
     return [[target]];
+  }
   const remainingMs = deadline === undefined ? 30_000 : Math.ceil(deadline - performance.now());
-  if (remainingMs <= 0) throw new Error("core stripe deadline expired before file discovery");
+  if (remainingMs <= 0) {
+    throw new Error("core stripe deadline expired before file discovery");
+  }
   const controller = new AbortController();
   const chunks: Buffer[] = [];
   let bytes = 0;
@@ -657,7 +669,9 @@ async function splitCoreTargetSelection(
       signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
       onReady(child) {
         child.stdout!.on("data", (chunk: Buffer) => {
-          if (overflow) return;
+          if (overflow) {
+            return;
+          }
           bytes += chunk.length;
           if (bytes > 4 * 1024 * 1024) {
             overflow = true;
@@ -670,7 +684,9 @@ async function splitCoreTargetSelection(
       },
     });
     signal?.throwIfAborted();
-    if (status !== 0) throw new Error(`core file discovery failed (exit ${status})`);
+    if (status !== 0) {
+      throw new Error(`core file discovery failed (exit ${status})`);
+    }
   } catch (error) {
     // Report overflow only after joined cancellation; uncertain cleanup stays fatal.
     if (overflow && isCommandCancellation(error)) {
@@ -686,13 +702,17 @@ async function splitCoreTargetSelection(
         const candidate = root + "/" + entry.name;
         return selected.has(candidate) || files.some((file) => file.startsWith(candidate + "/"));
       })
-      .sort((left, right) => left.name.localeCompare(right.name));
+      .toSorted((left, right) => left.name.localeCompare(right.name));
   let parts: string[][];
   if (target === "ui") {
     const root = entries("ui");
-    if (!root.some((entry) => entry.name === "src" && entry.isDirectory())) return [[target]];
+    if (!root.some((entry) => entry.name === "src" && entry.isDirectory())) {
+      return [[target]];
+    }
     const source = entries("ui/src");
-    if (!source.some((entry) => entry.name === "pages" && entry.isDirectory())) return [[target]];
+    if (!source.some((entry) => entry.name === "pages" && entry.isDirectory())) {
+      return [[target]];
+    }
     parts = [
       ["ui/src/pages"],
       [
@@ -838,7 +858,9 @@ async function runShards({
           completed++;
         },
       });
-      if (status !== 0) failed = true;
+      if (status !== 0) {
+        failed = true;
+      }
       return status;
     },
     { concurrency, stopOnError: stopOnFailure },

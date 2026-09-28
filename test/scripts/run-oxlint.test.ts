@@ -946,7 +946,7 @@ describe("run-oxlint", () => {
         }
       }
       const parts = stripes.flat().filter((shard) => shard.canonicalTargets);
-      expect(parts.map((shard) => shard.canonicalTargets).sort()).toEqual([
+      expect(parts.map((shard) => shard.canonicalTargets).toSorted()).toEqual([
         ["src/agents"],
         ["src/agents"],
         ["src/gateway"],
@@ -1227,16 +1227,23 @@ describe("run-oxlint", () => {
       try {
         await waitForFile(join(cwd, "ready"), 3_000);
         pids = JSON.parse(readFileSync(join(cwd, "ready"), "utf8")) as number[];
-        if (mode === "signal") process.kill(child.pid!, "SIGTERM");
+        if (mode === "signal") {
+          process.kill(child.pid!, "SIGTERM");
+        }
         const result = await completion;
         expect(result, stderr).toEqual({ code: mode === "signal" ? 143 : 1, signal: null });
-        if (mode === "overflow")
+        if (mode === "overflow") {
           expect(stderr).toContain("core file discovery exceeded 4 MiB output");
-        if (mode === "failure") expect(stderr).toContain("core file discovery failed (exit 7)");
+        }
+        if (mode === "failure") {
+          expect(stderr).toContain("core file discovery failed (exit 7)");
+        }
         expect(stdout).not.toContain("[ci-static:oxlint:");
         expect(stderr).not.toContain("[oxlint] shard concurrency");
         expect(readFileSync(join(cwd, "discoveries"), "utf8").trim().split("\n")).toHaveLength(1);
-        for (const pid of pids) await waitForDead(pid, 1_000);
+        for (const pid of pids) {
+          await waitForDead(pid, 1_000);
+        }
       } finally {
         // Keep the cleanup owner alive even when readiness or the assertion times out.
         // A rejected timeout promise does not prove that the wrapper has closed.
@@ -1267,7 +1274,7 @@ describe("run-oxlint", () => {
           try {
             process.kill(-pid, "SIGKILL");
           } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+            expect((error as NodeJS.ErrnoException).code).toBe("ESRCH");
           }
           expect(
             await waitForManagedProcessGroupExit({ pid }, 1_000, { errorPolicy: "alive-on-eperm" }),
@@ -1278,10 +1285,54 @@ describe("run-oxlint", () => {
           ...discoveries,
           ...(descendantPid ? [descendantPid] : []),
         ])) {
-          if (isProcessAlive(pid)) process.kill(pid, "SIGKILL");
+          if (isProcessAlive(pid)) {
+            process.kill(pid, "SIGKILL");
+          }
           await waitForDead(pid, 1_000);
         }
       }
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "preserves a single JSON report for a split-eligible core target",
+    () => {
+      const cwd = createTempDir("openclaw-oxlint-core-json-");
+      for (const directory of ["src/agents/nested", "scripts"]) {
+        mkdirSync(join(cwd, directory), { recursive: true });
+      }
+      symlinkSync(join(process.cwd(), "node_modules"), join(cwd, "node_modules"), "junction");
+      writeFileSync(join(cwd, "src/agents/root.ts"), "export {};\n");
+      writeFileSync(join(cwd, "src/agents/nested/child.ts"), "export {};\n");
+      writeModule(join(cwd, "scripts/run-oxlint.mts"), [
+        "console.log(JSON.stringify({ diagnostics: [], args: process.argv.slice(2) }));",
+      ]);
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `import { main } from ${JSON.stringify(RUN_OXLINT_SHARDS_URL)}; process.exitCode = await main(['--only=core:src:agents','--split-core','--core-stripe=1/1','--threads=1','--format=json']);`,
+        ],
+        {
+          cwd,
+          encoding: "utf8",
+          timeout: 15_000,
+          env: { ...process.env, OPENCLAW_LOCAL_CHECK: "0" },
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        diagnostics: [],
+        args: [
+          "--tsconfig",
+          "config/tsconfig/oxlint.core.json",
+          "src/agents",
+          "--threads=1",
+          "--format=json",
+        ],
+      });
     },
   );
 
@@ -1289,8 +1340,9 @@ describe("run-oxlint", () => {
     "joins core parts serially, sharing their deadline and stopping on exit %s",
     (exitCode) => {
       const cwd = createTempDir("openclaw-oxlint-core-parts-execution-");
-      for (const directory of ["src/agents/nested", "scripts"])
+      for (const directory of ["src/agents/nested", "scripts"]) {
         mkdirSync(join(cwd, directory), { recursive: true });
+      }
       symlinkSync(join(process.cwd(), "node_modules"), join(cwd, "node_modules"), "junction");
       writeFileSync(join(cwd, "src/agents/root.ts"), "export {};\n");
       writeFileSync(join(cwd, "src/agents/nested/child.ts"), "export {};\n");
