@@ -105,7 +105,7 @@ describe("plugin approval requester outcome", () => {
     {
       channel: "telegram",
       label: "Telegram",
-      to: "chat:123",
+      to: "-100123",
       accountId: "default",
       threadId: undefined,
       status: "denied",
@@ -134,17 +134,18 @@ describe("plugin approval requester outcome", () => {
         turnSourceThreadId: route.threadId,
       },
     };
+    const reviewerTarget = approverDm(route.channel === "telegram" ? "456" : "user:reviewer");
     reporter.start();
     reporter.selectRequest({ approvalKind: "plugin", request });
     await reporter.reportDelivery({
       approvalKind: "plugin",
       request,
       deliveryPlan: {
-        targets: [approverDm("user:reviewer")],
+        targets: [reviewerTarget],
         originTarget: { to: route.to, threadId: route.threadId },
         notifyOriginWhenDmOnly: true,
       },
-      deliveredTargets: [approverDm("user:reviewer")],
+      deliveredTargets: [reviewerTarget],
     });
     expect(requestGateway.mock.calls[0]?.[2]?.liveOnlyWhenCurrent()).toBe(true);
     // The channel's own card expiry/settlement must not retire the Gateway outcome route.
