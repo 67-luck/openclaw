@@ -28,6 +28,8 @@ export type TranscriptCallbacks = {
   onReaderScroll?: (towardEnd?: boolean) => void;
   /** Restored intent is explicit; a layout clamp is not fresh input toward the end. */
   onPositionRestored?: (position: ChatSessionScrollPosition) => void;
+  /** The page scroll queue owns send/latest until it issues the native command. */
+  hasQueuedEndScroll?: () => boolean;
   /** The pane owns reader intent; geometry-only follow must honor that policy. */
   canFollowEnd?: () => boolean;
 };

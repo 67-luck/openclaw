@@ -5,17 +5,20 @@ import {
   type ChatSessionScrollPosition,
 } from "../scroll.ts";
 import { maxTranscriptScrollOffset } from "./chat-transcript-geometry.ts";
+import type { createTranscriptOffsetState } from "./chat-transcript-offset-observer.ts";
 import { activeTranscriptMessageId } from "./chat-transcript-position.ts";
 import { captureTranscriptMessageAnchor } from "./chat-transcript-prepend-anchor.ts";
 import {
   CHAT_TRANSCRIPT_SCROLL_RESTORE_STABLE_FRAMES,
   CHAT_TRANSCRIPT_ZERO_MAX_SETTLE_FRAMES,
-  type ChatTranscriptPendingScrollOffset,
   type TranscriptCallbacks,
 } from "./chat-transcript-session.ts";
 
 type TranscriptScrollRestoreHost = {
-  readonly offsetState: { pendingScrollOffset: ChatTranscriptPendingScrollOffset | null };
+  readonly offsetState: Pick<
+    ReturnType<typeof createTranscriptOffsetState>,
+    "pendingScrollOffset" | "scrollCommand"
+  >;
   getScrollElement(): HTMLDivElement | null;
   isContentReady(): boolean;
   getRowCount(): number;
@@ -88,8 +91,21 @@ export class TranscriptScrollRestoration {
     );
   }
 
+  private get hasManualEndDestination(): boolean {
+    const command = this.owner.offsetState.scrollCommand;
+    return (
+      this.callbacks.hasQueuedEndScroll?.() === true ||
+      (command?.target === "end" && command.source === "manual")
+    );
+  }
+
   private capture(departing: boolean): ChatSessionScrollPosition | undefined {
     const element = this.owner.getScrollElement();
+    // Explicit intent replaces an older restore even before layout is measurable.
+    // Capture it before cancellation retires the queued or native command.
+    if (departing && this.hasManualEndDestination) {
+      return { scrollTop: Math.max(0, element?.scrollTop ?? 0), anchorToEnd: true };
+    }
     if (!element?.clientHeight) {
       return undefined;
     }
@@ -113,8 +129,8 @@ export class TranscriptScrollRestoration {
   save(departing = false): void {
     if (
       !this.isPresented ||
-      this.owner.offsetState.pendingScrollOffset ||
-      this.owner.isMaintenanceScroll()
+      (!(departing && this.hasManualEndDestination) &&
+        (this.owner.offsetState.pendingScrollOffset || this.owner.isMaintenanceScroll()))
     ) {
       return;
     }
@@ -127,7 +143,11 @@ export class TranscriptScrollRestoration {
   /** Called before Lit removes viewport-affecting presentation chrome. */
   prepareUpdate(): void {
     const presented = this.isPresented;
-    if (this.presented && !presented && !this.owner.offsetState.pendingScrollOffset) {
+    if (
+      this.presented &&
+      !presented &&
+      (!this.owner.offsetState.pendingScrollOffset || this.hasManualEndDestination)
+    ) {
       const position = this.capture(true);
       if (position) {
         this.onPositionSaved?.(position);
@@ -173,7 +193,7 @@ export class TranscriptScrollRestoration {
 
 function applyPendingScrollOffset(owner: TranscriptScrollRestoreHost): void {
   const pending = owner.offsetState.pendingScrollOffset;
-  if (!pending || !owner.isConnected()) {
+  if (!pending || !owner.isConnected() || (pending.anchorToEnd && !owner.isContentReady())) {
     return;
   }
   if (owner.isContentReady() && owner.getRowCount() === 0) {

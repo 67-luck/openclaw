@@ -10,6 +10,11 @@ import {
   installTranscriptDomMocks,
   resetTranscriptTestDom,
 } from "./components/chat-transcript.test-support.ts";
+import {
+  canAutoFollowChat,
+  getChatSessionScrollPosition,
+  scheduleCommittedChatScroll,
+} from "./scroll.ts";
 
 beforeEach(() => {
   installTranscriptDomMocks();
@@ -33,19 +38,25 @@ beforeEach(() => {
 });
 afterEach(resetTranscriptTestDom);
 
-async function mountSession(paneId: string, sessionKey: string, viewportHeight = 600) {
+async function mountSession(
+  paneId: string,
+  sessionKey: string,
+  viewportHeight = 600,
+  loading = false,
+) {
   const flushFrames = stubAnimationFrames();
   const { pane, state } = createRefreshChatPane();
   pane.paneId = paneId;
   pane.presentationId = JSON.stringify([paneId, sessionKey]);
   state.sessionKey = sessionKey;
+  state.chatLoading = loading;
   state.chatMessages = Array.from({ length: 12 }, (_, index) => ({
     role: index % 2 ? "assistant" : "user",
     content: `Message ${index}`,
     __openclaw: { id: `${sessionKey}:${index}` },
   }));
   pane.render();
-  const props = expectDefined(pane.chatProps, "pane transcript props");
+  let props = expectDefined(pane.chatProps, "pane transcript props");
   const container = document.body.appendChild(document.createElement("div"));
   props.transcript.hostConnected();
   render(renderChatThread(props, props.transcript), container);
@@ -58,6 +69,8 @@ async function mountSession(paneId: string, sessionKey: string, viewportHeight =
   state.chatScrollElement = () => props.transcript.scrollElement;
   state.chatIsProgrammaticScroll = () => props.transcript.isProgrammaticScroll;
   state.chatIsMaintenanceScroll = () => props.transcript.isMaintenanceScroll;
+  state.chatIsManualScroll = () => props.transcript.isManualScroll;
+  state.chatScrollToEnd = (options) => props.transcript.scrollToEnd(options);
   state.chatCancelScroll = () => props.transcript.cancelScroll();
   thread.scrollTo = (options?: ScrollToOptions | number) => {
     if (typeof options === "object") {
@@ -67,14 +80,25 @@ async function mountSession(paneId: string, sessionKey: string, viewportHeight =
       );
     }
   };
-  for (let frame = 0; frame < 6; frame++) {
-    props.transcript.hostUpdated();
-    await Promise.resolve();
-    await Promise.resolve();
-    flushFrames();
-    render(renderChatThread(props, props.transcript), container);
+  async function commitFrames(count = 6) {
+    for (let frame = 0; frame < count; frame++) {
+      props.transcript.hostUpdated();
+      await Promise.resolve();
+      await Promise.resolve();
+      flushFrames();
+      render(renderChatThread(props, props.transcript), container);
+    }
   }
+  await commitFrames();
   return {
+    flushFrames,
+    commitFrames,
+    setLoading(value: boolean) {
+      state.chatLoading = value;
+      pane.render();
+      props = expectDefined(pane.chatProps, "updated pane transcript props");
+      render(renderChatThread(props, props.transcript), container);
+    },
     pane,
     state,
     transcript: props.transcript,
@@ -149,3 +173,115 @@ it("restores explicit reader intent when a larger returning viewport clamps its 
     returned.dispose();
   }
 });
+
+it.each([
+  "before first frame",
+  "between measured frames",
+  "active smooth command",
+  "ordinary reader",
+] as const)("preserves the selected destination on departure: %s", async (stage) => {
+  const paneId = "departure-" + stage;
+  const sessionKey = "agent:main:" + paneId;
+  const view = await mountSession(paneId, sessionKey);
+  try {
+    view.thread.scrollTop = 840;
+    view.thread.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
+    view.thread.dispatchEvent(new Event("scroll"));
+    expect(view.state.chatFollowLocked).toBe(true);
+    const scrollTo = view.thread.scrollTo.bind(view.thread);
+    const smoothTargets: number[] = [];
+    view.thread.scrollTo = (options?: ScrollToOptions | number) => {
+      if (typeof options === "object" && options.behavior === "smooth") {
+        // Native smooth travel has started but has not delivered its first offset yet.
+        smoothTargets.push(options.top ?? 0);
+        return;
+      }
+      if (typeof options === "number") {
+        scrollTo(options, 0);
+      } else {
+        scrollTo(options);
+      }
+    };
+    const manual = stage !== "ordinary reader";
+    if (manual) {
+      scheduleCommittedChatScroll(view.state, true, true, { source: "manual" });
+      if (stage !== "before first frame") {
+        view.flushFrames();
+      }
+      if (stage === "active smooth command") {
+        view.flushFrames();
+      }
+    }
+    expect(smoothTargets.length).toBe(stage === "active smooth command" ? 1 : 0);
+    expect(canAutoFollowChat(view.state)).toBe(stage === "active smooth command");
+    expect(view.thread.scrollTop).toBe(840);
+    view.pane.presented = false;
+    view.transcript.hostUpdate();
+    expect(getChatSessionScrollPosition(paneId, sessionKey)?.anchorToEnd).toBe(manual);
+    await view.commitFrames();
+    view.pane.presented = true;
+    view.transcript.hostUpdate();
+    await view.commitFrames();
+    expect(view.thread.scrollTop).toBe(manual ? 2400 : 840);
+    expect(view.state.chatFollowLocked).toBe(!manual);
+  } finally {
+    view.dispose();
+  }
+});
+
+it.each([
+  { departure: "hide", manual: true },
+  { departure: "save before replacement", manual: true },
+  { departure: "hide", manual: false },
+  { departure: "save before replacement", manual: false },
+])(
+  "keeps the latest destination through pending restoration: $departure, manual=$manual",
+  async ({ departure, manual }) => {
+    const paneId = "pending-departure-" + departure + manual;
+    const sessionKey = "agent:main:" + paneId;
+    const first = await mountSession(paneId, sessionKey);
+    first.thread.scrollTop = 840;
+    first.thread.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
+    first.thread.dispatchEvent(new Event("scroll"));
+    first.dispose();
+    const savedReader = getChatSessionScrollPosition(paneId, sessionKey);
+    expect(savedReader?.messageAnchor).toBeDefined();
+    // The returning pane has its saved bookmark but not measurable layout or authoritative content.
+    const view = await mountSession(paneId, sessionKey, 0, true);
+    try {
+      expect(view.transcript.isProgrammaticScroll).toBe(true);
+      if (manual) {
+        scheduleCommittedChatScroll(view.state, true, true, { source: "manual" });
+      }
+      if (departure === "save before replacement") {
+        view.transcript.saveScrollPosition(true);
+        expect(getChatSessionScrollPosition(paneId, sessionKey)?.anchorToEnd).toBe(manual);
+      }
+      view.pane.presented = false;
+      view.transcript.hostUpdate();
+      expect(getChatSessionScrollPosition(paneId, sessionKey)?.anchorToEnd).toBe(manual);
+      if (!manual) {
+        expect(getChatSessionScrollPosition(paneId, sessionKey)).toEqual(savedReader);
+      }
+      // Retire the queued attempt while hidden; its destination must now belong to restoration.
+      await view.commitFrames();
+      view.pane.presented = true;
+      view.transcript.hostUpdate();
+      await view.commitFrames();
+      expect(view.transcript.isProgrammaticScroll).toBe(true);
+      Object.defineProperty(view.thread, "clientHeight", { configurable: true, value: 600 });
+      await view.commitFrames();
+      if (manual) {
+        expect(view.transcript.isProgrammaticScroll).toBe(true);
+        expect(getChatSessionScrollPosition(paneId, sessionKey)?.anchorToEnd).toBe(true);
+      }
+      view.setLoading(false);
+      await view.commitFrames();
+      expect(view.thread.scrollTop).toBe(manual ? 2400 : 840);
+      expect(view.state.chatFollowLocked).toBe(!manual);
+      expect(view.transcript.isProgrammaticScroll).toBe(false);
+    } finally {
+      view.dispose();
+    }
+  },
+);

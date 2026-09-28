@@ -119,6 +119,16 @@ type ChatScrollOptions = {
 type PendingChatScroll = { manual: boolean; cancel: () => void };
 const pendingChatScrolls = new WeakMap<ChatScrollHost, PendingChatScroll>();
 
+/** Queued send/latest intent is distinct from permission for automatic end-follow. */
+export function hasQueuedManualChatScroll(host: ChatScrollHost): boolean {
+  return pendingChatScrolls.get(host)?.manual === true;
+}
+
+/** A queued reader command owns the next viewport movement, including geometric follow. */
+export function canAutoFollowChat(host: ChatScrollHost): boolean {
+  return !host.chatFollowLocked && !pendingChatScrolls.get(host)?.manual;
+}
+
 export function cancelChatScroll(host: ChatScrollHost): void {
   pendingChatScrolls.get(host)?.cancel();
 }
@@ -220,13 +230,23 @@ function queueChatScroll(
   };
   pendingChatScrolls.set(host, request);
   const enqueue = (complete?: () => void) => {
-    frame = requestAnimationFrame(() => {
+    const apply = () => {
       if (pendingChatScrolls.get(host) !== request) {
         return;
       }
       pendingChatScrolls.delete(host);
       complete?.();
       applyChatScroll(host, force, smooth, options);
+    };
+    frame = requestAnimationFrame(() => {
+      // The composer viewport and appended rows commit their measured sizes in
+      // ResizeObserver after rAF. Starting a smooth send against their estimates
+      // makes the virtualizer snap to a revised target on its next frame.
+      if (request.manual && smooth && resolveScrollBehavior() === "smooth") {
+        frame = requestAnimationFrame(apply);
+      } else {
+        apply();
+      }
     });
     return request.cancel;
   };
@@ -279,6 +299,11 @@ export function restoreChatScrollPosition(
   host: ChatScrollHost,
   position: ChatSessionScrollPosition,
 ): void {
+  // An older restore may settle during the measured-layout wait for Latest.
+  // Its completion cannot cancel the newer command or replace that command's policy.
+  if (hasQueuedManualChatScroll(host)) {
+    return;
+  }
   cancelChatScroll(host);
   host.chatHasAutoScrolled = true;
   const container = host.chatScrollElement?.();
