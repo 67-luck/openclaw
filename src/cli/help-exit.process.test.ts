@@ -488,6 +488,7 @@ await runCliWithExitFinalization({
             OPENCLAW_CONFIG_PATH: configPath,
             OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
             OPENCLAW_NO_RESPAWN: "1",
+            OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
             OPENCLAW_STATE_DIR: stateDir,
           },
           CLI_PROCESS_DEADLOCK_GUARD_MS,
@@ -515,7 +516,14 @@ await runCliWithExitFinalization({
         throw new Error("Message fixture output exceeded maxBuffer", { cause: child.error });
       }
 
-      expect(child.error).toBeUndefined();
+      expect(
+        child.error,
+        formatCliProcessFailure({
+          reason: "Message broadcast fixture did not complete",
+          stdout: child.stdout,
+          stderr: child.stderr,
+        }),
+      ).toBeUndefined();
       expect(spawned.child?.signalCode).toBeNull();
       expect(child.status, child.stderr).toBe(1);
       expect(JSON.parse(child.stdout.trim())).toEqual({ payload: largePayload });
