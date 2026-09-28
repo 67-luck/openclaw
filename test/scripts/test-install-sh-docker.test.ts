@@ -32,6 +32,7 @@ const SMOKE_RUNNER_PATH = "scripts/docker/install-sh-smoke/run.sh";
 const NONROOT_DOCKERFILE_PATH = "scripts/docker/install-sh-nonroot/Dockerfile";
 const NONROOT_RUNNER_PATH = "scripts/docker/install-sh-nonroot/run.sh";
 const BUN_GLOBAL_SMOKE_PATH = "scripts/e2e/bun-global-install-smoke.sh";
+const BUN_GLOBAL_AI_CANDIDATE_PATH = "scripts/e2e/lib/bun-global-install/ai-candidate.sh";
 const BUN_GLOBAL_ASSERTIONS_PATH = "scripts/e2e/lib/bun-global-install/assertions.mjs";
 const DOCKER_E2E_PACKAGE_HELPER_PATH = "scripts/lib/docker-e2e-package.sh";
 const INSTALL_SMOKE_WORKFLOW_PATH = ".github/workflows/install-smoke-reusable.yml";
@@ -2707,12 +2708,19 @@ syncBuiltinESMExports();
 
   it("resolves the matching candidate AI package without changing the public registry", () => {
     const script = readFileSync(BUN_GLOBAL_SMOKE_PATH, "utf8");
+    const candidate = readFileSync(BUN_GLOBAL_AI_CANDIDATE_PATH, "utf8");
 
-    expect(script).toContain("assert-release-versions");
+    expect(script).toContain(
+      'source "$ROOT_DIR/scripts/e2e/lib/bun-global-install/ai-candidate.sh"',
+    );
+    expect(script).toContain('prepare_ai_candidate "$PACKAGE_TGZ" "$PACK_DIR"');
     expect(script).toContain('"$BUN_INSTALL/install/global/package.json"');
-    expect(script).toContain("package/node_modules/@openclaw/ai");
-    expect(script).toContain("--strip-components=4");
-    expect(script).toContain('npm pack --ignore-scripts --silent --pack-destination "$PACK_DIR"');
+    expect(candidate).toContain("package/node_modules/@openclaw/ai");
+    expect(candidate).toContain("--strip-components=4");
+    expect(candidate).toContain("assert-release-versions");
+    expect(candidate).toContain(
+      'npm pack --ignore-scripts --silent --pack-destination "$pack_dir"',
+    );
     expect(script).toContain('overrides: { "@openclaw/ai": `file:${aiPackageTarball}` }');
     expect(script).not.toContain("--registry");
     expect(script).not.toContain("@openclaw:registry");
