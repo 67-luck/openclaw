@@ -202,8 +202,9 @@ suite.define(() => {
 
   it("keeps usable effort controls when the selected model is locked during a partial refresh", async () => {
     await suite.withPage({ locale: "en-US" }, async ({ page }) => {
-      await installMockGateway(page, {
+      const gateway = await installMockGateway(page, {
         agentModel: partialConfig.agents.defaults.model,
+        heldMethods: ["chat.startup"],
         models: catalog.models,
         methodResponses: {
           "models.list": catalog,
@@ -227,33 +228,19 @@ suite.define(() => {
         },
       });
       await page.goto(`${suite.server.baseUrl}chat`);
-      // The effort control stays visible while history loads, but remains disabled.
-      // Settle the owning reads before checking the locked model's usable controls.
-      await page.waitForFunction(() => {
-        const pane = document.querySelector<
-          HTMLElement & {
-            state?: {
-              chatLoading: boolean;
-              chatModelsLoading: boolean;
-              chatModelCatalogInitialized?: boolean;
-            };
-          }
-        >("openclaw-chat-pane");
-        return (
-          pane?.state?.chatLoading === false &&
-          pane.state.chatModelsLoading === false &&
-          pane.state.chatModelCatalogInitialized === true
-        );
-      });
-      await expect
-        .poll(() => page.locator("[data-chat-model-select]").getAttribute("data-chat-model-locked"))
-        .toBe("true");
+      await gateway.waitForRequest("chat.startup");
       const effort = page.locator("[data-chat-thinking-select]");
       await expect.poll(() => effort.isVisible()).toBe(true);
+      expect(await effort.getAttribute("aria-disabled")).toBe("true");
+      await gateway.resolveDeferred("chat.startup");
+      await page.locator('[data-chat-thinking-select][aria-disabled="false"]').waitFor();
       expect(await effort.getAttribute("aria-disabled")).toBe("false");
       expect(await page.locator(".chat-controls__effort-picker").getAttribute("aria-hidden")).toBe(
         "false",
       );
+      expect(
+        await page.locator("[data-chat-model-select]").getAttribute("data-chat-model-locked"),
+      ).toBe("true");
       await effort.click();
       await expect.poll(() => page.locator("[data-chat-thinking-slider]").isEnabled()).toBe(true);
     });
