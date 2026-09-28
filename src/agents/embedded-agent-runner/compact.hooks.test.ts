@@ -3921,8 +3921,10 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     releaseResolution.resolve(undefined);
 
     await expect(pending).rejects.toThrow("queued compaction host authority expired");
-    expect(resolveModelAsyncMock).not.toHaveBeenCalled();
-    expect(selectAgentHarnessForPreparedModelProvidersMock).not.toHaveBeenCalled();
+    expect(resolveModelAsyncMock).toHaveBeenCalledBefore(resolveContextEngineMock);
+    expect(selectAgentHarnessForPreparedModelProvidersMock).toHaveBeenCalledBefore(
+      resolveContextEngineMock,
+    );
     expect(contextEngineCompactMock).not.toHaveBeenCalled();
   });
 
@@ -3954,8 +3956,10 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       compacted: false,
       reason: "compaction aborted",
     });
-    expect(resolveModelAsyncMock).not.toHaveBeenCalled();
-    expect(selectAgentHarnessForPreparedModelProvidersMock).not.toHaveBeenCalled();
+    expect(resolveModelAsyncMock).toHaveBeenCalledBefore(resolveContextEngineMock);
+    expect(selectAgentHarnessForPreparedModelProvidersMock).toHaveBeenCalledBefore(
+      resolveContextEngineMock,
+    );
     expect(contextEngineCompactMock).not.toHaveBeenCalled();
     expect(enqueueCommandInLaneMock).not.toHaveBeenCalled();
   });
@@ -4042,14 +4046,8 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     );
   });
 
-  it("disposes the context engine once when route materialization rejects", async () => {
-    const dispose = vi.fn(async () => {});
+  it("does not allocate a context engine when route materialization rejects", async () => {
     const authStorage = createCompactHooksAuthStorage();
-    resolveContextEngineMock.mockResolvedValue({
-      info: { ownsCompaction: true },
-      compact: contextEngineCompactMock,
-      dispose,
-    } as never);
     resolveModelAsyncMock
       .mockImplementationOnce(async (provider, modelId) => ({
         logicalRef: { provider, model: modelId },
@@ -4092,7 +4090,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       (mockCallArg(resolveModelAsyncMock, 1, 4) as { preparedModelRuntime?: unknown })
         .preparedModelRuntime,
     ).toBe(snapshot);
-    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(resolveContextEngineMock).not.toHaveBeenCalled();
     expect(enqueueCommandInLaneMock).not.toHaveBeenCalled();
   });
 
