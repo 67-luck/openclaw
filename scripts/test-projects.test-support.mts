@@ -1513,18 +1513,17 @@ function expandExplicitSourceTestTargets(targetArgs: string[], cwd: string, watc
       // The full aggregate already includes the dedicated database-worker project.
       return [targetArg];
     }
+    const globTarget = isGlobTarget(relative);
+    const directoryTarget = isExistingDirectoryTarget(targetArg, cwd);
     const databaseWorkerTargets = databaseWorkerExtensionTestFiles.filter((file) =>
-      isGlobTarget(relative)
+      globTarget
         ? path.matchesGlob(file, relative)
-        : isExistingDirectoryTarget(targetArg, cwd) && isPathAtOrUnder(file, relative),
+        : directoryTarget && isPathAtOrUnder(file, relative),
     );
     if (databaseWorkerTargets.length > 0) {
       return [...databaseWorkerTargets, targetArg];
     }
-    if (
-      (isPathAtOrUnder(relative, "ui") || isPluginControlUiPath(relative)) &&
-      isGlobTarget(relative)
-    ) {
+    if ((isPathAtOrUnder(relative, "ui") || isPluginControlUiPath(relative)) && globTarget) {
       // Expand mixed browser globs before assigning files to their disjoint runners.
       const targets = listExplicitTestTargetFilesForCwd(cwd).filter(
         (file) => isTestFileTarget(file) && path.matchesGlob(file, relative),
@@ -1535,13 +1534,13 @@ function expandExplicitSourceTestTargets(targetArgs: string[], cwd: string, watc
     if (prefixTargets) {
       return prefixTargets;
     }
-    if (relative === "src/commands" && isExistingDirectoryTarget(targetArg, cwd)) {
+    if (relative === "src/commands" && directoryTarget) {
       return [COMMANDS_LIGHT_VITEST_CONFIG, COMMANDS_VITEST_CONFIG];
     }
     // Contract directory targets must fan out to the owning contract lanes; the
     // generic channels/plugins projects exclude contracts/**, so routing a
     // contracts directory there silently runs zero tests (passWithNoTests).
-    if (isExistingDirectoryTarget(targetArg, cwd)) {
+    if (directoryTarget) {
       if (isPathAtOrUnder(relative, "src/channels/plugins/contracts")) {
         return [
           CONTRACTS_CHANNEL_SURFACE_VITEST_CONFIG,
@@ -1554,7 +1553,8 @@ function expandExplicitSourceTestTargets(targetArgs: string[], cwd: string, watc
         return [CONTRACTS_PLUGIN_VITEST_CONFIG];
       }
     }
-    const exactDirectoryTargets = resolveExactSourceDirectoryTestTargets(targetArg, cwd);
+    const exactDirectoryTargets =
+      directoryTarget && resolveExactSourceDirectoryTestTargets(targetArg, cwd);
     if (exactDirectoryTargets) {
       return exactDirectoryTargets;
     }
