@@ -64,6 +64,13 @@ it("delivers queued lifecycle receipts but rejects reset, ancestor revocation, a
     const client: GatewayWsClient = {
       ...source,
       connect: { ...source.connect, caps: ["session-changed-bundles"] },
+      authenticatedUserProfile: {
+        profileId: viewer.id,
+        displayName: null,
+        avatarRevision: "",
+        hasAvatar: false,
+        updatedAt: 1,
+      },
       socket,
       connId: "publication-viewer",
       usesSharedGatewayAuth: false,
