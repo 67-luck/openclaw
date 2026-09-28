@@ -3469,6 +3469,7 @@ describe("ci workflow guards", () => {
       repository: "openclaw/openclaw",
       runAttempt: 1,
       preflightOutputs: manifest.outputs,
+      steps: { built_artifact_checks: { outputs: {}, outcome: "success" as const } },
     };
     const evaluateCondition = (expression: string) =>
       evaluateWorkflowExpression(
@@ -3602,6 +3603,7 @@ describe("ci workflow guards", () => {
         repository: "openclaw/openclaw",
         runAttempt: 1,
         preflightOutputs: manifest.outputs,
+        steps: { built_artifact_checks: { outputs: {}, outcome: "success" as const } },
       };
       const steps = workflow.jobs["build-artifacts"].steps as WorkflowStep[];
       const verifiers = expectDefined(

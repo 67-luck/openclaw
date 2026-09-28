@@ -74,7 +74,11 @@ import {
   isReleaseOnlyRuntimeTestFile,
 } from "./ci-proof-test-inventory.mts";
 import { rebalanceRuntimeTestJobs } from "./ci-runtime-test-placement.mts";
-import { isRuntimePlacementIncludePatterns } from "./ci-test-timings-schema.mts";
+import {
+  NATIVE_SOLO_TIMING_PROFILE,
+  createNativeSoloTimingKey,
+  isRuntimePlacementIncludePatterns,
+} from "./ci-test-timings-schema.mts";
 import {
   readCompactGroupTimings,
   readCompleteSplitGenerationSeconds,
@@ -3157,6 +3161,39 @@ function listCompactToolingTestFiles(): string[] {
   );
 }
 
+function applyNativeSoloTimings(
+  jobs: CompactNodeTestShard[],
+  runnerBackend: string | undefined,
+): CompactNodeTestShard[] {
+  if (runnerBackend !== undefined && !["blacksmith", "hybrid", "runson"].includes(runnerBackend)) {
+    return jobs;
+  }
+  const timings = readCompactGroupTimings("blacksmith");
+  return jobs.map((job) => {
+    if (
+      job.runner !== NATIVE_SOLO_TIMING_PROFILE.runner ||
+      job.planConcurrency !== 1 ||
+      job.groups.length !== 1 ||
+      job.requiresDist ||
+      job.pretestBuildMode !== undefined ||
+      Object.entries(job.env ?? {}).some(
+        ([key, value]) =>
+          key !== "OPENCLAW_VITEST_MAX_WORKERS" ||
+          value !== String(NATIVE_SOLO_TIMING_PROFILE.maxWorkers),
+      )
+    ) {
+      return job;
+    }
+    const key = createNativeSoloTimingKey(job.groups[0]!);
+    const seconds = key === undefined ? undefined : timings[key];
+    // Solo measurements price only the final allocation. Feeding them into
+    // packing would let an unqualified shared row spend the solo discount.
+    return seconds === undefined
+      ? job
+      : { ...job, predictedSeconds: seconds, predictedTestSeconds: seconds };
+  });
+}
+
 /**
  * Collapse split include-pattern shards into bounded jobs for normal CI.
  * The base plan remains unchanged for release and coverage consumers.
@@ -3175,12 +3212,15 @@ export function createNodeTestShardBundles(
   const compactMode =
     options.compactMode ?? (options.compact === true ? "pull-request" : undefined);
   if (compactMode !== undefined) {
-    return createCompactNodeTestShardBundles(
-      // Keep complete owners for cost admission; compact projection below gives
-      // a reduced tooling selection its own timing identity.
-      createNodeTestShards({ ...options, includeReleaseOnlyToolingShards: true }),
-      { ...options, compactMode },
-      compactMode,
+    return applyNativeSoloTimings(
+      createCompactNodeTestShardBundles(
+        // Keep complete owners for cost admission; compact projection below gives
+        // a reduced tooling selection its own timing identity.
+        createNodeTestShards({ ...options, includeReleaseOnlyToolingShards: true }),
+        { ...options, compactMode },
+        compactMode,
+      ),
+      options.runnerBackend,
     );
   }
 
@@ -4242,17 +4282,25 @@ export function createSelectedNodeTestShardBundles(
         ]
       : [];
   });
-  return [
-    ...(tooling.size
-      ? createCompactNodeTestShardBundles(
-          shards.filter((shard) => owners.has(shard)),
-          options,
-          "pull-request",
-          tooling,
-        )
-      : []),
-    ...packSelectedNodeTestJobs(projected, options.runnerBackend, canonicalFamilies, groupSeconds),
-  ];
+  return applyNativeSoloTimings(
+    [
+      ...(tooling.size
+        ? createCompactNodeTestShardBundles(
+            shards.filter((shard) => owners.has(shard)),
+            options,
+            "pull-request",
+            tooling,
+          )
+        : []),
+      ...packSelectedNodeTestJobs(
+        projected,
+        options.runnerBackend,
+        canonicalFamilies,
+        groupSeconds,
+      ),
+    ],
+    options.runnerBackend,
+  );
 }
 
 function compactPreparationSeconds(
