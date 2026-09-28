@@ -44,28 +44,44 @@ if (command === "cleanup") {
   console.log("Published-upgrade observation fixtures restored after Gateway shutdown.");
   process.exit(0);
 }
-assert.equal(command, "observe");
-assert(packageRoot && gatewayLog && configPath && workspace && token);
+assert(command === "prepare" || command === "observe");
+assert(configPath && workspace);
 
-const originalConfig = await fs.readFile(configPath, "utf8");
-const config = JSON.parse(originalConfig);
-const nonce = randomUUID();
+const currentConfig = await fs.readFile(configPath, "utf8");
+const config = JSON.parse(currentConfig);
+const nonce =
+  command === "prepare" ? randomUUID() : JSON.parse(await fs.readFile(fixturePath, "utf8")).nonce;
 const skillName = `upgrade-observation-${nonce}`;
 const skillDir = path.join(workspace, "skills", skillName);
 const skillPath = path.join(skillDir, "SKILL.md");
 const includePath = path.join(path.dirname(configPath), `upgrade-observation-${nonce}.json`);
-await fs.writeFile(
-  fixturePath,
-  JSON.stringify({
-    configPath,
-    originalConfig,
-    skillDir,
-    files: [includePath, `${configPath}.${nonce}.tmp`, `${includePath}.${nonce}.tmp`],
-  }),
-  { mode: 0o600, flag: "wx" },
-);
+if (command === "prepare") {
+  assert.equal(process.env.OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE ?? "manual", "manual");
+  await fs.writeFile(
+    fixturePath,
+    JSON.stringify({
+      configPath,
+      originalConfig: currentConfig,
+      nonce,
+      skillDir,
+      files: [includePath, `${configPath}.${nonce}.tmp`, `${includePath}.${nonce}.tmp`],
+    }),
+    { mode: 0o600, flag: "wx" },
+  );
+  await fs.writeFile(
+    evidencePath,
+    `${JSON.stringify({ status: "prepared", observationsPassed: false, socketClosed: false })}\n`,
+  );
+  // Prime discovery in the Gateway before any watcher can publish its initial scan.
+  config.skills = { ...config.skills, load: { ...config.skills?.load, watch: false } };
+  await writeJson(configPath, config);
+  process.exit(0);
+}
+assert(packageRoot && gatewayLog && token);
+assert.equal(config.skills?.load?.watch, false, "Skills observation requires prepared startup");
 const startedAt = Date.now();
-const deadline = startedAt + 120_000;
+const observationBudgetMs = 120_000;
+const deadline = startedAt + observationBudgetMs;
 const evidence = {
   config: [],
   skills: [],
@@ -75,16 +91,18 @@ const evidence = {
   activeStage: "opening",
   failureStage: null,
   lastConfigAttempt: null,
+  lastSkillAttempt: null,
+  primedAgents: [],
   reloadTail: [],
 };
 const scanner = createConfigReloadLogScanner(gatewayLog);
 const WebSocket = createRequire(path.join(packageRoot, "package.json"))("ws");
 const socket = new WebSocket("ws://127.0.0.1:18789");
 
-function remainingMs() {
+function remainingMs(limit = 30_000) {
   const remaining = deadline - Date.now();
   assert(remaining > 0, "post-upgrade observation exceeded its two-minute budget");
-  return Math.min(30_000, remaining);
+  return Math.min(limit, remaining);
 }
 
 async function request(method, params = {}) {
@@ -198,6 +216,9 @@ async function observeSkill(label, mutate, description) {
   evidence.activeLabel = `skills-${label}`;
   evidence.activeStage = "skills-write";
   const mutationStartedAt = Date.now();
+  const waitBudgetMs = remainingMs(observationBudgetMs);
+  const attempt = { label, waitBudgetMs, eventElapsedMs: null, elapsedMs: 0 };
+  evidence.lastSkillAttempt = attempt;
   // Settle the event before reading inventory: a fresh read alone could hide a broken watcher.
   const observed = onceFrame(
     socket,
@@ -205,14 +226,18 @@ async function observeSkill(label, mutate, description) {
       frame.type === "event" &&
       frame.event === "skills.changed" &&
       frame.payload?.reason === "watch",
-    remainingMs(),
+    waitBudgetMs,
   ).then(
-    (frame) => frame,
+    (frame) => {
+      attempt.eventElapsedMs = Date.now() - mutationStartedAt;
+      return frame;
+    },
     () => null,
   );
   await mutate();
   evidence.activeStage = "skills-observe";
   const event = await observed;
+  attempt.elapsedMs = Date.now() - mutationStartedAt;
   assert(event, `${label} did not receive a skills.changed watch event`);
   evidence.activeStage = "skills-inventory";
   const report = await request("skills.status", { agentId: "main" });
@@ -243,14 +268,25 @@ try {
     client: { id: "cli", mode: "cli", version: "1.0.0", platform: process.platform },
     role: "operator",
     scopes: ["operator.read"],
-    caps: [],
+    caps: ["agent-kind"],
     auth: { token },
   });
+
+  evidence.activeLabel = "skills-prime";
+  evidence.activeStage = "skills-inventory";
+  const agents = await request("agents.list");
+  assert(agents.agents.some((agent) => agent.id === "main"));
+  for (const agent of agents.agents) {
+    const initial = await request("skills.status", { agentId: agent.id });
+    assert(!initial.skills.some((entry) => entry.name === skillName));
+    evidence.primedAgents.push(agent.id);
+  }
 
   evidence.activeLabel = "root-write";
   evidence.activeStage = "prepare-config";
   await writeJson(includePath, { seamColor: "#112233" });
   config.gateway.reload = { ...config.gateway.reload, mode: "hybrid" };
+  config.skills.load.watch = true;
   config.ui = { ...config.ui, $include: `./${path.basename(includePath)}` };
   delete config.ui.seamColor;
   config.ui.prefs = { ...config.ui.prefs, locale: "en" };
@@ -258,7 +294,10 @@ try {
     "root-write",
     "gateway.reload.mode",
     () => writeJson(configPath, config),
-    (current) => current.gateway.reload.mode === "hybrid" && current.ui.seamColor === "#112233",
+    (current) =>
+      current.gateway.reload.mode === "hybrid" &&
+      current.skills.load.watch === true &&
+      current.ui.seamColor === "#112233",
   );
 
   config.ui.prefs = { ...config.ui.prefs, locale: "en-US" };

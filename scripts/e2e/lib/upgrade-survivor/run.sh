@@ -2062,7 +2062,7 @@ start_gateway() {
       printf 'Gateway startup diagnostic: original_status=%s original_elapsed_ms=%s pid=%s original_config_sha256=%s\n' \
         "$readiness_status" "$((failed_epoch - start_epoch))" "$gateway_pid" "$startup_config_sha" \
         >"$ARTIFACT_ROOT/gateway-start-diagnostic.log" || return "$readiness_status"
-      # Observe the existing model-startup deadline without changing the failed readiness gate.
+      # Observe late readiness without changing the failed readiness gate.
       timeout --kill-after=5s 120s bash -c '
         source scripts/lib/openclaw-e2e-instance.sh
         openclaw_e2e_wait_gateway_ready "$1" "$2" 480 "$3" "$4"
@@ -2104,7 +2104,12 @@ ensure_gateway_started() {
   if [ "$UPDATE_RESTART_MODE" = "auto-auth" ]; then
     return 0
   fi
-  start_gateway
+  if [ "$SCENARIO" = "base" ]; then
+    # Include the model publication's foreground grace; keep the 90s performance report.
+    start_gateway 840
+  else
+    start_gateway
+  fi
 }
 
 check_gateway_probes() {
@@ -2682,10 +2687,13 @@ if [ "$SCENARIO" = "meeting-transcripts-sqlite" ]; then
   # check before exercising the explicit artifact materialization command.
   phase transcript-export node scripts/e2e/lib/upgrade-survivor/assertions.mjs assert-meeting-transcript-export
 fi
+if [ "$SCENARIO" = "base" ] && [ "$UPDATE_RESTART_MODE" = "manual" ]; then
+  phase gateway-file-observation-prepare node scripts/e2e/lib/upgrade-survivor/observe-files.mjs prepare
+fi
 phase gateway-start ensure_gateway_started
 phase gateway-probes check_gateway_probes
 phase gateway-status check_gateway_status
-if [ "$SCENARIO" = "base" ]; then
+if [ "$SCENARIO" = "base" ] && [ "$UPDATE_RESTART_MODE" = "manual" ]; then
   phase gateway-file-observation node scripts/e2e/lib/upgrade-survivor/observe-files.mjs observe \
     "$(package_root)" "$GATEWAY_LOG"
   phase gateway-file-observation-stop stop_gateway

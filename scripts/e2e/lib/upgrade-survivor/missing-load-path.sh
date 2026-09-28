@@ -4,7 +4,7 @@ missing_load_path_applicability=""
 
 start_missing_load_path_baseline() {
   local start_status=0 exit_status=0
-  # Allow the published model-runtime build's 120s deadline after 90s of startup work.
+  # Allow 90s of startup work plus the model publication's 120s foreground grace.
   start_gateway 840 || start_status=$?
   [ "$start_status" -eq 0 ] && return 0
   [ "$start_status" -eq 1 ] && [ -n "${gateway_pid:-}" ] || return "$start_status"
