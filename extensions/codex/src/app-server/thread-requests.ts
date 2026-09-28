@@ -8,6 +8,8 @@ import { isIncognitoSessionKey } from "../incognito-session.js";
 import type { CodexAppServerClient } from "./client.js";
 import {
   CODEX_SESSION_OVERRIDABLE_LAYER_TYPES,
+  readCodexAuthoredConfigValue,
+  readCodexConfigValue,
   readCodexEffectiveConfig,
 } from "./config-layer-policy.js";
 import type { CodexAppServerRuntimeOptions } from "./config.js";
@@ -331,28 +333,12 @@ function hasNativeQuestionOptIn(
     "tools.experimental_request_user_input.enabled",
     "features.default_mode_request_user_input",
   ].some((key) => {
-    const authored = readQuestionConfigValue(config, key);
+    const authored = readCodexConfigValue(config, key);
     if (authored !== undefined) {
       return authored === true;
     }
-    // config/read materializes enabled=true by default; only an origin proves opt-in.
-    return (
-      nativeConfig?.origins?.[key] !== undefined &&
-      readQuestionConfigValue(nativeConfig.config, key) === true
-    );
+    return nativeConfig !== undefined && readCodexAuthoredConfigValue(nativeConfig, key) === true;
   });
-}
-
-function readQuestionConfigValue(config: JsonObject, key: string): JsonValue | undefined {
-  if (Object.hasOwn(config, key)) {
-    return config[key];
-  }
-  const separator = key.indexOf(".");
-  if (separator < 0) {
-    return undefined;
-  }
-  const child = config[key.slice(0, separator)];
-  return isJsonObject(child) ? readQuestionConfigValue(child, key.slice(separator + 1)) : undefined;
 }
 
 function ensureDirectOnlyToolNamespaces(

@@ -56,6 +56,7 @@ import {
   createThreadRequestAppServerOptions as createAppServerOptions,
   createThreadRequestAttemptParams as createAttemptParams,
   disabledMcpServerStatus,
+  nativeQuestionConfigFixture,
   writeNativeCatalogFixture,
 } from "./thread-lifecycle.test-fixtures.js";
 import { attestCodexRestrictedToolSurfaceMcpServersDisabled } from "./thread-requests.js";
@@ -3291,11 +3292,7 @@ describe("Codex app-server supervised branch lifecycle", () => {
       });
       const request = vi.fn(async (method: string, requestParams: unknown) => {
         if (method === "config/read") {
-          return {
-            config: { tools: { experimental_request_user_input: { enabled: true } } },
-            origins: authored ? { [questionKey]: { name: { type: "user" }, version: "1" } } : {},
-            layers: [],
-          };
+          return nativeQuestionConfigFixture(authored ? true : undefined);
         }
         if (method === "configRequirements/read") {
           return { requirements: null };
