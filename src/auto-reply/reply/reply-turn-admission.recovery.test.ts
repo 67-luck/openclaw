@@ -6,6 +6,7 @@ import * as recoveryOwnerRelease from "../../agents/main-session-recovery/main-s
 import * as recoveryStore from "../../agents/main-session-recovery/main-session-recovery-store.js";
 import * as restartRecovery from "../../agents/main-session-recovery/main-session-restart-recovery.js";
 import { loadSessionEntry, replaceSessionEntry } from "../../config/sessions/session-accessor.js";
+import * as sessionAccessor from "../../config/sessions/session-accessor.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
@@ -50,8 +51,6 @@ describe("reply turn recovery admission", () => {
 
   it("keeps deferred owner release retries from retaining a successor", async () => {
     const deferredReleases: Promise<void>[] = [];
-    const deferredScheduled = createDeferred();
-    const deferredDelayMs = 1_000;
     const schedule = recoveryLifecycle.scheduleMainSessionRecoveryMutation;
     const scheduled = vi
       .spyOn(recoveryLifecycle, "scheduleMainSessionRecoveryMutation")
@@ -60,18 +59,16 @@ describe("reply turn recovery admission", () => {
         deferredReleases.push(settled.promise);
         schedule({
           ...params,
-          delayMs: deferredDelayMs,
           onSuccess: async (result) => {
             await params.onSuccess(result);
             settled.resolve();
           },
         });
-        deferredScheduled.resolve();
       });
     const pendingTarget = vi
       .spyOn(recoveryOwnerRelease, "scheduleMainSessionRecoveryPendingTarget")
       .mockImplementation(() => {});
-    let restoreReleaseRetry: (() => void) | undefined;
+    let restoreAccessor: (() => void) | undefined;
     vi.useFakeTimers();
     try {
       const sessionKey = "agent:main:telegram:topic:deferred-recovery-release";
@@ -99,11 +96,19 @@ describe("reply turn recovery admission", () => {
       if (owner.status !== "owned") {
         return;
       }
-      const releaseRetry = vi
-        .spyOn(recoveryLifecycle, "retryMainSessionRecoveryMutation")
-        .mockRejectedValueOnce(new Error("SQLite session entry changed before replacement"));
+      const applySessionEntryReplacements = sessionAccessor.applySessionEntryReplacements;
+      let failures = 0;
+      const accessorSpy = vi
+        .spyOn(sessionAccessor, "applySessionEntryReplacements")
+        .mockImplementation(async (params) => {
+          if (failures < 3) {
+            failures += 1;
+            throw new Error("SQLite session entry changed before replacement");
+          }
+          return await applySessionEntryReplacements(params);
+        });
 
-      restoreReleaseRetry = () => releaseRetry.mockRestore();
+      restoreAccessor = () => accessorSpy.mockRestore();
       owner.operation.complete();
       const successor = admitTestReplyTurn({
         sessionKey,
@@ -115,12 +120,13 @@ describe("reply turn recovery admission", () => {
       void successor.then(() => {
         successorSettled = true;
       });
-      // Join scheduling, then admit the successor without advancing the deferred repair timer.
-      await deferredScheduled.promise;
+      await vi.advanceTimersByTimeAsync(100);
+      // Worker I/O settles on real turns, not fake-clock advancement. No later
+      // retry timer is advanced while joining the successor admission.
       const admitted = await successor;
       expect(successorSettled).toBe(true);
       expect(deferredReleases).toHaveLength(1);
-      releaseRetry.mockRestore();
+      accessorSpy.mockRestore();
       expect(admitted.status).toBe("owned");
       if (admitted.status === "owned") {
         const released = getSessionWorkAdmissionRelease({
@@ -133,9 +139,9 @@ describe("reply turn recovery admission", () => {
       }
     } finally {
       try {
-        restoreReleaseRetry?.();
-        // Start the owned repair without advancing idle or worker-deadline timers during I/O.
-        await vi.advanceTimersByTimeAsync(deferredDelayMs);
+        restoreAccessor?.();
+        await vi.runOnlyPendingTimersAsync();
+        // Timer drainage starts the repair; its real SQLite work settles separately.
         await Promise.all(deferredReleases);
       } finally {
         scheduled.mockRestore();
