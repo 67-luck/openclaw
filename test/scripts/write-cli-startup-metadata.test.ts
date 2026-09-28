@@ -172,6 +172,15 @@ describe("write-cli-startup-metadata", () => {
     });
   });
 
+  it("renders source root help with an isolated native child environment", async () => {
+    vi.stubEnv("OPENCLAW_METADATA_UNRELATED_SECRET", "must-not-reach-renderer");
+    const help = await testing.renderSourceRootHelpText();
+    expect(help).toContain("Usage: openclaw");
+    const childEnv = vi.mocked(spawn).mock.calls[0]?.[2]?.env;
+    expect(childEnv).not.toHaveProperty("OPENCLAW_METADATA_UNRELATED_SECRET");
+    expect(childEnv).not.toHaveProperty("NODE_OPTIONS");
+  });
+
   it("finishes root help before rendering at most two command snapshots", async () => {
     const actualSpawn = (
       await vi.importActual<typeof import("node:child_process")>("node:child_process")
