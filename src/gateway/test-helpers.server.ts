@@ -335,7 +335,6 @@ function resetGatewayMutableTestFixtures(): void {
   agentDiscoveryMock.discoverCalls = 0;
   agentDiscoveryMock.models = [];
   testState.gatewayBind = DEFAULT_GATEWAY_TEST_BIND;
-  testState.gatewayAuth = { mode: "token", token: "test-gateway-token-1234567890" };
   testState.gatewayControlUi = undefined;
   testState.hooksConfig = undefined;
   testState.legacyIssues = [];
@@ -446,6 +445,8 @@ async function resetGatewayTestState(options: { uniqueConfigRoot: boolean }) {
   resetConfigRuntimeState();
   invalidateSessionSharingSnapshot();
   resetTestPluginRegistry();
+  // Only a full reset may replace auth; per-case cleanup can retain a live server.
+  testState.gatewayAuth = { mode: "token", token: "test-gateway-token-1234567890" };
   resetGatewayMutableTestFixtures();
   resetSystemEventsForTest();
   resetAgentEventsForTest();
@@ -494,10 +495,7 @@ async function resetGatewayTestRuntimeOnly() {
   resetConfigRuntimeState();
   invalidateSessionSharingSnapshot();
   resetTestPluginRegistry();
-  // Per-case mock cleanup must not replace the policy of a still-running server.
-  const gatewayAuth = testState.gatewayAuth;
   resetGatewayMutableTestFixtures();
-  testState.gatewayAuth = gatewayAuth;
   clearSessionStoreCacheForTest();
   await persistTestSessionConfig();
   resetSystemEventsForTest();

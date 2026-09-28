@@ -42,6 +42,11 @@ async function settleRestartRecoveryDispatch(params: {
         return { result: undefined };
       }
       const entry = current.entry;
+      // Admission already cleared this flag. A redundant worker write would briefly
+      // fence sharing facts while the running turn revalidates its requester.
+      if (!params.terminalStatus && entry.abortedLastRun === false) {
+        return { result: undefined };
+      }
       const now = Date.now();
       if (params.terminalStatus) {
         entry.abortedLastRun = params.terminalStatus !== "ok";

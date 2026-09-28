@@ -1,5 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { settleAcceptedRestartRecovery } from "../../agents/main-session-recovery/main-session-restart-dispatch-settlement.js";
 import { createSessionMembershipProjection } from "../../gateway/session-membership-projection.js";
+import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import {
   onSessionIdentityMutation,
   type SessionIdentityMutation,
@@ -527,6 +529,61 @@ it("fences inline maintenance rows and preserves a newer native publication for 
       resetConfigRuntimeState();
       stopObserver();
       stopFacts();
+      sharing.release();
+    }
+  });
+});
+
+it("keeps admitted restart authority readable while reconciling an already running turn", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const database = openOpenClawAgentDatabase({ agentId: "main" });
+    const sessionKey = "agent:main:recovery-settlement-race";
+    const lifecycleGeneration = getAgentEventLifecycleGeneration();
+    const original = {
+      sessionId: "recovery-settlement-session",
+      lifecycleRevision: "same-incarnation",
+      updatedAt: 1,
+      status: "running" as const,
+      abortedLastRun: false,
+      lifecycleRunId: "recovery-run",
+      restartRecoveryDeliveryRunId: "recovery-run",
+      restartRecoveryDeliverySourceRunId: "interrupted-run",
+      restartRecoveryRuns: [{ runId: "recovery-run", lifecycleGeneration }],
+      mainRestartRecovery: { cycleId: "recovery-cycle", revision: 2, chargedAttempts: 1 },
+    };
+    writeSessionEntry(database, sessionKey, original);
+    const identity = readOpenClawAgentDatabaseIdentity(database).identity;
+    if (typeof identity !== "string") {
+      throw new Error("Expected durable fixture");
+    }
+    const sharing = retainPreparedSessionSharingFacts({
+      databaseIdentity: `file:${identity}`,
+      sessionKey,
+      entry: projectSessionSharingEntry(original),
+      membership: new Set(),
+    });
+    // Execution can check its requester between native COMMIT and host publication.
+    // Reconciliation must not create a write/fence when admission already cleared the flag.
+    delivery.afterResult = () => {
+      expect(sharing.readCurrent()).toBeDefined();
+    };
+    try {
+      await expect(
+        settleAcceptedRestartRecovery({
+          agentId: "main",
+          storePath: database.path,
+          sessionKey,
+          sessionKeys: [sessionKey],
+          expectedSessionId: original.sessionId,
+          expectedRecoveryRunId: "recovery-run",
+          expectedRecoverySourceRunId: "interrupted-run",
+          lifecycleGeneration,
+        }),
+      ).resolves.toBe(true);
+      expect(sharing.readCurrent()?.entry).toEqual(projectSessionSharingEntry(original));
+      expect(readExactSessionEntryRow(database, sessionKey)?.entry.updatedAt).toBe(1);
+    } finally {
+      delivery.afterResult = undefined;
       sharing.release();
     }
   });

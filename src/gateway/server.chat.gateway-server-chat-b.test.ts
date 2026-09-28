@@ -90,6 +90,7 @@ import type {
   RespondFn,
 } from "./server-methods/shared-types.js";
 import { pendingChatSendDedupeKey } from "./server-shared.js";
+import { writeGatewayConfig } from "./server.chat-config.test-support.js";
 import {
   captureChatResponse,
   captureChatResult,
@@ -238,25 +239,6 @@ function readOpenClawSeq(message: unknown): number | undefined {
   }
   const seq = (metadata as Record<string, unknown>).seq;
   return typeof seq === "number" ? seq : undefined;
-}
-
-async function writeGatewayConfig(config: Record<string, unknown>) {
-  const configPath = process.env.OPENCLAW_CONFIG_PATH;
-  if (!configPath) {
-    throw new Error("OPENCLAW_CONFIG_PATH missing in gateway test environment");
-  }
-  await fs.mkdir(path.dirname(configPath), { recursive: true });
-  // These metadata fixtures change models/session routing, not the already-running ingress.
-  // Preserve its auth mode and policy unless a case explicitly replaces gateway settings.
-  const next = {
-    ...config,
-    gateway: {
-      ...getRuntimeConfig().gateway,
-      ...(isRecord(config.gateway) ? config.gateway : {}),
-    },
-  };
-  await fs.writeFile(configPath, JSON.stringify(next, null, 2), "utf-8");
-  resetConfigRuntimeState();
 }
 
 async function withDirectChatSession(
