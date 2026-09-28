@@ -26,7 +26,6 @@ export type WatcherFactory = (paths: string[], options: WatchOptions) => Watcher
 type Observation = {
   group: SourceTargetGroup;
   signature: string;
-  baseline: boolean;
   subscription: WatchSubscription;
 };
 
@@ -42,6 +41,7 @@ export function createSourceObserver(paths: string[], options: WatchOptions) {
   let closing: Promise<void> | undefined;
   let active: Promise<void> | undefined;
   let pending = false;
+  let files: Map<string, string> | undefined;
   let announced = false;
 
   function close(): Promise<void> {
@@ -102,7 +102,6 @@ export function createSourceObserver(paths: string[], options: WatchOptions) {
         if (existing.signature !== signature) {
           existing.group = group;
           existing.signature = signature;
-          existing.baseline = true;
           await existing.subscription.setScopes(group.scopes);
         }
         continue;
@@ -110,7 +109,6 @@ export function createSourceObserver(paths: string[], options: WatchOptions) {
       const entry: Observation = {
         group,
         signature,
-        baseline: true,
         subscription: watch(group.authority, {
           scopes: group.scopes,
           mode,
@@ -118,18 +116,9 @@ export function createSourceObserver(paths: string[], options: WatchOptions) {
           signal: lifetime.signal,
           exclude: (candidate) => excludeSourceTarget(entry.group, candidate, options.ignored),
           onInvalidate(hint) {
-            // Every admission has a baseline, including setScopes. Rediscover
-            // links created during admission without restarting for the baseline.
-            if (entry.baseline && hint.reason === "reconcile" && !hint.changes) {
-              entry.baseline = false;
-              request();
-              return;
-            }
-            if (!hint.changes || hint.changes.some((change) => change.type === "structural")) {
-              request();
-            }
+            // Overflow and admission baselines request a read, never a restart.
             if (!hint.changes) {
-              options.onChange();
+              request();
               return;
             }
             for (const change of hint.changes) {
@@ -137,7 +126,7 @@ export function createSourceObserver(paths: string[], options: WatchOptions) {
                 (lexical) => !options.ignored(lexical),
               );
               if (changed !== undefined) {
-                options.onChange(changed);
+                request();
                 return;
               }
             }
@@ -179,7 +168,19 @@ export function createSourceObserver(paths: string[], options: WatchOptions) {
             throw error;
           }
           lifetime.signal.throwIfAborted();
+          const current = new Map(groups.flatMap((group) => [...group.files]));
+          const previous = files;
+          const changed =
+            previous &&
+            [...new Set([...previous.keys(), ...current.keys()])].find(
+              (name) => previous.get(name) !== current.get(name),
+            );
+          files = current;
           await install(groups);
+          lifetime.signal.throwIfAborted();
+          if (changed !== undefined) {
+            options.onChange(changed);
+          }
         }
         if (!closing) {
           if (!announced) {

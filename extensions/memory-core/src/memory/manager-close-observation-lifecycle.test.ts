@@ -22,7 +22,10 @@ const embedding = vi.hoisted(() => ({
   embed: vi.fn<() => Promise<number[]>>(),
   embedBatch: vi.fn<(inputs: EmbeddingInput[]) => Promise<number[][]>>(),
 }));
-vi.mock("@openclaw/fs-safe/watch", () => ({ watch: observer.watch }));
+vi.mock("openclaw/plugin-sdk/file-access-runtime", async (original) => ({
+  ...(await original<typeof import("openclaw/plugin-sdk/file-access-runtime")>()),
+  watch: observer.watch,
+}));
 vi.mock("./embeddings.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./embeddings.js")>()),
   resolveEmbeddingProviderIndexIdentity: () => ({

@@ -46,6 +46,39 @@ describe("skills watcher churn", () => {
     fixtureWorkspaceDir = fixture.workspaceDir;
   });
 
+  it("re-reads on overflow without publishing unchanged skills", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    const workspaceDir = fixtureWorkspaceDir;
+    const skillDir = await createFixtureDirectory("workspace/skills/demo");
+    const skillPath = path.join(skillDir, "SKILL.md");
+    await fs.writeFile(skillPath, "---\nname: demo\ndescription: Original\n---\n");
+    refreshModule.ensureSkillsWatcher({ workspaceDir });
+    await observer.readyAll();
+    const options = {
+      bundledSkillsDir: "",
+      managedSkillsDir: path.join(workspaceDir, "missing-managed"),
+    };
+    await buildSkillSnapshot(workspaceDir, options);
+    const version = getSkillsSnapshotVersion(workspaceDir);
+    const changed = vi.fn();
+    refreshModule.registerSkillsChangeListener(changed);
+    const watcher = observer.forRoot(path.join(workspaceDir, "skills"));
+
+    watcher.dirty(undefined, "overflow");
+    await vi.advanceTimersByTimeAsync(250);
+    expect(getSkillsSnapshotVersion(workspaceDir)).toBe(version);
+    expect(changed).not.toHaveBeenCalled();
+
+    await fs.writeFile(skillPath, "---\nname: demo\ndescription: Changed\n---\n");
+    watcher.dirty(undefined, "overflow");
+    await vi.advanceTimersByTimeAsync(250);
+    expect(getSkillsSnapshotVersion(workspaceDir)).toBeGreaterThan(version);
+    expect(changed).toHaveBeenCalledOnce();
+    expect((await buildSkillSnapshot(workspaceDir, options)).resolvedSkills).toEqual([
+      expect.objectContaining({ name: "demo", description: "Changed" }),
+    ]);
+  });
+
   it("keeps due work independent of another target's later debounce deadline", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
     const workspaceDir = fixtureWorkspaceDir;

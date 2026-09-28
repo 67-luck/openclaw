@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { WatchSubscription } from "@openclaw/fs-safe/watch";
+import type { WatchHealth, WatchSubscription } from "@openclaw/fs-safe/watch";
 import { beforeEach, expect, it, vi } from "vitest";
 import { loadWorkspaceSkills } from "../loading/workspace-skill-loader.js";
 import { resolveWorkspaceSkillSourcePlan } from "../loading/workspace-skill-sources.js";
@@ -11,6 +11,18 @@ import { useSkillsWatcherFixture } from "./refresh.watcher.test-support.js";
 
 const subscriptions: WatchSubscription[] = [];
 const starts: Promise<void>[] = [];
+const failures: NonNullable<WatchHealth["failure"]>[] = [];
+const warnings = vi.hoisted(() => vi.fn());
+vi.mock("../../logging/subsystem.js", async (original) => {
+  const actual = await original<typeof import("../../logging/subsystem.js")>();
+  return {
+    ...actual,
+    createSubsystemLogger: (...args: Parameters<typeof actual.createSubsystemLogger>) => ({
+      ...actual.createSubsystemLogger(...args),
+      warn: warnings,
+    }),
+  };
+});
 vi.mock("@openclaw/fs-safe/watch", async () => {
   const { createRequire } = await import("node:module");
   // /root and /watch must share fs-safe's private Root registry.
@@ -22,6 +34,12 @@ vi.mock("@openclaw/fs-safe/watch", async () => {
       ...options,
       mode: "poll",
       pollIntervalMs: 2_147_483_647,
+      onHealth(health) {
+        if (health.failure) {
+          failures.push(health.failure);
+        }
+        options.onHealth?.(health);
+      },
     });
     const setScopes = subscription.setScopes.bind(subscription);
     subscription.setScopes = (scopes) => {
@@ -45,6 +63,8 @@ const planning: Promise<unknown>[] = [];
 const samples: Promise<unknown>[] = [];
 beforeEach(async () => {
   subscriptions.length = starts.length = planning.length = samples.length = 0;
+  failures.length = 0;
+  warnings.mockClear();
   const settling = await import("./refresh-file-stability.js");
   const createScheduler = settling.createSkillFileScheduler;
   vi.spyOn(settling, "createSkillFileScheduler").mockImplementation((options) =>
@@ -67,7 +87,7 @@ beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
 });
 
-async function ready() {
+async function ready(allowFailure = false) {
   // A completed admission can discover another trusted target or widen an entry scope.
   let joined = -1;
   while (joined !== starts.length + planning.length) {
@@ -76,8 +96,13 @@ async function ready() {
     await Promise.all(
       [...pathWatchers.values()].flatMap((state) => (state.authority ? [state.authority] : [])),
     );
-    await Promise.all(planning);
-    await Promise.all(starts);
+    if (allowFailure) {
+      await Promise.allSettled(planning);
+      await Promise.allSettled(starts);
+    } else {
+      await Promise.all(planning);
+      await Promise.all(starts);
+    }
   }
 }
 
@@ -119,6 +144,37 @@ const ensure = (config = {}) => {
   });
   return ready();
 };
+
+it.runIf(process.platform === "linux")(
+  "reports invalid UTF-8 observation and refreshes valid siblings during preparation",
+  async () => {
+    const workspaceDir = fixture.workspaceDir;
+    const root = path.join(workspaceDir, "skills");
+    const dir = path.join(root, "guide");
+    await writeSkill({ dir, name: "guide", description: "Before observation failed" });
+    await ensure();
+    expect(read()).toEqual(["Before observation failed"]);
+    const changed = vi.fn();
+    refresh.registerSkillsChangeListener(changed);
+    const invalid = Buffer.concat([Buffer.from(root + path.sep), Buffer.from([0xff])]);
+    await fs.writeFile(invalid, "unsupported filename");
+    await Promise.allSettled(subscriptions.map((subscription) => subscription.reconcile()));
+    await ready(true);
+    expect(failures).toContainEqual(expect.objectContaining({ code: "invalid-path" }));
+    expect(warnings).toHaveBeenCalledWith(expect.stringContaining("not valid UTF-8"));
+    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ reason: "watch-unavailable" }));
+    expect(read()).toEqual(["Before observation failed"]);
+
+    await writeSkill({ dir, name: "guide", description: "Edited while unavailable" });
+    refresh.ensureSkillsWatcher({
+      workspaceDir,
+      sourcePlan: resolveWorkspaceSkillSourcePlan(workspaceDir, { workspaceOnly: true }),
+    });
+    await ready(true);
+    expect(read()).toEqual(["Edited while unavailable"]);
+    expect(await fs.readFile(invalid, "utf8")).toBe("unsupported filename");
+  },
+);
 
 it.each(["missing", "root", "workspace", "symbolic"] as const)(
   "refreshes cached skills after replacing a %s and keeps observing later edits",

@@ -1,10 +1,6 @@
+import type { WatchInvalidation, WatchHealth, WatchSubscription } from "@openclaw/fs-safe/watch";
 import {
   watch,
-  type WatchInvalidation,
-  type WatchHealth,
-  type WatchSubscription,
-} from "@openclaw/fs-safe/watch";
-import {
   resolveFsObservationMode,
   resolveFsObservationIntervalMs,
   ObservationSampleCloseError,

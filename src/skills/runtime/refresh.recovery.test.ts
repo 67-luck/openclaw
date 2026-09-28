@@ -1,8 +1,10 @@
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { resolveWorkspaceSkillSourcePlan } from "../loading/workspace-skill-sources.js";
 import { writeSkill } from "../test-support/e2e-test-helpers.js";
 import { getSkillsSourceVersion } from "./refresh-state.js";
+import { pathWatchers } from "./refresh-watch-registry.js";
 import {
   createSkillsWatcherMock,
   useSkillsWatcherFixture,
@@ -16,6 +18,7 @@ vi.mock("../loading/plugin-skills.js", () => ({
 }));
 const fixture = useSkillsWatcherFixture(observer);
 const refresh = await import("./refresh.js");
+const { resolveReusableWorkspaceSkillSnapshot } = await import("./session-snapshot.js");
 
 it("invalidates before joined retirement, retries once under the exact admitted Root, and restores availability", async () => {
   const params = { workspaceDir: fixture.workspaceDir };
@@ -69,6 +72,49 @@ it("does not automatically loop after its one recovery attempt fails", async () 
   expect(observer.forRoot(root).authority).toBe(original.authority);
 });
 
+it("settles a deeper subscriber's scope update when replacement startup fails", async () => {
+  const workspaceDir = fixture.workspaceDir;
+  const root = await fixture.createFixtureDirectory("shared-source");
+  refresh.ensureSkillsWatcher({
+    workspaceDir,
+    sourcePlan: {
+      ...resolveWorkspaceSkillSourcePlan(workspaceDir, { workspaceOnly: true }),
+      roots: [{ dir: root, source: "openclaw-extra", tier: "extra" }],
+    },
+  });
+  await observer.readyAll();
+  const original = observer.forRoot(root);
+  original.fail(new Error("first scan failed"));
+  await original.close();
+  await waitForSkillsWatcherTurn();
+  await observer.started();
+  const retry = observer.forRoot(root);
+  const state = pathWatchers.get(root)!;
+  const initialDepth = state.depth;
+  const refreshScope = state.refreshScope;
+  // Bound a broken recursive retry so the regression fails instead of starving the event loop.
+  const scopeUpdates = vi
+    .spyOn(state, "refreshScope")
+    .mockResolvedValue(undefined)
+    .mockImplementationOnce(refreshScope);
+  const peer = await fixture.createFixtureDirectory("peer");
+  refresh.ensureSkillsWatcher({
+    workspaceDir: peer,
+    sourcePlan: {
+      ...resolveWorkspaceSkillSourcePlan(peer, { workspaceOnly: true }),
+      roots: [{ dir: root, source: "openclaw-workspace", tier: "workspace" }],
+    },
+  });
+  expect(state.depth).toBeGreaterThan(initialDepth);
+  expect(scopeUpdates).toHaveBeenCalledOnce();
+  retry.fail(new Error("replacement scan failed"));
+  await scopeUpdates.mock.results[0]!.value;
+  expect(scopeUpdates).toHaveBeenCalledOnce();
+  expect(state.failed).toBe(true);
+  expect(observer.forRoot(root, true)).toBe(retry);
+  expect(retry.close).not.toHaveBeenCalled();
+});
+
 it.each(["unsubscribe", "shutdown", "re-ensure"] as const)(
   "retains plan ownership when failure publication triggers %s",
   async (action) => {
@@ -110,7 +156,6 @@ it.each(["unsubscribe", "shutdown", "re-ensure"] as const)(
 
 it("keeps healthy sibling coverage and refreshes actual content while recovery is held", async () => {
   const params = { workspaceDir: fixture.workspaceDir, config: { plugins: { enabled: false } } };
-  const { resolveReusableWorkspaceSkillSnapshot } = await import("./session-snapshot.js");
   const write = (description: string) =>
     writeSkill({ dir: path.join(params.workspaceDir, "skills/guide"), name: "guide", description });
   await write("Before outage");

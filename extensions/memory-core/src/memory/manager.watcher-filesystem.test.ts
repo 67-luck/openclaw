@@ -2,8 +2,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import * as observation from "@openclaw/fs-safe/watch";
+import type { WatchSubscription, WatchOptions, WatchHealth } from "@openclaw/fs-safe/watch";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import * as observation from "openclaw/plugin-sdk/file-access-runtime";
 import {
   resolveMemorySearchConfig,
   type OpenClawConfig,
@@ -18,31 +19,54 @@ import {
 import { MemoryIndexManager } from "./manager.js";
 
 // Real observation and indexing; only the application-owned settling clock is advanced.
-vi.mock("@openclaw/fs-safe/watch", async (original) => ({
-  ...(await original<typeof import("@openclaw/fs-safe/watch")>()),
+vi.mock("openclaw/plugin-sdk/file-access-runtime", async (original) => ({
+  ...(await original<typeof import("openclaw/plugin-sdk/file-access-runtime")>()),
 }));
 vi.mock("openclaw/plugin-sdk/runtime-env", async (original) => ({
   ...(await original<typeof import("openclaw/plugin-sdk/runtime-env")>()),
   sleepWithAbort: async (_ms: number, signal?: AbortSignal) => signal?.throwIfAborted(),
 }));
+const warnings = vi.hoisted(() => vi.fn());
+vi.mock("openclaw/plugin-sdk/memory-core-host-engine-foundation", async (original) => {
+  const actual =
+    await original<typeof import("openclaw/plugin-sdk/memory-core-host-engine-foundation")>();
+  return {
+    ...actual,
+    createSubsystemLogger: (...args: Parameters<typeof actual.createSubsystemLogger>) => ({
+      ...actual.createSubsystemLogger(...args),
+      warn: warnings,
+    }),
+  };
+});
 
 it("indexes real edits, deletion and root replacement, then joins every subscription", async () => {
   // This helper allocates beneath os.tmpdir(), independent of the checkout path.
   const state = await createOpenClawTestState({ label: "memory-watch-filesystem" });
   const turn = new AsyncLocalStorage<string>();
   const contexts: Array<string | undefined> = [];
-  const subscriptions: observation.WatchSubscription[] = [];
+  const subscriptions: WatchSubscription[] = [];
+  const invalidations: WatchOptions["onInvalidate"][] = [];
+  const failures: NonNullable<WatchHealth["failure"]>[] = [];
   const bootstrap = createDeferred<void>();
   const originalWatch = observation.watch;
   const observed = vi.spyOn(observation, "watch").mockImplementation((authority, options) => {
     contexts.push(turn.getStore());
+    invalidations.push(options.onInvalidate);
     const subscription = originalWatch(authority, {
       ...options,
+      mode: "poll",
+      pollIntervalMs: 2_147_483_647,
       onInvalidate(invalidation) {
         options.onInvalidate(invalidation);
         if (invalidation.reason === "reconcile" && !invalidation.changes) {
           bootstrap.resolve();
         }
+      },
+      onHealth(health) {
+        if (health.failure) {
+          failures.push(health.failure);
+        }
+        options.onHealth?.(health);
       },
     });
     subscriptions.push(subscription);
@@ -78,7 +102,7 @@ it("indexes real edits, deletion and root replacement, then joins every subscrip
       },
     };
     const debounceMs = resolveMemorySearchConfig(cfg, "main")!.sync.watchDebounceMs;
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     manager = await turn.run("opening turn", () =>
       MemoryIndexManager.get({ cfg, agentId: "main" }),
     );
@@ -136,6 +160,15 @@ it("indexes real edits, deletion and root replacement, then joins every subscrip
     await vi.advanceTimersByTimeAsync(debounceMs);
     await indexed.promise;
     expect(rows.all()).toEqual(expected([{ path: "memory/note.md", text: "Amethyst sentinel." }]));
+    const revisions = index.prepare(
+      `SELECT chunk_rowid, id, updated_at FROM ${MEMORY_INDEX_CHUNKS_TABLE} ORDER BY id`,
+    );
+    const unchanged = revisions.all();
+    indexed = createDeferred<void>();
+    invalidations[0]!({ reason: "overflow" });
+    await vi.advanceTimersByTimeAsync(debounceMs);
+    await indexed.promise;
+    expect(revisions.all()).toEqual(unchanged);
     await fs.writeFile(note, "Cobalt sentinel after edit.");
     await flush([{ path: "memory/note.md", text: "Cobalt sentinel after edit." }]);
     await fs.rm(note);
@@ -144,6 +177,28 @@ it("indexes real edits, deletion and root replacement, then joins every subscrip
     await fs.mkdir(memory);
     await fs.writeFile(path.join(memory, "replacement.md"), "Heliotrope replacement.");
     await flush([{ path: "memory/replacement.md", text: "Heliotrope replacement." }]);
+    if (process.platform === "linux") {
+      const invalid = Buffer.concat([Buffer.from(memory + path.sep), Buffer.from([0xff])]);
+      await fs.writeFile(invalid, "unsupported filename");
+      await Promise.allSettled(subscriptions.map((subscription) => subscription.reconcile()));
+      expect(failures).toContainEqual(expect.objectContaining({ code: "invalid-path" }));
+      expect(warnings).toHaveBeenCalledWith(
+        expect.stringContaining("memory will refresh on search"),
+      );
+      expect(warnings).toHaveBeenCalledWith(expect.stringContaining("not valid UTF-8"));
+      const text = "Periwinkle sibling edited after observation failed.";
+      await fs.writeFile(path.join(memory, "replacement.md"), text);
+      const lifecycle = activeManager as unknown as { awaitManagerIdle: () => Promise<void> };
+      // Leave watcher/retry timers pending: only the search boundary may repair this edit.
+      await activeManager.search("Periwinkle", { minScore: 0 });
+      await lifecycle.awaitManagerIdle();
+      expect(rows.all()).toEqual(expected([{ path: "memory/replacement.md", text }]));
+      expect(
+        (await activeManager.search("Periwinkle", { minScore: 0 })).map((result) => result.snippet),
+      ).toContain(text);
+      await lifecycle.awaitManagerIdle();
+      expect(await fs.readFile(invalid, "utf8")).toBe("unsupported filename");
+    }
     expect(contexts.every((context) => context === undefined)).toBe(true);
     await activeManager.close();
     expect(subscriptions.every((entry) => entry.health().state === "closed")).toBe(true);

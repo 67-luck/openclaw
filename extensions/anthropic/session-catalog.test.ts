@@ -2069,13 +2069,13 @@ describe("Claude session catalog", () => {
     let failRoot = true;
     vi.spyOn(fs, "realpath").mockImplementation(async (...args) => {
       if (failRoot && args[0] === projectRoot) {
-        failRoot = false;
         throw new Error("transient realpath failure");
       }
       return await realpath(...args);
     });
 
     await expect(listLocalClaudeSessionPage({}, home)).resolves.toEqual({ sessions: [] });
+    failRoot = false;
     await expect(listLocalClaudeSessionPage({}, home)).resolves.toMatchObject({
       sessions: [expect.objectContaining({ threadId: "recovered" })],
     });

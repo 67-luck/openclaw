@@ -1,7 +1,8 @@
 import "./template.js";
 
 type UsageBarTemplateTestApi = {
-  clearUsageBarTemplateCacheForTest(): void;
+  clearUsageBarTemplateCacheForTest(): Promise<void>;
+  reconcileUsageBarTemplateCacheForTest(): Promise<void>;
 };
 
 function getTestApi(): UsageBarTemplateTestApi {
@@ -14,6 +15,7 @@ function getTestApi(): UsageBarTemplateTestApi {
   return api as UsageBarTemplateTestApi;
 }
 
-export function clearUsageBarTemplateCacheForTest(): void {
+export const clearUsageBarTemplateCacheForTest = () =>
   getTestApi().clearUsageBarTemplateCacheForTest();
-}
+export const reconcileUsageBarTemplateCacheForTest = () =>
+  getTestApi().reconcileUsageBarTemplateCacheForTest();
