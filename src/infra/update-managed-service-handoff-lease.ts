@@ -536,7 +536,9 @@ export function createManagedHandoffLeaseStore(
     return cas(active, { ...active.action, phase });
   }
   function canRelease(lease: ManagedHandoffLease) {
+    // Retained custody refuses release before mutable stored rows are inspected.
     if (
+      lease.version === 3 ||
       lease.version === 4 ||
       hasOriginalUpdateExecutorCustody(lease) ||
       !withDatabase(false, (db) => storedCurrent(lease, db)) ||

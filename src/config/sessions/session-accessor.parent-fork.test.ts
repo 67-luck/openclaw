@@ -6,7 +6,10 @@ import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { afterEach, describe, expect, it } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
-import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  openOpenClawAgentDatabase,
+} from "../../state/openclaw-agent-db.js";
 import { parseSqliteSessionFileMarker } from "./legacy-sqlite-marker.js";
 import {
   forkSessionEntryFromParentTarget,
@@ -18,6 +21,7 @@ import {
   replaceTranscriptEvents,
 } from "./session-accessor.js";
 import { resolveSqliteStoreScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
+import { waitForSessionTranscriptIndexReconcilesInStateDir } from "./session-transcript-reconcile.js";
 
 const roots: string[] = [];
 
@@ -77,7 +81,11 @@ async function openForkedChildSession(
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+  for (const root of roots.splice(0)) {
+    await waitForSessionTranscriptIndexReconcilesInStateDir(root);
+    await closeOpenClawAgentDatabasesAsync(root);
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 describe("forkSessionFromParentTranscript", () => {
