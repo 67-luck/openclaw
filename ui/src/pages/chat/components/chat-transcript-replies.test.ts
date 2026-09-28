@@ -3,8 +3,14 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { GatewaySessionRow } from "../../../api/types.ts";
 import { createTestTranscript } from "../chat-view.test-helpers.ts";
-import { renderTranscriptSearch, toggleTranscriptSearch } from "./chat-thread-interactions.ts";
+import * as chatMessage from "./chat-message.ts";
+import {
+  getTranscriptState,
+  renderTranscriptSearch,
+  toggleTranscriptSearch,
+} from "./chat-thread-interactions.ts";
 import { renderChatThread } from "./chat-thread.ts";
 import {
   flushDeferredRowPrune,
@@ -64,9 +70,10 @@ describe("chat transcript replies", () => {
       transcript.hostUpdated();
       await flushDeferredRowPrune();
 
-      const preview = container.querySelector<HTMLButtonElement>(".chat-reply-preview--message");
-      expect(preview?.textContent).toContain("Replying to Molty");
-      expect(preview?.textContent).toContain("The original answer");
+      const preview = container.querySelector<HTMLButtonElement>(
+        ".chat-reply-attribution--inline button",
+      );
+      expect(preview?.getAttribute("aria-label")).toBe("Replying to Molty");
       expect(preview?.textContent).not.toContain("source-message");
 
       const sourceBubble = [...container.querySelectorAll<HTMLElement>(".chat-bubble")].find(
@@ -97,6 +104,50 @@ describe("chat transcript replies", () => {
       }
     },
   );
+
+  it("reveals a loaded original without text instead of paging history", async () => {
+    const transcript = createTestTranscript();
+    const container = document.body.appendChild(document.createElement("div"));
+    const open = vi.fn();
+    const props = threadProps("pane-reply-textless", "agent:main:main", [
+      // Rendered for its own reply line, with no text of its own.
+      {
+        role: "user",
+        content: [],
+        __openclaw: { id: "textless", replyToId: "elsewhere" },
+        timestamp: 1_000,
+      },
+      {
+        role: "user",
+        content: "Follow up",
+        __openclaw: { id: "reply-message", replyToId: "textless" },
+        timestamp: 2_000,
+      },
+    ]);
+    props.replyMessageAccess = {
+      revision: 0,
+      navigationId: null,
+      read: () => undefined,
+      request: vi.fn(),
+      open,
+    };
+    try {
+      render(renderChatThread(props, transcript), container);
+      transcript.hostConnected();
+      transcript.hostUpdated();
+      await flushDeferredRowPrune();
+      requireElement(container, ".chat-reply-attribution--inline button").click();
+      await Promise.resolve();
+      expect(open).not.toHaveBeenCalled();
+      expect(
+        requireElement(container, "[data-entry-id='textless']").classList.contains(
+          "chat-bubble--reply-target",
+        ),
+      ).toBe(true);
+    } finally {
+      transcript.hostDisconnected();
+    }
+  });
 
   it.each([
     ["assistant", null, false, "Molty"],
@@ -140,11 +191,12 @@ describe("chat transcript replies", () => {
         props.replyMessageAccess.revision += 1;
         rerender();
 
-        const preview = container.querySelector<HTMLButtonElement>(".chat-reply-preview--message");
-        expect(preview?.querySelector(".chat-reply-preview__label")?.textContent?.trim()).toBe(
-          `Replying to ${senderLabel}`,
+        const preview = container.querySelector<HTMLButtonElement>(
+          ".chat-reply-attribution--inline button",
         );
-        expect(preview?.textContent).toContain("The original message");
+        expect(preview?.querySelector(".chat-reply-attribution__name")?.textContent?.trim()).toBe(
+          senderLabel,
+        );
         expect(container.querySelector("[data-entry-id='source-message']")).toBeNull();
         preview?.click();
         expect(open).toHaveBeenCalledWith("source-message");
@@ -179,7 +231,7 @@ describe("chat transcript replies", () => {
         rerender();
         transcript.hostConnected();
         await flushDeferredRowPrune();
-        requireElement(container, ".chat-reply-preview--message").click();
+        requireElement(container, ".chat-reply-attribution--inline button").click();
         expect(open).toHaveBeenCalledWith("source-message");
         props.replyMessageAccess.navigationId = "source-message";
         props.messages = [
@@ -210,6 +262,148 @@ describe("chat transcript replies", () => {
       } finally {
         transcript.hostDisconnected();
       }
+    },
+  );
+
+  const alice = {
+    senderId: "alice",
+    senderName: "Alice",
+    senderIdentity: { type: "profile", id: "alice" },
+  };
+  const bob = {
+    senderId: "bob",
+    senderName: "Bob",
+    senderIdentity: { type: "profile", id: "bob" },
+  };
+  const turn = (id: string, role: string, content: string, openclaw: object = {}) => ({
+    role,
+    content,
+    timestamp: Number(id.replace(/\D/g, "")),
+    __openclaw: { id, ...openclaw },
+  });
+  async function renderedStrips(props: ReturnType<typeof threadProps>, searchQuery?: string) {
+    const transcript = createTestTranscript();
+    const container = document.body.appendChild(document.createElement("div"));
+    if (searchQuery) {
+      Object.assign(getTranscriptState(props.paneId), { searchOpen: true, searchQuery });
+    }
+    render(renderChatThread(props, transcript), container);
+    transcript.hostConnected();
+    transcript.hostUpdated();
+    await flushDeferredRowPrune();
+    transcript.hostDisconnected();
+    const strips = [...container.querySelectorAll(".chat-reply-attribution--reply")].map((strip) =>
+      strip.querySelector(".chat-reply-attribution__name")?.textContent?.trim(),
+    );
+    // No reply cue renders beyond the named strips.
+    expect(container.textContent?.split("Replying to").length).toBe(strips.length + 1);
+    return strips;
+  }
+
+  it.each([
+    {
+      case: "search hides the other speaker",
+      messages: [
+        turn("p1", "user", "Deploy?", alice),
+        turn("a2", "assistant", "Deploying"),
+        turn("p3", "user", "Status?", bob),
+        turn("a4", "assistant", "Rollout done"),
+      ],
+      query: "Rollout",
+      strips: ["Bob"],
+    },
+    {
+      case: "search hides the prompt this turn answers",
+      messages: [
+        turn("p1", "user", "Rollout plan?", alice),
+        turn("a2", "assistant", "Drafted"),
+        turn("p3", "user", "Anything else?", alice),
+        turn("a4", "assistant", "Rollout finished", {
+          replyToId: "p3",
+          replyToPreview: { text: "Anything else?", senderLabel: "Alice" },
+        }),
+      ],
+      query: "Rollout",
+      strips: [],
+    },
+    {
+      // An explicit reply to its own prompt stays visible once the thread is shared.
+      case: "the session has a participant outside the loaded page",
+      messages: [
+        turn("p1", "user", "Deploy?", alice),
+        turn("a2", "assistant", "Deploying", { replyToId: "p1" }),
+      ],
+      session: {
+        owner: {
+          actor: { type: "human", id: "alice", identity: { type: "profile", id: "alice" } },
+        },
+        participants: [{ identity: { type: "profile", id: "bob" }, label: "Bob" }],
+      },
+      strips: ["Alice"],
+    },
+    {
+      // The owner listed again as a participant, keys reordered, is still one person.
+      case: "the owner reappears as a participant with reordered identity keys",
+      messages: [
+        turn("p1", "user", "Deploy?", alice),
+        turn("a2", "assistant", "Deploying", { replyToId: "p1" }),
+      ],
+      session: {
+        owner: {
+          actor: { type: "human", id: "alice", identity: { type: "profile", id: "alice" } },
+        },
+        participants: [{ identity: { id: "alice", type: "profile" }, label: "Alice" }],
+      },
+      strips: [],
+    },
+  ])(
+    "keeps reply attribution from the full conversation when $case",
+    async ({ messages, query, session, strips }) => {
+      const props = threadProps("pane-reply-context", "agent:main:main", [...messages]);
+      if (session) {
+        props.selectedSession = {
+          key: props.sessionKey,
+          kind: "direct",
+          updatedAt: 1,
+          ...session,
+        } as GatewaySessionRow;
+      }
+      expect(await renderedStrips(props, query)).toEqual(strips);
+    },
+  );
+
+  it.each([
+    { linkage: "the prompt that owns its run", strips: ["Alice"] },
+    { linkage: "its own prompt in a 1:1 thread", latest: null, strips: [] },
+    { linkage: "an older prompt in a 1:1 thread", latest: alice, strips: ["Alice"] },
+    { linkage: "a legacy reply without a run", replyRun: null, strips: [] },
+    { linkage: "a prompt without a run key", promptRun: null, strips: [] },
+    { linkage: "another run's prompt", promptRun: "run-b", strips: [] },
+    { linkage: "duplicate run owners", duplicate: true, strips: [] },
+    {
+      linkage: "a channel-mirrored reply keyed only by its send",
+      reply: { mirrorOrigin: "discord", idempotencyKey: "run-a" },
+      strips: [],
+    },
+  ])(
+    "attributes reply_to_current only through $linkage",
+    async ({ promptRun = "run-a", replyRun = "run-a", latest = bob, duplicate, reply, strips }) => {
+      const props = threadProps("pane-reply-current", "agent:main:main", [
+        ...(duplicate
+          ? [turn("p1", "user", "Earlier", { ...alice, idempotencyKey: "run-a:user" })]
+          : []),
+        turn("p2", "user", "hey hey", {
+          ...alice,
+          ...(promptRun ? { idempotencyKey: `${promptRun}:user` } : {}),
+        }),
+        // The latest prompt never stands in for an unresolved origin.
+        ...(latest ? [turn("p3", "user", "Unrelated", latest)] : []),
+        {
+          ...turn("a4", "assistant", "Tô aqui", reply ?? (replyRun ? { runId: replyRun } : {})),
+          openclawDelivery: { replyToCurrent: true },
+        },
+      ]);
+      expect(await renderedStrips(props)).toEqual(strips);
     },
   );
 
@@ -258,7 +452,7 @@ describe("chat transcript replies", () => {
 
     expect(threadContainer.querySelector("[data-entry-id='source-message']")).toBeNull();
     const preview = threadContainer.querySelector<HTMLButtonElement>(
-      ".chat-reply-preview--message",
+      ".chat-reply-attribution--inline button",
     );
     expect(preview).not.toBeNull();
     preview!.click();
@@ -267,4 +461,110 @@ describe("chat transcript replies", () => {
     expect(searchContainer.querySelector("input")).toBeNull();
     transcript.hostDisconnected();
   });
+
+  it.each(["group", "frame"] as const)(
+    "refreshes an unchanged reply %s when its older original loads or changes",
+    async (presentation) => {
+      vi.spyOn(Date, "now").mockReturnValue(60_000);
+      const history = [
+        {
+          role: "user",
+          content: "Alice's recent prompt",
+          timestamp: 1_000,
+          __openclaw: { id: "alice-prompt", senderId: "alice", senderName: "Alice" },
+        },
+        {
+          role: "assistant",
+          content: "Unrelated answer",
+          timestamp: 2_000,
+          __openclaw: { id: "unrelated-answer" },
+        },
+        {
+          role: "user",
+          content: "Bob's current prompt",
+          timestamp: 3_000,
+          __openclaw: {
+            id: "bob-prompt",
+            senderId: "bob",
+            senderName: "Bob",
+            idempotencyKey: "reply-run:user",
+          },
+        },
+        {
+          role: "assistant",
+          content: "Answer to the earlier question",
+          timestamp: 4_000,
+          phase: "final_answer",
+          stopReason: "stop",
+          ...(presentation === "frame" ? { runId: "reply-run" } : {}),
+          __openclaw: {
+            id: "reply-answer",
+            replyToId: "older-prompt",
+            replyToPreview: { senderLabel: "Old label", text: "Old snapshot" },
+          },
+        },
+      ];
+      const props = threadProps(
+        `pane-reply-source-${presentation}`,
+        "agent:main:dashboard:reply-source",
+        history,
+      );
+      const transcript = createTestTranscript();
+      const container = document.body.appendChild(document.createElement("div"));
+      const rerender = () => {
+        render(renderChatThread(props, transcript), container);
+        transcript.hostUpdated();
+      };
+      const attribution = () =>
+        expectDefined(
+          container
+            .querySelector('[data-entry-id="reply-answer"]')
+            ?.closest(".chat-group")
+            ?.querySelector(".chat-reply-attribution--reply"),
+          "reply attribution",
+        );
+      try {
+        rerender();
+        transcript.hostConnected();
+        await flushDeferredRowPrune();
+        // The snapshot names an original outside the loaded history; it still navigates.
+        expect(
+          attribution().querySelector("button .chat-reply-attribution__name")?.textContent,
+        ).toBe("Old label");
+        const unrelatedKey = expectDefined(
+          container
+            .querySelector('[data-entry-id="unrelated-answer"]')
+            ?.closest(".chat-group")
+            ?.getAttribute("data-chat-row-key"),
+          "unrelated group key",
+        );
+        const renderGroup = vi.spyOn(chatMessage, "renderMessageGroup");
+
+        for (const [name, text] of [
+          ["Carol", "Original question loaded"],
+          ["Caroline", "Original question corrected"],
+        ]) {
+          props.messages = [
+            {
+              role: "user",
+              content: text,
+              timestamp: 500,
+              __openclaw: { id: "older-prompt", senderId: "carol", senderName: name },
+            },
+            ...history,
+          ];
+          rerender();
+          await flushDeferredRowPrune();
+          expect(
+            attribution().querySelector("button .chat-reply-attribution__name")?.textContent,
+          ).toBe(name);
+          expect(renderGroup.mock.calls.filter(([group]) => group.key === unrelatedKey)).toEqual(
+            [],
+          );
+        }
+      } finally {
+        transcript.hostDisconnected();
+      }
+    },
+  );
 });
