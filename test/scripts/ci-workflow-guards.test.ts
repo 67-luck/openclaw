@@ -5185,6 +5185,28 @@ setImmediate(() => {
       status: 0,
     },
     {
+      name: "Linux job-local store",
+      cache: false,
+      workspaceStore: true,
+      runnerOS: "Linux",
+      importMethod: "hardlink",
+      frozen: "true",
+      exits: [0],
+      modes: ["--prefer-offline"],
+      status: 0,
+    },
+    {
+      name: "macOS job-local store",
+      cache: false,
+      workspaceStore: true,
+      runnerOS: "macOS",
+      importMethod: "copy",
+      frozen: "true",
+      exits: [0],
+      modes: ["--prefer-offline"],
+      status: 0,
+    },
+    {
       name: "invalid frozen policy",
       cache: false,
       frozen: "invalid",
@@ -5232,11 +5254,23 @@ setImmediate(() => {
       modes: ["--offline", "--offline", "--prefer-offline"],
       status: 23,
     },
-  ])("executes the dependency install recipe: $name", ({ cache, frozen, exits, modes, status }) => {
+  ])("executes the dependency install recipe: $name", (scenario) => {
+    const {
+      cache,
+      frozen,
+      exits,
+      modes,
+      status,
+      workspaceStore = false,
+      runnerOS = "Linux",
+      importMethod = cache ? "hardlink" : "copy",
+    } = scenario;
     const root = tempDirs.make("openclaw-install-recipe-");
     const workspace = path.join(root, "workspace");
     const bin = path.join(root, "bin");
-    const store = path.join(root, "store");
+    const store = workspaceStore
+      ? path.join(workspace, ".cache", "openclaw-pnpm-store")
+      : path.join(root, "store");
     const log = path.join(root, "calls.jsonl");
     const githubEnv = path.join(root, "github.env");
     const payload = path.join(root, "payload");
@@ -5300,6 +5334,7 @@ process.exit(JSON.parse(process.env.RECIPE_EXITS)[count] ?? 99);
           GITHUB_ACTION_PATH: path.resolve(".github/actions/setup-node-env"),
           GITHUB_WORKSPACE: workspace,
           GITHUB_ENV: githubEnv,
+          RUNNER_OS: runnerOS,
           CI: "true",
           DEPENDENCY_CACHE: String(cache),
           DEPENDENCY_CACHE_HIT: String(cache),
@@ -5330,7 +5365,7 @@ process.exit(JSON.parse(process.env.RECIPE_EXITS)[count] ?? 99);
       "--config.cache-dir=" + config.PNPM_CONFIG_CACHE_DIR,
       "--config.child-concurrency=3",
       "--config.network-concurrency=4",
-      "--config.package-import-method=" + (cache ? "hardlink" : "copy"),
+      "--config.package-import-method=" + importMethod,
       "--config.store-dir=" + store,
       "--config.virtual-store-dir=" + config.PNPM_CONFIG_VIRTUAL_STORE_DIR,
     ];
@@ -5338,7 +5373,7 @@ process.exit(JSON.parse(process.env.RECIPE_EXITS)[count] ?? 99);
       modes.map((mode) => ({
         args: [...expectedArgs, mode],
         cwd: workspace,
-        importMethod: cache ? "hardlink" : "copy",
+        importMethod,
       })),
     );
     expect(existsSync(path.join(workspace, "node_modules", "before"))).toBe(modes.length < 2);

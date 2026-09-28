@@ -1,8 +1,8 @@
 // Oxlint Config tests cover oxlint config script behavior.
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { expectDefined } from "@openclaw/normalization-core";
 import JSON5 from "json5";
 import { describe, expect, it } from "vitest";
 import { createScriptTestHarness } from "./test-helpers.js";
@@ -698,11 +698,13 @@ describe("oxlint config", () => {
       expect(result.status, result.stdout + result.stderr).toBe(github && !correctness ? 0 : 1);
       const marker = "\n[ci-static:oxlint:leaf] ";
       const [output, receipt] = result.stdout.split(marker);
-      const report = JSON.parse(expectDefined(output, "oxlint JSON report")) as {
+      assert.ok(output !== undefined, "Missing lint diagnostic output");
+      const report = JSON.parse(output) as {
         diagnostics: Array<{ code: string; severity: string; filename: string; help?: string }>;
       };
       if (evidence) {
-        expect(JSON.parse(expectDefined(receipt, "oxlint static evidence receipt"))).toMatchObject({
+        assert.ok(receipt !== undefined, "Missing lint evidence receipt");
+        expect(JSON.parse(receipt)).toMatchObject({
           version: 1,
           id: "limits:0",
           config: ".oxlintrc.json",

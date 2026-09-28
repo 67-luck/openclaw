@@ -1,4 +1,4 @@
-import { expectDefined } from "@openclaw/normalization-core";
+import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import {
   isStaticEvidencePath,
@@ -47,7 +47,9 @@ function stepLog(output: string, exitCode = 2) {
 }
 
 function fixtureRow(rows: { phase: string; data: Record<string, unknown> }[], index: number) {
-  return expectDefined(rows[index], `static evidence fixture row ${index}`);
+  const row = rows[index];
+  assert.ok(row, `Missing static evidence fixture row ${index}`);
+  return row;
 }
 
 function completeStaticLog(
