@@ -402,6 +402,7 @@ it("refuses a grown WAL family at the post-inventory capacity gate", async () =>
   await fs.mkdir(path.dirname(database), { recursive: true });
   const db = openNodeSqliteDatabase(database);
   const ready = path.join(root, "inventory-ready");
+  const diagnostic = path.join(root, "inventory-diagnostic.json");
   const runner = path.join(root, "inventory-runner.mjs");
   // Execute the real inventory child, then grow the synthetic WAL before the parent remeasures it.
   await fs.writeFile(
@@ -409,11 +410,15 @@ it("refuses a grown WAL family at the post-inventory capacity gate", async () =>
     `
     import fs from "node:fs";
     import { spawnSync } from "node:child_process";
+    const record = (phase, details = {}) => fs.writeFileSync(${JSON.stringify(diagnostic)}, JSON.stringify({ phase, ...details }));
+    record("runner-started");
     let input = "";
     for await (const chunk of process.stdin) input += chunk;
     const request = JSON.parse(input);
     if (request.mode !== "inventory") throw new Error("snapshot must not be launched after WAL growth");
+    record("child-started");
     const child = spawnSync(process.execPath, process.argv.slice(2), { input, encoding: "utf8" });
+    record("child-completed", { status: child.status, signal: child.signal, error: child.error?.message, stderr: child.stderr?.slice(-20000) });
     if (child.status !== 0) { process.stderr.write(child.stderr); process.exit(child.status ?? 1); }
     fs.writeFileSync(${JSON.stringify(ready)}, "inventory-complete");
     while (!fs.existsSync(${JSON.stringify(ready + ".grown")})) {
@@ -444,12 +449,27 @@ it("refuses a grown WAL family at the post-inventory capacity gate", async () =>
       workerEnv: () => ({ ...process.env, OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }),
       signal: controller.signal,
     });
+    let settlement = "pending";
     const outcome = operation.then(
-      (value) => ({ value }),
-      (error: unknown) => ({ error }),
+      (value) => {
+        settlement = "resolved before WAL growth";
+        return { value };
+      },
+      (error: unknown) => {
+        settlement = error instanceof Error ? (error.stack ?? error.message) : String(error);
+        return { error };
+      },
     );
     try {
-      await waitForFile(ready);
+      await waitForFile(ready).catch(async (error: unknown) => {
+        console.error("[inventory readiness failure]", {
+          settlement,
+          child: await fs
+            .readFile(diagnostic, "utf8")
+            .catch(() => "runner has not recorded a phase"),
+        });
+        throw error;
+      });
       db.exec("INSERT INTO payload VALUES (zeroblob(2097152));");
       await fs.writeFile(ready + ".grown", "continue");
       expect(await outcome).toMatchObject({

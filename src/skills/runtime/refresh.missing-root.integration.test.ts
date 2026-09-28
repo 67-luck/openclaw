@@ -24,13 +24,26 @@ vi.mock("../loading/plugin-skills.js", () => ({
 it.each(["initial", "closed", "disabled", "evicted"] as const)(
   "reads repaired skills immediately after %s watcher acquisition",
   async (lifecycle) => {
+    const started = performance.now();
+    const phases: Array<{ phase: string; elapsedMs: number }> = [];
+    const phase = (name: string) => {
+      phases.push({ phase: name, elapsedMs: Math.round(performance.now() - started) });
+    };
+    onTestFailed(() => {
+      console.error("[skills acquisition failure]", JSON.stringify({ lifecycle, phases }));
+    });
+    phase("create root");
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "skills-acquire-")));
     const workspaceDir = path.join(root, "workspace");
     const skillDir = path.join(workspaceDir, "skills", "acquire-proof");
     const skillFile = path.join(skillDir, "SKILL.md");
+    phase("import refresh");
     const { ensureSkillsWatcher, closeSkillsWatchers } = await import("./refresh.js");
+    phase("import refresh state");
     const { getSkillsSnapshotVersion } = await import("./refresh-state.js");
+    phase("import workspace skill loader");
     const { loadWorkspaceSkills } = await import("../loading/workspace-skill-loader.js");
+    phase("exercise acquisition");
     const options = { config: {}, agentId: "main" };
     try {
       await fs.mkdir(skillDir, { recursive: true });
@@ -73,8 +86,11 @@ it.each(["initial", "closed", "disabled", "evicted"] as const)(
       ensureSkillsWatcher({ workspaceDir, ...options });
       expect(getSkillsSnapshotVersion(workspaceDir)).toBe(version);
     } finally {
+      phase("close watchers");
       await closeSkillsWatchers();
+      phase("remove root");
       await fs.rm(root, { recursive: true, force: true });
+      phase("complete");
     }
   },
 );
