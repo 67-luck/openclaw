@@ -66,16 +66,33 @@ describe("server-owned pending input pagination", () => {
         queuedCount: 2,
       };
       let inputReceipts: ChatInputReceipts | undefined = undefined;
+      let olderInputs = [consumed, retained];
       const host = makeChatHost({
         sessionKey,
         currentSessionId: sessionId,
         requestHandlers: {
-          "chat.history": () => ({
+          "chat.history": (params: { pendingBefore?: number; inputRunIds?: string[] }) => ({
             sessionId,
             // Consumption happened outside this retained transcript window.
             messages: [{ role: "assistant", content: "Recent activity only" }],
-            pendingInputs,
-            ...(inputReceipts ? { inputReceipts } : {}),
+            pendingInputs:
+              params.pendingBefore === undefined
+                ? pendingInputs
+                : {
+                    items: olderInputs,
+                    total: pendingInputs.total,
+                    queuedCount: pendingInputs.queuedCount,
+                  },
+            ...(inputReceipts
+              ? {
+                  inputReceipts: [
+                    ...inputReceipts,
+                    ...(params.inputRunIds?.includes(replacement.runId)
+                      ? [{ runId: replacement.runId, state: "pending", queued: true }]
+                      : []),
+                  ],
+                }
+              : {}),
           }),
         },
       });
@@ -105,6 +122,7 @@ describe("server-owned pending input pagination", () => {
               queuedCount: source === "complete-page" ? 1 : 2,
               ...(source === "partial-page-receipts" ? { nextBefore: 21 } : {}),
             };
+      olderInputs = source === "partial-page-receipts" ? [retained] : [];
       // Complete queue snapshots stand alone; partial pages need exact receipts
       // because ordinary consumption deletes its custody record.
       inputReceipts =
@@ -135,6 +153,7 @@ describe("server-owned pending input pagination", () => {
       queued: true as const,
       message: { role: "user", content: `Queued message ${index}` },
     }));
+    let retireLast = false;
     const host = makeChatHost({
       sessionKey,
       currentSessionId: sessionId,
@@ -149,35 +168,46 @@ describe("server-owned pending input pagination", () => {
         },
       ],
       requestHandlers: {
-        "chat.history": (params: { inputRunIds?: string[] }) => ({
-          sessionId,
-          messages: [],
-          pendingInputs: { items: [], total: 71, nextBefore: 21 },
-          inputReceipts: params.inputRunIds?.map((runId) =>
-            runId === "browser-input"
-              ? { runId, state: "consumed", consumedByEventId: "browser-result" }
-              : {
-                  runId,
-                  state: "pending",
-                  ...(runId === "queued-50" ? {} : { queued: true }),
-                },
-          ),
-        }),
+        "chat.history": (params: { pendingBefore?: number; inputRunIds?: string[] }) => {
+          const remaining = inputs.filter(
+            (_, index) => index + 1 < (params.pendingBefore ?? Infinity),
+          );
+          return {
+            sessionId,
+            messages: [],
+            pendingInputs: {
+              items: remaining.slice(-20),
+              total: inputs.length,
+              queuedCount: retireLast ? 50 : 51,
+              ...(remaining.length > 20 ? { nextBefore: remaining.length - 19 } : {}),
+            },
+            inputReceipts: params.inputRunIds?.map((runId) =>
+              runId === "browser-input"
+                ? { runId, state: "consumed", consumedByEventId: "browser-result" }
+                : {
+                    runId,
+                    state: "pending",
+                    ...(retireLast && runId === "queued-50" ? {} : { queued: true }),
+                  },
+            ),
+          };
+        },
       },
     });
-    for (let offset = 0; offset < inputs.length; offset += 20) {
-      applyChatPendingInputs(host, { items: inputs.slice(offset, offset + 20), total: 71 });
-    }
-    const queueText = () =>
-      Array.from(
-        renderChatView({ historyState: host, sessionKey }).querySelectorAll(".chat-queue__text"),
-        (row) => row.textContent,
-      );
-    await loadChatHistory(host);
-    expect(queueText().slice(0, inputs.length)).toEqual(inputs.map((item) => item.message.content));
-    await loadChatHistory(host);
-    expect(queueText()).toEqual(inputs.slice(0, 50).map((item) => item.message.content));
+    applyChatPendingInputs(host, { items: [], total: 0 });
+    await loadChatPendingInputs(host);
+    expect(queuedTexts(host)).toEqual(inputs.map((item) => item.message.content));
     expect(host.chatQueue).toEqual([]);
+
+    retireLast = true;
+    host.request.mockClear();
+    await loadChatPendingInputs(host);
+    expect(queuedTexts(host)).toEqual(inputs.slice(0, 50).map((item) => item.message.content));
+    const batches = host.request.mock.calls.map(
+      ([, params]) => (params as { inputRunIds?: string[] }).inputRunIds ?? [],
+    );
+    expect(batches.every((batch) => batch.length <= 50)).toBe(true);
+    expect(new Set(batches.flat())).toEqual(new Set(inputs.map((item) => item.runId)));
   });
 
   it("discovers the whole live queue without changing the visible history page", async () => {
@@ -563,7 +593,8 @@ describe("server-owned pending input pagination", () => {
       expect(getChatPendingInputs(host)?.page).toEqual(page);
       expect(getChatPendingInputs(host)?.before).toBeUndefined();
       expect(getChatPendingInputs(host)?.loading).toBe(false);
-      expect(host.request).toHaveBeenCalledTimes(1);
+      // A cleared source starts its own discovery; the invalidated owner never rereads.
+      expect(host.request).toHaveBeenCalledTimes(change === "source" ? 2 : 1);
     },
   );
 
@@ -591,4 +622,206 @@ describe("server-owned pending input pagination", () => {
     expect(getChatPendingInputs(host)?.loading).toBe(false);
     expect(host.request).toHaveBeenCalledTimes(2);
   });
+});
+
+function forwardedInput(
+  id: string,
+  runId: string | undefined = id,
+): ChatPendingInputsPage["items"][number] {
+  return {
+    id,
+    runId,
+    acceptedAt: 100,
+    state: "queued",
+    message: {
+      role: "assistant",
+      content: id,
+      timestamp: 100,
+      provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+      senderSession: { sessionKey: "agent:main:helper", agentId: "main" },
+      __openclaw: { id: "pending:" + id },
+    },
+  };
+}
+
+function queuedTexts(host: Parameters<typeof getChatPendingInputs>[0]) {
+  return Array.from(
+    renderChatView({ historyState: host, sessionKey }).querySelectorAll(".chat-queue__text"),
+    (row) => row.textContent,
+  );
+}
+
+it.each([true, false])(
+  "retains a forwarded queue across Earlier and retires a full-snapshot absence (correlated=%s)",
+  async (correlated) => {
+    const forwarded = forwardedInput("Waiting agent update", correlated ? "agent-run" : undefined);
+    if (!correlated) {
+      delete forwarded.runId;
+    }
+    let consumed = false;
+    const olderPage: ChatPendingInputsPage = { items: [input], total: 21, queuedCount: 0 };
+    const latestPage: ChatPendingInputsPage = {
+      items: [forwarded],
+      total: 21,
+      nextBefore: 21,
+      queuedCount: 0,
+    };
+    const host = makeChatHost({
+      sessionKey,
+      currentSessionId: sessionId,
+      requestHandlers: {
+        "chat.history": (params: { pendingBefore?: number; inputRunIds?: string[] }) => ({
+          sessionId,
+          messages: [],
+          pendingInputs: consumed
+            ? { items: [input], total: 20, queuedCount: 0 }
+            : params.pendingBefore === 21
+              ? olderPage
+              : latestPage,
+          inputReceipts: params.inputRunIds?.flatMap((runId) =>
+            !consumed && runId === forwarded.runId ? [{ runId, state: "pending" }] : [],
+          ),
+        }),
+      },
+    });
+    applyChatPendingInputs(host, { items: [], total: 0, queuedCount: 0 });
+    await loadChatPendingInputs(host);
+    expect(queuedTexts(host)).toEqual([forwarded.id]);
+    await loadChatPendingInputs(host, 21);
+    expect(getChatPendingInputs(host)?.page).toEqual(olderPage);
+    expect(getChatPendingInputs(host)?.before).toBe(21);
+    expect(queuedTexts(host)).toEqual([forwarded.id]);
+    expect(getChatPendingInputs(host)?.queuedCount).toBe(0);
+    consumed = true;
+    await loadChatPendingInputs(host);
+    expect(queuedTexts(host)).toEqual([]);
+    expect(host.request.mock.calls.some(([method]) => method === "chat.send")).toBe(false);
+  },
+);
+
+it("discovers a forwarded input beyond the latest twenty without borrowing the execution queue count", async () => {
+  const forwarded = forwardedInput("Older agent update");
+  const human = {
+    ...input,
+    id: "human",
+    runId: "human-run",
+    state: "queued" as const,
+    queued: true as const,
+    message: { role: "user", content: "Human follow-up" },
+  };
+  const latestPage: ChatPendingInputsPage = {
+    items: [human],
+    total: 21,
+    nextBefore: 21,
+    queuedCount: 1,
+  };
+  let cancelled = false;
+  const host = makeChatHost({
+    sessionKey,
+    currentSessionId: sessionId,
+    requestHandlers: {
+      "chat.history": (params: { pendingBefore?: number; inputRunIds?: string[] }) => ({
+        sessionId,
+        messages: [],
+        pendingInputs:
+          params.pendingBefore === 21
+            ? {
+                items: [cancelled ? { ...forwarded, state: "cancelled" } : forwarded],
+                total: 21,
+                queuedCount: 1,
+              }
+            : latestPage,
+        inputReceipts: params.inputRunIds?.map((runId) =>
+          runId === human.runId
+            ? { runId, state: "pending", queued: true }
+            : { runId, state: "pending", ...(cancelled ? { cancelled: true } : {}) },
+        ),
+      }),
+    },
+  });
+  applyChatPendingInputs(host, { items: [], total: 0, queuedCount: 0 });
+  await loadChatPendingInputs(host);
+  expect(getChatPendingInputs(host)?.page).toEqual(latestPage);
+  expect(queuedTexts(host).toSorted()).toEqual([forwarded.id, "Human follow-up"].toSorted());
+  expect(getChatPendingInputs(host)?.queuedCount).toBe(1);
+  expect(readChatInputRunIds(host)).toContain(forwarded.runId);
+  expect(host.request).toHaveBeenCalledTimes(2);
+  cancelled = true;
+  await loadChatPendingInputs(host, 21);
+  expect(queuedTexts(host)).toEqual(["Human follow-up"]);
+});
+
+it("retires interrupted forwarded input on discovery even when its receipt still says pending", async () => {
+  const forwarded = forwardedInput("Interrupted agent update");
+  let interrupted = false;
+  const host = makeChatHost({
+    sessionKey,
+    currentSessionId: sessionId,
+    requestHandlers: {
+      "chat.history": (params: { pendingBefore?: number; inputRunIds?: string[] }) => ({
+        sessionId,
+        pendingInputs:
+          params.pendingBefore === undefined
+            ? { items: [input], total: 21, nextBefore: 21, queuedCount: 0 }
+            : {
+                items: [{ ...forwarded, state: interrupted ? "interrupted" : "queued" }],
+                total: 21,
+                queuedCount: 0,
+              },
+        inputReceipts: params.inputRunIds?.map((runId) => ({ runId, state: "pending" })),
+      }),
+    },
+  });
+  applyChatPendingInputs(host, { items: [], total: 0 });
+  await loadChatPendingInputs(host);
+  expect(queuedTexts(host)).toEqual([forwarded.id]);
+  interrupted = true;
+  await loadChatPendingInputs(host);
+  expect(queuedTexts(host)).toEqual([]);
+});
+
+it("restarts discovery from a newer latest page without publishing the stale response", async () => {
+  const stale = createDeferred<unknown>();
+  const newest = forwardedInput("Newest agent update");
+  const older = forwardedInput("Older agent update");
+  const host = makeChatHost({
+    sessionKey,
+    currentSessionId: sessionId,
+    requestHandlers: {
+      "chat.history": (params: { pendingBefore?: number }) =>
+        params.pendingBefore === 21
+          ? stale.promise
+          : { sessionId, pendingInputs: { items: [older], total: 22, queuedCount: 0 } },
+    },
+  });
+  applyChatPendingInputs(host, { items: [], total: 21, nextBefore: 21, queuedCount: 0 });
+  applyChatPendingInputs(host, { items: [newest], total: 22, nextBefore: 22, queuedCount: 0 });
+  stale.resolve({ sessionId, pendingInputs: { items: [forwardedInput("Stale")], total: 21 } });
+  await vi.waitFor(() =>
+    expect(queuedTexts(host).toSorted()).toEqual([older.id, newest.id].toSorted()),
+  );
+  expect(getChatPendingInputs(host)?.before).toBeUndefined();
+  expect(getChatPendingInputs(host)?.page.items).toEqual([newest]);
+  expect(
+    host.request.mock.calls.map(
+      ([, params]) => (params as { pendingBefore?: number }).pendingBefore,
+    ),
+  ).toEqual([21, 22]);
+});
+
+it("stops a non-advancing discovery cursor instead of issuing an unbounded read loop", async () => {
+  const forwarded = forwardedInput("Waiting agent update");
+  const host = makeChatHost({
+    sessionKey,
+    currentSessionId: sessionId,
+    requestHandlers: {
+      "chat.history": { sessionId, pendingInputs: { items: [], total: 21, nextBefore: 21 } },
+    },
+  });
+  applyChatPendingInputs(host, { items: [forwarded], total: 21, nextBefore: 21, queuedCount: 0 });
+  await vi.waitFor(() =>
+    expect(getChatPendingInputs(host)?.error).toContain("Could not finish loading queued messages"),
+  );
+  expect(queuedTexts(host)).toEqual([forwarded.id]);
+  expect(host.request).toHaveBeenCalledTimes(1);
 });

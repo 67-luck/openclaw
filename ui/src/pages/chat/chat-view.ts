@@ -74,7 +74,7 @@ import {
 } from "./components/chat-thread-interactions.ts";
 import { renderChatThread } from "./components/chat-thread.ts";
 import type { ChatTranscriptController } from "./components/chat-transcript-controller.ts";
-import { selectChatInputDisplay } from "./history-merge.ts";
+import { isQueuedChatInput, selectChatInputDisplay } from "./history-merge.ts";
 import type { ProviderPolicyNotice } from "./tool-stream-contract.ts";
 import type { WorkspaceResultConflict } from "./workspace-conflict.ts";
 import "../../components/resizable-divider.ts";
@@ -179,7 +179,10 @@ export function renderChat(props: ChatProps) {
     : undefined;
   const pendingInputs = props.historyState ? getChatPendingInputs(props.historyState) : undefined;
   const displayedPendingInputs = pendingInputs
-    ? [...pendingInputs.page.items.filter((input) => !input.queued), ...pendingInputs.queuedInputs]
+    ? [
+        ...pendingInputs.page.items.filter((input) => !isQueuedChatInput(input)),
+        ...pendingInputs.queuedInputs,
+      ]
     : undefined;
   const requestUpdate = props.onRequestUpdate ?? (() => {});
   const canCompose = props.canSend;

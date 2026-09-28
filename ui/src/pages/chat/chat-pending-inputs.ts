@@ -21,6 +21,7 @@ import { buildMessageItems, messageMatchesSearchQuery } from "./chat-thread-item
 import { isForwardedTurnBoundary } from "./chat-turn-boundary.ts";
 import {
   getChatSessionProjection,
+  isQueuedChatInput,
   readChatSessionProjectionScope,
   reconcileChatInputCustody,
 } from "./history-merge.ts";
@@ -31,6 +32,7 @@ type PendingInputRequest = {
   kind: "navigation" | "refresh" | "discovery";
   client: NonNullable<ChatState["client"]>;
   connectionEpoch: number;
+  done: Promise<void>;
 };
 
 type PendingInputView = {
@@ -43,6 +45,8 @@ type PendingInputView = {
   receiptRunIds: string[];
   queuedCount: number;
   queueBefore?: number;
+  /** IDs observed by the current latest-to-oldest queue discovery pass. */
+  queueScanIds?: Set<string>;
   before?: number;
   readonly loading: boolean;
   error?: string;
@@ -57,15 +61,12 @@ function reconcileQueuedInputs(
   receipts?: ChatInputReceipts,
   queriedRunIds: readonly string[] = [],
 ): ChatPendingInputsPage["items"] {
-  if (page.queuedCount === 0) {
-    return [];
-  }
   const completePage = page.nextBefore === undefined && page.items.length === page.total;
   const observed = new Map(receipts?.map((receipt) => [receipt.runId, receipt]));
   const queried = new Set(receipts === undefined ? [] : queriedRunIds);
   const current = new Map((completePage ? [] : queued).map((input) => [input.id, input]));
   for (const input of page.items) {
-    if (input.queued) {
+    if (isQueuedChatInput(input)) {
       current.set(input.id, input);
     } else {
       current.delete(input.id);
@@ -73,11 +74,30 @@ function reconcileQueuedInputs(
   }
   // Ordinary consumption deletes custody. An exact queried absence retires its
   // queue projection even when the transcript has advanced beyond that message.
-  return [...current.values()].filter((input) => {
+  return [...current.values()].flatMap((input) => {
     const receipt = input.runId ? observed.get(input.runId) : undefined;
-    return receipt
-      ? receipt.state === "pending" && receipt.queued
-      : !input.runId || !queried.has(input.runId);
+    if (
+      receipt
+        ? receipt.state !== "pending" || receipt.cancelled
+        : input.runId && queried.has(input.runId)
+    ) {
+      return [];
+    }
+    // Receipts control execution-queue actions, not forwarded display membership.
+    const executionQueued =
+      receipt?.state === "pending"
+        ? receipt.queued === true
+        : page.queuedCount === 0
+          ? false
+          : input.queued === true;
+    const { queued: previousQueued, ...rest } = input;
+    const candidate =
+      executionQueued === (previousQueued === true)
+        ? input
+        : executionQueued
+          ? { ...rest, queued: true as const }
+          : rest;
+    return isQueuedChatInput(candidate) ? [candidate] : [];
   });
 }
 
@@ -284,6 +304,33 @@ function ownsPendingInputRequest(
   );
 }
 
+/** Only a latest-to-oldest pass proves queue completeness; the execution count omits agent input. */
+function observeQueuePage(
+  view: PendingInputView,
+  page: ChatPendingInputsPage,
+  before?: number,
+): void {
+  if (before === undefined) {
+    view.queueScanIds = new Set();
+  } else if (!view.queueScanIds || before !== view.queueBefore) {
+    return;
+  }
+  if (before !== undefined && page.nextBefore !== undefined && page.nextBefore >= before) {
+    throw new Error(t("chat.pendingInputs.paginationError"));
+  }
+  for (const input of page.items) {
+    if (isQueuedChatInput(input)) {
+      view.queueScanIds.add(input.id);
+    }
+  }
+  view.queueBefore = page.nextBefore;
+  if (view.queueBefore === undefined) {
+    // This also retires inputs whose long run IDs cannot be queried as receipts.
+    view.queuedInputs = view.queuedInputs.filter((input) => view.queueScanIds?.has(input.id));
+    view.queueScanIds = undefined;
+  }
+}
+
 export function applyChatPendingInputs(
   state: ChatState,
   page: ChatPendingInputsPage | undefined,
@@ -306,7 +353,6 @@ export function applyChatPendingInputs(
       queuedInputs,
       receiptRunIds: [],
       queuedCount: displayPage.queuedCount ?? 0,
-      queueBefore: displayPage.nextBefore,
       revision: 0,
       get loading() {
         return this.request?.kind === "navigation";
@@ -316,7 +362,6 @@ export function applyChatPendingInputs(
   } else {
     view.queuedInputs = queuedInputs;
     view.queuedCount = displayPage.queuedCount ?? 0;
-    view.queueBefore = displayPage.nextBefore;
     view.revision += 1;
     if (view.request && !ownsPendingInputRequest(state, view, view.request)) {
       view.request = undefined;
@@ -330,12 +375,9 @@ export function applyChatPendingInputs(
       void requestPendingInputPage(state, view.before, "refresh");
     }
   }
+  observeQueuePage(view, displayPage);
   rotateInputReceipts(state, view, options.queriedRunIds);
-  if (
-    !view.request &&
-    view.queuedInputs.length < view.queuedCount &&
-    view.queueBefore !== undefined
-  ) {
+  if (!view.request && view.queueBefore !== undefined) {
     void requestPendingInputPage(state, view.queueBefore, "discovery");
   }
   state.requestUpdate?.();
@@ -351,14 +393,26 @@ async function requestPendingInputPage(
   if (!view || !client || !state.connected) {
     return;
   }
-  if (
-    view.request &&
-    ownsPendingInputRequest(state, view, view.request) &&
-    (kind !== "navigation" || view.request.kind === "navigation")
-  ) {
-    return;
+  if (view.request && ownsPendingInputRequest(state, view, view.request)) {
+    if (
+      kind === "navigation" &&
+      view.request.kind === "discovery" &&
+      view.request.before === before
+    ) {
+      // Earlier can adopt the discovery already reading that exact page.
+      view.request.kind = "navigation";
+      state.requestUpdate?.();
+      return view.request.done;
+    }
+    if (kind !== "navigation" || view.request.kind === "navigation") {
+      return view.request.done;
+    }
   }
-  const request = { before, kind, client, connectionEpoch: state.connectionEpoch };
+  let finishRequest = () => {};
+  const done = new Promise<void>((resolve) => {
+    finishRequest = resolve;
+  });
+  const request = { before, kind, client, connectionEpoch: state.connectionEpoch, done };
   view.request = request;
   view.error = undefined;
   if (kind === "navigation") {
@@ -385,6 +439,12 @@ async function requestPendingInputPage(
       }
       // Coalesce newer custody publications into a fresh read of the same target.
       if (view.revision !== revision) {
+        if (request.kind === "discovery") {
+          if (view.queueBefore === undefined) {
+            return;
+          }
+          request.before = view.queueBefore;
+        }
         continue;
       }
       const page = reconcilePendingInputPage(state, result.pendingInputs, result.inputReceipts);
@@ -395,17 +455,16 @@ async function requestPendingInputPage(
         inputRunIds,
       );
       view.queuedCount = page.queuedCount ?? view.queuedCount;
-      rotateInputReceipts(state, view, inputRunIds);
       if (request.kind !== "discovery") {
         view.page = page;
         view.before = request.before;
       }
-      if (request.kind === "discovery" || request.before === undefined) {
-        view.queueBefore = page.nextBefore;
-      }
-      if (view.queuedInputs.length < view.queuedCount && view.queueBefore !== undefined) {
+      observeQueuePage(view, page, request.before);
+      rotateInputReceipts(state, view, inputRunIds);
+      if (view.queueBefore !== undefined) {
         request.kind = "discovery";
         request.before = view.queueBefore;
+        state.requestUpdate?.();
         continue;
       }
       return;
@@ -415,6 +474,7 @@ async function requestPendingInputPage(
       view.error = formatUiError(error);
     }
   } finally {
+    finishRequest();
     if (view.request === request) {
       view.request = undefined;
       if (getChatPendingInputs(state) === view) {

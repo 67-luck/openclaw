@@ -399,6 +399,15 @@ const inputIdentities = new WeakMap<
   { inputIds: Set<string>; sendKeys: Set<string> }
 >();
 
+/** Display queue membership is separate from the Gateway execution queue flag. */
+export function isQueuedChatInput(input: ChatPendingInputsPage["items"][number]): boolean {
+  return (
+    input.state === "queued" &&
+    (input.queued === true || isForwardedTurnBoundary(input.message)) &&
+    asNullableRecord(input.message)?.display !== false
+  );
+}
+
 /** Canonical input IDs replace custody, including forwarded inputs projected as assistants. */
 export function selectChatInputDisplay(
   messages: readonly unknown[],
@@ -423,8 +432,6 @@ export function selectChatInputDisplay(
   const visibleInputs = inputs.filter(
     (input) => !inputIds.has(input.id) && asNullableRecord(input.message)?.display !== false,
   );
-  const queuedForDisplay = (input: ChatPendingInputsPage["items"][number]) =>
-    input.queued || (input.state === "queued" && isForwardedTurnBoundary(input.message));
   const accepted = new Set(inputs.map((input) => input.runId));
   return {
     queue: queue.filter(
@@ -434,8 +441,8 @@ export function selectChatInputDisplay(
           !sendKeys.has(item.sendRunId) &&
           !sendKeys.has(`${item.sendRunId}:user`)),
     ),
-    pendingInputs: visibleInputs.filter((input) => !queuedForDisplay(input)),
-    queuedInputs: visibleInputs.filter(queuedForDisplay),
+    pendingInputs: visibleInputs.filter((input) => !isQueuedChatInput(input)),
+    queuedInputs: visibleInputs.filter(isQueuedChatInput),
   };
 }
 

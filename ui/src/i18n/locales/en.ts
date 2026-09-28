@@ -3862,6 +3862,7 @@ export const en: TranslationMap & {
         "Interrupted before the agent started it. It will not run automatically; copy it and send again.",
       earlier: "Show earlier messages",
       latest: "Show latest messages",
+      paginationError: "Could not finish loading queued messages. Reload to retry.",
     },
     pairingQrExpired: {
       title: "Pairing QR expired",

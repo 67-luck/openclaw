@@ -331,10 +331,13 @@ describe("server-owned pending input display", () => {
         sendState: "sending" as const,
       })),
       requestHandlers: {
-        "chat.history": (params: { inputRunIds?: string[] }) => ({
+        "chat.history": (params: { inputRunIds?: string[]; pendingBefore?: number }) => ({
           sessionId,
           messages: [],
-          pendingInputs: { items: [], total: 21, nextBefore: 21 },
+          pendingInputs:
+            params.pendingBefore === undefined
+              ? { items: [], total: 21, nextBefore: 21 }
+              : { items: [], total: 21 },
           inputReceipts: params.inputRunIds?.map((runId) => ({ runId, state: "pending" })),
         }),
       },
@@ -344,7 +347,7 @@ describe("server-owned pending input display", () => {
       total: 1,
     });
     await loadChatHistory(host);
-    expect(host.request.mock.calls.findLast(([method]) => method === "chat.history")).toEqual([
+    expect(host.request.mock.calls.find(([method]) => method === "chat.history")).toEqual([
       "chat.history",
       expect.objectContaining({
         inputRunIds: [
@@ -644,7 +647,7 @@ describe("server-owned pending input display", () => {
           "chat.history": {
             sessionId,
             messages: [],
-            pendingInputs: page,
+            pendingInputs: { items: page.items, total: 1 },
             sessionInfo: { key: sessionKey, sessionId, hasActiveRun: true, status: "running" },
           },
         },
@@ -659,7 +662,9 @@ describe("server-owned pending input display", () => {
         },
         () => false,
       );
-      await vi.waitFor(() => expect(getChatPendingInputs(host)?.page).toEqual(page));
+      await vi.waitFor(() =>
+        expect(getChatPendingInputs(host)?.page).toEqual({ items: page.items, total: 1 }),
+      );
       expect(host.chatRunId).toBe("active-run");
       expect(host.chatStream).toBe("Live output");
       expect(host.request.mock.calls.filter(([method]) => method === "chat.history")).toHaveLength(
@@ -711,7 +716,7 @@ describe("server-owned pending input display", () => {
           "chat.history": () => (++historyReads === 1 ? stale.promise : fresh.promise),
         },
       });
-      applyChatPendingInputs(host, page);
+      applyChatPendingInputs(host, { items: page.items, total: 1 });
       const loading = loadChatHistory(host);
       handlePageGatewayEvent(host, {
         type: "event",
@@ -728,7 +733,11 @@ describe("server-owned pending input display", () => {
       });
       expect(historyReads).toBe(1);
       const refreshing = loadChatHistory(host);
-      stale.resolve({ sessionId, messages: [initialUser], pendingInputs: page });
+      stale.resolve({
+        sessionId,
+        messages: [initialUser],
+        pendingInputs: { items: page.items, total: 1 },
+      });
       await loading;
       await vi.waitFor(() => expect(historyReads).toBe(2));
       expect(host.chatMessages).toEqual([initialUser, promoted]);
