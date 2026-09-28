@@ -272,6 +272,7 @@ function capCronJobToolsAllow(params: {
   trigger?: unknown;
   creatorToolAllowlist: readonly CronCreatorToolAllowlistEntry[];
   defaultToolsAllow?: unknown;
+  diagnosticNotice?: string;
 }): void {
   const writesToolsAllow = Object.hasOwn(params.payload, "toolsAllow");
   if (
@@ -292,15 +293,16 @@ function capCronJobToolsAllow(params: {
     return;
   }
 
-  const requestedToolsAllow = expandToolGroups(
-    requestedRaw.filter((entry): entry is string => typeof entry === "string"),
+  const requestedSelectors = requestedRaw.filter(
+    (entry): entry is string => typeof entry === "string",
   );
+  const requestedToolsAllow = expandToolGroups(requestedSelectors);
   if (requestedToolsAllow.includes("*")) {
     params.payload.toolsAllow = creatorToolNames;
     params.payload.toolsAllowIsDefault = true;
     return;
   }
-  if (requestedToolsAllow.length === 0 || creatorToolsAllow.length === 0) {
+  if (requestedToolsAllow.length === 0) {
     params.payload.toolsAllow = [];
     delete params.payload.toolsAllowIsDefault;
     return;
@@ -310,6 +312,23 @@ function capCronJobToolsAllow(params: {
     tools: creatorToolsAllow,
     toolMeta: (tool) => (tool.pluginId ? { pluginId: tool.pluginId } : undefined),
   });
+  if (writesToolsAllow) {
+    const unavailable = requestedSelectors.map(normalizeToolPolicyName).filter((name) => {
+      const matches = createToolPolicyMatcher(
+        expandPolicyWithPluginGroups({ allow: [name] }, pluginGroups),
+      );
+      return !creatorToolsAllow.some(
+        (tool) => matches(tool.name) || (tool.aliasName !== undefined && matches(tool.aliasName)),
+      );
+    });
+    if (unavailable.length > 0) {
+      throw new Error(
+        `Requested automation tools are not currently executable: ${unavailable.join(", ")}. ` +
+          "Authenticate or enable the required integration, or correct/remove these toolsAllow names and retry. " +
+          `${params.diagnosticNotice ? `${params.diagnosticNotice} ` : ""}No automation changes were saved.`,
+      );
+    }
+  }
   const requestedPolicy = expandPolicyWithPluginGroups(
     { allow: requestedToolsAllow },
     pluginGroups,
@@ -328,6 +347,7 @@ function capCronJobToolsAllow(params: {
 export function capCronJobToolsAllowOnCreate(
   value: unknown,
   creatorToolAllowlist: readonly CronCreatorToolAllowlistEntry[] | undefined,
+  diagnosticNotice?: string,
 ): void {
   if (!isRecord(value) || !isRecord(value.payload) || !creatorToolAllowlist) {
     return;
@@ -336,6 +356,7 @@ export function capCronJobToolsAllowOnCreate(
     payload: value.payload,
     trigger: value.trigger,
     creatorToolAllowlist,
+    diagnosticNotice,
   });
 }
 
@@ -349,6 +370,7 @@ export function planCronJobUpdatePatch(params: {
   creatorToolAllowlist: readonly CronCreatorToolAllowlistEntry[] | undefined;
   currentJob?: Record<string, unknown>;
   creatorAuthorityComplete?: boolean;
+  diagnosticNotice?: string;
 }): CronJobUpdatePatchPlan {
   const patch = structuredClone(params.patch);
   const payload = isRecord(patch.payload) ? patch.payload : undefined;
@@ -383,6 +405,7 @@ export function planCronJobUpdatePatch(params: {
       payload: payload!,
       trigger: patch.trigger,
       creatorToolAllowlist: params.creatorToolAllowlist,
+      diagnosticNotice: params.diagnosticNotice,
     });
     return { kind: "ready", patch };
   }
@@ -429,6 +452,7 @@ export function planCronJobUpdatePatch(params: {
       payload: payload!,
       trigger,
       creatorToolAllowlist: params.creatorToolAllowlist,
+      diagnosticNotice: params.diagnosticNotice,
     });
     return { kind: "ready", patch };
   }
@@ -445,6 +469,7 @@ export function planCronJobUpdatePatch(params: {
     payload: nextPayload,
     trigger,
     creatorToolAllowlist: params.creatorToolAllowlist,
+    diagnosticNotice: params.diagnosticNotice,
     defaultToolsAllow:
       existingPayloadRecord && existingPayloadRecord.toolsAllowIsDefault !== true
         ? existingPayloadRecord.toolsAllow

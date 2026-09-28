@@ -29,6 +29,8 @@ export type CronToolsAllowCaptureRef = {
 export type CronCreatorToolAuthorityMaterialization = {
   tools: readonly CronCreatorToolAllowlistEntry[];
   provenance: CronToolsAllowCaptureProvenance;
+  /** Excluded capabilities and recovery guidance; never part of the saved authority. */
+  diagnosticNotice?: string;
   /** Opaque runtime-owned authority captured with the same exact executable surface. */
   runtimeAuthority?: CronRuntimeAuthority;
 };
