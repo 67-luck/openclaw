@@ -11,6 +11,7 @@ import {
   chat,
   commandMessage,
   createBot,
+  deliverTelegramUpdate,
   from,
   harness,
 } from "./bot.create-telegram-bot.native-pipeline.test-support.js";
@@ -43,7 +44,7 @@ beforeEach(() => {
 });
 
 async function receive(bot: Bot, payload: Record<string, unknown>) {
-  await bot.handleUpdate({ update_id: ++updateId, ...payload });
+  await deliverTelegramUpdate(bot, { update_id: ++updateId, ...payload });
 }
 
 function message(text: string) {
