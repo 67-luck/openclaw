@@ -2,6 +2,7 @@
 export const databaseWorkerCoreTestFiles = [
   "src/infra/update-run-reconciliation.worker.test.ts",
   "src/infra/update-run-interruption.worker.test.ts",
+  "src/channels/turn/durable-delivery.reload.test.ts",
   "test/e2e/qa-lab/runtime/gateway-loopback-lan-access.test.ts",
   "src/channels/message/durable-receive.test.ts",
   "src/channels/message/ingress-drain-lanes.test.ts",
