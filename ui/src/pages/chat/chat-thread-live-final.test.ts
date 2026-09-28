@@ -3,6 +3,7 @@ import { extractTextCached } from "../../lib/chat/message-extract.ts";
 import { coalesceAgentRunFrames } from "./chat-agent-run-grouping.ts";
 import { buildChatItems, type BuildChatItemsProps } from "./chat-thread-build.ts";
 import { coalesceStreamRuns } from "./chat-thread-grouping.ts";
+import { buildCachedChatItems, resetChatThreadState } from "./chat-thread.ts";
 import { projectTranscriptIndex } from "./components/chat-transcript-message-index.ts";
 import { rememberLiveTerminalRun } from "./terminal-message-identity.ts";
 
@@ -64,6 +65,97 @@ function completed() {
 }
 
 describe("live terminal continuity with pending collaborators", () => {
+  it.each([
+    { kind: "inter_session", sourceTool: "sessions_send" },
+    {
+      kind: "internal_system",
+      sourceTool: "cron",
+      jobId: "job",
+      runId: "cron-run",
+      sourceSessionKey: "agent:main:cron:job:run:cron-run",
+    },
+  ])(
+    "keeps pending $sourceTool updates before newer activity without claiming the active run",
+    (provenance) => {
+      const updates = [30, 31].map((timestamp, index) => ({
+        id: "forwarded-" + index,
+        runId: "forwarded-run-" + index,
+        acceptedAt: timestamp,
+        state: "queued" as const,
+        message: {
+          role: "assistant",
+          content: "Agent update " + index,
+          timestamp,
+          provenance,
+          senderSession: { sessionKey: "agent:main:helper", label: "Helper" },
+          __openclaw: { id: "pending:forwarded-" + index },
+        },
+      }));
+      const newerUser = user("newer", "reader", 4);
+      const newerReply = {
+        role: "assistant",
+        content: "Newer reply",
+        timestamp: 50,
+        __openclaw: { id: "reply", seq: 5, runId: "newer" },
+      };
+      const baseInput = props({ pendingInputs: updates });
+      const rows = (input: Partial<BuildChatItemsProps>) =>
+        buildCachedChatItems({ ...baseInput, ...input }).flatMap((item) =>
+          item.kind === "group"
+            ? item.messages.map(({ message }) => extractTextCached(message))
+            : item.kind === "stream"
+              ? [item.text]
+              : item.kind === "reading-indicator"
+                ? ["Working"]
+                : [],
+        );
+      resetChatThreadState("live-final");
+      try {
+        const prefix = ["earlier", "active", "Agent update 0", "Agent update 1"];
+        expect(rows({})).toEqual([...prefix, "The answer being read.", "Working"]);
+        // A stream-only update uses the cached path; custody must not become its ceiling.
+        expect(rows({ stream: "Continuing work" })).toEqual([
+          ...prefix,
+          "Continuing work",
+          "Working",
+        ]);
+        expect(
+          rows({
+            messages: [...history, newerUser, newerReply],
+            stream: null,
+            runWorking: false,
+            runId: null,
+          }),
+        ).toEqual([...prefix, "newer", "Newer reply"]);
+        expect(
+          rows({
+            messages: [...history, newerUser, newerReply],
+            stream: null,
+            runWorking: false,
+            runId: null,
+            searchOpen: true,
+            searchQuery: "Agent update",
+          }),
+        ).toEqual(["Agent update 0", "Agent update 1"]);
+        // Execution queue membership is separate: an actually queued input stays in the queue dock.
+        expect(
+          rows({
+            pendingInputs: updates.map(({ id, runId, acceptedAt, state, message }) => ({
+              id,
+              runId,
+              acceptedAt,
+              state,
+              message,
+              queued: true as const,
+            })),
+          }),
+        ).toEqual(["earlier", "active", "The answer being read.", "Working"]);
+      } finally {
+        resetChatThreadState("live-final");
+      }
+    },
+  );
+
   it.each([
     { runId: null, localQueue: true },
     { runId: "active", localQueue: true },

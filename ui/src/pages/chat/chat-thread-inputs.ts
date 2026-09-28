@@ -12,6 +12,7 @@ import {
   messageMatchesSearchQuery,
   queuedSendThreadMessage,
 } from "./chat-thread-items.ts";
+import { isForwardedTurnBoundary } from "./chat-turn-boundary.ts";
 import { selectChatInputDisplay } from "./history-merge.ts";
 import { isLiveTerminalForRun } from "./terminal-message-identity.ts";
 
@@ -61,7 +62,7 @@ export function placeChatInputs(
   const hiddenKeys = new Set<string>();
   const blocks: InputBlock[] = [];
   let activeInputKey: string | undefined;
-  let previousStoppedKey: string | undefined;
+  let previousHistoricalKey: string | undefined;
   const markSearchVisibility = (message: unknown, inputItems: readonly ChatItem[]) => {
     if (
       props.searchOpen &&
@@ -88,21 +89,26 @@ export function placeChatInputs(
     }
     markSearchVisibility(input.message, inputItems);
     if (input.state === "queued") {
-      blocks.push({ items: inputItems, runId: input.runId });
       // The active run owns this floor even when a fresh client has no local send.
       if (currentRunId && input.runId === currentRunId && !hiddenKeys.has(first.key)) {
         activeInputKey = first.key;
       }
-      continue;
+      if (!isForwardedTurnBoundary(input.message)) {
+        blocks.push({ items: inputItems, runId: input.runId });
+        continue;
+      }
     }
-    // A stopped input is historical. Its disposition travels with the message,
-    // and the Gateway's sequence wins over wall-clock changes between inputs.
-    insertChatItemsByTimestamp(items, [{ item: first, bounds: { afterKey: previousStoppedKey } }]);
+    // Forwarded updates belong where they arrived, even before consumption.
+    // Like stopped inputs, they must not pin newer activity above them or claim
+    // execution ownership. Preserve Gateway input order across clock changes.
+    insertChatItemsByTimestamp(items, [
+      { item: first, bounds: { afterKey: previousHistoricalKey } },
+    ]);
     items.splice(items.indexOf(first) + 1, 0, ...inputItems.slice(1));
     for (const item of inputItems) {
       historicalKeys.add(item.key);
     }
-    previousStoppedKey = inputItems.at(-1)!.key;
+    previousHistoricalKey = inputItems.at(-1)!.key;
   }
 
   const acceptedBlocks = new Map(
