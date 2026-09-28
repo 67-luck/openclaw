@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { Locator } from "playwright";
 import { expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
@@ -10,6 +11,15 @@ import {
 import { openSessionMenuSubmenu } from "./session-management.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "side-chat input focus" });
+
+async function submitCommand(composer: Locator, command: string) {
+  const input = composer.locator("textarea");
+  await input.fill(command);
+  // Drafts are editable before history is admitted, but slash commands are not.
+  // Wait for the same admission gate as Enter without changing the focus action.
+  await expect.poll(() => composer.locator(".chat-send-btn--send").isEnabled()).toBe(true);
+  await input.press("Enter");
+}
 
 suite.define(() => {
   for (const viewport of [
@@ -54,8 +64,7 @@ suite.define(() => {
       const input = page.getByRole("textbox", { name: "Ask in side chat", exact: true });
       expect(await input.isVisible()).toBe(false);
       for (const draft of ["", "Keep this side draft"]) {
-        await mainInput.fill(command);
-        await mainInput.press("Enter");
+        await submitCommand(page.locator(".agent-chat__composer-shell"), command);
         await expect.poll(() => input.isVisible()).toBe(true);
         await expect
           .poll(() => input.evaluate((element) => document.activeElement === element))
@@ -83,8 +92,7 @@ suite.define(() => {
           await installMockGateway(page);
           await page.goto(`${suite.server.baseUrl}chat`);
           const mainInput = page.locator(".agent-chat__composer-shell textarea");
-          await mainInput.fill(command);
-          await mainInput.press("Enter");
+          await submitCommand(page.locator(".agent-chat__composer-shell"), command);
           await held.request;
           const sideInput = page.getByRole("textbox", { name: "Ask in side chat", exact: true });
           expect(await sideInput.count()).toBe(0);
@@ -113,27 +121,16 @@ suite.define(() => {
   it.each(["close", "minimize", "switch tabs"])(
     "focuses a new Side chat opening after %s supersedes an unmounted command",
     async (action) => {
-      const mark = (phase: string) => console.info(`[side-chat-focus] ${action}: ${phase}`);
-      mark("acquire page");
       await suite.withPage({ viewport: { width: 1440, height: 900 } }, async ({ page }) => {
-        mark("install held route");
         const held = await holdModuleResponse(page, /\/assets\/chat-session-rail-[^/]+\.js$/u);
         try {
-          mark("install gateway");
           await installMockGateway(page);
-          mark("navigate");
           await page.goto(`${suite.server.baseUrl}chat`);
-          const mainInput = page.locator(".agent-chat__composer-shell textarea");
-          mark("submit command");
-          await mainInput.fill("/btw");
-          await mainInput.press("Enter");
-          mark("await held request");
+          await submitCommand(page.locator(".agent-chat__composer-shell"), "/btw");
           await held.request;
           const sideInput = page.getByRole("textbox", { name: "Ask in side chat", exact: true });
           expect(await sideInput.count()).toBe(0);
-          mark("await side tab");
           await page.getByRole("tab", { name: "Side chat", exact: true }).waitFor();
-          mark("supersede command");
           if (action === "close") {
             await page.getByRole("button", { name: "Close Side chat", exact: true }).click();
           } else if (action === "minimize") {
@@ -141,9 +138,7 @@ suite.define(() => {
           } else {
             await openChatSidePanelType(page, "Files");
           }
-          mark("release held module");
           held.release();
-          mark("reopen side chat");
           if (action === "close") {
             await openChatSidePanelType(page, "Side chat");
           } else if (action === "minimize") {
@@ -151,15 +146,12 @@ suite.define(() => {
           } else {
             await page.getByRole("tab", { name: "Side chat", exact: true }).click();
           }
-          mark("await input focus");
           await expect
             .poll(() => sideInput.evaluate((element) => document.activeElement === element))
             .toBe(true);
           await page.keyboard.type("New opening");
           expect(await sideInput.inputValue()).toBe("New opening");
-          mark("complete");
         } finally {
-          mark("release during cleanup");
           held.release();
         }
       });
@@ -198,8 +190,7 @@ suite.define(() => {
             .toBe(true);
         }
         const mainInput = page.locator(".agent-chat__composer-shell textarea");
-        await mainInput.fill("/btw what is this?");
-        await mainInput.press("Enter");
+        await submitCommand(page.locator(".agent-chat__composer-shell"), "/btw what is this?");
         const request = await gateway.waitForRequest("sessions.companion.ask");
         expect(request.params).toMatchObject({ question: "what is this?" });
         await page.locator(".chat-session-rail__exchange--pending").waitFor();
@@ -233,8 +224,10 @@ suite.define(() => {
         await expect.poll(() => panes.count()).toBe(2);
         const firstInput = panes.first().locator(".agent-chat__composer-shell textarea");
         const secondInput = panes.last().locator(".agent-chat__composer-shell textarea");
-        await firstInput.fill("/btw what is this?");
-        await firstInput.press("Enter");
+        await submitCommand(
+          panes.first().locator(".agent-chat__composer-shell"),
+          "/btw what is this?",
+        );
         await gateway.waitForRequest("sessions.companion.ask");
         const sideInput = panes
           .first()
@@ -289,8 +282,7 @@ suite.define(() => {
       await page.goto(`${suite.server.baseUrl}chat`);
       const mainInput = page.locator(".agent-chat__composer-shell textarea");
       const sideInput = page.locator(".chat-session-rail__input");
-      await mainInput.fill("/btw what is this?");
-      await mainInput.press("Enter");
+      await submitCommand(page.locator(".agent-chat__composer-shell"), "/btw what is this?");
       const request = await gateway.waitForRequest("sessions.companion.ask");
       expect(request.params).toMatchObject({ agentId: "main", sessionKey: "global" });
       await page.locator(".chat-session-rail__exchange--pending").waitFor();
@@ -347,8 +339,7 @@ suite.define(() => {
         });
         await page.goto(`${suite.server.baseUrl}chat`);
         const mainInput = page.locator(".agent-chat__composer-shell textarea");
-        await mainInput.fill("/btw what is this?");
-        await mainInput.press("Enter");
+        await submitCommand(page.locator(".agent-chat__composer-shell"), "/btw what is this?");
         await gateway.waitForRequest("sessions.companion.ask");
         const sideInput = page.locator(".chat-session-rail__input");
         if (held) {
