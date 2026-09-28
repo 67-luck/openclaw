@@ -1064,6 +1064,7 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
   it.each([
     { name: "qualified bun-compatible Node", expected: "2" },
     { name: "explicit Node policy", policy: "node", expected: "2" },
+    { name: "serial sibling", sibling: true, expected: "2" },
     { name: "one CPU", cpus: 1, expected: "1" },
     { name: "physical memory", gib: 7.49, expected: "1" },
     { name: "cgroup memory", gib: 32, constrainedGiB: 7.49, expected: "1" },
@@ -1117,10 +1118,19 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
         OPENCLAW_TEST_PROJECTS_PARALLEL: "2",
       },
     }));
+    if (scenario.sibling) {
+      groups.push({
+        ...groups[0]!,
+        shard_name: "serial-sibling",
+        env: { ...groups[0]!.env, OPENCLAW_TEST_PROJECTS_PARALLEL: "1" },
+      });
+    }
     const runtimes: Array<string | undefined> = [];
     const runChild = vi.fn(async (_args, env) => {
       runtimes.push(env.OPENCLAW_VITEST_RUNTIME);
-      expect(env.OPENCLAW_TEST_PROJECTS_PARALLEL).toBe(scenario.expected);
+      expect(env.OPENCLAW_TEST_PROJECTS_PARALLEL).toBe(
+        env.OPENCLAW_VITEST_SHARD_NAME === "serial-sibling" ? "1" : scenario.expected,
+      );
       expect(env.OPENCLAW_VITEST_MAX_WORKERS).toBe(scenario.workers ?? "2");
       expect(JSON.parse(readFileSync(env.OPENCLAW_VITEST_INCLUDE_FILE, "utf8"))).toEqual(includes);
       return 0;
