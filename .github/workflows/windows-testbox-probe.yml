@@ -82,6 +82,7 @@ env:
 jobs:
   probe:
     name: Windows probe
+    if: ${{ false }} # This private branch only qualifies the FileIO observer.
     outputs:
       native_package_id: ${{ steps.native_package_upload.outputs.artifact-id }}
       native_package_digest: ${{ steps.native_package_upload.outputs.artifact-digest }}
@@ -932,7 +933,7 @@ jobs:
   # Native session qualification must not depend on headless CI or WSL results.
   native-schtasks:
     name: Native Scheduled Task proof
-    if: ${{ inputs.run_windows_ci && inputs.installed_startup_package == '' && !inputs.run_private_node_provisioning && !inputs.installed_repair_worker && inputs.windows_ci_replay == '' }}
+    if: ${{ false }} # No source-native or updater execution in the control lane.
     runs-on: windows-2025
     timeout-minutes: 75
     env:
@@ -1559,7 +1560,7 @@ jobs:
   # independent while package mode explicitly waits for its current-run producer.
   native-schtasks-package:
     name: Native Scheduled Task installed proof
-    if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && !inputs.run_private_node_provisioning && !inputs.installed_repair_worker && !inputs.installed_startup_cpu_diagnostic && inputs.windows_ci_replay == '' }}
+    if: ${{ false }} # No installed updater execution in the control lane.
     needs: probe
     permissions:
       contents: read
@@ -1570,3 +1571,102 @@ jobs:
       NATIVE_PACKAGE_DIGEST: ${{ needs.probe.outputs.native_package_digest }}
       NATIVE_MANIFEST_SHA256: ${{ needs.probe.outputs.native_manifest_sha256 }}
     steps: *native_schtasks_steps
+
+  fileio-control:
+    name: Owned FileIO diagnostic controls
+    if: >-
+      ${{ github.ref == 'refs/heads/codex/windows-fileio-control-150153-20260928' && inputs.runner_label == 'windows-2025' && inputs.keepalive_minutes == '0' && !inputs.run_windows_ci && !inputs.run_private_node_provisioning && !inputs.installed_repair_worker && !inputs.installed_startup_cpu_diagnostic && inputs.installed_startup_package == '' && inputs.windows_ci_replay == '' && !inputs.require_wsl2 && !inputs.import_ubuntu_wsl2 && !inputs.enable_wsl2_features && inputs.startup_node_version == '26.8.2' }}
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - *windows_checkout
+      - name: Qualify fresh native runner isolation
+        shell: pwsh
+        env:
+          NATIVE_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          EXPECTED_HEAD: ${{ inputs.target_ref }}
+          NATIVE_ISOLATION_PROOF_NAME: fileio-isolation.json
+        run: *windows_native_isolation
+      - name: Authenticate FileIO control inputs
+        shell: pwsh
+        env:
+          EXPECTED_HEAD: ${{ inputs.target_ref }}
+          WORKFLOW_HEAD: ${{ github.sha }}
+          KEEPALIVE: ${{ inputs.keepalive_minutes }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$' -or $env:EXPECTED_HEAD -cne $env:WORKFLOW_HEAD -or (git rev-parse HEAD) -cne $env:EXPECTED_HEAD -or $env:KEEPALIVE -ne '0') { throw 'Expected exact diagnostic source and zero keepalive.' }
+          $root = Join-Path $env:RUNNER_TEMP 'fileio-control'
+          $evidence = Join-Path $root 'evidence'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $nodeZip = Join-Path $root 'node-v26.8.2-win-x64.zip'
+          $sums = Join-Path $root 'SHASUMS256.txt'
+          Invoke-WebRequest -Uri 'https://nodejs.org/dist/v26.8.2/SHASUMS256.txt' -OutFile $sums -TimeoutSec 60
+          Invoke-WebRequest -Uri 'https://nodejs.org/dist/v26.8.2/node-v26.8.2-win-x64.zip' -OutFile $nodeZip -TimeoutSec 120
+          $checksumLines = @(Get-Content $sums | Where-Object { $_ -cmatch '^([0-9a-f]{64})  node-v26\.8\.2-win-x64\.zip$' })
+          if ($checksumLines.Count -ne 1) { throw 'Missing unique official Node checksum.' }
+          $expectedNodeZip = $checksumLines[0].Substring(0, 64)
+          $nodeZipHash = (Get-FileHash $nodeZip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($nodeZipHash -cne $expectedNodeZip -or $nodeZipHash -cne 'cf02f5d0c06c794b84f277177d5cf3743d0924ca49f6641cd435dd7cb6ee9085') { throw 'Node archive hash mismatch.' }
+          Expand-Archive -LiteralPath $nodeZip -DestinationPath $root
+          $nodeDir = Join-Path $root 'node-v26.8.2-win-x64'
+          $nodeExe = Join-Path $nodeDir 'node.exe'
+          if ((& $nodeExe -p "process.version + '/' + process.arch") -cne 'v26.8.2/x64') { throw 'Unexpected Node runtime.' }
+          $tgz = Join-Path $root 'koffi-win32-x64-3.1.6.tgz'
+          Invoke-WebRequest -Uri 'https://registry.npmjs.org/@koromix/koffi-win32-x64/-/koffi-win32-x64-3.1.6.tgz' -OutFile $tgz -TimeoutSec 60
+          $sha512 = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([IO.File]::ReadAllBytes($tgz)))
+          if ($sha512 -cne 'lPKjAaHz0aoiZXT/wDVqH+joR5y3lCZj1s9Bk5qx/DGRq+0MK8Ib8VoqiBOrJ69NG5AsJSvn0tQDcSqfRgLmBQ==') { throw 'Published addon archive integrity mismatch.' }
+          $expectedMembers = @('package/index.js','package/package.json','package/win32_x64/koffi.lib','package/README.md','package/win32_x64/koffi.node') | Sort-Object
+          $members = @(tar -tf $tgz | Sort-Object)
+          if ($LASTEXITCODE -ne 0 -or ($members -join "`n") -cne ($expectedMembers -join "`n")) { throw 'Unexpected addon archive members.' }
+          $addonDir = Join-Path $root 'addon'
+          New-Item -ItemType Directory -Path $addonDir | Out-Null
+          tar -xf $tgz -C $addonDir
+          if ($LASTEXITCODE -ne 0) { throw 'Addon extraction failed.' }
+          $addon = Join-Path $addonDir 'package/win32_x64/koffi.node'
+          $addonHash = (Get-FileHash $addon -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($addonHash -cne '939156f310bd7a7d9d1db1b5249a5d135739b049c24c79fd3c201701333ddbf3' -or (Get-Item $addon).Length -ne 1044480) { throw 'Published addon bytes mismatch.' }
+          [ordered]@{ source = $env:EXPECTED_HEAD; nodeVersion = '26.8.2'; nodePath = $nodeExe; nodeArchiveSha256 = $nodeZipHash; nodeSha256 = (Get-FileHash $nodeExe -Algorithm SHA256).Hash.ToLowerInvariant(); addonPath = $addon; addonSha256 = $addonHash; addonBytes = (Get-Item $addon).Length; addonArchiveSha512 = $sha512 } | ConvertTo-Json | Set-Content (Join-Path $evidence 'inputs.json')
+          if ((Get-FileHash $nodeExe -Algorithm SHA256).Hash.ToLowerInvariant() -cne '23062343ad39fc79f12ae39cfb324e93a20ced5f1d342e7b850c148c022ddbca') { throw 'Node executable hash mismatch.' }
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'fileio-isolation.json') (Join-Path $evidence 'isolation.json')
+          $private = Join-Path $root 'private'
+          New-Item -ItemType Directory -Path $private | Out-Null
+          "FILEIO_PRIVATE=$private" >> $env:GITHUB_ENV
+          $nodeDir >> $env:GITHUB_PATH
+          "FILEIO_ADDON=$addon" >> $env:GITHUB_ENV
+          "FILEIO_EVIDENCE=$evidence" >> $env:GITHUB_ENV
+          "FILEIO_NODE=$nodeExe" >> $env:GITHUB_ENV
+      - name: Setup pinned repository tooling
+        uses: ./.github/actions/setup-pnpm-store-cache
+        with:
+          node-version: "26.8.2"
+          cache-mode: "off"
+      - name: Install frozen repository dependencies
+        shell: bash
+        env:
+          CI: true
+        run: pnpm install --frozen-lockfile --prefer-offline --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true
+      - name: Run owned FileIO controls
+        id: control
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          & $env:FILEIO_NODE --import ./scripts/tsx.mjs scripts/qa/windows-fileio-control.mjs run $env:FILEIO_ADDON $env:FILEIO_EVIDENCE $env:FILEIO_PRIVATE
+          if ($LASTEXITCODE -ne 0) { throw 'FileIO controls failed; preserve bounded evidence.' }
+      - name: Reconcile admitted trace cleanup
+        if: ${{ always() && contains(fromJSON('["success","failure","cancelled"]'), steps.control.outcome) }}
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          & $env:FILEIO_NODE --import ./scripts/tsx.mjs scripts/qa/windows-fileio-control.mjs cleanup $env:FILEIO_ADDON $env:FILEIO_EVIDENCE $env:FILEIO_PRIVATE
+          if ($LASTEXITCODE -ne 0) { throw 'Exact trace cleanup or private scratch deletion remains unverified.' }
+      - name: Retain projected control evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fileio-control-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fileio-control/evidence
+          if-no-files-found: error
+          retention-days: 7
