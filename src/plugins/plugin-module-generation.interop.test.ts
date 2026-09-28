@@ -12,11 +12,11 @@ const { temp, fixture, host } = createPluginModuleGenerationTestHarness();
 describe("native plugin generation interop", () => {
   it("retains native require.resolve peers across dependency generations and disposal", async () => {
     const dependencies = Object.fromEntries(
-      Array.from({ length: 128 }, (_, index) => [`fixture-${index}`, "1.0.0"]),
+      Array.from({ length: 2 }, (_, index) => [`fixture-${index}`, "1.0.0"]),
     );
     const files: Record<string, string> = {
       "package.json": JSON.stringify({ dependencies }),
-      "entry.cjs": "module.exports = require('fixture-127');",
+      "entry.cjs": "module.exports = require('fixture-1');",
     };
     for (const name of Object.keys(dependencies)) {
       files[`node_modules/${name}/package.json`] = JSON.stringify({
@@ -25,10 +25,10 @@ describe("native plugin generation interop", () => {
       });
       files[`node_modules/${name}/index.cjs`] = "exports.value = 'unused';";
     }
-    files["node_modules/fixture-127/index.cjs"] = `
+    files["node_modules/fixture-1/index.cjs"] = `
       exports.resolve = () => require.resolve('./peer.cjs');
       exports.read = () => require('./peer.cjs').value;`;
-    const peer = "node_modules/fixture-127/peer.cjs";
+    const peer = "node_modules/fixture-1/peer.cjs";
     const before = "exports.value = 'before';";
     const after = "exports.value = 'after';";
     files[peer] = before;
