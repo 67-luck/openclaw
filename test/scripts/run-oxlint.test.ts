@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { resolveRepoToolBinPath } from "../../scripts/lib/local-check-runtime.mts";
+import { waitForManagedProcessGroupExit } from "../../scripts/lib/managed-child-process.mts";
 import {
   createOxlintShards,
   createOxlintFileScope,
@@ -1174,6 +1175,7 @@ describe("run-oxlint", () => {
       }
       mkdirSync(join(cwd, "node_modules/.bin"), { recursive: true });
       const descendant =
+        "const fs = require('node:fs'); fs.writeFileSync('descendant.pid.tmp', String(process.pid)); fs.renameSync('descendant.pid.tmp', 'descendant.pid'); " +
         "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); process.send('ready');";
       writeModule(join(cwd, "node_modules/.bin/oxlint"), [
         `#!${process.execPath}`,
@@ -1236,13 +1238,48 @@ describe("run-oxlint", () => {
         expect(readFileSync(join(cwd, "discoveries"), "utf8").trim().split("\n")).toHaveLength(1);
         for (const pid of pids) await waitForDead(pid, 1_000);
       } finally {
-        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-        await completion.catch(() => undefined);
-        if (pids.length === 0 && existsSync(join(cwd, "ready"))) {
-          pids = JSON.parse(readFileSync(join(cwd, "ready"), "utf8")) as number[];
+        // Keep the cleanup owner alive even when readiness or the assertion times out.
+        // A rejected timeout promise does not prove that the wrapper has closed.
+        if (child.exitCode === null && child.signalCode === null) {
+          const closed = waitForChildClose(child, 2_000);
+          child.kill("SIGTERM");
+          try {
+            await closed;
+          } catch {
+            const killed = waitForChildClose(child, 2_000);
+            child.kill("SIGKILL");
+            await killed;
+          }
         }
-        for (const pid of pids) {
+        const discoveries = existsSync(join(cwd, "discoveries"))
+          ? readFileSync(join(cwd, "discoveries"), "utf8")
+              .trim()
+              .split("\n")
+              .map(Number)
+              .filter((pid) => Number.isSafeInteger(pid) && pid > 0)
+          : [];
+        const descendantPid = existsSync(join(cwd, "descendant.pid"))
+          ? Number(readFileSync(join(cwd, "descendant.pid"), "utf8"))
+          : undefined;
+        for (const pid of discoveries) {
+          // The managed discovery child owns this group; join it even if its
+          // leader exited before publishing the separate readiness receipt.
+          try {
+            process.kill(-pid, "SIGKILL");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          }
+          expect(
+            await waitForManagedProcessGroupExit({ pid }, 1_000, { errorPolicy: "alive-on-eperm" }),
+          ).toBe(true);
+        }
+        for (const pid of new Set([
+          ...pids,
+          ...discoveries,
+          ...(descendantPid ? [descendantPid] : []),
+        ])) {
           if (isProcessAlive(pid)) process.kill(pid, "SIGKILL");
+          await waitForDead(pid, 1_000);
         }
       }
     },
