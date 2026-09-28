@@ -1,7 +1,8 @@
 # Synthetic parser-boundary checks only; no native API or Windows proof.
-param([string]$SourcePath = (Join-Path $PSScriptRoot 'Invoke-OwnedFileTrace.ps1'))
+param([string]$SourcePath = (Join-Path $PSScriptRoot 'Invoke-OwnedFileTrace.ps1'),
+  [string]$FactsPath = (Join-Path $PSScriptRoot 'FileTraceFacts.ps1'))
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'FileTraceFacts.ps1')
+. $FactsPath
 $diagnosticAvailable=$true
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile(
@@ -126,6 +127,41 @@ foreach($case in @(
   [pscustomobject]@{scenario=$case.name;passed=$true;diagnosticOnly=$true} | ConvertTo-Json -Compress
 }
 
+# Earlier nonpriority traffic must not consume deletion facts; the parser still
+# invalidates the same pending IRP and suppresses its result exactly as before.
+$lookup['18:0']=@{id=18;version=0;task='SetDelete';opcode='Info'}
+$lookup['26:0']=@{id=26;version=0;task='DeletePath';opcode='Info'}
+$start=[DateTime]::UtcNow;$end=$start.AddSeconds(1);$clock=[Diagnostics.Stopwatch]::StartNew()
+$script:lifetimeEnd=[long]::MaxValue;$script:queryFailure=$false
+$rows=[Collections.Generic.List[object]]::new();$partial=[Collections.Generic.HashSet[string]]::new()
+$pending=@{};$objects=@{};$ownedKeys=@{};$excludedObjects=[Collections.Generic.HashSet[string]]::new()
+$counts=@{parsed=0;ownBegins=0;unmatchedEnds=0;unresolvedTargets=0;unresolvedThreads=0;outOfScope=0}
+$diagnosticFacts=New-FileTraceFacts;$filterCensus=New-FileTraceCensus
+$events=[Collections.Generic.List[object]]::new()
+for($n=1;$n -le 20;$n++){
+  $token=('0x{0:X}' -f $n)
+  $events.Add((Event 12 @{Irp=$token;FileObject=$token;IssuingThreadId='22';FileName='C:\outside\PRIORITY_PATH_CANARY';CreateOptions='0'} ($n*2)))
+  $events.Add((Event 24 @{Irp=$token;Status='0'} ($n*2+1)))
+}
+$events.Add((Event 12 @{Irp='0x21';FileObject='0xBEEF1234';IssuingThreadId='22';FileName='C:\owned\old.node';CreateOptions='0'} 50))
+$events.Add((Event 24 @{Irp='0x21';Status='0'} 51))
+$events.Add((Event 18 @{Irp='0xCAB01234';FileObject='0xBEEF1234';FileKey='0xFEED5678';IssuingThreadId='22';InfoClass='64'} 52))
+$events.Add((Event 26 @{Irp='0xCAB01234';FileObject='0xBEEF1234';FileKey='0xFEED5678';IssuingThreadId='22';InfoClass='0x40';FilePath='C:\owned\old.node'} 53))
+$events.Add((Event 24 @{Irp='0xCAB01234';Status='0'} 54))
+foreach($event in $events){$event | Add-Member NoteProperty ProcessId $TargetProcessId}
+$events | ForEach-Object $processor
+$own=Get-FileTraceFacts $diagnosticFacts;$census=Get-FileTraceCensus $filterCensus
+$priority=@($own.events | Where-Object {$_.schema.eventId -in @(18,26)})
+if($priority.Count -ne 2 -or @($census.events | Where-Object {$_.eventId -in @(18,26)}).Count -ne 2){throw 'Earlier traffic starved deletion facts'}
+$relation=$priority[0].nextSameIrpBegin
+if($relation.eventId -ne 26 -or -not $relation.parserPendingConflict -or -not $relation.nextBeginOwnAdmission){throw 'Exact conflict event was not retained'}
+if(-not $relation.sameObject -or -not $relation.sameKey -or -not $relation.sameIssuingThread -or -not $relation.sameInfoClass){throw 'Private equalities were not preserved'}
+if(-not $partial.Contains('irp-reuse-without-end') -or @($rows | Where-Object {$_.eventId -in @(18,26)}).Count -ne 0){throw 'Capture facts altered conservative parser outcome'}
+if(-not $own.nonPriorityTruncated -or -not $census.nonPriorityTruncated -or $own.priorityTruncated -or $census.priorityTruncated){throw 'Selection loss was not explicit'}
+$encoded=@($own,$census) | ConvertTo-Json -Depth 10 -Compress
+foreach($canary in @('PRIORITY_PATH_CANARY','CAB01234','BEEF1234','FEED5678','0x40')){if($encoded.Contains($canary)){throw 'Private conflict value leaked'}}
+@{scenario='priority-after-overflow-keeps-conflict-without-authority';passed=$true;diagnosticOnly=$true} | ConvertTo-Json -Compress
+
 # A header mismatch changes only the fixed-ID census, never creates a detail row.
 $filterCensus=New-FileTraceCensus
 $foreign=Event 12 @{Irp='0xDEADBEEF';FileName='C:\foreign\PRIVATE_CANARY'} 1
@@ -144,7 +180,14 @@ for($n=0;$n -lt 100;$n++){
   $row=Start-FileTraceCensusEvent $filterCensus $own $TargetProcessId
   Complete-FileTraceCensusEvent $filterCensus 12 $row 'processing-interrupted'
 }
+for($n=0;$n -lt 100;$n++){
+  $deletion=Event 18 @{Irp='0xC0FFEE';FileName='C:\foreign\PRIVATE_CANARY'} 1
+  $deletion | Add-Member NoteProperty ProcessId $TargetProcessId
+  $row=Start-FileTraceCensusEvent $filterCensus $deletion $TargetProcessId
+  Complete-FileTraceCensusEvent $filterCensus 18 $row 'processing-interrupted'
+}
 $fact=Get-FileTraceCensus $filterCensus
+if(-not $fact.priorityTruncated -or -not $fact.nonPriorityTruncated){throw 'Census quota truncation hidden'}
 if($fact.events.Count -ne 32 -or -not $fact.truncated){throw 'Census row cap failed'}
 if($fact.relevantEventCounts.Count+$fact.headerPidMatchCounts.Count+$fact.filterReasonCounts.Count -ne 32){throw 'Census count keys grew'}
 if([Text.Encoding]::UTF8.GetByteCount(($fact | ConvertTo-Json -Depth 8 -Compress)) -gt 32768){throw 'Census byte cap failed'}

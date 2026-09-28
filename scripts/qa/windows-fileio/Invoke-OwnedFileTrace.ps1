@@ -222,7 +222,7 @@ try {
         $pathFact = Resolve-OwnedPath $name
         $relative = $pathFact.relative
         if($diagnosticAvailable){
-          try { Update-FileTraceFacts $diagnosticFacts ([int]$event.Id) $irp $key ([bool]$ntstatus) ($pathFact.scope -eq 'owned') }
+          try { Update-FileTraceFacts $diagnosticFacts ([int]$event.Id) $irp $key ([bool]$ntstatus) ($pathFact.scope -eq 'owned') $fields $obj ([int]$event.Version) }
           catch { $diagnosticFacts.unavailable=$true }
         }
         # Host-wide names are never retained. Unknown lifetimes invalidate maps.
@@ -283,7 +283,11 @@ try {
         # A changed name cannot keep an earlier object target alive.
         if ($name -and $obj) { $objects.Remove($obj) }
         # Any second begin destroys the former correlation, including foreign IRPs.
-        if ($pending.ContainsKey($irp)) { $pending.Remove($irp); $null = $partial.Add('irp-reuse-without-end') }
+        if ($pending.ContainsKey($irp)) {
+          if($diagnosticAvailable){try {Mark-FileTracePendingConflict $diagnosticFacts $irp}
+            catch {$diagnosticFacts.unavailable=$true}}
+          $pending.Remove($irp); $null = $partial.Add('irp-reuse-without-end')
+        }
         if (-not $tidText) { $censusReason='missing-issuing-thread'; return }
         $threadId = [uint32]$tidText
         if (-not $threadLease.BelongsAt($threadId,$time.ToFileTimeUtc())) {
