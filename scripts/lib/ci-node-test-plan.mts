@@ -82,6 +82,10 @@ import {
   readToolingFileTimings,
   resolveRuntimePlacementSeconds,
 } from "./ci-test-timings.mts";
+import {
+  DATABASE_WORKER_CONFIG,
+  DATABASE_WORKER_TEST_JOB_FILE_LIMIT,
+} from "./extension-test-plan.mts";
 import { isStripeEligibleTestFile, listTrackedTestFiles } from "./list-test-files.mts";
 import { isExclusiveCiTestConfig } from "./local-check-runtime.mts";
 import { readPositiveEnvInt } from "./numeric-options.mjs";
@@ -4284,22 +4288,95 @@ function estimateParallelTestSeconds(
   return Math.ceil(Math.max(...slots));
 }
 
+function nodeTestJobPolicy(job: Omit<NodeTestShard, "configs">) {
+  return JSON.stringify([
+    job.runner,
+    job.requiresDist,
+    job.pretestBuildMode,
+    job.planConcurrency,
+    job.groups?.some(isExclusiveCompactGroup) ?? false,
+    Object.entries(job.env ?? {}).toSorted(([a], [b]) => a.localeCompare(b)),
+    job.timeoutMinutes,
+  ]);
+}
+
+/** Repack bounded serial tails across parent rows without changing their child contracts. */
+export function packBoundedSerialNodeTestJobs(jobs: NodeTestShard[], maxTestSeconds: number) {
+  const candidates = jobs
+    .flatMap((job) => {
+      const groups = job.groups;
+      const seconds = job.predictedTestSeconds;
+      const totalSeconds = job.predictedSeconds;
+      if (
+        !groups?.length ||
+        job.configs.length > 0 ||
+        job.requiresDist ||
+        job.planConcurrency !== 1 ||
+        seconds === undefined ||
+        !Number.isFinite(seconds) ||
+        seconds < 0 ||
+        seconds > maxTestSeconds ||
+        totalSeconds === undefined ||
+        !Number.isFinite(totalSeconds)
+      ) {
+        return [];
+      }
+      return [
+        {
+          job,
+          groups,
+          seconds,
+          preparationSeconds: Math.max(0, totalSeconds - seconds),
+          policy: nodeTestJobPolicy(job),
+          workerFiles: groups.reduce(
+            (count, group) =>
+              count +
+              (group.configs.includes(DATABASE_WORKER_CONFIG)
+                ? (group.includePatterns?.length ?? Infinity)
+                : 0),
+            0,
+          ),
+        },
+      ];
+    })
+    .toSorted((a, b) => b.seconds - a.seconds || a.job.checkName.localeCompare(b.job.checkName));
+  const bins = packNodeTestGroups(
+    candidates,
+    (bin, next) =>
+      bin[0].policy === next.policy &&
+      bin.reduce((count, entry) => count + entry.groups.length, next.groups.length) <=
+        COMPACT_NODE_TEST_JOB_GROUPS &&
+      bin.reduce((count, entry) => count + entry.workerFiles, next.workerFiles) <=
+        DATABASE_WORKER_TEST_JOB_FILE_LIMIT &&
+      bin.reduce((seconds, entry) => seconds + entry.seconds, next.seconds) <= maxTestSeconds,
+  );
+  const retired = new Set<NodeTestShard>();
+  const merged = new Map<NodeTestShard, NodeTestShard>();
+  for (const [first, ...rest] of bins) {
+    if (rest.length === 0) {
+      continue;
+    }
+    const entries = [first, ...rest];
+    const seconds = entries.reduce((total, entry) => total + entry.seconds, 0);
+    merged.set(first.job, {
+      ...first.job,
+      groups: entries.flatMap((entry) => entry.groups),
+      predictedTestSeconds: seconds,
+      predictedSeconds: seconds + Math.max(...entries.map((entry) => entry.preparationSeconds)),
+    });
+    for (const entry of rest) {
+      retired.add(entry.job);
+    }
+  }
+  return jobs.filter((job) => !retired.has(job)).map((job) => merged.get(job) ?? job);
+}
+
 function packSelectedNodeTestJobs(
   jobs: CompactNodeTestShard[],
   runnerBackend: string | undefined,
   canonicalFamilies: ReadonlyMap<NodeTestShardGroup, string | undefined>,
   groupSeconds: ReadonlyMap<NodeTestShardGroup, number>,
 ) {
-  const policy = (job: CompactNodeTestShard) =>
-    JSON.stringify([
-      job.runner,
-      job.requiresDist,
-      job.pretestBuildMode,
-      job.planConcurrency,
-      job.groups.some(isExclusiveCompactGroup),
-      Object.entries(job.env ?? {}).toSorted(([a], [b]) => a.localeCompare(b)),
-      job.timeoutMinutes,
-    ]);
   const seconds = (bin: readonly CompactNodeTestShard[]) =>
     bin.reduce(
       (total, job) =>
@@ -4348,7 +4425,7 @@ function packSelectedNodeTestJobs(
       (a, b) => b.predictedSeconds! - a.predictedSeconds! || a.checkName.localeCompare(b.checkName),
     ),
     (bin, job) => {
-      if (job.requiresDist || policy(bin[0]) !== policy(job)) {
+      if (job.requiresDist || nodeTestJobPolicy(bin[0]) !== nodeTestJobPolicy(job)) {
         return false;
       }
       const combined = [...bin, job];

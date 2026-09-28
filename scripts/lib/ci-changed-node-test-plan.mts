@@ -46,6 +46,7 @@ import {
   createUiRealGatewayTestShards,
   createSelectedNodeTestShardBundles,
   packNodeTestGroups,
+  packBoundedSerialNodeTestJobs,
   nodeTestConfigRequiresCanonicalMetadata,
   resolveCanonicalNodeTestConfig,
   isCanonicalNodeTestConfig,
@@ -1099,5 +1100,8 @@ export function createChangedNodeTestShards(
     ...boundaryShards,
   ];
   // Covered source targets keep build-artifacts ownership even with no Node rows.
-  return boundChangedNodeRows(shards, selectedTargets, options.runnerBackend, cwd);
+  return packBoundedSerialNodeTestJobs(
+    boundChangedNodeRows(shards, selectedTargets, options.runnerBackend, cwd),
+    PR_NODE_TEST_SECONDS,
+  );
 }
