@@ -955,6 +955,7 @@ describe("requester settle wake product flow", () => {
               const nextAttemptAt = registry.getSubagentRunByRunId(alpha.runId)?.requesterSettleWake
                 ?.nextAttemptAt;
               expect(nextAttemptAt).toEqual(expect.any(Number));
+              expect(nextAttemptAt).toBeLessThanOrEqual(retryWindowEndsAt);
               await vi.advanceTimersByTimeAsync(Math.max(0, nextAttemptAt! - Date.now()));
               // Join the retry's real worker I/O before advancing across its task deadline.
               await flushOwnedWork();
