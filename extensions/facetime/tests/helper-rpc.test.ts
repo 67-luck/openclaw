@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import net from "node:net";
+import { acquireTestPortBlock } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it } from "vitest";
 import { FaceTimeHelperActionError } from "../src/helper-results.js";
 import { FaceTimeHelperSocketServer, FaceTimeHelperUnavailableError } from "../src/helper-rpc.js";
@@ -91,22 +92,6 @@ function sendHelperPayload(socket: net.Socket, payload: Record<string, unknown>)
   socket.write(encodeHelperPayload(socket, payload));
 }
 
-async function reservePort(): Promise<number> {
-  const server = net.createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
-  const address = server.address();
-  await new Promise<void>((resolve) => {
-    server.close(() => resolve());
-  });
-  if (!address || typeof address === "string") {
-    throw new Error("failed to reserve TCP port");
-  }
-  return address.port;
-}
-
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 1000;
   while (Date.now() < deadline) {
@@ -184,7 +169,13 @@ async function registerHelper(
 
 describe("FaceTime helper RPC", () => {
   let helper: FaceTimeHelperSocketServer | undefined;
+  let portClaim: Awaited<ReturnType<typeof acquireTestPortBlock>> | undefined;
   const clients = new Set<net.Socket>();
+
+  async function reservePort(): Promise<number> {
+    portClaim = await acquireTestPortBlock({ offsets: [0] });
+    return portClaim.port;
+  }
 
   async function startDefaultHelper(
     port: number,
@@ -225,6 +216,8 @@ describe("FaceTime helper RPC", () => {
       socket.destroy();
     }
     await helper?.stop();
+    await portClaim?.release();
+    portClaim = undefined;
     clients.clear();
     helper = undefined;
   });
