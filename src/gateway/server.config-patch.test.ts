@@ -203,7 +203,7 @@ describe("gateway config methods", () => {
 });
 
 describe("gateway config methods", () => {
-  installConfigWriteGatewayHooks({ watchConfigFiles: false });
+  installConfigWriteGatewayHooks();
 
   it.each(["plain", "unrelated-include", "include-only"] as const)(
     "openclaw.changes.list preserves an approved %s operation without a duplicate write",
