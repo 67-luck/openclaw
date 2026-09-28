@@ -58,7 +58,7 @@ describe("buildExternalRunFailureReply", () => {
       });
       expect(payload).toMatchObject({
         isError: true,
-        text: expect.stringMatching(/sign in|login/i),
+        text: expect.stringContaining("Re-authenticate the provider and try again."),
       });
       expect(getReplyPayloadMetadata(payload!)).toMatchObject({ agentRunFailureReason: reason });
     },
