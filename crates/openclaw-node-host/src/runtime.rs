@@ -141,11 +141,18 @@ pub enum RuntimeError {
     ResultTask(String),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandSurface {
+    Public,
+    System,
+    Private,
+}
+
 struct Registration {
     command: String,
     handler: Handler,
     duplex: bool,
-    system_owner: bool,
+    surface: CommandSurface,
     admission: Option<AdmissionPolicy>,
 }
 
@@ -153,6 +160,7 @@ struct Registration {
 struct RegisteredHandler {
     handler: Handler,
     duplex: bool,
+    surface: CommandSurface,
     admission: Option<AdmissionPolicy>,
 }
 
@@ -191,8 +199,43 @@ impl CommandRuntimeBuilder {
     /// its current permission/route policy before every system handler entry.
     #[must_use]
     pub fn system_duplex_command<A, AF, F, Fut>(
+        self,
+        command: impl Into<String>,
+        admission: A,
+        handler: F,
+    ) -> Self
+    where
+        A: Fn(InvocationAdmissionContext) -> AF + Send + Sync + 'static,
+        AF: Future<Output = Result<(), HandlerError>> + Send + 'static,
+        F: Fn(InvocationContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Value, HandlerError>> + Send + 'static,
+    {
+        self.register_admitted(command, CommandSurface::System, admission, handler)
+    }
+
+    /// Register a product-owned private control, excluded from the public manifest.
+    /// The product must validate its separate private authority on every invocation;
+    /// registration alone is not permission to execute the command.
+    #[must_use]
+    pub fn private_duplex_command<A, AF, F, Fut>(
+        self,
+        command: impl Into<String>,
+        admission: A,
+        handler: F,
+    ) -> Self
+    where
+        A: Fn(InvocationAdmissionContext) -> AF + Send + Sync + 'static,
+        AF: Future<Output = Result<(), HandlerError>> + Send + 'static,
+        F: Fn(InvocationContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Value, HandlerError>> + Send + 'static,
+    {
+        self.register_admitted(command, CommandSurface::Private, admission, handler)
+    }
+
+    fn register_admitted<A, AF, F, Fut>(
         mut self,
         command: impl Into<String>,
+        surface: CommandSurface,
         admission: A,
         handler: F,
     ) -> Self
@@ -205,7 +248,7 @@ impl CommandRuntimeBuilder {
         self.registrations.push(Registration {
             command: command.into(),
             duplex: true,
-            system_owner: true,
+            surface,
             admission: Some(Arc::new(move |context| Box::pin(admission(context)))),
             handler: Arc::new(move |context| Box::pin(handler(context))),
         });
@@ -261,7 +304,7 @@ impl CommandRuntimeBuilder {
             command: command.into(),
             handler: Arc::new(move |context| Box::pin(handler(context))),
             duplex,
-            system_owner: false,
+            surface: CommandSurface::Public,
             admission: None,
         });
         self
@@ -329,7 +372,8 @@ impl CommandRuntimeBuilder {
             if command.is_empty() {
                 return Err(RuntimeBuildError::EmptyCommand);
             }
-            if (command == "system" || command.starts_with("system.")) && !registration.system_owner
+            if (command == "system" || command.starts_with("system."))
+                && registration.surface != CommandSurface::System
             {
                 return Err(RuntimeBuildError::ReservedCommand(command));
             }
@@ -339,6 +383,7 @@ impl CommandRuntimeBuilder {
                     RegisteredHandler {
                         handler: registration.handler,
                         duplex: registration.duplex,
+                        surface: registration.surface,
                         admission: registration.admission,
                     },
                 )
@@ -392,9 +437,11 @@ impl CommandRuntime {
         CommandRuntimeBuilder::default()
     }
 
-    /// Exact command names registered by this runtime, in deterministic order.
+    /// Public command names registered by this runtime, in deterministic order.
     pub fn command_names(&self) -> impl Iterator<Item = &str> {
-        self.inner.handlers.keys().map(String::as_str)
+        self.inner.handlers.iter().filter_map(|(name, handler)| {
+            (handler.surface != CommandSurface::Private).then_some(name.as_str())
+        })
     }
 
     /// Exact capability names declared by this runtime, in deterministic order.
@@ -402,7 +449,7 @@ impl CommandRuntime {
         self.inner.capabilities.iter().map(String::as_str)
     }
 
-    /// Declare every registered command and activate the supplied connect options.
+    /// Declare registered public commands and activate the supplied connect options.
     #[must_use]
     pub fn activate(&self, mut options: NodeConnectOptions) -> NodeConnectOptions {
         for capability in self.capability_names() {
@@ -491,7 +538,8 @@ impl CommandRuntime {
     ///
     /// The registered handlers may be a superset of the commands advertised by
     /// this connection. Session-bound dispatch fails closed for any command
-    /// outside the connection manifest.
+    /// outside the connection manifest unless explicitly registered as a private
+    /// control with mandatory product-owned admission.
     ///
     /// Disconnect cancels and aborts every handler still owned by this run.
     /// # Errors
@@ -926,15 +974,18 @@ impl CommandRuntime {
         invocation: &NodeInvocation,
         session: Option<&NodeSession>,
     ) -> Result<RegisteredHandler, InvocationResult> {
-        if session.is_some_and(|session| !session.advertises_command(&invocation.command)) {
+        let registration = self.inner.handlers.get(&invocation.command);
+        // Public approval never implies private authority. Only an explicit private
+        // registration may dispatch outside the manifest, through its mandatory policy.
+        if session.is_some_and(|session| !session.advertises_command(&invocation.command))
+            && registration.is_none_or(|handler| handler.surface != CommandSurface::Private)
+        {
             return Err(failure(
                 "COMMAND_NOT_ADVERTISED",
                 "command is outside the active connection manifest",
             ));
         }
-        self.inner
-            .handlers
-            .get(&invocation.command)
+        registration
             .cloned()
             .ok_or_else(|| failure("COMMAND_NOT_FOUND", "no handler registered for command"))
     }
@@ -2093,11 +2144,15 @@ mod tests {
 
     #[tokio::test]
     async fn gateway_cancellation_stops_admission_before_handler_execution() {
-        for native_system in [false, true] {
-            let command = if native_system {
-                "system.notify"
-            } else {
-                "example.status"
+        for surface in [
+            CommandSurface::Public,
+            CommandSurface::System,
+            CommandSurface::Private,
+        ] {
+            let command = match surface {
+                CommandSurface::System => "system.notify",
+                CommandSurface::Private => "host.control",
+                CommandSurface::Public => "example.status",
             };
             let admission_entered = Arc::new(Notify::new());
             let handler_ran = Arc::new(AtomicBool::new(false));
@@ -2118,12 +2173,16 @@ mod tests {
                 }
             };
             let builder = CommandRuntime::builder();
-            let runtime = if native_system {
-                builder.system_duplex_command(command, admission, handler)
-            } else {
-                builder
+            let runtime = match surface {
+                CommandSurface::System => {
+                    builder.system_duplex_command(command, admission, handler)
+                }
+                CommandSurface::Private => {
+                    builder.private_duplex_command(command, admission, handler)
+                }
+                CommandSurface::Public => builder
                     .admission_policy(admission)
-                    .command(command, handler)
+                    .command(command, handler),
             }
             .build()
             .unwrap();
@@ -2217,6 +2276,11 @@ mod tests {
         let runtime = CommandRuntime::builder()
             .command("example.z", |_context| async { Ok(Value::Null) })
             .command("example.a", |_context| async { Ok(Value::Null) })
+            .private_duplex_command(
+                "host.control",
+                |_| async { Ok(()) },
+                |_| async { Ok(Value::Null) },
+            )
             .build()
             .unwrap();
         assert_eq!(

@@ -834,7 +834,7 @@ async fn direct_dispatch_rejects_duplex_without_running_an_event_loop() {
 }
 
 #[tokio::test]
-async fn runtime_enforces_the_manifest_of_each_connection() {
+async fn runtime_enforces_public_manifests_and_private_admission() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let first_entered = Arc::new(tokio::sync::Notify::new());
@@ -864,7 +864,12 @@ async fn runtime_enforces_the_manifest_of_each_connection() {
             )
             .await;
 
-            for (id, command) in [("denied", denied), ("allowed", advertised)] {
+            for (id, command) in [
+                ("private-allowed", "host.control"),
+                ("private-denied", "host.control"),
+                ("denied", denied),
+                ("allowed", advertised),
+            ] {
                 send_json(
                     &mut socket,
                     json!({"type":"event","event":"node.invoke.request",
@@ -877,7 +882,10 @@ async fn runtime_enforces_the_manifest_of_each_connection() {
                 }
                 let result = receive_json(&mut socket).await;
                 assert_eq!(result["method"], "node.invoke.result");
-                if id == "denied" {
+                if id == "private-denied" {
+                    assert_eq!(result["params"]["ok"], false);
+                    assert_eq!(result["params"]["error"]["code"], "PRIVATE_DENIED");
+                } else if id == "denied" {
                     assert_eq!(result["params"]["ok"], false);
                     assert_eq!(result["params"]["error"]["code"], "COMMAND_NOT_ADVERTISED");
                 } else {
@@ -898,6 +906,20 @@ async fn runtime_enforces_the_manifest_of_each_connection() {
     let handler_entered = Arc::clone(&first_entered);
     let handler_cancelled = Arc::clone(&first_cancelled);
     let runtime = CommandRuntime::builder()
+        .private_duplex_command(
+            "host.control",
+            |context| async move {
+                if context.invocation.id == "private-denied" {
+                    Err(HandlerError::new(
+                        "PRIVATE_DENIED",
+                        "private authority retired",
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+            |context| async move { Ok(json!({"command":context.invocation.command})) },
+        )
         .command("example.first", move |context| {
             let entered = Arc::clone(&handler_entered);
             let cancelled = Arc::clone(&handler_cancelled);
