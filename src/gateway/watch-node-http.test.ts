@@ -486,6 +486,9 @@ describe("watch node HTTP transport", () => {
       },
       baseDir,
     );
+    // Keep real pairing-worker latency out of this authorization assertion.
+    const invokeNow = performance.now();
+    using _ = vi.spyOn(performance, "now").mockReturnValue(invokeNow);
     const invoke = nodeRegistry.invoke({
       nodeId: identity.deviceId,
       command: "device.info",
