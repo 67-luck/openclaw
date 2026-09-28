@@ -15,6 +15,7 @@ import {
   type ChannelBindingProof,
   type InstanceBindingProbeResult,
 } from "./server-plugins.lifecycle.test-fixtures.js";
+import { testState } from "./test-helpers.runtime-state.js";
 import { type connectWebchatClient, rpcReq } from "./test-helpers.server.js";
 
 export async function prepareInstanceBindingFixture(
@@ -41,6 +42,7 @@ export async function prepareInstanceBindingFixture(
     throw new Error("gateway test hooks did not install OPENCLAW_CONFIG_PATH");
   }
   const config = {
+    gateway: { auth: { mode: "none" as const } },
     plugins: {
       enabled: true,
       allow: [
@@ -123,8 +125,12 @@ export async function patchInstanceBindingTestConfig(
 
 export function installInstanceBindingConfigIo() {
   const configIoRestorers: Array<{ mockRestore: () => void }> = [];
+  let previousAuth: typeof testState.gatewayAuth;
 
   beforeEach(async () => {
+    previousAuth = testState.gatewayAuth;
+    // These real-IO fixtures start unauthenticated Gateways; reload must retain that policy.
+    testState.gatewayAuth = { mode: "none" };
     const actualIo = await vi.importActual<typeof import("../config/io.js")>("../config/io.js");
     const facades = await Promise.all([import("../config/io.js"), import("../config/config.js")]);
     // Cached mutation importers retain the shared mocks; delegate those same exports to real IO
@@ -148,6 +154,7 @@ export function installInstanceBindingConfigIo() {
   });
 
   afterEach(() => {
+    testState.gatewayAuth = previousAuth;
     for (const restore of configIoRestorers.splice(0)) {
       restore.mockRestore();
     }

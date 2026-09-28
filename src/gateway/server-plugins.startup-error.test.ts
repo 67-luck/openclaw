@@ -107,6 +107,7 @@ it.each(["module-load", "entry-open"] as const)(
     await fs.writeFile(
       configPath,
       JSON.stringify({
+        gateway: { auth: { mode: "none" } },
         plugins: {
           allow: ["startup-broken", "instance-binding-probe"],
           load: { paths: [healthyPlugin, ...(failureKind === "entry-open" ? [brokenDir] : [])] },
