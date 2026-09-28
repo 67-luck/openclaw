@@ -12,6 +12,7 @@ import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { prepareUserProfileRoleAuthority } from "../../state/user-channel-identity-operations.js";
 import { withFollowupRequest } from "../subagents/completion/session-followup-completion.js";
 import type { FollowupRequest } from "../subagents/completion/session-followup-completion.types.js";
+import { captureRequesterFollowupAuthority } from "../subagents/requester-cron-authority.js";
 import {
   captureGatewayToolCallerAssertion,
   getGatewayToolCallerIdentity,
@@ -25,6 +26,8 @@ class FollowupAccessChangedError extends Error {}
 /** Prepare current facts through their worker owner; no stored identity becomes authority. */
 export async function prepareSessionsSendFollowup(params: {
   runId: string;
+  requesterTurnRunId?: string;
+  withRequesterAuthority?: <T>(run: () => T) => T;
   requesterAgentId: string;
   requesterSessionKey: string;
   targetAgentId: string;
@@ -51,12 +54,14 @@ export async function prepareSessionsSendFollowup(params: {
   const signal = AbortSignal.any([captured.signal, revoked.signal]);
   let stopAccessWatch: (() => void) | undefined;
   let released = false;
+  let requesterAuthority: ReturnType<typeof captureRequesterFollowupAuthority>;
   const release = () => {
     if (released) {
       return;
     }
     released = true;
     stopAccessWatch?.();
+    requesterAuthority?.release();
     for (const read of facts) {
       read.release();
     }
@@ -153,10 +158,32 @@ export async function prepareSessionsSendFollowup(params: {
         }
       }
     });
+    const requesterSessionId = facts[0]!.readCurrent(getRuntimeConfig()).target.entry.sessionId;
+    if (params.requesterTurnRunId && params.withRequesterAuthority) {
+      const requesterTurnRunId = params.requesterTurnRunId;
+      requesterAuthority = params.withRequesterAuthority(() =>
+        captureRequesterFollowupAuthority({
+          requesterTurnRunId,
+          requesterAgentId: params.requesterAgentId,
+          requesterSessionKey: params.requesterSessionKey,
+          requesterSessionId,
+          sourceSessionKey: params.targetSessionKey,
+          isCurrent: () => {
+            try {
+              assertCurrent();
+              return true;
+            } catch {
+              return false;
+            }
+          },
+        }),
+      );
+    }
     return {
       runId: params.runId,
       requesterSessionKey: params.requesterSessionKey,
-      requesterSessionId: facts[0]!.readCurrent(getRuntimeConfig()).target.entry.sessionId,
+      requesterSessionId,
+      requesterAuthority,
       requesterAgentId: params.requesterAgentId,
       targetSessionKey: params.targetSessionKey,
       targetAgentId: params.targetAgentId,
