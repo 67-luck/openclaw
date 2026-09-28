@@ -1,5 +1,14 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runInNewContext } from "node:vm";
@@ -262,6 +271,20 @@ export function quoteShell(value: string): string {
 }
 
 let linuxWorkflowBash: string | undefined;
+
+/** Match the trusted harness materialized before CI check rows execute. */
+export function createWorkflowCheckFixture(makeTempDirectory: (prefix: string) => string) {
+  const root = makeTempDirectory("openclaw-ci-guards-");
+  const fakeBin = path.join(root, "bin");
+  const harnessScripts = path.join(root, ".ci-harness", "scripts");
+  mkdirSync(fakeBin);
+  mkdirSync(harnessScripts, { recursive: true });
+  copyFileSync(
+    new URL("../../scripts/ci-static-step.sh", import.meta.url),
+    path.join(harnessScripts, "ci-static-step.sh"),
+  );
+  return { root, fakeBin };
+}
 
 export function runWorkflowShellScript(
   script: string,

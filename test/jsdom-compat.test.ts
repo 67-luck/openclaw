@@ -1,15 +1,85 @@
 /* @vitest-environment jsdom */
 import { resolveObjectURL } from "node:buffer";
 import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { Worker } from "node:worker_threads";
+import { afterEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "./helpers/temp-dir.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 // Exercise the environment installed by the native preload, including in VM tests.
 const require = process.getBuiltinModule("module").createRequire(import.meta.url);
 const { builtinEnvironments }: typeof import("vitest/runtime") = require("vitest/runtime");
 
 describe("jsdom native API boundary", () => {
+  it.each(["entry", "eval"] as const)(
+    "preserves inherited Node flags in a standalone %s without Vitest",
+    (kind) => {
+      const root = tempDirs.make("openclaw-plain-preload-");
+      const entry = path.join(root, "entry.mjs");
+      const source = 'process.stdout.write(String(process.execArgv.includes("--no-warnings")));';
+      writeFileSync(entry, source);
+      const result = spawnSync(
+        process.execPath,
+        [
+          ...process.execArgv,
+          "--no-warnings",
+          ...(kind === "entry" ? [entry] : ["--input-type=module", "--eval", source]),
+        ],
+        { cwd: root, encoding: "utf8" },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe("true");
+    },
+  );
+
+  it("preserves inherited preloads in a standalone native worker without Vitest", async () => {
+    const root = tempDirs.make("openclaw-worker-preload-");
+    const entry = path.join(root, "worker.mjs");
+    writeFileSync(
+      entry,
+      'import { parentPort } from "node:worker_threads"; parentPort.postMessage(42); parentPort.close();',
+    );
+    const worker = new Worker(pathToFileURL(entry));
+    try {
+      const result = await new Promise((resolve, reject) => {
+        worker.once("message", resolve);
+        worker.once("error", reject);
+        worker.once("exit", (code) => reject(new Error(`Worker exited before replying: ${code}`)));
+      });
+      expect(result).toBe(42);
+    } finally {
+      await worker.terminate();
+    }
+  });
+
+  it("does not hide a broken Vitest runtime when its package is present", () => {
+    const root = tempDirs.make("openclaw-broken-preload-");
+    const packageRoot = path.join(root, "node_modules", "vitest");
+    mkdirSync(packageRoot, { recursive: true });
+    writeFileSync(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "vitest",
+        exports: { "./package.json": "./package.json", "./runtime": "./missing-runtime.js" },
+      }),
+    );
+    const entry = path.join(root, "entry.mjs");
+    writeFileSync(entry, 'process.stdout.write("must not execute");');
+    const result = spawnSync(process.execPath, [...process.execArgv, entry], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("missing-runtime.js");
+    expect(result.stdout).toBe("");
+  });
+
   it("adapts the package-local Vitest environment before creating object URLs", () => {
     const result = spawnSync(
       process.execPath,

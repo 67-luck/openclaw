@@ -49,6 +49,7 @@ import {
   CACHE_V5,
   SETUP_GO_V6,
   UPLOAD_ARTIFACT_V7,
+  createWorkflowCheckFixture,
   evaluateWorkflowExpression,
   readAndroidToolchainAction,
   readBuildArtifactsTestboxWorkflow,
@@ -464,12 +465,10 @@ function runCheckShardFixture(options: {
   typeCalls: { row: string; command: string; localCheck: string | null }[];
   rows: { name: string; status: number | null }[];
 } {
-  const root = tempDirs.make("openclaw-ci-guards-");
-  const fakeBin = path.join(root, "bin");
+  const { root, fakeBin } = createWorkflowCheckFixture((prefix) => tempDirs.make(prefix));
   const callsPath = path.join(root, "pnpm-calls.txt");
   const typeCallsPath = path.join(root, "type-calls.txt");
   const typeCheck = options.task === "test-types" || options.task === "prod-types";
-  mkdirSync(fakeBin);
   if (typeCheck) {
     mkdirSync(path.join(root, "scripts"));
     writeFileSync(
