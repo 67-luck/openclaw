@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { annotateInterSessionPromptText } from "../sessions/input-provenance.js";
 import { projectForwardedMessages } from "./chat-display-projection.history.js";
 import { projectChatDisplayMessages } from "./chat-display-projection.js";
+import { projectTranscriptEntryMessage } from "./session-transcript-entry-message.js";
+import { projectSessionMessagePayload } from "./session-transcript-message.js";
 
 describe("forwarded session attribution", () => {
   it.each([
@@ -207,4 +209,90 @@ it("refreshes only the sender label of an already projected automation", () => {
     content: message.content,
     senderSession: { label: "New name" },
   });
+});
+
+describe("forwarded input consumption time", () => {
+  it.each(["user", "assistant"])(
+    "uses the committed time for %s inputs in history and live delivery",
+    (role) => {
+      const message = {
+        role,
+        content: "Queued agent update",
+        timestamp: 1_000,
+        provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+        ...(role === "assistant" ? { senderLabel: "Forwarded agent message" } : {}),
+      };
+      const event = {
+        type: "message",
+        id: "queued-input",
+        timestamp: new Date(2_000).toISOString(),
+        message,
+      };
+      const canonical = projectTranscriptEntryMessage(event, 2);
+      const history = projectChatDisplayMessages([canonical]);
+      expect(history[0]).toMatchObject({
+        role: "assistant",
+        timestamp: 2_000,
+        senderLabel: "Forwarded agent message",
+      });
+      const live = projectSessionMessagePayload({
+        sessionKey: "agent:main:main",
+        message: canonical,
+        messageId: event.id,
+        messageSeq: 2,
+        projectCurrentUserProfile: (value) => value,
+      });
+      expect(live.payload?.message).toEqual(history[0]);
+      expect(projectForwardedMessages(history)).toBe(history);
+      expect(message.timestamp).toBe(1_000);
+    },
+  );
+
+  it("uses consumption time for automation without changing ordinary message timestamps", () => {
+    const provenance = {
+      kind: "internal_system",
+      sourceTool: "cron",
+      jobId: "job",
+      runId: "run",
+      sourceSessionKey: "agent:main:cron:job:run:run",
+    };
+    const forwarded = {
+      role: "user",
+      content: "Scheduled update",
+      timestamp: 1_000,
+      provenance,
+      __openclaw: { recordTimestampMs: 2_000 },
+    };
+    const human = {
+      role: "user",
+      content: "Human input",
+      timestamp: 1_000,
+      __openclaw: { recordTimestampMs: 2_000 },
+    };
+    const assistant = {
+      role: "assistant",
+      content: "Ordinary answer",
+      timestamp: 1_000,
+      __openclaw: { recordTimestampMs: 2_000 },
+    };
+    const output = projectChatDisplayMessages([forwarded, human, assistant], {
+      resolveCronJobName: () => "Daily report",
+    });
+    expect(output.map((message) => message.timestamp)).toEqual([2_000, 1_000, 1_000]);
+    expect(forwarded.timestamp).toBe(1_000);
+  });
+
+  it.each([undefined, Number.NaN, Number.POSITIVE_INFINITY])(
+    "retains the available time without a finite commit receipt (%s)",
+    (recordTimestampMs) => {
+      const message = {
+        role: "user",
+        content: "Legacy update",
+        timestamp: 1_000,
+        provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+        __openclaw: { recordTimestampMs },
+      };
+      expect(projectChatDisplayMessages([message])[0]?.timestamp).toBe(1_000);
+    },
+  );
 });

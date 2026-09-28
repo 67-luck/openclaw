@@ -618,10 +618,18 @@ export function projectForwardedMessages(
     return names.get(jobId);
   };
   let changed = false;
-  const projected = messages.map((message) => {
-    if (!isForwardedUserMessage(message) && !isProjectedForwardedMessage(message)) {
-      return message;
+  const projected = messages.map((storedMessage) => {
+    if (!isForwardedUserMessage(storedMessage) && !isProjectedForwardedMessage(storedMessage)) {
+      return storedMessage;
     }
+    // Accepted inputs retain their original time in storage. Their transcript
+    // commit marks consumption, so display that time in both history and live events.
+    const consumedAt = asFiniteNumber(readRecord(storedMessage["__openclaw"])?.recordTimestampMs);
+    const message =
+      consumedAt !== undefined && consumedAt !== storedMessage.timestamp
+        ? { ...storedMessage, timestamp: consumedAt }
+        : storedMessage;
+    changed ||= message !== storedMessage;
     const senderSession = resolveForwardedSenderSession(message, resolveName);
     if (message.role === "assistant") {
       const previous = readRecord(message.senderSession);
