@@ -21,7 +21,6 @@ import { mergeCodexThreadConfigs } from "./plugin-thread-config.js";
 import { buildCodexProjectDocThreadConfig } from "./project-doc-thread-config.js";
 import {
   CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE,
-  flattenCodexDynamicToolFunctions,
   isJsonObject,
   type CodexConfigReadResponse,
   type CodexConfigRequirementsReadResponse,
@@ -324,6 +323,38 @@ export function buildCodexRuntimeThreadConfig(
   return ensureDirectOnlyToolNamespaces(merged, options.directOnlyToolNamespaces);
 }
 
+function hasNativeQuestionOptIn(
+  config: JsonObject,
+  nativeConfig: CodexConfigReadResponse | undefined,
+): boolean {
+  return [
+    "tools.experimental_request_user_input.enabled",
+    "features.default_mode_request_user_input",
+  ].some((key) => {
+    const authored = readQuestionConfigValue(config, key);
+    if (authored !== undefined) {
+      return authored === true;
+    }
+    // config/read materializes enabled=true by default; only an origin proves opt-in.
+    return (
+      nativeConfig?.origins?.[key] !== undefined &&
+      readQuestionConfigValue(nativeConfig.config, key) === true
+    );
+  });
+}
+
+function readQuestionConfigValue(config: JsonObject, key: string): JsonValue | undefined {
+  if (Object.hasOwn(config, key)) {
+    return config[key];
+  }
+  const separator = key.indexOf(".");
+  if (separator < 0) {
+    return undefined;
+  }
+  const child = config[key.slice(0, separator)];
+  return isJsonObject(child) ? readQuestionConfigValue(child, key.slice(separator + 1)) : undefined;
+}
+
 function ensureDirectOnlyToolNamespaces(
   config: JsonObject,
   requiredNamespaces: readonly string[] | undefined,
@@ -368,7 +399,8 @@ export function buildCodexRuntimeThreadConfigForRun(
     nativeProviderWebSearchSupport?: CodexNativeWebSearchSupport;
     nativeCodeModeOnlyEnabled?: boolean;
     directOnlyToolNamespaces?: readonly string[];
-    dynamicTools?: readonly CodexDynamicToolSpec[];
+    askUserAvailable?: boolean;
+    nativeQuestionConfig?: CodexConfigReadResponse;
     webSearchAllowed?: boolean;
     appServer?: Pick<CodexAppServerRuntimeOptions, "networkProxy">;
     hostSystemAgentActive?: boolean;
@@ -413,11 +445,9 @@ export function buildCodexRuntimeThreadConfigForRun(
     mergeCodexThreadConfigs(
       baseConfig,
       options.appServer?.networkProxy?.configPatch,
-      // OpenClaw owns blocking questions when ask_user is available; Codex's
-      // duplicate request_user_input rejects turns in Default mode.
-      flattenCodexDynamicToolFunctions(options.dynamicTools).some(
-        (tool) => tool.name === "ask_user",
-      )
+      // Declarations can outlive executors. Prefer a currently callable Ask User,
+      // unless the operator explicitly enabled native questions (including Default mode).
+      options.askUserAvailable && !hasNativeQuestionOptIn(baseConfig, options.nativeQuestionConfig)
         ? { "tools.experimental_request_user_input.enabled": false }
         : undefined,
       isCodexResponsesOAuthRun(params)
