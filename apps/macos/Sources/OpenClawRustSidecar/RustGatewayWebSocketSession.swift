@@ -172,8 +172,11 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         let prefix = RustGatewayWebSocketSession.framePrefix(callerOwnsLifetime: lifetime != nil)
         try await withCheckedThrowingContinuation { continuation in
             self.writes.enqueue(
-                data, lane: .application, envelopeBytes: prefix.count + 1,
-                lifetime: lifetime, continuation: continuation,
+                data,
+                lane: .application,
+                envelopeBytes: prefix.count + 1,
+                lifetime: lifetime,
+                continuation: continuation,
                 prepare: { [self] data in
                     let (payload, frame) = try RustGatewayWebSocketSession.prepareGatewayFrame(data, prefix: prefix)
                     if let metadata = RustGatewayWebSocketSession.connectMetadata(frame) {
@@ -505,11 +508,14 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
     }
 
     private func enqueueWrite(
-        _ data: Data, lane: SidecarWriteQueue.Lane = .control,
+        _ data: Data,
+        lane: SidecarWriteQueue.Lane = .control,
         continuation: CheckedContinuation<Void, Error>? = nil)
     {
         self.writes.enqueue(
-            data, lane: lane, continuation: continuation,
+            data,
+            lane: lane,
+            continuation: continuation,
             write: { [self] data in try self.writePayload(data) },
             failed: { [weak self] error in self?.finish(error) })
     }

@@ -20,7 +20,10 @@ final class SidecarWriteQueue: @unchecked Sendable {
         var cancelled = false
 
         init(
-            data: Data, lane: Lane, envelopeBytes: Int, lifetime: WebSocketRequestLifetime?,
+            data: Data,
+            lane: Lane,
+            envelopeBytes: Int,
+            lifetime: WebSocketRequestLifetime?,
             continuation: CheckedContinuation<Void, Error>?,
             prepare: @escaping @Sendable (Data) throws -> Prepared,
             write: @escaping @Sendable (Data) throws -> Void)
@@ -54,8 +57,13 @@ final class SidecarWriteQueue: @unchecked Sendable {
         failed: @escaping @Sendable (Error) -> Void)
     {
         let request = Request(
-            data: data, lane: lane, envelopeBytes: envelopeBytes, lifetime: lifetime,
-            continuation: continuation, prepare: prepare, write: write)
+            data: data,
+            lane: lane,
+            envelopeBytes: envelopeBytes,
+            lifetime: lifetime,
+            continuation: continuation,
+            prepare: prepare,
+            write: write)
         let register = {
             self.lock.lock()
             let count = self.requests.values.filter { $0.lane == lane }.count
@@ -102,8 +110,11 @@ final class SidecarWriteQueue: @unchecked Sendable {
                     return false
                 }
                 request.admitted = true
-                if control { self.controlBytes += request.chargedBytes }
-                else { self.payloadBytes += request.chargedBytes }
+                if control {
+                    self.controlBytes += request.chargedBytes
+                } else {
+                    self.payloadBytes += request.chargedBytes
+                }
                 ready.append(request)
                 return true
             }
@@ -178,8 +189,11 @@ final class SidecarWriteQueue: @unchecked Sendable {
         guard let request = self.requests.removeValue(forKey: id) else { self.lock.unlock()
             return
         }
-        if request.lane == .control { self.controlBytes -= request.chargedBytes }
-        else { self.payloadBytes -= request.chargedBytes }
+        if request.lane == .control {
+            self.controlBytes -= request.chargedBytes
+        } else {
+            self.payloadBytes -= request.chargedBytes
+        }
         let continuation = request.continuation
         request.continuation = nil
         let ready = self.admitLocked()
