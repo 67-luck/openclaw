@@ -43,7 +43,7 @@ function safeLabel(value: string): boolean {
 
 function readMessage(line: string): string | undefined {
   const match =
-    /^\s+0x[\da-f]+: \[String\][^\r\n]*?: #message: 0x[\da-f]+ <String\[(\d+)\]: (.*)> \((?:const )?data field \d+,/iu.exec(
+    /^\s+(?:0x[\da-f]+|[\da-f]{16}): \[String\][^\r\n]*?: #message: (?:0x[\da-f]+|[\da-f]{16}) <String\[(\d+)\]: (.*)> \((?:const )?data field \d+,/iu.exec(
       line,
     );
   if (!match) {
@@ -69,10 +69,14 @@ function readMessage(line: string): string | undefined {
   return typeof message === "string" && message.length === Number(match[1]) ? message : undefined;
 }
 
-function projectMessage(message: string, installRoot: string): string {
+function projectMessage(message: string, installRoot: string, windows: boolean): string {
   const withoutPointers = message.replace(/\b0x[\da-f]+\b/giu, "[pointer]");
+  // Native Windows rendering can omit 0x; ambiguous IDs are withheld too.
+  const opaque = windows
+    ? withoutPointers.replace(/\b[\da-f]{16}\b/giu, "[redacted-hex]")
+    : withoutPointers;
   return redactSupportDiagnosticLine(
-    withoutPointers,
+    opaque,
     { env: {}, stateDir: installRoot },
     Number.MAX_SAFE_INTEGER,
   );
@@ -125,7 +129,9 @@ export function createInstalledExceptionObserver({ installRoot }: { installRoot:
   };
 
   const readFrame = (line: string): OwnedExceptionFrame | undefined => {
-    const frame = /^\s*\d+: (.*?) \[0x[\da-f]+\] \[([^\]\r\n]+)\](?:\s|$)/iu.exec(line);
+    const frame = /^\s*\d+: (.*?) \[(?:0x[\da-f]+|[\da-f]{16})\] \[([^\]\r\n]+)\](?:\s|$)/iu.exec(
+      line,
+    );
     const location = frame && /^(.*?):~?(\d+)(?::(\d+))?$/u.exec(frame[2]!);
     if (!frame || !location) {
       return undefined;
@@ -261,7 +267,7 @@ export function createInstalledExceptionObserver({ installRoot }: { installRoot:
         const wasPartial = exception.partial;
         try {
           if (exception.message !== undefined) {
-            const message = projectMessage(redact(exception.message), installRoot);
+            const message = projectMessage(redact(exception.message), installRoot, windows);
             exception.message = message.slice(0, MAX_MESSAGE);
             if (message.length > MAX_MESSAGE) {
               exception.messageTruncated = true;
