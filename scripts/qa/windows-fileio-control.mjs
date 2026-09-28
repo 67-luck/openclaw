@@ -11,6 +11,7 @@ import {
   inspectManagedProcessGroup,
   runManagedCommand,
 } from "../lib/managed-child-process.mts";
+import { createFixtureRelease } from "./windows-fileio/fixture-input.cjs";
 import { verifyDeletionControl } from "./windows-fileio/verify-deletion-control.mjs";
 
 const helper = fileURLToPath(new URL("./windows-fileio/", import.meta.url));
@@ -90,6 +91,7 @@ function launch(label, bin, args, { timeoutMs = 30_000, onRecord, signal } = {})
   let child;
   let carry = "";
   let outputError;
+  let inputError;
   const started = performance.now();
   const completion = lifetime.track(
     runManagedCommand({
@@ -147,6 +149,9 @@ function launch(label, bin, args, { timeoutMs = 30_000, onRecord, signal } = {})
       .then((code) => {
         receipt.exitCode = code;
         assert.equal(outputError, undefined, "Malformed/bounded stdout");
+        if (code === 0 && inputError) {
+          throw inputError;
+        }
         return code;
       })
       .catch((/** @type {unknown} */ error) => {
@@ -166,9 +171,17 @@ function launch(label, bin, args, { timeoutMs = 30_000, onRecord, signal } = {})
     receipt,
     completion,
     records,
-    send(line) {
+    fixtureInput(earlyExit) {
       assert.ok(child?.stdin);
-      child.stdin.end(line);
+      return createFixtureRelease(child.stdin, earlyExit, (error) => {
+        inputError = error;
+        receipt.stdinError = describeError(error);
+        // Preserve an already observed target exit; a live command with failed
+        // input is cancelled and joined by its existing command controller.
+        if (child.exitCode === null) {
+          controller.abort();
+        }
+      });
     },
     async waitFor(predicate) {
       const present = records.find(predicate);
@@ -256,7 +269,7 @@ async function runCell(name, fixtureMode) {
   persist(); // Existing installed cleanup owns custody before any allocation.
   fs.mkdirSync(resource.fixtureParent, { recursive: true });
   let target;
-  let released = false;
+  let fixtureRelease;
   let observer;
   const cell = { name, fixtureMode, qualified: false };
   cells.push(cell);
@@ -296,6 +309,7 @@ async function runCell(name, fixtureMode) {
           fixtureMode,
           addon,
           resource.fixtureParent,
+          name === "early-exit" ? "early-exit" : "hold",
         ],
         {
           timeoutMs: 30_000,
@@ -308,6 +322,7 @@ async function runCell(name, fixtureMode) {
         },
       );
       const ready = await target.waitFor((record) => record.event === "ready");
+      fixtureRelease = target.fixtureInput(name === "early-exit");
       assert.ok(Number.isSafeInteger(ready.pid));
       const identities = await powershell(`${name}:identity`, inspect, [
         "-Mode",
@@ -348,8 +363,7 @@ async function runCell(name, fixtureMode) {
           onRecord(record) {
             if (record.phase === "observing") {
               cell.enabledAcknowledged = true;
-              target.send("observe\n");
-              released = true;
+              fixtureRelease.observe();
               if (name === "observer-abort") {
                 controller.abort();
               }
@@ -367,6 +381,10 @@ async function runCell(name, fixtureMode) {
         cell.abortJoined = true;
       } finally {
         cell.observation = observer.records.find((record) => record.phase === "result");
+        cell.targetJoinedAtObserverCompletion = target.receipt.joined;
+        if (!target.receipt.joined) {
+          fixtureRelease.release();
+        }
       }
       if (name === "wrong-start") {
         assert.equal(cell.observerCode, 0);
@@ -376,7 +394,12 @@ async function runCell(name, fixtureMode) {
         assert.equal(cell.observation.records.length, 0);
       } else if (name === "observer-abort") {
         assert.ok(cell.enabledAcknowledged && cell.abortJoined);
+      } else if (name === "early-exit") {
+        cell.control = "natural-early-exit-without-attribution-requirement";
+        assert.equal(cell.observerCode, 0);
+        assert.equal(cell.targetJoinedAtObserverCompletion, true);
       } else {
+        assert.equal(cell.targetJoinedAtObserverCompletion, false);
         assert.equal(await target.completion, 0);
         assert.ok(target.receipt.joined && target.receipt.jobObserved);
         verifyDeletionControl({ cell, observer, target, identity: resource.identity, fixtureMode });
@@ -385,8 +408,8 @@ async function runCell(name, fixtureMode) {
     cell.qualified = true;
   } finally {
     if (target) {
-      if (!released && !target.receipt.joined) {
-        target.send("observe\n");
+      if (!target.receipt.joined && fixtureRelease) {
+        fixtureRelease.release();
       }
       assert.equal(await target.completion, 0);
       assert.ok(target.receipt.joined && target.receipt.jobObserved);
@@ -415,6 +438,7 @@ try {
     persist();
     for (const [name, fixtureMode] of [
       ["partial-preparation", "unloaded"],
+      ["early-exit", "unloaded"],
       ["unloaded", "unloaded"],
       ["loaded", "loaded"],
       ["wrong-start", "loaded"],

@@ -96,7 +96,7 @@ function Start-FileTraceCensusEvent($State,$Event,[uint32]$TargetPid) {
   if($State.rows.Count -ge 32){$State.truncated=$true;return $null}
   # Header equality is only a census selector, never process/operation authority.
   $row=@{eventId=[int]$Event.Id;eventVersion=[int]$Event.Version;headerPidMatched=$true;
-    timeWindowMatched=$null;processLifetimeMatched=$null;issuingThreadVerified=$null;
+    timeWindowMatched=$null;processLifetimeMatched=$null;processTime=$null;issuingThreadVerified=$null;
     fieldPresence=@{};irpValueNonzero=$null;fieldShapeUnavailable=$false;filterReason='processing-interrupted'}
   $State.rows.Add($row)
   try {

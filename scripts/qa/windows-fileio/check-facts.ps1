@@ -50,3 +50,20 @@ $metadata=Get-FileTracePublicSchema $schemas
 Require ($metadata.truncated -and $metadata.events.Count -le 32) 'Schema cardinality bound failed'
 Require ([Text.Encoding]::UTF8.GetByteCount(($metadata|ConvertTo-Json -Depth 8 -Compress)) -le 16384) 'Schema byte bound failed'
 @{case='metadata-and-fact-bounds';passed=$true} | ConvertTo-Json -Compress
+
+# The public native fact derives the same guard without exposing native times.
+Add-Type -Path (Join-Path $PSScriptRoot 'OwnedFileTrace.cs')
+foreach($case in @(
+  @{name='query-failure';query=$false;error=6;creation=$null;before=$null;exit=$null;after=$null;expected=$false}
+  @{name='wrong-creation';query=$true;error=$null;creation=$false;before=$true;exit=$false;after=$null;expected=$false}
+  @{name='before-creation';query=$true;error=$null;creation=$true;before=$false;exit=$false;after=$null;expected=$false}
+  @{name='after-exit';query=$true;error=$null;creation=$true;before=$true;exit=$true;after=$false;expected=$false}
+  @{name='live-process';query=$true;error=$null;creation=$true;before=$true;exit=$false;after=$null;expected=$true}
+  @{name='within-exited-lifetime';query=$true;error=$null;creation=$true;before=$true;exit=$true;after=$true;expected=$true}
+)) {
+  $fact=[OwnedFileTrace+ProcessTimeObservation]::new()
+  $fact.QuerySucceeded=$case.query;$fact.NativeError=$case.error;$fact.CreationMatches=$case.creation
+  $fact.EventNotBeforeCreation=$case.before;$fact.ExitTimePresent=$case.exit;$fact.EventNotAfterExit=$case.after
+  Require ($fact.ContainsTime -eq $case.expected) "Lifetime guard changed: $($case.name)"
+}
+@{case='native-lifetime-fact-decision';passed=$true} | ConvertTo-Json -Compress

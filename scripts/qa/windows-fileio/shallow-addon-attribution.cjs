@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { createFixtureInput } = require("./fixture-input.cjs");
 
 const addonSha256 = "939156f310bd7a7d9d1db1b5249a5d135739b049c24c79fd3c201701333ddbf3";
 const nodeSha256 = "23062343ad39fc79f12ae39cfb324e93a20ced5f1d342e7b850c148c022ddbca";
@@ -12,22 +13,10 @@ const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex"
 const normalize = (value) => path.toNamespacedPath(path.resolve(value)).toLowerCase();
 const emit = (event) => process.stdout.write(JSON.stringify(event) + "\n");
 
-async function receiveObservationCommand() {
-  let command = Buffer.alloc(0);
-  for await (const chunk of process.stdin) {
-    assert.ok(command.length + chunk.length <= 32);
-    command = Buffer.concat([command, chunk]);
-    if (command.includes(10)) {
-      assert.equal(command.toString("utf8"), "observe\n");
-      return;
-    }
-  }
-  throw new Error("Observation handshake missing");
-}
-
 async function main() {
-  const [mode, sourceArg, fixtureParentArg] = process.argv.slice(2);
-  assert.equal(process.argv.length, 5);
+  const [mode, sourceArg, fixtureParentArg, lifetimeMode] = process.argv.slice(2);
+  assert.equal(process.argv.length, 6);
+  assert.ok(lifetimeMode === "hold" || lifetimeMode === "early-exit");
   assert.equal(process.platform, "win32");
   assert.equal(process.arch, "x64");
   assert.equal(process.version, "v26.8.2");
@@ -55,32 +44,40 @@ async function main() {
 
   // The owner starts observation, captures native PID/start identity, then sends
   // exactly "observe\n". No fixture-side timeout, retry, preload, or forced exit.
-  await receiveObservationCommand();
-  const beganAt = new Date().toISOString();
-  let unlinkCode = null;
+  const commands = createFixtureInput(process.stdin);
   try {
-    // One native deletion attempt gives the observer a simple known operation.
-    // It intentionally does not duplicate the historical recursive-rm retries.
-    await fs.unlink(canonicalAddon);
-  } catch (error) {
-    assert.ok(error instanceof Error && typeof error.code === "string");
-    unlinkCode = error.code;
+    await commands.read("observe\n");
+    const beganAt = new Date().toISOString();
+    let unlinkCode = null;
+    try {
+      // One native deletion attempt gives the observer a simple known operation.
+      // It intentionally does not duplicate the historical recursive-rm retries.
+      await fs.unlink(canonicalAddon);
+    } catch (error) {
+      assert.ok(error instanceof Error && typeof error.code === "string");
+      unlinkCode = error.code;
+    }
+    assert.equal(sha256(await fs.readFile(source)), addonSha256);
+    emit({
+      event: "result",
+      mode,
+      root,
+      pid: process.pid,
+      modulePresent,
+      beganAt,
+      endedAt: new Date().toISOString(),
+      operation: "unlink",
+      target: "koffi.node",
+      unlinkCode,
+      interpretation: "Fixture operation only; JavaScript error is not native NTSTATUS",
+    });
+    assert.equal(unlinkCode, mode === "loaded" ? "EPERM" : null);
+    if (lifetimeMode === "hold") {
+      await commands.read("release\n");
+    }
+  } finally {
+    await commands.close();
   }
-  assert.equal(sha256(await fs.readFile(source)), addonSha256);
-  emit({
-    event: "result",
-    mode,
-    root,
-    pid: process.pid,
-    modulePresent,
-    beganAt,
-    endedAt: new Date().toISOString(),
-    operation: "unlink",
-    target: "koffi.node",
-    unlinkCode,
-    interpretation: "Fixture operation only; JavaScript error is not native NTSTATUS",
-  });
-  assert.equal(unlinkCode, mode === "loaded" ? "EPERM" : null);
 }
 
 main().catch(() => {

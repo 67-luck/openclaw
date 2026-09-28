@@ -25,7 +25,14 @@ $lookup=@{
 }
 $threadLease=[pscustomobject]@{}
 $threadLease | Add-Member ScriptMethod BelongsAt {param($tid,$time) return $tid -eq 22}
-$threadLease | Add-Member ScriptMethod ProcessContainsTime {param($time) return $time -le $script:lifetimeEnd}
+$threadLease | Add-Member ScriptMethod ObserveProcessTime {param($time)
+  $script:queryCount++
+  if($script:queryFailure){return [pscustomobject]@{QuerySucceeded=$false;NativeError=6;
+    CreationMatches=$null;EventNotBeforeCreation=$null;ExitTimePresent=$null;EventNotAfterExit=$null;ContainsTime=$false}}
+  return [pscustomobject]@{QuerySucceeded=$true;NativeError=$null;CreationMatches=$true;
+    EventNotBeforeCreation=$true;ExitTimePresent=$true;EventNotAfterExit=($time -le $script:lifetimeEnd);
+    ContainsTime=($time -le $script:lifetimeEnd)}
+}
 function Event([int]$Id,[hashtable]$Fields,[int]$Tick) {
   $data=($Fields.GetEnumerator() | ForEach-Object {
     '<Data Name="'+[Security.SecurityElement]::Escape($_.Key)+'">'+[Security.SecurityElement]::Escape([string]$_.Value)+'</Data>'
@@ -86,6 +93,7 @@ $lookup['12:0']=@{id=12;version=0;task='Create';opcode='Info'}
 $lookup['15:0']=@{id=15;version=0;task='Read';opcode='Info'}
 $lookup['24:0']=@{id=24;version=0;task='OperationEnd';opcode='Info'}
 foreach($case in @(
+  @{name='query-failure';reason='outside-original-lifetime';tick=1;id=12;fields=@{Irp='0xC0FFEE';IssuingThreadId='22'}}
   @{name='capture-window';reason='outside-capture-window';tick=-1;id=12;fields=@{Irp='0xC0FFEE';IssuingThreadId='22';FileName='C:\foreign\PRIVATE_CANARY'}}
   @{name='original-lifetime';reason='outside-original-lifetime';tick=2;id=12;fields=@{Irp='0xC0FFEE';IssuingThreadId='22'}}
   @{name='zero-irp';reason='missing-or-zero-irp';tick=1;id=12;fields=@{Irp='0x0';IssuingThreadId='22'}}
@@ -94,6 +102,7 @@ foreach($case in @(
   @{name='unresolved-read';reason='unresolved-target';tick=1;id=15;fields=@{Irp='0xC0FFEE';IssuingThreadId='22';FileKey='0xDEADBEEF'}}
 )) {
   $start=[DateTime]::UtcNow;$end=$start.AddSeconds(1);$clock=[Diagnostics.Stopwatch]::StartNew()
+  $script:queryFailure=$case.name -eq 'query-failure';$script:queryCount=0
   $script:lifetimeEnd=if($case.name -eq 'original-lifetime'){$start.AddMilliseconds(1).ToFileTimeUtc()}else{[long]::MaxValue}
   $rows=[Collections.Generic.List[object]]::new();$partial=[Collections.Generic.HashSet[string]]::new()
   $pending=@{};$objects=@{};$ownedKeys=@{};$excludedObjects=[Collections.Generic.HashSet[string]]::new()
@@ -109,6 +118,8 @@ foreach($case in @(
   if($case.name -eq 'capture-window' -and ($fact.events[0].timeWindowMatched -ne $false -or $null -ne $fact.events[0].processLifetimeMatched)){throw 'Skipped lifetime test claimed a result'}
   if($case.name -eq 'original-lifetime' -and $fact.events[0].processLifetimeMatched -ne $false){throw 'Header PID confused with process lifetime'}
   if($case.name -eq 'unverified-thread' -and $fact.events[0].issuingThreadVerified -ne $false){throw 'Header PID confused with issuing thread'}
+  if($script:queryCount -ne $(if($case.name -eq 'capture-window'){0}else{1})){throw 'Diagnostic repeated native lifetime query'}
+  if($case.name -eq 'query-failure' -and ($fact.events[0].processTime.querySucceeded -ne $false -or $fact.events[0].processTime.nativeError -ne 6 -or $null -ne $fact.events[0].processTime.creationMatches)){throw 'Query failure facts became interval evidence'}
   if($case.name -eq 'zero-irp' -and $fact.events[0].irpValueNonzero -ne $false){throw 'Zero IRP reported nonzero'}
   $encoded=$fact | ConvertTo-Json -Depth 8 -Compress
   foreach($canary in @('PRIVATE_CANARY','C0FFEE','DEADBEEF')){if($encoded.Contains($canary)){throw 'Private event value leaked'}}

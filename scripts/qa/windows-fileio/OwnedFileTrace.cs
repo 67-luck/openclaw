@@ -120,6 +120,15 @@ public static class OwnedFileTrace {
     if(WaitForSingleObject(handle,0) != 258) { CloseHandle(handle); throw new InvalidOperationException("Target identity unavailable"); }
     return handle;
   }
+  public struct ProcessTimeObservation {
+    public bool QuerySucceeded;
+    public int? NativeError;
+    public bool? CreationMatches, EventNotBeforeCreation, ExitTimePresent, EventNotAfterExit;
+    public bool ContainsTime {
+      get { return QuerySucceeded && CreationMatches == true && EventNotBeforeCreation == true
+        && (ExitTimePresent == false || EventNotAfterExit == true); }
+    }
+  }
   public sealed class ThreadLease : IDisposable {
     readonly Dictionary<uint,IntPtr> handles = new Dictionary<uint,IntPtr>();
     readonly uint pid;
@@ -130,12 +139,19 @@ public static class OwnedFileTrace {
       pid=target; processCreate=created; originalProcess=processHandle;
       try { Refresh(); } catch { Dispose(); throw; }
     }
-    public bool ProcessContainsTime(long eventTime) {
+    public ProcessTimeObservation ObserveProcessTime(long eventTime) {
       FileTime c,e,k,u;
-      return GetProcessTimes(originalProcess,out c,out e,out k,out u)
-        && Stamp(c) == processCreate && eventTime >= Stamp(c)
-        && (Stamp(e) == 0 || eventTime <= Stamp(e));
+      if(!GetProcessTimes(originalProcess,out c,out e,out k,out u)) {
+        return new ProcessTimeObservation { QuerySucceeded=false, NativeError=Marshal.GetLastWin32Error() };
+      }
+      long created=Stamp(c), exited=Stamp(e);
+      return new ProcessTimeObservation {
+        QuerySucceeded=true, NativeError=null, CreationMatches=created == processCreate,
+        EventNotBeforeCreation=eventTime >= created, ExitTimePresent=exited != 0,
+        EventNotAfterExit=exited == 0 ? (bool?)null : eventTime <= exited
+      };
     }
+    public bool ProcessContainsTime(long eventTime) { return ObserveProcessTime(eventTime).ContainsTime; }
     public void Refresh() {
       IntPtr checkedProcess = HoldProcess(pid,processCreate);
       try {

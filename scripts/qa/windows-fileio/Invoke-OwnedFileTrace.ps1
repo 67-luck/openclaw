@@ -197,7 +197,13 @@ try {
           $censusReason='outside-capture-window'; return
         }
         if($null -ne $censusRow){$censusRow.timeWindowMatched=$true}
-        if (-not $threadLease.ProcessContainsTime($time.ToFileTimeUtc())) {
+        $processTime=$threadLease.ObserveProcessTime($time.ToFileTimeUtc())
+        if($null -ne $censusRow){
+          $censusRow.processTime=@{querySucceeded=$processTime.QuerySucceeded;nativeError=$processTime.NativeError;
+            creationMatches=$processTime.CreationMatches;eventNotBeforeCreation=$processTime.EventNotBeforeCreation;
+            exitTimePresent=$processTime.ExitTimePresent;eventNotAfterExit=$processTime.EventNotAfterExit}
+        }
+        if (-not $processTime.ContainsTime) {
           if($null -ne $censusRow){$censusRow.processLifetimeMatched=$false}
           $censusReason='outside-original-lifetime'; return
         }
