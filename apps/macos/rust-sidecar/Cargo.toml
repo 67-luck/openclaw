@@ -9,6 +9,7 @@ license = "MIT"
 
 [dependencies]
 base64 = "0.22.1"
+futures-util = { version = "0.3.34", features = ["sink"] }
 openclaw-gateway-client = { path = "../../../crates/openclaw-gateway-client" }
 openclaw-node-host = { path = "../../../crates/openclaw-node-host" }
 serde = { version = "1.0.228", features = ["derive"] }

@@ -1274,26 +1274,25 @@ struct MacNodeModeCoordinatorTests {
         #expect(route.allowsTrustedPinReplacement)
     }
 
-    @Test func `tls session cache reuses session box for unchanged params`() throws {
-        let url = try #require(URL(string: "wss://gateway.example.com"))
-        var cache = MacNodeGatewayTLSSessionCache()
-        let route = try #require(GatewayTLSRoute.resolve(
+    @Test(arguments: ["ws://127.0.0.1:18789", "wss://gateway.example.com"])
+    func `node session cache reuses transport during routine refresh`(endpoint: String) throws {
+        let url = try #require(URL(string: endpoint))
+        var cache = MacNodeGatewaySessionCache()
+        let route = GatewayTLSRoute.resolve(
             url: url,
             connectionMode: .remote,
             configuredFingerprint: "sha256:configured",
-            storedFingerprint: "stored"))
+            storedFingerprint: "stored")
 
-        let firstBox = cache.sessionBox(url: url, params: route.params)
-        let secondBox = cache.sessionBox(url: url, params: route.params)
-        let first = try #require(firstBox)
-        let second = try #require(secondBox)
+        let first = cache.sessionBox(url: url, params: route?.params)
+        let second = cache.sessionBox(url: url, params: route?.params)
 
         #expect(ObjectIdentifier(first.session) == ObjectIdentifier(second.session))
     }
 
-    @Test func `tls session cache rebuilds session box when params change`() throws {
+    @Test func `node session cache retires transport when trust changes`() throws {
         let url = try #require(URL(string: "wss://gateway.example.com"))
-        var cache = MacNodeGatewayTLSSessionCache()
+        var cache = MacNodeGatewaySessionCache()
         let firstRoute = try #require(GatewayTLSRoute.resolve(
             url: url,
             connectionMode: .remote,
@@ -1305,12 +1304,23 @@ struct MacNodeModeCoordinatorTests {
             configuredFingerprint: "sha256:rotated",
             storedFingerprint: "stored"))
 
-        let firstBox = cache.sessionBox(url: url, params: firstRoute.params)
-        let secondBox = cache.sessionBox(url: url, params: secondRoute.params)
-        let first = try #require(firstBox)
-        let second = try #require(secondBox)
+        let first = cache.sessionBox(url: url, params: firstRoute.params)
+        let second = cache.sessionBox(url: url, params: secondRoute.params)
 
         #expect(ObjectIdentifier(first.session) != ObjectIdentifier(second.session))
+    }
+
+    @Test func `node session cache retires transport when private worker commands change`() throws {
+        let url = try #require(URL(string: "ws://127.0.0.1:18789"))
+        var cache = MacNodeGatewaySessionCache()
+        let first = cache.sessionBox(url: url, params: nil)
+        let withWorker = cache.sessionBox(url: url, params: nil, privateCommands: ["worker.status.v1"])
+        let refreshed = cache.sessionBox(url: url, params: nil, privateCommands: ["worker.status.v1"])
+        let retired = cache.sessionBox(url: url, params: nil)
+
+        #expect(ObjectIdentifier(first.session) != ObjectIdentifier(withWorker.session))
+        #expect(ObjectIdentifier(withWorker.session) == ObjectIdentifier(refreshed.session))
+        #expect(ObjectIdentifier(withWorker.session) != ObjectIdentifier(retired.session))
     }
 
     @Test func `auto repairs trusted tailscale serve pin mismatch`() throws {

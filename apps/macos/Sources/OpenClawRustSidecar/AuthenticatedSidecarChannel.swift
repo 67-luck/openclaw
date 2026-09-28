@@ -4,6 +4,10 @@ import Foundation
 /// Supervisor half of `openclaw-node-host`'s authenticated sidecar protocol v1.
 /// The owning process session serializes access; reference identity keeps retirement and sequences shared.
 final class AuthenticatedSidecarChannel {
+    /// Base64 preserves a full 25 MiB Gateway message across the JSON relay.
+    /// Reserve its exact expansion plus the IPC envelope; keep the helper offer aligned.
+    static let defaultMaxFrameBytes = ((25 * 1024 * 1024 + 2) / 3) * 4 + 4096
+
     enum Failure: Error, Equatable {
         case invalidConfiguration, retired, frameTooLarge, frameLimitLocked
         case authentication, invalidHeader, wrongDirection, wrongGeneration, wrongSequence, wrongSession, invalidPayload
@@ -33,7 +37,12 @@ final class AuthenticatedSidecarChannel {
         self.maxFrameBytes - Self.headerBytes - self.sessionID.count - Self.tagBytes
     }
 
-    init(key: Data, sessionID: String, generation: UInt64, maxFrameBytes: Int = 16_777_216) throws {
+    init(
+        key: Data,
+        sessionID: String,
+        generation: UInt64,
+        maxFrameBytes: Int = AuthenticatedSidecarChannel.defaultMaxFrameBytes) throws
+    {
         let session = Data(sessionID.utf8)
         guard key.count == 32, !session.isEmpty, session.count <= Int(UInt16.max), generation != 0,
               maxFrameBytes <= Int(UInt32.max),

@@ -499,6 +499,7 @@ name = "openclaw-mac-node-sidecar"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "futures-util",
  "openclaw-gateway-client",
  "openclaw-node-host",
  "serde",

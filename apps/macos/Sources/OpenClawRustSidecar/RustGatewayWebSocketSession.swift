@@ -8,7 +8,7 @@ import Security
 package final class RustGatewayWebSocketSession: WebSocketSessioning, GatewayTLSRouteMetadataProviding,
 GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Sendable {
     private let executableURL: URL
-    private let fingerprint: String?
+    private let privateCommands: Set<String>
     private let trustOwner: GatewayTLSPinningSession
 
     package static var bundledExecutableURL: URL {
@@ -36,9 +36,14 @@ GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Se
         return (request["id"] as? String, Set(params?["commands"] as? [String] ?? []))
     }
 
-    package init(executableURL: URL, fingerprint: String? = nil, tlsParams: GatewayTLSParams? = nil) {
+    package init(
+        executableURL: URL,
+        fingerprint: String? = nil,
+        tlsParams: GatewayTLSParams? = nil,
+        privateCommands: [String] = [])
+    {
         self.executableURL = executableURL
-        self.fingerprint = fingerprint
+        self.privateCommands = Set(privateCommands)
         self.trustOwner = GatewayTLSPinningSession(params: tlsParams ?? GatewayTLSParams(
             required: true, expectedFingerprint: fingerprint, allowTOFU: false, storeKey: nil))
     }
@@ -63,7 +68,7 @@ GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Se
         WebSocketTaskBox(task: RustGatewayWebSocketTask(
             executableURL: self.executableURL,
             request: request,
-            fingerprint: self.fingerprint,
+            privateCommands: self.privateCommands,
             trustOwner: self.trustOwner))
     }
 
@@ -86,8 +91,9 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
     private let reader = DispatchQueue(label: "ai.openclaw.sidecar.read")
     private let executableURL: URL
     private let request: URLRequest
-    private let fingerprint: String?
+    private let privateCommands: Set<String>
     private let trustOwner: GatewayTLSPinningSession
+    private var network: NativeGatewayTransport?
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -104,10 +110,10 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
     private var connectID: String?
     private var admitted = false
 
-    init(executableURL: URL, request: URLRequest, fingerprint: String?, trustOwner: GatewayTLSPinningSession) {
+    init(executableURL: URL, request: URLRequest, privateCommands: Set<String>, trustOwner: GatewayTLSPinningSession) {
         self.executableURL = executableURL
         self.request = request
-        self.fingerprint = fingerprint
+        self.privateCommands = privateCommands
         self.trustOwner = trustOwner
     }
 
@@ -268,7 +274,9 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         bootstrap.append(contentsOf: [0, 0, 0, 0, 0, 0, 0, 1])
         try self.writer.sync { try Self.writeExactly(bootstrap, to: stdinPipe.fileHandleForWriting) }
         bootstrap.resetBytes(in: bootstrap.startIndex..<bootstrap.endIndex)
-        let limits: [String: Any] = ["maxFrameBytes": 16_777_216, "maxInFlight": 64, "bootstrapTimeoutMs": 10000]
+        let limits: [String: Any] = [
+            "maxFrameBytes": channel.maxFrameBytes, "maxInFlight": 64, "bootstrapTimeoutMs": 10000,
+        ]
         let offer: [String: Any] = [
             "protocolMajor": 1, "protocolMinor": 0, "featureBits": 0, "limits": limits,
             "peer": [
@@ -295,7 +303,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
               selection["protocolMajor"] as? Int == 1, selection["protocolMinor"] as? Int == 0,
               selection["featureBits"] as? Int == 0,
               let selectedLimits = selection["limits"] as? [String: Int],
-              selectedLimits["maxFrameBytes"] == min(remoteLimits["maxFrameBytes"] ?? 0, 16_777_216),
+              selectedLimits["maxFrameBytes"] == min(remoteLimits["maxFrameBytes"] ?? 0, channel.maxFrameBytes),
               selectedLimits["maxInFlight"] == min(remoteLimits["maxInFlight"] ?? 0, 64),
               selectedLimits["bootstrapTimeoutMs"] == min(remoteLimits["bootstrapTimeoutMs"] ?? 0, 10000),
               (selectedLimits["maxInFlight"] ?? 0) > 0,
@@ -307,28 +315,42 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
             channel.lockFrameLimit()
         }
         guard let url = self.request.url else { throw URLError(.badURL) }
-        var open: [String: Any] = [
-            "type": "open",
-            "url": url.absoluteString,
-            "headers": self.request.allHTTPHeaderFields ?? [:],
-            "native_tls": url.scheme?.lowercased() == "wss",
-        ]
-        if let fingerprint = self.fingerprint { open["fingerprint"] = fingerprint }
-        try self.writeNow(open)
+        try self.writeNow(["type": "open", "url": url.absoluteString, "privateCommands": self.privateCommands.sorted()])
+        let network = NativeGatewayTransport(
+            socket: self.trustOwner.makeWebSocketTask(request: self.request),
+            write: { [weak self] data in
+                guard let self else { throw URLError(.cancelled) }
+                try await self.write(data)
+            },
+            failed: { [weak self] error in self?.finish(error) })
+        let installedNetwork = self.lock.withLock {
+            guard self.taskState == .running else { return false }
+            self.network = network
+            return true
+        }
+        guard installedNetwork else { network.close()
+            return
+        }
+        network.start()
         while self.state == .running {
             try autoreleasepool {
                 let message = try self.readMessage(stdoutPipe.fileHandleForReading)
-                try self.handle(message, url: url)
+                try self.handle(message)
             }
         }
     }
 
-    private func handle(_ message: [String: Any], url: URL) throws {
+    private func handle(_ message: [String: Any]) throws {
         switch message["type"] as? String {
-        case "tls-peer":
-            let allowed = try self.evaluateTLS(message, url: url)
-            try self.writeNow(["type": "tls-decision", "allowed": allowed])
-            if !allowed { throw URLError(.serverCertificateUntrusted) }
+        case "transport-send":
+            guard let id = message["id"] as? UInt64, let kind = message["kind"] as? String,
+                  let data = message["data"] as? String,
+                  let network = self.lock.withLock({ self.network })
+            else { throw URLError(.cannotParseResponse) }
+            try network.send(id: id, kind: kind, encoded: data)
+        case "transport-received":
+            guard let network = self.lock.withLock({ self.network }) else { throw URLError(.cancelled) }
+            try network.received()
         case "frame":
             guard let frame = message["frame"] else { throw URLError(.cannotParseResponse) }
             if let response = frame as? [String: Any], response["type"] as? String == "res" {
@@ -346,9 +368,14 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
             // This admission is the immutable native connection lease. The existing
             // command handler then rechecks current route authority and OS permissions.
             let allowed = self.lock.withLock {
-                self.admitted && self.taskState == .running && self.declaredCommands.contains(command)
+                self.admitted && self
+                    .taskState == .running &&
+                    (self.declaredCommands.contains(command) || self.privateCommands.contains(command))
             }
-            try self.writeNow(["type": "admission", "id": id, "allowed": allowed])
+            // The reader must keep draining transport receipts while the pipe writer is busy.
+            try self.enqueueWrite(JSONSerialization.data(withJSONObject: [
+                "type": "admission", "id": id, "allowed": allowed,
+            ]))
         case "pong":
             guard let id = message["id"] as? String else { throw URLError(.cannotParseResponse) }
             let callback = self.lock.withLock { self.pings.removeValue(forKey: id) }
@@ -359,34 +386,6 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
             ])
         default: throw URLError(.cannotParseResponse)
         }
-    }
-
-    private func evaluateTLS(_ message: [String: Any], url: URL) throws -> Bool {
-        guard let authority = GatewayTLSAuthority(url: url),
-              let host = message["serverName"] as? String,
-              let port = message["port"] as? Int,
-              authority.matches(host: host, port: port),
-              let encoded = message["certificateChain"] as? [String], !encoded.isEmpty,
-              encoded.count <= 16
-        else { throw URLError(.cannotParseResponse) }
-        let certificates = try encoded.map { encoded -> SecCertificate in
-            guard let data = Data(base64Encoded: encoded), data.count <= 1024 * 1024,
-                  let certificate = SecCertificateCreateWithData(nil, data as CFData)
-            else { throw URLError(.cannotParseResponse) }
-            return certificate
-        }
-        var trust: SecTrust?
-        let status = SecTrustCreateWithCertificates(
-            certificates as CFArray, SecPolicyCreateSSL(true, authority.host as CFString), &trust)
-        guard status == errSecSuccess, let trust else { throw URLError(.serverCertificateUntrusted) }
-        if let encodedOCSP = message["ocspResponse"] as? String, !encodedOCSP.isEmpty {
-            guard let ocsp = Data(base64Encoded: encodedOCSP) else { throw URLError(.cannotParseResponse) }
-            guard SecTrustSetOCSPResponse(trust, ocsp as CFData) == errSecSuccess else {
-                throw URLError(.serverCertificateUntrusted)
-            }
-        }
-        guard self.state == .running else { throw URLError(.cancelled) }
-        return self.trustOwner.validateServerTrust(trust, for: url)
     }
 
     private func readMessage(_ handle: FileHandle, bootstrap: Bool = false) throws -> [String: Any] {
@@ -562,7 +561,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         let task = RustGatewayWebSocketTask(
             executableURL: URL(fileURLWithPath: "/tmp/openclaw-rust-sidecar-test"),
             request: URLRequest(url: URL(string: "ws://127.0.0.1:1")!),
-            fingerprint: nil,
+            privateCommands: [],
             trustOwner: GatewayTLSPinningSession(params: GatewayTLSParams(
                 required: false, expectedFingerprint: nil, allowTOFU: false, storeKey: nil)))
         task.finish(URLError(.networkConnectionLost))
@@ -584,6 +583,8 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         self.admitted = false
         self.declaredCommands.removeAll()
         self.channel?.retire()
+        let network = self.network
+        self.network = nil
         let child = self.process
         let input = self.input
         self.process = nil
@@ -599,6 +600,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         self.buffered = retainedBuffered
         self.bufferedBytes = retainedBuffered.reduce(0) { $0 + $1.count }
         self.lock.unlock()
+        network?.close()
         // Closing the owned pipe retires the Rust connection before any replacement process starts.
         // Closing on the writer queue prevents a reused descriptor from reaching a late write.
         self.writer.async { try? input?.close() }

@@ -1,9 +1,9 @@
 //! macOS owns this executable, its inherited pipes, and credential selection.
 //! The shared crates own Gateway sessions, invocation scheduling, and authenticated IPC framing.
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
-use openclaw_gateway_client::{tls_trust, Event, GatewayClientConfig};
-use openclaw_gateway_client::{TlsCertificatePolicy, TlsPeerCertificate};
+mod transport;
+
+use openclaw_gateway_client::{Event, GatewayClientConfig};
 use openclaw_node_host::{
     read_sidecar_frame, write_sidecar_frame, AuthenticatedSidecarChannel, ClientError,
     CommandRuntime, HandlerError, InvocationContext, InvocationIo, NodeClient, SidecarHandshake,
@@ -11,19 +11,17 @@ use openclaw_node_host::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{
-    collections::{BTreeMap, HashMap},
-    error::Error,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, error::Error, sync::Arc, time::Duration};
 use tokio::{
     io::AsyncReadExt,
     sync::{mpsc, oneshot, Mutex},
     task::JoinSet,
 };
 
-const FRAME_LIMIT: u32 = 16 * 1024 * 1024;
+const GATEWAY_PAYLOAD_LIMIT: usize = 25 * 1024 * 1024;
+// Relay bytes use base64 so valid Gateway text is unchanged by nested JSON.
+// Preserve the full payload contract plus its expansion and authenticated envelope.
+const FRAME_LIMIT: u32 = (GATEWAY_PAYLOAD_LIMIT.div_ceil(3) * 4 + 4096) as u32;
 const MAX_IN_FLIGHT: u16 = 64;
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -35,10 +33,8 @@ type RequestResult = (Option<String>, Result<(), mpsc::error::SendError<Value>>)
 enum SupervisorMessage {
     Open {
         url: String,
-        fingerprint: Option<String>,
-        headers: BTreeMap<String, String>,
-        #[serde(default)]
-        native_tls: bool,
+        #[serde(default, rename = "privateCommands")]
+        private_commands: Vec<String>,
     },
     Frame {
         frame: Request,
@@ -55,8 +51,13 @@ enum SupervisorMessage {
         id: String,
         allowed: bool,
     },
-    TlsDecision {
-        allowed: bool,
+    TransportFrame {
+        kind: String,
+        data: String,
+    },
+    TransportSent {
+        id: u64,
+        ok: bool,
     },
     Close,
 }
@@ -133,6 +134,10 @@ async fn run() -> Result<(), Failure> {
         .max_in_flight;
     let channel = Arc::new(Mutex::new(channel));
     let (incoming_tx, incoming) = mpsc::channel::<SupervisorMessage>(usize::from(MAX_IN_FLIGHT));
+    let (transport_outgoing, mut transport_writes) = mpsc::channel(1);
+    let (transport_receipts, mut receipt_writes) = mpsc::channel(1);
+    let (transport, transport_input) =
+        transport::NativeTransport::new(transport_outgoing, transport_receipts);
     let reader_channel = Arc::clone(&channel);
     let reader = tokio::spawn(async move {
         loop {
@@ -149,22 +154,37 @@ async fn run() -> Result<(), Failure> {
                 .lock()
                 .await
                 .open::<SupervisorMessage>(&frame)?;
-            incoming_tx
-                .send(message)
-                .await
-                .map_err(|_| "supervisor reader closed")?;
+            match message {
+                SupervisorMessage::TransportFrame { kind, data } => {
+                    transport_input.receive(&kind, &data)?
+                }
+                SupervisorMessage::TransportSent { id, ok } => {
+                    transport_input.acknowledge(id, ok)?
+                }
+                // Never block transport receipts behind application traffic; saturation closes
+                // this connection instead of deadlocking both inherited pipes.
+                message => incoming_tx
+                    .try_send(message)
+                    .map_err(|_| "supervisor queue full or closed")?,
+            }
         }
     });
     let (outgoing, mut outgoing_rx) = mpsc::channel::<Value>(usize::from(MAX_IN_FLIGHT));
     let writer_channel = Arc::clone(&channel);
     let writer = tokio::spawn(async move {
-        while let Some(value) = outgoing_rx.recv().await {
+        loop {
+            let value = tokio::select! {
+                Some(value) = outgoing_rx.recv() => value,
+                Some(value) = transport_writes.recv() => value,
+                Some(value) = receipt_writes.recv() => value,
+                else => break,
+            };
             let frame = writer_channel.lock().await.seal(&value)?;
             write_sidecar_frame(&mut output, &frame, frame_limit, WRITE_TIMEOUT).await?;
         }
         Ok::<(), Failure>(())
     });
-    let result = run_gateway(incoming, &outgoing, max_in_flight).await;
+    let result = run_gateway(incoming, &outgoing, max_in_flight, transport).await;
     reader.abort();
     drop(outgoing);
     // Await output before exit so an authenticated terminal error is not lost.
@@ -177,27 +197,19 @@ async fn run_gateway(
     mut incoming: mpsc::Receiver<SupervisorMessage>,
     outgoing: &mpsc::Sender<Value>,
     max_in_flight: u16,
+    transport: transport::NativeTransport,
 ) -> Result<(), Failure> {
     let Some(SupervisorMessage::Open {
         url,
-        fingerprint,
-        headers,
-        native_tls,
+        private_commands,
     }) = incoming.recv().await
     else {
         return Err("expected Gateway configuration".into());
     };
     let incoming = Arc::new(Mutex::new(incoming));
-    let mut config = GatewayClientConfig::new(url)?.tls_trust(tls_trust(fingerprint.as_deref())?);
-    if native_tls {
-        config = config.tls_certificate_policy(Arc::new(NativeTlsPolicy {
-            incoming: Arc::clone(&incoming),
-            outgoing: outgoing.clone(),
-        }));
-    }
-    for (name, value) in headers {
-        config = config.header(&name, &value)?;
-    }
+    let config = GatewayClientConfig::new(url)?
+        .max_message_bytes(GATEWAY_PAYLOAD_LIMIT)
+        .connector(Arc::new(transport::NativeConnector::new(transport)));
     let mut connect_id = String::new();
     let connect_id_ref = &mut connect_id;
     let incoming_ref = Arc::clone(&incoming);
@@ -254,8 +266,8 @@ async fn run_gateway(
     });
     let mut builder = CommandRuntime::builder()
         .max_concurrency(usize::from(max_in_flight))
-        .max_input_bytes(FRAME_LIMIT as usize - 4096)
-        .max_output_bytes(FRAME_LIMIT as usize - 4096)
+        .max_input_bytes(GATEWAY_PAYLOAD_LIMIT)
+        .max_output_bytes(GATEWAY_PAYLOAD_LIMIT)
         .max_timeout(Duration::from_millis(i32::MAX as u64))
         .result_grace(Duration::ZERO);
     for name in session.command_names() {
@@ -283,6 +295,31 @@ async fn run_gateway(
                 async move { native.invoke(context).await }
             });
         }
+    }
+    let mut registered_private = std::collections::HashSet::new();
+    for name in private_commands {
+        if session.command_names().any(|public| public == name)
+            || !registered_private.insert(name.clone())
+        {
+            return Err("duplicate private command registration".into());
+        }
+        let admission = Arc::clone(&native);
+        let handler = Arc::clone(&native);
+        builder = builder.private_duplex_command(
+            name,
+            move |context| {
+                let native = Arc::clone(&admission);
+                async move {
+                    native
+                        .admit(&context.invocation.id, &context.invocation.command)
+                        .await
+                }
+            },
+            move |context| {
+                let native = Arc::clone(&handler);
+                async move { native.invoke(context).await }
+            },
+        );
     }
     let runtime = builder.build()?;
     let runtime_session = session.clone();
@@ -421,40 +458,6 @@ struct AbortTaskOnDrop(tokio::task::AbortHandle);
 impl Drop for AbortTaskOnDrop {
     fn drop(&mut self) {
         self.0.abort();
-    }
-}
-
-struct NativeTlsPolicy {
-    incoming: Arc<Mutex<mpsc::Receiver<SupervisorMessage>>>,
-    outgoing: mpsc::Sender<Value>,
-}
-
-impl std::fmt::Debug for NativeTlsPolicy {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("NativeTlsPolicy")
-            .finish_non_exhaustive()
-    }
-}
-
-impl TlsCertificatePolicy for NativeTlsPolicy {
-    fn verify(
-        &self,
-        peer: TlsPeerCertificate,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
-        let incoming = Arc::clone(&self.incoming);
-        let outgoing = self.outgoing.clone();
-        Box::pin(async move {
-            outgoing.send(json!({"type":"tls-peer", "serverName":peer.server_name,
-                "port":peer.port,"peerAddress":peer.peer_addr.to_string(),
-                "certificateChain":peer.certificate_chain.iter().map(|der| STANDARD.encode(der)).collect::<Vec<_>>(),
-                "ocspResponse":STANDARD.encode(peer.ocsp_response),
-            })).await.map_err(|_| "native trust owner disconnected".to_owned())?;
-            match incoming.lock().await.recv().await {
-                Some(SupervisorMessage::TlsDecision { allowed: true }) => Ok(()),
-                _ => Err("native TLS verification rejected this connection".into()),
-            }
-        })
     }
 }
 

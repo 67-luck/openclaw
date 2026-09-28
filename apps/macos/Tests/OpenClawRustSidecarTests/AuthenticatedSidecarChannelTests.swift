@@ -109,6 +109,30 @@ struct AuthenticatedSidecarChannelTests {
         }
     }
 
+    @Test func `native result at Gateway payload limit fits authenticated IPC`() throws {
+        // Screen capture permits this outer Gateway frame size. IPC adds an envelope;
+        // it must not retire the connection for a result the Gateway accepts.
+        let gatewayLimit = 25 * 1024 * 1024
+        func result(_ payload: String) -> [String: Any] {
+            [
+                "type": "req", "id": "result-request", "method": "node.invoke.result",
+                "params": ["id": "capture", "nodeId": "mac", "ok": true, "payloadJSON": payload],
+            ]
+        }
+        let emptyBytes = try JSONSerialization.data(withJSONObject: result("\"\"")).count
+        let frame = result("\"" + String(repeating: "x", count: gatewayLimit - emptyBytes) + "\"")
+        #expect(try JSONSerialization.data(withJSONObject: frame).count == gatewayLimit)
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "type": "frame", "frame": frame, "callerOwnsLifetime": false,
+        ])
+        let channel = try AuthenticatedSidecarChannel(
+            key: Data(repeating: 0, count: 32), sessionID: String(repeating: "a", count: 32), generation: 1)
+        let sealed = try channel.seal(payload)
+        #expect(sealed.count <= channel.maxFrameBytes + 4)
+        #expect(!channel.isRetired)
+        #expect(throws: Never.self) { try channel.seal(Data("{}".utf8)) }
+    }
+
     private static func fixture(_ kind: String) throws -> [String: Any] {
         var root = URL(fileURLWithPath: #filePath)
         for _ in 0..<5 {

@@ -3,42 +3,38 @@ import Foundation
 import OpenClawIPC
 import OpenClawKit
 import OpenClawProtocol
+import OpenClawRustSidecar
 import OSLog
 
-struct MacNodeGatewayTLSSessionCache {
+struct MacNodeGatewaySessionCache {
     private struct Key: Equatable {
         let url: URL
-        let required: Bool
-        let expectedFingerprint: String?
-        let allowTOFU: Bool
-        let storeKey: String?
-
-        init(url: URL, params: GatewayTLSParams) {
-            self.url = url
-            self.required = params.required
-            self.expectedFingerprint = params.expectedFingerprint
-            self.allowTOFU = params.allowTOFU
-            self.storeKey = params.storeKey
-        }
+        let params: GatewayTLSParams?
+        let privateCommands: [String]
     }
 
     private var cachedKey: Key?
     private var cachedBox: WebSocketSessionBox?
 
-    mutating func sessionBox(url: URL, params: GatewayTLSParams) -> WebSocketSessionBox {
-        let key = Key(url: url, params: params)
+    mutating func sessionBox(
+        url: URL,
+        params: GatewayTLSParams?,
+        privateCommands: [String] = []) -> WebSocketSessionBox
+    {
+        let key = Key(url: url, params: params, privateCommands: privateCommands)
         if let cachedKey = self.cachedKey, cachedKey == key, let cachedBox = self.cachedBox {
             return cachedBox
         }
-        let box = WebSocketSessionBox(session: GatewayTLSPinningSession(params: params))
+        // Session identity is part of the node route. Reuse it across routine refreshes;
+        // Endpoint, trust, or private handler changes retire the helper before reconnecting.
+        let box = WebSocketSessionBox(session: RustGatewayWebSocketSession(
+            executableURL: RustGatewayWebSocketSession.bundledExecutableURL,
+            fingerprint: params?.expectedFingerprint,
+            tlsParams: params,
+            privateCommands: privateCommands))
         self.cachedKey = key
         self.cachedBox = box
         return box
-    }
-
-    mutating func invalidate() {
-        self.cachedKey = nil
-        self.cachedBox = nil
     }
 }
 
@@ -58,7 +54,7 @@ private struct ConnectionAttempt {
     let workerUnavailable: (reason: String, diagnostic: String?)?
     let endpoint: GatewayConnection.EndpointSnapshot
     let options: GatewayConnectOptions
-    let sessionBox: WebSocketSessionBox?
+    let sessionBox: WebSocketSessionBox
     let fallbackMainSessionKey: String
 }
 
@@ -142,7 +138,7 @@ final class MacNodeModeCoordinator: NSObject {
     private let nodeHostWorkerRetrySleep: @Sendable (UInt64) async throws -> Void
     private let refreshEvents: AsyncStream<Void>
     private let refreshContinuation: AsyncStream<Void>.Continuation
-    private var tlsSessionCache = MacNodeGatewayTLSSessionCache()
+    private var gatewaySessionCache = MacNodeGatewaySessionCache()
     private var nodeHostWorkerRetryPolicy: MacNodeHostWorkerRetryPolicy
 
     override private convenience init() {
@@ -641,7 +637,10 @@ final class MacNodeModeCoordinator: NSObject {
             deviceIdentityProfile: Self.nodeIdentityProfile,
             allowStoredDeviceAuth: deviceAuth.allowStoredDeviceAuth,
             deviceAuthGatewayID: deviceAuth.gatewayID)
-        let sessionBox = self.buildSessionBox(url: config.url, tls: endpoint.tls)
+        let sessionBox = self.gatewaySessionCache.sessionBox(
+            url: config.url,
+            params: endpoint.tls?.params,
+            privateCommands: workerManifest?.privateCommands ?? [])
 
         // Resolve compatibility fallback before node admission. Operator recovery
         // here cannot block the node lifecycle callback or its successor cleanup.
@@ -1128,14 +1127,6 @@ extension MacNodeModeCoordinator {
         self.lastNodeHostWorkerStartFailure = nil
         self.nodeHostWorkerRetryPolicy.reset()
     }
-
-    private func buildSessionBox(url: URL, tls: GatewayTLSRoute?) -> WebSocketSessionBox? {
-        guard let tls else {
-            self.tlsSessionCache.invalidate()
-            return nil
-        }
-        return self.tlsSessionCache.sessionBox(url: url, params: tls.params)
-    }
 }
 
 extension MacNodeModeCoordinator {
@@ -1361,6 +1352,7 @@ extension MacNodeModeCoordinator {
             version: manifest.version,
             caps: manifest.caps.filter { $0 != OpenClawCapability.computer.rawValue },
             commands: manifest.commands.filter { !providerCommands.contains($0) },
+            privateCommands: manifest.privateCommands,
             computerUse: nil,
             pathEnv: manifest.pathEnv)
     }
