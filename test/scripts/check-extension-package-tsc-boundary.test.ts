@@ -1,5 +1,6 @@
 // Check Extension Package Tsc Boundary tests cover check extension package tsc boundary script behavior.
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -542,12 +543,11 @@ describe("check-extension-package-tsc-boundary", () => {
       readinessSignal.throwIfAborted();
       expect(isProcessAlive(childPid)).toBe(true);
 
+      // Managed cancellation allows a five-second grace before force-kill, followed
+      // by scope drainage. Observe close under the test lifetime, not a competing fuse.
+      const closed = once(runner, "close", { signal });
       runner.kill("SIGTERM");
-
-      await expect(waitForChildClose(runner)).resolves.toEqual({
-        code: 143,
-        signal: null,
-      });
+      await expect(closed).resolves.toEqual([143, null]);
       await waitForDead(childPid, 2_000);
     } finally {
       if (runner?.pid && isProcessAlive(runner.pid)) {
