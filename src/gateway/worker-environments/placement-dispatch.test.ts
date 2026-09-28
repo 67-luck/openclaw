@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WORKER_LAUNCH_V2_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import {
   openOpenClawStateDatabase,
   type OpenClawStateDatabase,
@@ -955,26 +956,39 @@ describe("worker placement dispatch", () => {
     harness.markEnvironmentOwnerEpoch(harness.attached.ownerEpoch + 1);
     harness.log.length = 0;
 
+    const { promise: toolAdmissionClosed, resolve: signalToolAdmissionClosed } = createDeferred();
+    const closeWorkerTurnToolState = placementStore.closeWorkerTurnToolState.bind(placementStore);
+    // Real read-worker queries precede fencing; observe the fence without timing their startup.
+    vi.spyOn(placementStore, "closeWorkerTurnToolState").mockImplementation((closingClaim) => {
+      const closing = closeWorkerTurnToolState(closingClaim);
+      signalToolAdmissionClosed();
+      return closing;
+    });
     const reconciliation = harness.service.reconcileActive();
 
-    await vi.waitFor(() => {
+    try {
+      await Promise.race([toolAdmissionClosed, reconciliation]);
       expect(placementStore.isWorkerTurnToolAuthorized(binding, "sessions_send")).toBe(false);
-    });
-    expect(harness.environments.destroy).not.toHaveBeenCalled();
-    expect(harness.placements.current()).toMatchObject({
-      state: "draining",
-      turnClaim: { claimId: claim.claimId },
-    });
-    expect(
-      placementStore.completeWorkerSessionToolOperation({
-        sourceSessionId: claim.sessionId,
-        sourceClaimId: claim.claimId,
-        toolCallId: "call-owner-mismatch",
-        requestDigest: "digest-owner-mismatch",
-        resultJson: '{"status":"ok"}',
-      }),
-    ).toBe(true);
-    await reconciliation;
+      expect(harness.environments.destroy).not.toHaveBeenCalled();
+      expect(harness.placements.current()).toMatchObject({
+        state: "draining",
+        turnClaim: { claimId: claim.claimId },
+      });
+    } finally {
+      try {
+        expect(
+          placementStore.completeWorkerSessionToolOperation({
+            sourceSessionId: claim.sessionId,
+            sourceClaimId: claim.claimId,
+            toolCallId: "call-owner-mismatch",
+            requestDigest: "digest-owner-mismatch",
+            resultJson: '{"status":"ok"}',
+          }),
+        ).toBe(true);
+      } finally {
+        await reconciliation;
+      }
+    }
 
     expect(harness.placements.current()).toMatchObject({
       state: "failed",
