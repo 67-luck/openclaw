@@ -137,8 +137,9 @@ When settlement resumes a top-level parent with automatic channel delivery,
 OpenClaw keeps the channel's typing indicator active while that continuation
 executes. The indicator starts after execution begins, not while admission is
 queued, and stops when the call settles, is cancelled, or loses its owner.
-It respects `typingMode: "never"` and requires channel typing support. Private
-and nested continuations do not send activity to an external channel. This
+It respects `typingMode: "never"`, uses the `agents.defaults.typingIntervalSeconds`
+refresh cadence, and requires channel typing support. Private and nested
+continuations do not send activity to an external channel. This
 activity signal does not change the configured message queue mode or restore
 individual tool-progress messages.
 

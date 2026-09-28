@@ -218,7 +218,7 @@ describe("late exact requester recovery", () => {
       expect.objectContaining({ to: "123", accountId: "work", threadId: "42" }),
     );
     await vi.advanceTimersByTimeAsync(65_000);
-    expect(sendTyping.mock.calls.length).toBeGreaterThan(20);
+    expect(sendTyping.mock.calls.length).toBeGreaterThan(10);
     if (ending === "cancelled") {
       fixture.controller.abort();
     }
