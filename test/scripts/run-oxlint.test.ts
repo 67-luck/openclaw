@@ -1036,13 +1036,17 @@ describe("run-oxlint", () => {
         "ui/src/components/config-ignored.ts",
         "ui/node_modules/example/index.ts",
         "src/agents/unsupported.txt",
+        "src/agents/generated/ignored.ts",
+        "src/gateway/generated/ignored.ts",
+        "ui/generated/ignored.ts",
+        "ui/src/generated/ignored.ts",
       ];
       for (const file of [...included, ...ignored]) {
         mkdirSync(join(cwd, file, ".."), { recursive: true });
         writeFileSync(join(cwd, file), "export {};\n");
       }
       writeFileSync(join(cwd, ".oxlintrc.json"), "{}");
-      writeFileSync(join(cwd, ".eslintignore"), "**/eslint-ignored.ts\n");
+      writeFileSync(join(cwd, ".eslintignore"), "**/eslint-ignored.ts\n**/generated/\n");
       writeFileSync(join(cwd, ".gitignore"), "node_modules/\n**/git-ignored.ts\n");
       for (const directory of ["src/agents/nested", "src/gateway/server", "ui/src/components"]) {
         writeFileSync(join(cwd, directory, ".gitignore"), "git-ignored.ts\n");
@@ -1143,7 +1147,7 @@ describe("run-oxlint", () => {
       expect(result.stderr).toContain("ETIMEDOUT");
       const pids = readFileSync(join(cwd, "discoveries"), "utf8").trim().split("\n").map(Number);
       expect(pids).toHaveLength(1);
-      await waitForDead(pids[0]!);
+      await waitForDead(pids[0]!, 1_000);
       const shards = [
         {
           name: "core:src:agents",

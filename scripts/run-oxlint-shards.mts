@@ -630,11 +630,7 @@ function splitCoreTargetSelection(target: string, options: DirectoryLookup, dead
     readDirectoryEntries(options.readDir, path.join(options.cwd, root))
       .filter((entry) => {
         const candidate = root + "/" + entry.name;
-        return (
-          entry.isDirectory() ||
-          selected.has(candidate) ||
-          files.some((file) => file.startsWith(candidate + "/"))
-        );
+        return selected.has(candidate) || files.some((file) => file.startsWith(candidate + "/"));
       })
       .sort((left, right) => left.name.localeCompare(right.name));
   let parts: string[][];
