@@ -108,41 +108,65 @@ describe("installed V8 exception observation", () => {
     const caught = result.exceptions.find(
       (value) => value.message === "caught-update-failure redacted",
     );
+    const rendered = child.stdout.toString("utf8");
+    console.info("Synthetic V8 format categories", {
+      platform: process.platform,
+      node: process.versions.node,
+      prefixedMessageSlot: /^\s+0x[\da-f]+: \[String\].*#message:/imu.test(rendered),
+      bareMessageSlot: /^\s+[\da-f]{16}: \[String\].*#message:/imu.test(rendered),
+      prefixedFrameSlot: /^\s*\d+: .*? \[0x[\da-f]+\] \[/imu.test(rendered),
+      bareFrameSlot: /^\s*\d+: .*? \[[\da-f]{16}\] \[/imu.test(rendered),
+      caughtMessage: caught !== undefined,
+      ownedFrame: caught?.frames.some((value) => value.module === "caught.cjs") ?? false,
+    });
     expect(caught?.frames).toContainEqual(
       expect.objectContaining({ module: "caught.cjs", functionName: "caughtError" }),
     );
     expect(caught?.partial).toBe(false);
   });
 
-  it("handles byte-split UTF-8 and CRLF while admitting only owned file locations", () => {
-    const root = "C:\\fixture\\owned";
-    const raw = Buffer.from(
-      exception("caught café 🦞", [
-        frame("C:\\fixture\\owned\\dist\\worker.mjs"),
-        frame("file:///C:/fixture/owned/dist/next.mjs", 1, "next(aka next)"),
-        frame("C:\\fixture\\owned-sibling\\foreign.mjs", 2),
-        frame("C:\\fixture\\owned\\..\\foreign.mjs", 3),
-        frame("node:internal/process/execution", 4),
-        frame("C:\\fixture\\owned\\dist\\anonymous.mjs", 5, "/* anonymous */"),
-      ]).replaceAll("\n", "\r\n"),
-    );
-    const original = Buffer.from(raw);
-    const result = project(raw, root, 1);
-    expect(raw.equals(original)).toBe(true);
-    expect(result).toEqual(project(raw, root));
-    expect(result.exceptions).toEqual([
-      {
-        message: "caught café 🦞",
-        partial: false,
-        frames: [
-          { module: "worker.mjs", line: 12, column: 3, functionName: "ownedFailure" },
-          { module: "next.mjs", line: 12, column: 3, functionName: "next" },
-          { module: "anonymous.mjs", line: 12, column: 3, functionName: "anonymous" },
-        ],
-      },
-    ]);
-    expect(result.excludedFrames).toBe(3);
-  });
+  it.each(["prefixed", "bare"])(
+    "handles %s addresses, byte-split UTF-8 and owned file locations",
+    (addresses) => {
+      const root = "C:\\fixture\\owned";
+      const raw = Buffer.from(
+        exception("caught café 🦞", [
+          frame("C:\\fixture\\owned\\dist\\worker.mjs"),
+          frame("file:///C:/fixture/owned/dist/next.mjs", 1, "next(aka next)"),
+          frame("C:\\fixture\\owned-sibling\\foreign.mjs", 2),
+          frame("C:\\fixture\\owned\\..\\foreign.mjs", 3),
+          frame("node:internal/process/execution", 4),
+          frame("C:\\fixture\\owned\\dist\\anonymous.mjs", 5, "/* anonymous */"),
+        ]).replaceAll("\n", "\r\n"),
+      );
+      const input =
+        addresses === "bare"
+          ? Buffer.from(
+              raw
+                .toString()
+                .replace(/0x([\da-f]+)/giu, (_match, value: string) =>
+                  value.toUpperCase().padStart(16, "0"),
+                ),
+            )
+          : raw;
+      const original = Buffer.from(input);
+      const result = project(input, root, 1);
+      expect(input.equals(original)).toBe(true);
+      expect(result).toEqual(project(input, root));
+      expect(result.exceptions).toEqual([
+        {
+          message: "caught café 🦞",
+          partial: false,
+          frames: [
+            { module: "worker.mjs", line: 12, column: 3, functionName: "ownedFailure" },
+            { module: "next.mjs", line: 12, column: 3, functionName: "next" },
+            { module: "anonymous.mjs", line: 12, column: 3, functionName: "anonymous" },
+          ],
+        },
+      ]);
+      expect(result.excludedFrames).toBe(3);
+    },
+  );
 
   it("keeps the last 32 exceptions and accounts for discarded owned frames", () => {
     const raw = Buffer.from(
@@ -218,6 +242,17 @@ describe("installed V8 exception observation", () => {
     const privateMessage = "failure at 0x1234 opening C:\\foreign\\private-file";
     const projection = project(Buffer.from(exception(privateMessage)), "/owned");
     expect(projection.exceptions[0]?.message).toBe("failure at [pointer] opening [redacted-path]");
+    const opaqueHex = project(
+      Buffer.from(
+        exception(
+          "opaque 00007FFA1234ABCD short deadbeef nonhex 00007FFA1234ABCZ longer z00007FFA1234ABCDz",
+        ),
+      ),
+      "C:\\owned",
+    );
+    expect(opaqueHex.exceptions[0]?.message).toBe(
+      "opaque [redacted-hex] short deadbeef nonhex 00007FFA1234ABCZ longer z00007FFA1234ABCDz",
+    );
     const root = temporary.make("installed-exception-cap-");
     const filename = path.join(root, `${"m".repeat(124)}.mjs`);
     const label = "f".repeat(128);
