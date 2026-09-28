@@ -11,9 +11,7 @@ import {
   resolveUniqueOriginReport,
   normalizeApprovalRouteChannel,
   resolveApprovalRouteNotice,
-  type ApprovalRouteReport,
   type ApprovalRouteSkipReason,
-  type GatewayRequestFn,
 } from "./approval-native-route-notice.js";
 import {
   PLUGIN_TERMINAL_ROUTE_GRACE_MS,
@@ -25,59 +23,27 @@ import {
   maybeSendPluginTerminalNotice,
   publishPluginTerminalForState,
   reportRemoteNativeDelivery,
-  type PluginOriginBinding,
-  type PluginTerminalNotice,
-  type PluginTerminalStatus,
-  type RemoteNativeApprovalDeliveryReport,
 } from "./approval-native-route-plugin-notices.js";
+import type {
+  ApprovalNativeRouteCoordinatorState,
+  ApprovalRouteRuntimeRecord,
+  ApprovalRouteSelection,
+  ApprovalRouteSelectionVerdict,
+  PendingApprovalRouteNotice,
+  PluginTerminalStatus,
+  RemoteNativeApprovalDeliveryReport,
+} from "./approval-native-route-types.js";
 import type {
   ApprovalRequestChannelRouteClass,
   ApprovalRequestInput as ApprovalRequest,
   ChannelApprovalKind,
 } from "./approval-types.js";
 import type { PluginApprovalRequest } from "./plugin-approvals.js";
-export type { RemoteNativeApprovalDeliveryReport } from "./approval-native-route-plugin-notices.js";
-
-export type ApprovalRouteRuntimeRecord = {
-  runtimeId: string;
-  handledKinds: ReadonlySet<ChannelApprovalKind>;
-  channel?: string;
-  channelLabel?: string;
-  accountId?: string | null;
-  sourceConfig?: OpenClawConfig;
-  isOriginCurrent?: (request: ApprovalRequest, handoffConfig?: OpenClawConfig) => boolean;
-  requestGateway: GatewayRequestFn;
-  shouldHandle: (request: ApprovalRequest) => boolean;
-  classifyRoute: (request: ApprovalRequest) => ApprovalRequestChannelRouteClass;
-};
-
-type PendingApprovalRouteNotice = {
-  request: ApprovalRequest;
-  approvalKind: ChannelApprovalKind;
-  reports: Map<string, ApprovalRouteReport>;
-  cleanupTimeout: NodeJS.Timeout;
-};
-
-type ApprovalRouteSelectionVerdict =
-  | { kind: "selected" }
-  | { kind: ApprovalRouteSkipReason }
-  | { kind: "selector-error"; error: unknown };
-
-type ApprovalRouteSelection = {
-  verdicts: Map<string, ApprovalRouteSelectionVerdict>;
-  pluginTerminalStatus?: PluginTerminalStatus;
-  cleanupTimeout: NodeJS.Timeout;
-};
-
-export type ApprovalNativeRouteCoordinatorState = {
-  activeRuntimes: Map<string, ApprovalRouteRuntimeRecord>;
-  pendingNotices: Map<string, PendingApprovalRouteNotice>;
-  pluginTerminalNotices: Map<string, PluginTerminalNotice>;
-  selections: Map<string, ApprovalRouteSelection>;
-  pluginOrigins: Map<string, PluginOriginBinding>;
-  runtimeSeq: number;
-  closed: boolean;
-};
+export type {
+  ApprovalNativeRouteCoordinatorState,
+  ApprovalRouteRuntimeRecord,
+  RemoteNativeApprovalDeliveryReport,
+} from "./approval-native-route-types.js";
 
 function createApprovalNativeRouteCoordinatorState(): ApprovalNativeRouteCoordinatorState {
   return {

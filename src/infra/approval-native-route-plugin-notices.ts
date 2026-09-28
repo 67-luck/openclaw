@@ -2,53 +2,21 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ChannelApprovalNativePlannedTarget } from "./approval-native-delivery.js";
-import type {
-  ApprovalNativeRouteCoordinatorState,
-  ApprovalRouteRuntimeRecord,
-} from "./approval-native-route-coordinator.js";
 import {
   formatRemotePluginApprovalNotice,
   normalizeApprovalRouteChannel,
-  type GatewayRequestFn,
-  type RouteNoticeTarget,
 } from "./approval-native-route-notice.js";
+import type {
+  ApprovalNativeRouteCoordinatorState,
+  ApprovalRouteRuntimeRecord,
+  PluginOriginBinding,
+  PluginTerminalNotice,
+  PluginTerminalStatus,
+  RemoteNativeApprovalDeliveryReport,
+} from "./approval-native-route-types.js";
 import { buildChannelApprovalNativeTargetKey } from "./approval-native-target-key.js";
 import type { ApprovalRequestInput as ApprovalRequest } from "./approval-types.js";
 import type { PluginApprovalRequest } from "./plugin-approvals.js";
-
-export type PluginTerminalStatus = "allowed" | "denied" | "expired" | "cancelled";
-
-export type PluginTerminalNotice = {
-  request: ApprovalRequest;
-  requestGateway?: GatewayRequestFn;
-  target?: RouteNoticeTarget;
-  isOriginCurrent?: (cfg?: OpenClawConfig) => boolean;
-  initialNotice?: Promise<void>;
-  status?: "denied" | "expired";
-  sent: boolean;
-  sending?: Promise<void>;
-  cleanupTimeout: NodeJS.Timeout;
-};
-
-export type RemoteNativeApprovalDeliveryReport = {
-  id: string;
-  channel: string;
-  channelLabel?: string;
-  accountId?: string | null;
-  deliveredAny: boolean;
-  deliveredOnlyToApproverDms: boolean;
-};
-
-export type PluginOriginBinding = {
-  request: PluginApprovalRequest;
-  runtime: ApprovalRouteRuntimeRecord;
-  target: RouteNoticeTarget;
-  releaseApprovalBinding?: () => void;
-  terminalStatus?: PluginTerminalStatus;
-  reported?: "failed" | "delivered";
-  originDelivered?: boolean;
-  cleanupTimeout: NodeJS.Timeout;
-};
 
 export const PLUGIN_TERMINAL_ROUTE_GRACE_MS = 60_000;
 
