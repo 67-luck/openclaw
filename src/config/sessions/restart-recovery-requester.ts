@@ -16,7 +16,7 @@ const requesterSchema = z.strictObject({
   role: identifier.nullable(),
   rolePolicy: z.string().max(32 * 1024),
   authPolicy: z.string().max(32 * 1024),
-  authMode: z.string().min(1).max(64).nullable(),
+  authMode: z.enum(["none", "password", "token", "trusted-proxy"]).nullable(),
   authIdentity: identifier.optional(),
   device: z
     .strictObject({ deviceId: identifier, identity: z.string().regex(/^[a-f0-9]{64}$/) })
