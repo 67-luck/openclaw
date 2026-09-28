@@ -10,6 +10,7 @@ import {
 import { createChangedExtensionConfigShardsForPaths } from "../../scripts/lib/ci-extension-test-shards.mts";
 import {
   createNodeTestShardBundles,
+  createSelectedNodeTestShardBundles,
   createUiTestShardGroups,
   resolveCanonicalNodeTestConfig,
   type CompactNodeTestShard,
@@ -75,12 +76,24 @@ it("retains every PR-exempt file in hourly and release plans with its canonical 
   )
     .filter((entry) => entry.manifestPath && !entry.packageJsonPath)
     .map((entry) => `extensions/${entry.dirName}`);
+  // Migrated worker files can already belong to prerelease groups even when
+  // their source-only plugin has no package. Supplement only the remaining files.
   const sourceGroups = createChangedExtensionConfigShardsForPaths(sourceRoots, process.cwd(), {
     includePrExemptRuntimeTests: true,
-  }).map((shard) => ({
-    config: expectDefined(shard.configs[0], "source plugin config"),
-    roots: expectDefined(shard.includePatterns, "source plugin tests"),
-  }));
+  })
+    .map((shard) => {
+      const config = expectDefined(shard.configs[0], "source plugin config");
+      const roots = expectDefined(shard.includePatterns, "source plugin tests").filter(
+        (file) =>
+          !extensionGroups.some(
+            (group) =>
+              group.config === config &&
+              group.roots.some((root) => file === root || file.startsWith(`${root}/`)),
+          ),
+      );
+      return { config, roots };
+    })
+    .filter((group) => group.roots.length > 0);
   const allExtensionGroups = [...extensionGroups, ...sourceGroups];
   // Discover in the same Node context as the prerelease planner, without the
   // parent Vitest invocation's file filter or transformed config module graph.
@@ -439,10 +452,25 @@ it("keeps UI and core changes with exact owners and direct consumers", () => {
   } finally {
     placement.mockRestore();
   }
+  // File selection can exclude a compiler fixture that sized the full job.
+  // Compare precise groups against that same selected canonical allocation.
+  const selectedCanonical = expectDefined(
+    createSelectedNodeTestShardBundles(
+      (shards ?? []).flatMap((job) =>
+        (job.groups ?? []).flatMap((group) => group.includePatterns ?? []),
+      ),
+      {
+        runnerBackend: options.runnerBackend,
+        includeReleaseOnlyRuntimeTests: true,
+        includePrExemptRuntimeTests: true,
+      },
+    ),
+    "canonical selected UI consumer owners",
+  );
   for (const job of shards ?? []) {
     for (const group of job.groups ?? []) {
       const ownerJob = expectDefined(
-        canonical.find((candidate) =>
+        (group.includePatterns ? selectedCanonical : canonical).find((candidate) =>
           candidate.groups.some((owner) => owner.shard_name === group.shard_name),
         ),
         `canonical UI consumer job for ${group.shard_name}`,
@@ -461,7 +489,7 @@ it("keeps UI and core changes with exact owners and direct consumers", () => {
       expect(group.fallbackMaxWorkers).toBe(owner.fallbackMaxWorkers);
       expect(group.minTotalMemoryBytes).toBe(owner.minTotalMemoryBytes);
       expect(job.env).toEqual(ownerJob.env);
-      expect(job.runner).toBe(ownerJob.runner);
+      expect(job.runner, `runner for ${group.shard_name}`).toBe(ownerJob.runner);
       expect(job.planConcurrency).toBe(ownerJob.planConcurrency);
     }
   }

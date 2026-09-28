@@ -1991,6 +1991,7 @@ jobs:
               : eventName === "push" || mainValidation
                 ? "push"
                 : undefined;
+          const nodeMatrixLimit = mainValidation ? 77 : compactPlanMode === "pull-request" ? 130 : 70;
           let changedNodeTestShards = null;
           let changedNodeTestFallbackReason;
           if (runtimePullRequest && runNodeFull) {
@@ -2002,6 +2003,7 @@ jobs:
             }
             changedNodeTestShards = changedNodeTestPlan.createChangedNodeTestShards(changedPaths, {
               baseRef: process.env.OPENCLAW_CI_CHANGED_BASE,
+              compactNodeJobCap: compactPlanMode ? nodeMatrixLimit : undefined,
               selectedTestTargets,
               // Changed compiler plans validate every consuming graph, with full fallback on ambiguity.
               dedicatedCoreTypeChecks: runNodeFull,
@@ -2117,7 +2119,6 @@ jobs:
             runNodeFull &&
             changedScopeHasQaImpact &&
             (!frozenTarget || existsSync("extensions/qa-lab/src/ci-smoke-plan.ts"));
-          const nodeMatrixLimit = mainValidation ? 77 : compactPlanMode === "pull-request" ? 130 : 70;
           const rawNodeTestShards = runNodeFull
             ? changedNodeTestShards
               ? changedNodeTestShards

@@ -21,7 +21,7 @@ type RecoverySource =
   | "harness_completion"
   | "inter_session"
   | "internal_system"
-  | "other";
+  | "external_user";
 
 export async function readMainSessionRecoveryCheckpoint(
   scope: SessionTranscriptReadScope,
@@ -60,8 +60,12 @@ export async function readMainSessionRecoveryCheckpoint(
                   ? "completion"
                   : "inter_session";
             break;
+          case "external_user":
+            source = "external_user";
+            break;
           default:
-            source = "other";
+            // A later unverified input cannot inherit an earlier human sender's evidence.
+            source = undefined;
         }
       }
     } else if (hasReplaySafeCodeModeCheckpointInCurrentTurn([message])) {
