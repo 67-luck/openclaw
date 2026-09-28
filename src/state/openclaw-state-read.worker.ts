@@ -52,13 +52,15 @@ import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import {
   readInterruptedUpdateCandidate,
-  inspectUpdateRunReconciliation,
-  readUpdateRunReconciliationCandidates,
   readUpdateRunStatusInDatabase,
   readUpdateRunHistoryStatusInDatabase,
   readUpdateRunRecord,
   readUpdateRuns,
 } from "../infra/update-run-read.kernel.js";
+import {
+  inspectUpdateRunReconciliation,
+  readUpdateRunReconciliationCandidates,
+} from "../infra/update-run-reconciliation.worker.js";
 import { serveOwnedWorkerTasks } from "../infra/worker-task-server.js";
 import {
   pluginBlobLookupInDatabase,

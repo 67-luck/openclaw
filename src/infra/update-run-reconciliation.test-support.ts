@@ -1,10 +1,10 @@
 import { withExistingOpenClawStateDatabaseArtifactPreservingReadOnly } from "../state/openclaw-state-db-readonly.js";
-import {
-  canReconcileUpdateRunCandidates,
-  readUpdateRunReconciliationCandidates,
-} from "./update-run-read.kernel.js";
+import { canReconcileUpdateRunCandidates } from "./update-run-read.kernel.js";
 import type { reconcileAbandonedUpdateRunsAsync } from "./update-run-reconciliation.js";
-import { reconcileUpdateRunCandidatesInWorker } from "./update-run-reconciliation.worker.js";
+import {
+  readUpdateRunReconciliationCandidates,
+  reconcileUpdateRunCandidatesInWorker,
+} from "./update-run-reconciliation.worker.js";
 
 /** Native-kernel policy coverage shares the fixture clock and PID observations; worker transport is tested separately. */
 export function reconcileUpdateRunsInNativeKernelForTest(
