@@ -444,7 +444,7 @@ describe("plugin npm runtime build planning", () => {
     );
     expect(plan.runtimeExtensions).toEqual(["./dist/index.js"]);
     const { workerUrl } = await import(pathToFileURL(path.join(packageDir, "dist/index.js")).href);
-    const worker = new Worker(workerUrl);
+    const worker = new Worker(workerUrl, { execArgv: [] });
     try {
       const result = await new Promise((resolve, reject) => {
         worker.once("message", resolve);
