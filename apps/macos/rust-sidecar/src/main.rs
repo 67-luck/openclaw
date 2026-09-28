@@ -23,6 +23,8 @@ const GATEWAY_PAYLOAD_LIMIT: usize = 25 * 1024 * 1024;
 // Preserve the full payload contract plus its expansion and authenticated envelope.
 const FRAME_LIMIT: u32 = (GATEWAY_PAYLOAD_LIMIT.div_ceil(3) * 4 + 4096) as u32;
 const MAX_IN_FLIGHT: u16 = 64;
+// Product IPC requires the native relay; never open a Gateway for an older supervisor.
+const NATIVE_TRANSPORT_FEATURE: u64 = 1;
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 type Failure = Box<dyn Error + Send + Sync>;
@@ -113,7 +115,7 @@ async fn run() -> Result<(), Failure> {
             version: env!("CARGO_PKG_VERSION").into(),
             artifact_identity: "bundled-macos-sidecar".into(),
         },
-        feature_bits: 0,
+        feature_bits: NATIVE_TRANSPORT_FEATURE,
         limits: SidecarLimits {
             max_frame_bytes: FRAME_LIMIT,
             max_in_flight: MAX_IN_FLIGHT,
@@ -127,11 +129,11 @@ async fn run() -> Result<(), Failure> {
     write_sidecar_frame(&mut output, &accept, FRAME_LIMIT, WRITE_TIMEOUT).await?;
     handshake.complete_acceptance(&mut channel)?;
     let frame_limit = channel.max_frame_bytes();
-    let max_in_flight = handshake
-        .negotiated()
-        .ok_or("missing negotiated limits")?
-        .limits
-        .max_in_flight;
+    let negotiated = handshake.negotiated().ok_or("missing negotiated limits")?;
+    if negotiated.feature_bits & NATIVE_TRANSPORT_FEATURE == 0 {
+        return Err("native transport capability required".into());
+    }
+    let max_in_flight = negotiated.limits.max_in_flight;
     let channel = Arc::new(Mutex::new(channel));
     let (incoming_tx, incoming) = mpsc::channel::<SupervisorMessage>(usize::from(MAX_IN_FLIGHT));
     let (transport_outgoing, mut transport_writes) = mpsc::channel(1);

@@ -217,6 +217,9 @@ function deadline(p, deadlineLabel) {
   let cleanupError;
   try {
     await deadline(ready, "startup");
+    if (process.env.RFC54_EXPECT_STARTUP_REJECTION) {
+      throw new Error("expected helper rejection before Gateway connection");
+    }
     for (const pid of descendants(child.pid)) {
       observed.add(pid);
     }

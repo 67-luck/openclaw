@@ -86,6 +86,8 @@ GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Se
 }
 
 private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecked Sendable {
+    // Product IPC requires the native relay; older helpers must fail before opening a Gateway socket.
+    private static let nativeTransportFeature = 1
     private let lock = NSLock()
     private let writer = DispatchQueue(label: "ai.openclaw.sidecar.write")
     private let reader = DispatchQueue(label: "ai.openclaw.sidecar.read")
@@ -278,7 +280,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
             "maxFrameBytes": channel.maxFrameBytes, "maxInFlight": 64, "bootstrapTimeoutMs": 10000,
         ]
         let offer: [String: Any] = [
-            "protocolMajor": 1, "protocolMinor": 0, "featureBits": 0, "limits": limits,
+            "protocolMajor": 1, "protocolMinor": 0, "featureBits": Self.nativeTransportFeature, "limits": limits,
             "peer": [
                 "role": "supervisor",
                 "name": "openclaw-macos",
@@ -301,7 +303,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
               let remoteLimits = remote["limits"] as? [String: Int],
               let selection = acceptance["selection"] as? [String: Any],
               selection["protocolMajor"] as? Int == 1, selection["protocolMinor"] as? Int == 0,
-              selection["featureBits"] as? Int == 0,
+              selection["featureBits"] as? Int == Self.nativeTransportFeature,
               let selectedLimits = selection["limits"] as? [String: Int],
               selectedLimits["maxFrameBytes"] == min(remoteLimits["maxFrameBytes"] ?? 0, channel.maxFrameBytes),
               selectedLimits["maxInFlight"] == min(remoteLimits["maxInFlight"] ?? 0, 64),
