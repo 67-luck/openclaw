@@ -306,7 +306,7 @@ async function maybeFinalizeApprovalRouteNotice(
     missingSelectedRuntime,
   });
   const terminalNotice = pluginOrigin ? getPluginTerminalNotice(state, entry.request) : undefined;
-  if (terminalNotice && notice) {
+  if (pluginOrigin && terminalNotice && notice) {
     terminalNotice.requestGateway = pluginOrigin.requestGateway;
     terminalNotice.target = pluginOrigin.target;
     terminalNotice.isOriginCurrent = (cfg) => isPluginOriginCurrent(state, pluginOrigin, cfg);
