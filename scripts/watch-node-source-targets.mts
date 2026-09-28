@@ -5,6 +5,7 @@ import { FsSafeError } from "@openclaw/fs-safe/errors";
 import { root, type Root } from "@openclaw/fs-safe/root";
 import type { WatchEntry, WatchScope } from "@openclaw/fs-safe/watch";
 import { admitObservationRoot, observationPrefixKind } from "../src/infra/fs-observation-root.ts";
+import { runTasksWithConcurrency } from "../src/utils/run-with-concurrency.ts";
 import { runNodeConfigFiles } from "./run-node-watch-paths.mts";
 import type { WatchOptions } from "./watch-node-observation.mts";
 
@@ -15,6 +16,7 @@ const SOURCE_OBSERVATION_LIMITS = {
   directories: 4096,
   depth: 128,
   linkHops: 32,
+  reads: 8,
 } as const;
 
 type Mapping = { physical: string; lexical: string; kind: "entry" | "tree" };
@@ -98,13 +100,13 @@ export function createSourceTargetDiscovery(
       .toSorted((a, b) => b.rootReal.length - a.rootReal.length)
       .find((authority) => relativeInside(authority.rootReal, target) !== undefined);
 
-  const targetAuthority = async (target: string, signal: AbortSignal) => {
+  const targetAuthority = async (requested: string, signal: AbortSignal) => {
     // Resolve components before `..` through the filesystem before ascending.
-    target = path.sep === "\\" ? target.replaceAll("/", path.sep) : target;
-    const parts = target.split(path.sep);
+    const spelling = path.sep === "\\" ? requested.replaceAll("/", path.sep) : requested;
+    const parts = spelling.split(path.sep);
     const parent = parts.indexOf("..");
     const remaining = parent < 0 ? "" : parts.splice(parent).join(path.sep);
-    target = path.resolve(parts.join(path.sep) || path.parse(target).root);
+    const target = path.resolve(parts.join(path.sep) || path.parse(spelling).root);
     // Never re-admit a replaced Root, even after its last alias disappeared.
     const previous = pinnedRoot(target);
     if (previous) {
@@ -132,6 +134,7 @@ export function createSourceTargetDiscovery(
     signal.throwIfAborted();
     const groups = new Map<Root, SourceTargetGroup>();
     const mappings = new Set<string>();
+    const reads: Array<() => Promise<void>> = [];
     let examined = 0;
     let directories = 0;
     const checkEntry = () => {
@@ -167,11 +170,13 @@ export function createSourceTargetDiscovery(
       }
       group.mappings.push({ physical, lexical, kind: remaining ? "entry" : kind });
       const files = group.files;
-      const fingerprint = async (name: string, alias: string) => {
-        files.set(alias, {
-          authority,
-          relative: name,
-          hash: await hashSourceFile(authority, name, signal),
+      const fingerprint = (name: string, alias: string) => {
+        reads.push(async () => {
+          files.set(alias, {
+            authority,
+            relative: name,
+            hash: await hashSourceFile(authority, name, signal),
+          });
         });
       };
       const relative = relativeInside(authority.rootReal, physical);
@@ -220,14 +225,14 @@ export function createSourceTargetDiscovery(
         const admitted = await targetAuthority(declared, signal);
         const tail = [admitted.remaining, suffix].filter(Boolean).join(path.sep).split(path.sep);
         const parent = tail.indexOf("..");
-        const remaining = parent < 0 ? "" : tail.splice(parent).join(path.sep);
+        const rest = parent < 0 ? "" : tail.splice(parent).join(path.sep);
         await visit(
           admitted.authority,
           path.resolve(admitted.target, ...tail),
           alias,
           linkKind,
           hops + 1,
-          remaining,
+          rest,
         );
       };
       const parts = relative.split(path.sep).filter(Boolean);
@@ -250,7 +255,7 @@ export function createSourceTargetDiscovery(
         }
         if (found !== "directory") {
           if (!remaining && found === "other" && index === parts.length - 1 && !ignored(lexical)) {
-            await fingerprint(prefix, lexical);
+            fingerprint(prefix, lexical);
           }
           return;
         }
@@ -293,7 +298,7 @@ export function createSourceTargetDiscovery(
             }
             await scan(name, mapped, depth - 1);
           } else if (entry.isFile) {
-            await fingerprint(name, mapped);
+            fingerprint(name, mapped);
           }
         }
       };
@@ -317,6 +322,22 @@ export function createSourceTargetDiscovery(
         0,
       );
     }
+    const errors = new Set<unknown>();
+    await runTasksWithConcurrency({
+      tasks: reads,
+      limit: SOURCE_OBSERVATION_LIMITS.reads,
+      errorMode: "stop",
+      throwOnError: false,
+      onTaskError: (error) => {
+        errors.add(error);
+      },
+    });
+    if (errors.size === 1) {
+      throw [...errors][0];
+    }
+    if (errors.size) {
+      throw new AggregateError(errors, "Source reads failed");
+    }
     for (const group of groups.values()) {
       group.scopes.sort((a, b) => a.path.localeCompare(b.path));
       group.mappings.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
@@ -330,11 +351,15 @@ export function createSourceTargetDiscovery(
         try {
           return await discover(signal);
         } catch (error) {
+          const errors: unknown[] = error instanceof AggregateError ? error.errors : [error];
           if (
             signal.aborted ||
             pass >= 3 ||
-            !(error instanceof FsSafeError) ||
-            !["not-found", "path-mismatch", "symlink"].includes(error.code)
+            !errors.every(
+              (failure) =>
+                failure instanceof FsSafeError &&
+                ["not-found", "path-mismatch", "symlink"].includes(failure.code),
+            )
           ) {
             throw error;
           }

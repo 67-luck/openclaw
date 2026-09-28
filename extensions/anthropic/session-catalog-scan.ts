@@ -298,7 +298,7 @@ export async function readProjectsTreeSnapshot(
     current.hardExpiresAt <= Date.now() ||
     dirty === "all";
   setBoundedCache(projectTreeSlots, root, current, 8, (evicted) => {
-    void evicted.watch.close().catch((error) => {
+    void evicted.watch.close().catch((error: unknown) => {
       log.warn(`Claude project catalog watcher cleanup failed: ${String(error)}`);
     });
   });

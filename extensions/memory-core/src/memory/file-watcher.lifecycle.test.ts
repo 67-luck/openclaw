@@ -306,7 +306,11 @@ describe("Memory observation lifecycle", () => {
       await watcher.start();
       expect(observer.observations).toHaveLength(2);
       const [first, second] = observer.observations;
-      expect(observer.observations.every((entry) => entry.options.mode === mode)).toBe(true);
+      expect(
+        observer.observations.every(
+          (entry) => entry.options.mode === (mode === "poll" ? "poll" : "auto"),
+        ),
+      ).toBe(true);
       first!.health({ state: "starting", directories: 9_000 });
       expect(warnings).not.toHaveBeenCalled();
       const facts = (count: number) => ({

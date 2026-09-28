@@ -21,7 +21,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 it.each([
   [undefined, "auto"],
-  ["false", "events"],
+  ["false", "auto"],
   ["1", "poll"],
 ] as const)("passes Skills observation mode %s and polling cadence", async (setting, mode) => {
   vi.stubEnv("CHOKIDAR_USEPOLLING", setting);

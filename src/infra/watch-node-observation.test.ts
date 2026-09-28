@@ -47,14 +47,22 @@ describe("developer source observation", () => {
     await directoryLink(path.join(outside, "first"), alias);
     const subscriptions: observation.WatchSubscription[] = [];
     const reads: string[] = [];
+    const rereadStarted = createDeferredCore();
+    const releaseReread = createDeferredCore();
+    let holdReread = true;
     const targetReady = createDeferredCore<observation.WatchSubscription>();
     let invalidate: observation.WatchOptions["onInvalidate"];
     const original = observation.watch;
     vi.spyOn(observation, "watch").mockImplementation((authority, options) => {
       const open = authority.open.bind(authority);
-      vi.spyOn(authority, "open").mockImplementation((relative, settings) => {
+      vi.spyOn(authority, "open").mockImplementation(async (relative, settings) => {
         reads.push(path.resolve(authority.rootReal, relative));
-        return open(relative, settings);
+        if (holdReread) {
+          holdReread = false;
+          rereadStarted.resolve();
+          await releaseReread.promise;
+        }
+        return await open(relative, settings);
       });
       const subscription = original(authority, options);
       if (subscriptions.length === 0) {
@@ -80,7 +88,17 @@ describe("developer source observation", () => {
       onLog,
     });
     observers.push(observer);
+    const admitted = vi.fn();
+    void observer.ready.then(admitted, () => {});
+    try {
+      await rereadStarted.promise;
+      expect(admitted).toHaveBeenCalledOnce();
+      expect(onLog).toHaveBeenCalledExactlyOnceWith("Watching sources (poll).");
+    } finally {
+      releaseReread.resolve();
+    }
     await observer.ready;
+    await changed.promise;
     const repository = subscriptions[0]!;
     expect(onChange).toHaveBeenCalledExactlyOnceWith(path.join(cwd, "src", "first.ts"));
     expect(onLog).toHaveBeenCalledExactlyOnceWith("Watching sources (poll).");
@@ -170,9 +188,13 @@ describe("developer source observation", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const cwd = temp.make("source-owner-loss-");
     await fs.mkdir(path.join(cwd, "src"));
+    const source = path.join(cwd, "src", "main.ts");
+    await fs.writeFile(source, "before admission");
+    const changed = createDeferredCore<string | undefined>();
     let subscription: observation.WatchSubscription | undefined;
     const original = observation.watch;
     vi.spyOn(observation, "watch").mockImplementation((authority, options) => {
+      writeFileSync(source, "during admission");
       subscription = original(authority, options);
       return subscription;
     });
@@ -181,11 +203,12 @@ describe("developer source observation", () => {
       cwd,
       env: { CHOKIDAR_USEPOLLING: "1" },
       ignored: () => false,
-      onChange: vi.fn(),
+      onChange: (name) => changed.resolve(name),
       onError,
     });
     observers.push(observer);
     await observer.ready;
+    expect(await changed.promise).toBe(source);
     await fs.rm(cwd, { recursive: true });
     await expect(subscription!.reconcile()).rejects.toThrow();
     await observer.close();
@@ -336,17 +359,17 @@ describe("developer linked-source admission", () => {
       const discovery = createSourceTargetDiscovery(cwd, ["src"], ignored);
       const discovered = await discovery.discover(signal());
       expect(await fs.readdir(alias)).toEqual(["main.ts"]);
-      expect(discovered.flatMap((group) => [...group.files.keys()])).toEqual([
+      expect(discovered.flatMap((group) => Array.from(group.files.keys()))).toEqual([
         path.join(alias, "main.ts"),
       ]);
       expect(mapped(discovered, intermediate)).toContain(alias);
       await fs.unlink(intermediate);
       const dangling = await discovery.discover(signal());
-      expect(dangling.flatMap((group) => [...group.files.keys()])).toEqual([]);
+      expect(dangling.flatMap((group) => Array.from(group.files.keys()))).toEqual([]);
       expect(mapped(dangling, intermediate)).toContain(alias);
       await directoryLink(path.join(outside, "actual", "child"), intermediate);
       const restored = await discovery.discover(signal());
-      expect(restored.flatMap((group) => [...group.files.keys()])).toEqual([
+      expect(restored.flatMap((group) => Array.from(group.files.keys()))).toEqual([
         path.join(alias, "main.ts"),
       ]);
     },

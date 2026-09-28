@@ -154,15 +154,15 @@ export function createSourceObserver(paths: string[], options: WatchOptions) {
     }
   }
 
-  function request(names?: Iterable<string>) {
+  function request(changedNames?: Iterable<string>) {
     if (closing) {
       return;
     }
-    if (!names) {
+    if (!changedNames) {
       rediscover = true;
       dirtyFiles.clear();
     } else if (!rediscover) {
-      for (const name of names) {
+      for (const name of changedNames) {
         dirtyFiles.add(name);
       }
     }
@@ -233,16 +233,15 @@ export function createSourceObserver(paths: string[], options: WatchOptions) {
           if (changed !== undefined) {
             options.onChange(changed);
           }
-        }
-        if (!closing) {
           if (!announced) {
+            // Admission does not wait for later invalidations to stop arriving.
             announced = true;
             const modes = new Set(
               [...observations.values()].map(({ subscription }) => subscription.health().mode),
             );
             options.onLog?.(`Watching sources (${[...modes].join(", ")}).`);
+            readiness.resolve();
           }
-          readiness.resolve();
         }
       })
       .catch(fail)

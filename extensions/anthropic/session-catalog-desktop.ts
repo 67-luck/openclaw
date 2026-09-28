@@ -234,7 +234,7 @@ export async function readDesktopOverlay(
     !(dirty instanceof Set && dirty.size > 0)
   ) {
     setBoundedCache(desktopOverlays, homeDir, entry, 8, (evicted) => {
-      void evicted.watch?.close().catch((error) => {
+      void evicted.watch?.close().catch((error: unknown) => {
         log.warn(`Claude Desktop catalog watcher cleanup failed: ${String(error)}`);
       });
     });
@@ -260,7 +260,7 @@ export async function readDesktopOverlay(
     current.refreshing = false;
   });
   setBoundedCache(desktopOverlays, homeDir, current, 8, (evicted) => {
-    void evicted.watch?.close().catch((error) => {
+    void evicted.watch?.close().catch((error: unknown) => {
       log.warn(`Claude Desktop catalog watcher cleanup failed: ${String(error)}`);
     });
   });
