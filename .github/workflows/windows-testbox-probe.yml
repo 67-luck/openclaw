@@ -1414,6 +1414,7 @@ jobs:
         if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_isolation.outcome == 'success' }}
         shell: bash
         env:
+          OPENCLAW_VITEST_WORKER_CACHE: "1"
           CI_WINDOWS_SCHTASKS_INSTALLED_CELL: "2026.9.4"
           CI_WINDOWS_SCHTASKS_TEST_ID: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
