@@ -254,7 +254,7 @@ async function runArtifactPhase(
   const stderrArtifact = artifact + ".stderr";
   const stdoutFd = fs.openSync(artifact, "w");
   let stderrFd: number | undefined;
-  let completed = false;
+  let completed: { elapsedMs: number } | undefined;
   const failures: unknown[] = [];
   try {
     stderrFd = fs.openSync(stderrArtifact, "w");
@@ -267,11 +267,9 @@ async function runArtifactPhase(
         fs.writeFileSync(stdoutFd, chunk as Buffer);
       }
     }
-    completed = true;
-    return { elapsedMs: result.elapsedMs };
+    completed = { elapsedMs: result.elapsedMs };
   } catch (error) {
     failures.push(error);
-    throw error;
   } finally {
     // Preserve uncertain child ownership through cleanup failures, and attempt
     // both closes even when the first fails. Artifact ownership reads this chain.
@@ -292,12 +290,13 @@ async function runArtifactPhase(
         failures.push(error);
       }
     }
-    if (failures.length) {
-      throw failures.length === 1
-        ? failures[0]
-        : new AggregateError(failures, "Profiler artifact cleanup failed");
-    }
   }
+  if (failures.length) {
+    throw failures.length === 1
+      ? failures[0]
+      : new AggregateError(failures, "Profiler artifact cleanup failed");
+  }
+  return completed!;
 }
 
 function parseDiagnostics(output: string): Diagnostics {
