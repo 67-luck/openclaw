@@ -44,6 +44,7 @@ vi.mock("./tools/nodes-utils.js", () => ({
 
 let state: OpenClawTestState;
 let invokeCount: number;
+let nodeEvents: Array<{ event: string; payloadJSON: string }>;
 let afterPrepare: () => Promise<void>;
 let request: ExecuteNodeHostCommandParams & { workdir: string };
 let resolveDecision: (result: { decision: string }) => void;
@@ -66,6 +67,7 @@ beforeEach(async ({ onTestFinished }) => {
   await state.writeConfig({});
   saveExecApprovals({ version: 1, defaults: { security: "full", ask: "off" } });
   invokeCount = 0;
+  nodeEvents = [];
   afterPrepare = async () => {};
   request = {
     command: "/usr/bin/printf node-policy-proof",
@@ -116,6 +118,9 @@ beforeEach(async ({ onTestFinished }) => {
       },
       {
         async request<T>(name: string, value?: unknown): Promise<T> {
+          if (name === "node.event") {
+            nodeEvents.push(value as { event: string; payloadJSON: string });
+          }
           if (name === "node.invoke.result") {
             response = value as typeof response;
           }
@@ -137,6 +142,25 @@ beforeEach(async ({ onTestFinished }) => {
 });
 afterEach(async () => {
   await state.cleanup();
+});
+
+it("suppresses completion wakes after returning a foreground node result", async () => {
+  const sessionKey = "agent:main:telegram:group:-100155462274:topic:42";
+  const result = await executeNodeHostCommand({
+    ...request,
+    sessionKey,
+    turnSourceChannel: "telegram",
+    turnSourceTo: "telegram:-100155462274:topic:42",
+    turnSourceThreadId: 42,
+  });
+
+  expect(result.details).toMatchObject({ status: "completed", aggregated: "node-policy-proof" });
+  const finished = nodeEvents.find((event) => event.event === "exec.finished");
+  expect(finished).toBeDefined();
+  expect(JSON.parse(finished?.payloadJSON ?? "{}")).toMatchObject({
+    sessionKey,
+    suppressNotifyOnExit: true,
+  });
 });
 
 it.each([
