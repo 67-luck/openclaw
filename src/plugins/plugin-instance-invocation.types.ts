@@ -1,6 +1,7 @@
 import type { ScopedPluginMetadataSnapshot } from "./current-plugin-metadata-snapshot.types.js";
 import type { PluginCacheScope } from "./plugin-cache.types.js";
 import type { PluginInvocationInstance } from "./plugin-instance.types.js";
+import type { PluginSourceCaptureStorage } from "./plugin-source-capture-context.js";
 
 export type PluginInstanceInvocation = { instance: PluginInvocationInstance; token: object };
 
@@ -8,6 +9,7 @@ export type PluginExecutionScopes = {
   readonly invocation?: PluginInstanceInvocation;
   readonly metadataScope?: ScopedPluginMetadataSnapshot;
   readonly cacheScope?: PluginCacheScope;
+  readonly sourceCaptureStorage?: PluginSourceCaptureStorage;
 };
 
 /** Runtime owners preserve their context when these independent scopes change. */

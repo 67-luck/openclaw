@@ -29,7 +29,8 @@ export type AdmissionState = {
   pins: Map<string, () => void>;
   roots: Set<NativeSnapshot>;
   pending: Set<Promise<void>>;
-  publications: Map<string, () => Promise<void>>;
+  /** Null marks inspected facts that need a later writable admission. */
+  publications: Map<string, (() => Promise<void>) | null>;
   publishing: Set<string>;
   borrowers: Set<object>;
 };
