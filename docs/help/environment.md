@@ -140,14 +140,13 @@ Installed third-party plugins may declare additional credential variables in the
 Config hot reload, skills refresh, memory indexing, and the development watch
 supervisor use `@openclaw/fs-safe/watch`. The existing `CHOKIDAR_*` variable
 names remain supported for Docker, virtual machines, and other deployments
-that need an explicit observation mode:
+that need an observation preference:
 
-| Variable              | Value                            | Behavior                                                                                           |
-| --------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `CHOKIDAR_USEPOLLING` | Unset                            | `auto`: select native events when available.                                                       |
-| `CHOKIDAR_USEPOLLING` | `false`, `0`, or an empty string | Require `events`.                                                                                  |
-| `CHOKIDAR_USEPOLLING` | Any other nonempty value         | Select `poll`. Values are case-insensitive.                                                        |
-| `CHOKIDAR_INTERVAL`   | Positive integer in milliseconds | Polling interval, default `100`, minimum `20`. Applies to explicit polling and automatic fallback. |
+| Variable              | Value                                   | Behavior                                                                                           |
+| --------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `CHOKIDAR_USEPOLLING` | Unset, `false`, `0`, or an empty string | `auto`: prefer native events, with polling fallback when no event backend is available.            |
+| `CHOKIDAR_USEPOLLING` | Any other nonempty value                | Select `poll`. Values are case-insensitive.                                                        |
+| `CHOKIDAR_INTERVAL`   | Positive integer in milliseconds        | Polling interval, default `100`, minimum `20`. Applies to explicit polling and automatic fallback. |
 
 Native events are supported on Node.js on Linux, macOS, and Windows. In `auto`
 mode, Bun and runtimes without the native backend use polling with the same
@@ -156,9 +155,9 @@ mode, Bun and runtimes without the native backend use polling with the same
 `100` ms; larger intervals are capped at `2147483647` ms.
 
 Recovery remains specific to each owner. Config hot reload retries a failed
-events subscription with its existing backoff and can recreate it in polling
-mode when native watching becomes unavailable, unless the environment requires
-events-only observation. Memory indexing switches to
+subscription with its existing backoff. With `CHOKIDAR_USEPOLLING` unset, native
+watch failures can additionally trigger a fresh polling subscription after those
+retries. Explicit overrides keep the existing retry limit. Memory indexing switches to
 refresh-on-search when native watch capacity is exhausted (`watch-limit`).
 Skills refreshes during agent preparation after capacity exhaustion, and the
 development supervisor stops its child if observation fails.

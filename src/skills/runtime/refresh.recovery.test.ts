@@ -16,6 +16,8 @@ vi.mock("../loading/plugin-skills.js", () => ({
 }));
 const fixture = useSkillsWatcherFixture(observer);
 const refresh = await import("./refresh.js");
+// Complete worker admission during test-file setup, before timing the recovery behavior.
+const { resolveReusableWorkspaceSkillSnapshot } = await import("./session-snapshot.js");
 
 it("invalidates before joined retirement, retries once under the exact admitted Root, and restores availability", async () => {
   const params = { workspaceDir: fixture.workspaceDir };
@@ -110,7 +112,6 @@ it.each(["unsubscribe", "shutdown", "re-ensure"] as const)(
 
 it("keeps healthy sibling coverage and refreshes actual content while recovery is held", async () => {
   const params = { workspaceDir: fixture.workspaceDir, config: { plugins: { enabled: false } } };
-  const { resolveReusableWorkspaceSkillSnapshot } = await import("./session-snapshot.js");
   const write = (description: string) =>
     writeSkill({ dir: path.join(params.workspaceDir, "skills/guide"), name: "guide", description });
   await write("Before outage");

@@ -7,9 +7,9 @@ it.each([
   ["1", "poll"],
   ["yes", "poll"],
   ["off", "poll"],
-  ["FALSE", "events"],
-  ["0", "events"],
-  ["", "events"],
+  ["FALSE", "auto"],
+  ["0", "auto"],
+  ["", "auto"],
 ] as const)("preserves the polling environment override %j", (value, mode) => {
   expect(resolveFsObservationMode({ CHOKIDAR_USEPOLLING: value })).toBe(mode);
 });

@@ -40,6 +40,7 @@ export function createConfigFileAdapter(opts: {
   type Watcher = {
     lifetime: AbortController;
     mode: WatchOptions["mode"];
+    allowPollingRecovery: boolean;
     sources: Map<string, Source>;
     work: Promise<void>;
     ready: boolean;
@@ -251,6 +252,7 @@ export function createConfigFileAdapter(opts: {
     const next: Watcher = {
       lifetime,
       mode: degradedToPolling ? "poll" : resolveFsObservationMode(),
+      allowPollingRecovery: process.env.CHOKIDAR_USEPOLLING === undefined,
       sources: new Map(),
       work: Promise.resolve(),
       ready: false,
@@ -297,8 +299,9 @@ export function createConfigFileAdapter(opts: {
     }
     let backoff = WATCHER_RECREATE_BACKOFF_MS[retries];
     if (backoff === undefined) {
-      // An explicit events-only override must never silently become polling.
-      if (eventWatchFailed && source.mode === "auto") {
+      // Explicit legacy overrides retain their bounded retry policy, while
+      // fs-safe still selects the available backend at subscription creation.
+      if (eventWatchFailed && source.mode === "auto" && source.allowPollingRecovery) {
         degradedToPolling = true;
         retries = 0;
         backoff = WATCHER_RECREATE_BACKOFF_MS[0];
