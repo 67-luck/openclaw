@@ -254,6 +254,10 @@ Operator clients may advertise optional capabilities in `connect.params.caps`:
 - `inline-widgets`: can render hosted inline widget tool results.
 - `chat-only-assistant-text`: renders assistant text from `chat` and omits the
   redundant assistant-text `agent` stream. See [event families](/gateway/protocol/rpc-bootstrap-and-events#common-event-families).
+- `session-changed-bundles`: accepts ordered `sessions.changed.bundle` frames and
+  applies every enclosed receipt through its ordinary `sessions.changed` reducer.
+  The bundled Control UI advertises this capability. Native apps, the TUI, SDK
+  clients, and older clients keep individual events unless they explicitly opt in.
 
 Client capabilities describe the connected client, not authorization. Agent tools may declare required capabilities; the Gateway omits those tools unless every requirement appears in the originating client's `caps`. Channel-originated runs have no Gateway client capabilities, so capability-gated tools are unavailable even when tool policy explicitly allows them.
 

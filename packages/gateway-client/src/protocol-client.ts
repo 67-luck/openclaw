@@ -481,7 +481,17 @@ export class GatewayProtocolClient<TPlan> {
         }
         this.lastSeq = seq;
       }
-      this.dispatchEvent(socket, generation, parsed);
+      const expanded = this.opts.expandEvent?.(parsed);
+      if (expanded) {
+        for (const event of expanded) {
+          if (!this.isActive(socket, generation) || this.connectionAbort?.signal.aborted) {
+            return;
+          }
+          this.dispatchEvent(socket, generation, event);
+        }
+      } else {
+        this.dispatchEvent(socket, generation, parsed);
+      }
       return;
     }
     if (!isGatewayResponseFrame(parsed)) {

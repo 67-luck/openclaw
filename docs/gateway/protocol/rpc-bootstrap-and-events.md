@@ -179,6 +179,21 @@ or protocol-version change.
   `/clear` preserves `sessionId` and changes `lifecycleRevision`.
   Clients show its headline or inspector link only while the digest's exact `runId`
   is present in `activeRunIds`.
+- `sessions.changed.bundle`: negotiated transport grouping for clients with
+  `session-changed-bundles` in their connect capabilities. Its payload is
+  `{ sessionKey, agentId?, receipts: [{ payload, stateVersion? }] }`, with 1–32
+  receipts in publication order. Each `payload` is the complete original,
+  viewer-scoped `sessions.changed` payload; explicit nulls, reasons, row snapshots,
+  and all lifecycle and capacity transitions remain intact. No receipt is merged
+  with or replaced by another. A short burst of consecutive receipts for the same
+  session can share one frame, bounded by 25 ms and 32 receipts. The Gateway
+  flushes pending receipts before another event or session, preserving ordering
+  against transcript delivery and terminal events. SDK/plugin publication callbacks
+  still run per receipt. Clients that do not advertise the capability receive the
+  original individual `sessions.changed` events. Broad/keyless changes also keep
+  their individual form. The Control UI expands bundles after transport sequence
+  admission and runs the same reducers used for individual events, including
+  roster refresh, explicit clearing, capacity, transcript, and owner-release receipts.
 - `sessions.changed`: session index or metadata changed. Keyed changes carry the
   affected row in `session`, presented for that connection. Nested rows in
   `sessions.changed` and `session.message` use the same full prepared metadata,

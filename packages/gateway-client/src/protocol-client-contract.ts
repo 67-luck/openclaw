@@ -110,6 +110,8 @@ export type GatewayProtocolClientOptions<TPlan> = {
   onSocketFactoryError?: (error: Error) => void;
   onReconnectStopped?: (error: Error) => void;
   onParseError?: (error: unknown) => void;
+  /** Expand an admitted wire frame before ordered local dispatch; undefined leaves it unchanged. */
+  expandEvent?: (event: EventFrame) => readonly EventFrame[] | undefined;
   onEvent?: (event: EventFrame) => void;
   onGap?: (info: { expected: number; received: number }) => void;
   onActivity?: () => void;

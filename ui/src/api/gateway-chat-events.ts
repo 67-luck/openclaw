@@ -3,6 +3,7 @@ import {
   type EventFrame,
   type GatewayProtocolRequestOptions,
 } from "@openclaw/gateway-client/browser";
+import { isSessionsChangedBundleEvent } from "@openclaw/gateway-protocol/frame-guards";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { parseAgentSessionKeyParts } from "@openclaw/session-url-contract";
 
@@ -54,6 +55,22 @@ export class GatewayChatEvents {
     if (projected) {
       listener?.(projected);
     }
+  }
+
+  expand(event: EventFrame): EventFrame[] | undefined {
+    if (event.event !== "sessions.changed.bundle") {
+      return undefined;
+    }
+    if (!isSessionsChangedBundleEvent(event.payload)) {
+      this.reconnect("invalid session change bundle");
+      return [];
+    }
+    return event.payload.receipts.map((receipt) => ({
+      ...event,
+      event: "sessions.changed",
+      payload: receipt.payload,
+      stateVersion: receipt.stateVersion,
+    }));
   }
 
   private project(event: EventFrame): EventFrame | null {

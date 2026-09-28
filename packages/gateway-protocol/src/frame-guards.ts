@@ -1,5 +1,6 @@
 import { isNonEmptyProtocolString, isProtocolRecord } from "./protocol-value-normalization.js";
 import type { EventFrame, ResponseFrame } from "./schema/frames.js";
+import type { SessionsChangedBundleEvent } from "./schema/sessions-changed.js";
 export { GATEWAY_SERVER_CAPS } from "./server-capabilities.js";
 export type {
   ConnectParams,
@@ -51,4 +52,25 @@ export function isGatewayResponseFrame(value: unknown): value is ResponseFrame {
     return false;
   }
   return value.error === undefined || isGatewayErrorShape(value.error);
+}
+
+/** Validates bundle dispatch fields without importing the schema registry into browsers. */
+export function isSessionsChangedBundleEvent(value: unknown): value is SessionsChangedBundleEvent {
+  return (
+    isProtocolRecord(value) &&
+    isNonEmptyProtocolString(value.sessionKey) &&
+    (value.agentId === undefined || isNonEmptyProtocolString(value.agentId)) &&
+    Array.isArray(value.receipts) &&
+    value.receipts.length > 0 &&
+    value.receipts.length <= 32 &&
+    value.receipts.every(
+      (receipt: unknown) =>
+        isProtocolRecord(receipt) &&
+        Object.hasOwn(receipt, "payload") &&
+        (receipt.stateVersion === undefined ||
+          (isProtocolRecord(receipt.stateVersion) &&
+            isNonNegativeInteger(receipt.stateVersion.presence) &&
+            isNonNegativeInteger(receipt.stateVersion.health))),
+    )
+  );
 }

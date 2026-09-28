@@ -304,6 +304,7 @@ export class GatewayBrowserClient {
         }
       },
       onSocketFactoryError: (error) => this.handleSocketFactoryError(error),
+      expandEvent: (event) => this.chatEvents.expand(event),
       onEvent: (event) => this.chatEvents.dispatch(event, this.opts.onEvent),
       onGap: (info) => this.opts.onGap?.(info),
       onActivity: () => {
@@ -483,6 +484,7 @@ export class GatewayBrowserClient {
             "tool-events",
             "chat-only-assistant-text",
             "session-scoped-events",
+            "session-changed-bundles",
             "inline-widgets",
             "model-selection-policy",
             "ui-commands",

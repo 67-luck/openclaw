@@ -26,6 +26,7 @@ import {
   isSessionReadInvalidation,
   modelMetadataInvalidationFragment,
 } from "./server-broadcast-scopes.js";
+import { createGatewaySessionReceiptDelivery } from "./server-broadcast-session-receipts.js";
 import type {
   GatewayBroadcastFn,
   GatewayBroadcastOpts,
@@ -35,7 +36,11 @@ import type {
   GatewayPluginEventScope,
 } from "./server-broadcast-types.js";
 import type { SessionMessageSubscriberRegistry } from "./server-chat-state.js";
-import { MAX_BUFFERED_BYTES, WEBSOCKET_OPEN_READY_STATE } from "./server-constants.js";
+import {
+  MAX_BUFFERED_BYTES,
+  MAX_PAYLOAD_BYTES,
+  WEBSOCKET_OPEN_READY_STATE,
+} from "./server-constants.js";
 import type { GatewayClientRegistry } from "./server/client-registry.js";
 import { closeGatewayTransportWithGrace } from "./server/connection-transport-close.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
@@ -228,6 +233,32 @@ export function createGatewayBroadcaster(params: {
       return false;
     }
   };
+  const sessionReceipts = createGatewaySessionReceiptDelivery({
+    maxBytes: MAX_PAYLOAD_BYTES,
+    send: (pending, payloadFragment, dropIfSlow, delivered) => {
+      const payload = { sessionKey: pending.sessionKey, agentId: pending.agentId };
+      broadcastInternal(
+        "sessions.changed.bundle",
+        payload,
+        { sessionKeys: [pending.sessionKey], agentId: pending.agentId, dropIfSlow },
+        undefined,
+        undefined,
+        {
+          client: pending.client,
+          socket: pending.socket,
+          frames: {
+            snapshot: {
+              eventJSON: '"sessions.changed.bundle"',
+              stateVersionFragment: "",
+              payloadFragment,
+            },
+          },
+          sessionReceipts: true,
+          delivered,
+        },
+      );
+    },
+  });
   const broadcastInternal = (
     event: string,
     payload: unknown,
@@ -239,6 +270,8 @@ export function createGatewayBroadcaster(params: {
       socket: GatewayWsClient["socket"];
       frames: PreparedFrames;
       publication?: LiveTextPublication;
+      sessionReceipts?: true;
+      delivered?: () => void;
     },
   ) => {
     if (!retained && event === "sessions.changed") {
@@ -416,6 +449,18 @@ export function createGatewayBroadcaster(params: {
       ) {
         continue;
       }
+      const bundleSessionKey =
+        !retained &&
+        event === "sessions.changed" &&
+        sessionKeys.length === 1 &&
+        isRecord(payload) &&
+        typeof payload.sessionKey === "string" &&
+        hasGatewayClientCap(c.connect.caps, GATEWAY_CLIENT_CAPS.SESSION_CHANGED_BUNDLES)
+          ? sessionKeys[0]
+          : undefined;
+      if (!retained?.sessionReceipts) {
+        sessionReceipts.before(c, bundleSessionKey, agentId);
+      }
       if (!outboundEventLogged) {
         outboundEventLogged = true;
         logWs("out", "event", () => {
@@ -441,8 +486,8 @@ export function createGatewayBroadcaster(params: {
       if (state.retired) {
         continue;
       }
-      const nextSeq = (clientSeq.get(c) ?? 0) + 1;
-      const bufferedAmount = delivery.bufferedBytes(state);
+      let nextSeq = (clientSeq.get(c) ?? 0) + 1;
+      const bufferedAmount = delivery.bufferedBytes(state) + sessionReceipts.bufferedBytes(c);
       const slow = bufferedAmount > MAX_BUFFERED_BYTES;
       if (!slow) {
         reportedSlowPayloadClients.delete(c);
@@ -564,7 +609,7 @@ export function createGatewayBroadcaster(params: {
           ? (frames.delta ??= frameBaseFor(projection.delta(payload)))
           : getFrameBase();
       let frame: string;
-      let delivered: (() => void) | undefined;
+      let delivered: (() => void) | undefined = retained?.delivered;
       try {
         if (!sessionProjectionPrepared) {
           // Headers precede source hooks and reads performed while preparing projection.
@@ -584,10 +629,12 @@ export function createGatewayBroadcaster(params: {
           if (!canSkipSourcePayload) {
             getDeliveryFrameBase();
           }
-          projectSession = params.prepareSessionEventProjection?.(event, payload, {
-            sessionKeys,
-            agentId,
-          });
+          projectSession = retained?.sessionReceipts
+            ? undefined
+            : params.prepareSessionEventProjection?.(event, payload, {
+                sessionKeys,
+                agentId,
+              });
           skipSourcePayload = canSkipSourcePayload && projectSession !== undefined;
           sessionProjectionPrepared = true;
         }
@@ -629,6 +676,41 @@ export function createGatewayBroadcaster(params: {
         // A drained write can refresh the recipient; cache only the profile at this send.
         const recipientProfileId =
           (c.connect.role ?? "operator") === "operator" ? c.preparedRecipientProfileId : undefined;
+        if (bundleSessionKey && payloadFragment.startsWith(',"payload":')) {
+          const fragment = `{${payloadFragment.slice(1)}${base.stateVersionFragment}}`;
+          if (
+            sessionReceipts.enqueue(c, bundleSessionKey, agentId, {
+              fragment,
+              bytes:
+                Buffer.byteLength(fragment) +
+                256 +
+                (bundleSessionKey.length + (agentId?.length ?? 0)) * 6 +
+                MAX_RECIPIENT_PROFILE_FIELD_BYTES,
+              dropIfSlow: opts?.dropIfSlow === true,
+              isCurrent: () =>
+                isCurrent(
+                  () =>
+                    !state.retired &&
+                    c.socket === state.socket &&
+                    (!targetConnIds || targetConnIds.has(c.connId)) &&
+                    hasEventScope(c, event, explicitPluginScope, false, hasSessionReadContext) &&
+                    (!params.canReceiveSessionEvent ||
+                      params.canReceiveSessionEvent(c, sessionKeys, agentId, event, payload)),
+                ),
+              delivered,
+            })
+          ) {
+            continue;
+          }
+        }
+        if (bundleSessionKey) {
+          // Oversized or custom-serialized receipts retain the individual wire form.
+          sessionReceipts.before(c);
+          if (state.retired) {
+            continue;
+          }
+          nextSeq = (clientSeq.get(c) ?? 0) + 1;
+        }
         if (
           !presencePayload &&
           !projectSession &&
@@ -705,7 +787,9 @@ export function createGatewayBroadcaster(params: {
     }
     const state = delivery.deliveryFor(client);
     // Failed compression retains ws's queued byte count after transport retirement.
-    return state.retired ? undefined : delivery.bufferedBytes(state);
+    return state.retired
+      ? undefined
+      : delivery.bufferedBytes(state) + sessionReceipts.bufferedBytes(client);
   };
 
   const broadcastPluginEvent: GatewayPluginEventBroadcastFn = (event, payload, scope) => {

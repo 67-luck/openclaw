@@ -1000,6 +1000,7 @@ enum class GatewayEvent(
   SessionTyping("session.typing"),
   SessionTool("session.tool"),
   SessionsChanged("sessions.changed"),
+  SessionsChangedBundle("sessions.changed.bundle"),
   ControlUiSessionPullRequestsChanged("controlUi.sessionPullRequests.changed"),
   PluginsControlUiChanged("plugins.controlUi.changed"),
   Presence("presence"),

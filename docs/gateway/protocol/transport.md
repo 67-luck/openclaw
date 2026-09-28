@@ -55,6 +55,18 @@ Frame shapes:
 - Response: `{type:"res", id, ok, payload|error}`
 - Event: `{type:"event", event, payload, seq?, stateVersion?, recipientProfileId?}`
 
+Clients advertising `session-changed-bundles` may receive one
+`sessions.changed.bundle` frame containing up to 32 ordered receipts for one
+session. The outer `seq` counts that physical frame once. Check the connection
+sequence before expanding the bundle, then dispatch each receipt as
+`sessions.changed` with its own `payload` and optional `stateVersion`, retaining
+the outer `recipientProfileId`. Receipt expansion does not advance transport
+sequence tracking. Apply each receipt to all current listeners before advancing
+to the next; a listener failure must not discard later receipts. Retiring the
+connection retires any remaining local dispatch from that connection.
+See [session event families](/gateway/protocol/rpc-bootstrap-and-events#common-event-families)
+for bundle timing and legacy delivery.
+
 Live text uses append deltas after an initial recipient snapshot. An outer event
 sequence gap means a client may have lost part of that baseline: retire the
 connection and reconnect before applying more deltas. If the frame revealing the

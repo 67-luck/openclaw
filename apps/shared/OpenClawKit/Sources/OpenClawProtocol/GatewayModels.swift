@@ -16777,6 +16777,46 @@ public struct SessionsCatalogStartTerminalResult: Codable, Sendable {
     }
 }
 
+public struct SessionsChangedBundleEvent: Codable, Sendable {
+    public let sessionkey: String
+    public let agentid: String?
+    public let receipts: [SessionsChangedReceipt]
+
+    public init(
+        sessionkey: String,
+        agentid: String? = nil,
+        receipts: [SessionsChangedReceipt])
+    {
+        self.sessionkey = sessionkey
+        self.agentid = agentid
+        self.receipts = receipts
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionkey = "sessionKey"
+        case agentid = "agentId"
+        case receipts
+    }
+}
+
+public struct SessionsChangedReceipt: Codable, Sendable {
+    public let payload: AnyCodable
+    public let stateversion: StateVersion?
+
+    public init(
+        payload: AnyCodable,
+        stateversion: StateVersion? = nil)
+    {
+        self.payload = payload
+        self.stateversion = stateversion
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case payload
+        case stateversion = "stateVersion"
+    }
+}
+
 public struct SessionsCleanupParams: Codable, Sendable {
     public let agent: String?
     public let allagents: Bool?
