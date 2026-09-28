@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { captureChatOutboxAdmission } from "../../lib/chat/outbox-store.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
+import { makeChatHost } from "./chat-host.test-support.ts";
 import {
   input,
   makeChatPageHost,
@@ -11,6 +12,7 @@ import {
 } from "./chat-pending-inputs.test-support.ts";
 import { applyChatPendingInputs } from "./chat-pending-inputs.ts";
 import { admitQueuedMessageForSession } from "./chat-queue.ts";
+import { retireDeliveredQueuedUserTurn } from "./chat-send-support.ts";
 import { renderChatView } from "./chat-view.test-helpers.ts";
 import {
   installTranscriptDomMocks,
@@ -85,3 +87,47 @@ it.each(["held", "failed"] as const)(
     expect(host.request).not.toHaveBeenCalled();
   },
 );
+
+it("does not duplicate an off-page active input when delivered display arrives late", async () => {
+  const host = makeChatHost({ sessionKey, currentSessionId: sessionId });
+  const activeInput = {
+    id: "accepted",
+    runId: "original-run",
+    acceptedAt: 100,
+    state: "queued" as const,
+    message: {
+      role: "user",
+      content: "One accepted prompt",
+      __openclaw: { id: "pending:accepted" },
+    },
+  };
+  applyChatPendingInputs(host, {
+    items: [],
+    total: 21,
+    nextBefore: 20,
+    queue: { items: [activeInput] },
+  });
+  const rows = () =>
+    [
+      ...renderChatView({
+        historyState: host,
+        sessionKey,
+        messages: host.chatMessages,
+        queue: host.chatQueue,
+      }).querySelectorAll<HTMLElement>(".chat-bubble"),
+    ].map((row) => row.dataset.messageText);
+  expect(rows()).toEqual(["One accepted prompt"]);
+  expect(
+    admitQueuedMessageForSession(host, captureChatOutboxAdmission(host, sessionKey), {
+      id: "late-local",
+      sendRunId: activeInput.runId,
+      sessionKey,
+      sessionId,
+      text: "One accepted prompt",
+      createdAt: 100,
+    }),
+  ).toBe(true);
+  const outbox = listStoredChatOutboxes(host)[0]!;
+  expect(await retireDeliveredQueuedUserTurn(host, activeInput.runId, outbox)).toBe("retired");
+  expect(rows()).toEqual(["One accepted prompt"]);
+});

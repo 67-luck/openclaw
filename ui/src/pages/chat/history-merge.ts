@@ -532,7 +532,9 @@ export function shouldDisplayChatSubmission(
 /** A retained submission has display ownership only until its own user receipt or custody. */
 export function admitChatSubmission(
   owner: ChatSessionProjectionOwner,
-  pendingInputs: ChatPendingInputsPage["items"] | undefined,
+  pendingInputs:
+    | { page: ChatPendingInputsPage; activeInputs: ChatPendingInputsPage["items"] }
+    | undefined,
   submission: RetainedChatSubmission | null | undefined = owner.chatSubmissions?.readInitial(
     owner.sessionKey,
     owner.client ?? null,
@@ -540,9 +542,11 @@ export function admitChatSubmission(
   ),
 ): boolean {
   // A pane can receive custody before the sender hands off its local display.
+  // The browsed retained page is not the complete active-custody snapshot.
   if (
     submission &&
-    (pendingInputs?.some((input) => input.runId === submission.pendingRunId) ||
+    (pendingInputs?.activeInputs.some((input) => input.runId === submission.pendingRunId) ||
+      pendingInputs?.page.items.some((input) => input.runId === submission.pendingRunId) ||
       (submission.kind === "initial" &&
         owner.chatMessages.some((message) =>
           isInitialSubmissionReceipt(submission, readSessionMessageIdentity(message)),
