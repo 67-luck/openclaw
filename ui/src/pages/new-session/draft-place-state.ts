@@ -136,12 +136,12 @@ export class DraftPlaceState {
         }
         return accepted;
       },
-      (model, ownsSelection) => {
-        void this.catalogSelection.selectModelTarget(model, ownsSelection).then((accepted) => {
-          if (accepted) {
-            this.callbacks.onError(null);
-          }
-        });
+      async (model, ownsSelection) => {
+        const accepted = await this.catalogSelection.selectModelTarget(model, ownsSelection);
+        if (accepted) {
+          this.callbacks.onError(null);
+        }
+        return accepted;
       },
       () => this.catalogSelection.transitionPending,
     );

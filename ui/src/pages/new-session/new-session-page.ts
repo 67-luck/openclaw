@@ -156,7 +156,7 @@ export class NewSessionPage extends OpenClawLightDomElement {
           if (data.group) {
             params.set("group", data.group);
           }
-          prepareTargetTransition(context, data, isCurrent);
+          const cancel = prepareTargetTransition(context, data, isCurrent);
           try {
             await context.navigateAndWait("new-session", {
               search: params.size ? "?" + params.toString() : "",
@@ -165,6 +165,8 @@ export class NewSessionPage extends OpenClawLightDomElement {
             return isCurrent() && catalog.routeKey(this.data) === catalog.routeKey(data);
           } catch {
             return false;
+          } finally {
+            cancel?.();
           }
         },
         onRecoveryReady: (gatewayUrl, recoveryScope) =>

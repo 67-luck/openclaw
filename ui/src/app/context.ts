@@ -102,7 +102,7 @@ export type ApplicationChatAttachmentHandoff = {
       incognito?: boolean;
       reviewPrivateDraft: typeof reviewPrivateComposerDraft;
     },
-  ): void;
+  ): (() => void) | undefined;
   consume(handoff: ChatAttachmentHandoffKey): {
     attachments: ChatAttachment[];
     fallbacks: Record<string, ChatComposerMemoryFallback>;
