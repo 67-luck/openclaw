@@ -9,11 +9,11 @@ import OpenClawKit
 /// to prepared/transport copies. The 64 MiB admitted budget is not a process memory cap.
 final class SidecarWriteQueue: @unchecked Sendable {
     enum Lane: Sendable {
-        case application, progress, delivery, transport, cancellation, admission, keepalive, receipt
+        case application, progress, delivery, transport, cancellation, admission, keepalive, receipt, pong
 
         var isControl: Bool {
             switch self {
-            case .cancellation, .admission, .keepalive, .receipt: true
+            case .cancellation, .admission, .keepalive, .receipt, .pong: true
             default: false
             }
         }
@@ -22,7 +22,7 @@ final class SidecarWriteQueue: @unchecked Sendable {
             switch self {
             // The peer can acknowledge physically written bytes before the serial
             // writer releases its slot. One completed write plus one successor can coexist.
-            case .transport, .receipt: 2
+            case .transport, .receipt, .pong: 2
             case .cancellation: 128 // One reserved cancellation per ordinary/progress RPC lease.
             default: 64
             }
@@ -138,6 +138,7 @@ final class SidecarWriteQueue: @unchecked Sendable {
             .admission,
             .keepalive,
             .receipt,
+            .pong,
             .transport,
             .delivery,
             .progress,

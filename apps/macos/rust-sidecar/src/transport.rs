@@ -22,14 +22,15 @@ pub struct NativeTransport {
     receipts: mpsc::Sender<Value>,
     acknowledgement: Acknowledgement,
     pending: Option<oneshot::Receiver<bool>>,
-    ping: Option<WebSocketMessage>,
-    pong: Option<WebSocketMessage>,
+    pong: Option<(WebSocketMessage, oneshot::Receiver<bool>)>,
+    pong_acknowledgement: Acknowledgement,
     sequence: u64,
 }
 
 pub struct NativeTransportInput {
     incoming: mpsc::Sender<WebSocketMessage>,
     acknowledgement: Acknowledgement,
+    pong_acknowledgement: Acknowledgement,
 }
 
 impl NativeTransport {
@@ -39,6 +40,7 @@ impl NativeTransport {
     ) -> (Self, NativeTransportInput) {
         let (incoming_tx, incoming) = mpsc::channel(1);
         let acknowledgement = Arc::new(Mutex::new(None));
+        let pong_acknowledgement = Arc::new(Mutex::new(None));
         (
             Self {
                 incoming,
@@ -46,13 +48,14 @@ impl NativeTransport {
                 receipts,
                 acknowledgement: acknowledgement.clone(),
                 pending: None,
-                ping: None,
                 pong: None,
+                pong_acknowledgement: pong_acknowledgement.clone(),
                 sequence: 0,
             },
             NativeTransportInput {
                 incoming: incoming_tx,
                 acknowledgement,
+                pong_acknowledgement,
             },
         )
     }
@@ -84,23 +87,31 @@ impl NativeTransportInput {
     }
 
     pub fn acknowledge(&self, id: u64, ok: bool) -> Result<(), &'static str> {
-        let (expected, reply) = self
-            .acknowledgement
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or("unexpected transport receipt")?;
-        if expected != id {
-            return Err("transport receipt mismatch");
-        }
-        reply.send(ok).map_err(|_| "transport closed")
+        acknowledge(&self.acknowledgement, id, ok)
+    }
+
+    pub fn pong(&self, id: u64, ok: bool) -> Result<(), &'static str> {
+        acknowledge(&self.pong_acknowledgement, id, ok)
     }
 }
 
 impl Drop for NativeTransportInput {
     fn drop(&mut self) {
         self.acknowledgement.lock().unwrap().take();
+        self.pong_acknowledgement.lock().unwrap().take();
     }
+}
+
+fn acknowledge(slot: &Acknowledgement, id: u64, ok: bool) -> Result<(), &'static str> {
+    let (expected, reply) = slot
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or("unexpected transport receipt")?;
+    if expected != id {
+        return Err("transport receipt mismatch");
+    }
+    reply.send(ok).map_err(|_| "transport closed")
 }
 
 fn closed() -> WebSocketError {
@@ -110,8 +121,18 @@ fn closed() -> WebSocketError {
 impl Stream for NativeTransport {
     type Item = Result<WebSocketMessage, WebSocketError>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if let Some(pong) = self.pong.take() {
-            return Poll::Ready(Some(Ok(pong)));
+        if let Some((_, receipt)) = self.pong.as_mut() {
+            match Pin::new(receipt).poll(cx) {
+                Poll::Ready(Ok(true)) => {
+                    let (pong, _) = self.pong.take().unwrap();
+                    return Poll::Ready(Some(Ok(pong)));
+                }
+                Poll::Ready(_) => {
+                    self.pong = None;
+                    return Poll::Ready(Some(Err(closed())));
+                }
+                Poll::Pending => {}
+            }
         }
         match self.incoming.poll_recv(cx) {
             Poll::Ready(Some(message)) => {
@@ -140,13 +161,15 @@ impl Sink<WebSocketMessage> for NativeTransport {
         if self.pending.is_some() {
             return Err(closed());
         }
-        let (kind, data) = match message {
-            WebSocketMessage::Text(text) => ("text", text.as_bytes().to_vec()),
+        let (kind, data, pong) = match message {
+            WebSocketMessage::Text(text) => ("text", text.as_bytes().to_vec(), None),
             WebSocketMessage::Ping(bytes) => {
-                self.ping = Some(WebSocketMessage::Pong(bytes));
-                ("ping", Vec::new())
+                if self.pong.is_some() {
+                    return Err(closed());
+                }
+                ("ping", Vec::new(), Some(WebSocketMessage::Pong(bytes)))
             }
-            WebSocketMessage::Close(_) => ("close", Vec::new()),
+            WebSocketMessage::Close(_) => ("close", Vec::new(), None),
             // URLSession owns unsolicited WebSocket ping/pong responses.
             WebSocketMessage::Pong(_) => return Ok(()),
             _ => return Err(closed()),
@@ -155,6 +178,11 @@ impl Sink<WebSocketMessage> for NativeTransport {
             return Err(closed());
         }
         self.sequence = self.sequence.checked_add(1).ok_or_else(closed)?;
+        if let Some(pong) = pong {
+            let (reply, receipt) = oneshot::channel();
+            *self.pong_acknowledgement.lock().unwrap() = Some((self.sequence, reply));
+            self.pong = Some((pong, receipt));
+        }
         let (reply, receive) = oneshot::channel();
         *self.acknowledgement.lock().unwrap() = Some((self.sequence, reply));
         self.pending = Some(receive);
@@ -171,7 +199,8 @@ impl Sink<WebSocketMessage> for NativeTransport {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Ok(true)) => {
                 self.pending = None;
-                self.pong = self.ping.take();
+                // Flush confirms native submission, never remote Pong. Waiting for Pong here
+                // would prevent reading the inbound frame that lets URLSession observe it.
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(_) => {
@@ -218,6 +247,83 @@ impl GatewayWebSocketConnector for NativeConnector {
 mod tests {
     use super::*;
     use futures_util::{SinkExt, StreamExt};
+
+    #[tokio::test]
+    async fn ping_submission_is_not_a_pong_and_does_not_stop_inbound_messages() {
+        let (outgoing, mut writes) = mpsc::channel(1);
+        let (receipts, mut acknowledgements) = mpsc::channel(1);
+        let (mut socket, native) = NativeTransport::new(outgoing, receipts);
+        let mut send = Box::pin(socket.send(WebSocketMessage::Ping(b"ping-1".to_vec().into())));
+        assert!(futures_util::poll!(&mut send).is_pending());
+        let write = writes.recv().await.unwrap();
+        native
+            .acknowledge(write["id"].as_u64().unwrap(), true)
+            .unwrap();
+        send.await.unwrap();
+        // Submission is not evidence of peer liveness. Stream must await the real Pong.
+        assert!(futures_util::poll!(socket.next()).is_pending());
+        native
+            .receive("text", &STANDARD.encode("tick before pong"))
+            .unwrap();
+        assert_eq!(
+            socket.next().await.unwrap().unwrap().into_text().unwrap(),
+            "tick before pong"
+        );
+        acknowledgements.recv().await.unwrap();
+        let observed = tokio::spawn(async move { socket.next().await });
+        tokio::task::yield_now().await;
+        native.pong(write["id"].as_u64().unwrap(), true).unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), observed)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            WebSocketMessage::Pong(b"ping-1".to_vec().into())
+        );
+    }
+
+    #[tokio::test]
+    async fn early_pong_survives_submission_and_other_writes_without_overwriting_correlation() {
+        let (outgoing, mut writes) = mpsc::channel(1);
+        let (receipts, _acknowledgements) = mpsc::channel(1);
+        let (mut socket, native) = NativeTransport::new(outgoing, receipts);
+        let mut send = Box::pin(socket.send(WebSocketMessage::Ping(b"first".to_vec().into())));
+        assert!(futures_util::poll!(&mut send).is_pending());
+        let ping = writes.recv().await.unwrap()["id"].as_u64().unwrap();
+        native.pong(ping, true).unwrap();
+        native.acknowledge(ping, true).unwrap();
+        send.await.unwrap();
+        let mut send = Box::pin(socket.send(WebSocketMessage::Text("result".into())));
+        assert!(futures_util::poll!(&mut send).is_pending());
+        let text = writes.recv().await.unwrap()["id"].as_u64().unwrap();
+        native.acknowledge(text, true).unwrap();
+        send.await.unwrap();
+        assert_eq!(
+            socket.next().await.unwrap().unwrap(),
+            WebSocketMessage::Pong(b"first".to_vec().into())
+        );
+        assert!(native.pong(ping, true).is_err());
+    }
+
+    #[tokio::test]
+    async fn only_one_ping_can_wait_and_failed_pong_is_not_liveness() {
+        let (outgoing, mut writes) = mpsc::channel(1);
+        let (receipts, _acknowledgements) = mpsc::channel(1);
+        let (mut socket, native) = NativeTransport::new(outgoing, receipts);
+        let mut send = Box::pin(socket.send(WebSocketMessage::Ping(b"pending".to_vec().into())));
+        assert!(futures_util::poll!(&mut send).is_pending());
+        let ping = writes.recv().await.unwrap()["id"].as_u64().unwrap();
+        native.acknowledge(ping, true).unwrap();
+        send.await.unwrap();
+        assert!(socket
+            .send(WebSocketMessage::Ping(b"duplicate".to_vec().into()))
+            .await
+            .is_err());
+        native.pong(ping, false).unwrap();
+        assert!(socket.next().await.unwrap().is_err());
+    }
 
     #[tokio::test]
     async fn duplex_receipts_do_not_wait_for_the_gateway_receive_loop() {

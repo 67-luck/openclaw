@@ -24,7 +24,7 @@ const GATEWAY_PAYLOAD_LIMIT: usize = 25 * 1024 * 1024;
 const FRAME_LIMIT: u32 = (GATEWAY_PAYLOAD_LIMIT.div_ceil(3) * 4 + 4096) as u32;
 const MAX_IN_FLIGHT: u16 = 64;
 // Product IPC requires the native relay; never open a Gateway for an older supervisor.
-const NATIVE_TRANSPORT_FEATURE: u64 = 1;
+const NATIVE_TRANSPORT_FEATURE: u64 = 3; // Native relay and independent Pong observation.
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 type Failure = Box<dyn Error + Send + Sync>;
@@ -65,6 +65,10 @@ enum SupervisorMessage {
         data: String,
     },
     TransportSent {
+        id: u64,
+        ok: bool,
+    },
+    TransportPong {
         id: u64,
         ok: bool,
     },
@@ -173,6 +177,7 @@ async fn run() -> Result<(), Failure> {
                 SupervisorMessage::TransportSent { id, ok } => {
                     transport_input.acknowledge(id, ok)?
                 }
+                SupervisorMessage::TransportPong { id, ok } => transport_input.pong(id, ok)?,
                 // Never block transport receipts behind application traffic; saturation closes
                 // this connection instead of deadlocking both inherited pipes.
                 message => incoming_tx

@@ -275,7 +275,36 @@ struct SidecarWriteQueueCapacityTests {
 }
 
 struct SidecarWriteQueueAcknowledgementTests {
-    @Test(arguments: [SidecarWriteQueue.Lane.transport, .receipt])
+    @Test func `Pong receipt capacity is independent of data write receipts`() async {
+        let owner = SidecarWriteQueue()
+        let gate = DispatchSemaphore(value: 0)
+        let (events, output) = AsyncStream<Int>.makeStream()
+        defer { owner.close(URLError(.cancelled))
+            output.finish()
+        }
+        owner.enqueue(
+            Data([1]),
+            lane: .receipt,
+            write: { _ in output.yield(1)
+                gate.wait()
+            },
+            failed: { _ in output.yield(-1) })
+        var iterator = events.makeAsyncIterator()
+        #expect(await iterator.next() == 1)
+        for (id, lane) in [(2, SidecarWriteQueue.Lane.receipt), (3, .pong), (4, .pong)] {
+            owner.enqueue(
+                Data([UInt8(id)]),
+                lane: lane,
+                write: { _ in output.yield(id) },
+                failed: { _ in output.yield(-1) })
+        }
+        gate.signal()
+        #expect(await iterator.next() == 2)
+        #expect(await iterator.next() == 3)
+        #expect(await iterator.next() == 4)
+    }
+
+    @Test(arguments: [SidecarWriteQueue.Lane.transport, .receipt, .pong])
     func `peer acknowledgement can arrive before physical write completion`(lane: SidecarWriteQueue.Lane) async {
         let owner = SidecarWriteQueue()
         let (events, output) = AsyncStream<Int>.makeStream()

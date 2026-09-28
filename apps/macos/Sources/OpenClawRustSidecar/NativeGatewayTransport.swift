@@ -12,6 +12,7 @@ final class NativeGatewayTransport: @unchecked Sendable {
     private let failed: @Sendable (any Error) -> Void
     private var stopped = false
     private var sending = false
+    private var ping: Task<Void, Never>?
     private var receipt: CheckedContinuation<Void, any Error>?
     private var receiver: Task<Void, Never>?
 
@@ -88,7 +89,7 @@ final class NativeGatewayTransport: @unchecked Sendable {
               ["text", "ping", "close"].contains(kind)
         else { throw URLError(.cannotParseResponse) }
         let accepted = self.lock.withLock {
-            guard !self.stopped, !self.sending else { return false }
+            guard !self.stopped, !self.sending, kind != "ping" || self.ping == nil else { return false }
             self.sending = true
             return true
         }
@@ -102,7 +103,7 @@ final class NativeGatewayTransport: @unchecked Sendable {
                         throw URLError(.cannotParseResponse)
                     }
                     try await self.socket.send(.string(text))
-                case "ping": try await self.socket.sendPing()
+                case "ping": self.startPing(id: id)
                 case "close": self.socket.cancel(with: .normalClosure, reason: nil)
                 default: throw URLError(.cannotParseResponse)
                 }
@@ -114,17 +115,47 @@ final class NativeGatewayTransport: @unchecked Sendable {
         }
     }
 
+    private func startPing(id: UInt64) {
+        self.lock.withLock {
+            guard !self.stopped else { return }
+            // URLSession only processes Pong while receive is progressing. Report submission
+            // independently so Rust can consume the frame that releases the native reader.
+            self.ping = Task { [self] in
+                let ok: Bool
+                do { try await self.socket.sendPing()
+                    ok = true
+                } catch { ok = false }
+                let report = self.lock.withLock {
+                    guard !self.stopped else { return false }
+                    self.ping = nil
+                    return true
+                }
+                guard report else { return }
+                do {
+                    try await self.write(JSONSerialization.data(withJSONObject: [
+                        "type": "transport-pong", "id": id, "ok": ok,
+                    ]), .pong)
+                } catch { self.fail(error) }
+            }
+        }
+    }
+
     func close() {
-        let retired = self.lock.withLock { () -> (Task<Void, Never>?, CheckedContinuation<Void, any Error>?) in
+        let retired = self.lock.withLock { () -> (
+            Task<Void, Never>?,
+            Task<Void, Never>?,
+            CheckedContinuation<Void, any Error>?) in
             self.stopped = true
             defer { self.receiver = nil
+                self.ping = nil
                 self.receipt = nil
             }
-            return (self.receiver, self.receipt)
+            return (self.receiver, self.ping, self.receipt)
         }
         self.socket.cancel(with: .goingAway, reason: nil)
         retired.0?.cancel()
-        retired.1?.resume(throwing: URLError(.cancelled))
+        retired.1?.cancel()
+        retired.2?.resume(throwing: URLError(.cancelled))
     }
 
     private func fail(_ error: any Error) {

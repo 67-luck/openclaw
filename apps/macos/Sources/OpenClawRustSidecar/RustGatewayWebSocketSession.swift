@@ -104,7 +104,7 @@ GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Se
 
 private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecked Sendable {
     // Product IPC requires the native relay; older helpers must fail before opening a Gateway socket.
-    private static let nativeTransportFeature = 1
+    private static let nativeTransportFeature = 3 // Native relay and independent Pong observation.
     private let lock = NSLock()
     private let writes = SidecarWriteQueue()
     private let reader = DispatchQueue(label: "ai.openclaw.sidecar.read")

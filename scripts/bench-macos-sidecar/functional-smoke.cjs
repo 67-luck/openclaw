@@ -42,6 +42,7 @@ function deadline(p, deadlineLabel) {
     host: "127.0.0.1",
     port: 0,
     perMessageDeflate: false,
+    autoPong: false,
     maxPayload: gatewayPayloadLimit,
   });
   await once(server, "listening");
@@ -57,6 +58,7 @@ function deadline(p, deadlineLabel) {
     nativeEffects = new Set(),
     nativeRejectedBeforeEffect = new Set();
   let startupFailure;
+  let nextPing;
   let nativeRouteRetired = false;
   const observed = new Set();
   let finished = false;
@@ -65,6 +67,15 @@ function deadline(p, deadlineLabel) {
   const record = { mode, checks: [] };
   server.on("connection", (socket) => {
     ws = socket;
+    socket.on("ping", (data) => {
+      if (nextPing) {
+        const pending = nextPing;
+        nextPing = undefined;
+        socket.send(JSON.stringify({ type: "event", event: "tick", payload: { ts: Date.now() } }));
+        if (pending.reply) setTimeout(() => socket.pong(data), 50);
+        pending.resolve(socket);
+      } else socket.pong(data);
+    });
     socket.send(
       JSON.stringify({
         type: "event",
@@ -201,6 +212,19 @@ function deadline(p, deadlineLabel) {
       waitLabel,
     );
   }
+  // Keep the production 15-second keepalive; application deadlines remain five seconds.
+  const orderedKeepalive = (reply) =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("15-second keepalive missing")), 20000);
+      timer.unref();
+      nextPing = {
+        reply,
+        resolve: (socket) => {
+          clearTimeout(timer);
+          resolve(socket);
+        },
+      };
+    });
   const invoke = (id, command, params = { data: "native" }, timeoutMs = 30000) =>
     ws.send(
       JSON.stringify({
@@ -464,6 +488,49 @@ function deadline(p, deadlineLabel) {
         passed: true,
         retirementBoundary: retiredBoundary,
       });
+    }
+    if (!retirementMode) {
+      const keepaliveSocket = await orderedKeepalive(true);
+      invoke("after-ordered-pong", "benchmark.echo", { alive: true });
+      const echoed = await until(
+        () => results.get("after-ordered-pong"),
+        "echo with tick preceding Pong",
+      );
+      if (!echoed.ok || payload(echoed).alive !== true)
+        throw new Error("ordered Pong blocked native result");
+      // A fabricated successful Pong could pass the echo but later retire on the real ten-second timeout.
+      await delay(11000);
+      if (ws !== keepaliveSocket || nativeRouteRetired || keepaliveSocket.readyState !== 1)
+        throw new Error("real Pong did not preserve the original native route");
+      record.checks.push({
+        scenario: "tick before delayed Pong preserves receive progress and native keepalive",
+        passed: true,
+      });
+      if (mode !== "baseline") {
+        const missingPongSocket = await orderedKeepalive(false);
+        const retired = Promise.race([
+          once(missingPongSocket, "close"),
+          new Promise((_, reject) => {
+            const timer = setTimeout(
+              () => reject(new Error("missing Pong did not retire transport")),
+              12000,
+            );
+            timer.unref();
+          }),
+        ]);
+        invoke("before-missing-pong-timeout", "benchmark.echo", { alive: true });
+        const beforeTimeout = await until(
+          () => results.get("before-missing-pong-timeout"),
+          "receive while real Pong is absent",
+        );
+        if (!beforeTimeout.ok) throw new Error("pending Pong blocked application delivery");
+        await retired;
+        await until(() => nativeRouteRetired, "native route retirement after missing Pong");
+        record.checks.push({
+          scenario: "missing real Pong times out and retires the native route",
+          passed: true,
+        });
+      }
     }
   } catch (error) {
     const expectedStartupRejection = process.env.RFC54_EXPECT_STARTUP_REJECTION;

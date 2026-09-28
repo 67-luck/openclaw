@@ -7,9 +7,11 @@ struct NativeGatewayTransportTests {
     @Test func `incoming backpressure does not block outgoing write receipts`() async throws {
         let socket = RelaySocket()
         let (writes, capture) = AsyncStream<Data>.makeStream()
-        let transport = NativeGatewayTransport(socket: WebSocketTaskBox(task: socket), write: { data, _ in
-            capture.yield(data)
-        }, failed: { _ in })
+        let transport = NativeGatewayTransport(
+            socket: WebSocketTaskBox(task: socket),
+            write: { data, _ in
+                capture.yield(data)
+            }, failed: { _ in })
         defer { transport.close()
             capture.finish()
         }
@@ -37,12 +39,65 @@ struct NativeGatewayTransportTests {
         #expect(socket.sent == ["connect"])
     }
 
+    @Test func `ping submission lets inbound messages progress before real Pong`() async throws {
+        let socket = RelaySocket(holdPong: true)
+        let writes = RelayWrites()
+        let transport = NativeGatewayTransport(
+            socket: WebSocketTaskBox(task: socket),
+            write: { data, lane in
+                writes.append(data, lane: lane)
+            }, failed: { _ in })
+        defer { transport.close() }
+        transport.start()
+        socket.provide(.string("tick"))
+        try await writes.waitForCount(1)
+        try transport.send(id: 1, kind: "ping", encoded: "")
+        try await writes.waitForCount(2)
+        #expect(try writes.types() == ["transport-frame", "transport-sent"])
+        #expect(socket.receiveCount == 1)
+        #expect(throws: (any Error).self) { try transport.send(id: 2, kind: "ping", encoded: "") }
+        // Application writes remain available while the single Ping awaits its actual Pong.
+        try transport.send(id: 3, kind: "text", encoded: Data("result".utf8).base64EncodedString())
+        try await writes.waitForCount(3)
+        #expect(socket.sent == ["result"])
+        try transport.received()
+        socket.provide(.string("next tick"))
+        try await writes.waitForCount(4)
+        socket.completePong()
+        try await writes.waitForCount(5)
+        let pong = try Self.message(#require(writes.values.last?.0))
+        #expect(pong["type"] as? String == "transport-pong")
+        #expect(pong["id"] as? UInt64 == 1)
+        #expect(pong["ok"] as? Bool == true)
+        #expect(writes.values.last?.1 == .pong)
+    }
+
+    @Test func `retired native route drops a previously installed late Pong callback`() async throws {
+        let socket = RelaySocket(holdPong: true)
+        let writes = RelayWrites()
+        let transport = NativeGatewayTransport(
+            socket: WebSocketTaskBox(task: socket),
+            write: { data, lane in
+                writes.append(data, lane: lane)
+            }, failed: { _ in })
+        transport.start()
+        try transport.send(id: 1, kind: "ping", encoded: "")
+        try await writes.waitForCount(1)
+        try await waitForCondition { socket.pongPending }
+        transport.close()
+        socket.completePong()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(try writes.types() == ["transport-sent"])
+    }
+
     @Test func `full gateway binary payload fits authenticated envelope even with all slashes`() async throws {
         let socket = RelaySocket()
         let (writes, capture) = AsyncStream<Data>.makeStream()
-        let transport = NativeGatewayTransport(socket: WebSocketTaskBox(task: socket), write: { data, _ in
-            capture.yield(data)
-        }, failed: { _ in })
+        let transport = NativeGatewayTransport(
+            socket: WebSocketTaskBox(task: socket),
+            write: { data, _ in
+                capture.yield(data)
+            }, failed: { _ in })
         defer { transport.close()
             capture.finish()
         }
@@ -72,6 +127,25 @@ private final class RelaySocket: WebSocketTasking, @unchecked Sendable {
     private var closed = false
     private var reads = 0
     private var writes: [String] = []
+    private let holdPong: Bool
+    private var pong: (@Sendable ((any Error)?) -> Void)?
+
+    init(holdPong: Bool = false) {
+        self.holdPong = holdPong
+    }
+
+    var pongPending: Bool {
+        self.lock.withLock { self.pong != nil }
+    }
+
+    func completePong() {
+        let callback = self.lock.withLock {
+            defer { self.pong = nil }
+            return self.pong
+        }
+        callback?(nil)
+    }
+
     var receiveCount: Int {
         self.lock.withLock { self.reads }
     }
@@ -102,16 +176,16 @@ private final class RelaySocket: WebSocketTasking, @unchecked Sendable {
     }
 
     func sendPing(pongReceiveHandler: @escaping @Sendable ((any Error)?) -> Void) {
-        pongReceiveHandler(nil)
+        if self.holdPong { self.lock.withLock { self.pong = pongReceiveHandler } } else { pongReceiveHandler(nil) }
     }
 
     func receive() async throws -> URLSessionWebSocketTask.Message {
         try await withCheckedThrowingContinuation { continuation in
             self.lock.withLock {
                 self.reads += 1
-                if self.closed { continuation.resume(throwing: URLError(.cancelled)) }
-                else if !self.buffered.isEmpty { continuation.resume(returning: self.buffered.removeFirst()) }
-                else { self.pending = continuation }
+                if self.closed { continuation.resume(throwing: URLError(.cancelled)) } else if !self.buffered.isEmpty {
+                    continuation.resume(returning: self.buffered.removeFirst())
+                } else { self.pending = continuation }
             }
         }
     }
@@ -128,5 +202,34 @@ private final class RelaySocket: WebSocketTasking, @unchecked Sendable {
                 pending.resume(returning: message)
             } else { self.buffered.append(message) }
         }
+    }
+}
+
+private final class RelayWrites: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [(Data, SidecarWriteQueue.Lane)] = []
+    var values: [(Data, SidecarWriteQueue.Lane)] {
+        self.lock.withLock { self.stored }
+    }
+
+    func append(_ data: Data, lane: SidecarWriteQueue.Lane) {
+        self.lock.withLock { self.stored.append((data, lane)) }
+    }
+
+    func types() throws -> [String] {
+        try self.values
+            .map { try #require((JSONSerialization.jsonObject(with: $0.0) as? [String: Any])?["type"] as? String) }
+    }
+
+    func waitForCount(_ count: Int) async throws {
+        try await waitForCondition { self.values.count >= count }
+    }
+}
+
+private func waitForCondition(_ condition: () -> Bool) async throws {
+    let deadline = ContinuousClock.now + .seconds(1)
+    while !condition() {
+        guard ContinuousClock.now < deadline else { throw URLError(.timedOut) }
+        try await Task.sleep(for: .milliseconds(5))
     }
 }
