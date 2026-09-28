@@ -136,6 +136,118 @@ test("scope search reaches beyond 200 sessions and four agents with bounded matc
   });
 });
 
+test.each(["matched", "excluded"] as const)(
+  "scope search survives %s session updates during every transcript read",
+  async (updatedSession) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      try {
+        const owner = ensureProfileForEmail("busy-search@example.test").id;
+        const query = "we have a nasty bug where";
+        const key = await seed("main", "target", owner, query);
+        const excludedKey = await seed("main", "subagent:busy", owner, "Background activity");
+        const updatedKey = updatedSession === "matched" ? key : excludedKey;
+        const context = requestContext({ agents: { list: [{ id: "main", default: true }] } });
+        await initializeSessionReadContext(context);
+        const projection = expectDefined(getSessionRowProjection(context), "search projection");
+        await projection.ensureMaterialized();
+        const generation = projection.capture({ agentId: "main", key: updatedKey })?.generation;
+        const read = transcriptSearch.searchSessionTranscripts;
+        let updates = 0;
+        const spy = vi
+          .spyOn(transcriptSearch, "searchSessionTranscripts")
+          .mockImplementation(async (...args) => {
+            const result = await read(...args);
+            await upsertSessionEntryCore(
+              { agentId: "main", sessionKey: updatedKey },
+              { displayName: "Updated title", totalTokens: ++updates },
+            );
+            expect(projection.needsMaterialization).toBe(true);
+            expect(projection.capture({ agentId: "main", key: updatedKey })?.generation).toBe(
+              generation,
+            );
+            return result;
+          });
+        const result = await search(context, identifiedClient(owner), {
+          query,
+          scope: paletteScope,
+        });
+        expect(result.ok, result.error?.message).toBe(true);
+        expect(result.payload).toMatchObject({
+          results: [{ sessionKey: key, snippet: query }],
+          sessions: [
+            { key, displayName: updatedSession === "matched" ? "Updated title" : "target" },
+          ],
+        });
+        expect(result.payload?.results).toHaveLength(1);
+        expect(spy).toHaveBeenCalledOnce();
+      } finally {
+        await disposeSessionReadContexts();
+      }
+    });
+  },
+);
+
+test.each(["membership", "lifecycle", "refresh"] as const)(
+  "scope search still fails honestly when %s keeps changing during reads",
+  async (change) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      try {
+        const owner = ensureProfileForEmail("changing-search@example.test").id;
+        const key = await seed("main", "target", owner, "needle");
+        const context = requestContext({ agents: { list: [{ id: "main", default: true }] } });
+        await initializeSessionReadContext(context);
+        const projection = expectDefined(getSessionRowProjection(context), "search projection");
+        const ensureMaterialized = projection.ensureMaterialized;
+        const refresh = vi.spyOn(projection, "ensureMaterialized");
+        let updates = 0;
+        const update = () =>
+          upsertSessionEntryCore({ agentId: "main", sessionKey: key }, { totalTokens: ++updates });
+        const read = transcriptSearch.searchSessionTranscripts;
+        let changes = 0;
+        const spy = vi
+          .spyOn(transcriptSearch, "searchSessionTranscripts")
+          .mockImplementation(async (...args) => {
+            const result = await read(...args);
+            changes++;
+            if (change === "membership") {
+              await seed("main", "added-" + changes, owner, "needle");
+            } else if (change === "refresh") {
+              await update();
+              // Publish new dirty work after the joined drain settles, before its caller resumes.
+              refresh.mockImplementationOnce(async () => {
+                await ensureMaterialized();
+                await update();
+                expect(projection.needsMaterialization).toBe(true);
+              });
+            } else {
+              await replaceSessionEntry(
+                { agentId: "main", sessionKey: key },
+                {
+                  sessionId: "replacement-" + changes,
+                  updatedAt: Date.now(),
+                  visibility: "shared",
+                },
+              );
+            }
+            return result;
+          });
+        expect(
+          await search(context, identifiedClient(owner), { query: "needle", scope: paletteScope }),
+        ).toMatchObject({
+          ok: false,
+          error: {
+            code: "UNAVAILABLE",
+            message: "Session search scope changed while reading; retry the request",
+          },
+        });
+        expect(spy).toHaveBeenCalledTimes(2);
+      } finally {
+        await disposeSessionReadContexts();
+      }
+    });
+  },
+);
+
 test("scope authorizes and applies membership before the hit limit, and empty scope never widens", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     try {

@@ -115,6 +115,11 @@ export async function searchProjectedSessionTranscripts(params: {
         ),
       })),
     );
+    // Display rows can become dirty during the worker read without changing its scope.
+    // Join one refresh before comparing membership; newer dirty work still spends a retry.
+    if (projection.needsMaterialization) {
+      await projection.ensureMaterialized();
+    }
     if (getSessionRowProjection(params.context) !== projection) {
       throw new Error("Session search owner changed while reading; retry the request");
     }
