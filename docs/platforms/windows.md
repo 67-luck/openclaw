@@ -231,6 +231,23 @@ openclaw onboard --non-interactive --accept-risk --skip-health
 openclaw gateway run
 ```
 
+### Updating from 2026.9.4
+
+The published 2026.9.4 Windows updater retains an old database reader in its
+service handoff. A target that migrates shared state beyond schema 17 can make
+that callback fail after activation. Candidate Doctor's CLI preflight refuses this
+migration during a running 9.4 update whose drivers have not been confirmed stopped. During the package
+candidate rehearsal, this refusal happens before replacing the installed
+package or stopping its Gateway. It does not complete the automatic update.
+
+Wait for the updater to exit and review its result. To upgrade, create a
+[verified backup](/install/updating/rollback-and-recovery#before-updating-create-a-verified-backup)
+and use the existing [manual package-manager procedure](/install/updating/update-methods#alternative-manual-npm-pnpm-or-bun)
+from an independent shell. Keep the original service account, package prefix,
+profile, and state/config overrides. Stop the Gateway through its owner before
+replacing the package, run the newly installed Doctor, then start and verify the
+Gateway. Do not lower schema markers or run an older build against migrated data.
+
 ## WSL2 Gateway
 
 WSL2 remains the most Linux-compatible Gateway runtime on Windows. Windows

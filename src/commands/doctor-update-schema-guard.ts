@@ -7,6 +7,7 @@ import { exitCliAfterOutput } from "../cli/one-shot-exit.js";
 import { resolveStateDir } from "../config/paths.js";
 import {
   clearNodeSqliteKyselyCacheForDatabase,
+  executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
@@ -15,6 +16,7 @@ import { prepareSqliteReadOnlyLocation } from "../infra/sqlite-snapshot-source.j
 import type { UpdateDoctorWriteAuthority } from "../infra/update-doctor-result.js";
 import { POST_CORE_UPDATE_ENV } from "../infra/update-post-core-context.js";
 import {
+  inspectUpdateRunDriver,
   readUpdateRunDriver,
   sameUpdateRunDriver,
   type UpdateRunDriver,
@@ -46,6 +48,7 @@ type DrivingUpdater = {
   canDeferStateSchema: boolean;
   earlyDoctorRunning: boolean;
   postCoreStarted: boolean;
+  requiresReadableSharedContent?: true;
 };
 
 // Unknown file IDs cannot prove that a recovery image covers the pending live mutation.
@@ -53,7 +56,9 @@ function sameSnapshotFile(left: Pick<Stats, "dev" | "ino">, right: Pick<Stats, "
   return left.dev !== 0 && left.ino !== 0 && left.dev === right.dev && left.ino === right.ino;
 }
 
-async function readDrivingUpdater(): Promise<DrivingUpdater | undefined> {
+async function readDrivingUpdater(
+  sharedContentUpgrade = false,
+): Promise<DrivingUpdater | undefined> {
   // The runtime ledger reader consults quarantine state. This diagnostic must
   // not open any live database, including a quarantine store needing recovery.
   const snapshot = await prepareSqliteReadOnlyLocation(resolveOpenClawStateSqlitePath(), {
@@ -64,6 +69,56 @@ async function readDrivingUpdater(): Promise<DrivingUpdater | undefined> {
     let closeSchemaReadAdmission: (() => void) | undefined;
     try {
       closeSchemaReadAdmission = openDoctorStateSchemaReadAdmission(database);
+      if (
+        sharedContentUpgrade &&
+        process.platform === "win32" &&
+        tableExists(database, "update_runs")
+      ) {
+        const rows = executeSqliteQuerySync(
+          database,
+          getNodeSqliteKysely<Pick<DB, "update_runs">>(database)
+            .selectFrom("update_runs")
+            .select(["run_id", "before_json", "origin_json", "steps_json"])
+            .where("status", "=", "running")
+            .orderBy("run_id"),
+        ).rows;
+        for (const row of rows) {
+          const before = UpdateRunRecordSchema.shape.before.safeParse(
+            safeParseJson(row.before_json),
+          );
+          if (!before.success || before.data.version !== "2026.9.4") {
+            continue;
+          }
+          const origin = UpdateRunRecordSchema.shape.origin.safeParse(
+            safeParseJson(row.origin_json),
+          );
+          const drivers = origin.success
+            ? [
+                ...(origin.data.driver ? [origin.data.driver] : []),
+                ...(origin.data.previousDrivers ?? []),
+              ]
+            : [];
+          const steps = UpdateRunRecordSchema.shape.steps.safeParse(safeParseJson(row.steps_json));
+          if (
+            steps.success &&
+            !steps.data.some((step) => step.step === "driver:identity-unavailable") &&
+            drivers.length > 0 &&
+            drivers.every((driver) => inspectUpdateRunDriver(driver) === "dead")
+          ) {
+            continue;
+          }
+          // 9.4 requires the candidate content version, then its retained Windows
+          // handoff callback reopens that content with the old schema-17 reader.
+          return {
+            runId: row.run_id,
+            version: before.data.version,
+            canDeferStateSchema: false,
+            earlyDoctorRunning: false,
+            postCoreStarted: false,
+            requiresReadableSharedContent: true,
+          };
+        }
+      }
       const blocker = readStateSchemaPublicationBlocker(database);
       if (!blocker) {
         return undefined;
@@ -109,6 +164,8 @@ export async function guardUpdateDoctorSchemaUpgrade(options: {
   schemas?: DoctorDatabasePreflight;
   runtime?: RuntimeEnv;
   json?: boolean;
+  /** Raw CLI bootstrap runs before a shipped parent can delegate Doctor. */
+  cliBootstrap?: true;
   postCoreSchemaRepair?: UpdateDoctorWriteAuthority["postCoreSchemaRepair"];
   onVerifiedBackup?: (snapshots: readonly BackupSqliteSnapshotFact[]) => void;
 }): Promise<DoctorDatabasePreflight | undefined> {
@@ -120,16 +177,23 @@ export async function guardUpdateDoctorSchemaUpgrade(options: {
     return schemas;
   }
   let updater: Awaited<ReturnType<typeof readDrivingUpdater>>;
+  const sharedContentUpgrade =
+    options.cliBootstrap === true &&
+    schemas.pendingMigrations.some(
+      (database) => database.kind === "state" && database.supportedVersion > 17,
+    );
   try {
-    updater = await readDrivingUpdater();
+    updater = await readDrivingUpdater(sharedContentUpgrade);
   } catch {
     // A missing or unreadable run cannot prove that the driver writes the ledger.
   }
   if (!updater) {
     return schemas;
   }
-  const blockedMigrations = schemas.pendingMigrations.filter(
-    (database) => database.kind === "agent" || !updater.canDeferStateSchema,
+  const blockedMigrations = schemas.pendingMigrations.filter((database) =>
+    updater.requiresReadableSharedContent
+      ? database.kind === "state" && database.supportedVersion > 17
+      : database.kind === "agent" || !updater.canDeferStateSchema,
   );
   if (blockedMigrations.length === 0) {
     return schemas;
@@ -317,7 +381,7 @@ export async function guardUpdateDoctorSchemaUpgrade(options: {
 export async function preflightUpdateDoctorCli(options: { json?: boolean }) {
   // Pin the invoking parent before schema admission can yield or reparent us.
   const parent = readUpdateRunDriver(process.ppid);
-  const schemas = await guardUpdateDoctorSchemaUpgrade(options);
+  const schemas = await guardUpdateDoctorSchemaUpgrade({ ...options, cliBootstrap: true });
   if (schemas?.updateSchemaRehearsal) {
     await rehearseDeferredUpdateDoctorSchemaForParent(schemas, defaultRuntime, parent);
     // The existing one-shot owner joins cleanup and drains the warning before exit.
