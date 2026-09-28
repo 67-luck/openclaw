@@ -1,4 +1,5 @@
 .sidebar-zone-entry {
+  position: relative;
   display: flex;
   align-items: center;
 }
@@ -40,10 +41,6 @@
    screen-reader path: its trigger stays in the accessibility tree, takes no row
    space, and only appears while the row has keyboard focus (same recipe as
    .sr-only). wa-dropdown is display: contents, so the trigger carries the box. */
-.sidebar-zone-entry {
-  position: relative;
-}
-
 .sidebar-reorder-menu--entry .sidebar-reorder-trigger {
   position: absolute;
   inset-block-start: calc(50% - 12px);
