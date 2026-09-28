@@ -245,6 +245,8 @@ describe("listGatewayMethods", () => {
       "cron.history",
       "presence.activity",
       "presence.query",
+      "users.merge",
+      "gateway.stop.request",
       "plugin.approval.reportNativeDelivery",
     ];
     expect(listGatewayMethods().slice(-expectedSuffix.length)).toEqual(expectedSuffix);
@@ -314,6 +316,8 @@ describe("listGatewayMethods", () => {
       "cron.history",
       "presence.activity",
       "presence.query",
+      "users.merge",
+      "gateway.stop.request",
       "plugin.approval.reportNativeDelivery",
     ]);
   });
@@ -511,6 +515,8 @@ describe("listGatewayMethods", () => {
       "cron.history",
       "presence.activity",
       "presence.query",
+      "users.merge",
+      "gateway.stop.request",
       "plugin.approval.reportNativeDelivery",
     ];
     expect(coreMethods.slice(-expectedCoreSuffix.length)).toEqual(expectedCoreSuffix);
