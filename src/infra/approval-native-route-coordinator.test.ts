@@ -84,21 +84,56 @@ function approverDm(to: string) {
 
 describe("plugin approval requester outcome", () => {
   it.each([
-    ["denied", "was denied"],
-    ["expired", "timed out"],
-  ] as const)("reports a %s DM-only approval once to its exact origin", async (status, wording) => {
+    {
+      channel: "slack",
+      label: "Slack",
+      to: "channel:C123",
+      accountId: "work",
+      threadId: "1712345678.123456",
+      status: "denied",
+      wording: "was denied",
+    },
+    {
+      channel: "slack",
+      label: "Slack",
+      to: "channel:C123",
+      accountId: "work",
+      threadId: "1712345678.123456",
+      status: "expired",
+      wording: "timed out",
+    },
+    {
+      channel: "telegram",
+      label: "Telegram",
+      to: "chat:123",
+      accountId: "default",
+      threadId: undefined,
+      status: "denied",
+      wording: "was denied",
+    },
+  ] as const)("reports a $status $channel DM-only approval to its exact origin", async (route) => {
     const coordinator = createApprovalNativeRouteCoordinator();
     const requestGateway = createGatewayRequestMock();
     const reporter = coordinator.createReporter(
       reporterOptions({
         handledKinds: new Set(["plugin"]),
-        channel: "slack",
-        channelLabel: "Slack",
-        accountId: "work",
+        channel: route.channel,
+        channelLabel: route.label,
+        accountId: route.accountId,
         requestGateway,
       }),
     );
-    const request = createPluginRequest(`plugin:${status}`);
+    const baseRequest = createPluginRequest(`plugin:${route.channel}-${route.status}`);
+    const request: PluginApprovalRequest = {
+      ...baseRequest,
+      request: {
+        ...baseRequest.request,
+        turnSourceChannel: route.channel,
+        turnSourceTo: route.to,
+        turnSourceAccountId: route.accountId,
+        turnSourceThreadId: route.threadId,
+      },
+    };
     reporter.start();
     reporter.selectRequest({ approvalKind: "plugin", request });
     await reporter.reportDelivery({
@@ -106,7 +141,7 @@ describe("plugin approval requester outcome", () => {
       request,
       deliveryPlan: {
         targets: [approverDm("user:reviewer")],
-        originTarget: { to: "channel:C123", threadId: "1712345678.123456" },
+        originTarget: { to: route.to, threadId: route.threadId },
         notifyOriginWhenDmOnly: true,
       },
       deliveredTargets: [approverDm("user:reviewer")],
@@ -114,19 +149,19 @@ describe("plugin approval requester outcome", () => {
     expect(requestGateway.mock.calls[0]?.[2]?.liveOnlyWhenCurrent()).toBe(true);
     // The channel's own card expiry/settlement must not retire the Gateway outcome route.
     reporter.completeRequest(request.id);
-    await coordinator.publishPluginTerminal({ approvalId: request.id, status });
-    await coordinator.publishPluginTerminal({ approvalId: request.id, status });
+    await coordinator.publishPluginTerminal({ approvalId: request.id, status: route.status });
+    await coordinator.publishPluginTerminal({ approvalId: request.id, status: route.status });
 
     expect(requestGateway).toHaveBeenCalledTimes(2);
     expect(requestGateway).toHaveBeenNthCalledWith(
       1,
       "send",
       {
-        channel: "slack",
-        to: "channel:C123",
-        accountId: "work",
-        threadId: "1712345678.123456",
-        message: `Approval ${request.id} required. I sent the approval request to Slack DMs, not this chat.`,
+        channel: route.channel,
+        to: route.to,
+        accountId: route.accountId,
+        threadId: route.threadId,
+        message: `Approval ${request.id} required. I sent the approval request to ${route.label} DMs, not this chat.`,
         idempotencyKey: `approval-route-notice:${request.id}`,
       },
       { liveOnlyWhenCurrent: expect.any(Function), approvalRequest: request },
@@ -135,11 +170,11 @@ describe("plugin approval requester outcome", () => {
     expect(requestGateway).toHaveBeenLastCalledWith(
       "send",
       {
-        channel: "slack",
-        to: "channel:C123",
-        accountId: "work",
-        threadId: "1712345678.123456",
-        message: `Approval ${request.id} ${wording}. The requested action did not run.`,
+        channel: route.channel,
+        to: route.to,
+        accountId: route.accountId,
+        threadId: route.threadId,
+        message: `Approval ${request.id} ${route.wording}. The requested action did not run.`,
         idempotencyKey: `approval-terminal-notice:${request.id}`,
       },
       { liveOnlyWhenCurrent: expect.any(Function), approvalRequest: request },
