@@ -1,5 +1,5 @@
 import type { ChatPendingInputsPage } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
-import { sameSelfUser } from "../../app/user-profile.ts";
+import { sameSelfUserIdentity } from "../../app/user-profile.ts";
 import { resolveUiSelectedSessionAgentId } from "../../lib/sessions/session-key.ts";
 import {
   resolveCappedMessageId,
@@ -26,15 +26,12 @@ type InspectionScope = {
   sessionKey: string;
   sessionId: string | null;
   agentId: string | undefined;
-  viewer: string;
+  viewer: ChatState["selfUser"];
   signal: AbortSignal | undefined;
   inspections: Map<string, Inspection>;
 };
 const scopes = new WeakMap<ChatState, InspectionScope>();
 
-function viewerKey(state: ChatState) {
-  return JSON.stringify([state.selfUser?.id, state.selfUser?.identity]);
-}
 function ownsScope(state: ChatState, scope: InspectionScope) {
   return (
     scopes.get(state) === scope &&
@@ -43,7 +40,7 @@ function ownsScope(state: ChatState, scope: InspectionScope) {
     state.sessionKey === scope.sessionKey &&
     (state.currentSessionId ?? null) === scope.sessionId &&
     resolveUiSelectedSessionAgentId(state) === scope.agentId &&
-    viewerKey(state) === scope.viewer &&
+    sameSelfUserIdentity(state.selfUser, scope.viewer) &&
     !scope.signal?.aborted
   );
 }
@@ -88,7 +85,7 @@ export function createChatSavedInputs(props: ChatProps) {
     !page ||
     page.pageClient !== state.client ||
     page.pageEpoch !== state.connectionEpoch ||
-    !sameSelfUser(page.pageViewer, state.selfUser) ||
+    !sameSelfUserIdentity(page.pageViewer, state.selfUser) ||
     props.readSignal?.aborted ||
     (!scope && !state.connected)
   ) {
@@ -101,7 +98,7 @@ export function createChatSavedInputs(props: ChatProps) {
       sessionKey: state.sessionKey,
       sessionId: state.currentSessionId ?? null,
       agentId: resolveUiSelectedSessionAgentId(state),
-      viewer: viewerKey(state),
+      viewer: state.selfUser,
       signal: props.readSignal,
       inspections: new Map(),
     };
@@ -117,7 +114,7 @@ export function createChatSavedInputs(props: ChatProps) {
   const current = () =>
     ownsScope(state, owner) &&
     getChatPendingInputs(state) === page &&
-    sameSelfUser(page.pageViewer, state.selfUser) &&
+    sameSelfUserIdentity(page.pageViewer, state.selfUser) &&
     getChatPendingInputs(state)?.pageClient === owner.client &&
     getChatPendingInputs(state)?.pageEpoch === owner.epoch;
   const requestUpdate = props.onRequestUpdate ?? (() => state.requestUpdate?.());

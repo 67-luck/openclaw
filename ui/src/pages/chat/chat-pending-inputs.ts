@@ -6,7 +6,7 @@ import type {
   ChatInputReceipts,
   ChatPendingInputsPage,
 } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
-import { sameSelfUser } from "../../app/user-profile.ts";
+import { sameSelfUserIdentity } from "../../app/user-profile.ts";
 import { t } from "../../i18n/index.ts";
 import type { ChatItem, ChatQueueItem, ChatQueueDisplayItem } from "../../lib/chat/chat-types.ts";
 import { findChatSubmissionMessage } from "../../lib/chat/history-message-identity.ts";
@@ -300,7 +300,7 @@ function ownsPendingInputRequest(
     getChatPendingInputs(state) === view &&
     view.request === request &&
     state.client === request.client &&
-    sameSelfUser(state.selfUser, request.viewer) &&
+    sameSelfUserIdentity(state.selfUser, request.viewer) &&
     state.connected &&
     state.connectionEpoch === request.connectionEpoch
   );

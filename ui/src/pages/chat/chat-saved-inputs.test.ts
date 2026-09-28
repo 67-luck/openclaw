@@ -52,6 +52,20 @@ function fixture() {
 afterEach(() => resetThreadPresentation("saved-test"));
 
 describe("pane-local saved input inspection", () => {
+  it("keeps an authenticated viewer's saved read across cosmetic profile changes", async () => {
+    const { host, props, deferred } = fixture();
+    host.selfUser = { id: "viewer", name: "Before", avatarUrl: "/before.png" };
+    applyChatPendingInputs(host, { items: [input], total: 1 });
+    const saved = createChatSavedInputs(props)!;
+    const loading = saved.onToggle(input, true);
+    host.selfUser = { ...host.selfUser, name: "After", avatarUrl: "/after.png" };
+    deferred.resolve(full);
+    await loading;
+    const refreshed = createChatSavedInputs(props);
+    expect(refreshed?.items).toHaveLength(1);
+    expect(refreshed?.inspections.get(input.id)?.state?.status).toBe("loaded");
+    expect(host.request).toHaveBeenCalledOnce();
+  });
   it.each(["input ID", "run ID"] as const)(
     "lets active custody supersede a stale saved copy by %s",
     async (correlation) => {
