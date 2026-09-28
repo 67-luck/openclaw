@@ -47,6 +47,21 @@ function selectedFiles(shards: ReturnType<typeof createChangedNodeTestShards>) {
   );
 }
 
+it("keeps the hybrid hourly plan within the main-tier cap", () => {
+  const hourly = createNodeTestShardBundles({
+    runnerBackend: "hybrid",
+    compactMode: "pull-request",
+    compactNodeJobCap: 77,
+    includeProofTests: true,
+    includeReleaseOnlyToolingShards: true,
+    includePrExemptRuntimeTests: true,
+    includeReleaseOnlyRuntimeTests: false,
+    includeReleaseOnlyPluginShards: false,
+  });
+  expect(hourly.filter((job) => !job.requiresDist).length).toBeLessThanOrEqual(77);
+  expect(hourly.length).toBeLessThanOrEqual(79);
+});
+
 function createPrExemptCensus() {
   const prExemptFiles = listPrExemptRuntimeTestFiles();
   expect(prExemptFiles.length).toBeGreaterThan(0);
@@ -256,6 +271,7 @@ it("retains one canonical owner for every PR-exempt file in hourly plans within 
     createUiTestShardGroups({ includeReleaseOnlyTests: false }),
   );
   expect(hourly.filter((job) => !job.requiresDist).length).toBeLessThanOrEqual(77);
+  expect(hourly.length).toBeLessThanOrEqual(79);
   const hourlyOwners = indexOwners([
     ...hourly.flatMap((job) => job.groups),
     ...retainedExtensionGroups,
