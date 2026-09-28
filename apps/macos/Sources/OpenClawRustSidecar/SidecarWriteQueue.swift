@@ -2,9 +2,39 @@ import Foundation
 import OpenClawKit
 
 /// Bounds admitted payload bytes separately from the original messages held by waiting callers.
-/// At most 64 application writes, one acknowledged relay, and 64 small controls retain queue slots.
+/// Ordinary RPCs, native progress, and one-way deliveries each retain at most 64 writer slots.
+/// RPC leases outlive their writes until the ordered cancellation drains; controls cannot be
+/// multiplied by repeatedly filling the pipe while the helper is stalled.
+/// The 192 waiting/admitted callers can retain about 4.69 GiB at 25 MiB each, in addition
+/// to prepared/transport copies. The 64 MiB admitted budget is not a process memory cap.
 final class SidecarWriteQueue: @unchecked Sendable {
-    enum Lane: Sendable { case application, transport, control }
+    enum Lane: Sendable {
+        case application, progress, delivery, transport, cancellation, admission, keepalive, receipt
+
+        var isControl: Bool {
+            switch self {
+            case .cancellation, .admission, .keepalive, .receipt: true
+            default: false
+            }
+        }
+
+        var countLimit: Int {
+            switch self {
+            case .transport, .receipt: 1
+            case .cancellation: 128 // One reserved cancellation per ordinary/progress RPC lease.
+            default: 64
+            }
+        }
+    }
+
+    private final class Lease: @unchecked Sendable {
+        let lane: Lane
+        var released = false
+        init(_ lane: Lane) {
+            self.lane = lane
+        }
+    }
+
     typealias Prepared = (data: Data, cancellation: Data?)
 
     private final class Request: @unchecked Sendable {
@@ -18,6 +48,8 @@ final class SidecarWriteQueue: @unchecked Sendable {
         var continuation: CheckedContinuation<Void, Error>?
         var admitted = false
         var cancelled = false
+        var lease: Lease?
+        var releasesLease = true
 
         init(
             data: Data,
@@ -45,6 +77,7 @@ final class SidecarWriteQueue: @unchecked Sendable {
     private var waiting: [UUID] = []
     private var payloadBytes = 0
     private var controlBytes = 0
+    private var leases: [Lane: Int] = [:]
 
     func enqueue(
         _ data: Data,
@@ -64,15 +97,19 @@ final class SidecarWriteQueue: @unchecked Sendable {
             continuation: continuation,
             prepare: prepare,
             write: write)
+        self.register(request, failed: failed)
+    }
+
+    private func register(_ request: Request, failed: @escaping @Sendable (Error) -> Void) {
         let register = {
+            let lane = request.lane
             self.lock.lock()
             let count = self.requests.values.filter { $0.lane == lane }.count
-            let limit = lane == .transport ? 1 : 64
-            let byteLimit = lane == .control ? 64 * 1024 : 64 * 1024 * 1024
-            guard self.failure == nil, count < limit, request.chargedBytes <= byteLimit else {
+            let byteLimit = lane.isControl ? 64 * 1024 : 64 * 1024 * 1024
+            guard self.failure == nil, count < lane.countLimit, request.chargedBytes <= byteLimit else {
                 let error = self.failure ?? URLError(.dataLengthExceedsMaximum)
                 self.lock.unlock()
-                continuation?.resume(throwing: error)
+                request.continuation?.resume(throwing: error)
                 failed(error)
                 return
             }
@@ -82,10 +119,10 @@ final class SidecarWriteQueue: @unchecked Sendable {
             self.lock.unlock()
             self.schedule(ready, failed: failed)
         }
-        if let lifetime {
+        if let lifetime = request.lifetime {
             let id = request.id
             if !lifetime.performIfActive(register, onFinish: { self.cancelWaiting(id) }) {
-                continuation?.resume(throwing: CancellationError())
+                request.continuation?.resume(throwing: CancellationError())
             }
         } else { register() }
     }
@@ -94,22 +131,36 @@ final class SidecarWriteQueue: @unchecked Sendable {
         var ready: [Request] = []
         // A full application lane must not starve the one acknowledged native relay
         // message, or its receipts. Their bounded owners have separate count allowances.
-        for lane in [Lane.control, .transport, .application] {
-            if lane == .application, self.waiting.contains(where: { self.requests[$0]?.lane == .transport }) {
-                break
-            }
+        for lane in [
+            Lane.cancellation,
+            .admission,
+            .keepalive,
+            .receipt,
+            .transport,
+            .delivery,
+            .progress,
+            .application,
+        ] {
+            if !lane.isControl, lane != .transport,
+               self.waiting.contains(where: { self.requests[$0]?.lane == .transport }) { break }
             var blocked = false
             self.waiting.removeAll { id in
                 guard let request = self.requests[id] else { return true }
                 guard request.lane == lane, !blocked else { return false }
-                let control = lane == .control
+                let control = lane.isControl
                 let used = control ? self.controlBytes : self.payloadBytes
                 let limit = control ? 64 * 1024 : 64 * 1024 * 1024
-                guard used + request.chargedBytes <= limit else {
+                guard used + request.chargedBytes <= limit,
+                      request.lifetime == nil || self.leases[lane, default: 0] < 64
+                else {
                     blocked = true
                     return false
                 }
                 request.admitted = true
+                if request.lifetime != nil {
+                    request.lease = Lease(lane)
+                    self.leases[lane, default: 0] += 1
+                }
                 if control {
                     self.controlBytes += request.chargedBytes
                 } else {
@@ -151,13 +202,25 @@ final class SidecarWriteQueue: @unchecked Sendable {
                     if let lifetime = request.lifetime {
                         // The completion hook must retain only the tiny cancellation frame,
                         // not the original payload, prepared envelope, or request lifetime.
-                        let cancellation = prepared.cancellation
+                        guard let cancellation = prepared.cancellation, let lease = request.lease else {
+                            throw URLError(.cannotParseResponse)
+                        }
                         let write = request.write
                         let active = lifetime.performIfActive(send, onFinish: {
-                            guard let cancellation else { return }
-                            self.enqueue(cancellation, lane: .control, write: write, failed: failed)
+                            let control = Request(
+                                data: cancellation,
+                                lane: .cancellation,
+                                envelopeBytes: 0,
+                                lifetime: nil,
+                                continuation: nil,
+                                prepare: { ($0, nil) },
+                                write: write)
+                            control.lease = lease
+                            self.register(control, failed: failed)
                         })
-                        if !active { self.complete(request.id, error: CancellationError(), failed: failed) }
+                        if active { request.releasesLease = false } else {
+                            self.complete(request.id, error: CancellationError(), failed: failed)
+                        }
                     } else { send() }
                 } catch {
                     self.complete(request.id, error: error, failed: failed)
@@ -189,10 +252,14 @@ final class SidecarWriteQueue: @unchecked Sendable {
         guard let request = self.requests.removeValue(forKey: id) else { self.lock.unlock()
             return
         }
-        if request.lane == .control {
+        if request.lane.isControl {
             self.controlBytes -= request.chargedBytes
         } else {
             self.payloadBytes -= request.chargedBytes
+        }
+        if let lease = request.lease, request.releasesLease || error != nil, !lease.released {
+            lease.released = true
+            self.leases[lease.lane, default: 0] -= 1
         }
         let continuation = request.continuation
         request.continuation = nil
@@ -213,6 +280,7 @@ final class SidecarWriteQueue: @unchecked Sendable {
         self.waiting.removeAll()
         self.payloadBytes = 0
         self.controlBytes = 0
+        self.leases.removeAll()
         self.lock.unlock()
         for continuation in continuations {
             continuation.resume(throwing: error)

@@ -1438,7 +1438,8 @@ extension GatewayChannelActor {
                         cont.resume(throwing: CancellationError())
                         return
                     }
-                    var request = PendingRequest(continuation: cont)
+                    var request = PendingRequest(
+                        continuation: cont, transportLifetime: WebSocketRequestLifetime(method: method))
                     if let effectiveTimeout {
                         request.timeoutTask = Task { [weak self] in
                             guard let self else { return }

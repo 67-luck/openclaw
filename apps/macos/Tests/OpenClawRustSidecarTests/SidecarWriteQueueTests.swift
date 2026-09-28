@@ -29,7 +29,7 @@ struct SidecarWriteQueueTests {
         queue.enqueue(Data(repeating: 3, count: 34 * 1024 * 1024), lane: .transport, write: { _ in
             received.yield(3)
         }, failed: { _ in received.yield(-1) })
-        queue.enqueue(Data([4]), lane: .control, write: { _ in received.yield(4) }, failed: { _ in
+        queue.enqueue(Data([4]), lane: .receipt, write: { _ in received.yield(4) }, failed: { _ in
             received.yield(-1)
         })
         gate.signal()
@@ -96,7 +96,7 @@ struct SidecarWriteQueueTests {
         #expect(await iterator.next() == 1)
         #expect(await iterator.next() == 2)
         lifetime.finish()
-        queue.enqueue(Data([3]), lane: .control, write: { _ in received.yield(3) }, failed: { _ in received.yield(-1) })
+        queue.enqueue(Data([3]), lane: .receipt, write: { _ in received.yield(3) }, failed: { _ in received.yield(-1) })
         #expect(await iterator.next() == 3)
     }
 
@@ -160,5 +160,116 @@ struct SidecarWriteQueueTests {
         #expect(await waiting.value)
         // The first injected pipe write is still blocked: retirement cannot rely on its completion.
         gate.signal()
+    }
+}
+
+struct SidecarWriteQueueCapacityTests {
+    @Test func `RPC leases survive writes and reserve cancellation without blocking native delivery`() async throws {
+        let owner = SidecarWriteQueue()
+        let gate = DispatchSemaphore(value: 0)
+        let (events, output) = AsyncStream<String>.makeStream()
+        defer { gate.signal()
+            owner.close(URLError(.cancelled))
+            output.finish()
+        }
+        var active: [WebSocketRequestLifetime] = []
+        // Fully written requests still own helper slots. Both classes must retain their
+        // reservations until cancellation reaches the pipe, not merely until write returns.
+        for lane in [SidecarWriteQueue.Lane.application, .progress] {
+            for _ in 0..<64 {
+                let lifetime = WebSocketRequestLifetime()
+                active.append(lifetime)
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    owner.enqueue(
+                        Data([1]), lane: lane, lifetime: lifetime, continuation: continuation,
+                        prepare: { ($0, Data([2])) },
+                        write: { data in if data[0] == 2 { output.yield("cancel") } },
+                        failed: { _ in output.yield("failure") })
+                }
+            }
+        }
+        var waiting: [WebSocketRequestLifetime] = []
+        for lane in [SidecarWriteQueue.Lane.application, .progress] {
+            for _ in 0..<64 {
+                let lifetime = WebSocketRequestLifetime()
+                waiting.append(lifetime)
+                owner.enqueue(
+                    Data([3]), lane: lane, lifetime: lifetime,
+                    prepare: { ($0, Data([4])) }, write: { _ in output.yield("unexpected waiting RPC") },
+                    failed: { _ in output.yield("failure") })
+            }
+        }
+        // All ordinary/progress waiting counts are full. A native result must still start.
+        owner.enqueue(Data(repeating: 5, count: 25 * 1024 * 1024), lane: .delivery, write: { _ in
+            output.yield("result started")
+            gate.wait()
+        }, failed: { _ in output.yield("failure") })
+        var received = events.makeAsyncIterator()
+        #expect(await received.next() == "result started")
+        for lifetime in active + waiting {
+            lifetime.finish()
+        }
+        for lane in [SidecarWriteQueue.Lane.admission, .keepalive] {
+            for _ in 0..<64 {
+                owner.enqueue(Data([6]), lane: lane, write: { _ in output.yield("control") }, failed: { _ in
+                    output.yield("failure")
+                })
+            }
+        }
+        owner.enqueue(Data([7]), lane: .receipt, write: { _ in output.yield("receipt") }, failed: { _ in
+            output.yield("failure")
+        })
+        gate.signal()
+        var counts: [String: Int] = [:]
+        for _ in 0..<257 {
+            let event = try #require(await received.next())
+            counts[event, default: 0] += 1
+        }
+        #expect(counts == ["cancel": 128, "control": 128, "receipt": 1])
+        // The drained cancellation permits the next ordinary RPC on the same owner.
+        let reused = WebSocketRequestLifetime()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            owner.enqueue(
+                Data([8]), lane: .application, lifetime: reused, continuation: continuation,
+                prepare: { ($0, Data([9])) }, write: { _ in output.yield("reused") },
+                failed: { _ in output.yield("failure") })
+        }
+        #expect(await received.next() == "reused")
+        reused.finish()
+        #expect(await received.next() == "reused")
+    }
+
+    @Test(arguments: [false, true])
+    func `cancellation and retirement resume a request waiting for an RPC lease`(retire: Bool) async throws {
+        let owner = SidecarWriteQueue()
+        defer { owner.close(URLError(.cancelled)) }
+        for _ in 0..<64 {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                owner.enqueue(
+                    Data([1]), lane: .application, lifetime: WebSocketRequestLifetime(), continuation: continuation,
+                    prepare: { ($0, Data([2])) }, write: { _ in }, failed: { _ in })
+            }
+        }
+        let (events, output) = AsyncStream<Void>.makeStream()
+        defer { output.finish() }
+        let waitingLifetime = WebSocketRequestLifetime()
+        let waiting = Task {
+            do {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    owner.enqueue(
+                        Data([3]), lane: .application, lifetime: waitingLifetime, continuation: continuation,
+                        prepare: { ($0, Data([4])) }, write: { _ in Issue.record("Retired RPC reached the pipe") },
+                        failed: { _ in })
+                    output.yield(())
+                }
+                return false
+            } catch {
+                return retire ? (error as? URLError)?.code == .cancelled : error is CancellationError
+            }
+        }
+        var received = events.makeAsyncIterator()
+        _ = await received.next()
+        if retire { owner.close(URLError(.cancelled)) } else { waitingLifetime.finish() }
+        #expect(await waiting.value)
     }
 }

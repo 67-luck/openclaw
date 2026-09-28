@@ -109,7 +109,7 @@ final class NativeGatewayTransport: @unchecked Sendable {
                 self.lock.withLock { self.sending = false }
                 try await self.write(JSONSerialization.data(withJSONObject: [
                     "type": "transport-sent", "id": id, "ok": true,
-                ]), .control)
+                ]), .receipt)
             } catch { self.fail(error) }
         }
     }

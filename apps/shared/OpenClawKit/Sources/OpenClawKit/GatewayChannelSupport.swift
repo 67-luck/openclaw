@@ -47,7 +47,7 @@ extension GatewayChannelActor {
     struct PendingRequest {
         let continuation: CheckedContinuation<GatewayFrame, Error>
         var timeoutTask: Task<Void, Never>?
-        let transportLifetime = WebSocketRequestLifetime()
+        let transportLifetime: WebSocketRequestLifetime
     }
 
     enum ConnectChallengeError: Error {

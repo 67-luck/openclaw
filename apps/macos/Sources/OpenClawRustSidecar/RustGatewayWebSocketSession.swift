@@ -173,7 +173,8 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         try await withCheckedThrowingContinuation { continuation in
             self.writes.enqueue(
                 data,
-                lane: .application,
+                lane: lifetime == nil ? .delivery : lifetime?
+                    .method == "node.invoke.progress" ? .progress : .application,
                 envelopeBytes: prefix.count + 1,
                 lifetime: lifetime,
                 continuation: continuation,
@@ -186,7 +187,10 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
                         }
                     }
                     var cancellation: Data?
-                    if lifetime != nil {
+                    if let lifetime {
+                        guard lifetime.method == nil || lifetime.method == frame["method"] as? String else {
+                            throw URLError(.cannotParseResponse)
+                        }
                         guard let id = frame["id"] as? String else {
                             throw URLError(.cannotParseResponse)
                         }
@@ -211,7 +215,9 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
             return
         }
         Task {
-            do { try await self.write(["type": "ping", "id": id]) } catch { self.finish(error) }
+            do { try await self.write(
+                JSONSerialization.data(withJSONObject: ["type": "ping", "id": id]),
+                lane: .keepalive) } catch { self.finish(error) }
         }
     }
 
@@ -394,7 +400,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
             // The reader must keep draining transport receipts while the pipe writer is busy.
             try self.enqueueWrite(JSONSerialization.data(withJSONObject: [
                 "type": "admission", "id": id, "allowed": allowed,
-            ]))
+            ]), lane: .admission)
         case "pong":
             guard let id = message["id"] as? String else { throw URLError(.cannotParseResponse) }
             let callback = self.lock.withLock { self.pings.removeValue(forKey: id) }
@@ -497,10 +503,6 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         }
     }
 
-    private func write(_ value: [String: Any]) async throws {
-        try await self.write(JSONSerialization.data(withJSONObject: value), lane: .control)
-    }
-
     private func write(_ data: Data, lane: SidecarWriteQueue.Lane) async throws {
         try await withCheckedThrowingContinuation { continuation in
             self.enqueueWrite(data, lane: lane, continuation: continuation)
@@ -509,7 +511,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
 
     private func enqueueWrite(
         _ data: Data,
-        lane: SidecarWriteQueue.Lane = .control,
+        lane: SidecarWriteQueue.Lane,
         continuation: CheckedContinuation<Void, Error>? = nil)
     {
         self.writes.enqueue(

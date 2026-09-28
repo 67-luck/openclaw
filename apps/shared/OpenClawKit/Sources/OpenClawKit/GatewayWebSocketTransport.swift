@@ -18,7 +18,12 @@ public final class WebSocketRequestLifetime: @unchecked Sendable {
     private var finished = false
     private var onFinish: (@Sendable () -> Void)?
 
-    public init() {}
+    /// The request owner supplies the method so transports can reserve independent RPC budgets.
+    public let method: String?
+
+    public init(method: String? = nil) {
+        self.method = method
+    }
 
     // periphery:ignore - External transports use this to order send admission with cancellation.
     /// Enqueue the request while holding the same lock that orders its retirement.
