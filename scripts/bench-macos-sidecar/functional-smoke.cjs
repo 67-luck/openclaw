@@ -277,6 +277,23 @@ function deadline(p, deadlineLabel) {
         passed: true,
       });
     }
+    // Quotes, backslashes, and newlines expand twice across the serialized result
+    // envelope. Keep the wire below 25 MiB while checking the private worker contract.
+    const escapedText = String.fromCharCode(34, 92, 10).repeat(1024 * 1024);
+    invoke("escaped-result", "benchmark.echo", { text: escapedText });
+    const escapedResult = await until(() => results.get("escaped-result"), "escaped native result");
+    if (
+      !escapedResult.ok ||
+      typeof escapedResult.payloadJSON !== "string" ||
+      payload(escapedResult).text !== escapedText
+    ) {
+      throw new Error("native serialized result changed escaped JSON content");
+    }
+    results.delete("escaped-result");
+    record.checks.push({
+      scenario: "serialized native result preserves quotes, backslashes, and newlines",
+      passed: true,
+    });
     // Concurrent native completions must wait for the bounded IPC writer without
     // replacing a healthy connection. Pause reads to make byte pressure reproducible.
     const mediaSocket = ws;
