@@ -662,7 +662,9 @@ async function runShards({ entries, env, extraArgs, runner, evidenceId }: ShardB
   let completed = 0;
   const statuses: number[] = [];
   for (const [index, shard] of entries.entries()) {
-    if (isParentTerminationRequested()) break;
+    if (isParentTerminationRequested()) {
+      break;
+    }
     const targets = shard.args.slice(2);
     const boundedTargets =
       (shard.name.startsWith("core:") &&
@@ -689,7 +691,9 @@ async function runShards({ entries, env, extraArgs, runner, evidenceId }: ShardB
     });
     statuses.push(status);
     // Join the failed leaf before returning. Later --fix shards must not mutate files.
-    if (status !== 0) break;
+    if (status !== 0) {
+      break;
+    }
   }
   return { statuses, completed };
 }
