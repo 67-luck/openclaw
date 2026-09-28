@@ -214,3 +214,127 @@ describe("new-session CLI-agent model targets", () => {
     expect(container.querySelector('[data-chat-model-target="main-owner"]')).toBeNull();
   });
 });
+
+describe("native CLI target admission", () => {
+  function catalog(label: string, canStartTerminal: boolean) {
+    return {
+      catalogs: [
+        {
+          id: "anthropic",
+          label,
+          capabilities: { startTerminal: true },
+          hosts: [{ hostId: "gateway:local", label: "Gateway", canStartTerminal }],
+        },
+      ],
+    };
+  }
+
+  it("keeps the current selection when no host can start the chosen CLI", async () => {
+    const onSelect = vi.fn();
+    const { context, request } = contextWith(models, "openclaw", ["sessions.catalog.list"]);
+    let calls = 0;
+    request.mockImplementation((method: string) => {
+      if (method === "sessions.catalog.list") {
+        calls += 1;
+        return Promise.resolve(catalog("Claude Code", false));
+      }
+      return Promise.resolve({ models });
+    });
+    const control = new NewSessionModelControl(() => undefined, undefined, onSelect);
+
+    control.load(context, "main", true);
+    control.loadCatalogTargets(context, "main", true);
+    await vi.waitFor(() =>
+      expect(
+        renderControl(control, context).querySelector('[data-chat-model-target="anthropic"]'),
+      ).not.toBeNull(),
+    );
+
+    renderControl(control, context)
+      .querySelector<HTMLButtonElement>('[data-chat-model-target="anthropic"]')
+      ?.click();
+    await vi.waitFor(() => {
+      const row = renderControl(control, context).querySelector<HTMLButtonElement>(
+        '[data-chat-model-target="anthropic"]',
+      );
+      expect(row?.getAttribute("aria-label")).toContain("No native CLI is available");
+    });
+
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(calls).toBe(2);
+    expect(request.mock.calls.at(-1)?.[1]).toEqual({
+      agentId: "main",
+      catalogId: "anthropic",
+      limitPerHost: 1,
+    });
+  });
+
+  it("admits a target only after targeted capability validation succeeds", async () => {
+    const onSelect = vi.fn();
+    const { context, request } = contextWith(models, "openclaw", ["sessions.catalog.list"]);
+    request.mockImplementation((method: string) => {
+      if (method === "sessions.catalog.list") {
+        return Promise.resolve(catalog("Claude Code", true));
+      }
+      return Promise.resolve({ models });
+    });
+    const control = new NewSessionModelControl(() => undefined, undefined, onSelect);
+
+    control.load(context, "main", true);
+    control.loadCatalogTargets(context, "main", true);
+    await vi.waitFor(() =>
+      expect(
+        renderControl(control, context).querySelector('[data-chat-model-target="anthropic"]'),
+      ).not.toBeNull(),
+    );
+    renderControl(control, context)
+      .querySelector<HTMLButtonElement>('[data-chat-model-target="anthropic"]')
+      ?.click();
+
+    await vi.waitFor(() => expect(onSelect).toHaveBeenCalledExactlyOnceWith("anthropic"));
+    expect(
+      request.mock.calls.filter(([method]) => method === "sessions.catalog.list"),
+    ).toHaveLength(2);
+  });
+
+  it("shows a targeted admission failure and retries the same target", async () => {
+    const onSelect = vi.fn();
+    const { context, request } = contextWith(models, "openclaw", ["sessions.catalog.list"]);
+    let calls = 0;
+    request.mockImplementation((method: string) => {
+      if (method === "sessions.catalog.list") {
+        calls += 1;
+        return calls === 2
+          ? Promise.reject(new Error("target probe failed"))
+          : Promise.resolve(catalog("Claude Code", true));
+      }
+      return Promise.resolve({ models });
+    });
+    const control = new NewSessionModelControl(() => undefined, undefined, onSelect);
+
+    control.load(context, "main", true);
+    control.loadCatalogTargets(context, "main", true);
+    await vi.waitFor(() =>
+      expect(
+        renderControl(control, context).querySelector('[data-chat-model-target="anthropic"]'),
+      ).not.toBeNull(),
+    );
+
+    renderControl(control, context)
+      .querySelector<HTMLButtonElement>('[data-chat-model-target="anthropic"]')
+      ?.click();
+    await vi.waitFor(() => {
+      const row = renderControl(control, context).querySelector<HTMLButtonElement>(
+        '[data-chat-model-target="anthropic"]',
+      );
+      expect(row?.getAttribute("aria-label")).toContain("This session target is unavailable");
+    });
+    expect(onSelect).not.toHaveBeenCalled();
+
+    renderControl(control, context)
+      .querySelector<HTMLButtonElement>('[data-chat-model-target="anthropic"]')
+      ?.click();
+    await vi.waitFor(() => expect(onSelect).toHaveBeenCalledExactlyOnceWith("anthropic"));
+    expect(calls).toBe(3);
+  });
+});

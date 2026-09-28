@@ -19,7 +19,7 @@ import { requiresChatModelSetup } from "../chat/chat-model-setup.ts";
 import { renderChatModelAccountControl } from "../chat/components/chat-model-account-control.ts";
 import { renderChatModelControls } from "../chat/components/chat-model-controls.ts";
 import { navigateToModelProvider } from "../model-providers/navigation.ts";
-import { CatalogTargetDiscovery } from "./catalog-target.ts";
+import { admitCreateTarget, CatalogTargetDiscovery } from "./catalog-target.ts";
 import type { DraftCloudProfile } from "./discovery.ts";
 import {
   NewSessionModelSelection,
@@ -257,7 +257,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
     if (!client || !model) {
       return Promise.resolve(false);
     }
-    this.selectionGeneration += 1;
+    this.cancelCatalogSelection();
     this.restoringPreference = false;
     this.draftAccount = { authProfileId: account.authProfileId, provider: account.provider, model };
     const requestedScope = { agentId: this.agentId, authProfileId: account.authProfileId };
@@ -292,7 +292,13 @@ export class NewSessionModelControl extends NewSessionModelSelection {
     this.catalogTargets.retry(client, this.agentId);
   }
 
+  cancelCatalogSelection() {
+    this.selectionGeneration += 1;
+    this.catalogTargets.clearSelection();
+  }
+
   invalidate(resetSelection = false) {
+    this.cancelCatalogSelection();
     if (!resetSelection && this.metadataClient) {
       invalidateModelCatalogCache(this.metadataClient, this.metadataScope);
     }
@@ -370,7 +376,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
     const initialModel = options.initialModel;
     if (initialModel && initialModel !== this.initialModel) {
       this.resetSelection();
-      this.selectionGeneration += 1;
+      this.cancelCatalogSelection();
       this.initialModel = initialModel;
       this.initialModelPending = true;
     }
@@ -526,7 +532,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
       return;
     }
     // The durable scope includes URL intent. A later choice in that same draft wins on reload.
-    this.selectionGeneration += 1;
+    this.cancelCatalogSelection();
     this.initialModelPending = false;
     this.pendingPreference = selection;
     this.pendingSelectionGeneration = this.selectionGeneration;
@@ -613,7 +619,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
           onAutomatic: this.draftAccount
             ? () => {
                 if (ownsSelection()) {
-                  this.selectionGeneration += 1;
+                  this.cancelCatalogSelection();
                   this.clearDraftAccount();
                   this.load(options.context, options.agentId, true, { agent: options.agent });
                 }
@@ -637,7 +643,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
       sessionsResult: agentDefaultsAvailable ? sourceResult : null,
       stream: null,
       onModelSelect: (value, _sessionKey, agentRuntime) => {
-        this.selectionGeneration += 1;
+        this.cancelCatalogSelection();
         this.initialModelPending = false;
         this.restoringPreference = false;
         const selection = reconcileDraftModelSelection({
@@ -680,9 +686,24 @@ export class NewSessionModelControl extends NewSessionModelSelection {
         this.onDraftSelectionChange?.();
       },
       onModelPickerTargetSelect: (groupId, catalogId) => {
-        if (groupId === "cliAgents") {
-          this.onCatalogTargetSelect(catalogId);
+        if (groupId !== "cliAgents") {
+          return Promise.resolve(false);
         }
+        const generation = ++this.selectionGeneration;
+        return this.catalogTargets.select(
+          catalogId,
+          (id, isCurrent) =>
+            generation === this.selectionGeneration
+              ? admitCreateTarget(
+                  this.metadataClient,
+                  id,
+                  this.agentId,
+                  isCurrent,
+                  this.onCatalogTargetSelect,
+                )
+              : Promise.resolve(undefined),
+          () => generation === this.selectionGeneration,
+        );
       },
       onModelPickerTargetRetry: (groupId) => {
         if (groupId === "cliAgents") {
@@ -690,7 +711,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
         }
       },
       onThinkingSelect: (value) => {
-        this.selectionGeneration += 1;
+        this.cancelCatalogSelection();
         this.restoringPreference = false;
         this.thinkingLevel = value;
         this.markExplicitSelection();
@@ -698,7 +719,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
         this.onDraftSelectionChange?.();
       },
       onFastModeSelect: (value) => {
-        this.selectionGeneration += 1;
+        this.cancelCatalogSelection();
         this.restoringPreference = false;
         this.fastModeSelected = true;
         this.fastMode = normalizeChatFastModeInput(value);
@@ -706,7 +727,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
         this.notify();
       },
       onContextWindowSelect: (value) => {
-        this.selectionGeneration += 1;
+        this.cancelCatalogSelection();
         this.restoringPreference = false;
         this.contextWindow = value;
         this.notify();
