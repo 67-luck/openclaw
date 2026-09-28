@@ -23,7 +23,7 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-async function fixture() {
+async function fixture({ realMode = false } = {}) {
   const directory = await fs.realpath(dirs.make("config-observation-"));
   const p = (name: string) => path.join(directory, name);
   await fs.writeFile(p("openclaw.json"), "{}");
@@ -38,17 +38,21 @@ async function fixture() {
   });
   const sources: Array<{ subscription: WatchSubscription; options: WatchOptions }> = [];
   let installed: ((source: (typeof sources)[number]) => void) | undefined;
+  const ready = createDeferred();
   const watch = observation.watch;
   vi.spyOn(observation, "watch").mockImplementation((root, options) => {
-    // Qualify owner policy through real scans without depending on native events.
-    const subscription = watch(root, { ...options, mode: "poll", pollIntervalMs: 30_000 });
+    // Most policy cases use deterministic polling; backend selection keeps the actual options.
+    const subscription = watch(
+      root,
+      realMode ? options : { ...options, mode: "poll", pollIntervalMs: 30_000 },
+    );
+    void subscription.ready.catch(ready.reject);
     sources.push({ subscription, options });
     installed?.({ subscription, options });
     installed = undefined;
     return subscription;
   });
   const onChange = vi.fn();
-  const ready = createDeferred();
   const log = { warn: vi.fn(), error: vi.fn() };
   const adapter = createConfigFileAdapter({
     path: p("openclaw.json"),
@@ -176,7 +180,7 @@ describe("config file observation", () => {
       vi.stubEnv("CHOKIDAR_USEPOLLING", setting);
       vi.stubEnv("CHOKIDAR_INTERVAL", "250");
       const h = await fixture();
-      const initialMode = setting === undefined ? "auto" : setting === "1" ? "poll" : "events";
+      const initialMode = setting === "1" ? "poll" : "auto";
       expect(h.sources[0]!.options).toMatchObject({
         mode: initialMode,
         pollIntervalMs: 250,
@@ -205,6 +209,7 @@ describe("config file observation", () => {
         expect(current.options.mode).toBe(initialMode);
       }
       const fallback = setting === undefined ? h.nextSource() : undefined;
+      vi.stubEnv("CHOKIDAR_USEPOLLING", setting === undefined ? "false" : undefined);
       fail();
       await h.sources.at(-1)!.subscription.close();
       await vi.advanceTimersByTimeAsync(500);
@@ -222,6 +227,29 @@ describe("config file observation", () => {
       }
     },
   );
+
+  it("observes config with native watching disabled and an explicit legacy false override", async () => {
+    vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+    vi.stubEnv("CHOKIDAR_USEPOLLING", "false");
+    vi.stubEnv("CHOKIDAR_INTERVAL", undefined);
+    const h = await fixture({ realMode: true });
+    expect(h.sources).toHaveLength(1);
+    const subscription = h.sources[0]!.subscription;
+    expect(subscription.health()).toMatchObject({ state: "ready", mode: "poll" });
+    expect(h.onChange).not.toHaveBeenCalled();
+
+    await fs.writeFile(h.p("openclaw.json"), '{"changed":true}');
+    await h.reconcile();
+    await h.settle(4);
+    expect(h.onChange).not.toHaveBeenCalled();
+    await h.settle(1);
+    expect(h.onChange).toHaveBeenCalledOnce();
+    expect(h.log.warn).not.toHaveBeenCalled();
+    expect(h.log.error).not.toHaveBeenCalled();
+
+    await h.adapter.stop();
+    expect(subscription.health().state).toBe("closed");
+  });
 
   it("pins configured alias boundaries and the identity of admitted Roots", async () => {
     const directory = await fs.realpath(dirs.make("config-root-admission-"));

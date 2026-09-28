@@ -1,12 +1,7 @@
 /** Preserve operator polling overrides while letting fs-safe choose the native backend. */
-export function resolveFsObservationMode(
-  env: NodeJS.ProcessEnv = process.env,
-): "auto" | "events" | "poll" {
+export function resolveFsObservationMode(env: NodeJS.ProcessEnv = process.env): "auto" | "poll" {
   const value = env.CHOKIDAR_USEPOLLING?.toLowerCase();
-  if (value === undefined) {
-    return "auto";
-  }
-  return value && value !== "false" && value !== "0" ? "poll" : "events";
+  return value && value !== "false" && value !== "0" ? "poll" : "auto";
 }
 
 export function resolveFsObservationIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
