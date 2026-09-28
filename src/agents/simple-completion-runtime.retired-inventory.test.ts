@@ -26,6 +26,7 @@ import {
 } from "../plugins/test-helpers/cold-plugin-fixtures.js";
 import { createSyncSuiteTempRootTracker } from "../plugins/test-helpers/fs-fixtures.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import { acquireTestPortBlock } from "../test-utils/port-claims.js";
 import { clearRuntimeAuthProfileStoreSnapshots } from "./auth-profiles/runtime-snapshots.js";
 import { resetPreparedModelRuntimeSnapshotsForTest } from "./prepared-model-runtime.test-support.js";
 import {
@@ -51,6 +52,9 @@ it("admits a direct completion against the committed inventory from a retired ge
     fixture.runtimeSource,
     `module.exports = { id: ${JSON.stringify(fixture.pluginId)}, register(api) { api.registerProvider({ id: ${JSON.stringify(fixture.providerId)}, label: "Completion fixture", auth: [] }); } };`,
   );
+  await using resources = new AsyncDisposableStack();
+  const portClaim = await acquireTestPortBlock({ offsets: [0] });
+  resources.defer(portClaim.release);
   const requests: string[] = [];
   const server = createServer((request, response: ServerResponse) => {
     request.resume();
@@ -72,7 +76,7 @@ it("admits a direct completion against the committed inventory from a retired ge
     );
   });
   await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", resolve);
+    server.listen(portClaim.port, "127.0.0.1", resolve);
   });
   const address = server.address();
   if (!address || typeof address === "string") {
@@ -142,7 +146,6 @@ it("admits a direct completion against the committed inventory from a retired ge
               cfg,
               agentId: "main",
               modelRef: `${fixture.providerId}/completion-fixture-model`,
-              signal: AbortSignal.timeout(15_000),
             });
             if ("error" in acquired) {
               throw new Error(acquired.error);

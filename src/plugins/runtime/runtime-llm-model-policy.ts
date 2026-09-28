@@ -51,15 +51,7 @@ export function assertAllowedModelOverride(params: {
   authorityPolicy: RuntimeLlmPolicy | undefined;
   pluginPolicy: RuntimeLlmPolicy | undefined;
 }): void {
-  if (
-    params.authorityPolicy?.allowModelOverride !== true &&
-    params.pluginPolicy?.allowModelOverride !== true
-  ) {
-    throw completionError(
-      "LLM_COMPLETION_NOT_AUTHORIZED",
-      "Plugin LLM completion cannot override the target model.",
-    );
-  }
+  assertModelOverrideAuthorized(params);
   // Host and operator policy are independent trust boundaries. When both
   // configure a restriction, an override must satisfy their intersection.
   assertModelAllowed({
@@ -73,4 +65,20 @@ export function assertAllowedModelOverride(params: {
     policy: params.pluginPolicy,
     policyOwnerPluginId: params.pluginPolicyId,
   });
+}
+
+/** Capability permission is checked before model admission; target restrictions need its selection. */
+export function assertModelOverrideAuthorized(params: {
+  authorityPolicy: RuntimeLlmPolicy | undefined;
+  pluginPolicy: RuntimeLlmPolicy | undefined;
+}): void {
+  if (
+    params.authorityPolicy?.allowModelOverride !== true &&
+    params.pluginPolicy?.allowModelOverride !== true
+  ) {
+    throw completionError(
+      "LLM_COMPLETION_NOT_AUTHORIZED",
+      "Plugin LLM completion cannot override the target model.",
+    );
+  }
 }

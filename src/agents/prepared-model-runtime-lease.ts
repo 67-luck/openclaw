@@ -1,7 +1,10 @@
 /** Agent-run lease admission for lifecycle-owned prepared model runtimes. */
 import { createAbortError, racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { withPluginMetadataSnapshotScope } from "../plugins/current-plugin-metadata-snapshot.js";
-import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import {
+  projectPluginMetadataSnapshot,
+  resolvePluginMetadataSnapshot,
+} from "../plugins/plugin-metadata-snapshot.js";
 import { isReservedSystemAgentId } from "../system-agent/agent-id.js";
 import { getPreparedModelRuntimeBorrowedSnapshot } from "./prepared-model-runtime-generation-scope.js";
 import { capturePreparedModelRuntimeCatalog } from "./prepared-model-runtime.capture.js";
@@ -21,6 +24,7 @@ import {
   type PreparedModelRuntimeReplacement,
   type PreparedModelRuntimeSnapshot,
 } from "./prepared-model-runtime.owner.js";
+import { prepareOwnedPluginMetadataSnapshotParams } from "./prepared-model-runtime.plugin-context.js";
 import {
   preparedPluginGenerationReusesBase,
   preparedPluginGenerationSupportsSelections,
@@ -205,6 +209,15 @@ export async function acquirePreparedModelRuntimeLeaseFromOwners(
           });
         },
         { trustConfigIdentity: true },
+      );
+      // Planning needs the admitted inventory; execution retains its selected view.
+      // Reuse the workspace owner's scope without rediscovery or changing generations.
+      pluginMetadataSnapshot = projectPluginMetadataSnapshot(
+        metadataSnapshot,
+        prepareOwnedPluginMetadataSnapshotParams(
+          input,
+          input.env ?? process.env,
+        ).pluginIdScope?.resolve({ index: metadataSnapshot.index }),
       );
     }
     key = ownerKey(input);

@@ -392,7 +392,7 @@ describe("runtime.llm.complete", () => {
     const message = caught instanceof Error ? caught.message : String(caught);
     expect(message).toContain('"openrouter/gpt-5.5"');
     expect(message).not.toContain("openrouter/openrouter/");
-    expect(hoisted.acquireSimpleCompletionModelForAgent).not.toHaveBeenCalled();
+    expect(hoisted.completeWithPreparedSimpleCompletionModel).not.toHaveBeenCalled();
   });
 
   it("keeps context-engine attribution and host-derived policy inside plugin runtime scope", async () => {
@@ -542,7 +542,7 @@ describe("runtime.llm.complete", () => {
     ).rejects.toThrow(
       'model override "openai/gpt-5.5" is not allowlisted for plugin "restricted-plugin"',
     );
-    expect(hoisted.acquireSimpleCompletionModelForAgent).not.toHaveBeenCalled();
+    expect(hoisted.completeWithPreparedSimpleCompletionModel).not.toHaveBeenCalled();
   });
 
   it("uses runtime-scoped config and the host preparation/dispatch path", async () => {
@@ -788,7 +788,7 @@ describe("runtime.llm.complete", () => {
         llm.complete({ messages: [{ role: "user", content: "Ping" }] }),
       ),
     ).rejects.toThrow('model "openai/gpt-5.5" is not allowlisted for completions');
-    expect(hoisted.acquireSimpleCompletionModelForAgent).not.toHaveBeenCalled();
+    expect(hoisted.completeWithPreparedSimpleCompletionModel).not.toHaveBeenCalled();
   });
 
   it("applies the completion model allowlist to explicit overrides too", async () => {
@@ -810,7 +810,7 @@ describe("runtime.llm.complete", () => {
         }),
       ),
     ).rejects.toThrow('model "openai/gpt-5.6" is not allowlisted for completions');
-    expect(hoisted.acquireSimpleCompletionModelForAgent).not.toHaveBeenCalled();
+    expect(hoisted.completeWithPreparedSimpleCompletionModel).not.toHaveBeenCalled();
   });
 
   it.each([[[]], [["not-a-canonical-model-ref"]]])(
@@ -826,7 +826,7 @@ describe("runtime.llm.complete", () => {
           llm.complete({ messages: [{ role: "user", content: "Ping" }] }),
         ),
       ).rejects.toThrow("completion model allowlist has no valid models");
-      expect(hoisted.acquireSimpleCompletionModelForAgent).not.toHaveBeenCalled();
+      expect(hoisted.completeWithPreparedSimpleCompletionModel).not.toHaveBeenCalled();
     },
   );
 

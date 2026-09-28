@@ -33,6 +33,7 @@ import {
 } from "./runtime-llm-isolated.js";
 import {
   assertAllowedModelOverride,
+  assertModelOverrideAuthorized,
   assertModelAllowed,
   type RuntimeLlmPolicy,
 } from "./runtime-llm-model-policy.js";
@@ -429,38 +430,28 @@ export function createRuntimeLlm(
       const requestedModelProfile = requestedModel
         ? normalizeOptionalString(splitTrailingAuthProfile(requestedModel).profile)
         : undefined;
-      const selection = resolveSimpleCompletionSelectionForAgent({
-        cfg,
-        agentId,
-        modelRef: requestedModel,
-      });
-      if (!selection) {
-        throw completionError("LLM_COMPLETION_FAILED", `No model configured for agent ${agentId}.`);
+      if (requestedModel) {
+        assertModelOverrideAuthorized({ authorityPolicy, pluginPolicy });
       }
-      const normalizedSelection = normalizeModelRef(selection.provider, selection.modelId);
-      assertCurrent();
-      source.assertModelAllowed(normalizedSelection);
-      // Host and operator policy are independent trust boundaries. A plugin operation
-      // can publish a replacement inventory that remaps the requested alias, so the
-      // same checks run against the target actually admitted, not only the target this
-      // request saw when it started.
+      // Model-target policy consumes the admitted selection, never a predecessor's alias.
       const assertCompletionTargetAllowed = (
         target: {
           provider: string;
           modelId: string;
         },
-        // The admitted target must be compared as the single-pass id the provider request
-        // uses. Re-applying inventory aliases here could authorize a name the dispatch does
-        // not use, so the final pass normalizes without manifest or runtime rewriting.
-        normalization?: { canonicalOnly?: boolean },
+        policyConfig: OpenClawConfig = cfg,
+        modelIdSource: "selected" | "input" = "selected",
       ): void => {
         const normalizedTarget = normalizeModelRef(
           target.provider,
           target.modelId,
-          normalization?.canonicalOnly
-            ? { allowManifestNormalization: false, allowPluginNormalization: false }
-            : undefined,
+          modelIdSource === "input"
+            ? undefined
+            : { allowManifestNormalization: false, allowPluginNormalization: false },
         );
+        assertCurrent();
+        source.assertModelAllowed(normalizedTarget);
+        const currentPluginPolicy = resolvePluginLlmPolicy(policyConfig, pluginPolicyId);
         const targetRef = modelKey(normalizedTarget.provider, normalizedTarget.model);
         assertModelAllowed({
           kind: "completion",
@@ -470,7 +461,7 @@ export function createRuntimeLlm(
         assertModelAllowed({
           kind: "completion",
           resolvedModelRef: targetRef,
-          policy: pluginPolicy,
+          policy: currentPluginPolicy,
           policyOwnerPluginId: pluginPolicyId,
         });
         if (requestedModel) {
@@ -478,17 +469,15 @@ export function createRuntimeLlm(
             resolvedModelRef: targetRef,
             pluginPolicyId,
             authorityPolicy,
-            pluginPolicy,
+            pluginPolicy: currentPluginPolicy,
           });
         }
       };
-      assertCompletionTargetAllowed(selection);
 
       const isolatedRequest = isIsolatedAgentRuntimeRequest(params);
       const executionProfile = isolatedRequest
         ? normalizeOptionalString(params.execution.authProfileId)
         : undefined;
-      const modelProfile = normalizeOptionalString(selection.profileId);
       if (executionProfile && requestedModelProfile && executionProfile !== requestedModelProfile) {
         throw completionError(
           "LLM_ISOLATED_INPUT_REJECTED",
@@ -497,6 +486,20 @@ export function createRuntimeLlm(
       }
 
       if (isolatedRequest) {
+        const selection = resolveSimpleCompletionSelectionForAgent({
+          cfg,
+          agentId,
+          modelRef: requestedModel,
+        });
+        if (!selection) {
+          throw completionError(
+            "LLM_COMPLETION_FAILED",
+            "No model configured for agent " + agentId + ".",
+          );
+        }
+        // Isolated runtimes retain their existing input-normalization contract.
+        assertCompletionTargetAllowed(selection, cfg, "input");
+        const modelProfile = normalizeOptionalString(selection.profileId);
         // Direct completions preserve the shipped model@profile contract under model
         // override authority. Isolated credential routing requires separate authority.
         assertAllowedAuthProfileOverride({
@@ -550,38 +553,44 @@ export function createRuntimeLlm(
       void trackOwner(async () => {
         assertCurrent();
         let preparedLogicalModel: ModelRef | undefined;
-        const preparation = await acquireSimpleCompletionModelForAgent({
-          cfg,
-          agentId,
-          modelRef: params.model,
-          preferredProfile,
-          ...(requestedModelProfile ? { bindAuthOwner: true } : {}),
-          allowBundledStaticCatalogFallback: true,
-          allowMissingApiKeyModes: ["aws-sdk"],
-          skipAgentDiscovery: true,
-          signal: requestSignal,
-          modelResolver: operatorAuthority
-            ? async (...args) => {
-                const { resolveModelAsync } =
-                  await import("../../agents/embedded-agent-runner/model.js");
-                assertCurrent();
-                const resolved = await resolveModelAsync(...args);
-                if (resolved.model) {
-                  preparedLogicalModel = resolved.logicalRef;
-                  source.assertModelAllowed(preparedLogicalModel);
+        let admittedConfig = cfg;
+        const preparation = await acquireSimpleCompletionModelForAgent(
+          {
+            cfg,
+            agentId,
+            modelRef: params.model,
+            preferredProfile,
+            ...(requestedModelProfile ? { bindAuthOwner: true } : {}),
+            allowBundledStaticCatalogFallback: true,
+            allowMissingApiKeyModes: ["aws-sdk"],
+            skipAgentDiscovery: true,
+            signal: requestSignal,
+            modelResolver: operatorAuthority
+              ? async (...args) => {
+                  const { resolveModelAsync } =
+                    await import("../../agents/embedded-agent-runner/model.js");
+                  assertCurrent();
+                  const resolved = await resolveModelAsync(...args);
+                  if (resolved.model) {
+                    preparedLogicalModel = resolved.logicalRef;
+                    source.assertModelAllowed(preparedLogicalModel);
+                  }
+                  return resolved;
                 }
-                return resolved;
-              }
-            : undefined,
-        });
+              : undefined,
+          },
+          (selection, config) => {
+            admittedConfig = config;
+            assertCompletionTargetAllowed(selection, config);
+          },
+        );
 
         if ("error" in preparation) {
           throw new Error(`Plugin LLM completion failed: ${preparation.error}`);
         }
         await using prepared = preparation;
-        // The admitted generation can differ from the one this request authorized, so the
-        // canonical admitted target is authorized before provider I/O.
-        assertCompletionTargetAllowed(prepared.selection, { canonicalOnly: true });
+        // Recheck the admitted target after model/auth preparation and before completion dispatch.
+        assertCompletionTargetAllowed(prepared.selection, admittedConfig);
         const modelExecution = source.bindModelExecution(
           preparedLogicalModel ?? {
             provider: prepared.selection.provider,
@@ -630,7 +639,7 @@ export function createRuntimeLlm(
                 assertCurrent: assertPreparedCurrent,
                 model: prepared.model,
                 auth: prepared.auth,
-                cfg,
+                cfg: admittedConfig,
                 context,
                 options: {
                   maxTokens: asFiniteNumber(params.maxTokens),
@@ -649,7 +658,7 @@ export function createRuntimeLlm(
                 .map((c) => c.text)
                 .join("");
               return finalizePluginLlmCompletion({
-                cfg,
+                cfg: admittedConfig,
                 hostPluginId: pluginPolicyId,
                 // Provider failures resolve as messages; only visible successful output owns usage.
                 suppressUsage:
