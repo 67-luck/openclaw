@@ -853,14 +853,14 @@ async function initSessionStateAttemptLocked(
       // overrides these need no fallback-provenance filtering (#92562).
       // Explicit /new and /reset rotate CLI conversation bindings elsewhere.
       preservedState = resolveReplySessionRolloverState(entry, sessionKey);
-      // Implicit rollover keeps the worker workspace; explicit resets keep their detachment policy.
-      if (!resetTriggered) {
-        if (entry.worktree) {
-          preservedState.worktree = entry.worktree;
-        }
-        if (entry.repositoryWorkspaceId) {
-          preservedState.repositoryWorkspaceId = entry.repositoryWorkspaceId;
-        }
+      // Native worktrees belong to the logical session, not its conversation context.
+      // Plain New Chat detaches separately through clearSpawnedCwd and lifecycle cleanup.
+      if (entry.worktree) {
+        const { worktree, projectId, spawnedCwd, sessionRoot } = entry;
+        Object.assign(preservedState, { worktree, projectId, spawnedCwd, sessionRoot });
+      }
+      if (!resetTriggered && entry.repositoryWorkspaceId) {
+        preservedState.repositoryWorkspaceId = entry.repositoryWorkspaceId;
       }
     }
   }
