@@ -13,6 +13,8 @@ const MAX_CACHED_TRANSCRIPT_SCROLL_PANES = 8;
 export type ChatSessionScrollPosition = {
   scrollTop: number;
   anchorToEnd: boolean;
+  /** One logical bubble, not the evicted virtualizer's row measurements. */
+  messageAnchor?: { messageKey: string; offset: number };
 };
 
 const transcriptScrollTopByPane = new Map<string, Map<string, ChatSessionScrollPosition>>();
@@ -70,6 +72,7 @@ export function saveChatSessionScrollPosition(
   setSessionCacheValue(scrollTops, sessionKey, {
     scrollTop: Math.max(0, position.scrollTop),
     anchorToEnd: position.anchorToEnd,
+    ...(position.messageAnchor ? { messageAnchor: { ...position.messageAnchor } } : {}),
   });
 }
 
@@ -271,6 +274,23 @@ export function handleChatScrollTakeover(host: ChatScrollHost, towardEnd = false
   }
 }
 
+/** A saved reader remains a reader even when the returning viewport clamps to its end. */
+export function restoreChatScrollPosition(
+  host: ChatScrollHost,
+  position: ChatSessionScrollPosition,
+): void {
+  cancelChatScroll(host);
+  host.chatHasAutoScrolled = true;
+  const container = host.chatScrollElement?.();
+  if (container) {
+    updateChatScrollPosition(
+      host,
+      container,
+      position.anchorToEnd ? "toward-end" : "restored-reader",
+    );
+  }
+}
+
 /** Reader-controlled UI can take over even when the transcript is at its end. */
 export function lockChatScroll(
   host: ChatScrollHost,
@@ -298,7 +318,7 @@ export function lockChatScroll(
 function updateChatScrollPosition(
   host: ChatScrollHost,
   container: HTMLElement,
-  takeover: false | "reader" | "toward-end" = false,
+  takeover: false | "reader" | "toward-end" | "restored-reader" = false,
 ): void {
   const scrollTop = Math.max(0, container.scrollTop);
   const delta = scrollTop - host.chatLastScrollTop;
@@ -313,7 +333,10 @@ function updateChatScrollPosition(
   }
   const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
   const wasReadingHistory = host.chatReadingHistory;
-  if (isUserScrollUp && distanceFromBottom > CHAT_TRANSCRIPT_END_THRESHOLD_PX) {
+  if (
+    takeover === "restored-reader" ||
+    (isUserScrollUp && distanceFromBottom > CHAT_TRANSCRIPT_END_THRESHOLD_PX)
+  ) {
     // Taking control before initial history settles must retire its queued
     // force-scroll. Otherwise that delayed commit can overwrite the viewport.
     host.chatHasAutoScrolled = true;

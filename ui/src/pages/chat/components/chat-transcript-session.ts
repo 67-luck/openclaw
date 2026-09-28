@@ -12,6 +12,9 @@ import type { TranscriptRow } from "./chat-transcript-layout.ts";
 /** A reader-position restoration that is waiting for measurable transcript geometry. */
 export type ChatTranscriptPendingScrollOffset = {
   offset: number;
+  messageAnchor?: ChatSessionScrollPosition["messageAnchor"];
+  /** Presentation suspension preserves intent even if its temporary range clamps. */
+  anchorToEnd?: boolean;
   observedMaxOffset?: number;
   stableFrames: number;
   zeroMaxFrames: number;
@@ -23,6 +26,8 @@ export type TranscriptCallbacks = {
   visuallyPresented?: () => boolean;
   onViewportResize?: () => void;
   onReaderScroll?: (towardEnd?: boolean) => void;
+  /** Restored intent is explicit; a layout clamp is not fresh input toward the end. */
+  onPositionRestored?: (position: ChatSessionScrollPosition) => void;
   /** The pane owns reader intent; geometry-only follow must honor that policy. */
   canFollowEnd?: () => boolean;
 };

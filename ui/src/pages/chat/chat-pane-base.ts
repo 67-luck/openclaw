@@ -68,7 +68,7 @@ import { getTranscriptState } from "./components/chat-thread-interactions.ts";
 import { ChatTranscriptController } from "./components/chat-transcript-controller.ts";
 import type { SessionDiscussionPanelConfig } from "./components/session-discussion-panel.ts";
 import { hasDirectSessionRun } from "./run-lifecycle.ts";
-import { handleChatScrollTakeover } from "./scroll.ts";
+import { handleChatScrollTakeover, restoreChatScrollPosition } from "./scroll.ts";
 import type { ChatMessageCache } from "./session-message-cache.ts";
 import { resolveChatSnapshotKey } from "./session-snapshot-key.ts";
 import type { SessionSnapshotStore } from "./session-snapshot-store.ts";
@@ -348,10 +348,11 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
     this.requestUpdate(),
   );
   protected readonly transcript = new ChatTranscriptController(this, () => this.paneId, {
-    visuallyPresented: () => this.visuallyPresented,
+    visuallyPresented: () => this.presented && this.visuallyPresented,
     onViewportResize: () => this.chatState.handleTranscriptResize(),
     canFollowEnd: () => this.state !== undefined && !this.state.chatFollowLocked,
     onReaderScroll: (towardEnd) => this.state && handleChatScrollTakeover(this.state, towardEnd),
+    onPositionRestored: (position) => this.state && restoreChatScrollPosition(this.state, position),
   });
   protected readonly progressCard = new SessionProgressCardController(this, {
     gateway: () => this.context?.gateway,
