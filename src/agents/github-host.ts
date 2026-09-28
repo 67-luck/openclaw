@@ -34,7 +34,7 @@ export function resolveGitHubHost(env: NodeJS.ProcessEnv = process.env): string 
   return normalizeGitHubHost(env.GITHUB_HOST);
 }
 
-export function resolveGitHubApiBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+function resolveGitHubApiBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
   return normalizeGitHubApiBaseUrl(env.GITHUB_API_BASE_URL);
 }
 
