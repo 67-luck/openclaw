@@ -6,9 +6,10 @@ import {
   createChannelNativeApprovalRuntime as createChannelNativeApprovalRuntimeRaw,
   deliverApprovalRequestViaChannelNativePlan,
 } from "./approval-native-runtime.js";
+import type { ApprovalRequestInput } from "./approval-types.js";
 
 const hoisted = vi.hoisted(() => {
-  const approvalClientRequest = vi.fn(async () => ({ ok: true }));
+  const approvalClientRequest = vi.fn(async (_method: string): Promise<unknown> => ({ ok: true }));
   return {
     approvalClientRequest,
     callGatewayLeastPrivilege: vi.fn(async () => ({ ok: true })),
@@ -358,7 +359,22 @@ describe("createChannelNativeApprovalRuntime", () => {
     );
   });
 
-  it.each([
+  const routeNoticeCases: Array<
+    | {
+        approvalKind: "exec";
+        id: string;
+        action: { command: string };
+        message: string;
+        originChannel?: string;
+      }
+    | {
+        approvalKind: "plugin";
+        id: string;
+        action: { title: string; description: string };
+        message: string;
+        originChannel?: string;
+      }
+  > = [
     {
       approvalKind: "exec" as const,
       id: "approval-route-notice",
@@ -379,109 +395,122 @@ describe("createChannelNativeApprovalRuntime", () => {
       originChannel: "telegram",
       message: "",
     },
-  ])("sends $approvalKind route notices through the current source account", async (testCase) => {
-    const runtime = createChannelNativeApprovalRuntime({
-      label: "test/native-runtime-route-notice",
-      clientDisplayName: "Test",
-      channel: "slack",
-      channelLabel: "Slack",
-      eventKinds: ["exec", "plugin"],
-      cfg: { gateway: { auth: { token: "configured-token" } } } as never,
-      accountId: "default",
-      nativeAdapter: {
-        describeDeliveryCapabilities: () => ({
-          enabled: true,
-          preferredSurface: "approver-dm",
-          supportsOriginSurface: true,
-          supportsApproverDmSurface: true,
-          notifyOriginWhenDmOnly: true,
-        }),
-        resolveOriginTarget: async () => ({
-          to: "channel:C123",
-          threadId: "1712345678.123456",
-        }),
-        resolveApproverDmTargets: async () => [{ to: "user:owner" }],
-      },
-      isConfigured: () => true,
-      shouldHandle: () => true,
-      isOriginCurrent: () => true,
-      buildPendingContent: async () => "pending approval",
-      prepareTarget: async ({ plannedTarget }) => ({
-        dedupeKey: plannedTarget.target.to,
-        target: { chatId: plannedTarget.target.to },
-      }),
-      deliverTarget: async () => ({ chatId: "user:owner", messageId: "m1" }),
-      finalizeResolved: async () => {},
-    });
+  ];
 
-    await runtime.start();
-    try {
-      await runtime.handleRequested({
-        approvalKind: testCase.approvalKind,
-        id: testCase.id,
-        request: {
-          ...testCase.action,
+  it.each(routeNoticeCases)(
+    "sends $approvalKind route notices through the current source account",
+    async (testCase) => {
+      const runtime = createChannelNativeApprovalRuntime({
+        label: "test/native-runtime-route-notice",
+        clientDisplayName: "Test",
+        channel: "slack",
+        channelLabel: "Slack",
+        eventKinds: ["exec", "plugin"],
+        cfg: { gateway: { auth: { token: "configured-token" } } } as never,
+        accountId: "default",
+        nativeAdapter: {
+          describeDeliveryCapabilities: () => ({
+            enabled: true,
+            preferredSurface: "approver-dm",
+            supportsOriginSurface: true,
+            supportsApproverDmSurface: true,
+            notifyOriginWhenDmOnly: true,
+          }),
+          resolveOriginTarget: async () => ({
+            to: "channel:C123",
+            threadId: "1712345678.123456",
+          }),
+          resolveApproverDmTargets: async () => [{ to: "user:owner" }],
+        },
+        isConfigured: () => true,
+        shouldHandle: () => true,
+        isOriginCurrent: () => true,
+        buildPendingContent: async () => "pending approval",
+        prepareTarget: async ({ plannedTarget }) => ({
+          dedupeKey: plannedTarget.target.to,
+          target: { chatId: plannedTarget.target.to },
+        }),
+        deliverTarget: async () => ({ chatId: "user:owner", messageId: "m1" }),
+        finalizeResolved: async () => {},
+      });
+
+      await runtime.start();
+      try {
+        const source = {
           turnSourceChannel: testCase.originChannel ?? "slack",
           turnSourceTo: "channel:C123",
           turnSourceAccountId: "default",
           turnSourceThreadId: "1712345678.123456",
-          ...(testCase.approvalKind === "plugin"
-            ? { approvalSource: { channel: testCase.originChannel ?? "slack", senderId: "U123" } }
-            : {}),
-        },
-        createdAtMs: 0,
-        expiresAtMs: Date.now() + 60_000,
-      });
-    } finally {
-      await runtime.stop();
-    }
-
-    if (testCase.originChannel) {
-      expect(hoisted.sendMessage).not.toHaveBeenCalled();
-      expect(hoisted.approvalClientRequest).toHaveBeenCalledWith(
-        "plugin.approval.reportNativeDelivery",
-        expect.objectContaining({
+        };
+        const timedRequest = {
           id: testCase.id,
-          channel: "slack",
-          channelLabel: "Slack",
-          deliveredAny: true,
-          deliveredOnlyToApproverDms: true,
-        }),
-      );
-    } else if (testCase.approvalKind === "plugin") {
-      expect(hoisted.callGatewayLeastPrivilege).not.toHaveBeenCalled();
-      expect(hoisted.sendMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          channel: "slack",
-          to: "channel:C123",
-          accountId: "default",
-          threadId: "1712345678.123456",
-          content: testCase.message,
-          gatewayOwnedDelivery: true,
-          skipQueue: true,
-          onPlatformSendDispatch: expect.any(Function),
-          assertDirectAdapterHandoff: expect.any(Function),
-        }),
-      );
-    } else {
-      expect(hoisted.callGatewayLeastPrivilege).toHaveBeenCalledWith(
-        expect.objectContaining({
-          config: { gateway: { auth: { token: "configured-token" } } },
-          method: "send",
-          clientName: "gateway-client",
-          mode: "backend",
-          params: {
+          createdAtMs: 0,
+          expiresAtMs: Date.now() + 60_000,
+        };
+        const request: ApprovalRequestInput =
+          testCase.approvalKind === "exec"
+            ? { ...timedRequest, approvalKind: "exec", request: { ...testCase.action, ...source } }
+            : {
+                ...timedRequest,
+                approvalKind: "plugin",
+                request: {
+                  ...testCase.action,
+                  ...source,
+                  approvalSource: { channel: source.turnSourceChannel, senderId: "U123" },
+                },
+              };
+        await runtime.handleRequested(request);
+      } finally {
+        await runtime.stop();
+      }
+
+      if (testCase.originChannel) {
+        expect(hoisted.sendMessage).not.toHaveBeenCalled();
+        expect(hoisted.approvalClientRequest).toHaveBeenCalledWith(
+          "plugin.approval.reportNativeDelivery",
+          expect.objectContaining({
+            id: testCase.id,
+            channel: "slack",
+            channelLabel: "Slack",
+            deliveredAny: true,
+            deliveredOnlyToApproverDms: true,
+          }),
+        );
+      } else if (testCase.approvalKind === "plugin") {
+        expect(hoisted.callGatewayLeastPrivilege).not.toHaveBeenCalled();
+        expect(hoisted.sendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
             channel: "slack",
             to: "channel:C123",
             accountId: "default",
             threadId: "1712345678.123456",
-            message: testCase.message,
-            idempotencyKey: `approval-route-notice:${testCase.id}`,
-          },
-        }),
-      );
-    }
-  });
+            content: testCase.message,
+            gatewayOwnedDelivery: true,
+            skipQueue: true,
+            onPlatformSendDispatch: expect.any(Function),
+            assertDirectAdapterHandoff: expect.any(Function),
+          }),
+        );
+      } else {
+        expect(hoisted.callGatewayLeastPrivilege).toHaveBeenCalledWith(
+          expect.objectContaining({
+            config: { gateway: { auth: { token: "configured-token" } } },
+            method: "send",
+            clientName: "gateway-client",
+            mode: "backend",
+            params: {
+              channel: "slack",
+              to: "channel:C123",
+              accountId: "default",
+              threadId: "1712345678.123456",
+              message: testCase.message,
+              idempotencyKey: `approval-route-notice:${testCase.id}`,
+            },
+          }),
+        );
+      }
+    },
+  );
 
   it("records delivered cards before a remote plugin report finishes", async () => {
     let markReportStarted!: () => void;
