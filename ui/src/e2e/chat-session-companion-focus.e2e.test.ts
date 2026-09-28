@@ -113,18 +113,27 @@ suite.define(() => {
   it.each(["close", "minimize", "switch tabs"])(
     "focuses a new Side chat opening after %s supersedes an unmounted command",
     async (action) => {
+      const mark = (phase: string) => console.info(`[side-chat-focus] ${action}: ${phase}`);
+      mark("acquire page");
       await suite.withPage({ viewport: { width: 1440, height: 900 } }, async ({ page }) => {
+        mark("install held route");
         const held = await holdModuleResponse(page, /\/assets\/chat-session-rail-[^/]+\.js$/u);
         try {
+          mark("install gateway");
           await installMockGateway(page);
+          mark("navigate");
           await page.goto(`${suite.server.baseUrl}chat`);
           const mainInput = page.locator(".agent-chat__composer-shell textarea");
+          mark("submit command");
           await mainInput.fill("/btw");
           await mainInput.press("Enter");
+          mark("await held request");
           await held.request;
           const sideInput = page.getByRole("textbox", { name: "Ask in side chat", exact: true });
           expect(await sideInput.count()).toBe(0);
+          mark("await side tab");
           await page.getByRole("tab", { name: "Side chat", exact: true }).waitFor();
+          mark("supersede command");
           if (action === "close") {
             await page.getByRole("button", { name: "Close Side chat", exact: true }).click();
           } else if (action === "minimize") {
@@ -132,7 +141,9 @@ suite.define(() => {
           } else {
             await openChatSidePanelType(page, "Files");
           }
+          mark("release held module");
           held.release();
+          mark("reopen side chat");
           if (action === "close") {
             await openChatSidePanelType(page, "Side chat");
           } else if (action === "minimize") {
@@ -140,12 +151,15 @@ suite.define(() => {
           } else {
             await page.getByRole("tab", { name: "Side chat", exact: true }).click();
           }
+          mark("await input focus");
           await expect
             .poll(() => sideInput.evaluate((element) => document.activeElement === element))
             .toBe(true);
           await page.keyboard.type("New opening");
           expect(await sideInput.inputValue()).toBe("New opening");
+          mark("complete");
         } finally {
+          mark("release during cleanup");
           held.release();
         }
       });
