@@ -108,7 +108,7 @@ function resolveApprovalDeliveryFailedNoticeText(params: {
   ].join("\n");
 }
 
-export function normalizeChannel(value?: string | null): string {
+export function normalizeApprovalRouteChannel(value?: string | null): string {
   return normalizeLowercaseStringOrEmpty(value);
 }
 
@@ -180,12 +180,15 @@ export function resolveApprovalRouteNotice(params: {
   missingSelectedRuntime: boolean;
 }): { requestGateway: GatewayRequestFn; target: RouteNoticeTarget; text: string } | null {
   const explicitTarget = resolveRouteNoticeTargetFromRequest(params.request);
-  const originChannel = normalizeChannel(
+  const originChannel = normalizeApprovalRouteChannel(
     explicitTarget?.channel ?? params.request.request.turnSourceChannel,
   );
   const fallbackTarget =
     params.reports
-      .filter((report) => normalizeChannel(report.channel) === originChannel || !originChannel)
+      .filter(
+        (report) =>
+          normalizeApprovalRouteChannel(report.channel) === originChannel || !originChannel,
+      )
       .map(resolveFallbackRouteNoticeTarget)
       .find((target) => target !== null) ?? null;
   const target = explicitTarget
@@ -234,7 +237,7 @@ export function resolveApprovalRouteNotice(params: {
   // If any same-channel runtime already delivered into the origin chat, every
   // other fallback delivery becomes supplemental and should not trigger a notice.
   const originDelivered = params.reports.some((report) => {
-    if (originChannel && normalizeChannel(report.channel) !== originChannel) {
+    if (originChannel && normalizeApprovalRouteChannel(report.channel) !== originChannel) {
       return false;
     }
     return didReportDeliverToOrigin(report, originAccountId);
@@ -247,7 +250,7 @@ export function resolveApprovalRouteNotice(params: {
     if (!report.channelLabel || report.deliveredTargets.length === 0) {
       return [];
     }
-    const reportChannel = normalizeChannel(report.channel);
+    const reportChannel = normalizeApprovalRouteChannel(report.channel);
     if (
       originChannel &&
       reportChannel === originChannel &&
@@ -303,10 +306,10 @@ export function isPluginDmOnlyRoute(params: {
   if (params.approvalKind !== "plugin" || params.missingSelectedRuntime) {
     return false;
   }
-  const originChannel = normalizeChannel(params.target.channel);
+  const originChannel = normalizeApprovalRouteChannel(params.target.channel);
   const originAccountId = normalizeOptionalString(params.target.accountId);
   const matchingReports = params.reports.filter((report) => {
-    if (normalizeChannel(report.channel) !== originChannel) {
+    if (normalizeApprovalRouteChannel(report.channel) !== originChannel) {
       return false;
     }
     const reportAccountId = normalizeOptionalString(report.accountId);

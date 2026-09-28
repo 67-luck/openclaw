@@ -6,7 +6,7 @@ import type {
 } from "./approval-native-delivery.js";
 import {
   isPluginDmOnlyRoute,
-  normalizeChannel,
+  normalizeApprovalRouteChannel,
   resolveApprovalRouteNotice,
   type ApprovalRouteReport,
   type ApprovalRouteSkipReason,
@@ -94,7 +94,7 @@ function clearApprovalRouteSelection(
 }
 
 function routeGroupKey(runtime: ApprovalRouteRuntimeRecord): string {
-  return normalizeChannel(runtime.channel) || runtime.runtimeId;
+  return normalizeApprovalRouteChannel(runtime.channel) || runtime.runtimeId;
 }
 
 function createApprovalRouteSelection(
@@ -318,13 +318,13 @@ function hasActiveApprovalNativeRouteRuntimeForState(
     accountId?: string | null;
   },
 ): boolean {
-  const channel = normalizeChannel(params.channel);
+  const channel = normalizeApprovalRouteChannel(params.channel);
   const accountId = normalizeOptionalString(params.accountId);
   const matchingRuntimes = Array.from(state.activeRuntimes.values()).filter((runtime) => {
     if (!runtime.handledKinds.has(params.approvalKind)) {
       return false;
     }
-    if (channel && normalizeChannel(runtime.channel) !== channel) {
+    if (channel && normalizeApprovalRouteChannel(runtime.channel) !== channel) {
       return false;
     }
     const runtimeAccountId = normalizeOptionalString(runtime.accountId);
