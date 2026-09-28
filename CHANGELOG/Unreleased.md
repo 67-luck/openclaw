@@ -2,6 +2,8 @@
 
 ### Fixes
 
+- Developer checks: contain SDK declaration compilers within the shared host memory budget, serialize their batches, and join cancellation through artifact release before publishing lint or compiler completion.
+
 - Developer checks: contain compiler graph discovery within the shared host memory budget, preserve cancellation while waiting or between queries, and refuse unbounded execution on unsupported local hosts.
 
 - Codex: restore background memory narratives and isolated text completions on agent-scoped local runtimes with administrator-managed hooks, preserving managed hooks and existing native-account/proxy routing while keeping ordinary hooks and model tools isolated. (#151658)
