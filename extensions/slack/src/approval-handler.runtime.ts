@@ -68,6 +68,8 @@ type SlackExecApprovalConfig = NonNullable<
 type SlackApprovalHandlerContext = {
   app: App;
   config: SlackExecApprovalConfig;
+  /** Token captured by the monitor that admitted this approval runtime. */
+  writeToken?: string;
   installationIdentity: SlackInstallationIdentity;
   readConfig?: () => OpenClawConfig;
   assertCurrent?: () => void;
@@ -360,6 +362,32 @@ export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdap
             accountId: resolved.accountId,
           })
         : false;
+    },
+    isOriginCurrent: (params, handoffConfig) => {
+      const resolved = resolveHandlerContext(params);
+      if (
+        !resolved?.context.assertCurrent ||
+        !resolved.context.readConfig ||
+        !resolved.context.writeToken
+      ) {
+        return false;
+      }
+      try {
+        resolved.context.assertCurrent();
+        const hasOriginalWriteToken = (cfg: OpenClawConfig) => {
+          const account = resolveSlackAccount({ cfg, accountId: resolved.accountId });
+          return (
+            account.enabled &&
+            resolveSlackOperationToken(account, "write") === resolved.context.writeToken
+          );
+        };
+        return (
+          hasOriginalWriteToken(resolved.context.readConfig()) &&
+          (!handoffConfig || hasOriginalWriteToken(handoffConfig))
+        );
+      } catch {
+        return false;
+      }
     },
     shouldHandle: (params) => {
       const resolved = resolveHandlerContext(params);

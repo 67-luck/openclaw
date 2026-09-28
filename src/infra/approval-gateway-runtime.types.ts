@@ -1,3 +1,4 @@
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GatewayNativeApprovalMethod } from "./approval-gateway-runtime-methods.js";
 import type { ApprovalNativeRouteCoordinator } from "./approval-native-route-coordinator.js";
 import type { ApprovalRouteSendParams } from "./approval-native-route-notice.js";
@@ -31,7 +32,7 @@ export type GatewayNativeApprovalRuntime = {
   requestRoute: (
     method: "send",
     params: ApprovalRouteSendParams,
-    options?: { liveOnlyWhenCurrent: () => boolean },
+    options?: { liveOnlyWhenCurrent: (cfg?: OpenClawConfig) => boolean },
   ) => Promise<void>;
   routeCoordinator: ApprovalNativeRouteCoordinator;
   subscribe: (subscriber: GatewayApprovalEventSubscriber) => () => void;

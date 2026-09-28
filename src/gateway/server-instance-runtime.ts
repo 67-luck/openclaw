@@ -1,6 +1,7 @@
 import { DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS } from "../../packages/gateway-client/src/timeouts.js";
 import type { AgentWaitParams } from "../../packages/gateway-protocol/src/index.js";
 import { createOutboundSendDeps } from "../cli/outbound-send-deps.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   GATEWAY_NATIVE_APPROVAL_METHODS,
   type GatewayNativeApprovalMethod,
@@ -421,7 +422,7 @@ export function createGatewayInstanceRuntime(
       requestRoute: async (
         method: "send",
         payload: ApprovalRouteSendParams,
-        routeOptions?: { liveOnlyWhenCurrent: () => boolean },
+        routeOptions?: { liveOnlyWhenCurrent: (cfg?: OpenClawConfig) => boolean },
       ) => {
         if (routeOptions) {
           await recovery.sendRecoveryNotice({

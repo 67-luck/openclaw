@@ -1,5 +1,6 @@
 // Covers native approval route reporting behavior.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   createApprovalNativeRouteCoordinator,
   createApprovalNativeRouteReporter as createApprovalNativeRouteReporterRaw,
@@ -72,7 +73,7 @@ function createGatewayRequestMock() {
     async (
       _method: "send",
       _params: ApprovalRouteSendParams,
-      _options?: { liveOnlyWhenCurrent: () => boolean },
+      _options?: { liveOnlyWhenCurrent: (cfg?: OpenClawConfig) => boolean },
     ): Promise<void> => {},
   );
 }
@@ -131,14 +132,22 @@ describe("plugin approval requester outcome", () => {
       { liveOnlyWhenCurrent: expect.any(Function) },
     );
     expect(requestGateway.mock.calls[0]?.[2]?.liveOnlyWhenCurrent()).toBe(false);
-    expect(requestGateway).toHaveBeenLastCalledWith("send", {
-      channel: "slack",
-      to: "channel:C123",
-      accountId: "work",
-      threadId: "1712345678.123456",
-      message: `Approval ${request.id} ${wording}. The requested action did not run.`,
-      idempotencyKey: `approval-terminal-notice:${request.id}`,
-    });
+    expect(requestGateway).toHaveBeenLastCalledWith(
+      "send",
+      {
+        channel: "slack",
+        to: "channel:C123",
+        accountId: "work",
+        threadId: "1712345678.123456",
+        message: `Approval ${request.id} ${wording}. The requested action did not run.`,
+        idempotencyKey: `approval-terminal-notice:${request.id}`,
+      },
+      { liveOnlyWhenCurrent: expect.any(Function) },
+    );
+    const terminalCurrent = requestGateway.mock.calls[1]?.[2]?.liveOnlyWhenCurrent;
+    expect(terminalCurrent?.()).toBe(true);
+    await reporter.stop();
+    expect(terminalCurrent?.()).toBe(false);
     coordinator.close();
   });
 
@@ -179,12 +188,14 @@ describe("plugin approval requester outcome", () => {
   it("invalidates an in-flight fallback notice when a plugin approval is denied", async () => {
     const coordinator = createApprovalNativeRouteCoordinator();
     const requestGateway = createGatewayRequestMock();
+    let originCurrent = true;
     const reporter = coordinator.createReporter(
       reporterOptions({
         handledKinds: new Set(["plugin"]),
         channel: "slack",
         channelLabel: "Slack",
         accountId: "work",
+        isOriginCurrent: () => originCurrent,
         requestGateway,
       }),
     );
@@ -205,8 +216,52 @@ describe("plugin approval requester outcome", () => {
     const currentAtHandoff = requestGateway.mock.calls[0]?.[2]?.liveOnlyWhenCurrent;
     expect(currentAtHandoff).toBeTypeOf("function");
     expect(currentAtHandoff?.()).toBe(true);
+    originCurrent = false;
+    expect(currentAtHandoff?.()).toBe(false);
     await coordinator.publishPluginTerminal({ approvalId: request.id, status: "denied" });
     expect(currentAtHandoff?.()).toBe(false);
+    coordinator.close();
+  });
+
+  it("keeps a cross-channel plugin notice on its original config snapshot", async () => {
+    const coordinator = createApprovalNativeRouteCoordinator();
+    const requestGateway = createGatewayRequestMock();
+    const sourceConfig = {};
+    const reporter = coordinator.createReporter(
+      reporterOptions({
+        handledKinds: new Set(["plugin"]),
+        channel: "telegram",
+        channelLabel: "Telegram",
+        sourceConfig,
+        requestGateway,
+      }),
+    );
+    const request = createPluginRequest("plugin:cross-channel");
+    reporter.start();
+    reporter.selectRequest({ approvalKind: "plugin", request });
+    await reporter.reportDelivery({
+      approvalKind: "plugin",
+      request,
+      deliveryPlan: {
+        targets: [approverDm("user:reviewer")],
+        originTarget: null,
+        notifyOriginWhenDmOnly: false,
+      },
+      deliveredTargets: [approverDm("user:reviewer")],
+    });
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      "send",
+      expect.objectContaining({
+        channel: "slack",
+        accountId: "work",
+        message: `Approval ${request.id} required. I sent the approval request to Telegram DMs, not this chat.`,
+      }),
+      { liveOnlyWhenCurrent: expect.any(Function) },
+    );
+    const currentAtHandoff = requestGateway.mock.calls[0]?.[2]?.liveOnlyWhenCurrent;
+    expect(currentAtHandoff?.(sourceConfig)).toBe(true);
+    expect(currentAtHandoff?.({})).toBe(false);
     coordinator.close();
   });
 
@@ -377,6 +432,7 @@ describe("plugin approval requester outcome", () => {
         idempotencyKey: `approval-terminal-notice:${request.id}`,
         message: `Approval ${request.id} timed out. The requested action did not run.`,
       }),
+      { liveOnlyWhenCurrent: expect.any(Function) },
     );
     coordinator.close();
   });

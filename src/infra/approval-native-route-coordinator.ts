@@ -1,11 +1,14 @@
 // Coordinates native approval delivery routing and notices.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { getPublishedConfigRuntimeEnvState } from "../config/config-env-vars.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type {
   ChannelApprovalNativeDeliveryPlan,
   ChannelApprovalNativePlannedTarget,
 } from "./approval-native-delivery.js";
 import {
-  isPluginDmOnlyRoute,
+  resolvePluginDmOnlyOriginReport,
+  resolveUniqueOriginReport,
   normalizeApprovalRouteChannel,
   resolveApprovalRouteNotice,
   type ApprovalRouteReport,
@@ -25,6 +28,8 @@ type ApprovalRouteRuntimeRecord = {
   channel?: string;
   channelLabel?: string;
   accountId?: string | null;
+  sourceConfig?: OpenClawConfig;
+  isOriginCurrent?: (request: ApprovalRequest, handoffConfig?: OpenClawConfig) => boolean;
   requestGateway: GatewayRequestFn;
   shouldHandle: (request: ApprovalRequest) => boolean;
   classifyRoute: (request: ApprovalRequest) => ApprovalRequestChannelRouteClass;
@@ -53,6 +58,7 @@ type PluginTerminalStatus = "allowed" | "denied" | "expired" | "cancelled";
 type PluginTerminalNotice = {
   requestGateway?: GatewayRequestFn;
   target?: RouteNoticeTarget;
+  isOriginCurrent?: (cfg?: OpenClawConfig) => boolean;
   initialNotice?: Promise<void>;
   status?: "denied" | "expired";
   sent: boolean;
@@ -244,17 +250,28 @@ async function maybeSendPluginTerminalNotice(
     if (state.closed || state.pluginTerminalNotices.get(approvalId) !== notice) {
       return;
     }
-    await requestGateway("send", {
-      channel: target.channel,
-      to: target.to,
-      accountId: target.accountId ?? undefined,
-      threadId: target.threadId ?? undefined,
-      message:
-        notice.status === "expired"
-          ? `Approval ${approvalId} timed out. The requested action did not run.`
-          : `Approval ${approvalId} was denied. The requested action did not run.`,
-      idempotencyKey: `approval-terminal-notice:${approvalId}`,
-    });
+    await requestGateway(
+      "send",
+      {
+        channel: target.channel,
+        to: target.to,
+        accountId: target.accountId ?? undefined,
+        threadId: target.threadId ?? undefined,
+        message:
+          notice.status === "expired"
+            ? `Approval ${approvalId} timed out. The requested action did not run.`
+            : `Approval ${approvalId} was denied. The requested action did not run.`,
+        idempotencyKey: `approval-terminal-notice:${approvalId}`,
+      },
+      {
+        // Origin status must not survive its reporter or account. A durable
+        // queue replay cannot recover the original account's send authority.
+        liveOnlyWhenCurrent: (cfg) =>
+          !state.closed &&
+          state.pluginTerminalNotices.get(approvalId) === notice &&
+          notice.isOriginCurrent?.(cfg) === true,
+      },
+    );
   } catch (error) {
     notice.sent = false;
     throw error;
@@ -380,19 +397,34 @@ async function maybeFinalizeApprovalRouteNotice(
     reports,
     missingSelectedRuntime,
   });
-  const terminalNotice =
+  const originReport =
     notice &&
-    isPluginDmOnlyRoute({
+    resolvePluginDmOnlyOriginReport({
       approvalKind: entry.approvalKind,
       reports,
       missingSelectedRuntime,
       target: notice.target,
-    })
-      ? getPluginTerminalNotice(state, entry.request)
-      : undefined;
-  if (terminalNotice && notice) {
-    terminalNotice.requestGateway = notice.requestGateway;
+    });
+  const pendingOriginReport =
+    notice && entry.approvalKind === "plugin"
+      ? resolveUniqueOriginReport({ reports, target: notice.target })
+      : null;
+  // Cross-channel approvals have no runtime for the originating account.
+  // Pin their notice to the reported config and managed env generation so a
+  // replacement account cannot inherit the old conversation target.
+  const fallbackOriginCurrent = (cfg?: OpenClawConfig) =>
+    reports.length > 0 &&
+    reports.every(
+      (report) =>
+        report.isOriginCurrent(cfg) &&
+        report.sourceEnvGeneration === getPublishedConfigRuntimeEnvState().generation &&
+        (!cfg || (report.sourceConfig !== undefined && cfg === report.sourceConfig)),
+    );
+  const terminalNotice = originReport ? getPluginTerminalNotice(state, entry.request) : undefined;
+  if (terminalNotice && notice && originReport) {
+    terminalNotice.requestGateway = originReport.requestGateway;
     terminalNotice.target = notice.target;
+    terminalNotice.isOriginCurrent = originReport.isOriginCurrent;
   }
   clearPendingApprovalRouteNotice(state, approvalId);
   if (!notice) {
@@ -402,14 +434,18 @@ async function maybeFinalizeApprovalRouteNotice(
     try {
       // The same owner check runs again at platform handoff; pending work never
       // enters the durable queue where it could outlive this approval.
-      const isCurrent = () =>
+      const isCurrent = (cfg?: OpenClawConfig) =>
         !(
           state.closed ||
           state.selections.get(approvalId) !== selection ||
           selection.pluginTerminalStatus ||
           terminalNotice?.status ||
           entry.request.expiresAtMs <= Date.now()
-        );
+        ) &&
+        (entry.approvalKind !== "plugin" ||
+          (pendingOriginReport
+            ? pendingOriginReport.isOriginCurrent(cfg)
+            : fallbackOriginCurrent(cfg)));
       if (!isCurrent()) {
         return;
       }
@@ -487,6 +523,7 @@ function createApprovalNativeRouteReporterForState(
         request: payload.request,
         approvalKind: payload.approvalKind,
       });
+    const runtimeRecord = state.activeRuntimes.get(runtimeId);
     entry.reports.set(runtimeId, {
       runtimeId,
       request: payload.request,
@@ -496,6 +533,25 @@ function createApprovalNativeRouteReporterForState(
       deliveryPlan: payload.deliveryPlan,
       deliveredTargets: payload.deliveredTargets,
       requestGateway: params.requestGateway,
+      sourceConfig: params.sourceConfig,
+      sourceEnvGeneration: getPublishedConfigRuntimeEnvState().generation,
+      isOriginCurrent: (cfg) => {
+        if (
+          state.closed ||
+          !registered ||
+          !runtimeRecord ||
+          state.activeRuntimes.get(runtimeId) !== runtimeRecord
+        ) {
+          return false;
+        }
+        try {
+          return params.isOriginCurrent
+            ? params.isOriginCurrent(payload.request, cfg)
+            : !cfg || !params.sourceConfig || cfg === params.sourceConfig;
+        } catch {
+          return false;
+        }
+      },
       skipReason: payload.skipReason,
     });
     state.pendingNotices.set(payload.request.id, entry);
@@ -539,6 +595,8 @@ function createApprovalNativeRouteReporterForState(
         channel: params.channel,
         channelLabel: params.channelLabel,
         accountId: params.accountId,
+        sourceConfig: params.sourceConfig,
+        isOriginCurrent: params.isOriginCurrent,
         requestGateway: params.requestGateway,
         shouldHandle: params.shouldHandle,
         classifyRoute: params.classifyRoute,

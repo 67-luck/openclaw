@@ -4,6 +4,7 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 // Resolves native-route approval notices and formats their visible text.
 import { sortUniqueStrings } from "@openclaw/normalization-core/string-normalization";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatHumanList } from "../shared/human-list.js";
 import type {
   ChannelApprovalNativeDeliveryPlan,
@@ -27,7 +28,7 @@ export type ApprovalRouteSendParams = {
 export type GatewayRequestFn = (
   method: "send",
   params: ApprovalRouteSendParams,
-  options?: { liveOnlyWhenCurrent: () => boolean },
+  options?: { liveOnlyWhenCurrent: (cfg?: OpenClawConfig) => boolean },
 ) => Promise<void>;
 
 export type ApprovalRouteSkipReason = "ambiguous-owner" | "ineligible" | "owner-unavailable";
@@ -41,6 +42,9 @@ export type ApprovalRouteReport = {
   deliveryPlan: ChannelApprovalNativeDeliveryPlan;
   deliveredTargets: readonly ChannelApprovalNativePlannedTarget[];
   requestGateway: GatewayRequestFn;
+  isOriginCurrent: (cfg?: OpenClawConfig) => boolean;
+  sourceConfig?: OpenClawConfig;
+  sourceEnvGeneration?: number;
   skipReason?: ApprovalRouteSkipReason;
 };
 
@@ -297,34 +301,47 @@ export function resolveApprovalRouteNotice(params: {
   };
 }
 
-export function isPluginDmOnlyRoute(params: {
-  approvalKind: ChannelApprovalKind;
+function matchingOriginReports(params: {
   reports: readonly ApprovalRouteReport[];
-  missingSelectedRuntime: boolean;
   target: RouteNoticeTarget;
-}): boolean {
-  if (params.approvalKind !== "plugin" || params.missingSelectedRuntime) {
-    return false;
-  }
+}): ApprovalRouteReport[] {
   const originChannel = normalizeApprovalRouteChannel(params.target.channel);
   const originAccountId = normalizeOptionalString(params.target.accountId);
-  const matchingReports = params.reports.filter((report) => {
+  return params.reports.filter((report) => {
     if (normalizeApprovalRouteChannel(report.channel) !== originChannel) {
       return false;
     }
     const reportAccountId = normalizeOptionalString(report.accountId);
-    return (
-      originAccountId === undefined ||
-      reportAccountId === undefined ||
-      originAccountId === reportAccountId
-    );
+    return originAccountId === undefined || originAccountId === reportAccountId;
   });
-  return (
-    !matchingReports.some((report) => didReportDeliverToOrigin(report, originAccountId)) &&
-    matchingReports.some(
-      (report) =>
-        report.deliveryPlan.notifyOriginWhenDmOnly &&
-        report.deliveredTargets.some((target) => target.surface === "approver-dm"),
-    )
+}
+
+export function resolveUniqueOriginReport(params: {
+  reports: readonly ApprovalRouteReport[];
+  target: RouteNoticeTarget;
+}): ApprovalRouteReport | null {
+  const reports = matchingOriginReports(params);
+  return reports.length === 1 ? (reports[0] ?? null) : null;
+}
+
+export function resolvePluginDmOnlyOriginReport(params: {
+  approvalKind: ChannelApprovalKind;
+  reports: readonly ApprovalRouteReport[];
+  missingSelectedRuntime: boolean;
+  target: RouteNoticeTarget;
+}): ApprovalRouteReport | null {
+  if (params.approvalKind !== "plugin" || params.missingSelectedRuntime) {
+    return null;
+  }
+  const matchingReports = matchingOriginReports(params);
+  const originAccountId = normalizeOptionalString(params.target.accountId);
+  if (matchingReports.some((report) => didReportDeliverToOrigin(report, originAccountId))) {
+    return null;
+  }
+  const dmReports = matchingReports.filter(
+    (report) =>
+      report.deliveryPlan.notifyOriginWhenDmOnly &&
+      report.deliveredTargets.some((target) => target.surface === "approver-dm"),
   );
+  return dmReports.length === 1 ? (dmReports[0] ?? null) : null;
 }

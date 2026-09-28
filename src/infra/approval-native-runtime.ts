@@ -165,6 +165,7 @@ type ChannelNativeApprovalRuntimeAdapter<
     channel?: string;
     channelLabel?: string;
     accountId?: string | null;
+    isOriginCurrent?: (request: TRequest, handoffConfig?: OpenClawConfig) => boolean;
     nativeAdapter?: ChannelApprovalNativeAdapter | null;
     /** @deprecated Trusted compatibility override; omit to derive ownership from the payload. */
     resolveApprovalKind?: (request: TRequest) => ChannelApprovalKind;
@@ -202,6 +203,13 @@ export function createChannelNativeApprovalRuntime<
     channel: adapter.channel,
     channelLabel: adapter.channelLabel,
     accountId: adapter.accountId,
+    sourceConfig: adapter.cfg,
+    ...(adapter.isOriginCurrent
+      ? {
+          isOriginCurrent: (request: ApprovalRequest, handoffConfig?: OpenClawConfig) =>
+            adapter.isOriginCurrent?.(request as TRequest, handoffConfig) === true,
+        }
+      : {}),
     // SAFETY: the route coordinator receives only normalized requests from this runtime.
     shouldHandle: (request) => adapter.shouldHandle(request as NormalizedApprovalRequest<TRequest>),
     classifyRoute: (request) =>

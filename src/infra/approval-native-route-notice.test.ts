@@ -59,6 +59,7 @@ function createReport(params: {
     },
     deliveredTargets,
     requestGateway,
+    isOriginCurrent: () => true,
     skipReason: params.skipReason,
   };
 }
