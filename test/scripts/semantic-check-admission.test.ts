@@ -58,14 +58,18 @@ afterEach(async () => {
   Object.defineProperty(process, "platform", platform);
   vi.restoreAllMocks();
   // Retention tests simulate uncertain work; their fixture has no live process.
-  for (const lock of held.splice(0)) await lock.release();
+  for (const lock of held.splice(0)) {
+    await lock.release();
+  }
   await lifetime.cleanup();
 });
 
 function waitForContention() {
   const waiting = createDeferred();
   vi.mocked(console.error).mockImplementation((message: string) => {
-    if (message.includes("waiting for the host")) waiting.resolve();
+    if (message.includes("waiting for the host")) {
+      waiting.resolve();
+    }
   });
   return waiting.promise;
 }
@@ -152,11 +156,13 @@ it.for([false, true])(
     now += expires ? 61_000 : 40_000;
     release.resolve(0);
     expect(await Promise.all([first, second])).toEqual([0, expires ? 75 : 0]);
-    if (expires) expect(mocks.run).toHaveBeenCalledTimes(1);
-    else
+    if (expires) {
+      expect(mocks.run).toHaveBeenCalledTimes(1);
+    } else {
       expect(mocks.run).toHaveBeenLastCalledWith(
         expect.objectContaining({ timeoutMs: 20_000, memoryLimitBytes: 2 * 1024 ** 3 }),
       );
+    }
   },
 );
 
@@ -256,7 +262,9 @@ it("refuses launch if its scope receipt cannot be written", async () => {
   const failure = new Error("receipt write failed");
   const write = fs.writeFileSync;
   vi.spyOn(fs, "writeFileSync").mockImplementation((...args) => {
-    if (String(args[0]).endsWith(".scope-owner")) throw failure;
+    if (String(args[0]).endsWith(".scope-owner")) {
+      throw failure;
+    }
     return write(...args);
   });
   const launched = vi.fn();
@@ -303,11 +311,17 @@ it.for(["SIGINT", "SIGTERM", "SIGHUP", "abort"] as const)(
     });
     const result = runSemanticCheck({ bin: "fixture", signal: controller.signal });
     await ready.promise;
-    if (received === "abort") controller.abort();
-    else process.listeners(signal).find((listener) => !previous.includes(listener))!(signal);
+    if (received === "abort") {
+      controller.abort();
+    } else {
+      process.listeners(signal).find((listener) => !previous.includes(listener))!(signal);
+    }
     release.resolve();
-    if (received === "abort") await expect(result).rejects.toBe(controller.signal.reason);
-    else expect(await result).toBe({ SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[received]);
+    if (received === "abort") {
+      await expect(result).rejects.toBe(controller.signal.reason);
+    } else {
+      expect(await result).toBe({ SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[received]);
+    }
     expect(process.listeners(signal)).toEqual(previous);
     expect(fs.readdirSync(directory)).toEqual([]);
   },
