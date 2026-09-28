@@ -45,9 +45,9 @@ export function createTranscriptAutoStartRetry(params: {
         } else {
           clear();
         }
-      } catch (error) {
+      } catch (retentionError) {
         clear();
-        throw error;
+        throw retentionError;
       }
       if (
         !previous &&
