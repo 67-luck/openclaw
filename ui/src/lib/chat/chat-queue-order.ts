@@ -1,4 +1,4 @@
-import type { ChatQueueItem } from "./chat-types.ts";
+import type { ChatQueueDisplayItem, ChatQueueItem } from "./chat-types.ts";
 
 type ChatQueuePosition = Pick<ChatQueueItem, "createdAt" | "orderKey">;
 
@@ -25,8 +25,9 @@ export function compareChatQueueOrder(left: ChatQueuePosition, right: ChatQueueP
  * to a run — attempted, sending, running a command, or awaiting settings — keep
  * their place, so a move can never jump ahead of work already handed over.
  */
-export function isMovableChatQueueItem(item: ChatQueueItem): boolean {
+export function isMovableChatQueueItem(item: ChatQueueDisplayItem): boolean {
   return (
+    !item.readOnly &&
     !item.pendingRunId &&
     !item.intent &&
     (item.sendAttempts ?? 0) === 0 &&

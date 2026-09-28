@@ -118,7 +118,12 @@ export type ChatGuardianNotice = {
 
 export type { ToolApprovalReview } from "../../../../src/shared/tool-approval-reviews.js";
 
-export type ChatQueueDisplayItem = ChatQueueItem & { serverQueued?: true };
+export type ChatQueueDisplayItem = ChatQueueItem & {
+  serverQueued?: true;
+  /** Accepted input without a user queue-management operation. Never browser outbox work. */
+  readOnly?: true;
+  senderSession?: NormalizedMessage["senderSession"];
+};
 
 export type ChatQueueItem = {
   id: string;

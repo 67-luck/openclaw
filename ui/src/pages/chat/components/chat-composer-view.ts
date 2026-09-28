@@ -316,6 +316,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
         ></div>`
       : nothing;
   const queue = renderChatQueue({
+    currentAgentId: props.currentAgentId,
     queue: props.queue,
     displayQueue: props.displayQueue,
     offline: props.offline,

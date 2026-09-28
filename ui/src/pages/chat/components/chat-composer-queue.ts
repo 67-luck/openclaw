@@ -18,8 +18,10 @@ import { updateHumanMentions, type HumanMentionInput } from "../../../lib/chat/h
 import { isQueuedSendInlineState } from "../chat-progress.ts";
 import { isSteerableQueuedMessage } from "../chat-queue.ts";
 import { renderChatAuthorAvatar } from "./chat-author-avatar.ts";
+import { renderForwardedAttribution } from "./chat-forwarded-attribution.ts";
 
 type ChatQueueProps = {
+  currentAgentId?: string;
   queue: ChatQueueItem[];
   displayQueue?: ChatQueueDisplayItem[];
   offline?: boolean;
@@ -288,8 +290,14 @@ function renderChatQueueItem(
   const failed =
     item.sendState === "failed" || item.sendState === "unconfirmed" || item.sendState === "held";
   const reconnecting =
-    !item.serverQueued && !failed && (props.offline || item.sendState === "waiting-reconnect");
-  const stateLabel = sendStateLabel(item, !item.serverQueued && props.offline === true);
+    !item.readOnly &&
+    !item.serverQueued &&
+    !failed &&
+    (props.offline || item.sendState === "waiting-reconnect");
+  const stateLabel =
+    item.readOnly || item.senderSession
+      ? t("common.queued")
+      : sendStateLabel(item, !item.serverQueued && props.offline === true);
   const steered = item.queueMode === "steer" && stateLabel === null;
   const busy = item.sendState === "executing-command";
   const editing = props.editingId === item.id;
@@ -496,7 +504,14 @@ function renderChatQueueItem(
                 }
               }}
             ></textarea>`
-          : html`<span class="chat-queue__copy">
+          : html`<div class="chat-queue__copy">
+              ${
+                item.senderSession
+                  ? html`<div class="chat-queue__source">
+                      ${renderForwardedAttribution(item, { agentId: props.currentAgentId })}
+                    </div>`
+                  : nothing
+              }
               <span class="chat-queue__text" title=${text}>${text}</span>
               ${
                 steered && !canSteer
@@ -520,7 +535,7 @@ function renderChatQueueItem(
                     >`
                   : nothing
               }
-            </span>`
+            </div>`
       }
       <span class="chat-queue__actions">
         ${
@@ -577,7 +592,7 @@ function renderChatQueueItem(
             : nothing
         }
         ${
-          busy || editing
+          busy || editing || item.readOnly
             ? nothing
             : html`
                 <openclaw-tooltip .content=${t("chat.queue.removeQueuedMessage")}>

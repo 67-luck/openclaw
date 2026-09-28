@@ -4,7 +4,11 @@ import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { i18n, t } from "../../i18n/index.ts";
 import type { HumanMention } from "../../lib/chat/chat-types.ts";
+import { buildPendingInputQueueItems } from "./chat-pending-inputs.ts";
+import { isSteerableQueuedMessage } from "./chat-queue.ts";
+import { buildChatItems } from "./chat-thread-build.ts";
 import { renderChatQueue } from "./components/chat-composer-queue.ts";
+import { selectChatInputDisplay } from "./history-merge.ts";
 
 afterEach(async () => {
   document.body.replaceChildren();
@@ -660,3 +664,88 @@ describe("chat composer queue reordering", () => {
     expect(onQueueMove.mock.calls).toEqual([["c", "a"]]);
   });
 });
+
+it.each([
+  { kind: "inter_session", sourceTool: "sessions_send" },
+  {
+    kind: "internal_system",
+    sourceTool: "cron",
+    jobId: "job",
+    runId: "cron-run",
+    sourceSessionKey: "agent:main:cron:job:run:cron-run",
+  },
+])(
+  "queues pending $sourceTool input read-only and retires it on canonical promotion",
+  (provenance) => {
+    const message = {
+      role: "assistant",
+      content: "Agent verification completed",
+      timestamp: 10,
+      provenance,
+      senderSession: {
+        sessionKey: "agent:main:helper",
+        agentId: "main",
+        label: "Verification helper",
+      },
+      __openclaw: { id: "pending:agent-input" },
+    };
+    // Long external run IDs can be omitted by the Gateway; they still need a queue row.
+    const agentInput = { id: "agent-input", acceptedAt: 10, state: "queued" as const, message };
+    const humanInput = {
+      id: "human-input",
+      runId: "human-run",
+      acceptedAt: 11,
+      state: "queued" as const,
+      queued: true as const,
+      message: { role: "user", content: "Human follow-up" },
+    };
+    const inputs = [agentInput, humanInput];
+    const selection = selectChatInputDisplay([], [], inputs);
+    expect(selection.pendingInputs).toEqual([]);
+    expect(selection.queuedInputs).toEqual(inputs);
+    const displayQueue = buildPendingInputQueueItems(selection.queuedInputs);
+    expect(displayQueue).toHaveLength(2);
+    expect(displayQueue[0]).toMatchObject({ readOnly: true, senderSession: message.senderSession });
+    expect(isSteerableQueuedMessage(displayQueue[0]!)).toBe(false);
+    const container = renderQueue({
+      queue: [],
+      displayQueue,
+      canAbort: true,
+      canRemoveServerQueued: true,
+      offline: true,
+      onQueueRemove: vi.fn(),
+      onQueueSteer: vi.fn(),
+      onQueueEdit: vi.fn(),
+      onQueueMove: vi.fn(),
+    });
+    const agentRow = container.querySelector('[data-chat-queue-item="pending-input:agent-input"]')!;
+    expect(agentRow.textContent).toContain("Queued");
+    expect(agentRow.textContent).toContain("Verification helper");
+    expect(agentRow.textContent).not.toContain("reconnect");
+    expect(agentRow.querySelector('a[data-session-key="agent:main:helper"]')).not.toBeNull();
+    expect(
+      agentRow.querySelector(".chat-queue__remove, .chat-queue__steer, .chat-queue__more"),
+    ).toBeNull();
+    expect(container.querySelectorAll(".chat-queue__remove")).toHaveLength(1);
+    const promoted = { ...message, __openclaw: { id: "agent-input", seq: 1 } };
+    // A lagging custody page cannot leave a second copy after its forwarded history row arrives.
+    const consumed = selectChatInputDisplay([promoted], [], inputs);
+    expect(consumed.queuedInputs).toEqual([humanInput]);
+    expect(consumed.pendingInputs).toEqual([]);
+    const stopped = selectChatInputDisplay([], [], [{ ...agentInput, state: "interrupted" }]);
+    expect(stopped.queuedInputs).toEqual([]);
+    expect(stopped.pendingInputs).toHaveLength(1);
+    const rows = buildChatItems({
+      paneId: "queued-agent",
+      sessionKey: "main",
+      messages: [],
+      pendingInputs: inputs,
+      toolMessages: [],
+      streamSegments: [],
+      stream: null,
+      streamStartedAt: null,
+      showToolCalls: true,
+    });
+    expect(rows).toEqual([]);
+  },
+);

@@ -18,6 +18,7 @@ import { confirmQueuedMessageCustody, removeQueuedMessage } from "./chat-queue.t
 import type { ChatState } from "./chat-state-contract.ts";
 import { projectChatSystemNotice } from "./chat-system-notice.ts";
 import { buildMessageItems, messageMatchesSearchQuery } from "./chat-thread-items.ts";
+import { isForwardedTurnBoundary } from "./chat-turn-boundary.ts";
 import {
   getChatSessionProjection,
   readChatSessionProjectionScope,
@@ -86,10 +87,11 @@ export function buildPendingInputQueueItems(
   return inputs
     .toSorted((left, right) => left.acceptedAt - right.acceptedAt)
     .flatMap<ChatQueueDisplayItem>((input) => {
-      if (!input.queued || input.state !== "queued" || !input.runId) {
+      if (input.state !== "queued") {
         return [];
       }
       const message = normalizeMessage(input.message);
+      const forwarded = isForwardedTurnBoundary(input.message);
       const attachmentLabels = message.content.flatMap((part) =>
         part.type === "attachment" || part.type === "attachment_error"
           ? [part.attachment.label]
@@ -107,8 +109,11 @@ export function buildPendingInputQueueItems(
             (imageCount ? t("chat.queue.imageCount", { count: String(imageCount) }) : ""),
           createdAt: input.acceptedAt,
           pendingRunId: input.runId,
-          serverQueued: true,
-          sender: message.sender ?? undefined,
+          // Only the explicit Gateway queue flag grants the existing cancel action.
+          // Other accepted agent inputs are display-only, never local outbox work.
+          ...(input.queued ? { serverQueued: true as const } : { readOnly: true as const }),
+          sender: forwarded ? undefined : (message.sender ?? undefined),
+          senderSession: forwarded ? (message.senderSession ?? {}) : undefined,
         },
       ];
     });

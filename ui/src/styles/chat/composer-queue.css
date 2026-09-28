@@ -304,6 +304,16 @@
   padding-block: 3px;
 }
 
+.chat-queue__source {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.chat-queue__source .chat-reply-attribution {
+  margin-bottom: 0;
+  font-size: 11px;
+}
+
 .chat-queue__text {
   display: -webkit-box;
   min-width: 0;
