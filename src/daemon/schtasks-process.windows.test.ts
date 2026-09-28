@@ -42,7 +42,9 @@ it.skipIf(process.platform !== "win32")(
         stdio: ["ignore", "ignore", "inherit", "ipc"],
         windowsHide: true,
       });
-      const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+      const closed = new Promise<void>((resolve) => {
+        child.once("close", () => resolve());
+      });
       try {
         const [actualArguments] = await once(child, "message", { signal: context.signal });
         expect(actualArguments).toEqual(programArguments);
