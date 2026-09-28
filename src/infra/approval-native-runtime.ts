@@ -206,8 +206,10 @@ export function createChannelNativeApprovalRuntime<
     sourceConfig: adapter.cfg,
     ...(adapter.isOriginCurrent
       ? {
-          isOriginCurrent: (request: ApprovalRequest, handoffConfig?: OpenClawConfig) =>
-            adapter.isOriginCurrent?.(request as TRequest, handoffConfig) === true,
+          isOriginCurrent: (request: ApprovalRequest, handoffConfig?: OpenClawConfig) => {
+            // SAFETY: Core calls this guard with the request registered by this typed runtime.
+            return adapter.isOriginCurrent?.(request as TRequest, handoffConfig) === true;
+          },
         }
       : {}),
     // SAFETY: the route coordinator receives only normalized requests from this runtime.
