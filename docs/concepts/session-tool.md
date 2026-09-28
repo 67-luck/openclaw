@@ -186,7 +186,8 @@ its one-way result turn in the same requester conversation. Successful results
 and child failures can therefore continue already authorized work with owner-only
 plugin tools. This does not make the child an owner or treat its text as a user
 instruction. A new user turn, revoked ownership, changed conversation, or Gateway
-restart invalidates the retained authority.
+restart invalidates the retained authority. Once the result turn is admitted,
+its run owns that authority until it finishes, even if result polling disconnects.
 The original paused child task remains separate from an explicit followup.
 
 Retries with the same input ID reconcile retained Gateway admission and reply

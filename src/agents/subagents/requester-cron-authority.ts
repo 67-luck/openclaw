@@ -48,6 +48,7 @@ type RequesterCronAuthority = {
       kind: "followup";
       sourceSessionKey: string;
       isFollowupCurrent: () => boolean;
+      releaseFollowup: () => void;
     }
 );
 
@@ -65,6 +66,9 @@ const state = resolveGlobalSingleton<RequesterCronAuthorityState>(
         entry.active = false;
         entry.releaseOperatorAuthority?.();
         entry.releaseOperatorAuthority = undefined;
+        if (entry.kind === "followup") {
+          entry.releaseFollowup();
+        }
       }
     }
     value.byEntry = new WeakMap();
@@ -91,6 +95,9 @@ function discard(authority: RequesterCronAuthority): void {
   session?.delete(authority);
   if (session?.size === 0) {
     state.bySession.delete(authority.requesterSessionKey);
+  }
+  if (authority.kind === "followup") {
+    authority.releaseFollowup();
   }
 }
 
@@ -411,6 +418,7 @@ export function captureRequesterFollowupAuthority(params: {
   requesterSessionId: string;
   sourceSessionKey: string;
   isCurrent: () => boolean;
+  release: () => void;
 }) {
   const capture = captureActiveCronManagementAuthority({
     runId: params.requesterTurnRunId,
@@ -427,13 +435,20 @@ export function captureRequesterFollowupAuthority(params: {
     managementEntitlement: capture.managementEntitlement,
     lifecycleGeneration: capture.lifecycleGeneration,
     isFollowupCurrent: params.isCurrent,
+    releaseFollowup: params.release,
     active: true,
   };
   const session = state.bySession.get(params.requesterSessionKey) ?? new Set();
   session.add(authority);
   state.bySession.set(params.requesterSessionKey, session);
   return {
-    release: () => discard(authority),
+    release: () => {
+      // Observation may end before accepted work starts. Its Gateway admission
+      // and subsequent run scope, not the result waiter, now own this capture.
+      if (authority.admittedRunId === undefined) {
+        discard(authority);
+      }
+    },
     async run<T>(runId: string, run: () => Promise<T>): Promise<T> {
       if (!isCurrent(authority) || authority.admittedRunId !== undefined) {
         throw new Error("Requester followup authority is no longer current");
@@ -461,6 +476,7 @@ export function consumeRequesterCronAuthorityAdmission(params: {
       requesterOwner?: CronCreatorAuthorityCapability["requesterOwner"];
       isCurrent: () => boolean;
       bindRunScope: (scope: CronCreatorAuthorityCapability) => void;
+      release?: () => void;
     }
   | undefined {
   const dispatch = activeDispatch.getStore();
@@ -492,6 +508,9 @@ export function consumeRequesterCronAuthorityAdmission(params: {
     managementEntitlement: dispatch.authority.managementEntitlement,
     requesterOwner: dispatch.authority.requesterOwner,
     isCurrent: dispatch.isCurrent,
+    ...(dispatch.authority.kind === "followup"
+      ? { release: () => discard(dispatch.authority) }
+      : {}),
     bindRunScope: (scope) => {
       if (
         dispatch.authority.runScopeBound ||

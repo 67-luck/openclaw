@@ -54,18 +54,27 @@ export async function prepareSessionsSendFollowup(params: {
   const signal = AbortSignal.any([captured.signal, revoked.signal]);
   let stopAccessWatch: (() => void) | undefined;
   let released = false;
+  let observationReleased = false;
+  let authorityReleased = true;
   let requesterAuthority: ReturnType<typeof captureRequesterFollowupAuthority>;
-  const release = () => {
-    if (released) {
+  const releaseResources = () => {
+    if (released || !observationReleased || !authorityReleased) {
       return;
     }
     released = true;
     stopAccessWatch?.();
-    requesterAuthority?.release();
     for (const read of facts) {
       read.release();
     }
     captured.release();
+  };
+  const release = () => {
+    if (observationReleased) {
+      return;
+    }
+    observationReleased = true;
+    requesterAuthority?.release();
+    releaseResources();
   };
   try {
     assertInvocation?.();
@@ -168,6 +177,10 @@ export async function prepareSessionsSendFollowup(params: {
           requesterSessionKey: params.requesterSessionKey,
           requesterSessionId,
           sourceSessionKey: params.targetSessionKey,
+          release: () => {
+            authorityReleased = true;
+            releaseResources();
+          },
           isCurrent: () => {
             try {
               assertCurrent();
@@ -178,6 +191,9 @@ export async function prepareSessionsSendFollowup(params: {
           },
         }),
       );
+      // The observer and the admitted parent share the prepared custody. Either
+      // can finish first; release its readers only after both owners are done.
+      authorityReleased = requesterAuthority === undefined;
     }
     return {
       runId: params.runId,

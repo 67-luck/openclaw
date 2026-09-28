@@ -130,122 +130,130 @@ afterEach(() => {
 });
 
 describe("child followup requester continuation", () => {
-  it.each(["success", "child error", "owner revoked", "custody revoked", "new user turn"])(
-    "returns the original owner's plugin authority after %s",
-    async (outcome) => {
-      let ownerCurrent = true;
-      const owner = {
-        senderId: "owner",
-        channel: "telegram",
-        accountId: "test",
-        isCurrent: () => ownerCurrent,
-      };
-      const capability = createCronCreatorAuthorityCapability(
-        "original",
-        { kind: "unknown" },
-        { source: "channel-owner", isCurrent: () => ownerCurrent },
-        () => true,
+  it.each([
+    "success",
+    "child error",
+    "owner revoked",
+    "custody revoked",
+    "new user turn",
+    "observer closed",
+  ])("returns the original owner's plugin authority after %s", async (outcome) => {
+    let ownerCurrent = true;
+    const owner = {
+      senderId: "owner",
+      channel: "telegram",
+      accountId: "test",
+      isCurrent: () => ownerCurrent,
+    };
+    const capability = createCronCreatorAuthorityCapability(
+      "original",
+      { kind: "unknown" },
+      { source: "channel-owner", isCurrent: () => ownerCurrent },
+      () => true,
+      undefined,
+      owner,
+    )!;
+    const request: FollowupRequest | undefined = await inRun("original", () =>
+      runWithCronCreatorAuthorityCapability(capability, async () => {
+        const withRequesterAuthority = bindRequesterYieldCronAuthority("original");
+        return await prepareSessionsSendFollowup({
+          runId: "child-followup",
+          requesterTurnRunId: "original",
+          withRequesterAuthority,
+          requesterAgentId: "main",
+          requesterSessionKey: SESSION,
+          targetAgentId: "main",
+          targetSessionKey: CHILD,
+        });
+      }),
+    );
+    expect(request).toBeDefined();
+    const completion = SessionFollowupCompletion.bind(request!);
+    completion.markAccepted(request!.runId);
+    const released = createDeferredCore();
+    fixture.release.mockImplementation(() => released.resolve());
+    if (outcome === "owner revoked") {
+      ownerCurrent = false;
+    }
+    if (outcome === "custody revoked") {
+      fixture.assertCustody.mockImplementation(() => {
+        throw new Error("custody revoked");
+      });
+    }
+    if (outcome === "new user turn") {
+      revokeRequesterCronAuthority(SESSION);
+    }
+    const invoked = vi.fn();
+    const callGateway = vi.fn();
+    callGateway.mockImplementation(async (rpc) => {
+      if (rpc.method !== "agent") {
+        throw new Error("unexpected RPC");
+      }
+      rpc.assertDispatchCurrent?.();
+      const input = rpc.params;
+      const admission = consumeRequesterCronAuthorityAdmission({
+        runId: input.idempotencyKey,
+        sessionKey: input.sessionKey,
+        sessionId: input.expectedExistingSessionId,
+        inputProvenance: input.inputProvenance,
+      });
+      expect(admission).toBeDefined();
+      const scope = createCronCreatorAuthorityCapability(
+        admission!.runId,
+        admission!.callerOrigin,
+        admission!.managementEntitlement,
+        admission!.isCurrent,
         undefined,
-        owner,
+        admission!.requesterOwner,
       )!;
-      const request: FollowupRequest | undefined = await inRun("original", () =>
-        runWithCronCreatorAuthorityCapability(capability, async () => {
-          const withRequesterAuthority = bindRequesterYieldCronAuthority("original");
-          return await prepareSessionsSendFollowup({
-            runId: "child-followup",
-            requesterTurnRunId: "original",
-            withRequesterAuthority,
-            requesterAgentId: "main",
-            requesterSessionKey: SESSION,
-            targetAgentId: "main",
-            targetSessionKey: CHILD,
+      admission!.bindRunScope(scope);
+      await inRun(admission!.runId, () =>
+        runWithCronCreatorAuthorityCapability(scope, async () => {
+          if (outcome === "observer closed") {
+            completion.close();
+            expect(fixture.release).not.toHaveBeenCalled();
+          }
+          const binding = bindRequesterOwnerIdentity({
+            runId: admission!.runId,
+            sessionKey: SESSION,
+            sessionId: SESSION_ID,
+            agentId: "main",
           });
+          expect(binding?.isCurrent()).toBe(true);
+          binding!.assertCurrent();
+          invoked();
         }),
       );
-      expect(request).toBeDefined();
-      const completion = SessionFollowupCompletion.bind(request!);
-      completion.markAccepted(request!.runId);
-      const released = createDeferredCore();
-      fixture.release.mockImplementation(() => released.resolve());
-      if (outcome === "owner revoked") {
-        ownerCurrent = false;
-      }
-      if (outcome === "custody revoked") {
-        fixture.assertCustody.mockImplementation(() => {
-          throw new Error("custody revoked");
-        });
-      }
-      if (outcome === "new user turn") {
-        revokeRequesterCronAuthority(SESSION);
-      }
-      const invoked = vi.fn();
-      const callGateway = vi.fn();
-      callGateway.mockImplementation(async (rpc) => {
-        if (rpc.method !== "agent") {
-          throw new Error("unexpected RPC");
-        }
-        rpc.assertDispatchCurrent?.();
-        const input = rpc.params;
-        const admission = consumeRequesterCronAuthorityAdmission({
-          runId: input.idempotencyKey,
-          sessionKey: input.sessionKey,
-          sessionId: input.expectedExistingSessionId,
-          inputProvenance: input.inputProvenance,
-        });
-        expect(admission).toBeDefined();
-        const scope = createCronCreatorAuthorityCapability(
-          admission!.runId,
-          admission!.callerOrigin,
-          admission!.managementEntitlement,
-          admission!.isCurrent,
-          undefined,
-          admission!.requesterOwner,
-        )!;
-        admission!.bindRunScope(scope);
-        await inRun(admission!.runId, () =>
-          runWithCronCreatorAuthorityCapability(scope, async () => {
-            const binding = bindRequesterOwnerIdentity({
-              runId: admission!.runId,
-              sessionKey: SESSION,
-              sessionId: SESSION_ID,
-              agentId: "main",
-            });
-            expect(binding?.isCurrent()).toBe(true);
-            binding!.assertCurrent();
-            invoked();
-          }),
-        );
-        return { runId: admission!.runId, status: "accepted" };
-      });
-      startSessionsSendReplyFlow({
-        completion,
-        callGateway,
-        runId: request!.runId,
-        skip: false,
-        reply:
-          outcome === "child error"
-            ? { status: "error", error: "plugin failed" }
-            : { status: "ok", replyText: "ready" },
-        notifyRequesterOnWaitFailure: true,
-        targetSessionKey: CHILD,
-        targetAgentId: "main",
-        displayKey: CHILD,
-        requesterSessionKey: SESSION,
-        requesterAgentId: "main",
-        message: "finish authorized task",
-        announceTimeoutMs: 1000,
-        maxPingPongTurns: 0,
-        replyMode: "one-way",
-      });
-      await released.promise;
-      if (outcome === "success" || outcome === "child error") {
-        expect(invoked).toHaveBeenCalledTimes(1);
-        expect(fixture.log).not.toHaveBeenCalled();
-      } else {
-        expect(invoked).not.toHaveBeenCalled();
-        expect(fixture.log).toHaveBeenCalled();
-      }
-      fixture.assertCustody.mockReset();
-    },
-  );
+      return { runId: admission!.runId, status: "accepted" };
+    });
+    startSessionsSendReplyFlow({
+      completion,
+      callGateway,
+      runId: request!.runId,
+      skip: false,
+      reply:
+        outcome === "child error"
+          ? { status: "error", error: "plugin failed" }
+          : { status: "ok", replyText: "ready" },
+      notifyRequesterOnWaitFailure: true,
+      targetSessionKey: CHILD,
+      targetAgentId: "main",
+      displayKey: CHILD,
+      requesterSessionKey: SESSION,
+      requesterAgentId: "main",
+      message: "finish authorized task",
+      announceTimeoutMs: 1000,
+      maxPingPongTurns: 0,
+      replyMode: "one-way",
+    });
+    await released.promise;
+    if (outcome === "success" || outcome === "child error" || outcome === "observer closed") {
+      expect(invoked).toHaveBeenCalledTimes(1);
+      expect(fixture.log).not.toHaveBeenCalled();
+    } else {
+      expect(invoked).not.toHaveBeenCalled();
+      expect(fixture.log).toHaveBeenCalled();
+    }
+    fixture.assertCustody.mockReset();
+  });
 });
