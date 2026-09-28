@@ -377,6 +377,20 @@ process.exitCode = await new Promise((resolve, reject) => {
           `
 const fs = require("node:fs");
 const path = require("node:path");
+if (require("node:worker_threads").isMainThread) {
+  const role = path.basename(process.argv[1] ?? "");
+  const initialCacheFlag = process.env.TSX_DISABLE_CACHE ?? "<unset>";
+  const record = (event, code) => fs.writeSync(2, "[cache-phase] " + JSON.stringify({
+    event, role, pid: process.pid, ppid: process.ppid, time: Date.now(),
+    uptimeMs: Math.round(process.uptime() * 1000), code, initialCacheFlag,
+  }) + "\\n");
+  record("start");
+  // The outer wrapper's existing failure trailer must remain its final line.
+  if (role !== "run-vitest.mjs") {
+    process.once("beforeExit", code => record("beforeExit", code));
+    process.once("exit", code => record("exit", code));
+  }
+}
 const readdirSync = fs.readdirSync;
 fs.readdirSync = function (directory, ...args) {
   if (/^tsx(?:-|$)/.test(path.basename(String(directory)))) {
@@ -447,13 +461,19 @@ process.exitCode = child.status ?? 1;
             env.TSX_DISABLE_CACHE = cacheFlag;
           }
           for (const launch of launches) {
+            const invocationStarted = performance.now();
             const result = await runNode(
               [...launch, "argument with spaces", "--proof"],
               env,
               process.cwd(),
             );
-            expect(result.error, formatShimResult(result)).toBeUndefined();
-            expect(result.status, formatShimResult(result)).toBe(17);
+            const diagnostic = `${formatShimResult(result)}\ninvocation: ${JSON.stringify({
+              entrypoint,
+              cacheFlag: cacheFlag ?? "<unset>",
+              elapsedMs: performance.now() - invocationStarted,
+            })}`;
+            expect(result.error, diagnostic).toBeUndefined();
+            expect(result.status, diagnostic).toBe(17);
             expect(
               result.stdout
                 .trim()

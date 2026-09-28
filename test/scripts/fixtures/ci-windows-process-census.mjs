@@ -268,6 +268,8 @@ export async function requestWindowsProcessCensus(root, token, pids) {
     throw new Error("Invalid fixture census endpoint");
   }
   const id = randomUUID();
+  const started = performance.now();
+  const phaseMs = {};
   const socket = net.createConnection({ host: "127.0.0.1", port: endpoint.port });
   let observations;
   let failure;
@@ -278,6 +280,7 @@ export async function requestWindowsProcessCensus(root, token, pids) {
   };
   const closed = new Promise((resolve, reject) => {
     socket.once("close", () => {
+      phaseMs.close = performance.now() - started;
       if (failure || !observations)
         reject(failure ?? new Error("Census broker closed without a reply"));
       else resolve(observations);
@@ -290,6 +293,7 @@ export async function requestWindowsProcessCensus(root, token, pids) {
   readFrames(
     socket,
     (message) => {
+      phaseMs.reply = performance.now() - started;
       if (
         observations ||
         failure ||
@@ -304,9 +308,11 @@ export async function requestWindowsProcessCensus(root, token, pids) {
     fail,
   );
   socket.once("connect", () => {
+    phaseMs.connect = performance.now() - started;
     try {
       assertLease(root, token);
       socket.write(JSON.stringify({ id, token, pids }) + "\n");
+      phaseMs.writeSubmitted = performance.now() - started;
     } catch (error) {
       fail(error);
     }
@@ -316,6 +322,11 @@ export async function requestWindowsProcessCensus(root, token, pids) {
     if (Date.now() >= deadline) throw new Error("Census broker query ETIMEDOUT");
     assertLease(root, token);
     return result;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("ETIMEDOUT")) {
+      error.message += `; client phases ${JSON.stringify(phaseMs)}`;
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
