@@ -60,7 +60,7 @@ it("copies saved content through the real hit target without mounting forwarded 
   } as const;
   const saved: ChatSavedInputs = {
     items: [input],
-    inspections: new Map([[input.id, { source: input.message }]]),
+    inspections: new Map([[input.id, { source: input }]]),
     onToggle: async () => {},
     error: undefined,
     loading: false,

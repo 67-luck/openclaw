@@ -4,6 +4,7 @@ import { resolveUiSelectedSessionAgentId } from "../../lib/sessions/session-key.
 import {
   resolveCappedMessageId,
   resolveSourceMessageId,
+  sameSavedInputSource,
   type AssistantMessageExpansionState,
 } from "./chat-message-recovery.ts";
 import {
@@ -19,7 +20,7 @@ import { getTranscriptState } from "./components/chat-thread-interactions.ts";
 import { selectChatInputDisplay } from "./history-merge.ts";
 
 export type SavedChatInput = ChatPendingInputsPage["items"][number];
-type Inspection = { source: unknown; state?: AssistantMessageExpansionState };
+type Inspection = { source: SavedChatInput; state?: AssistantMessageExpansionState };
 type InspectionScope = {
   client: ChatState["client"];
   epoch: number;
@@ -107,7 +108,7 @@ export function createChatSavedInputs(props: ChatProps) {
   const owner = scope;
   const items = savedInputs(state);
   for (const [id, inspection] of owner.inspections) {
-    if (!items.some((input) => input.id === id && input.message === inspection.source)) {
+    if (!items.some((input) => sameSavedInputSource(input, inspection.source))) {
       owner.inspections.delete(id);
     }
   }
@@ -119,10 +120,7 @@ export function createChatSavedInputs(props: ChatProps) {
     getChatPendingInputs(state)?.pageEpoch === owner.epoch;
   const requestUpdate = props.onRequestUpdate ?? (() => state.requestUpdate?.());
   const onToggle = async (input: SavedChatInput, open: boolean) => {
-    if (
-      !current() ||
-      !savedInputs(state).some((row) => row.id === input.id && row.message === input.message)
-    ) {
+    if (!current() || !savedInputs(state).some((row) => sameSavedInputSource(row, input))) {
       return;
     }
     if (!open) {
@@ -134,7 +132,7 @@ export function createChatSavedInputs(props: ChatProps) {
     if (existing && existing.state?.status !== "error") {
       return;
     }
-    const inspection: Inspection = { source: input.message };
+    const inspection: Inspection = { source: input };
     owner.inspections.set(input.id, inspection);
     const prepared = prepareChatMessageRender(input.message);
     const messageId = resolveCappedMessageId(input.message, prepared.normalizedMessage.role);
@@ -154,7 +152,7 @@ export function createChatSavedInputs(props: ChatProps) {
       current() &&
       state.connected &&
       owner.inspections.get(input.id) === inspection &&
-      savedInputs(state).some((row) => row.id === input.id && row.message === inspection.source);
+      savedInputs(state).some((row) => sameSavedInputSource(row, inspection.source));
     try {
       const result = await loader({
         sessionKey: owner.sessionKey,

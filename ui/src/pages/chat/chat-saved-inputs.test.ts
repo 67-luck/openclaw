@@ -52,6 +52,20 @@ function fixture() {
 afterEach(() => resetThreadPresentation("saved-test"));
 
 describe("pane-local saved input inspection", () => {
+  it("keeps the same saved source open across fresh display projections", async () => {
+    const { host, props, deferred } = fixture();
+    const saved = createChatSavedInputs(props)!;
+    const loading = saved.onToggle(input, true);
+    const refresh = () =>
+      applyChatPendingInputs(host, { items: [structuredClone(input)], total: 1 });
+    refresh();
+    deferred.resolve(full);
+    await loading;
+    expect(createChatSavedInputs(props)?.inspections.get(input.id)?.state?.status).toBe("loaded");
+    refresh();
+    expect(createChatSavedInputs(props)?.inspections.get(input.id)?.state?.status).toBe("loaded");
+    expect(host.request).toHaveBeenCalledOnce();
+  });
   it("keeps an authenticated viewer's saved read across cosmetic profile changes", async () => {
     const { host, props, deferred } = fixture();
     host.selfUser = { id: "viewer", name: "Before", avatarUrl: "/before.png" };
@@ -113,6 +127,7 @@ describe("pane-local saved input inspection", () => {
   it.each([
     "close",
     "source",
+    "custody state",
     "remove",
     "epoch",
     "session",
@@ -137,9 +152,22 @@ describe("pane-local saved input inspection", () => {
         break;
       case "source":
         applyChatPendingInputs(host, {
-          items: [{ ...input, message: { ...input.message, content: "Changed source" } }],
+          items: [
+            {
+              ...input,
+              id: "replacement",
+              message: {
+                ...input.message,
+                content: "Changed source",
+                __openclaw: { id: "pending:replacement", truncated: true },
+              },
+            },
+          ],
           total: 1,
         });
+        break;
+      case "custody state":
+        applyChatPendingInputs(host, { items: [{ ...input, state: "cancelled" }], total: 1 });
         break;
       case "remove":
         applyChatPendingInputs(host, { items: [], total: 0 });
