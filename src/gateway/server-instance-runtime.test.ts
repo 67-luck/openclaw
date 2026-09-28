@@ -191,15 +191,15 @@ describe("createGatewayInstanceRuntime", () => {
       request: { ...request.request, turnSourceAccountId: null },
     };
     expect(runtime.approvalEvents.publishRequested("plugin", defaultRequest)).toBe(4);
-    expect(recipients[3]?.onRequested).toHaveBeenCalledWith(defaultRequest);
-    for (const recipient of recipients.slice(0, 3)) {
-      expect(recipient.onRequested).toHaveBeenCalledWith(
-        expect.objectContaining({
-          request: expect.objectContaining({
-            approvalSource: { channel: "slack", senderId: "U123" },
-          }),
-        }),
-      );
+    const publicDefaultRequest = {
+      ...defaultRequest,
+      request: {
+        ...defaultRequest.request,
+        approvalSource: { channel: "slack", senderId: "U123" },
+      },
+    };
+    for (const recipient of recipients) {
+      expect(recipient.onRequested).toHaveBeenCalledWith(publicDefaultRequest);
     }
 
     runtime.approvalEvents.publishResolved("plugin", {

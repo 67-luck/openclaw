@@ -844,6 +844,91 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
           capabilityLease.assertActive("startup");
           channelRuntimeForTask = scopedChannelRuntime.channelRuntime;
 
+          const getAccountApprovalRuntime = (): GatewayNativeApprovalRuntime | undefined => {
+            const gatewayRuntime = opts.getNativeApprovalRuntime?.();
+            if (!gatewayRuntime) {
+              return undefined;
+            }
+            const assertApprovalCurrent = () => {
+              assertStartCurrent();
+              capabilityLease.assertActive("approval runtime");
+              if (abort.signal.aborted) {
+                throw new Error("Channel approval runtime owner stopped");
+              }
+            };
+            const isApprovalCurrent = () => {
+              try {
+                assertApprovalCurrent();
+                return true;
+              } catch {
+                return false;
+              }
+            };
+            const routeCoordinator = gatewayRuntime.routeCoordinator;
+            return {
+              ...gatewayRuntime,
+              routeCoordinator: {
+                ...routeCoordinator,
+                createReporter: (params) => {
+                  assertApprovalCurrent();
+                  // The host owns route reporter coordinates; plugin supplied
+                  // values cannot claim another channel's requester route.
+                  const reporter = routeCoordinator.createReporter({
+                    ...params,
+                    channel: channelId,
+                    accountId: id,
+                    ...(params.isOriginCurrent
+                      ? {
+                          isOriginCurrent: (request, handoffConfig) => {
+                            if (!isApprovalCurrent()) {
+                              return false;
+                            }
+                            try {
+                              return params.isOriginCurrent?.(request, handoffConfig) === true;
+                            } catch {
+                              return false;
+                            }
+                          },
+                        }
+                      : {}),
+                  });
+                  return {
+                    ...reporter,
+                    start: () => {
+                      assertApprovalCurrent();
+                      reporter.start();
+                    },
+                  };
+                },
+              },
+              subscribe: (subscriber) => {
+                assertApprovalCurrent();
+                // The host owns this channel/account binding. A plugin must not
+                // claim another account to receive its private approval context.
+                // Account stop can precede task settlement; gate each callback too.
+                return capabilityLease.retain(
+                  gatewayRuntime.subscribe({
+                    ...subscriber,
+                    channel: channelId,
+                    accountId: id,
+                    shouldHandle: (request) =>
+                      isApprovalCurrent() && subscriber.shouldHandle(request),
+                    onRequested: (request) => {
+                      if (isApprovalCurrent()) {
+                        subscriber.onRequested(request);
+                      }
+                    },
+                    onResolved: (resolved) => {
+                      if (isApprovalCurrent()) {
+                        subscriber.onResolved(resolved);
+                      }
+                    },
+                  }),
+                );
+              },
+            };
+          };
+
           if (!preserveRestartAttempts) {
             restarts.delete(rKey);
           }
@@ -856,7 +941,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
                   cfg,
                   accountId: id,
                   channelRuntime: channelRuntimeForTask,
-                  gatewayRuntime: opts.getNativeApprovalRuntime?.(),
+                  gatewayRuntime: getAccountApprovalRuntime(),
                   logger: log,
                 }),
             );
@@ -936,7 +1021,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
                   channelRunDurationMs = Date.now() - startedAt;
                 };
                 try {
-                  return withGatewayNativeApprovalRuntime(opts.getNativeApprovalRuntime?.(), () =>
+                  return withGatewayNativeApprovalRuntime(getAccountApprovalRuntime(), () =>
                     startAccount({
                       ...accountContext,
                       setStatus: (next) =>

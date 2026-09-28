@@ -1,3 +1,4 @@
+import { projectApprovalRequestForExternal } from "../../infra/approval-request-projection.js";
 import type { ChannelApprovalKind } from "../../infra/approval-types.js";
 // Best-effort legacy approval resolution events after durable CAS wins.
 import type { ExecApprovalForwarder } from "../../infra/exec-approval-forwarder.js";
@@ -13,7 +14,6 @@ import type {
   SystemAgentApprovalRequestPayload,
   SystemAgentApprovalResolved,
 } from "../../infra/system-agent-approvals.js";
-import { projectApprovalRequestForExternal } from "../approval-request-projection.js";
 import type { ExecApprovalRecord } from "../exec-approval-manager.js";
 import type { OperatorApprovalRecord } from "../operator-approval-store.js";
 import { broadcastApprovalResolvedEvent } from "./approval-shared.js";

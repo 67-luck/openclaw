@@ -13,15 +13,15 @@ import type {
 } from "../infra/approval-gateway-runtime.types.js";
 import { createApprovalNativeRouteCoordinator } from "../infra/approval-native-route-coordinator.js";
 import type { ApprovalRouteSendParams } from "../infra/approval-native-route-notice.js";
+import { projectApprovalRequestForExternal } from "../infra/approval-request-projection.js";
 import type { ChannelApprovalKind } from "../infra/approval-types.js";
 import type { PluginApprovalRequest } from "../infra/plugin-approvals.js";
-import { DEFAULT_ACCOUNT_ID, normalizeOptionalAccountId } from "../routing/account-id.js";
+import { normalizeOptionalAccountId } from "../routing/account-id.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 // HTTP agent ingress can finish before the lazy agent.wait handler loads its recorder.
 import "./agent-turn/agent-job.js";
 import { createInternalAgentTurnFacade } from "./agent-turn/internal-facade.js";
 import type { InternalAgentTurnPrincipalOptions } from "./agent-turn/internal-facade.types.js";
-import { projectApprovalRequestForExternal } from "./approval-request-projection.js";
 import {
   resolveLeastPrivilegeOperatorScopesForMethod,
   APPROVALS_SCOPE,
@@ -78,8 +78,7 @@ function pluginRequestForSubscriber<TRequest extends PluginApprovalRequest>(
     subscriber.channel === "slack" &&
     request.request.turnSourceChannel === "slack" &&
     subscriberAccountId !== undefined &&
-    (subscriberAccountId === sourceAccountId ||
-      (request.request.turnSourceAccountId == null && subscriberAccountId === DEFAULT_ACCOUNT_ID));
+    subscriberAccountId === sourceAccountId;
   return ownsSlackSource ? request : publicRequest;
 }
 

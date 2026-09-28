@@ -7,6 +7,7 @@ import {
   validatePluginApprovalRequestParams,
   validatePluginApprovalResolveParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { projectApprovalRequestForExternal } from "../../infra/approval-request-projection.js";
 import { sanitizeApprovalScope } from "../../infra/approval-scope.js";
 import type { ExecApprovalForwarder } from "../../infra/exec-approval-forwarder.js";
 import {
@@ -26,7 +27,6 @@ import {
   resolvePluginApprovalTimeoutMs,
   truncatePluginApprovalDetail,
 } from "../../infra/plugin-approvals.js";
-import { projectApprovalRequestForExternal } from "../approval-request-projection.js";
 import type { ExecApprovalManager } from "../exec-approval-manager.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { resolveStoredSessionKeyForAgentStore } from "../session-store-key.js";

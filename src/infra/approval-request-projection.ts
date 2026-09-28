@@ -11,3 +11,11 @@ export function projectApprovalRequestForExternal<TRequest extends object>(
   // SAFETY: Gateway approval requests make the source excerpt optional; removing it preserves the request type.
   return { ...request, approvalSource } as TRequest;
 }
+
+/** Keep private excerpts out of shared native route callbacks and pending state. */
+export function projectApprovalRouteRequest<TRequest extends { request: object }>(
+  request: TRequest,
+): TRequest {
+  const projected = projectApprovalRequestForExternal(request.request);
+  return projected === request.request ? request : { ...request, request: projected };
+}

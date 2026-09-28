@@ -9,6 +9,7 @@ import type { ApprovalRouteSendParams } from "./approval-native-route-notice.js"
 import type { PluginApprovalRequest } from "./plugin-approvals.js";
 
 type ReporterOptions = Parameters<typeof createApprovalNativeRouteReporter>[0];
+type RouteRequest = Parameters<ReporterOptions["shouldHandle"]>[0];
 
 function createGatewayRequestMock() {
   return vi.fn(
@@ -59,6 +60,86 @@ function createOrigin(
 }
 
 describe("plugin approval requester notices without a local reviewer route", () => {
+  it("keeps the source excerpt out of route callbacks and pending notices", async () => {
+    const coordinator = createApprovalNativeRouteCoordinator();
+    const seen = {
+      shouldHandle: [] as RouteRequest[],
+      classifyRoute: [] as RouteRequest[],
+      isOriginCurrent: [] as RouteRequest[],
+    };
+    const { reporter: origin, requestGateway: originGateway } = createOrigin(coordinator, {
+      isOriginCurrent: (request) => {
+        seen.isOriginCurrent.push(request);
+        return true;
+      },
+    });
+    const otherGateway = createGatewayRequestMock();
+    const other = coordinator.createReporter({
+      handledKinds: new Set(["plugin"]),
+      channel: "discord",
+      channelLabel: "Discord",
+      accountId: "default",
+      requestGateway: otherGateway,
+      shouldHandle: (request) => {
+        seen.shouldHandle.push(request);
+        return true;
+      },
+      classifyRoute: (request) => {
+        seen.classifyRoute.push(request);
+        return "unbound";
+      },
+    });
+    other.start();
+    const request = createPluginRequest("plugin:private-route-source");
+    request.request.approvalSource = {
+      channel: "slack",
+      senderId: "U123",
+      userMessageExcerpt: "private original message",
+    };
+
+    coordinator.capturePluginOrigin(request);
+    origin.selectRequest({ approvalKind: "plugin", request });
+    const reviewerTarget = {
+      surface: "approver-dm" as const,
+      target: { to: "user:reviewer" },
+      reason: "preferred" as const,
+    };
+    await other.reportDelivery({
+      approvalKind: "plugin",
+      request,
+      deliveryPlan: {
+        targets: [reviewerTarget],
+        originTarget: null,
+        notifyOriginWhenDmOnly: false,
+      },
+      deliveredTargets: [reviewerTarget],
+    });
+    await origin.reportSkipped({ approvalKind: "plugin", request, reason: "ineligible" });
+    await coordinator.finishPluginOriginRouting(request.id, true);
+
+    for (const requests of Object.values(seen)) {
+      expect(requests.length).toBeGreaterThan(0);
+      for (const observed of requests) {
+        expect(observed.request).toEqual(
+          expect.objectContaining({ approvalSource: { channel: "slack", senderId: "U123" } }),
+        );
+      }
+    }
+    const sends = [...originGateway.mock.calls, ...otherGateway.mock.calls];
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.[2]).toEqual(
+      expect.objectContaining({
+        approvalRequest: expect.objectContaining({
+          request: expect.objectContaining({
+            approvalSource: { channel: "slack", senderId: "U123" },
+          }),
+        }),
+      }),
+    );
+    expect(request.request.approvalSource?.userMessageExcerpt).toBe("private original message");
+    coordinator.close();
+  });
+
   it("sends a truthful pending notice and denial through the captured source account", async () => {
     const coordinator = createApprovalNativeRouteCoordinator();
     let current = true;

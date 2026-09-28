@@ -32,6 +32,7 @@ import type {
   PendingApprovalRouteNotice,
   PluginTerminalStatus,
 } from "./approval-native-route-types.js";
+import { projectApprovalRouteRequest } from "./approval-request-projection.js";
 import type {
   ApprovalRequestChannelRouteClass,
   ApprovalRequestInput as ApprovalRequest,
@@ -75,6 +76,7 @@ function createApprovalRouteSelection(
   state: ApprovalNativeRouteCoordinatorState,
   params: { request: ApprovalRequest; approvalKind: ChannelApprovalKind },
 ): ApprovalRouteSelection {
+  const publicRequest = projectApprovalRouteRequest(params.request);
   const runtimes = Array.from(state.activeRuntimes.values()).filter((runtime) =>
     runtime.handledKinds.has(params.approvalKind),
   );
@@ -90,7 +92,7 @@ function createApprovalRouteSelection(
     const candidates: ApprovalRouteRuntimeRecord[] = [];
     for (const runtime of group) {
       try {
-        if (runtime.shouldHandle(params.request)) {
+        if (runtime.shouldHandle(publicRequest)) {
           candidates.push(runtime);
         }
       } catch (error) {
@@ -99,7 +101,7 @@ function createApprovalRouteSelection(
     }
     let routeClass: ApprovalRequestChannelRouteClass;
     try {
-      routeClass = group[0]?.classifyRoute(params.request) ?? "unbound";
+      routeClass = group[0]?.classifyRoute(publicRequest) ?? "unbound";
     } catch (error) {
       for (const runtime of group) {
         verdicts.set(runtime.runtimeId, { kind: "selector-error", error });
@@ -407,6 +409,7 @@ function createApprovalNativeRouteReporterForState(
     if (state.closed || !registered || !params.handledKinds.has(payload.approvalKind)) {
       return;
     }
+    const publicRequest = projectApprovalRouteRequest(payload.request);
     // After expiry, only a denied/expired terminal can still await delivery;
     // a late report must not resurrect a resolved request's pending notice.
     if (
@@ -417,21 +420,24 @@ function createApprovalNativeRouteReporterForState(
     ) {
       return;
     }
-    const selection = resolveApprovalRouteSelection(state, payload);
+    const selection = resolveApprovalRouteSelection(state, {
+      approvalKind: payload.approvalKind,
+      request: publicRequest,
+    });
     if (!selection.verdicts.has(runtimeId)) {
       return;
     }
     const entry =
       state.pendingNotices.get(payload.request.id) ??
       createPendingApprovalRouteNotice(state, {
-        request: payload.request,
+        request: publicRequest,
         approvalKind: payload.approvalKind,
       });
     const runtimeRecord = state.activeRuntimes.get(runtimeId);
     markPluginOriginDelivered(state, payload.request.id, runtimeRecord, payload.deliveredTargets);
     entry.reports.set(runtimeId, {
       runtimeId,
-      request: payload.request,
+      request: publicRequest,
       channel: params.channel,
       channelLabel: params.channelLabel,
       accountId: params.accountId,
@@ -451,7 +457,7 @@ function createApprovalNativeRouteReporterForState(
         }
         try {
           return params.isOriginCurrent
-            ? params.isOriginCurrent(payload.request, cfg)
+            ? params.isOriginCurrent(publicRequest, cfg)
             : !cfg || !params.sourceConfig || cfg === params.sourceConfig;
         } catch {
           return false;
@@ -471,20 +477,22 @@ function createApprovalNativeRouteReporterForState(
       if (state.closed || !params.handledKinds.has(payload.approvalKind)) {
         return { kind: "ineligible" };
       }
+      const publicRequest = projectApprovalRouteRequest(payload.request);
       if (!registered) {
         try {
-          return params.shouldHandle(payload.request)
-            ? { kind: "selected" }
-            : { kind: "ineligible" };
+          return params.shouldHandle(publicRequest) ? { kind: "selected" } : { kind: "ineligible" };
         } catch (error) {
           return { kind: "selector-error", error };
         }
       }
-      const selection = resolveApprovalRouteSelection(state, payload);
+      const selection = resolveApprovalRouteSelection(state, {
+        approvalKind: payload.approvalKind,
+        request: publicRequest,
+      });
       const entry =
         state.pendingNotices.get(payload.request.id) ??
         createPendingApprovalRouteNotice(state, {
-          request: payload.request,
+          request: publicRequest,
           approvalKind: payload.approvalKind,
         });
       state.pendingNotices.set(payload.request.id, entry);

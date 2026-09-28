@@ -11,6 +11,7 @@ import type {
   PluginTerminalStatus,
 } from "./approval-native-route-types.js";
 import { buildChannelApprovalNativeTargetKey } from "./approval-native-target-key.js";
+import { projectApprovalRouteRequest } from "./approval-request-projection.js";
 import type { ApprovalRequestInput as ApprovalRequest } from "./approval-types.js";
 import type { PluginApprovalRequest } from "./plugin-approvals.js";
 
@@ -34,14 +35,15 @@ export function capturePluginOrigin(
   request: PluginApprovalRequest,
   retainApprovalBinding?: () => (() => void) | null,
 ): void {
-  const source = request.request;
+  const publicRequest = projectApprovalRouteRequest(request);
+  const source = publicRequest.request;
   const channel = normalizeApprovalRouteChannel(source.turnSourceChannel);
   const accountId = normalizeOptionalString(source.turnSourceAccountId);
   const to = normalizeOptionalString(source.turnSourceTo);
   if (
     state.closed ||
-    state.pluginOrigins.has(request.id) ||
-    request.expiresAtMs <= Date.now() ||
+    state.pluginOrigins.has(publicRequest.id) ||
+    publicRequest.expiresAtMs <= Date.now() ||
     !source.approvalSource ||
     normalizeApprovalRouteChannel(source.approvalSource.channel) !== channel ||
     !channel ||
@@ -62,7 +64,7 @@ export function capturePluginOrigin(
   }
   const runtime = matches[0];
   try {
-    if (!runtime?.isOriginCurrent?.(request)) {
+    if (!runtime?.isOriginCurrent?.(publicRequest)) {
       return;
     }
   } catch {
@@ -77,15 +79,15 @@ export function capturePluginOrigin(
   let cleanupTimeout: NodeJS.Timeout | undefined;
   try {
     cleanupTimeout = setTimeout(
-      () => clearPluginOrigin(state, request.id),
+      () => clearPluginOrigin(state, publicRequest.id),
       Math.min(
-        Math.max(0, request.expiresAtMs - Date.now() + PLUGIN_TERMINAL_ROUTE_GRACE_MS),
+        Math.max(0, publicRequest.expiresAtMs - Date.now() + PLUGIN_TERMINAL_ROUTE_GRACE_MS),
         0x7fffffff,
       ),
     );
     cleanupTimeout.unref?.();
-    state.pluginOrigins.set(request.id, {
-      request,
+    state.pluginOrigins.set(publicRequest.id, {
+      request: publicRequest,
       runtime,
       target: {
         channel,

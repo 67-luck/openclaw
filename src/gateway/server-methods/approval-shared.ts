@@ -5,6 +5,7 @@ import { normalizeUniqueTrimmedStringList } from "@openclaw/normalization-core/s
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import type { ApprovalChannelReviewer } from "../../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { projectApprovalRequestForExternal } from "../../infra/approval-request-projection.js";
 import { hasApprovalTurnSourceRoute } from "../../infra/approval-turn-source.js";
 import type { ChannelApprovalKind } from "../../infra/approval-types.js";
 import type {
@@ -14,7 +15,6 @@ import type {
 import type { PluginApprovalRequestPayload } from "../../infra/plugin-approvals.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { prepareApprovalChannelCustody } from "../approval-channel-custody.js";
-import { projectApprovalRequestForExternal } from "../approval-request-projection.js";
 import type { ExecApprovalManager, ExecApprovalRecord } from "../exec-approval-manager.js";
 import type { OperatorApprovalStoreGuard } from "../operator-approval-store.types.js";
 import {
