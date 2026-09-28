@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.ts";
 import { createChatAttachmentHandoff } from "../../app/chat-attachment-handoff.ts";
+import type { AgentSelect } from "../../components/agent-select.ts";
 import { t } from "../../i18n/index.ts";
 import { settleModelCatalogRequests } from "../../lib/model-catalog-store.ts";
 import { createApplicationContextProvider } from "../../test-helpers/application-context.ts";
@@ -64,6 +66,21 @@ afterEach(() => {
 });
 
 describe("new session draft route ownership", () => {
+  it.each(["normal", "native", "unavailable"] as const)(
+    "keeps the canonical header for %s",
+    async (state) => {
+      const page = await mount({
+        ...routeData("main", state === "normal" ? "" : "anthropic"),
+        catalogLabel: state === "native" ? "Claude Code" : "",
+        startTerminal: state === "native",
+        terminalHosts: state === "native" ? [{ hostId: "gateway:local", label: "Gateway" }] : [],
+      });
+      expect(page.querySelector(".agent-chat__hint")?.textContent?.trim()).toBe(
+        "Pick where this session works, then say what to do.",
+      );
+    },
+  );
+
   it.each(["rejected", "stale"] as const)(
     "retires a %s picker handoff and accepts the next navigation with the same draft",
     async (outcome) => {
@@ -71,6 +88,11 @@ describe("new session draft route ownership", () => {
       window.history.replaceState({}, "", "/new?agent=main&catalog=codex");
       const fixture = createDraftFixture({
         data,
+        agents: ["main", "research"].map((id) => ({
+          id,
+          workspace: "/workspace",
+          model: { primary: "openai/gpt-5.6-luna" },
+        })),
         modelCatalog: async () => ({
           models: [{ id: "recovery", provider: "example", name: "Recovery", available: true }],
         }),
@@ -132,14 +154,28 @@ describe("new session draft route ownership", () => {
         expect(page.data?.catalogId).toBe("codex");
         expect(message(page)).toBe("Keep this navigation draft");
 
+        const admitted = createDeferred();
+        const release = createDeferred();
         navigate.mockImplementationOnce(async (_route, options) => {
+          admitted.resolve();
+          await release.promise;
           const search = options?.search ?? "";
           page.data = await load(context, search, "navigation");
           window.history.replaceState({}, "", "/new" + search);
           await settle(page);
         });
         choose();
-        await navigate.mock.results.at(-1)?.value;
+        await admitted.promise;
+        await settle(page);
+        try {
+          const agent = page.querySelector<AgentSelect>("openclaw-agent-select");
+          expect(agent?.disabled).toBe(true);
+          agent?.onSelect("research");
+          expect(page.querySelector(".new-session-page__incognito-toggle")).toBeNull();
+        } finally {
+          release.resolve();
+          await navigate.mock.results.at(-1)?.value;
+        }
         await settle(page);
         await settle(page);
         expect(page.data?.requestedModel).toBe("example/recovery");

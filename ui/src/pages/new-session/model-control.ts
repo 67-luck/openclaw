@@ -347,6 +347,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
       this.metadataIdentityId !== snapshot?.selfUser?.id ||
       (this.metadataHello && this.metadataHello !== snapshot?.hello)
     ) {
+      this.cancelCatalogSelection();
       // Model preferences belong to the agent; an explicit account belongs to this connection.
       // Neither its availability nor an in-flight preview can cross an identity change.
       this.draftAccount = undefined;
@@ -363,6 +364,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
     this.metadataIdentityId = snapshot?.selfUser?.id;
     this.metadataHello = snapshot?.hello;
     if (!context || snapshot?.phase !== "connected" || !client || !normalizedAgentId || !enabled) {
+      this.cancelCatalogSelection();
       this.clearDraftAccount();
       this.clearMetadataSubscription();
       this.metadataClient = undefined;

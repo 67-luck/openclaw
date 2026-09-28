@@ -11,7 +11,7 @@ const models = [
   { id: "second", provider: "example", name: "Second", available: true },
   { id: "remembered", provider: "example", name: "Remembered", available: true },
 ];
-const targets = ["claude", "codex"].map((id) => ({
+const targets = ["claude", "codex", "third-party-terminal"].map((id) => ({
   id,
   label: id === "claude" ? "Claude Code" : "Codex",
   capabilities: { startTerminal: true },
@@ -192,6 +192,36 @@ describe("native CLI picker admission", () => {
     expect(f.place.modelControl.modelForSubmission()).toBe("example/second");
   });
 
+  it("holds the agent and visibility while an admitted model navigation retains its draft", async () => {
+    const f = await fixture("codex");
+    const attachment = registerTextPayload("admitted-model-owner");
+    f.flow.setMessage("Keep the admitted draft");
+    f.flow.attachmentDraft.replace([attachment]);
+    const release = createDeferred();
+    const entered = createDeferred();
+    const commit = f.options.onTargetSelect.getMockImplementation()!;
+    f.options.onTargetSelect.mockImplementationOnce(async (data, isCurrent) => {
+      entered.resolve();
+      await release.promise;
+      return commit(data, isCurrent);
+    });
+    f.choose('[data-chat-model-option="example/second"]');
+    await entered.promise;
+    try {
+      f.place.selectAgentId("research");
+      f.flow.setVisibility("incognito");
+      expect(f.place.agentId).toBe("main");
+      expect(f.flow.visibility).toBe("normal");
+    } finally {
+      release.resolve();
+      await f.settleModelSelection();
+    }
+    expect(f.place.data?.catalogId).toBe("");
+    expect(f.place.modelControl.modelForSubmission()).toBe("example/second");
+    expect(f.flow.message).toBe("Keep the admitted draft");
+    expect(f.flow.attachmentDraft.attachments).toEqual([attachment]);
+  });
+
   it.each(["rejected", "stale"] as const)(
     "preserves native draft and model preferences after %s model navigation, then recovers",
     async (outcome) => {
@@ -251,7 +281,7 @@ describe("native CLI picker admission", () => {
     },
   );
 
-  it.each(["claude", "codex"])(
+  it.each(["claude", "codex", "third-party-terminal"])(
     "keeps the draft and picker on unavailable %s, retries once, and recovers to a model",
     async (id) => {
       const f = await fixture();
@@ -388,6 +418,8 @@ describe("native CLI picker admission", () => {
     "hello",
     "client",
     "identity",
+    "credentials",
+    "disabled",
     "disconnect",
     "submission",
     "incognito",
@@ -421,6 +453,12 @@ describe("native CLI picker admission", () => {
         break;
       case "identity":
         Object.assign(gateway.snapshot, { selfUser: { id: "different" } });
+        break;
+      case "credentials":
+        Object.assign(gateway, { connectionRevision: gateway.connectionRevision + 1 });
+        break;
+      case "disabled":
+        f.place.modelControl.loadCatalogTargets(f.context, "main", false);
         break;
       case "disconnect":
         gateway.snapshot.phase = "offline";

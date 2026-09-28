@@ -441,6 +441,7 @@ export class NewSessionPage extends OpenClawLightDomElement {
               disabled:
                 this.submission.submitting ||
                 Boolean(this.submission.pendingPlacement.sessionKey) ||
+                this.place.catalogSelection.transitionPending ||
                 catalog.isTarget(this.place.data),
               onSelect: (agentId) => this.place.selectAgentId(agentId),
               onOpenChange: (open) => {
@@ -453,7 +454,7 @@ export class NewSessionPage extends OpenClawLightDomElement {
         data: this.place.data,
         gateway: this.gateway,
         place: this.place,
-        submitting: this.submission.submitting,
+        submitting: this.submission.submitting || this.place.catalogSelection.transitionPending,
         pendingPlacement: Boolean(this.submission.pendingPlacement.sessionKey),
         onConnectMachine: () => this.openConnectMachine(),
         onNavigate: (route, options) => this.context?.navigate(route, options),
@@ -554,7 +555,7 @@ export class NewSessionPage extends OpenClawLightDomElement {
         }"
       >
         ${
-          catalog.isTarget(this.place.data)
+          catalog.isTarget(this.place.data) || this.place.catalogSelection.transitionPending
             ? nothing
             : renderNewSessionIncognitoControl(
                 this.submission,
