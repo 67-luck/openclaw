@@ -253,9 +253,13 @@ vi.mock("../logging/subsystem.js", () => ({
   createSubsystemLogger: () => ({ warn: vi.fn() }),
 }));
 
-const { getPreparedModelRuntimeSnapshot, refreshPreparedModelRuntimeSnapshots } =
-  await import("./prepared-model-runtime.js");
-const { getPreparedModelCatalogSnapshot } = await import("./prepared-model-catalog.js");
+const {
+  activateStandalonePreparedModelRuntime,
+  getPreparedModelRuntimeSnapshot,
+  refreshPreparedModelRuntimeSnapshots,
+} = await import("./prepared-model-runtime.js");
+const { getPreparedModelCatalogSnapshot, refreshExpiredPreparedModelCatalog } =
+  await import("./prepared-model-catalog.js");
 const { prepareScopedReadOnlyModelCatalog } =
   await import("./prepared-model-runtime.scoped-catalog.js");
 const { resetPreparedModelRuntimeSnapshotsForTest } =
@@ -304,6 +308,116 @@ beforeEach(async () => {
 });
 
 describe("prepared model runtime Gateway catalog mode", () => {
+  it.each([
+    { fails: false, nativeFirst: false },
+    { fails: true, nativeFirst: false },
+    { fails: false, nativeFirst: true },
+    { fails: true, nativeFirst: true },
+  ])(
+    "starts account discovery once on the first catalog read (failure=$fails, nativeFirst=$nativeFirst)",
+    async ({ fails, nativeFirst }) => {
+      const native = { provider: "openai", id: "native", name: "Native", nativeRuntime: "fixture" };
+      if (nativeFirst) {
+        mocks.loadAgentRuntimePluginRegistryHandle.mockImplementation(() => {
+          const registry = createEmptyPluginRegistry();
+          registry.agentHarnesses.push({
+            pluginId: "fixture",
+            source: "fixture",
+            harness: {
+              id: "fixture",
+              label: "Fixture",
+              supports: () => ({ supported: true }),
+              runAttempt: vi.fn(),
+              loadModelCatalog: async () => [native],
+            },
+          });
+          return registry;
+        });
+      }
+      const input = {
+        agentId: "default",
+        config: { agents: { defaults: { model: "openai/gpt-5.5" } } },
+        agentDir: "/tmp/prepared-static-agent",
+        inheritedAuthDir: "/tmp/prepared-static-agent",
+        workspaceDir: "/tmp/prepared-static-workspace",
+      };
+      await refreshPreparedModelRuntimeSnapshots(input.config, {
+        gatewayLifecycle: true,
+        catalogMode: "static",
+      });
+      const owner = getPreparedModelRuntimeSnapshot(input)!;
+      expect(owner).toBeDefined();
+      if (nativeFirst) {
+        await owner.loadNativeModelCatalog!({
+          provider: "openai",
+          modelId: "native",
+          runtime: "fixture",
+        });
+        expect(owner.readFullModelCatalog?.()?.entries).toContainEqual(
+          expect.objectContaining(native),
+        );
+      }
+      expect(mocks.runPreparedModelCatalogWorker).not.toHaveBeenCalled();
+      const published = owner.readFullModelCatalog?.() ?? owner.modelCatalog;
+      const started = createDeferred();
+      const reply = createDeferred<ModelCatalogSnapshot>();
+      mocks.runPreparedModelCatalogWorker.mockImplementationOnce(async () => {
+        started.resolve();
+        return reply.promise;
+      });
+      const discovered = { provider: "openai", id: "account-model", name: "Account model" };
+      const catalog = { entries: [discovered], routeVariants: [discovered] };
+      let completion: Promise<ModelCatalogSnapshot> | undefined;
+      try {
+        expect(refreshExpiredPreparedModelCatalog(input)).toBe(published);
+        expect(published.pendingProviders).toEqual(["openai"]);
+        await started.promise;
+        expect(refreshExpiredPreparedModelCatalog(input)).toBe(published);
+        expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledOnce();
+        // Join the existing acquisition to observe settlement without polling or timers.
+        completion = owner.loadFullModelCatalog!({ changedOnly: true });
+        if (fails) {
+          reply.reject(new Error("synthetic discovery failure"));
+          await expect(completion).rejects.toThrow("synthetic discovery failure");
+          expect(refreshExpiredPreparedModelCatalog(input)?.refreshFailed).toBe(true);
+          expect(published.pendingProviders).toBeUndefined();
+        } else {
+          reply.resolve(catalog);
+          await completion;
+          expect(refreshExpiredPreparedModelCatalog(input)?.entries).toContainEqual(
+            expect.objectContaining(discovered),
+          );
+        }
+        expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledOnce();
+        if (fails) {
+          mocks.runPreparedModelCatalogWorker.mockResolvedValueOnce(catalog);
+          await owner.loadFullModelCatalog!({ refresh: true });
+          expect(refreshExpiredPreparedModelCatalog(input)?.entries).toContainEqual(
+            expect.objectContaining(discovered),
+          );
+          expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledTimes(2);
+        }
+      } finally {
+        reply.resolve(catalog);
+        await completion?.catch(() => undefined);
+      }
+    },
+  );
+
+  it("keeps standalone catalog reads passive", async () => {
+    const input = {
+      agentId: "default",
+      config: {},
+      agentDir: "/tmp/prepared-static-agent",
+      inheritedAuthDir: "/tmp/prepared-static-agent",
+      workspaceDir: "/tmp/prepared-static-workspace",
+    };
+    const owner = await activateStandalonePreparedModelRuntime(input, { catalogMode: "static" });
+    expect(owner).toBeDefined();
+    expect(refreshExpiredPreparedModelCatalog(input)).toBe(owner!.modelCatalog);
+    expect(mocks.runPreparedModelCatalogWorker).not.toHaveBeenCalled();
+  });
+
   it("publishes binary thinking policy for lightweight configured and full catalog reads", async () => {
     const profile = {
       levels: [{ id: "off" }, { id: "low", label: "on" }],

@@ -93,7 +93,7 @@ Other selection rules:
 
 - Changing `agents.defaults.model.primary` does not rewrite existing session pins. If status reports `This session is pinned to X; config primary Y will apply to new/unpinned sessions.`, run `/model default` to clear the pin.
 - CLI default-model and allowlist pickers respect `models.mode: "replace"` by listing only `models.providers.*.models` instead of the full built-in catalog.
-- The Control UI starts from the Gateway's prepared configured model view, so opening chat does not start provider discovery. Opening the chat model picker reads published rows, including rows matched by a trailing `provider/*` policy entry. Use its explicit Refresh action to request immediate provider discovery. Default and configured picker views hide catalog rows marked `deprecated` or `disabled`. There is one exception: a row stays visible when that exact model is configured as a primary, fallback, utility or tool model, alias or settings key, or exact policy entry. Hidden rows remain selectable by exact `provider/model` ref. The full built-in catalog, including hidden rows, is reserved for explicit browse views (`models.list` with `view: "all"`, or `openclaw models list --all`).
+- The Control UI starts from the Gateway's prepared configured model view while its connect-time catalog read can start account-model discovery in the background. Opening the chat model picker reads published rows, including rows matched by a trailing `provider/*` policy entry. Use its explicit Refresh action to request immediate provider discovery. Default and configured picker views hide catalog rows marked `deprecated` or `disabled`. There is one exception: a row stays visible when that exact model is configured as a primary, fallback, utility or tool model, alias or settings key, or exact policy entry. Hidden rows remain selectable by exact `provider/model` ref. The full built-in catalog, including hidden rows, is reserved for explicit browse views (`models.list` with `view: "all"`, or `openclaw models list --all`).
 - Provider inventory UIs use `models.list` with `view: "provider-config"` to show source-authored `models.providers.*.models` rows without applying picker allowlists.
 - Chat and New Session keep the Default reset choice pinned in its provider group, then put the selected model before the remaining catalog choices. Models settings puts the selected model first. Other rows keep the Gateway's catalog order, including provider-curated recommendations where supplied. Text `/models <provider>` pages also put the current model first instead of alphabetizing the catalog. Picker search checks the full list, not just the visible rows.
 - Signing in to a provider keeps existing choices visible in open Control UI and terminal model pickers while discovery refreshes in the background. Changes to model restrictions, operator roles, or catalog mode still retire the old choices until the replacement catalog is ready.
@@ -113,7 +113,7 @@ model still updates the preference.
 The Gateway prepares one model catalog for the CLI, `/models`, the Control UI,
 and native apps. Chat and session metadata read published rows without starting
 provider discovery. Model-inventory requests return those rows immediately and
-can renew expired provider inventory in the background. A selected native model
+can acquire missing or renew expired provider inventory in the background. A selected native model
 can load its own metadata while that renewal is still running.
 
 In chat apps, `/models` and model picker buttons return the newest completed list
@@ -135,8 +135,13 @@ discovers account models, a small spinner in the picker’s search field indicat
 a background refresh. Hover, focus, or tap it to see which providers are refreshing;
 existing models stay usable, and the open picker updates when discovery completes.
 An empty picker shows “Loading models…” until its first models arrive.
-Gateway startup and credential changes
-also refresh the affected catalog. Use **Refresh** in Models or
+Credential changes refresh the affected catalog. After Gateway startup, the first
+catalog read starts account-model discovery in the background: opening Models,
+connecting the Control UI or a native app, or opening a channel model picker that
+uses the plugin SDK catalog snapshot. Until then, startup uses prepared starter
+models without acquiring provider catalogs. Reads return the published models
+immediately and do not repeatedly retry a failed initial discovery. Standalone CLI
+reads do not start this background work. Use **Refresh** in Models or
 `openclaw models list --refresh` to request another refresh, including newly
 released models. **Retry** requests discovery again after a failure.
 
@@ -301,7 +306,8 @@ ACP sessions keep their existing model controls; they cannot select a different
 harness here.
 Catalog preparation and explicit Refresh acquire the requested native inventories
 once per runtime while preserving the configured default.
-Opening the picker reuses prepared catalog facts; explicit Refresh owns discovery.
+Opening the picker reuses prepared catalog facts while the first catalog read can
+start background discovery. Explicit Refresh requests fresh discovery.
 
 An agent can replace the inherited list through
 `agents.entries.<id>.models["provider/model"].pickerRuntimes`; an empty array removes

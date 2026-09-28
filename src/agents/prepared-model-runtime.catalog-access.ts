@@ -167,11 +167,9 @@ export function createFullModelCatalogAccess(
     retainedInventory.catalog.entries = retainedInventory.catalog.entries.filter(retain);
     retainedInventory.catalog.routeVariants =
       retainedInventory.catalog.routeVariants.filter(retain);
-    const includesNativeProvider = (provider: string) =>
-      identifiedNativeProviders.has(normalizeProvider(provider));
     retainedInventory.catalog.nativeProviderOutcomes = filterNativeModelCatalogScopes(
       retainedInventory.catalog.nativeProviderOutcomes,
-      includesNativeProvider,
+      (provider) => identifiedNativeProviders.has(normalizeProvider(provider)),
     );
     // Untagged harness rows describe the current host projection, not identified native
     // account inventory. Reacquire them with this generation before enriching API routes.
@@ -329,18 +327,15 @@ export function createFullModelCatalogAccess(
       const retained = published.inventory;
       const retainedAuth =
         getPreparedModelFullCatalogAuth(published.catalog ?? staticCatalog) ?? currentAuth;
+      const includesProvider = (provider: string) => scope.has(normalizeProvider(provider));
       const auth = providerIds
-        ? replacePreparedModelCatalogAuth(retainedAuth, discoveredAuth, (provider) =>
-            scope.has(normalizeProvider(provider)),
-          )
+        ? replacePreparedModelCatalogAuth(retainedAuth, discoveredAuth, includesProvider)
         : discoveredAuth;
       const { legacyRows, ...publication } = prepareModelCatalogPublication(
         providerIds
-          ? filterPreparedProviderCatalog(workerCatalog, (provider) =>
-              scope.has(normalizeProvider(provider)),
-            )
+          ? filterPreparedProviderCatalog(workerCatalog, includesProvider)
           : workerCatalog,
-        new Map([...runtimeModels].filter(([provider]) => scope.has(normalizeProvider(provider)))),
+        new Map([...runtimeModels].filter(([provider]) => includesProvider(provider))),
         retained,
         auth,
         normalizeProvider,
@@ -521,9 +516,17 @@ export function createFullModelCatalogAccess(
     return promise;
   };
 
+  let catalogAcquisitionStarted = false;
   const refreshExpiredModelCatalog = () => {
     assertCurrent();
-    if (pending || !published.inventory) {
+    if (pending) {
+      return;
+    }
+    // First reads discover changed providers, preserving any inventory retained across reloads.
+    if (!catalogAcquisitionStarted && params.inventoryOwner.provenance === "configured") {
+      void acquireCatalog({ changedOnly: true }).catch(() => undefined);
+    }
+    if (!published.inventory) {
       return;
     }
     const now = Date.now();
@@ -539,6 +542,8 @@ export function createFullModelCatalogAccess(
     acquireNative = true,
   ): Promise<ModelCatalogSnapshot> => {
     assertCurrent();
+    // Failed discovery waits for explicit Retry/Refresh.
+    catalogAcquisitionStarted = true;
     if (
       !options.refresh &&
       !options.changedOnly &&

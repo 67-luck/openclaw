@@ -33,7 +33,7 @@ async function prepareCatalogOwner(
 }
 
 describe("captured startup inventory refresh", () => {
-  it("reports redacted nested failures from the committed catalog refresh", async () => {
+  it("reports redacted nested failures from the credential-change catalog refresh", async () => {
     const warning = createDeferred<string>();
     const token = "sk-abcdefghijklmnopqrstuv";
     const failure = new AggregateError(
@@ -53,6 +53,10 @@ describe("captured startup inventory refresh", () => {
       { agents: { entries: { pro: {} } } },
       { gatewayLifecycle: true, catalogMode: "static" },
     );
+    mocks.mutationListener?.({
+      agentDir: fixture.state.agentDir("pro"),
+      affectsInheritedStores: false,
+    });
     const message = await warning.promise;
 
     expect(message).toContain("provider catalog refresh failed:");

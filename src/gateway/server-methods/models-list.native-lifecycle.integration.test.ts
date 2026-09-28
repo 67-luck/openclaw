@@ -289,6 +289,7 @@ it.for([false, true])(
         await server.startupSettled;
         const list = () =>
           client.request<ModelsListResult>("models.list", { agentId: "main", view: "all" });
+        await list();
         await nativeRequested;
         const beforeReads = requests.length;
         // Discovery stays held until these RPCs return the prepared snapshot.
@@ -517,11 +518,10 @@ it.for([false, true])(
               agents: { defaults: { modelPolicy: { allow: [`${provider}/*`, "unused/*"] } } },
             }),
           });
-          await expect
-            .poll(() => requests.filter((path) => path === "/native/models").length, {
-              timeout: 15_000,
-            })
-            .toBe(beforeReloadNative + 1);
+          await client.request("models.list", { agentId: "main", refresh: true });
+          expect(requests.filter((path) => path === "/native/models")).toHaveLength(
+            beforeReloadNative + 1,
+          );
           await expect
             .poll(
               async () => (await list()).models.find((row) => row.id === nativeModelId)?.available,

@@ -227,7 +227,7 @@ export function getPublishedPreparedModelCatalogOwnerSnapshot(
   return findPreparedCatalogOwner([full, activationFull], "published");
 }
 
-/** Requests expiry renewal for an inventory consumer without waiting for discovery. */
+/** Starts initial configured discovery or expiry renewal without waiting for inventory. */
 export function refreshExpiredPreparedModelCatalog(
   params: LoadPreparedModelCatalogParams = {},
 ): ModelCatalogSnapshot | undefined {

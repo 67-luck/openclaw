@@ -73,24 +73,21 @@ async function fixture(standalone = false, cold = false, runtimeA = "native-a") 
   mocks.configuredAgentIds = ["pro"];
   mocks.runPreparedModelCatalogWorker.mockResolvedValue({ entries: [], routeVariants: [] });
   if (!standalone) {
-    // Gateway commits start background discovery. Publish the cold owner separately after activation.
-    if (cold) {
-      mocks.configuredAgentIds = [];
-    }
     await refreshPreparedModelRuntimeSnapshots(config, {
       gatewayLifecycle: true,
       catalogMode: "static",
       allowGatewaySubagentBinding: true,
     });
-    mocks.configuredAgentIds = ["pro"];
   }
-  const owner =
-    standalone || cold
-      ? await publishPreparedModelRuntimeSnapshot(input, {
-          catalogMode: "static",
-          provenance: standalone ? "standalone" : "configured",
-        })
-      : getPreparedModelRuntimeSnapshot(input)!;
+  const owner = standalone
+    ? await publishPreparedModelRuntimeSnapshot(input, {
+        catalogMode: "static",
+        provenance: "standalone",
+      })
+    : getPreparedModelRuntimeSnapshot(input)!;
+  if (!standalone && !cold) {
+    await owner.loadFullModelCatalog!({ changedOnly: true });
+  }
   return { input, owner, a, b, loadA, loadB };
 }
 

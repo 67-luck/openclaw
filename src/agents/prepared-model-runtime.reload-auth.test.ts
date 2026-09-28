@@ -3,6 +3,7 @@
 import { usePreparedModelRuntimeHarness } from "./prepared-model-runtime.test-harness.js";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { refreshExpiredPreparedModelCatalog } from "./prepared-model-catalog.js";
 import { withPreparedModelRuntimePluginGenerationScope } from "./prepared-model-runtime-generation-scope.js";
 import {
   acquireAgentRunPreparedModelRuntime,
@@ -18,6 +19,91 @@ const fixture = usePreparedModelRuntimeHarness({ label: "prepared-model-runtime"
 const { mocks } = fixture;
 
 describe("prepared model runtime reload auth adoption", () => {
+  it("discovers only the changed provider on the first read after a partial inventory reload", async () => {
+    mocks.configuredAgentIds = ["default"];
+    mocks.authStorage.getAll.mockReturnValue({
+      custom: { type: "api_key", key: "test-key" },
+      changed: { type: "api_key", key: "test-changed-key" },
+    });
+    const config = {
+      models: {
+        providers: {
+          custom: {
+            baseUrl: "https://retained.invalid/v1",
+            api: "openai-completions" as const,
+            models: [],
+          },
+          changed: {
+            baseUrl: "https://before.invalid/v1",
+            api: "openai-completions" as const,
+            models: [],
+          },
+        },
+      },
+    };
+    const retained = { provider: "custom", id: "retained", name: "Retained model" };
+    const obsolete = { provider: "changed", id: "obsolete", name: "Obsolete model" };
+    const discovered = { provider: "changed", id: "discovered", name: "Discovered model" };
+    const options = { gatewayLifecycle: true, catalogMode: "static" as const };
+    await refreshPreparedModelRuntimeSnapshots(config, options);
+    const original = await prepareModelRuntimeSnapshot(fixture.agentInput("default", config));
+    mocks.runPreparedModelCatalogWorker.mockResolvedValueOnce({
+      entries: [retained, obsolete],
+      routeVariants: [retained, obsolete],
+    });
+    await original.loadFullModelCatalog!({ changedOnly: true });
+    expect(
+      original
+        .readFullModelCatalog?.()
+        ?.entries.map(({ id }) => id)
+        .toSorted(),
+    ).toEqual(["obsolete", "retained"]);
+    mocks.runPreparedModelCatalogWorker.mockClear();
+
+    const replacementConfig = {
+      models: {
+        providers: {
+          ...config.models.providers,
+          changed: { ...config.models.providers.changed, baseUrl: "https://after.invalid/v1" },
+        },
+      },
+    };
+    await refreshPreparedModelRuntimeSnapshots(replacementConfig, options);
+    const input = fixture.agentInput("default", replacementConfig);
+    const replacement = await prepareModelRuntimeSnapshot(input);
+    expect(replacement).not.toBe(original);
+    const published = replacement.readFullModelCatalog!()!;
+    expect(published.entries).toMatchObject([retained]);
+    expect(mocks.runPreparedModelCatalogWorker).not.toHaveBeenCalled();
+
+    const started = createDeferred();
+    const reply = createDeferred<Awaited<ReturnType<typeof mocks.runPreparedModelCatalogWorker>>>();
+    const catalog = { entries: [discovered], routeVariants: [discovered] };
+    mocks.runPreparedModelCatalogWorker.mockImplementationOnce(() => {
+      started.resolve();
+      return reply.promise;
+    });
+    let completion: ReturnType<NonNullable<typeof replacement.loadFullModelCatalog>> | undefined;
+    try {
+      expect(refreshExpiredPreparedModelCatalog(input)).toBe(published);
+      expect(published.pendingProviders).toEqual(["changed"]);
+      await started.promise;
+      expect(refreshExpiredPreparedModelCatalog(input)).toBe(published);
+      expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledExactlyOnceWith(["changed"]);
+      // Join the read-triggered acquisition so settlement needs no polling or sleeps.
+      completion = replacement.loadFullModelCatalog!({ changedOnly: true });
+      reply.resolve(catalog);
+      await completion;
+      const completed = refreshExpiredPreparedModelCatalog(input)!;
+      expect(completed.entries.map(({ id }) => id).toSorted()).toEqual(["discovered", "retained"]);
+      expect(completed.pendingProviders).toBeUndefined();
+      expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledOnce();
+    } finally {
+      reply.resolve(catalog);
+      await completion?.catch(() => undefined);
+    }
+  });
+
   it("keeps catalog failure status when a neutral reload retains the same source", async () => {
     mocks.configuredAgentIds = ["default"];
     const config = {
@@ -352,6 +438,87 @@ describe("prepared model runtime reload auth adoption", () => {
       configBuild.resolve({ agentDir: fixture.state.agentDir("default"), wrote: false });
       authBuild.resolve({ agentDir: fixture.state.agentDir("default"), wrote: false });
       await Promise.allSettled([publication, affectedRead, siblingRead]);
+      unregister();
+    }
+  });
+
+  it("adopts an in-flight auth gate and eagerly discovers after the config reload", async () => {
+    mocks.configuredAgentIds = ["default"];
+    const initialConfig = {};
+    const replacementConfig = { plugins: {} };
+    await refreshPreparedModelRuntimeSnapshots(initialConfig, { gatewayLifecycle: true });
+    expect(mocks.runPreparedModelCatalogWorker).not.toHaveBeenCalled();
+    const authBuild = createDeferred<{ agentDir: string; wrote: false }>();
+    const configBuild = createDeferred<{ agentDir: string; wrote: false }>();
+    const authStarted = createDeferred();
+    const configStarted = createDeferred();
+    const catalogReply =
+      createDeferred<Awaited<ReturnType<typeof mocks.runPreparedModelCatalogWorker>>>();
+    const discovered = { provider: "custom", id: "signed-in-model", name: "Signed-in model" };
+    const catalog = { entries: [discovered], routeVariants: [discovered] };
+    mocks.authStorage.getAll.mockReturnValue({
+      custom: { type: "api_key", key: "replacement-key" },
+    });
+    mocks.runPreparedModelCatalogWorker.mockImplementationOnce(() => catalogReply.promise);
+    const events: string[] = [];
+    const unregister = registerPreparedModelRuntimePublicationListener((event) => {
+      events.push(event.phase);
+    });
+    mocks.ensureOpenClawModelsJson
+      .mockImplementationOnce(async () => {
+        authStarted.resolve();
+        return await authBuild.promise;
+      })
+      .mockImplementationOnce(async () => {
+        configStarted.resolve();
+        return await configBuild.promise;
+      });
+
+    let authWaiter: ReturnType<typeof loadPublishedGatewayReplyDispatchRuntime> | undefined;
+    let reload: ReturnType<typeof refreshPreparedModelRuntimeSnapshots> | undefined;
+    let catalogCompletion: ReturnType<typeof mocks.runPreparedModelCatalogWorker> | undefined;
+    try {
+      mocks.mutationListener?.({
+        agentDir: fixture.state.agentDir("default"),
+        affectsInheritedStores: false,
+      });
+      await authStarted.promise;
+      authWaiter = loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" });
+      void authWaiter.catch(() => undefined);
+      reload = refreshPreparedModelRuntimeSnapshots(replacementConfig, {
+        gatewayLifecycle: true,
+      });
+      void reload.catch(() => undefined);
+      authBuild.resolve({ agentDir: fixture.state.agentDir("default"), wrote: false });
+      await configStarted.promise;
+      await expect(
+        Promise.race([authWaiter.then(() => "settled"), Promise.resolve("pending")]),
+      ).resolves.toBe("pending");
+
+      configBuild.resolve({ agentDir: fixture.state.agentDir("default"), wrote: false });
+      await expect(reload).resolves.toBeUndefined();
+      const runtime = await authWaiter;
+
+      expect(runtime?.config).toBe(replacementConfig);
+      expect(events.filter((phase) => phase === "published")).toHaveLength(1);
+      expect(events).not.toContain("failed");
+      expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledOnce();
+      const snapshot = await prepareModelRuntimeSnapshot(
+        fixture.agentInput("default", replacementConfig),
+      );
+      catalogCompletion = snapshot.loadFullModelCatalog!({ changedOnly: true });
+      catalogReply.resolve(catalog);
+      await catalogCompletion;
+      expect(snapshot.readFullModelCatalog?.()?.entries).toContainEqual(
+        expect.objectContaining(discovered),
+      );
+      expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledOnce();
+      expect(mocks.warn).not.toHaveBeenCalled();
+    } finally {
+      authBuild.resolve({ agentDir: fixture.state.agentDir("default"), wrote: false });
+      configBuild.resolve({ agentDir: fixture.state.agentDir("default"), wrote: false });
+      catalogReply.resolve(catalog);
+      await Promise.allSettled([authWaiter, reload, catalogCompletion]);
       unregister();
     }
   });

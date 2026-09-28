@@ -123,14 +123,13 @@ export function updateOwnersForScopedRefresh(
       }
       continue;
     }
+    owner.generation += 1;
     if (options.retireStandalone && owner.provenance === "standalone") {
-      owner.generation += 1;
       owners.delete(key);
       retirePreparedModelRuntimeGeneration(owner);
       retiredPublications.push(owner);
       continue;
     }
-    owner.generation += 1;
     retirePreparedModelRuntimeGeneration(owner);
     owner.needsRefresh = true;
     owner.refreshError = staleError;

@@ -156,7 +156,7 @@ it.for([
         };
         const initial = await waitForCatalogPublication({
           signal,
-          // Startup discovers nonempty inventory; forcing refresh would bypass TTL renewal.
+          // The first read starts discovery; forcing refresh would bypass TTL renewal.
           start: initiallyEmpty ? () => list(true) : list,
           read: list,
           ready: (result) =>
