@@ -1,5 +1,4 @@
 import Foundation
-@testable import OpenClaw
 @testable import OpenClawKit
 
 extension WebSocketTasking {

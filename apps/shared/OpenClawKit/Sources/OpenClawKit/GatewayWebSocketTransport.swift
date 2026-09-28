@@ -56,7 +56,7 @@ public final class WebSocketRequestLifetime: @unchecked Sendable {
 // periphery:ignore - Native transports implement caller-owned request lifetime handling.
 public protocol WebSocketRequestSending: WebSocketTasking {
     // periphery:ignore - The erased request adapter dispatches through this optional transport seam.
-    func sendRequest(_ message: URLSessionWebSocketTask.Message, lifetime: WebSocketRequestLifetime) async throws
+    func sendRequest(_ request: PreparedGatewayRequest, lifetime: WebSocketRequestLifetime?) async throws
 }
 
 private final class WebSocketPingContinuationGate: @unchecked Sendable {
@@ -102,13 +102,17 @@ public struct WebSocketTaskBox: @unchecked Sendable {
     }
 
     public func sendRequest(
-        _ message: URLSessionWebSocketTask.Message,
-        lifetime: WebSocketRequestLifetime) async throws
+        _ request: PreparedGatewayRequest,
+        lifetime: WebSocketRequestLifetime? = nil) async throws
     {
         if let transport = self.task as? any WebSocketRequestSending {
-            try await transport.sendRequest(message, lifetime: lifetime)
+            try await transport.sendRequest(request, lifetime: lifetime)
         } else {
-            try await self.task.send(message)
+            guard case let .frame(data) = request.body else {
+                throw EncodingError.invalidValue(request.body, .init(
+                    codingPath: [], debugDescription: "Native result requires a request-capable transport"))
+            }
+            try await self.task.send(.data(data))
         }
     }
 

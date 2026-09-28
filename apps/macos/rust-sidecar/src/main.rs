@@ -24,7 +24,7 @@ const GATEWAY_PAYLOAD_LIMIT: usize = 25 * 1024 * 1024;
 const FRAME_LIMIT: u32 = (GATEWAY_PAYLOAD_LIMIT.div_ceil(3) * 4 + 4096) as u32;
 const MAX_IN_FLIGHT: u16 = 64;
 // Product IPC requires the native relay; never open a Gateway for an older supervisor.
-const NATIVE_TRANSPORT_FEATURE: u64 = 3; // Native relay and independent Pong observation.
+const NATIVE_TRANSPORT_FEATURE: u64 = 31; // Native relay, independent Pong, binary relay, and transport/result tuples.
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 type Failure = Box<dyn Error + Send + Sync>;
@@ -49,6 +49,10 @@ enum SupervisorMessage {
         frame: Request,
         #[serde(default, rename = "callerOwnsLifetime")]
         caller_owns_lifetime: bool,
+    },
+    #[serde(skip)]
+    NativeResult {
+        frame: Request,
     },
     CancelRequest {
         id: String,
@@ -84,6 +88,27 @@ struct Request {
     method: String,
     #[serde(default)]
     params: Value,
+}
+
+fn decode_native_result(payload: &[u8]) -> serde_json::Result<Option<SupervisorMessage>> {
+    if payload.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'[') {
+        return Ok(None);
+    }
+    let (kind, mut frame, raw): (String, Request, &serde_json::value::RawValue) =
+        serde_json::from_slice(payload)?;
+    if kind != "native-result"
+        || frame.kind != "req"
+        || frame.method != "node.invoke.result"
+        || frame.params["ok"] != true
+        || frame.params.get("payloadJSON").is_some()
+    {
+        return Err(serde::de::Error::custom("invalid native result metadata"));
+    }
+    // RawValue borrows the last tuple element without copying its escaped JSON.
+    // A separate Value parse preserves standalone payloadJSON depth, number,
+    // Unicode and duplicate-key semantics; RawValue alone does not validate them.
+    frame.params["payload"] = serde_json::from_str(raw.get())?;
+    Ok(Some(SupervisorMessage::NativeResult { frame }))
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -164,12 +189,16 @@ async fn run() -> Result<(), Failure> {
             if size > frame_limit || size < 65 {
                 return Err::<(), Failure>("invalid frame length".into());
             }
-            let mut frame = vec![0; size as usize];
+            // Decoding returns owned messages. Release media-sized input storage after
+            // dispatch instead of retaining its high-water capacity while the reader is idle.
+            let mut frame = Vec::new();
+            frame.reserve_exact(size as usize);
+            frame.resize(size as usize, 0);
             tokio::time::timeout(WRITE_TIMEOUT, input.read_exact(&mut frame)).await??;
             let message = reader_channel
                 .lock()
                 .await
-                .open::<SupervisorMessage>(&frame)?;
+                .open_reusing_with::<SupervisorMessage>(&mut frame, decode_native_result)?;
             match message {
                 SupervisorMessage::TransportFrame { kind, data } => {
                     transport_input.receive(&kind, &data)?
@@ -189,14 +218,16 @@ async fn run() -> Result<(), Failure> {
     let (outgoing, mut outgoing_rx) = mpsc::channel::<Value>(usize::from(MAX_IN_FLIGHT));
     let writer_channel = Arc::clone(&channel);
     let writer = tokio::spawn(async move {
+        // Reuse encoded output: growing base64 frames afresh retains large intermediate
+        // allocations on every burst, even after the completed frame is released.
+        let mut frame = Vec::new();
         loop {
-            let value = tokio::select! {
-                Some(value) = outgoing_rx.recv() => value,
-                Some(value) = transport_writes.recv() => value,
-                Some(value) = receipt_writes.recv() => value,
+            tokio::select! {
+                Some(value) = outgoing_rx.recv() => writer_channel.lock().await.seal_into(&value, &mut frame)?,
+                Some(value) = transport_writes.recv() => writer_channel.lock().await.seal_into(&value, &mut frame)?,
+                Some(value) = receipt_writes.recv() => writer_channel.lock().await.seal_into(&value, &mut frame)?,
                 else => break,
             };
-            let frame = writer_channel.lock().await.seal(&value)?;
             write_sidecar_frame(&mut output, &frame, frame_limit, WRITE_TIMEOUT).await?;
         }
         Ok::<(), Failure>(())
@@ -368,9 +399,12 @@ async fn run_gateway(
                     finish_request(completed, &mut request_handles)?;
                 }
                 match message {
+                    Some(SupervisorMessage::NativeResult { frame }) => {
+                        native.complete(frame.params).await?;
+                    }
                     Some(SupervisorMessage::Frame { frame, caller_owns_lifetime }) if frame.kind == "req" && frame.method != "connect" => {
                         if frame.method == "node.invoke.result" {
-                            native.complete(&frame.params).await?;
+                            native.complete(frame.params).await?;
                             // Swift's node owner sends a completion; it does not await an RPC response.
                             // CommandRuntime owns the actual Gateway result and delivery failure.
                             continue;
@@ -589,7 +623,7 @@ impl NativeHandlers {
         outcome
     }
 
-    async fn complete(&self, params: &Value) -> Result<(), Failure> {
+    async fn complete(&self, mut params: Value) -> Result<(), Failure> {
         let id = params["id"]
             .as_str()
             .ok_or("native result requires invocation id")?;
@@ -603,7 +637,10 @@ impl NativeHandlers {
             if let Some(raw) = params["payloadJSON"].as_str() {
                 Ok(serde_json::from_str(raw)?)
             } else {
-                Ok(params["payload"].clone())
+                Ok(params
+                    .as_object_mut()
+                    .and_then(|fields| fields.remove("payload"))
+                    .unwrap_or(Value::Null))
             }
         } else {
             Err(HandlerError::new(
@@ -676,6 +713,127 @@ fn event_frame(event: Event) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn native_result_bytes(raw: &str) -> Vec<u8> {
+        format!(r#"["native-result",{{"type":"req","id":"request-1","method":"node.invoke.result","params":{{"id":"invoke-1","nodeId":"node-1","ok":true,"payload":{{"ignored":true}}}}}},{raw}]"#).into_bytes()
+    }
+
+    #[test]
+    fn native_result_preserves_standalone_json_semantics() {
+        let mut values = vec![
+            r#"{"z":1,"a":2,"z":3}"#.to_owned(),
+            r#"[null,true,false,-0,1e2,18446744073709551616,"é🦀\n\\\"\uD83E\uDD80"]"#.to_owned(),
+            "null".into(),
+            "1e999".into(),
+            r#""\ud800""#.into(),
+            r#""\udc00""#.into(),
+            "01".into(),
+            "true false".into(),
+        ];
+        for depth in [126, 127, 128, 129] {
+            values.push(format!("{}null{}", "[".repeat(depth), "]".repeat(depth)));
+        }
+        for raw in values {
+            let expected = serde_json::from_str::<Value>(&raw);
+            let decoded = decode_native_result(&native_result_bytes(&raw));
+            match expected {
+                Ok(expected) => {
+                    let Some(SupervisorMessage::NativeResult { frame }) = decoded.unwrap() else {
+                        panic!("expected native result")
+                    };
+                    assert_eq!(frame.params["payload"], expected, "{raw}");
+                    assert_eq!(frame.params["id"], "invoke-1");
+                    assert_eq!(frame.params["nodeId"], "node-1");
+                }
+                Err(_) => assert!(decoded.is_err(), "accepted invalid standalone JSON: {raw}"),
+            }
+        }
+    }
+
+    #[test]
+    fn native_result_rejects_metadata_and_structural_injection() {
+        let valid = String::from_utf8(native_result_bytes("null")).unwrap();
+        assert!(matches!(
+            decode_native_result(
+                valid
+                    .replace("native-result", "\\u006eative-result")
+                    .as_bytes()
+            ),
+            Ok(Some(SupervisorMessage::NativeResult { .. }))
+        ));
+        for invalid in [
+            valid.replace("native-result", "transport-send"),
+            valid.replace("\"req\"", "\"res\""),
+            valid.replace("node.invoke.result", "connect"),
+            valid.replace("\"ok\":true", "\"ok\":false"),
+            valid.replace("\"ok\":true", "\"ok\":true,\"payloadJSON\":\"null\""),
+            valid.replace("\"type\":\"req\"", "\"type\":\"req\",\"extra\":0"),
+            valid.replace(",null]", "]"),
+            valid.replace(",null]", ",null,0]"),
+            format!("{valid} {{}}"),
+            String::from_utf8(native_result_bytes("null],{\"ok\":false}")).unwrap(),
+        ] {
+            assert!(
+                decode_native_result(invalid.as_bytes()).is_err(),
+                "accepted {invalid}"
+            );
+        }
+        assert!(decode_native_result(br#"{"type":"ping","id":"one"}"#)
+            .unwrap()
+            .is_none());
+        assert!(serde_json::from_slice::<SupervisorMessage>(
+            br#"{"type":"native-result","frame":{}}"#
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn native_result_moves_large_payload_to_matching_invocation() {
+        let media = "x".repeat(GATEWAY_PAYLOAD_LIMIT - 4096);
+        let raw = format!(r#"{{"media":"{media}"}}"#);
+        let Some(SupervisorMessage::NativeResult { frame }) =
+            decode_native_result(&native_result_bytes(&raw)).unwrap()
+        else {
+            panic!("expected native result")
+        };
+        let allocation = frame.params["payload"]["media"].as_str().unwrap().as_ptr();
+        let (outgoing, _) = mpsc::channel(1);
+        let native = NativeHandlers {
+            outgoing,
+            results: std::sync::Mutex::new(HashMap::new()),
+            admissions: std::sync::Mutex::new(HashMap::new()),
+            failed: tokio::sync::watch::channel(false).0,
+        };
+        let (reply, receiver) = oneshot::channel();
+        native.results.lock().unwrap().insert(
+            "invoke-1".into(),
+            NativeInvocation {
+                reply,
+                io: None,
+                node_id: "node-1".into(),
+            },
+        );
+        native.complete(frame.params).await.unwrap();
+        let result = receiver.await.unwrap().unwrap();
+        assert_eq!(result["media"].as_str().unwrap(), media);
+        assert_eq!(result["media"].as_str().unwrap().as_ptr(), allocation);
+        assert!(native.results.lock().unwrap().is_empty());
+
+        let (reply, receiver) = oneshot::channel();
+        native.results.lock().unwrap().insert(
+            "invoke-1".into(),
+            NativeInvocation {
+                reply,
+                io: None,
+                node_id: "another-node".into(),
+            },
+        );
+        assert!(native
+            .complete(json!({"id":"invoke-1","nodeId":"node-1","ok":true,"payload":null}))
+            .await
+            .is_err());
+        assert!(receiver.await.is_err());
+    }
 
     #[test]
     fn event_forwarding_preserves_sequence_numbers() {

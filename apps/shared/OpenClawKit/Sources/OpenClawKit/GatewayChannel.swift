@@ -7,6 +7,44 @@ import Synchronization
 /// Avoid ambiguity with the app's own AnyCodable type.
 private typealias ProtoAnyCodable = OpenClawProtocol.AnyCodable
 
+/// The encoder owns both wire bytes and transport metadata; consumers cannot construct mismatched facts.
+public struct PreparedGatewayRequest: Sendable {
+    public enum Body: Sendable {
+        case frame(Data)
+        case nativeResult(metadata: Data, payloadJSON: String)
+    }
+
+    public let body: Body
+    public let id: String
+    public let method: String
+    public let commands: Set<String>?
+
+    fileprivate init(_ frame: RequestFrame, encoder: JSONEncoder, nativeResults: Bool = false) throws {
+        if nativeResults, frame.method == "node.invoke.result",
+           var params = frame.params?.value as? [String: ProtoAnyCodable],
+           params["ok"]?.value as? Bool == true,
+           let payloadJSON = params.removeValue(forKey: "payloadJSON")?.value as? String
+        {
+            // Freeze every other value now. AnyCodable can hold mutable references;
+            // only the owned String may bypass eager encoding for a capable transport.
+            let metadata = RequestFrame(
+                type: frame.type, id: frame.id, method: frame.method, params: ProtoAnyCodable(params),
+                traceparent: frame.traceparent, expectedprofileid: frame.expectedprofileid)
+            self.body = try .nativeResult(metadata: encoder.encode(metadata), payloadJSON: payloadJSON)
+        } else {
+            self.body = try .frame(encoder.encode(frame))
+        }
+        self.id = frame.id
+        self.method = frame.method
+        if frame.method == "connect" {
+            let params = frame.params?.value as? [String: ProtoAnyCodable]
+            self.commands = Set(params?["commands"]?.value as? [String] ?? [])
+        } else {
+            self.commands = nil
+        }
+    }
+}
+
 public actor GatewayChannelActor {
     nonisolated static func resolveRequestTimeoutMs(_ timeoutMs: Double?, defaultMs: Double) -> Double? {
         timeoutMs == 0 ? nil : (timeoutMs ?? defaultMs)
@@ -535,8 +573,7 @@ public actor GatewayChannelActor {
             id: reqId,
             method: "connect",
             params: ProtoAnyCodable(params))
-        let data = try self.encoder.encode(frame)
-        try await task.send(.data(data))
+        try await task.sendRequest(PreparedGatewayRequest(frame, encoder: self.encoder))
         try self.ensureCurrentConnectAttempt(attemptID, task: task)
         try self.requireCurrentConnection(connectionGeneration)
         do {
@@ -1427,7 +1464,7 @@ extension GatewayChannelActor {
     {
         // Zero leaves terminal-operation deadlines to the Gateway owner.
         let effectiveTimeout = Self.resolveRequestTimeoutMs(timeoutMs, defaultMs: self.defaultRequestTimeoutMs)
-        let payload = try self.encodeRequest(method: method, params: params, kind: "request")
+        let payload = try self.encodeRequest(method: method, params: params, kind: "request", task: task)
         let cancellationGate = GatewayRequestCancellationGate()
         let response: GatewayFrame
         do {
@@ -1462,7 +1499,7 @@ extension GatewayChannelActor {
                             return
                         }
                         do {
-                            try await task.sendRequest(.data(payload.data), lifetime: transportLifetime)
+                            try await task.sendRequest(payload, lifetime: transportLifetime)
                         } catch is CancellationError {
                             // Cancellation owns only this request. Treating it as socket loss
                             // starts disconnect cleanup and can reject an immediate safe retry.
@@ -1545,16 +1582,16 @@ extension GatewayChannelActor {
         connectionGeneration: UInt64) async throws
     {
         try Task.checkCancellation()
-        let payload = try self.encodeRequest(method: method, params: params, kind: "send")
         guard let task = self.task else {
             throw NSError(
                 domain: "Gateway",
                 code: 5,
                 userInfo: [NSLocalizedDescriptionKey: "gateway socket unavailable"])
         }
+        let payload = try self.encodeRequest(method: method, params: params, kind: "send", task: task)
         do {
             try Task.checkCancellation()
-            try await task.send(.data(payload.data))
+            try await task.sendRequest(payload)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -1596,7 +1633,8 @@ extension GatewayChannelActor {
     private func encodeRequest(
         method: String,
         params: [String: AnyCodable]?,
-        kind: String) throws -> (id: String, data: Data)
+        kind: String,
+        task: WebSocketTaskBox) throws -> PreparedGatewayRequest
     {
         let id = UUID().uuidString
         // Encode request using the generated models to avoid JSONSerialization/ObjC bridging pitfalls.
@@ -1607,8 +1645,8 @@ extension GatewayChannelActor {
             method: method,
             params: paramsObject)
         do {
-            let data = try self.encoder.encode(frame)
-            return (id: id, data: data)
+            return try PreparedGatewayRequest(
+                frame, encoder: self.encoder, nativeResults: task.task is any WebSocketRequestSending)
         } catch {
             let failure = error.localizedDescription
             self.logger.error(

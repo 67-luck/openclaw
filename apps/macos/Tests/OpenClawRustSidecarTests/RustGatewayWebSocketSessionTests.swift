@@ -3,21 +3,7 @@ import Testing
 @testable import OpenClawRustSidecar
 
 struct RustGatewayWebSocketSessionTests {
-    @Test func `IPC framing preserves native UTF8 JSON bytes within the charged envelope`() throws {
-        let original = Data(#"  {"id":"receipt","number":1.234567890123456789e+30,"text":"\u0061 / 😀"}  "#.utf8)
-        for callerOwnsLifetime in [false, true] {
-            let prefix = RustGatewayWebSocketSession.framePrefix(callerOwnsLifetime: callerOwnsLifetime)
-            let prepared = try RustGatewayWebSocketSession.prepareGatewayFrame(original, prefix: prefix)
-            #expect(prepared.data.count == original.count + prefix.count + 1)
-            #expect(prepared.data.dropFirst(prefix.count).dropLast() == original)
-            let envelope = try #require(JSONSerialization.jsonObject(with: prepared.data) as? [String: Any])
-            #expect(envelope["type"] as? String == "frame")
-            #expect(envelope["callerOwnsLifetime"] as? Bool == callerOwnsLifetime)
-            #expect((envelope["frame"] as? [String: Any])?["text"] as? String == "a / 😀")
-        }
-    }
-
-    @Test func `IPC framing rejects non UTF8 objects and trailing JSON`() {
+    @Test func `raw websocket metadata rejects non UTF8 objects and trailing JSON`() {
         let object = "{\"id\":\"receipt\"}"
         let invalid = [
             Data("[]".utf8),
@@ -30,8 +16,7 @@ struct RustGatewayWebSocketSessionTests {
             .compactMap { object.data(using: $0) }
         for input in invalid {
             #expect(throws: (any Error).self) {
-                try RustGatewayWebSocketSession.prepareGatewayFrame(
-                    input, prefix: RustGatewayWebSocketSession.framePrefix(callerOwnsLifetime: false))
+                try RustGatewayWebSocketSession.gatewayFrameMetadata(input)
             }
         }
     }
@@ -44,9 +29,9 @@ struct RustGatewayWebSocketSessionTests {
             "params": ["role": "node"],
         ])
 
-        let metadata = RustGatewayWebSocketSession._testConnectMetadata(commandlessConnect)
-        #expect(metadata?.id == "connect-without-commands")
-        #expect(metadata?.commands.isEmpty == true)
+        let metadata = try RustGatewayWebSocketSession.gatewayFrameMetadata(commandlessConnect)
+        #expect(metadata.id == "connect-without-commands")
+        #expect(metadata.commands?.isEmpty == true)
     }
 
     @Test func `finish retains only terminal connect failures`() throws {

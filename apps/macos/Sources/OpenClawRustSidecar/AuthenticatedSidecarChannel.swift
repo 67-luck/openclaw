@@ -1,6 +1,55 @@
 import CryptoKit
 import Foundation
 
+/// Envelopes borrow the original body; only their small prefix and suffix are copied.
+struct SidecarPayload: Sendable {
+    enum Body: Sendable {
+        case data(Data)
+        case utf8(String)
+
+        var count: Int {
+            switch self {
+            case let .data(data): data.count
+            case let .utf8(text): text.utf8.count
+            }
+        }
+
+        func withUnsafeBytes<Result>(_ body: (UnsafeRawBufferPointer) throws -> Result) rethrows -> Result {
+            switch self {
+            case let .data(data): try data.withUnsafeBytes(body)
+            case var .utf8(text): try text.withUTF8 { try body(UnsafeRawBufferPointer($0)) }
+            }
+        }
+    }
+
+    let body: Body
+    let prefix: Data
+    let suffix: Data
+
+    init(_ data: Data, prefix: Data = Data(), suffix: Data = Data()) {
+        self.init(body: .data(data), prefix: prefix, suffix: suffix)
+    }
+
+    init(body: Body, prefix: Data = Data(), suffix: Data = Data()) {
+        if case var .utf8(text) = body {
+            text.makeContiguousUTF8()
+            self.body = .utf8(text)
+        } else {
+            self.body = body
+        }
+        self.prefix = prefix
+        self.suffix = suffix
+    }
+
+    var count: Int {
+        self.prefix.count + self.body.count + self.suffix.count
+    }
+
+    var segments: [Body] {
+        [.data(self.prefix), self.body, .data(self.suffix)]
+    }
+}
+
 /// Supervisor half of `openclaw-node-host`'s authenticated sidecar protocol v1.
 /// The owning process session serializes access; reference identity keeps retirement and sequences shared.
 final class AuthenticatedSidecarChannel {
@@ -72,12 +121,15 @@ final class AuthenticatedSidecarChannel {
     }
 
     /// The prefix is transport framing; the HMAC covers the header, session ID, and exact JSON bytes.
-    func seal(_ payload: Data) throws -> Data {
+    func seal(_ payload: SidecarPayload) throws -> SidecarPayload {
         guard let key = self.key else { throw Failure.retired }
         guard payload.count <= self.maxPayloadBytes else { throw Failure.frameTooLarge }
         guard self.sendSequence < UInt64.max else { throw Failure.wrongSequence }
         let sequence = self.sendSequence + 1
-        var frame = Data("OCSC".utf8)
+        let frameBytes = Self.headerBytes + self.sessionID.count + payload.count + Self.tagBytes
+        var frame = Data(capacity: Self.headerBytes + self.sessionID.count + payload.prefix.count + 4)
+        Self.append(UInt32(frameBytes), to: &frame)
+        frame.append(contentsOf: "OCSC".utf8)
         Self.append(UInt16(1), to: &frame)
         Self.append(UInt16(0), to: &frame)
         frame.append(1) // Supervisor -> runtime; accepting this direction would permit reflection.
@@ -86,17 +138,20 @@ final class AuthenticatedSidecarChannel {
         Self.append(UInt16(self.sessionID.count), to: &frame)
         Self.append(UInt32(payload.count), to: &frame)
         frame.append(self.sessionID)
-        frame.append(payload)
-        frame.append(contentsOf: HMAC<SHA256>.authenticationCode(for: frame, using: key))
-        var prefixed = Data()
-        Self.append(UInt32(frame.count), to: &prefixed)
-        prefixed.append(frame)
+        var authentication = HMAC<SHA256>(key: key)
+        authentication.update(data: frame.dropFirst(4))
+        for segment in payload.segments {
+            segment.withUnsafeBytes { authentication.update(data: $0) }
+        }
+        frame.append(payload.prefix)
+        var suffix = payload.suffix
+        suffix.append(contentsOf: authentication.finalize())
         self.sendSequence = sequence
-        return prefixed
+        return SidecarPayload(body: payload.body, prefix: frame, suffix: suffix)
     }
 
     /// The caller bounds the length prefix before allocating and retires on I/O or typed-message errors.
-    func open(_ frame: Data) throws -> Data {
+    func open<Payload>(_ frame: Data, decode: (Data) throws -> Payload) throws -> Payload {
         guard let key = self.key else { throw Failure.retired }
         do {
             guard frame.count <= self.maxFrameBytes else { throw Failure.frameTooLarge }
@@ -122,8 +177,8 @@ final class AuthenticatedSidecarChannel {
             else { throw Failure.invalidHeader }
             guard authenticated.dropFirst(Self.headerBytes).prefix(sessionBytes) == self.sessionID
             else { throw Failure.wrongSession }
-            let payload = Data(authenticated.suffix(payloadBytes))
-            guard (try? JSONSerialization.jsonObject(with: payload, options: [.fragmentsAllowed])) != nil
+            // Decode only after authentication; typed-payload failures retire the same session.
+            guard let payload = try? decode(authenticated.suffix(payloadBytes))
             else { throw Failure.invalidPayload }
             self.receiveSequence += 1
             return payload

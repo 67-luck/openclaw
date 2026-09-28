@@ -13,7 +13,7 @@ futures-util = { version = "0.3.34", features = ["sink"] }
 openclaw-gateway-client = { path = "../../../crates/openclaw-gateway-client" }
 openclaw-node-host = { path = "../../../crates/openclaw-node-host" }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
+serde_json = { version = "1.0.150", features = ["raw_value"] }
 tokio = { version = "1.52.3", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 
 [lints.rust]

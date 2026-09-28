@@ -13,7 +13,7 @@ struct SidecarWriteQueueTests {
             received.finish()
         }
         let first = Data(repeating: 1, count: 40 * 1024 * 1024)
-        queue.enqueue(first, lane: .application, write: { _ in
+        queue.enqueue(SidecarPayload(first), lane: .application, write: { _ in
             received.yield(1)
             gate.wait()
         }, failed: { _ in received.yield(-1) })
@@ -21,15 +21,15 @@ struct SidecarWriteQueueTests {
         #expect(await iterator.next() == 1)
         let waiting = Data(repeating: 2, count: 40 * 1024 * 1024)
         for _ in 0..<63 {
-            queue.enqueue(waiting, lane: .application, write: { _ in received.yield(2) }, failed: { _ in
+            queue.enqueue(SidecarPayload(waiting), lane: .application, write: { _ in received.yield(2) }, failed: { _ in
                 received.yield(-1)
             })
         }
         // All 64 application slots are occupied. Neither native relay nor receipts can wait for a count slot.
-        queue.enqueue(Data(repeating: 3, count: 34 * 1024 * 1024), lane: .transport, write: { _ in
+        queue.enqueue(SidecarPayload(Data(repeating: 3, count: 34 * 1024 * 1024)), lane: .transport, write: { _ in
             received.yield(3)
         }, failed: { _ in received.yield(-1) })
-        queue.enqueue(Data([4]), lane: .receipt, write: { _ in received.yield(4) }, failed: { _ in
+        queue.enqueue(SidecarPayload(Data([4])), lane: .receipt, write: { _ in received.yield(4) }, failed: { _ in
             received.yield(-1)
         })
         gate.signal()
@@ -38,7 +38,7 @@ struct SidecarWriteQueueTests {
         for _ in 0..<63 {
             #expect(await iterator.next() == 2)
         }
-        queue.enqueue(Data([5]), lane: .application, write: { _ in received.yield(5) }, failed: { _ in
+        queue.enqueue(SidecarPayload(Data([5])), lane: .application, write: { _ in received.yield(5) }, failed: { _ in
             received.yield(-1)
         })
         #expect(await iterator.next() == 5)
@@ -53,7 +53,7 @@ struct SidecarWriteQueueTests {
             queue.close(URLError(.cancelled))
             received.finish()
         }
-        queue.enqueue(Data(repeating: 1, count: 30 * 1024 * 1024), lane: .application, write: { _ in
+        queue.enqueue(SidecarPayload(Data(repeating: 1, count: 30 * 1024 * 1024)), lane: .application, write: { _ in
             received.yield(1)
             gate.wait()
         }, failed: { _ in received.yield(-1) })
@@ -64,7 +64,7 @@ struct SidecarWriteQueueTests {
             (3, 10 * 1024 * 1024, lane),
             (4, 1, .application),
         ] {
-            queue.enqueue(Data(repeating: UInt8(value), count: bytes), lane: lane, write: { _ in
+            queue.enqueue(SidecarPayload(Data(repeating: UInt8(value), count: bytes)), lane: lane, write: { _ in
                 received.yield(value)
             }, failed: { _ in received.yield(-1) })
         }
@@ -83,12 +83,12 @@ struct SidecarWriteQueueTests {
         }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.enqueue(
-                Data([1]),
+                SidecarPayload(Data([1])),
                 lane: .application,
                 lifetime: lifetime,
                 continuation: continuation,
                 prepare: { ($0, Data([2])) },
-                write: { data in received.yield(Int(data[0])) },
+                write: { data in received.yield(Int(data.bytes[0])) },
                 failed: { _ in received.yield(-1) })
         }
         lifetime.finish()
@@ -96,11 +96,16 @@ struct SidecarWriteQueueTests {
         #expect(await iterator.next() == 1)
         #expect(await iterator.next() == 2)
         lifetime.finish()
-        queue.enqueue(Data([3]), lane: .receipt, write: { _ in received.yield(3) }, failed: { _ in received.yield(-1) })
+        queue.enqueue(
+            SidecarPayload(Data([3])),
+            lane: .receipt,
+            write: { _ in received.yield(3) },
+            failed: { _ in received.yield(-1) })
         #expect(await iterator.next() == 3)
     }
 
-    @Test func `cancelled waiting and admitted requests never reach the pipe`() async {
+    @Test(arguments: [false, true])
+    func `cancelled waiting and admitted requests never reach the pipe`(utf8: Bool) async {
         let queue = SidecarWriteQueue()
         let gate = DispatchSemaphore(value: 0)
         let (events, received) = AsyncStream<Int>.makeStream()
@@ -108,7 +113,7 @@ struct SidecarWriteQueueTests {
             queue.close(URLError(.cancelled))
             received.finish()
         }
-        queue.enqueue(Data(repeating: 1, count: 40 * 1024 * 1024), lane: .application, write: { _ in
+        queue.enqueue(SidecarPayload(Data(repeating: 1, count: 40 * 1024 * 1024)), lane: .application, write: { _ in
             received.yield(1)
             gate.wait()
         }, failed: { _ in received.yield(-1) })
@@ -117,14 +122,18 @@ struct SidecarWriteQueueTests {
         let waitingLifetime = WebSocketRequestLifetime()
         let admittedLifetime = WebSocketRequestLifetime()
         for (byte, size, lifetime) in [(2, 40, waitingLifetime), (3, 10, admittedLifetime)] {
+            let payload = utf8 ? SidecarPayload(body: .utf8(String(
+                repeating: byte == 2 ? "😀" : "🦞", count: size * 1024 * 1024 / 4))) :
+                SidecarPayload(Data(repeating: UInt8(byte), count: size * 1024 * 1024))
             queue.enqueue(
-                Data(repeating: UInt8(byte), count: size * 1024 * 1024), lane: .application, lifetime: lifetime,
+                payload, lane: .application,
+                lifetime: lifetime,
                 prepare: { data in (data, Data([99])) },
                 write: { _ in received.yield(byte) }, failed: { _ in received.yield(-1) })
         }
         waitingLifetime.finish()
         admittedLifetime.finish()
-        queue.enqueue(Data([4]), lane: .application, write: { _ in received.yield(4) }, failed: { _ in
+        queue.enqueue(SidecarPayload(Data([4])), lane: .application, write: { _ in received.yield(4) }, failed: { _ in
             received.yield(-1)
         })
         gate.signal()
@@ -138,7 +147,7 @@ struct SidecarWriteQueueTests {
         defer { gate.signal()
             received.finish()
         }
-        queue.enqueue(Data(repeating: 1, count: 40 * 1024 * 1024), lane: .application, write: { _ in
+        queue.enqueue(SidecarPayload(Data(repeating: 1, count: 40 * 1024 * 1024)), lane: .application, write: { _ in
             received.yield(1)
             gate.wait()
         }, failed: { _ in })
@@ -148,7 +157,7 @@ struct SidecarWriteQueueTests {
             do {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                     queue.enqueue(
-                        Data(repeating: 2, count: 40 * 1024 * 1024), lane: .application,
+                        SidecarPayload(Data(repeating: 2, count: 40 * 1024 * 1024)), lane: .application,
                         continuation: continuation, write: { _ in received.yield(-1) }, failed: { _ in })
                     received.yield(2)
                 }
@@ -181,9 +190,9 @@ struct SidecarWriteQueueCapacityTests {
                 active.append(lifetime)
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                     owner.enqueue(
-                        Data([1]), lane: lane, lifetime: lifetime, continuation: continuation,
+                        SidecarPayload(Data([1])), lane: lane, lifetime: lifetime, continuation: continuation,
                         prepare: { ($0, Data([2])) },
-                        write: { data in if data[0] == 2 { output.yield("cancel") } },
+                        write: { data in if data.bytes[0] == 2 { output.yield("cancel") } },
                         failed: { _ in output.yield("failure") })
                 }
             }
@@ -194,13 +203,13 @@ struct SidecarWriteQueueCapacityTests {
                 let lifetime = WebSocketRequestLifetime()
                 waiting.append(lifetime)
                 owner.enqueue(
-                    Data([3]), lane: lane, lifetime: lifetime,
+                    SidecarPayload(Data([3])), lane: lane, lifetime: lifetime,
                     prepare: { ($0, Data([4])) }, write: { _ in output.yield("unexpected waiting RPC") },
                     failed: { _ in output.yield("failure") })
             }
         }
         // All ordinary/progress waiting counts are full. A native result must still start.
-        owner.enqueue(Data(repeating: 5, count: 25 * 1024 * 1024), lane: .delivery, write: { _ in
+        owner.enqueue(SidecarPayload(Data(repeating: 5, count: 25 * 1024 * 1024)), lane: .delivery, write: { _ in
             output.yield("result started")
             gate.wait()
         }, failed: { _ in output.yield("failure") })
@@ -211,12 +220,16 @@ struct SidecarWriteQueueCapacityTests {
         }
         for lane in [SidecarWriteQueue.Lane.admission, .keepalive] {
             for _ in 0..<64 {
-                owner.enqueue(Data([6]), lane: lane, write: { _ in output.yield("control") }, failed: { _ in
-                    output.yield("failure")
-                })
+                owner.enqueue(
+                    SidecarPayload(Data([6])),
+                    lane: lane,
+                    write: { _ in output.yield("control") },
+                    failed: { _ in
+                        output.yield("failure")
+                    })
             }
         }
-        owner.enqueue(Data([7]), lane: .receipt, write: { _ in output.yield("receipt") }, failed: { _ in
+        owner.enqueue(SidecarPayload(Data([7])), lane: .receipt, write: { _ in output.yield("receipt") }, failed: { _ in
             output.yield("failure")
         })
         gate.signal()
@@ -230,7 +243,7 @@ struct SidecarWriteQueueCapacityTests {
         let reused = WebSocketRequestLifetime()
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             owner.enqueue(
-                Data([8]), lane: .application, lifetime: reused, continuation: continuation,
+                SidecarPayload(Data([8])), lane: .application, lifetime: reused, continuation: continuation,
                 prepare: { ($0, Data([9])) }, write: { _ in output.yield("reused") },
                 failed: { _ in output.yield("failure") })
         }
@@ -246,7 +259,8 @@ struct SidecarWriteQueueCapacityTests {
         for _ in 0..<64 {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 owner.enqueue(
-                    Data([1]), lane: .application, lifetime: WebSocketRequestLifetime(), continuation: continuation,
+                    SidecarPayload(Data([1])), lane: .application, lifetime: WebSocketRequestLifetime(),
+                    continuation: continuation,
                     prepare: { ($0, Data([2])) }, write: { _ in }, failed: { _ in })
             }
         }
@@ -257,7 +271,8 @@ struct SidecarWriteQueueCapacityTests {
             do {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                     owner.enqueue(
-                        Data([3]), lane: .application, lifetime: waitingLifetime, continuation: continuation,
+                        SidecarPayload(Data([3])), lane: .application, lifetime: waitingLifetime,
+                        continuation: continuation,
                         prepare: { ($0, Data([4])) }, write: { _ in Issue.record("Retired RPC reached the pipe") },
                         failed: { _ in })
                     output.yield(())
@@ -283,7 +298,7 @@ struct SidecarWriteQueueAcknowledgementTests {
             output.finish()
         }
         owner.enqueue(
-            Data([1]),
+            SidecarPayload(Data([1])),
             lane: .receipt,
             write: { _ in output.yield(1)
                 gate.wait()
@@ -293,7 +308,7 @@ struct SidecarWriteQueueAcknowledgementTests {
         #expect(await iterator.next() == 1)
         for (id, lane) in [(2, SidecarWriteQueue.Lane.receipt), (3, .pong), (4, .pong)] {
             owner.enqueue(
-                Data([UInt8(id)]),
+                SidecarPayload(Data([UInt8(id)])),
                 lane: lane,
                 write: { _ in output.yield(id) },
                 failed: { _ in output.yield(-1) })
@@ -311,11 +326,15 @@ struct SidecarWriteQueueAcknowledgementTests {
         defer { owner.close(URLError(.cancelled))
             output.finish()
         }
-        owner.enqueue(Data([1]), lane: lane, write: { _ in
+        owner.enqueue(SidecarPayload(Data([1])), lane: lane, write: { _ in
             // The peer consumes the bytes and acknowledges them before this thread
             // resumes to release the completed writer slot. It may now send one successor.
             output.yield(1)
-            owner.enqueue(Data([2]), lane: lane, write: { _ in output.yield(2) }, failed: { _ in output.yield(-1) })
+            owner.enqueue(
+                SidecarPayload(Data([2])),
+                lane: lane,
+                write: { _ in output.yield(2) },
+                failed: { _ in output.yield(-1) })
         }, failed: { _ in output.yield(-1) })
         var iterator = events.makeAsyncIterator()
         #expect(await iterator.next() == 1)

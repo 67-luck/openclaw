@@ -37,16 +37,16 @@ final class SidecarWriteQueue: @unchecked Sendable {
         }
     }
 
-    typealias Prepared = (data: Data, cancellation: Data?)
+    typealias Prepared = (data: SidecarPayload, cancellation: Data?)
 
     private final class Request: @unchecked Sendable {
         let id = UUID()
-        let data: Data
+        let data: SidecarPayload
         let lane: Lane
         let chargedBytes: Int
         let lifetime: WebSocketRequestLifetime?
-        let prepare: @Sendable (Data) throws -> Prepared
-        let write: @Sendable (Data) throws -> Void
+        let prepare: @Sendable (SidecarPayload) throws -> Prepared
+        let write: @Sendable (SidecarPayload) throws -> Void
         var continuation: CheckedContinuation<Void, Error>?
         var admitted = false
         var cancelled = false
@@ -54,17 +54,16 @@ final class SidecarWriteQueue: @unchecked Sendable {
         var releasesLease = true
 
         init(
-            data: Data,
+            data: SidecarPayload,
             lane: Lane,
-            envelopeBytes: Int,
             lifetime: WebSocketRequestLifetime?,
             continuation: CheckedContinuation<Void, Error>?,
-            prepare: @escaping @Sendable (Data) throws -> Prepared,
-            write: @escaping @Sendable (Data) throws -> Void)
+            prepare: @escaping @Sendable (SidecarPayload) throws -> Prepared,
+            write: @escaping @Sendable (SidecarPayload) throws -> Void)
         {
             self.data = data
             self.lane = lane
-            self.chargedBytes = data.count + envelopeBytes
+            self.chargedBytes = data.count
             self.lifetime = lifetime
             self.continuation = continuation
             self.prepare = prepare
@@ -82,19 +81,17 @@ final class SidecarWriteQueue: @unchecked Sendable {
     private var leases: [Lane: Int] = [:]
 
     func enqueue(
-        _ data: Data,
+        _ data: SidecarPayload,
         lane: Lane,
-        envelopeBytes: Int = 0,
         lifetime: WebSocketRequestLifetime? = nil,
         continuation: CheckedContinuation<Void, Error>? = nil,
-        prepare: @escaping @Sendable (Data) throws -> Prepared = { ($0, nil) },
-        write: @escaping @Sendable (Data) throws -> Void,
+        prepare: @escaping @Sendable (SidecarPayload) throws -> Prepared = { ($0, nil) },
+        write: @escaping @Sendable (SidecarPayload) throws -> Void,
         failed: @escaping @Sendable (Error) -> Void)
     {
         let request = Request(
             data: data,
             lane: lane,
-            envelopeBytes: envelopeBytes,
             lifetime: lifetime,
             continuation: continuation,
             prepare: prepare,
@@ -211,9 +208,8 @@ final class SidecarWriteQueue: @unchecked Sendable {
                         let write = request.write
                         let active = lifetime.performIfActive(send, onFinish: {
                             let control = Request(
-                                data: cancellation,
+                                data: SidecarPayload(cancellation),
                                 lane: .cancellation,
-                                envelopeBytes: 0,
                                 lifetime: nil,
                                 continuation: nil,
                                 prepare: { ($0, nil) },

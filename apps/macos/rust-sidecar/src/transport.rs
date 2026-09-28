@@ -1,10 +1,11 @@
 //! One acknowledged message each way; IPC demultiplexing never waits for Gateway consumption.
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{display::Base64Display, engine::general_purpose::STANDARD, Engine as _};
 use futures_util::{Sink, Stream};
 use openclaw_gateway_client::{
     ClientError, GatewayWebSocket, GatewayWebSocketConnector, WebSocketError, WebSocketMessage,
     WebSocketRequest,
 };
+use serde::{Serialize, Serializer};
 use serde_json::{json, Value};
 use std::{
     future::Future,
@@ -16,9 +17,34 @@ use tokio::sync::{mpsc, oneshot};
 
 type Acknowledgement = Arc<Mutex<Option<(u64, oneshot::Sender<bool>)>>>;
 
+#[derive(Serialize)]
+pub struct TransportWrite(
+    &'static str,
+    u64,
+    &'static str,
+    // A closed tuple lets the native decoder consume every field and decode base64
+    // directly to Data, without constructing a second full-sized string.
+    #[serde(serialize_with = "serialize_message_bytes")] WebSocketMessage,
+);
+
+fn serialize_message_bytes<S: Serializer>(
+    message: &WebSocketMessage,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let bytes: &[u8] = match message {
+        WebSocketMessage::Text(text) => text.as_bytes(),
+        WebSocketMessage::Binary(bytes) => bytes,
+        // Native control messages carry no data; URLSession owns their wire payload.
+        _ => &[],
+    };
+    // Stream the existing engine's bounded chunks into the authenticated frame.
+    // Materializing a base64 String would add another 33 MiB allocation per media result.
+    serializer.collect_str(&Base64Display::new(bytes, &STANDARD))
+}
+
 pub struct NativeTransport {
     incoming: mpsc::Receiver<WebSocketMessage>,
-    outgoing: mpsc::Sender<Value>,
+    outgoing: mpsc::Sender<TransportWrite>,
     receipts: mpsc::Sender<Value>,
     acknowledgement: Acknowledgement,
     pending: Option<oneshot::Receiver<bool>>,
@@ -35,7 +61,7 @@ pub struct NativeTransportInput {
 
 impl NativeTransport {
     pub fn new(
-        outgoing: mpsc::Sender<Value>,
+        outgoing: mpsc::Sender<TransportWrite>,
         receipts: mpsc::Sender<Value>,
     ) -> (Self, NativeTransportInput) {
         let (incoming_tx, incoming) = mpsc::channel(1);
@@ -161,22 +187,25 @@ impl Sink<WebSocketMessage> for NativeTransport {
         if self.pending.is_some() {
             return Err(closed());
         }
-        let (kind, data, pong) = match message {
-            WebSocketMessage::Text(text) => ("text", text.as_bytes().to_vec(), None),
+        let (kind, pong) = match &message {
+            message @ (WebSocketMessage::Text(_) | WebSocketMessage::Binary(_)) => {
+                let kind = if message.is_text() { "text" } else { "binary" };
+                if message.len() > super::GATEWAY_PAYLOAD_LIMIT {
+                    return Err(closed());
+                }
+                (kind, None)
+            }
             WebSocketMessage::Ping(bytes) => {
                 if self.pong.is_some() {
                     return Err(closed());
                 }
-                ("ping", Vec::new(), Some(WebSocketMessage::Pong(bytes)))
+                ("ping", Some(WebSocketMessage::Pong(bytes.clone())))
             }
-            WebSocketMessage::Close(_) => ("close", Vec::new(), None),
+            WebSocketMessage::Close(_) => ("close", None),
             // URLSession owns unsolicited WebSocket ping/pong responses.
             WebSocketMessage::Pong(_) => return Ok(()),
             _ => return Err(closed()),
         };
-        if data.len() > super::GATEWAY_PAYLOAD_LIMIT {
-            return Err(closed());
-        }
         self.sequence = self.sequence.checked_add(1).ok_or_else(closed)?;
         if let Some(pong) = pong {
             let (reply, receipt) = oneshot::channel();
@@ -186,10 +215,8 @@ impl Sink<WebSocketMessage> for NativeTransport {
         let (reply, receive) = oneshot::channel();
         *self.acknowledgement.lock().unwrap() = Some((self.sequence, reply));
         self.pending = Some(receive);
-        self.outgoing
-            .try_send(json!({"type":"transport-send", "id":self.sequence,
-            "kind":kind,"data":STANDARD.encode(data)}))
-            .map_err(|_| closed())
+        let frame = TransportWrite("transport-send", self.sequence, kind, message);
+        self.outgoing.try_send(frame).map_err(|_| closed())
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let Some(pending) = self.pending.as_mut() else {
@@ -255,9 +282,9 @@ mod tests {
         let (mut socket, native) = NativeTransport::new(outgoing, receipts);
         let mut send = Box::pin(socket.send(WebSocketMessage::Ping(b"ping-1".to_vec().into())));
         assert!(futures_util::poll!(&mut send).is_pending());
-        let write = writes.recv().await.unwrap();
+        let write = serde_json::to_value(writes.recv().await.unwrap()).unwrap();
         native
-            .acknowledge(write["id"].as_u64().unwrap(), true)
+            .acknowledge(write[1].as_u64().unwrap(), true)
             .unwrap();
         send.await.unwrap();
         // Submission is not evidence of peer liveness. Stream must await the real Pong.
@@ -272,7 +299,7 @@ mod tests {
         acknowledgements.recv().await.unwrap();
         let observed = tokio::spawn(async move { socket.next().await });
         tokio::task::yield_now().await;
-        native.pong(write["id"].as_u64().unwrap(), true).unwrap();
+        native.pong(write[1].as_u64().unwrap(), true).unwrap();
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_secs(1), observed)
                 .await
@@ -291,13 +318,17 @@ mod tests {
         let (mut socket, native) = NativeTransport::new(outgoing, receipts);
         let mut send = Box::pin(socket.send(WebSocketMessage::Ping(b"first".to_vec().into())));
         assert!(futures_util::poll!(&mut send).is_pending());
-        let ping = writes.recv().await.unwrap()["id"].as_u64().unwrap();
+        let ping = serde_json::to_value(writes.recv().await.unwrap()).unwrap()[1]
+            .as_u64()
+            .unwrap();
         native.pong(ping, true).unwrap();
         native.acknowledge(ping, true).unwrap();
         send.await.unwrap();
         let mut send = Box::pin(socket.send(WebSocketMessage::Text("result".into())));
         assert!(futures_util::poll!(&mut send).is_pending());
-        let text = writes.recv().await.unwrap()["id"].as_u64().unwrap();
+        let text = serde_json::to_value(writes.recv().await.unwrap()).unwrap()[1]
+            .as_u64()
+            .unwrap();
         native.acknowledge(text, true).unwrap();
         send.await.unwrap();
         assert_eq!(
@@ -314,7 +345,9 @@ mod tests {
         let (mut socket, native) = NativeTransport::new(outgoing, receipts);
         let mut send = Box::pin(socket.send(WebSocketMessage::Ping(b"pending".to_vec().into())));
         assert!(futures_util::poll!(&mut send).is_pending());
-        let ping = writes.recv().await.unwrap()["id"].as_u64().unwrap();
+        let ping = serde_json::to_value(writes.recv().await.unwrap()).unwrap()[1]
+            .as_u64()
+            .unwrap();
         native.acknowledge(ping, true).unwrap();
         send.await.unwrap();
         assert!(socket
@@ -345,10 +378,10 @@ mod tests {
         // Delivering that response must not consume or obstruct the independent write receipt.
         let mut send = Box::pin(socket.send(WebSocketMessage::Text("connect".into())));
         assert!(futures_util::poll!(&mut send).is_pending());
-        let write = writes.recv().await.unwrap();
+        let write = serde_json::to_value(writes.recv().await.unwrap()).unwrap();
         native.receive("text", &STANDARD.encode("hello")).unwrap();
         native
-            .acknowledge(write["id"].as_u64().unwrap(), true)
+            .acknowledge(write[1].as_u64().unwrap(), true)
             .unwrap();
         send.await.unwrap();
         assert_eq!(
@@ -378,39 +411,53 @@ mod tests {
 
     #[tokio::test]
     async fn full_gateway_payload_survives_base64_relay_and_oversize_is_rejected() {
-        let (outgoing, mut writes) = mpsc::channel(1);
-        let (receipts, mut acknowledgements) = mpsc::channel(1);
-        let (mut socket, native) = NativeTransport::new(outgoing, receipts);
-        let text = "/".repeat(super::super::GATEWAY_PAYLOAD_LIMIT);
-        let mut send = Box::pin(socket.send(WebSocketMessage::Text(text.clone().into())));
-        assert!(futures_util::poll!(&mut send).is_pending());
-        let value = writes.recv().await.unwrap();
-        assert!(
-            serde_json::to_vec(&value).unwrap().len() + 65 <= super::super::FRAME_LIMIT as usize
-        );
-        let encoded = value["data"].as_str().unwrap();
-        native.receive("text", encoded).unwrap();
-        native
-            .acknowledge(value["id"].as_u64().unwrap(), true)
-            .unwrap();
-        send.await.unwrap();
-        assert_eq!(
-            socket.next().await.unwrap().unwrap().into_text().unwrap(),
-            text
-        );
-        acknowledgements.recv().await.unwrap();
-        assert!(native
-            .receive(
-                "binary",
-                &STANDARD.encode(vec![0; super::super::GATEWAY_PAYLOAD_LIMIT + 1])
-            )
-            .is_err());
-        native
-            .receive("text", &STANDARD.encode("still-alive"))
-            .unwrap();
-        assert_eq!(
-            socket.next().await.unwrap().unwrap().into_text().unwrap(),
-            "still-alive"
-        );
+        for binary in [false, true] {
+            let (outgoing, mut writes) = mpsc::channel(1);
+            let (receipts, mut acknowledgements) = mpsc::channel(1);
+            let (mut socket, native) = NativeTransport::new(outgoing, receipts);
+            let bytes = vec![if binary { 0xff } else { b'/' }; super::super::GATEWAY_PAYLOAD_LIMIT];
+            let message = if binary {
+                WebSocketMessage::Binary(bytes.clone().into())
+            } else {
+                WebSocketMessage::Text(String::from_utf8(bytes.clone()).unwrap().into())
+            };
+            let mut send = Box::pin(socket.send(message));
+            assert!(futures_util::poll!(&mut send).is_pending());
+            let value = serde_json::to_value(writes.recv().await.unwrap()).unwrap();
+            assert!(
+                serde_json::to_vec(&value).unwrap().len() + 65
+                    <= super::super::FRAME_LIMIT as usize
+            );
+            let tuple = value
+                .as_array()
+                .expect("native relay requires a fully decoded tuple");
+            assert_eq!(tuple.len(), 4);
+            assert_eq!(tuple[0], "transport-send");
+            let encoded = tuple[3].as_str().unwrap();
+            let kind = if binary { "binary" } else { "text" };
+            assert_eq!(tuple[2], kind);
+            native.receive(kind, encoded).unwrap();
+            native
+                .acknowledge(tuple[1].as_u64().unwrap(), true)
+                .unwrap();
+            send.await.unwrap();
+            let received = socket.next().await.unwrap().unwrap();
+            assert_eq!(received.is_binary(), binary);
+            assert_eq!(received.into_data(), bytes);
+            acknowledgements.recv().await.unwrap();
+            assert!(native
+                .receive(
+                    "binary",
+                    &STANDARD.encode(vec![0; super::super::GATEWAY_PAYLOAD_LIMIT + 1])
+                )
+                .is_err());
+            native
+                .receive("text", &STANDARD.encode("still-alive"))
+                .unwrap();
+            assert_eq!(
+                socket.next().await.unwrap().unwrap().into_text().unwrap(),
+                "still-alive"
+            );
+        }
     }
 }
