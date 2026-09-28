@@ -158,7 +158,10 @@ export async function restoreRestartRecoveryRequester(params: {
       }
     }
     const cfg = params.getConfig();
-    if (resolveGatewayAuthPolicyGeneration(cfg, snapshot.authIdentity) !== snapshot.authPolicy) {
+    if (
+      resolveGatewayAuthPolicyGeneration(cfg, snapshot.authIdentity) !== snapshot.authPolicy ||
+      (cfg.gateway?.auth?.mode ?? null) !== snapshot.authMode
+    ) {
       return deny();
     }
     if (snapshot.browserOrigin && !checkGatewayWsBrowserOrigin(snapshot.browserOrigin, cfg).ok) {
@@ -347,6 +350,7 @@ export async function restoreRestartRecoveryRequester(params: {
       restartAccessGrant: snapshot.grant,
       restartDevice: snapshot.device,
       restartAuthPolicy: snapshot.authPolicy,
+      restartAuthMode: snapshot.authMode,
       restartAuthIdentity: snapshot.authIdentity,
       restartBrowserOrigin: snapshot.browserOrigin,
       source: Object.freeze({}),

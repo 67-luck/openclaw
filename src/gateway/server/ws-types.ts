@@ -1,6 +1,7 @@
 // Gateway WebSocket client types describe authenticated client state retained by the server.
 import type { WebSocket } from "ws";
 import type { ConnectParams } from "../../../packages/gateway-protocol/src/schema/frames.js";
+import type { GatewayAuthConfig } from "../../config/types.gateway.js";
 import type { AgentRuntimeIdentity } from "../agent-runtime-identity-token.js";
 import type { AuthenticatedGitHubIdentitySync } from "../github-user-identity.types.js";
 import type { GatewayOperatorAccessAuthority } from "../operator-access-policy.types.js";
@@ -43,6 +44,7 @@ export type GatewayWsClient = PluginNodeCapabilityClient & {
   usesSharedGatewayAuth: boolean;
   sharedGatewaySessionGeneration?: string;
   authPolicyGeneration?: string;
+  authModeAtAdmission?: GatewayAuthConfig["mode"] | null;
   presenceKey?: string;
   /** Connection-owned timing facts, reconciled across live peers independently of the TTL cache. */
   personPresence?: { onlineSince: number; lastActivityAt?: number };

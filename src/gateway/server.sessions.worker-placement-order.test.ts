@@ -190,13 +190,12 @@ test.each(["delete", "archive", "recover"] as const)(
     const entry = loadSessionEntry(sessionKey).entry;
     if (action === "delete") {
       expect(entry).toBeUndefined();
-    } else {
+    } else if (action === "archive") {
       expect(entry?.archivedAt).toEqual(expect.any(Number));
-      if (action === "recover") {
-        expect(entry).toMatchObject({
-          mainRestartRecovery: { tombstone: { recoveredSessionKey: expect.any(String) } },
-        });
-      }
+    } else {
+      expect(entry?.sessionId).toBe(sessionId);
+      expect(entry?.archivedAt).toBeUndefined();
+      expect(entry?.mainRestartRecovery).toBeUndefined();
     }
   },
 );

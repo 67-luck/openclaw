@@ -153,6 +153,7 @@ async function prepareFixture(
     operatorAccessAuthority: resolveGatewayOperatorAccessAuthority(profile.id, cfg),
     scopes: ["operator.write"],
   });
+  originalClient.authModeAtAdmission = cfg.gateway?.auth?.mode ?? null;
   originalClient.browserOrigin = {
     requestHost: "gateway.example.test",
     origin: "https://gateway.example.test",

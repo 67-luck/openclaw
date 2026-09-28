@@ -9,7 +9,7 @@ import {
   type ExecutionIdentityAdmissionToken,
 } from "../audit/execution-identity-admission.js";
 import { executionIdentitySpawnAdmission } from "../audit/execution-identity-spawn-admission.js";
-import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
+import type { GatewayAuthConfig, GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GatewayWsBrowserOrigin } from "../gateway/server/client-identity-types.js";
 import {
@@ -49,6 +49,8 @@ export type AdmittedRunOperatorAuthority = Readonly<{
   restartDevice?: Readonly<{ deviceId: string; identity: string }> | null;
   /** Original classified ingress policy, never inferred from the recovery receiver. */
   restartAuthPolicy?: string;
+  /** Auth mode at the original ingress admission; null means no configured mode. */
+  restartAuthMode?: GatewayAuthConfig["mode"] | null;
   /** Server-verified login used by the original ingress policy generation. */
   restartAuthIdentity?: string;
   restartBrowserOrigin?: Readonly<GatewayWsBrowserOrigin> | null;
@@ -105,6 +107,7 @@ export function createAdmittedRunOperatorAuthority(
       ? Object.freeze({ ...source.restartAccessGrant })
       : source.restartAccessGrant,
     restartAuthPolicy: source.restartAuthPolicy,
+    restartAuthMode: source.restartAuthMode,
     restartAuthIdentity: source.restartAuthIdentity,
     restartBrowserOrigin: source.restartBrowserOrigin
       ? Object.freeze({ ...source.restartBrowserOrigin })

@@ -58,6 +58,7 @@ export async function captureRestartRecoveryRequester(params: {
     source.restartAccessGrant === undefined ||
     source.restartDevice === undefined ||
     source.restartAuthPolicy === undefined ||
+    source.restartAuthMode === undefined ||
     source.restartBrowserOrigin === undefined ||
     !source.readCurrentRoleAssignment
   ) {
@@ -76,17 +77,15 @@ export async function captureRestartRecoveryRequester(params: {
     if (current.profile.profileId !== source.profileId || current.profile.assignedRole !== role) {
       throw new Error("Restart continuation requester changed during admission.");
     }
+    const admissionConfig = params.getConfig();
     if (
       source.restartAuthPolicy !==
-      resolveGatewayAuthPolicyGeneration(params.getConfig(), source.restartAuthIdentity)
+        resolveGatewayAuthPolicyGeneration(admissionConfig, source.restartAuthIdentity) ||
+      source.restartAuthMode !== (admissionConfig.gateway?.auth?.mode ?? null)
     ) {
       throw new Error("Restart continuation authentication policy changed during admission.");
     }
-    const policy = resolveOperatorRolePolicyForAssignment(
-      source.profileId,
-      role,
-      params.getConfig(),
-    );
+    const policy = resolveOperatorRolePolicyForAssignment(source.profileId, role, admissionConfig);
     const snapshot = normalizeRestartRecoveryRequester({
       version: 1,
       agentId: params.agentId,
@@ -104,6 +103,7 @@ export async function captureRestartRecoveryRequester(params: {
       role,
       rolePolicy: JSON.stringify(sourceRolePolicy(policy) ?? null),
       authPolicy: source.restartAuthPolicy,
+      authMode: source.restartAuthMode,
       ...(source.restartAuthIdentity === undefined
         ? {}
         : { authIdentity: source.restartAuthIdentity }),

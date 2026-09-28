@@ -40,6 +40,7 @@ function fixture() {
     restartDevice: null,
     restartBrowserOrigin: null,
     restartAuthPolicy: resolveGatewayAuthPolicyGeneration({}),
+    restartAuthMode: null,
     readCurrentRoleAssignment: () => null,
     assertCurrent,
   });
@@ -142,6 +143,7 @@ describe("restart requester capture", () => {
     "restartAccessGrant",
     "restartDevice",
     "restartAuthPolicy",
+    "restartAuthMode",
     "restartBrowserOrigin",
   ] as const)(
     "refuses an unknown %s basis rather than treating it as independent",
@@ -161,6 +163,15 @@ describe("restart requester capture", () => {
     f.client.internal!.operatorRunAuthority = { ...f.authority };
     await expect(captureRestartRecoveryRequester(f.params)).rejects.toThrow();
     expect(prepareProfile).not.toHaveBeenCalled();
+  });
+
+  it("does not record a later auth mode as the original admission", async () => {
+    const f = fixture();
+    f.params.getConfig = () => ({ gateway: { auth: { mode: "token" } } });
+    await expect(captureRestartRecoveryRequester(f.params)).rejects.toThrow(
+      "authentication policy changed during admission",
+    );
+    expect(f.release).toHaveBeenCalledOnce();
   });
 
   it("joins profile preparation and rejects revocation before recording a grant", async () => {

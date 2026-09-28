@@ -561,6 +561,7 @@ export async function captureGatewayOperatorRunAuthority(input: {
               : undefined,
         restartDevice,
         restartAuthPolicy: restartAuthPolicy?.generation,
+        restartAuthMode: restartAuthPolicy ? client.authModeAtAdmission : undefined,
         restartAuthIdentity: restartAuthPolicy?.identity,
         restartBrowserOrigin: client.browserOrigin ?? null,
         source: source.token,

@@ -2,6 +2,7 @@ import type { ConnectParams } from "../../../packages/gateway-protocol/src/schem
 import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import type { RuntimeContextFragment } from "../../agents/internal-runtime-context.js";
 import type { TranscriptSenderIdentity } from "../../chat/sender-identity.js";
+import type { GatewayAuthConfig } from "../../config/types.gateway.js";
 import type { PluginSubagentRequesterContext } from "../../plugins/runtime/subagent-requester-context.js";
 import type { RuntimePluginToolGrant } from "../../plugins/runtime/tool-grant.js";
 import type { AgentRuntimeIdentity } from "../agent-runtime-identity-token.js";
@@ -51,6 +52,8 @@ export type GatewayClient = {
   /** Client id verified against the server-approved device pairing record. */
   pairedClientId?: string;
   authenticatedUserId?: string;
+  /** Configured auth mode captured at the original handshake. */
+  authModeAtAdmission?: GatewayAuthConfig["mode"] | null;
   /** Verified Tailscale provider identity; generic proxy identities must not infer this. */
   authenticatedUserIsTailscaleProvider?: boolean;
   authenticatedGitHubIdentitySync?: AuthenticatedGitHubIdentitySync;

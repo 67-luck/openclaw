@@ -408,6 +408,7 @@ export async function attachAuthenticatedGatewayConnect(
       context.configSnapshot,
       authenticatedUserId,
     ),
+    authModeAtAdmission: context.configSnapshot.gateway?.auth?.mode ?? null,
     presenceKey,
     ...(authenticatedUserId ? { authenticatedUserId } : {}),
     ...(authenticatedUserIsTailscaleProvider ? { authenticatedUserIsTailscaleProvider: true } : {}),
