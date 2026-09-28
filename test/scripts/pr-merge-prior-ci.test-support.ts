@@ -24,7 +24,14 @@ export function createPriorCiFixtureState(head: string) {
           run_id: number;
           head_sha: string;
           check_run_url?: string;
-          steps?: Array<{ number: number; name: string; status: string; conclusion: string }>;
+          steps?: Array<{
+            number: number;
+            name: string;
+            status: string;
+            conclusion: string;
+            started_at?: string;
+            completed_at?: string;
+          }>;
         }>
       | undefined,
     event: "workflow_dispatch",

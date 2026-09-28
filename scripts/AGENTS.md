@@ -154,7 +154,11 @@ pending/skipped `openclaw/ci-gate`. An explicitly approved `pre-existing-failure
 attribution instead binds the current failed attempt, effective gate check-run,
 tested merge/base, unchanged failure inputs, and inspected qualification artifacts.
 Every failed job and fail-fast cancellation must be accounted for; cancelled
-coverage stays unrun. The review retains `tests.result: "fail"` with exact
+coverage stays unrun. A cancelled job's failed step remains blocking except for
+the explicitly qualified historical skipped-producer/missing-artifact case in
+the landing workflow. Its secondary evidence stays under cancellation, never
+in the causal root list; test, cleanup, and upload transport failures remain blocked.
+The review retains `tests.result: "fail"` with exact
 `tests.preExistingCi` head/run/attempt attribution. Ordinary merge admission refuses
 that review; the confirmed admin route must verify the same failed attempt.
 Branch-caused or unattributed failures, other required checks, security, and
