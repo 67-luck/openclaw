@@ -16,6 +16,10 @@ $dll = [IO.Path]::Combine($privateDirectory, 'OwnedFileTrace.dll')
 $raw = [IO.Path]::Combine($privateDirectory, 'private-host-events.etl')
 $schemaFile = [IO.Path]::Combine($privateDirectory, 'provider-schema.json')
 $providerName = 'Microsoft-Windows-Kernel-File'
+$diagnosticAvailable=$false
+if($Mode -ne 'cleanup'){
+  try { . (Join-Path $PSScriptRoot 'FileTraceFacts.ps1'); $diagnosticAvailable=$true } catch {}
+}
 
 function Write-ExclusiveJson([string]$File, $Value) {
   $bytes = [Text.Encoding]::UTF8.GetBytes(($Value | ConvertTo-Json -Depth 12 -Compress))
@@ -75,6 +79,8 @@ try {
     })
     if ($schemas.Count -eq 0 -or $schemas.Count -gt 512) { throw 'Provider schema unavailable or oversized' }
     Write-ExclusiveJson $schemaFile $schemas
+    try { Emit (Get-FileTracePublicSchema $schemas) }
+    catch { Emit @{phase='provider-metadata';diagnosticOnly=$true;unavailable=$true;events=@()} }
     if (-not (Test-TraceAbsent)) { throw 'Session name occupied; refusing acquisition' }
     $handle = [OwnedFileTrace]::Start($sessionName,$ExpectedGuid,$raw)
     Write-ExclusiveJson ([IO.Path]::Combine($privateDirectory,'acquired.json')) @{ handle=$handle.ToString() }
@@ -115,6 +121,7 @@ try {
   $loss = $null; $stopped = $false; $start = $null; $end = $null
   $threadRefresh = 'not-attempted'
   $identityRefused = $false
+  $diagnosticFacts = if($diagnosticAvailable){New-FileTraceFacts}else{@{unavailable=$true}}
   try {
     if ($TargetProcessId -eq 0 -or $NativeStartFileTime -notmatch '^[0-9]{15,20}$') { throw 'Exact native process identity required' }
     $startIdentity = [long]::Parse($NativeStartFileTime)
@@ -194,6 +201,10 @@ try {
         $name = Field $fields @('FileName','OpenPath','FilePath')
         $pathFact = Resolve-OwnedPath $name
         $relative = $pathFact.relative
+        if($diagnosticAvailable){
+          try { Update-FileTraceFacts $diagnosticFacts ([int]$event.Id) $irp $key ([bool]$ntstatus) ($pathFact.scope -eq 'owned') }
+          catch { $diagnosticFacts.unavailable=$true }
+        }
         # Host-wide names are never retained. Unknown lifetimes invalidate maps.
         $kind = [string]$s.task + '/' + [string]$s.opcode
         $isCreate = $kind -match 'Create' -or $fields.ContainsKey('CreateOptions')
@@ -267,6 +278,11 @@ try {
             if (-not $relative -and -not $outside -and $key) { $relative = $ownedKeys[$key] }
           }
         }
+        if($diagnosticAvailable){try {
+          $resolvedScope=if($outside){'outside'}elseif($relative){'owned'}else{'unknown'}
+          Add-OwnFileTraceFact $diagnosticFacts $s $fields $irp $obj $key $pathFact.scope $resolvedScope `
+            ([bool]($obj -and $objects.ContainsKey($obj))) ([bool]($key -and $ownedKeys.ContainsKey($key))) ([bool]$isCreate) ([bool]$isClose)
+        } catch { $diagnosticFacts.unavailable=$true }}
         if($outside){$counts.outOfScope++;if(-not $isCreate){return}}
         if (-not $relative -and -not $outside) { $counts.unresolvedTargets++; return }
         if ($pending.Count + $objects.Count + $ownedKeys.Count + $excludedObjects.Count -ge 1024) { throw 'BoundReached' }
@@ -304,6 +320,8 @@ try {
   if ([Text.Encoding]::UTF8.GetByteCount($encoded) -gt 256KB) {
     $result.records=@(); $result.observation='insufficient-evidence'; $result.partial=@('projection-byte-cap')
   }
+  try { Emit (Get-FileTraceFacts $diagnosticFacts) }
+  catch { Emit @{phase='owned-begin-facts';diagnosticOnly=$true;unavailable=$true;events=@()} }
   Emit $result
   if (-not $stopped) { exit 2 }
 } catch {

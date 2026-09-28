@@ -1,6 +1,8 @@
 # Synthetic parser-boundary checks only; no native API or Windows proof.
 param([string]$SourcePath = (Join-Path $PSScriptRoot 'Invoke-OwnedFileTrace.ps1'))
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'FileTraceFacts.ps1')
+$diagnosticAvailable=$true
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile(
   $SourcePath,[ref]$tokens,[ref]$errors)
@@ -39,6 +41,7 @@ foreach ($scenario in @('success','failed-create','unnamed-create','late-old-cre
   $script:lifetimeEnd=if($scenario -eq 'after-process-exit') {$start.AddMilliseconds(4).ToFileTimeUtc()} else {[long]::MaxValue}
   $rows=[Collections.Generic.List[object]]::new(); $partial=[Collections.Generic.HashSet[string]]::new()
   $pending=@{}; $objects=@{}; $ownedKeys=@{}
+  $diagnosticFacts=New-FileTraceFacts
   $excludedObjects=[Collections.Generic.HashSet[string]]::new()
   $counts=@{parsed=0;ownBegins=0;unmatchedEnds=0;unresolvedTargets=0;unresolvedThreads=0;outOfScope=0}
   $events=[Collections.Generic.List[object]]::new()
@@ -73,5 +76,6 @@ foreach ($scenario in @('success','failed-create','unnamed-create','late-old-cre
     if($setInfo.Count -ne 1 -or $setInfo[0].relativeTarget -ne 'old.node' -or $setInfo[0].ntStatus -ne '0xC0000022') {throw 'Valid attribution lost'}
   } elseif($setInfo.Count -ne 0) {throw "False target attribution: $scenario"}
   if($scenario -in @('foreign-explicit-name','outside-object') -and $counts.unresolvedTargets -ne 0){throw 'Known outside path treated as unresolved'}
+  if($scenario -eq 'foreign-thread' -and $diagnosticFacts.entries.Count -ne 1){throw 'Foreign thread entered diagnostic facts'}
   [pscustomobject]@{scenario=$scenario;passed=$true;setInfoRecords=$setInfo.Count} | ConvertTo-Json -Compress
 }
