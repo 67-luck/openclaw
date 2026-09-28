@@ -494,7 +494,10 @@ async function resetGatewayTestRuntimeOnly() {
   resetConfigRuntimeState();
   invalidateSessionSharingSnapshot();
   resetTestPluginRegistry();
+  // Per-case mock cleanup must not replace the policy of a still-running server.
+  const gatewayAuth = testState.gatewayAuth;
   resetGatewayMutableTestFixtures();
+  testState.gatewayAuth = gatewayAuth;
   clearSessionStoreCacheForTest();
   await persistTestSessionConfig();
   resetSystemEventsForTest();

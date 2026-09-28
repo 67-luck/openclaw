@@ -1,10 +1,16 @@
 // Gateway websocket E2E harness.
 // Starts an unauthenticated loopback gateway and opens connected test clients.
 import { WebSocket } from "ws";
+import { clearRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { captureEnv } from "../test-utils/env.js";
 import { acquireTestPortBlock } from "../test-utils/port-claims.js";
 import { gatewayFixtureLifetime } from "./gateway-fixture-lifetime.test-support.js";
-import { connectOk, startTestGatewayServer, trackConnectChallengeNonce } from "./test-helpers.js";
+import {
+  connectOk,
+  startTestGatewayServer,
+  testState,
+  trackConnectChallengeNonce,
+} from "./test-helpers.js";
 
 type GatewayWsClient = {
   ws: WebSocket;
@@ -30,6 +36,9 @@ export async function startGatewayServerHarness(): Promise<GatewayServerHarness>
   }
   const { port } = claim;
   const envSnapshot = captureEnv(["OPENCLAW_GATEWAY_TOKEN"]);
+  const authSnapshot = testState.gatewayAuth;
+  // Runtime config readers must see the same policy as this server override.
+  testState.gatewayAuth = { mode: "none" };
   const clients = new Set<WebSocket>();
   delete process.env.OPENCLAW_GATEWAY_TOKEN;
   const server = await startTestGatewayServer(claim, {
@@ -40,6 +49,8 @@ export async function startGatewayServerHarness(): Promise<GatewayServerHarness>
     // Failed startup has no receipt, but must not restore over another closing owner.
     if (gatewayFixtureLifetime.canAdmit()) {
       envSnapshot.restore();
+      testState.gatewayAuth = authSnapshot;
+      clearRuntimeConfigSnapshot();
     }
     throw error;
   });
@@ -79,6 +90,8 @@ export async function startGatewayServerHarness(): Promise<GatewayServerHarness>
       clearTimeout(forceCloseTimer);
       if (gatewayFixtureLifetime.canReleaseState(server)) {
         envSnapshot.restore();
+        testState.gatewayAuth = authSnapshot;
+        clearRuntimeConfigSnapshot();
       }
     }
   };
