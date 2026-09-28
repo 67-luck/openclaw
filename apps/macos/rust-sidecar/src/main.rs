@@ -113,22 +113,25 @@ async fn run() -> Result<(), Failure> {
         key,
         FRAME_LIMIT,
     )?;
-    let mut handshake = SidecarHandshake::new(SidecarProtocolOffer {
-        protocol_major: 1,
-        protocol_minor: 0,
-        peer: SidecarPeerIdentity {
-            role: SidecarPeerRole::Runtime,
-            name: "openclaw-mac-node-sidecar".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-            artifact_identity: "bundled-macos-sidecar".into(),
+    let mut handshake = SidecarHandshake::with_required_features(
+        SidecarProtocolOffer {
+            protocol_major: 1,
+            protocol_minor: 0,
+            peer: SidecarPeerIdentity {
+                role: SidecarPeerRole::Runtime,
+                name: "openclaw-mac-node-sidecar".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                artifact_identity: "bundled-macos-sidecar".into(),
+            },
+            feature_bits: NATIVE_TRANSPORT_FEATURE,
+            limits: SidecarLimits {
+                max_frame_bytes: FRAME_LIMIT,
+                max_in_flight: MAX_IN_FLIGHT,
+                bootstrap_timeout_ms: 10_000,
+            },
         },
-        feature_bits: NATIVE_TRANSPORT_FEATURE,
-        limits: SidecarLimits {
-            max_frame_bytes: FRAME_LIMIT,
-            max_in_flight: MAX_IN_FLIGHT,
-            bootstrap_timeout_ms: 10_000,
-        },
-    })?;
+        NATIVE_TRANSPORT_FEATURE,
+    )?;
     let offer = read_sidecar_frame(&mut input, FRAME_LIMIT, BOOTSTRAP_TIMEOUT).await?;
     let accept = handshake
         .receive(&mut channel, &offer)?
@@ -137,9 +140,6 @@ async fn run() -> Result<(), Failure> {
     handshake.complete_acceptance(&mut channel)?;
     let frame_limit = channel.max_frame_bytes();
     let negotiated = handshake.negotiated().ok_or("missing negotiated limits")?;
-    if negotiated.feature_bits & NATIVE_TRANSPORT_FEATURE == 0 {
-        return Err("native transport capability required".into());
-    }
     let max_in_flight = negotiated.limits.max_in_flight;
     let channel = Arc::new(Mutex::new(channel));
     // Application and progress tasks each own max_in_flight slots; their bursts
