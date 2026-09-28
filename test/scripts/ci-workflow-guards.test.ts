@@ -10430,9 +10430,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     const upload = steps.find(
       (entry: WorkflowStep) => entry.name === "Upload Discord component attachment proof",
     );
-    expect(upload.if).toBe(
-      "always() && needs.preflight.outputs.run_discord_component_proof == 'true'",
-    );
+    expect(upload.with["if-no-files-found"]).toBe("error");
     expect(upload.with.path).toContain("${{ runner.temp }}/discord-component-attachments.json");
     expect(upload.with.path).toContain("${{ runner.temp }}/discord-component-attachments.log");
     // Every verifier reports through the shared results map so a failure can
