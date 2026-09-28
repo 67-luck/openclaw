@@ -57,28 +57,40 @@ describe("jsdom native API boundary", () => {
     }
   });
 
-  it("does not hide a broken Vitest runtime when its package is present", () => {
-    const root = tempDirs.make("openclaw-broken-preload-");
-    const packageRoot = path.join(root, "node_modules", "vitest");
-    mkdirSync(packageRoot, { recursive: true });
-    writeFileSync(
-      path.join(packageRoot, "package.json"),
-      JSON.stringify({
-        name: "vitest",
-        exports: { "./package.json": "./package.json", "./runtime": "./missing-runtime.js" },
-      }),
-    );
-    const entry = path.join(root, "entry.mjs");
-    writeFileSync(entry, 'process.stdout.write("must not execute");');
-    const result = spawnSync(process.execPath, [...process.execArgv, entry], {
-      cwd: root,
-      encoding: "utf8",
-    });
-    expect(result.error).toBeUndefined();
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("missing-runtime.js");
-    expect(result.stdout).toBe("");
-  });
+  it.each(["ordinary", "vitest"] as const)(
+    "isolates a broken installed runtime from %s entrypoints",
+    (kind) => {
+      const root = tempDirs.make("openclaw-broken-preload-");
+      const packageRoot = path.join(root, "node_modules", "vitest");
+      mkdirSync(packageRoot, { recursive: true });
+      writeFileSync(
+        path.join(packageRoot, "package.json"),
+        JSON.stringify({
+          name: "vitest",
+          exports: { "./package.json": "./package.json", "./runtime": "./missing-runtime.js" },
+        }),
+      );
+      const entry =
+        kind === "vitest"
+          ? path.join(packageRoot, "dist/workers/forks.js")
+          : path.join(root, "entry.mjs");
+      mkdirSync(path.dirname(entry), { recursive: true });
+      writeFileSync(entry, 'process.stdout.write("ordinary child executed");');
+      const result = spawnSync(process.execPath, [...process.execArgv, entry], {
+        cwd: root,
+        encoding: "utf8",
+      });
+      expect(result.error).toBeUndefined();
+      if (kind === "vitest") {
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("missing-runtime.js");
+        expect(result.stdout).toBe("");
+      } else {
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toBe("ordinary child executed");
+      }
+    },
+  );
 
   it("adapts the package-local Vitest environment before creating object URLs", () => {
     const result = spawnSync(
@@ -104,7 +116,15 @@ describe("jsdom native API boundary", () => {
             await environment.teardown(globalThis);
           }
         `,
-        path.resolve("ui/package.json"),
+        path.join(
+          path.dirname(
+            process
+              .getBuiltinModule("module")
+              .createRequire(path.resolve("ui/package.json"))
+              .resolve("vitest/package.json"),
+          ),
+          "dist/workers/forks.js",
+        ),
       ],
       { encoding: "utf8" },
     );
