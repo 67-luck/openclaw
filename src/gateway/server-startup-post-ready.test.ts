@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { gatewayCatalogAcquisitionBarrier } from "../agents/prepared-model-runtime.lifecycle.js";
 import type { GatewaySchedulerClock } from "../infra/gateway-scheduler.js";
 import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -53,6 +54,8 @@ describe("Gateway post-ready startup work", () => {
       let realStartup: Promise<void> | undefined;
       let postReadyWork: Promise<void> | undefined;
       let closeOutcome: Promise<void> | undefined;
+      const catalogResumed = vi.fn();
+      let catalogOutcome: Promise<unknown> | undefined;
       let beforeReadyWake: void | Promise<void> = undefined;
       const earlyModule = await import("./server-startup-early.js");
       const startEarlyRuntime = earlyModule.startGatewayEarlyRuntime;
@@ -97,14 +100,25 @@ describe("Gateway post-ready startup work", () => {
           sidecarStartup: "defer",
         });
         await realStartup;
+        expect(gatewayCatalogAcquisitionBarrier).toBeDefined();
+        catalogOutcome = gatewayCatalogAcquisitionBarrier!.then(
+          catalogResumed,
+          (error: unknown) => error,
+        );
         // Let both production grace periods elapse while published startup is pending.
         beforeReadyWake = clock.advanceBy(600);
         expect(startMaintenance).not.toHaveBeenCalled();
         expect(resumed).not.toHaveBeenCalled();
+        expect(catalogResumed).not.toHaveBeenCalled();
 
         if (outcome === "closes") {
           closeOutcome = server.close();
           await postReadyWork;
+          expect(await catalogOutcome).toEqual(
+            new Error("Gateway closed before catalog acquisition"),
+          );
+          expect(gatewayCatalogAcquisitionBarrier).toBeUndefined();
+          expect(catalogResumed).not.toHaveBeenCalled();
           expect(resumed).toHaveBeenCalledExactlyOnceWith(true);
           startup.resolve();
           await server.startupSettled;
@@ -117,8 +131,12 @@ describe("Gateway post-ready startup work", () => {
           await server.startupSettled;
           await clock.advanceBy(499);
           expect(resumed).not.toHaveBeenCalled();
+          expect(catalogResumed).not.toHaveBeenCalled();
           await clock.advanceBy(1);
           await postReadyWork;
+          await catalogOutcome;
+          expect(gatewayCatalogAcquisitionBarrier).toBeUndefined();
+          expect(catalogResumed).toHaveBeenCalledOnce();
           await beforeReadyWake;
           expect(resumed).toHaveBeenCalledExactlyOnceWith(false);
           expect(startMaintenance).toHaveBeenCalledOnce();
@@ -129,6 +147,7 @@ describe("Gateway post-ready startup work", () => {
           await closeOutcome;
           await server?.close();
           await postReadyWork;
+          await catalogOutcome;
           await beforeReadyWake;
           await state.cleanup();
         } finally {

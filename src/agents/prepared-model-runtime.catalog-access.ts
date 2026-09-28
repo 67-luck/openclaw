@@ -1,4 +1,5 @@
 import pLimit from "p-limit";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { resolveInstalledManifestRegistryIndexFingerprint } from "../plugins/manifest-registry-installed.js";
 import { createPreparedRuntimeAuthProfileUsageReader } from "./auth-profiles/runtime-snapshots.js";
 import {
@@ -41,6 +42,7 @@ import {
   prepareModelCatalogPublication,
   retainPreparedModelCatalogPublication,
 } from "./prepared-model-runtime.full-catalog.js";
+import { gatewayCatalogAcquisitionBarrier } from "./prepared-model-runtime.lifecycle.js";
 import { retainPreparedPluginGeneration } from "./prepared-model-runtime.plugin-lifetime.js";
 import {
   createCatalogAttemptReporter,
@@ -524,7 +526,9 @@ export function createFullModelCatalogAccess(
     }
     // First reads discover changed providers, preserving any inventory retained across reloads.
     if (!catalogAcquisitionStarted && params.inventoryOwner.provenance === "configured") {
-      void acquireCatalog({ changedOnly: true }).catch(() => undefined);
+      void acquireCatalog({ changedOnly: true }, true, gatewayCatalogAcquisitionBarrier).catch(
+        () => undefined,
+      );
     }
     if (!published.inventory) {
       return;
@@ -540,6 +544,7 @@ export function createFullModelCatalogAccess(
   const acquireCatalog = async (
     options: PreparedModelCatalogRefreshOptions = {},
     acquireNative = true,
+    startBarrier?: Promise<void>,
   ): Promise<ModelCatalogSnapshot> => {
     assertCurrent();
     // Failed discovery waits for explicit Retry/Refresh.
@@ -597,8 +602,17 @@ export function createFullModelCatalogAccess(
       await current.promise.catch(() => undefined);
       return acquireCatalog(options, acquireNative);
     }
+    const failProvider = (error: unknown): never => {
+      attempt.failed(error, providers, "provider");
+      throw error;
+    };
     attempt.setPending(fullRefresh || providers.length ? providers : undefined);
     const promise = (async () => {
+      if (startBarrier) {
+        // Pending reads coalesce while Gateway startup owns the acquisition window.
+        await racePromiseWithAbortSignal(startBarrier, params.retirementSignal).catch(failProvider);
+        assertCurrent();
+      }
       await using _ = {
         [Symbol.asyncDispose]: retainPreparedPluginGeneration(params.pluginGeneration),
       };
@@ -606,10 +620,7 @@ export function createFullModelCatalogAccess(
         const candidate = await acquireProviderCatalog(
           fullRefresh ? undefined : providers,
           providers,
-        ).catch((error: unknown) => {
-          attempt.failed(error, providers, "provider");
-          throw error;
-        });
+        ).catch(failProvider);
         // Provider facts belong to their completed acquisition; optional native failure cannot
         // discard them. Native discovery starts from this accepted publication.
         attempt.published(fullRefresh ? undefined : providers, "provider", () =>

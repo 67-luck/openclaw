@@ -114,26 +114,6 @@ export function collectPreparedModelRuntimeProviderIds(
   return [...providerIds].toSorted((left, right) => left.localeCompare(right));
 }
 
-function hasConfiguredInlineProviderModel(
-  config: OpenClawConfig,
-  provider: string,
-  modelId: string,
-  matchesStaticModelId: StaticModelIdMatcher,
-): boolean {
-  return Object.entries(config.models?.providers ?? {}).some(
-    ([providerId, providerConfig]) =>
-      normalizeProviderId(providerId) === provider &&
-      (providerConfig.models ?? []).some((model) =>
-        matchesStaticModelId({
-          candidateId: model.id,
-          rowProvider: providerId,
-          provider,
-          modelId,
-        }),
-      ),
-  );
-}
-
 export function collectConfiguredProviderIdsNeedingStaticCatalog(params: {
   config: OpenClawConfig;
   configuredModelRefs?: readonly ConfiguredModelRef[];
@@ -150,15 +130,19 @@ export function collectConfiguredProviderIdsNeedingStaticCatalog(params: {
       continue;
     }
     const { provider, modelId } = parsed;
-    if (
-      hasConfiguredInlineProviderModel(
-        params.config,
-        provider,
-        modelId,
-        params.matchesStaticModelId,
-      ) ||
-      params.resolveStaticCatalogModel({ provider, modelId })
-    ) {
+    const hasInlineModel = Object.entries(params.config.models?.providers ?? {}).some(
+      ([providerId, providerConfig]) =>
+        normalizeProviderId(providerId) === provider &&
+        (providerConfig.models ?? []).some((model) =>
+          params.matchesStaticModelId({
+            candidateId: model.id,
+            rowProvider: providerId,
+            provider,
+            modelId,
+          }),
+        ),
+    );
+    if (hasInlineModel || params.resolveStaticCatalogModel({ provider, modelId })) {
       continue;
     }
     providerIds.add(provider);

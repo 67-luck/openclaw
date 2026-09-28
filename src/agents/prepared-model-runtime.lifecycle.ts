@@ -21,6 +21,19 @@ export function retirePreparedModelRuntimeGeneration(
   retirement?.abort();
 }
 
+export let gatewayCatalogAcquisitionBarrier: Promise<void> | undefined;
+
+export function setGatewayCatalogAcquisitionBarrier(barrier?: Promise<void>): void {
+  gatewayCatalogAcquisitionBarrier = barrier;
+  const clear = () => {
+    if (gatewayCatalogAcquisitionBarrier === barrier) {
+      gatewayCatalogAcquisitionBarrier = undefined;
+    }
+  };
+  // Release startup scope on either outcome; waiting readers still observe rejection.
+  void barrier?.then(clear, clear);
+}
+
 type ModelRuntimeClose = (error: Error) => Promise<void>;
 class ProcessModelRuntimeLifetimes {
   readonly closeCallbacks = new Set<ModelRuntimeClose>();
@@ -63,6 +76,7 @@ export function closePreparedModelRuntimeSnapshots(): Promise<void> {
   if (lifetimes.closing) {
     return lifetimes.closing;
   }
+  setGatewayCatalogAcquisitionBarrier();
   const closed = createDeferredCore();
   lifetimes.closing = closed.promise;
   lifetimes.epoch += 1;

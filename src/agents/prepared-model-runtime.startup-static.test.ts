@@ -15,6 +15,10 @@ import type { AuthProfileStore } from "./auth-profiles/types.js";
 import type * as ModelCatalog from "./model-catalog.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { setPreparedModelFullCatalogAuth } from "./prepared-model-runtime-auth.js";
+import {
+  closePreparedModelRuntimeSnapshots,
+  setGatewayCatalogAcquisitionBarrier,
+} from "./prepared-model-runtime.lifecycle.js";
 import type { ModelRegistry } from "./sessions/model-registry.js";
 
 type CreateStaticCatalogResolver =
@@ -309,13 +313,16 @@ beforeEach(async () => {
 
 describe("prepared model runtime Gateway catalog mode", () => {
   it.each([
-    { fails: false, nativeFirst: false },
-    { fails: true, nativeFirst: false },
-    { fails: false, nativeFirst: true },
-    { fails: true, nativeFirst: true },
+    { fails: false, nativeFirst: false, deferred: false, retires: false },
+    { fails: true, nativeFirst: false, deferred: false, retires: false },
+    { fails: false, nativeFirst: true, deferred: false, retires: false },
+    { fails: true, nativeFirst: true, deferred: false, retires: false },
+    { fails: false, nativeFirst: false, deferred: true, retires: false },
+    { fails: true, nativeFirst: false, deferred: true, retires: false },
+    { fails: false, nativeFirst: false, deferred: true, retires: true },
   ])(
-    "starts account discovery once on the first catalog read (failure=$fails, nativeFirst=$nativeFirst)",
-    async ({ fails, nativeFirst }) => {
+    "starts account discovery once on the first catalog read (failure=$fails, nativeFirst=$nativeFirst, deferred=$deferred, retires=$retires)",
+    async ({ fails, nativeFirst, deferred, retires }) => {
       const native = { provider: "openai", id: "native", name: "Native", nativeRuntime: "fixture" };
       if (nativeFirst) {
         mocks.loadAgentRuntimePluginRegistryHandle.mockImplementation(() => {
@@ -341,6 +348,8 @@ describe("prepared model runtime Gateway catalog mode", () => {
         inheritedAuthDir: "/tmp/prepared-static-agent",
         workspaceDir: "/tmp/prepared-static-workspace",
       };
+      const postReady = createDeferred();
+      setGatewayCatalogAcquisitionBarrier(deferred ? postReady.promise : undefined);
       await refreshPreparedModelRuntimeSnapshots(input.config, {
         gatewayLifecycle: true,
         catalogMode: "static",
@@ -371,6 +380,31 @@ describe("prepared model runtime Gateway catalog mode", () => {
       try {
         expect(refreshExpiredPreparedModelCatalog(input)).toBe(published);
         expect(published.pendingProviders).toEqual(["openai"]);
+        if (deferred) {
+          expect(refreshExpiredPreparedModelCatalog(input)).toBe(published);
+          expect(published.pendingProviders).toEqual(["openai"]);
+          expect(mocks.runPreparedModelCatalogWorker).not.toHaveBeenCalled();
+          if (retires) {
+            completion = owner.loadFullModelCatalog!({ changedOnly: true });
+            const cancelled = expect(completion).rejects.toThrow("Operation aborted");
+            await closePreparedModelRuntimeSnapshots();
+            await cancelled;
+            expect(mocks.runPreparedModelCatalogWorker).not.toHaveBeenCalled();
+            return;
+          }
+          if (fails) {
+            completion = owner.loadFullModelCatalog!({ changedOnly: true });
+            // A rejected startup gate must settle pending status without dispatching a worker.
+            reply.resolve(catalog);
+            postReady.reject(new Error("Gateway closed before catalog acquisition"));
+            await expect(completion).rejects.toThrow("Gateway closed before catalog acquisition");
+            expect(refreshExpiredPreparedModelCatalog(input)?.refreshFailed).toBe(true);
+            expect(published.pendingProviders).toBeUndefined();
+            expect(mocks.runPreparedModelCatalogWorker).not.toHaveBeenCalled();
+            return;
+          }
+          postReady.resolve();
+        }
         await started.promise;
         expect(refreshExpiredPreparedModelCatalog(input)).toBe(published);
         expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledOnce();
@@ -398,6 +432,7 @@ describe("prepared model runtime Gateway catalog mode", () => {
           expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledTimes(2);
         }
       } finally {
+        postReady.resolve();
         reply.resolve(catalog);
         await completion?.catch(() => undefined);
       }

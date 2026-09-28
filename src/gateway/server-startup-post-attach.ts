@@ -255,6 +255,14 @@ export async function startGatewaySidecars(params: {
             : {}),
           workspaceDir: params.defaultWorkspaceDir,
           startupTrace: params.startupTrace,
+          waitForPostReadyWork: params.waitForPostReadyWork
+            ? async () => {
+                await params.waitForPostReadyWork!();
+                if (params.shouldCreatePostReadySidecars?.() === false) {
+                  throw new Error("Gateway closed before catalog acquisition");
+                }
+              }
+            : undefined,
         }),
       ),
     );
