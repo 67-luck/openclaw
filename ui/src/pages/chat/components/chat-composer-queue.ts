@@ -294,10 +294,10 @@ function renderChatQueueItem(
     !item.serverQueued &&
     !failed &&
     (props.offline || item.sendState === "waiting-reconnect");
-  const stateLabel =
-    item.readOnly || item.senderSession
-      ? t("common.queued")
-      : sendStateLabel(item, !item.serverQueued && props.offline === true);
+  const stateLabel = sendStateLabel(
+    item,
+    !item.readOnly && !item.serverQueued && props.offline === true,
+  );
   const steered = item.queueMode === "steer" && stateLabel === null;
   const busy = item.sendState === "executing-command";
   const editing = props.editingId === item.id;
@@ -316,7 +316,7 @@ function renderChatQueueItem(
   const move = props.onQueueMove;
   // Queue-level: once any row can move, every row's own state icon becomes the
   // handle so text stays on one x without adding a second grabber column.
-  const showsHandle = Boolean(move) && reorder.offered;
+  const showsHandle = Boolean(move) && reorder.offered && !item.senderSession;
   const canMove = showsHandle && moveIndex >= 0 && segment.length > 1;
   // Every row keeps its handle and action slots in every state and goes inert
   // instead of empty while an edit is open, so no column moves mid-flow.
@@ -330,7 +330,9 @@ function renderChatQueueItem(
       : "");
   // The leading glyph identifies the object, not its transient delivery state.
   // Row tone, badges, and actions carry failure, review, reconnect, and steer.
-  const leadingIcon = queueWaitingIcon;
+  const leadingIcon = item.senderSession
+    ? renderForwardedAttribution(item, { agentId: props.currentAgentId, compact: true })
+    : queueWaitingIcon;
   const itemClass = `chat-queue__item${hasAuthorAvatar ? "" : " chat-queue__item--no-avatar"}${steered ? " chat-queue__item--steered" : ""}${
     failed ? " chat-queue__item--failed" : ""
   }${reconnecting ? " chat-queue__item--reconnect" : ""}${
@@ -448,7 +450,9 @@ function renderChatQueueItem(
                   : nothing
               }
             </button>`
-          : html`<span class="chat-queue__leading chat-queue__icon" aria-hidden="true"
+          : html`<span
+              class="chat-queue__leading chat-queue__icon"
+              aria-hidden=${ifDefined(item.senderSession ? undefined : "true")}
               >${leadingIcon}</span
             >`
       }
@@ -504,14 +508,7 @@ function renderChatQueueItem(
                 }
               }}
             ></textarea>`
-          : html`<div class="chat-queue__copy">
-              ${
-                item.senderSession
-                  ? html`<div class="chat-queue__source">
-                      ${renderForwardedAttribution(item, { agentId: props.currentAgentId })}
-                    </div>`
-                  : nothing
-              }
+          : html`<span class="chat-queue__copy">
               <span class="chat-queue__text" title=${text}>${text}</span>
               ${
                 steered && !canSteer
@@ -535,7 +532,7 @@ function renderChatQueueItem(
                     >`
                   : nothing
               }
-            </div>`
+            </span>`
       }
       <span class="chat-queue__actions">
         ${

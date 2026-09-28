@@ -719,8 +719,11 @@ it.each([
       onQueueMove: vi.fn(),
     });
     const agentRow = container.querySelector('[data-chat-queue-item="pending-input:agent-input"]')!;
-    expect(agentRow.textContent).toContain("Queued");
-    expect(agentRow.textContent).toContain("Verification helper");
+    expect(agentRow.querySelector(".chat-queue__source, .chat-queue__state")).toBeNull();
+    const indicator = agentRow.querySelector(".chat-queue__leading .chat-forwarded-indicator");
+    expect(indicator?.getAttribute("aria-label")).toContain("Verification helper");
+    expect(indicator?.getAttribute("title")).toContain("Verification helper");
+    expect(indicator?.querySelector("svg")).not.toBeNull();
     expect(agentRow.textContent).not.toContain("reconnect");
     expect(agentRow.querySelector('a[data-session-key="agent:main:helper"]')).not.toBeNull();
     expect(

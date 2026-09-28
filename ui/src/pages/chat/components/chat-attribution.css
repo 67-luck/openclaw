@@ -13,3 +13,19 @@
   width: 14px;
   height: 14px;
 }
+
+.chat-forwarded-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: inherit;
+  text-decoration: none;
+}
+
+.chat-forwarded-indicator:focus-visible {
+  border-radius: var(--radius-sm);
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}

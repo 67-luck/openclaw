@@ -7,6 +7,7 @@ import { GatewayBrowserClient } from "../../../api/gateway.ts";
 import { SessionLinkTitler } from "../../../components/session-link-titling.ts";
 import type { MessageGroup } from "../../../lib/chat/chat-types.ts";
 import { groupMessages } from "../chat-thread-grouping.ts";
+import { renderForwardedAttribution } from "./chat-forwarded-attribution.ts";
 import { renderMessageGroup } from "./chat-message.ts";
 
 let container: HTMLDivElement;
@@ -302,3 +303,39 @@ describe("forwarded message attribution", () => {
     expect(sourceLink().title).toBe("agent:main:main");
   });
 });
+
+it.each(["agent:main:helper", "legacy-session", undefined])(
+  "keeps compact source %s accessible without adding a source line",
+  async (sessionKey) => {
+    const source = { senderSession: { sessionKey, label: "Verification helper", agentId: "main" } };
+    const template = () => renderForwardedAttribution(source, { agentId: "main", compact: true });
+    render(template(), container);
+    const indicator = expectDefined(
+      container.querySelector<HTMLElement>(".chat-forwarded-indicator"),
+      "compact source",
+    );
+    expect(indicator.getAttribute("aria-label")).toBe("Forwarded from Verification helper");
+    expect(indicator.title).toBe("Forwarded from Verification helper");
+    expect(indicator.textContent?.trim()).toBe("");
+    expect(indicator.querySelector("svg")).not.toBeNull();
+    if (sessionKey === "agent:main:helper") {
+      const titler = new SessionLinkTitler(container);
+      titler.client = new GatewayBrowserClient({ url: "ws://localhost" });
+      vi.spyOn(titler.client, "request").mockResolvedValueOnce({
+        status: "ok",
+        sessionKey,
+        agentId: "main",
+        title: "Resolved helper",
+      });
+      await titler.decorate(indicator, true);
+      expect(indicator.getAttribute("href")).toContain("/chat/");
+      render(template(), container);
+      expect(indicator.querySelector("svg")).not.toBeNull();
+      expect(indicator.getAttribute("aria-label")).toBe("Forwarded from Verification helper");
+    } else {
+      expect(indicator.tagName).toBe("SPAN");
+      expect(indicator.hasAttribute("tabindex")).toBe(false);
+      expect(indicator.hasAttribute("href")).toBe(false);
+    }
+  },
+);
