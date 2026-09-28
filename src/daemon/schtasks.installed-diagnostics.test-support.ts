@@ -111,7 +111,7 @@ export async function inspectInstalledUpdateFailure(params: {
     commands,
     0,
     signal,
-    { observeService: "status" },
+    { observeCommand: "status" },
   );
 }
 

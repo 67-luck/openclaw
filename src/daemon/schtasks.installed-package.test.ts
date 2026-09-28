@@ -1,9 +1,12 @@
 import { readFileSync } from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import { z } from "zod";
+import * as installedArtifact from "../../scripts/lib/gateway-bench-installed-package.ts";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { collectNestedErrorCandidates } from "../infra/error-graph-internal.js";
 import { resolveEnvironmentValue } from "../infra/process-env.js";
 import * as updateRunReader from "../infra/update-run-reader.js";
 import type { UpdateRunRecord } from "../infra/update-run-record.js";
@@ -22,6 +25,7 @@ import {
   resolveInstalledCellBodyTimeoutMs,
   keys,
 } from "./schtasks.installed-package.test-support.js";
+import { runInstalledPublishedUpdateWithRecovery } from "./schtasks.installed-recovery.test-support.js";
 import * as nativeObservation from "./schtasks.integration-observation.test-support.js";
 
 const temporary = useAutoCleanupTempDirTracker(afterEach);
@@ -33,69 +37,6 @@ const candidateCheckNames = [
   "candidate migration continuation",
   "candidate gateway canary",
 ];
-
-it("retains the original failed published result before the bounded output tail", async () => {
-  const root = temporary.make("installed-update-result-");
-  const secret = "synthetic-update-result-secret";
-  const records: installedCommand.CommandRecord[] = [];
-  await expect(
-    installedCommand.run(
-      [
-        "-e",
-        `process.stdout.write(JSON.stringify({
-          status: "error", mode: "npm", reason: "primary-update-failure", durationMs: 123,
-          root: process.env.FIXTURE_SECRET,
-          steps: [{ name: "candidate check", exitCode: 1, durationMs: 12,
-            command: process.env.FIXTURE_SECRET, cwd: process.env.FIXTURE_SECRET,
-            stderrTail: "token=" + process.env.FIXTURE_SECRET,
-            failureFacts: [{ check: "runtime", code: "fixture-failure", message: "Primary check failed", privatePayload: process.env.FIXTURE_SECRET }]
-          }],
-          padding: "x".repeat(4000),
-          recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" }
-        })); process.exitCode = 1;`,
-      ],
-      {
-        SystemRoot: process.env.SystemRoot,
-        WINDIR: process.env.WINDIR,
-        HOME: root,
-        USERPROFILE: root,
-        OPENCLAW_STATE_DIR: path.join(root, "state"),
-        FIXTURE_SECRET: secret,
-      },
-      root,
-      records,
-      0,
-      undefined,
-      { commandBudget: "published-update" },
-    ),
-  ).rejects.toThrow();
-  expect(records).toHaveLength(1);
-  expect(records[0]).toMatchObject({
-    code: 1,
-    joined: true,
-    publishedUpdate: {
-      kind: "published-update",
-      status: "error",
-      reason: "primary-update-failure",
-      recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
-      steps: [
-        {
-          name: "candidate check",
-          exitCode: 1,
-          failureFacts: [
-            { check: "runtime", code: "fixture-failure", message: "Primary check failed" },
-          ],
-        },
-      ],
-    },
-  });
-  expect(records[0]?.failureOutput?.stdout).not.toContain("primary-update-failure");
-  expect(records[0]?.publishedUpdate).not.toHaveProperty("root");
-  expect(records[0]?.publishedUpdate).not.toHaveProperty("steps.0.command");
-  expect(records[0]?.publishedUpdate).not.toHaveProperty("steps.0.cwd");
-  expect(records[0]?.publishedUpdate).not.toHaveProperty("steps.0.failureFacts.0.privatePayload");
-  expect(JSON.stringify(records)).not.toContain(secret);
-});
 
 it.each([
   { name: "candidate migration continuation", exitCode: 0 },
@@ -443,6 +384,227 @@ describe("published installed update progress", () => {
     vi.useRealTimers();
   });
 
+  it.each(["aborted", "unjoined", "transport", "capped", "succeeded", "missing-run"] as const)(
+    "refuses explicit recovery before effects for %s work",
+    async (kind) => {
+      const task = installedTask();
+      const controller = new AbortController();
+      const aborted = new Error("Fixture body cancelled");
+      if (kind === "aborted") {
+        controller.abort(aborted);
+      }
+      vi.spyOn(updateRunReader, "listUpdateRunsAsync").mockResolvedValue(
+        kind === "transport" ? [recordedRun([])] : [],
+      );
+      const prepare = vi
+        .spyOn(installedArtifact, "prepareInstalledPackage")
+        .mockRejectedValue(new Error("Recovery must not inspect the candidate"));
+      const originalFailure = new Error("Original published failure");
+      const command = vi.spyOn(installedCommand, "run").mockRejectedValue(originalFailure);
+      const readStatus =
+        vi.fn<
+          Parameters<typeof runInstalledPublishedUpdateWithRecovery>[0]["recovery"]["readStatus"]
+        >();
+      const observations: Record<string, unknown> = {};
+      const pending = runInstalledPublishedUpdateWithRecovery({
+        task,
+        input,
+        inputPath: "C:\\synthetic-input.json",
+        key: "2026.9.4",
+        commands: [
+          {
+            args: [task.entry, "--profile", task.profile, "update", "--yes"],
+            launcherPid: 1234,
+            beforeCleanup: "dead",
+            code: kind === "succeeded" ? 0 : 1,
+            managedResult: kind === "transport" ? null : 1,
+            signal: null,
+            joined: kind !== "unjoined",
+            elapsedMs: kind === "capped" ? 360_000 : 1_000,
+          },
+        ],
+        signal: controller.signal,
+        observations,
+        recordProgress: vi.fn().mockResolvedValue(undefined),
+        recovery: {
+          selected: task,
+          peer: task,
+          configBefore: Buffer.from("{}"),
+          peerXml: "",
+          peerConfig: Buffer.from("{}"),
+          peerInstallBefore: { sha256: "synthetic", files: 0 },
+          peerIdentity: { version: "synthetic", buildId: "synthetic" },
+          peerPid: 1234,
+          awaitReadiness: vi.fn().mockResolvedValue(undefined),
+          readStatus,
+        },
+      });
+      const failure: unknown = await pending.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      const failures = collectNestedErrorCandidates(failure);
+      expect(failures).toContain(originalFailure);
+      if (kind === "aborted") {
+        expect(failures).toContain(aborted);
+      } else {
+        const message = {
+          unjoined: "Recovery requires joined commands",
+          transport: "Recovery requires a normal managed command return",
+          capped: "Recovery observation requires an uncapped failure",
+          succeeded: "Recovery observation requires a failed published command",
+          "missing-run": "Recovery requires the original recorded update run",
+        }[kind];
+        expect(
+          failures.some((error) => error instanceof Error && error.message.includes(message)),
+        ).toBe(true);
+      }
+      expect(command).toHaveBeenCalledTimes(1);
+      expect(readStatus).not.toHaveBeenCalled();
+      expect(prepare).not.toHaveBeenCalled();
+      expect(observations).toEqual({});
+    },
+  );
+
+  it.each(["invalid-result", "failed-command", "failed-readiness"] as const)(
+    "retains launcher changes across recovery failures (%s)",
+    async (kind) => {
+      const root = temporary.make("installed-repair-observation-");
+      const task = {
+        ...installedTask(),
+        configPath: path.join(root, "openclaw.json"),
+        scriptPath: path.join(root, "gateway.cmd"),
+      };
+      await fs.writeFile(task.configPath, "{}");
+      await fs.writeFile(task.scriptPath, "original launcher");
+      const originalHash = await installedArtifact.hashFile(task.scriptPath);
+      vi.spyOn(updateRunReader, "listUpdateRunsAsync").mockResolvedValue([recordedRun([])]);
+      vi.spyOn(installedArtifact, "prepareInstalledPackage").mockResolvedValue({
+        input,
+        installRoot: task.installRoot,
+        entry: task.entry,
+        root: task.stateDir,
+        buildInfo: {},
+        before: { sha256: "synthetic-install", files: 1 },
+        after: undefined,
+      });
+      vi.spyOn(installedPackage, "readInstalledBuildIdentity").mockResolvedValue({
+        version: input.candidate.version,
+        buildId: "synthetic-build",
+      });
+      vi.spyOn(nativeObservation, "readTaskXml").mockResolvedValue(
+        "<Task><Settings><Enabled>false</Enabled></Settings></Task>",
+      );
+      let enabled = false;
+      vi.spyOn(nativeObservation, "readTaskPrincipal").mockImplementation(() => ({
+        enabled,
+        lastRunTime: "",
+        lastTaskResult: 0,
+        logonType: 3,
+        runLevel: 0,
+        taskState: 3,
+      }));
+      const originalFailure = new Error("Original published failure");
+      const recoveryFailure = new Error("Recovery observation failure");
+      const command = vi
+        .spyOn(installedCommand, "run")
+        .mockRejectedValueOnce(originalFailure)
+        .mockImplementationOnce(async () => {
+          await fs.writeFile(task.scriptPath, "repaired launcher");
+          if (kind === "failed-command") {
+            throw recoveryFailure;
+          }
+          return kind === "invalid-result"
+            ? "{}"
+            : JSON.stringify({
+                status: "ok",
+                mode: "finalize",
+                root: installedPackage.packageRoot(task.installRoot),
+                restart: false,
+                reconciledRuns: [recordedRun([]).runId],
+                postUpdate: { doctor: {}, plugins: { status: "ok" } },
+              });
+        })
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            service: { loaded: true, runtime: { status: "stopped" } },
+            rpc: { ok: false },
+          }),
+        )
+        .mockImplementationOnce(async () => {
+          enabled = true;
+          return JSON.stringify({ ok: true, result: "started" });
+        });
+      const observations: Record<string, unknown> = {};
+      const failure: unknown = await runInstalledPublishedUpdateWithRecovery({
+        task,
+        input,
+        inputPath: path.join(root, "input.json"),
+        key: "2026.9.4",
+        commands: [
+          {
+            args: [task.entry, "--profile", task.profile, "update", "--yes"],
+            launcherPid: 1234,
+            beforeCleanup: "dead",
+            code: 1,
+            managedResult: 1,
+            signal: null,
+            joined: true,
+            elapsedMs: 1000,
+          },
+        ],
+        signal: new AbortController().signal,
+        observations,
+        recordProgress: vi.fn().mockResolvedValue(undefined),
+        recovery: {
+          selected: task,
+          peer: task,
+          configBefore: Buffer.from("{}"),
+          peerXml: "",
+          peerConfig: Buffer.from("{}"),
+          peerInstallBefore: { sha256: "synthetic", files: 0 },
+          peerIdentity: { version: "synthetic", buildId: "synthetic" },
+          peerPid: 1234,
+          awaitReadiness: vi.fn().mockRejectedValue(recoveryFailure),
+          readStatus: vi.fn(),
+        },
+      }).catch((error: unknown) => error);
+      expect(collectNestedErrorCandidates(failure)).toContain(originalFailure);
+      expect(command).toHaveBeenCalledTimes(kind === "failed-readiness" ? 4 : 2);
+      if (kind !== "invalid-result") {
+        expect(collectNestedErrorCandidates(failure)).toContain(recoveryFailure);
+      }
+      expect(observations.explicitRecovery).toMatchObject({
+        beforeRepair: {
+          files: expect.arrayContaining([{ pathname: task.scriptPath, sha256: originalHash }]),
+        },
+        afterRepairDefinition: {
+          files: expect.arrayContaining([
+            {
+              pathname: task.scriptPath,
+              sha256: await installedArtifact.hashFile(task.scriptPath),
+            },
+          ]),
+        },
+      });
+      expect(await installedArtifact.hashFile(task.scriptPath)).not.toBe(originalHash);
+      if (kind === "failed-readiness") {
+        expect(observations.explicitRecovery).toMatchObject({
+          beforeStart: { principal: { enabled: false } },
+          afterStart: {
+            principal: { enabled: true },
+            files: expect.arrayContaining([
+              {
+                pathname: task.scriptPath,
+                sha256: await installedArtifact.hashFile(task.scriptPath),
+              },
+            ]),
+          },
+        });
+      }
+    },
+  );
+
   it.each(["ready", "aborted", "unjoined", "failed-status"] as const)(
     "keeps post-failure status on the selected context and admitted lifetime (%s)",
     async (kind) => {
@@ -467,6 +629,7 @@ describe("published installed update progress", () => {
                 launcherPid: 1234,
                 beforeCleanup: "indeterminate",
                 code: 1,
+                managedResult: null,
                 signal: null,
                 joined: false,
                 elapsedMs: 360_000,
@@ -505,7 +668,7 @@ describe("published installed update progress", () => {
           commands,
           0,
           controller.signal,
-          { observeService: "status" },
+          { observeCommand: "status" },
         );
       }
     },

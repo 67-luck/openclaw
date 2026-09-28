@@ -6,6 +6,129 @@ import { installedStatusSchema } from "./schtasks.installed-package.test-support
 
 const temporary = useAutoCleanupTempDirTracker(afterEach);
 
+it("retains the original failed published result before the bounded output tail", async () => {
+  const root = temporary.make("installed-update-result-");
+  const secret = "synthetic-update-result-secret";
+  const records: CommandRecord[] = [];
+  await expect(
+    run(
+      [
+        "-e",
+        `process.stdout.write(JSON.stringify({
+          status: "error", mode: "npm", reason: "primary-update-failure", durationMs: 123,
+          root: process.env.FIXTURE_SECRET,
+          steps: [{ name: "candidate check", exitCode: 1, durationMs: 12,
+            command: process.env.FIXTURE_SECRET, cwd: process.env.FIXTURE_SECRET,
+            stderrTail: "token=" + process.env.FIXTURE_SECRET,
+            failureFacts: [{ check: "runtime", code: "fixture-failure", message: "Primary check failed", privatePayload: process.env.FIXTURE_SECRET }]
+          }],
+          padding: "x".repeat(4000),
+          recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" }
+        })); process.exitCode = 1;`,
+      ],
+      {
+        SystemRoot: process.env.SystemRoot,
+        WINDIR: process.env.WINDIR,
+        HOME: root,
+        USERPROFILE: root,
+        OPENCLAW_STATE_DIR: path.join(root, "state"),
+        FIXTURE_SECRET: secret,
+      },
+      root,
+      records,
+      0,
+      undefined,
+      { commandBudget: "published-update" },
+    ),
+  ).rejects.toThrow();
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({
+    code: 1,
+    joined: true,
+    publishedUpdate: {
+      kind: "published-update",
+      status: "error",
+      reason: "primary-update-failure",
+      recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+      steps: [
+        {
+          name: "candidate check",
+          exitCode: 1,
+          failureFacts: [
+            { check: "runtime", code: "fixture-failure", message: "Primary check failed" },
+          ],
+        },
+      ],
+    },
+  });
+  expect(records[0]?.failureOutput?.stdout).not.toContain("primary-update-failure");
+  expect(records[0]?.publishedUpdate).not.toHaveProperty("root");
+  expect(records[0]?.publishedUpdate).not.toHaveProperty("steps.0.command");
+  expect(records[0]?.publishedUpdate).not.toHaveProperty("steps.0.cwd");
+  expect(records[0]?.publishedUpdate).not.toHaveProperty("steps.0.failureFacts.0.privatePayload");
+  expect(JSON.stringify(records)).not.toContain(secret);
+});
+
+it.each([0, 1])(
+  "retains a sanitized repair deferral before exit or semantic rejection (exit=%s)",
+  async (exitCode) => {
+    const root = temporary.make("schtasks-repair-observation-");
+    const records: CommandRecord[] = [];
+    const secret = "synthetic-repair-credential-do-not-report";
+    const payload = {
+      status: exitCode === 0 ? "warning" : "error",
+      mode: "finalize",
+      deferred: true,
+      reason: "maintenance-owner-active",
+      message: "Wait for the recorded owner to settle. token=" + secret,
+      config: { token: secret },
+      auth: { token: secret },
+      postUpdate: { doctor: { warnings: ["token=" + secret] } },
+    };
+    const command = run(
+      [
+        "-e",
+        "process.stdout.write(process.env.FIXTURE_JSON); process.exitCode = Number(process.env.FIXTURE_EXIT);",
+      ],
+      {
+        SystemRoot: process.env.SystemRoot,
+        WINDIR: process.env.WINDIR,
+        FIXTURE_JSON: JSON.stringify(payload),
+        FIXTURE_EXIT: String(exitCode),
+      },
+      root,
+      records,
+      0,
+      undefined,
+      { observeCommand: "repair" },
+    );
+    if (exitCode === 0) {
+      const response = JSON.parse(await command);
+      expect(response.deferred).toBe(true);
+      expect(response.reconciledRuns).toBeUndefined();
+    } else {
+      await expect(command).rejects.toThrow();
+    }
+    expect(records[0]).toMatchObject({
+      code: exitCode,
+      managedResult: exitCode,
+      joined: true,
+      repairOutput: {
+        kind: "repair",
+        status: payload.status,
+        mode: "finalize",
+        deferred: true,
+        reason: "maintenance-owner-active",
+      },
+    });
+    const observation = JSON.stringify(records[0]?.repairOutput);
+    expect(observation).toContain("Wait for the recorded owner to settle");
+    expect(observation).not.toContain(secret);
+    expect(observation).not.toContain('"config"');
+    expect(observation).not.toContain('"auth"');
+  },
+);
+
 it.each(
   (["stdout", "stderr"] as const).flatMap((stream) =>
     [false, true].map((coloredLabel) => ({ stream, coloredLabel })),
@@ -240,7 +363,7 @@ it("retains safe native and RPC facts before an exit-zero status fails semantic 
     records,
     0,
     undefined,
-    { observeService: "status", expectedStderr: [secret] },
+    { observeCommand: "status", expectedStderr: [secret] },
   );
   expect(() => installedStatusSchema.parse(JSON.parse(stdout))).toThrow();
   expect(records[0]).toMatchObject({
@@ -303,7 +426,7 @@ it("retains bounded sanitized install outcome without private response fields", 
     records,
     0,
     undefined,
-    { observeService: "install" },
+    { observeCommand: "install" },
   );
   expect(JSON.parse(stdout).ok).toBe(true);
   expect(records[0]?.serviceOutput).toMatchObject({

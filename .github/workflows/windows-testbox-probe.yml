@@ -1,4 +1,4 @@
-name: Windows Testbox Probe
+name: Windows 9.4 Recovery Continuity Diagnostic
 
 on:
   workflow_dispatch:
@@ -102,6 +102,22 @@ jobs:
           ref: ${{ inputs.target_ref || github.ref }}
           persist-credentials: false
           submodules: false
+
+      - name: Require the fixed published-driver diagnostic scope
+        env:
+          PACKAGE_BINDING: ${{ inputs.installed_startup_package }}
+          NATIVE_MODE: ${{ inputs.run_windows_ci }}
+          RUNNER_LABEL: ${{ inputs.runner_label }}
+          KEEPALIVE: ${{ inputs.keepalive_minutes }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          MIXED_MODE: ${{ inputs.run_private_node_provisioning || inputs.installed_repair_worker || inputs.installed_startup_cpu_diagnostic || inputs.windows_ci_replay != '' || inputs.require_wsl2 || inputs.import_ubuntu_wsl2 || inputs.enable_wsl2_features }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:NATIVE_MODE -cne "true" -or $env:RUNNER_LABEL -cne "windows-2025" -or $env:KEEPALIVE -cne "0" -or $env:MIXED_MODE -cne "false") { throw "Only the fixed installed 9.4 diagnostic is admitted." }
+          if ($env:TARGET_REF -cnotmatch '^[0-9a-f]{40}$' -or $env:WORKFLOW_SHA -cne $env:TARGET_REF -or (git rev-parse HEAD).Trim() -cne $env:TARGET_REF) { throw "Diagnostic source identity differs." }
+          $binding = $env:PACKAGE_BINDING | ConvertFrom-Json
+          if ($binding.sourceSha -cne "a68299da6a282602d43dff45081eba83eaab32c6") { throw "Diagnostic package source differs from its fixed candidate." }
 
       - name: Qualify fresh native runner isolation
         if: ${{ inputs.installed_repair_worker }}
@@ -932,7 +948,7 @@ jobs:
   # Native session qualification must not depend on headless CI or WSL results.
   native-schtasks:
     name: Native Scheduled Task proof
-    if: ${{ inputs.run_windows_ci && inputs.installed_startup_package == '' && !inputs.run_private_node_provisioning && !inputs.installed_repair_worker && inputs.windows_ci_replay == '' }}
+    if: ${{ false }}
     runs-on: windows-2025
     timeout-minutes: 75
     env:
@@ -1023,7 +1039,7 @@ jobs:
           if ($manifest.candidate.name -cne "openclaw" -or [string]::IsNullOrWhiteSpace($manifest.candidate.version) -or $manifest.candidate.packageSourceSha -cne $binding.sourceSha -or $manifest.candidate.sha256 -cne $binding.packageSha256 -or (Get-FileHash -LiteralPath $tarball -Algorithm SHA256).Hash.ToLowerInvariant() -cne $binding.packageSha256) { throw "Candidate package identity changed in transit." }
           $nodePath = (node -p 'process.execPath').Trim()
           if ($LASTEXITCODE -ne 0 -or $manifest.runtime.version -cne "v$env:NODE_VERSION" -or (node --version).Trim() -cne $manifest.runtime.version -or (Get-FileHash -LiteralPath $nodePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.runtime.sha256) { throw "Native runtime differs from the producer's pinned runtime." }
-          $record = @{ status = "transport-verified-only"; artifactId = $env:HANDOFF_ID; artifactDigest = $env:HANDOFF_DIGEST; manifestSha256 = $env:MANIFEST_SHA256; origin = $manifest.origin; candidate = $manifest.candidate; plannedCells = @("fresh", "published-2026.9.3-to-candidate", "published-2026.9.4-to-candidate"); productProof = "not-run" }
+          $record = @{ status = "transport-verified-only"; artifactId = $env:HANDOFF_ID; artifactDigest = $env:HANDOFF_DIGEST; manifestSha256 = $env:MANIFEST_SHA256; origin = $manifest.origin; candidate = $manifest.candidate; plannedCells = @("published-2026.9.4-recovery-and-start-continuity"); productProof = "original failure retained; skipped cells do not qualify the full campaign" }
           New-Item -ItemType Directory -Force -Path .artifacts/windows-schtasks | Out-Null
           $record | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath .artifacts/windows-schtasks/package-handoff.json
           $published = @()
@@ -1077,7 +1093,7 @@ jobs:
 
       - name: Prepare installed Scheduled Task cell fresh
         id: native_prepare_fresh
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' }}
+        if: ${{ false }}
         shell: bash
         env:
           OPENCLAW_VITEST_WORKER_CACHE: "1"
@@ -1326,7 +1342,7 @@ jobs:
 
       - name: Prepare installed Scheduled Task cell 2026.9.3
         id: native_prepare_9_3
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_retire_fresh.outcome == 'success' }}
+        if: ${{ false }}
         shell: bash
         env:
           CI_WINDOWS_SCHTASKS_INSTALLED_CELL: "2026.9.3"
@@ -1395,7 +1411,7 @@ jobs:
 
       - name: Prepare installed Scheduled Task cell 2026.9.4
         id: native_prepare_9_4
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_retire_9_3.outcome == 'success' }}
+        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_isolation.outcome == 'success' }}
         shell: bash
         env:
           CI_WINDOWS_SCHTASKS_INSTALLED_CELL: "2026.9.4"
@@ -1403,7 +1419,9 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$NODE_BIN:$PATH"
+          node --import ./scripts/tsx.mjs --input-type=module -e 'import fs from "node:fs/promises"; import { readInput } from "./src/daemon/schtasks.installed-package.test-support.ts"; const input = await readInput(".artifacts/windows-schtasks/installed-input.json"); await fs.mkdir(input.stateRoot); await fs.mkdir(input.installRoot);'
           node --import ./scripts/tsx.mjs src/daemon/schtasks.installed-package.test-support.ts prepare .artifacts/windows-schtasks/installed-input.json
+          CI_WINDOWS_SCHTASKS_INTEGRATION=1 node scripts/prepare-vitest-worker-cache.mts
 
       - name: Run installed Scheduled Task cell 2026.9.4
         id: native_schtasks_9_4
