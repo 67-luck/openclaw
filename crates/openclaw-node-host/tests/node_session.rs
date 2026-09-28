@@ -847,15 +847,8 @@ async fn runtime_enforces_public_manifests_and_private_admission() {
         .into_iter()
         .enumerate()
         {
-            let (tcp, _) = listener.accept().await.unwrap();
-            let mut socket = accept_async(tcp).await.unwrap();
-            send_json(
-                &mut socket,
-                json!({"type":"event","event":"connect.challenge",
-                    "payload":{"nonce":"node-nonce","ts":1_700_000_000_123_u64}}),
-            )
-            .await;
-            let connect = receive_json(&mut socket).await;
+            let (mut socket, connect) =
+                accept_node_connect(&listener, "node-nonce", 1_700_000_000_123_u64).await;
             assert_eq!(connect["params"]["commands"], json!([advertised]));
             send_json(
                 &mut socket,
@@ -891,12 +884,7 @@ async fn runtime_enforces_public_manifests_and_private_admission() {
                 } else {
                     assert_eq!(result["params"]["payload"], json!({"command":command}));
                 }
-                send_json(
-                    &mut socket,
-                    json!({"type":"res","id":result["id"],"ok":true,
-                        "payload":{"accepted":true}}),
-                )
-                .await;
+                acknowledge(&mut socket, &result).await;
             }
             socket.close(None).await.unwrap();
         }
