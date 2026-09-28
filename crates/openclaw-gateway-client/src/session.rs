@@ -1549,7 +1549,10 @@ fn is_trusted_plaintext_host(url: &Url) -> bool {
         Some(Host::Ipv6(address)) => is_trusted_plaintext_address(&IpAddr::V6(address)),
         Some(Host::Domain(host)) => {
             let host = host.to_ascii_lowercase();
-            host == "localhost" || host.ends_with(".local") || host.ends_with(".ts.net")
+            // Native URLSession accepts the absolute DNS spelling of localhost too.
+            matches!(host.as_str(), "localhost" | "localhost.")
+                || host.ends_with(".local")
+                || host.ends_with(".ts.net")
         }
         None => false,
     }

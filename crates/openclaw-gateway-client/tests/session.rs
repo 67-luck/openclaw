@@ -1261,6 +1261,7 @@ async fn connect_rejection_preserves_recovery_details() {
 fn plaintext_policy_accepts_trusted_private_targets_only() {
     for target in [
         "ws://127.0.0.1:18789",
+        "ws://localhost.:18789",
         "ws://192.168.1.10:18789",
         "ws://100.64.0.1:18789",
         "ws://[::ffff:127.0.0.1]:18789",
