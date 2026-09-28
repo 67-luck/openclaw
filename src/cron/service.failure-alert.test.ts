@@ -359,49 +359,59 @@ describe("CronService failure alerts", () => {
   it.each([
     { reason: "auth" as const, useFallback: false },
     { reason: "auth_permanent" as const, useFallback: true },
-  ])("records $reason failures quietly and resumes delivery after login", async ({ reason, useFallback }) => {
-    await withAlerts(
-      async ({ cron, sendCronFailureAlert, enqueueSystemEvent, requestHeartbeat, runIsolatedAgentJob, addJob }) => {
-        const job = await addJob("scheduled report", { delivery: createTelegramDelivery() });
+  ])(
+    "records $reason failures quietly and resumes delivery after login",
+    async ({ reason, useFallback }) => {
+      await withAlerts(
+        async ({
+          cron,
+          sendCronFailureAlert,
+          enqueueSystemEvent,
+          requestHeartbeat,
+          runIsolatedAgentJob,
+          addJob,
+        }) => {
+          const job = await addJob("scheduled report", { delivery: createTelegramDelivery() });
 
-        await cron.run(job.id, "force");
-        await cron.run(job.id, "force");
+          await cron.run(job.id, "force");
+          await cron.run(job.id, "force");
 
-        expect(cron.getJob(job.id)?.state).toMatchObject({
-          lastRunStatus: "error",
-          lastError: "The provider requires sign-in.",
-          lastErrorReason: reason,
-          consecutiveErrors: 2,
-          lastFailureNotificationDeliveryStatus: "not-requested",
-        });
-        expect(sendCronFailureAlert).toHaveBeenCalledTimes(0);
-        expect(enqueueSystemEvent).toHaveBeenCalledTimes(0);
-        expect(requestHeartbeat).toHaveBeenCalledTimes(0);
+          expect(cron.getJob(job.id)?.state).toMatchObject({
+            lastRunStatus: "error",
+            lastError: "The provider requires sign-in.",
+            lastErrorReason: reason,
+            consecutiveErrors: 2,
+            lastFailureNotificationDeliveryStatus: "not-requested",
+          });
+          expect(sendCronFailureAlert).toHaveBeenCalledTimes(0);
+          expect(enqueueSystemEvent).toHaveBeenCalledTimes(0);
+          expect(requestHeartbeat).toHaveBeenCalledTimes(0);
 
-        runIsolatedAgentJob.mockResolvedValueOnce({ status: "ok", delivered: true });
-        await cron.run(job.id, "force");
+          runIsolatedAgentJob.mockResolvedValueOnce({ status: "ok", delivered: true });
+          await cron.run(job.id, "force");
 
-        expect(cron.getJob(job.id)?.state).toMatchObject({
-          lastRunStatus: "ok",
-          lastDeliveryStatus: "delivered",
-          consecutiveErrors: 0,
-          lastFailureNotificationDeliveryStatus: "not-requested",
-        });
-        expect(sendCronFailureAlert).toHaveBeenCalledTimes(0);
-        expect(enqueueSystemEvent).toHaveBeenCalledTimes(0);
-        expect(requestHeartbeat).toHaveBeenCalledTimes(0);
-      },
-      {
-        useFallback,
-        runResult: {
-          status: "error",
-          provider: "openai",
-          errorClassification: { kind: "reason", reason },
-          error: "The provider requires sign-in.",
+          expect(cron.getJob(job.id)?.state).toMatchObject({
+            lastRunStatus: "ok",
+            lastDeliveryStatus: "delivered",
+            consecutiveErrors: 0,
+            lastFailureNotificationDeliveryStatus: "not-requested",
+          });
+          expect(sendCronFailureAlert).toHaveBeenCalledTimes(0);
+          expect(enqueueSystemEvent).toHaveBeenCalledTimes(0);
+          expect(requestHeartbeat).toHaveBeenCalledTimes(0);
         },
-      },
-    );
-  });
+        {
+          useFallback,
+          runResult: {
+            status: "error",
+            provider: "openai",
+            errorClassification: { kind: "reason", reason },
+            error: "The provider requires sign-in.",
+          },
+        },
+      );
+    },
+  );
 
   it.each([
     ["command exit", { kind: "command-exit", exitCode: 23 }, "Cause: command exited with code 23"],

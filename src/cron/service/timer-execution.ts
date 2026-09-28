@@ -200,7 +200,12 @@ export async function executeJobCore(
               status: "error" as const,
               error: `heartbeat failed: ${heartbeatResult.reason}`,
               ...(heartbeatResult.failureReason
-                ? { errorClassification: { kind: "reason" as const, reason: heartbeatResult.failureReason } }
+                ? {
+                    errorClassification: {
+                      kind: "reason" as const,
+                      reason: heartbeatResult.failureReason,
+                    },
+                  }
                 : {}),
             }
           : { status: "skipped" as const, error: `heartbeat skipped: ${heartbeatResult.reason}` };
@@ -308,7 +313,9 @@ async function executeMainSessionCronJob(
       status: heartbeatResult.status === "skipped" ? "skipped" : "error",
       error: heartbeatResult.reason,
       ...(heartbeatResult.status === "failed" && heartbeatResult.failureReason
-        ? { errorClassification: { kind: "reason" as const, reason: heartbeatResult.failureReason } }
+        ? {
+            errorClassification: { kind: "reason" as const, reason: heartbeatResult.failureReason },
+          }
         : {}),
       summary: text,
     };

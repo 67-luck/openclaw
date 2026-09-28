@@ -4,9 +4,9 @@ import {
   normalizeOptionalString,
   readNonBlankString,
 } from "@openclaw/normalization-core/string-coerce";
+import type { FailoverReason } from "../agents/failover/signal.js";
 /** Reply payload contracts and metadata helpers shared by dispatch and channel renderers. */
 import type { ProgressContinuationCapability } from "../channels/progress-continuation.js";
-import type { FailoverReason } from "../agents/failover/signal.js";
 import type { HarnessCompletionRecovery } from "../config/sessions/restart-recovery-types.js";
 import type { ReplyToMode } from "../config/types.base.js";
 import { hasReplyPayloadContent } from "../interactive/payload.js";

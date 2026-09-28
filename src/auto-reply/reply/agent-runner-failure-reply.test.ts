@@ -56,7 +56,10 @@ describe("buildExternalRunFailureReply", () => {
         sessionCtx: { ChatType: "direct" },
         resolvedVerboseLevel: undefined,
       });
-      expect(payload).toMatchObject({ isError: true, text: expect.stringMatching(/sign in|login/i) });
+      expect(payload).toMatchObject({
+        isError: true,
+        text: expect.stringMatching(/sign in|login/i),
+      });
       expect(getReplyPayloadMetadata(payload!)).toMatchObject({ agentRunFailureReason: reason });
     },
   );

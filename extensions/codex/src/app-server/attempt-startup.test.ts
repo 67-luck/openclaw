@@ -232,45 +232,47 @@ describe("startCodexAttemptThread", () => {
     { provider: "codex", modelId: "gpt-5.4-codex", nativeAuthRequired: false },
     { provider: "lmstudio", modelId: "gpt-5.4-codex", nativeAuthRequired: true },
     { provider: "codex", modelId: "lmstudio/gpt-5.4-codex", nativeAuthRequired: true },
-  ])("starts accountless $provider/$modelId with nativeAuthRequired=$nativeAuthRequired", async ({
-    provider,
-    modelId,
-    nativeAuthRequired,
-  }) => {
-    const paths = createAttemptPaths(tempRoots);
-    const harness = createCodexLifecycleHarness({
-      respond: (method, requestParams) => {
-        if (method === "account/read") {
-          return { account: null, requiresOpenaiAuth: nativeAuthRequired };
-        }
-        if (method === "config/read") {
-          return { config: {}, origins: {}, layers: [] };
-        }
-        if (method === "configRequirements/read") {
-          return { requirements: null };
-        }
-        if (method === "thread/start") {
-          const response = threadStartResult();
-          const { modelProvider } = requestParams as { modelProvider?: string };
-          return {
-            ...response,
-            modelProvider: modelProvider ?? response.modelProvider,
-            thread: { ...response.thread, modelProvider: modelProvider ?? response.modelProvider },
-          };
-        }
-        throw new Error(`unexpected method: ${method}`);
-      },
-    });
-    const result = await startThreadWithHarness(5_000, undefined, {
-      harness,
-      paths,
-      buildAttemptParams: () => ({ ...createAttemptParams(paths), provider, modelId }),
-    }).run;
-    expect(result.thread.threadId).toBe("thread-1");
-    expect(result.thread.modelProvider).toBe(nativeAuthRequired ? "lmstudio" : "openai");
-    result.turnRoute.release();
-    result.releaseSharedClientLease();
-  });
+  ])(
+    "starts accountless $provider/$modelId with nativeAuthRequired=$nativeAuthRequired",
+    async ({ provider, modelId, nativeAuthRequired }) => {
+      const paths = createAttemptPaths(tempRoots);
+      const harness = createCodexLifecycleHarness({
+        respond: (method, requestParams) => {
+          if (method === "account/read") {
+            return { account: null, requiresOpenaiAuth: nativeAuthRequired };
+          }
+          if (method === "config/read") {
+            return { config: {}, origins: {}, layers: [] };
+          }
+          if (method === "configRequirements/read") {
+            return { requirements: null };
+          }
+          if (method === "thread/start") {
+            const response = threadStartResult();
+            const { modelProvider } = requestParams as { modelProvider?: string };
+            return {
+              ...response,
+              modelProvider: modelProvider ?? response.modelProvider,
+              thread: {
+                ...response.thread,
+                modelProvider: modelProvider ?? response.modelProvider,
+              },
+            };
+          }
+          throw new Error(`unexpected method: ${method}`);
+        },
+      });
+      const result = await startThreadWithHarness(5_000, undefined, {
+        harness,
+        paths,
+        buildAttemptParams: () => ({ ...createAttemptParams(paths), provider, modelId }),
+      }).run;
+      expect(result.thread.threadId).toBe("thread-1");
+      expect(result.thread.modelProvider).toBe(nativeAuthRequired ? "lmstudio" : "openai");
+      result.turnRoute.release();
+      result.releaseSharedClientLease();
+    },
+  );
 
   it("clears the shared app-server when top-level thread startup fails with an app error", async () => {
     const { harness, run } = startThreadWithHarness(5_000);

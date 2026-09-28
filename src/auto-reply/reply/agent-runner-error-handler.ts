@@ -246,11 +246,15 @@ export async function handleAgentExecutionError(params: {
   }
   const replayPrevented = findCliTimeoutError(err)?.cliTimeout.observedActivity === true;
   if (providerRequestError) {
-    return await settleFailure({
-      // Curated facet copy beats the generic classified summary; see
-      // buildExternalRunFailureReply for the same priority.
-      text: providerRequestError.userMessage,
-    }, false, failoverFacts.reason);
+    return await settleFailure(
+      {
+        // Curated facet copy beats the generic classified summary; see
+        // buildExternalRunFailureReply for the same priority.
+        text: providerRequestError.userMessage,
+      },
+      false,
+      failoverFacts.reason,
+    );
   }
   defaultRuntime.error(`Embedded agent failed before reply: ${message}`);
   const externalRunFailureCandidate =

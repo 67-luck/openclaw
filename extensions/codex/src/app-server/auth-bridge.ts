@@ -777,11 +777,7 @@ export async function assertCodexAppServerAuthenticated(params: {
     return;
   }
   const options = { assertCurrent: params.assertCurrent, signal: params.signal };
-  let response = await params.client.request(
-    "account/read",
-    { refreshToken: false },
-    options,
-  );
+  let response = await params.client.request("account/read", { refreshToken: false }, options);
   if (response.requiresOpenaiAuth && !response.account) {
     // A permanent refresh failure can hide a cached account after the operator
     // repairs its credentials. Let native auth reload that account before blocking.

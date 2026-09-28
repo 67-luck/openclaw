@@ -8,13 +8,13 @@ import { createCronServiceState as createCronServiceStateBase } from "../../cron
 import { onTimer } from "../../cron/service/timer.test-support.js";
 import { loadCronStore } from "../../cron/store.js";
 import type { CronJob } from "../../cron/types.js";
-import { heartbeatTaskDeclarationKey } from "../heartbeat-task.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
 } from "../../test-utils/gateway-scheduler-clock.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
+import { heartbeatTaskDeclarationKey } from "../heartbeat-task.js";
 import { start, stop } from "./ops-lifecycle.js";
 import { add as addJob, update as updateJob } from "./ops-mutations.js";
 import { status as cronStatus } from "./ops-read.js";
