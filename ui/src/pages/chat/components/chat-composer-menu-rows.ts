@@ -34,7 +34,7 @@ export function renderCapabilityToggleRow(options: {
       type="checkbox"
       .checked=${live(options.checked)}
       ?disabled=${options.disabled}
-      title=${options.title ? `${options.label}: ${options.title}` : options.label}
+      title=${options.title ?? ""}
     >
       ${options.icon ? html`<span slot="icon" aria-hidden="true">${options.icon}</span>` : nothing}
       <span class="agent-chat__capability-menu-label">

@@ -297,7 +297,8 @@
   scrollbar-gutter: auto;
 }
 
-.agent-chat__capability-menu[data-view="skills"]::part(menu) {
+.agent-chat__capability-menu[data-view="skills"]::part(menu),
+.agent-chat__capability-menu[data-view^="library:"]::part(menu) {
   width: min(320px, calc(100vw - 24px));
   min-width: 0;
   max-width: min(320px, calc(100vw - 24px));
