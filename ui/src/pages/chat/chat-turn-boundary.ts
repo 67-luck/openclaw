@@ -1,4 +1,5 @@
 import { asNullableRecord as asRecord } from "@openclaw/normalization-core/record-coerce";
+import { normalizeInputProvenance } from "../../../../src/sessions/input-provenance.js";
 import type { ChatItem, MessageGroup, NormalizedMessage } from "../../lib/chat/chat-types.ts";
 import {
   normalizeMessage,
@@ -18,7 +19,7 @@ export function safeNormalizeMessage(message: unknown): NormalizedMessage | null
 }
 
 export function isForwardedTurnBoundary(message: unknown): boolean {
-  const provenance = asRecord(asRecord(message)?.provenance);
+  const provenance = normalizeInputProvenance(asRecord(message)?.provenance);
   return (
     (provenance?.kind === "inter_session" && provenance.sourceTool === "sessions_send") ||
     (provenance?.kind === "internal_system" &&

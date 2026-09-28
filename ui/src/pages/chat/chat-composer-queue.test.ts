@@ -667,6 +667,7 @@ describe("chat composer queue reordering", () => {
 
 it.each([
   { kind: "inter_session", sourceTool: "sessions_send" },
+  { kind: "inter_session", sourceTool: "  sessions_send\t" },
   {
     kind: "internal_system",
     sourceTool: "cron",
