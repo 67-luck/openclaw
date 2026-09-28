@@ -107,15 +107,15 @@ describe("transcript input order", () => {
     ).toEqual(["Existing conversation", "First accepted input", "Second accepted input"]);
   });
 
-  it("keeps inactive saved attempts out of the transcript", () => {
-    expect(
-      visibleRows({
-        pendingInputs: [
-          acceptedInput("Interrupted input", 30, "interrupted"),
-          acceptedInput("Cancelled input", 20, "cancelled"),
-        ],
-      }),
-    ).toEqual(["Existing conversation"]);
+  it("keeps saved attempts out of the normal transcript but available to search", () => {
+    const pendingInputs = [
+      acceptedInput("Interrupted input", 30, "interrupted"),
+      acceptedInput("Cancelled input", 20, "cancelled"),
+    ];
+    expect(visibleRows({ pendingInputs })).toEqual(["Existing conversation"]);
+    const matches = visibleRows({ pendingInputs, searchOpen: true, searchQuery: "Interrupted" });
+    expect(matches).toContain("Interrupted input");
+    expect(matches).not.toContain("Cancelled input");
   });
 
   it("preserves a reordered queue when its first input receives custody", () => {

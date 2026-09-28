@@ -207,11 +207,12 @@ export function buildPendingInputItems(
   workspaceSyncPendingRunIds: readonly string[] = [],
   workerSetupPending = false,
   messageRecovery?: ChatMessageRecovery,
+  includeInactive = false,
 ): ChatItem[] {
   // Custody records stay outside active-run ordering until the writer promotes them.
   const items: ChatItem[] = [];
   for (const input of inputs) {
-    if (chatInputNeedsRecovery(input, browserInputs)) {
+    if (!includeInactive && chatInputNeedsRecovery(input, browserInputs)) {
       continue;
     }
     if (

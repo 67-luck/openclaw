@@ -63,9 +63,11 @@ cancelled requests that will not run automatically appear as inactive rows in th
 existing composer queue, with **Not started** or **Cancelled** badges. They do not
 join the runnable outbox, block queued work, change its order, or send automatically.
 Expand a saved row to inspect its text and available attachments without sending it.
+Explicit conversation search still finds matching loaded saved attempts with their
+original status; clearing search returns them to queue-only presentation.
 System notices and forwarded messages retain their original identity and cannot be
 resent as a new human prompt. **Send** explicitly submits a complete user prompt
-through the normal send owner; **Discard** hides that saved attempt for the current
+through the normal send owner; **Discard** hides that queue row for the current
 viewer in this browser. It does not cancel accepted work or delete shared history.
 When the browser already owns a held or failed attempt, its existing native
 Retry/Discard controls remain authoritative instead of adding a second saved row.
