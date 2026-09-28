@@ -503,19 +503,27 @@ build_swift_architecture() {
   swift package --scratch-path "$BUILD_PATH" resolve
   verify_snapshot_swift_lock
   patch_swiftpm_resource_lookups "$BUILD_PATH"
-  # SwiftPM compiles each dependency for its own floored platform (KeyboardShortcuts: macOS 12),
-  # and below macOS 13 the weak Clock.sleep(for:) specialization gets a smaller async frame.
-  # The linker coalesces bodies and frame descriptors separately, so mixed targets can pair a
-  # 128-byte body with a 112-byte descriptor. Compile every module for the app's minimum.
-  local deployment_target
-  deployment_target="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$ROOT_DIR/apps/macos/Sources/OpenClaw/Resources/Info.plist")"
-  local target_flags=(-Xswiftc -target -Xswiftc "$arch-apple-macosx$deployment_target")
+  # Mixed deployment targets can coalesce incompatible Swift async bodies and frame descriptors
+  # (swiftlang/swift#86204). Compile every destination module for the app minimum;
+  # host macros must retain their native toolchain.
+  /usr/bin/python3 - "$arch" "$ROOT_DIR/apps/macos/Sources/OpenClaw/Resources/Info.plist" "$SWIFT_WORK_ROOT/destination-toolset.json" <<'PY'
+import json
+import plistlib
+import sys
+
+arch, plist, output = sys.argv[1:]
+with open(plist, "rb") as source:
+    minimum = plistlib.load(source)["LSMinimumSystemVersion"]
+triple = f"{arch}-apple-macosx{minimum}"
+with open(output, "w") as destination:
+    json.dump({"schemaVersion": "1.0", "swiftCompiler": {"extraCLIOptions": ["-target", triple]}}, destination)
+PY
   echo "🔨 Building $PRODUCT ($BUILD_CONFIG) [$arch]"
   verify_snapshot_swift_lock
-  swift build -c "$BUILD_CONFIG" --jobs "$SWIFT_BUILD_JOBS" --product "$PRODUCT" --build-path "$BUILD_PATH" --arch "$arch" "${target_flags[@]}" -Xlinker -rpath -Xlinker @executable_path/../Frameworks
+  swift build -c "$BUILD_CONFIG" --jobs "$SWIFT_BUILD_JOBS" --product "$PRODUCT" --build-path "$BUILD_PATH" --arch "$arch" --toolset "$SWIFT_WORK_ROOT/destination-toolset.json" -Xlinker -rpath -Xlinker @executable_path/../Frameworks
   verify_snapshot_swift_lock
   echo "🔨 Building openclaw-mac ($BUILD_CONFIG) [$arch]"
-  swift build -c "$BUILD_CONFIG" --jobs "$SWIFT_BUILD_JOBS" --product openclaw-mac --build-path "$BUILD_PATH" --arch "$arch" "${target_flags[@]}" -Xlinker -rpath -Xlinker @executable_path/../Frameworks
+  swift build -c "$BUILD_CONFIG" --jobs "$SWIFT_BUILD_JOBS" --product openclaw-mac --build-path "$BUILD_PATH" --arch "$arch" --toolset "$SWIFT_WORK_ROOT/destination-toolset.json" -Xlinker -rpath -Xlinker @executable_path/../Frameworks
   verify_snapshot_swift_lock
   arch_peekaboo_commit="$(compiled_peekaboo_commit "$PEEKABOO_SNAPSHOT_MOUNT" "$PEEKABOO_LOCKED_SOURCE_COMMIT")"
   printf '%s\n' "$arch_peekaboo_commit" > "$SWIFT_WORK_ROOT/peekaboo-commit"
