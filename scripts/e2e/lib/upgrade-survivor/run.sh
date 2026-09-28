@@ -552,6 +552,14 @@ on_exit() {
       echo "Upgrade survivor diagnostics missing; preserving original phase failure." >&3
   fi
   cleanup
+  if [ "$SCENARIO" = "base" ] &&
+    ! node scripts/e2e/lib/upgrade-survivor/observe-files.mjs cleanup; then
+    if [ "$status" -eq 0 ]; then
+      FAILURE_PHASE="gateway-file-observation-cleanup"
+      FAILURE_MESSAGE="post-upgrade file observation cleanup failed"
+    fi
+    status=1
+  fi
   if [ "$status" -eq 0 ] && [ "$run_completed" = "1" ]; then
     write_summary passed ""
   else
@@ -2634,6 +2642,11 @@ fi
 phase gateway-start ensure_gateway_started
 phase gateway-probes check_gateway_probes
 phase gateway-status check_gateway_status
+if [ "$SCENARIO" = "base" ]; then
+  phase gateway-file-observation node scripts/e2e/lib/upgrade-survivor/observe-files.mjs observe \
+    "$(package_root)" "$GATEWAY_LOG"
+  phase gateway-file-observation-stop stop_gateway
+fi
 run_missing_load_path_fixture ready
 if [ "$SCENARIO" = "legacy-operator-state" ]; then
   phase legacy-operator-cron-owners node scripts/e2e/lib/upgrade-survivor/assertions.mjs \
