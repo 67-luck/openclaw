@@ -946,14 +946,11 @@ describe("run-oxlint", () => {
         }
       }
       const parts = stripes.flat().filter((shard) => shard.canonicalTargets);
-      expect(parts.map((shard) => shard.canonicalTargets).toSorted()).toEqual([
-        ["src/agents"],
-        ["src/agents"],
-        ["src/gateway"],
-        ["src/gateway"],
-        ["ui"],
-        ["ui"],
-      ]);
+      expect(
+        parts
+          .map((shard) => shard.canonicalTargets)
+          .toSorted((left, right) => left![0]!.localeCompare(right![0]!)),
+      ).toEqual([["src/agents"], ["src/agents"], ["src/gateway"], ["src/gateway"], ["ui"], ["ui"]]);
       for (const file of files) {
         const selected = createOxlintFileScope([file], cwd).selectShards(parts);
         expect(selected).toHaveLength(1);
