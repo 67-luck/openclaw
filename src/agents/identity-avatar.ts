@@ -11,6 +11,7 @@ import {
   isAvatarHttpUrl,
   isWindowsAbsolutePath,
 } from "../shared/avatar-policy.js";
+import { formatClawmojiSource, parseClawmojiSource } from "../shared/clawmoji.js";
 import { resolveAgentWorkspaceDir } from "./agent-scope.js";
 import { resolveLocalAgentAvatarPath } from "./identity-avatar-file.js";
 import { loadAgentIdentityFromWorkspace } from "./identity-file.js";
@@ -65,6 +66,12 @@ export function resolvePublicAgentAvatarSource(
     return undefined;
   }
   if (isAvatarDataUrl(source)) {
+    const clawmoji = resolved.kind === "data" ? parseClawmojiSource(source) : null;
+    if (clawmoji) {
+      // Browser avatars use authenticated image routes. Carry only the validated
+      // character recipe through public metadata, never the embedded image bytes.
+      return formatClawmojiSource(clawmoji);
+    }
     // Data URLs can be large and sensitive; expose only the media/header prefix.
     const commaIndex = source.indexOf(",");
     const header =

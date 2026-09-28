@@ -300,7 +300,9 @@ describe("exportClawAgent", () => {
       model: { primary: "acme/primary", fallbacks: ["acme/fallback"] },
       subagents: { allowAgents: ["researcher", "reviewer"], delegationMode: "prefer" },
     };
-    const fixture = await installedFixture({ withPackage: true, agentProfile });
+    const avatar =
+      "data:image/svg+xml;clawmoji=v1.ef4444.dc2626.111111.crown.droopy.mighty.sleepy.1.0;base64,PHN2Zy8+";
+    const fixture = await installedFixture({ withPackage: true, agentProfile, avatar });
     expect(fixture.config.agents?.entries?.worker).toMatchObject(agentProfile);
     expect(fixture.plan.agent.config.memory?.search).toEqual({
       enabled: true,
@@ -329,7 +331,7 @@ describe("exportClawAgent", () => {
       agentId: "worker",
       manifest: {
         schemaVersion: 1,
-        agent: { id: "worker", name: "Worker" },
+        agent: { id: "worker", name: "Worker", identity: { avatar } },
         workspace: {
           bootstrapFiles: {},
           files: [{ source: "workspace/reference/policy.md", path: "reference/policy.md" }],
@@ -418,7 +420,7 @@ describe("exportClawAgent", () => {
       },
     });
     expect(replanned.blockers).toEqual([]);
-    expect(replanned.agent.config).toMatchObject(agentProfile);
+    expect(replanned.agent.config).toMatchObject({ ...agentProfile, identity: { avatar } });
   });
 
   it.each([

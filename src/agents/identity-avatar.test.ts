@@ -178,6 +178,23 @@ describe("resolveAgentAvatar", () => {
     ).toBeUndefined();
   });
 
+  it("publishes a validated clawmoji recipe without its image payload", () => {
+    const recipe = "v1.ef4444.dc2626.111111.crown.droopy.mighty.sleepy.1.0";
+    const artwork = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg"><text>private artwork</text></svg>',
+    ).toString("base64");
+    const source = `data:image/svg+xml;clawmoji=${recipe};base64,${artwork}`;
+    expect(resolvePublicAgentAvatarSource({ kind: "data", source })).toBe(`clawmoji:${recipe}`);
+    for (const resolved of [
+      { kind: "none", source },
+      { kind: "data", source: source.replace("crown", "private-secret") },
+    ] as const) {
+      const description = resolvePublicAgentAvatarSource(resolved);
+      expect(description).not.toMatch(/^clawmoji:/);
+      expect(description).not.toContain(artwork);
+    }
+  });
+
   it("rejects local avatars larger than max bytes", async () => {
     const root = await createTempAvatarRoot();
     const workspace = path.join(root, "work");
