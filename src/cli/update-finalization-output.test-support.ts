@@ -49,13 +49,18 @@ const recoveryClockOwners = new Set([
 const recoveryClockUrl = `data:text/javascript,${encodeURIComponent(`
 const realMonotonicNow = performance.now.bind(performance);
 const realWallNow = Date.now;
+const deadlines = new WeakMap();
 let elapsed = 0;
 Object.defineProperty(performance, 'now', { value: () => realMonotonicNow() + elapsed });
 Date.now = () => realWallNow() + Math.floor(elapsed);
+export function registerRecoveryDeadline(signal, deadlineMs) {
+  deadlines.set(signal, deadlineMs);
+}
 export async function sleep(ms, signal) {
   signal?.throwIfAborted();
   if (elapsed === 0) process.stderr.write('Fixture advanced recovery clock.\\n');
-  elapsed += ms;
+  const deadlineMs = deadlines.get(signal);
+  elapsed += deadlineMs === undefined ? ms : Math.max(ms, deadlineMs - performance.now());
   await new Promise(resolve => setImmediate(resolve));
   signal?.throwIfAborted();
 }
@@ -267,6 +272,20 @@ export async function runInteractiveUpdateFailureAction({ runtime }) {
   );
 }
 if (scenario === "doctor-error") {
+  // Exhaust the real deadline only after the first inspection reaches polling.
+  // Small clock ticks otherwise leave a real native probe racing the last fractional budget.
+  const deadlineUrl = sourceUrl("./daemon-cli/restart-health-deadline.ts");
+  stubs.set(
+    deadlineUrl,
+    `export * from ${JSON.stringify(`${deadlineUrl}?fixture-original`)};
+import { createGatewayRestartDeadline as createRealDeadline } from ${JSON.stringify(`${deadlineUrl}?fixture-original`)};
+import { registerRecoveryDeadline } from ${JSON.stringify(recoveryClockUrl)};
+export function createGatewayRestartDeadline(params) {
+  const deadline = createRealDeadline(params);
+  registerRecoveryDeadline(deadline.signal, deadline.deadlineMs);
+  return deadline;
+}`,
+  );
   // The timeout-report case owns an uninspectable service, not the host's manager.
   // Admit that fixture identity while leaving recovery inspection, HTTP probes,
   // polling, and failure recording real; no service mutation is permitted.
