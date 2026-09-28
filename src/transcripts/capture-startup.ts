@@ -45,6 +45,8 @@ export function retainTranscriptStartRetry(
   };
 }
 
+export type TranscriptStartRetry = ReturnType<typeof retainTranscriptStartRetry>;
+
 export function revokeTranscriptStartRetries(
   stateDir: string,
   session: TranscriptSessionDescriptor,

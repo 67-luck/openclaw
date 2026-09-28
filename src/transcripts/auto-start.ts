@@ -348,10 +348,7 @@ function startTranscriptsAutoStartEntry(
     try {
       const result = await startTranscripts({
         ...params,
-        existingSession: retry?.session ?? params.existingSession,
-        existingSessionCondition: retry
-          ? { expectedInputRevision: retry.revision, assertCurrent: retry.assertCurrent }
-          : params.existingSessionCondition,
+        retry,
         ctx,
         startupWaitMs: AUTO_START_PROVIDER_READY_TIMEOUT_MS,
         configuredLifecycle: true,
@@ -365,7 +362,7 @@ function startTranscriptsAutoStartEntry(
       return result;
     } catch (error) {
       if (error instanceof TranscriptStartError) {
-        retries.retain(error.retry, retry);
+        await retries.retainFailure(error, retry, params.existingSession);
       }
       throw error;
     } finally {

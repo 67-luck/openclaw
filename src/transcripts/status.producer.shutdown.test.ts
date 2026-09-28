@@ -30,6 +30,110 @@ describe("configured transcript shutdown cleanup", () => {
     }
   });
 
+  it("preserves a failed row adopted by a replacement service and lets its retry start", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const f = fixture({ transcripts: { autoStart: [{ ...room, whenOccupied: true }] } });
+    f.provider.watchOccupancy = async (request) => {
+      request.onOccupied();
+      return { ok: true, value: { stop() {} } };
+    };
+    const start = vi.fn(async (request: TranscriptStartRequest) =>
+      start.mock.calls.length < 3
+        ? { ok: false as const, error: "provider unavailable" }
+        : { ok: true as const, session: request.session },
+    );
+    f.provider.start = start;
+    const retiring = createTranscriptsAutoStartService(f.ctx);
+    const replacement = createTranscriptsAutoStartService(f.ctx);
+    try {
+      await retiring.start().settled;
+      const { session } = (await f.store.listSessionEntries())[0]!;
+      const revision = await f.store.readSummaryInputRevision(session);
+      await replacement.start().settled;
+      expect(start).toHaveBeenCalledTimes(2);
+      expect(start.mock.calls[1]![0].session.sessionId).toBe(session.sessionId);
+      expect(await f.store.readSession(session.sessionId)).toEqual(session);
+      expect(await f.store.readSummaryInputRevision(session)).toBe(revision);
+
+      // The replacement restored the same tuple. Only custody, not content checks,
+      // can keep the retiring lifecycle from deleting its pending row in SQLite.
+      await retiring.stop();
+      expect(await f.store.readSession(session.sessionId)).toEqual(session);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await replacement.start().settled;
+      expect(start).toHaveBeenCalledTimes(3);
+      expect(start.mock.calls[2]![0].session.sessionId).toBe(session.sessionId);
+      expect((await f.read()).active).toMatchObject([{ sessionId: session.sessionId }]);
+    } finally {
+      await retiring.stop();
+      await replacement.stop();
+    }
+  });
+
+  it.each(["discarded", "rewritten"] as const)(
+    "reselects only a %s candidate before replacement admission",
+    async (change) => {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      const f = fixture({ transcripts: { autoStart: [{ ...room, whenOccupied: true }] } });
+      f.provider.watchOccupancy = async (request) => {
+        request.onOccupied();
+        return { ok: true, value: { stop() {} } };
+      };
+      const start = vi.fn(async (request: TranscriptStartRequest) =>
+        start.mock.calls.length === 1
+          ? { ok: false as const, error: "provider unavailable" }
+          : { ok: true as const, session: request.session },
+      );
+      f.provider.start = start;
+      const retiring = createTranscriptsAutoStartService(f.ctx);
+      const replacement = createTranscriptsAutoStartService(f.ctx);
+      const selected = createDeferred();
+      const release = createDeferred();
+      try {
+        await retiring.start().settled;
+        const { session } = (await f.store.listSessionEntries())[0]!;
+        const readRecent = f.store.readRecentStoppedSession.bind(f.store);
+        vi.spyOn(TranscriptsStore.prototype, "readRecentStoppedSession").mockImplementationOnce(
+          async (...args) => {
+            const candidate = await readRecent(...args);
+            selected.resolve();
+            await release.promise;
+            return candidate;
+          },
+        );
+        const starting = replacement.start().settled;
+        await selected.promise;
+        if (change === "rewritten") {
+          await f.store.writeSession({ ...session, title: "Operator-owned meeting" });
+        }
+        await retiring.stop();
+        if (change === "discarded") {
+          expect(await f.store.readSession(session.sessionId)).toBeUndefined();
+        }
+        release.resolve();
+        await starting;
+        await vi.advanceTimersByTimeAsync(5_000);
+        await replacement.start().settled;
+        if (change === "discarded") {
+          expect(start).toHaveBeenCalledTimes(2);
+          expect(start.mock.calls[1]![0].session.sessionId).not.toBe(session.sessionId);
+          expect((await f.read()).active).toHaveLength(1);
+        } else {
+          expect(start).toHaveBeenCalledOnce();
+          expect(await f.store.readSession(session.sessionId)).toEqual({
+            ...session,
+            title: "Operator-owned meeting",
+          });
+          expect((await f.read()).active).toEqual([]);
+        }
+      } finally {
+        release.resolve();
+        await retiring.stop();
+        await replacement.stop();
+      }
+    },
+  );
+
   it.each([false, true])(
     "discards failed late startup after the stop deadline (occupied=%s)",
     async (whenOccupied) => {

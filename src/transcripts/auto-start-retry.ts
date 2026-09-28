@@ -1,9 +1,12 @@
-import { retainTranscriptStartRetry, TranscriptStartError } from "./capture-startup.js";
+import {
+  retainTranscriptStartRetry,
+  TranscriptStartError,
+  type TranscriptStartRetry,
+} from "./capture-startup.js";
 import { activeSessions, isTranscriptSessionStarting } from "./capture.js";
+import type { TranscriptSessionDescriptor } from "./provider-types.js";
 import { TranscriptsSummaryChangedError } from "./store-errors.js";
-import type { TranscriptsStore } from "./store.js";
-
-type Retry = ReturnType<typeof retainTranscriptStartRetry>;
+import { transcriptSessionSelector, type TranscriptsStore } from "./store.js";
 
 /** Own one configured entry's failed admission through retry and abandonment. */
 export function createTranscriptAutoStartRetry(params: {
@@ -11,7 +14,7 @@ export function createTranscriptAutoStartRetry(params: {
   store: TranscriptsStore;
   warn: (error: unknown) => void;
 }) {
-  let current: Retry | undefined;
+  let current: TranscriptStartRetry | undefined;
   const clear = () => {
     current?.release();
     current = undefined;
@@ -21,7 +24,12 @@ export function createTranscriptAutoStartRetry(params: {
       return current;
     },
     clear,
-    retain(retry: TranscriptStartError["retry"], previous: Retry | undefined) {
+    async retainFailure(
+      error: TranscriptStartError,
+      previous: TranscriptStartRetry | undefined,
+      existingSession: TranscriptSessionDescriptor | undefined,
+    ) {
+      const retry = error.retry;
       try {
         if (retry) {
           // Retries update an existing row; insertion provenance remains with the
@@ -40,6 +48,19 @@ export function createTranscriptAutoStartRetry(params: {
       } catch (error) {
         clear();
         throw error;
+      }
+      if (
+        !previous &&
+        existingSession &&
+        error.code === "id-conflict" &&
+        error.cause instanceof TranscriptsSummaryChangedError &&
+        !(await params.store.readSession(transcriptSessionSelector(existingSession)))
+      ) {
+        // A retiring service may discard a merely selected candidate before
+        // admission. Rescan on the normal bounded retry; never revive the row.
+        throw new Error("transcript reopen candidate was discarded before admission", {
+          cause: error,
+        });
       }
     },
     async discard() {
