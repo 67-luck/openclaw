@@ -15,6 +15,9 @@ inputs cannot claim scheduled-run policy. The schedule selects the complete
 native platforms, docs, QA Smoke, browser process proofs, and the published-updater
 survivor all run against that revision. Node tests use the complete compact
 inventory, including tooling and PR-exempt files, within its 77-row main-tier cap.
+Hosted hourly plans reuse measured serial tooling packing for complete measured
+children, retaining their two-worker limit and the 720-second budget including
+setup. Unmeasured children keep their existing placement.
 
 The existing Plugin Prerelease workflow owns the complete extension runtime
 inventory separately, at minute 37 each hour. Scheduled runs pin the scheduled

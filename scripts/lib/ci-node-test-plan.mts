@@ -5288,7 +5288,15 @@ function createCompactNodeTestShardBundles(
     job.predictedSeconds = Math.ceil(job.predictedSeconds! - savedSeconds);
   }
 
-  const hostedHourly = options.runnerBackend === "github" && compactMode === "push";
+  const hostedHourly =
+    options.runnerBackend === "github" &&
+    (compactMode === "push" ||
+      (compactMode === "pull-request" &&
+        options.includeProofTests === true &&
+        options.includeReleaseOnlyPluginShards === false &&
+        options.includeReleaseOnlyToolingShards === true &&
+        options.includePrExemptRuntimeTests === true &&
+        options.includeReleaseOnlyRuntimeTests === false));
   const toolingFileTimings =
     options.runnerBackend === "hybrid" || hostedHourly
       ? readToolingFileTimings("blacksmith")
