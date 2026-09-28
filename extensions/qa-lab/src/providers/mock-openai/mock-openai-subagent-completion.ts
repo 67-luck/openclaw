@@ -27,9 +27,7 @@ export function readMockSubagentCompletion(
   ).exec(current);
   if (
     settled &&
-    current.includes(
-      "[Subagent Context] Every subagent spawned from this session has now settled",
-    ) &&
+    current.includes("[Subagent Context] Every subagent in this batch has now settled") &&
     currentInput.includes("sourceTool=subagent_settle")
   ) {
     return { ok: settled[1] === "ok", result: normalizeChildResult(settled[2] ?? "") };
