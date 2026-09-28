@@ -9,7 +9,7 @@ import { formatSenderLabel, type SenderIdentity } from "../../../lib/chat/sender
 import { persistedMessageEntryId } from "../chat-thread.ts";
 import { renderChatAuthorAvatar } from "./chat-author-avatar.ts";
 import { renderReplyConnector } from "./chat-reply-connector.ts";
-import type { ReplyPreview, ReplyPreviewLookup } from "./chat-reply-preview.ts";
+import type { ReplyPreview, ReplyPreviewLookup } from "./chat-reply-preview.types.ts";
 
 /**
  * One "Replying to" line. `hidden` renders nothing, `reserved` keeps an

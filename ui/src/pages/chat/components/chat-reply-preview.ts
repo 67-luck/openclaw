@@ -1,30 +1,18 @@
 // Reply-preview resolution: memoized quoted-source previews served from
 // already-loaded transcript rows first, then the reply-message access loader.
-import {
-  normalizeRoleForGrouping,
-  type normalizeMessage,
-} from "../../../lib/chat/message-normalizer.ts";
+import { normalizeRoleForGrouping } from "../../../lib/chat/message-normalizer.ts";
 import { DEFAULT_AGENT_ID } from "../../../lib/sessions/session-key.ts";
 import { userTurnRunId } from "../chat-thread-items.ts";
 import { persistedMessageEntryId } from "../chat-thread.ts";
-import type { renderChatAuthorAvatar } from "./chat-author-avatar.ts";
 import { prepareChatMessageRender, resolveMessageReplyText } from "./chat-message-markdown.ts";
 import { resolveMessageGroupSenderLabel } from "./chat-message-sender.ts";
-import type { MessageReplyTarget } from "./chat-message.ts";
+import type { ReplyPreview, ReplyPreviewLookup } from "./chat-reply-preview.types.ts";
 import { resolveAssistantDisplayAvatar } from "./chat-welcome.ts";
 
 export type LoadedReplySource = {
   message: unknown;
   messageId: string;
   senderLabel: string;
-};
-
-export type ReplyPreview = MessageReplyTarget & {
-  sourceMessageId: string;
-  sender?: ReturnType<typeof normalizeMessage>["sender"];
-  /** The run a source prompt started, from its persisted user-turn identity. */
-  turnRunId?: string;
-  agentAvatar?: Parameters<typeof renderChatAuthorAvatar>[2];
 };
 
 /**
@@ -38,10 +26,6 @@ const STATUS_PREVIEWS = {
   missing: { missing: true },
   oversized: { oversized: true },
 } as const;
-
-export type ReplyPreviewLookup = (
-  replyToId: string,
-) => ReplyPreview | (typeof STATUS_PREVIEWS)[ReplyMessageStatus] | undefined;
 
 type ReplyPreviewProps = Omit<
   Parameters<typeof resolveAssistantDisplayAvatar>[0],

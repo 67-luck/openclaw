@@ -64,7 +64,7 @@ import {
   resolveMessageReplyLine,
   type ReplyLine,
 } from "./chat-reply-attribution.ts";
-import type { ReplyPreviewLookup } from "./chat-reply-preview.ts";
+import type { ReplyPreviewLookup } from "./chat-reply-preview.types.ts";
 import type { SidebarContent, SidebarFullMessageLoader } from "./chat-sidebar.ts";
 import {
   renderBrowserTabPreviews,

@@ -22,7 +22,7 @@ import {
   renderReplyLineConnector,
   resolveGroupReplyLine,
 } from "./chat-reply-attribution.ts";
-import type { ReplyPreviewLookup } from "./chat-reply-preview.ts";
+import type { ReplyPreviewLookup } from "./chat-reply-preview.types.ts";
 import type { SidebarContent } from "./chat-sidebar.ts";
 import { shouldToggleSelectableDisclosure, syncToolDisclosureOverflow } from "./chat-tool-cards.ts";
 import { renderToolOutcomeSummary } from "./chat-tool-outcome-summary.ts";
