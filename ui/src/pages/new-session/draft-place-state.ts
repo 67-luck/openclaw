@@ -11,11 +11,12 @@ import * as catalog from "./catalog-target.ts";
 import { projectDevicePlacements, resolveSelectedDevicePlacement } from "./device-placement.ts";
 import { DraftCloudMachineState } from "./draft-cloud-machine-state.ts";
 import type { DraftGatewayState } from "./draft-gateway-state.ts";
+import { navigateToPreparedTarget } from "./draft-navigation-handoff.ts";
 import type { DraftPlaceBrowser } from "./draft-place-browser.ts";
 import { DraftRepositoryController } from "./draft-repository-state.ts";
 import type { PendingPlacementPlace } from "./draft-session-placement.ts";
 import { DraftRestoredFolderValidation } from "./folder-validation.ts";
-import { newSessionSearch, type NewSessionRouteData } from "./location.ts";
+import type { NewSessionRouteData } from "./location.ts";
 import { NewSessionModelControl } from "./model-control.ts";
 import {
   resolveNewSessionFolderPreference,
@@ -142,10 +143,7 @@ export class DraftPlaceState {
     this.modelControl = new NewSessionModelControl(
       callbacks.requestUpdate,
       (selection) => this.persistPreference(selection),
-      (catalogId) =>
-        this.read().context?.navigate("new-session", {
-          search: newSessionSearch(this.agentIdValue, { catalogId }),
-        }),
+      (data, isCurrent) => navigateToPreparedTarget(this.read().context, data, isCurrent),
     );
   }
 

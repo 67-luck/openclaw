@@ -19,7 +19,7 @@ import { requiresChatModelSetup } from "../chat/chat-model-setup.ts";
 import { renderChatModelAccountControl } from "../chat/components/chat-model-account-control.ts";
 import { renderChatModelControls } from "../chat/components/chat-model-controls.ts";
 import { navigateToModelProvider } from "../model-providers/navigation.ts";
-import { admitCreateTarget, CatalogTargetDiscovery } from "./catalog-target.ts";
+import { CatalogTargetDiscovery } from "./catalog-target.ts";
 import type { DraftCloudProfile } from "./discovery.ts";
 import {
   NewSessionModelSelection,
@@ -68,7 +68,8 @@ export class NewSessionModelControl extends NewSessionModelSelection {
   constructor(
     private readonly notify: () => void,
     onSelectionChange: ModelSelectionChange = () => undefined,
-    private readonly onCatalogTargetSelect: (catalogId: string) => void = () => undefined,
+    private readonly onCatalogTargetSelect: Parameters<CatalogTargetDiscovery["select"]>[2] = () =>
+      undefined,
   ) {
     super(onSelectionChange);
     this.catalogTargets = new CatalogTargetDiscovery(notify);
@@ -343,6 +344,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
       this.metadataIdentityId !== snapshot?.selfUser?.id ||
       (this.metadataHello && this.metadataHello !== snapshot?.hello)
     ) {
+      this.cancelCatalogSelection();
       // Model preferences belong to the agent; an explicit account belongs to this connection.
       // Neither its availability nor an in-flight preview can cross an identity change.
       this.draftAccount = undefined;
@@ -359,6 +361,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
     this.metadataIdentityId = snapshot?.selfUser?.id;
     this.metadataHello = snapshot?.hello;
     if (!context || snapshot?.phase !== "connected" || !client || !normalizedAgentId || !enabled) {
+      this.cancelCatalogSelection();
       this.clearDraftAccount();
       this.clearMetadataSubscription();
       this.metadataClient = undefined;
@@ -690,19 +693,19 @@ export class NewSessionModelControl extends NewSessionModelSelection {
           return Promise.resolve(false);
         }
         const generation = ++this.selectionGeneration;
+        const agentId = this.agentId;
+        const isCurrent = () =>
+          Boolean(
+            generation === this.selectionGeneration &&
+            agentId === this.agentId &&
+            client &&
+            scope &&
+            this.ownsMetadata(client, scope),
+          );
         return this.catalogTargets.select(
           catalogId,
-          (id, isCurrent) =>
-            generation === this.selectionGeneration
-              ? admitCreateTarget(
-                  this.metadataClient,
-                  id,
-                  this.agentId,
-                  isCurrent,
-                  this.onCatalogTargetSelect,
-                )
-              : Promise.resolve(undefined),
-          () => generation === this.selectionGeneration,
+          { gateway: options.context?.gateway, client, agentId, isCurrent },
+          this.onCatalogTargetSelect,
         );
       },
       onModelPickerTargetRetry: (groupId) => {

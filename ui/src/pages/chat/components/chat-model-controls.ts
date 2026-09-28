@@ -73,7 +73,6 @@ type ChatModelControlsProps = {
   modelSelectionLocked?: boolean;
   modelSelectionTarget?: SessionsListResult["defaults"]["modelSelectionTarget"];
   modelPickerTargetGroups?: readonly ChatModelPickerTargetGroup[];
-  selectedTarget?: { groupId: string; value: string; label: string; description?: string };
   modelPickerOpen?: boolean;
   modelSwitching: boolean;
   modelsLoading?: boolean;
@@ -595,11 +594,9 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
     <div class="chat-controls__session chat-controls__model chat-controls__model-settings">
       ${renderChatModelPicker({
         providerAuth: props.modelAuthStatusResult ? providerAuth : undefined,
-        accountSection: props.selectedTarget
-          ? undefined
-          : props.renderAccountSection?.(currentOverride || defaultModel),
+        accountSection: props.renderAccountSection?.(currentOverride || defaultModel),
         contextWindow:
-          !props.selectedTarget && contextWindows.length > 1
+          contextWindows.length > 1
             ? {
                 options: contextWindows,
                 selected: selectedContextWindow,
@@ -620,31 +617,21 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
           : resolveModelSelectionScopeDescription(props.modelSelectionTarget),
         modelOptions,
         targetGroups: props.modelPickerTargetGroups,
-        selectedTarget: props.selectedTarget,
-        selectedModelValue: props.selectedTarget
-          ? "target:" + props.selectedTarget.value
-          : pickerValue,
+        selectedModelValue: pickerValue,
         selectedAgentRuntime,
         sessionModelPinned,
         sessionKey: props.sessionKey,
-        triggerModelLabel:
-          props.selectedTarget?.label ?? formatPickerModelLabel(committedModelLabel),
-        triggerModelValue: props.selectedTarget
-          ? ""
-          : modelPending && !modelStarting
-            ? ""
-            : triggerModelValue || undefined,
+        triggerModelLabel: formatPickerModelLabel(committedModelLabel),
+        triggerModelValue: modelPending && !modelStarting ? "" : triggerModelValue || undefined,
         triggerStarting: modelStarting,
-        triggerStatusLabel:
-          props.selectedTarget || modelStarting
-            ? undefined
-            : modelPending
-              ? t("chat.modelControls.modelPending")
-              : props.modelSelectionLocked
-                ? undefined
-                : catalogTriggerStatus,
+        triggerStatusLabel: modelStarting
+          ? undefined
+          : modelPending
+            ? t("chat.modelControls.modelPending")
+            : props.modelSelectionLocked
+              ? undefined
+              : catalogTriggerStatus,
         triggerLoading:
-          !props.selectedTarget &&
           !modelPending &&
           !props.modelSelectionLocked &&
           catalogLoadingWithoutSnapshot &&
@@ -662,7 +649,7 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
         onRequestUpdate: props.onRequestUpdate,
       })}
       ${
-        props.selectedTarget || !showEffortPicker
+        !showEffortPicker
           ? nothing
           : renderChatEffortPicker({
               disabled: effortDisabled,

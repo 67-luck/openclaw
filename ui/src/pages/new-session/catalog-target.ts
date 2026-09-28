@@ -221,44 +221,19 @@ export async function resolveCreateTarget(
     });
     const catalog = result.catalogs.find((candidate) => candidate.id === catalogId);
     const terminal = catalog?.capabilities.startTerminal;
-    const terminalHosts = catalog?.hosts
-      .filter((host) => host.canStartTerminal === true)
-      .map(({ hostId, label }) => ({ hostId, label }));
     return catalog && terminal === true
       ? {
           model: "",
           catalogLabel: catalog.label,
           startTerminal: true,
-          terminalHosts,
+          terminalHosts: catalog.hosts
+            .filter((host) => host.canStartTerminal === true)
+            .map(({ hostId, label }) => ({ hostId, label })),
         }
       : undefined;
   } catch {
     return undefined;
   }
-}
-
-export async function admitCreateTarget(
-  client: GatewayBrowserClient | undefined,
-  catalogId: string,
-  agentId: string,
-  isCurrent: () => boolean,
-  onSelect: (catalogId: string) => void,
-): Promise<boolean | string | undefined> {
-  if (!client) {
-    return false;
-  }
-  const target = await resolveCreateTarget(client, catalogId, agentId);
-  if (!isCurrent()) {
-    return undefined;
-  }
-  if (!target) {
-    return false;
-  }
-  if (!target.terminalHosts?.length) {
-    return t("newSession.nativeHostsUnavailable");
-  }
-  onSelect(catalogId);
-  return true;
 }
 
 type CatalogCreateTarget = Pick<SessionCatalog, "id" | "label">;
@@ -283,25 +258,52 @@ export class CatalogTargetDiscovery {
 
   async select(
     catalogId: string,
-    select: (id: string, isCurrent: () => boolean) => Promise<boolean | string | undefined>,
-    isCurrent: () => boolean,
+    owner: {
+      gateway: ApplicationContext["gateway"] | undefined;
+      client: GatewayBrowserClient | null | undefined;
+      agentId: string;
+      isCurrent: () => boolean;
+    },
+    onSelect: (data: NewSessionRouteData, isCurrent: () => boolean) => void,
   ) {
-    this.selection = { catalogId, status: "loading" };
-    this.notify();
-    const accepted = await select(catalogId, isCurrent);
-    if (!isCurrent()) {
+    const selection = { catalogId, status: "loading" as const };
+    const discovery = this.state;
+    const connection = owner.gateway?.connection;
+    const revision = owner.gateway?.connectionRevision;
+    const isCurrent = () =>
+      this.state === discovery &&
+      owner.gateway?.connection === connection &&
+      owner.gateway?.connectionRevision === revision &&
+      owner.isCurrent();
+    if (!owner.client || !isCurrent()) {
       return false;
     }
-    this.selection =
-      accepted === false || typeof accepted === "string"
-        ? {
-            catalogId,
-            status: "error",
-            error: typeof accepted === "string" ? accepted : t("newSession.catalogUnavailable"),
-          }
-        : undefined;
+    this.selection = selection;
     this.notify();
-    return accepted === true;
+    const target = await resolveCreateTarget(owner.client, catalogId, owner.agentId);
+    if (!isCurrent()) {
+      if (this.selection === selection) {
+        this.clearSelection();
+        this.notify();
+      }
+      return false;
+    }
+    const error = !target
+      ? t("newSession.catalogUnavailable")
+      : !target.terminalHosts?.length
+        ? t("newSession.nativeHostsUnavailable")
+        : undefined;
+    this.selection = error ? { catalogId, status: "error", error } : undefined;
+    this.notify();
+    if (!target || error) {
+      return false;
+    }
+    // Metadata outlives the busy row until navigation consumes it.
+    onSelect(
+      { agentId: owner.agentId, requestedAgentId: owner.agentId, catalogId, ...target },
+      isCurrent,
+    );
+    return true;
   }
 
   private requestId = 0;
@@ -311,6 +313,7 @@ export class CatalogTargetDiscovery {
 
   clear() {
     const previous = this.state;
+    this.clearSelection();
     this.state = { status: "idle" };
     this.requestId += 1;
     if (previous.status === "loading") {
@@ -397,7 +400,7 @@ export class CatalogTargetDiscovery {
     }
   }
 
-  groups(target?: NewSessionRouteData): readonly ChatModelPickerTargetGroup[] | undefined {
+  groups(): readonly ChatModelPickerTargetGroup[] | undefined {
     const discovery = this.state;
     if (
       discovery.status === "idle" ||
@@ -419,12 +422,7 @@ export class CatalogTargetDiscovery {
                 error:
                   this.selection?.catalogId === id && this.selection.status === "error"
                     ? this.selection.error
-                    : target?.catalogId === id &&
-                        (!target.startTerminal || target.terminalHosts?.length === 0)
-                      ? target.terminalHosts?.length === 0
-                        ? t("newSession.nativeHostsUnavailable")
-                        : t("newSession.catalogUnavailable")
-                      : undefined,
+                    : undefined,
               }))
             : [],
         status: discovery.status,

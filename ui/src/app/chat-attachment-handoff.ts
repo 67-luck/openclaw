@@ -199,6 +199,7 @@ export function createChatAttachmentHandoff(
       replyTarget,
       mentions,
       newSessionDraft,
+      newSessionTarget,
       incognito,
       reviewPrivateDraft,
     }) => {
@@ -206,6 +207,7 @@ export function createChatAttachmentHandoff(
       const previous = take(key);
       const fallbackEntries = Object.entries(fallbacks);
       if (
+        !newSessionTarget &&
         !message &&
         !goalMode &&
         !replyTarget &&
@@ -241,6 +243,7 @@ export function createChatAttachmentHandoff(
         scopeKey,
         attachments: [...attachments],
         ...(newSessionDraft ? { newSessionDraft } : {}),
+        ...(newSessionTarget ? { newSessionTarget } : {}),
         ...(incognito ? { incognito } : {}),
         message,
         ...(draftRevision !== undefined ? { draftRevision } : {}),
@@ -267,11 +270,16 @@ export function createChatAttachmentHandoff(
       const match = take(entryKey(paneId, scopeKey));
       // A Gateway mismatch is terminal for this exact presentation. Other
       // retained session scopes under the same logical pane remain independent.
-      if (match?.owner === owner && match.isConnectionCurrent()) {
+      if (
+        match?.owner === owner &&
+        match.isConnectionCurrent() &&
+        (!match.newSessionTarget || match.newSessionTarget.isCurrent())
+      ) {
         return {
           attachments: match.attachments,
           fallbacks: match.fallbacks,
           ...(match.newSessionDraft ? { newSessionDraft: match.newSessionDraft } : {}),
+          ...(match.newSessionTarget ? { newSessionTarget: match.newSessionTarget } : {}),
           ...(match.message ? { message: match.message } : {}),
           ...(match.draftRevision !== undefined ? { draftRevision: match.draftRevision } : {}),
           ...(match.goalMode ? { goalMode: match.goalMode } : {}),
@@ -281,6 +289,14 @@ export function createChatAttachmentHandoff(
       }
       releaseHandoff(match);
       return null;
+    },
+    peekNewSessionTarget: ({ owner, paneId, scopeKey }) => {
+      const match = pending.get(entryKey(paneId, scopeKey));
+      return match?.owner === owner &&
+        match.isConnectionCurrent() &&
+        match.newSessionTarget?.isCurrent()
+        ? match.newSessionTarget.data
+        : undefined;
     },
     retainedAttachmentIds: (attachments) => {
       const requested = new Set(attachments.map((attachment) => attachment.id));

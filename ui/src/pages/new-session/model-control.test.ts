@@ -100,7 +100,7 @@ describe("new-session model runtime", () => {
                 id: "anthropic",
                 label: "Claude Code",
                 capabilities: { startTerminal: true },
-                hosts: [],
+                hosts: [{ hostId: "gateway:local", label: "Gateway", canStartTerminal: true }],
               },
               {
                 id: "history-only",
@@ -145,7 +145,12 @@ describe("new-session model runtime", () => {
       .querySelector<HTMLButtonElement>('[data-chat-model-target="anthropic"]')
       ?.click();
 
-    expect(onCatalogTargetSelect).toHaveBeenCalledExactlyOnceWith("anthropic");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onCatalogTargetSelect).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ catalogId: "anthropic", startTerminal: true }),
+      expect.any(Function),
+    );
   });
 
   it("does not discover CLI agents when the Gateway omits catalog support", async () => {

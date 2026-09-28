@@ -3,8 +3,48 @@ import type { HumanMention } from "../../lib/chat/chat-types.ts";
 import { reviewPrivateComposerDraft } from "../chat/components/private-composer-recovery-dialog.ts";
 import * as catalog from "./catalog-target.ts";
 import type { DraftSubmissionFlow } from "./draft-submission-flow.ts";
+import { newSessionSearch, type NewSessionRouteData } from "./location.ts";
 
 const NEW_SESSION_DRAFT_PANE_ID = "new-session-draft";
+
+export function prepareTargetTransition(
+  context: ApplicationContext,
+  data: NewSessionRouteData,
+  isCurrent: () => boolean,
+) {
+  context.chatAttachmentHandoff.prepare({
+    owner: context.gateway.snapshot.client,
+    paneId: NEW_SESSION_DRAFT_PANE_ID,
+    scopeKey: catalog.routeKey(data),
+    reviewPrivateDraft: reviewPrivateComposerDraft,
+    // The mounted composer retains payload custody until an actual teardown.
+    attachments: [],
+    newSessionTarget: { data, isCurrent },
+    fallbacks: {},
+  });
+}
+
+export function navigateToPreparedTarget(
+  context: ApplicationContext | undefined,
+  data: NewSessionRouteData,
+  isCurrent: () => boolean,
+) {
+  if (!context || !isCurrent()) {
+    return;
+  }
+  prepareTargetTransition(context, data, isCurrent);
+  context.navigate("new-session", {
+    search: newSessionSearch(data.agentId, { catalogId: data.catalogId }),
+  });
+}
+
+export function preparedTarget(context: ApplicationContext, search: string) {
+  return context.chatAttachmentHandoff.peekNewSessionTarget({
+    owner: context.gateway.snapshot.client,
+    paneId: NEW_SESSION_DRAFT_PANE_ID,
+    scopeKey: catalog.routeKeyFromSearch(search),
+  });
+}
 
 export function retainDraft(
   context: ApplicationContext | undefined,

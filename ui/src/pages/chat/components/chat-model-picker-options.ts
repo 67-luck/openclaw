@@ -255,7 +255,6 @@ export function renderChatModelPickerTargetOption(params: {
   groupId: string;
   groupLabel: string;
   index: number;
-  selected?: boolean;
   onSelect: (groupId: string, value: string, event: MouseEvent) => void;
 }) {
   return html`
@@ -267,7 +266,7 @@ export function renderChatModelPickerTargetOption(params: {
       data-chat-model-name=${params.entry.label.toLocaleLowerCase()}
       data-chat-model-provider-label=${params.groupLabel.toLocaleLowerCase()}
       role="option"
-      aria-selected=${String(params.selected === true)}
+      aria-selected="false"
       aria-busy=${String(params.entry.pending === true)}
       title=${params.entry.error || nothing}
       aria-label=${[params.entry.label, params.entry.error, params.entry.error ? t("lazyView.retry") : ""].filter(Boolean).join(". ")}
@@ -294,7 +293,7 @@ export function renderChatModelPickerTargetOption(params: {
         }
       </span>
       <span class="chat-controls__model-option-action">
-        ${params.entry.pending || params.entry.error || params.selected ? html`<span class="chat-controls__inline-select-check" aria-hidden="true">${params.entry.pending ? icons.loader : params.entry.error ? icons.alertTriangle : icons.check}</span>` : nothing}
+        ${params.entry.pending || params.entry.error ? html`<span class="chat-controls__inline-select-check" aria-hidden="true">${params.entry.pending ? icons.loader : icons.alertTriangle}</span>` : nothing}
         <kbd data-chat-model-shortcut="true" aria-hidden="true" hidden></kbd>
       </span>
     </button>
