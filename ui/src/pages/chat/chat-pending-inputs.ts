@@ -75,16 +75,29 @@ function chatInputNeedsRecovery(
   );
 }
 
+/** Live custody stays visible independently of the retained page being inspected. */
+export function getChatDisplayPendingInputs(state: ChatState): ChatPendingInputsPage["items"] {
+  const view = getChatPendingInputs(state);
+  if (!view) {
+    return EMPTY_INPUTS;
+  }
+  return [
+    ...view.page.items.filter((input) => !input.queued && !hasLiveChatInputCustody(state, input)),
+    ...view.activeInputs,
+  ];
+}
+
 /** Saved-input pagination must not create transcript scroll or unread intent. */
 export function getChatThreadPendingInputs(state: ChatState): ChatPendingInputsPage["items"] {
   const view = getChatPendingInputs(state);
   if (!view) {
     return EMPTY_INPUTS;
   }
-  const display = selectChatInputDisplay(state.chatMessages, state.chatQueue, [
-    ...view.page.items.filter((input) => !input.queued),
-    ...view.queuedInputs,
-  ]);
+  const display = selectChatInputDisplay(
+    state.chatMessages,
+    state.chatQueue,
+    getChatDisplayPendingInputs(state),
+  );
   const inputs = [
     ...display.pendingInputs.filter((input) => !chatInputNeedsRecovery(input, state.chatQueue)),
     ...display.queuedInputs,
@@ -111,18 +124,11 @@ export function hasLiveChatInputCustody(
 }
 
 export function getChatRecoveryInputs(state: ChatState): ChatPendingInputsPage["items"] {
-  const view = getChatPendingInputs(state);
-  if (!view) {
-    return EMPTY_INPUTS;
-  }
   return selectChatInputDisplay(
     state.chatMessages,
     state.chatQueue,
-    view.page.items,
-  ).pendingInputs.filter(
-    (input) =>
-      chatInputNeedsRecovery(input, state.chatQueue) && !hasLiveChatInputCustody(state, input),
-  );
+    getChatDisplayPendingInputs(state),
+  ).pendingInputs.filter((input) => chatInputNeedsRecovery(input, state.chatQueue));
 }
 
 function reconcileActiveInputs(
@@ -326,7 +332,10 @@ function reconcilePendingInputPage(
   const { page: displayPage, acceptedRunIds } = reconcileChatInputCustody(state, page, receipts);
   const settled = new Set([
     ...(receipts ?? [])
-      .filter((receipt) => receipt.state === "consumed")
+      .filter(
+        (receipt) =>
+          receipt.state === "consumed" || (receipt.state === "pending" && receipt.cancelled),
+      )
       .map((receipt) => receipt.runId),
     ...displayPage.items.filter((input) => input.state === "cancelled").map((input) => input.runId),
   ]);

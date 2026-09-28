@@ -421,7 +421,7 @@ export function selectChatInputDisplay(
     userIdentities.set(messages, identities);
   }
   const { userIds, sendKeys } = identities;
-  // Interrupted custody does not replace a held/failed browser owner: that owner
+  // Inactive custody does not replace a held/failed browser owner: that owner
   // may still block successors and owns Retry/Remove. Hiding it behind a dismissible
   // saved row would leave the real outbox blocked without a visible recovery action.
   const localRecoveryRunIds = new Set(
@@ -432,7 +432,7 @@ export function selectChatInputDisplay(
   const serverInputs = inputs.filter(
     (input) =>
       !(
-        input.state === "interrupted" &&
+        input.state !== "queued" &&
         !input.queued &&
         input.runId &&
         localRecoveryRunIds.has(input.runId)
@@ -447,7 +447,12 @@ export function selectChatInputDisplay(
           !sendKeys.has(item.sendRunId) &&
           !sendKeys.has(`${item.sendRunId}:user`)),
     ),
-    pendingInputs: serverInputs.filter((input) => !userIds.has(input.id) && !input.queued),
+    pendingInputs: serverInputs.filter(
+      (input) =>
+        !userIds.has(input.id) &&
+        !input.queued &&
+        asNullableRecord(input.message)?.display !== false,
+    ),
     queuedInputs: serverInputs.filter((input) => !userIds.has(input.id) && input.queued),
   };
 }
