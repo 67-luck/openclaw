@@ -2596,12 +2596,18 @@ describe("CI changed Node test plan", () => {
         expect(prepared[0]?.predictedSeconds).toBe(
           60 + Math.ceil(preparedFiles * (worker ? 17.31 : 2.49)),
         );
+        expect(prepared[0]?.predictedTestSeconds).toBe(
+          Math.ceil(preparedFiles * (worker ? 17.31 : 2.49)),
+        );
         for (const group of groups) {
           expect(group.includePatterns!.length).toBeLessThanOrEqual(
             worker ? 12 : CODEX_TEST_PROCESS_FILE_LIMIT,
           );
         }
         for (const job of jobs) {
+          expect(job.predictedTestSeconds).toBe(
+            job.predictedSeconds! - (job.pretestBuildMode ? 60 : 0),
+          );
           const workerFiles = fallbackGroups([job])
             .filter((group) => group.configs.includes(workerConfig))
             .flatMap((group) => group.includePatterns ?? []);
