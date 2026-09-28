@@ -100,6 +100,21 @@ it("preserves the repository's reviewed syntax-only boundary plugin", async () =
   expect(runSemanticCheck).not.toHaveBeenCalled();
 });
 
+it("does not mistake a bare plugin package name for the reviewed relative module", async () => {
+  const read = vi
+    .spyOn(fs, "readFileSync")
+    .mockReturnValueOnce(JSON.stringify({ jsPlugins: ["oxlint-boundary-guards.mjs"] }));
+  try {
+    await expect(
+      runOxlint(["--openclaw-focused-config", "--config", "scripts/focused.json"], env),
+    ).rejects.toThrow("unreviewed JavaScript plugins");
+    expect(runManagedCommand).not.toHaveBeenCalled();
+    expect(runSemanticCheck).not.toHaveBeenCalled();
+  } finally {
+    read.mockRestore();
+  }
+});
+
 it.for([false, true])(
   "retains native config only while cleanup is uncertain: %s",
   async (uncertain) => {

@@ -119,6 +119,7 @@ function assertSyntaxOnlyConfig(args: string[]) {
     scope.jsPlugins?.some(
       (plugin) =>
         typeof plugin !== "string" ||
+        !(plugin.startsWith("./") || plugin.startsWith("../") || path.isAbsolute(plugin)) ||
         path.resolve(path.dirname(configPath), plugin) !==
           fileURLToPath(new URL("./oxlint-boundary-guards.mjs", import.meta.url)),
     ),
