@@ -15,7 +15,7 @@ const fixture = createFixtureLifetime();
 afterEach(() => fixture.cleanup());
 const entries = ["run-oxlint.mjs", "run-oxlint-shards.mts", "run-lint.mts"] as const;
 type Entry = (typeof entries)[number];
-type Mode = "success" | "nonzero" | "signal" | "wait" | "throw" | "unjoined";
+type Mode = "success" | "nonzero" | "signal" | "wait" | "resist" | "throw" | "unjoined";
 
 let preparedScripts: Promise<Map<string, string | Uint8Array>> | undefined;
 
@@ -67,7 +67,24 @@ export function waitForFile(file) {
     "lib/windows-taskkill.mjs",
     "lib/repo-root.mjs",
   ]) {
-    write(`scripts/${file}`, fs.readFileSync(path.resolve("scripts", file), "utf8"));
+    let source = fs.readFileSync(path.resolve("scripts", file), "utf8");
+    if (file === "lib/managed-child-process.mts") {
+      // Inject uncertainty only after the real leaf has joined; no process escapes the fixture.
+      source = source.replace(
+        "export async function runManagedCommand(",
+        "async function runFixtureManagedCommand(",
+      );
+      source += `
+export async function runManagedCommand(options: RunManagedCommandOptions): Promise<number> {
+  const status = await runFixtureManagedCommand(options);
+  if (options.env?.OPENCLAW_TEST_UNJOINED_OXLINT === "1" && options.bin.endsWith("/oxlint")) {
+    throw Object.assign(new Error("fixture cleanup unverified"), { processTreeState: "indeterminate" });
+  }
+  return status;
+}
+`;
+    }
+    write(`scripts/${file}`, source);
   }
   for (const file of [
     "scripts/lib/process-memory.mts",
@@ -144,6 +161,7 @@ export function waitForFile(file) {
     );
   }
   const toolSource = (step: string) => `
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { waitForFile } from ${JSON.stringify(pathToFileURL(waitForFile).href)};
 const step = ${JSON.stringify(step)};
@@ -157,10 +175,16 @@ process.stderr.write("diagnostic:" + name + "\\n");
 if (mode === "throw") throw new Error("fixture preparation failure");
 if (mode === "unjoined") throw Object.assign(new Error("fixture cleanup unverified"), { processTreeState: "indeterminate" });
 if (mode === "signal") process.kill(process.pid, "SIGTERM");
-else if (mode === "wait") {
+else if (mode === "wait" || mode === "resist") {
   const timer = setInterval(() => {}, 1000);
   // Force the initial deadline to expire before this child can publish readiness.
   if (${timeout} && step === "oxlint") await waitForFile("watchdog-fired");
+  if (mode === "resist") {
+    const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); process.send('ready');"], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+    await new Promise((resolve, reject) => { child.once("message", resolve); child.once("error", reject); });
+    fs.appendFileSync("steps.jsonl", JSON.stringify({ step: "descendant", shard, pid: child.pid }) + "\\n");
+    process.stdout.write(JSON.stringify({ step: "descendant", shard }) + "\\n");
+  }
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => {
     process.stderr.write("drained:" + name + ":" + signal + "\\n");
     clearInterval(timer);
@@ -225,7 +249,11 @@ process.stderr.write = (chunk, ...args) => {
 };
 `,
   );
-  const env: NodeJS.ProcessEnv = { ...process.env, OPENCLAW_OXLINT_SHARDS_SERIAL: "1" };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    OPENCLAW_OXLINT_SHARDS_SERIAL: "1",
+    OPENCLAW_TEST_UNJOINED_OXLINT: mode === "unjoined" && phase === "oxlint" ? "1" : "",
+  };
   for (const key of [
     "NODE_OPTIONS",
     "NODE_PATH",
@@ -297,6 +325,7 @@ async function runLintFixture(
         OPENCLAW_OXLINT_SHARDS_SERIAL: multipleShards ? "0" : "1",
         OPENCLAW_OXLINT_SHARD_HEARTBEAT_MS: "0",
         OPENCLAW_OXLINT_SHARD_TIMEOUT_MS: timeout ? "1500" : "0",
+        OPENCLAW_OXLINT_SHARD_KILL_GRACE_MS: mode === "resist" ? "25" : "5000",
       },
       10_000,
       {
@@ -463,9 +492,8 @@ describe.skipIf(process.platform === "win32")("lint failure reporting boundary",
           "--mode=package-boundary",
         ]);
       }
-      if (entry !== "run-oxlint.mjs") {
-        expect(lint!.claims).toHaveLength(1);
-      }
+      // The batch composes its operation directly; no intermediary wrapper claim remains.
+      expect(lint!.claims).toHaveLength(0);
       if (mode === "success" && entry === "run-lint.mts") {
         expect(steps.map((step) => step.step)).toEqual(["i18n", "prepare", "oxlint", "stylelint"]);
       }
@@ -483,25 +511,30 @@ describe.skipIf(process.platform === "win32")("lint failure reporting boundary",
     }),
   );
 
-  it.for(["run-oxlint-shards.mts", "run-lint.mts"] as const)(
-    "%s reports one timeout after the owned child drains",
-    (entry, { signal }) =>
-      fixture.run(async () => {
-        const { result, details, trailers } = await runLintFixture(entry, "wait", signal, {
-          timeout: true,
-        });
-        expect(result.status, details).toBe(124);
-        expect(result.stderr).toContain("timed out");
-        expect(result.stderr).toContain("drained:extensions:SIGTERM");
-        expect(trailers, details).toEqual([
-          {
-            text: `[${entry === "run-lint.mts" ? "lint" : "oxlint"}] FAILED (exit 124)`,
-            owned: false,
-            claims: [],
-            live: [],
-          },
-        ]);
-      }),
+  it.for(
+    (["run-oxlint-shards.mts", "run-lint.mts"] as const).flatMap((entry) =>
+      (["wait", "resist"] as const).map((mode) => ({ entry, mode })),
+    ),
+  )("$entry reports one timeout after joined $mode cleanup", ({ entry, mode }, { signal }) =>
+    fixture.run(async () => {
+      const { result, details, steps, trailers } = await runLintFixture(entry, mode, signal, {
+        timeout: true,
+      });
+      expect(result.status, details).toBe(124);
+      expect(result.stderr).toContain("timed out");
+      expect(result.stderr).toContain("drained:extensions:SIGTERM");
+      expect(steps.filter((step) => step.step === "descendant")).toHaveLength(
+        mode === "resist" ? 1 : 0,
+      );
+      expect(trailers, details).toEqual([
+        {
+          text: `[${entry === "run-lint.mts" ? "lint" : "oxlint"}] FAILED (exit 124)`,
+          owned: false,
+          claims: [],
+          live: [],
+        },
+      ]);
+    }),
   );
 
   it.for(entries)(
@@ -600,25 +633,27 @@ describe.skipIf(process.platform === "win32")("lint failure reporting boundary",
     }),
   );
 
-  it.for(["run-oxlint-shards.mts", "run-lint.mts"] as const)(
-    "%s reports after retaining uncertain artifact ownership",
-    (entry, { signal }) =>
-      fixture.run(async () => {
-        // Inject only an uncertainty receipt; the fixture has no escaped/unowned process.
-        const { result, details, trailers } = await runLintFixture(entry, "unjoined", signal, {
-          phase: "prepare",
-        });
-        expect(result.status, details).toBe(1);
-        expect(result.stderr).toContain("fixture cleanup unverified");
-        expect(result.stderr).toContain("child cleanup unverified; retained");
-        expect(trailers, details).toEqual([
-          {
-            text: `[${entry === "run-lint.mts" ? "lint" : "oxlint"}] FAILED (exit 1)`,
-            owned: true,
-            claims: [],
-            live: [],
-          },
-        ]);
-      }),
+  it.for(
+    (["run-oxlint-shards.mts", "run-lint.mts"] as const).flatMap((entry) =>
+      (["prepare", "oxlint"] as const).map((phase) => ({ entry, phase })),
+    ),
+  )("$entry reports after retaining uncertain $phase ownership", ({ entry, phase }, { signal }) =>
+    fixture.run(async () => {
+      // Inject only an uncertainty receipt; the fixture has no escaped/unowned process.
+      const { result, details, trailers } = await runLintFixture(entry, "unjoined", signal, {
+        phase,
+      });
+      expect(result.status, details).toBe(1);
+      expect(result.stderr).toContain("fixture cleanup unverified");
+      expect(result.stderr).toContain("child cleanup unverified; retained");
+      expect(trailers, details).toEqual([
+        {
+          text: `[${entry === "run-lint.mts" ? "lint" : "oxlint"}] FAILED (exit 1)`,
+          owned: true,
+          claims: [],
+          live: [],
+        },
+      ]);
+    }),
   );
 });
