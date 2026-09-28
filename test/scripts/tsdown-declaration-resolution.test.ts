@@ -517,7 +517,7 @@ const root = process.cwd();
 const output = path.join(root, "packages/output-producer/dist");
 const alias = ${JSON.stringify(alias)};
 assert.equal(fs.existsSync(output), false, "the producer must start cold");
-const originalEmit = Program.prototype.emitToString;
+const originalEmit = Program.prototype.emit;
 let current;
 const begin = () => {
   const started = Promise.withResolvers();
@@ -527,7 +527,7 @@ const begin = () => {
   globalThis.finishProducer = written.resolve;
   return current;
 };
-Program.prototype.emitToString = async function (...args) {
+Program.prototype.emit = async function (...args) {
   const output = await originalEmit.apply(this, args);
   if ((await this.getSourceFileNames()).includes(path.join(root, "src/consumer.ts"))) {
     const phase = current;
@@ -562,7 +562,7 @@ try {
   assert.equal(second.compilers, 1);
 } finally {
   current?.written.resolve();
-  Program.prototype.emitToString = originalEmit;
+  Program.prototype.emit = originalEmit;
 }
 console.log("cold sibling ownership and fresh build isolation verified");
 `,

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { API, EmitOnly, type EmitOutputFile } from "typescript/unstable/async";
+import { API, EmitOnly } from "typescript/unstable/async";
 import { CompilerInputSnapshot } from "./compiler-input-snapshot.mts";
 import { createDeclarationInputBoundary, resolveRepoToolBinPath } from "./local-check-runtime.mts";
 import { createDeclarationFileSystem } from "./native-declaration-filesystem.mts";
@@ -89,11 +89,36 @@ export async function compileNativeProject({
     const virtualFiles = new Map([
       [config, JSON.stringify({ extends: admittedConfig, compilerOptions })],
     ]);
+    const output =
+      typeof compilerOptions?.outDir === "string"
+        ? admit(path.resolve(root, compilerOptions.outDir))
+        : path.join(stage, "out");
+    const stagedFiles = new Map<string, string>();
     view = createDeclarationFileSystem(
       root,
       assertInput ? admit : undefined,
       virtualFiles,
       before.readText,
+      emit
+        ? (file, text) => {
+            const accepted = admit(file);
+            const relative = path.relative(output, accepted);
+            if (
+              relative === "" ||
+              relative === ".." ||
+              relative.startsWith(`..${path.sep}`) ||
+              path.isAbsolute(relative)
+            ) {
+              throw new Error(`Native declaration output escapes its directory: ${file}`);
+            }
+            // Keep output private until the compiler exits and its inputs seal.
+            // Numeric staging names cannot follow aliases in the final output tree.
+            const staged =
+              stagedFiles.get(accepted) ?? path.join(stage, `emit-${stagedFiles.size}`);
+            fs.writeFileSync(staged, text);
+            stagedFiles.set(accepted, staged);
+          }
+        : undefined,
     );
     const manifestFile = admit(path.join(root, "package.json"));
     const manifestText = view.filesystem.readFile(manifestFile);
@@ -121,10 +146,6 @@ export async function compileNativeProject({
             ],
       ),
     ];
-    const output =
-      typeof compilerOptions?.outDir === "string"
-        ? admit(path.resolve(root, compilerOptions.outDir))
-        : path.join(stage, "out");
     virtualFiles.set(
       config,
       JSON.stringify({
@@ -141,7 +162,7 @@ export async function compileNativeProject({
           declaration: true,
           emitDeclarationOnly: emit,
           noEmit: !emit,
-          // Validate the requested diagnostics below, then use the in-memory
+          // Validate the requested diagnostics below, then use the native
           // emit result for declaration errors without a second preflight.
           noEmitOnError: false,
           noCheck: false,
@@ -165,9 +186,10 @@ export async function compileNativeProject({
     if (errors.length) {
       throw new Error(formatNativeTypeScriptDiagnostics(errors));
     }
-    const outputFiles = new Map<string, EmitOutputFile>();
     if (emit) {
-      const result = await project.program.emitToString(EmitOnly.OnlyDts);
+      // Callback emission avoids retaining all output in Go and one large RPC
+      // response while the semantic program is still alive.
+      const result = await project.program.emit(EmitOnly.OnlyDts);
       view.assertValid();
       if (result.emitSkipped || result.diagnostics.length) {
         throw new Error(
@@ -175,22 +197,6 @@ export async function compileNativeProject({
             ? formatNativeTypeScriptDiagnostics(result.diagnostics)
             : "Native declaration emission was skipped",
         );
-      }
-      for (const [file, contents] of result.outputFiles) {
-        const accepted = admit(file);
-        const relative = path.relative(output, accepted);
-        if (
-          relative === "" ||
-          relative === ".." ||
-          relative.startsWith(`..${path.sep}`) ||
-          path.isAbsolute(relative)
-        ) {
-          throw new Error(`Native declaration output escapes its directory: ${file}`);
-        }
-        if (contents.sourceFileName) {
-          admit(contents.sourceFileName);
-        }
-        outputFiles.set(accepted, contents);
       }
     }
     for (const file of await project.program.getSourceFileNames()) {
@@ -206,6 +212,11 @@ export async function compileNativeProject({
     }
     const after = snapshot();
     after.seal(admittedConfig, args, inputs, before, preparationStartedAt, stage, producedFiles);
+    const outputFiles = new Map(
+      [...stagedFiles.keys()]
+        .toSorted()
+        .map((file) => [file, { text: fs.readFileSync(stagedFiles.get(file)!, "utf8") }] as const),
+    );
     return { inputs, outputFiles };
   } catch (error) {
     view?.assertValid();

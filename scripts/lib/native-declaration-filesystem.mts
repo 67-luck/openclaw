@@ -9,6 +9,7 @@ export function createDeclarationFileSystem(
   admit: ((file: string) => string) | undefined,
   virtualFiles: ReadonlyMap<string, string>,
   readText: (file: string) => string = (file) => fs.readFileSync(file, "utf8"),
+  writeText?: (file: string, text: string) => void,
 ) {
   const boundary = admit ? createDeclarationInputBoundary(cwd) : undefined;
   const resolve = (file: string) => boundary?.resolve(file) ?? path.resolve(cwd, file);
@@ -125,8 +126,19 @@ export function createDeclarationFileSystem(
         return accepted;
       }
     },
-    writeFile() {
-      reject(new Error("Native declarations must be emitted in memory"));
+    writeFile(file, text) {
+      if (failure) {
+        return;
+      }
+      try {
+        if (!writeText) {
+          throw new Error("Native declaration filesystem is read-only");
+        }
+        writeText(file, text);
+      } catch (error) {
+        // RPC callbacks must settle even when the private output write fails.
+        reject(error);
+      }
     },
   } satisfies FileSystem;
   return {

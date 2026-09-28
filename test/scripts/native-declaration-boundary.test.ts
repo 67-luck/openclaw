@@ -1,9 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Program } from "typescript/unstable/async";
+import { API, Program } from "typescript/unstable/async";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeclarationInputBoundary } from "../../scripts/lib/local-check-runtime.mts";
-import { emitNativeDeclarations } from "../../scripts/lib/native-declaration-emitter.mts";
+import {
+  compileNativeProject,
+  emitNativeDeclarations,
+} from "../../scripts/lib/native-declaration-emitter.mts";
 import { readNativeTypeScriptConfig } from "../../scripts/lib/native-typescript-config.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import {
@@ -169,6 +172,107 @@ it("rejects semantic errors before returning valid native declarations", async (
   expect(emitted.declarations.get(path.join(root, "src/index.ts"))?.code).toContain(
     "export declare const count: number;",
   );
+});
+
+it("preserves native output bytes and reads staged declarations only after native exit", async () => {
+  const root = fs.realpathSync.native(roots.make("native-declaration-stream-"));
+  const fixture = createNativeFixture(root);
+  fixture.write("src/index.ts", 'export { value } from "./value.js";\n');
+  fixture.write("src/value.ts", "export const value = 42;\n");
+  const output = path.join(root, "dist");
+  const boundary = createDeclarationInputBoundary(root);
+  const expected = new Map<string, { text: string }>();
+  let closed = false;
+  const readAfterClose: boolean[] = [];
+  const originalEmit = Program.prototype.emit;
+  const originalClose = API.prototype.close;
+  const originalRead = fs.readFileSync;
+  const emitter = vi.spyOn(Program.prototype, "emit").mockImplementationOnce(async function (
+    this: Program,
+    ...args
+  ) {
+    for (const [file, value] of (await this.emitToString(...args)).outputFiles) {
+      expected.set(file, { text: value.text });
+    }
+    return originalEmit.apply(this, args);
+  });
+  const closer = vi.spyOn(API.prototype, "close").mockImplementationOnce(async function (
+    this: API,
+  ) {
+    await originalClose.call(this);
+    closed = true;
+  });
+  const reader = vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
+    if (typeof args[0] === "string" && path.basename(args[0]).startsWith("emit-")) {
+      readAfterClose.push(closed);
+    }
+    return originalRead(...args);
+  });
+  try {
+    const result = await compileNativeProject({
+      cwd: root,
+      compilerRoot: root,
+      configFile: path.join(root, "tsconfig.json"),
+      compilerOptions: { outDir: output, declarationMap: true, emitBOM: true },
+      assertInput: (file) => boundary.assert(file),
+    });
+    expect(expected.size).toBeGreaterThan(1);
+    expect(result.outputFiles).toEqual(expected);
+    expect(readAfterClose).toHaveLength(expected.size);
+    expect(readAfterClose.every(Boolean)).toBe(true);
+    expect(result.inputs).toContain(path.join(root, "src/value.ts"));
+    expect(fs.existsSync(output)).toBe(false);
+    expect(fs.readdirSync(path.join(root, ".artifacts"))).toEqual([]);
+  } finally {
+    reader.mockRestore();
+    closer.mockRestore();
+    emitter.mockRestore();
+  }
+});
+
+it("joins native emission and discards private outputs when staging a declaration fails", async () => {
+  const root = fs.realpathSync.native(roots.make("native-declaration-write-failure-"));
+  const fixture = createNativeFixture(root);
+  fixture.write("src/index.ts", "export const value = 42;\n");
+  fixture.write("dist/previous.d.ts", "existing output");
+  const boundary = createDeclarationInputBoundary(root);
+  const failure = new Error("synthetic declaration staging failure");
+  const originalWrite = fs.writeFileSync;
+  const originalClose = API.prototype.close;
+  let closed = false;
+  let writes = 0;
+  const closer = vi.spyOn(API.prototype, "close").mockImplementationOnce(async function (
+    this: API,
+  ) {
+    await originalClose.call(this);
+    closed = true;
+  });
+  const writer = vi.spyOn(fs, "writeFileSync").mockImplementation((...args) => {
+    if (typeof args[0] === "string" && path.basename(args[0]).startsWith("emit-")) {
+      writes++;
+      throw failure;
+    }
+    return originalWrite(...args);
+  });
+  try {
+    await expect(
+      compileNativeProject({
+        cwd: root,
+        compilerRoot: root,
+        configFile: path.join(root, "tsconfig.json"),
+        compilerOptions: { outDir: path.join(root, "dist"), declarationMap: true },
+        assertInput: (file) => boundary.assert(file),
+      }),
+    ).rejects.toBe(failure);
+    expect(writes).toBe(1);
+    expect(closed).toBe(true);
+    expect(fs.readdirSync(path.join(root, "dist"))).toEqual(["previous.d.ts"]);
+    expect(fs.readFileSync(path.join(root, "dist/previous.d.ts"), "utf8")).toBe("existing output");
+    expect(fs.readdirSync(path.join(root, ".artifacts"))).toEqual([]);
+  } finally {
+    writer.mockRestore();
+    closer.mockRestore();
+  }
 });
 
 it("bounds optional SDK relative imports and manifest probes to the checkout", async () => {
@@ -507,15 +611,16 @@ it("rejects config paths changed after materialization while preserving default-
   expect(fs.readdirSync(artifacts)).toEqual([]);
 
   let changed = false;
-  const emitter = vi
-    .spyOn(Program.prototype, "emitToString")
-    .mockImplementationOnce(async function (this: Program, ...args) {
-      emitter.mockRestore();
-      const output = await this.emitToString(...args);
-      changed = true;
-      fs.writeFileSync(configFile, configuration("after"));
-      return output;
-    });
+  const emitter = vi.spyOn(Program.prototype, "emit").mockImplementationOnce(async function (
+    this: Program,
+    ...args
+  ) {
+    emitter.mockRestore();
+    const output = await this.emit(...args);
+    changed = true;
+    fs.writeFileSync(configFile, configuration("after"));
+    return output;
+  });
   try {
     await expect(emit()).rejects.toThrow(/Boundary .*changed during compilation/u);
   } finally {
