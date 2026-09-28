@@ -2,7 +2,7 @@
 import path from "node:path";
 import type { EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFailed, vi } from "vitest";
 import { readAttemptTerminal } from "./attempt-terminal.test-helper.js";
 import { CodexAppServerClient } from "./client.js";
 import { CodexAppServerEventProjector } from "./event-projector.js";
@@ -317,6 +317,13 @@ describe("Codex app-server main thread cleanup", () => {
 
   it("preserves a quiet long-running native tool while a distinct shared-client turn completes", async () => {
     const physical = createInferenceReadyClientHarness();
+    const timedOutAttempts: string[] = [];
+    onTestFailed(() => {
+      console.error("Concurrent native-tool fixture failed", {
+        timedOutAttempts,
+        methods: physical.writes.map((write) => (JSON.parse(write) as { method: string }).method),
+      });
+    });
     const startClient = vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(physical.client);
     const firstParams = createParams(
       path.join(tempDir, "concurrent-first.jsonl"),
@@ -334,6 +341,12 @@ describe("Codex app-server main thread cleanup", () => {
     await seedRunSessionOwnerForTest(secondParams.sessionId, secondParams.sessionKey!);
     firstParams.timeoutMs = 60_000;
     secondParams.timeoutMs = 60_000;
+    firstParams.onAttemptTimeout = () => {
+      timedOutAttempts.push("first");
+    };
+    secondParams.onAttemptTimeout = () => {
+      timedOutAttempts.push("second");
+    };
 
     const firstRun = runCodexAppServerAttempt(firstParams, {
       bindingStore: testCodexAppServerBindingStore,
