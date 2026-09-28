@@ -4,7 +4,8 @@ missing_load_path_applicability=""
 
 start_missing_load_path_baseline() {
   local start_status=0 exit_status=0
-  start_gateway || start_status=$?
+  # Allow the published model-runtime build's 120s deadline after 90s of startup work.
+  start_gateway 840 || start_status=$?
   [ "$start_status" -eq 0 ] && return 0
   [ "$start_status" -eq 1 ] && [ -n "${gateway_pid:-}" ] || return "$start_status"
   # Published startup may install migration plugins, then require one fresh process.
@@ -32,7 +33,7 @@ start_missing_load_path_baseline() {
   printf 'Published baseline %s completed plugin convergence (pid %s, exit %s); restarting once with the same config, state, and port. First attempt: %s\n' \
     "$baseline_version" "$gateway_pid" "$exit_status" "$refused_log"
   gateway_pid=""
-  start_gateway
+  start_gateway 840
 }
 
 capture_missing_load_path_lint() {

@@ -2034,6 +2034,7 @@ probe_gateway_endpoint() {
 
 start_gateway() {
   local port=18789
+  local readiness_attempts="${1:-360}"
   local budget
   budget="$(openclaw_e2e_read_positive_int_env OPENCLAW_UPGRADE_SURVIVOR_START_BUDGET_SECONDS 90)" || return "$?"
   local start_epoch
@@ -2047,7 +2048,7 @@ start_gateway() {
     readiness_mode="legacy-ready-log-ok"
   fi
   local readiness_status=0
-  openclaw_e2e_wait_gateway_ready "$gateway_pid" "$GATEWAY_LOG" 360 "$port" "$readiness_mode" || readiness_status=$?
+  openclaw_e2e_wait_gateway_ready "$gateway_pid" "$GATEWAY_LOG" "$readiness_attempts" "$port" "$readiness_mode" || readiness_status=$?
   if [ "$readiness_status" -ne 0 ]; then
     if [ "${SCENARIO:-}" = "base" ] && [ "${CURRENT_PHASE:-}" = "gateway-start" ]; then
       local failed_epoch diagnostic_epoch diagnostic_status=0 late_ready=false
