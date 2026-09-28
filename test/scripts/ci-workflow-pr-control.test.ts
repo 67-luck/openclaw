@@ -279,6 +279,8 @@ describe("PR failure cancellation", () => {
         String(
           evaluateWorkflowExpression(expression, {
             eventName: "pull_request",
+            repository: "openclaw/openclaw",
+            runAttempt: 1,
             runnerProfile: "github",
           }),
         ),
