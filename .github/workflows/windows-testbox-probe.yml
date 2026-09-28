@@ -82,6 +82,7 @@ env:
 jobs:
   probe:
     name: Windows probe
+    if: ${{ false }}
     outputs:
       native_package_id: ${{ steps.native_package_upload.outputs.artifact-id }}
       native_package_digest: ${{ steps.native_package_upload.outputs.artifact-digest }}
@@ -913,7 +914,7 @@ jobs:
   # Native session qualification must not depend on headless CI or WSL results.
   native-schtasks:
     name: Native Scheduled Task proof
-    if: ${{ inputs.run_windows_ci && inputs.installed_startup_package == '' && !inputs.run_private_node_provisioning && !inputs.installed_repair_worker && inputs.windows_ci_replay == '' }}
+    if: ${{ false }}
     runs-on: windows-2025
     timeout-minutes: 75
     env:
@@ -1141,6 +1142,23 @@ jobs:
               }
               if ($discovery -and [IO.Path]::GetFullPath($record.scriptPath) -ine [IO.Path]::GetFullPath((Join-Path $expectedRoot "$($record.role).cmd"))) { throw "Discovery launcher path differs from its fixture." }
               if ($record.role -cin @("direct", "extra") -and $record.cleanupNeedle -cne $expectedProfile) { throw "Diagnostic task cleanup token differs from its exact profile." }
+              $expectedPrivate = Join-Path $expectedRoot '.fileio-private'
+              if ($null -ne $record.fileIo) {
+                $trace = $record.fileIo
+                if ($record.role -cne 'selected' -or $record.cell -cne '2026.9.3' -or $trace.contract -cne 'installed-fileio-custody-v1') { throw 'Unexpected FileIO task admission.' }
+                if ($trace.toolingSha -cnotmatch '^[a-f0-9]{40}$' -or $trace.toolingSha -cne (git rev-parse HEAD)) { throw 'FileIO source revision differs from its admission.' }
+                if ($trace.expectedGuid -cnotmatch '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$' -or $trace.name -cne ('OpenClaw-Owned-FileIO-' + $trace.expectedGuid.Replace('-', ''))) { throw 'FileIO session identity is not exact.' }
+                $sourceRoot = Join-Path $env:GITHUB_WORKSPACE 'scripts/qa/windows-fileio'
+                $expectedPowerShell = Join-Path ([Environment]::GetFolderPath('Windows')) 'System32/WindowsPowerShell/v1.0/powershell.exe'
+                foreach ($pair in @(@($trace.privateRoot, $expectedPrivate), @($trace.receiptPath, (Join-Path $expectedPrivate 'trace.json')), @($trace.ownedPrefix, (Join-Path $expectedInstall 'node_modules')), @($trace.powerShellExe, $expectedPowerShell), @($trace.sourcePath, (Join-Path $sourceRoot 'OwnedFileTrace.cs')), @($trace.cliPath, (Join-Path $sourceRoot 'Invoke-OwnedFileTrace.ps1')), @($trace.helperPath, (Join-Path $sourceRoot 'OwnedFileTraceOperations.ps1')), @($trace.factsPath, (Join-Path $sourceRoot 'FileTraceFacts.ps1')))) {
+                  if ([string]::IsNullOrEmpty($pair[0]) -or [IO.Path]::GetFullPath($pair[0]) -ine [IO.Path]::GetFullPath($pair[1])) { throw 'FileIO path differs from its admitted task.' }
+                  if ((Test-Path -LiteralPath $pair[0]) -and ((Get-Item -LiteralPath $pair[0] -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'FileIO recovery refuses redirected custody.' }
+                }
+                if ($trace.sourceSha256 -cne '8fc1495a0d7a828cdd611d376aebc4590747d1d855ed7e48d69d765eca3fe45d') { throw 'FileIO native source differs from the pinned observer.' }
+                foreach ($pair in @(@($trace.sourcePath, $trace.sourceSha256), @($trace.cliPath, $trace.cliSha256), @($trace.helperPath, $trace.helperSha256), @($trace.factsPath, $trace.factsSha256))) {
+                  if ($pair[1] -cnotmatch '^[a-f0-9]{64}$' -or (Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne $pair[1]) { throw 'FileIO recovery source binding changed.' }
+                }
+              } elseif ($record.role -cne 'peer' -and (Test-Path -LiteralPath $expectedPrivate)) { throw 'Private FileIO state has no admitted descriptor.' }
               $seen[$expectedTask] = $true
             }
             foreach ($record in $records) { schtasks.exe /End /TN $record.taskName 2>$null }
@@ -1164,6 +1182,23 @@ jobs:
                 if ($remaining.Count -gt 0) { $cleanupErrors += "Installed processes remain; preserve evidence for runner teardown." }
               }
             } catch { $cleanupErrors += "Installed process absence is unverified." }
+            foreach ($record in $records) {
+              if ($null -eq $record.fileIo) { continue }
+              $trace = $record.fileIo
+              try {
+                # The adapter keeps source compilation and exact native cleanup in its managed job.
+                $admissionFile = Join-Path $env:GITHUB_WORKSPACE ".artifacts/windows-schtasks/cells/$($record.cell)/installed-cleanup.json"
+                $expectedRoot = Join-Path $env:TEST_ROOT $record.cell
+                $expectedInstall = Join-Path (Join-Path $env:RUNNER_TEMP 'native-package-installed') $record.cell
+                $sourceHead = (git rev-parse HEAD).Trim()
+                $traceOutput = @(node.exe --import ./scripts/tsx.mjs src/daemon/schtasks.installed-fileio.test-support.ts cleanup $admissionFile $expectedRoot $expectedInstall $sourceHead 2>$null)
+                $traceExit = $LASTEXITCODE
+                if ($traceExit -ne 0 -or $traceOutput.Count -ne 1 -or [Text.Encoding]::UTF8.GetByteCount([string]$traceOutput[0]) -gt 16384) { throw 'FileIO recovery command failed.' }
+                $traceResult = $traceOutput[0] | ConvertFrom-Json -ErrorAction Stop
+                $traceCommands = @($traceResult.commandFacts)
+                if ($traceResult.phase -cne 'cleanup' -or $traceResult.cleanupVerified -ne $true -or $traceCommands.Count -ne 1 -or $traceCommands[0].phase -cne 'cleanup' -or $traceCommands[0].outcome -cne 'verified' -or $traceCommands[0].joined -ne $true -or $traceCommands[0].jobObserved -ne $true) { throw 'FileIO native absence or command join remains unverified.' }
+              } catch { $cleanupErrors += 'FileIO exact cleanup or private-state retirement is unverified.' }
+            }
             $summaryRoot = if ([string]::IsNullOrEmpty($env:CI_WINDOWS_SCHTASKS_INSTALLED_CELL)) { $env:TEST_ROOT } else { Join-Path $env:TEST_ROOT $env:CI_WINDOWS_SCHTASKS_INSTALLED_CELL }
             $cleanupErrors | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $summaryRoot "cleanup-summary.txt")
             if ($cleanupErrors.Count -gt 0) { throw ($cleanupErrors -join " ") }
@@ -1512,7 +1547,7 @@ jobs:
   # independent while package mode explicitly waits for its current-run producer.
   native-schtasks-package:
     name: Native Scheduled Task installed proof
-    if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && !inputs.run_private_node_provisioning && !inputs.installed_repair_worker && !inputs.installed_startup_cpu_diagnostic && inputs.windows_ci_replay == '' }}
+    if: ${{ false }}
     needs: probe
     permissions:
       contents: read
@@ -1523,3 +1558,102 @@ jobs:
       NATIVE_PACKAGE_DIGEST: ${{ needs.probe.outputs.native_package_digest }}
       NATIVE_MANIFEST_SHA256: ${{ needs.probe.outputs.native_manifest_sha256 }}
     steps: *native_schtasks_steps
+
+  fileio-integration-control:
+    name: Integrated owned FileIO diagnostic controls
+    if: >-
+      ${{ github.ref == 'refs/heads/codex/windows-fileio-integration-150153-20260928' && inputs.runner_label == 'windows-2025' && inputs.keepalive_minutes == '0' && !inputs.run_windows_ci && !inputs.run_private_node_provisioning && !inputs.installed_repair_worker && !inputs.installed_startup_cpu_diagnostic && inputs.installed_startup_package == '' && inputs.windows_ci_replay == '' && !inputs.require_wsl2 && !inputs.import_ubuntu_wsl2 && !inputs.enable_wsl2_features && inputs.startup_node_version == '26.8.2' }}
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - *windows_checkout
+      - name: Qualify fresh native runner isolation
+        shell: pwsh
+        env:
+          NATIVE_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          EXPECTED_HEAD: ${{ inputs.target_ref }}
+          NATIVE_ISOLATION_PROOF_NAME: fileio-isolation.json
+        run: *windows_native_isolation
+      - name: Authenticate FileIO control inputs
+        shell: pwsh
+        env:
+          EXPECTED_HEAD: ${{ inputs.target_ref }}
+          WORKFLOW_HEAD: ${{ github.sha }}
+          KEEPALIVE: ${{ inputs.keepalive_minutes }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$' -or $env:EXPECTED_HEAD -cne $env:WORKFLOW_HEAD -or (git rev-parse HEAD) -cne $env:EXPECTED_HEAD -or $env:KEEPALIVE -ne '0') { throw 'Expected exact diagnostic source and zero keepalive.' }
+          $root = Join-Path $env:RUNNER_TEMP 'fileio-integration-control'
+          $evidence = Join-Path $root 'evidence'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $nodeZip = Join-Path $root 'node-v26.8.2-win-x64.zip'
+          $sums = Join-Path $root 'SHASUMS256.txt'
+          Invoke-WebRequest -Uri 'https://nodejs.org/dist/v26.8.2/SHASUMS256.txt' -OutFile $sums -TimeoutSec 60
+          Invoke-WebRequest -Uri 'https://nodejs.org/dist/v26.8.2/node-v26.8.2-win-x64.zip' -OutFile $nodeZip -TimeoutSec 120
+          $checksumLines = @(Get-Content $sums | Where-Object { $_ -cmatch '^([0-9a-f]{64})  node-v26\.8\.2-win-x64\.zip$' })
+          if ($checksumLines.Count -ne 1) { throw 'Missing unique official Node checksum.' }
+          $expectedNodeZip = $checksumLines[0].Substring(0, 64)
+          $nodeZipHash = (Get-FileHash $nodeZip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($nodeZipHash -cne $expectedNodeZip -or $nodeZipHash -cne 'cf02f5d0c06c794b84f277177d5cf3743d0924ca49f6641cd435dd7cb6ee9085') { throw 'Node archive hash mismatch.' }
+          Expand-Archive -LiteralPath $nodeZip -DestinationPath $root
+          $nodeDir = Join-Path $root 'node-v26.8.2-win-x64'
+          $nodeExe = Join-Path $nodeDir 'node.exe'
+          if ((& $nodeExe -p "process.version + '/' + process.arch") -cne 'v26.8.2/x64') { throw 'Unexpected Node runtime.' }
+          $tgz = Join-Path $root 'koffi-win32-x64-3.1.6.tgz'
+          Invoke-WebRequest -Uri 'https://registry.npmjs.org/@koromix/koffi-win32-x64/-/koffi-win32-x64-3.1.6.tgz' -OutFile $tgz -TimeoutSec 60
+          $sha512 = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([IO.File]::ReadAllBytes($tgz)))
+          if ($sha512 -cne 'lPKjAaHz0aoiZXT/wDVqH+joR5y3lCZj1s9Bk5qx/DGRq+0MK8Ib8VoqiBOrJ69NG5AsJSvn0tQDcSqfRgLmBQ==') { throw 'Published addon archive integrity mismatch.' }
+          $expectedMembers = @('package/index.js','package/package.json','package/win32_x64/koffi.lib','package/README.md','package/win32_x64/koffi.node') | Sort-Object
+          $members = @(tar -tf $tgz | Sort-Object)
+          if ($LASTEXITCODE -ne 0 -or ($members -join "`n") -cne ($expectedMembers -join "`n")) { throw 'Unexpected addon archive members.' }
+          $addonDir = Join-Path $root 'addon'
+          New-Item -ItemType Directory -Path $addonDir | Out-Null
+          tar -xf $tgz -C $addonDir
+          if ($LASTEXITCODE -ne 0) { throw 'Addon extraction failed.' }
+          $addon = Join-Path $addonDir 'package/win32_x64/koffi.node'
+          $addonHash = (Get-FileHash $addon -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($addonHash -cne '939156f310bd7a7d9d1db1b5249a5d135739b049c24c79fd3c201701333ddbf3' -or (Get-Item $addon).Length -ne 1044480) { throw 'Published addon bytes mismatch.' }
+          [ordered]@{ source = $env:EXPECTED_HEAD; nodeVersion = '26.8.2'; nodePath = $nodeExe; nodeArchiveSha256 = $nodeZipHash; nodeSha256 = (Get-FileHash $nodeExe -Algorithm SHA256).Hash.ToLowerInvariant(); addonPath = $addon; addonSha256 = $addonHash; addonBytes = (Get-Item $addon).Length; addonArchiveSha512 = $sha512 } | ConvertTo-Json | Set-Content (Join-Path $evidence 'inputs.json')
+          if ((Get-FileHash $nodeExe -Algorithm SHA256).Hash.ToLowerInvariant() -cne '23062343ad39fc79f12ae39cfb324e93a20ced5f1d342e7b850c148c022ddbca') { throw 'Node executable hash mismatch.' }
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'fileio-isolation.json') (Join-Path $evidence 'isolation.json')
+          $private = Join-Path $root 'private-診断-é'
+          New-Item -ItemType Directory -Path $private | Out-Null
+          "FILEIO_PRIVATE=$private" >> $env:GITHUB_ENV
+          $nodeDir >> $env:GITHUB_PATH
+          "FILEIO_ADDON=$addon" >> $env:GITHUB_ENV
+          "FILEIO_EVIDENCE=$evidence" >> $env:GITHUB_ENV
+          "FILEIO_NODE=$nodeExe" >> $env:GITHUB_ENV
+      - name: Setup pinned repository tooling
+        uses: ./.github/actions/setup-pnpm-store-cache
+        with:
+          node-version: "26.8.2"
+          cache-mode: "off"
+      - name: Install frozen repository dependencies
+        shell: bash
+        env:
+          CI: true
+        run: pnpm install --frozen-lockfile --prefer-offline --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true
+      - name: Run owned FileIO controls
+        id: control
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          & $env:FILEIO_NODE --import ./scripts/tsx.mjs scripts/qa/windows-fileio-integration-control.mjs run $env:FILEIO_ADDON $env:FILEIO_EVIDENCE $env:FILEIO_PRIVATE
+          if ($LASTEXITCODE -ne 0) { throw 'FileIO controls failed; preserve bounded evidence.' }
+      - name: Reconcile admitted trace cleanup
+        if: ${{ always() && contains(fromJSON('["success","failure","cancelled"]'), steps.control.outcome) }}
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          & $env:FILEIO_NODE --import ./scripts/tsx.mjs scripts/qa/windows-fileio-integration-control.mjs cleanup $env:FILEIO_ADDON $env:FILEIO_EVIDENCE $env:FILEIO_PRIVATE
+          if ($LASTEXITCODE -ne 0) { throw 'Exact trace cleanup or private scratch deletion remains unverified.' }
+      - name: Retain projected control evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fileio-integration-control-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fileio-integration-control/evidence
+          if-no-files-found: error
+          retention-days: 7

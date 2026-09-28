@@ -1,8 +1,14 @@
+import { ChildProcess } from "node:child_process";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, expect, it, vi } from "vitest";
 import * as managedCommand from "../../scripts/lib/managed-child-process.mts";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { run, type CommandRecord } from "./schtasks.installed-command.test-support.js";
+import {
+  run,
+  type CommandRecord,
+  type CompletedTerminalJsonObservation,
+} from "./schtasks.installed-command.test-support.js";
 import { installedStatusSchema } from "./schtasks.installed-package.test-support.js";
 
 const temporary = useAutoCleanupTempDirTracker(afterEach);
@@ -389,3 +395,110 @@ it("retains bounded sanitized install outcome without private response fields", 
   expect(observation).not.toContain("auth");
   expect(observation.length).toBeLessThan(11_000);
 });
+
+it.each([
+  "complete",
+  "terminal-error",
+  "terminal-skipped",
+  "nonterminal",
+  "later-bytes",
+  "stdout-truncated",
+  "stderr-truncated",
+  "incomplete",
+  "invalid",
+] as const)(
+  "observes fragmented terminal JSON before join and retains its validity (%s)",
+  async (scenario) => {
+    const child = new ChildProcess();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    child.stdout = stdout;
+    child.stderr = stderr;
+    const records: CommandRecord[] = [];
+    const facts: Array<CompletedTerminalJsonObservation | undefined> = [];
+    const callback = vi.fn((fact: CompletedTerminalJsonObservation | undefined) =>
+      facts.push(fact),
+    );
+    vi.spyOn(managedCommand, "inspectManagedProcessGroup").mockReturnValue("dead");
+    vi.spyOn(managedCommand, "runManagedCommand").mockImplementation(async ({ onReady }) => {
+      onReady?.(child);
+      if (scenario === "stdout-truncated") {
+        stdout.emit("data", Buffer.from(" ".repeat(262144)));
+      }
+      const status =
+        scenario === "terminal-error"
+          ? "error"
+          : scenario === "terminal-skipped"
+            ? "skipped"
+            : "ok";
+      const chunks =
+        scenario === "nonterminal"
+          ? ['{\n  "diagnostic": "not an update result"\n}']
+          : [
+              `{\n  "status": "${status}",\n  "mode": "npm",\n  "durationMs": 0,\n  "after": {\n    "version": "fixture"\n  }`,
+              ',\n  "steps": []',
+              scenario === "invalid" ? ',\n  "broken": undefined' : "",
+              "\n}",
+            ];
+      for (const chunk of chunks) {
+        stdout.emit("data", Buffer.from(chunk));
+        expect(callback).not.toHaveBeenCalled();
+      }
+      if (scenario !== "incomplete") {
+        stdout.emit("data", Buffer.from("\r"));
+        expect(callback).not.toHaveBeenCalled();
+        stdout.emit("data", Buffer.from("\n"));
+      }
+      const observed = [
+        "complete",
+        "terminal-error",
+        "terminal-skipped",
+        "later-bytes",
+        "stderr-truncated",
+      ].includes(scenario);
+      expect(callback).toHaveBeenCalledTimes(observed ? 1 : 0);
+      if (observed) {
+        expect(facts[0]).toMatchObject({
+          kind: "completed-terminal-JSON-observed",
+          observedAtMs: expect.any(Number),
+          stdoutRevision: expect.any(Number),
+          projection: { kind: "published-update", status, after: { version: "fixture" } },
+        });
+        expect(records).toEqual([]);
+      }
+      if (scenario === "later-bytes") {
+        stdout.emit("data", Buffer.from("\n"));
+        expect(facts[1]).toBeUndefined();
+        expect(callback).toHaveBeenCalledTimes(2);
+      } else if (scenario === "stderr-truncated") {
+        stderr.emit("data", Buffer.from("x".repeat(262145)));
+        expect(facts[1]).toBeUndefined();
+        expect(callback).toHaveBeenCalledTimes(2);
+      }
+      child.emit("exit", 0, null);
+      child.emit("close", 0, null);
+      return 0;
+    });
+    const pending = run(["fixture"], {}, ".", records, 0, undefined, {
+      commandBudget: "published-update",
+      onCompletedTerminalJson: callback,
+    });
+    if (scenario.endsWith("truncated")) {
+      await expect(pending).rejects.toThrow("Command output was truncated");
+    } else {
+      await pending;
+    }
+    if (facts[0]) {
+      expect(records[0]?.completedTerminalJson).toMatchObject({
+        fact: facts[0],
+        validAtJoin: ["complete", "terminal-error", "terminal-skipped"].includes(scenario),
+        stdoutRevisionAtJoin: facts[0].stdoutRevision + (scenario === "later-bytes" ? 1 : 0),
+      });
+      if (["complete", "terminal-error", "terminal-skipped"].includes(scenario)) {
+        expect(records[0]?.publishedUpdate).toBe(facts[0].projection);
+      }
+    } else {
+      expect(records[0]?.completedTerminalJson).toBeUndefined();
+    }
+  },
+);

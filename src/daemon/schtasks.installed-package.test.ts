@@ -15,6 +15,10 @@ import {
   parseInstalledUpdateResult,
   type InstalledTask,
 } from "./schtasks.installed-diagnostics.test-support.js";
+import {
+  createInstalledFileIoDescriptorFixture,
+  createInstalledRetirementBaselineFixture,
+} from "./schtasks.installed-fileio-fixtures.test-support.js";
 import * as installedPackage from "./schtasks.installed-package.test-support.js";
 import {
   boundedEnv,
@@ -401,12 +405,15 @@ describe("published installed update progress", () => {
     };
   }
 
+  const retirementBaseline = createInstalledRetirementBaselineFixture(invokedAt);
+
   function startUpdate(
     recordProgress = vi
       .fn<(phase: string, error?: Error) => Promise<void>>()
       .mockResolvedValue(undefined),
     observationCellDeadlineAt?: number,
-    retirementBaseline?: InstalledRetirementBaseline,
+    baseline?: InstalledRetirementBaseline,
+    fileIo?: Parameters<typeof runInstalledPublishedUpdate>[0]["fileIo"],
   ) {
     const task = installedTask();
     const command = createDeferredCore<string>();
@@ -430,7 +437,8 @@ describe("published installed update progress", () => {
       observations,
       recordProgress,
       observationCellDeadlineAt,
-      retirementBaseline,
+      retirementBaseline: baseline,
+      fileIo,
     });
     return { command, observations, pending, recordProgress };
   }
@@ -578,21 +586,6 @@ describe("published installed update progress", () => {
   });
 
   it("bounds terminal process snapshots to the current run without reporting new progress", async () => {
-    const retirementBaseline: InstalledRetirementBaseline = {
-      packageRoot: "C:\\synthetic-update\\prefix\\node_modules\\openclaw",
-      globalRoot: "C:\\synthetic-update\\prefix\\node_modules",
-      namespaceWasEmpty: true,
-      backupNamespaceBefore: [],
-      observedAtMs: invokedAt,
-      expectedAddon: {
-        relativePath: "node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
-        canonicalPath:
-          "C:\\synthetic-update\\prefix\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
-        sha256: "a".repeat(64),
-        bytes: 1_044_480,
-        fileIdentity: { device: "1", inode: "2" },
-      },
-    };
     const terminal = {
       ...recordedRun([completedStep]),
       phase: "finished" as const,
@@ -696,6 +689,81 @@ describe("published installed update progress", () => {
       "command:update",
     ]);
   });
+
+  it.each(["ready", "missing-pin", "invalidated", "different-run", "running", "late"] as const)(
+    "reserves FileIO slot two for prior identity, terminal ledger, and live stdout (%s)",
+    async (scenario) => {
+      const terminal = {
+        ...recordedRun([]),
+        phase: "finished" as const,
+        status: "succeeded" as const,
+      };
+      const reader = vi.spyOn(updateRunReader, "listUpdateRunsAsync").mockResolvedValue([terminal]);
+      const originalProcess = { pid: 1234, startTicks: "134000000000000000" };
+      const census = vi.spyOn(nativeObservation, "readRelatedProcessDiagnostics").mockReturnValue({
+        ok: true,
+        error: null,
+        truncated: false,
+        processes: [],
+        retirement: {
+          runId: terminal.runId,
+          limitation: "Diagnostic only",
+          complete: true,
+          ...(scenario === "missing-pin" ? {} : { originalProcess }),
+        },
+      });
+      const fileIo = createInstalledFileIoDescriptorFixture(retirementBaseline.globalRoot);
+      const fixture = startUpdate(undefined, undefined, retirementBaseline, fileIo);
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(census).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(census).toHaveBeenCalledTimes(1);
+      expect(census.mock.calls[0]?.[1]).not.toHaveProperty("fileIo");
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(census).toHaveBeenCalledTimes(1);
+      if (scenario === "late") {
+        await vi.advanceTimersByTimeAsync(330_000);
+        expect(census).toHaveBeenCalledTimes(1);
+      }
+      const callback = vi.mocked(installedCommand.run).mock.calls[0]?.[6]?.onCompletedTerminalJson;
+      expect(callback).toBeTypeOf("function");
+      const terminalCapture = installedCommand.createInstalledTerminalJsonCapture(
+        (value) => value,
+        callback,
+      );
+      terminalCapture.observe(
+        JSON.stringify({ status: "ok", mode: "npm", steps: [], durationMs: 0 }, null, 2) + "\n",
+        false,
+        Date.now(),
+      );
+      const fact = terminalCapture.current();
+      expect(fact).toBeDefined();
+      if (scenario === "invalidated") {
+        terminalCapture.invalidate();
+      } else if (scenario === "different-run") {
+        reader.mockResolvedValue([{ ...terminal, runId: "different-run" }]);
+      } else if (scenario === "running") {
+        reader.mockResolvedValue([{ ...terminal, phase: "verifying", status: "running" }]);
+      }
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(census).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(census).toHaveBeenCalledTimes(scenario === "ready" ? 2 : 1);
+      if (scenario === "ready") {
+        expect(census.mock.calls[1]?.[1]).toMatchObject({
+          pinnedProcess: originalProcess,
+          fileIo: {
+            ...fileIo,
+            trigger: { terminalJson: fact, ledgerObservedAtMs: invokedAt + 45_000 },
+          },
+        });
+      }
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(census).toHaveBeenCalledTimes(scenario === "ready" ? 2 : 1);
+      fixture.command.resolve(JSON.stringify(success));
+      await expect(fixture.pending).resolves.toEqual(success);
+    },
+  );
 
   it.each([
     { terminal: true, physicalMs: 480_000, secondAtMs: 450_000 },

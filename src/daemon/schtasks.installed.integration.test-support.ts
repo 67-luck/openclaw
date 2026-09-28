@@ -23,6 +23,10 @@ import {
   type InstalledTask as Task,
 } from "./schtasks.installed-diagnostics.test-support.js";
 import {
+  prepareInstalledFileIo,
+  type InstalledFileIoCommandFact,
+} from "./schtasks.installed-fileio.test-support.js";
+import {
   boundedEnv,
   cellEvidence,
   createInstalledProgressRecorder,
@@ -360,18 +364,58 @@ export async function runInstalledLifecycle(
       const { readInstalledRetirementBaseline } =
         await import("./schtasks.installed-retirement-baseline.test-support.js");
       const retirementBaseline = await readInstalledRetirementBaseline(selected);
-      observations.update = await runInstalledPublishedUpdate({
-        task: selected,
-        input,
-        inputPath,
-        key,
-        commands,
-        signal,
-        observations,
-        recordProgress,
-        observationCellDeadlineAt: cellDeadlineAt,
-        retirementBaseline,
-      });
+      const fileIoCommands: InstalledFileIoCommandFact[] = [];
+      if (key === "2026.9.3") {
+        observations.fileIoPreparation = { commands: fileIoCommands };
+      }
+      const selectedAdmission = admissions.find((admission) => admission.role === "selected");
+      assert.ok(selectedAdmission);
+      const fileIo =
+        key === "2026.9.3"
+          ? await prepareInstalledFileIo({
+              task: selected,
+              toolingSha: input.toolingSha,
+              admission: selectedAdmission,
+              persistAdmission: () =>
+                fs.writeFile(admissionPath, JSON.stringify(admissions, null, 2), { flush: true }),
+              lifetime,
+              ownedPrefix: retirementBaseline.globalRoot,
+              signal,
+              commandFacts: fileIoCommands,
+            })
+          : undefined;
+      let updateFailure: unknown;
+      try {
+        observations.update = await runInstalledPublishedUpdate({
+          task: selected,
+          input,
+          inputPath,
+          key,
+          commands,
+          signal,
+          observations,
+          recordProgress,
+          observationCellDeadlineAt: cellDeadlineAt,
+          retirementBaseline,
+          ...(fileIo ? { fileIo: fileIo.descriptor } : {}),
+        });
+      } catch (error) {
+        updateFailure = error;
+      }
+      // The update owner settles its managed command and joins observation before returning.
+      try {
+        await fileIo?.cleanup();
+      } catch (error) {
+        updateFailure = new AggregateError(
+          updateFailure ? [updateFailure, error] : [error],
+          "Installed update FileIO cleanup failed",
+        );
+      }
+      if (updateFailure) {
+        throw updateFailure instanceof Error
+          ? updateFailure
+          : new Error("Installed update failed", { cause: updateFailure });
+      }
       await prepareInstalledPackage({ ...input, installRoot });
       await recordProgress("updated-candidate:hash-verified");
       const candidateIdentity = await readInstalledBuildIdentity(

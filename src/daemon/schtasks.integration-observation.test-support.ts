@@ -1,12 +1,13 @@
 // Native task/process inspection and sanitized proof rendering.
-import { spawnSync } from "node:child_process";
+import assert from "node:assert/strict";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import os from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
-import { expect } from "vitest";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
 import { setScheduledTaskXmlEnabled } from "./schtasks-control.js";
 import { execSchtasks } from "./schtasks-exec.js";
 import { probeScheduledTaskExists } from "./schtasks-state-probe.js";
+import { readInstalledFileIoObservation } from "./schtasks.installed-fileio-observation.test-support.js";
 import {
   buildInstalledUpdateRetirementCensus,
   readInstalledUpdateRetirementObservation,
@@ -148,6 +149,24 @@ export function readTaskPrincipal(taskName: string): ScheduledTaskPrincipal {
   };
 }
 
+export function buildInstalledCensusInvocation(script: string) {
+  if (Buffer.byteLength(script, "utf8") > 1024 * 1024) {
+    throw new Error("Census input exceeds its byte bound");
+  }
+  // Framework console-codepage setters need a console; hidden children own pipes.
+  const bootstrap = [
+    "$ErrorActionPreference='Stop';",
+    "$censusReader=[IO.StreamReader]::new([Console]::OpenStandardInput(),[Text.UTF8Encoding]::new($false,$true),$false);",
+    "$censusWriter=[IO.StreamWriter]::new([Console]::OpenStandardOutput(),[Text.UTF8Encoding]::new($false));",
+    "try {$censusValue=& ([ScriptBlock]::Create($censusReader.ReadToEnd())); $censusWriter.WriteLine([string]$censusValue); $censusWriter.Flush()}",
+    "finally {$censusReader.Dispose();$censusWriter.Dispose()}",
+  ].join(" ");
+  return {
+    args: ["-NoProfile", "-NonInteractive", "-Command", bootstrap],
+    input: script,
+  };
+}
+
 export function readRelatedProcessDiagnostics(
   needles: string[],
   binding?: InstalledUpdateRetirementBinding,
@@ -157,6 +176,7 @@ export function readRelatedProcessDiagnostics(
   processes: WindowsProcessDiagnostic[];
   truncated: boolean;
   retirement?: ReturnType<typeof readInstalledUpdateRetirementObservation>;
+  fileIo?: ReturnType<typeof readInstalledFileIoObservation>;
 } {
   const script = binding
     ? buildInstalledUpdateRetirementCensus(binding)
@@ -164,22 +184,33 @@ export function readRelatedProcessDiagnostics(
         "$ErrorActionPreference='Stop'",
         "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine,UserModeTime,KernelModeTime,ReadOperationCount,WriteOperationCount,OtherOperationCount,@{Name='CreationDate';Expression={if ($_.CreationDate) {$_.CreationDate.ToUniversalTime().ToString('o')}}} | ConvertTo-Json -Compress",
       ].join("; ");
+  const invocation = buildInstalledCensusInvocation(script);
+  const result = spawnSync(
+    binding?.fileIo?.powerShellExe ?? getWindowsPowerShellExePath(),
+    invocation.args,
+    {
+      input: invocation.input,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 5_000,
+      windowsHide: true,
+    },
+  );
+  return readRelatedProcessDiagnosticsResult(result, needles, binding);
+}
+
+/** Private native output crosses this filter before any proof or command receipt. */
+export function readRelatedProcessDiagnosticsResult(
+  result: Pick<SpawnSyncReturns<string>, "error" | "status" | "stdout" | "stderr">,
+  needles: string[],
+  binding?: InstalledUpdateRetirementBinding,
+) {
   const unavailableRetirement = binding
     ? { retirement: readInstalledUpdateRetirementObservation(undefined, binding) }
     : {};
-  const result = spawnSync(
-    getWindowsPowerShellExePath(),
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-EncodedCommand",
-      Buffer.from(script, "utf16le").toString("base64"),
-    ],
-    { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 5_000, windowsHide: true },
-  );
   if (result.error) {
     return {
-      error: result.error.message,
+      error: binding?.fileIo ? "FileIO census process failed or timed out" : result.error.message,
       ok: false,
       processes: [],
       truncated: false,
@@ -188,7 +219,9 @@ export function readRelatedProcessDiagnostics(
   }
   if (result.status !== 0) {
     return {
-      error: result.stderr.trim() || `PowerShell exited ${result.status ?? "without status"}`,
+      error: binding?.fileIo
+        ? "FileIO census exited without a valid envelope"
+        : result.stderr.trim() || `PowerShell exited ${result.status ?? "without status"}`,
       ok: false,
       processes: [],
       truncated: false,
@@ -197,10 +230,13 @@ export function readRelatedProcessDiagnostics(
   }
   let parsed: unknown;
   try {
+    if (Buffer.byteLength(result.stdout) > 1024 * 1024) {
+      throw new Error("Census byte bound exceeded");
+    }
     parsed = JSON.parse(result.stdout.trim() || "[]");
-  } catch (error) {
+  } catch {
     return {
-      error: error instanceof Error ? error.message : String(error),
+      error: "Census response is invalid or exceeds its byte bound",
       ok: false,
       processes: [],
       truncated: false,
@@ -266,6 +302,14 @@ export function readRelatedProcessDiagnostics(
     processes: processes.slice(0, DIAGNOSTIC_PROCESS_LIMIT),
     truncated: processes.length > DIAGNOSTIC_PROCESS_LIMIT,
     ...(retirement ? { retirement } : {}),
+    ...(binding?.fileIo
+      ? {
+          fileIo: readInstalledFileIoObservation(
+            envelope && "fileIo" in envelope ? envelope.fileIo : undefined,
+            binding,
+          ),
+        }
+      : {}),
   };
 }
 
@@ -354,13 +398,13 @@ export function assertInteractiveLeastPrivilegeTask(params: {
   principal: ScheduledTaskPrincipal;
   taskXml: string;
 }): void {
-  expect(params.taskXml).toContain("<LogonType>InteractiveToken</LogonType>");
-  expect(params.principal.logonType).toBe(TASK_LOGON_INTERACTIVE_TOKEN);
-  expect(params.principal.runLevel).toBe(TASK_RUNLEVEL_LEAST_PRIVILEGE);
+  assert.ok(params.taskXml.includes("<LogonType>InteractiveToken</LogonType>"));
+  assert.equal(params.principal.logonType, TASK_LOGON_INTERACTIVE_TOKEN);
+  assert.equal(params.principal.runLevel, TASK_RUNLEVEL_LEAST_PRIVILEGE);
   const exportedRunLevel = params.taskXml.match(/<RunLevel>([^<]+)<\/RunLevel>/u)?.[1];
   // Task Scheduler may omit the default LeastPrivilege node when exporting XML.
   // If present, it must agree with the effective COM principal checked above.
-  expect(exportedRunLevel === undefined || exportedRunLevel === "LeastPrivilege").toBe(true);
+  assert.ok(exportedRunLevel === undefined || exportedRunLevel === "LeastPrivilege");
 }
 
 /** Wait for the service owner to report the expected native runtime and identity. */

@@ -7,6 +7,7 @@ import {
   PUBLISHED_UPDATE_ACCEPTANCE_MS,
   run,
   type CommandRecord,
+  type CompletedTerminalJsonObservation,
   type InstalledPublishedCommandStart,
 } from "./schtasks.installed-command.test-support.js";
 import {
@@ -21,6 +22,7 @@ import {
   requiredCellSpace,
 } from "./schtasks.installed-package.test-support.js";
 import type { InstalledRetirementBaseline } from "./schtasks.installed-retirement-baseline.test-support.js";
+import type { InstalledUpdateRetirementBinding } from "./schtasks.installed-retirement-observation.test-support.js";
 
 export async function runInstalledPublishedUpdate(params: {
   task: InstalledTask;
@@ -33,6 +35,7 @@ export async function runInstalledPublishedUpdate(params: {
   recordProgress: (phase: string, error?: Error) => Promise<void>;
   observationCellDeadlineAt?: number;
   retirementBaseline?: InstalledRetirementBaseline;
+  fileIo?: InstalledUpdateRetirementBinding["fileIo"];
 }) {
   const { task, input, inputPath, key, commands, signal, observations, recordProgress } = params;
   const before = await recordCapacityBoundary(inputPath, input, key, "before-published-update");
@@ -51,6 +54,7 @@ export async function runInstalledPublishedUpdate(params: {
   const completed = new Set<string>();
   let observedRunId: string | undefined;
   let commandStart: InstalledPublishedCommandStart | undefined;
+  let terminalJson: CompletedTerminalJsonObservation | undefined;
   let pinnedProcess: { pid: number; startTicks: string } | undefined;
   const expectedArgv = Object.freeze([
     task.entry,
@@ -115,7 +119,21 @@ export async function runInstalledPublishedUpdate(params: {
           reason: "Less than 15000ms remains before the physical cutoff",
         };
       }
-      if (!processObservationWindowClosed && snapshotReason && settlementProcesses.length < 2) {
+      const fileIoTrigger =
+        params.fileIo &&
+        settlementProcesses.length === 1 &&
+        pinnedProcess &&
+        terminalJson &&
+        progress.phase === "finished" &&
+        progress.status !== "running"
+          ? { terminalJson, ledgerObservedAtMs: Date.now() }
+          : undefined;
+      if (
+        !processObservationWindowClosed &&
+        snapshotReason &&
+        settlementProcesses.length < 2 &&
+        (!params.fileIo || settlementProcesses.length === 0 || fileIoTrigger)
+      ) {
         const capture = captureInstalledUpdateProcesses(
           task,
           [task.profile, packageRoot(task.installRoot)],
@@ -134,10 +152,15 @@ export async function runInstalledPublishedUpdate(params: {
                 namespaceWasEmpty: params.retirementBaseline.namespaceWasEmpty,
                 expectedAddon: params.retirementBaseline.expectedAddon,
                 pinnedProcess,
+                ...(fileIoTrigger ? { fileIo: { ...params.fileIo!, trigger: fileIoTrigger } } : {}),
               }
             : undefined,
         );
-        if ("retirement" in capture && capture.retirement?.originalProcess) {
+        if (
+          settlementProcesses.length === 0 &&
+          "retirement" in capture &&
+          capture.retirement?.originalProcess
+        ) {
           pinnedProcess ??= capture.retirement.originalProcess;
         }
         if (params.retirementBaseline && !commandStart) {
@@ -199,6 +222,13 @@ export async function runInstalledPublishedUpdate(params: {
     output = await run([...expectedArgv], task.env, task.rootDir, commands, 0, signal, {
       commandBudget: "published-update",
       physicalObservationLimitMs,
+      ...(params.fileIo
+        ? {
+            onCompletedTerminalJson: (fact: CompletedTerminalJsonObservation | undefined) => {
+              terminalJson = fact;
+            },
+          }
+        : {}),
       ...(params.retirementBaseline
         ? {
             onStarted: (facts: InstalledPublishedCommandStart) => {

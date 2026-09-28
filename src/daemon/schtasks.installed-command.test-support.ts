@@ -41,32 +41,58 @@ export function captureInstalledUpdateProcesses(
     reason,
     capturedAtMs: Date.now(),
   };
-  const safeText = (value: string) => redactSupportString(value, context, { maxLength: 2_000 });
   try {
     const capture = retirementBinding
       ? readRelatedProcessDiagnostics(needles, retirementBinding)
       : readRelatedProcessDiagnostics(needles);
-    return {
-      ...sample,
-      ok: capture.ok,
-      truncated: capture.truncated,
-      ...(capture.error ? { unavailable: safeText(capture.error) } : {}),
-      ...(capture.retirement ? { retirement: capture.retirement } : {}),
-      processes: capture.processes.map((process) => ({
-        pid: process.ProcessId,
-        parentPid: process.ParentProcessId,
-        createdAt: process.CreationDate,
-        userModeTime100ns: process.UserModeTime,
-        kernelModeTime100ns: process.KernelModeTime,
-        readOperationCount: process.ReadOperationCount,
-        writeOperationCount: process.WriteOperationCount,
-        otherOperationCount: process.OtherOperationCount,
-        commandLine: process.CommandLine ? safeText(process.CommandLine) : null,
-      })),
-    };
+    return { ...sample, ...projectInstalledUpdateProcessCapture(context, capture) };
   } catch {
     return { ...sample, unavailable: "Process observation could not be read" };
   }
+}
+
+/** All native consumers retain this selected projection, never the host-wide envelope. */
+export function projectInstalledUpdateProcessCapture(
+  context: SupportRedactionContext,
+  capture: ReturnType<typeof readRelatedProcessDiagnostics>,
+) {
+  const safeText = (value: string) => redactSupportString(value, context, { maxLength: 2_000 });
+  const retirement = capture.retirement;
+  return {
+    ok: capture.ok,
+    truncated: capture.truncated,
+    ...(capture.error ? { unavailable: safeText(capture.error) } : {}),
+    ...(retirement
+      ? {
+          retirement: {
+            ...retirement,
+            moduleReportedPaths: retirement.moduleReportedPaths?.map(safeText),
+            moduleComparisonKeys: retirement.moduleComparisonKeys?.map(safeText),
+            expectedAddon: retirement.expectedAddon
+              ? {
+                  ...retirement.expectedAddon,
+                  canonicalPath: safeText(retirement.expectedAddon.canonicalPath),
+                }
+              : undefined,
+            backups: retirement.backups?.map((backup) =>
+              Object.assign({}, backup, { root: safeText(backup.root) }),
+            ),
+          },
+        }
+      : {}),
+    ...(capture.fileIo ? { fileIo: capture.fileIo } : {}),
+    processes: capture.processes.map((process) => ({
+      pid: process.ProcessId,
+      parentPid: process.ParentProcessId,
+      createdAt: process.CreationDate,
+      userModeTime100ns: process.UserModeTime,
+      kernelModeTime100ns: process.KernelModeTime,
+      readOperationCount: process.ReadOperationCount,
+      writeOperationCount: process.WriteOperationCount,
+      otherOperationCount: process.OtherOperationCount,
+      commandLine: process.CommandLine ? safeText(process.CommandLine) : null,
+    })),
+  };
 }
 
 function captureCommandOutput(
@@ -74,6 +100,7 @@ function captureCommandOutput(
   stdout: string,
   truncated: boolean,
   diagnostic: (value: string) => string,
+  requireTerminalResult = false,
 ) {
   if (truncated) {
     return { kind, unavailable: "capture limit exceeded; output withheld" };
@@ -86,6 +113,20 @@ function captureCommandOutput(
   }
   if (!value) {
     return { kind, unavailable: "response is not a JSON object" };
+  }
+  // Live terminal admission uses the published UpdateRunResult shape; final
+  // command diagnostics still retain useful partial error responses.
+  if (
+    requireTerminalResult &&
+    (typeof value.status !== "string" ||
+      !["ok", "error", "skipped"].includes(value.status) ||
+      typeof value.mode !== "string" ||
+      !["git", "pnpm", "bun", "npm", "unknown"].includes(value.mode) ||
+      !Array.isArray(value.steps) ||
+      typeof value.durationMs !== "number" ||
+      !Number.isFinite(value.durationMs))
+  ) {
+    return { kind, unavailable: "response is not a terminal update result" };
   }
   // Only these fixed diagnostic fields may cross into retained evidence, never config/auth/argv.
   const fields = (input: unknown, keys: string[]) => {
@@ -181,6 +222,81 @@ function captureCommandOutput(
   };
 }
 
+export type CompletedTerminalJsonObservation = Readonly<{
+  kind: "completed-terminal-JSON-observed";
+  stdoutRevision: number;
+  observedAtMs: number;
+  projection: ReturnType<typeof captureCommandOutput>;
+}>;
+
+export function createInstalledTerminalJsonCapture(
+  diagnostic: (value: string) => string,
+  onChange?: (fact: CompletedTerminalJsonObservation | undefined) => void,
+) {
+  let stdoutRevision = 0;
+  let examined = false;
+  let fact: CompletedTerminalJsonObservation | undefined;
+  let valid = false;
+  const invalidate = () => {
+    if (valid) {
+      valid = false;
+      onChange?.(undefined);
+    }
+  };
+  return {
+    // Call once per nonempty stdout chunk, after the caller bounds its accumulated capture.
+    observe(stdout: string, truncated: boolean, observedAtMs: number) {
+      stdoutRevision++;
+      invalidate();
+      // The published writer emits an unindented root closing line plus newline.
+      // Inspect only the bounded suffix; nested closing lines are indented.
+      if (!examined && !truncated && /\n\}\r?\n$/u.test(stdout.slice(-4))) {
+        examined = true;
+        const projection = captureCommandOutput(
+          "published-update",
+          stdout,
+          false,
+          diagnostic,
+          true,
+        );
+        if (!("unavailable" in projection)) {
+          fact = Object.freeze({
+            kind: "completed-terminal-JSON-observed",
+            stdoutRevision,
+            observedAtMs,
+            projection,
+          });
+          valid = true;
+          onChange?.(fact);
+        }
+      }
+    },
+    // A different stream can exhaust the command's shared capture limit.
+    invalidate,
+    current: () => (valid ? fact : undefined),
+    final(stdout: string, truncated: boolean) {
+      if (truncated) {
+        invalidate();
+      }
+      return {
+        publishedUpdate:
+          valid && fact?.stdoutRevision === stdoutRevision
+            ? fact.projection
+            : captureCommandOutput("published-update", stdout, truncated, diagnostic),
+        ...(fact
+          ? {
+              completedTerminalJson: {
+                fact,
+                validAtJoin: valid,
+                stdoutRevisionAtJoin: stdoutRevision,
+              },
+            }
+          : {}),
+      };
+    },
+  };
+}
+
 type CommandSettlement = {
   startedAtMs: number;
   observedAtMs?: number;
@@ -210,6 +326,11 @@ export type CommandRecord = {
   failureOutput?: { stdout: string; stderr: string; captureTruncated: boolean };
   serviceOutput?: ReturnType<typeof captureCommandOutput>;
   publishedUpdate?: ReturnType<typeof captureCommandOutput>;
+  completedTerminalJson?: {
+    fact: CompletedTerminalJsonObservation;
+    validAtJoin: boolean;
+    stdoutRevisionAtJoin: number;
+  };
 };
 export async function run(
   args: string[],
@@ -224,6 +345,7 @@ export async function run(
     commandBudget?: "published-update";
     physicalObservationLimitMs?: number;
     onStarted?: (facts: InstalledPublishedCommandStart) => void;
+    onCompletedTerminalJson?: (fact: CompletedTerminalJsonObservation | undefined) => void;
   } = {},
 ) {
   const { expectedStderr = [], observeService } = options;
@@ -246,6 +368,25 @@ export async function run(
   let stdout = "";
   let stderr = "";
   let truncated = false;
+  const redaction = { env, stateDir: env.OPENCLAW_STATE_DIR ?? cwd };
+  const diagnostic = (value: string) => {
+    // A truncated capture may have lost the field name needed for redaction.
+    if (truncated) {
+      return "[output withheld: capture limit exceeded]";
+    }
+    const normalized = stripAnsi(value)
+      .split(/\r\n|[\r\n]/u)
+      .map((line) => sanitizeForLog(line.replaceAll("\t", " ")))
+      .join("\n");
+    return formatCommandOutput(
+      redactSupportString(normalized, redaction, { maxLength: Number.MAX_SAFE_INTEGER }),
+      2_000,
+    );
+  };
+  const terminalJsonCapture =
+    options.commandBudget === "published-update" && options.onCompletedTerminalJson
+      ? createInstalledTerminalJsonCapture(diagnostic, options.onCompletedTerminalJson)
+      : undefined;
   let code: number | null = null;
   let exitSignal: NodeJS.Signals | null = null;
   let beforeCleanup: ReturnType<typeof inspectManagedProcessGroup> | undefined;
@@ -314,6 +455,9 @@ export async function run(
             truncated = true;
             stdout = stdout.slice(-262144);
           }
+          if (chunk.length > 0) {
+            terminalJsonCapture?.observe(stdout, truncated, Date.now());
+          }
         });
         launched.stderr?.on("data", (chunk: Buffer) => {
           if (settlement) {
@@ -323,6 +467,7 @@ export async function run(
           if (stderr.length > 262144) {
             truncated = true;
             stderr = stderr.slice(-262144);
+            terminalJsonCapture?.invalidate();
           }
         });
         launched.once("exit", (exitCode, receivedSignal) => {
@@ -374,21 +519,6 @@ export async function run(
     code !== expectedExit ||
     result !== expectedExit ||
     !stderrMatches;
-  const redaction = { env, stateDir: env.OPENCLAW_STATE_DIR ?? cwd };
-  const diagnostic = (value: string) => {
-    // A truncated capture may have lost the field name needed for redaction.
-    if (truncated) {
-      return "[output withheld: capture limit exceeded]";
-    }
-    const normalized = stripAnsi(value)
-      .split(/\r\n|[\r\n]/u)
-      .map((line) => sanitizeForLog(line.replaceAll("\t", " ")))
-      .join("\n");
-    return formatCommandOutput(
-      redactSupportString(normalized, redaction, { maxLength: Number.MAX_SAFE_INTEGER }),
-      2_000,
-    );
-  };
   const failureOutput = failed
     ? {
         stdout: diagnostic(stdout),
@@ -411,7 +541,9 @@ export async function run(
       ? { serviceOutput: captureCommandOutput(observeService, stdout, truncated, diagnostic) }
       : {}),
     ...(options.commandBudget === "published-update"
-      ? { publishedUpdate: captureCommandOutput("published-update", stdout, truncated, diagnostic) }
+      ? (terminalJsonCapture?.final(stdout, truncated) ?? {
+          publishedUpdate: captureCommandOutput("published-update", stdout, truncated, diagnostic),
+        })
       : {}),
   });
   if (child && afterCleanup !== "dead") {

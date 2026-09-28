@@ -1,6 +1,34 @@
 import path from "node:path";
 import { z } from "zod";
 import { parseCmdScriptCommandLine } from "./cmd-argv.js";
+import type { CompletedTerminalJsonObservation } from "./schtasks.installed-command.test-support.js";
+
+export type InstalledFileIoDescriptor = Readonly<{
+  privateRoot: string;
+  receiptPath: string;
+  expectedGuid: string;
+  dllPath: string;
+  dllSha256: string;
+  sourceSha256: string;
+  schemaSha256: string;
+  helperSha256: string;
+  helperPath: string;
+  factsPath: string;
+  factsSha256: string;
+  powerShellExe: string;
+  ownedPrefix: string;
+  runtime: Readonly<{
+    executable: string;
+    psVersion: string;
+    edition: "Desktop";
+    clrVersion: string;
+    is64BitProcess: true;
+  }>;
+  trigger?: Readonly<{
+    terminalJson: CompletedTerminalJsonObservation;
+    ledgerObservedAtMs: number;
+  }>;
+}>;
 
 export type InstalledUpdateRetirementBinding = Readonly<{
   launcherPid: number;
@@ -23,6 +51,7 @@ export type InstalledUpdateRetirementBinding = Readonly<{
     bytes: number;
   }>;
   pinnedProcess?: Readonly<{ pid: number; startTicks: string }>;
+  fileIo?: InstalledFileIoDescriptor;
 }>;
 
 const limitation =
@@ -326,6 +355,7 @@ function Read-Backup([string]$root,[hashtable]$bounds,[string]$kind) {
   }
   return $result
 }
+$collectRetirement={
 try {
   Check-Budget
   $command=@($all | Where-Object {$_.ProcessId -eq $binding.commandPid})
@@ -414,6 +444,51 @@ try {
   }
 } catch {$retirement.unavailable='retirement-observation-unavailable:' + (Get-FailureReason $_)}
 $retirement.finishedAtMs=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-@{processes=$rows;retirement=$retirement} | ConvertTo-Json -Depth 12 -Compress
+}
+$fileIo=$null
+$workState=@{started=$false}
+$observeWork={ $workState.started=$true; & $collectRetirement }
+if($binding.fileIo) {
+  try {
+    Check-Budget 4500
+    $trace=$binding.fileIo
+    if(-not $binding.pinnedProcess -or -not $trace.trigger -or
+      $trace.trigger.terminalJson.kind -cne 'completed-terminal-JSON-observed' -or
+      [long]$trace.trigger.terminalJson.observedAtMs -ge $startedAtMs -or
+      [long]$trace.trigger.ledgerObservedAtMs -gt $startedAtMs){throw 'fileio-trigger-unavailable'}
+    if([IO.Path]::GetFullPath([string]$trace.ownedPrefix) -ine [IO.Path]::GetFullPath([string]$binding.globalRoot)){
+      throw 'fileio-prefix-mismatch'
+    }
+    $runtimeProcess=[Diagnostics.Process]::GetCurrentProcess()
+    try {
+      if([string]$trace.runtime.executable -ine $runtimeProcess.MainModule.FileName -or
+        [string]$trace.powerShellExe -ine $runtimeProcess.MainModule.FileName -or
+        [string]$trace.runtime.psVersion -cne $PSVersionTable.PSVersion.ToString() -or
+        [string]$trace.runtime.edition -cne $PSVersionTable.PSEdition -or
+        [string]$trace.runtime.clrVersion -cne [Environment]::Version.ToString() -or
+        $trace.runtime.is64BitProcess -ne $true -or -not [Environment]::Is64BitProcess){throw 'fileio-runtime-mismatch'}
+    } finally {$runtimeProcess.Dispose()}
+    foreach($source in @(@($trace.helperPath,$trace.helperSha256),@($trace.factsPath,$trace.factsSha256))) {
+      Check-Budget 4500
+      if(Is-Reparse ([string]$source[0])){throw 'fileio-source-redirect'}
+      if((Get-Item -LiteralPath $source[0]).Length -gt 2097152 -or
+        (Get-FileHash -LiteralPath $source[0] -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$source[1]){
+        throw 'fileio-source-mismatch'
+      }
+    }
+    . ([string]$trace.helperPath)
+    $observationArguments=@{
+      ReceiptPath=$trace.receiptPath;ExpectedGuid=$trace.expectedGuid;
+      TargetProcessId=$binding.pinnedProcess.pid;NativeStartFileTime=$binding.pinnedProcess.startTicks;
+      OwnedPrefix=$trace.ownedPrefix;ObservationClock=$watch;ObserveWork=$observeWork;
+      ExpectedDllSha256=$trace.dllSha256;ExpectedSourceSha256=$trace.sourceSha256;
+      ExpectedSchemaSha256=$trace.schemaSha256;ExpectedHelperSha256=$trace.helperSha256;ExpectedFactsSha256=$trace.factsSha256
+    }
+    $fileIo=Invoke-OwnedFileTraceOperation -Mode observe @observationArguments
+  } catch {$fileIo=@{unavailable='fileio-binding-or-observation-unavailable'}}
+}
+# Refused FileIO admission must not replace the original module/residual observation.
+if(-not $workState.started){$null=& $observeWork}
+@{processes=$rows;retirement=$retirement;fileIo=$fileIo} | ConvertTo-Json -Depth 12 -Compress
 `;
 }
