@@ -250,7 +250,7 @@ try {
   evidence.activeLabel = "root-write";
   evidence.activeStage = "prepare-config";
   await writeJson(includePath, { seamColor: "#112233" });
-  config.gateway.reload = { ...config.gateway.reload, mode: "hot" };
+  config.gateway.reload = { ...config.gateway.reload, mode: "hybrid" };
   config.ui = { ...config.ui, $include: `./${path.basename(includePath)}` };
   delete config.ui.seamColor;
   config.ui.prefs = { ...config.ui.prefs, locale: "en" };
@@ -258,7 +258,7 @@ try {
     "root-write",
     "gateway.reload.mode",
     () => writeJson(configPath, config),
-    (current) => current.gateway.reload.mode === "hot" && current.ui.seamColor === "#112233",
+    (current) => current.gateway.reload.mode === "hybrid" && current.ui.seamColor === "#112233",
   );
 
   config.ui.prefs = { ...config.ui.prefs, locale: "en-US" };
