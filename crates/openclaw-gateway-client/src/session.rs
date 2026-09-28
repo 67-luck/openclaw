@@ -166,6 +166,9 @@ impl GatewayClientConfig {
         self
     }
 
+    /// Bound each RPC lane independently: application, delivery, and streaming.
+    /// Keepalive has one additional slot, so at most `3 * maximum + 1` requests
+    /// can be queued or awaiting responses across the session.
     #[must_use]
     pub fn max_in_flight(mut self, maximum: usize) -> Self {
         self.max_in_flight = maximum;
@@ -601,9 +604,9 @@ where
     // timeout cannot overtake its request. Each request carries its
     // semaphore permit through the session task, bounding queued and
     // pending requests even if the caller drops its future.
-    // Keep one command slot available for cancellation when every RPC slot is
-    // occupied by a caller-owned request.
-    let command_capacity = config.max_in_flight.max(1).saturating_add(1);
+    // Preserve each lane's concurrency and one spare cancellation enqueue slot.
+    let lane_capacity = config.max_in_flight.max(1);
+    let command_capacity = lane_capacity.saturating_mul(3).saturating_add(1);
     let (command_tx, command_rx) = mpsc::channel(command_capacity);
     let (control_tx, control_rx) = mpsc::channel(1);
     let events = Arc::new(EventHub::new(
@@ -639,8 +642,10 @@ where
         close_tx,
         next_request_id: Arc::new(AtomicU64::new(1)),
         request_timeout: config.request_timeout,
-        in_flight: Arc::new(Semaphore::new(config.max_in_flight.max(1))),
+        in_flight: Arc::new(Semaphore::new(lane_capacity)),
         control_in_flight: Arc::new(Semaphore::new(1)),
+        delivery_in_flight: Arc::new(Semaphore::new(lane_capacity)),
+        streaming_in_flight: Arc::new(Semaphore::new(lane_capacity)),
     })
 }
 
@@ -710,6 +715,13 @@ async fn connect_with_certificate_policy(
     .map_err(|error| classify_connect_error(error, true))
 }
 
+#[derive(Clone, Copy)]
+enum RequestLane {
+    Application,
+    Delivery,
+    Streaming,
+}
+
 #[derive(Clone)]
 pub struct GatewaySession {
     hello: Value,
@@ -724,6 +736,8 @@ pub struct GatewaySession {
     request_timeout: Duration,
     in_flight: Arc<Semaphore>,
     control_in_flight: Arc<Semaphore>,
+    delivery_in_flight: Arc<Semaphore>,
+    streaming_in_flight: Arc<Semaphore>,
 }
 
 impl GatewaySession {
@@ -795,6 +809,7 @@ impl GatewaySession {
             params,
             Some(Instant::now() + self.request_timeout),
             None,
+            RequestLane::Application,
         )
         .await
     }
@@ -822,6 +837,7 @@ impl GatewaySession {
                 dispatch.enqueue();
                 Ok(())
             })),
+            RequestLane::Application,
         )
         .await
     }
@@ -846,8 +862,14 @@ impl GatewaySession {
             + Send
             + 'static,
     {
-        self.request_inner(method.into(), params, Some(deadline), Some(Box::new(guard)))
-            .await
+        self.request_inner(
+            method.into(),
+            params,
+            Some(deadline),
+            Some(Box::new(guard)),
+            RequestLane::Application,
+        )
+        .await
     }
 
     /// Send a request whose lifetime is owned by the caller instead of the default deadline.
@@ -857,7 +879,48 @@ impl GatewaySession {
         method: impl Into<String>,
         params: Value,
     ) -> Result<Value, ClientError> {
-        self.request_inner(method.into(), params, None, None).await
+        self.request_inner(method.into(), params, None, None, RequestLane::Application)
+            .await
+    }
+
+    /// Deliver terminal work using its reserved RPC capacity, independent of
+    /// ordinary requests and streaming updates. The normal deadline and cancellation rules apply.
+    pub async fn request_delivery(
+        &self,
+        method: impl Into<String>,
+        params: Value,
+    ) -> Result<Value, ClientError> {
+        self.request_inner(
+            method.into(),
+            params,
+            Some(Instant::now() + self.request_timeout),
+            None,
+            RequestLane::Delivery,
+        )
+        .await
+    }
+
+    /// Send a streaming update using its reserved RPC capacity. The synchronous guard
+    /// revalidates its owner after capacity/write waits, immediately at enqueue.
+    pub async fn request_streaming<G>(
+        &self,
+        method: impl Into<String>,
+        params: Value,
+        guard: G,
+    ) -> Result<Value, ClientError>
+    where
+        G: for<'a> FnOnce(&mut DispatchContext<'a>) -> Result<(), DispatchRejection>
+            + Send
+            + 'static,
+    {
+        self.request_inner(
+            method.into(),
+            params,
+            Some(Instant::now() + self.request_timeout),
+            Some(Box::new(guard)),
+            RequestLane::Streaming,
+        )
+        .await
     }
 
     async fn request_inner(
@@ -866,13 +929,19 @@ impl GatewaySession {
         params: Value,
         deadline: Option<Instant>,
         guard: Option<DispatchGuard>,
+        lane: RequestLane,
     ) -> Result<Value, ClientError> {
         if method.is_empty() {
             return Err(ClientError::InvalidFrame(
                 "request method must not be empty".into(),
             ));
         }
-        let permit = before_deadline(deadline, self.in_flight.clone().acquire_owned())
+        let capacity = match lane {
+            RequestLane::Application => &self.in_flight,
+            RequestLane::Delivery => &self.delivery_in_flight,
+            RequestLane::Streaming => &self.streaming_in_flight,
+        };
+        let permit = before_deadline(deadline, capacity.clone().acquire_owned())
             .await
             .map_err(|_| ClientError::RequestTimeout(method.clone()))?
             .map_err(|_| self.closed_error())?;
@@ -1638,8 +1707,10 @@ mod tests {
                 &self,
                 _: crate::WebSocketRequest<()>,
                 _: usize,
-            ) -> Pin<Box<dyn Future<Output = Result<Box<dyn GatewayWebSocket>, ClientError>> + Send>>
-            {
+            ) -> futures_util::future::BoxFuture<
+                'static,
+                Result<Box<dyn GatewayWebSocket>, ClientError>,
+            > {
                 panic!("mixed trust ownership must be rejected before connecting");
             }
         }

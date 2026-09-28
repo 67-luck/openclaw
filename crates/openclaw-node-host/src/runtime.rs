@@ -47,7 +47,7 @@ pub struct CancellationToken {
 }
 
 impl CancellationToken {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (sender, _receiver) = watch::channel(false);
         Self {
             sender: Arc::new(sender),
@@ -71,6 +71,17 @@ impl CancellationToken {
                 return;
             }
         }
+    }
+
+    pub(crate) fn while_active(&self, action: impl FnOnce()) -> bool {
+        // Keep the watch read lease through enqueue so cancellation cannot retire
+        // the invocation between the last authority check and the wire write.
+        let cancelled = self.sender.borrow();
+        if *cancelled {
+            return false;
+        }
+        action();
+        true
     }
 
     pub(crate) fn cancel(&self) {

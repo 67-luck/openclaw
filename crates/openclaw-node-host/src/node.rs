@@ -940,7 +940,26 @@ impl NodeSession {
             return Err(ClientError::NotActivated);
         }
         let params = invocation_result_params(invocation, result)?;
-        self.request("node.invoke.result", params).await.map(|_| ())
+        self.gateway
+            .request_delivery("node.invoke.result", params)
+            .await
+            .map(|_| ())
+            .map_err(map_gateway_error)
+    }
+
+    pub(crate) async fn progress<G>(&self, params: Value, guard: G) -> Result<(), ClientError>
+    where
+        G: for<'a> FnOnce(
+                &mut openclaw_gateway_client::DispatchContext<'a>,
+            ) -> Result<(), openclaw_gateway_client::DispatchRejection>
+            + Send
+            + 'static,
+    {
+        self.gateway
+            .request_streaming("node.invoke.progress", params, guard)
+            .await
+            .map(|_| ())
+            .map_err(map_gateway_error)
     }
 
     /// Send a correlated Gateway request.
@@ -1048,9 +1067,7 @@ fn map_gateway_error(error: GatewayClientError) -> ClientError {
             retry_after_ms,
         },
         GatewayClientError::RequestTimeout(method) => ClientError::RequestTimeout(method),
-        GatewayClientError::DispatchRejected(_) => {
-            unreachable!("node client only issues unguarded Gateway requests")
-        }
+        GatewayClientError::DispatchRejected(reason) => ClientError::Closed(reason),
         GatewayClientError::WriteTimeout(operation) => ClientError::WriteTimeout(operation),
         GatewayClientError::Closed(error) => ClientError::Closed(error),
         GatewayClientError::InvalidFrame(error) => ClientError::InvalidFrame(error),

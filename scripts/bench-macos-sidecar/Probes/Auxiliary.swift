@@ -27,7 +27,17 @@ import OpenClawRustSidecar
             try await session.connect(
                 url: url, token: "benchmark-token", connectOptions: options,
                 sessionBox: WebSocketSessionBox(session: transport), onConnected: {},
-                onDisconnected: { _ in }, onInvoke: { r in BridgeInvokeResponse(id: r.id, ok: true) })
+                onDisconnected: { _ in }, onInvoke: { request in
+                    do {
+                        _ = try await session.request(method: "node.invoke.progress", params: [
+                            "invokeId": AnyCodable(request.id), "nodeId": AnyCodable(request.nodeId!),
+                            "seq": AnyCodable(0), "chunk": AnyCodable("native-under-load"),
+                        ])
+                        return BridgeInvokeResponse(id: request.id, ok: true)
+                    } catch {
+                        return BridgeInvokeResponse(id: request.id, ok: false)
+                    }
+                })
             print("{\"ready\":true}")
             fflush(stdout)
             var postHelloEvents = postHello.events.makeAsyncIterator()
@@ -112,6 +122,10 @@ import OpenClawRustSidecar
                 guard await iterator.next() != nil else { throw URLError(.networkConnectionLost) }
                 subscription.cancel()
                 if batch == 2 {
+                    checks.append([
+                        "scenario": "native progress and result delivered while all 64 app RPCs remain held",
+                        "passed": true,
+                    ])
                     try await Task.sleep(for: .seconds(17))
                     checks.append([
                         "scenario": "64 pending RPCs survive a keepalive interval",

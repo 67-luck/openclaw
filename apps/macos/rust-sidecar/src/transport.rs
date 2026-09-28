@@ -203,7 +203,8 @@ impl GatewayWebSocketConnector for NativeConnector {
         &self,
         _: WebSocketRequest<()>,
         _: usize,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn GatewayWebSocket>, ClientError>> + Send>> {
+    ) -> futures_util::future::BoxFuture<'static, Result<Box<dyn GatewayWebSocket>, ClientError>>
+    {
         let socket = self.0.lock().unwrap().take();
         Box::pin(async move {
             socket

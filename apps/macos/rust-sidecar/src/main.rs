@@ -29,6 +29,13 @@ const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 type Failure = Box<dyn Error + Send + Sync>;
 type RequestResult = (Option<String>, Result<(), mpsc::error::SendError<Value>>);
+type RequestHandles = HashMap<String, (tokio::task::AbortHandle, RequestKind)>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RequestKind {
+    Application,
+    Progress,
+}
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
@@ -135,7 +142,10 @@ async fn run() -> Result<(), Failure> {
     }
     let max_in_flight = negotiated.limits.max_in_flight;
     let channel = Arc::new(Mutex::new(channel));
-    let (incoming_tx, incoming) = mpsc::channel::<SupervisorMessage>(usize::from(MAX_IN_FLIGHT));
+    // Application and progress tasks each own max_in_flight slots; their bursts
+    // must fit without blocking transport receipts on the reader task.
+    let (incoming_tx, incoming) =
+        mpsc::channel::<SupervisorMessage>(usize::from(max_in_flight) * 2);
     let (transport_outgoing, mut transport_writes) = mpsc::channel(1);
     let (transport_receipts, mut receipt_writes) = mpsc::channel(1);
     let (transport, transport_input) =
@@ -329,7 +339,7 @@ async fn run_gateway(
     let _runtime_lifetime = AbortTaskOnDrop(runtime_task.abort_handle());
     let mut requests = JoinSet::new();
     let mut controls = JoinSet::new();
-    let mut request_handles = HashMap::<String, tokio::task::AbortHandle>::new();
+    let mut request_handles = RequestHandles::new();
     loop {
         tokio::select! {
             event = events.recv() => {
@@ -360,7 +370,10 @@ async fn run_gateway(
                             // CommandRuntime owns the actual Gateway result and delivery failure.
                             continue;
                         }
-                        if requests.len() >= usize::from(max_in_flight) || request_handles.contains_key(&frame.id) {
+                        // Progress belongs to active native invocations, not the unrelated app
+                        // RPC budget. Both task classes remain independently bounded.
+                        let kind = if frame.method == "node.invoke.progress" { RequestKind::Progress } else { RequestKind::Application };
+                        if request_handles.values().filter(|(_, active)| *active == kind).count() >= usize::from(max_in_flight) || request_handles.contains_key(&frame.id) {
                             return Err("request capacity or identity conflict".into());
                         }
                         let session = session.clone();
@@ -368,7 +381,7 @@ async fn run_gateway(
                         let native = Arc::clone(&native);
                         let id = frame.id.clone();
                         let handle = requests.spawn(async move {
-                            let result = if frame.method == "node.invoke.progress" {
+                            let result = if kind == RequestKind::Progress {
                                 native.progress(&frame.params).await.map(|()| json!({}))
                             } else if caller_owns_lifetime {
                                 session.request_until_cancelled(frame.method, frame.params).await
@@ -381,10 +394,10 @@ async fn run_gateway(
                             };
                             (Some(frame.id), outgoing.send(json!({"type":"frame","frame":response})).await)
                         });
-                        request_handles.insert(id, handle);
+                        request_handles.insert(id, (handle, kind));
                     }
                     Some(SupervisorMessage::CancelRequest { id }) => {
-                        if let Some(handle) = request_handles.get(&id) {
+                        if let Some((handle, _)) = request_handles.get(&id) {
                             handle.abort();
                             // Retire the actual RPC future before admitting a replacement;
                             // removing its identity alone would leave its request permit alive.
@@ -439,7 +452,7 @@ async fn run_gateway(
 
 fn finish_request(
     completed: Result<RequestResult, tokio::task::JoinError>,
-    handles: &mut HashMap<String, tokio::task::AbortHandle>,
+    handles: &mut RequestHandles,
 ) -> Result<(), Failure> {
     match completed {
         Ok((id, result)) => {
@@ -449,7 +462,7 @@ fn finish_request(
             result?;
         }
         Err(error) if error.is_cancelled() => {
-            handles.retain(|_, handle| handle.id() != error.id());
+            handles.retain(|_, (handle, _)| handle.id() != error.id());
         }
         Err(error) => return Err(error.into()),
     }

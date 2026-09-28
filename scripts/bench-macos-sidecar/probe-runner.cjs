@@ -38,6 +38,7 @@ async function run(pinMode) {
   let connectCount = 0;
   const batchCounts = new Map();
   const echoedBatches = [];
+  const nativeCapacity = { progress: false, result: false };
   const timers = [];
   if (kind === "tls") {
     const der = fs.readFileSync(fixtureDir + "/localhost.der");
@@ -114,12 +115,34 @@ async function run(pinMode) {
           const batch = f.params.batch;
           const count = (batchCounts.get(batch) || 0) + 1;
           batchCounts.set(batch, count);
-          if (count === 64) {
+          if (count === 64 && batch === 2) {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "node.invoke.request",
+                payload: {
+                  id: "native-capacity",
+                  nodeId: "probe-node",
+                  command: "benchmark.echo",
+                  timeoutMs: 10000,
+                },
+              }),
+            );
+          } else if (count === 64) {
             ws.send(
               JSON.stringify({ type: "event", event: "benchmark.batch-ready", payload: { batch } }),
             );
           }
         }
+      } else if (f.method === "node.invoke.progress" && f.params.invokeId === "native-capacity") {
+        nativeCapacity.progress = f.params.chunk === "native-under-load";
+        reply({});
+      } else if (f.method === "node.invoke.result" && f.params.id === "native-capacity") {
+        nativeCapacity.result = f.params.ok === true && nativeCapacity.progress;
+        reply({});
+        ws.send(
+          JSON.stringify({ type: "event", event: "benchmark.batch-ready", payload: { batch: 2 } }),
+        );
       } else {
         if (f.method === "benchmark.echo") {
           echoedBatches.push(f.params?.batch);
@@ -189,6 +212,9 @@ async function run(pinMode) {
     result = rows.at(-1);
     if (!result) {
       throw new Error("no result: " + stderr);
+    }
+    if (kind === "aux" && batchCounts.has(2) && !nativeCapacity.result) {
+      throw new Error("native progress/result failed while application RPC capacity was full");
     }
     if (kind === "aux" && (!result.passed || connectCount !== 1)) {
       throw new Error("auxiliary probe failed: " + JSON.stringify(result));
@@ -293,6 +319,7 @@ async function run(pinMode) {
       connectCount,
       admittedNeverRequestsByBatch: Object.fromEntries(batchCounts),
       echoedBatches,
+      nativeCapacity,
       cleanup: { observedPIDs: [...owned], forcedPIDs: forced, remainingPIDs: remaining },
       stderr,
     };

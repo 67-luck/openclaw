@@ -1324,3 +1324,160 @@ where
     let message = socket.next().await.unwrap().unwrap();
     serde_json::from_str(message.into_text().unwrap().as_str()).unwrap()
 }
+
+#[tokio::test]
+async fn delivery_streaming_and_ping_reserve_bounded_independent_capacity() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    for capacity in [1, 2] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (seen_tx, mut seen_rx) = tokio::sync::mpsc::channel(3);
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(tcp).await.unwrap();
+            send_json(
+                &mut socket,
+                json!({"type":"event","event":"connect.challenge",
+            "payload":{"nonce":"capacity","ts":1700000000000_u64}}),
+            )
+            .await;
+            let connect = receive_json(&mut socket).await;
+            send_json(
+                &mut socket,
+                json!({"type":"res","id":connect["id"],"ok":true,
+            "payload":{"type":"hello-ok","protocol":4}}),
+            )
+            .await;
+            while let Some(message) = socket.next().await {
+                match message.unwrap() {
+                    Message::Ping(payload) => socket.send(Message::Pong(payload)).await.unwrap(),
+                    Message::Text(text) => {
+                        let frame: Value = serde_json::from_str(&text).unwrap();
+                        let method = frame["method"].as_str().unwrap();
+                        assert!(
+                            !method.ends_with("blocked"),
+                            "a full lane admitted an extra request"
+                        );
+                        assert_ne!(
+                            method, "stream.stale",
+                            "retired streaming owner reached wire"
+                        );
+                        if method.ends_with("held") {
+                            seen_tx.send(method.to_owned()).await.unwrap();
+                        } else {
+                            send_json(
+                                &mut socket,
+                                json!({"type":"res","id":frame["id"],"ok":true,
+                            "payload":{"delivered":true}}),
+                            )
+                            .await;
+                        }
+                        if method == "delivery.finish" {
+                            break;
+                        }
+                    }
+                    other => panic!("unexpected message: {other:?}"),
+                }
+            }
+        });
+        let session = GatewayClient::connect(
+            GatewayClientConfig::new(format!("ws://{address}"))
+                .unwrap()
+                .max_in_flight(capacity)
+                .request_timeout(Duration::from_secs(5)),
+            |_| async { Ok::<_, io::Error>(json!({"role":"node"})) },
+        )
+        .await
+        .unwrap();
+        let mut ordinary = Vec::new();
+        for _ in 0..capacity {
+            let ordinary_session = session.clone();
+            ordinary.push(tokio::spawn(async move {
+                ordinary_session
+                    .request_until_cancelled("app.held", json!({}))
+                    .await
+            }));
+            assert_eq!(seen_rx.recv().await.unwrap(), "app.held");
+        }
+        let mut streaming = Vec::new();
+        for _ in 0..capacity {
+            let streaming_session = session.clone();
+            streaming.push(tokio::spawn(async move {
+                streaming_session
+                    .request_streaming("stream.held", json!({}), |dispatch| {
+                        dispatch.enqueue();
+                        Ok(())
+                    })
+                    .await
+            }));
+            assert_eq!(seen_rx.recv().await.unwrap(), "stream.held");
+        }
+        assert_eq!(
+            session
+                .request_delivery("delivery.complete", json!({}))
+                .await
+                .unwrap(),
+            json!({"delivered":true})
+        );
+        let mut delivery = Vec::new();
+        for _ in 0..capacity {
+            let delivery_session = session.clone();
+            delivery.push(tokio::spawn(async move {
+                delivery_session
+                    .request_delivery("delivery.held", json!({}))
+                    .await
+            }));
+            assert_eq!(seen_rx.recv().await.unwrap(), "delivery.held");
+        }
+        // A stalled streaming peer and a stalled delivery peer cannot consume app or
+        // keepalive capacity, and none of the three RPC lanes admits an extra request.
+        let blocked_app = session.request("app.blocked", json!({}));
+        let blocked_delivery = session.request_delivery("delivery.blocked", json!({}));
+        let blocked_stream = session.request_streaming("stream.blocked", json!({}), |dispatch| {
+            dispatch.enqueue();
+            Ok(())
+        });
+        let (app, result, progress) = tokio::join!(
+            tokio::time::timeout(Duration::from_millis(30), blocked_app),
+            tokio::time::timeout(Duration::from_millis(30), blocked_delivery),
+            tokio::time::timeout(Duration::from_millis(30), blocked_stream),
+        );
+        assert!(app.is_err() && result.is_err() && progress.is_err());
+        session.ping().await.unwrap();
+        let active = Arc::new(AtomicBool::new(true));
+        let guard_active = active.clone();
+        let stale = session.request_streaming("stream.stale", json!({}), move |dispatch| {
+            if !guard_active.load(Ordering::SeqCst) {
+                return Err(DispatchRejection::new("owner retired"));
+            }
+            dispatch.enqueue();
+            Ok(())
+        });
+        tokio::pin!(stale);
+        assert!(tokio::time::timeout(Duration::from_millis(30), &mut stale)
+            .await
+            .is_err());
+        active.store(false, Ordering::SeqCst);
+        let released = streaming.pop().unwrap();
+        released.abort();
+        assert!(released.await.unwrap_err().is_cancelled());
+        assert!(
+            matches!(stale.await, Err(ClientError::DispatchRejected(reason)) if reason == "owner retired")
+        );
+        let released = delivery.pop().unwrap();
+        released.abort();
+        assert!(released.await.unwrap_err().is_cancelled());
+        session
+            .request_delivery("delivery.finish", json!({}))
+            .await
+            .unwrap();
+        for task in ordinary.into_iter().chain(streaming).chain(delivery) {
+            task.abort();
+            let _ = task.await;
+        }
+        server.await.unwrap();
+    }
+}

@@ -1,7 +1,6 @@
 use crate::ClientError;
 use futures_util::{Sink, Stream};
 use std::{
-    future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -31,7 +30,7 @@ pub trait GatewayWebSocketConnector: std::fmt::Debug + Send + Sync {
         &self,
         request: tokio_tungstenite::tungstenite::http::Request<()>,
         max_message_bytes: usize,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn GatewayWebSocket>, ClientError>> + Send>>;
+    ) -> futures_util::future::BoxFuture<'static, Result<Box<dyn GatewayWebSocket>, ClientError>>;
 }
 
 pub(crate) struct BoundedWebSocket {
