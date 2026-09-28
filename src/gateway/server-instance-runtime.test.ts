@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { slackPlugin } from "../../extensions/slack/api.js";
 import { DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS } from "../../packages/gateway-client/src/timeouts.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { ChannelPlugin } from "../channels/plugins/types.public.js";
@@ -579,34 +578,54 @@ describe("createGatewayInstanceRuntime", () => {
           const sourceConfig = configForToken(originalToken);
           let currentConfig = sourceConfig;
           const posts: Array<{ text: string; token: unknown }> = [];
-          const sendSlack = vi.fn(
-            async (
-              _to: string,
-              text: string,
-              options: {
-                cfg: OpenClawConfig;
-                onPlatformSendDispatch?: () => Promise<void>;
-                assertDirectAdapterHandoff?: () => void;
-              },
-            ) => {
-              if (reassignment === "at-handoff" && text.includes("was denied")) {
+          const sendText = vi.fn(
+            async (options: {
+              text: string;
+              cfg: OpenClawConfig;
+              onPlatformSendDispatch?: () => Promise<void>;
+              assertDirectAdapterHandoff?: () => void;
+            }) => {
+              if (reassignment === "at-handoff" && options.text.includes("was denied")) {
                 currentConfig = configForToken(terminalToken);
               }
               await options.onPlatformSendDispatch?.();
               options.assertDirectAdapterHandoff?.();
-              posts.push({ text, token: options.cfg.channels?.slack?.accounts?.work?.botToken });
-              return { channelId: "C123", messageId: `1712345678.${posts.length}` };
+              posts.push({
+                text: options.text,
+                token: options.cfg.channels?.slack?.accounts?.work?.botToken,
+              });
+              return { channel: "slack", messageId: `1712345678.${posts.length}` };
             },
           );
+          const plugin: ChannelPlugin = {
+            id: "slack",
+            meta: {
+              id: "slack",
+              label: "Slack",
+              selectionLabel: "Slack",
+              docsPath: "/channels/slack",
+              blurb: "Slack-shaped approval test plugin.",
+            },
+            capabilities: { chatTypes: ["direct"] },
+            config: {
+              listAccountIds: () => ["work"],
+              resolveAccount: () => ({}),
+              isConfigured: () => true,
+            },
+            outbound: {
+              deliveryMode: "direct",
+              resolveTarget: ({ to }) => ({ ok: true, to: to?.trim() ?? "" }),
+              sendText,
+            },
+          };
           const pluginRegistrySnapshot = captureActivePluginRegistrySnapshot();
           stageActivePluginRegistry(
-            createTestRegistry([{ pluginId: "slack", source: "test", plugin: slackPlugin }]),
+            createTestRegistry([{ pluginId: "slack", source: "test", plugin }]),
             null,
             "default",
           );
           const context = {
             ...createContext(),
-            deps: { slack: sendSlack },
             getRuntimeConfig: () => currentConfig,
           } as GatewayRequestContext;
           const runtime = createGatewayInstanceRuntime({
@@ -681,7 +700,7 @@ describe("createGatewayInstanceRuntime", () => {
               await publish;
             }
             expect(
-              sendSlack.mock.calls.filter((call) => call[1].includes("was denied")),
+              sendText.mock.calls.filter((call) => call[0].text.includes("was denied")),
             ).toHaveLength(terminalAttempts);
             const terminalMessages = posts.filter((post) => post.text.includes("was denied"));
             expect(terminalMessages).toHaveLength(terminalPosts);
