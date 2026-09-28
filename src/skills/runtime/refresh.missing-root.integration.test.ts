@@ -6,6 +6,7 @@ import { loadWorkspaceSkills } from "../loading/workspace-skill-loader.js";
 import { resolveWorkspaceSkillSourcePlan } from "../loading/workspace-skill-sources.js";
 import { writeSkill } from "../test-support/e2e-test-helpers.js";
 import { getSkillsResourceVersion, getSkillsSourceVersion } from "./refresh-state.js";
+import { toWatchRoot } from "./refresh-watch-path.js";
 import { pathWatchers } from "./refresh-watch-registry.js";
 import { useSkillsWatcherFixture } from "./refresh.watcher.test-support.js";
 
@@ -171,7 +172,7 @@ it.each(["missing", "root", "workspace", "symbolic", "external collection"] as c
     await ready();
     expect(readSkills()).toEqual(replacement === "missing" ? [] : ["Original instructions"]);
     const original = subscriptions.slice();
-    const retiring = external ? pathWatchers.get(root) : undefined;
+    const retiring = external ? pathWatchers.get(toWatchRoot(root)) : undefined;
     if (external) {
       expect(await retiring?.authority).toMatchObject({ rootDir: collection });
     }
