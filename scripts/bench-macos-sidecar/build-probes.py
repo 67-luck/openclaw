@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 
-BASE_COMMIT = "73d99565248df43a0c972402ccc5bf034b34fe91"
+BASE_COMMIT = "f2a6cd8bf3b31e0fc7fcc92ae8bdf1f522a1a293"
 MODULES = ["OpenClawKit", "OpenClawProtocol", "OpenClawNativeState"]
 
 

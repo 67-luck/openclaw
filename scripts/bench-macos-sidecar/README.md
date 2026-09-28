@@ -39,11 +39,11 @@ RFC54_BENCH_FORCE_SUPERVISOR_EXIT=1 \
 RFC54_BENCH_EXTRA_ARGS='["<output>/bin/absent-helper"]' \
   node run-bench.cjs "$RFC54_BENCH_ROOT/bin/candidate-swift" missing-helper 1 1
 
-# On a disposable Mac, package an opt-in ad-hoc signed app and prove fresh
+# On a disposable Mac, package an ad-hoc signed app and prove fresh
 # bundle execution, replacement with predecessor-shaped/malformed bundles,
 # missing/incompatible helper rejection, valid/tampered signature behavior,
 # and replacement recovery. This does not exercise a production updater.
-OPENCLAW_PACKAGE_RUST_NODE_SIDECAR=1 OPENCLAW_SKIP_MLX_TTS=1 \
+OPENCLAW_SKIP_MLX_TTS=1 \
   ALLOW_ADHOC_SIGNING=1 SIGN_IDENTITY=- SKIP_TEAM_ID_CHECK=1 \
   BUILD_CONFIG=debug BUILD_ARCHS="$(uname -m)" \
   ../../scripts/package-mac-app.sh
@@ -56,7 +56,7 @@ python3 run-paired.py
 
 Before execution, validate the included sandbox with `sandbox-probe`: it must deny operator file access, Keychain, preference, TCC, and WindowServer services. The validator supplies `BENCH_ROOT=<resolved output path>` and `BENCH_ENDPOINT=localhost:<fixture port>` through `sandbox-exec -D`. The selected listener must work and a different live loopback listener must fail with `EPERM`. The profile does not grant general loopback access, home-directory access, or TOFU/pin persistence. The runner supplies a fresh environment to every native process. TLS uses source-defined test certificates and explicit fingerprints.
 
-The baseline is extracted from `73d99565248df43a0c972402ccc5bf034b34fe91`, the refreshed sidecar stack tip before macOS adoption. Candidate sources and the helper binary come from the selected clean checkout. Build metadata records the exact candidate head, helper build command, source hashes, and executable SHA-256 hashes.
+The baseline is extracted from `f2a6cd8bf3b31e0fc7fcc92ae8bdf1f522a1a293`, the current macOS app before switching its default node transport to the sidecar. Candidate sources and the helper binary come from the selected clean checkout. Build metadata records the exact candidate head, helper build command, source hashes, and executable SHA-256 hashes.
 
 ## Measurements
 

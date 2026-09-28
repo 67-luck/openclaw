@@ -23,20 +23,22 @@ actor InputInbox {
         let session = GatewayNodeSession()
         let inbox = InputInbox()
         let mode = CommandLine.arguments[2]
-        let transport: any WebSocketSessioning
-        if mode == "baseline" {
-            transport = URLSession(configuration: .ephemeral)
+        let transport: any WebSocketSessioning = if mode == "baseline" {
+            URLSession(configuration: .ephemeral)
         } else if mode == "bundled" {
-            transport = RustGatewayWebSocketSession(
+            RustGatewayWebSocketSession(
                 executableURL: RustGatewayWebSocketSession.bundledExecutableURL)
         } else {
-            transport = RustGatewayWebSocketSession(executableURL: URL(fileURLWithPath: mode))
+            RustGatewayWebSocketSession(executableURL: URL(fileURLWithPath: mode))
         }
         let options = GatewayConnectOptions(
             role: "node",
             scopes: [],
             caps: ["benchmark"],
-            commands: ["benchmark.echo", "benchmark.raw", "system.echo", "benchmark.duplex", "system.notify"],
+            commands: [
+                "benchmark.echo", "benchmark.raw", "benchmark.large", "system.echo", "benchmark.duplex",
+                "system.notify",
+            ],
             permissions: [:],
             clientId: "openclaw-macos",
             clientMode: "node",
@@ -52,72 +54,84 @@ actor InputInbox {
                 onConnected: {},
                 onDisconnected: { _ in },
                 onInvoke: { req in
-                if req.id == "retire-during-delivery" {
-                    print("{\"nativeEntered\":\"\(req.id)\"}")
-                    fflush(stdout)
-                    let release = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-                        .appendingPathComponent("retirement-release-\(req.id)")
-                    while !FileManager.default.fileExists(atPath: release.path) {
-                        // Ignore cancellation until the harness releases the handoff so the
-                        // production notification boundary, rather than sleep, proves rejection.
-                        try? await Task.sleep(for: .milliseconds(5))
-                    }
-                    do {
-                        try NotificationDeliveryFence.perform {
-                            print("{\"nativeEffect\":\"\(req.id)\"}")
+                    if req.id == "retire-during-delivery" {
+                        print("{\"nativeEntered\":\"\(req.id)\"}")
+                        fflush(stdout)
+                        let release = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                            .appendingPathComponent("retirement-release-\(req.id)")
+                        while !FileManager.default.fileExists(atPath: release.path) {
+                            // Ignore cancellation until the harness releases the handoff so the
+                            // production notification boundary, rather than sleep, proves rejection.
+                            try? await Task.sleep(for: .milliseconds(5))
+                        }
+                        do {
+                            try NotificationDeliveryFence.perform {
+                                print("{\"nativeEffect\":\"\(req.id)\"}")
+                                fflush(stdout)
+                            }
+                        } catch is CancellationError {
+                            print("{\"nativeRejectedBeforeEffect\":\"\(req.id)\"}")
                             fflush(stdout)
+                            return BridgeInvokeResponse(
+                                id: req.id,
+                                ok: false,
+                                error: OpenClawNodeError(
+                                    code: .unavailable,
+                                    message: "native operation retired before effect"))
+                        } catch {
+                            print("{\"nativeFenceError\":\"\\(error)\"}")
+                            fflush(stdout)
+                            return BridgeInvokeResponse(
+                                id: req.id,
+                                ok: false,
+                                error: OpenClawNodeError(
+                                    code: .unavailable,
+                                    message: "native effect fence failed"))
                         }
-                    } catch is CancellationError {
-                        print("{\"nativeRejectedBeforeEffect\":\"\(req.id)\"}")
-                        fflush(stdout)
-                        return BridgeInvokeResponse(
-                            id: req.id,
-                            ok: false,
-                            error: OpenClawNodeError(
-                                code: .unavailable,
-                                message: "native operation retired before effect"))
-                    } catch {
-                        print("{\"nativeFenceError\":\"\\(error)\"}")
-                        fflush(stdout)
-                        return BridgeInvokeResponse(
-                            id: req.id,
-                            ok: false,
-                            error: OpenClawNodeError(
-                                code: .unavailable,
-                                message: "native effect fence failed"))
-                    }
-                    return BridgeInvokeResponse(id: req.id, ok: true, payloadJSON: "{}")
-                }
-                if req.command == "benchmark.duplex" || req.command == "system.notify" {
-                    do {
-                        _ = try await session.request(
-                            method: "node.invoke.progress",
-                            params: [
-                                "invokeId": AnyCodable(req.id),
-                                "nodeId": AnyCodable(req.nodeId!),
-                                "seq": AnyCodable(0),
-                                "chunk": AnyCodable("native-start"),
-                            ])
-                        if req.command == "benchmark.duplex" {
-                            let payload = await inbox.take(req.id)
-                            return BridgeInvokeResponse(id: req.id, ok: true, payloadJSON: payload)
-                        }
-                        try await Task.sleep(for: .seconds(30))
                         return BridgeInvokeResponse(id: req.id, ok: true, payloadJSON: "{}")
-                    } catch {
-                        print("{\"nativeCancelled\":\"\(req.id)\"}")
-                        fflush(stdout)
-                        return BridgeInvokeResponse(
-                            id: req.id,
-                            ok: false,
-                            error: OpenClawNodeError(code: .unavailable, message: "native operation cancelled"))
                     }
-                }
-                if req.command == "benchmark.raw" { return BridgeInvokeResponse(
-                    id: req.id,
-                    ok: true,
-                    payload: AnyCodable(["present": req.paramsJSON != nil, "raw": req.paramsJSON ?? "missing"])) }
-                return BridgeInvokeResponse(id: req.id, ok: true, payloadJSON: req.paramsJSON)
+                    if req.command == "benchmark.duplex" || req.command == "system.notify" {
+                        do {
+                            _ = try await session.request(
+                                method: "node.invoke.progress",
+                                params: [
+                                    "invokeId": AnyCodable(req.id),
+                                    "nodeId": AnyCodable(req.nodeId!),
+                                    "seq": AnyCodable(0),
+                                    "chunk": AnyCodable("native-start"),
+                                ])
+                            if req.command == "benchmark.duplex" {
+                                let payload = await inbox.take(req.id)
+                                return BridgeInvokeResponse(id: req.id, ok: true, payloadJSON: payload)
+                            }
+                            try await Task.sleep(for: .seconds(30))
+                            return BridgeInvokeResponse(id: req.id, ok: true, payloadJSON: "{}")
+                        } catch {
+                            print("{\"nativeCancelled\":\"\(req.id)\"}")
+                            fflush(stdout)
+                            return BridgeInvokeResponse(
+                                id: req.id,
+                                ok: false,
+                                error: OpenClawNodeError(code: .unavailable, message: "native operation cancelled"))
+                        }
+                    }
+                    if req.command == "benchmark.raw" { return BridgeInvokeResponse(
+                        id: req.id,
+                        ok: true,
+                        payload: AnyCodable(["present": req.paramsJSON != nil, "raw": req.paramsJSON ?? "missing"])) }
+                    if req.command == "benchmark.large" {
+                        let params = try? JSONSerialization.jsonObject(with: Data((req.paramsJSON ?? "{}").utf8))
+                        guard let bytes = (params as? [String: Any])?["bytes"] as? Int,
+                              (0...(25 * 1024 * 1024 + 1)).contains(bytes)
+                        else {
+                            return BridgeInvokeResponse(
+                                id: req.id, ok: false,
+                                error: OpenClawNodeError(code: .invalidRequest, message: "invalid probe size"))
+                        }
+                        return BridgeInvokeResponse(
+                            id: req.id, ok: true, payloadJSON: "\"" + String(repeating: "x", count: bytes) + "\"")
+                    }
+                    return BridgeInvokeResponse(id: req.id, ok: true, payloadJSON: req.paramsJSON)
                 },
                 onInvokeInput: { event in await inbox.deliver(event) },
                 onInvokeCancel: { id in

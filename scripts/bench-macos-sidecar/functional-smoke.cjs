@@ -8,6 +8,7 @@ const root = process.env.RFC54_BENCH_ROOT || __dirname;
 const mode = process.argv[2] || root + "/bin/openclaw-mac-node-sidecar";
 const label = process.argv[3] || "candidate-functional";
 const functionalProbe = process.env.RFC54_FUNCTIONAL_PROBE || root + "/bin/functional-probe";
+const gatewayPayloadLimit = 25 * 1024 * 1024;
 const delay = (ms) =>
   new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -37,7 +38,12 @@ function deadline(p, deadlineLabel) {
   ]);
 }
 (async () => {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0, perMessageDeflate: false });
+  const server = new WebSocketServer({
+    host: "127.0.0.1",
+    port: 0,
+    perMessageDeflate: false,
+    maxPayload: gatewayPayloadLimit,
+  });
   await once(server, "listening");
   let ws;
   let child;
@@ -87,7 +93,11 @@ function deadline(p, deadlineLabel) {
                 stateVersion: { presence: 0, health: 0 },
                 uptimeMs: 0,
               },
-              policy: { maxPayload: 16777216, maxBufferedBytes: 16777216, tickIntervalMs: 30000 },
+              policy: {
+                maxPayload: gatewayPayloadLimit,
+                maxBufferedBytes: 2 * gatewayPayloadLimit,
+                tickIntervalMs: 30000,
+              },
               auth: { role: "node", scopes: [] },
             },
           }),
@@ -246,6 +256,40 @@ function deadline(p, deadlineLabel) {
       throw new Error("system echo mismatch");
     }
     record.checks.push({ scenario: "system command admission and native result", passed: true });
+    for (const bytes of [17 * 1024 * 1024, gatewayPayloadLimit - 4096]) {
+      const id = "large-" + bytes;
+      invoke(id, "benchmark.large", { bytes });
+      const result = await until(() => results.get(id), "large native result");
+      const body = payload(result);
+      if (!result.ok || typeof body !== "string" || body.length !== bytes || !/^x+$/u.test(body)) {
+        throw new Error("large native result failed integrity: " + bytes);
+      }
+      results.delete(id);
+      record.checks.push({
+        scenario: "native media-sized result crosses IPC and Gateway",
+        bytes,
+        passed: true,
+      });
+    }
+    if (mode !== "baseline") {
+      invoke("large-rejected", "benchmark.large", { bytes: gatewayPayloadLimit + 1 });
+      const rejected = await until(() => results.get("large-rejected"), "oversized native result");
+      if (rejected.ok || rejected.error?.code !== "OUTPUT_TOO_LARGE") {
+        throw new Error("oversized native result did not yield bounded rejection");
+      }
+      record.checks.push({
+        scenario: "oversized native result is rejected without retiring IPC",
+        passed: true,
+      });
+    }
+    invoke("after-large", "benchmark.echo", { alive: true });
+    const afterLarge = await until(
+      () => results.get("after-large"),
+      "session reuse after large native output",
+    );
+    if (!afterLarge.ok || payload(afterLarge).alive !== true) {
+      throw new Error("native output limits retired the node session");
+    }
     invoke("duplex-one", "benchmark.duplex");
     const initial = await until(() => progress.get("duplex-one"), "duplex progress");
     if (initial.seq !== 0 || initial.chunk !== "native-start") {
