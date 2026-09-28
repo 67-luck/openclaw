@@ -21,6 +21,7 @@ import { isProcessAlive, waitForPidFile } from "../helpers/process-wait.js";
 import { runNodeScript } from "../helpers/run-node-script.js";
 import { createNestedGitEnv } from "../helpers/temp-repo.js";
 import {
+  hasSemanticTestBackend,
   materializeNativeCompiler,
   overrideNativeFixtureExecutable,
 } from "./native-boundary-fixture.js";
@@ -336,7 +337,7 @@ describe("changed core test graph selection", () => {
 const lifetime = createFixtureLifetime();
 afterEach(() => lifetime.cleanup());
 
-it.runIf(process.platform !== "win32")(
+it.runIf(hasSemanticTestBackend())(
   "checks a helper type error in its transitive test consumers without repeating enumeration",
   ({ signal }) =>
     lifetime.run(async () => {
