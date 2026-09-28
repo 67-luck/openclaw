@@ -2037,10 +2037,16 @@ start_gateway() {
   local readiness_attempts="${1:-360}"
   local budget
   budget="$(openclaw_e2e_read_positive_int_env OPENCLAW_UPGRADE_SURVIVOR_START_BUDGET_SECONDS 90)" || return "$?"
+  local startup_env=(OPENCLAW_GATEWAY_STARTUP_TRACE=1)
+  local startup_config_sha=""
+  if [ "${SCENARIO:-}" = "base" ] && [ "${CURRENT_PHASE:-}" = "gateway-start" ]; then
+    startup_env+=(OPENCLAW_DIAGNOSTICS=plugin.load-profile)
+    startup_config_sha="$(node -e 'const fs = require("node:fs"); const crypto = require("node:crypto"); process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"));' "$OPENCLAW_CONFIG_PATH")" || return "$?"
+  fi
   local start_epoch
   local ready_epoch
   start_epoch="$(node -e "process.stdout.write(String(Date.now()))")" || return "$?"
-  env -u OPENCLAW_GATEWAY_TOKEN -u OPENCLAW_GATEWAY_PASSWORD OPENCLAW_GATEWAY_STARTUP_TRACE=1 \
+  env -u OPENCLAW_GATEWAY_TOKEN -u OPENCLAW_GATEWAY_PASSWORD "${startup_env[@]}" \
     openclaw gateway --port "$port" --bind loopback --allow-unconfigured >"$GATEWAY_LOG" 2>&1 &
   gateway_pid="$!"
   local readiness_mode="strict"
@@ -2053,23 +2059,39 @@ start_gateway() {
     if [ "${SCENARIO:-}" = "base" ] && [ "${CURRENT_PHASE:-}" = "gateway-start" ]; then
       local failed_epoch diagnostic_epoch diagnostic_status=0 late_ready=false
       failed_epoch="$(node -e "process.stdout.write(String(Date.now()))")" || return "$readiness_status"
-      echo "Gateway startup diagnostic: original_status=$readiness_status original_elapsed_ms=$((failed_epoch - start_epoch)) pid=$gateway_pid"
+      printf 'Gateway startup diagnostic: original_status=%s original_elapsed_ms=%s pid=%s original_config_sha256=%s\n' \
+        "$readiness_status" "$((failed_epoch - start_epoch))" "$gateway_pid" "$startup_config_sha" \
+        >"$ARTIFACT_ROOT/gateway-start-diagnostic.log" || return "$readiness_status"
       # Observe the existing model-startup deadline without changing the failed readiness gate.
       timeout --kill-after=5s 120s bash -c '
         source scripts/lib/openclaw-e2e-instance.sh
         openclaw_e2e_wait_gateway_ready "$1" "$2" 480 "$3" "$4"
       ' startup-diagnostic "$gateway_pid" "$GATEWAY_LOG" "$port" "$readiness_mode" \
-        >"$ARTIFACT_ROOT/gateway-start-diagnostic.log" 2>&1 || diagnostic_status=$?
+        >>"$ARTIFACT_ROOT/gateway-start-diagnostic.log" 2>&1 || diagnostic_status=$?
       diagnostic_epoch="$(node -e "process.stdout.write(String(Date.now()))")" || return "$readiness_status"
       [ "$diagnostic_status" -ne 0 ] || late_ready=true
-      echo "Gateway startup diagnostic: late_ready=$late_ready diagnostic_status=$diagnostic_status elapsed_ms=$((diagnostic_epoch - start_epoch)) preserved_status=$readiness_status"
+      printf 'Gateway startup diagnostic: late_ready=%s diagnostic_status=%s elapsed_ms=%s preserved_status=%s\n' \
+        "$late_ready" "$diagnostic_status" "$((diagnostic_epoch - start_epoch))" "$readiness_status" \
+        >>"$ARTIFACT_ROOT/gateway-start-diagnostic.log" || return "$readiness_status"
       openclaw_e2e_print_log "$ARTIFACT_ROOT/gateway-start-diagnostic.log" || true
       tail -n 120 "$GATEWAY_LOG" || true
+      grep -F '[plugin-load-profile]' "$GATEWAY_LOG" || true
+      if [ "$diagnostic_status" -eq 0 ]; then
+        local observation_status=0 observation_result
+        node scripts/e2e/lib/upgrade-survivor/observe-files.mjs observe \
+          "$(package_root)" "$GATEWAY_LOG" || observation_status=$?
+        observation_result="Gateway file observation diagnostic: original_startup_status=$readiness_status late_ready=true observer_status=$observation_status preserved_status=$readiness_status"
+        printf '%s\n' "$observation_result" >>"$ARTIFACT_ROOT/gateway-start-diagnostic.log" || return "$readiness_status"
+        printf '%s\n' "$observation_result"
+      fi
     fi
     return "$readiness_status"
   fi
   ready_epoch="$(node -e "process.stdout.write(String(Date.now()))")" || return "$?"
   start_seconds=$(((ready_epoch - start_epoch + 999) / 1000))
+  if [ -n "$startup_config_sha" ]; then
+    grep -F '[plugin-load-profile]' "$GATEWAY_LOG" || true
+  fi
   if [ "$start_seconds" -gt "$budget" ]; then
     if ! node scripts/lib/check-limits.mts scripts/e2e/lib/upgrade-survivor/run.sh "Upgrade startup budget" "gateway startup exceeded survivor budget: ${start_seconds}s > ${budget}s"; then
       openclaw_e2e_print_log "$GATEWAY_LOG" >&2
