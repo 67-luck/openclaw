@@ -12,7 +12,7 @@ import {
   runManagedCommand,
 } from "../lib/managed-child-process.mts";
 import { createFixtureRelease } from "./windows-fileio/fixture-input.cjs";
-import { verifyDeletionControl } from "./windows-fileio/verify-deletion-control.mjs";
+import { recordRequestOnlyControl } from "./windows-fileio/record-request-only-control.mjs";
 
 const helper = fileURLToPath(new URL("./windows-fileio/", import.meta.url));
 const probe = path.join(helper, "Invoke-OwnedFileTrace.ps1");
@@ -408,10 +408,16 @@ async function runCell(name, fixtureMode) {
         assert.equal(cell.targetJoinedAtObserverCompletion, false);
         assert.equal(await target.completion, 0);
         assert.ok(target.receipt.joined && target.receipt.jobObserved);
-        verifyDeletionControl({ cell, observer, target, identity: resource.identity, fixtureMode });
+        recordRequestOnlyControl({
+          cell,
+          observer,
+          target,
+          identity: resource.identity,
+          fixtureMode,
+        });
       }
     }
-    cell.qualified = true;
+    cell.qualified = !cell.completedDeletionFailure;
   } finally {
     if (target) {
       if (!target.receipt.joined && fixtureRelease) {
@@ -452,6 +458,17 @@ try {
       ["observer-abort", "loaded"],
     ]) {
       await runCell(name, fixtureMode);
+      if (cells.at(-1).completedDeletionFailure) {
+        failed = true;
+      }
+    }
+    if (failed) {
+      save(path.join(evidence, "run-failure.json"), {
+        reason: "completed-deletion-unqualified",
+        failures: cells
+          .filter((cell) => cell.completedDeletionFailure)
+          .map((cell) => ({ name: cell.name, failure: cell.completedDeletionFailure })),
+      });
     }
   } else {
     admission = JSON.parse(fs.readFileSync(admissionFile, "utf8"));

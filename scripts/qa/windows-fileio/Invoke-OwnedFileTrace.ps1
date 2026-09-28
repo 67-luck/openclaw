@@ -326,8 +326,20 @@ try {
         }
         if($diagnosticAvailable){try {
           $resolvedScope=if($outside){'outside'}elseif($relative){'owned'}else{'unknown'}
+          $requestEvent=$null
+          if([int]$event.Id -eq 26 -and [int]$event.Version -eq 1 -and $fields.FilePath -and
+              $fields.IssuingThreadId -and $pathFact.scope -eq 'owned' -and $name -ceq $fields.FilePath){
+            $informationClass=Get-FileTracePrivateNumber $fields.InfoClass
+            if($informationClass -in @(13,64)){
+              # This event's admitted identity/path is independent of IRP completion.
+              $requestEvent=@{evidenceKind='request-event-only';pathProvenance='explicit-FilePath';
+                pid=$TargetProcessId;nativeStartFileTime=$NativeStartFileTime;threadId=$threadId;
+                relativeTarget=$pathFact.relative;eventId=26;eventVersion=1;infoClass=$informationClass;
+                eventAt=$time.ToString('O');completion='unknown';ntStatus=$null}
+            }
+          }
           Add-OwnFileTraceFact $diagnosticFacts $s $fields $irp $obj $key $pathFact.scope $resolvedScope `
-            ([bool]($obj -and $objects.ContainsKey($obj))) ([bool]($key -and $ownedKeys.ContainsKey($key))) ([bool]$isCreate) ([bool]$isClose)
+            ([bool]($obj -and $objects.ContainsKey($obj))) ([bool]($key -and $ownedKeys.ContainsKey($key))) ([bool]$isCreate) ([bool]$isClose) $requestEvent
         } catch { $diagnosticFacts.unavailable=$true }}
         if($outside){$counts.outOfScope++;if(-not $isCreate){$censusReason='outside-owned-path';return}}
         if (-not $relative -and -not $outside) { $counts.unresolvedTargets++; $censusReason='unresolved-target'; return }
@@ -370,6 +382,8 @@ try {
   $result.identityRefused = $identityRefused
   $result.postStopAdmission=$postStopAdmission
   $result.projectionStarted=$projectionStarted
+  $result.captureInterval=@{startedAt=$(if($start){$start.ToString('O')}else{$null});
+    endedAt=$(if($end){$end.ToString('O')}else{$null})}
   $encoded = $result | ConvertTo-Json -Depth 12 -Compress
   if ([Text.Encoding]::UTF8.GetByteCount($encoded) -gt 256KB) {
     $result.records=@(); $result.observation='insufficient-evidence'; $result.partial=@('projection-byte-cap')

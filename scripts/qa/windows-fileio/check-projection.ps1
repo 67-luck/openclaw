@@ -34,11 +34,11 @@ $threadLease | Add-Member ScriptMethod ObserveProcessTime {param($time)
     EventNotBeforeCreation=$true;ExitTimePresent=$true;EventNotAfterExit=($time -le $script:lifetimeEnd);
     ContainsTime=($time -le $script:lifetimeEnd)}
 }
-function Event([int]$Id,[hashtable]$Fields,[int]$Tick) {
+function Event([int]$Id,[hashtable]$Fields,[int]$Tick,[int]$Version=0) {
   $data=($Fields.GetEnumerator() | ForEach-Object {
     '<Data Name="'+[Security.SecurityElement]::Escape($_.Key)+'">'+[Security.SecurityElement]::Escape([string]$_.Value)+'</Data>'
   }) -join ''
-  $event=[pscustomobject]@{Id=$Id;Version=0;ProviderId=[guid]$receipt.provider;
+  $event=[pscustomobject]@{Id=$Id;Version=$Version;ProviderId=[guid]$receipt.provider;
     TimeCreated=$start.AddMilliseconds($Tick); Xml='<Event><EventData>'+$data+'</EventData></Event>'}
   $event | Add-Member ScriptMethod ToXml {return $this.Xml}
   $event | Add-Member ScriptMethod Dispose {}
@@ -192,6 +192,83 @@ if($fact.events.Count -ne 32 -or -not $fact.truncated){throw 'Census row cap fai
 if($fact.relevantEventCounts.Count+$fact.headerPidMatchCounts.Count+$fact.filterReasonCounts.Count -ne 32){throw 'Census count keys grew'}
 if([Text.Encoding]::UTF8.GetByteCount(($fact | ConvertTo-Json -Depth 8 -Compress)) -gt 32768){throw 'Census byte cap failed'}
 @{scenario='header-selector-and-census-bounds';passed=$true;diagnosticOnly=$true} | ConvertTo-Json -Compress
+
+# Request evidence comes from the actual admitted event, never maps or relation facts.
+$lookup['18:1']=@{id=18;version=1;task='SetDelete';opcode='Info'}
+$lookup['26:1']=@{id=26;version=1;task='DeletePath';opcode='Info'}
+foreach($scenario in @('exact','class13','hex-class','repeated','foreign-path','missing-path','alias-path',
+  'conflicting-name','wrong-class','missing-class','wrong-version','foreign-provider','unknown-schema',
+  'zero-irp','missing-thread','foreign-thread','process-query-failure','after-process-exit','before-capture',
+  'after-capture','priority-overflow','byte-overflow','diagnostics-disabled')) {
+  $start=[DateTime]::UtcNow;$end=$start.AddSeconds(1);$clock=[Diagnostics.Stopwatch]::StartNew()
+  $script:queryFailure=$scenario -eq 'process-query-failure';$script:queryCount=0
+  $script:lifetimeEnd=if($scenario -eq 'after-process-exit'){$start.AddMilliseconds(3).ToFileTimeUtc()}else{[long]::MaxValue}
+  $rows=[Collections.Generic.List[object]]::new();$partial=[Collections.Generic.HashSet[string]]::new()
+  $pending=@{};$objects=@{};$ownedKeys=@{};$excludedObjects=[Collections.Generic.HashSet[string]]::new()
+  $counts=@{parsed=0;ownBegins=0;unmatchedEnds=0;unresolvedTargets=0;unresolvedThreads=0;outOfScope=0}
+  $diagnosticFacts=New-FileTraceFacts;$filterCensus=New-FileTraceCensus
+  $diagnosticAvailable=$scenario -ne 'diagnostics-disabled'
+  $events=[Collections.Generic.List[object]]::new()
+  $events.Add((Event 12 @{Irp='0x1';FileObject='0xBEEF1234';IssuingThreadId='22';FileName='C:\owned\old.node';CreateOptions='0'} 1))
+  $events.Add((Event 24 @{Irp='0x1';Status='0'} 2))
+  $begin=@{Irp='0xCAB01234';FileObject='0xBEEF1234';FileKey='0xFEED5678';IssuingThreadId='22';InfoClass='64'}
+  $events.Add((Event 18 $begin 3 1))
+  $fields=$begin.Clone();$fields.FilePath='C:\owned\old.node';$tick=4;$version=1
+  switch($scenario){
+    'class13' {$fields.InfoClass='13'}
+    'hex-class' {$fields.InfoClass='0x40'}
+    'foreign-path' {$fields.FilePath='C:\foreign\PRIVATE_CANARY'}
+    'missing-path' {$fields.Remove('FilePath')}
+    'alias-path' {$fields.Remove('FilePath');$fields.FileName='C:\owned\old.node'}
+    'conflicting-name' {$fields.FileName='C:\owned\different.node'}
+    'wrong-class' {$fields.InfoClass='4'}
+    'missing-class' {$fields.Remove('InfoClass')}
+    'wrong-version' {$version=0}
+    'unknown-schema' {$version=99}
+    'zero-irp' {$fields.Irp='0'}
+    'missing-thread' {$fields.Remove('IssuingThreadId')}
+    'foreign-thread' {$fields.IssuingThreadId='33'}
+    'before-capture' {$tick=-1}
+    'after-capture' {$tick=1001}
+  }
+  $request=Event 26 $fields $tick $version
+  if($scenario -eq 'foreign-provider'){$request.ProviderId=[guid]::Empty}
+  $events.Add($request)
+  if($scenario -eq 'repeated'){$events.Add((Event 26 $fields 5 1))}
+  if($scenario -in @('priority-overflow','byte-overflow')){
+    for($n=0;$n -lt 10;$n++){
+      $extra=$fields.Clone();$extra.Irp=('0x{0:X}' -f (100+$n))
+      if($scenario -eq 'byte-overflow'){$extra.FilePath='C:\owned\'+([string][char]0x6F22)*1700+$n}
+      $events.Add((Event 26 $extra (5+$n) 1))
+    }
+  }
+  $events.Add((Event 24 @{Irp='0xCAB01234';Status='0xC0000121'} 20))
+  $events | ForEach-Object $processor
+  $facts=Get-FileTraceFacts $diagnosticFacts
+  $requests=@($facts.events | Where-Object {$null -ne $_.requestEvent} | ForEach-Object {$_.requestEvent})
+  $wanted=switch($scenario){'exact'{1};'class13'{1};'hex-class'{1};'repeated'{2};'priority-overflow'{7};default{0}}
+  if($requests.Count -ne $wanted){throw "Wrong request-only projection count: $scenario ($($requests.Count))"}
+  foreach($request in $requests){
+    if($request.evidenceKind -ne 'request-event-only' -or $request.pathProvenance -ne 'explicit-FilePath' -or
+      $request.pid -ne $TargetProcessId -or $request.nativeStartFileTime -ne $NativeStartFileTime -or
+      $request.threadId -ne 22 -or $request.relativeTarget -ne 'old.node' -or $request.eventId -ne 26 -or
+      $request.eventVersion -ne 1 -or $request.infoClass -notin @(13,64) -or
+      ([datetime]$request.eventAt).ToUniversalTime() -lt $start -or ([datetime]$request.eventAt).ToUniversalTime() -gt $end -or
+      $request.completion -ne 'unknown' -or $null -ne $request.ntStatus){throw "Request contract changed: $scenario"}
+  }
+  if($scenario -in @('exact','class13','hex-class','repeated','diagnostics-disabled')){
+    if(-not $partial.Contains('irp-reuse-without-end') -or @($rows | Where-Object {$_.eventId -in @(18,26)}).Count){throw 'Request evidence gained completion authority'}
+  }
+  if($scenario -eq 'priority-overflow' -and (-not $facts.priorityTruncated -or $facts.events.Count -gt 16)){throw 'Request row overflow hidden'}
+  if($scenario -eq 'byte-overflow' -and (-not $facts.truncated -or $facts.events.Count)){throw 'Request byte overflow hidden'}
+  $encoded=$facts | ConvertTo-Json -Depth 8 -Compress
+  if([Text.Encoding]::UTF8.GetByteCount($encoded) -gt 32768){throw 'Request facts exceeded byte cap'}
+  foreach($canary in @('PRIVATE_CANARY','CAB01234','BEEF1234','FEED5678','C:\owned')){
+    if($encoded.Contains($canary)){throw 'Request projection leaked private values'}
+  }
+  @{scenario="request-only-$scenario";passed=$true;requestEvents=$requests.Count;nativeProof=$false} | ConvertTo-Json -Compress
+}
+$diagnosticAvailable=$true;$script:queryFailure=$false
 
 # Diagnostic capture failure cannot alter a successful parser result or partiality.
 function Start-FileTraceCensusEvent {throw 'Synthetic diagnostic failure'}

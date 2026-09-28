@@ -103,7 +103,7 @@ function Update-FileTraceFacts($State,[int]$EventId,[string]$Irp,[string]$Key,[b
   }
 }
 function Add-OwnFileTraceFact($State,$Schema,$Fields,[string]$Irp,[string]$Object,[string]$Key,
-  [string]$NameScope,[string]$ResolvedScope,[bool]$ObjectMapped,[bool]$KeyMapped,[bool]$DispatchCreate,[bool]$DispatchClose) {
+  [string]$NameScope,[string]$ResolvedScope,[bool]$ObjectMapped,[bool]$KeyMapped,[bool]$DispatchCreate,[bool]$DispatchClose,$RequestEvent=$null) {
   $State.ownSequence++
   foreach($entry in $State.entries){
     if($entry.irp -eq $Irp -and $entry.nextSequence -eq $State.sequence -and $entry.public.nextSameIrpBegin){
@@ -124,6 +124,7 @@ function Add-OwnFileTraceFact($State,$Schema,$Fields,[string]$Irp,[string]$Objec
     nameScope=$NameScope;resolvedScope=$ResolvedScope;objectMappingPresent=$ObjectMapped;keyMappingPresent=$KeyMapped;
     classifiedCreate=$DispatchCreate;classifiedClose=$DispatchClose;matchingOwnedNameBeforeBegin=$before;
     matchingOwnedNameAfterBegin=0;nameKeyRetired=$false;completionSeen=$false;irpReusedBeforeEnd=$false}
+  if($null -ne $RequestEvent){$public.requestEvent=$RequestEvent}
   $State.entries.Add(@{public=$public;irp=$Irp;key=$Key;active=$true;nameActive=$true;priority=$priority;
     nextSequence=-1;identity=$(if($priority){Get-FileTracePrivateIdentity $Fields $Object $Key}else{$null})})
 }
@@ -131,6 +132,7 @@ function Get-FileTraceFacts($State) {
   $result=@{phase='owned-begin-facts';diagnosticOnly=$true;truncated=$State.truncated;unavailable=$State.unavailable;
     nameMatchMeaning='same private key, owned-path name, before completion; never attribution authority';
     relationMeaning='first subsequent same-IRP begin; equality and parser branch facts only, never a companion or reuse verdict';
+    requestEventMeaning='one admitted provider event, not a distinct operation, active-at-instant claim, completion or NTSTATUS';
     priorityRowLimit=8;nonPriorityRowLimit=8;priorityTruncated=$State.priorityTruncated;nonPriorityTruncated=$State.nonPriorityTruncated;
     events=@($State.entries | ForEach-Object {$_.public})}
   if([Text.Encoding]::UTF8.GetByteCount(($result | ConvertTo-Json -Depth 8 -Compress)) -gt 32768){
