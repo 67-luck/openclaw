@@ -123,7 +123,7 @@ async fn serve_public_runtime_authority(listener: TcpListener, handler_entered: 
     let allowed = receive_json(&mut socket).await;
     assert_eq!(allowed["method"], "node.invoke.result");
     assert_eq!(allowed["params"]["id"], "allowed");
-    assert_eq!(allowed["params"]["payload"], json!({"ready":true}));
+    assert_eq!(result_payload(&allowed), json!({"ready":true}));
     send_json(
         &mut socket,
         json!({"type":"res","id":allowed["id"],"ok":true,"payload":{"accepted":true}}),
@@ -421,7 +421,7 @@ async fn sidecar_bridge_preserves_authority_through_the_public_runtime() {
             assert_eq!(result["method"], "node.invoke.result");
             assert_eq!(result["params"]["id"], id);
             if expected.0.is_empty() {
-                assert_eq!(result["params"]["payload"], expected.1);
+                assert_eq!(result_payload(&result), expected.1);
             } else {
                 assert_eq!(result["params"]["ok"], false);
                 assert_eq!(result["params"]["error"]["code"], expected.0);
@@ -882,7 +882,7 @@ async fn runtime_enforces_public_manifests_and_private_admission() {
                     assert_eq!(result["params"]["ok"], false);
                     assert_eq!(result["params"]["error"]["code"], "COMMAND_NOT_ADVERTISED");
                 } else {
-                    assert_eq!(result["params"]["payload"], json!({"command":command}));
+                    assert_eq!(result_payload(&result), json!({"command":command}));
                 }
                 acknowledge(&mut socket, &result).await;
             }
@@ -1017,7 +1017,14 @@ async fn serve_duplex_runtime(listener: TcpListener, fixture: Value) {
 
     let result = receive_json(&mut socket).await;
     assert_eq!(result["method"], "node.invoke.result");
-    assert_eq!(result["params"], fixture["results"]["success"]);
+    let mut success = result["params"].clone();
+    let payload_json = success
+        .as_object_mut()
+        .unwrap()
+        .remove("payloadJSON")
+        .unwrap();
+    success["payload"] = serde_json::from_str(payload_json.as_str().unwrap()).unwrap();
+    assert_eq!(success, fixture["results"]["success"]);
     send_json(
         &mut socket,
         json!({"type":"res", "id":result["id"], "ok":true,
@@ -1035,6 +1042,15 @@ where
         json!({"type":"res", "id":request["id"], "ok":true, "payload":{"ok":true}}),
     )
     .await;
+}
+
+fn result_payload(result: &Value) -> Value {
+    // Private worker consumers require payloadJSON; public node.invoke
+    // accepts this same result representation.
+    let raw = result["params"]["payloadJSON"]
+        .as_str()
+        .expect("node invocation result must carry serialized JSON");
+    serde_json::from_str(raw).expect("valid invocation result JSON")
 }
 
 async fn send_json<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>, value: Value)

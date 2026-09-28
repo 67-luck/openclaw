@@ -1024,7 +1024,9 @@ fn invocation_result_params(
             "id": invocation.id,
             "nodeId": invocation.node_id,
             "ok": true,
-            "payload": payload,
+            // Private worker controls consume the serialized result contract
+            // directly; only public node.invoke also normalizes typed payloads.
+            "payloadJSON": payload.to_string(),
         }),
         InvocationResult::Failure { code, message } => {
             let code = require_non_empty_result_field("error code", code)?;
@@ -1303,11 +1305,17 @@ mod tests {
         }
         assert!(parse_invocation_input(fixture["input"]["invalid"].clone()).is_err());
 
-        let success = invocation_result_params(
+        let mut success = invocation_result_params(
             &invocation,
             InvocationResult::success(fixture["results"]["success"]["payload"].clone()),
         )
         .expect("canonical success result");
+        let payload_json = success
+            .as_object_mut()
+            .unwrap()
+            .remove("payloadJSON")
+            .unwrap();
+        success["payload"] = serde_json::from_str(payload_json.as_str().unwrap()).unwrap();
         assert_eq!(success, fixture["results"]["success"]);
         let failure = &fixture["results"]["failure"];
         let failed_invocation = NodeInvocation::new(
