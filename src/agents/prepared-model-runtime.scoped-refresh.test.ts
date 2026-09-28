@@ -11,7 +11,10 @@ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { buildConfiguredModelCatalog } from "./model-selection-shared.js";
-import { loadPreparedModelCatalogSnapshot } from "./prepared-model-catalog.js";
+import {
+  loadPreparedModelCatalogSnapshot,
+  refreshExpiredPreparedModelCatalog,
+} from "./prepared-model-catalog.js";
 import {
   getPreparedModelFullCatalogAuth,
   getPreparedModelRuntimeAuthStore,
@@ -796,7 +799,9 @@ describe("prepared model runtime scoped refresh", () => {
     );
     expect(next.staticEntries?.some((entry) => entry.id === "new-configured")).toBe(true);
     expect(next.entries.some((entry) => entry.id === "old-configured")).toBe(false);
-    const ordinaryRead = nextOwner.loadFullModelCatalog!();
+    expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledTimes(initialDiscoveryRequests);
+    expect(refreshExpiredPreparedModelCatalog(ownerInput(nextConfig))).toBe(next);
+    const ordinaryRead = nextOwner.loadFullModelCatalog!({ changedOnly: true });
     await nativeStarted.promise;
     const newlyDiscovered = { provider: "demo", id: "new-discovery", name: "New discovery" };
     mocks.runPreparedModelCatalogWorker.mockResolvedValueOnce(

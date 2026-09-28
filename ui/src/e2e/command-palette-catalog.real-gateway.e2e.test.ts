@@ -137,7 +137,7 @@ const suite = createControlUiE2eSuite({
 });
 
 suite.define(() => {
-  it("opens Settings pickers from publication and acquires only on Refresh or Retry", async () => {
+  it("discovers each owner on first read and keeps Settings picker opens passive beyond Refresh or Retry", async () => {
     const frames: unknown[] = [];
     const requests: Array<{ id: string; params: Record<string, unknown> }> = [];
     const replies = new Map<string, Record<string, unknown>>();
@@ -162,11 +162,23 @@ suite.define(() => {
     const url = new URL("/settings/model-providers", browserUrl);
     url.hash = new URL(browserUrl).hash;
     try {
-      // Settle startup acquisition before measuring page-owned requests.
-      expect((await publish()).providerOutcomes).toContainEqual({
-        provider: "ollama",
-        status: "ready",
-      });
+      expect(acquisitions()).toBe(0);
+      // Auth refresh reaches both fixture owners; settle the reviewer's first read separately.
+      await expect
+        .poll(async () => {
+          const catalog = requireRecord(
+            await readback.request("models.list", { agentId: "reviewer", view: "configured" }),
+          );
+          return catalog.pendingProviders ? undefined : catalog;
+        })
+        .toMatchObject({
+          models: expect.arrayContaining([
+            expect.objectContaining({ provider: "ollama", id: "refresh-fixture:latest" }),
+          ]),
+          providerOutcomes: [{ provider: "ollama", status: "ready" }],
+        });
+      expect(acquisitions()).toBe(1);
+      stages.push({ stage: "reviewer-first-read", acquisitions: acquisitions() });
       await suite.withPage(
         { serviceWorkers: "block", locale: "en-US", viewport: { width: 1280, height: 900 } },
         async ({ page }) => {
@@ -205,7 +217,7 @@ suite.define(() => {
               }
             });
           });
-          const initialAcquisitions = acquisitions();
+          expect(acquisitions()).toBe(1);
           await page.goto(url.href);
           await waitForControlUiGatewayReady(page);
           const settings = page.locator("openclaw-model-providers-page");
@@ -226,8 +238,6 @@ suite.define(() => {
           };
           await trigger.waitFor({ state: "visible" });
           await expect.poll(() => pickerValue(primary)).toBe("fixture/anchor");
-          expect(acquisitions()).toBe(initialAcquisitions);
-          stages.push({ stage: "initial", acquisitions: acquisitions() });
 
           const catalogRefresh = async (action: () => Promise<void>) => {
             // Publication can add passive reads; this action owns the explicit acquisition.
@@ -263,6 +273,11 @@ suite.define(() => {
               })
               .toBe(true);
           };
+          // The connect-time catalog read starts one acquisition; picker opens reuse it.
+          await waitForCatalogIdle();
+          expect(acquisitions()).toBe(2);
+          const initialAcquisitions = acquisitions();
+          stages.push({ stage: "connected", acquisitions: initialAcquisitions });
           const open = async () => {
             await waitForCatalogIdle();
             const requestsBeforeOpen = requests.length;
@@ -279,6 +294,7 @@ suite.define(() => {
           await primary
             .locator('[role="option"][data-value="ollama/refresh-fixture:latest"]')
             .waitFor({ state: "visible" });
+          await open();
           expect(acquisitions()).toBe(initialAcquisitions);
           expect(await pickerValue(primary)).toBe("fixture/anchor");
           stages.push({ stage: "first-open", acquisitions: acquisitions() });
@@ -337,6 +353,8 @@ suite.define(() => {
           await waitForControlUiGatewayReady(page);
           await trigger.waitFor({ state: "visible" });
           await expect.poll(() => pickerValue(primary)).toBe("fixture/anchor");
+          await waitForCatalogIdle();
+          expect(acquisitions()).toBe(initialAcquisitions + 2);
           providerMode = "failed";
           const failed = await catalogRefresh(() =>
             settings.getByRole("button", { name: "Refresh", exact: true }).click(),
