@@ -1101,6 +1101,23 @@ describe("run-oxlint", () => {
             .toSorted(),
         );
       }
+
+      // Root ignores prefilter explicit files before nested negations can restore
+      // them. This selection must retain the native directory walk.
+      writeFileSync(join(cwd, ".eslintignore"), "**/*.ts\n");
+      writeFileSync(join(cwd, "src/agents/.eslintignore"), "!*.ts\n");
+      const target = "src/agents";
+      const canonical = {
+        name: "core:src:agents",
+        args: ["--tsconfig", "config/tsconfig/oxlint.core.json", target],
+      };
+      const baseline = inventory([target]);
+      expect(baseline).toContain("src/agents/root.ts");
+      const retained = await splitCoreOxlintSelections([canonical], { cwd, platform: "linux" });
+      expect(retained).toEqual([canonical]);
+      expect(retained.flatMap((part) => inventory(part.args.slice(2))).toSorted()).toEqual(
+        baseline,
+      );
     },
   );
 

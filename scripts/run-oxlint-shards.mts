@@ -646,55 +646,58 @@ async function splitCoreTargetSelection(
   ) {
     return [[target]];
   }
-  const remainingMs = deadline === undefined ? 30_000 : Math.ceil(deadline - performance.now());
-  if (remainingMs <= 0) {
-    throw new Error("core stripe deadline expired before file discovery");
-  }
-  const controller = new AbortController();
-  const chunks: Buffer[] = [];
-  let bytes = 0;
-  let overflow = false;
-  try {
-    const status = await runManagedCommand({
-      bin: resolveRepoToolBinPath("oxlint"),
-      args: ["--debug", "files", target],
-      cwd: options.cwd,
-      env,
-      stdio: ["ignore", "pipe", "inherit"],
-      requireProcessTreeExit: true,
-      timeoutMs: Math.min(30_000, remainingMs),
-      timeoutKillGraceMs: 0,
-      signalKillGraceMs: resolveShardKillGraceMs(env),
-      abortKillGraceMs: 0,
-      signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
-      onReady(child) {
-        child.stdout!.on("data", (chunk: Buffer) => {
-          if (overflow) {
-            return;
-          }
-          bytes += chunk.length;
-          if (bytes > 4 * 1024 * 1024) {
-            overflow = true;
-            chunks.length = 0;
-            controller.abort();
-          } else {
-            chunks.push(chunk);
-          }
-        });
-      },
-    });
-    signal?.throwIfAborted();
-    if (status !== 0) {
-      throw new Error(`core file discovery failed (exit ${status})`);
+  const discover = async (targets: string[]) => {
+    const remainingMs = deadline === undefined ? 30_000 : Math.ceil(deadline - performance.now());
+    if (remainingMs <= 0) {
+      throw new Error("core stripe deadline expired before file discovery");
     }
-  } catch (error) {
-    // Report overflow only after joined cancellation; uncertain cleanup stays fatal.
-    if (overflow && isCommandCancellation(error)) {
-      throw new Error("core file discovery exceeded 4 MiB output", { cause: error });
+    const controller = new AbortController();
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let overflow = false;
+    try {
+      const status = await runManagedCommand({
+        bin: resolveRepoToolBinPath("oxlint"),
+        args: ["--debug", "files", ...targets],
+        cwd: options.cwd,
+        env,
+        stdio: ["ignore", "pipe", "inherit"],
+        requireProcessTreeExit: true,
+        timeoutMs: Math.min(30_000, remainingMs),
+        timeoutKillGraceMs: 0,
+        signalKillGraceMs: resolveShardKillGraceMs(env),
+        abortKillGraceMs: 0,
+        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+        onReady(child) {
+          child.stdout!.on("data", (chunk: Buffer) => {
+            if (overflow) {
+              return;
+            }
+            bytes += chunk.length;
+            if (bytes > 4 * 1024 * 1024) {
+              overflow = true;
+              chunks.length = 0;
+              controller.abort();
+            } else {
+              chunks.push(chunk);
+            }
+          });
+        },
+      });
+      signal?.throwIfAborted();
+      if (status !== 0) {
+        throw new Error(`core file discovery failed (exit ${status})`);
+      }
+    } catch (error) {
+      // Report overflow only after joined cancellation; uncertain cleanup stays fatal.
+      if (overflow && isCommandCancellation(error)) {
+        throw new Error("core file discovery exceeded 4 MiB output", { cause: error });
+      }
+      throw error;
     }
-    throw error;
-  }
-  const files = Buffer.concat(chunks).toString("utf8").split(/\r?\n/u).filter(Boolean).toSorted();
+    return Buffer.concat(chunks).toString("utf8").split(/\r?\n/u).filter(Boolean).toSorted();
+  };
+  const files = await discover([target]);
   const selected = new Set(files);
   const entries = (root: string) =>
     readDirectoryEntries(options.readDir, path.join(options.cwd, root))
@@ -730,7 +733,20 @@ async function splitCoreTargetSelection(
   }
   // Retain directory traversal: enumerating every nested file can overflow
   // the bounded-argument ownership token's per-environment-variable OS limit.
-  return parts.every((part) => part.length > 0) ? parts : [[target]];
+  if (parts.some((part) => part.length === 0)) {
+    return [[target]];
+  }
+  const projected: string[] = [];
+  for (const part of parts) {
+    projected.push(...(await discover(part)));
+  }
+  projected.sort();
+  // Explicit paths are prefiltered before nested ignore negations can restore
+  // them. Keep native directory traversal unless the split preserves every file.
+  return projected.length === files.length &&
+    projected.every((file, index) => file === files[index])
+    ? parts
+    : [[target]];
 }
 
 function hasBoundedOxlintArgs(args: readonly string[]) {
