@@ -296,7 +296,10 @@ export class CodexToolTranscriptProjection {
       typeof item.output === "string"
         ? item.output
         : collectDynamicToolContentText(item.output as CodexThreadItem["contentItems"]);
-    const execution = rawCall?.name === "exec" ? CODE_MODE_RESULT_RE.exec(responseText) : null;
+    const execution =
+      rawCall?.name === "exec" || rawCall?.name === "wait"
+        ? CODE_MODE_RESULT_RE.exec(responseText)
+        : null;
     const codeModePatchInput = this.codeModeNativePatchInputsByCallId.get(callId);
     if (codeModePatchInput) {
       this.codeModeNativePatchInputsByCallId.delete(callId);

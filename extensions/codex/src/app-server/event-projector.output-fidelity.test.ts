@@ -25,11 +25,24 @@ function outputText(result: Record<string, unknown>) {
   return requireRecord(requireArray(result.content, "content")[0], "output").text;
 }
 
-async function projectCodeModeOutput(output: string, input: string) {
+async function projectCodeModeOutput(
+  output: string,
+  input: string,
+  name: "exec" | "wait" = "exec",
+) {
   const projector = await createProjector();
+  const callId = `outer-${name}`;
   for (const item of [
-    { type: "custom_tool_call", call_id: "outer-exec", name: "exec", input },
-    { type: "custom_tool_call_output", call_id: "outer-exec", output },
+    name === "exec"
+      ? { type: "custom_tool_call", call_id: callId, name, input }
+      : { type: "function_call", call_id: callId, name, arguments: input },
+    name === "exec"
+      ? { type: "custom_tool_call_output", call_id: callId, output }
+      : {
+          type: "function_call_output",
+          call_id: callId,
+          output: [{ type: "input_text", text: output }],
+        },
   ]) {
     await projector.handleNotification(forCurrentTurn("rawResponseItem/completed", { item }));
   }
@@ -107,37 +120,59 @@ describe("Codex tool response fidelity", () => {
     });
   });
 
-  it.each([
-    { label: "empty", output: "", isError: false, outcome: "unknown" },
-    { label: "whitespace", output: " \r\n", isError: false, outcome: "unknown" },
-    {
-      label: "completed",
-      output: "Script completed\nWall time 0.1 seconds\nOutput:\n" + "x".repeat(34_766),
-      isError: false,
-      outcome: undefined,
-    },
-    {
-      label: "failed",
-      output: "Script failed\nWall time 0.1 seconds\nOutput:\nScript error: fixture failure",
-      isError: true,
-      outcome: undefined,
-    },
-  ])(
-    "retains $label outer code-mode output under its own call ID",
-    async ({ output, isError, outcome }) => {
-      const result = await projectCodeModeOutput(
-        output,
-        "text(await tools.exec_command({cmd: 'transcript'}))",
-      );
-      expect(result.toolCallId).toBe("outer-exec");
-      expect(result.isError).toBe(isError);
-      expect(
-        requireRecord(requireRecord(result["__openclaw"], "metadata").toolOutput, "provenance")
-          .outcome,
-      ).toBe(outcome);
-      expect(outputText(result)).toBe(output);
-    },
-  );
+  describe.each(["exec", "wait"] as const)("%s response", (name) => {
+    it.each([
+      { label: "empty", output: "", isError: false, outcome: "unknown" },
+      { label: "whitespace", output: " \r\n", isError: false, outcome: "unknown" },
+      {
+        label: "yielded",
+        output: "Script running with cell ID cell-1\nWall time 0.1 seconds\nOutput:\n",
+        isError: false,
+        outcome: "unknown",
+      },
+      {
+        label: "unrecognized",
+        output: "Script completed\nunrecognized result envelope",
+        isError: false,
+        outcome: "unknown",
+      },
+      {
+        label: "completed",
+        output: "Script completed\nWall time 0.1 seconds\nOutput:\n" + "x".repeat(34_766),
+        isError: false,
+        outcome: undefined,
+      },
+      {
+        label: "failed",
+        output: "Script failed\nWall time 0.1 seconds\nOutput:\nScript error: fixture failure",
+        isError: true,
+        outcome: undefined,
+      },
+    ])(
+      "retains $label outer code-mode output under its own call ID",
+      async ({ output, isError, outcome }) => {
+        const result = await projectCodeModeOutput(
+          output,
+          name === "exec"
+            ? "text(await tools.exec_command({cmd: 'transcript'}))"
+            : JSON.stringify({ cell_id: "cell-1" }),
+          name,
+        );
+        expect(result.toolCallId).toBe(`outer-${name}`);
+        expect(result.toolName).toBe(name);
+        expect(result.isError).toBe(isError);
+        expect(
+          requireRecord(requireRecord(result["__openclaw"], "metadata").toolOutput, "provenance")
+            .outcome,
+        ).toBe(outcome);
+        expect(outputText(result)).toBe(
+          name === "exec"
+            ? output
+            : JSON.stringify([{ type: "input_text", text: output }], null, 2),
+        );
+      },
+    );
+  });
 
   it("retains unrecognized code-mode patch responses without inventing patch success", async () => {
     const output = "  Future patch execution failure\r\n" + "details\n".repeat(2_000);

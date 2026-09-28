@@ -393,6 +393,11 @@ to the Gateway host and follows OpenClaw exec policy. `gateway_process` uses the
 existing per-session OpenClaw process scope for background follow-up. Prefer
 Codex native shell for ordinary local work.
 
+Native code-mode Exec and Wait tool rows show completion or failure when Codex
+reports a final script result. A response that only yields a cell ID keeps
+**Outcome unknown**; the later Wait result records its own outcome without
+rewriting the earlier response.
+
 A native shell command can yield a session handle before it exits. When a
 successful turn ends with that exact command still owned by the native thread,
 its tool row records **Outcome unknown** and explains that the process is still
