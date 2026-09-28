@@ -190,6 +190,37 @@ describe("negotiated session receipt delivery", () => {
     expect(socket.frames.map((frame) => frame.seq)).toEqual([1, 2]);
   });
 
+  it("does not charge retired receipts to a replacement socket's byte budget", () => {
+    const { client, socket } = peer("replaced");
+    const { broadcast, getBufferedAmount } = createGatewayBroadcaster({
+      clients: new GatewayClientRegistry([client]),
+    });
+    broadcast("sessions.changed", { sessionKey, reason: "send" });
+    const replacement = new ReceiptSocket();
+    replacement.bufferedAmount = MAX_BUFFERED_BYTES - 1;
+    client.socket = replacement;
+    expect(getBufferedAmount(client.connId)).toBe(replacement.bufferedAmount);
+    broadcast(
+      "sessions.changed",
+      { sessionKey, reason: "agent.run.started" },
+      { dropIfSlow: true },
+    );
+    replacement.bufferedAmount = 0;
+    vi.advanceTimersByTime(25);
+    expect(socket.frames).toEqual([]);
+    expect(replacement.frames).toEqual([
+      {
+        type: "event",
+        event: "sessions.changed.bundle",
+        seq: 1,
+        payload: {
+          sessionKey,
+          receipts: [{ payload: { sessionKey, reason: "agent.run.started" } }],
+        },
+      },
+    ]);
+  });
+
   it("keeps slow-consumer drops observable through the outer sequence", () => {
     const { client, socket } = peer("slow");
     const { broadcast } = createGatewayBroadcaster({

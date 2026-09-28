@@ -45,18 +45,24 @@ export function createGatewaySessionReceiptDelivery(params: {
       timer = undefined;
     }
   };
-  const flush = (client: GatewayWsClient) => {
+  const current = (client: GatewayWsClient) => {
     const entry = pending.get(client);
+    if (
+      entry &&
+      (client.socket !== entry.socket ||
+        client.preparedRecipientProfileId !== entry.recipientProfileId)
+    ) {
+      take(entry);
+      return undefined;
+    }
+    return entry;
+  };
+  const flush = (client: GatewayWsClient) => {
+    const entry = current(client);
     if (!entry) {
       return;
     }
     take(entry);
-    if (
-      client.socket !== entry.socket ||
-      client.preparedRecipientProfileId !== entry.recipientProfileId
-    ) {
-      return;
-    }
     const receipts = entry.receipts.filter((receipt) => receipt.isCurrent());
     if (receipts.length === 0) {
       return;
@@ -74,9 +80,9 @@ export function createGatewaySessionReceiptDelivery(params: {
     );
   };
   return {
-    bufferedBytes: (client: GatewayWsClient) => pending.get(client)?.bytes ?? 0,
+    bufferedBytes: (client: GatewayWsClient) => current(client)?.bytes ?? 0,
     before: (client: GatewayWsClient, sessionKey?: string, agentId?: string) => {
-      const entry = pending.get(client);
+      const entry = current(client);
       if (entry && (entry.sessionKey !== sessionKey || entry.agentId !== agentId)) {
         flush(client);
       }
@@ -91,13 +97,10 @@ export function createGatewaySessionReceiptDelivery(params: {
         flush(client);
         return false;
       }
-      let entry = pending.get(client);
+      let entry = current(client);
       if (
         entry &&
-        (entry.socket !== client.socket ||
-          entry.recipientProfileId !== client.preparedRecipientProfileId ||
-          entry.receipts.length === MAX_RECEIPTS ||
-          entry.bytes + receipt.bytes > params.maxBytes)
+        (entry.receipts.length === MAX_RECEIPTS || entry.bytes + receipt.bytes > params.maxBytes)
       ) {
         flush(client);
         entry = undefined;
