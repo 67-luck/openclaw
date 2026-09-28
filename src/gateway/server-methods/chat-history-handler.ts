@@ -49,7 +49,7 @@ import {
 import { prepareChatHistoryResponsePage } from "./chat-history-response-page.js";
 import { prepareChatHistorySessionRead } from "./chat-history-session-read.js";
 import { handleChatMetadataRequest } from "./chat-metadata-handler.js";
-import { readChatPendingInputs } from "./chat-pending-inputs.js";
+import { prepareChatPendingInputs } from "./chat-pending-inputs.js";
 import { handleChatStartupRequest } from "./chat-startup-handler.js";
 import { prepareChatStartupRequester } from "./chat-startup-requester.js";
 import { resolveVisibleActiveSessionRunState } from "./session-active-runs.js";
@@ -210,9 +210,9 @@ export async function handleChatHistoryRequest({
     const max = limit ?? 200;
     const maxHistoryBytes = Math.min(maxBytes ?? Infinity, getMaxChatHistoryMessagesBytes());
     const effectiveMaxChars = resolveEffectiveChatHistoryMaxChars(maxChars);
-    const pendingInputs =
+    const publishPendingInputs =
       sessionId && sessionId === entry?.sessionId
-        ? await readChatPendingInputs(
+        ? await prepareChatPendingInputs(
             {
               agentId: sessionAgentId,
               sessionKey: canonicalKey,
@@ -228,25 +228,13 @@ export async function handleChatHistoryRequest({
               cronStorePath: context.cronStorePath,
             },
           )
-        : { items: [], total: 0 };
+        : () => ({ items: [], total: 0 });
     // Receipts belong to the currently selected physical session, never archived history.
     const inputReceipts = inputRunIds
       ? !messageId && sessionId && sessionId === entry?.sessionId
-        ? (
-            await readSessionPendingInputReceiptsInWorker(
-              { agentId: sessionAgentId, sessionKey: canonicalKey, sessionId, storePath },
-              { runIds: inputRunIds },
-            )
-          ).map((receipt) =>
-            receipt.state === "pending" &&
-            !receipt.cancelled &&
-            isQueuedChatTurnForSession(context.chatQueuedTurns, receipt.runId, {
-              agentId: sessionAgentId,
-              sessionKey: canonicalKey,
-              sessionId,
-            })
-              ? { runId: receipt.runId, state: receipt.state, queued: true as const }
-              : receipt,
+        ? await readSessionPendingInputReceiptsInWorker(
+            { agentId: sessionAgentId, sessionKey: canonicalKey, sessionId, storePath },
+            { runIds: inputRunIds },
           )
         : []
       : undefined;
@@ -326,6 +314,29 @@ export async function handleChatHistoryRequest({
       client,
       agentId: sessionAgentId,
       catalog: defaultModelCatalog,
+    };
+    const respondWithInputs = (payload: Parameters<typeof projectOperatorModelRead>[1]) => {
+      // Keep active custody and cancel authority current through every preparation await.
+      const receipts = inputReceipts?.map((receipt) =>
+        receipt.state === "pending" &&
+        !receipt.cancelled &&
+        sessionId &&
+        isQueuedChatTurnForSession(context.chatQueuedTurns, receipt.runId, {
+          agentId: sessionAgentId,
+          sessionKey: canonicalKey,
+          sessionId,
+        })
+          ? { runId: receipt.runId, state: receipt.state, queued: true as const }
+          : receipt,
+      );
+      respond(
+        true,
+        projectOperatorModelRead(modelReadScope, {
+          ...payload,
+          pendingInputs: publishPendingInputs(),
+          ...(receipts ? { inputReceipts: receipts, inputConsumptions } : {}),
+        }),
+      );
     };
     const query = {
       key: canonicalKey,
@@ -547,13 +558,11 @@ export async function handleChatHistoryRequest({
               messages: delta.messages,
               ...(delta.activity.length > 0 ? { activity: delta.activity } : {}),
               deltaCursor: delta.deltaCursor,
-              pendingInputs,
-              ...(inputReceipts ? { inputReceipts, inputConsumptions } : {}),
               sessionInfo,
               ...(boundedInFlightRun ? { inFlightRun: boundedInFlightRun } : {}),
               ...(startupMetadata ? { metadata: startupMetadata } : {}),
             };
-            respond(true, projectOperatorModelRead(modelReadScope, payload));
+            respondWithInputs(payload);
             return undefined;
           });
         };
@@ -569,8 +578,6 @@ export async function handleChatHistoryRequest({
         sessionId,
         messages,
         ...responseFields,
-        pendingInputs,
-        ...(inputReceipts ? { inputReceipts, inputConsumptions } : {}),
         ...(historyPage.deltaCursor ? { deltaCursor: historyPage.deltaCursor } : {}),
         ...(historyPage.windowReset ? { windowReset: true } : {}),
         ...(historyPage.responseOffset !== undefined ? { offset: historyPage.responseOffset } : {}),
@@ -591,10 +598,10 @@ export async function handleChatHistoryRequest({
               ((await retainedTranscript.verifyRetainedState?.()) ?? true),
             requireCurrentSession: retainedTranscript.requireCurrentSession === true,
             sharing: currentSharing,
-            publish: () => respond(true, projectOperatorModelRead(modelReadScope, payload)),
+            publish: () => respondWithInputs(payload),
           });
       }
-      respond(true, projectOperatorModelRead(modelReadScope, payload));
+      respondWithInputs(payload);
       return undefined;
     });
     await publishDelta?.();

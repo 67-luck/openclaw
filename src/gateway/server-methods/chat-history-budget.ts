@@ -10,6 +10,7 @@ import { readTranscriptDisplayPosition } from "../../chat/transcript-display-pos
 import type { AgentHistoryActivity } from "../../infra/agent-activity-events.js";
 import { jsonUtf8Bytes, jsonUtf8BytesOrInfinity } from "../../infra/json-utf8-bytes.js";
 import { logLargePayload } from "../../logging/diagnostic-payload.js";
+import { normalizeInputProvenance } from "../../sessions/input-provenance.js";
 import type { InFlightRunSnapshot } from "../chat-abort.js";
 import {
   extractChatHistoryBlockText,
@@ -229,11 +230,18 @@ function buildOversizedHistoryPlaceholder(message?: unknown): Record<string, unk
     typeof metadata.idempotencyKey === "string" ? metadata.idempotencyKey : undefined;
   const turnBoundary = metadata.turnBoundary === true;
   const transcriptPosition = readTranscriptDisplayPosition(metadata.transcriptPosition);
+  const provenance = normalizeInputProvenance(entry.provenance);
+  if (provenance) {
+    // Keep source classification, not the model-facing prompt prefix, on bounded placeholders.
+    delete provenance.sourcePromptPrefix;
+  }
   return {
     role,
     timestamp,
     content: [{ type: "text", text: CHAT_HISTORY_OVERSIZED_PLACEHOLDER }],
     ...toolIdentity,
+    ...(provenance ? { provenance } : {}),
+    ...(asOptionalRecord(entry.senderSession) ? { senderSession: entry.senderSession } : {}),
     ...(isError !== undefined ? { isError } : {}),
     __openclaw: {
       ...(metadata.toolOutput ? { toolOutput: metadata.toolOutput } : {}),

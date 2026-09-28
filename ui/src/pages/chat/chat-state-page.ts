@@ -83,7 +83,7 @@ import { resetToolStream } from "./tool-stream-state.ts";
 
 function cancelPendingQueuedChatInput(state: ChatPageHost, id: string): boolean {
   const view = getChatPendingInputs(state);
-  const input = view?.queuedInputs.find(
+  const input = view?.activeInputs.find(
     (item) => `pending-input:${item.id}` === id && item.queued && item.state === "queued",
   );
   const client = state.client;

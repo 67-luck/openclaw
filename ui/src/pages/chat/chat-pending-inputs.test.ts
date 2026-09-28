@@ -357,7 +357,7 @@ describe("server-owned pending input display", () => {
       }),
       { signal: expect.any(AbortSignal) },
     ]);
-    expect(getChatPendingInputs(host)?.queuedInputs).toEqual([]);
+    expect(getChatPendingInputs(host)?.activeInputs).toEqual([]);
   });
 
   it.each(["page", "delta"])(

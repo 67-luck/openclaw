@@ -18,6 +18,7 @@ import {
   resolveSqliteScope,
   toDatabaseOptions,
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
+import { prepareActiveSessionPendingInputsInWorker } from "../../config/sessions/session-active-pending-inputs.js";
 import * as historyWorker from "../../config/sessions/session-transcript-worker-runtime.js";
 import { saveCronJobsStore } from "../../cron/store.js";
 import type { CronJob } from "../../cron/types.js";
@@ -32,11 +33,22 @@ import {
   registerQueuedChatTurn,
   retireQueuedChatTurnCancellation,
 } from "../chat-queued-turns.js";
+import { MAX_PAYLOAD_BYTES } from "../server-constants.js";
 import { chatHistoryHandlers } from "./chat-history-handler.js";
+import * as historyPages from "./chat-history-pages.js";
 import { createHistoryReadContext } from "./chat-history.test-helpers.js";
 import { chatMessageGetHandlers } from "./chat-message-get-handler.js";
-import { readChatPendingInputs } from "./chat-pending-inputs.js";
+import { prepareChatPendingInputs } from "./chat-pending-inputs.js";
 import type { GatewayRequestContext } from "./types.js";
+
+const readChatPendingInputs = async (...args: Parameters<typeof prepareChatPendingInputs>) =>
+  (await prepareChatPendingInputs(...args))();
+const readActiveSessionPendingInputsInWorker = async (
+  ...args: Parameters<typeof prepareActiveSessionPendingInputsInWorker>
+) => {
+  const prepared = await prepareActiveSessionPendingInputsInWorker(...args);
+  return { ...prepared.page, items: prepared.selectCurrent(prepared.page.items) };
+};
 
 describe("pending input read boundary", () => {
   it("prepares automation names once per pending page from the Gateway's selected partition", async () => {
@@ -587,18 +599,200 @@ const activeMessage = (id: string) => ({
   idempotencyKey: id + ":user",
   provenance: { kind: "inter_session" as const, sourceTool: "sessions_send" },
 });
-const stageActive = async (id: string, target = activeScope) =>
+const stageActive = async (id: string, target = activeScope, message = activeMessage(id)) =>
   expectDefined(
     await stageSessionPendingInput(target, {
       runId: id,
       requestFingerprint: id,
-      message: activeMessage(id),
+      message,
       assertCurrent: () => {},
     }),
     "pending input",
   );
 
 describe("active pending input display", () => {
+  it.each(["sessions_send", "cron"])(
+    "keeps %s provenance when a full active page exceeds its display budget",
+    async (sourceTool) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        await upsertSessionEntryCore(activeScope, {
+          sessionId: activeScope.sessionId,
+          updatedAt: 1,
+        });
+        const provenance =
+          sourceTool === "cron"
+            ? {
+                kind: "internal_system" as const,
+                sourceTool,
+                sourceSessionKey: "agent:main:cron:daily:run:first",
+                jobId: "daily",
+                runId: "first",
+              }
+            : { kind: "inter_session" as const, sourceTool, sourceSessionKey: "agent:main:helper" };
+        const receipts = [];
+        try {
+          for (let index = 0; index < 20; index++) {
+            const id = "budget-" + index;
+            receipts.push(
+              expectDefined(
+                await stageSessionPendingInput(activeScope, {
+                  runId: id,
+                  assertCurrent: () => {},
+                  message: { ...activeMessage(id), provenance, content: "😀".repeat(2000) },
+                }),
+                "budgeted pending receipt",
+              ),
+            );
+          }
+          const page = await readChatPendingInputs(activeScope, {
+            before: 1,
+            limit: 20,
+            maxChars: 8000,
+          });
+          expect(page.items).toEqual([]);
+          expect(page.queue?.items).toHaveLength(20);
+          for (const item of page.queue?.items ?? []) {
+            expect(item).not.toHaveProperty("queued");
+            expect(item.message).toMatchObject({
+              provenance,
+              senderSession: { sessionKey: provenance.sourceSessionKey, agentId: "main" },
+              __openclaw: { truncated: true },
+            });
+          }
+          expect(Buffer.byteLength(JSON.stringify(page.queue))).toBeLessThan(128 * 1024);
+        } finally {
+          receipts.forEach((receipt) => receipt.finish("interrupted"));
+        }
+      });
+    },
+  );
+
+  it.each(
+    [undefined, 100].flatMap((before) =>
+      ["cancelled", "consumed", "lifecycle"].map((ended) => ({ before, ended })),
+    ),
+  )(
+    "does not publish $ended custody after history preparation (before=$before)",
+    async ({ before, ended }) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        await upsertSessionEntryCore(activeScope, {
+          sessionId: activeScope.sessionId,
+          updatedAt: 1,
+        });
+        const receipt = await stageActive("late-cancel-".repeat(30));
+        const original = historyPages.readChatHistoryPage;
+        const read = vi
+          .spyOn(historyPages, "readChatHistoryPage")
+          .mockImplementation(async (...args) => {
+            const result = await original(...args);
+            if (ended === "consumed") {
+              await receipt.run(() =>
+                appendTranscriptMessage(activeScope, { message: receipt.message }),
+              );
+            } else if (ended === "lifecycle") {
+              rotateAgentEventLifecycleGeneration();
+            } else {
+              receipt.finish("cancelled");
+            }
+            return result;
+          });
+        try {
+          const context = await createHistoryReadContext();
+          const respond = vi.fn();
+          await expectDefined(
+            chatHistoryHandlers["chat.history"],
+            "history handler",
+          )({
+            params: {
+              sessionKey: activeScope.sessionKey,
+              ...(before ? { pendingBefore: before } : {}),
+            },
+            context,
+            respond,
+            req: { type: "req", id: "late-cancel", method: "chat.history" },
+            client: null,
+            isWebchatConnect: () => false,
+          });
+          expect(read).toHaveBeenCalled();
+          expect(respond).toHaveBeenLastCalledWith(
+            true,
+            expect.objectContaining({
+              pendingInputs: expect.objectContaining({
+                items: [],
+                ...(before ? { queue: { items: [] } } : {}),
+              }),
+            }),
+          );
+        } finally {
+          read.mockRestore();
+          receipt.finish("interrupted");
+        }
+      });
+    },
+  );
+  it("continues past a fully hidden active page without exposing internal input", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      await upsertSessionEntryCore(activeScope, { sessionId: activeScope.sessionId, updatedAt: 1 });
+      const visible = await stageActive("visible-oldest");
+      const receipts = [visible];
+      try {
+        for (let index = 0; index < 20; index++) {
+          const id = "hidden-" + index;
+          receipts.push(
+            expectDefined(
+              await stageSessionPendingInput(activeScope, {
+                runId: id,
+                message: { ...activeMessage(id), display: false },
+                assertCurrent: () => {},
+              }),
+              "hidden receipt",
+            ),
+          );
+        }
+        const first = await readChatPendingInputs(activeScope, { limit: 20, maxChars: 1000 });
+        expect(first.items).toEqual([]);
+        expect(first.queue?.items).toEqual([]);
+        expect(JSON.stringify(first)).not.toContain("hidden-");
+        const next = await readChatPendingInputs(activeScope, {
+          limit: 20,
+          maxChars: 1000,
+          queueBefore: expectDefined(first.queue?.nextBefore, "hidden page continuation"),
+        });
+        expect(next.queue?.items.map((item) => item.id)).toEqual([visible.inputId]);
+        expect(next.queue?.nextBefore).toBeUndefined();
+      } finally {
+        receipts.forEach((receipt) => receipt.finish("interrupted"));
+      }
+    });
+  });
+
+  it("bounds active worker payloads without truncating or skipping an oversized page", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      await upsertSessionEntryCore(activeScope, { sessionId: activeScope.sessionId, updatedAt: 1 });
+      const content = "x".repeat(Math.floor(MAX_PAYLOAD_BYTES / 2));
+      const receipts = [];
+      try {
+        for (const id of ["large-oldest", "large-newest"]) {
+          receipts.push(await stageActive(id, activeScope, { ...activeMessage(id), content }));
+        }
+        const first = await readActiveSessionPendingInputsInWorker(activeScope, { limit: 20 });
+        expect(first.items.map((item) => item.id)).toEqual([receipts[1]?.inputId]);
+        expect(first.items[0]?.message.content === content).toBe(true);
+        const older = await readActiveSessionPendingInputsInWorker(activeScope, {
+          limit: 20,
+          before: expectDefined(first.nextBefore, "byte-limited continuation"),
+        });
+        expect(older.items.map((item) => item.id)).toEqual([receipts[0]?.inputId]);
+        expect(older.items[0]?.message.content === content).toBe(true);
+        expect(older.nextBefore).toBeUndefined();
+        const display = await readChatPendingInputs(activeScope, { limit: 20, maxChars: 1000 });
+        expect(display.queue?.items).toHaveLength(1);
+        expect(Buffer.byteLength(JSON.stringify(display))).toBeLessThan(128 * 1024);
+      } finally {
+        receipts.forEach((receipt) => receipt.finish("interrupted"));
+      }
+    });
+  });
   it("does not publish an owner that ended while its worker read was in flight", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       await upsertSessionEntryCore(activeScope, { sessionId: activeScope.sessionId, updatedAt: 1 });

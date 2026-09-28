@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import type { ChatPendingInputsPage } from "../../../packages/gateway-protocol/src/schema/logs-chat.js";
 import { installMockGateway, reconnectMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { requireRecord, requireString } from "./chat-flow.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
@@ -53,7 +54,7 @@ suite.define(() => {
         queued: true,
         acceptedAt: pendingMessage.timestamp,
         message: pendingMessage,
-      };
+      } satisfies ChatPendingInputsPage["items"][number];
       const history = {
         sessionId,
         messages: [],
@@ -141,29 +142,41 @@ suite.define(() => {
       };
       const historyResponses = <
         T extends {
-          pendingInputs: { total: number; queuedCount: number };
+          pendingInputs: ChatPendingInputsPage & { queuedCount: number };
           inputReceipts: unknown[];
         },
       >(
         latest: T,
-      ) => ({
-        cases: [
-          {
-            match: { pendingBefore: 21 },
-            response: {
-              ...olderHistory,
-              pendingInputs: {
-                ...olderHistory.pendingInputs,
-                total: latest.pendingInputs.total,
-                queuedCount: latest.pendingInputs.queuedCount,
+      ) => {
+        const activeQueue = {
+          items: latest.pendingInputs.items.filter((item) => item.state === "queued"),
+        };
+        return {
+          cases: [
+            {
+              match: { pendingBefore: 21 },
+              response: {
+                ...olderHistory,
+                pendingInputs: {
+                  ...olderHistory.pendingInputs,
+                  total: latest.pendingInputs.total,
+                  queuedCount: latest.pendingInputs.queuedCount,
+                  queue: activeQueue,
+                },
+                // Exact custody receipts cover all requested inputs, independent of pagination.
+                inputReceipts: latest.inputReceipts,
               },
-              // Exact custody receipts cover all requested inputs, independent of pagination.
-              inputReceipts: latest.inputReceipts,
             },
-          },
-          { match: {}, response: latest },
-        ],
-      });
+            {
+              match: {},
+              response: {
+                ...latest,
+                pendingInputs: { ...latest.pendingInputs, queue: activeQueue },
+              },
+            },
+          ],
+        };
+      };
       await gateway.setMethodResponse(
         "chat.history",
         historyResponses({

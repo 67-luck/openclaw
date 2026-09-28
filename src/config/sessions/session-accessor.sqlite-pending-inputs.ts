@@ -105,10 +105,15 @@ export function captureActiveSessionPendingInputs(scope: {
   databasePath: string;
   sessionKey: string;
   sessionId: string;
+  inputIds?: readonly string[];
 }) {
   const captured = new Map(
-    [...owners.live].filter(
+    (scope.inputIds
+      ? scope.inputIds.map((id) => [id, owners.live.get(id)] as const)
+      : [...owners.live]
+    ).filter(
       ([, owner]) =>
+        owner !== undefined &&
         owner.databasePath === scope.databasePath &&
         owner.sessionKey === scope.sessionKey &&
         owner.sessionId === scope.sessionId &&

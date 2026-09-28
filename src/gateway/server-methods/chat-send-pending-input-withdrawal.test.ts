@@ -22,7 +22,7 @@ import { abortChatRunById, removeChatAbortControllerEntry } from "../chat-abort.
 import { abortQueuedChatTurnById } from "../chat-queued-turns.js";
 import { dispatchInboundMessageMock, installGatewayTestHooks } from "../test-helpers.js";
 import { handleChatAbortRequest } from "./chat-abort-handler.js";
-import { readChatPendingInputs } from "./chat-pending-inputs.js";
+import { prepareChatPendingInputs } from "./chat-pending-inputs.js";
 import { useBrowserFollowupFixture } from "./chat-send-pending-inputs.test-support.js";
 import { createActiveRun } from "./chat.abort.test-helpers.js";
 import * as sessionChangeEvent from "./session-change-event.js";
@@ -153,7 +153,9 @@ describe("queued chat input withdrawal", () => {
           reason ? { items: [{ state: disposition }], total: 1 } : { items: [], total: 0 },
         );
         if (reason) {
-          const page = await readChatPendingInputs(fixture.scope, { limit: 1, maxChars: 1000 });
+          const page = (
+            await prepareChatPendingInputs(fixture.scope, { limit: 1, maxChars: 1000 })
+          )();
           expect(page.items).toHaveLength(1);
           if (discardPendingInput) {
             expect(page.items[0]?.message).toMatchObject({ display: false, content: [] });

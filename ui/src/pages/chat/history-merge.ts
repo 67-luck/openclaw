@@ -399,12 +399,14 @@ const inputIdentities = new WeakMap<
   { inputIds: Set<string>; sendKeys: Set<string> }
 >();
 
+export function isActiveChatInput(input: ChatPendingInputsPage["items"][number]): boolean {
+  return input.state === "queued" && asNullableRecord(input.message)?.display !== false;
+}
+
 /** Display queue membership is separate from the Gateway execution queue flag. */
 export function isQueuedChatInput(input: ChatPendingInputsPage["items"][number]): boolean {
   return (
-    input.state === "queued" &&
-    (input.queued === true || isForwardedTurnBoundary(input.message)) &&
-    asNullableRecord(input.message)?.display !== false
+    isActiveChatInput(input) && (input.queued === true || isForwardedTurnBoundary(input.message))
   );
 }
 

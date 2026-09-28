@@ -19,7 +19,12 @@ export const input: ChatPendingInputsPage["items"][number] = {
     __openclaw: { id: "pending:input-1" },
   },
 };
-export const page: ChatPendingInputsPage = { items: [input], total: 2, nextBefore: 2 };
+export const page: ChatPendingInputsPage = {
+  items: [input],
+  total: 2,
+  nextBefore: 2,
+  queue: { items: [] },
+};
 
 export function makeChatPageHost({
   requestHandlers,

@@ -178,10 +178,13 @@ export function renderChat(props: ChatProps) {
       )
     : undefined;
   const pendingInputs = props.historyState ? getChatPendingInputs(props.historyState) : undefined;
+  const activeInputIds = new Set(pendingInputs?.activeInputs.map((input) => input.id));
   const displayedPendingInputs = pendingInputs
     ? [
-        ...pendingInputs.page.items.filter((input) => !isQueuedChatInput(input)),
-        ...pendingInputs.queuedInputs,
+        ...pendingInputs.page.items.filter(
+          (input) => !isQueuedChatInput(input) && !activeInputIds.has(input.id),
+        ),
+        ...pendingInputs.activeInputs,
       ]
     : undefined;
   const requestUpdate = props.onRequestUpdate ?? (() => {});

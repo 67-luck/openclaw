@@ -5,7 +5,7 @@ import {
   listSessionPendingInputs,
   type SessionPendingInput,
 } from "../../config/sessions/session-accessor.js";
-import { readActiveSessionPendingInputsInWorker } from "../../config/sessions/session-active-pending-inputs.js";
+import { prepareActiveSessionPendingInputsInWorker } from "../../config/sessions/session-active-pending-inputs.js";
 import { prepareForwardedMessageCronJobNameResolver } from "../chat-display-projection.history.js";
 import {
   createCurrentUserProfileMessageProjector,
@@ -52,7 +52,7 @@ export function projectPendingInputMessage(
   };
 }
 
-export async function readChatPendingInputs(
+export async function prepareChatPendingInputs(
   scope: Parameters<typeof listSessionPendingInputs>[0],
   options: {
     before?: number;
@@ -62,36 +62,28 @@ export async function readChatPendingInputs(
     queuedTurns?: QueuedChatTurnMap;
     cronStorePath?: string;
   },
-): Promise<ChatPendingInputsPage> {
+): Promise<() => ChatPendingInputsPage> {
   const page = listSessionPendingInputs(scope, {
     before: options.before,
     limit: Math.min(options.limit, 20),
   });
-  const queue =
+  const separateQueue =
     page.nextBefore !== undefined ||
     options.before !== undefined ||
-    options.queueBefore !== undefined
-      ? await readActiveSessionPendingInputsInWorker(scope, {
-          before: options.queueBefore,
-          limit: 20,
-        })
-      : undefined;
+    options.queueBefore !== undefined;
+  const active = await prepareActiveSessionPendingInputsInWorker(scope, {
+    before: options.queueBefore,
+    limit: 20,
+    ...(!separateQueue ? { page } : {}),
+  });
+  const queue = separateQueue ? active.page : undefined;
   const resolveCronJobName = await prepareForwardedMessageCronJobNameResolver(
     [...page.items, ...(queue?.items ?? [])].map((input) => input.message),
     options.cronStorePath,
   );
-  let queuedCount = 0;
-  for (const runId of options.queuedTurns?.keys() ?? []) {
-    if (
-      runId.length <= PENDING_INPUT_CORRELATION_MAX_CHARS &&
-      isQueuedChatTurnForSession(options.queuedTurns, runId, scope)
-    ) {
-      queuedCount += 1;
-    }
-  }
   const projectProfile = createCurrentUserProfileMessageProjector(resolveCurrentUserProfileDisplay);
   const project = (items: SessionPendingInput[]): ChatPendingInputsPage["items"] => {
-    const visible = items.flatMap((input) => {
+    const visible = active.selectCurrent(items).flatMap((input) => {
       const message = projectPendingInputMessage(
         input,
         options.maxChars,
@@ -125,10 +117,21 @@ export async function readChatPendingInputs(
       return display;
     });
   };
-  return {
-    ...page,
-    ...(options.queuedTurns ? { queuedCount } : {}),
-    items: project(page.items),
-    ...(queue ? { queue: { ...queue, items: project(queue.items) } } : {}),
+  return () => {
+    let queuedCount = 0;
+    for (const runId of options.queuedTurns?.keys() ?? []) {
+      if (
+        runId.length <= PENDING_INPUT_CORRELATION_MAX_CHARS &&
+        isQueuedChatTurnForSession(options.queuedTurns, runId, scope)
+      ) {
+        queuedCount += 1;
+      }
+    }
+    return {
+      ...page,
+      ...(options.queuedTurns ? { queuedCount } : {}),
+      items: project(page.items),
+      ...(queue ? { queue: { ...queue, items: project(queue.items) } } : {}),
+    };
   };
 }
