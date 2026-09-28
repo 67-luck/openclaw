@@ -1,5 +1,5 @@
 // Splits oxlint into resource-aware shards with heartbeat and timeout handling.
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs, { type Dirent } from "node:fs";
 import os from "node:os";
@@ -13,6 +13,7 @@ import {
   CI_PARALLEL_MIN_MEMORY_BYTES,
   isConstrainedCiCheckHost,
   resolveLocalCheckEnv,
+  resolveRepoToolBinPath,
 } from "./lib/local-check-runtime.mts";
 import {
   inspectManagedProcessGroup,
@@ -64,6 +65,8 @@ type ShardBatchOptions = RunnerOptions & {
   concurrency: number;
   entries: OxlintShard[];
   evidenceId?: string;
+  deadline?: number;
+  stopOnFailure: boolean;
 };
 type ActiveShardChild = { child: ChildProcess; killGraceMs: number };
 
@@ -319,6 +322,9 @@ export async function main(
   const runner = path.resolve("scripts", "run-oxlint.mts");
   const shardArgs = parseShardRunnerArgs(extraArgs);
   const env = resolveLocalCheckEnv(runtimeEnv);
+  const timeoutMs = resolveShardTimeoutMs(env);
+  const deadline =
+    shardArgs.coreStripe && timeoutMs > 0 ? performance.now() + timeoutMs : undefined;
   const hostResources = resolveHostResources();
   const splitExtensions = shardArgs.extensionStripe !== undefined;
   const shards = createOxlintShards({
@@ -332,6 +338,9 @@ export async function main(
   const stripedShards = selectExtensionOxlintStripe(
     selectCoreOxlintStripe(filterOxlintShards(shards, shardArgs.only), shardArgs.coreStripe, {
       isolateLargeTargets: true,
+      // Explicit file requests retain their intentional gitignore bypass.
+      splitLargeSelections: !shardArgs.files && hasBoundedOxlintArgs(shardArgs.oxlintArgs),
+      deadline,
     }),
     shardArgs.extensionStripe,
   );
@@ -361,13 +370,15 @@ export async function main(
         return code;
       }
     }
-    const shardConcurrency = resolveOxlintShardConcurrency({
-      env,
-      platform: process.platform,
-      hostResources,
-      splitCore: shardArgs.splitCore,
-      splitExtensions,
-    });
+    const shardConcurrency = shardArgs.coreStripe
+      ? 1
+      : resolveOxlintShardConcurrency({
+          env,
+          platform: process.platform,
+          hostResources,
+          splitCore: shardArgs.splitCore,
+          splitExtensions,
+        });
     // stderr: stdout may carry machine-readable oxlint output for callers.
     console.error(
       `[oxlint] shard concurrency ${Math.max(1, Math.min(shardConcurrency, selectedShards.length))} ` +
@@ -380,6 +391,8 @@ export async function main(
       extraArgs: shardArgs.oxlintArgs,
       runner,
       evidenceId,
+      deadline,
+      stopOnFailure: shardArgs.coreStripe !== undefined,
     });
     completed = results.completed;
     return results.statuses.find((status) => status !== 0) ?? 0;
@@ -535,7 +548,19 @@ export function filterOxlintShards<T extends { name: string }>(shards: T[], only
 export function selectCoreOxlintStripe(
   shards: OxlintShard[],
   stripe: ShardStripe | undefined,
-  { isolateLargeTargets = false }: { isolateLargeTargets?: boolean } = {},
+  {
+    isolateLargeTargets = false,
+    splitLargeSelections = false,
+    platform = process.platform,
+    cwd = process.cwd(),
+    readDir = fs.readdirSync,
+    deadline,
+  }: DirectoryOptions &
+    PlatformOptions & {
+      isolateLargeTargets?: boolean;
+      splitLargeSelections?: boolean;
+      deadline?: number;
+    } = {},
 ) {
   if (!stripe) {
     return shards;
@@ -561,11 +586,86 @@ export function selectCoreOxlintStripe(
           },
         ]
       : []),
-    ...isolatedTargets.map((target) => ({
-      name: `core:stripe:${stripe.index}:${target.replaceAll("/", ":")}`,
-      args: ["--tsconfig", CORE_TS_CONFIG, target],
-    })),
+    ...isolatedTargets.flatMap((target) => {
+      // Explicit root-file arguments can exceed Windows command-line limits.
+      // These measured selections are qualified only on Linux workers.
+      const parts =
+        splitLargeSelections && platform === "linux"
+          ? splitCoreTargetSelection(target, { cwd, readDir }, deadline)
+          : [[target]];
+      const name = `core:stripe:${stripe.index}:${target.replaceAll("/", ":")}`;
+      return parts.map((targets, index) => ({
+        name: parts.length === 1 ? name : `${name}:part:${index + 1}`,
+        args: ["--tsconfig", CORE_TS_CONFIG, ...targets],
+        ...(parts.length > 1 ? { canonicalTargets: [target] } : {}),
+      }));
+    }),
   ];
+}
+
+function splitCoreTargetSelection(target: string, options: DirectoryLookup, deadline?: number) {
+  // These measured cuts bound checker/payload retention without changing type
+  // projects. Native discovery preserves gitignore before files become explicit.
+  if (
+    !["src/agents", "src/gateway", "ui"].includes(target) ||
+    readDirectoryEntries(options.readDir, path.join(options.cwd, target)).length === 0
+  )
+    return [[target]];
+  const remainingMs = deadline === undefined ? 30_000 : Math.ceil(deadline - performance.now());
+  if (remainingMs <= 0) throw new Error("core stripe deadline expired before file discovery");
+  const files = execFileSync(resolveRepoToolBinPath("oxlint"), ["--debug", "files", target], {
+    cwd: options.cwd,
+    encoding: "utf8",
+    // Discovery runs the native binding in this process; it starts no checker.
+    // A blocked event loop cannot enforce the outer command's timer for us.
+    timeout: Math.min(30_000, remainingMs),
+    killSignal: "SIGKILL",
+    maxBuffer: 4 * 1024 * 1024,
+  })
+    .split(/\r?\n/u)
+    .filter(Boolean)
+    .toSorted();
+  const selected = new Set(files);
+  const entries = (root: string) =>
+    readDirectoryEntries(options.readDir, path.join(options.cwd, root))
+      .filter((entry) => {
+        const candidate = root + "/" + entry.name;
+        return (
+          entry.isDirectory() ||
+          selected.has(candidate) ||
+          files.some((file) => file.startsWith(candidate + "/"))
+        );
+      })
+      .sort((left, right) => left.name.localeCompare(right.name));
+  let parts: string[][];
+  if (target === "ui") {
+    const root = entries("ui");
+    if (!root.some((entry) => entry.name === "src" && entry.isDirectory())) return [[target]];
+    const source = entries("ui/src");
+    if (!source.some((entry) => entry.name === "pages" && entry.isDirectory())) return [[target]];
+    parts = [
+      ["ui/src/pages"],
+      [
+        ...root.filter((entry) => entry.name !== "src").map((entry) => "ui/" + entry.name),
+        ...source.filter((entry) => entry.name !== "pages").map((entry) => "ui/src/" + entry.name),
+      ],
+    ];
+  } else {
+    const children = entries(target);
+    parts = [false, true].map((directory) =>
+      children
+        .filter((entry) => entry.isDirectory() === directory)
+        .map((entry) => target + "/" + entry.name),
+    );
+  }
+  // Retain directory traversal: enumerating every nested file can overflow
+  // the bounded-argument ownership token's per-environment-variable OS limit.
+  return parts.every((part) => part.length > 0) ? parts : [[target]];
+}
+
+function hasBoundedOxlintArgs(args: readonly string[]) {
+  // Fixes, suppression updates and warning budgets retain whole-command semantics.
+  return args.every((arg) => /^--(?:threads=[12]|format=(?:json|stylish))$/u.test(arg));
 }
 
 /** Select one deterministic, disjoint stripe of independently bounded extension Programs. */
@@ -639,16 +739,26 @@ async function runShards({
   extraArgs,
   runner,
   evidenceId,
+  deadline,
+  stopOnFailure,
 }: ShardBatchOptions) {
   // Dependency-less worktrees establish their primary-checkout toolchain link
   // before this lazy import, avoiding a top-level package-resolution failure.
   const { default: pMap } = await import("p-map");
   let completed = 0;
+  let failed = false;
   const results = await pMap(
     entries,
     async (shard, index) => {
-      if (isParentTerminationRequested()) {
+      if (isParentTerminationRequested() || (stopOnFailure && failed)) {
         return undefined;
+      }
+      const remainingMs =
+        deadline === undefined ? undefined : Math.ceil(deadline - performance.now());
+      if (remainingMs !== undefined && remainingMs <= 0) {
+        failed = true;
+        console.error("[oxlint] core stripe deadline expired; remaining shards were not started");
+        return 124;
       }
       // File projection must retain the measured parent Program's resource bounds.
       const targets = shard.canonicalTargets ?? shard.args.slice(2);
@@ -657,12 +767,14 @@ async function runShards({
           (targets.length === 1 ||
             targets.every((target) => !ISOLATED_CORE_TARGETS.has(target)))) ||
         (shard.name.startsWith("extensions:") && targets.length <= DEFAULT_EXTENSION_CHUNK_SIZE);
-      const boundedArgs =
-        boundedTargets &&
-        extraArgs.every((arg) => /^--(?:threads=[12]|format=(?:json|stylish))$/u.test(arg));
-      return await runShard({
+      const boundedArgs = boundedTargets && hasBoundedOxlintArgs(extraArgs);
+      const status = await runShard({
         env: {
           ...env,
+          // Physical parts share one command budget; another part cannot restart it.
+          ...(remainingMs === undefined
+            ? {}
+            : { OPENCLAW_OXLINT_SHARD_TIMEOUT_MS: String(remainingMs) }),
           ...(evidenceId ? { OPENCLAW_CI_STATIC_EVIDENCE_ID: `${evidenceId}:${index}` } : {}),
           OPENCLAW_OXLINT_BATCH_CONCURRENCY: String(concurrency),
           OPENCLAW_OXLINT_BOUNDED_SHARD_ARGS: boundedArgs
@@ -676,8 +788,10 @@ async function runShards({
           completed++;
         },
       });
+      if (status !== 0) failed = true;
+      return status;
     },
-    { concurrency, stopOnError: false },
+    { concurrency, stopOnError: stopOnFailure },
   );
   return { statuses: results.filter((status) => status !== undefined), completed };
 }
