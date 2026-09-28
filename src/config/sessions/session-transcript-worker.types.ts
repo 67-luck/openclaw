@@ -21,6 +21,7 @@ import type { AgentDatabaseExecutionFileIdentity } from "../../state/openclaw-ag
 import type { SessionLifecycleTimestamps } from "./lifecycle.types.js";
 import type { SessionTranscriptBoundedActiveContext } from "./session-accessor.sqlite-active-context.js";
 import type { listActiveSessionPendingInputs } from "./session-accessor.sqlite-active-pending-inputs.js";
+import type { TranscriptArchivePresenceRead } from "./session-accessor.sqlite-archive-types.js";
 import type {
   SessionBranchSummaryReadRequest,
   SessionBranchSummaryReadResult,
@@ -442,6 +443,10 @@ type SessionPendingArchivesWorkerInput = {
   env: NodeJS.ProcessEnv;
 };
 
+type SessionArchivePresenceWorkerInput = TranscriptArchivePresenceRead & {
+  kind: "session-archive-presence";
+};
+
 export type SessionArchivePruningWorkerInput = {
   kind: "session-archive-pruning";
   database: { agentId: string; path: string };
@@ -462,6 +467,7 @@ export type SessionHistoryWorkerInput =
   | SessionHistoricalEvictionCandidatesWorkerInput
   | SessionArchivePruningWorkerInput
   | SessionPendingArchivesWorkerInput
+  | SessionArchivePresenceWorkerInput
   | SessionColdMetadataWorkerInput
   | SessionTranscriptHydrationWorkerInput
   | SessionTranscriptCurrentTurnEntryWorkerInput
@@ -505,6 +511,7 @@ export type SessionHistoryWorkerPreparedInput = {
 export type SessionTranscriptWorkerValues = {
   prewarm: { kind: "prewarm" };
   "session-pending-archives": { kind: "session-pending-archives"; pending: boolean };
+  "session-archive-presence": { kind: "session-archive-presence"; registered: boolean };
   "historical-eviction-candidates": {
     kind: "historical-eviction-candidates";
     sessionIds: string[];
@@ -584,6 +591,9 @@ export type SessionTranscriptWorkerReply<Kind extends keyof SessionTranscriptWor
 
 export type SessionHistoryWorkerDatabase = {
   prewarm: (input: { env: NodeJS.ProcessEnv }) => Promise<void>;
+  readArchivePresence: (
+    input: Omit<SessionArchivePresenceWorkerInput, "kind" | "database">,
+  ) => Promise<boolean>;
   readPendingArchives: (
     input: Omit<SessionPendingArchivesWorkerInput, "kind" | "database">,
     signal?: AbortSignal,

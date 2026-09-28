@@ -346,6 +346,7 @@ const HOSTED_MAIN_UPDATE_TEST = "src/cli/update-cli.test.ts";
 // Trusted forks can use the GitHub profile on Blacksmith. Every compact
 // profile must fit the same runner-registration allowance.
 const COMPACT_NODE_TEST_JOB_CAP = 90;
+const COMPACT_GITHUB_NODE_TEST_JOB_CAP = 96;
 const COMPACT_NODE_TEST_JOB_GROUPS = 10;
 const COMPACT_TOOLING_NODE_TEST_GROUPS = 16;
 const COMPACT_WHOLE_NODE_TEST_TIMEOUT_MINUTES = 120;
@@ -1164,6 +1165,21 @@ function isParallelToolingGroup(group: NodeTestShardGroup): boolean {
   return /^core-tooling-\d+(?:-hosted-\d+)?$/u.test(group.shard_name);
 }
 
+function compactToolingTestSecondsLimit(
+  groups: readonly NodeTestShardGroup[],
+  runnerBackend: string | undefined,
+): number {
+  // Keep the measured planner-proof tail bounded without fragmenting unrelated tooling.
+  const hasPlannerProof = groups.some((group) =>
+    group.includePatterns?.some((file) =>
+      /^test\/scripts\/ci-changed-node-test-plan(?:\.[^/]+)?\.test\.ts$/u.test(file),
+    ),
+  );
+  return runnerBackend !== "github" && hasPlannerProof
+    ? COMPACT_EXCLUSIVE_JOB_SECONDS
+    : COMPACT_SERIAL_NODE_TEST_JOB_SECONDS;
+}
+
 function estimateParallelToolingSeconds(
   group: Pick<NodeTestShardGroup, "env">,
   files: readonly string[],
@@ -1486,7 +1502,10 @@ function expandCompactGroup(
 const TOOLING_CONFIG = "test/vitest/vitest.tooling.config.ts";
 const TOOLING_DOCKER_TEST_FILE = "test/scripts/docker-build-helper.test.ts";
 const TOOLING_UNIFIED_DECLARATIONS_TEST_FILE = "test/scripts/write-unified-entry-dts.test.ts";
-const TOOLING_DECLARATION_COMPILER_TEST_FILES = new Set([
+const TOOLING_LARGE_CAPACITY_TEST_FILES = new Set([
+  // Generation-retention cases require eight CPUs / 24 GiB; the two-CPU
+  // screen also peaked at 6.05 GiB before those gated cases could run.
+  "test/scripts/vitest-worker-artifacts.ci.test.ts",
   "test/scripts/write-unified-entry-dts.test.ts",
   "test/scripts/write-plugin-sdk-entry-dts.test.ts",
 ]);
@@ -2605,7 +2624,6 @@ type CanonicalTargetInventory = {
   configsByFile: Map<string, Set<string>>;
   configs: Set<string>;
   completeConfigs: Set<string>;
-  releaseOnlyConfigs: Set<string>;
 };
 const canonicalTargetInventories = new Map<
   (typeof canonicalNodeTestOwners)[number] | undefined,
@@ -2628,18 +2646,11 @@ function resolveCanonicalTargetInventory(requestedConfig?: string) {
   const configsByFile = new Map<string, Set<string>>();
   const configs = new Set<string>();
   const incompleteConfigs = new Set<string>();
-  const releaseOnlyConfigs = new Set<string>();
   for (const shard of createNodeTestShardsForOwners(owner ? [owner] : canonicalNodeTestOwners, {
     includeReleaseOnlyPluginShards: true,
     includeReleaseOnlyToolingShards: true,
     includeProofTests: false,
   })) {
-    if (RELEASE_ONLY_PLUGIN_SHARDS.has(shard.shardName)) {
-      for (const config of shard.configs) {
-        releaseOnlyConfigs.add(config);
-      }
-      continue;
-    }
     const envelope = shard.includePatterns ?? listWholeConfigFiles(shard.shardName);
     const included = envelope ? new Set(envelope) : undefined;
     for (const config of shard.configs) {
@@ -2664,7 +2675,6 @@ function resolveCanonicalTargetInventory(requestedConfig?: string) {
     configsByFile,
     configs,
     completeConfigs: new Set([...configs].filter((config) => !incompleteConfigs.has(config))),
-    releaseOnlyConfigs,
   };
   canonicalTargetInventories.set(owner, inventory);
   return inventory;
@@ -2701,7 +2711,6 @@ export function resolveCanonicalNodeTestConfig(
     return owners.values().next().value;
   }
   if (
-    inventory.releaseOnlyConfigs.has(config) ||
     EXCLUDED_PROJECT_CONFIGS.has(config) ||
     canonicalNodeTestOwners.some(
       (owner) => EXCLUDED_FULL_SUITE_SHARDS.has(owner.config) && owner.projects.includes(config),
@@ -3697,7 +3706,17 @@ function splitOversizedCompactGroup(
           patterns.toSorted(
             (a, b) => weightForValue(b) - weightForValue(a) || discoveryOrder(a, b),
           ),
-          (bin, file) => batchWeight([...bin, file]) <= secondsCap,
+          (bin, file) => {
+            const combinedSeconds = batchWeight([...bin, file]);
+            // Fill an indivisible file's spare worker without increasing its
+            // cost, but keep files above the whole-job budget alone.
+            return (
+              combinedSeconds <= secondsCap ||
+              (bin.length === 1 &&
+                combinedSeconds <= COMPACT_SERIAL_NODE_TEST_JOB_SECONDS &&
+                combinedSeconds <= batchWeight(bin))
+            );
+          },
         ).map((batch) => batch.toSorted(discoveryOrder));
       // Full children plus small tails can strand a whole row even when the
       // files fit. On overflow, expose smaller file envelopes for placement.
@@ -4155,7 +4174,13 @@ export function createSelectedNodeTestShardBundles(
   const tooling = new Set([...selected].filter((target) => configs.get(target) === TOOLING_CONFIG));
   const shards = createNodeTestShardsForOwners(
     fullSuiteVitestShards,
-    { ...options, includeReleaseOnlyPluginShards: false, includeProofTests: false },
+    {
+      ...options,
+      // Exact selection opts into its existing owner, not the unrelated plugin sweep.
+      changedPaths: [...selected],
+      includeReleaseOnlyPluginShards: false,
+      includeProofTests: false,
+    },
     tooling.size === selected.size,
   );
   const owners = new Set<NodeTestShard>();
@@ -4519,15 +4544,16 @@ function createCompactNodeTestShardBundles(
       options.compactNodeJobCap ?? COMPACT_NODE_TEST_JOB_CAP,
     );
   }
-  const compactNodeJobCap = options.compactNodeJobCap ?? COMPACT_NODE_TEST_JOB_CAP;
+  const profileJobCap =
+    options.runnerBackend === "github"
+      ? COMPACT_GITHUB_NODE_TEST_JOB_CAP
+      : COMPACT_NODE_TEST_JOB_CAP;
+  const compactNodeJobCap = options.compactNodeJobCap ?? profileJobCap;
   if (!Number.isSafeInteger(compactNodeJobCap) || compactNodeJobCap < 1) {
     throw new Error("compact Node job cap must be a positive integer");
   }
   const effectiveJobCap = (bins: readonly (readonly NodeTestShardGroup[])[]) =>
-    Math.min(
-      COMPACT_NODE_TEST_JOB_CAP,
-      compactNodeJobCap + bins.filter((bin) => bin[0]?.requiresDist).length,
-    );
+    Math.min(profileJobCap, compactNodeJobCap + bins.filter((bin) => bin[0]?.requiresDist).length);
   const includeTooling = compactMode !== "push" && includesReleaseOnlyTooling(options);
   const keepPrExemptRuntimeFile = (file: string) =>
     options.includePrExemptRuntimeTests !== undefined &&
@@ -4595,6 +4621,9 @@ function createCompactNodeTestShardBundles(
     let plannedGroups =
       usesExpandedRunnerProfile(options.runnerBackend) ||
       COMPACT_BLACKSMITH_SPLIT_OWNERS.has(group.shard_name) ||
+      (isParallelToolingGroup(group) &&
+        compactToolingTestSecondsLimit([group], options.runnerBackend) ===
+          COMPACT_EXCLUSIVE_JOB_SECONDS) ||
       isParallelGatewayServerGroup(group) ||
       isParallelCommandsGroup(group) ||
       runtimePartition !== undefined ||
@@ -4852,7 +4881,7 @@ function createCompactNodeTestShardBundles(
       const serialSecondsCap = sharesSerialCliBudget
         ? COMPACT_HYBRID_SERIAL_CLI_JOB_SECONDS
         : combined.every(isParallelToolingGroup)
-          ? COMPACT_SERIAL_NODE_TEST_JOB_SECONDS
+          ? compactToolingTestSecondsLimit(combined, options.runnerBackend)
           : exclusive && !sharesHostedBuild
             ? COMPACT_EXCLUSIVE_JOB_SECONDS
             : usesExpandedRunnerProfile(options.runnerBackend)
@@ -4985,7 +5014,7 @@ function createCompactNodeTestShardBundles(
       (options.runnerBackend === "hybrid" &&
         usesBlacksmithCapacity(runner) &&
         bin.some((group) =>
-          group.includePatterns?.some((file) => TOOLING_DECLARATION_COMPILER_TEST_FILES.has(file)),
+          group.includePatterns?.some((file) => TOOLING_LARGE_CAPACITY_TEST_FILES.has(file)),
         )) ||
       (usesBlacksmithCapacity(runner) &&
         bin.some((group) => MEASURED_CLI_GROUP_RE.test(group.shard_name)))
@@ -5295,6 +5324,12 @@ function createCompactNodeTestShardBundles(
                   group.includePatterns?.every((file) => toolingFileTimings?.[file] !== undefined),
                 ),
               }),
+              ...(hostedHourly
+                ? {}
+                : {
+                    testSecondsLimit: (groups: NodeTestShardGroup[]) =>
+                      compactToolingTestSecondsLimit(groups, options.runnerBackend),
+                  }),
               canShare: (groups) =>
                 groups.length <= COMPACT_NODE_TEST_JOB_GROUPS && hasDistinctStripeFamilies(groups),
             }),

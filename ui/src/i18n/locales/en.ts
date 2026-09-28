@@ -23,6 +23,7 @@ export const en: TranslationMap & {
         | "showLess"
         | "showMore"
         | "tooLargeToDisplay"
+        | "unattributedSender"
         | "toolSender"
         | "errorSender",
         string
@@ -1869,6 +1870,7 @@ export const en: TranslationMap & {
     moreActions: "More actions",
     copyUrl: "Copy URL",
     openNewTab: "Open in new tab",
+    openWithinOpenClaw: "Open in OpenClaw",
     toggle: "Toggle browser panel",
     close: "Close browser panel",
     resize: "Resize browser panel",
@@ -3185,7 +3187,6 @@ export const en: TranslationMap & {
       suggest: "Suggest",
       draft: "Draft",
       publishDraft: "Publish draft",
-      owner: "Owner",
       members: "Members",
       selected: "Member",
       noPeople: "No paired people found.",
@@ -3672,7 +3673,7 @@ export const en: TranslationMap & {
     },
     questions: {
       other: "Type your own answer here",
-      multilineHint: "Enter adds a line · Ctrl/⌘+Enter to continue",
+      multilineHint: "Enter adds a line · {shortcut} to continue",
       answer: "Answer",
       answerPlaceholder: "{label}",
       openLink: "Open link",
@@ -3726,6 +3727,7 @@ export const en: TranslationMap & {
       showLess: "Show less",
       showMore: "Show more",
       tooLargeToDisplay: "This message is too large to display here.",
+      unattributedSender: "Message",
       toolSender: "Tool",
       errorSender: "Error",
     },
