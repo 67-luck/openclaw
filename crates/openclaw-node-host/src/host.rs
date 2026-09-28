@@ -943,9 +943,7 @@ mod tests {
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
         let message = socket.next().await.unwrap().unwrap();
-        let Message::Text(text) = message else {
-            panic!("expected text frame");
-        };
+        let text = message.into_text().expect("expected UTF-8 JSON frame");
         serde_json::from_str(text.as_str()).unwrap()
     }
 }

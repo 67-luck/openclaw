@@ -3,7 +3,6 @@ use serde_json::Value;
 use std::{
     collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap},
     future::Future,
-    io::{self, Write},
     panic::AssertUnwindSafe,
     pin::Pin,
     sync::{Arc, Mutex, Weak},
@@ -1367,37 +1366,8 @@ fn nonzero_duration(value: Duration) -> Duration {
     value.max(Duration::from_millis(1))
 }
 
-struct LimitWriter {
-    written: usize,
-    maximum: usize,
-}
-
-impl Write for LimitWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let Some(next) = self.written.checked_add(bytes.len()) else {
-            return Err(io::Error::other("serialized JSON exceeds byte limit"));
-        };
-        if next > self.maximum {
-            return Err(io::Error::other("serialized JSON exceeds byte limit"));
-        }
-        self.written = next;
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 fn serialized_json_within_limit(value: &Value, maximum: usize) -> bool {
-    serde_json::to_writer(
-        LimitWriter {
-            written: 0,
-            maximum,
-        },
-        value,
-    )
-    .is_ok()
+    openclaw_gateway_client::json_encoded_len(value, maximum).is_some()
 }
 
 #[cfg(test)]

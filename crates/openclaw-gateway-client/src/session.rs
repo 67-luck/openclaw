@@ -1222,7 +1222,10 @@ where
             .ok_or_else(|| ClientError::Closed("Gateway ended the WebSocket stream".into()))?
             .map_err(|error| ClientError::Transport(error.to_string()))?;
         match message {
-            Message::Text(text) => {
+            message @ (Message::Text(_) | Message::Binary(_)) => {
+                let text = message
+                    .into_text()
+                    .map_err(|error| ClientError::InvalidFrame(error.to_string()))?;
                 return serde_json::from_str(text.as_str())
                     .map_err(|error| ClientError::InvalidFrame(error.to_string()));
             }
@@ -1230,7 +1233,7 @@ where
                 send_message(socket, Message::Pong(payload), write_timeout, "pong").await?
             }
             Message::Close(frame) => return Err(ClientError::Closed(format_close(frame.as_ref()))),
-            Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
+            Message::Pong(_) | Message::Frame(_) => {}
         }
     }
 }
@@ -1246,15 +1249,14 @@ async fn send_request<S>(
 where
     S: GatewayWebSocket,
 {
-    let frame = json!({ "type": "req", "id": id, "method": method, "params": params });
-    send_message_guarded(
-        socket,
-        Message::Text(frame.to_string().into()),
-        write_timeout,
-        method,
-        guard,
-    )
-    .await
+    let mut frame = json!({ "type": "req", "id": id, "method": method });
+    frame["params"] = params;
+    // Gateway accepts UTF-8 JSON bytes, as sent by the native Swift client.
+    // Binary avoids a native transport decoding and re-encoding the same text.
+    let message = Message::Binary(crate::encode_json(&frame).into_bytes().into());
+    // Pending network writes need only the serialized message, not a second media payload.
+    drop(frame);
+    send_message_guarded(socket, message, write_timeout, method, guard).await
 }
 
 async fn send_message<S>(
@@ -1477,7 +1479,8 @@ where
                     activity.send_modify(|generation| *generation = generation.wrapping_add(1));
                 }
                 match message {
-                    Some(Ok(Message::Text(text))) => {
+                    Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) => {
+                        let Ok(text) = message.into_text() else { continue; };
                         match serde_json::from_str::<IncomingFrame>(text.as_str()) {
                             Ok(IncomingFrame::Event { .. }) => {
                                 events.publish(Arc::from(text.as_str()));
@@ -1492,7 +1495,7 @@ where
                                     ));
                                 }
                             }
-                            // Match the authoritative TypeScript client: unknown text frames are
+                            // Match the authoritative TypeScript client: unknown JSON frames are
                             // not responses or events, regardless of request timing.
                             Err(_) => {}
                         }
@@ -1519,7 +1522,7 @@ where
                             }
                         }
                     }
-                    Some(Ok(Message::Binary(_) | Message::Frame(_))) => {}
+                    Some(Ok(Message::Frame(_))) => {}
                     Some(Err(error)) => break SessionCloseCause::Transport(error.to_string()),
                     None => break SessionCloseCause::Closed("Gateway ended the WebSocket stream".into()),
                 }

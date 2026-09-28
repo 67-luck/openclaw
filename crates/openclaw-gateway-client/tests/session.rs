@@ -9,85 +9,93 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 #[tokio::test]
 async fn connects_publishes_events_and_correlates_requests() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        let (tcp, _) = listener.accept().await.unwrap();
-        let mut socket = accept_async(tcp).await.unwrap();
-        send_json(
+    for binary in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(tcp).await.unwrap();
+            send_json_as(
             &mut socket,
             json!({
                 "type":"event", "event":"connect.challenge", "payload":{"nonce":"nonce-1","ts":1_700_000_000_123_u64}
             }),
+            binary,
         )
         .await;
 
-        let connect = receive_json(&mut socket).await;
-        assert_eq!(connect["method"], "connect");
-        assert_eq!(connect["params"]["role"], "node");
-        send_json(
-            &mut socket,
-            json!({
-                "type":"res", "id":connect["id"], "ok":true,
-                "payload":{"type":"hello-ok","protocol":4}
-            }),
-        )
-        .await;
-        send_json(
-            &mut socket,
-            json!({
-                "type":"event", "event":"node.test", "payload":{"ready":true}, "seq":7,
-                "stateVersion":{"presence":9}, "recipientProfileId":"profile-1"
-            }),
-        )
-        .await;
+            let connect = receive_json(&mut socket).await;
+            assert_eq!(connect["method"], "connect");
+            assert_eq!(connect["params"]["role"], "node");
+            send_json_as(
+                &mut socket,
+                json!({
+                    "type":"res", "id":connect["id"], "ok":true,
+                    "payload":{"type":"hello-ok","protocol":4}
+                }),
+                binary,
+            )
+            .await;
+            send_json_as(
+                &mut socket,
+                json!({
+                    "type":"event", "event":"node.test", "payload":{"ready":true}, "seq":7,
+                    "stateVersion":{"presence":9}, "recipientProfileId":"profile-1"
+                }),
+                binary,
+            )
+            .await;
 
-        let request = receive_json(&mut socket).await;
-        assert_eq!(request["method"], "node.echo");
-        send_json(
-            &mut socket,
-            json!({
-                "type":"res", "id":request["id"], "ok":true,
-                "payload":{"echo":request["params"]}
-            }),
-        )
-        .await;
-        socket.close(None).await.unwrap();
-    });
+            let request = receive_json(&mut socket).await;
+            assert_eq!(request["method"], "node.echo");
+            send_json_as(
+                &mut socket,
+                json!({
+                    "type":"res", "id":request["id"], "ok":true,
+                    "payload":{"echo":request["params"]}
+                }),
+                binary,
+            )
+            .await;
+            socket.close(None).await.unwrap();
+        });
 
-    let session = GatewayClient::connect(
-        GatewayClientConfig::new(format!("ws://{address}")).unwrap(),
-        |challenge| async move {
-            assert_eq!(challenge.nonce, "nonce-1");
-            assert_eq!(challenge.issued_at_ms, 1_700_000_000_123);
-            Ok::<_, io::Error>(json!({
-                "minProtocol":4, "maxProtocol":4,
-                "client":{"id":"node-host","version":"test","platform":"test","mode":"node"},
-                "role":"node", "scopes":[]
-            }))
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(session.hello()["protocol"], 4);
-    assert_eq!(
-        session.next_event().await.unwrap(),
-        Event {
-            event: "node.test".into(),
-            payload: json!({"ready":true}),
-            seq: Some(7),
-            state_version: Some(json!({"presence":9})),
-            recipient_profile_id: Some("profile-1".into()),
-        }
-    );
-    assert_eq!(
-        session
-            .request("node.echo", json!({"value":42}))
-            .await
-            .unwrap(),
-        json!({"echo":{"value":42}})
-    );
-    server.await.unwrap();
+        let session = GatewayClient::connect(
+            GatewayClientConfig::new(format!("ws://{address}"))
+                .unwrap()
+                .challenge_timeout(Duration::from_secs(1)),
+            |challenge| async move {
+                assert_eq!(challenge.nonce, "nonce-1");
+                assert_eq!(challenge.issued_at_ms, 1_700_000_000_123);
+                Ok::<_, io::Error>(json!({
+                    "minProtocol":4, "maxProtocol":4,
+                    "client":{"id":"node-host","version":"test","platform":"test","mode":"node"},
+                    "role":"node", "scopes":[]
+                }))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(session.hello()["protocol"], 4);
+        assert_eq!(
+            session.next_event().await.unwrap(),
+            Event {
+                event: "node.test".into(),
+                payload: json!({"ready":true}),
+                seq: Some(7),
+                state_version: Some(json!({"presence":9})),
+                recipient_profile_id: Some("profile-1".into()),
+            }
+        );
+        assert_eq!(
+            session
+                .request("node.echo", json!({"value":42}))
+                .await
+                .unwrap(),
+            json!({"echo":{"value":42}})
+        );
+        server.await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -195,7 +203,7 @@ async fn dispatch_guard_rejection_after_enqueue_retires_the_session() {
             .await
             .expect("client close timeout");
         assert!(
-            !matches!(closed, Some(Ok(Message::Text(_)))),
+            !matches!(closed, Some(Ok(Message::Text(_) | Message::Binary(_)))),
             "rejected frame must not reach the server"
         );
     });
@@ -1311,10 +1319,23 @@ async fn send_json<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>, value:
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    socket
-        .send(Message::Text(value.to_string().into()))
-        .await
-        .unwrap();
+    send_json_as(socket, value, false).await;
+}
+
+async fn send_json_as<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    value: Value,
+    binary: bool,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let encoded = value.to_string();
+    let message = if binary {
+        Message::Binary(encoded.into_bytes().into())
+    } else {
+        Message::Text(encoded.into())
+    };
+    socket.send(message).await.unwrap();
 }
 
 async fn receive_json<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>) -> Value
@@ -1354,7 +1375,8 @@ async fn delivery_streaming_and_ping_reserve_bounded_independent_capacity() {
             while let Some(message) = socket.next().await {
                 match message.unwrap() {
                     Message::Ping(payload) => socket.send(Message::Pong(payload)).await.unwrap(),
-                    Message::Text(text) => {
+                    message @ (Message::Text(_) | Message::Binary(_)) => {
+                        let text = message.into_text().unwrap();
                         let frame: Value = serde_json::from_str(&text).unwrap();
                         let method = frame["method"].as_str().unwrap();
                         assert!(

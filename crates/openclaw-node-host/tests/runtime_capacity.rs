@@ -71,7 +71,8 @@ async fn run(capacity: usize) -> Value {
             tokio::time::timeout(Duration::from_secs(2), socket.next()).await
         {
             match message {
-                Message::Text(text) => {
+                message @ (Message::Text(_) | Message::Binary(_)) => {
+                    let text = message.into_text().unwrap();
                     let frame: Value = serde_json::from_str(&text).unwrap();
                     if frame["method"] == "node.invoke.result" {
                         assert_eq!(frame["params"]["ok"], true);

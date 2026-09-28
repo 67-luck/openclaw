@@ -1,7 +1,9 @@
 //! Reusable transport, security, and connection policy for Rust OpenClaw Gateway clients.
 
+mod json;
 mod session;
 mod transport;
+pub use json::{encode_json, json_encoded_len};
 pub use transport::{GatewayWebSocket, GatewayWebSocketConnector};
 
 // Transport implementations share the exact message/error contract used by the built-in socket.

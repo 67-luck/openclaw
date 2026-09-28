@@ -200,7 +200,8 @@ async fn runtime_rejects_buffered_invocation_after_session_retirement_is_request
             if message.is_close() {
                 break;
             }
-            if let Message::Text(text) = message {
+            if matches!(message, Message::Text(_) | Message::Binary(_)) {
+                let text = message.into_text().unwrap();
                 let request: Value = serde_json::from_str(text.as_str()).unwrap();
                 send_json(
                     &mut socket,
@@ -1168,7 +1169,7 @@ async fn native_signed_connect_preserves_product_fields_and_rejects_invalid_node
             if rejected {
                 let next = socket.next().await;
                 assert!(
-                    !matches!(next, Some(Ok(Message::Text(_)))),
+                    !matches!(next, Some(Ok(Message::Text(_) | Message::Binary(_)))),
                     "invalid manifest was sent to Gateway"
                 );
             } else {

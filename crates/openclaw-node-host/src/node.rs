@@ -1020,14 +1020,18 @@ fn invocation_result_params(
     result: InvocationResult,
 ) -> Result<Value, ClientError> {
     Ok(match result {
-        InvocationResult::Success(payload) => json!({
-            "id": invocation.id,
-            "nodeId": invocation.node_id,
-            "ok": true,
+        InvocationResult::Success(payload) => {
+            let mut params = json!({
+                "id": invocation.id,
+                "nodeId": invocation.node_id,
+                "ok": true,
+            });
             // Private worker controls consume the serialized result contract
             // directly; only public node.invoke also normalizes typed payloads.
-            "payloadJSON": payload.to_string(),
-        }),
+            // Move the serialized media result: json! would clone its full string.
+            params["payloadJSON"] = Value::String(openclaw_gateway_client::encode_json(&payload));
+            params
+        }
         InvocationResult::Failure { code, message } => {
             let code = require_non_empty_result_field("error code", code)?;
             let message = require_non_empty_result_field("error message", message)?;
@@ -1248,6 +1252,24 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serialized_media_result_does_not_retain_a_doubled_allocation() {
+        let invocation = NodeInvocation::new("media", "node", "camera.snap", Value::Null);
+        let params = invocation_result_params(
+            &invocation,
+            InvocationResult::success(Value::String("x".repeat(3 * 1024))),
+        )
+        .unwrap();
+        let Value::String(encoded) = &params["payloadJSON"] else {
+            panic!("serialized result contract missing");
+        };
+        assert_eq!(encoded.capacity(), encoded.len());
+        assert_eq!(
+            serde_json::from_str::<String>(encoded).unwrap().len(),
+            3 * 1024
+        );
+    }
 
     #[test]
     fn shared_invocation_lifecycle_contract_matches_openclaw() {

@@ -8,9 +8,11 @@
 
 use std::{
     fmt,
+    io::{self, BufReader, Cursor, Read},
+    ops::Range,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -244,6 +246,7 @@ pub struct AuthenticatedSidecarChannel {
     send_sequence: u64,
     receive_sequence: u64,
     liveness: SidecarChannelLiveness,
+    decoder: Option<JsonDecoder>,
 }
 
 #[derive(Clone)]
@@ -308,12 +311,14 @@ impl AuthenticatedSidecarChannel {
             send_sequence: 0,
             receive_sequence: 0,
             liveness: SidecarChannelLiveness(Arc::new(watch::channel(false).0)),
+            decoder: None,
         })
     }
 
     /// Permanently retire this process-session channel.
     pub fn retire(&mut self) {
         self.key.0.zeroize();
+        self.decoder = None;
         self.liveness.0.send_replace(true);
     }
 
@@ -372,6 +377,7 @@ impl AuthenticatedSidecarChannel {
             });
         }
         self.max_frame_bytes = negotiated_max_frame_bytes;
+        self.decoder = None;
         Ok(())
     }
 
@@ -417,6 +423,38 @@ impl AuthenticatedSidecarChannel {
     /// the local ceiling, the sequence has been exhausted, or the channel was
     /// retired by an inbound or transport failure.
     pub fn seal<T: Serialize>(&mut self, payload: &T) -> Result<Vec<u8>, SidecarFrameError> {
+        let mut frame = Vec::new();
+        self.seal_into(payload, &mut frame)?;
+        Ok(frame)
+    }
+
+    /// Seal into a transport-owned buffer, reusing its allocation between completed writes.
+    /// The buffer remains bounded by the channel ceiling and is empty on failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same framing and serialization errors as [`Self::seal`].
+    pub fn seal_into<T: Serialize>(
+        &mut self,
+        payload: &T,
+        frame: &mut Vec<u8>,
+    ) -> Result<(), SidecarFrameError> {
+        frame.clear();
+        if frame.capacity() > self.max_frame_bytes as usize {
+            frame.shrink_to(self.max_frame_bytes as usize);
+        }
+        let result = self.seal_active(payload, frame);
+        if result.is_err() {
+            frame.clear();
+        }
+        result
+    }
+
+    fn seal_active<T: Serialize>(
+        &mut self,
+        payload: &T,
+        frame: &mut Vec<u8>,
+    ) -> Result<(), SidecarFrameError> {
         if self.is_retired() {
             return Err(SidecarFrameError::ChannelRetired);
         }
@@ -439,7 +477,7 @@ impl AuthenticatedSidecarChannel {
             });
         }
 
-        let mut frame = Vec::with_capacity(minimum_capacity);
+        frame.reserve_exact(minimum_capacity);
         frame.extend_from_slice(&FRAME_MAGIC);
         frame.extend_from_slice(&SIDECAR_PROTOCOL_MAJOR.to_be_bytes());
         frame.extend_from_slice(&self.protocol_minor.to_be_bytes());
@@ -455,7 +493,7 @@ impl AuthenticatedSidecarChannel {
         let payload_start = frame.len();
         let max_authenticated_len = self.max_frame_bytes as usize - AUTH_TAG_BYTES;
         let serialization = {
-            let mut writer = BoundedFrameWriter::new(&mut frame, max_authenticated_len);
+            let mut writer = BoundedFrameWriter::new(frame, max_authenticated_len);
             match serde_json::to_writer(&mut writer, payload) {
                 Ok(()) => Ok(()),
                 Err(_) if writer.exceeded => Err(SidecarFrameError::FrameTooLarge {
@@ -478,10 +516,10 @@ impl AuthenticatedSidecarChannel {
 
         let mut mac = HmacSha256::new_from_slice(&self.key.0)
             .map_err(|_| SidecarFrameError::Authentication)?;
-        mac.update(&frame);
+        mac.update(frame);
         frame.extend_from_slice(&mac.finalize().into_bytes());
         self.send_sequence = sequence;
-        Ok(frame)
+        Ok(())
     }
 
     /// Authenticate, validate, and deserialize the next incoming frame.
@@ -491,18 +529,60 @@ impl AuthenticatedSidecarChannel {
     /// Returns an error for authentication, session, generation, direction,
     /// sequence, version, size, framing, or payload failures.
     pub fn open<T: DeserializeOwned>(&mut self, frame: &[u8]) -> Result<T, SidecarFrameError> {
+        self.open_input(FrameInput::Borrowed(frame), |_| Ok(None))
+    }
+
+    /// Decode using the transport's allocation instead of copying its authenticated payload.
+    /// The frame bytes and allocation are returned unchanged, including on decoding failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same authentication, framing, and JSON errors as [`Self::open`].
+    pub fn open_reusing<T: DeserializeOwned>(
+        &mut self,
+        frame: &mut Vec<u8>,
+    ) -> Result<T, SidecarFrameError> {
+        self.open_reusing_with(frame, |_| Ok(None))
+    }
+
+    /// Decode an authenticated product message directly from the transport buffer.
+    /// Return `None` to use the channel's reusable JSON decoder. A custom decoder
+    /// must consume and validate the entire UTF-8 JSON payload before returning `Some`.
+    /// It runs only after authentication and framing checks, before sequence advancement.
+    ///
+    /// # Errors
+    ///
+    /// Authentication, framing, and either decoder's errors permanently retire the channel.
+    pub fn open_reusing_with<T: DeserializeOwned>(
+        &mut self,
+        frame: &mut Vec<u8>,
+        decode: impl FnOnce(&[u8]) -> serde_json::Result<Option<T>>,
+    ) -> Result<T, SidecarFrameError> {
+        self.open_input(FrameInput::Reused(frame), decode)
+    }
+
+    fn open_input<T: DeserializeOwned>(
+        &mut self,
+        frame: FrameInput<'_>,
+        decode: impl FnOnce(&[u8]) -> serde_json::Result<Option<T>>,
+    ) -> Result<T, SidecarFrameError> {
         if self.is_retired() {
             return Err(SidecarFrameError::ChannelRetired);
         }
 
-        let result = self.open_active(frame);
+        let result = self.open_active(frame, decode);
         if result.is_err() {
             self.retire();
         }
         result
     }
 
-    fn open_active<T: DeserializeOwned>(&mut self, frame: &[u8]) -> Result<T, SidecarFrameError> {
+    fn open_active<T: DeserializeOwned>(
+        &mut self,
+        input: FrameInput<'_>,
+        decode: impl FnOnce(&[u8]) -> serde_json::Result<Option<T>>,
+    ) -> Result<T, SidecarFrameError> {
+        let frame = input.as_ref();
         if frame.len() > self.max_frame_bytes as usize {
             return Err(SidecarFrameError::FrameTooLarge {
                 size: frame.len() as u64,
@@ -562,14 +642,111 @@ impl AuthenticatedSidecarChannel {
         if session != self.session_id.as_bytes() {
             return Err(SidecarFrameError::WrongSession);
         }
-        let payload = take_slice(authenticated, &mut cursor, payload_len)?;
+        let payload_start = cursor;
+        take_slice(authenticated, &mut cursor, payload_len)?;
         if cursor != authenticated.len() {
             return Err(SidecarFrameError::TrailingBytes);
         }
 
-        let decoded = serde_json::from_slice(payload).map_err(SidecarFrameError::Deserialize)?;
+        let decoded =
+            match decode(&frame[payload_start..cursor]).map_err(SidecarFrameError::Deserialize)? {
+                Some(decoded) => decoded,
+                None => self
+                    .decoder
+                    .get_or_insert_with(JsonDecoder::new)
+                    .decode(input, payload_start..cursor)
+                    .map_err(SidecarFrameError::Deserialize)?,
+            };
         self.receive_sequence = sequence;
         Ok(decoded)
+    }
+}
+
+enum FrameInput<'a> {
+    Borrowed(&'a [u8]),
+    Reused(&'a mut Vec<u8>),
+}
+
+impl AsRef<[u8]> for FrameInput<'_> {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::Reused(bytes) => bytes,
+        }
+    }
+}
+
+// Keep serde's string scratch space for this authenticated channel. Recreating a
+// slice decoder for every escaped media result doubles and discards a large buffer.
+// The bounded input is replaced only after `end()` consumed the previous JSON document.
+struct JsonDecoder {
+    input: JsonInput,
+    decoder: serde_json::Deserializer<serde_json::de::IoRead<BufReader<JsonInput>>>,
+}
+
+#[derive(Clone)]
+struct JsonInput(Arc<Mutex<(Cursor<Vec<u8>>, usize)>>);
+
+impl Read for JsonInput {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let mut input = self.0.lock().unwrap();
+        let (cursor, end) = &mut *input;
+        // EOF is the authenticated JSON boundary, never the following HMAC or frame.
+        let count = bytes.len().min(end.saturating_sub(
+            usize::try_from(cursor.position()).expect("input position fits frame"),
+        ));
+        Read::read(cursor, &mut bytes[..count])
+    }
+}
+
+impl JsonDecoder {
+    fn new() -> Self {
+        let input = JsonInput(Arc::new(Mutex::new((Cursor::new(Vec::new()), 0))));
+        Self {
+            decoder: serde_json::Deserializer::from_reader(BufReader::new(input.clone())),
+            input,
+        }
+    }
+
+    fn decode<T: DeserializeOwned>(
+        &mut self,
+        frame: FrameInput<'_>,
+        range: Range<usize>,
+    ) -> serde_json::Result<T> {
+        let mut reused = None;
+        {
+            let mut input = self.input.0.lock().unwrap();
+            let (cursor, end) = &mut *input;
+            match frame {
+                FrameInput::Borrowed(frame) => {
+                    let payload = &frame[range];
+                    let bytes = cursor.get_mut();
+                    bytes.clear();
+                    bytes.reserve_exact(payload.len());
+                    bytes.extend_from_slice(payload);
+                    cursor.set_position(0);
+                    *end = payload.len();
+                }
+                FrameInput::Reused(frame) => {
+                    std::mem::swap(cursor.get_mut(), frame);
+                    cursor.set_position(range.start as u64);
+                    *end = range.end;
+                    reused = Some(frame);
+                }
+            }
+        }
+        let result = T::deserialize(&mut self.decoder).and_then(|value| {
+            self.decoder.end()?;
+            Ok(value)
+        });
+        // Restore the transport allocation before propagating any JSON error and retiring.
+        let mut input = self.input.0.lock().unwrap();
+        if let Some(frame) = reused {
+            std::mem::swap(input.0.get_mut(), frame);
+        } else {
+            input.0.get_mut().clear();
+        }
+        result
     }
 }
 
@@ -605,6 +782,16 @@ impl std::io::Write for BoundedFrameWriter<'_> {
         if bytes.len() > remaining {
             self.exceeded = true;
             return Err(std::io::Error::other("sidecar frame limit exceeded"));
+        }
+        // A large JSON fragment followed by a quote must not double the whole frame.
+        // Include the tag in geometric growth, capped at the negotiated allocation ceiling.
+        let required = self.frame.len() + bytes.len() + AUTH_TAG_BYTES;
+        if required > self.frame.capacity() {
+            let capacity = required
+                .checked_next_power_of_two()
+                .unwrap_or(usize::MAX)
+                .min(self.max_len + AUTH_TAG_BYTES);
+            self.frame.reserve_exact(capacity - self.frame.len());
         }
         self.frame.extend_from_slice(bytes);
         Ok(bytes.len())
@@ -1134,6 +1321,173 @@ mod tests {
             runtime.open::<Value>(&active).unwrap(),
             json!({"type":"active"})
         );
+    }
+
+    #[test]
+    fn a_large_json_fragment_keeps_frame_capacity_within_the_channel_limit() {
+        let mut supervisor = channel(SidecarPeerRole::Supervisor, 7);
+        let payload = json!({"media": "x".repeat(3 * 1024)});
+        let frame = supervisor.seal(&payload).unwrap();
+        assert!(frame.len() < supervisor.max_frame_bytes() as usize);
+        assert!(
+            frame.capacity() <= supervisor.max_frame_bytes() as usize,
+            "JSON closing bytes must not double a near-limit frame allocation"
+        );
+        let mut runtime = channel(SidecarPeerRole::Runtime, 7);
+        assert_eq!(runtime.open::<Value>(&frame).unwrap(), payload);
+    }
+
+    #[test]
+    fn reused_frame_preserves_wire_sequence_and_discards_failed_output() {
+        let mut supervisor = channel(SidecarPeerRole::Supervisor, 7);
+        let mut runtime = channel(SidecarPeerRole::Runtime, 7);
+        let large = json!({"media": "x".repeat(3 * 1024)});
+        let small = json!({"ok": true});
+        let mut frame = Vec::new();
+        supervisor.seal_into(&large, &mut frame).unwrap();
+        assert_eq!(runtime.open_reusing::<Value>(&mut frame).unwrap(), large);
+        let allocation = frame.as_ptr();
+        supervisor.seal_into(&small, &mut frame).unwrap();
+        assert_eq!(frame.as_ptr(), allocation);
+        assert_eq!(runtime.open_reusing::<Value>(&mut frame).unwrap(), small);
+
+        assert!(supervisor.seal_into(&"x".repeat(4096), &mut frame).is_err());
+        assert!(frame.is_empty());
+        supervisor.seal_into(&large, &mut frame).unwrap();
+        assert_eq!(frame.as_ptr(), allocation);
+        assert_eq!(runtime.open_reusing::<Value>(&mut frame).unwrap(), large);
+
+        supervisor.lower_frame_limit(128).unwrap();
+        runtime.lower_frame_limit(128).unwrap();
+        supervisor.seal_into(&small, &mut frame).unwrap();
+        assert!(frame.capacity() <= 128);
+        assert_eq!(runtime.open_reusing::<Value>(&mut frame).unwrap(), small);
+        supervisor.retire();
+        assert!(supervisor.seal_into(&small, &mut frame).is_err());
+        assert!(frame.is_empty());
+    }
+
+    #[test]
+    fn consecutive_documents_consume_the_entire_authenticated_payload() {
+        for reuse in [false, true] {
+            let mut supervisor = channel(SidecarPeerRole::Supervisor, 7);
+            let mut runtime = channel(SidecarPeerRole::Runtime, 7);
+            for payload in [
+                json!({"media": format!("\"{}\"", "x".repeat(3 * 1024))}),
+                json!(123),
+                json!(null),
+                json!(["é🦀\n\\\"", true, -1.5]),
+            ] {
+                let mut frame = supervisor.seal(&payload).unwrap();
+                let original = frame.clone();
+                let allocation = frame.as_ptr();
+                let decoded = if reuse {
+                    runtime.open_reusing::<Value>(&mut frame)
+                } else {
+                    runtime.open::<Value>(&frame)
+                };
+                assert_eq!(decoded.unwrap(), payload);
+                assert_eq!(frame, original);
+                assert_eq!(frame.as_ptr(), allocation);
+            }
+
+            for malformed in [b"0 1".as_slice(), b"01", b"{\"x\":\"\\q\"}", b"\"\xff\""] {
+                let mut supervisor = channel(SidecarPeerRole::Supervisor, 7);
+                let mut runtime = channel(SidecarPeerRole::Runtime, 7);
+                let first = supervisor.seal(&json!({"ok":true})).unwrap();
+                runtime.open::<Value>(&first).unwrap();
+                let mut frame = supervisor.seal(&0).unwrap();
+                frame.truncate(frame.len() - AUTH_TAG_BYTES - 1);
+                frame[PAYLOAD_LENGTH_OFFSET..PAYLOAD_LENGTH_OFFSET + 4]
+                    .copy_from_slice(&u32::try_from(malformed.len()).unwrap().to_be_bytes());
+                frame.extend_from_slice(malformed);
+                let mut mac = HmacSha256::new_from_slice(&KEY).unwrap();
+                mac.update(&frame);
+                frame.extend_from_slice(&mac.finalize().into_bytes());
+                let original = frame.clone();
+                let decoded = if reuse {
+                    runtime.open_reusing::<Value>(&mut frame)
+                } else {
+                    runtime.open::<Value>(&frame)
+                };
+                assert!(matches!(decoded, Err(SidecarFrameError::Deserialize(_))));
+                assert_eq!(frame, original);
+                assert!(runtime.is_retired());
+                assert_eq!(runtime.receive_sequence, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn product_decoder_shares_authentication_sequence_and_retirement() {
+        let mut supervisor = channel(SidecarPeerRole::Supervisor, 7);
+        let mut runtime = channel(SidecarPeerRole::Runtime, 7);
+        for custom in [false, true, false, true] {
+            let payload = json!({"custom": custom, "media": "x".repeat(2048)});
+            let mut frame = supervisor.seal(&payload).unwrap();
+            let original = frame.clone();
+            let allocation = frame.as_ptr();
+            let decoded: Value = runtime
+                .open_reusing_with(&mut frame, |bytes| {
+                    if custom {
+                        serde_json::from_slice(bytes).map(Some)
+                    } else {
+                        Ok(None)
+                    }
+                })
+                .unwrap();
+            assert_eq!(decoded, payload);
+            assert_eq!(frame, original);
+            assert_eq!(frame.as_ptr(), allocation);
+        }
+        let mut rejected = supervisor.seal(&json!({"custom": true})).unwrap();
+        let original = rejected.clone();
+        let failure = runtime.open_reusing_with::<Value>(&mut rejected, |_| {
+            Err(serde::de::Error::custom("invalid product payload"))
+        });
+        assert!(matches!(failure, Err(SidecarFrameError::Deserialize(_))));
+        assert_eq!(rejected, original);
+        assert_eq!(runtime.receive_sequence, 4);
+        assert!(runtime.is_retired());
+        assert!(matches!(
+            runtime.open_reusing_with::<Value>(&mut rejected, |_| {
+                panic!("retired channel must not invoke product decoder")
+            }),
+            Err(SidecarFrameError::ChannelRetired)
+        ));
+
+        for failure in [
+            "authentication",
+            "generation",
+            "direction",
+            "sequence",
+            "session",
+        ] {
+            let role = if failure == "direction" {
+                SidecarPeerRole::Runtime
+            } else {
+                SidecarPeerRole::Supervisor
+            };
+            let mut sender = channel(role, if failure == "generation" { 6 } else { 7 });
+            if failure == "session" {
+                sender.session_id = "another-session".into();
+            }
+            if failure == "sequence" {
+                sender.seal(&json!(null)).unwrap();
+            }
+            let mut frame = sender.seal(&json!({"custom":true})).unwrap();
+            if failure == "authentication" {
+                frame[FIXED_HEADER_BYTES] ^= 1;
+            }
+            let mut runtime = channel(SidecarPeerRole::Runtime, 7);
+            assert!(runtime
+                .open_reusing_with::<Value>(&mut frame, |_| {
+                    panic!("{failure} must reject before product decoder")
+                })
+                .is_err());
+            assert!(runtime.is_retired());
+            assert_eq!(runtime.receive_sequence, 0);
+        }
     }
 
     #[test]
