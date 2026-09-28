@@ -245,6 +245,7 @@ describe("listGatewayMethods", () => {
       "cron.history",
       "presence.activity",
       "presence.query",
+      "plugin.approval.reportNativeDelivery",
     ];
     expect(listGatewayMethods().slice(-expectedSuffix.length)).toEqual(expectedSuffix);
     const methods = listGatewayMethods();
@@ -313,6 +314,7 @@ describe("listGatewayMethods", () => {
       "cron.history",
       "presence.activity",
       "presence.query",
+      "plugin.approval.reportNativeDelivery",
     ]);
   });
 
@@ -509,6 +511,7 @@ describe("listGatewayMethods", () => {
       "cron.history",
       "presence.activity",
       "presence.query",
+      "plugin.approval.reportNativeDelivery",
     ];
     expect(coreMethods.slice(-expectedCoreSuffix.length)).toEqual(expectedCoreSuffix);
     expect(methods.indexOf("approval.get")).toBeGreaterThan(methods.indexOf("tts.speak"));
