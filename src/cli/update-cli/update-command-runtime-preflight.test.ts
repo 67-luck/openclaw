@@ -9,13 +9,13 @@ import { prepareUpdateFailureReport } from "../../infra/update-failure-report-pr
 import { withTempDir } from "../../test-utils/temp-dir.js";
 import { quoteCliArg, quotePowerShellArg } from "../quote-cli-arg.js";
 import { resolveTargetNodeRuntime } from "./update-command-node-runtime-resolution.js";
+import { resolvePackageRuntimePreflight } from "./update-command-runtime-preflight.js";
 import {
   expectedPlainRecovery,
   expectedRuntimeSelectionCommand,
   unsupportedServiceRuntimeFixture,
 } from "./update-command-runtime-recovery.test-support.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
-import { resolvePackageRuntimePreflight } from "./update-command-service-plan.js";
 
 const refreshableService: PreManagedServiceStop = {
   stopped: false,

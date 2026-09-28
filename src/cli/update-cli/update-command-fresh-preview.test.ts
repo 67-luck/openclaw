@@ -29,7 +29,7 @@ import { installFreshUpdateFixture, targetMetadata } from "./update-command-fres
 import * as initialization from "./update-command-initialization.js";
 import * as packageUpdate from "./update-command-package.js";
 import * as commandRun from "./update-command-run.js";
-import * as servicePlan from "./update-command-service-plan.js";
+import * as packageRuntime from "./update-command-runtime-preflight.js";
 import {
   deferUpdateCommandTerminalResult,
   publishUpdateCommandTerminalResult,
@@ -48,7 +48,7 @@ const { fixture, dirs } = installFreshUpdateFixture();
 const inheritedRunIds = ["  1c5a25f3-f46a-408b-a87f-a0f0d1f80ee7  ", " \t "] as const;
 
 function allowPackageRuntime() {
-  return vi.spyOn(servicePlan, "resolvePackageRuntimePreflight").mockResolvedValue({
+  return vi.spyOn(packageRuntime, "resolvePackageRuntimePreflight").mockResolvedValue({
     ok: true,
     value: {},
   });
@@ -526,7 +526,7 @@ describe("update command admission with fresh state", () => {
       OPENCLAW_CONFIG_PATH: serviceConfigPath,
     };
     vi.spyOn(commandRun, "resolveUpdateCommandAdmissionEnv").mockResolvedValue(serviceEnv);
-    vi.spyOn(servicePlan, "resolvePackageRuntimePreflight").mockResolvedValue({
+    vi.spyOn(packageRuntime, "resolvePackageRuntimePreflight").mockResolvedValue({
       ok: false,
       error: "fixture-stop",
     });
@@ -563,7 +563,7 @@ describe("update command admission with fresh state", () => {
         writeStoredChannel("beta");
         return targetMetadata;
       });
-      const runtime = vi.spyOn(servicePlan, "resolvePackageRuntimePreflight").mockResolvedValue({
+      const runtime = vi.spyOn(packageRuntime, "resolvePackageRuntimePreflight").mockResolvedValue({
         ok: false,
         error: "fixture-stop",
       });
@@ -693,7 +693,7 @@ it.each([
       return staged;
     });
     const runtime = vi
-      .spyOn(servicePlan, "resolvePackageRuntimePreflight")
+      .spyOn(packageRuntime, "resolvePackageRuntimePreflight")
       .mockResolvedValue({ ok: true, value: {} });
     const doctor = vi
       .spyOn(initialization, "initializeUpdateStateFromTarget")
@@ -786,7 +786,7 @@ it.each(["node", "concurrent-state"] as const)(
       }
       return stage;
     });
-    vi.spyOn(servicePlan, "resolvePackageRuntimePreflight").mockResolvedValue({
+    vi.spyOn(packageRuntime, "resolvePackageRuntimePreflight").mockResolvedValue({
       ok: false,
       error: "selected artifact requires a newer Node",
     });

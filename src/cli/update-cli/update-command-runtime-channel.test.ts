@@ -14,8 +14,8 @@ import * as shared from "./shared.js";
 import { installFreshUpdateFixture, targetMetadata } from "./update-command-fresh.test-support.js";
 import * as packageUpdate from "./update-command-package.js";
 import * as commandRun from "./update-command-run.js";
+import * as packageRuntime from "./update-command-runtime-preflight.js";
 import { unsupportedServiceRuntimeFixture } from "./update-command-runtime-recovery.test-support.js";
-import * as servicePlan from "./update-command-service-plan.js";
 import { updateCommand } from "./update-command.js";
 
 vi.mock("../../infra/container-environment.js", () => ({ isContainerEnvironment: () => false }));
@@ -56,7 +56,7 @@ it.each([
     vi.mocked(shared.resolveTargetVersion).mockResolvedValue({ version });
     const runtime = vi.spyOn(runtimePaths, "resolveNodeRuntimeInfo");
     runtime.mockResolvedValue(unsupportedServiceRuntimeFixture);
-    const preflight = vi.spyOn(servicePlan, "resolvePackageRuntimePreflight");
+    const preflight = vi.spyOn(packageRuntime, "resolvePackageRuntimePreflight");
 
     const options = {
       admission: "installed" as const,

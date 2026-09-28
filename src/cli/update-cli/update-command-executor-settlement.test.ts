@@ -28,7 +28,7 @@ import {
   withUpdateCommandExecutorChild,
   type UpdateCommandExecutor,
 } from "./update-command-executor.js";
-import { resolvePackageRuntimePreflight } from "./update-command-service-plan.js";
+import { resolvePackageRuntimePreflight } from "./update-command-runtime-preflight.js";
 import { createUpdateOperationDeadline } from "./update-operation-deadline.js";
 
 const boundaries = vi.hoisted(() => ({ store: vi.fn(), runtime: vi.fn(), databasePath: "" }));
