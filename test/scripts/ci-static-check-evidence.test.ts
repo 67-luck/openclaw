@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import {
   isStaticEvidencePath,
@@ -43,6 +44,12 @@ function stepLog(output: string, exitCode = 2) {
     .split("\n")
     .map((line) => `2026-09-27T12:41:53.7715041Z ${line}`)
     .join("\n");
+}
+
+function fixtureRow(rows: { phase: string; data: Record<string, unknown> }[], index: number) {
+  const row = rows[index];
+  assert.ok(row, `Missing static evidence fixture row ${index}`);
+  return row;
 }
 
 function completeStaticLog(
@@ -229,31 +236,34 @@ describe("static CI diagnostic evidence", () => {
 
   it.each([
     ["missing leaf", (rows) => rows.splice(1, 1)],
-    ["duplicate leaf", (rows) => rows.splice(1, 0, rows[0])],
-    ["duplicate step", (rows) => rows.push(rows[3])],
-    ["duplicate group", (rows) => rows.splice(3, 0, rows[2])],
+    ["duplicate leaf", (rows) => rows.splice(1, 0, fixtureRow(rows, 0))],
+    ["duplicate step", (rows) => rows.push(fixtureRow(rows, 3))],
+    ["duplicate group", (rows) => rows.splice(3, 0, fixtureRow(rows, 2))],
     ["missing step", (rows) => rows.pop()],
     [
       "orphan leaf",
       (rows) => {
-        rows[2].data.leaves = ["batch:0"];
-        rows[2].data.planned = 1;
-        rows[2].data.completed = 1;
+        fixtureRow(rows, 2).data.leaves = ["batch:0"];
+        fixtureRow(rows, 2).data.planned = 1;
+        fixtureRow(rows, 2).data.completed = 1;
       },
     ],
-    ["unfinished graph", (rows) => (rows[2].data.completed = 1)],
-    ["missing group", (rows) => (rows[3].data.groups = 2)],
-    ["duplicate graph coverage", (rows) => (rows[2].data.leaves = ["batch:0", "batch:0"])],
-    ["non-diagnostic failure", (rows) => (rows[1].data.exitCode = 137)],
-    ["signaled compiler", (rows) => (rows[0].data.signal = "SIGTERM")],
-    ["skipped compiler", (rows) => (rows[1].data.skipped = true)],
-    ["compiler stderr", (rows) => (rows[0].data.stderr = "panic: worker stopped")],
+    ["unfinished graph", (rows) => (fixtureRow(rows, 2).data.completed = 1)],
+    ["missing group", (rows) => (fixtureRow(rows, 3).data.groups = 2)],
+    [
+      "duplicate graph coverage",
+      (rows) => (fixtureRow(rows, 2).data.leaves = ["batch:0", "batch:0"]),
+    ],
+    ["non-diagnostic failure", (rows) => (fixtureRow(rows, 1).data.exitCode = 137)],
+    ["signaled compiler", (rows) => (fixtureRow(rows, 0).data.signal = "SIGTERM")],
+    ["skipped compiler", (rows) => (fixtureRow(rows, 1).data.skipped = true)],
+    ["compiler stderr", (rows) => (fixtureRow(rows, 0).data.stderr = "panic: worker stopped")],
     [
       "unparsed compiler output",
-      (rows) => (rows[0].data.stdout = `${realTypeDiagnostic}\nworker crashed`),
+      (rows) => (fixtureRow(rows, 0).data.stdout = `${realTypeDiagnostic}\nworker crashed`),
     ],
-    ["false successful compiler", (rows) => (rows[1].data.stdout = realTypeDiagnostic)],
-    ["failure without diagnostics", (rows) => (rows[0].data.stdout = "")],
+    ["false successful compiler", (rows) => (fixtureRow(rows, 1).data.stdout = realTypeDiagnostic)],
+    ["failure without diagnostics", (rows) => (fixtureRow(rows, 0).data.stdout = "")],
     ["step before completion", (rows) => rows.unshift(...rows.splice(-1))],
   ] satisfies [string, (rows: { phase: string; data: Record<string, unknown> }[]) => void][])(
     "keeps %s blocking despite another matching diagnostic",

@@ -1,4 +1,5 @@
 // Oxlint Config tests cover oxlint config script behavior.
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -695,12 +696,14 @@ describe("oxlint config", () => {
       );
       expect(result.error).toBeUndefined();
       expect(result.status, result.stdout + result.stderr).toBe(github && !correctness ? 0 : 1);
-      const marker = "[ci-static:oxlint:leaf] ";
+      const marker = "\n[ci-static:oxlint:leaf] ";
       const [output, receipt] = result.stdout.split(marker);
+      assert.ok(output !== undefined, "Missing lint diagnostic output");
       const report = JSON.parse(output) as {
         diagnostics: Array<{ code: string; severity: string; filename: string; help?: string }>;
       };
       if (evidence) {
+        assert.ok(receipt !== undefined, "Missing lint evidence receipt");
         expect(JSON.parse(receipt)).toMatchObject({
           version: 1,
           id: "limits:0",
