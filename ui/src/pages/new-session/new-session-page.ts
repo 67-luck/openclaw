@@ -354,7 +354,8 @@ export class NewSessionPage extends OpenClawLightDomElement {
     const groupDefaults = catalog.groupDefaultsKey(this.data);
     if (this.openedFor !== openKey && this.place.catalogSelection.isTargetTransition(openKey)) {
       // The picker keeps the same composer and choices; only this owned handoff moves its scope.
-      if (!this.data) {
+      // A cached destination can render before its loader reads the newly admitted target.
+      if (!this.data || this.data !== this.place.data) {
         return;
       }
       if (this.context && completeTargetTransition(this.context, this.submission, openKey)) {
