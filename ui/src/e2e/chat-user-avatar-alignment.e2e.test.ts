@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { controlUiSessionUrl, installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const imageUrl =
@@ -32,7 +32,7 @@ suite.define(() => {
           },
         ],
       });
-      await page.goto(controlUiSessionUrl(suite.server.baseUrl, "agent:main:main"));
+      await page.goto(`${suite.server.baseUrl}chat`);
       const visibleAvatar = page.locator(".chat-group.user .chat-avatar:visible");
       const [offset, leftGap, rightGap, height] = await visibleAvatar.evaluate((node) => {
         const group = node.closest(".chat-group")!;

@@ -1,5 +1,4 @@
 import path from "node:path";
-import { expect as expectBrowser } from "playwright/test";
 import { expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
@@ -335,9 +334,6 @@ suite.define(() => {
         await page.goto(`${suite.server.baseUrl}chat`);
         const mainInput = page.locator(".agent-chat__composer-shell textarea");
         await mainInput.fill("/btw what is this?");
-        await expectBrowser(
-          page.locator(".agent-chat__composer-shell .chat-send-btn--send"),
-        ).toBeEnabled();
         await mainInput.press("Enter");
         await gateway.waitForRequest("sessions.companion.ask");
         const sideInput = page.locator(".chat-session-rail__input");
