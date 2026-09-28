@@ -17,7 +17,10 @@ import { DEFAULT_RESTART_HEALTH_DELAY_MS } from "../cli/daemon-cli/restart-healt
 import { resolveGatewayStartupTiming } from "../commands/gateway-startup-timing.js";
 import { run, type CommandRecord } from "./schtasks.installed-command.test-support.js";
 import {
-  assertInstalledSiblingBuildRefusal,
+  observeInstalledContainment,
+  seedContainmentCanaries,
+} from "./schtasks.installed-containment.test-support.js";
+import {
   doctorReportSchema,
   inspectDisabledDiscoveryTasks,
   inspectInstalledUpdateFailure,
@@ -84,6 +87,11 @@ export async function runInstalledLifecycle(
     readTaskXml,
     readRelatedProcessDiagnostics,
   } = await import("./schtasks.integration-observation.test-support.js");
+  assert.equal(
+    process.env.CI_WINDOWS_SCHTASKS_INSTALLED_CELL,
+    "2026.9.4",
+    "Private containment fixture admits only the published 9.4 driver",
+  );
   const key = z.enum(keys).parse(process.env.CI_WINDOWS_SCHTASKS_INSTALLED_CELL);
   const cellIndex = keys.indexOf(key);
   const input = await readInput(inputPath);
@@ -269,6 +277,7 @@ export async function runInstalledLifecycle(
       scriptPath: task.scriptPath,
     });
     await fs.writeFile(admissionPath, JSON.stringify(admissions, null, 2));
+    await seedContainmentCanaries(stateDir);
     // Both published CLIs support these options; 9.3 has no --runtime-path.
     await cli(task, [
       "gateway",
@@ -338,26 +347,6 @@ export async function runInstalledLifecycle(
       const peerConfig = await fs.readFile(peer.configPath);
       const peerInstallBefore = await hashInstall(peer.installRoot);
       await recordProgress("peer-before-update:hash-verified");
-      if (key === "2026.9.4") {
-        observations.siblingBuildRefusal = await assertInstalledSiblingBuildRefusal({
-          toolingEntry: path.resolve("scripts/run-node.mjs"),
-          selected,
-          peer,
-          commands,
-          signal,
-          recordProgress,
-          verifyContinuity: async () => {
-            assert.equal(
-              (await status(selected, beforeIdentity)).service.runtime.pid,
-              before.service.runtime.pid,
-            );
-            assert.equal(
-              (await status(peer, peerIdentity)).service.runtime.pid,
-              peerBefore.service.runtime.pid,
-            );
-          },
-        });
-      }
       const driverBefore = await hashFile(selected.entry);
       observations.driver = {
         version: key,
@@ -365,15 +354,30 @@ export async function runInstalledLifecycle(
         installed: await hashInstall(installRoot),
       };
       await recordProgress("published-driver:hash-verified");
-      observations.update = await runInstalledPublishedUpdate({
-        task: selected,
-        input,
-        inputPath,
-        key,
+      await observeInstalledContainment({
+        selected,
+        peer,
+        selectedPid: before.service.runtime.pid,
+        peerPid: peerBefore.service.runtime.pid,
         commands,
-        signal,
         observations,
+        signal,
         recordProgress,
+        verifyServing: async () => ({
+          selectedPid: (await status(selected, beforeIdentity)).service.runtime.pid,
+          peerPid: (await status(peer, peerIdentity)).service.runtime.pid,
+        }),
+        runUpdate: () =>
+          runInstalledPublishedUpdate({
+            task: selected,
+            input,
+            inputPath,
+            key,
+            commands,
+            signal,
+            observations,
+            recordProgress,
+          }),
       });
       await prepareInstalledPackage({ ...input, installRoot });
       await recordProgress("updated-candidate:hash-verified");

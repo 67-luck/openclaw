@@ -53,6 +53,9 @@ describe("installed fingerprint source qualification", () => {
   it("reuses candidate owners across the exact reviewed fixture-only tooling changes", () => {
     const repo = createRepository();
     const changed = [
+      "src/daemon/schtasks.installed-containment.test-support.ts",
+      "src/daemon/schtasks.installed-containment-state.test-support.ts",
+      "src/daemon/schtasks.installed-containment.test.ts",
       "src/daemon/schtasks.integration-observation.test-support.ts",
       "src/daemon/schtasks.integration.e2e.test.ts",
       fixturePath,

@@ -11,6 +11,9 @@ import {
 import { redactSupportString } from "../logging/diagnostic-support-redaction.js";
 import { formatCommandOutput } from "../process/command-error.js";
 
+export const PUBLISHED_94_CONTAINMENT_REASON =
+  "Doctor refused update-time schema repair driven by OpenClaw 2026.9.4: this updater reopens the ledger with old code after migration, and version publication could not be deferred safely.";
+
 type ServiceObservation = "install" | "status";
 
 function captureCommandOutput(
@@ -52,6 +55,11 @@ function captureCommandOutput(
     return {
       kind,
       ...fields(value, ["status", "mode", "reason", "durationMs"]),
+      runId:
+        typeof value.runId === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value.runId)
+          ? value.runId
+          : undefined,
       before: fields(value.before, ["version", "buildId", "sha"]),
       after: fields(value.after, ["version", "buildId", "sha"]),
       recovery: fields(value.recovery, [
@@ -68,6 +76,16 @@ function captureCommandOutput(
               fields(step, ["name", "exitCode", "durationMs", "signal", "killed", "termination"]),
               step?.exitCode !== 0 ? fields(step, ["stdoutTail", "stderrTail"]) : {},
               {
+                containmentRefusalReasonWitness:
+                  step?.name === "candidate migration rehearsal" &&
+                  typeof step.exitCode === "number" &&
+                  step.exitCode !== 0 &&
+                  typeof step.stderrTail === "string" &&
+                  stripAnsi(step.stderrTail)
+                    .split(/\r?\n/u)
+                    .some(
+                      (line) => line === `[openclaw] Reason: ${PUBLISHED_94_CONTAINMENT_REASON}`,
+                    ),
                 failureFacts: Array.isArray(step?.failureFacts)
                   ? step.failureFacts
                       .slice(0, 8)
@@ -142,6 +160,7 @@ export type CommandRecord = {
   launcherPid: number | null;
   beforeCleanup: ReturnType<typeof inspectManagedProcessGroup> | undefined;
   code: number | null;
+  managedResult: number | null;
   signal: string | null;
   joined: boolean;
   elapsedMs: number;
@@ -290,6 +309,7 @@ export async function run(
     args,
     launcherPid: child?.pid ?? null,
     code,
+    managedResult: result ?? null,
     signal: exitSignal,
     beforeCleanup,
     joined: afterCleanup === "dead" && !hasUnjoinedWork(failure),

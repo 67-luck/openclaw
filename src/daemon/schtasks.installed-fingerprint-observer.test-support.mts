@@ -8,6 +8,9 @@ import { isMainModule } from "../infra/is-main.js";
 import { packageRoot, prefix, readInput } from "./schtasks.installed-package.test-support.js";
 
 const reviewedFixturePaths = new Set([
+  "src/daemon/schtasks.installed-containment.test-support.ts",
+  "src/daemon/schtasks.installed-containment-state.test-support.ts",
+  "src/daemon/schtasks.installed-containment.test.ts",
   "src/daemon/schtasks.integration-observation.test-support.ts",
   "src/daemon/schtasks.integration.e2e.test.ts",
   "src/daemon/schtasks.integration-xml.test.ts",

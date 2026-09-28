@@ -467,6 +467,7 @@ describe("published installed update progress", () => {
                 launcherPid: 1234,
                 beforeCleanup: "indeterminate",
                 code: 1,
+                managedResult: null,
                 signal: null,
                 joined: false,
                 elapsedMs: 360_000,
