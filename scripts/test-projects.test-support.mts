@@ -4869,6 +4869,15 @@ export function buildVitestRunPlans(
         gatewayProjectShards === "0"),
   );
   const explicitConfigTargets = classifiedTargets.map(({ relative }) => relative);
+  const scopedIncludePatterns = new Map<string, string>();
+  const scopedIncludePattern = (targetArg: string) => {
+    let pattern = scopedIncludePatterns.get(targetArg);
+    if (pattern === undefined) {
+      pattern = toScopedIncludePattern(targetArg, cwd);
+      scopedIncludePatterns.set(targetArg, pattern);
+    }
+    return pattern;
+  };
   const databaseWorkerPatterns = uniqueOrdered([
     ...requestedTargetArgs,
     ...activeTargetArgs,
@@ -4877,7 +4886,7 @@ export function buildVitestRunPlans(
     return isTestFileTarget(relative) ||
       isGlobTarget(relative) ||
       isExistingDirectoryTarget(targetArg, cwd)
-      ? [toScopedIncludePattern(targetArg, cwd)]
+      ? [scopedIncludePattern(targetArg)]
       : [];
   });
   const impliedDatabaseWorkerTargets = databaseWorkerCoreTestFiles.filter((file) =>
@@ -4971,9 +4980,7 @@ export function buildVitestRunPlans(
   if (
     !watchMode &&
     toolingTargets.some((targetArg) =>
-      includePatternMatchesAnyFile(toScopedIncludePattern(targetArg, cwd), [
-        TOOLING_DOCKER_TEST_TARGET,
-      ]),
+      includePatternMatchesAnyFile(scopedIncludePattern(targetArg), [TOOLING_DOCKER_TEST_TARGET]),
     )
   ) {
     const current = groupedTargets.get("toolingDocker") ?? [];
@@ -4985,7 +4992,7 @@ export function buildVitestRunPlans(
   const impliedToolingIsolatedTargets = !watchMode
     ? toolingIsolatedTestFiles.filter((file) =>
         classifiedTargets.some(({ targetArg }) =>
-          includePatternMatchesAnyFile(toScopedIncludePattern(targetArg, cwd), [file]),
+          includePatternMatchesAnyFile(scopedIncludePattern(targetArg), [file]),
         ),
       )
     : [];
@@ -5001,7 +5008,7 @@ export function buildVitestRunPlans(
   const uiTargets = groupedTargets.get("ui") ?? [];
   const impliedUiTimingTargets = uiTimingTestFiles.filter((file) =>
     uiTargets.some((targetArg) =>
-      includePatternMatchesAnyFile(toScopedIncludePattern(targetArg, cwd), [file]),
+      includePatternMatchesAnyFile(scopedIncludePattern(targetArg), [file]),
     ),
   );
   if (impliedUiTimingTargets.length > 0) {
@@ -5019,7 +5026,7 @@ export function buildVitestRunPlans(
         broadUiTargets.some(
           (targetArg) =>
             shouldUseWholeConfigTarget("ui", targetArg, cwd) ||
-            includePatternMatchesAnyFile(toScopedIncludePattern(targetArg, cwd), [file]),
+            includePatternMatchesAnyFile(scopedIncludePattern(targetArg), [file]),
         ),
     );
     if (browserTargets.length > 0) {
@@ -5030,7 +5037,7 @@ export function buildVitestRunPlans(
   }
   const impliedUiIsolatedTargets = uiIsolatedTestFiles.filter((file) =>
     uiTargets.some((targetArg) =>
-      includePatternMatchesAnyFile(toScopedIncludePattern(targetArg, cwd), [file]),
+      includePatternMatchesAnyFile(scopedIncludePattern(targetArg), [file]),
     ),
   );
   if (impliedUiIsolatedTargets.length > 0) {
@@ -5046,7 +5053,7 @@ export function buildVitestRunPlans(
   // Match every active target so broad selections cannot silently omit excluded children.
   const impliedCliProcessTargets = cliProcessTestFiles.filter((file) =>
     activeTargetArgs.some((targetArg) =>
-      includePatternMatchesAnyFile(toScopedIncludePattern(targetArg, cwd), [file]),
+      includePatternMatchesAnyFile(scopedIncludePattern(targetArg), [file]),
     ),
   );
   if (impliedCliProcessTargets.length > 0) {
@@ -5087,7 +5094,7 @@ export function buildVitestRunPlans(
           forwardedArgs: nonTargetArgs,
           includePatterns: wholeOwner
             ? null
-            : uniqueOrdered(activeTargetArgs.map((target) => toScopedIncludePattern(target, cwd))),
+            : uniqueOrdered(activeTargetArgs.map(scopedIncludePattern)),
           watchMode: true,
         },
       ];
@@ -5158,7 +5165,7 @@ export function buildVitestRunPlans(
         : uniqueOrdered(
             grouped.flatMap((targetArg) => {
               const lightLanePatterns = resolveLightLaneIncludePatterns(kind, targetArg, cwd);
-              return lightLanePatterns ?? [toScopedIncludePattern(targetArg, cwd)];
+              return lightLanePatterns ?? [scopedIncludePattern(targetArg)];
             }),
           );
     const broadToolingScriptPlans = createBroadToolingScriptPlans({
