@@ -56,9 +56,37 @@ struct NativeExternalBrowserProofTests {
         controller.show()
         controller.window?.setContentSize(NSSize(width: 1280, height: 900))
         _ = try await wait("settings")
-        try #require(try await controller.webView.evaluateJavaScript("""
-        Boolean(document.visibilityState === 'visible' && window.webkit?.messageHandlers?.openclawLink && window.webkit?.messageHandlers?.openclawBrowser)
-        """) as? Bool == true)
+        let pageState = try #require(try await controller.webView.evaluateJavaScript("""
+        ({visibility:document.visibilityState, focus:document.hasFocus(),
+          linkHandler:Boolean(window.webkit?.messageHandlers?.openclawLink),
+          browserHandler:Boolean(window.webkit?.messageHandlers?.openclawBrowser)})
+        """) as? [String: Any])
+        let window = try #require(controller.window)
+        let login = CGSessionCopyCurrentDictionary() as? [String: Any] ?? [:]
+        let presentation: [String: Any] = [
+            "page": pageState,
+            "applicationActive": NSApp.isActive,
+            "applicationRunning": NSApp.isRunning,
+            "windowVisible": window.isVisible,
+            "windowKey": window.isKeyWindow,
+            "windowMiniaturized": window.isMiniaturized,
+            "windowOcclusionVisible": window.occlusionState.contains(.visible),
+            "windowOnActiveSpace": window.isOnActiveSpace,
+            "viewHidden": controller.webView.isHiddenOrHasHiddenAncestor,
+            "viewBounds": NSStringFromRect(controller.webView.bounds),
+            "screenCount": NSScreen.screens.count,
+            "onConsole": login["kCGSSessionOnConsoleKey"] ?? "unknown",
+            "loginDone": login["kCGSessionLoginDoneKey"] ?? "unknown",
+            "screenLocked": login["CGSSessionScreenIsLocked"] ?? "unknown",
+        ]
+        let presentationData = try JSONSerialization.data(
+            withJSONObject: presentation, options: [.prettyPrinted, .sortedKeys])
+        try presentationData.write(to: config.artifactDir.appendingPathComponent("native-presentation.json"))
+        print(String(decoding: presentationData, as: UTF8.self))
+        try await self.capture(controller.webView, to: config.artifactDir.appendingPathComponent("native-presentation.png"))
+        try #require(pageState["linkHandler"] as? Bool == true)
+        try #require(pageState["browserHandler"] as? Bool == true)
+        try #require(pageState["visibility"] as? String == "visible")
         let enabled = try await controller.webView.callAsyncJavaScript("""
         const row = [...document.querySelectorAll('.settings-row')].find(e =>
           e.querySelector('.settings-row__title')?.textContent.trim() === 'Open links outside OpenClaw');
