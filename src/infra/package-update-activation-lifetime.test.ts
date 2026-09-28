@@ -7,10 +7,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writePackageDistInventory } from "../../scripts/lib/package-dist-inventory.ts";
-import {
-  assertReliabilityForcedExit,
-  waitForReliabilityWorkerExit,
-} from "../../scripts/lib/sqlite-reliability-process.js";
+import { waitForReliabilityWorkerExit } from "../../scripts/lib/sqlite-reliability-process.js";
 import {
   captureUpdateCommandExecutorAuthority,
   withUpdateCommandExecutor,
@@ -127,10 +124,10 @@ describe.skipIf(process.platform === "win32")(
       const journalPath = resolvePackageActivationJournalPath(fixture.anchor);
       const killed = killUncommittedWrite(journalPath);
       expect(killed.error, killed.stderr).toBeUndefined();
-      assertReliabilityForcedExit(
+      expect(
         { code: killed.status, signal: killed.signal },
         "activation uncommitted journal",
-      );
+      ).toEqual({ code: null, signal: "SIGKILL" });
       const rollbackPath = `${journalPath}-journal`;
       expect(fs.statSync(rollbackPath).size).toBeGreaterThan(512);
       const rollback = fs.readFileSync(rollbackPath);
@@ -287,7 +284,10 @@ describe.skipIf(process.platform === "win32")(
             );
             await closed;
             signal.throwIfAborted();
-            assertReliabilityForcedExit(exit, `package bootstrap ${cut}: ${stderr}`);
+            expect(exit, `package bootstrap ${cut}: ${stderr}`).toEqual({
+              code: null,
+              signal: "SIGKILL",
+            });
             expect(JSON.parse(stdout.trim())).toEqual({ cut, pid: child.pid });
             expect(fs.readFileSync(fixture.launcher, "utf8")).toBe("old launcher\n");
             expect(
@@ -417,7 +417,10 @@ describe.skipIf(process.platform === "win32")(
             );
             await closed;
             signal.throwIfAborted();
-            assertReliabilityForcedExit(exit, `later journal ${cut}: ${stderr}`);
+            expect(exit, `later journal ${cut}: ${stderr}`).toEqual({
+              code: null,
+              signal: "SIGKILL",
+            });
             expect(JSON.parse(stdout.trim())).toEqual({ cut, pid: child.pid });
             const snapshot = () => fixtures.snapshotControl(f.anchor);
             const afterDeath = snapshot();

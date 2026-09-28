@@ -4,7 +4,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { assertReliabilityForcedExit } from "../../scripts/lib/sqlite-reliability-process.js";
 import {
   installPrivateUpdateHandoffStore,
   writePrivateUpdateHandoffChildGuard,
@@ -341,10 +340,10 @@ describe.skipIf(process.platform === "win32")("package activation journal", () =
       { env: childGuardEnv({}), encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" },
     );
     expect(crashed.error, crashed.stderr).toBeUndefined();
-    assertReliabilityForcedExit(
+    expect(
       { code: crashed.status, signal: crashed.signal },
       "activation hot-journal fixture",
-    );
+    ).toEqual({ code: null, signal: "SIGKILL" });
     const rollbackPath = `${f.journalPath}-journal`;
     expect(fs.statSync(rollbackPath).size).toBeGreaterThan(512);
     const before = journalFiles(f.anchor);
@@ -416,10 +415,10 @@ describe.skipIf(process.platform === "win32")("package activation journal", () =
       { env: childGuardEnv({}), encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" },
     );
     expect(child.error, child.stderr).toBeUndefined();
-    assertReliabilityForcedExit(
-      { code: child.status, signal: child.signal },
-      "replacement hot journal",
-    );
+    expect({ code: child.status, signal: child.signal }, "replacement hot journal").toEqual({
+      code: null,
+      signal: "SIGKILL",
+    });
     const admission = await f.journal.readForRecovery();
     const rollbackPath = `${f.journalPath}-journal`;
     const readOnly = new DatabaseSync(f.journalPath, { readOnly: true });
