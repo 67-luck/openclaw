@@ -431,10 +431,20 @@ export function selectChatInputDisplay(
     inputIdentities.set(messages, identities);
   }
   const { inputIds, sendKeys } = identities;
-  const visibleInputs = inputs.filter(
+  // Interrupted custody must not hide the browser payload that owns Retry/Discard.
+  // Active Gateway custody and canonical consumption still take precedence.
+  const localRecovery = new Set(
+    queue
+      .filter((item) => item.sendState === "held" || item.sendState === "failed")
+      .map((item) => item.sendRunId),
+  );
+  const serverInputs = inputs.filter(
+    (input) => input.state !== "interrupted" || !input.runId || !localRecovery.has(input.runId),
+  );
+  const visibleInputs = serverInputs.filter(
     (input) => !inputIds.has(input.id) && asNullableRecord(input.message)?.display !== false,
   );
-  const accepted = new Set(inputs.map((input) => input.runId));
+  const accepted = new Set(serverInputs.map((input) => input.runId));
   return {
     queue: queue.filter(
       (item) =>
