@@ -19,7 +19,7 @@ const refresh = await import("./refresh.js");
 // Complete worker admission during test-file setup, before timing the recovery behavior.
 const { resolveReusableWorkspaceSkillSnapshot } = await import("./session-snapshot.js");
 
-it("invalidates before joined retirement, retries once under the exact admitted Root, and restores availability", async () => {
+it("invalidates before joined retirement, retries once, and restores availability", async () => {
   const params = { workspaceDir: fixture.workspaceDir };
   refresh.ensureSkillsWatcher(params);
   await observer.readyAll();
@@ -42,7 +42,6 @@ it("invalidates before joined retirement, retries once under the exact admitted 
   await observer.started();
   const replacement = observer.forRoot(root);
   expect(replacement).not.toBe(original);
-  expect(replacement.authority).toBe(original.authority);
   expect(events.mock.calls.some(([event]) => event.reason === "watch-available")).toBe(false);
   await observer.readyAll();
   expect(refresh.reconcileSkillsWatcherCoverage(params)).toBe(true);
@@ -68,7 +67,7 @@ it("does not automatically loop after its one recovery attempt fails", async () 
   await retry.close();
   await waitForSkillsWatcherTurn();
   await observer.readyAll();
-  expect(observer.forRoot(root).authority).toBe(original.authority);
+  expect(refresh.reconcileSkillsWatcherCoverage(params)).toBe(true);
 });
 
 it.each(["unsubscribe", "shutdown", "re-ensure"] as const)(
@@ -101,9 +100,7 @@ it.each(["unsubscribe", "shutdown", "re-ensure"] as const)(
     await observer.started();
     if (action === "re-ensure") {
       await observer.readyAll();
-      expect(observer.forRoot(path.join(params.workspaceDir, "skills")).authority).toBe(
-        original.authority,
-      );
+      expect(refresh.reconcileSkillsWatcherCoverage(params)).toBe(true);
     } else {
       expect(observer.subscriptions.every((entry) => entry.closed)).toBe(true);
     }

@@ -249,16 +249,6 @@ export function createPluginNativeAdmission(
     });
     // Overlapping managed namespaces share inodes; a new hardlink changes earlier captures too.
     for (const namespace of state.namespaces.values()) {
-      if (
-        !namespace.referenceRoot &&
-        namespace !== previous &&
-        !namespaces().includes(namespace) &&
-        !priorNamespaces.has(namespace) &&
-        !isPluginSourceCaptureRetained(namespace.capturedRoot) &&
-        !fs.lstatSync(namespace.capturedRoot, { throwIfNoEntry: false })
-      ) {
-        continue;
-      }
       for (const [relative, member] of Object.entries(namespace.members)) {
         const identity = changed.get(member.source);
         const sourceChanged =
@@ -269,6 +259,17 @@ export function createPluginNativeAdmission(
           pluginSourceIdentityChangedOnlyByCtime(member.capturedIdentity, identity);
         if (!identity || (!sourceChanged && !captureChanged)) {
           continue;
+        }
+        // Only retired, entirely missing captures may be readmitted from installed bytes.
+        if (
+          !namespace.referenceRoot &&
+          namespace !== previous &&
+          !namespaces().includes(namespace) &&
+          !priorNamespaces.has(namespace) &&
+          !isPluginSourceCaptureRetained(namespace.capturedRoot) &&
+          !fs.lstatSync(namespace.capturedRoot, { throwIfNoEntry: false })
+        ) {
+          break;
         }
         if (namespace !== previous || !captureChanged) {
           const capturedHash = hashPluginSourceFile(

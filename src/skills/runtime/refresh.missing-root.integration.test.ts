@@ -86,16 +86,27 @@ async function advance(elapsed: number) {
   await Promise.all(samples.splice(0));
 }
 
-async function reconcile() {
+async function reconcile(retiring?: { closed: boolean; close(): Promise<void> }) {
   const results = await Promise.allSettled(
     subscriptions
       .filter((subscription) => subscription.health().state === "ready")
       .map((subscription) => subscription.reconcile()),
   );
+  let lostRoots = 0;
   for (const result of results) {
     if (result.status === "rejected") {
-      expect(result.reason).toMatchObject({ name: "AbortError" });
+      if (retiring && result.reason?.code === "path-mismatch") {
+        expect(result.reason).toMatchObject({ message: "root path changed during operation" });
+        lostRoots += 1;
+      } else {
+        expect(result.reason).toMatchObject({ name: "AbortError" });
+      }
     }
+  }
+  if (retiring) {
+    expect(lostRoots).toBe(1);
+    expect(retiring.closed).toBe(true);
+    await retiring.close();
   }
   await ready();
   for (const elapsed of [0, 100, 100, 50, 250]) {
@@ -120,11 +131,13 @@ const ensure = (config = {}) => {
   return ready();
 };
 
-it.each(["missing", "root", "workspace", "symbolic"] as const)(
+it.each(["missing", "root", "workspace", "symbolic", "external collection"] as const)(
   "refreshes cached skills after replacing a %s and keeps observing later edits",
   async (replacement) => {
     const workspaceDir = fixture.workspaceDir;
-    const root = path.join(workspaceDir, "skills");
+    const external = replacement === "external collection";
+    const collection = path.join(fixture.root, "collection");
+    const root = path.join(external ? collection : workspaceDir, "skills");
     const write = (description: string) =>
       writeSkill({ dir: path.join(root, "guide"), name: "guide", description });
     const linked = await fixture.createFixtureDirectory("linked-target");
@@ -137,27 +150,55 @@ it.each(["missing", "root", "workspace", "symbolic"] as const)(
     if (replacement !== "missing") {
       await write("Original instructions");
     }
-    const config = { skills: { load: { allowSymlinkTargets: [linked] } } };
-    await ensure(config);
-    expect(read(config)).toEqual(replacement === "missing" ? [] : ["Original instructions"]);
+    const config = {
+      skills: { load: { allowSymlinkTargets: [linked], extraDirs: external ? [collection] : [] } },
+    };
+    const sources = {
+      workspaceOnly: !external,
+      config,
+      bundledSkillsDir: path.join(fixture.root, "empty-bundled"),
+      managedSkillsDir: path.join(fixture.root, "empty-managed"),
+      pluginSkillsDir: path.join(fixture.root, "empty-plugins"),
+    };
+    const params = {
+      workspaceDir,
+      config,
+      sourcePlan: resolveWorkspaceSkillSourcePlan(workspaceDir, sources),
+    };
+    const readSkills = () =>
+      loadWorkspaceSkills(workspaceDir, sources).map((entry) => entry.skill.description);
+    refresh.ensureSkillsWatcher(params);
+    await ready();
+    expect(readSkills()).toEqual(replacement === "missing" ? [] : ["Original instructions"]);
     const original = subscriptions.slice();
+    const retiring = external ? pathWatchers.get(root) : undefined;
+    if (external) {
+      expect(await retiring?.authority).toMatchObject({ rootDir: collection });
+    }
     if (replacement === "symbolic") {
       await fs.unlink(root);
     } else if (replacement === "root") {
       await fs.rename(root, path.join(workspaceDir, "old-skills"));
     } else if (replacement === "workspace") {
       await fs.rename(workspaceDir, path.join(fixture.root, "old-workspace"));
+    } else if (external) {
+      await fs.rename(collection, path.join(fixture.root, "old-collection"));
     }
     await write("Replacement instructions");
-    await reconcile();
-    expect(read(config)).toEqual(["Replacement instructions"]);
-    expect(subscriptions).toEqual(original);
+    await reconcile(retiring);
+    expect(refresh.reconcileSkillsWatcherCoverage(params)).toBe(true);
+    expect(readSkills()).toEqual(["Replacement instructions"]);
+    if (!external) {
+      expect(subscriptions).toEqual(original);
+    }
+    const version = getSkillsSourceVersion(workspaceDir);
     await write("Later independent edit");
     await reconcile();
-    expect(read(config)).toEqual(["Later independent edit"]);
+    expect(getSkillsSourceVersion(workspaceDir)).toBeGreaterThan(version);
+    expect(readSkills()).toEqual(["Later independent edit"]);
     await fs.rm(root, { recursive: true });
     await reconcile();
-    expect(read(config)).toEqual([]);
+    expect(readSkills()).toEqual([]);
   },
 );
 

@@ -36,8 +36,8 @@ export async function observationPrefixKind(
 
 /**
  * Admit an existing prefix of a caller-selected stable boundary, stopping before
- * a symbolic entry. Callers separately admit trusted canonical targets. This is
- * initial source admission only, never a watcher recovery or recursive scanner.
+ * a symbolic entry. Each subscription admits its own Root; callers separately
+ * admit trusted canonical targets. This does not scan descendants.
  */
 export async function admitObservationRoot(
   boundary: string,

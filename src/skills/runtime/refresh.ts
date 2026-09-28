@@ -99,7 +99,6 @@ function createSkillsPathWatcher(
   const state: SkillsPathWatchState = {
     closed: false,
     depth: target.depth,
-    authority: previous?.authority,
     initialScan: previous?.initialScan ?? "pending",
     unavailable: Boolean(previous?.unavailable),
     verified: false,
@@ -244,8 +243,8 @@ function createSkillsPathWatcher(
     } else {
       publishSkillsWatchChanges([{ ...targetChange, change: "skills" }]);
     }
-    // A fresh physical subscription gets one automatic recovery attempt. Later
-    // preparation may retry under the same pinned Root; close failure never rearms.
+    // A fresh subscription gets one automatic recovery attempt. Each replacement
+    // re-admits its source after joined retirement; close failure never rearms.
     const subscriber = state.subscribers.values().next().value;
     if (isCurrent() && !state.recovering && subscriber !== undefined) {
       subscribeWorkspaceToPath(subscriber, target);
@@ -290,15 +289,7 @@ function createSkillsPathWatcher(
       if (!isCurrent()) {
         return;
       }
-      if (!state.authority) {
-        const admission = admitObservationRoot(target.authorityPath);
-        state.authority = admission;
-        void admission.catch(() => {
-          if (state.authority === admission) {
-            state.authority = undefined;
-          }
-        });
-      }
+      state.authority = admitObservationRoot(target.authorityPath);
       const authority = await state.authority;
       if (!isCurrent()) {
         return;
