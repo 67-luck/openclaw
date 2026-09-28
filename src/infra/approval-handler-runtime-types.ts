@@ -40,11 +40,6 @@ export type ChannelApprovalNativeFinalAction<TPayload> =
 /** Availability gate for deciding whether a channel-native approval runtime can handle work. */
 export type ChannelApprovalNativeAvailabilityAdapter = {
   isConfigured: (params: ChannelApprovalCapabilityHandlerContext) => boolean;
-  /** The original channel account must still own a requester notice at send time. */
-  isOriginCurrent?: (
-    params: ChannelApprovalCapabilityHandlerContext & { request: ApprovalRequest },
-    handoffConfig?: OpenClawConfig,
-  ) => boolean;
   shouldHandle: (
     params: ChannelApprovalCapabilityHandlerContext & {
       request: ApprovalRequest;

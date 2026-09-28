@@ -14,33 +14,30 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it.each([
-  { sourceThreadId: undefined, expectedPluginThreadId: null },
-  { sourceThreadId: "1700000000.000001", expectedPluginThreadId: "1700000000.000001" },
-])(
-  "keeps generic tool routing while capturing plugin origin $sourceThreadId",
-  async ({ sourceThreadId, expectedPluginThreadId }) => {
-    const fixture = await createAdmittedHostCapabilityTestFixture({
-      runId: `approval-thread-${sourceThreadId ?? "root"}`,
-      agentId: "main",
-      sessionKey: "agent:main:approval-thread",
-      messageChannel: "slack",
-      currentThreadTs: "1700000001.000002",
-      messageThreadId: sourceThreadId,
-      approvalSource: { channel: "slack", senderId: "U123", conversationKind: "direct" },
+it("retains requester context through harness tool hooks", async () => {
+  const approvalSource = {
+    channel: "slack",
+    senderId: "U123",
+    conversationKind: "direct" as const,
+  };
+  const fixture = await createAdmittedHostCapabilityTestFixture({
+    runId: "approval-source",
+    agentId: "main",
+    sessionKey: "agent:main:approval-thread",
+    messageChannel: "slack",
+    currentThreadTs: "1700000001.000002",
+    approvalSource,
+  });
+  try {
+    vi.mocked(runBeforeToolCallHook).mockImplementationOnce(async ({ ctx, params }) => {
+      expect(ctx?.turnSourceThreadId).toBe("1700000001.000002");
+      expect(getGatewayToolCallerIdentity()?.approvalSource).toEqual(approvalSource);
+      return { blocked: false, params };
     });
-    try {
-      vi.mocked(runBeforeToolCallHook).mockImplementationOnce(async ({ ctx, params }) => {
-        expect(ctx?.turnSourceThreadId).toBe("1700000001.000002");
-        expect(getGatewayToolCallerIdentity()?.pluginApprovalOriginThreadId).toBe(
-          expectedPluginThreadId,
-        );
-        return { blocked: false, params };
-      });
-      await fixture.hostCapabilities.runBeforeToolCall({ toolName: "read", params: {} });
-    } finally {
-      fixture.closeHost();
-      fixture.closeAdmission();
-    }
-  },
-);
+    await fixture.hostCapabilities.runBeforeToolCall({ toolName: "read", params: {} });
+    expect(runBeforeToolCallHook).toHaveBeenCalledTimes(1);
+  } finally {
+    fixture.closeHost();
+    fixture.closeAdmission();
+  }
+});

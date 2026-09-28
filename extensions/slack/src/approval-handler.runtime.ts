@@ -24,7 +24,7 @@ import {
   isSlackAnyNativeApprovalClientEnabled,
   shouldHandleSlackNativeApprovalRequest,
 } from "./approval-native-gates.js";
-import { isSlackApprovalOriginCurrent, resolveSlackApproverDmTargets } from "./approval-native.js";
+import { resolveSlackApproverDmTargets } from "./approval-native.js";
 import { getSlackListenerWriteClient } from "./client.js";
 import { normalizeSlackApproverId } from "./exec-approvals.js";
 import { SLACK_EDIT_TEXT_MAX_BYTES } from "./limits.js";
@@ -68,8 +68,6 @@ type SlackExecApprovalConfig = NonNullable<
 type SlackApprovalHandlerContext = {
   app: App;
   config: SlackExecApprovalConfig;
-  /** Token captured by the monitor that admitted this approval runtime. */
-  writeToken?: string;
   installationIdentity: SlackInstallationIdentity;
   readConfig?: () => OpenClawConfig;
   assertCurrent?: () => void;
@@ -363,7 +361,6 @@ export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdap
           })
         : false;
     },
-    isOriginCurrent: isSlackApprovalOriginCurrent,
     shouldHandle: (params) => {
       const resolved = resolveHandlerContext(params);
       if (!resolved) {

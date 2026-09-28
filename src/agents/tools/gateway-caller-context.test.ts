@@ -33,25 +33,24 @@ import {
 } from "./gateway-caller-context.js";
 
 describe("gateway caller context wrapper", () => {
-  it("keeps the admitted plugin origin separate from nested reply anchors", async () => {
+  it("prevents nested tools from inventing requester context", async () => {
     const identity = { agentId: "main", sessionKey: "agent:main:slack:direct:u123" };
     await withGatewayToolCallerIdentity(
       {
         ...identity,
         operationalRunInstance: { instanceId: "slack-root", runId: "slack-root" },
         turnSourceThreadId: "reply-anchor",
-        pluginApprovalOriginThreadId: null,
       },
       () =>
         withGatewayToolCallerIdentity(
           {
             ...identity,
             turnSourceThreadId: "nested-reply-anchor",
-            pluginApprovalOriginThreadId: "nested-thread",
+            approvalSource: { channel: "slack", senderId: "forged-sender" },
           },
           () => {
             expect(getGatewayToolCallerIdentity()?.turnSourceThreadId).toBe("reply-anchor");
-            expect(getGatewayToolCallerIdentity()?.pluginApprovalOriginThreadId).toBeNull();
+            expect(getGatewayToolCallerIdentity()?.approvalSource).toBeUndefined();
           },
         ),
     );

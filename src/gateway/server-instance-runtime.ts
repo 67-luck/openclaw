@@ -1,8 +1,6 @@
 import { DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS } from "../../packages/gateway-client/src/timeouts.js";
 import type { AgentWaitParams } from "../../packages/gateway-protocol/src/index.js";
 import { createOutboundSendDeps } from "../cli/outbound-send-deps.js";
-import { getPublishedConfigRuntimeEnvState } from "../config/config-env-vars.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   GATEWAY_NATIVE_APPROVAL_METHODS,
   type GatewayNativeApprovalMethod,
@@ -13,7 +11,6 @@ import type {
   GatewayApprovalResolved,
 } from "../infra/approval-gateway-runtime.types.js";
 import { createApprovalNativeRouteCoordinator } from "../infra/approval-native-route-coordinator.js";
-import type { ApprovalRouteSendParams } from "../infra/approval-native-route-notice.js";
 import { projectApprovalRequestForExternal } from "../infra/approval-request-projection.js";
 import type { ChannelApprovalKind } from "../infra/approval-types.js";
 import type { PluginApprovalRequest } from "../infra/plugin-approvals.js";
@@ -64,10 +61,6 @@ type GatewayInstanceRuntimeOptions = {
   getContext: () => GatewayRequestContext;
   getMethodRegistry: () => GatewayMethodRegistry;
   isDispatchAvailable: () => boolean;
-  captureCurrentChannelAccountTask?: (
-    channel: string,
-    accountId: string,
-  ) => (() => boolean) | undefined;
   logError?: (message: string) => void;
 };
 
@@ -322,76 +315,12 @@ export function createGatewayInstanceRuntime(
     return delivered;
   };
 
-  const requestApprovalRoute = async (
-    method: "send",
-    payload: ApprovalRouteSendParams,
-    routeOptions?: { liveOnlyWhenCurrent: (cfg?: OpenClawConfig) => boolean },
-  ): Promise<void> => {
-    if (routeOptions) {
-      await recovery.sendRecoveryNotice({
-        channel: payload.channel,
-        to: payload.to,
-        accountId: payload.accountId,
-        threadId: payload.threadId,
-        text: payload.message,
-        idempotencyKey: payload.idempotencyKey,
-        liveOnly: true,
-        isCurrent: routeOptions.liveOnlyWhenCurrent,
-      });
-      return;
-    }
-    await dispatch({
-      allowedMethods: approvalRouteMethods,
-      client: approvalRouteClient,
-      method,
-      payload,
-      timeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
-    });
-  };
-
   return {
     createAgentTurnFacade,
     approvalEvents: {
       publishRequested: (kind, request) => {
         // SAFETY: Gateway approval publishers pair the plugin kind with a plugin request.
         const pluginRequest = kind === "plugin" ? (request as PluginApprovalRequest) : null;
-        if (pluginRequest) {
-          const context = options.getContext();
-          const manager = context.pluginApprovalManager;
-          const record = manager?.getLiveSnapshot(pluginRequest.id);
-          const sourceConfig = context.getRuntimeConfig();
-          const sourceEnvGeneration = getPublishedConfigRuntimeEnvState().generation;
-          const sourceChannel = pluginRequest.request.turnSourceChannel;
-          const sourceAccountId = normalizeOptionalAccountId(
-            pluginRequest.request.turnSourceAccountId,
-          );
-          // A remote channel owner may hold the only usable credential. The
-          // Gateway sends a fallback notice only for its own live source task.
-          const isSourceTaskCurrent =
-            sourceChannel && sourceAccountId
-              ? options.captureCurrentChannelAccountTask?.(sourceChannel, sourceAccountId)
-              : undefined;
-          routeCoordinator.capturePluginOrigin(
-            pluginRequest,
-            manager ? () => manager.retainForHandoff(pluginRequest.id) : undefined,
-            manager && record && isSourceTaskCurrent
-              ? {
-                  requestGateway: requestApprovalRoute,
-                  isOriginCurrent: (boundRequest, cfg) =>
-                    !closed &&
-                    options.isDispatchAvailable() &&
-                    options.getContext() === context &&
-                    context.pluginApprovalManager === manager &&
-                    manager.getLiveSnapshot(pluginRequest.id) === record &&
-                    boundRequest.id === record.id &&
-                    context.getRuntimeConfig() === sourceConfig &&
-                    getPublishedConfigRuntimeEnvState().generation === sourceEnvGeneration &&
-                    isSourceTaskCurrent() &&
-                    (cfg === undefined || cfg === sourceConfig),
-                }
-              : undefined,
-          );
-        }
         const publicRequest = pluginRequest
           ? {
               ...pluginRequest,
@@ -418,41 +347,9 @@ export function createGatewayInstanceRuntime(
             // SAFETY: the external projection preserves the approval request identity.
             subscriber.shouldHandle(publicRequest as GatewayApprovalRequest),
         );
-        if (pluginRequest) {
-          void routeCoordinator
-            .finishPluginOriginRouting(pluginRequest.id, delivered > 0)
-            .catch((error: unknown) => {
-              options.logError?.(`plugin approval origin notice failed: ${String(error)}`);
-            });
-        }
         return delivered;
       },
       publishResolved: (kind, resolved) => {
-        if (
-          kind === "plugin" &&
-          resolved !== null &&
-          typeof resolved === "object" &&
-          "id" in resolved &&
-          typeof resolved.id === "string"
-        ) {
-          const terminalStatus = "terminalStatus" in resolved ? resolved.terminalStatus : undefined;
-          const decision = "decision" in resolved ? resolved.decision : undefined;
-          void routeCoordinator
-            .publishPluginTerminal({
-              approvalId: resolved.id,
-              status:
-                terminalStatus === "expired"
-                  ? "expired"
-                  : terminalStatus === "cancelled"
-                    ? "cancelled"
-                    : decision === "deny"
-                      ? "denied"
-                      : "allowed",
-            })
-            .catch((error: unknown) => {
-              options.logError?.(`plugin approval origin notice failed: ${String(error)}`);
-            });
-        }
         const publicResolved =
           kind === "plugin" &&
           resolved !== null &&
@@ -495,7 +392,14 @@ export function createGatewayInstanceRuntime(
           payload,
           timeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
         }),
-      requestRoute: requestApprovalRoute,
+      requestRoute: async <T>(method: "send", payload: Record<string, unknown>) =>
+        await dispatch<T>({
+          allowedMethods: approvalRouteMethods,
+          client: approvalRouteClient,
+          method,
+          payload,
+          timeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
+        }),
       routeCoordinator,
       subscribe: (subscriber) => {
         if (closed) {

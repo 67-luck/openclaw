@@ -1,8 +1,6 @@
 // Creates channel-native approval runtimes and delivery flows.
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { ChannelApprovalNativeAdapter } from "../channels/plugins/approval-native.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { createSubsystemLogger } from "../logging/subsystem.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { getGatewayNativeApprovalRuntime } from "./approval-gateway-runtime-context.js";
 import {
@@ -10,14 +8,7 @@ import {
   type ChannelApprovalNativePlannedTarget,
   type ChannelApprovalNativeDeliveryPlan,
 } from "./approval-native-delivery.js";
-import {
-  createApprovalNativeRouteReporter,
-  publishDefaultPluginTerminal,
-} from "./approval-native-route-coordinator.js";
-import {
-  normalizeApprovalRouteChannel,
-  type ApprovalRouteSendParams,
-} from "./approval-native-route-notice.js";
+import { createApprovalNativeRouteReporter } from "./approval-native-route-coordinator.js";
 import type {
   ChannelNativeApprovalDeliveryCallbacks,
   ChannelNativeApprovalTransportSpec,
@@ -35,7 +26,7 @@ import {
   type ExecApprovalChannelRuntimeAdapter,
 } from "./exec-approval-channel-runtime.js";
 import type { ExecApprovalResolved } from "./exec-approvals.js";
-import type { PluginApprovalRequest, PluginApprovalResolved } from "./plugin-approvals.js";
+import type { PluginApprovalResolved } from "./plugin-approvals.js";
 import type { SystemAgentApprovalResolved } from "./system-agent-approvals.js";
 
 type ApprovalRequest = ApprovalRequestInput;
@@ -173,7 +164,6 @@ type ChannelNativeApprovalRuntimeAdapter<
     channel?: string;
     channelLabel?: string;
     accountId?: string | null;
-    isOriginCurrent?: (request: TRequest, handoffConfig?: OpenClawConfig) => boolean;
     nativeAdapter?: ChannelApprovalNativeAdapter | null;
     /** @deprecated Trusted compatibility override; omit to derive ownership from the payload. */
     resolveApprovalKind?: (request: TRequest) => ChannelApprovalKind;
@@ -202,24 +192,8 @@ export function createChannelNativeApprovalRuntime<
   >,
 ): ExecApprovalChannelRuntime<TRequest, TResolved> {
   const nowMs = adapter.nowMs ?? Date.now;
-  const log = createSubsystemLogger(adapter.label);
   const handledEventKinds = new Set<ChannelApprovalKind>(adapter.eventKinds ?? ["exec"]);
   const gatewayRuntime = getGatewayNativeApprovalRuntime();
-  const remoteOriginIsLocal = (request: ApprovalRequest): boolean => {
-    if (request.approvalKind !== "plugin") {
-      return false;
-    }
-    // SAFETY: the explicit approval kind selects the plugin request payload.
-    const source = (request as PluginApprovalRequest).request;
-    return (
-      source.approvalSource?.channel === source.turnSourceChannel &&
-      normalizeApprovalRouteChannel(source.turnSourceChannel) ===
-        normalizeApprovalRouteChannel(adapter.channel) &&
-      Boolean(normalizeOptionalString(source.turnSourceAccountId)) &&
-      normalizeOptionalString(source.turnSourceAccountId) ===
-        normalizeOptionalString(adapter.accountId)
-    );
-  };
   const createRouteReporter =
     gatewayRuntime?.routeCoordinator.createReporter ?? createApprovalNativeRouteReporter;
   const routeReporter = createRouteReporter({
@@ -227,15 +201,6 @@ export function createChannelNativeApprovalRuntime<
     channel: adapter.channel,
     channelLabel: adapter.channelLabel,
     accountId: adapter.accountId,
-    sourceConfig: adapter.cfg,
-    ...(adapter.isOriginCurrent
-      ? {
-          isOriginCurrent: (request: ApprovalRequest, handoffConfig?: OpenClawConfig) => {
-            // SAFETY: Core calls this guard with the request registered by this typed runtime.
-            return adapter.isOriginCurrent?.(request as TRequest, handoffConfig) === true;
-          },
-        }
-      : {}),
     // SAFETY: the route coordinator receives only normalized requests from this runtime.
     shouldHandle: (request) => adapter.shouldHandle(request as NormalizedApprovalRequest<TRequest>),
     classifyRoute: (request) =>
@@ -244,51 +209,15 @@ export function createChannelNativeApprovalRuntime<
         request,
         channel: adapter.channel ?? "",
       }),
-    requestGateway: async (
-      method: "send",
-      params: ApprovalRouteSendParams,
-      options?: { liveOnlyWhenCurrent: () => boolean; approvalRequest?: ApprovalRequest },
-    ): Promise<void> => {
+    requestGateway: async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
       if (gatewayRuntime) {
-        await gatewayRuntime.requestRoute(method, params, options);
-        return;
-      }
-      if (options) {
-        const request = options.approvalRequest;
-        if (request && remoteOriginIsLocal(request) && adapter.isOriginCurrent) {
-          const assertCurrent = () => {
-            if (!options.liveOnlyWhenCurrent()) {
-              throw new Error("native approval notice owner retired before delivery");
-            }
-          };
-          assertCurrent();
-          const { sendMessage } = await import("./outbound/message.js");
-          const result = await sendMessage({
-            cfg: adapter.cfg,
-            channel: params.channel,
-            to: params.to,
-            accountId: params.accountId,
-            threadId: params.threadId,
-            content: params.message,
-            idempotencyKey: params.idempotencyKey,
-            gatewayOwnedDelivery: true,
-            bestEffort: true,
-            skipQueue: true,
-            onPlatformSendDispatch: async () => assertCurrent(),
-            assertDirectAdapterHandoff: assertCurrent,
-            abortSignal: AbortSignal.timeout(10_000),
-          });
-          if (result.deliveryStatus === "failed" || result.deliveryStatus === "partial_failed") {
-            throw new Error(result.error ?? "native approval notice delivery failed");
-          }
-          return;
+        if (method !== "send") {
+          throw new Error(`native approval route cannot dispatch ${method}`);
         }
-        // The source Gateway owns the requester notice. This process has no
-        // credential for the originating account.
-        return;
+        return await gatewayRuntime.requestRoute<T>(method, params);
       }
       const { callGatewayLeastPrivilege } = await import("../gateway/call.js");
-      await callGatewayLeastPrivilege({
+      return await callGatewayLeastPrivilege<T>({
         config: adapter.cfg,
         ...(adapter.gatewayUrl ? { url: adapter.gatewayUrl } : {}),
         method,
@@ -336,18 +265,7 @@ export function createChannelNativeApprovalRuntime<
       try {
         await adapter.finalizeResolved(params);
       } finally {
-        try {
-          if (!gatewayRuntime && params.request.approvalKind === "plugin") {
-            await publishDefaultPluginTerminal({
-              approvalId: params.request.id,
-              status: params.resolved.decision === "deny" ? "denied" : "allowed",
-            });
-          }
-        } catch (error) {
-          log.warn(`remote plugin approval terminal notice failed: ${String(error)}`);
-        } finally {
-          routeReporter.completeRequest(params.request.id);
-        }
+        routeReporter.completeRequest(params.request.id);
       }
     },
     finalizeExpired: adapter.finalizeExpired
@@ -355,18 +273,7 @@ export function createChannelNativeApprovalRuntime<
           try {
             await adapter.finalizeExpired?.(params);
           } finally {
-            try {
-              if (!gatewayRuntime && params.request.approvalKind === "plugin") {
-                await publishDefaultPluginTerminal({
-                  approvalId: params.request.id,
-                  status: "expired",
-                });
-              }
-            } catch (error) {
-              log.warn(`remote plugin approval terminal notice failed: ${String(error)}`);
-            } finally {
-              routeReporter.completeRequest(params.request.id);
-            }
+            routeReporter.completeRequest(params.request.id);
           }
         }
       : undefined,

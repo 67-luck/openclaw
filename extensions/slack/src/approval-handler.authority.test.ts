@@ -10,7 +10,6 @@ import {
 import { withServer } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { slackApprovalNativeRuntime } from "./approval-handler.runtime.js";
-import { slackApprovalCapability } from "./approval-native.js";
 import { createSlackWebClient } from "./client.js";
 import { registerSlackInstallationState } from "./installation-identity-state.js";
 
@@ -55,59 +54,6 @@ afterEach(() => {
 });
 
 describe("Slack approval reviewer delivery authority", () => {
-  it("keeps requester notices on the original live bot account", () => {
-    const cfg = approvalConfig(REVIEWER);
-    setRuntimeConfigSnapshot(cfg);
-    let monitorCurrent = true;
-    const context = {
-      app: {},
-      config: {},
-      writeToken: BOT_TOKEN,
-      installationIdentity: { kind: "workspace", teamId: TEAM },
-      readConfig: createRuntimeConfigReader(cfg),
-      assertCurrent: () => {
-        if (!monitorCurrent) {
-          throw new Error("monitor replaced");
-        }
-      },
-    };
-    const params = {
-      cfg,
-      accountId: "default",
-      context,
-      request: {
-        approvalKind: "plugin" as const,
-        id: "plugin:origin-authority",
-        request: { title: "Render a diff", description: "Render an example diff" },
-        createdAtMs: 0,
-        expiresAtMs: 60_000,
-      },
-    };
-    expect(slackApprovalCapability.nativeRuntime?.availability.isOriginCurrent?.(params)).toBe(
-      true,
-    );
-    expect(slackApprovalNativeRuntime.availability.isOriginCurrent?.(params)).toBe(true);
-    expect(
-      slackApprovalNativeRuntime.availability.isOriginCurrent?.(params, {
-        channels: { slack: { botToken: "xoxb-reassigned" } },
-      }),
-    ).toBe(false);
-    expect(
-      slackApprovalCapability.nativeRuntime?.availability.isOriginCurrent?.(params, {
-        channels: { slack: { botToken: "xoxb-reassigned" } },
-      }),
-    ).toBe(false);
-
-    const reassigned = approvalConfig(REVIEWER);
-    reassigned.channels!.slack!.botToken = "xoxb-reassigned";
-    setRuntimeConfigSnapshot(reassigned);
-    expect(slackApprovalNativeRuntime.availability.isOriginCurrent?.(params)).toBe(false);
-
-    setRuntimeConfigSnapshot(cfg);
-    monitorCurrent = false;
-    expect(slackApprovalNativeRuntime.availability.isOriginCurrent?.(params)).toBe(false);
-  });
-
   it.each([
     { installation: "enterprise", change: "removed", nextApprover: OTHER, shouldPost: false },
     { installation: "enterprise", change: "retained", nextApprover: REVIEWER, shouldPost: true },

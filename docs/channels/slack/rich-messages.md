@@ -175,9 +175,7 @@ of the originating private channel or DM. Choose reviewers who may see this
 limited source context.
 
 External approval clients that connect over the Gateway WebSocket receive the
-requester and source without the excerpt. For DM-only approval delivery, the
-requester receives a notice that review is pending and another notice if the
-request is denied or times out.
+requester and source without the excerpt.
 
 For Enterprise Grid org installs, the originating event's validated workspace
 is retained for the approval prompt, approver DM, button callback, and final

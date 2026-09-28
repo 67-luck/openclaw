@@ -81,8 +81,6 @@ type GatewayToolCallerIdentity = {
   turnSourceTo?: string;
   turnSourceAccountId?: string;
   turnSourceThreadId?: string | number;
-  /** Trusted plugin notification route; null records a top-level origin. */
-  pluginApprovalOriginThreadId?: string | number | null;
   /** Host-captured approval presentation; never plugin-authored request data. */
   approvalSource?: PluginApprovalSource;
 };
@@ -142,7 +140,6 @@ type AdmittedGatewayToolCallerParams = {
   turnSourceTo?: string;
   turnSourceAccountId?: string;
   turnSourceThreadId?: string | number;
-  pluginApprovalOriginThreadId?: string | number | null;
   approvalSource?: PluginApprovalSource;
 };
 
@@ -206,7 +203,6 @@ export function createAdmittedGatewayToolCallerIdentity(
     turnSourceTo: params.turnSourceTo,
     turnSourceAccountId: params.turnSourceAccountId,
     turnSourceThreadId: params.turnSourceThreadId,
-    pluginApprovalOriginThreadId: params.pluginApprovalOriginThreadId,
     approvalSource: params.approvalSource,
   };
 }
@@ -339,11 +335,7 @@ export async function withGatewayToolCallerIdentity<T>(
   const turnSourceAccountId =
     inheritedOwner?.turnSourceAccountId ?? identity.turnSourceAccountId?.trim();
   const turnSourceThreadId = inheritedOwner?.turnSourceThreadId ?? identity.turnSourceThreadId;
-  // An admitted root can be unthreaded; a nested tool cannot turn its reply
-  // anchor into the plugin request's origin thread.
-  const pluginApprovalOriginThreadId = inheritedOwner?.operationalRunInstance
-    ? inheritedOwner.pluginApprovalOriginThreadId
-    : (inheritedOwner?.pluginApprovalOriginThreadId ?? identity.pluginApprovalOriginThreadId);
+  // Nested tools cannot replace or invent the admitted requester's context.
   const approvalSource = inheritedOwner?.operationalRunInstance
     ? inheritedOwner.approvalSource
     : (inheritedOwner?.approvalSource ?? identity.approvalSource);
@@ -385,7 +377,6 @@ export async function withGatewayToolCallerIdentity<T>(
       ...(turnSourceTo ? { turnSourceTo } : {}),
       ...(turnSourceAccountId ? { turnSourceAccountId } : {}),
       ...(turnSourceThreadId !== undefined ? { turnSourceThreadId } : {}),
-      ...(pluginApprovalOriginThreadId !== undefined ? { pluginApprovalOriginThreadId } : {}),
       ...(approvalSource ? { approvalSource } : {}),
     },
     run,

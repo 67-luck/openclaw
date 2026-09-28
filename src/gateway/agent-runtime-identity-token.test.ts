@@ -126,14 +126,9 @@ afterEach(() => {
 });
 
 describe("agent runtime identity token", () => {
-  it.each([
-    { mode: "signed", originThreadId: null },
-    { mode: "direct", originThreadId: null },
-    { mode: "signed", originThreadId: "1700000000.000001" },
-    { mode: "direct", originThreadId: "1700000000.000001" },
-  ] as const)(
-    "retains bounded host approval context and origin $originThreadId through $mode identity",
-    async ({ mode, originThreadId }) => {
+  it.each(["signed", "direct"] as const)(
+    "retains bounded host approval context through %s identity",
+    async (mode) => {
       useTempHome();
       const runtimeToken = await importRuntimeTokenModule();
       const source = {
@@ -149,31 +144,26 @@ describe("agent runtime identity token", () => {
         sessionKey: "agent:main:main",
         ...operationalRun(),
         approvalSource: source,
-        pluginApprovalOriginThreadId: originThreadId,
       });
       expect(identity?.approvalSource).toEqual(source);
-      expect(identity?.pluginApprovalOriginThreadId).toBe(originThreadId);
     },
   );
 
-  it("retains Matrix sender and thread IDs through the signed approval identity", async () => {
+  it("retains Matrix sender IDs through the signed approval identity", async () => {
     useTempHome();
     const runtimeToken = await importRuntimeTokenModule();
     const senderId = `@${"a".repeat(52)}:example.org`;
-    const originThreadId = `$${"e".repeat(96)}:example.org`;
     const identity = await createIdentity(runtimeToken, "signed", {
       agentId: "main",
       sessionKey: "agent:main:main",
       ...operationalRun(),
       approvalSource: { channel: "matrix", senderId, conversationKind: "direct" },
-      pluginApprovalOriginThreadId: originThreadId,
     });
     expect(identity?.approvalSource).toEqual({
       channel: "matrix",
       senderId,
       conversationKind: "direct",
     });
-    expect(identity?.pluginApprovalOriginThreadId).toBe(originThreadId);
   });
 
   it.each(["signed", "direct"] as const)(

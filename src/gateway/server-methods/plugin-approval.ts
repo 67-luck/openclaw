@@ -211,9 +211,7 @@ export function createPluginApprovalHandlers(
           ? normalizeTrimmedString(trustedAgentRuntime.turnSourceAccountId)
           : normalizeTrimmedString(p.turnSourceAccountId),
         turnSourceThreadId: trustedAgentRuntime
-          ? approvalSource && trustedAgentRuntime.pluginApprovalOriginThreadId !== undefined
-            ? trustedAgentRuntime.pluginApprovalOriginThreadId
-            : (trustedAgentRuntime.turnSourceThreadId ?? null)
+          ? (trustedAgentRuntime.turnSourceThreadId ?? null)
           : (p.turnSourceThreadId ?? null),
       };
 

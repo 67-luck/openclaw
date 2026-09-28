@@ -57,7 +57,6 @@ export type AgentRuntimeIdentity = {
   turnSourceTo?: string;
   turnSourceAccountId?: string;
   turnSourceThreadId?: string | number;
-  pluginApprovalOriginThreadId?: string | number | null;
   approvalSource?: PluginApprovalSource;
   gatewayUiCommandTarget?: GatewayUiCommandTarget;
   messageActionContext?: AgentRuntimeMessageActionContext;
@@ -219,9 +218,6 @@ const pluginApprovalSourceSchema = z.object({
   conversationKind: z.enum(["direct", "group", "channel"]).optional(),
   userMessageExcerpt: z.string().max(320).optional(),
 });
-const pluginApprovalOriginThreadIdSchema = z
-  .union([z.string().min(1).max(255), z.number().finite(), z.null()])
-  .optional();
 const agentRuntimeIdentityTokenPayloadSchema = z.object({
   kind: z.literal(AGENT_RUNTIME_IDENTITY_TOKEN_KIND),
   agentId: z.string(),
@@ -235,7 +231,6 @@ const agentRuntimeIdentityTokenPayloadSchema = z.object({
   turnSourceTo: z.string().optional().catch(undefined),
   turnSourceAccountId: z.string().optional().catch(undefined),
   turnSourceThreadId: z.union([z.string(), z.number()]).optional().catch(undefined),
-  pluginApprovalOriginThreadId: pluginApprovalOriginThreadIdSchema,
   approvalSource: pluginApprovalSourceSchema.optional(),
   gatewayUiCommandTarget: gatewayUiCommandTargetSchema.optional(),
   messageActionContext: messageActionContextSchema.optional(),
@@ -362,7 +357,6 @@ function parsePayload(value: unknown, nowMs: number): AgentRuntimeIdentityTokenP
     }
     const turnSourceTo = normalizeOptionalString(raw.turnSourceTo);
     const turnSourceThreadId = raw.turnSourceThreadId;
-    const pluginApprovalOriginThreadId = raw.pluginApprovalOriginThreadId;
     const approvalSource = raw.approvalSource;
     if (!agentId || !sessionKey) {
       return undefined;
@@ -422,7 +416,6 @@ function parsePayload(value: unknown, nowMs: number): AgentRuntimeIdentityTokenP
       ...(turnSourceTo ? { turnSourceTo } : {}),
       ...(turnSourceAccountId ? { turnSourceAccountId } : {}),
       ...(turnSourceThreadId !== undefined ? { turnSourceThreadId } : {}),
-      ...(pluginApprovalOriginThreadId !== undefined ? { pluginApprovalOriginThreadId } : {}),
       ...(approvalSource ? { approvalSource } : {}),
       ...(raw.gatewayUiCommandTarget
         ? { gatewayUiCommandTarget: Object.freeze(raw.gatewayUiCommandTarget) }
@@ -453,7 +446,6 @@ export type AgentRuntimeIdentityTokenParams = {
   turnSourceTo?: string;
   turnSourceAccountId?: string;
   turnSourceThreadId?: string | number;
-  pluginApprovalOriginThreadId?: string | number | null;
   approvalSource?: PluginApprovalSource;
   gatewayUiCommandTarget?: GatewayUiCommandTarget;
   messageActionContext?: AgentRuntimeMessageActionContext;
@@ -550,9 +542,6 @@ function prepareAgentRuntimeIdentityTokenPayload(
   const approvalSource = params.approvalSource
     ? pluginApprovalSourceSchema.parse(params.approvalSource)
     : undefined;
-  const pluginApprovalOriginThreadId = approvalSource
-    ? pluginApprovalOriginThreadIdSchema.parse(params.pluginApprovalOriginThreadId)
-    : undefined;
   const cronSelfManagementJobId = normalizeOptionalString(params.cronSelfManagementJobId);
   const cronSelfManagementContext = cronSelfManagementJobId
     ? {
@@ -577,7 +566,6 @@ function prepareAgentRuntimeIdentityTokenPayload(
     ...(turnSourceTo ? { turnSourceTo } : {}),
     ...(turnSourceAccountId ? { turnSourceAccountId } : {}),
     ...(turnSourceThreadId !== undefined ? { turnSourceThreadId } : {}),
-    ...(pluginApprovalOriginThreadId !== undefined ? { pluginApprovalOriginThreadId } : {}),
     ...(approvalSource ? { approvalSource } : {}),
     ...(params.gatewayUiCommandTarget
       ? {

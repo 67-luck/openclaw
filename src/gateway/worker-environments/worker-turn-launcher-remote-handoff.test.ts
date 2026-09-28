@@ -311,7 +311,6 @@ describe("worker turn launcher remote handoff", () => {
       turnSourceTo: "Dworker",
       turnSourceAccountId: "worker-account",
       turnSourceThreadId: "reply-anchor-worker",
-      pluginApprovalOriginThreadId: "actual-thread-worker",
       approvalSource: {
         channel: "slack",
         senderId: "Urequester",

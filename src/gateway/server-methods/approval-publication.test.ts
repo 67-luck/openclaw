@@ -86,31 +86,6 @@ describe("publishAppliedApprovalResolution for OpenClaw changes", () => {
     }
   });
 
-  it.each(["expired", "cancelled"] as const)(
-    "publishes the durable plugin %s status to native routes",
-    async (status) => {
-      const publishResolved = vi.fn();
-      await publishAppliedApprovalResolution({
-        record: {
-          id: "plugin:1",
-          kind: "plugin",
-          status,
-          resolvedAtMs: 1,
-        } as unknown as PublishParams["record"],
-        liveRecord: { request: {}, resolvedBy: null } as unknown as PublishParams["liveRecord"],
-        context: {
-          broadcast: vi.fn(),
-          broadcastToConnIds: vi.fn(),
-          approvalEvents: { publishResolved },
-        } as unknown as PublishParams["context"],
-      });
-      expect(publishResolved).toHaveBeenCalledWith(
-        "plugin",
-        expect.objectContaining({ id: "plugin:1", terminalStatus: status }),
-      );
-    },
-  );
-
   // Decisions publish their applied outcome from the system-agent owner; a
   // second chat update here would duplicate the terminal message.
   it.each(["allowed", "denied"] as const)(
