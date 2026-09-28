@@ -2046,7 +2046,27 @@ start_gateway() {
   if [ "${SCENARIO:-}" = "watchos-direct-node" ]; then
     readiness_mode="legacy-ready-log-ok"
   fi
-  openclaw_e2e_wait_gateway_ready "$gateway_pid" "$GATEWAY_LOG" 360 "$port" "$readiness_mode" || return "$?"
+  local readiness_status=0
+  openclaw_e2e_wait_gateway_ready "$gateway_pid" "$GATEWAY_LOG" 360 "$port" "$readiness_mode" || readiness_status=$?
+  if [ "$readiness_status" -ne 0 ]; then
+    if [ "${SCENARIO:-}" = "base" ] && [ "${CURRENT_PHASE:-}" = "gateway-start" ]; then
+      local failed_epoch diagnostic_epoch diagnostic_status=0 late_ready=false
+      failed_epoch="$(node -e "process.stdout.write(String(Date.now()))")" || return "$readiness_status"
+      echo "Gateway startup diagnostic: original_status=$readiness_status original_elapsed_ms=$((failed_epoch - start_epoch)) pid=$gateway_pid"
+      # Observe the existing model-startup deadline without changing the failed readiness gate.
+      timeout --kill-after=5s 120s bash -c '
+        source scripts/lib/openclaw-e2e-instance.sh
+        openclaw_e2e_wait_gateway_ready "$1" "$2" 480 "$3" "$4"
+      ' startup-diagnostic "$gateway_pid" "$GATEWAY_LOG" "$port" "$readiness_mode" \
+        >"$ARTIFACT_ROOT/gateway-start-diagnostic.log" 2>&1 || diagnostic_status=$?
+      diagnostic_epoch="$(node -e "process.stdout.write(String(Date.now()))")" || return "$readiness_status"
+      [ "$diagnostic_status" -ne 0 ] || late_ready=true
+      echo "Gateway startup diagnostic: late_ready=$late_ready diagnostic_status=$diagnostic_status elapsed_ms=$((diagnostic_epoch - start_epoch)) preserved_status=$readiness_status"
+      openclaw_e2e_print_log "$ARTIFACT_ROOT/gateway-start-diagnostic.log" || true
+      tail -n 120 "$GATEWAY_LOG" || true
+    fi
+    return "$readiness_status"
+  fi
   ready_epoch="$(node -e "process.stdout.write(String(Date.now()))")" || return "$?"
   start_seconds=$(((ready_epoch - start_epoch + 999) / 1000))
   if [ "$start_seconds" -gt "$budget" ]; then
