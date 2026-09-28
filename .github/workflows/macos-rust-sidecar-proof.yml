@@ -92,7 +92,6 @@ jobs:
           BUILD_CONFIG: debug
           CODESIGN_TIMESTAMP: "off"
           OPENCLAW_PACKAGE_APP_ROOT: ${{ github.workspace }}/dist/OpenClawSidecarProof.app
-          OPENCLAW_PACKAGE_RUST_NODE_SIDECAR: "1"
           OPENCLAW_SKIP_MLX_TTS: "1"
           RUSTUP_TOOLCHAIN: 1.93.0
           SIGN_IDENTITY: "-"
