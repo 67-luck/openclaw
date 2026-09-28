@@ -37,3 +37,25 @@ export function resolveGitHubHost(env: NodeJS.ProcessEnv = process.env): string 
 export function resolveGitHubApiBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
   return normalizeGitHubApiBaseUrl(env.GITHUB_API_BASE_URL);
 }
+
+export function resolveGitHubAppApiBaseUrl(
+  host: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (host !== resolveGitHubHost(env)) {
+    throw new Error("GITHUB_API_BASE_URL must match GITHUB_HOST");
+  }
+  const apiBaseUrl = resolveGitHubApiBaseUrl(env);
+  const api = new URL(apiBaseUrl);
+  const cloud = host === GITHUB_PUBLIC_HOST || host.endsWith(".ghe.com");
+  const expectedApiHost =
+    host === GITHUB_PUBLIC_HOST
+      ? "api.github.com"
+      : host.endsWith(".ghe.com")
+        ? `api.${host}`
+        : host;
+  if (api.hostname !== expectedApiHost || api.pathname !== (cloud ? "/" : "/api/v3")) {
+    throw new Error("GITHUB_API_BASE_URL must match GITHUB_HOST");
+  }
+  return apiBaseUrl;
+}
