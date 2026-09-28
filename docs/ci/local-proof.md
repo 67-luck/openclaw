@@ -176,7 +176,7 @@ with an actionable error. It does not fall back to an unbounded compiler. Use a
 qualified remote worker or a memory-limited Linux VM. For example:
 
 ```bash
-node scripts/crabbox-wrapper.mjs run --provider blacksmith-testbox -- node scripts/check-tsgo-core-boundary.mjs
+node scripts/crabbox-wrapper.mjs run --workload ci-fast --target linux -- corepack pnpm lint:tmp:tsgo-core-boundary
 ```
 
 This policy covers native compiler queries used by boundary discovery. Other

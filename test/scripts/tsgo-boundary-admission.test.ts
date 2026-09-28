@@ -1,4 +1,4 @@
-import type { ChildProcess } from "node:child_process";
+import { spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +8,7 @@ import { root as openLockRoot } from "@openclaw/fs-safe/root";
 import { afterEach, expect, it } from "vitest";
 import { runManagedCommand } from "../../scripts/lib/managed-child-process.mts";
 import { createFixtureLifetime } from "../helpers/fixture-lifetime.js";
+import { waitForPidFile } from "../helpers/process-wait.js";
 import { createDeferred } from "../helpers/promise.js";
 import { installDistArtifactScripts } from "./dist-artifact-fixture.js";
 import {
@@ -119,6 +120,88 @@ function installHook(
     NODE_OPTIONS: [env.NODE_OPTIONS, "--import=" + pathToFileURL(hook).href].join(" "),
   };
 }
+
+it.runIf(hasSemanticTestBackend())(
+  "joins the boundary scheduler's compiler scope before releasing admission on cancellation",
+  async ({ signal }) =>
+    lifetime.run(async () => {
+      const { root, env } = fixture();
+      const compilerPidFile = path.join(root, "compiler.pid");
+      const descendantPidFile = path.join(root, "descendant.pid");
+      const descendant = `
+const fs = require("node:fs");
+process.on("SIGTERM", () => {});
+setInterval(() => {}, 1000);
+fs.writeFileSync(${JSON.stringify(descendantPidFile)}, String(process.pid));
+`;
+      fs.writeFileSync(
+        path.join(root, "compiler.cjs"),
+        `
+#!/usr/bin/env node
+const fs = require("node:fs");
+const { spawn } = require("node:child_process");
+process.on("SIGTERM", () => {});
+spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { detached: true, stdio: "ignore" });
+setInterval(() => {}, 1000);
+fs.writeFileSync(${JSON.stringify(compilerPidFile)}, String(process.pid));
+`.trimStart(),
+      );
+      const scheduler = path.join(root, "scheduler.mjs");
+      fs.writeFileSync(
+        scheduler,
+        `
+import { BOUNDARY_CHECKS, runChecks } from ${JSON.stringify(new URL("../../scripts/run-additional-boundary-checks.mts", import.meta.url).href)};
+const check = BOUNDARY_CHECKS.find(check => check.label === "lint:tmp:tsgo-core-boundary");
+process.exitCode = await runChecks([{
+  ...check,
+  args: [${JSON.stringify(path.join(root, "scripts/check-tsgo-core-boundary.mts"))}],
+}], { concurrency: 1, checkTimeoutMs: 30000 }) ? 1 : 0;
+`,
+      );
+      const running = start(root, env, [scheduler], signal);
+      try {
+        const pids = await Promise.all(
+          [compilerPidFile, descendantPidFile].map((file) => waitForPidFile(file, 5000)),
+        );
+        const directory = path.join(root, ".cache/openclaw/semantic-checks");
+        const receipt = fs.readdirSync(directory).find((file) => file.endsWith(".scope-owner"))!;
+        const unit = fs.readFileSync(path.join(directory, receipt), "utf8").trim();
+        expect(unit).toMatch(/^openclaw-check-[a-f0-9-]+\.scope$/u);
+        running.cancel();
+        expect(await running.completion, running.output()).toBe(143);
+        expect(fs.readdirSync(directory)).toEqual([]);
+        for (const pid of pids) {
+          const state = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" });
+          expect(state.stdout.trim() === "" || state.stdout.trim().startsWith("Z")).toBe(true);
+        }
+        const scope = spawnSync(
+          "systemctl",
+          ["--user", "show", "--property=LoadState", "--property=ControlGroup", unit],
+          { encoding: "utf8", timeout: 5000 },
+        );
+        expect(scope.error).toBeUndefined();
+        const fields = Object.fromEntries(
+          scope.stdout
+            .trim()
+            .split("\n")
+            .map((line) => line.split("=")),
+        );
+        if (fields.LoadState !== "not-found") {
+          expect(fields.ControlGroup).toMatch(new RegExp("/" + unit.replaceAll(".", "\\.") + "$"));
+          expect(
+            fs.readFileSync(
+              path.join("/sys/fs/cgroup", fields.ControlGroup!, "cgroup.events"),
+              "utf8",
+            ),
+          ).toMatch(/^populated 0$/mu);
+        }
+      } finally {
+        running.cancel();
+        await Promise.allSettled([running.completion]);
+        await lifetime.verifyCleanup(async () => stopSemanticFixtureScopes(root));
+      }
+    }),
+);
 
 const barrier = [
   "await new Promise(resolve=>{",
