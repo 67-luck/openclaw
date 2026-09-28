@@ -548,6 +548,11 @@ suite.define(() => {
 
       await page.setViewportSize({ width: 1366, height: 900 });
       await page.goto(`${suite.server.baseUrl}chat`);
+      const microphonePicker = page.locator("wa-dropdown.chat-talk-input-picker");
+      await expect.poll(() => microphonePicker.count()).toBe(1);
+      await expect
+        .poll(() => microphonePicker.locator('[data-chat-talk-capability="realtime"]').count())
+        .toBe(0);
       await page.getByRole("button", { name: "Start voice input" }).click();
       const request = await gateway.waitForRequest("talk.client.create");
       expect(request.params).toMatchObject({
