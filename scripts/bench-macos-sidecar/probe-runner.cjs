@@ -36,6 +36,7 @@ async function run(pinMode) {
   let observedPin;
   let upgradeCount = 0;
   let connectCount = 0;
+  let floodEventsQueued = 0;
   const batchCounts = new Map();
   const echoedBatches = [];
   const nativeCapacity = { progress: false, result: false };
@@ -101,13 +102,27 @@ async function run(pinMode) {
           policy: { maxPayload: 16777216, maxBufferedBytes: 16777216, tickIntervalMs: 30000 },
           auth: { role: "node", scopes: [] },
         });
-        ws.send(
-          JSON.stringify({
-            type: "event",
-            event: "benchmark.post-hello",
-            payload: { immediate: true },
-          }),
-        );
+        if (kind !== "backpressure") {
+          ws.send(
+            JSON.stringify({
+              type: "event",
+              event: "benchmark.post-hello",
+              payload: { immediate: true },
+            }),
+          );
+        }
+      } else if (f.method === "benchmark.flood") {
+        reply({});
+        for (let seq = 0; seq < 512; seq++) {
+          floodEventsQueued++;
+          ws.send(
+            JSON.stringify({
+              type: "event",
+              event: "benchmark.input",
+              payload: { seq, data: "x".repeat(15000) },
+            }),
+          );
+        }
       } else if (f.method === "benchmark.delay") {
         timers.push(setTimeout(() => reply({ delayed: true }), f.params.delayMs));
       } else if (f.method === "benchmark.never") {
@@ -152,7 +167,13 @@ async function run(pinMode) {
     });
   });
   const name =
-    kind === "tls" ? "tls-probe" : mode === "baseline" ? "auxiliary-baseline" : "auxiliary-probe";
+    kind === "tls"
+      ? "tls-probe"
+      : kind === "backpressure"
+        ? "backpressure-probe"
+        : mode === "baseline"
+          ? "auxiliary-baseline"
+          : "auxiliary-probe";
   const url = `${kind === "tls" ? "wss" : "ws"}://127.0.0.1:${port}`;
   const child = spawn(
     "/usr/bin/sandbox-exec",
@@ -199,7 +220,7 @@ async function run(pinMode) {
   try {
     const ended = await Promise.race([
       exit,
-      delay(kind === "tls" ? 15000 : 75000).then(() => null),
+      delay(kind === "aux" ? 75000 : 15000).then(() => null),
     ]);
     if (!ended) {
       throw new Error("probe deadline expired");
@@ -212,6 +233,12 @@ async function run(pinMode) {
     result = rows.at(-1);
     if (!result) {
       throw new Error("no result: " + stderr);
+    }
+    if (
+      kind === "backpressure" &&
+      (!result.passed || connectCount !== 2 || floodEventsQueued !== 512)
+    ) {
+      throw new Error("blocked-consumer retirement/recovery failed: " + JSON.stringify(result));
     }
     if (kind === "aux" && batchCounts.has(2) && !nativeCapacity.result) {
       throw new Error("native progress/result failed while application RPC capacity was full");
@@ -317,6 +344,7 @@ async function run(pinMode) {
       pinMode,
       upgradeCount,
       connectCount,
+      floodEventsQueued,
       admittedNeverRequestsByBatch: Object.fromEntries(batchCounts),
       echoedBatches,
       nativeCapacity,
@@ -331,7 +359,7 @@ async function run(pinMode) {
   }
 }
 (async () => {
-  for (const scenario of kind === "tls" ? ["match", "mismatch"] : ["aux"]) {
+  for (const scenario of kind === "tls" ? ["match", "mismatch"] : [kind]) {
     await run(scenario);
   }
 })().catch((/** @type {unknown} */ error) => {

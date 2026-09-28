@@ -357,30 +357,6 @@ function deadline(p, deadlineLabel) {
       passed: true,
       error: timed.error,
     });
-    if (mode !== "baseline" && process.env.RFC54_CHECK_OVERFLOW === "1") {
-      invoke("overflow-one", "system.notify");
-      await until(() => progress.get("overflow-one"), "overflow handler startup");
-      const large = JSON.stringify({ data: "x".repeat(15000) });
-      for (let seq = 0; seq < 128; seq++) {
-        ws.send(
-          JSON.stringify({
-            type: "event",
-            event: "node.invoke.input",
-            payload: { id: "overflow-one", nodeId: "functional-node", seq, payloadJSON: large },
-          }),
-        );
-      }
-      const overflow = await until(() => results.get("overflow-one"), "overflow result");
-      if (overflow.ok || overflow.error?.code !== "INPUT_BUFFER_OVERFLOW") {
-        throw new Error("expected INPUT_BUFFER_OVERFLOW: " + JSON.stringify(overflow));
-      }
-      await until(() => cancelled.has("overflow-one"), "native Swift task overflow cleanup");
-      record.checks.push({
-        scenario: "input overflow stops native Swift task",
-        passed: true,
-        error: overflow.error,
-      });
-    }
     const retirementMode = process.env.RFC54_CHECK_RETIREMENT;
     if (mode !== "baseline" && retirementMode) {
       const id = "retire-during-delivery";

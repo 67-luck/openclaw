@@ -82,6 +82,7 @@ def build_variant(repo, root, scripts, base, variant):
             ("FunctionalProbe", "Functional.swift", "functional-probe"),
             ("AuxiliaryProbe", "Auxiliary.swift", "auxiliary-probe"),
             ("TLSProbe", "TLS.swift", "tls-probe"),
+            ("BackpressureProbe", "Backpressure.swift", "backpressure-probe"),
         ]
         shutil.copytree(
             repo / "apps/macos/Sources/OpenClawRustSidecar",
