@@ -104,6 +104,7 @@ async function mountSession(
     transcript: props.transcript,
     thread,
     dispose: () => {
+      pane.visuallyPresented = false;
       pane.presented = false;
       props.transcript.hostUpdate();
       props.transcript.hostDisconnected();
@@ -152,6 +153,7 @@ it("restores explicit reader intent when a larger returning viewport clamps its 
   const first = await mountSession(paneId, sessionKey);
   first.thread.scrollTop = 840;
   first.thread.dispatchEvent(new Event("scroll"));
+  first.pane.visuallyPresented = false;
   first.pane.presented = false;
   first.transcript.hostUpdate();
   first.dispose();
@@ -173,6 +175,47 @@ it("restores explicit reader intent when a larger returning viewport clamps its 
     returned.dispose();
   }
 });
+
+it.each([false, true])(
+  "positions the visible inert preview before route ownership, latest=%s",
+  async (latest) => {
+    const paneId = "preview-destination-" + latest;
+    const view = await mountSession(paneId, "agent:main:" + paneId);
+    try {
+      view.thread.scrollTop = 840;
+      view.thread.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
+      view.thread.dispatchEvent(new Event("scroll"));
+      if (latest) {
+        scheduleCommittedChatScroll(view.state, true, false, { source: "manual" });
+        await view.commitFrames();
+        expect(view.thread.scrollTop).toBe(2400);
+      }
+      view.pane.visuallyPresented = false;
+      view.pane.presented = false;
+      view.transcript.hostUpdate();
+      Object.defineProperty(view.thread, "scrollHeight", { configurable: true, value: 3200 });
+      view.thread.scrollTop = 1200;
+      await view.commitFrames();
+      // Retained navigation makes the pane visible and inert while the old route
+      // remains authoritative for input and external work. Geometry cannot wait.
+      view.pane.toggleAttribute("inert", true);
+      view.pane.visuallyPresented = true;
+      view.transcript.hostUpdate();
+      await view.commitFrames();
+      expect(view.pane.presented).toBe(false);
+      expect(view.pane.hasAttribute("inert")).toBe(true);
+      expect(view.thread.scrollTop).toBe(latest ? 2600 : 840);
+      expect(view.state.chatFollowLocked).toBe(!latest);
+      view.pane.visuallyPresented = true;
+      view.pane.presented = true;
+      view.transcript.hostUpdate();
+      await view.commitFrames();
+      expect(view.thread.scrollTop).toBe(latest ? 2600 : 840);
+    } finally {
+      view.dispose();
+    }
+  },
+);
 
 it.each([
   "before first frame",
@@ -215,10 +258,12 @@ it.each([
     expect(smoothTargets.length).toBe(stage === "active smooth command" ? 1 : 0);
     expect(canAutoFollowChat(view.state)).toBe(stage === "active smooth command");
     expect(view.thread.scrollTop).toBe(840);
+    view.pane.visuallyPresented = false;
     view.pane.presented = false;
     view.transcript.hostUpdate();
     expect(getChatSessionScrollPosition(paneId, sessionKey)?.anchorToEnd).toBe(manual);
     await view.commitFrames();
+    view.pane.visuallyPresented = true;
     view.pane.presented = true;
     view.transcript.hostUpdate();
     await view.commitFrames();
@@ -257,6 +302,7 @@ it.each([
         view.transcript.saveScrollPosition(true);
         expect(getChatSessionScrollPosition(paneId, sessionKey)?.anchorToEnd).toBe(manual);
       }
+      view.pane.visuallyPresented = false;
       view.pane.presented = false;
       view.transcript.hostUpdate();
       expect(getChatSessionScrollPosition(paneId, sessionKey)?.anchorToEnd).toBe(manual);
@@ -265,6 +311,7 @@ it.each([
       }
       // Retire the queued attempt while hidden; its destination must now belong to restoration.
       await view.commitFrames();
+      view.pane.visuallyPresented = true;
       view.pane.presented = true;
       view.transcript.hostUpdate();
       await view.commitFrames();

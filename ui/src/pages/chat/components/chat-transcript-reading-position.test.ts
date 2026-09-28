@@ -12,10 +12,12 @@ import {
   restoreChatScrollPosition,
 } from "../scroll.ts";
 import { ChatTranscriptController } from "./chat-transcript-controller.ts";
+import { CHAT_TRANSCRIPT_ZERO_MAX_SETTLE_FRAMES } from "./chat-transcript-session.ts";
 import type { TestContentRow } from "./chat-transcript.test-support.ts";
 import {
   installTranscriptDomMocks,
   resetTranscriptTestDom,
+  resizeObservers,
 } from "./chat-transcript.test-support.ts";
 
 beforeEach(installTranscriptDomMocks);
@@ -23,17 +25,32 @@ afterEach(resetTranscriptTestDom);
 
 function fixture(
   paneId: string,
-  options: { saved?: boolean; ready?: boolean; omitMessage?: number } = {},
+  options: {
+    saved?: boolean;
+    ready?: boolean;
+    omitMessage?: number;
+    deferredMeasurement?: boolean;
+    viewportSlot?: boolean;
+  } = {},
 ) {
   const flushFrames = stubAnimationFrames();
   const sessionKey = `agent:main:${paneId}`;
-  const container = document.body.appendChild(document.createElement("div"));
+  const slot = options.viewportSlot
+    ? document.body.appendChild(document.createElement("div"))
+    : document.body;
+  const container = slot.appendChild(document.createElement("div"));
   let presented = true;
   const policy = makeChatHost();
   let ready = options.ready ?? true;
   let height = 400;
+  if (options.viewportSlot) {
+    slot.style.padding = "0px";
+    Object.defineProperty(slot, "clientHeight", { configurable: true, get: () => height });
+    Object.defineProperty(container, "offsetWidth", { configurable: true, value: 800 });
+  }
   let requested = true;
   let scrollTop = 0;
+  let beforeFirstPaint = options.deferredMeasurement ?? false;
   const heights = Array.from({ length: 80 }, (_, index) => 80 + (index % 5) * 45);
   let rows: TestContentRow[] = heights.map((_, index) => ({
     kind: "content",
@@ -70,9 +87,19 @@ function fixture(
   vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (
     this: HTMLElement,
   ) {
-    return this.classList.contains("chat-virtual-row")
-      ? (heights[Number(this.dataset.index)] ?? 100)
-      : height;
+    if (!this.classList.contains("chat-virtual-row")) {
+      return height;
+    }
+    // Chromium can keep auto-content-visibility rows at their intrinsic size
+    // until rendering, unless the measurement owner explicitly resolves them.
+    if (
+      beforeFirstPaint &&
+      !this.closest("[data-measuring-rows]") &&
+      this.style.contentVisibility !== "visible"
+    ) {
+      return Number.parseFloat(this.style.containIntrinsicBlockSize) || 120;
+    }
+    return heights[Number(this.dataset.index)] ?? 100;
   });
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
     const row = this.closest<HTMLElement>(".chat-virtual-row");
@@ -151,18 +178,28 @@ function fixture(
       }),
       container,
     );
+    // A browser keeps the clamped offset when a committed short range later grows.
+    scrollTop = Math.max(0, Math.min(scrollTop, maxOffset()));
     transcript.hostUpdated();
   }
-  async function frames(count = 8) {
-    for (let frame = 0; frame < count; frame++) {
-      await Promise.resolve();
+  async function beforePaint() {
+    // This host is manually rendered: drain the Lit/row-ref checkpoint without
+    // granting frame-based retries. A real browser exhausts microtasks before paint.
+    for (let checkpoint = 0; checkpoint < 24; checkpoint++) {
       await Promise.resolve();
       if (requested) {
         commit();
       }
+    }
+    beforeFirstPaint = false;
+  }
+  async function frames(count = 8) {
+    for (let frame = 0; frame < count; frame++) {
+      await beforePaint();
       // Browser-delivered maintenance offsets retire their receipts after native delivery.
       container.dispatchEvent(new Event("scroll"));
       flushFrames();
+      await beforePaint();
     }
   }
   transcript.hostConnected();
@@ -173,6 +210,13 @@ function fixture(
     sessionKey,
     onReaderScroll,
     frames,
+    beforePaint,
+    commitViewport() {
+      for (const observer of resizeObservers) {
+        observer.emitTarget(slot, 800, height);
+        observer.emitTarget(container, 800, height);
+      }
+    },
     heights,
     allRows,
     get following() {
@@ -208,9 +252,48 @@ function fixture(
       transcript.hostDisconnected();
       render(nothing, container);
       container.remove();
+      if (slot !== document.body) {
+        slot.remove();
+      }
     },
   };
 }
+
+it.each([false, true])(
+  "positions a cold transcript before its first paint, history ready=%s",
+  async (ready) => {
+    const view = fixture("first-paint-end", { saved: true, deferredMeasurement: true, ready });
+    try {
+      await view.beforePaint();
+      const tail = view.container.querySelector<HTMLElement>('[data-message-id="message:79"]')!;
+      expect(tail).not.toBeNull();
+      expect(tail.getBoundingClientRect().bottom).toBeCloseTo(400, 0);
+      expect(view.container.scrollTop).toBe(view.container.scrollHeight - 400);
+      expect(view.container.querySelectorAll(".chat-virtual-row").length).toBeLessThan(12);
+      // Widening the overscan on the following frame must not move the tail.
+      for (let frame = 0; frame < 2; frame++) {
+        await view.frames(1);
+        expect(tail.getBoundingClientRect().bottom).toBeCloseTo(400, 0);
+      }
+    } finally {
+      view.dispose();
+    }
+  },
+);
+
+it("lets reader input supersede a queued initial positioning commit", async () => {
+  const view = fixture("first-paint-takeover", { saved: true, deferredMeasurement: true });
+  try {
+    view.readAt(0);
+    await view.beforePaint();
+    expect(view.container.scrollTop).toBe(0);
+    expect(view.following).toBe(false);
+    await view.frames();
+    expect(view.container.scrollTop).toBe(0);
+  } finally {
+    view.dispose();
+  }
+});
 
 it("restores the same bubble after eviction discards variable-height row measurements", async () => {
   const first = fixture("evicted-reader");
@@ -226,7 +309,7 @@ it("restores the same bubble after eviction discards variable-height row measure
 
   const returned = fixture("evicted-reader", { saved: true });
   try {
-    await returned.frames();
+    await returned.beforePaint();
     const bubble = [...returned.container.querySelectorAll<HTMLElement>(".chat-bubble")].find(
       (node) => node.dataset.messageId === before.messageAnchor!.messageKey,
     )!;
@@ -234,6 +317,7 @@ it("restores the same bubble after eviction discards variable-height row measure
     expect(bubble.getBoundingClientRect().top).toBeCloseTo(before.messageAnchor!.offset, 0);
     // Old absolute pixels are not a bookmark when unmounted rows have new estimates.
     expect(returned.container.scrollTop).not.toBe(before.scrollTop);
+    await returned.frames();
     expect(returned.transcript.isProgrammaticScroll).toBe(false);
     returned.readAt(returned.container.scrollTop - 90);
     const takenOver = returned.container.scrollTop;
@@ -323,6 +407,129 @@ it.each(["arrives", "deleted", "reader takeover"] as const)(
       } else {
         expect(view.container.scrollTop).toBe(takenOver);
       }
+    } finally {
+      view.dispose();
+    }
+  },
+);
+
+it("resumes a bookmark in the initial viewport commit without waiting for another frame", async () => {
+  const first = fixture("initial-viewport-reader");
+  await first.frames();
+  first.readAt(4500);
+  await first.frames();
+  const before = first.save();
+  expect(before.messageAnchor).toBeDefined();
+  first.dispose();
+
+  const returned = fixture("initial-viewport-reader", { saved: true, viewportSlot: true });
+  try {
+    await returned.beforePaint();
+    expect(returned.container.clientHeight).toBe(400);
+    expect(returned.container.style.paddingTop).toBe("");
+    expect(returned.transcript.isProgrammaticScroll).toBe(true);
+    // The slot publishes its initial styles, but the already-sized viewport
+    // has no dimension change to provide a second notification.
+    returned.commitViewport();
+    await returned.beforePaint();
+    expect(returned.container.style.paddingTop).toBe("0px");
+    const bubble = [...returned.container.querySelectorAll<HTMLElement>(".chat-bubble")].find(
+      (node) => node.dataset.messageId === before.messageAnchor!.messageKey,
+    )!;
+    expect(bubble).toBeDefined();
+    expect(bubble.getBoundingClientRect().top).toBeCloseTo(before.messageAnchor!.offset, 0);
+  } finally {
+    returned.dispose();
+  }
+});
+
+it("keeps the cold end destination when hidden before initial positioning", async () => {
+  const paneId = "initial-end-departure";
+  const view = fixture(paneId, { saved: true, viewportSlot: true });
+  try {
+    // A short cached projection clamps the initial offset before the complete
+    // history arrives, while the viewport style commit is still pending.
+    view.setRows(view.allRows.slice(0, 1));
+    view.commit();
+    await view.beforePaint();
+    view.setRows(view.allRows);
+    view.commit();
+    expect(view.transcript.isProgrammaticScroll).toBe(true);
+    view.setPresented(false);
+    view.commit();
+    expect(getChatSessionScrollPosition(paneId, view.sessionKey)?.anchorToEnd).toBe(true);
+    view.commitViewport();
+    view.setPresented(true);
+    view.commit();
+    await view.beforePaint();
+    expect(view.container.scrollTop).toBe(view.container.scrollHeight - 400);
+    expect(view.following).toBe(true);
+  } finally {
+    view.dispose();
+  }
+});
+
+it.each([0, 1])(
+  "drops a deleted bookmark when authoritative history has %i fitting rows",
+  async (count) => {
+    const paneId = "deleted-zero-range-" + count;
+    saveChatSessionScrollPosition(paneId, "agent:main:" + paneId, {
+      scrollTop: 420,
+      anchorToEnd: false,
+      messageAnchor: { messageKey: "message:40", offset: -20 },
+    });
+    const view = fixture(paneId, { saved: true, ready: false, omitMessage: 40 });
+    try {
+      view.setRows(view.allRows.slice(0, count));
+      view.commit();
+      await view.frames();
+      expect(getChatSessionScrollPosition(paneId, view.sessionKey)?.messageAnchor).toBeDefined();
+      view.setReady(true);
+      view.commit();
+      await view.frames(CHAT_TRANSCRIPT_ZERO_MAX_SETTLE_FRAMES + 1);
+      expect(view.transcript.isProgrammaticScroll).toBe(false);
+      expect(getChatSessionScrollPosition(paneId, view.sessionKey)).toEqual({
+        scrollTop: 0,
+        anchorToEnd: false,
+      });
+      // Deleting content retires its bookmark, not the reader's explicit follow lock.
+      expect(view.following).toBe(false);
+    } finally {
+      view.dispose();
+    }
+  },
+);
+
+it.each([false, true])(
+  "restores a hidden end destination before paint while history ready=%s",
+  async (ready) => {
+    const view = fixture("hidden-end-measure-" + ready, { saved: true });
+    try {
+      await view.beforePaint();
+      view.setPresented(false);
+      // The mounted tail changes while the pane is hidden. Its old virtual
+      // extent is not the end that the returning reader should see.
+      view.heights[79] = 600;
+      view.setRows([...view.allRows]);
+      view.setReady(ready);
+      view.commit();
+      view.setPresented(true);
+      view.commit();
+      await view.beforePaint();
+      const tail = view.container.querySelector<HTMLElement>('[data-message-id="message:79"]')!;
+      expect(tail.getBoundingClientRect().bottom).toBeCloseTo(400, 0);
+      expect(view.container.scrollTop).toBe(view.container.scrollHeight - 400);
+      if (!ready) {
+        // Cached rows may be positioned now without retiring the destination
+        // before the authoritative history arrives.
+        expect(view.transcript.isProgrammaticScroll).toBe(true);
+        view.setReady(true);
+        view.commit();
+        await view.beforePaint();
+      }
+      await view.frames(1);
+      expect(tail.getBoundingClientRect().bottom).toBeCloseTo(400, 0);
+      expect(view.following).toBe(true);
     } finally {
       view.dispose();
     }

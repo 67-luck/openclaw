@@ -17,17 +17,18 @@ import {
 type TranscriptScrollRestoreHost = {
   readonly offsetState: Pick<
     ReturnType<typeof createTranscriptOffsetState>,
-    "pendingScrollOffset" | "scrollCommand"
+    "pendingScrollOffset" | "scrollCommand" | "syncNativeOffset"
   >;
   getScrollElement(): HTMLDivElement | null;
   isContentReady(): boolean;
   getRowCount(): number;
   readonly virtualizer: Pick<
     Virtualizer<HTMLDivElement, HTMLElement>,
-    "scrollToOffset" | "scrollToIndex" | "getVirtualItemForOffset"
+    "scrollToOffset" | "scrollToIndex" | "getVirtualItemForOffset" | "scrollOffset"
   >;
   getMessageRowIndex(messageKey: string): number | undefined;
-  measureRows(): boolean;
+  /** True only after mounted measurements and their rendered range agree. */
+  prepareGeometry(): boolean;
   isConnected(): boolean;
   pendingFrame: number | null;
   requestUpdate(): void;
@@ -43,12 +44,14 @@ type TranscriptScrollRestoreOwner = Omit<
   getMessageRowKeysById(): ReadonlyMap<string, string>;
   isMaintenanceScroll(): boolean;
   cancelScroll(): void;
-  onRestoreStarted(): void;
+  onEndAnchored(): void;
 };
 
 /** One lifecycle for cached bookmarks, hidden suspension, and measurable restoration. */
 export class TranscriptScrollRestoration {
   private presented: boolean;
+  private initialEnd: boolean;
+  private positionCommitQueued = false;
   private readonly restoreHost: TranscriptScrollRestoreHost;
 
   constructor(
@@ -58,6 +61,7 @@ export class TranscriptScrollRestoration {
     private readonly callbacks: TranscriptCallbacks,
   ) {
     this.presented = this.isPresented;
+    this.initialEnd = initialPosition === undefined || initialPosition.anchorToEnd;
     this.restoreHost = {
       ...owner,
       getMessageRowIndex: (key) => {
@@ -65,11 +69,20 @@ export class TranscriptScrollRestoration {
         return rowKey === undefined ? undefined : owner.getRowIndexes().get(rowKey);
       },
       pendingFrame: null,
-      onRestored: (position) => callbacks.onPositionRestored?.(position),
+      onRestored: (position) => {
+        callbacks.onPositionRestored?.(position);
+        if (position.anchorToEnd) {
+          owner.onEndAnchored();
+        }
+      },
     };
     if (initialPosition && !initialPosition.anchorToEnd) {
       this.restore(initialPosition, onPositionSaved);
     }
+  }
+
+  get initialEndPending(): boolean {
+    return this.initialEnd;
   }
 
   get isPresented(): boolean {
@@ -103,7 +116,7 @@ export class TranscriptScrollRestoration {
     const element = this.owner.getScrollElement();
     // Explicit intent replaces an older restore even before layout is measurable.
     // Capture it before cancellation retires the queued or native command.
-    if (departing && this.hasManualEndDestination) {
+    if (departing && (this.initialEnd || this.hasManualEndDestination)) {
       return { scrollTop: Math.max(0, element?.scrollTop ?? 0), anchorToEnd: true };
     }
     if (!element?.clientHeight) {
@@ -162,7 +175,7 @@ export class TranscriptScrollRestoration {
     position: Omit<ChatSessionScrollPosition, "anchorToEnd"> & { anchorToEnd?: boolean },
     onSettled?: (position: ChatSessionScrollPosition) => void,
   ): void {
-    this.owner.onRestoreStarted();
+    this.cancelInitialEnd();
     this.owner.offsetState.pendingScrollOffset = {
       offset: position.scrollTop,
       messageAnchor: position.messageAnchor,
@@ -175,7 +188,51 @@ export class TranscriptScrollRestoration {
   }
 
   update(): void {
-    applyPendingScrollOffset(this.restoreHost);
+    const pending = this.owner.offsetState.pendingScrollOffset;
+    const measuredDestination =
+      pending?.messageAnchor !== undefined || pending?.anchorToEnd === true;
+    if (!measuredDestination) {
+      applyPendingScrollOffset(this.restoreHost);
+    }
+    if ((!this.initialEnd && !measuredDestination) || this.positionCommitQueued) {
+      return;
+    }
+    this.positionCommitQueued = true;
+    // Row refs and nested preview clamps finish after the Lit commit. Both
+    // reader bookmarks and end destinations must use that committed geometry.
+    const element = this.owner.getScrollElement();
+    queueMicrotask(() =>
+      queueMicrotask(() => {
+        this.positionCommitQueued = false;
+        if (element === this.owner.getScrollElement()) {
+          if (this.owner.offsetState.pendingScrollOffset) {
+            applyPendingScrollOffset(this.restoreHost);
+          } else {
+            this.commitInitialEnd();
+          }
+        }
+      }),
+    );
+  }
+
+  cancelInitialEnd(): void {
+    this.initialEnd = false;
+  }
+
+  private commitInitialEnd(): void {
+    if (!this.initialEnd || !this.owner.isConnected()) {
+      return;
+    }
+    if (this.callbacks.canFollowEnd?.() === false) {
+      this.cancelInitialEnd();
+      this.owner.requestUpdate();
+      return;
+    }
+    if (positionAtMeasuredEnd(this.restoreHost)) {
+      this.initialEnd = false;
+      this.owner.onEndAnchored();
+      this.owner.requestUpdate();
+    }
   }
 
   disconnect(): void {
@@ -191,10 +248,47 @@ export class TranscriptScrollRestoration {
   }
 }
 
+/** Position against measured, committed rows without retiring a loading destination. */
+function positionAtMeasuredEnd(owner: TranscriptScrollRestoreHost): boolean {
+  const element = owner.getScrollElement();
+  if ((!owner.isContentReady() && owner.getRowCount() === 0) || !element?.clientHeight) {
+    return false;
+  }
+  if (!owner.prepareGeometry()) {
+    owner.requestUpdate();
+    return false;
+  }
+  const max = maxTranscriptScrollOffset(element);
+  if (max === null) {
+    return false;
+  }
+  if (
+    Math.abs(element.scrollTop - max) > 1 ||
+    owner.virtualizer.scrollOffset === null ||
+    Math.abs(owner.virtualizer.scrollOffset - max) > 1
+  ) {
+    owner.virtualizer.scrollToOffset(max, { behavior: "instant" });
+    owner.offsetState.syncNativeOffset?.();
+    // Newly exposed rows need a committed measurement before positioning settles.
+    owner.requestUpdate();
+    return false;
+  }
+  return true;
+}
+
 function applyPendingScrollOffset(owner: TranscriptScrollRestoreHost): void {
   const pending = owner.offsetState.pendingScrollOffset;
-  if (!pending || !owner.isConnected() || (pending.anchorToEnd && !owner.isContentReady())) {
+  if (!pending || !owner.isConnected()) {
     return;
+  }
+  // Authoritative deletion retires a bookmark even when the new transcript is
+  // empty or fits without scrolling. Preserve its explicit follow policy.
+  if (
+    pending.messageAnchor &&
+    owner.isContentReady() &&
+    owner.getMessageRowIndex(pending.messageAnchor.messageKey) === undefined
+  ) {
+    pending.messageAnchor = undefined;
   }
   if (owner.isContentReady() && owner.getRowCount() === 0) {
     settlePendingScroll(owner, 0);
@@ -205,6 +299,15 @@ function applyPendingScrollOffset(owner: TranscriptScrollRestoreHost): void {
     pending.observedMaxOffset = undefined;
     pending.stableFrames = 0;
     pending.zeroMaxFrames = 0;
+    return;
+  }
+  if (pending.anchorToEnd) {
+    if (positionAtMeasuredEnd(owner) && owner.isContentReady()) {
+      const currentOffset = owner.getScrollElement()?.scrollTop;
+      if (currentOffset !== undefined) {
+        settlePendingScroll(owner, currentOffset);
+      }
+    }
     return;
   }
   if (maxOffset === 0 && pending.offset > 0) {
@@ -223,7 +326,7 @@ function applyPendingScrollOffset(owner: TranscriptScrollRestoreHost): void {
   if (pending.messageAnchor && restoreMessageAnchor(owner, maxOffset)) {
     return;
   }
-  const requestedOffset = pending.anchorToEnd ? maxOffset : pending.offset;
+  const requestedOffset = pending.offset;
   if (maxOffset < requestedOffset) {
     if (pending.observedMaxOffset !== maxOffset) {
       pending.observedMaxOffset = maxOffset;
@@ -258,17 +361,14 @@ function restoreMessageAnchor(owner: TranscriptScrollRestoreHost, maxOffset: num
   }
   const index = owner.getMessageRowIndex(anchor.messageKey);
   if (index === undefined) {
-    // A preload may not contain the bookmarked page yet. Only authoritative
-    // content can retire a missing/deleted message and use the numeric fallback.
-    if (!owner.isContentReady()) {
-      return true;
-    }
-    pending.messageAnchor = undefined;
-    return false;
+    // A preload may not contain the bookmarked page yet. Authoritative
+    // deletion is resolved before all settlement paths in applyPendingScrollOffset.
+    return true;
   }
-  if (owner.measureRows()) {
+  if (!owner.prepareGeometry()) {
     pending.stableFrames = 0;
-    schedulePendingScrollRetry(owner);
+    // New measurements need a Lit commit, not another displayed frame.
+    owner.requestUpdate();
     return true;
   }
   const bubble = [...element.querySelectorAll<HTMLElement>(".chat-bubble[data-message-id]")].find(
@@ -290,7 +390,7 @@ function restoreMessageAnchor(owner: TranscriptScrollRestoreHost, maxOffset: num
   const target = Math.max(0, Math.min(maxOffset, element.scrollTop + delta));
   if (Math.abs(target - element.scrollTop) > 1) {
     owner.virtualizer.scrollToOffset(target, { behavior: "instant" });
-    schedulePendingScrollRetry(owner);
+    owner.requestUpdate();
     return true;
   }
   // A correction needs another committed range to expose and measure the rows

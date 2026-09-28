@@ -13,11 +13,11 @@ import { detectTextDirection } from "../../../lib/text-direction.ts";
 import "../../../styles/chat/composer-context-strip.css";
 import type { ComposerDictationController } from "../composer-dictation.ts";
 import { insertComposerDictation } from "../composer-dictation.ts";
+import { renderChatAttachmentInputs } from "./chat-attachment-inputs.ts";
 import {
   handleChatAttachmentPaste,
   renderAttachmentPreview,
   renderAttachmentReadStatus,
-  renderChatAttachmentInputs,
 } from "./chat-attachments.ts";
 import type { ChatRunControlsProps } from "./chat-composer-controls.ts";
 import {
@@ -308,13 +308,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
           props.connected && props.canSend ? props.progressCardRefresh : undefined,
         )}
       </div>`
-    : props.progressCardInitialLoading
-      ? html`<div
-          class="agent-chat__progress-float agent-chat__progress-float--loading"
-          ?hidden=${!showComposer}
-          aria-hidden="true"
-        ></div>`
-      : nothing;
+    : nothing;
   const queue = renderChatQueue({
     queue: props.queue,
     displayQueue: props.displayQueue,
@@ -450,7 +444,11 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
                 ${renderAttachmentPreview(props)}
                 ${renderAttachmentReadStatus(props.getPendingAttachmentReads?.() ?? props.pendingAttachmentReads ?? 0)}
                 ${renderComposerDictationStatus(dictation)}
-                ${renderChatAttachmentInputs({ ...props, disabled: !canCompose })}
+                ${renderChatAttachmentInputs({
+                  ...props,
+                  disabled: !canCompose,
+                  cameraActive: showComposer && props.cameraActive !== false,
+                })}
                 ${
                   props.realtimeTalkVideoStream
                     ? html`

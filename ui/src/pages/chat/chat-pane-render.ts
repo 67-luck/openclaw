@@ -411,7 +411,6 @@ export class ChatPane extends ChatPaneLayoutRender {
       progressCardIdentity: progressPresentation?.identity,
       progressCardLifetime: progressPresentation?.lifetime,
       gatewayScope: gatewayPresentationScope(this.context.gateway),
-      progressCardInitialLoading: this.progressCardInitialLoading,
       progressCardRefresh,
       collapseTaskProgress: state.settings.chatCollapseTaskProgress === true,
       readingHistory: state.chatReadingHistory,
@@ -586,6 +585,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       showNewMessages: state.chatNewMessagesBelow,
       onScrollToBottom: state.scrollToBottom,
       ...this.chatState.attachmentInputProps(state),
+      cameraActive: this.conversationPresented,
       onRemoveAttachment: this.removeBrowserAnnotation,
       onSend: (followUpModeOverride, submissionAction) =>
         !composerAvailability.canSend ||

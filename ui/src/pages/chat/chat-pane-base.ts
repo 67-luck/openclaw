@@ -353,7 +353,9 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
     this.requestUpdate(),
   );
   protected readonly transcript = new ChatTranscriptController(this, () => this.paneId, {
-    visuallyPresented: () => this.presented && this.visuallyPresented,
+    // Retained navigation reveals an inert preview before route admission.
+    // Its transcript geometry must be ready without admitting route-owned work.
+    visuallyPresented: () => this.visuallyPresented,
     onViewportResize: () => this.chatState.handleTranscriptResize(),
     canFollowEnd: () => this.state !== undefined && canAutoFollowChat(this.state),
     hasQueuedEndScroll: () => this.state !== undefined && hasQueuedManualChatScroll(this.state),
@@ -362,7 +364,7 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   });
   protected readonly progressCard = new SessionProgressCardController(this, {
     gateway: () => this.context?.gateway,
-    target: () => this.initialProgressCardTarget(),
+    target: () => this.progressCardTarget(),
   });
   protected readonly questionPromptState = createQuestionPromptState(() => {
     this.questionPrompts = listQuestionPrompts(this.questionPromptState);
@@ -612,7 +614,7 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   ): boolean;
   protected abstract publishHeaderError(error: unknown, owner?: string): void;
   protected abstract probeSessionDiscussion(sessionKey: string): Promise<void>;
-  protected abstract initialProgressCardTarget():
+  protected abstract progressCardTarget():
     | ReturnType<typeof resolveUiConversationIdentity>
     | undefined;
   protected abstract secondarySessionReadsReady(explicit?: boolean): boolean;
