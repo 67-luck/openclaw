@@ -2614,6 +2614,37 @@ describe("ci workflow guards", () => {
       });
     }
 
+    it("reserves the fork observer before admitting optional hosted rows", () => {
+      const eventName = "pull_request" as const;
+      const changedPaths = [".github/workflows/ci.yml"];
+      const baseline = manifestWithHostedNodeRows(1, { eventName, changedPaths });
+      expect(baseline.status, baseline.output).toBe(0);
+      const nodeRows = 1 + 40 - Number(baseline.outputs.hybrid_hosted_base_rows);
+      expect(nodeRows).toBeGreaterThan(0);
+      const sameRepository = manifestWithHostedNodeRows(nodeRows, { eventName, changedPaths });
+      const fork = manifestWithHostedNodeRows(nodeRows, {
+        eventName,
+        changedPaths,
+        scopeEnv: { OPENCLAW_CI_HEAD_REPOSITORY: "contributor/openclaw" },
+      });
+      expect(sameRepository.status, sameRepository.output).toBe(0);
+      expect(fork.status, fork.output).toBe(0);
+      expect(Number(sameRepository.outputs.hybrid_hosted_base_rows)).toBe(40);
+      const sameRows = emittedHostedRows(sameRepository.outputs, { eventName });
+      const forkRows = emittedHostedRows(fork.outputs, {
+        eventName,
+        headRepository: "contributor/openclaw",
+      });
+      const hostedControls = ["check-plan", "checks-baseline-ratchets"].filter(
+        (name) => forkRows.includes(name) && !sameRows.includes(name),
+      ).length;
+      expect(Number(fork.outputs.hybrid_hosted_base_rows)).toBe(40 + hostedControls + 1);
+      expect(sameRepository.outputs.hybrid_hosted_offload).toBe("true");
+      expect(fork.outputs.hybrid_hosted_offload).toBe("false");
+      expect(Number(fork.outputs.hybrid_hosted_total_rows)).toBeLessThanOrEqual(45);
+      expect(forkRows).toContain("pr-fail-fast");
+    });
+
     it.each([true, false])("bounds hosted rows with Android=%s", (androidSelected) => {
       const planner = readCiWorkflow().jobs.preflight.steps.find(
         (step: WorkflowStep) => step.name === "Build CI manifest",

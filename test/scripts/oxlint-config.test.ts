@@ -661,10 +661,11 @@ describe("oxlint config", () => {
     }
     fs.writeFileSync(path.join(root, "src/correctness.ts"), "export var legacy = 1;\n");
     fs.writeFileSync(path.join(root, "src/globals.js"), "window.console.log(configuredGlobal);\n");
-    for (const { github, correctness } of [
-      { github: false, correctness: false },
-      { github: true, correctness: false },
-      { github: true, correctness: true },
+    for (const { github, correctness, evidence } of [
+      { github: false, correctness: false, evidence: false },
+      { github: true, correctness: false, evidence: false },
+      { github: true, correctness: true, evidence: false },
+      { github: true, correctness: true, evidence: true },
     ]) {
       const summary = path.join(root, `summary-${github}-${correctness}.md`);
       const result = spawnSync(
@@ -687,14 +688,33 @@ describe("oxlint config", () => {
             CI: "true",
             GITHUB_ACTIONS: github ? "true" : "false",
             GITHUB_STEP_SUMMARY: summary,
+            OPENCLAW_CI_STATIC_EVIDENCE: evidence ? "1" : "0",
+            OPENCLAW_CI_STATIC_EVIDENCE_ID: "limits:0",
           },
         },
       );
       expect(result.error).toBeUndefined();
       expect(result.status, result.stdout + result.stderr).toBe(github && !correctness ? 0 : 1);
-      const report = JSON.parse(result.stdout) as {
+      const marker = "[ci-static:oxlint:leaf] ";
+      const [output, receipt] = result.stdout.split(marker);
+      const report = JSON.parse(output) as {
         diagnostics: Array<{ code: string; severity: string; filename: string; help?: string }>;
       };
+      if (evidence) {
+        expect(JSON.parse(receipt)).toMatchObject({
+          version: 1,
+          id: "limits:0",
+          config: ".oxlintrc.json",
+          exitCode: 1,
+          stdout: output,
+          stderr: "",
+        });
+        expect(fs.readdirSync(root).filter((file) => file.startsWith(".oxlint-limits-"))).toEqual(
+          [],
+        );
+      } else {
+        expect(receipt).toBeUndefined();
+      }
       expect(report.diagnostics).toHaveLength(correctness ? 2 : 1);
       expect(
         report.diagnostics.find((diagnostic) => diagnostic.code === "eslint(max-lines)"),
@@ -736,7 +756,12 @@ describe("oxlint config", () => {
           {
             cwd: root,
             encoding: "utf8",
-            env: { ...process.env, GITHUB_ACTIONS: github ? "true" : "false" },
+            env: {
+              ...process.env,
+              GITHUB_ACTIONS: github ? "true" : "false",
+              OPENCLAW_CI_STATIC_EVIDENCE: "1",
+              OPENCLAW_CI_STATIC_EVIDENCE_ID: "invalid:0",
+            },
           },
         );
         expect(result.error).toBeUndefined();
@@ -745,6 +770,7 @@ describe("oxlint config", () => {
           `${config} / Actions=${github}: ${result.stdout}${result.stderr}`,
         ).toBe(1);
         expect(result.stdout + result.stderr).toContain("Failed to parse");
+        expect(result.stdout).not.toContain("[ci-static:oxlint:leaf]");
       }
     }
   });
