@@ -7,11 +7,7 @@ import {
   getPluginExecutionFrame,
   runWithPluginExecutionFrame,
 } from "./plugin-instance-invocation.js";
-
-export type PluginSourceCaptureStorage = Readonly<{
-  stateDir: string;
-  placement: "state" | "temporary";
-}>;
+import type { PluginSourceCaptureStorage } from "./plugin-instance-invocation.types.js";
 
 export function getPluginSourceCaptureStorage(): PluginSourceCaptureStorage | undefined {
   return getPluginExecutionFrame()?.sourceCaptureStorage;

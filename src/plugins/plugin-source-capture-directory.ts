@@ -14,11 +14,11 @@ import {
 } from "../infra/sqlite-staging-token.js";
 import { removeTemporaryArtifacts } from "../infra/temp-artifact-cleanup.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import type { PluginSourceCaptureStorage } from "./plugin-instance-invocation.types.js";
 import {
   getPluginSourceCaptureStorage,
   pluginSourceCaptureMaintenance,
   runInPluginSourceCaptureContext,
-  type PluginSourceCaptureStorage,
 } from "./plugin-source-capture-context.js";
 import { createPluginNativeCaptureCustody } from "./plugin-source-capture-native-loads.js";
 import {
