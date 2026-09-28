@@ -108,7 +108,9 @@ function deadline(p, deadlineLabel) {
         socket.send(JSON.stringify({ type: "res", id: f.id, ok: true, payload: {} }));
         if (f.method === "node.invoke.result") {
           results.set(f.params.id, f.params);
-          if (f.params.id.startsWith("parallel-media-")) mediaResultsReceived.add(f.params.id);
+          if (f.params.id.startsWith("parallel-media-")) {
+            mediaResultsReceived.add(f.params.id);
+          }
         }
         if (f.method === "node.invoke.progress") {
           progress.set(f.params.invokeId, f.params);
@@ -301,7 +303,9 @@ function deadline(p, deadlineLabel) {
     mediaSocket.pause();
     const resumeMedia = setTimeout(() => mediaSocket.resume(), 1500);
     try {
-      for (let i = 0; i < 4; i++) invoke(`parallel-media-${i}`, "benchmark.large", { bytes });
+      for (let i = 0; i < 4; i++) {
+        invoke(`parallel-media-${i}`, "benchmark.large", { bytes });
+      }
       await until(() => mediaResultsReceived.size === 4, "concurrent native media");
       for (let i = 0; i < 4; i++) {
         const id = `parallel-media-${i}`;
@@ -318,8 +322,9 @@ function deadline(p, deadlineLabel) {
         mediaResultsValidated.add(id);
         results.delete(id);
       }
-      if (ws !== mediaSocket || nativeRouteRetired)
+      if (ws !== mediaSocket || nativeRouteRetired) {
         throw new Error("concurrent media replaced the native route");
+      }
       record.checks.push({
         scenario: "four concurrent near-limit native results survive paused Gateway reads",
         bytes,
