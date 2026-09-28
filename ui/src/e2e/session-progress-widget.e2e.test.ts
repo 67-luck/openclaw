@@ -1,5 +1,6 @@
 import path from "node:path";
 import { beforeEach, expect, it } from "vitest";
+import type { ApplicationContext } from "../app/context.ts";
 import {
   ensureSidebarConversation,
   openSlot,
@@ -304,9 +305,18 @@ suite.define(() => {
   it("keeps target liveness when the selected agent scope changes", async () => {
     await suite.withPage(englishDesktopPageOptions, async ({ page }) => {
       const now = Date.now();
+      const targetRoster = sessionListResponse(sessionKey, "Main progress dashboard", {
+        hasActiveRun: true,
+        startedAt: now - 30_000,
+        updatedAt: now,
+      });
       const gateway = await installMockGateway(page, {
         sessionKey,
-        sessions: [{ key: sessionKey }],
+        sessions: targetRoster.sessions,
+        deferredMethods: ["chat.startup", "sessions.describe"],
+        historyMessages: [
+          { role: "assistant", content: [{ type: "text", text: "Dashboard startup settled." }] },
+        ],
         controlUiWidgetKinds: [
           { pluginId: "session", kind: "session:progress", label: "Session progress" },
         ],
@@ -326,11 +336,7 @@ suite.define(() => {
             cases: [
               {
                 match: { agentId: "main" },
-                response: sessionListResponse(sessionKey, "Main progress dashboard", {
-                  hasActiveRun: true,
-                  startedAt: now - 30_000,
-                  updatedAt: now,
-                }),
+                response: targetRoster,
               },
               {
                 match: { agentId: "writer" },
@@ -364,17 +370,29 @@ suite.define(() => {
       await expect.poll(() => card.locator(".session-run-spinner").count()).toBe(1);
       await expect.poll(() => card.locator(".session-progress-card__step--paused").count()).toBe(0);
 
-      await page.waitForFunction(() => {
-        const app = document.querySelector("openclaw-app") as HTMLElement & {
-          runtime?: { context?: { agentSelection?: { setScope?: (agentId: string) => void } } };
-        };
-        return typeof app.runtime?.context?.agentSelection?.setScope === "function";
-      });
       await page.evaluate(() => {
         const app = document.querySelector("openclaw-app") as HTMLElement & {
-          runtime?: { context?: { agentSelection?: { setScope?: (agentId: string) => void } } };
+          runtime: { context: ApplicationContext };
         };
-        app.runtime?.context?.agentSelection?.setScope?.("writer");
+        app.runtime.context.agentSelection.setScope("writer");
+      });
+      await gateway.waitForRequest("chat.startup");
+      await gateway.resolveDeferred("chat.startup");
+      await page.getByText("Dashboard startup settled.", { exact: true }).waitFor();
+      // Join the late descriptor read after the list rendered active progress.
+      // Its canonical snapshot must agree with the list, regardless of arrival order.
+      await gateway.waitForRequest("sessions.describe");
+      const descriptor = await page.evaluateHandle((key) => {
+        const app = document.querySelector("openclaw-app") as HTMLElement & {
+          runtime: { context: ApplicationContext };
+        };
+        return { settled: app.runtime.context.sessions.describe({ key }) };
+      }, sessionKey);
+      await gateway.resolveDeferred("sessions.describe");
+      await descriptor.evaluate(async ({ settled }) => await settled);
+      await descriptor.dispose();
+      await card.evaluate(async (element) => {
+        await element.closest("openclaw-session-progress-widget")!.updateComplete;
       });
       await expect
         .poll(async () =>
