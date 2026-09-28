@@ -20,7 +20,9 @@ final class SidecarWriteQueue: @unchecked Sendable {
 
         var countLimit: Int {
             switch self {
-            case .transport, .receipt: 1
+            // The peer can acknowledge physically written bytes before the serial
+            // writer releases its slot. One completed write plus one successor can coexist.
+            case .transport, .receipt: 2
             case .cancellation: 128 // One reserved cancellation per ordinary/progress RPC lease.
             default: 64
             }

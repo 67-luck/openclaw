@@ -273,3 +273,23 @@ struct SidecarWriteQueueCapacityTests {
         #expect(await waiting.value)
     }
 }
+
+struct SidecarWriteQueueAcknowledgementTests {
+    @Test(arguments: [SidecarWriteQueue.Lane.transport, .receipt])
+    func `peer acknowledgement can arrive before physical write completion`(lane: SidecarWriteQueue.Lane) async {
+        let owner = SidecarWriteQueue()
+        let (events, output) = AsyncStream<Int>.makeStream()
+        defer { owner.close(URLError(.cancelled))
+            output.finish()
+        }
+        owner.enqueue(Data([1]), lane: lane, write: { _ in
+            // The peer consumes the bytes and acknowledges them before this thread
+            // resumes to release the completed writer slot. It may now send one successor.
+            output.yield(1)
+            owner.enqueue(Data([2]), lane: lane, write: { _ in output.yield(2) }, failed: { _ in output.yield(-1) })
+        }, failed: { _ in output.yield(-1) })
+        var iterator = events.makeAsyncIterator()
+        #expect(await iterator.next() == 1)
+        #expect(await iterator.next() == 2)
+    }
+}
