@@ -311,7 +311,6 @@ describe("startCodexAttemptThread", () => {
       "account/read",
       "config/read",
       "configRequirements/read",
-      "account/read",
     ]);
     expect([
       [
@@ -389,9 +388,9 @@ describe("startCodexAttemptThread", () => {
       expect(readHarnessRequestMethods(second)).toEqual([
         "initialize",
         "account/login/start",
+        "account/read",
         "config/read",
         "configRequirements/read",
-        "account/read",
         "thread/start",
       ]);
       await vi.waitFor(() => expect(first.process.stdin.destroyed).toBe(true));
@@ -430,7 +429,7 @@ describe("startCodexAttemptThread", () => {
     );
     expect(
       readHarnessMessages(harness.writes.slice(writesBeforeRestart)).map(({ method }) => method),
-    ).toEqual(["config/read", "configRequirements/read", "account/read"]);
+    ).toEqual(["account/read", "config/read", "configRequirements/read"]);
 
     result.turnRoute.release();
     result.releaseSharedClientLease();
