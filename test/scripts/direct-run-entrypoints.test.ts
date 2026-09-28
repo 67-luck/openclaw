@@ -899,9 +899,16 @@ child.once("message", () => fs.writeFileSync(${JSON.stringify(pidPaths[1])}, Str
         expect(isProcessAlive(implementationPid)).toBe(true);
         throw failure;
       }).catch((cause: unknown) => cause);
-      expect(error).toBe(failure);
       expect(command).toBeDefined();
       const result = await command!;
+      // The fixture has joined the command; expose its result before a readiness
+      // failure can hide which existing startup receipts were reached.
+      const details = `${formatShimResult(result)}\nPID receipts: ${JSON.stringify(
+        Object.fromEntries(
+          pidPaths.map((pidPath) => [path.basename(pidPath), existsSync(pidPath)]),
+        ),
+      )}`;
+      expect(error, details).toBe(failure);
       expect(result.error, formatShimResult(result)).toMatchObject({
         code: "ETIMEDOUT",
         message: "Managed command timed out after 10000ms",
