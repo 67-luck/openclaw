@@ -507,7 +507,7 @@ The slot is exclusive at run time - only one registered context engine is resolv
 
 - Use `openclaw doctor` to verify your engine is loading correctly.
 - If switching engines, existing sessions continue with their current history. The new engine takes over for future runs.
-- Engine errors are logged and the selected plugin engine is quarantined for the current Gateway process. OpenClaw falls back to `legacy` for user turns so replies can continue, but you should still repair, update, disable, or uninstall the broken plugin.
+- Recovery is operation-specific: see [failure isolation](/concepts/context-engine#failure-isolation). Repair, update, disable, or uninstall a broken plugin. Standalone context-engine compaction does not silently switch frontiers; explicitly select `legacy` if you want built-in compaction.
 - For development, use `openclaw plugins install -l ./my-engine` to link a local plugin directory without copying.
 
 ## Related
