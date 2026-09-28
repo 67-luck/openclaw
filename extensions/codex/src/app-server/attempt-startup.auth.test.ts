@@ -1,7 +1,12 @@
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createAttemptPaths, createAttemptParams, createAttemptThreadStarter, readHarnessMessages } from "./attempt-startup.test-support.js";
+import {
+  createAttemptPaths,
+  createAttemptParams,
+  createAttemptThreadStarter,
+  readHarnessMessages,
+} from "./attempt-startup.test-support.js";
 import { CodexAppServerClient } from "./client.js";
 import { threadStartResult } from "./codex-app-server.test-fixtures.js";
 import { setManagedCodexPluginRoot } from "./managed-binary.js";
@@ -11,7 +16,9 @@ import { clearSharedCodexAppServerClientAndWait } from "./shared-client.js";
 import { createCodexLifecycleHarness } from "./thread-lifecycle.test-fixtures.js";
 
 const tempRoots = new Set<string>();
-const startThreadWithHarness = createAttemptThreadStarter(tempRoots, { appServer: { command: "codex" } });
+const startThreadWithHarness = createAttemptThreadStarter(tempRoots, {
+  appServer: { command: "codex" },
+});
 
 describe("Codex attempt authentication readiness", () => {
   beforeEach(async () => {
@@ -148,5 +155,4 @@ describe("Codex attempt authentication readiness", () => {
       result.releaseSharedClientLease();
     },
   );
-
 });

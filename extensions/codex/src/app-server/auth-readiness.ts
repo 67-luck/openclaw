@@ -33,7 +33,9 @@ class CodexAppServerAuthenticationRequiredError extends Error {
   readonly code = "codex_auth_required";
 
   constructor() {
-    super("Codex app-server is signed out. Sign in to the account used by this app-server, then retry.");
+    super(
+      "Codex app-server is signed out. Sign in to the account used by this app-server, then retry.",
+    );
     this.name = "CodexAppServerAuthenticationRequiredError";
   }
 }

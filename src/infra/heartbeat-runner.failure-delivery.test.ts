@@ -128,7 +128,10 @@ describe("runHeartbeatOnce failure delivery", () => {
       await withTempTelegramHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
         const cfg = createConfig({ tmpDir, storePath });
         const sessionKey = await seedTelegramSession(storePath, cfg);
-        enqueueSystemEvent("Scheduled work is due", { sessionKey, contextKey: "cron:pending-work" });
+        enqueueSystemEvent("Scheduled work is due", {
+          sessionKey,
+          contextKey: "cron:pending-work",
+        });
         replySpy.mockImplementation(async (_ctx, options) => {
           setHeartbeatAgentTurnStatus(options, "failed");
           return buildKnownAgentRunFailureReplyPayload({
