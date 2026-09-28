@@ -109,6 +109,8 @@ export function waitForFile(file) {
       deps: { neverBundle: ["p-map", "@openclaw/fs-safe"] },
       // These POSIX fixtures omit optional Windows Job and declaration compiler runtimes.
       inputOptions: {
+        // Output preserves the source tree; keep these unique fixture imports verbatim.
+        makeAbsoluteExternalsRelative: false,
         external: (id, importer) =>
           id === "./prepare-extension-package-boundary-artifacts.mts" ||
           (id === "./managed-windows-job.mts" &&
