@@ -10,12 +10,12 @@ import { VERSION } from "../../version.js";
 import { createUpdateProgress } from "./progress.js";
 import {
   confirmUpdateDowngrade,
-  UpdatePreMutationError,
   resolveGitInstallDir,
   type UpdateCommandOptions,
 } from "./shared.js";
 import { withUpdateCandidateAdmission } from "./update-command-candidate-admission.js";
 import { createUpdateConfigFailure } from "./update-command-config-failure.js";
+import type { UpdateCommandExecutorOptions } from "./update-command-executor-options.js";
 import {
   captureUpdateCommandExecutorAuthority,
   type UpdateCommandExecutor,
@@ -54,16 +54,20 @@ import { withUpdateCommandRecoveryUnwind } from "./update-command-unwind.js";
 
 type PreparedUpdate = NonNullable<Awaited<ReturnType<typeof prepareUpdateCommand>>>;
 
-export async function updateCommand(inputOpts: UpdateCommandOptions): Promise<void> {
+export async function updateCommand(
+  inputOpts: UpdateCommandOptions,
+  executorOptions?: UpdateCommandExecutorOptions,
+): Promise<void> {
   const { withRetainedUpdateRuntime } = await import("../../infra/update-retained-runtime.js");
   return await withRetainedUpdateRuntime(import.meta.url, (retainRuntime) =>
-    updateCommandWithRuntime(inputOpts, retainRuntime),
+    updateCommandWithRuntime(inputOpts, retainRuntime, executorOptions),
   );
 }
 
 async function updateCommandWithRuntime(
   inputOpts: UpdateCommandOptions,
   retainRuntime: RetainUpdateRuntime,
+  executorOptions?: UpdateCommandExecutorOptions,
 ): Promise<void> {
   const invocationCwd = tryProcessCwd();
   const recoveryState: UpdateCommandRecoveryState = {
@@ -97,7 +101,18 @@ async function updateCommandWithRuntime(
     });
     const { updateStateNeedsInitialization } = await import("./update-command-initialization.js");
     assertUpdatePackageActivationAdmission(root, { serviceRoot });
-    if (await updateStateNeedsInitialization(env)) {
+    const needsInitialization = await updateStateNeedsInitialization(env);
+    const execute = (initialization?: InitializedUpdate) =>
+      runAdmittedUpdate(
+        inputOpts,
+        prepared,
+        recoveryState,
+        invocationCwd,
+        retainRuntime,
+        initialization,
+        executorOptions,
+      );
+    if (needsInitialization) {
       const { initializeAndRunUpdate } = await import("./update-command-initialization-run.js");
       return await initializeAndRunUpdate(
         inputOpts,
@@ -105,24 +120,11 @@ async function updateCommandWithRuntime(
         recoveryState,
         invocationCwd,
         env,
-        (initialization) =>
-          runAdmittedUpdate(
-            inputOpts,
-            prepared,
-            recoveryState,
-            invocationCwd,
-            retainRuntime,
-            initialization,
-          ),
+        execute,
+        executorOptions,
       );
     }
-    return await runAdmittedUpdate(
-      inputOpts,
-      prepared,
-      recoveryState,
-      invocationCwd,
-      retainRuntime,
-    );
+    return await execute();
   });
 }
 
@@ -133,6 +135,7 @@ async function runAdmittedUpdate(
   invocationCwd: string | undefined,
   retainRuntime: RetainUpdateRuntime,
   initialization?: InitializedUpdate,
+  executorOptions?: UpdateCommandExecutorOptions,
 ): Promise<void> {
   const run = await admitUpdateCommandRun({
     opts: inputOpts,
@@ -220,7 +223,7 @@ async function runAdmittedUpdate(
             withUpdateInProgressEnv(invocationCwd, () =>
               withUpdateCommandTerminalResult((registerRun) => {
                 registerRun(run);
-                return withUpdateCommandExecutor(run.runId, executeWith);
+                return withUpdateCommandExecutor(run.runId, executeWith, executorOptions);
               }, opts),
             ),
           );
@@ -264,49 +267,31 @@ async function updateCommandInternal(
   if (!target) {
     return;
   }
-  try {
-    return await withUpdateCandidateAdmission(
-      {
-        target,
-        prepared,
-        opts,
-        timeoutMs: updateStepTimeoutMs,
-        invocationCwd,
-        presentation,
-        stagedPackage: initialization?.stagedPackage,
-        candidateAdmission: initialization?.candidateAdmission,
-      },
-      (stagedPackage) =>
-        runResolvedUpdate(
-          opts,
-          recoveryState,
-          invocationCwd,
-          prepared,
-          presentation,
-          executor,
-          retainRuntime,
-          target,
-          stagedPackage,
-          initialization,
-        ),
-    );
-  } catch (error) {
-    if (!(error instanceof UpdatePreMutationError)) {
-      throw error;
-    }
-    return await reportPreMutationUpdateResult({
-      root: target.root,
-      mode: target.mode,
-      installKind: target.updateInstallKind,
+  return await withUpdateCandidateAdmission(
+    {
+      target,
+      prepared,
       opts,
-      controlPlaneUpdateSentinelMeta: prepared.controlPlaneUpdateSentinelMeta,
-      reason: error.reason,
-      message: error.message,
-      nextAction: error.nextAction,
-      failureFacts: error.failureFacts,
-      recoverySteps: error.recoverySteps,
-    });
-  }
+      timeoutMs: updateStepTimeoutMs,
+      invocationCwd,
+      presentation,
+      stagedPackage: initialization?.stagedPackage,
+      candidateAdmission: initialization?.candidateAdmission,
+    },
+    (stagedPackage) =>
+      runResolvedUpdate(
+        opts,
+        recoveryState,
+        invocationCwd,
+        prepared,
+        presentation,
+        executor,
+        retainRuntime,
+        target,
+        stagedPackage,
+        initialization,
+      ),
+  );
 }
 
 async function runResolvedUpdate(
@@ -347,7 +332,6 @@ async function runResolvedUpdate(
     currentVersion,
     targetVersion,
     downgradeRisk,
-    packageInstallSpec,
     packageInstallTarget,
     packageAlreadyCurrent,
     packageRuntimeTarget,
@@ -438,7 +422,6 @@ async function runResolvedUpdate(
     startedAt,
     controlPlaneUpdateSentinelMeta,
     packageUpdateNodeRunner: packageUpdateNodeRunner ?? managedServiceNodeRunner,
-    packageInstallSpec,
     runtimeTarget: packageRuntimeTarget,
     managedServiceRootRedirect,
     managedServiceRoot,
