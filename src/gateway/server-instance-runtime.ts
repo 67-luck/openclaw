@@ -64,6 +64,10 @@ type GatewayInstanceRuntimeOptions = {
   getContext: () => GatewayRequestContext;
   getMethodRegistry: () => GatewayMethodRegistry;
   isDispatchAvailable: () => boolean;
+  captureCurrentChannelAccountTask?: (
+    channel: string,
+    accountId: string,
+  ) => (() => boolean) | undefined;
   logError?: (message: string) => void;
 };
 
@@ -357,10 +361,20 @@ export function createGatewayInstanceRuntime(
           const record = manager?.getLiveSnapshot(pluginRequest.id);
           const sourceConfig = context.getRuntimeConfig();
           const sourceEnvGeneration = getPublishedConfigRuntimeEnvState().generation;
+          const sourceChannel = pluginRequest.request.turnSourceChannel;
+          const sourceAccountId = normalizeOptionalAccountId(
+            pluginRequest.request.turnSourceAccountId,
+          );
+          // A remote channel owner may hold the only usable credential. The
+          // Gateway sends a fallback notice only for its own live source task.
+          const isSourceTaskCurrent =
+            sourceChannel && sourceAccountId
+              ? options.captureCurrentChannelAccountTask?.(sourceChannel, sourceAccountId)
+              : undefined;
           routeCoordinator.capturePluginOrigin(
             pluginRequest,
             manager ? () => manager.retainForHandoff(pluginRequest.id) : undefined,
-            manager && record
+            manager && record && isSourceTaskCurrent
               ? {
                   requestGateway: requestApprovalRoute,
                   isOriginCurrent: (boundRequest, cfg) =>
@@ -372,6 +386,7 @@ export function createGatewayInstanceRuntime(
                     boundRequest.id === record.id &&
                     context.getRuntimeConfig() === sourceConfig &&
                     getPublishedConfigRuntimeEnvState().generation === sourceEnvGeneration &&
+                    isSourceTaskCurrent() &&
                     (cfg === undefined || cfg === sourceConfig),
                 }
               : undefined,

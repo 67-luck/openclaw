@@ -20,7 +20,7 @@ import { SharedGatewaySessionGenerationState } from "./server-shared-auth-genera
 import { createTestRuntimeSecretsActivator } from "./server-startup-config.test-support.js";
 
 describe("Gateway-owned remote plugin approval requester notice", () => {
-  it("reports pending and denial through the source account with or without a local reporter", async () => {
+  it("reports through the live local source account and leaves remote-only accounts to their owner", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "remote-plugin-approval-notice-" },
       async () => {
@@ -32,9 +32,12 @@ describe("Gateway-owned remote plugin approval requester notice", () => {
         });
         const sourceConfig = configForToken("xoxb-original");
         let currentConfig = sourceConfig;
+        let sourceTaskActive = true;
         const posts: Array<{ text: string; token: unknown }> = [];
         const pendingPosted = createDeferred();
         const deniedPosted = createDeferred();
+        const noReporterPendingPosted = createDeferred();
+        const noReporterDeniedPosted = createDeferred();
         const staleHandoff = createDeferred();
         const noticeFailed = createDeferred();
         const telegramPendingPosted = createDeferred();
@@ -57,7 +60,13 @@ describe("Gateway-owned remote plugin approval requester notice", () => {
               text: options.text,
               token: options.cfg.channels?.slack?.accounts?.work?.botToken,
             });
-            if (options.text.includes("was denied")) {
+            if (options.text.includes("plugin:slack-no-reporter")) {
+              if (options.text.includes("was denied")) {
+                noReporterDeniedPosted.resolve();
+              } else {
+                noReporterPendingPosted.resolve();
+              }
+            } else if (options.text.includes("was denied")) {
               deniedPosted.resolve();
             } else {
               pendingPosted.resolve();
@@ -150,6 +159,9 @@ describe("Gateway-owned remote plugin approval requester notice", () => {
             throw new Error("source notice must not use a public Gateway RPC");
           },
           isDispatchAvailable: () => true,
+          captureCurrentChannelAccountTask: () => {
+            return sourceTaskActive ? () => sourceTaskActive : undefined;
+          },
           logError: (message) => {
             errors.push(message);
             if (message.includes("plugin approval origin notice failed")) {
@@ -225,7 +237,16 @@ describe("Gateway-owned remote plugin approval requester notice", () => {
         };
 
         try {
+          sourceTaskActive = false;
+          const remoteOnly = await publish("plugin:remote-only-source");
+          await runtime.nativeApprovals.routeCoordinator.finishPluginOriginRouting(
+            remoteOnly.id,
+            false,
+          );
+          expect(posts).toEqual([]);
+          sourceTaskActive = true;
           reporter.start();
+
           const request = await publish("plugin:remote-source");
           await pendingPosted.promise;
           expect(posts).toEqual([
@@ -262,10 +283,27 @@ describe("Gateway-owned remote plugin approval requester notice", () => {
             .catch(() => undefined);
           expect(posts).toHaveLength(2);
 
-          // Telegram has no isOriginCurrent hook. A remote reviewer can still
-          // receive its card while the source Gateway has no native reporter.
           currentConfig = sourceConfig;
           await reporter.stop();
+          const noReporter = await publish("plugin:slack-no-reporter");
+          await noReporterPendingPosted.promise;
+          expect(posts[2]?.text).toBe(
+            `Approval ${noReporter.id} required. An approver can review it in the Control UI or terminal UI.`,
+          );
+          await aux.pluginApprovalManager.resolve(noReporter.id, "deny");
+          runtime.approvalEvents.publishResolved("plugin", {
+            id: noReporter.id,
+            decision: "deny",
+            ts: Date.now(),
+            request: noReporter.request,
+          });
+          await noReporterDeniedPosted.promise;
+          expect(posts[3]?.text).toBe(
+            `Approval ${noReporter.id} was denied. The requested action did not run.`,
+          );
+
+          // Telegram has no isOriginCurrent hook. A remote reviewer can still
+          // receive its card while the source Gateway has no native reporter.
           const telegramRequest = await publish("plugin:remote-telegram", "telegram");
           await telegramPendingPosted.promise;
           expect(telegramPosts).toEqual([

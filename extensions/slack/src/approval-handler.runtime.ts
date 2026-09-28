@@ -24,7 +24,7 @@ import {
   isSlackAnyNativeApprovalClientEnabled,
   shouldHandleSlackNativeApprovalRequest,
 } from "./approval-native-gates.js";
-import { resolveSlackApproverDmTargets } from "./approval-native.js";
+import { isSlackApprovalOriginCurrent, resolveSlackApproverDmTargets } from "./approval-native.js";
 import { getSlackListenerWriteClient } from "./client.js";
 import { normalizeSlackApproverId } from "./exec-approvals.js";
 import { SLACK_EDIT_TEXT_MAX_BYTES } from "./limits.js";
@@ -363,32 +363,7 @@ export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdap
           })
         : false;
     },
-    isOriginCurrent: (params, handoffConfig) => {
-      const resolved = resolveHandlerContext(params);
-      if (
-        !resolved?.context.assertCurrent ||
-        !resolved.context.readConfig ||
-        !resolved.context.writeToken
-      ) {
-        return false;
-      }
-      try {
-        resolved.context.assertCurrent();
-        const hasOriginalWriteToken = (cfg: OpenClawConfig) => {
-          const account = resolveSlackAccount({ cfg, accountId: resolved.accountId });
-          return (
-            account.enabled &&
-            resolveSlackOperationToken(account, "write") === resolved.context.writeToken
-          );
-        };
-        return (
-          hasOriginalWriteToken(resolved.context.readConfig()) &&
-          (!handoffConfig || hasOriginalWriteToken(handoffConfig))
-        );
-      } catch {
-        return false;
-      }
-    },
+    isOriginCurrent: isSlackApprovalOriginCurrent,
     shouldHandle: (params) => {
       const resolved = resolveHandlerContext(params);
       if (!resolved) {

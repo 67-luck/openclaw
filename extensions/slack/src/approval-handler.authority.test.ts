@@ -10,6 +10,7 @@ import {
 import { withServer } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { slackApprovalNativeRuntime } from "./approval-handler.runtime.js";
+import { slackApprovalCapability } from "./approval-native.js";
 import { createSlackWebClient } from "./client.js";
 import { registerSlackInstallationState } from "./installation-identity-state.js";
 
@@ -82,9 +83,17 @@ describe("Slack approval reviewer delivery authority", () => {
         expiresAtMs: 60_000,
       },
     };
+    expect(slackApprovalCapability.nativeRuntime?.availability.isOriginCurrent?.(params)).toBe(
+      true,
+    );
     expect(slackApprovalNativeRuntime.availability.isOriginCurrent?.(params)).toBe(true);
     expect(
       slackApprovalNativeRuntime.availability.isOriginCurrent?.(params, {
+        channels: { slack: { botToken: "xoxb-reassigned" } },
+      }),
+    ).toBe(false);
+    expect(
+      slackApprovalCapability.nativeRuntime?.availability.isOriginCurrent?.(params, {
         channels: { slack: { botToken: "xoxb-reassigned" } },
       }),
     ).toBe(false);

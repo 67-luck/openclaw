@@ -29,7 +29,7 @@ export function createLazyChannelApprovalNativeRuntimeAdapter<
   >;
   isConfigured: ChannelApprovalNativeAvailabilityAdapter["isConfigured"];
   shouldHandle: ChannelApprovalNativeAvailabilityAdapter["shouldHandle"];
-  supportsOriginCurrent?: true;
+  isOriginCurrent?: ChannelApprovalNativeAvailabilityAdapter["isOriginCurrent"];
   eventKinds?: readonly ChannelApprovalKind[];
   /** Erases payload types only when registering with the non-generic channel capability. */
   capabilityBoundary?: TCapabilityBoundary;
@@ -67,19 +67,7 @@ export function createLazyChannelApprovalNativeRuntimeAdapter<
     availability: {
       isConfigured: params.isConfigured,
       shouldHandle: params.shouldHandle,
-      ...(params.supportsOriginCurrent
-        ? {
-            isOriginCurrent: (
-              runtimeParams: Parameters<
-                NonNullable<ChannelApprovalNativeAvailabilityAdapter["isOriginCurrent"]>
-              >[0],
-              handoffConfig?: Parameters<
-                NonNullable<ChannelApprovalNativeAvailabilityAdapter["isOriginCurrent"]>
-              >[1],
-            ) =>
-              loadedRuntime?.availability.isOriginCurrent?.(runtimeParams, handoffConfig) === true,
-          }
-        : {}),
+      ...(params.isOriginCurrent ? { isOriginCurrent: params.isOriginCurrent } : {}),
     },
     presentation: {
       buildPendingPayload: async (runtimeParams) =>

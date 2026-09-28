@@ -90,8 +90,9 @@ subscription, and routed-elsewhere notices.
 - `availability` - whether the account is configured and whether a request
   should be handled. Channels can implement `isOriginCurrent` so core rejects
   a requester notice if the originating account or credentials changed after
-  native delivery; lazy runtimes set `supportsOriginCurrent: true` to forward
-  this check.
+  native delivery. Lazy runtimes provide a synchronous `isOriginCurrent`
+  callback on their lightweight adapter because origin capture can precede
+  loading the delivery runtime.
 - `presentation` - map the shared approval view model into
   pending/resolved/expired native payloads or final actions
 - `transport` - prepare targets plus send/update/delete native approval

@@ -261,6 +261,10 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
   pruneInactiveChannelAccountState: (activeChannelIds: ReadonlySet<ChannelId>) => void;
   resolveRuntimeAccountId: (channelId: ChannelId, accountId: string) => string | undefined;
   hasCurrentAccountTask: (channelId: ChannelId, accountId: string) => boolean;
+  captureCurrentAccountTask: (
+    channelId: ChannelId,
+    accountId: string,
+  ) => (() => boolean) | undefined;
 } {
   const {
     getRuntimeConfig,
@@ -1735,6 +1739,27 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
     return { channels, channelAccounts, reloadingChannels };
   };
 
+  const isCurrentAccountTask = (
+    channelId: ChannelId,
+    accountId: string,
+    expectedLifetime?: ChannelAccountLifetime,
+    expectedTask?: Promise<unknown>,
+  ): boolean => {
+    const store = channelStores.get(channelId);
+    const lifetime = store?.lifetimes.get(accountId);
+    return Boolean(
+      store &&
+      lifetime &&
+      (!expectedLifetime || lifetime === expectedLifetime) &&
+      store.tasks.has(accountId) &&
+      (!expectedTask || store.tasks.get(accountId) === expectedTask) &&
+      !store.stops.has(accountId) &&
+      !lifetime.abort.signal.aborted &&
+      lifetime.capabilityLease.isActive() &&
+      lifetime.plugin === getChannelPlugin(channelId),
+    );
+  };
+
   return {
     getRuntimeSnapshot,
     pauseChannelStarts: (channelIds) =>
@@ -1760,19 +1785,15 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
     markChannelLoggedOut,
     isManuallyStopped: (channelId, accountId) =>
       manuallyStopped.has(restartKey(channelId, accountId)),
-    hasCurrentAccountTask: (channelId, accountId) => {
+    hasCurrentAccountTask: (channelId, accountId) => isCurrentAccountTask(channelId, accountId),
+    captureCurrentAccountTask: (channelId, accountId) => {
       const store = channelStores.get(channelId);
       const lifetime = store?.lifetimes.get(accountId);
-      // A retained task slot can be an aborted predecessor or supervised backoff.
-      return Boolean(
-        store &&
-        lifetime &&
-        store.tasks.has(accountId) &&
-        !store.stops.has(accountId) &&
-        !lifetime.abort.signal.aborted &&
-        lifetime.capabilityLease.isActive() &&
-        lifetime.plugin === getChannelPlugin(channelId),
-      );
+      const task = store?.tasks.get(accountId);
+      // A notice cannot inherit a replacement task's authority after reload.
+      return lifetime && task && isCurrentAccountTask(channelId, accountId, lifetime, task)
+        ? () => isCurrentAccountTask(channelId, accountId, lifetime, task)
+        : undefined;
     },
     isAccountListed: (channelId, accountId) => {
       const fence = channelStores.get(channelId)?.startFence;
