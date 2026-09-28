@@ -672,6 +672,13 @@ extension SettingsProTab {
     /// gateways; splitting these across the page hid Scan QR below plumbing.
     var gatewaySetupCard: some View {
         Section {
+            if let failure = self.setupApplication.failure {
+                GatewaySetupFailureView(
+                    failure: failure,
+                    isBusy: self.connectingGateway != nil,
+                    onRetry: { Task { await self.retryGatewaySetup() } },
+                    onScan: self.openGatewayQRScanner)
+            }
             self.gatewayActionButton(
                 title: "Scan QR",
                 icon: "qrcode.viewfinder",
@@ -708,7 +715,7 @@ extension SettingsProTab {
             Text("Add Gateway")
                 .font(OpenClawType.subheadSemiBold)
         } footer: {
-            if let status = self.setupStatusLine {
+            if self.setupApplication.failure == nil, let status = self.setupStatusLine {
                 Text(status)
                     .font(OpenClawType.footnote)
             }

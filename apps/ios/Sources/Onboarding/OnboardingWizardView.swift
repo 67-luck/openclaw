@@ -52,6 +52,7 @@ struct OnboardingWizardView: View {
     @State private var qrCodeCompletion = OnboardingQRCodeCompletion()
     @State private var setupCode: String = ""
     @State private var setupCodeStatus: String?
+    @State private var setupApplication = GatewaySetupApplication()
     @State private var setupAttemptID: UUID?
     @State private var manualConnectGeneration: UInt64 = 0
     @FocusState private var focusedField: OnboardingFocusedField?
@@ -148,6 +149,11 @@ struct OnboardingWizardView: View {
                     self.successStep
                 default:
                     Form {
+                        if let failure = self.setupApplication.failure {
+                            Section {
+                                self.setupFailureView(failure)
+                            }
+                        }
                         switch self.step {
                         case .mode:
                             self.modeStep
@@ -229,6 +235,7 @@ struct OnboardingWizardView: View {
         }
         .onDisappear {
             self.invalidateSetupAttempt()
+            self.setupApplication.cancel()
             self.qrCodeCompletion.cancel()
             self.discoveryRestartTask?.cancel()
             self.discoveryRestartTask = nil
@@ -260,6 +267,7 @@ struct OnboardingWizardView: View {
             guard !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             self.qrCodeCompletion.cancel()
             self.clearStagedGatewaySetupLink()
+            self.setupApplication.cancel()
         }
         .onChange(of: self.appModel.lastGatewayProblem) { _, newValue in
             self.updateConnectionIssue(problem: newValue, statusText: self.appModel.gatewayStatusText)
@@ -271,7 +279,9 @@ struct OnboardingWizardView: View {
             self.applyPendingGatewaySetupLinkIfNeeded()
         }
         .onChange(of: self.appModel.gatewayServerName) { _, newValue in
-            guard newValue != nil, self.setupLinkStaging.link == nil else { return }
+            guard newValue != nil, self.setupLinkStaging.link == nil,
+                  self.setupApplication.pendingRequest == nil, self.setupApplication.failure == nil
+            else { return }
             let destination = self.qrCodeCompletion.destination(
                 connectedStableID: self.appModel.activeGatewayConnectConfig?.effectiveStableID)
             self.showQRScanner = false
@@ -416,15 +426,27 @@ struct OnboardingWizardView: View {
     private var welcomeStep: some View {
         OnboardingWelcomeStep(
             statusLine: self.statusLine,
+            setupFailure: self.setupApplication.failure,
+            onRetrySetup: { Task { await self.retryGatewaySetup() } },
+            isPreparingSetup: self.setupApplication.isApplying,
             isConnecting: self.connectingGateway != nil,
             onScanQRCode: {
                 self.openQRScannerFromOnboarding()
             },
             onManualSetup: {
+                self.setupApplication.cancel()
                 self.invalidateSetupAttempt()
                 self.statusLine = ""
                 self.navigate(to: .mode)
             })
+    }
+
+    private func setupFailureView(_ failure: GatewaySetupApplication.Failure) -> some View {
+        GatewaySetupFailureView(
+            failure: failure,
+            isBusy: self.connectingGateway != nil,
+            onRetry: { Task { await self.retryGatewaySetup() } },
+            onScan: { self.openQRScannerFromOnboarding() })
     }
 
     @ViewBuilder
@@ -451,7 +473,7 @@ struct OnboardingWizardView: View {
     private var connectStep: some View {
         if let selectedMode {
             Section {
-                self.connectPhaseView
+                if self.setupApplication.failure == nil { self.connectPhaseView }
                 self.onboardingLabeledContent("Mode", value: selectedMode.title)
                 self.onboardingLabeledContent("Discovery", value: self.gatewayController.discoveryStatusText)
             } header: {
@@ -881,14 +903,7 @@ extension OnboardingWizardView {
         let link = await self.gatewayController.selectReachableSetupLink(parsedLink)
         guard self.setupAttemptID == attemptID else { return }
 
-        await self.applyGatewayLink(link)
-        self.setupCode = ""
-        self.setupCodeStatus = "Setup code applied. Connecting…"
-        self.connectMessage = "Connecting via setup code…"
-        self.statusLine = "Setup code loaded. Connecting to \(link.host):\(link.port)…"
-        await self.prepareFocusedFieldForStepTransition()
-        self.navigate(to: .connect)
-        await self.connectManual(setupAttemptID: attemptID)
+        await self.performGatewaySetup(.init(link: link, source: .setupCode), attemptID: attemptID)
     }
 
     private func queueScannedResult(_ result: QRScannerResult, scanID: UInt64) {
@@ -921,20 +936,16 @@ extension OnboardingWizardView {
     private func connectScannedLink(_ parsedLink: GatewayConnectDeepLink, attemptID: UUID) async {
         defer {
             self.finishSetupAttempt(attemptID)
-            self.pendingTargetSuppression.resumeAutoConnect(.qrScanner, controller: self.gatewayController)
         }
         let link = await self.gatewayController.selectReachableSetupLink(parsedLink)
         guard self.setupAttemptID == attemptID else { return }
-        self.qrCodeCompletion.stage(link)
-        await self.applyGatewayLink(link)
-        self.connectMessage = "Connecting via setup code…"
-        self.statusLine = "Setup code loaded. Connecting to \(link.host):\(link.port)…"
-        self.navigate(to: .connect)
-        await self.connectManual(setupAttemptID: attemptID)
+        await self.performGatewaySetup(.init(link: link, source: .scan), attemptID: attemptID)
     }
 
     private func applyPendingGatewaySetupLinkIfNeeded() {
         guard let link = self.appModel.consumePendingGatewaySetupLink() else { return }
+        self.invalidateSetupAttempt()
+        self.setupApplication.cancel()
         self.qrCodeCompletion.cancel()
         self.showQRScanner = false
         self.scannerResultHandoff.cancel()
@@ -953,33 +964,71 @@ extension OnboardingWizardView {
     }
 
     private func connectStagedGatewaySetupLink() async {
-        guard self.connectingGateway == nil else { return }
-        guard let link = self.setupLinkStaging.link else { return }
-        guard link.isValidEndpoint else {
-            let message = "Setup link has an invalid gateway endpoint."
-            self.setupCodeStatus = message
-            self.setConnectionFailure(message)
-            return
+        guard let link = self.setupLinkStaging.link,
+              let attemptID = self.beginSetupAttempt()
+        else { return }
+        defer {
+            self.finishSetupAttempt(attemptID)
         }
-        self.connectingGateway = .manual
-        self.localConnectionFailure = nil
-        defer { self.connectingGateway = nil }
+        await self.performGatewaySetup(.init(link: link, source: .setupLink), attemptID: attemptID)
+    }
+
+    private func retryGatewaySetup() async {
+        guard let request = self.setupApplication.pendingRequest,
+              let attemptID = self.beginSetupAttempt()
+        else { return }
+        defer { self.finishSetupAttempt(attemptID) }
+        await self.performGatewaySetup(request, attemptID: attemptID)
+    }
+
+    private func performGatewaySetup(_ request: GatewaySetupApplication.Request, attemptID: UUID) async {
         let lease = self.gatewayController.cancelPendingConnectionAttempts()
         self.pendingTargetSuppression.replace(owner: .setupLink, lease: lease)
-        defer { self.pendingTargetSuppression.resumeAutoConnect(.setupLink, controller: self.gatewayController) }
-        await self.appModel.resetGatewaySessionsForTargetSwitch()
-        guard self.setupLinkStaging.link == link else { return }
-        _ = self.setupLinkStaging.take()
-        await self.applyGatewayLink(link, disconnectExistingGatewayForBootstrap: false)
-        self.setupCodeStatus = "Setup link applied. Connecting…"
-        self.issue = .none
-        self.connectMessage = "Connecting to \(link.host)…"
-        self.statusLine = "Connecting to \(link.host):\(link.port)…"
-        await self.connectCurrentManualGateway(host: link.host, port: link.port, forceReconnect: false)
+        defer {
+            // A failed setup keeps automatic connection paused until retry or an explicit new choice.
+            if self.setupAttemptID == attemptID, self.setupApplication.failure == nil {
+                self.pendingTargetSuppression.releaseAutoConnect(.setupLink, controller: self.gatewayController)
+            }
+        }
+        self.statusLine = String(localized: "Preparing gateway setup…")
+        self.setupCode = ""
+        await self.setupApplication.apply(
+            request,
+            appModel: self.appModel,
+            disconnectExistingGatewayForBootstrap: request.source != .setupLink,
+            isCurrent: { self.setupAttemptID == attemptID },
+            onReady: { auth in
+                let link = request.link
+                self.manualHost = link.host
+                self.manualPort = link.port
+                self.manualPortText = String(link.port)
+                self.manualTLS = link.tls
+                self.manualContextPath = link.contextPath
+                self.gatewayToken = auth.token
+                self.gatewayPassword = auth.password
+                self.gatewayCredentialFieldStableID = auth.targetStableID
+                self.pendingManualAuthOverride = auth.manualAuthOverride
+                if self.selectedMode == nil {
+                    self.selectedMode = link.tls ? .remoteDomain : .homeNetwork
+                }
+                _ = self.setupLinkStaging.take()
+                self.setupCode = ""
+                if request.source == .scan { self.qrCodeCompletion.stage(link) }
+                self.localConnectionFailure = nil
+                self.issue = .none
+                self.setupCodeStatus = String(localized: "Setup code applied. Connecting…")
+                self.connectMessage = self.setupCodeStatus
+                self.statusLine = self.setupCodeStatus ?? ""
+                await self.prepareFocusedFieldForStepTransition()
+                guard self.setupAttemptID == attemptID else { return }
+                self.navigate(to: .connect)
+                await self.connectManual(setupAttemptID: attemptID)
+            })
     }
 
     private func clearStagedGatewaySetupLink() {
         guard self.setupLinkStaging.cancel() else { return }
+        self.setupApplication.cancel()
         self.pendingTargetSuppression.resumeAutoConnect(.setupLink, controller: self.gatewayController)
         let message = "Setup link cleared."
         self.localConnectionFailure = nil
@@ -987,50 +1036,9 @@ extension OnboardingWizardView {
         self.statusLine = message
     }
 
-    private func applyGatewayLink(
-        _ link: GatewayConnectDeepLink,
-        disconnectExistingGatewayForBootstrap: Bool = true) async
-    {
-        self.manualHost = link.host
-        self.manualPort = link.port
-        self.manualPortText = String(link.port)
-        self.manualTLS = link.tls
-        self.manualContextPath = link.contextPath
-        let setupAuth = GatewayConnectionController.ManualAuthOverride.setupAuth(from: link)
-        self.gatewayCredentialFieldStableID = setupAuth.targetStableID
-        if setupAuth.hasBootstrapToken {
-            guard await GatewayOnboardingReset.prepareForBootstrapPairing(
-                appModel: self.appModel,
-                instanceId: GatewaySettingsStore.currentInstanceID(),
-                gatewayStableID: setupAuth.targetStableID,
-                disconnectGateway: disconnectExistingGatewayForBootstrap)
-            else {
-                let message = "Could not safely replace the gateway's offline data. Try again."
-                self.connectMessage = message
-                self.statusLine = message
-                return
-            }
-        }
-        self.gatewayToken = setupAuth.token
-        self.gatewayPassword = setupAuth.password
-        self.pendingManualAuthOverride = setupAuth.manualAuthOverride
-        let instanceId = GatewaySettingsStore.currentInstanceID()
-        if !instanceId.isEmpty {
-            GatewaySettingsStore.saveGatewayCredentials(
-                token: setupAuth.token,
-                bootstrapToken: setupAuth.bootstrapToken,
-                password: setupAuth.password,
-                gatewayStableID: setupAuth.targetStableID,
-                suppressStoredDeviceAuth: true,
-                instanceId: instanceId)
-        }
-        if self.selectedMode == nil {
-            self.selectedMode = link.tls ? .remoteDomain : .homeNetwork
-        }
-    }
-
     private func handleScannedSetupCode(_ code: String) {
         guard AppleReviewDemoMode.isSetupCode(code) else { return }
+        self.setupApplication.cancel()
         self.qrCodeCompletion.cancel()
         self.showQRScanner = false
         self.invalidateSetupAttempt()
@@ -1042,6 +1050,7 @@ extension OnboardingWizardView {
     }
 
     private func openQRScannerFromOnboarding(status: String = "Opening QR scanner…") {
+        self.setupApplication.cancel()
         // Stop active reconnect loops before scanning new credentials.
         self.qrCodeCompletion.cancel()
         self.invalidateSetupAttempt()
@@ -1081,6 +1090,7 @@ extension OnboardingWizardView {
     }
 
     private func attemptAutomaticPairingResumeIfNeeded() {
+        guard self.setupApplication.pendingRequest == nil, self.setupApplication.failure == nil else { return }
         guard self.scenePhase == .active else { return }
         guard self.step == .auth else { return }
         guard self.issue.needsPairing else { return }
@@ -1095,6 +1105,7 @@ extension OnboardingWizardView {
     }
 
     private func updateConnectionIssue(problem: GatewayConnectionProblem?, statusText: String) {
+        guard self.setupApplication.pendingRequest == nil, self.setupApplication.failure == nil else { return }
         let wasOnAuthStep = self.step == .auth
         let next = GatewayConnectionIssue.detect(problem: problem)
         let fallback = next == .none ? GatewayConnectionIssue.detect(from: statusText) : next
@@ -1176,6 +1187,7 @@ extension OnboardingWizardView {
 
     private func navigateBack() {
         guard let target = step.previous else { return }
+        self.setupApplication.cancel()
         self.invalidateSetupAttempt()
         self.qrCodeCompletion.cancel()
         self.localConnectionFailure = nil
@@ -1322,6 +1334,7 @@ extension OnboardingWizardView {
         Binding(
             get: { self.gatewayToken },
             set: { value in
+                self.setupApplication.cancel()
                 self.gatewayToken = value
                 self.persistGatewayCredentials(for: self.gatewayCredentialTargetStableID)
             })
@@ -1331,6 +1344,7 @@ extension OnboardingWizardView {
         Binding(
             get: { self.gatewayPassword },
             set: { value in
+                self.setupApplication.cancel()
                 self.gatewayPassword = value
                 self.persistGatewayCredentials(for: self.gatewayCredentialTargetStableID)
             })
@@ -1387,6 +1401,7 @@ extension OnboardingWizardView {
     }
 
     private func clearManualCredentialFields() {
+        self.setupApplication.cancel()
         self.gatewayToken = ""
         self.gatewayPassword = ""
         self.gatewayCredentialFieldStableID = nil
@@ -1419,6 +1434,7 @@ extension OnboardingWizardView {
     }
 
     private func connectDiscoveredGateway(_ gateway: GatewayDiscoveryModel.DiscoveredGateway) async {
+        self.setupApplication.cancel()
         self.qrCodeCompletion.cancel()
         self.selectGatewayCredentialTarget(gateway.stableID, allowManualOverride: false)
         self.connectingGateway = .gateway(gateway.id)
@@ -1466,6 +1482,7 @@ extension OnboardingWizardView {
         if let setupAttemptID {
             guard self.setupAttemptID == setupAttemptID else { return }
         } else {
+            self.setupApplication.cancel()
             self.qrCodeCompletion.cancel()
             self.invalidateSetupAttempt()
         }
@@ -1477,10 +1494,13 @@ extension OnboardingWizardView {
         self.connectMessage = "Connecting to \(host)…"
         self.statusLine = "Connecting to \(host):\(port)…"
         defer { self.connectingGateway = nil }
-        await self.connectCurrentManualGateway(host: host, port: port, forceReconnect: false)
+        await self.connectCurrentManualGateway(
+            host: host, port: port, forceReconnect: false, persistCredentials: setupAttemptID == nil)
     }
 
-    private func connectCurrentManualGateway(host: String, port: Int, forceReconnect: Bool) async {
+    private func connectCurrentManualGateway(
+        host: String, port: Int, forceReconnect: Bool, persistCredentials: Bool = true) async
+    {
         let stableID = GatewayConnectionController.ManualAuthOverride.manualStableID(
             host: host,
             port: port,
@@ -1502,14 +1522,18 @@ extension OnboardingWizardView {
             password: fieldsMatchTarget ? self.gatewayPassword : nil,
             targetStableID: stableID)
         let instanceId = GatewaySettingsStore.currentInstanceID()
-        if !instanceId.isEmpty, fieldsMatchTarget || pendingOverride != nil {
-            GatewaySettingsStore.saveGatewayCredentials(
+        if persistCredentials, fieldsMatchTarget || pendingOverride != nil {
+            guard GatewaySettingsStore.saveGatewayCredentials(
                 token: authOverride?.token,
                 bootstrapToken: authOverride?.bootstrapToken,
                 password: authOverride?.password,
                 gatewayStableID: stableID,
                 suppressStoredDeviceAuth: authOverride?.suppressStoredDeviceAuth == true,
                 instanceId: instanceId)
+            else {
+                self.setConnectionFailure(GatewaySetupApplication.Failure.credentialSave.message)
+                return
+            }
         }
         let result = await self.gatewayController.connectManual(
             host: host,
@@ -1531,6 +1555,10 @@ extension OnboardingWizardView {
     }
 
     private func retryLastAttempt(silent: Bool = false) async {
+        if self.setupApplication.failure != nil || self.setupApplication.pendingRequest != nil {
+            if !silent { await self.retryGatewaySetup() }
+            return
+        }
         self.connectingGateway = silent ? .retryAutomatically : .retry
         self.localConnectionFailure = nil
         // Keep current auth/pairing issue sticky while retrying to avoid Step 3 UI flip-flop.

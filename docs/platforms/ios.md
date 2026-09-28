@@ -673,6 +673,7 @@ same iOS limits as Talk started inside the app.
 
 - `NODE_BACKGROUND_UNAVAILABLE`: bring the iOS app to the foreground (camera/screen commands require it).
 - Pairing prompt never appears: run `openclaw devices list` and approve manually.
+- **Couldn’t finish setup**: the iPhone could not prepare local pairing state or save the setup credentials. Connection does not start. **Try Again** retries the same setup while the screen stays open; you do not need to scan or paste it again. Expired codes require **Scan New Code**. Leaving setup or choosing a different setup discards the pending retry.
 - `Gateway setup incomplete`: the Gateway did not provide both node and operator credentials. Generate a new iPhone setup code from **Devices -> Pair device** in the Control UI or `openclaw qr`, then scan it in **Settings -> Gateway**. Automatic reconnect stays paused until you retry setup; this is not a device-storage error.
 - Watch shows no iPhone state: confirm the iPhone reports `watchPaired: true`
   and `watchAppInstalled: true` in `watch.status`. If pairing is false, pair the

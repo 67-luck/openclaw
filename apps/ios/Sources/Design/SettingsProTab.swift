@@ -44,6 +44,7 @@ struct SettingsProTab: View {
     @State var manualGatewayContextPath: String?
     @State var setupStatusText: String?
     @State var gatewayActionStatusText: String?
+    @State var setupApplication = GatewaySetupApplication()
     @State var setupAttemptID: UUID?
     @State var manualConnectGeneration: UInt64 = 0
     @State var stagedGatewaySetupLink: GatewayConnectDeepLink?
@@ -136,6 +137,7 @@ struct SettingsProTab: View {
         content
             .onDisappear {
                 self.invalidateGatewaySetupAttempt()
+                self.setupApplication.cancel()
             }
             .task {
                 self.syncSettingsState()
@@ -168,6 +170,7 @@ struct SettingsProTab: View {
             .onChange(of: self.setupCode) { _, newValue in
                 if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     self.clearStagedGatewaySetupLink()
+                    self.setupApplication.cancel()
                 }
             }
             .onChange(of: self.acceptsGatewaySetupRequests) { _, acceptsRequests in

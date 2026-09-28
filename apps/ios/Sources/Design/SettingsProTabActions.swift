@@ -129,6 +129,7 @@ extension SettingsProTab {
 
     func switchGateway(to entry: GatewaySettingsStore.GatewayRegistryEntry) async {
         guard self.connectingGateway == nil else { return }
+        self.setupApplication.cancel()
         self.connectingGateway = .gateway(entry.id)
         self.gatewayActionStatusText = String(
             format: String(localized: "Switching to %@…"),
@@ -248,6 +249,7 @@ extension SettingsProTab {
     }
 
     func syncAfterOnboardingReset() {
+        self.setupApplication.cancel()
         self.invalidateGatewaySetupAttempt()
         self.setupStatusText = nil
         self.stagedGatewaySetupLink = nil
@@ -257,6 +259,7 @@ extension SettingsProTab {
     }
 
     func connect(_ gateway: GatewayDiscoveryModel.DiscoveredGateway) async {
+        self.setupApplication.cancel()
         let supersededSetupLease = self.takeStagedGatewaySetupSuppression()
         defer {
             if let supersededSetupLease {
@@ -281,21 +284,79 @@ extension SettingsProTab {
         guard let attemptID = self.beginGatewaySetupAttempt() else { return }
         defer {
             self.finishGatewaySetupAttempt(attemptID)
-            self.pendingTargetSuppression.resumeAutoConnect(.setupLink, controller: self.gatewayController)
         }
         self.setupStatusText = nil
-        guard await self.applySetupCode(attemptID: attemptID) else { return }
-        let host = self.manualGatewayHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard self.resolvedManualPort(host: host) != nil else {
-            self.setupStatusText = String(localized: "Failed: invalid port")
+        let raw = self.setupCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty || self.stagedGatewaySetupLink != nil else {
+            self.setupStatusText = String(localized: "Paste a setup code to continue.")
             return
         }
-        guard await self.preflightGateway(host: host) else { return }
-        self.setupStatusText = String(localized: "Setup code applied. Connecting...")
-        await self.connectManual(setupAttemptID: attemptID)
+        if AppleReviewDemoMode.isSetupCode(raw) {
+            self.setupApplication.cancel()
+            self.stagedGatewaySetupLink = nil
+            self.setupCode = ""
+            self.appModel.enterAppleReviewDemoMode()
+            return
+        }
+        guard let parsedLink = raw.isEmpty
+            ? self.stagedGatewaySetupLink : GatewayConnectDeepLink.fromSetupInput(raw)
+        else {
+            self.setupStatusText = String(
+                localized: "Setup code not recognized or uses an insecure ws:// gateway URL.")
+            return
+        }
+        let link = await self.gatewayController.selectReachableSetupLink(parsedLink)
+        guard self.setupAttemptID == attemptID else { return }
+        await self.performGatewaySetup(
+            .init(link: link, source: raw.isEmpty ? .setupLink : .setupCode),
+            attemptID: attemptID)
+    }
+
+    func retryGatewaySetup() async {
+        guard let request = self.setupApplication.pendingRequest,
+              let attemptID = self.beginGatewaySetupAttempt()
+        else { return }
+        defer { self.finishGatewaySetupAttempt(attemptID) }
+        await self.performGatewaySetup(request, attemptID: attemptID)
+    }
+
+    private func performGatewaySetup(_ request: GatewaySetupApplication.Request, attemptID: UUID) async {
+        let lease = self.gatewayController.cancelPendingConnectionAttempts()
+        self.pendingTargetSuppression.replace(owner: .setupLink, lease: lease)
+        defer {
+            // A failed setup keeps automatic connection paused until retry or an explicit new choice.
+            if self.setupAttemptID == attemptID, self.setupApplication.failure == nil {
+                self.pendingTargetSuppression.releaseAutoConnect(.setupLink, controller: self.gatewayController)
+            }
+        }
+        self.setupStatusText = String(localized: "Preparing gateway setup…")
+        self.setupCode = ""
+        await self.setupApplication.apply(
+            request,
+            appModel: self.appModel,
+            isCurrent: { self.setupAttemptID == attemptID },
+            onReady: { auth in
+                let link = request.link
+                self.manualGatewayHost = link.host
+                self.manualGatewayPort = link.port
+                self.manualGatewayPortText = String(link.port)
+                self.manualGatewayTLS = link.tls
+                self.manualGatewayContextPath = link.contextPath
+                self.gatewayToken = auth.token
+                self.gatewayPassword = auth.password
+                self.gatewayCredentialFieldStableID = auth.targetStableID
+                self.pendingManualAuthOverride = auth.manualAuthOverride
+                self.stagedGatewaySetupLink = nil
+                self.setupCode = ""
+                guard await self.preflightGateway(host: link.host), self.setupAttemptID == attemptID else { return }
+                self.setupStatusText = String(localized: "Setup code applied. Connecting...")
+                await self.connectManual(setupAttemptID: attemptID)
+            })
     }
 
     func applyGatewaySetupLink(_ link: GatewayConnectDeepLink) {
+        self.invalidateGatewaySetupAttempt()
+        self.setupApplication.cancel()
         // Only the root-selected Gateway destination may destructively claim a
         // setup link; other Settings views can remain mounted behind onboarding.
         self.showQRScanner = false
@@ -314,67 +375,8 @@ extension SettingsProTab {
             security)
     }
 
-    @discardableResult
-    func applySetupCode(attemptID: UUID) async -> Bool {
-        let raw = self.setupCode.trimmingCharacters(in: .whitespacesAndNewlines)
-        let stagedLink = self.stagedGatewaySetupLink
-        guard !raw.isEmpty || stagedLink != nil else {
-            self.setupStatusText = String(localized: "Paste a setup code to continue.")
-            return false
-        }
-
-        if AppleReviewDemoMode.isSetupCode(raw) {
-            self.stagedGatewaySetupLink = nil
-            self.setupCode = ""
-            self.setupStatusText = String(localized: "Apple Review demo mode enabled.")
-            self.appModel.enterAppleReviewDemoMode()
-            self.pendingTargetSuppression.releaseAutoConnect(.setupLink, controller: self.gatewayController)
-            return false
-        }
-
-        guard let parsedLink = raw.isEmpty ? stagedLink : GatewayConnectDeepLink.fromSetupInput(raw) else {
-            self.setupStatusText = String(
-                localized: "Setup code not recognized or uses an insecure ws:// gateway URL.")
-            return false
-        }
-        let link = await self.gatewayController.selectReachableSetupLink(parsedLink)
-        guard self.setupAttemptID == attemptID else { return false }
-        self.stagedGatewaySetupLink = nil
-        self.setupCode = ""
-        await self.applyGatewayLink(link)
-        return true
-    }
-
-    func applyGatewayLink(_ link: GatewayConnectDeepLink) async {
-        self.manualGatewayHost = link.host
-        self.manualGatewayPort = link.port
-        self.manualGatewayPortText = String(link.port)
-        self.manualGatewayTLS = link.tls
-        self.manualGatewayContextPath = link.contextPath
-        let instanceId = GatewaySettingsStore.currentInstanceID()
-        let setupAuth = GatewayConnectionController.ManualAuthOverride.setupAuth(from: link)
-        self.gatewayCredentialFieldStableID = setupAuth.targetStableID
-        if setupAuth.hasBootstrapToken {
-            await GatewayOnboardingReset.prepareForBootstrapPairing(
-                appModel: self.appModel,
-                instanceId: instanceId,
-                gatewayStableID: setupAuth.targetStableID)
-        }
-        if !instanceId.isEmpty {
-            GatewaySettingsStore.saveGatewayCredentials(
-                token: setupAuth.token,
-                bootstrapToken: setupAuth.bootstrapToken,
-                password: setupAuth.password,
-                gatewayStableID: setupAuth.targetStableID,
-                suppressStoredDeviceAuth: true,
-                instanceId: instanceId)
-        }
-        self.gatewayToken = setupAuth.token
-        self.gatewayPassword = setupAuth.password
-        self.pendingManualAuthOverride = setupAuth.manualAuthOverride
-    }
-
     func openGatewayQRScanner() {
+        self.setupApplication.cancel()
         self.invalidateGatewaySetupAttempt()
         let lease = self.gatewayController.cancelPendingConnectionAttempts(suspendCurrentGateway: true)
         self.stagedGatewaySetupLink = nil
@@ -414,6 +416,7 @@ extension SettingsProTab {
 
     func handleScannedSetupCode(_ code: String) {
         guard AppleReviewDemoMode.isSetupCode(code) else { return }
+        self.setupApplication.cancel()
         self.showQRScanner = false
         self.setupCode = ""
         self.stagedGatewaySetupLink = nil
@@ -436,28 +439,17 @@ extension SettingsProTab {
     func connectAfterScannedGatewayLink(_ parsedLink: GatewayConnectDeepLink, attemptID: UUID) async {
         defer {
             self.finishGatewaySetupAttempt(attemptID)
-            self.pendingTargetSuppression.resumeAutoConnect(.qrScanner, controller: self.gatewayController)
         }
         let link = await self.gatewayController.selectReachableSetupLink(parsedLink)
         guard self.setupAttemptID == attemptID else { return }
-        await self.applyGatewayLink(link)
-        self.setupStatusText = String(
-            format: String(localized: "QR loaded. Connecting to %@:%@..."),
-            link.host,
-            link.port.formatted())
-        let host = self.manualGatewayHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard self.resolvedManualPort(host: host) != nil else {
-            self.setupStatusText = String(localized: "Failed: invalid port")
-            return
-        }
-        guard await self.preflightGateway(host: host) else { return }
-        await self.connectManual(setupAttemptID: attemptID)
+        await self.performGatewaySetup(.init(link: link, source: .scan), attemptID: attemptID)
     }
 
     func connectManual(setupAttemptID: UUID? = nil) async {
         if let setupAttemptID {
             guard self.setupAttemptID == setupAttemptID else { return }
         } else {
+            self.setupApplication.cancel()
             self.invalidateGatewaySetupAttempt()
         }
         let supersededSetupLease = self.takeStagedGatewaySetupSuppression()
@@ -506,14 +498,18 @@ extension SettingsProTab {
             password: fieldsMatchTarget ? self.gatewayPassword : nil,
             targetStableID: stableID)
         let instanceId = GatewaySettingsStore.currentInstanceID()
-        if !instanceId.isEmpty, fieldsMatchTarget || pendingOverride != nil {
-            GatewaySettingsStore.saveGatewayCredentials(
+        if setupAttemptID == nil, fieldsMatchTarget || pendingOverride != nil {
+            guard GatewaySettingsStore.saveGatewayCredentials(
                 token: authOverride?.token,
                 bootstrapToken: authOverride?.bootstrapToken,
                 password: authOverride?.password,
                 gatewayStableID: stableID,
                 suppressStoredDeviceAuth: authOverride?.suppressStoredDeviceAuth == true,
                 instanceId: instanceId)
+            else {
+                self.setupStatusText = GatewaySetupApplication.Failure.credentialSave.message
+                return
+            }
         }
         let result = await self.gatewayController.connectManual(
             host: host,
@@ -539,6 +535,7 @@ extension SettingsProTab {
     }
 
     func resetOnboarding() async {
+        self.setupApplication.cancel()
         self.invalidateGatewaySetupAttempt()
         self.setupStatusText = nil
         self.setupCode = ""
@@ -658,11 +655,13 @@ extension SettingsProTab {
     }
 
     func persistGatewayToken(_ value: String) {
+        self.setupApplication.cancel()
         self.gatewayToken = value
         self.persistGatewayCredentials(for: self.gatewayCredentialTargetStableID)
     }
 
     func persistGatewayPassword(_ value: String) {
+        self.setupApplication.cancel()
         self.gatewayPassword = value
         self.persistGatewayCredentials(for: self.gatewayCredentialTargetStableID)
     }
@@ -731,6 +730,7 @@ extension SettingsProTab {
     }
 
     private func clearManualCredentialFields() {
+        self.setupApplication.cancel()
         self.gatewayToken = ""
         self.gatewayPassword = ""
         self.gatewayCredentialFieldStableID = nil
@@ -775,6 +775,7 @@ extension SettingsProTab {
     }
 
     var setupStatusLine: String? {
+        if let failure = self.setupApplication.failure { return failure.message }
         if let problem = self.appModel.lastGatewayProblem {
             return problem.localizedMessage
         }

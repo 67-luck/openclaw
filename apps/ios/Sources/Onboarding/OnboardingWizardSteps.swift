@@ -271,6 +271,9 @@ struct OnboardingIntroStep: View {
 
 struct OnboardingWelcomeStep: View {
     let statusLine: String
+    var setupFailure: GatewaySetupApplication.Failure?
+    var onRetrySetup: () -> Void = {}
+    var isPreparingSetup = false
     let isConnecting: Bool
     let onScanQRCode: () -> Void
     let onManualSetup: () -> Void
@@ -298,7 +301,9 @@ struct OnboardingWelcomeStep: View {
                                     ProgressView()
                                         .progressViewStyle(.circular)
                                         .tint(OpenClawBrand.activationPrimaryActionText)
-                                    Text("Connecting…")
+                                    Text(self.isPreparingSetup
+                                        ? String(localized: "Preparing…")
+                                        : String(localized: "Connecting…"))
                                         .font(OpenClawType.subheadSemiBold)
                                 }
                             } else {
@@ -323,7 +328,14 @@ struct OnboardingWelcomeStep: View {
                 }
                 .padding(.top, 46)
 
-                if !statusText.isEmpty {
+                if let setupFailure {
+                    GatewaySetupFailureView(
+                        failure: setupFailure,
+                        isBusy: self.isConnecting,
+                        onRetry: self.onRetrySetup,
+                        onScan: self.onScanQRCode)
+                        .padding(.top, 14)
+                } else if !statusText.isEmpty {
                     Text(verbatim: statusText)
                         .font(OpenClawType.footnote)
                         .foregroundStyle(.secondary)
