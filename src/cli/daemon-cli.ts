@@ -14,33 +14,40 @@ export type {
 } from "./daemon-cli/types.js";
 
 // Finalization must not load the service/plugin graph before settling the ledger.
+// Named zero-argument loaders keep these same-name forwarders recognizable as lazy facades.
+const loadInstallRuntime = () => import("./daemon-cli/install.js");
+const loadLifecycleRuntime = () => import("./daemon-cli/lifecycle.js");
+const loadStatusRuntime = () => import("./daemon-cli/status.js");
+const loadLifecycleContextRuntime = () => import("./daemon-cli/lifecycle-context.js");
+const loadManagedServiceHandoffRuntime = () => import("../infra/update-managed-service-handoff.js");
+
 export async function runDaemonInstall(opts: DaemonInstallOptions) {
-  const runtime = await import("./daemon-cli/install.js");
+  const runtime = await loadInstallRuntime();
   return runtime.runDaemonInstall(opts);
 }
 
 export async function runDaemonRestart(opts: DaemonLifecycleOptions = {}) {
-  const runtime = await import("./daemon-cli/lifecycle.js");
+  const runtime = await loadLifecycleRuntime();
   return runtime.runDaemonRestart(opts);
 }
 
 export async function runDaemonStart(opts: DaemonLifecycleOptions = {}) {
-  const runtime = await import("./daemon-cli/lifecycle.js");
+  const runtime = await loadLifecycleRuntime();
   return runtime.runDaemonStart(opts);
 }
 
 export async function runDaemonStop(opts: DaemonLifecycleOptions = {}) {
-  const runtime = await import("./daemon-cli/lifecycle.js");
+  const runtime = await loadLifecycleRuntime();
   return runtime.runDaemonStop(opts);
 }
 
 export async function runDaemonUninstall(opts: DaemonLifecycleOptions = {}) {
-  const runtime = await import("./daemon-cli/lifecycle.js");
+  const runtime = await loadLifecycleRuntime();
   return runtime.runDaemonUninstall(opts);
 }
 
 export async function runDaemonStatus(opts: DaemonStatusOptions) {
-  const runtime = await import("./daemon-cli/status.js");
+  const runtime = await loadStatusRuntime();
   return runtime.runDaemonStatus(opts);
 }
 
@@ -49,7 +56,7 @@ export async function isManagedUpdateRequesterOwner(
     typeof import("./daemon-cli/lifecycle-context.js").isManagedUpdateRequesterOwner
   >
 ) {
-  const runtime = await import("./daemon-cli/lifecycle-context.js");
+  const runtime = await loadLifecycleContextRuntime();
   return runtime.isManagedUpdateRequesterOwner(...args);
 }
 
@@ -58,7 +65,7 @@ export async function waitForGatewayUpdateRecovery(
     typeof import("./daemon-cli/lifecycle-context.js").waitForGatewayUpdateRecovery
   >
 ) {
-  const runtime = await import("./daemon-cli/lifecycle-context.js");
+  const runtime = await loadLifecycleContextRuntime();
   return runtime.waitForGatewayUpdateRecovery(...args);
 }
 
@@ -82,6 +89,6 @@ export async function assertForegroundUpdateOrigin(
     typeof import("../infra/update-managed-service-handoff.js").assertForegroundUpdateOrigin
   >
 ) {
-  const runtime = await import("../infra/update-managed-service-handoff.js");
+  const runtime = await loadManagedServiceHandoffRuntime();
   return runtime.assertForegroundUpdateOrigin(...args);
 }
