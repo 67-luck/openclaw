@@ -1522,18 +1522,15 @@ extension OnboardingWizardView {
             password: fieldsMatchTarget ? self.gatewayPassword : nil,
             targetStableID: stableID)
         let instanceId = GatewaySettingsStore.currentInstanceID()
-        if persistCredentials, fieldsMatchTarget || pendingOverride != nil {
-            guard GatewaySettingsStore.saveGatewayCredentials(
+        if persistCredentials, !instanceId.isEmpty, fieldsMatchTarget || pendingOverride != nil {
+            // Ordinary manual Connect keeps saving best effort; setup already saved in its owner.
+            GatewaySettingsStore.saveGatewayCredentials(
                 token: authOverride?.token,
                 bootstrapToken: authOverride?.bootstrapToken,
                 password: authOverride?.password,
                 gatewayStableID: stableID,
                 suppressStoredDeviceAuth: authOverride?.suppressStoredDeviceAuth == true,
                 instanceId: instanceId)
-            else {
-                self.setConnectionFailure(GatewaySetupApplication.Failure.credentialSave.message)
-                return
-            }
         }
         let result = await self.gatewayController.connectManual(
             host: host,

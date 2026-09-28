@@ -498,18 +498,15 @@ extension SettingsProTab {
             password: fieldsMatchTarget ? self.gatewayPassword : nil,
             targetStableID: stableID)
         let instanceId = GatewaySettingsStore.currentInstanceID()
-        if setupAttemptID == nil, fieldsMatchTarget || pendingOverride != nil {
-            guard GatewaySettingsStore.saveGatewayCredentials(
+        if setupAttemptID == nil, !instanceId.isEmpty, fieldsMatchTarget || pendingOverride != nil {
+            // Ordinary manual Connect keeps saving best effort; setup already saved in its owner.
+            GatewaySettingsStore.saveGatewayCredentials(
                 token: authOverride?.token,
                 bootstrapToken: authOverride?.bootstrapToken,
                 password: authOverride?.password,
                 gatewayStableID: stableID,
                 suppressStoredDeviceAuth: authOverride?.suppressStoredDeviceAuth == true,
                 instanceId: instanceId)
-            else {
-                self.setupStatusText = GatewaySetupApplication.Failure.credentialSave.message
-                return
-            }
         }
         let result = await self.gatewayController.connectManual(
             host: host,
