@@ -136,6 +136,21 @@ describe("openclaw-tools progress_card gating", () => {
     },
   );
 
+  it.each(["coding", "messaging"] as const)(
+    "exposes session stop to non-owner %s callers",
+    (profile) => {
+      const tools = createOpenClawCodingTools({
+        sessionKey: "agent:main:dashboard:requester",
+        senderIsOwner: false,
+        config: withDefaultRoster({ tools: { profile } }),
+        disableMessageTool: true,
+        wrapBeforeToolCallHook: false,
+      });
+      expect(toolNames(tools)).toContain("sessions_stop");
+      expect(toolNames(tools)).not.toContain("sessions");
+    },
+  );
+
   it("exposes presence to non-owner readers without shell access", () => {
     const tools = createOpenClawCodingTools({
       sessionKey: "agent:main:dashboard:presence",

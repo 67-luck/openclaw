@@ -30,6 +30,8 @@ export const DEFAULT_GATEWAY_HTTP_TOOL_DENY = [
   "sessions_spawn",
   // Cross-session injection — message injection across sessions
   "sessions_send",
+  // Cross-session cancellation belongs to the interactive agent tool policy.
+  "sessions_stop",
   // External conversation discovery and delivery use server-held channel credentials
   "conversations_list",
   "conversations_send",

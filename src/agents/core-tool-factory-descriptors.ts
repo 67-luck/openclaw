@@ -57,6 +57,7 @@ const CORE_TOOL_FACTORY_DESCRIPTORS = [
   { name: "sessions_list", family: "openclaw" },
   { name: "sessions_search", family: "openclaw" },
   { name: "sessions_send", family: "openclaw" },
+  { name: "sessions_stop", family: "openclaw" },
   { name: "sessions_spawn", family: "openclaw" },
   { name: "sessions_yield", family: "openclaw" },
   { name: "structured_output", family: "openclaw" },

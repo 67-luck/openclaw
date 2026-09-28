@@ -173,6 +173,7 @@ export function collectCrossAgentSessionAccessFindings(
       "sessions_history",
       "sessions_search",
       "sessions_send",
+      "sessions_stop",
       "session_status",
     ].filter((name) => isToolAllowedByPolicies(name, policies));
     const unclamped = sandboxMode !== "all" || sandboxClamp === "all";

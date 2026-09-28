@@ -24,7 +24,7 @@ type GatewayCaller = typeof defaultCallGateway;
 
 export type LookupFailureKind = "transient" | "credentials" | "unknown";
 
-export type SessionVisibilityDecisionAction = "history" | "send" | "list" | "status";
+export type SessionVisibilityDecisionAction = "history" | "send" | "stop" | "list" | "status";
 export type SessionVisibilityDecisionPresentationAction =
   | SessionVisibilityDecisionAction
   | "search";
@@ -297,14 +297,14 @@ export function lookupFailedDenialSuffix(kind: LookupFailureKind): string {
 }
 
 export function lookupFailedDenialMessage(
-  action: "history" | "send" | "status" | "list" | "search",
+  action: SessionVisibilityDecisionPresentationAction,
   kind: LookupFailureKind,
 ): string {
   return `${actionPrefix(action)} denied because ${lookupFailedDenialSuffix(kind)}`;
 }
 
 export function lookupFailedOperationMessage(
-  action: "history" | "send" | "status" | "list" | "search",
+  action: SessionVisibilityDecisionPresentationAction,
   kind: LookupFailureKind,
 ): string {
   const guidance =

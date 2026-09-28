@@ -248,13 +248,18 @@ export async function resolveSessionToolAccess(params: {
       return deny(capped);
     }
   }
-  const scoped = await createSessionVisibilityChecker.resolveScopedAccessAsync({
-    action: params.action,
-    requesterSessionKey: params.requesterSessionKey,
-    // A bare key is not globally unique under explicit ownership. Callers
-    // qualify cross-agent targets so a grant cannot cross store owners.
-    targetSessionKey: authorizationTargetSessionKey,
-  });
+  // Existing host grants cover reading/messaging, not cancellation. A stop
+  // must pass configured visibility even when an older provider ignores action.
+  const scoped =
+    params.action === "stop"
+      ? undefined
+      : await createSessionVisibilityChecker.resolveScopedAccessAsync({
+          action: params.action,
+          requesterSessionKey: params.requesterSessionKey,
+          // A bare key is not globally unique under explicit ownership. Callers
+          // qualify cross-agent targets so a grant cannot cross store owners.
+          targetSessionKey: authorizationTargetSessionKey,
+        });
   if (scoped) {
     return { allowed: true, expectedSessionId: scoped.expectedSessionId };
   }

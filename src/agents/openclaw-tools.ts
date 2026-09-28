@@ -77,6 +77,7 @@ import { createSessionsListTool } from "./tools/sessions-list-tool.js";
 import { createSessionsSearchTool } from "./tools/sessions-search-tool.js";
 import { createSessionsSendTool } from "./tools/sessions-send-tool.js";
 import { createSessionsSpawnTool } from "./tools/sessions-spawn-tool.js";
+import { createSessionsStopTool } from "./tools/sessions-stop-tool.js";
 import { createSessionsTool } from "./tools/sessions-tool.js";
 import { createSessionsYieldTool } from "./tools/sessions-yield-tool.js";
 import { createConfiguredSkillWorkshopTool } from "./tools/skill-workshop-tool-factory.js";
@@ -559,6 +560,10 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
               senderIsOwner: options?.senderIsOwner,
             }),
           ),
+          createSessionsStopTool({
+            ...sessionLookupToolOptions,
+            requesterAgentIdOverride: sessionAgentId,
+          }),
           // Keep the in-process caller so materialized agent roots retain their creation stamp.
           createSessionsSendTool({
             agentId: sessionAgentId,

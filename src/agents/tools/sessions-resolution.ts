@@ -178,7 +178,7 @@ type SessionReferenceResolution =
     }
   | { ok: false; status: "error" | "forbidden"; error: string; notFound?: boolean };
 
-type SessionReferenceAction = "history" | "send" | "status" | "list" | "search";
+type SessionReferenceAction = "history" | "send" | "stop" | "status" | "list" | "search";
 
 type VisibleSessionReferenceResolution =
   | {
@@ -439,7 +439,7 @@ export async function resolveVisibleSessionReference(params: {
   if (
     isExplicitKey &&
     !params.restrictToSpawned &&
-    (params.action === "history" || params.action === "send")
+    (params.action === "history" || params.action === "send" || params.action === "stop")
   ) {
     try {
       const resolved = await requestResolvedSession(

@@ -335,6 +335,7 @@ describe("resolveSubagentToolPolicyForSession", () => {
         "cron",
         "message",
         "sessions_send",
+        "sessions_stop",
         "conversations_list",
         "conversations_send",
         "conversations_turn",

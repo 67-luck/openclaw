@@ -10,6 +10,7 @@ const sessionTools = [
   "sessions_history",
   "sessions_search",
   "sessions_send",
+  "sessions_stop",
   "session_status",
 ];
 

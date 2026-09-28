@@ -103,6 +103,7 @@ Gateway HTTP also applies a hard deny list by default (even if session policy al
 | `apply_patch`    | Patch application can rewrite arbitrary files             |
 | `sessions_spawn` | Session orchestration; spawning agents remotely is RCE    |
 | `sessions_send`  | Cross-session message injection                           |
+| `sessions_stop`  | Cross-session cancellation                                |
 | `cron`           | Persistent automation control plane                       |
 | `gateway`        | Gateway control plane; prevents reconfiguration via HTTP  |
 | `nodes`          | Node command relay can reach `system.run` on paired hosts |

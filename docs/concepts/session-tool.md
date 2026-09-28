@@ -18,6 +18,7 @@ OpenClaw gives agents tools to work across sessions, inspect status, and orchest
 | `sessions_search`    | Search visible session transcripts and return matching excerpts                         |
 | `sessions_history`   | Read the transcript of a specific session                                               |
 | `sessions_send`      | Run another session on the same Gateway and optionally wait                             |
+| `sessions_stop`      | Stop active work in another visible session without resetting its conversation          |
 | `conversations_list` | List stable external conversation addresses                                             |
 | `conversations_send` | Send to one exact external conversation without running a local session                 |
 | `conversations_turn` | Send to one exact external conversation and wait for its correlated reply               |
@@ -267,6 +268,38 @@ These reply deliveries apply to new or follow-up turns. `mode: "steer"` returns 
 Child coordination stays in agent context and raw transcripts. The receiving chat hides child reports and automatic coordination replies, while normal task-completion summaries and direct human answers remain visible. Historical messages without source provenance cannot be classified as child traffic.
 
 Pass `watch: true` to also register the sender as a state-change watcher of the target: when another actor later sends the target a direct human message or changes its goal, the sender receives a system notice pointing at `session_status` `changesSince`. Registration happens after successful dispatch, targets the session that actually received the message, and starts at its current state version, so only later changes produce notices. The result reports `watched: true` when registration succeeded. See [Session state awareness](/concepts/session-state).
+
+## Stopping another session
+
+`sessions_stop` uses the Gateway cancellation path, without a browser or another
+sign-in. Pass the target `sessionKey` from `sessions_list`; also pass the row’s
+`agentId` when the key is unscoped (for example, `global`):
+
+```json
+{ "sessionKey": "agent:main:dashboard:example" }
+```
+
+A session-wide stop cancels active work and controlled descendants and requests
+queued follow-up cleanup by default. Pass `clearQueued: false` to preserve those
+follow-ups. An optional `runId` stops only that run and its controlled descendants;
+it cannot be combined with `clearQueued: true`. The literal `global` session keeps
+the Gateway’s existing run-ownership and queue-cleanup rules.
+
+The result preserves the Gateway receipt, including `no-active-run` and any
+partial-stop warning. Stopping does not reset, archive, or delete the conversation;
+send a new message to continue it. The tool rejects stopping its own caller.
+
+Unlike the owner-only `sessions` management tool, `sessions_stop` is available to
+ordinary Gateway agents in the coding and messaging profiles. It still obeys
+tool allow/deny policy, session visibility, agent-to-agent policy, sandbox limits,
+and the Gateway’s current write authorization. Admitted agent callers can stop
+browser-started work only for the exact session generation authorized by the
+Gateway, with live caller authority; they do not gain admin or browser credentials.
+It cannot reach incognito sessions.
+Native subagents use their controlled-tree `subagents` cancellation instead;
+`sessions_stop` is excluded from their tools, from standalone embedded mode, and
+from HTTP tool invocation by default. The separate cloud-worker session-tool RPC
+surface is unchanged. Availability never grants access to another user’s session.
 
 ## Status and orchestration helpers
 
