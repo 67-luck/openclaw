@@ -1,4 +1,4 @@
-import { webhookCallback, type Bot } from "grammy";
+import type { Bot } from "grammy";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   normalizeSessionDeliveryState,
@@ -43,17 +43,7 @@ beforeEach(() => {
 });
 
 async function receive(bot: Bot, payload: Record<string, unknown>) {
-  const response = await webhookCallback(
-    bot,
-    "std/http",
-  )(
-    new Request("http://localhost/telegram", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ update_id: ++updateId, ...payload }),
-    }),
-  );
-  expect(response.status).toBe(200);
+  await bot.handleUpdate({ update_id: ++updateId, ...payload });
 }
 
 function message(text: string) {
