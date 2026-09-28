@@ -15,7 +15,7 @@ it.for(
   ),
 )("owns $signal through $outcome cleanup", async ({ signal, exitCode, outcome }) => {
   const previous = process.listeners(signal);
-  const release = createDeferred<void>();
+  const release = createDeferred();
   const failure = Object.assign(
     new Error("cleanup failed", {
       cause: outcome === "unjoined" ? { processTreeState: "indeterminate" } : undefined,
@@ -35,8 +35,12 @@ it.for(
         { once: true },
       );
       await release.promise;
-      if (outcome === "abort") abortSignal.throwIfAborted();
-      if (outcome === "release failure" || outcome === "unjoined") throw failure;
+      if (outcome === "abort") {
+        abortSignal.throwIfAborted();
+      }
+      if (outcome === "release failure" || outcome === "unjoined") {
+        throw failure;
+      }
       return 7;
     },
     { onSignal: (value) => observed.push(value) },
