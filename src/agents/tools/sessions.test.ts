@@ -46,16 +46,14 @@ vi.mock("../../gateway/call.js", async (importOriginal) => {
     callGateway: (opts: unknown) => callGatewayMock(opts),
   };
 });
-vi.mock("./in-process-gateway.js", () => ({
-  callAgentToolGatewayRequest: (opts: unknown) => callGatewayMock(opts),
-  callInProcessGatewayToolWithCreation: (method: unknown, params: unknown, creation: unknown) =>
-    inProcessCreationMock(method, params, creation),
-  hasInProcessGatewayToolContext: () => inProcessGatewayContextAvailable,
-  getInProcessGatewayToolContext: () => undefined,
-  hasGatewayToolRoutingContext: () => false,
-  runWithGatewayToolCleanupContext: <T>(run: () => T): T => run(),
-  runWithGatewayToolContinuationContext: async <T>(run: () => Promise<T>): Promise<T> => run(),
-}));
+vi.mock("./in-process-gateway.js", async () => {
+  const { createSessionGatewayMock } = await import("./sessions-gateway.test-support.js");
+  return createSessionGatewayMock(
+    (opts) => callGatewayMock(opts),
+    (method, params, creation) => inProcessCreationMock(method, params, creation),
+    () => inProcessGatewayContextAvailable,
+  );
+});
 vi.mock("../../plugin-sdk/facade-runtime.js", async () => {
   const actual = await vi.importActual<typeof import("../../plugin-sdk/facade-runtime.js")>(
     "../../plugin-sdk/facade-runtime.js",
@@ -842,7 +840,8 @@ describe("sessions_send gating", () => {
       timeoutSeconds: 0,
       ...args,
     });
-    expect(requireDetails(result).status).toBe("accepted");
+    const details = requireDetails(result);
+    expect(details.status, JSON.stringify(details.error)).toBe("accepted");
     const call = callGatewayMock.mock.calls.find(([request]) => request.method === "agent");
     const request = requireRecord(call?.[0], "agent request");
     const forwarded = requireRecord(request.params, "agent params");
