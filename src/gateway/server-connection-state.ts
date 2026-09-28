@@ -1,4 +1,8 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  GATEWAY_CLIENT_CAPS,
+  hasGatewayClientCap,
+} from "../../packages/gateway-protocol/src/client-info.js";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
@@ -202,7 +206,12 @@ export function createGatewayConnectionState(params: {
             projectedAgentRuns,
           );
         }
-        const presentation = presentRecipient(client, projectRun);
+        const presentation = presentRecipient(
+          client,
+          projectRun,
+          event === "sessions.changed" &&
+            hasGatewayClientCap(client.connect.caps, GATEWAY_CLIENT_CAPS.SESSION_CHANGED_BUNDLES),
+        );
         const row = presentation.present(record, enrichment);
         if (!row) {
           return undefined;
@@ -253,8 +262,12 @@ export function createGatewayConnectionState(params: {
         if (Object.hasOwn(projected, "childSessions")) {
           projected.childSessions = row.childSessions;
         }
+        const currentPresentation = presentation.isCurrent;
         return {
           payload: projected,
+          ...(currentPresentation
+            ? { isCurrent: () => sessionRowProjection === projection && currentPresentation() }
+            : {}),
           serializeSession: () => {
             let encoded = encodedRows.get(row);
             if (encoded === undefined) {

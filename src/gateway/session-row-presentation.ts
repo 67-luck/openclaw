@@ -1,4 +1,5 @@
-import { isIncognitoSessionKey } from "../routing/session-key.js";
+import { getGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
+import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
 import { prepareOperatorModelPresentation } from "./operator-model-presentation.js";
 import { gatewayClientSessionCreator } from "./server-methods/gateway-client-identity.js";
 import type { createVisibleActiveSessionRunProjector } from "./server-methods/session-active-runs.js";
@@ -13,6 +14,7 @@ import type * as records from "./session-row-projection-record.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 import {
   authorizeIncognitoSessionTarget,
+  hasSessionReadAccessChanged,
   resolveSessionVisibility,
   type SessionSharingTarget,
 } from "./session-sharing-policy.js";
@@ -27,7 +29,7 @@ type PresentationOptions = Omit<
   includeActivitySummary?: boolean;
 };
 
-function toProjectedSessionSharingTarget(record: records.MaterializedRow): SessionSharingTarget {
+function toProjectedSessionSharingTarget(record: records.EntryRow): SessionSharingTarget {
   return {
     agentId: record.agentId,
     canonicalKey: record.key,
@@ -43,6 +45,18 @@ type PublicationView = (context: SessionRowReadView["state"]["rowContext"]) => {
   rows: PublicationRows;
   subagentRuns: SessionRowReadView["state"]["rowContext"]["subagentRuns"];
 };
+type RetainPublicationRow = (record: records.EntryRow, row?: GatewaySessionRow) => void;
+
+function captureReadAccess(entry: records.EntryRow["entry"]): records.EntryRow["entry"] {
+  return {
+    sessionId: entry.sessionId,
+    updatedAt: entry.updatedAt,
+    lifecycleRevision: entry.lifecycleRevision,
+    createdActor: entry.createdActor && { ...entry.createdActor },
+    visibility: entry.visibility,
+    incognito: entry.incognito,
+  };
+}
 
 /** Sharing decisions remain recipient-local; only their identical presented results are reused. */
 export function prepareSessionRowPublication(projection: SessionRowProjection, now: number) {
@@ -63,7 +77,167 @@ export function prepareSessionRowPublication(projection: SessionRowProjection, n
   return (
     client: GatewayClient,
     projectRun: ReturnType<typeof createVisibleActiveSessionRunProjector>,
-  ) => prepareProjectedSessionPresentation(projection, client, now, projectRun, view);
+    retainAuthority = false,
+  ): ReturnType<typeof prepareProjectedSessionPresentation> & { isCurrent?: () => boolean } => {
+    if (!retainAuthority) {
+      return prepareProjectedSessionPresentation(projection, client, now, projectRun, view);
+    }
+    const creator = gatewayClientSessionCreator(client)?.id;
+    const prepareSharing = () =>
+      prepareProjectedSessionSharing({
+        cfg: projection.getPolicyConfig(),
+        client,
+        isMember: (target, identity) =>
+          projection.hasMembership(target.storePath, target.storeKey, identity),
+      });
+    const sharing = prepareSharing();
+    const retained = new Map<
+      records.EntryRow,
+      {
+        entry: records.EntryRow["entry"];
+        role: ReturnType<typeof sharing.roleForTarget>;
+        rows: Set<GatewaySessionRow>;
+      }
+    >();
+    const children = new Map<
+      string,
+      {
+        query: records.Lookup;
+        target?: SessionSharingTarget & { generation: string | symbol };
+        role?: ReturnType<typeof sharing.roleForTarget>;
+      }
+    >();
+    let retired = false;
+    let validatedRevision = projection.sharingRevision;
+    let validatedModels = getGatewayPluginMetadataSnapshot();
+    let validatedPolicy = projection.getPolicyConfig();
+    let validatedProfile = client.preparedSessionProfile;
+    let validatedScopes = JSON.stringify(client.connect.scopes);
+    const retain: RetainPublicationRow = (record, row) => {
+      let captured = retained.get(record);
+      if (!captured) {
+        captured = {
+          entry: captureReadAccess(record.entry),
+          role: sharing.roleForTarget(toProjectedSessionSharingTarget(record)),
+          rows: new Set(),
+        };
+        retained.set(record, captured);
+      }
+      if (row) {
+        captured.rows.add(row);
+        const keys = new Set([
+          ...(row.childSessions ?? []),
+          ...(row.swarm?.groups.flatMap(
+            (group) => group.children?.map((child) => child.sessionKey) ?? [],
+          ) ?? []),
+        ]);
+        for (const key of keys) {
+          if (children.has(key)) {
+            continue;
+          }
+          const query = { agentId: parseAgentSessionKey(key)?.agentId ?? record.agentId, key };
+          const state = projection.sharingTargetState(query);
+          if (state.status === "pending") {
+            retired = true;
+          }
+          children.set(key, {
+            query,
+            ...(state.status === "ready"
+              ? {
+                  target: { ...state.target, entry: captureReadAccess(state.target.entry) },
+                  role: sharing.roleForTarget(state.target),
+                }
+              : {}),
+          });
+        }
+      }
+      validatedRevision = projection.sharingRevision;
+    };
+    return {
+      ...prepareProjectedSessionPresentation(projection, client, now, projectRun, view, retain),
+      isCurrent: () => {
+        if (
+          retired ||
+          projection.sharingRevision === undefined ||
+          gatewayClientSessionCreator(client)?.id !== creator ||
+          [...retained.keys()].some((record) => !projection.isCurrent(record))
+        ) {
+          retired = true;
+          return false;
+        }
+        const revision = projection.sharingRevision;
+        const modelMetadata = getGatewayPluginMetadataSnapshot();
+        const policyConfig = projection.getPolicyConfig();
+        const profile = client.preparedSessionProfile;
+        const scopes = JSON.stringify(client.connect.scopes);
+        if (
+          revision === validatedRevision &&
+          modelMetadata === validatedModels &&
+          policyConfig === validatedPolicy &&
+          profile === validatedProfile &&
+          scopes === validatedScopes
+        ) {
+          return true;
+        }
+        const sharing = prepareSharing();
+        const models = prepareOperatorModelPresentation({
+          cfg: projection.state.cfg,
+          policyConfig,
+          client,
+        });
+        for (const { query, target, role } of children.values()) {
+          const current = projection.sharingTargetState(query);
+          if (
+            current.status === "pending" ||
+            (target
+              ? current.status !== "ready" ||
+                current.target.generation !== target.generation ||
+                current.target.storePath !== target.storePath ||
+                hasSessionReadAccessChanged(target.entry, current.target.entry) ||
+                sharing.entryFilter?.(current.target.canonicalKey, current.target.entry) ===
+                  false ||
+                sharing.roleForTarget(current.target) !== role
+              : current.status !== "missing")
+          ) {
+            retired = true;
+            return false;
+          }
+        }
+        for (const [record, captured] of retained) {
+          const query = {
+            agentId: record.agentId,
+            key: record.key,
+            storePath: record.storeTarget.storePath,
+          };
+          const state = projection.sharingTargetState(query);
+          const privateRecord = isIncognitoSessionKey(record.key)
+            ? projection.describe(query, record)
+            : undefined;
+          const target = privateRecord
+            ? toProjectedSessionSharingTarget(privateRecord)
+            : state.status === "ready"
+              ? state.target
+              : undefined;
+          if (
+            !target ||
+            hasSessionReadAccessChanged(captured.entry, target.entry) ||
+            sharing.entryFilter?.(target.canonicalKey, target.entry) === false ||
+            sharing.roleForTarget(target) !== captured.role ||
+            [...captured.rows].some((row) => models && models.session(row) !== row)
+          ) {
+            retired = true;
+            return false;
+          }
+        }
+        validatedRevision = revision;
+        validatedModels = modelMetadata;
+        validatedPolicy = policyConfig;
+        validatedProfile = profile;
+        validatedScopes = scopes;
+        return true;
+      },
+    };
+  };
 }
 
 /** Recreate after yields: the caller identity and clock belong to one synchronous presentation. */
@@ -73,6 +247,7 @@ export function prepareProjectedSessionPresentation(
   now = Date.now(),
   projectRun?: ReturnType<typeof createVisibleActiveSessionRunProjector>,
   publication?: PublicationView,
+  retain?: RetainPublicationRow,
 ) {
   const { cfg, policyConfig, rowContext } = projection.state;
   const models =
@@ -191,24 +366,25 @@ export function prepareProjectedSessionPresentation(
     let views = publicationRows?.get(record);
     const cached = signature === undefined ? undefined : views?.get(signature);
     const projectModels = (row: GatewaySessionRow) => {
-      const projected = models?.session(row) ?? row;
-      if (projected === row || !views || signature === undefined) {
-        return projected;
+      let projected = models?.session(row) ?? row;
+      if (projected !== row && views && signature !== undefined) {
+        const modelSignature =
+          signature +
+          JSON.stringify([
+            projected.modelProvider,
+            projected.model,
+            projected.activeModelProvider,
+            projected.activeModel,
+            projected.contextBudgetStatus,
+          ]);
+        const existing = views.get(modelSignature);
+        if (existing) {
+          projected = existing;
+        } else {
+          views.set(modelSignature, projected);
+        }
       }
-      const modelSignature =
-        signature +
-        JSON.stringify([
-          projected.modelProvider,
-          projected.model,
-          projected.activeModelProvider,
-          projected.activeModel,
-          projected.contextBudgetStatus,
-        ]);
-      const existing = views.get(modelSignature);
-      if (existing) {
-        return existing;
-      }
-      views.set(modelSignature, projected);
+      retain?.(record, projected);
       return projected;
     };
     if (cached) {
