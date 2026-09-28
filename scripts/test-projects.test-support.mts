@@ -1010,6 +1010,8 @@ export function formatNoChangedTestTargetLines(skippedBroadFallbackPaths: string
 }
 
 const EXPLICIT_SOURCE_FULL_IMPORT_GRAPH_THRESHOLD = 12;
+// Keep small queries on Git; measured broad term sets favor the batched source reader.
+const NATIVE_SOURCE_PREFILTER_TERM_THRESHOLD = 1_024;
 function resolveTestProjectsVitestNoOutputTimeoutMs(config: string) {
   const directRunnerTimeoutMs = resolveDefaultVitestNoOutputTimeoutMs(["run", "--config", config]);
   return String(
@@ -2086,42 +2088,60 @@ function listImportGraphGrepMatches(
   if (missing.length === 0) {
     return matches;
   }
-  const roots = tooling ? TOOLING_IMPORT_GRAPH_ROOTS : SOURCE_ROOTS_FOR_IMPORT_GRAPH;
-  const extensions = tooling ? TOOLING_IMPORTABLE_FILE_EXTENSIONS : IMPORTABLE_FILE_EXTENSIONS;
-  // Literal-reference routing only consumes tests; keep import frontiers on the full scope.
-  const suffixes = testFilesOnly
-    ? extensions.flatMap((ext) => [`.test${ext}`, `.spec${ext}`])
-    : extensions;
-  const grepPaths = importGraphPathspecs(roots, suffixes);
-  const spawnOptions: SpawnSyncOptionsWithStringEncoding = {
-    cwd,
-    encoding: "utf8",
-    // A frontier can exceed the platform argv limit; Git accepts stdin patterns.
-    input: missing.join("\n"),
-    maxBuffer: GIT_LS_FILES_MAX_BUFFER_BYTES,
-    stdio: ["pipe", "pipe", "pipe"],
-  };
-  const result = spawnSync(
-    "git",
-    ["grep", "-l", "-z", "--fixed-strings", "-f", "-", "--", ...grepPaths],
-    spawnOptions,
-  );
   for (const term of missing) {
     matches.set(term, []);
   }
-  if (result.status !== 1) {
-    const trackedFiles = new Set(listImportGraphFilesForCwd(cwd, { tooling }));
-    // Source archives use the same filesystem inventory and native reader as the full graph.
-    const candidates = (
-      result.status === 0
-        ? result.stdout.split("\0").filter((file) => trackedFiles.has(file))
-        : [...trackedFiles].filter((file) => !testFilesOnly || isTestFileTarget(file))
-    ).toSorted((left, right) => left.localeCompare(right));
+  let trackedFiles: Set<string> | undefined;
+  let candidates: string[] = [];
+  if (missing.length > NATIVE_SOURCE_PREFILTER_TERM_THRESHOLD) {
+    trackedFiles = new Set(listImportGraphFilesForCwd(cwd, { tooling }));
+    candidates = readTestSelectorSourceFacts(
+      cwd,
+      [...trackedFiles]
+        .filter((file) => !testFilesOnly || isTestFileTarget(file))
+        .map((file) => ({ file, parseImports: false })),
+      missing,
+      GIT_LS_FILES_MAX_BUFFER_BYTES,
+    )
+      .filter(({ matches }) => matches.length > 0)
+      .map(({ file }) => file);
+  } else {
+    const roots = tooling ? TOOLING_IMPORT_GRAPH_ROOTS : SOURCE_ROOTS_FOR_IMPORT_GRAPH;
+    const extensions = tooling ? TOOLING_IMPORTABLE_FILE_EXTENSIONS : IMPORTABLE_FILE_EXTENSIONS;
+    // Literal-reference routing only consumes tests; keep import frontiers on the full scope.
+    const suffixes = testFilesOnly
+      ? extensions.flatMap((ext) => [`.test${ext}`, `.spec${ext}`])
+      : extensions;
+    const grepPaths = importGraphPathspecs(roots, suffixes);
+    const spawnOptions: SpawnSyncOptionsWithStringEncoding = {
+      cwd,
+      encoding: "utf8",
+      // A frontier can exceed the platform argv limit; Git accepts stdin patterns.
+      input: missing.join("\n"),
+      maxBuffer: GIT_LS_FILES_MAX_BUFFER_BYTES,
+      stdio: ["pipe", "pipe", "pipe"],
+    };
+    const result = spawnSync(
+      "git",
+      ["grep", "-l", "-z", "--fixed-strings", "-f", "-", "--", ...grepPaths],
+      spawnOptions,
+    );
+    if (result.status !== 1) {
+      const tracked = new Set(listImportGraphFilesForCwd(cwd, { tooling }));
+      trackedFiles = tracked;
+      // Source archives use the same filesystem inventory and native reader as the full graph.
+      candidates =
+        result.status === 0
+          ? result.stdout.split("\0").filter((file) => tracked.has(file))
+          : [...tracked].filter((file) => !testFilesOnly || isTestFileTarget(file));
+    }
+  }
+  if (trackedFiles) {
     // Per-term membership preserves the helper first-success rule.
     // Cached edges need only term facts; full-graph acquisition reuses their parsing.
     for (const { edges, matches: fileTerms } of readImportGraphEdges(
       cwd,
-      candidates,
+      candidates.toSorted((left, right) => left.localeCompare(right)),
       trackedFiles,
       tooling,
       missing,
