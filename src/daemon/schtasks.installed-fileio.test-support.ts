@@ -100,7 +100,7 @@ type CommandErrorFact = {
 
 // Exceptions remain private. Traverse only a bounded cause/member prefix and
 // copy fixed categories before the acquisition owner replaces the failure.
-function commandFailureFacts(failure: unknown) {
+export function commandFailureFacts(failure: unknown) {
   const pending: unknown[] = [failure];
   const seen = new Set<unknown>();
   const errors: CommandErrorFact[] = [];

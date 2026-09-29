@@ -14,6 +14,7 @@ import {
   projectInstalledUpdateProcessCapture,
 } from "../../src/daemon/schtasks.installed-command.test-support.ts";
 import {
+  commandFailureFacts,
   prepareInstalledFileIo,
   cleanupInstalledFileIo,
 } from "../../src/daemon/schtasks.installed-fileio.test-support.ts";
@@ -44,6 +45,7 @@ const save = (file, value) =>
 const safeError = (error) => ({
   name: error instanceof Error ? error.name : "Error",
   unjoined: hasUnjoinedWork(error),
+  ...commandFailureFacts(error),
 });
 
 /** Only a trusted control copy gains the fixed post-Enable handshake. */
@@ -57,6 +59,35 @@ export function instrumentCensus(script, blockAfterEnable = false) {
     marker,
     `${marker} -PublishFact {param($fact) if($fact.phase -ceq 'observing'){[Console]::Error.WriteLine('${enabledLine}');${block}}}`,
   );
+}
+
+const censusStages = [
+  "bootstrap-entered",
+  "census-entered",
+  "process-query-returned",
+  "census-returned",
+  "bootstrap-failed",
+];
+
+/** Only trusted control copies publish fixed stage facts; the production transport stays intact. */
+function instrumentCensusInvocation(script) {
+  const emit = (stage) =>
+    `[Console]::Error.WriteLine('{"event":"census-stage","stage":"${stage}"}');`;
+  const query = "$all=@(Get-CimInstance Win32_Process)";
+  assert.equal(script.split(query).length, 2, "Expected exactly one process query");
+  // Apply the existing byte limit to the complete instrumented input.
+  const invocation = buildInstalledCensusInvocation(
+    `${emit("census-entered")}\n${script.replace(query, `${query}\n${emit("process-query-returned")}`)}\n${emit("census-returned")}`,
+  );
+  assert.equal(invocation.args.length, 4);
+  assert.equal(invocation.args[2], "-Command");
+  return {
+    args: [
+      ...invocation.args.slice(0, 3),
+      `try {${emit("bootstrap-entered")} ${invocation.args[3]}} catch {${emit("bootstrap-failed")} throw}`,
+    ],
+    input: invocation.input,
+  };
 }
 
 /** Raw host-wide envelopes must cross both existing boundaries before retention. */
@@ -125,6 +156,7 @@ function launchManaged({
   stdoutLimit = 1024 * 1024,
   onStdout,
   onStderrLine,
+  captureCensusStages = false,
   signal,
 }) {
   const started = performance.now();
@@ -136,6 +168,10 @@ function launchManaged({
     jobObserved: false,
     stdoutBytes: 0,
     stderrBytes: 0,
+    // Last observed handle event; Windows exit comes from the managed launcher.
+    commandPhase: "created",
+    observedExitCode: null,
+    censusStageArrivals: [],
   };
   commands.push(receipt);
   let child;
@@ -157,10 +193,16 @@ function launchManaged({
       stdio: ["pipe", "pipe", "pipe"],
       onReady(launched) {
         child = launched;
+        receipt.commandPhase = "on-ready";
+        launched.once("exit", (code) => {
+          receipt.commandPhase = "exited";
+          receipt.observedExitCode = Number.isInteger(code) ? code : null;
+        });
         receipt.launcherPid = launched.pid;
         launched.on("message", (message) => {
           if (message?.type === "ready" && typeof message.job === "string") {
             receipt.launcherReadyAtMs ??= Date.now();
+            receipt.commandPhase = "launcher-ready";
           }
           if (
             message?.type === "spawned" &&
@@ -169,6 +211,7 @@ function launchManaged({
             message.pid > 0
           ) {
             receipt.jobObserved = true;
+            receipt.commandPhase = "spawned";
             receipt.commandPid = message.pid;
             receipt.commandSpawnedAtMs = Date.now();
           }
@@ -209,7 +252,19 @@ function launchManaged({
             const line = stderr.slice(0, newline).trim();
             stderr = stderr.slice(newline + 1);
             try {
-              if (line) {
+              const stage =
+                captureCensusStages &&
+                censusStages.find(
+                  (value) => line === JSON.stringify({ event: "census-stage", stage: value }),
+                );
+              if (stage) {
+                if (!receipt.censusStageArrivals.some((entry) => entry.stage === stage)) {
+                  receipt.censusStageArrivals.push({
+                    stage,
+                    pipeArrivalElapsedMs: Math.round(performance.now() - started),
+                  });
+                }
+              } else if (line) {
                 onStderrLine?.(line);
               }
             } catch (error) {
@@ -471,7 +526,7 @@ async function main() {
   async function census(binding, context, label, onEnabled) {
     const generated = buildInstalledUpdateRetirementCensus(binding);
     const script = binding.fileIo ? instrumentCensus(generated) : generated;
-    const invocation = buildInstalledCensusInvocation(script);
+    const invocation = instrumentCensusInvocation(script);
     const observer = launchManaged({
       lifetime,
       commands,
@@ -481,6 +536,7 @@ async function main() {
       args: invocation.args,
       input: invocation.input,
       timeoutMs: 5000,
+      captureCensusStages: true,
       onStderrLine(line) {
         assert.equal(line, enabledLine);
         onEnabled?.();
