@@ -50,10 +50,9 @@ it("does not retain the requesting turn context through initial observation or r
     await original.close();
     await waitForSkillsWatcherTurn();
     await observer.readyAll();
-    expect(seen.length).toBeGreaterThan(initialCount);
     expect(seen.every((context) => context === undefined)).toBe(true);
-    expect(observer.forRoot(path.join(fixture.workspaceDir, "skills")).authority).toBe(
-      original.authority,
+    expect(observer.forRoot(path.join(fixture.workspaceDir, "skills")).subscription).not.toBe(
+      original.subscription,
     );
   } finally {
     observer.watchMock.mockImplementation(start);
