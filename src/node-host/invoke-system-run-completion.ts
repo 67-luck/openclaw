@@ -5,6 +5,7 @@ export type SystemRunExecutionContext = {
   runId: string;
   commandText: string;
   suppressNotifyOnExit: boolean;
+  notifyOnExit: boolean;
 };
 
 type CompletionSenders = {
@@ -29,6 +30,7 @@ export async function publishSystemRunCompletion(
     commandText: execution.commandText,
     result,
     suppressNotifyOnExit: execution.suppressNotifyOnExit,
+    notifyOnExit: execution.notifyOnExit,
     invokeResultSentFirst: true,
   });
 }

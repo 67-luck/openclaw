@@ -825,6 +825,7 @@ describe("node host invoke", () => {
               approved: true,
               approvalDecision: "allow-once",
               suppressNotifyOnExit: true,
+              notifyOnExit: false,
             }),
           },
           { request } as unknown as GatewayClient,
@@ -838,6 +839,7 @@ describe("node host invoke", () => {
         )?.[1] as { payloadJSON?: string | null } | undefined;
         expect(JSON.parse(event?.payloadJSON ?? "{}")).toMatchObject({
           suppressNotifyOnExit: true,
+          notifyOnExit: false,
           invokeResultSentFirst: true,
         });
         const resultIndex = request.mock.calls.findIndex(

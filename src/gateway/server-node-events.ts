@@ -59,7 +59,7 @@ import {
   parseMessageWithAttachments,
   persistInboundImagesForTranscript,
 } from "./chat-attachments.js";
-import { shouldSuppressSystemRunCompletion } from "./node-system-run-event-authority.js";
+import { shouldSuppressRun } from "./node-system-run-event-authority.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./server-methods/attachment-normalize.js";
 import { registerNodeApnsEvent } from "./server-node-events-apns.js";
 import type { NodeEvent, NodeEventContext } from "./server-node-events-types.js";
@@ -940,9 +940,10 @@ export const handleNodeEvent = async (
         return undefined;
       }
       const sessionKeyRaw = normalizeOptionalString(obj.sessionKey) ?? `node-${nodeId}`;
-      const { canonicalKey: sessionKey, agentId } = loadSessionEntry(sessionKeyRaw);
+      const { canonicalKey: sessionKey, agentId, entry } = loadSessionEntry(sessionKeyRaw);
 
-      const cfg = getRuntimeConfig();
+      const cfg = getRuntimeConfig(),
+        route = deliveryContextFromSession(entry);
       const runId = normalizeOptionalString(obj.runId) ?? "";
       const eventAuthorization = ctx.authorizeNodeSystemRunEvent({
         nodeId,
@@ -960,13 +961,9 @@ export const handleNodeEvent = async (
           reason: "unmatched_exec_event",
         };
       }
-      // Respect tools.exec.notifyOnExit setting (default: true)
-      // When false, skip system event notifications for node exec events.
-      const notifyOnExit = cfg.tools?.exec?.notifyOnExit !== false;
-      if (!notifyOnExit) {
-        return undefined;
-      }
-      if (shouldSuppressSystemRunCompletion(obj, eventAuthorization)) {
+      // Respect tools.exec.notifyOnExit (default true); false skips node exec system events.
+      const notifyEnabled = cfg.tools?.exec?.notifyOnExit !== false;
+      if (shouldSuppressRun(obj, eventAuthorization, route, notifyEnabled, sessionKey)) {
         return undefined;
       }
       if (evt.event === "exec.denied") {
@@ -1016,6 +1013,7 @@ export const handleNodeEvent = async (
           {
             sessionKey: resolveEventSessionKeyForPolicy(sessionKey, eventRouting),
             contextKey: runId ? `exec:${runId}` : "exec",
+            ...(route ? { deliveryContext: route } : {}),
           },
           agentId,
         ),

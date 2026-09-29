@@ -14,6 +14,7 @@ export function buildExecFinishedEventPayload(params: ExecFinishedEventParams): 
     success: params.result.success,
     output,
     suppressNotifyOnExit: params.suppressNotifyOnExit,
+    notifyOnExit: params.notifyOnExit,
     invokeResultSentFirst: params.invokeResultSentFirst,
   };
 }

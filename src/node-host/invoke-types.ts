@@ -26,6 +26,7 @@ export type SystemRunParams = {
   approvalSource?: string | null;
   runId?: string | null;
   suppressNotifyOnExit?: boolean | null;
+  notifyOnExit?: boolean | null;
 };
 
 export type RunResult = {
@@ -50,6 +51,7 @@ export type ExecEventPayload = {
   output?: string;
   reason?: string;
   suppressNotifyOnExit?: boolean;
+  notifyOnExit?: boolean;
   /** The node attempted node.invoke.result before emitting this terminal event. */
   invokeResultSentFirst?: boolean;
 };
@@ -69,6 +71,7 @@ export type ExecFinishedEventParams = {
   commandText: string;
   result: ExecFinishedResult;
   suppressNotifyOnExit?: boolean;
+  notifyOnExit?: boolean;
   /** The node attempted node.invoke.result before emitting this terminal event. */
   invokeResultSentFirst?: boolean;
 };

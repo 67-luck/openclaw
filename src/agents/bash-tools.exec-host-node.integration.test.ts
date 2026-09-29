@@ -144,7 +144,7 @@ afterEach(async () => {
   await state.cleanup();
 });
 
-it("suppresses completion wakes after returning a foreground node result", async () => {
+it("suppresses foreground completion wakes while preserving the notification opt-out", async () => {
   const sessionKey = "agent:main:telegram:group:-100155462274:topic:42";
   const result = await executeNodeHostCommand({
     ...request,
@@ -152,6 +152,7 @@ it("suppresses completion wakes after returning a foreground node result", async
     turnSourceChannel: "telegram",
     turnSourceTo: "telegram:-100155462274:topic:42",
     turnSourceThreadId: 42,
+    notifyOnExit: false,
   });
 
   expect(result.details).toMatchObject({ status: "completed", aggregated: "node-policy-proof" });
@@ -160,6 +161,7 @@ it("suppresses completion wakes after returning a foreground node result", async
   expect(JSON.parse(finished?.payloadJSON ?? "{}")).toMatchObject({
     sessionKey,
     suppressNotifyOnExit: true,
+    notifyOnExit: false,
   });
 });
 

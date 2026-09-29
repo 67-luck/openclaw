@@ -362,6 +362,7 @@ async function parseSystemRunPhase(
   const runId = normalizeOptionalString(opts.params.runId) ?? crypto.randomUUID();
   const cwd = normalizeOptionalString(opts.params.cwd);
   const suppressNotifyOnExit = opts.params.suppressNotifyOnExit === true;
+  const notifyOnExit = opts.params.notifyOnExit !== false;
   const approvalSource = opts.params.approvalSource;
   if (
     approvalSource != null &&
@@ -441,7 +442,7 @@ async function parseSystemRunPhase(
     agentId,
     sessionKey,
     runId,
-    execution: { sessionKey, runId, commandText, suppressNotifyOnExit },
+    execution: { sessionKey, runId, commandText, suppressNotifyOnExit, notifyOnExit },
     approvalDecision,
     approvalSource: approvalSource ?? undefined,
     delayedApprovalPolicySnapshot,

@@ -341,6 +341,7 @@ export function buildNodeSystemRunInvoke(params: {
       runId,
       suppressNotifyOnExit:
         params.suppressNotifyOnExit === true || params.notifyOnExit === false ? true : undefined,
+      notifyOnExit: params.notifyOnExit,
     },
     idempotencyKey: crypto.randomUUID(),
   };
