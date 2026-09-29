@@ -9,7 +9,7 @@ param(
   [ValidateRange(100,1500)][int]$CaptureMilliseconds=1000
 )
 $ErrorActionPreference='Stop'
-. (Join-Path $PSScriptRoot 'OwnedFileTraceOperations.ps1')
+. ([IO.Path]::Combine($PSScriptRoot,'OwnedFileTraceOperations.ps1'))
 $arguments=@{} + $PSBoundParameters
 $arguments.PublishFact={param($value)
   # Keep the fixed entry acknowledgement independent of diagnostic serialization.
