@@ -25,6 +25,7 @@ import { withPrivateStagedPackageInstall } from "./update-command-artifact.js";
 import { readUpdateChannelConfig } from "./update-command-config.js";
 import { inspectUpdateManagedServices } from "./update-command-database-context.js";
 import { handoffUpdateFromGateway } from "./update-command-handoff.js";
+import type { UpdateCandidateAdmission } from "./update-command-initialization-types.js";
 import type { StagedPackageInstallUpdate } from "./update-command-package.js";
 import type { prepareUpdateCommand } from "./update-command-run.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
@@ -76,7 +77,7 @@ export async function inspectStagedUpdateCandidateAdmission(
     env?: NodeJS.ProcessEnv;
     assertCurrent?: () => void;
   },
-): Promise<{ result: UpdateCandidateAdmissionResult; configSnapshot: ConfigFileSnapshot }> {
+): Promise<UpdateCandidateAdmission> {
   return await withOwnedManagedUpdateEnv(params.env, async () => {
     const { target, opts, prepared } = params;
     const installTarget = target.packageInstallTarget;
@@ -249,7 +250,7 @@ export function applyUpdateCandidateAdmission(params: {
 export async function withUpdateCandidateAdmission<T>(
   params: CandidateAdmissionParams & {
     stagedPackage?: StagedPackageInstallUpdate;
-    candidateAdmission?: Awaited<ReturnType<typeof inspectStagedUpdateCandidateAdmission>>;
+    candidateAdmission?: UpdateCandidateAdmission;
   },
   execute: (stagedPackage?: StagedPackageInstallUpdate) => Promise<T>,
 ): Promise<T> {
