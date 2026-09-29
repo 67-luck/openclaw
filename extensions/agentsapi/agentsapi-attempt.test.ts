@@ -28,6 +28,7 @@ beforeEach(() => {
     isSettled: () => true,
     wasSubmitted: () => true,
     queueMessage: async () => {},
+    readFinalItems: async () => [completedItem],
     readUsageTurns: async () => [completedTurn],
     run: async () => {
       options.onSettled?.();
@@ -37,7 +38,7 @@ beforeEach(() => {
     close: async () => {},
     reconcileAfterClose: async () => {
       await options.onReconcile?.(completedTurn, [completedItem]);
-      return completedTurn;
+      return undefined;
     },
   }));
 });

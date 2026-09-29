@@ -128,6 +128,8 @@ vi.mock("./agentsapi-session.js", () => ({
       return { turn: { id: "turn-fixture", status: "completed" }, cancelled: false };
     },
     readUsageTurns: async () => [],
+    readFinalItems: (turnId: string) =>
+      options.client.items(options.sessionId, turnId, options.signal),
     close: async () => {},
     wasSubmitted: () => true,
   }),

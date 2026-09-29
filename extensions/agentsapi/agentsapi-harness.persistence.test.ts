@@ -50,6 +50,7 @@ beforeEach(() => {
       isSettled: () => true,
       wasSubmitted: () => true,
       queueMessage: async () => {},
+      readFinalItems: (turnId) => options.client.items(options.sessionId, turnId, options.signal),
       readUsageTurns: async () => [],
       run: async (prompt, persistInput, onSubmitted) => {
         await persistInput();
@@ -59,7 +60,7 @@ beforeEach(() => {
         return { turn, cancelled: false, terminatedByTool: false };
       },
       close: async () => {},
-      reconcileAfterClose: async () => turn,
+      reconcileAfterClose: async () => undefined,
     };
   });
 });
