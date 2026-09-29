@@ -105,12 +105,112 @@ const factsSchema = z.object({
   nonPriorityTruncated: z.boolean(),
   events: z.array(z.object({ requestEvent: request.optional() })).max(16),
 });
+const censusEventId = z.literal([10, 11, 12, 13, 14, 15, 17, 18, 24, 26]);
+const censusReason = z.enum([
+  "outside-capture-window",
+  "outside-original-lifetime",
+  "unknown-schema",
+  "name-event",
+  "completion-event",
+  "missing-or-zero-irp",
+  "missing-issuing-thread",
+  "unverified-issuing-thread",
+  "outside-owned-path",
+  "unresolved-target",
+  "request-retained",
+  "processing-interrupted",
+]);
+const censusCount = z.number().int().min(0).max(20_000);
+const fieldPresence = z.object({
+  Irp: z.boolean(),
+  IrpPtr: z.boolean(),
+  FileObject: z.boolean(),
+  FileKey: z.boolean(),
+  IssuingThreadId: z.boolean(),
+  TTID: z.boolean(),
+  ThreadId: z.boolean(),
+  Status: z.boolean(),
+  FileName: z.boolean(),
+  OpenPath: z.boolean(),
+  FilePath: z.boolean(),
+  CreateOptions: z.boolean(),
+  InfoClass: z.boolean(),
+});
+const censusRow = z
+  .object({
+    eventId: censusEventId,
+    eventVersion: uint,
+    headerPidMatched: z.literal(true),
+    priorityEventFamily: z.boolean(),
+    timeWindowMatched: z.boolean().nullable(),
+    processLifetimeMatched: z.boolean().nullable(),
+    processTime: z
+      .object({
+        querySucceeded: z.boolean(),
+        nativeError: z.number().int().min(-0x80000000).max(0x7fffffff).nullable(),
+        creationMatches: z.boolean().nullable(),
+        eventNotBeforeCreation: z.boolean().nullable(),
+        exitTimePresent: z.boolean().nullable(),
+        eventNotAfterExit: z.boolean().nullable(),
+      })
+      .nullable(),
+    issuingThreadVerified: z.boolean().nullable(),
+    fieldPresence: fieldPresence.partial(),
+    irpValueNonzero: z.boolean().nullable(),
+    fieldShapeUnavailable: z.boolean(),
+    filterReason: censusReason,
+  })
+  .refine((event) => event.priorityEventFamily === [17, 18, 26].includes(event.eventId))
+  .refine(
+    (event) => event.fieldShapeUnavailable || fieldPresence.safeParse(event.fieldPresence).success,
+  );
+const censusSchema = z
+  .object({
+    phase: z.literal("filter-census"),
+    diagnosticOnly: z.literal(true),
+    meaning: z.literal(
+      "provider event counts and header PID equality only; neither grants process, path, or operation authority",
+    ),
+    // Exhaustive finite records admit 10 + 10 + 12 count keys in total.
+    relevantEventCounts: z.record(censusEventId, censusCount),
+    headerPidMatchCounts: z.record(censusEventId, censusCount),
+    filterReasonCounts: z.record(censusReason, censusCount),
+    events: z.array(censusRow).max(32),
+    unavailable: z.boolean(),
+    truncated: z.boolean(),
+    priorityTruncated: z.boolean(),
+    nonPriorityTruncated: z.boolean(),
+    rowLimit: z.literal(32),
+    byteLimit: z.literal(32768),
+    countKeyLimit: z.literal(32),
+    priorityRowLimit: z.literal(16),
+    nonPriorityRowLimit: z.literal(16),
+  })
+  .refine((census) => {
+    const priority = census.events.filter((event) => event.priorityEventFamily).length;
+    return priority <= 16 && census.events.length - priority <= 16;
+  });
+const censusPhase = z.object({ phase: z.literal("filter-census") });
+
+function readFilterCensus(records: unknown[]) {
+  const unavailable = { phase: "filter-census", diagnosticOnly: true, unavailable: true } as const;
+  const candidates = records.filter((record) => censusPhase.safeParse(record).success);
+  if (candidates.length !== 1 || Buffer.byteLength(JSON.stringify(candidates[0]) ?? "") > 32768) {
+    return unavailable;
+  }
+  const census = censusSchema.safeParse(candidates[0]);
+  if (!census.success || Buffer.byteLength(JSON.stringify(census.data)) > 32768) {
+    return unavailable;
+  }
+  return census.data;
+}
+
 const outcomeSchema = z.object({
   exitCode: z.number().int(),
   records: z.array(z.unknown()).max(8),
 });
 
-/** Project only known own-process fields; never retain raw native envelopes. */
+/** Project only bounded diagnostic fields; never retain raw native envelopes. */
 export function readInstalledFileIoObservation(
   value: unknown,
   binding: InstalledUpdateRetirementBinding,
@@ -165,6 +265,7 @@ export function readInstalledFileIoObservation(
   return {
     result: result.data,
     facts: facts.data,
+    filterCensus: readFilterCensus(outcome.data.records),
     exitCode: outcome.data.exitCode,
     runtime: descriptor.runtime,
     trigger: {

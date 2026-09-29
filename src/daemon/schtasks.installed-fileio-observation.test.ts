@@ -16,7 +16,7 @@ import {
   readRelatedProcessDiagnosticsResult,
 } from "./schtasks.integration-observation.test-support.js";
 
-function input() {
+function input(extraRecords: unknown[] = []) {
   const pin = { pid: 1234, startTicks: "134350962258102430" };
   const identity = { pid: pin.pid, nativeStartFileTime: pin.startTicks };
   const terminal = createInstalledTerminalJsonCapture((value) => value);
@@ -113,8 +113,85 @@ function input() {
     requestEvent,
     facts,
     result,
-    outcome: { exitCode: 0, records: [facts, result] },
+    outcome: { exitCode: 0, records: [facts, result, ...extraRecords] },
   };
+}
+
+function filterCensus() {
+  const counts = () =>
+    Object.fromEntries([10, 11, 12, 13, 14, 15, 17, 18, 24, 26].map((id) => [id, 0]));
+  const relevantEventCounts = counts();
+  const headerPidMatchCounts = counts();
+  relevantEventCounts[26] = 1;
+  headerPidMatchCounts[26] = 1;
+  const row = {
+    eventId: 26,
+    eventVersion: 1,
+    headerPidMatched: true,
+    priorityEventFamily: true,
+    timeWindowMatched: true,
+    processLifetimeMatched: true,
+    processTime: {
+      querySucceeded: true,
+      nativeError: null,
+      creationMatches: true,
+      eventNotBeforeCreation: true,
+      exitTimePresent: false,
+      eventNotAfterExit: null,
+    },
+    issuingThreadVerified: false,
+    fieldPresence: {
+      Irp: true,
+      IrpPtr: false,
+      FileObject: true,
+      FileKey: true,
+      IssuingThreadId: true,
+      TTID: false,
+      ThreadId: false,
+      Status: false,
+      FileName: false,
+      OpenPath: false,
+      FilePath: true,
+      CreateOptions: false,
+      InfoClass: true,
+    },
+    irpValueNonzero: true,
+    fieldShapeUnavailable: false,
+    filterReason: "unverified-issuing-thread",
+  };
+  const census = {
+    phase: "filter-census",
+    diagnosticOnly: true,
+    meaning:
+      "provider event counts and header PID equality only; neither grants process, path, or operation authority",
+    relevantEventCounts,
+    headerPidMatchCounts,
+    filterReasonCounts: {
+      "outside-capture-window": 0,
+      "outside-original-lifetime": 0,
+      "unknown-schema": 0,
+      "name-event": 0,
+      "completion-event": 0,
+      "missing-or-zero-irp": 0,
+      "missing-issuing-thread": 0,
+      "unverified-issuing-thread": 1,
+      "outside-owned-path": 0,
+      "unresolved-target": 0,
+      "request-retained": 0,
+      "processing-interrupted": 0,
+    },
+    events: [row],
+    unavailable: false,
+    truncated: false,
+    priorityTruncated: false,
+    nonPriorityTruncated: false,
+    rowLimit: 32,
+    byteLimit: 32768,
+    countKeyLimit: 32,
+    priorityRowLimit: 16,
+    nonPriorityRowLimit: 16,
+  };
+  return { census, row };
 }
 
 describe("installed FileIO receiving boundary", () => {
@@ -133,6 +210,224 @@ describe("installed FileIO receiving boundary", () => {
     expect(read.facts?.nonPriorityTruncated).toBe(true);
     expect(read.result?.partial).toContain("irp-reuse-without-end");
     expect(JSON.stringify(read)).not.toContain("HOST_PRIVATE_CANARY");
+  });
+
+  it("retains emitted filter facts through the real census receiver without admitting an owned request", () => {
+    const { census } = filterCensus();
+    const value = input([census]);
+    value.facts.events = [];
+    value.result.counts.ownBegins = 0;
+    value.result.counts.unresolvedThreads = 86;
+    value.result.partial = ["unverified-issuing-threads"];
+    const read = readRelatedProcessDiagnosticsResult(
+      {
+        status: 0,
+        stdout: JSON.stringify({ processes: [], retirement: null, fileIo: value.outcome }),
+        stderr: "",
+      },
+      [value.binding.globalRoot],
+      value.binding,
+    );
+    assert.ok("fileIo" in read);
+    expect(read.fileIo).toMatchObject({
+      result: {
+        observation: "insufficient-evidence",
+        records: [],
+        counts: { ownBegins: 0, unresolvedThreads: 86 },
+      },
+      facts: { events: [] },
+      filterCensus: {
+        phase: "filter-census",
+        diagnosticOnly: true,
+        unavailable: false,
+        relevantEventCounts: { "26": 1 },
+        headerPidMatchCounts: { "26": 1 },
+        filterReasonCounts: { "unverified-issuing-thread": 1 },
+        events: [
+          {
+            eventId: 26,
+            headerPidMatched: true,
+            issuingThreadVerified: false,
+            filterReason: "unverified-issuing-thread",
+            processTime: { eventNotAfterExit: null },
+          },
+        ],
+      },
+    });
+  });
+
+  it("strips raw diagnostic canaries while preserving fixed nullable observations", () => {
+    const { census, row } = filterCensus();
+    const canary = "HOST_PRIVATE_CENSUS_CANARY";
+    Object.assign(census, { rawHostEvents: canary });
+    Object.assign(row, {
+      pointer: canary,
+      threadId: canary,
+      filePath: canary,
+      timeWindowMatched: null,
+      processLifetimeMatched: null,
+      issuingThreadVerified: null,
+      irpValueNonzero: null,
+      filterReason: "processing-interrupted",
+    });
+    Object.assign(row.processTime, {
+      querySucceeded: false,
+      nativeError: 5,
+      creationMatches: null,
+      eventNotBeforeCreation: null,
+      exitTimePresent: null,
+      eventNotAfterExit: null,
+      rawError: canary,
+    });
+    Object.assign(row.fieldPresence, { rawPayload: canary });
+    const value = input([census]);
+    const read = readInstalledFileIoObservation(value.outcome, value.binding);
+    expect(read).toMatchObject({
+      filterCensus: {
+        events: [
+          {
+            timeWindowMatched: null,
+            processLifetimeMatched: null,
+            issuingThreadVerified: null,
+            irpValueNonzero: null,
+            processTime: { querySucceeded: false, nativeError: 5, creationMatches: null },
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(read)).not.toContain(canary);
+  });
+
+  it("retains the existing 16+16 row capacity and incomplete field-shape observation", () => {
+    const { census, row } = filterCensus();
+    census.events = [
+      row,
+      ...Array.from({ length: 15 }, () => ({ ...row })),
+      ...Array.from({ length: 16 }, () => ({ ...row, eventId: 15, priorityEventFamily: false })),
+    ];
+    Object.assign(row, {
+      processTime: null,
+      fieldPresence: {},
+      fieldShapeUnavailable: true,
+    });
+    census.unavailable = true;
+    census.truncated = true;
+    census.nonPriorityTruncated = true;
+    const value = input([census]);
+    const read = readInstalledFileIoObservation(value.outcome, value.binding);
+    expect(read).toHaveProperty("filterCensus.events.length", 32);
+    expect(read).toHaveProperty("filterCensus.events.0.processTime", null);
+    expect(read).toHaveProperty("filterCensus.events.0.fieldPresence", {});
+    expect(read).toHaveProperty("filterCensus.events.0.fieldShapeUnavailable", true);
+    expect(read).toMatchObject({
+      filterCensus: {
+        unavailable: true,
+        truncated: true,
+        nonPriorityTruncated: true,
+      },
+    });
+  });
+
+  it.each([
+    "missing",
+    "null",
+    "duplicate",
+    "malformed-duplicate",
+    "unknown-phase",
+    "unknown-reason",
+    "unknown-id",
+    "header-mismatch",
+    "missing-boolean",
+    "invalid-boolean",
+    "unknown-count-key",
+    "missing-count-key",
+    "negative-count",
+    "fractional-count",
+    "excess-count",
+    "row-cap",
+    "priority-cap",
+    "priority-mismatch",
+    "byte-cap",
+    "missing-shape",
+    "invalid-native-error",
+  ])("marks %s census unavailable without changing the existing result or facts", (scenario) => {
+    const { census, row } = filterCensus();
+    const value = input([census]);
+    if (scenario === "missing") {
+      value.outcome.records.pop();
+    }
+    if (scenario === "null") {
+      value.outcome.records[2] = null;
+    }
+    if (scenario === "duplicate") {
+      value.outcome.records.push(structuredClone(census));
+    }
+    if (scenario === "malformed-duplicate") {
+      value.outcome.records.push({ phase: "filter-census" });
+    }
+    if (scenario === "unknown-phase") {
+      census.phase = "unknown-phase";
+    }
+    if (scenario === "unknown-reason") {
+      row.filterReason = "HOST_PRIVATE_CENSUS_CANARY";
+    }
+    if (scenario === "unknown-id") {
+      row.eventId = 999;
+    }
+    if (scenario === "header-mismatch") {
+      row.headerPidMatched = false;
+    }
+    if (scenario === "missing-boolean") {
+      Reflect.deleteProperty(row, "issuingThreadVerified");
+    }
+    if (scenario === "invalid-boolean") {
+      Object.assign(row, { issuingThreadVerified: "false" });
+    }
+    if (scenario === "unknown-count-key") {
+      census.relevantEventCounts.HOST_PRIVATE_CENSUS_CANARY = 1;
+    }
+    if (scenario === "missing-count-key") {
+      Reflect.deleteProperty(census.relevantEventCounts, "26");
+    }
+    if (scenario === "negative-count") {
+      census.relevantEventCounts[26] = -1;
+    }
+    if (scenario === "fractional-count") {
+      census.relevantEventCounts[26] = 1.5;
+    }
+    if (scenario === "excess-count") {
+      census.relevantEventCounts[26] = 20001;
+    }
+    if (scenario === "row-cap") {
+      census.events = Array.from({ length: 33 }, () => row);
+    }
+    if (scenario === "priority-cap") {
+      census.events = Array.from({ length: 17 }, () => row);
+    }
+    if (scenario === "priority-mismatch") {
+      row.priorityEventFamily = false;
+    }
+    if (scenario === "byte-cap") {
+      Object.assign(census, { extra: "HOST_PRIVATE_CENSUS_CANARY".repeat(1400) });
+    }
+    if (scenario === "missing-shape") {
+      Object.assign(row, { fieldPresence: {} });
+    }
+    if (scenario === "invalid-native-error") {
+      Object.assign(row.processTime, { nativeError: "HOST_PRIVATE_CENSUS_CANARY" });
+    }
+    const baseline = input();
+    const before = readInstalledFileIoObservation(baseline.outcome, baseline.binding);
+    const read = readInstalledFileIoObservation(value.outcome, value.binding);
+    assert.ok("result" in before && "result" in read);
+    expect(read.result).toEqual(before.result);
+    expect(read.facts).toEqual(before.facts);
+    expect(read).toHaveProperty("filterCensus", {
+      phase: "filter-census",
+      diagnosticOnly: true,
+      unavailable: true,
+    });
+    expect(JSON.stringify(read)).not.toContain("HOST_PRIVATE_CENSUS_CANARY");
   });
 
   it.each([
