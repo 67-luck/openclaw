@@ -216,9 +216,27 @@ export async function runClaudeCliNativeSpawnProof(
       );
       const source = instance.state.path("ClaudeFixture.cs");
       await fs.writeFile(source, NATIVE_LAUNCHER);
+      const compilationStartedAt = performance.now();
       const compiled = await runUtf8CommandWithTimeout(
         [compiler, "/nologo", "/target:exe", `/out:${path.join(prefix, "claude.exe")}`, source],
         { baseEnv: instance.env, timeoutMs: 30_000, killProcessTree: true },
+      );
+      console.log(
+        "[claude-cli-fixture-compile]",
+        JSON.stringify({
+          elapsedMs: Math.round(performance.now() - compilationStartedAt),
+          pid: compiled.pid,
+          code: compiled.code,
+          signal: compiled.signal,
+          termination: compiled.termination,
+          killed: compiled.killed,
+          killIssuedByAbort: compiled.killIssuedByAbort ?? false,
+          cleanup: compiled.cleanup,
+          stdoutBytes: Buffer.byteLength(compiled.stdout),
+          stderrBytes: Buffer.byteLength(compiled.stderr),
+          stdoutTruncatedBytes: compiled.stdoutTruncatedBytes ?? 0,
+          stderrTruncatedBytes: compiled.stderrTruncatedBytes ?? 0,
+        }),
       );
       if (compiled.code !== 0) {
         throw new Error(

@@ -137,7 +137,13 @@ describe.skipIf(process.platform !== "win32")("native Windows Testbox OpenSSH ad
       fixture,
       String.raw`param([string]$Resolver)
 $ErrorActionPreference = 'Stop'
+$fixtureClock = [Diagnostics.Stopwatch]::StartNew()
+function Write-FixturePhase([string]$Phase) {
+  [Console]::Error.WriteLine(('openssh-fixture phase={0} elapsedMs={1}' -f $Phase, $fixtureClock.ElapsedMilliseconds))
+}
+Write-FixturePhase 'entered'
 . $Resolver
+Write-FixturePhase 'resolver-loaded'
 function Assert($Condition, $Name) { if (-not $Condition) { throw "Admission fixture failed: $Name" } }
 $trustedInstaller = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
 $aclCases = @(
@@ -178,6 +184,7 @@ foreach ($ace in @(
   $descriptor.DiscretionaryAcl.InsertAce(0, $ace)
   Assert ((Get-OpenSshAclDisposition $descriptor $true) -eq 'unknown') 'unsupported applying ACE'
 }
+Write-FixturePhase 'descriptors-complete'
 
 # One process supplies read-only OS observations; the resolver must never execute a binary.
 $env:WINDIR = 'C:\Windows'
@@ -285,7 +292,11 @@ $cases = @(
   @{ Name='process path changed'; ChangeProcess='ExecutablePath'; ChangeValue='C:\other\sshd.exe' },
   @{ Name='process became unavailable'; ChangeProcess='CreationDate'; ChangeValue=$null }
 )
+Write-FixturePhase 'installations-start'
+$fixtureCaseIndex = 0
 foreach ($case in $cases) {
+  $fixtureCaseIndex++
+  if ($fixtureCaseIndex % 10 -eq 0) { Write-FixturePhase "installation-$fixtureCaseIndex" }
   $script:case = $case
   $directory = if ($case.Directory) { $case.Directory } else { $inbox }
   $script:sshd = "$directory\sshd.exe"
@@ -308,9 +319,11 @@ foreach ($case in $cases) {
     Assert ($script:items[-1] -eq $case.Reparse -and $script:acls.Count -eq 0 -and $script:signatures.Count -eq 0) 'stop before following reparse'
   }
 }
+Write-FixturePhase 'installations-complete'
 @{ installations=$cases.Count; descriptors=($aclCases.Count + 4) } | ConvertTo-Json -Compress
 `,
     );
+    const startedAt = performance.now();
     const result = spawnSync(
       "pwsh",
       [
@@ -344,9 +357,11 @@ foreach ($case in $cases) {
     };
     const diagnostic = JSON.stringify({
       ...outcome,
+      elapsedMs: Math.round(performance.now() - startedAt),
       stdout: redact(result.stdout),
       stderr: redact(result.stderr),
     });
+    console.log("[openssh-fixture]", diagnostic);
     expect(outcome, diagnostic).toEqual({ status: 0, signal: null, error: undefined });
     expect(JSON.parse(result.stdout)).toEqual({ installations: 40, descriptors: 25 });
   });

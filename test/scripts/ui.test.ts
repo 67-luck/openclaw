@@ -398,6 +398,7 @@ process.exitCode = ${expectedExit};\n`,
 const fs = require("node:fs");
 const path = require("node:path");
 const roots = ${JSON.stringify(cacheRoots)};
+process.stderr.write("[ui-build-fixture] " + JSON.stringify({ phase: "guard-loaded", pid: process.pid, atMs: Date.now() }) + "\\n");
 if (${JSON.stringify(validators)}.includes(process.argv[2])) {
   function rejectRuntimeActivity(operation) {
     fs.appendFileSync(${JSON.stringify(accessLog)}, operation + "\\n");
@@ -455,11 +456,14 @@ const childProcess = require("node:child_process");
 const path = require("node:path");
 const spawnSync = childProcess.spawnSync;
 const validators = ${JSON.stringify(validators)};
+const phase = (name, outcome) => process.stderr.write("[ui-build-fixture] " + JSON.stringify({ phase: name, pid: process.pid, atMs: Date.now(), ...outcome }) + "\\n");
+phase("capture-loaded");
 assert.equal(process.env.TSX_DISABLE_CACHE, undefined);
 assert.equal(process.env.npm_execpath, ${JSON.stringify(pnpm)});
 childProcess.spawnSync = function(command, args, options) {
   if (args[0] === ${JSON.stringify(path.join(path.dirname(createRequire(path.resolve("ui/package.json")).resolve("vite/package.json")), "bin/vite.js"))}) {
     assert.deepEqual(args.slice(1), ["build"]);
+    phase("build-intercepted");
     return { status: 0 };
   }
   const validatorIndex = args.findIndex(arg => validators.includes(path.basename(arg)));
@@ -468,7 +472,10 @@ childProcess.spawnSync = function(command, args, options) {
   const validatorArgs = args.slice(validatorIndex + 1);
   assert.deepEqual(validatorArgs, validator === "check-control-ui-performance.mts" ? ["--report-only"] : []);
   assert.equal(options.env.TSX_DISABLE_CACHE, undefined);
-  return spawnSync(command, [...args.slice(0, validatorIndex), ${JSON.stringify(fixture)}, validator, ...validatorArgs], options);
+  phase("validator-start:" + validator);
+  const result = spawnSync(command, [...args.slice(0, validatorIndex), ${JSON.stringify(fixture)}, validator, ...validatorArgs], options);
+  phase("validator-close:" + validator, { status: result.status, signal: result.signal, error: result.error?.code });
+  return result;
 };
 require("node:module").syncBuiltinESMExports();
 `,
@@ -506,6 +513,7 @@ require("node:module").syncBuiltinESMExports();
           expect(fs.readFileSync(accessLog, "utf8").trim()).toBe("readdirSync");
           fs.unlinkSync(accessLog);
         }
+        const startedAt = performance.now();
         const result = spawnSync(
           testNodeExecPath,
           ["--require", capture, "scripts/ui.js", "build"],
@@ -516,7 +524,32 @@ require("node:module").syncBuiltinESMExports();
             timeout: 10_000,
           },
         );
-        expect(result.error).toBeUndefined();
+        const redact = (text: string | null) => {
+          let value = text ?? "";
+          for (const [root, label] of [
+            [tempDir, "<fixture>"],
+            [process.cwd(), "<repo>"],
+            [os.homedir(), "<home>"],
+          ] as const) {
+            value = value.replaceAll(root, label).replaceAll(root.replaceAll("\\", "/"), label);
+          }
+          return value.slice(-4096);
+        };
+        const diagnostic = JSON.stringify({
+          noPnpm,
+          failValidator,
+          elapsedMs: Math.round(performance.now() - startedAt),
+          pid: result.pid,
+          status: result.status,
+          signal: result.signal,
+          error: result.error
+            ? { name: result.error.name, message: redact(result.error.message) }
+            : undefined,
+          stdout: redact(result.stdout),
+          stderr: redact(result.stderr),
+        });
+        console.log("[ui-build-fixture]", diagnostic);
+        expect(result.error, diagnostic).toBeUndefined();
         expect(fs.existsSync(accessLog), result.stderr).toBe(false);
         expect(result.status, result.stderr).toBe(failValidator ? 17 : 0);
         const expectedValidators = failValidator
