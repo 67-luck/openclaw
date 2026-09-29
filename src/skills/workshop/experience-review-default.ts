@@ -69,7 +69,12 @@ export function scheduleUnusedWorkshopSkillArchive(config: OpenClawConfig, agent
   void runWithGatewayDetachedWorkContinuation(async () => {
     // The archive pass loads the library and runtime policy; most turns never need them.
     const { archiveUnusedWorkshopSkills } = await import("./unused-archive.js");
-    await archiveUnusedWorkshopSkills(config, agentId, nowMs);
+    const archived = await archiveUnusedWorkshopSkills(config, agentId, nowMs);
+    if (archived.length > 0) {
+      log.info(
+        `archived ${archived.length} unused learned skill(s) for ${agentId}: ${archived.map((change) => change.skillName).join(", ")}`,
+      );
+    }
   }, "skills:workshop-unused-archive").catch((error: unknown) => {
     log.warn(`unused skill archive failed: ${formatErrorMessage(error)}`);
   });
