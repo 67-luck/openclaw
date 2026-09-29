@@ -23,20 +23,37 @@ const refusalLine =
   "[openclaw] Reason: Doctor refused update-time schema repair driven by OpenClaw 2026.9.4: this updater reopens the ledger with old code after migration, and version publication could not be deferred safely.";
 const runId = "e5bd046f-91b1-4820-8645-15b33359c71f";
 
-it("retains the normal managed return and bounded published run identity after refusal", async () => {
+it("retains only complete producer-specific refusal lines from failed pre-validation steps", async () => {
   const cwd = tempDirs.make("installed-containment-command-");
   const records: CommandRecord[] = [];
+  const rawReason = refusalLine.replace("[openclaw] Reason: ", "");
+  const cases = [
+    ["candidate migration rehearsal", 1, refusalLine, true],
+    ["global update", 1, `npm error ${rawReason}`, true],
+    ["global update (omit optional)", 1, `npm error ${rawReason}`, true],
+    ["npm package postinstall", 1, rawReason, true],
+    ["unrelated step", 1, refusalLine, false],
+    ["global update", 0, `npm error ${rawReason}`, false],
+    ["candidate migration rehearsal", 0, refusalLine, false],
+    ["candidate migration rehearsal", 1, "schema-version", false],
+    ["package update", 1, `npm error ${rawReason}`, false],
+    ["npm package postinstall", 1, `npm error ${rawReason}`, false],
+    ["global update", 1, `npm error prefix ${rawReason}`, false],
+    ["global update", 1, `npm error ${rawReason} extra`, false],
+    ["global update", 1, rawReason, false],
+  ] as const;
+  const payload = JSON.stringify({
+    status: "error",
+    runId,
+    steps: cases.map(([name, exitCode, line]) => ({
+      name,
+      exitCode,
+      stderrTail: line + "\n" + Array(4).fill("x".repeat(500)).join("\n"),
+    })),
+  });
   await expect(
     run(
-      [
-        "-e",
-        `console.log(JSON.stringify({ status: "error", runId: "${runId}", steps: [
-          {name: "candidate migration rehearsal", exitCode: 1, stderrTail: ${JSON.stringify(refusalLine)} + "\\n" + Array(4).fill("x".repeat(500)).join("\\n")},
-          {name: "unrelated step", exitCode: 1, stderrTail: ${JSON.stringify(refusalLine)}},
-          {name: "candidate migration rehearsal", exitCode: 0, stderrTail: ${JSON.stringify(refusalLine)}},
-          {name: "candidate migration rehearsal", exitCode: 1, stderrTail: "schema-version"}
-        ] })); process.exitCode = 1`,
-      ],
+      ["-e", `console.log(${JSON.stringify(payload)}); process.exitCode = 1`],
       { PATH: path.dirname(process.execPath) },
       cwd,
       records,
@@ -55,12 +72,7 @@ it("retains the normal managed return and bounded published run identity after r
     publishedUpdate: {
       status: "error",
       runId,
-      steps: [
-        { containmentRefusalReasonWitness: true },
-        { containmentRefusalReasonWitness: false },
-        { containmentRefusalReasonWitness: false },
-        { containmentRefusalReasonWitness: false },
-      ],
+      steps: cases.map((entry) => ({ containmentRefusalReasonWitness: entry[3] })),
     },
   });
 });
@@ -195,6 +207,45 @@ it("requires the full shipped reason line and normal failure settlement", () => 
     },
   };
   expect(assertContainmentRefusal(record)).toBe(runId);
+  const acceptedStep = { exitCode: 1, containmentRefusalReasonWitness: true };
+  const packageFailure = { name: "package update", exitCode: 1, stderrTail: "EBUSY" };
+  const baseline = { status: "error", runId, before: { version: "2026.9.4" }, stepsOmitted: 0 };
+  for (const name of [
+    "global update",
+    "global update (omit optional)",
+    "npm package postinstall",
+  ]) {
+    expect(
+      assertContainmentRefusal({
+        ...record,
+        publishedUpdate: { ...baseline, steps: [{ ...acceptedStep, name }] },
+      }),
+    ).toBe(runId);
+  }
+  expect(
+    assertContainmentRefusal({
+      ...record,
+      publishedUpdate: {
+        ...baseline,
+        steps: [
+          { ...acceptedStep, name: "global update" },
+          { ...acceptedStep, name: "global update (omit optional)" },
+        ],
+      },
+    }),
+  ).toBe(runId);
+  for (const steps of [
+    [{ ...acceptedStep, name: "global update" }, packageFailure],
+    [{ ...acceptedStep, name: "global update", exitCode: 0 }],
+    [
+      { ...acceptedStep, name: "npm package postinstall" },
+      { name: "global package swap", exitCode: 0 },
+    ],
+  ]) {
+    expect(() =>
+      assertContainmentRefusal({ ...record, publishedUpdate: { ...baseline, steps } }),
+    ).toThrow();
+  }
   const published = {
     kind: "published-update",
     status: "error",
@@ -221,187 +272,203 @@ it("requires the full shipped reason line and normal failure settlement", () => 
   }
 });
 
-it.each(["peer-state-failure", "native-mismatch", "peer-native-failure"] as const)(
-  "retains completed observations when containment encounters %s",
-  async (mode) => {
-    const root = tempDirs.make("installed-containment-retention-");
-    const filename = path.join(root, "state.sqlite");
-    const db = openNodeSqliteDatabase(filename);
-    const identity = createHash("sha256").update("state/openclaw.sqlite").digest("hex");
-    let before;
-    let after;
-    try {
-      db.exec(`PRAGMA user_version=17;
+it.each([
+  "peer-state-failure",
+  "native-mismatch",
+  "peer-native-failure",
+  "unexpected-result",
+  "unjoined",
+  "qualified-refusal",
+] as const)("retains completed observations when containment encounters %s", async (mode) => {
+  const root = tempDirs.make("installed-containment-retention-");
+  const filename = path.join(root, "state.sqlite");
+  const db = openNodeSqliteDatabase(filename);
+  const identity = createHash("sha256").update("state/openclaw.sqlite").digest("hex");
+  let before;
+  let after;
+  try {
+    db.exec(`PRAGMA user_version=17;
         CREATE TABLE update_runs(run_id TEXT PRIMARY KEY, phase TEXT, status TEXT, before_json TEXT, steps_json TEXT);`);
-      before = (await captureContainmentDatabase(filename, identity, true, { rows: 0 })).database;
-      db.prepare("INSERT INTO update_runs VALUES(?,?,?,?,?)").run(
-        runId,
-        "validating",
-        "running",
-        '{"version":"2026.9.4"}',
-        "[]",
-      );
-      after = (await captureContainmentDatabase(filename, identity, true, { rows: 0 })).database;
-    } finally {
-      db.close();
-    }
-    const task = async (role: "selected" | "peer"): Promise<InstalledTask> => {
-      const stateDir = path.join(root, role);
-      const installRoot = path.join(root, `${role}-install`);
-      fs.mkdirSync(stateDir);
-      fs.mkdirSync(installRoot);
-      const configPath = path.join(stateDir, "openclaw.json");
-      const scriptPath = path.join(stateDir, "gateway.cmd");
-      const entry = path.join(installRoot, "openclaw.mjs");
-      fs.writeFileSync(configPath, '{"synthetic":"before"}');
-      fs.writeFileSync(scriptPath, "synthetic command");
-      fs.writeFileSync(path.join(stateDir, "gateway.vbs"), "synthetic launcher");
-      fs.writeFileSync(entry, "synthetic package");
-      await seedContainmentCanaries(stateDir);
-      return {
-        profile: role,
-        taskName: role,
-        stateDir,
-        configPath,
-        scriptPath,
-        gatewayPort: 1234,
-        rootDir: root,
-        installRoot,
-        entry,
-        env: { OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER: "1" },
-      };
-    };
-    const selected = await task("selected");
-    const peer = await task("peer");
-    const captureFailure = new Error("Synthetic second observation failed");
-    let updateAttempted = false;
-    const xml = vi.spyOn(nativeObservations, "readTaskXml").mockImplementation(async (taskName) => {
-      if (updateAttempted && taskName === "peer" && mode === "peer-native-failure") {
-        throw captureFailure;
-      }
-      return "<Task>synthetic definition</Task>";
-    });
-    const principal = vi.spyOn(nativeObservations, "readTaskPrincipal").mockReturnValue({
-      enabled: true,
-      taskState: 4,
-      lastRunTime: "2026-09-28T00:00:00.000Z",
-      lastTaskResult: 0,
-      logonType: 3,
-      runLevel: 0,
-    });
-    const processes = vi
-      .spyOn(nativeObservations, "readRelatedProcessDiagnostics")
-      .mockImplementation(([profile]) => ({
-        ok: true,
-        error: null,
-        truncated: false,
-        processes: [
-          {
-            ProcessId: profile === "selected" ? 101 : 202,
-            CreationDate: "2026-09-28T00:00:00.000Z",
-          },
-        ],
-      }));
-    // Deliver real snapshot facts; inject only the asynchronous capture failure boundary.
-    const state = vi
-      .spyOn(stateObservations, "captureContainmentState")
-      .mockResolvedValueOnce([before])
-      .mockResolvedValueOnce([before])
-      .mockResolvedValueOnce([after]);
-    if (mode === "peer-state-failure") {
-      state.mockRejectedValueOnce(captureFailure);
-    } else {
-      state.mockResolvedValueOnce([before]);
-    }
-    const commands: CommandRecord[] = [];
-    const observations: Record<string, unknown> = {};
-    const updateFailure = new Error("Original published update refusal");
-    const publishedUpdate = {
-      kind: "published-update" as const,
-      status: "error",
+    before = (await captureContainmentDatabase(filename, identity, true, { rows: 0 })).database;
+    db.prepare("INSERT INTO update_runs VALUES(?,?,?,?,?)").run(
       runId,
-      before: { version: "2026.9.4" },
-      after: {},
-      recovery: {},
-      stepsOmitted: 0,
-      steps: [
+      "validating",
+      "running",
+      '{"version":"2026.9.4"}',
+      "[]",
+    );
+    after = (await captureContainmentDatabase(filename, identity, true, { rows: 0 })).database;
+  } finally {
+    db.close();
+  }
+  const task = async (role: "selected" | "peer"): Promise<InstalledTask> => {
+    const stateDir = path.join(root, role);
+    const installRoot = path.join(root, `${role}-install`);
+    fs.mkdirSync(stateDir);
+    fs.mkdirSync(installRoot);
+    const configPath = path.join(stateDir, "openclaw.json");
+    const scriptPath = path.join(stateDir, "gateway.cmd");
+    const entry = path.join(installRoot, "openclaw.mjs");
+    fs.writeFileSync(configPath, '{"synthetic":"before"}');
+    fs.writeFileSync(scriptPath, "synthetic command");
+    fs.writeFileSync(path.join(stateDir, "gateway.vbs"), "synthetic launcher");
+    fs.writeFileSync(entry, "synthetic package");
+    await seedContainmentCanaries(stateDir);
+    return {
+      profile: role,
+      taskName: role,
+      stateDir,
+      configPath,
+      scriptPath,
+      gatewayPort: 1234,
+      rootDir: root,
+      installRoot,
+      entry,
+      env: { OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER: "1" },
+    };
+  };
+  const selected = await task("selected");
+  const peer = await task("peer");
+  const captureFailure = new Error("Synthetic second observation failed");
+  let updateAttempted = false;
+  const xml = vi.spyOn(nativeObservations, "readTaskXml").mockImplementation(async (taskName) => {
+    if (updateAttempted && taskName === "peer" && mode === "peer-native-failure") {
+      throw captureFailure;
+    }
+    return "<Task>synthetic definition</Task>";
+  });
+  const principal = vi.spyOn(nativeObservations, "readTaskPrincipal").mockReturnValue({
+    enabled: true,
+    taskState: 4,
+    lastRunTime: "2026-09-28T00:00:00.000Z",
+    lastTaskResult: 0,
+    logonType: 3,
+    runLevel: 0,
+  });
+  const processes = vi
+    .spyOn(nativeObservations, "readRelatedProcessDiagnostics")
+    .mockImplementation(([profile]) => ({
+      ok: true,
+      error: null,
+      truncated: false,
+      processes: [
         {
-          name: "candidate migration rehearsal",
-          exitCode: 1,
-          containmentRefusalReasonWitness: true,
-          failureFacts: undefined,
+          ProcessId: profile === "selected" ? 101 : 202,
+          CreationDate: "2026-09-28T00:00:00.000Z",
         },
       ],
-    };
-    let failure: unknown;
-    try {
-      await observeInstalledContainment({
-        selected,
-        peer,
-        selectedPid: 101,
-        peerPid: 202,
-        commands,
-        observations,
-        signal: new AbortController().signal,
-        recordProgress: async () => {},
-        runUpdate: async () => {
-          updateAttempted = true;
-          commands.push({
-            args: [],
-            launcherPid: null,
-            code: 1,
-            managedResult: 1,
-            signal: null,
-            joined: true,
-            beforeCleanup: "dead",
-            elapsedMs: 1,
-            failureOutput: { stdout: "", stderr: "", captureTruncated: false },
-            publishedUpdate,
-          });
-          throw updateFailure;
-        },
-        verifyServing: async () => {
-          if (mode === "native-mismatch") {
-            fs.writeFileSync(selected.configPath, '{"synthetic":"changed"}');
-          }
-          return { selectedPid: 101, peerPid: 202 };
-        },
-      });
-    } catch (error) {
-      failure = error;
-    } finally {
-      state.mockRestore();
-      processes.mockRestore();
-      principal.mockRestore();
-      xml.mockRestore();
-    }
-    expect(failure).toBeInstanceOf(AggregateError);
-    if (!(failure instanceof AggregateError)) {
-      throw new Error("Expected containment failure");
-    }
-    expect(failure.errors[0]).toBe(updateFailure);
-    expect(observations.containment).toMatchObject({
-      qualified: false,
-      phase: "verification-failed",
-      stateAfter: { selected: [{ present: true, userVersion: 17, tables: [{ rows: 1 }] }] },
+    }));
+  // Deliver real snapshot facts; inject only the asynchronous capture failure boundary.
+  const state = vi
+    .spyOn(stateObservations, "captureContainmentState")
+    .mockResolvedValueOnce([before])
+    .mockResolvedValueOnce([before])
+    .mockResolvedValueOnce([after]);
+  if (mode === "peer-state-failure") {
+    state.mockRejectedValueOnce(captureFailure);
+  } else {
+    state.mockResolvedValueOnce([before]);
+  }
+  const commands: CommandRecord[] = [];
+  const observations: Record<string, unknown> = {};
+  const updateFailure = new Error("Original published update refusal");
+  const publishedUpdate = {
+    kind: "published-update" as const,
+    status: "error",
+    runId,
+    before: { version: "2026.9.4" },
+    after: {},
+    recovery: {},
+    stepsOmitted: 0,
+    steps: [
+      {
+        name: mode === "unexpected-result" ? "package update" : "npm package postinstall",
+        exitCode: 1,
+        containmentRefusalReasonWitness: mode !== "unexpected-result",
+        failureFacts: undefined,
+      },
+    ],
+  };
+  let failure: unknown;
+  try {
+    await observeInstalledContainment({
+      selected,
+      peer,
+      selectedPid: 101,
+      peerPid: 202,
+      commands,
+      observations,
+      signal: new AbortController().signal,
+      recordProgress: async () => {},
+      runUpdate: async () => {
+        updateAttempted = true;
+        commands.push({
+          args: [],
+          launcherPid: null,
+          code: 1,
+          managedResult: 1,
+          signal: null,
+          joined: mode !== "unjoined",
+          beforeCleanup: "dead",
+          elapsedMs: 1,
+          failureOutput: { stdout: "", stderr: "", captureTruncated: false },
+          publishedUpdate,
+        });
+        throw updateFailure;
+      },
+      verifyServing: async () => {
+        if (mode === "native-mismatch") {
+          fs.writeFileSync(selected.configPath, '{"synthetic":"changed"}');
+        }
+        return { selectedPid: 101, peerPid: 202 };
+      },
     });
-    if (mode !== "peer-state-failure") {
-      expect(observations.containment).toMatchObject({
-        serving: { selectedPid: 101, peerPid: 202 },
-        after: {
-          selected: {
-            pid: 101,
-            configSha256: createHash("sha256")
-              .update(
-                mode === "native-mismatch" ? '{"synthetic":"changed"}' : '{"synthetic":"before"}',
-              )
-              .digest("hex"),
-          },
+  } catch (error) {
+    failure = error;
+  } finally {
+    state.mockRestore();
+    processes.mockRestore();
+    principal.mockRestore();
+    xml.mockRestore();
+  }
+  if (mode === "qualified-refusal") {
+    expect(failure).toBe(updateFailure);
+    expect(observations.containment).toMatchObject({
+      qualified: true,
+      phase: "refused-before-activation",
+    });
+    return;
+  }
+  expect(failure).toBeInstanceOf(AggregateError);
+  if (!(failure instanceof AggregateError)) {
+    throw new Error("Expected containment failure");
+  }
+  expect(failure.errors[0]).toBe(updateFailure);
+  if (mode === "unjoined") {
+    expect(observations.containment).toMatchObject({ qualified: false, stateAfter: {}, after: {} });
+    return;
+  }
+  expect(observations.containment).toMatchObject({
+    qualified: false,
+    phase: "verification-failed",
+    stateAfter: { selected: [{ present: true, userVersion: 17, tables: [{ rows: 1 }] }] },
+  });
+  if (mode !== "peer-state-failure") {
+    expect(observations.containment).toMatchObject({
+      serving: { selectedPid: 101, peerPid: 202 },
+      after: {
+        selected: {
+          pid: 101,
+          configSha256: createHash("sha256")
+            .update(
+              mode === "native-mismatch" ? '{"synthetic":"changed"}' : '{"synthetic":"before"}',
+            )
+            .digest("hex"),
         },
-      });
-      if (mode === "native-mismatch") {
-        expect(observations.containment).toMatchObject({ after: { peer: { pid: 202 } } });
-      }
+      },
+    });
+    if (mode === "native-mismatch" || mode === "unexpected-result") {
+      expect(observations.containment).toMatchObject({ after: { peer: { pid: 202 } } });
     }
-  },
-);
+  }
+});

@@ -235,10 +235,13 @@ openclaw gateway run
 
 The published 2026.9.4 Windows updater retains an old database reader in its
 service handoff. A target that migrates shared state beyond schema 17 can make
-that callback fail after activation. Candidate Doctor's CLI preflight refuses this
-migration during a running 9.4 update whose drivers have not been confirmed stopped. During the package
-candidate rehearsal, this refusal happens before replacing the installed
-package or stopping its Gateway. It does not complete the automatic update.
+that callback fail after activation. During a running 9.4 update, the candidate's
+package lifecycle asks Doctor's read-only preflight to refuse this migration
+while an updater driver has not been confirmed stopped. A failed npm stage leaves
+the original package and Gateway in place, before the old updater enters repair.
+The CLI preflight also retains this check when package scripts were skipped;
+that later refusal can be masked by a cleanup error in the old repair path.
+This containment does not complete the automatic update.
 
 Wait for the updater to exit and review its result. To upgrade, create a
 [verified backup](/install/updating/rollback-and-recovery#before-updating-create-a-verified-backup)

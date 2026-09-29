@@ -36,18 +36,22 @@ export async function seedContainmentCanaries(stateDir: string) {
   await fs.writeFile(path.join(root, canaryFiles[1]!), Buffer.from([0, 1, 2, 127, 128, 255]));
 }
 
-/** This is a producer-message witness, not a typed error code or a grant of authority. */
-export function assertContainmentRefusal(
-  record: Pick<
-    CommandRecord,
-    "code" | "managedResult" | "signal" | "joined" | "beforeCleanup" | "failureOutput"
-  > & { publishedUpdate?: unknown },
-): string {
+type ContainmentCommand = Pick<
+  CommandRecord,
+  "code" | "managedResult" | "signal" | "joined" | "beforeCleanup" | "failureOutput"
+> & { publishedUpdate?: unknown };
+
+function assertNaturalRefusalSettlement(record: ContainmentCommand) {
   assert.equal(record.code, 1);
   assert.equal(record.managedResult, 1, "Managed command did not return normally");
   assert.equal(record.signal, null);
   assert.equal(record.joined, true);
   assert.equal(record.beforeCleanup, "dead");
+}
+
+/** This is a producer-message witness, not a typed error code or a grant of authority. */
+export function assertContainmentRefusal(record: ContainmentCommand): string {
+  assertNaturalRefusalSettlement(record);
   assert.equal(record.failureOutput?.captureTruncated, false);
   const result = asOptionalRecord(record.publishedUpdate);
   assert.equal(result?.status, "error");
@@ -59,14 +63,25 @@ export function assertContainmentRefusal(
   assert.equal(asOptionalRecord(result?.before)?.version, "2026.9.4");
   assert.ok(Array.isArray(result?.steps) && result.steps.length > 0);
   const steps = result.steps.map(asOptionalRecord);
-  const failed = steps.find((step) => step?.exitCode !== 0);
-  assert.equal(failed?.name, "candidate migration rehearsal");
-  assert.equal(failed?.exitCode, 1);
-  assert.equal(
-    failed?.containmentRefusalReasonWitness,
-    true,
-    "Published canary did not retain the complete producer-specific refusal reason line",
-  );
+  const failed = steps.filter((step) => step?.exitCode !== 0);
+  assert.ok(failed.length > 0, "Published update has no failed step");
+  for (const step of failed) {
+    assert.ok(
+      [
+        "candidate migration rehearsal",
+        "global update",
+        "global update (omit optional)",
+        "npm package postinstall",
+      ].includes(String(step?.name)),
+      "Unexpected failed step before containment",
+    );
+    assert.equal(step?.exitCode, 1);
+    assert.equal(
+      step?.containmentRefusalReasonWitness,
+      true,
+      "Published updater did not retain the complete producer-specific refusal reason line",
+    );
+  }
   assert.equal(
     steps.some((step) =>
       /^(?:global package swap|openclaw doctor|post-update verification)$/u.test(
@@ -164,20 +179,22 @@ export async function observeInstalledContainment(params: {
       "Expected the original joined command refusal",
     );
     assert.equal(commands.length, commandIndex + 1, "Unexpected command during published update");
-    const runId = assertContainmentRefusal(commands[commandIndex]!);
-    Object.assign(evidence, { runId, commandIndex, phase: "capturing-after-state" });
+    assertNaturalRefusalSettlement(commands[commandIndex]!);
+    Object.assign(evidence, { commandIndex, phase: "capturing-after-state" });
     // Capture before extra RPC/status probes can contribute their own operational writes.
     const selectedAfter = await captureContainmentState(selected, signal);
     stateAfter.selected = summarizeContainmentState(selectedAfter);
     const peerAfter = await captureContainmentState(peer, signal);
     stateAfter.peer = summarizeContainmentState(peerAfter);
-    evidence.phase = "comparing-state";
-    state.selected = compareContainmentState(states.selected, selectedAfter, runId);
-    state.peer = compareContainmentState(states.peer, peerAfter);
     const serving = await params.verifyServing();
     Object.assign(evidence, { serving, phase: "capturing-after-native" });
     after.selected = await captureTask(selected, serving.selectedPid);
     after.peer = await captureTask(peer, serving.peerPid);
+    // Preserve completed observations even when the immutable driver lost the refusal witness.
+    const runId = assertContainmentRefusal(commands[commandIndex]!);
+    Object.assign(evidence, { runId, phase: "comparing-state" });
+    state.selected = compareContainmentState(states.selected, selectedAfter, runId);
+    state.peer = compareContainmentState(states.peer, peerAfter);
     assert.equal(serving.selectedPid, params.selectedPid);
     assert.equal(serving.peerPid, params.peerPid);
     assert.deepEqual(

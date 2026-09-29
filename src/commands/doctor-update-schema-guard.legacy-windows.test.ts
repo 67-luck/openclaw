@@ -19,6 +19,7 @@ import type { DoctorDatabasePreflight } from "./doctor-database-preflight.js";
 import {
   guardUpdateDoctorSchemaUpgrade,
   preflightUpdateDoctorCli,
+  preflightUpdatePackageLifecycle,
 } from "./doctor-update-schema-guard.js";
 
 afterEach(() => {
@@ -33,7 +34,7 @@ type Scenario = {
   previousDriver?: boolean;
   noDriver?: boolean;
   identityUnavailable?: boolean;
-  invocation?: "cli" | "flow";
+  invocation?: "cli" | "flow" | "package";
   finished?: boolean;
   update?: boolean;
   databaseKind?: "state" | "agent";
@@ -64,7 +65,6 @@ async function inspectDoctor(scenario: Scenario) {
     const databasePath = resolveOpenClawStateSqlitePath();
     const before = fs.readFileSync(databasePath);
     const snapshotPath = state.path("diagnostic.sqlite");
-    fs.copyFileSync(databasePath, snapshotPath);
     const cleanup = () => {
       fs.unlinkSync(snapshotPath);
       return true;
@@ -73,10 +73,13 @@ async function inspectDoctor(scenario: Scenario) {
     // Supply its closed, task-owned image while simulating Windows policy here.
     const snapshotRead = vi
       .spyOn(sqliteSnapshot, "prepareSqliteReadOnlyLocation")
-      .mockResolvedValue({
-        location: snapshotPath,
-        cleanup,
-        cleanupAsync: async () => cleanup(),
+      .mockImplementation(async () => {
+        fs.copyFileSync(databasePath, snapshotPath);
+        return {
+          location: snapshotPath,
+          cleanup,
+          cleanupAsync: async () => cleanup(),
+        };
       });
     // These are prepared preflight facts, not a synthetic migration or a claim
     // that the current test database has the shipped schema's full layout.
@@ -115,10 +118,14 @@ async function inspectDoctor(scenario: Scenario) {
     let error: unknown;
     let result: DoctorDatabasePreflight | undefined;
     try {
-      result =
-        scenario.invocation === "flow"
-          ? await guardUpdateDoctorSchemaUpgrade({ schemas })
-          : await preflightUpdateDoctorCli({});
+      if (scenario.invocation === "package") {
+        await preflightUpdatePackageLifecycle();
+      } else {
+        result =
+          scenario.invocation === "flow"
+            ? await guardUpdateDoctorSchemaUpgrade({ schemas })
+            : await preflightUpdateDoctorCli({});
+      }
     } catch (caught) {
       error = caught;
     }
@@ -133,6 +140,7 @@ async function inspectDoctor(scenario: Scenario) {
 }
 
 const refusalScenarios: (Scenario & { name: string })[] = [
+  { name: "package lifecycle before repair", invocation: "package" },
   { name: "live driver", liveness: "alive" },
   { name: "unobservable driver", liveness: "unknown" },
   { name: "live retained parent", previousDriver: true },
@@ -173,6 +181,9 @@ it.each(refusalScenarios)(
 );
 
 const allowedScenarios: (Scenario & { name: string })[] = [
+  { name: "current package updater", invocation: "package", version: "2026.9.6" },
+  { name: "other shipped package updater", invocation: "package", version: "2026.9.2" },
+  { name: "independent package installation", invocation: "package", update: false },
   { name: "current driver", version: "2026.9.6" },
   { name: "other platform", platform: "darwin" },
   { name: "dead driver", liveness: "dead" },
@@ -184,5 +195,7 @@ const allowedScenarios: (Scenario & { name: string })[] = [
 it.each(allowedScenarios)("preserves existing Doctor admission for $name", async (scenario) => {
   const { error, result, schemas } = await inspectDoctor(scenario);
   expect(error).toBeUndefined();
-  expect(result).toBe(scenario.update === false ? undefined : schemas);
+  expect(result).toBe(
+    scenario.update === false || scenario.invocation === "package" ? undefined : schemas,
+  );
 });

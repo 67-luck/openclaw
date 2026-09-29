@@ -72,20 +72,26 @@ function captureCommandOutput(
       steps: Array.isArray(value.steps)
         ? value.steps.slice(0, 40).map((entry: unknown) => {
             const step = asOptionalRecord(entry);
+            const reasonPrefix =
+              step?.name === "candidate migration rehearsal"
+                ? "[openclaw] Reason: "
+                : step?.name === "npm package postinstall"
+                  ? ""
+                  : step?.name === "global update" || step?.name === "global update (omit optional)"
+                    ? "npm error "
+                    : undefined;
             return Object.assign(
               fields(step, ["name", "exitCode", "durationMs", "signal", "killed", "termination"]),
               step?.exitCode !== 0 ? fields(step, ["stdoutTail", "stderrTail"]) : {},
               {
                 containmentRefusalReasonWitness:
-                  step?.name === "candidate migration rehearsal" &&
-                  typeof step.exitCode === "number" &&
+                  reasonPrefix !== undefined &&
+                  typeof step?.exitCode === "number" &&
                   step.exitCode !== 0 &&
                   typeof step.stderrTail === "string" &&
                   stripAnsi(step.stderrTail)
                     .split(/\r?\n/u)
-                    .some(
-                      (line) => line === `[openclaw] Reason: ${PUBLISHED_94_CONTAINMENT_REASON}`,
-                    ),
+                    .some((line) => line === `${reasonPrefix}${PUBLISHED_94_CONTAINMENT_REASON}`),
                 failureFacts: Array.isArray(step?.failureFacts)
                   ? step.failureFacts
                       .slice(0, 8)

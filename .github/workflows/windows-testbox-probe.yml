@@ -119,7 +119,7 @@ jobs:
           if ($env:NATIVE_MODE -cne "true" -or $env:RUNNER_LABEL -cne "windows-2025" -or $env:KEEPALIVE -cne "0" -or $env:NODE_VERSION -cne "26.9.0" -or $env:MIXED_MODE -cne "false") { throw "Only the fixed installed 9.4 containment diagnostic is admitted." }
           if ($env:TARGET_REF -cnotmatch '^[0-9a-f]{40}$' -or $env:WORKFLOW_SHA -cne $env:TARGET_REF -or $env:EVENT_SHA -cne $env:TARGET_REF -or (git rev-parse HEAD).Trim() -cne $env:TARGET_REF) { throw "Diagnostic source identity differs." }
           $binding = $env:PACKAGE_BINDING | ConvertFrom-Json
-          if ($binding.sourceSha -cne "d1c29041ecbb60d0118f05f6d04674ea5ef4265e") { throw "Diagnostic package source differs from its fixed candidate." }
+          if ($binding.sourceSha -cne "0ec85fe1df0259ea6356091eadfa373bfbcdff32") { throw "Diagnostic package source differs from its fixed candidate." }
 
       - name: Qualify fresh native runner isolation
         if: ${{ inputs.installed_repair_worker }}
@@ -1423,8 +1423,8 @@ jobs:
           set -euo pipefail
           export PATH="$NODE_BIN:$PATH"
           node --import ./scripts/tsx.mjs --input-type=module -e 'import fs from "node:fs/promises"; import { readInput } from "./src/daemon/schtasks.installed-package.test-support.ts"; const input = await readInput(".artifacts/windows-schtasks/installed-input.json"); await fs.mkdir(input.stateRoot); await fs.mkdir(input.installRoot);'
-          git -c maintenance.auto=false -c gc.auto=0 fetch --no-tags --no-write-fetch-head --depth=1 https://github.com/openclaw/openclaw.git d1c29041ecbb60d0118f05f6d04674ea5ef4265e
-          node --import ./scripts/tsx.mjs --input-type=module -e 'import { verifyInstalledFingerprintSource } from "./src/daemon/schtasks.installed-fingerprint-observer.test-support.mts"; verifyInstalledFingerprintSource({sourceSha:"d1c29041ecbb60d0118f05f6d04674ea5ef4265e",toolingSha:process.env.GITHUB_SHA});'
+          git -c maintenance.auto=false -c gc.auto=0 fetch --no-tags --no-write-fetch-head --depth=1 https://github.com/openclaw/openclaw.git 0ec85fe1df0259ea6356091eadfa373bfbcdff32
+          node --import ./scripts/tsx.mjs --input-type=module -e 'import { verifyInstalledFingerprintSource } from "./src/daemon/schtasks.installed-fingerprint-observer.test-support.mts"; verifyInstalledFingerprintSource({sourceSha:"0ec85fe1df0259ea6356091eadfa373bfbcdff32",toolingSha:process.env.GITHUB_SHA});'
           node --import ./scripts/tsx.mjs src/daemon/schtasks.installed-package.test-support.ts prepare .artifacts/windows-schtasks/installed-input.json
           CI_WINDOWS_SCHTASKS_INTEGRATION=1 node scripts/prepare-vitest-worker-cache.mts
 
