@@ -420,6 +420,12 @@ content from the reviewed target package, and `claws remove` may delete an
 unchanged adopted file. Locally modified adopted files are retained and must be
 reconciled explicitly. Preview update and removal plans before applying them.
 
+Downgrading after adoption is not supported. Adoption stores an ownership marker
+that older builds do not understand and are intended to reject as unsafe during
+removal. Return to a build that supports workspace adoption to manage or remove
+that Claw. Do not delete the ownership marker to bypass the refusal: it protects
+the adopted directory and preserves the file-ownership record.
+
 With a local Gateway running, Claw add and update apply their plugin requirements
 before continuing to the agent, workspace, MCP, and cron phases. One bounded
 handoff reloads the affected packages after the package leases have been released;

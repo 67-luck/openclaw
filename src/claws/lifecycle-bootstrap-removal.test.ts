@@ -3,12 +3,12 @@ import { createHash } from "node:crypto";
 import syncFs from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import * as fsSafe from "@openclaw/fs-safe/root";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { readWorkspaceStateSnapshot } from "../agents/workspace-state-store.js";
 import { seedWorkspaceBootstrap } from "../agents/workspace.js";
 import type { OpenClawConfig } from "../config/config.js";
-import * as fsSafe from "../infra/fs-safe.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { applyClawAddPlan } from "./add.js";
 import { seedClawPackageBootstrap } from "./bootstrap.js";
@@ -19,6 +19,10 @@ import { deleteClawInstallRecord, persistClawInstallRecord } from "./provenance.
 import { stateEnv } from "./provenance.test-helpers.js";
 import { parseClawManifest } from "./schema.js";
 import { prepareClawBootstrapPublication, readClawWorkspaceAdoption } from "./workspace-origin.js";
+
+vi.mock(import("@openclaw/fs-safe/root"), async (importOriginal) => ({
+  ...(await importOriginal()),
+}));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => closeOpenClawStateDatabaseForTest());

@@ -1,6 +1,6 @@
 // Tests for planning Claw adds that adopt an existing workspace directory.
 import { createHash } from "node:crypto";
-import syncFs from "node:fs";
+import syncFs, * as syncFsExports from "node:fs";
 import { link, mkdir, readFile, rmdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { __setFsSafeTestHooksForTest } from "@openclaw/fs-safe/test-hooks";
@@ -21,6 +21,8 @@ import { parseClawManifest } from "./schema.js";
 import type { ClawManifest, ClawSourceIdentity } from "./types.js";
 import { prepareClawBootstrapPublication, readClawWorkspaceAdoption } from "./workspace-origin.js";
 import { readClawWorkspaceFiles } from "./workspace.js";
+
+vi.mock(import("node:fs"), async (importOriginal) => ({ ...(await importOriginal()) }));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -649,11 +651,26 @@ describe("planWorkspaceAdoptionTargets resume ownership", () => {
     });
   });
 
-  it("rebuilds and completes an adopted add after publication changes fallback birthtime and config fails", async () => {
+  it("resumes adoption after publication changes fallback file and directory birthtime and config fails", async () => {
     let birthtimeNs = 101n;
     const statSpy = substituteBirthtime(() => birthtimeNs);
     const realUnlink = syncFs.unlinkSync.bind(syncFs);
     let published = false;
+    const realLstat = syncFs.lstatSync.bind(syncFs);
+    // Child publication can change Node's fallback directory birth metadata, not its identity.
+    const directoryStatSpy = vi
+      .spyOn(syncFsExports, "lstatSync")
+      .mockImplementation((path, options) => {
+        const observed = realLstat(path, options);
+        if (published && observed?.isDirectory()) {
+          if (typeof observed.birthtimeMs === "bigint") {
+            observed.birthtimeMs += 1n;
+          } else {
+            observed.birthtimeMs += 1;
+          }
+        }
+        return observed;
+      });
     const unlinkSpy = vi.spyOn(syncFs, "unlinkSync").mockImplementation((filePath) => {
       realUnlink(filePath);
       if (String(filePath).endsWith("BOOTSTRAP.md")) {
@@ -785,6 +802,7 @@ describe("planWorkspaceAdoptionTargets resume ownership", () => {
       expect(readClawWorkspaceAdoption("worker", workspace, { env })).toEqual(workspaceOrigin);
     } finally {
       unlinkSpy.mockRestore();
+      directoryStatSpy.mockRestore();
       statSpy.mockRestore();
     }
   });

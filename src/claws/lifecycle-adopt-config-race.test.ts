@@ -1,6 +1,6 @@
 // Adoption must acquire config admission before writing or claiming workspace files.
 import { AsyncResource } from "node:async_hooks";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -13,8 +13,9 @@ import {
   closeOpenClawStateDatabaseForTest,
 } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import * as workspaceGuard from "./add-workspace-guard.js";
 import { applyClawAddPlan } from "./add.js";
-import { makeProvenancePlan, stateEnv } from "./provenance.test-helpers.js";
+import { makeProvenancePlan, readInstallRow, stateEnv } from "./provenance.test-helpers.js";
 import { readClawWorkspaceFiles } from "./workspace.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
@@ -47,6 +48,45 @@ async function expectUnclaimedWorkspace(workspace: string, env: NodeJS.ProcessEn
 }
 
 describe("applyClawAddPlan config admission exclusion", () => {
+  it("normalizes an adopted root replacement during pin acquisition", async () => {
+    const originalPin = workspaceGuard.pinAdoptedWorkspace;
+    const pinSpy = vi
+      .spyOn(workspaceGuard, "pinAdoptedWorkspace")
+      .mockImplementationOnce(async (workspace, identity) => {
+        await rename(workspace, `${workspace}-moved`);
+        await mkdir(workspace);
+        await writeFile(join(workspace, "operator.txt"), "replacement");
+        return await originalPin(workspace, identity);
+      });
+    try {
+      const root = tempDirs.make("claw-pin-admission-");
+      const workspace = join(root, "workspace");
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, "original.txt"), "original");
+      const { plan } = await makeProvenancePlan(
+        root,
+        {
+          schemaVersion: 1,
+          agent: { id: "worker" },
+        },
+        { workspace, adoptExistingWorkspace: true },
+      );
+      const commitConfig = vi.fn();
+      await expect(
+        applyClawAddPlan(plan, {
+          env: stateEnv(root),
+          consentPlanIntegrity: plan.planIntegrity,
+          commitConfig,
+        }),
+      ).rejects.toMatchObject({ code: "workspace_collision" });
+      expect(commitConfig).not.toHaveBeenCalled();
+      expect(readInstallRow("worker", root)).toBeUndefined();
+      expect(await readFile(join(workspace, "operator.txt"), "utf8")).toBe("replacement");
+      expect(await readFile(join(workspace + "-moved", "original.txt"), "utf8")).toBe("original");
+    } finally {
+      pinSpy.mockRestore();
+    }
+  });
   it.each(["same-workspace", "ancestor", "descendant", "same-agent-id"] as const)(
     "does not write or claim files ahead of a queued %s collision",
     async (collision) => {
