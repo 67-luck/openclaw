@@ -3866,7 +3866,7 @@ jobs:
             exit 1
           fi
           # Freeze GitHub's canonical merge snapshot once it contains the exact head.
-          # Base freshness belongs to the landing gate; chasing moving main here never converges.
+          # Base freshness belongs to the landing gate; chasing moving main here can never converge.
           prepared=false
           for attempt in {1..6}; do
             if python3 -I -S "$RUNNER_TEMP/ci-git-owner.py" --checkout-git 120 fetch --no-tags --depth=2 origin \
