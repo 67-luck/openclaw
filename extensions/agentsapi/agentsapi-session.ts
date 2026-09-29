@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { APIConnectionError, APIError, APIUserAbortError } from "openai";
 import type { Turn } from "openai/resources/beta/agents/sessions/turns";
+import { hasAgentHarnessCompletedAnswer } from "openclaw/plugin-sdk/agent-harness-attempt-runtime";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
@@ -677,13 +678,15 @@ export function createAgentsApiSession(options: {
         session.error !== null ||
         !last ||
         last.turn.id !== failedRead.turnId ||
-        last.turn.status !== "completed" ||
-        last.turn.error !== null ||
         failedRead.submission !== submission ||
         failedRead.inputCount !== admittedMessageCount ||
         observedInputItems.size !== admittedMessageCount ||
         !transcriptReady ||
-        !readAgentsApiFinalText(last.items).trim()
+        !hasAgentHarnessCompletedAnswer({
+          status: last.turn.status,
+          error: last.turn.error,
+          text: readAgentsApiFinalText(last.items),
+        })
       ) {
         return undefined;
       }

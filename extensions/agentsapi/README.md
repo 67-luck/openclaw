@@ -204,6 +204,8 @@ commits that saved final reply, including explicit `NO_REPLY`, without replaying
 input or tools. The read error remains in diagnostics. Missing or incomplete
 saved output, changed inputs, cancellation, and genuine native failures retain
 the unsuccessful outcome. Existing sessions need no reset or migration.
+Agents API and Codex share the harness's completed-answer eligibility check;
+each backend retains its native receipt, cancellation, and recovery fences.
 
 Saved sessions keep their native conversation, workspace, and original tool
 declarations when Gateway tools are added. Fresh sessions receive the current
