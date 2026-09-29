@@ -529,3 +529,115 @@ const input = createFixtureInput(process.stdin);
     await lifetime.cleanup();
   }
 });
+
+it.each(["missing", "invalid", "false", "query-threw", "early-exit", "complete"] as const)(
+  "retains nullable lifetime diagnostics without weakening admission (%s)",
+  async (scenario) => {
+    const source = fs.readFileSync(
+      new URL("../../scripts/qa/windows-fileio-integration-control.mjs", import.meta.url),
+      "utf8",
+    );
+    const ast = parse(source, { ecmaVersion: "latest", sourceType: "module" });
+    const main = ast.body.find(
+      (node) => node.type === "FunctionDeclaration" && node.id?.name === "main",
+    );
+    assert.ok(main?.type === "FunctionDeclaration");
+    const declaration = main.body.body.find(
+      (node) => node.type === "FunctionDeclaration" && node.id?.name === "nativeLifetimeControl",
+    );
+    assert.ok(declaration);
+    const outcomeKeys = [
+      "processLive",
+      "processInsideExit",
+      "processAfterExit",
+      "threadLive",
+      "threadInsideExit",
+      "threadAfterExit",
+      "naturalRelease",
+    ];
+    const observationKeys = [
+      "childHasExited",
+      "callCompleted",
+      "querySucceeded",
+      "creationMatches",
+      "eventNotBeforeCreation",
+      "exitTimePresent",
+      "eventNotAfterExit",
+      "containsTime",
+    ];
+    const emptyObservation = Object.fromEntries(observationKeys.map((key) => [key, null]));
+    const observed = {
+      childHasExited: scenario === "early-exit",
+      callCompleted: true,
+      querySucceeded: true,
+      creationMatches: true,
+      eventNotBeforeCreation: true,
+      exitTimePresent: false,
+      eventNotAfterExit: null,
+      containsTime: true,
+    };
+    const expectedObservation =
+      scenario === "query-threw"
+        ? { ...emptyObservation, callCompleted: false }
+        : scenario === "early-exit" || scenario === "complete"
+          ? observed
+          : emptyObservation;
+    const record: Record<string, unknown> = {
+      phase: "native-lifetime-control",
+      passed: true,
+      stage: "complete",
+      sourceSha256: "source",
+      dllSha256: "dll",
+      foreign: "PRIVATE_EXCEPTION_CANARY",
+    };
+    if (scenario === "missing") {
+      delete record.passed;
+    } else if (scenario === "invalid") {
+      record.passed = "true";
+    }
+    if (scenario !== "missing") {
+      for (const key of outcomeKeys) {
+        record[key] = scenario === "invalid" ? "true" : scenario === "complete";
+      }
+      record.processLiveObservation =
+        scenario === "invalid"
+          ? Object.fromEntries(observationKeys.map((key) => [key, "PRIVATE_EXCEPTION_CANARY"]))
+          : { ...expectedObservation, unknown: "PRIVATE_EXCEPTION_CANARY" };
+    }
+    const dependencies = {
+      assert,
+      path,
+      helper: "/synthetic-helper",
+      lifetime: {},
+      commands: [],
+      env: {},
+      hash: () => "script",
+      launchManaged: () => ({
+        completion: Promise.resolve(0),
+        receipt: { joined: true, jobObserved: true },
+        result: () => ({ stdout: JSON.stringify(record) }),
+      }),
+    };
+    const invoke = compileFunction(
+      `return ${source.slice(declaration.start, declaration.end)}`,
+      Object.keys(dependencies),
+    )(...Object.values(dependencies));
+    const cell: { nativeLifetimeControl?: Record<string, unknown> } = {};
+    const call = invoke({ sourceSha256: "source", dllSha256: "dll" }, cell);
+    if (scenario === "complete") {
+      await call;
+    } else {
+      await expect(call).rejects.toThrow(assert.AssertionError);
+    }
+    expect(cell.nativeLifetimeControl?.passed).toBe(
+      scenario === "missing" || scenario === "invalid" ? null : true,
+    );
+    expect(cell.nativeLifetimeControl?.processLiveObservation).toEqual(expectedObservation);
+    for (const key of outcomeKeys) {
+      expect(cell.nativeLifetimeControl?.[key]).toBe(
+        scenario === "missing" || scenario === "invalid" ? null : scenario === "complete",
+      );
+    }
+    expect(JSON.stringify(cell)).not.toContain("PRIVATE_EXCEPTION_CANARY");
+  },
+);

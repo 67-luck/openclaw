@@ -7,6 +7,17 @@ param(
 )
 $ErrorActionPreference='Stop'
 $stage='binding'
+function Get-ProcessLiveObservation {
+  $fields=@{childHasExited='ChildHasExited';callCompleted='ObservationCallCompleted';querySucceeded='QuerySucceeded';
+    creationMatches='CreationMatches';eventNotBeforeCreation='EventNotBeforeCreation';exitTimePresent='ExitTimePresent';
+    eventNotAfterExit='EventNotAfterExit';containsTime='ContainsTime'}
+  $type='FileTraceLifetimeControl' -as [type]
+  $facts=@{}
+  foreach($key in $fields.Keys) {
+    $facts[$key]=if($type){$type.GetField($fields[$key]).GetValue($null)}else{$null}
+  }
+  return $facts
+}
 try {
   if([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
     -not [Environment]::Is64BitProcess -or $PSVersionTable.PSEdition -cne 'Desktop' -or
@@ -30,6 +41,8 @@ public static class FileTraceLifetimeControl {
   [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetThreadTimes(IntPtr handle,out FileTime create,out FileTime exit,out FileTime kernel,out FileTime user);
   static long Stamp(FileTime value) { return unchecked((long)(((ulong)value.High << 32) | value.Low)); }
   public static string Stage="process-start";
+  public static bool? ChildHasExited,ObservationCallCompleted,QuerySucceeded,CreationMatches,
+    EventNotBeforeCreation,ExitTimePresent,EventNotAfterExit,ContainsTime;
   static void Require(bool value) { if(!value) throw new InvalidOperationException("Lifetime control assertion failed"); }
   public static void Run(string executable) {
     using(Process child=new Process()) {
@@ -50,8 +63,14 @@ public static class FileTraceLifetimeControl {
         lease=new OwnedFileTrace.ThreadLease((uint)child.Id,created,handle);
         long liveTime=DateTime.UtcNow.ToFileTimeUtc();
         Stage="process-live";
+        ObservationCallCompleted=false;
         OwnedFileTrace.ProcessTimeObservation live=lease.ObserveProcessTime(liveTime);
-        Require(!child.HasExited && live.ContainsTime && live.ExitTimePresent == false);
+        ObservationCallCompleted=true;
+        QuerySucceeded=live.QuerySucceeded;CreationMatches=live.CreationMatches;
+        EventNotBeforeCreation=live.EventNotBeforeCreation;ExitTimePresent=live.ExitTimePresent;
+        EventNotAfterExit=live.EventNotAfterExit;ContainsTime=live.ContainsTime;
+        bool childHasExited=child.HasExited;ChildHasExited=childHasExited;
+        Require(!childHasExited && live.ContainsTime && live.ExitTimePresent == false);
         child.StandardInput.WriteLine("release");child.StandardInput.Close();released=true;
         child.WaitForExit();Require(child.ExitCode == 0);
         Stage="process-exited";
@@ -118,10 +137,12 @@ public static class FileTraceLifetimeControl {
   try {[FileTraceLifetimeControl]::Run($current.MainModule.FileName)} finally {$current.Dispose()}
   @{phase='native-lifetime-control';passed=$true;stage='complete';sourceSha256=$ExpectedSourceSha256;
     dllSha256=$ExpectedDllSha256;processLive=$true;processInsideExit=$true;processAfterExit=$true;
-    threadLive=$true;threadInsideExit=$true;threadAfterExit=$true;naturalRelease=$true} | ConvertTo-Json -Compress
+    threadLive=$true;threadInsideExit=$true;threadAfterExit=$true;naturalRelease=$true;
+    processLiveObservation=(Get-ProcessLiveObservation)} | ConvertTo-Json -Depth 3 -Compress
 } catch {
   $controlType='FileTraceLifetimeControl' -as [type]
   if($controlType){$stage=$controlType.GetField('Stage').GetValue($null)}
-  @{phase='native-lifetime-control';passed=$false;stage=$stage} | ConvertTo-Json -Compress
+  @{phase='native-lifetime-control';passed=$false;stage=$stage;
+    processLiveObservation=(Get-ProcessLiveObservation)} | ConvertTo-Json -Depth 3 -Compress
   exit 2
 }

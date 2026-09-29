@@ -538,14 +538,33 @@ async function main() {
       "threadAfterExit",
       "naturalRelease",
     ];
-    const facts = Object.fromEntries(fields.map((field) => [field, record[field] === true]));
+    const facts = Object.fromEntries(
+      fields.map((field) => [field, typeof record[field] === "boolean" ? record[field] : null]),
+    );
+    const observationFields = [
+      "childHasExited",
+      "callCompleted",
+      "querySucceeded",
+      "creationMatches",
+      "eventNotBeforeCreation",
+      "exitTimePresent",
+      "eventNotAfterExit",
+      "containsTime",
+    ];
+    const processLiveObservation = Object.fromEntries(
+      observationFields.map((field) => {
+        const value = record.processLiveObservation?.[field];
+        return [field, typeof value === "boolean" ? value : null];
+      }),
+    );
     cell.nativeLifetimeControl = {
-      passed: record.passed === true,
+      passed: typeof record.passed === "boolean" ? record.passed : null,
       stage: stages.includes(record.stage) ? record.stage : "unknown",
       scriptSha256,
       sourceSha256: descriptor.sourceSha256,
       dllSha256: descriptor.dllSha256,
       ...facts,
+      processLiveObservation,
     };
     assert.equal(code, 0);
     assert.ok(control.receipt.joined && control.receipt.jobObserved);
@@ -555,7 +574,7 @@ async function main() {
     assert.equal(hash(script), scriptSha256);
     assert.equal(cell.nativeLifetimeControl.stage, "complete");
     assert.equal(cell.nativeLifetimeControl.passed, true);
-    assert.ok(Object.values(facts).every((value) => value));
+    assert.ok(Object.values(facts).every((value) => value === true));
   }
   async function runCell(name, fixtureMode) {
     const rootDir = path.join(privateRoot, name);
