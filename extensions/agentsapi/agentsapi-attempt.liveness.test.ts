@@ -198,6 +198,56 @@ describe("Agents API ordinary attempt completion liveness", () => {
     expect(fixture.onRunProgress).not.toHaveBeenCalled();
   });
 
+  it("dispatches a required action while a quiet saved-state read is stalled", async () => {
+    const fixture = await createAttempt();
+    const running = await fixture.start();
+    const stalledRead = fixture.delayNextSessionRead();
+    try {
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(stalledRead.started).toBe(true);
+      fixture.saved.turns = [{ ...completedTurn, status: "waiting", completed_at: null }];
+      fixture.saved.session.status = "requires_action";
+      fixture.saved.session.required_actions = [
+        {
+          type: "function_call",
+          turn_id: completedTurn.id,
+          call_id: "arriving-function-fixture",
+          name: "unavailable_fixture_tool",
+          arguments: {},
+        },
+      ];
+
+      // Awaiting the event receipt here would hang behind the stalled read on the defect.
+      void fixture.stream.send({ type: "agent.session.requires_action" });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const toolStarts = fixture.onAgentEvent.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.stream === "tool" && event.data.phase === "start");
+      expect(toolStarts).toMatchObject([
+        {
+          stream: "tool",
+          data: {
+            phase: "start",
+            name: "unavailable_fixture_tool",
+            toolCallId: "arriving-function-fixture",
+            args: {},
+          },
+        },
+      ]);
+      expect(stalledRead.released).toBe(false);
+      expect(running.completed()).toBe(false);
+      expect(
+        fixture.inputEvents.filter((type) => type === "agent.session.input.message"),
+      ).toHaveLength(1);
+    } finally {
+      fixture.controller.abort(new Error("Fixture caller stopped after observing action dispatch"));
+      stalledRead.release();
+    }
+    const result = await running.result;
+    expect(result.terminal).toEqual({ kind: "aborted", source: "external" });
+  });
+
   it.each([
     { resource: "turns", status: 429 },
     { resource: "items", status: 503 },

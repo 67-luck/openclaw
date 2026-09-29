@@ -60,6 +60,7 @@ export async function createAttemptFixture(options: {
   const pendingReadFailures: ReadFailure[] = [];
   const failedReads: ReadFailure[] = [];
   let sessionRead: ReturnType<typeof deferred<void>> | undefined;
+  let delayedSessionRead: ReturnType<typeof createDelayedRead> | undefined;
   fetchWithSsrFGuardMock.mockImplementation(async (request) => {
     request.beforeRequest?.();
     const pathname = new URL(request.url).pathname;
@@ -103,12 +104,18 @@ export async function createAttemptFixture(options: {
       response = Response.json(saved.session);
       sessionRead?.resolve();
       sessionRead = undefined;
+      const delayedRead = delayedSessionRead;
+      delayedSessionRead = undefined;
+      if (delayedRead) {
+        await delayedRead.wait(request.signal);
+      }
     } else {
       throw new Error(`Unexpected fixture request: ${request.init?.method} ${pathname}`);
     }
     return { response, finalUrl: request.url, release: async () => {} };
   });
   const onPartialReply = vi.fn<NonNullable<AgentHarnessAttemptParamsV2["onPartialReply"]>>();
+  const onAgentEvent = vi.fn<NonNullable<AgentHarnessAttemptParamsV2["onAgentEvent"]>>();
   const onRunProgress = vi.fn<NonNullable<AgentHarnessAttemptParamsV2["onRunProgress"]>>((event) =>
     stream.observe(event.reason),
   );
@@ -155,6 +162,7 @@ export async function createAttemptFixture(options: {
       waitForApproval: async () => undefined,
     },
     onPartialReply,
+    onAgentEvent,
     onRunProgress,
   };
   return {
@@ -164,6 +172,7 @@ export async function createAttemptFixture(options: {
     inputEvents,
     failedReads,
     onPartialReply,
+    onAgentEvent,
     onRunProgress,
     failNextRead: (resource: SavedResource, status: number) => {
       pendingReadFailures.push({ resource, status });
@@ -183,6 +192,10 @@ export async function createAttemptFixture(options: {
     nextSessionRead: () => {
       sessionRead = deferred<void>();
       return sessionRead.promise;
+    },
+    delayNextSessionRead: () => {
+      delayedSessionRead = createDelayedRead();
+      return delayedSessionRead;
     },
     transcript: () => SessionManager.open(target, workspaceDir).buildSessionContext().messages,
     start: async () => {
@@ -213,6 +226,38 @@ export async function createAttemptFixture(options: {
       ]);
       await vi.advanceTimersByTimeAsync(0);
       return { result, completed: () => completed };
+    },
+  };
+}
+
+function createDelayedRead() {
+  const response = deferred<void>();
+  let started = false;
+  let released = false;
+  return {
+    get started() {
+      return started;
+    },
+    get released() {
+      return released;
+    },
+    release() {
+      released = true;
+      response.resolve();
+    },
+    async wait(signal?: AbortSignal) {
+      started = true;
+      signal?.throwIfAborted();
+      let onAbort = () => {};
+      const aborted = new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(new Error("Fixture read aborted", { cause: signal?.reason }));
+        signal?.addEventListener("abort", onAbort, { once: true });
+      });
+      try {
+        await Promise.race([response.promise, aborted]);
+      } finally {
+        signal?.removeEventListener("abort", onAbort);
+      }
     },
   };
 }

@@ -1,9 +1,10 @@
-import { APIConnectionError, APIError } from "openai";
+import { APIConnectionError, APIError, APIUserAbortError } from "openai";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { AgentsApiError } from "./agentsapi-client.js";
 
-export function isTransientReadFailure(error: unknown): boolean {
+export function isOptionalReadFailure(error: unknown, signal: AbortSignal): boolean {
   return (
+    (signal.aborted && (error === signal.reason || error instanceof APIUserAbortError)) ||
     error instanceof APIConnectionError ||
     (error instanceof APIError && (error.status === 429 || (error.status ?? 0) >= 500))
   );

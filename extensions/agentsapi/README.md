@@ -74,6 +74,8 @@ These checks do not resubmit input or extend the run's deadline.
 Transient read failures retry on the next quiet-stream check within that same
 deadline; authentication errors and native failures still end the attempt.
 Quiet completion checks leave required host actions to their existing event-driven path.
+An arriving stream event interrupts an optional saved-state read so a slow read
+cannot hold up the event handler.
 
 Memory Core dreaming can generate its diary narrative in a fresh Agents API
 session without an executor, supplied functions, native web search, vaults, or

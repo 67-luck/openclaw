@@ -1,5 +1,4 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { APIUserAbortError } from "openai";
 import type { Turn } from "openai/resources/beta/agents/sessions/turns";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
@@ -10,7 +9,7 @@ import {
   type AgentsApiFunctionCall,
   type AgentsApiItem,
 } from "./agentsapi-client.js";
-import { isTransientReadFailure, isTransportDisconnect } from "./agentsapi-session-errors.js";
+import { isOptionalReadFailure, isTransportDisconnect } from "./agentsapi-session-errors.js";
 import type { AgentsApiToolExecutionResult } from "./agentsapi-tools.js";
 
 /** Native input receipts and session idle, together, establish Agents API completion. */
@@ -308,10 +307,7 @@ export function createAgentsApiSession(options: {
         } catch (error) {
           signal.throwIfAborted();
           assertCurrent();
-          const prefixAborted =
-            prefixSignal.aborted &&
-            (error === prefixSignal.reason || error instanceof APIUserAbortError);
-          if (!prefixAborted && !isTransientReadFailure(error)) {
+          if (!isOptionalReadFailure(error, prefixSignal)) {
             throw error;
           }
           options.onTranscriptOrderingGap?.();
@@ -431,15 +427,24 @@ export function createAgentsApiSession(options: {
         const admittedCount = admittedMessageCount;
         let snapshot: Awaited<ReturnType<typeof readSavedState>>;
         let session: Awaited<ReturnType<AgentsApiClient["session"]>>;
+        const probe = quietProbe ? new AbortController() : undefined;
+        const readSignal = probe ? AbortSignal.any([signal, probe.signal]) : signal;
+        if (probe) {
+          // Interrupt only optional reads. The loop awaits their cancellation
+          // before handling the event; projection keeps the attempt's signal.
+          const interrupt = () => probe.abort();
+          void nextEvent.then(interrupt, interrupt);
+        }
         try {
-          snapshot = await readSavedState(client, signal);
+          snapshot = await readSavedState(client, readSignal);
           assertCurrent();
-          session = await client.session(sessionId, signal);
+          session = await client.session(sessionId, readSignal);
+          readSignal.throwIfAborted();
           assertCurrent();
         } catch (error) {
           signal.throwIfAborted();
           assertCurrent();
-          if (!quietProbe || !isTransientReadFailure(error)) {
+          if (!quietProbe || !isOptionalReadFailure(error, readSignal)) {
             throw error;
           }
           // An optional probe must not retire healthy native work. Only reads
