@@ -1575,7 +1575,9 @@ where
                     Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) => {
                         let Ok(text) = message.into_text() else { continue; };
                         match serde_json::from_str::<IncomingFrame>(text.as_str()) {
-                            Ok(IncomingFrame::Event { .. }) => {
+                            Ok(frame @ IncomingFrame::Event { .. }) => {
+                                // Validation is complete; release its payload before retaining raw bytes.
+                                drop(frame);
                                 events.publish(Arc::from(text.as_str()));
                             }
                             Ok(IncomingFrame::Response { id, ok, payload, error }) => {
