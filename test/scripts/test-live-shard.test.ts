@@ -448,6 +448,21 @@ describe("scripts/test-live-shard", () => {
       "OPENCLAW_LIVE_SUBAGENT_STRESS",
     ],
     ["src/agents/tools/sessions-send-peer.live.test.ts", "OPENCLAW_LIVE_SUBAGENT_STRESS"],
+    ["extensions/anthropic/cli-output.compaction.live.test.ts", "OPENCLAW_LIVE_CLAUDE_COMPACTION"],
+    [
+      "extensions/codex/src/app-server/approval-requester.real-binary.live.test.ts",
+      "OPENCLAW_LIVE_CODEX_APPROVAL_REQUESTER",
+    ],
+    [
+      "extensions/codex/src/app-server/async-questions.real-binary.live.test.ts",
+      "OPENCLAW_LIVE_CODEX_ASYNC_QUESTIONS",
+    ],
+    [
+      "extensions/codex/src/app-server/thread-lifecycle.restricted-mcp.real-binary.live.test.ts",
+      "OPENCLAW_LIVE_CODEX_RESTRICTED_MCP",
+    ],
+    ["extensions/ollama/ollama.live.test.ts", "OPENCLAW_LIVE_OLLAMA"],
+    ["extensions/twitch/src/plugin.live.test.ts", "TWITCH_LIVE_TEST"],
     [
       "src/agents/cli-runner/execute.compaction-watchdog.claude.live.test.ts",
       "OPENCLAW_LIVE_CLAUDE_COMPACTION",
