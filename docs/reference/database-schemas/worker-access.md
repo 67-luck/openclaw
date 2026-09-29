@@ -558,8 +558,11 @@ intent and current live objects without treating a stale resident snapshot as
 fresh durable state. Reaper maintenance uses the existing compact subagent
 projection, with a fresh protection check at the worker commit boundary.
 The batch keeps one synchronous transaction and the existing archive,
-publication, rollback, and uncertain-outcome owners. Native harness mutation
-objects remain with their process-held owner. No cross-database atomicity,
+publication, rollback, and uncertain-outcome owners. Confirmed lifecycle removals
+publish known absence for retained generations that were still available, before
+observers run. Previously unavailable generations stay unavailable and require
+fresh preparation. Other reclamation invalidations do not prove removal.
+Native harness mutation objects remain with their process-held owner. No cross-database atomicity,
 retention change, or new update step is introduced.
 
 Cron retention discovery uses a separate, single-worker maintenance lane within the

@@ -349,6 +349,10 @@ async function runPreparedSqliteSessionReclamation(
                     agentId: plan.databaseOptions.agentId,
                     storePath: owner.nativeLocation,
                     databaseIdentity: identity,
+                    removedSessionKeys:
+                      completed.kind === "lifecycle-projection-commit"
+                        ? new Set(completed.value.removedSessionKeys)
+                        : undefined,
                   },
                   collectReclamationChangedSessionKeys(plan, completed),
                   () => {

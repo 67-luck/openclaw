@@ -143,6 +143,15 @@ export function emitPreparedSessionSharingChange(
   sessionChanges.emit(change, database.db);
 }
 
+function invalidateSessionEntryCaches(databaseIdentity: string): void {
+  invalidateOpenClawAgentWritableProjections(databaseIdentity, (database) =>
+    sessionEntryCaches.delete(database),
+  );
+  invalidateOpenClawAgentReadOnlyProjections(databaseIdentity, (database) =>
+    sessionEntryCaches.delete(database),
+  );
+}
+
 /** A committed metadata-only worker write invalidates caches without changing retained identity. */
 export function publishSessionEntryWorkerMetadataInvalidation(params: {
   agentId: string;
@@ -150,12 +159,7 @@ export function publishSessionEntryWorkerMetadataInvalidation(params: {
   databaseIdentity: string;
   sessionKey: string;
 }): void {
-  invalidateOpenClawAgentWritableProjections(params.databaseIdentity, (database) =>
-    sessionEntryCaches.delete(database),
-  );
-  invalidateOpenClawAgentReadOnlyProjections(params.databaseIdentity, (database) =>
-    sessionEntryCaches.delete(database),
-  );
+  invalidateSessionEntryCaches(params.databaseIdentity);
   const change: SessionRowChange = {
     agentId: params.agentId,
     storePath: params.storePath,
@@ -514,20 +518,25 @@ function publishRetainedSessionEntryChange(
 
 /** A confirmed worker result invalidates row facts without opening a parent connection. */
 export function publishSessionEntryWorkerInvalidations(
-  params: { agentId: string; storePath: string; databaseIdentity: string },
+  params: {
+    agentId: string;
+    storePath: string;
+    databaseIdentity: string;
+    removedSessionKeys?: ReadonlySet<string>;
+  },
   changedKeys: readonly string[],
   beforePublicNotifications?: () => void,
 ): void {
   const keys = [...new Set(changedKeys)];
   const changes: SessionRowChange[] = [];
   for (const sessionKey of keys) {
-    // The commit is confirmed, but this result supplies no complete sharing postimage.
+    // Confirmed removal revokes generation custody; other invalidations remain unknown.
     publishRetainedSessionEntryChange(
       params.databaseIdentity,
       sessionKey,
       undefined,
       undefined,
-      false,
+      params.removedSessionKeys?.has(sessionKey) === true,
     );
     const change: SessionRowChange = {
       agentId: params.agentId,
@@ -539,12 +548,7 @@ export function publishSessionEntryWorkerInvalidations(
     changes.push(change);
   }
   if (keys.length > 0) {
-    invalidateOpenClawAgentWritableProjections(params.databaseIdentity, (database) =>
-      sessionEntryCaches.delete(database),
-    );
-    invalidateOpenClawAgentReadOnlyProjections(params.databaseIdentity, (database) =>
-      sessionEntryCaches.delete(database),
-    );
+    invalidateSessionEntryCaches(params.databaseIdentity);
   }
   sessionChanges.emitBatch(changes, undefined, beforePublicNotifications);
 }
@@ -625,12 +629,7 @@ export function retainSessionEntryWorkerPublication(params: {
         ]),
       ];
       if (changed.length) {
-        invalidateOpenClawAgentWritableProjections(params.databaseIdentity, (database) =>
-          sessionEntryCaches.delete(database),
-        );
-        invalidateOpenClawAgentReadOnlyProjections(params.databaseIdentity, (database) =>
-          sessionEntryCaches.delete(database),
-        );
+        invalidateSessionEntryCaches(params.databaseIdentity);
       }
       const changes: SessionRowChange[] = [];
       for (const sessionKey of changed) {
