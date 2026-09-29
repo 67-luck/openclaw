@@ -46,6 +46,14 @@ type PublicationView = (context: SessionRowReadView["state"]["rowContext"]) => {
   subagentRuns: SessionRowReadView["state"]["rowContext"]["subagentRuns"];
 };
 type RetainPublicationRow = (record: records.EntryRow, row?: GatewaySessionRow) => void;
+type PublicationChildren = {
+  targets: readonly {
+    query: records.Lookup;
+    target: ReturnType<SessionRowProjection["sharingTarget"]>;
+  }[];
+  revision: object | undefined;
+  valid: boolean;
+};
 
 function captureReadAccess(entry: records.EntryRow["entry"]): records.EntryRow["entry"] {
   return {
@@ -64,6 +72,53 @@ export function prepareSessionRowPublication(projection: SessionRowProjection, n
   let revision: object | undefined;
   let rows: PublicationRows = new WeakMap();
   let subagentRuns: SessionRowReadView["state"]["rowContext"]["subagentRuns"];
+  const childrenByRow = new WeakMap<GatewaySessionRow, PublicationChildren>();
+  const captureChildren = (agentId: string, row: GatewaySessionRow): PublicationChildren => {
+    const cached = childrenByRow.get(row);
+    if (cached) {
+      return cached;
+    }
+    let valid = true;
+    const keys = new Set([
+      ...(row.childSessions ?? []),
+      ...(row.swarm?.groups.flatMap(
+        (group) => group.children?.map((child) => child.sessionKey) ?? [],
+      ) ?? []),
+    ]);
+    const targets = [...keys].map((key) => {
+      const query = { agentId: parseAgentSessionKey(key)?.agentId ?? agentId, key };
+      const state = projection.sharingTargetState(query);
+      valid &&= state.status !== "pending";
+      return {
+        query,
+        target:
+          state.status === "ready"
+            ? { ...state.target, entry: captureReadAccess(state.target.entry) }
+            : null,
+      };
+    });
+    const captured = { targets, revision: projection.sharingRevision, valid };
+    childrenByRow.set(row, captured);
+    return captured;
+  };
+  const childrenCurrent = (
+    captured: PublicationChildren,
+    authorityRevision: object | undefined,
+  ) => {
+    if (captured.valid && captured.revision !== authorityRevision) {
+      captured.valid = captured.targets.every(({ query, target }) => {
+        const current = projection.sharingTargetState(query);
+        return target
+          ? current.status === "ready" &&
+              current.target.generation === target.generation &&
+              current.target.storePath === target.storePath &&
+              !hasSessionReadAccessChanged(target.entry, current.target.entry)
+          : current.status === "missing";
+      });
+      captured.revision = authorityRevision;
+    }
+    return captured.valid;
+  };
   const view: PublicationView = (current) => {
     const sharingRevision = projection.sharingRevision;
     if (context !== current || revision !== sharingRevision || sharingRevision === undefined) {
@@ -99,14 +154,8 @@ export function prepareSessionRowPublication(projection: SessionRowProjection, n
         rows: Set<GatewaySessionRow>;
       }
     >();
-    const children = new Map<
-      string,
-      {
-        query: records.Lookup;
-        target?: SessionSharingTarget & { generation: string | symbol };
-        role?: ReturnType<typeof sharing.roleForTarget>;
-      }
-    >();
+    const children = new Set<PublicationChildren>();
+    let validatedSharing = sharing;
     let retired = false;
     let validatedRevision = projection.sharingRevision;
     let validatedModels = getGatewayPluginMetadataSnapshot();
@@ -125,31 +174,9 @@ export function prepareSessionRowPublication(projection: SessionRowProjection, n
       }
       if (row) {
         captured.rows.add(row);
-        const keys = new Set([
-          ...(row.childSessions ?? []),
-          ...(row.swarm?.groups.flatMap(
-            (group) => group.children?.map((child) => child.sessionKey) ?? [],
-          ) ?? []),
-        ]);
-        for (const key of keys) {
-          if (children.has(key)) {
-            continue;
-          }
-          const query = { agentId: parseAgentSessionKey(key)?.agentId ?? record.agentId, key };
-          const state = projection.sharingTargetState(query);
-          if (state.status === "pending") {
-            retired = true;
-          }
-          children.set(key, {
-            query,
-            ...(state.status === "ready"
-              ? {
-                  target: { ...state.target, entry: captureReadAccess(state.target.entry) },
-                  role: sharing.roleForTarget(state.target),
-                }
-              : {}),
-          });
-        }
+        const childFacts = captureChildren(record.agentId, row);
+        children.add(childFacts);
+        retired ||= !childFacts.valid;
       }
       validatedRevision = projection.sharingRevision;
     };
@@ -170,34 +197,27 @@ export function prepareSessionRowPublication(projection: SessionRowProjection, n
         const policyConfig = projection.getPolicyConfig();
         const profile = client.preparedSessionProfile;
         const scopes = JSON.stringify(client.connect.scopes);
-        if (
-          authorityRevision === validatedRevision &&
-          modelMetadata === validatedModels &&
-          policyConfig === validatedPolicy &&
-          profile === validatedProfile &&
-          scopes === validatedScopes
-        ) {
+        const sharingInputsChanged =
+          policyConfig !== validatedPolicy ||
+          profile !== validatedProfile ||
+          scopes !== validatedScopes;
+        const modelInputsChanged = sharingInputsChanged || modelMetadata !== validatedModels;
+        if (authorityRevision === validatedRevision && !modelInputsChanged) {
           return true;
         }
-        const currentSharing = prepareSharing();
-        const models = prepareOperatorModelPresentation({
-          cfg: projection.state.cfg,
-          policyConfig,
-          client,
-        });
-        for (const { query, target, role } of children.values()) {
-          const current = projection.sharingTargetState(query);
+        const currentSharing = sharingInputsChanged ? prepareSharing() : validatedSharing;
+        const models = modelInputsChanged
+          ? prepareOperatorModelPresentation({ cfg: projection.state.cfg, policyConfig, client })
+          : undefined;
+        for (const captured of children) {
           if (
-            current.status === "pending" ||
-            (target
-              ? current.status !== "ready" ||
-                current.target.generation !== target.generation ||
-                current.target.storePath !== target.storePath ||
-                hasSessionReadAccessChanged(target.entry, current.target.entry) ||
-                currentSharing.entryFilter?.(current.target.canonicalKey, current.target.entry) ===
-                  false ||
-                currentSharing.roleForTarget(current.target) !== role
-              : current.status !== "missing")
+            !childrenCurrent(captured, authorityRevision) ||
+            (sharingInputsChanged &&
+              captured.targets.some(
+                ({ target }) =>
+                  target &&
+                  currentSharing.entryFilter?.(target.canonicalKey, target.entry) === false,
+              ))
           ) {
             retired = true;
             return false;
@@ -223,12 +243,13 @@ export function prepareSessionRowPublication(projection: SessionRowProjection, n
             hasSessionReadAccessChanged(captured.entry, target.entry) ||
             currentSharing.entryFilter?.(target.canonicalKey, target.entry) === false ||
             currentSharing.roleForTarget(target) !== captured.role ||
-            [...captured.rows].some((row) => models && models.session(row) !== row)
+            (models && [...captured.rows].some((row) => models.session(row) !== row))
           ) {
             retired = true;
             return false;
           }
         }
+        validatedSharing = currentSharing;
         validatedRevision = authorityRevision;
         validatedModels = modelMetadata;
         validatedPolicy = policyConfig;

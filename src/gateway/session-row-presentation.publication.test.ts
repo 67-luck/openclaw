@@ -155,7 +155,7 @@ it("delivers queued lifecycle receipts but rejects reset, ancestor revocation, a
   });
 });
 
-it("retains visible child identity and membership authority", async () => {
+it("shares child read facts across recipients while retaining their own row authority", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const viewer = ensureProfileForEmail("publication-member@example.test");
     const client = sharingPolicyClient({ user: viewer.id });
@@ -171,9 +171,10 @@ it("retains visible child identity and membership authority", async () => {
     });
     addSessionMember(parent, { identityId: viewer.id, addedBy: "owner" });
     const projection = await createSessionRowProjection({ cfg });
-    const publication = () => {
-      const present = prepareSessionRowPublication(projection, 1)(
-        client,
+    const presentRecipient = prepareSessionRowPublication(projection, 1);
+    const publication = (recipient = client) => {
+      const present = presentRecipient(
+        recipient,
         createVisibleActiveSessionRunProjector(
           { chatAbortControllers: new Map() },
           projection.state.rowContext.projectedAgentRuns,
@@ -186,9 +187,26 @@ it("retains visible child identity and membership authority", async () => {
       return present;
     };
     try {
+      const reads = vi.spyOn(projection, "sharingTargetState");
+      const childReads = () =>
+        reads.mock.calls.filter(([query]) => query.key === child.sessionKey).length;
       const beforeMemberRemoval = publication();
+      const secondRecipient = publication({ ...client, connect: { ...client.connect } });
+      expect(childReads()).toBe(1);
+      await patchSessionEntryCore(parent, () => ({ status: "running", outputTokens: 2 }));
+      await projection.ensureMaterialized();
+      expect(beforeMemberRemoval.isCurrent?.()).toBe(true);
+      expect(secondRecipient.isCurrent?.()).toBe(true);
+      expect(childReads()).toBe(2);
       removeSessionMember(parent, viewer.id);
       expect(beforeMemberRemoval.isCurrent?.()).toBe(false);
+      expect(secondRecipient.isCurrent?.()).toBe(false);
+      await projection.ensureMaterialized();
+      addSessionMember(child, { identityId: viewer.id, addedBy: "owner" });
+      await projection.ensureMaterialized();
+      const beforeChildMemberRemoval = publication();
+      removeSessionMember(child, viewer.id);
+      expect(beforeChildMemberRemoval.isCurrent?.()).toBe(true);
       await projection.ensureMaterialized();
       const beforeChildReset = publication();
       replaceSessionEntrySync(child, {
