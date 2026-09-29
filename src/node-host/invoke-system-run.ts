@@ -80,7 +80,7 @@ import {
 import {
   applyOutputTruncation,
   evaluateSystemRunAllowlist,
-  requiresSystemRunSuppressionApproval,
+  resolveSystemRunSuppressionPolicy,
   resolvePlannedAllowlistArgv,
   resolveSystemRunExecArgv,
 } from "./invoke-system-run-allowlist.js";
@@ -159,7 +159,7 @@ type SystemRunPolicyPhase = SystemRunParsePhase & {
   segments: ExecCommandSegment[];
   segmentSatisfiedBy: ExecSegmentSatisfiedBy[];
   authorizationPlan: ExecAuthorizationPlan | undefined;
-  plannedAllowlistArgv: string[] | undefined;
+  plannedExecArgv: string[] | undefined;
   isWindows: boolean;
   approvedCwdSnapshot: ApprovedCwdSnapshot | undefined;
   executableBinding: SystemRunMutableFileBinding | undefined;
@@ -584,12 +584,16 @@ async function evaluateSystemRunPolicyPhase(
     // Env sanitization uses broader shell-wrapper detection in parse phase.
     shellWrapperInvocation: parsed.shellPayload !== null,
   });
+  const suppression = resolveSystemRunSuppressionPolicy({
+    ...parsed,
+    trustedSafeBinDirs,
+    analysis: allowlistEvaluation,
+  });
+  const protectSuppressions = !(baseSecurity === "full" && baseAsk === "off" && !fallbackRequest);
   const requiresSecurityAuditSuppressionApproval =
-    requiresSystemRunSuppressionApproval({
-      ...parsed,
-      trustedSafeBinDirs,
-      analysis: allowlistEvaluation,
-    }) && !(baseSecurity === "full" && baseAsk === "off" && !fallbackRequest);
+    protectSuppressions && suppression.requiresApproval;
+  const inspectionArgv = protectSuppressions ? suppression.inspectionArgv : undefined;
+  const policyBound = security === "allowlist" || inspectionArgv !== undefined;
   if (forwardedAutoReview && requiresSecurityAuditSuppressionApproval) {
     await sendSystemRunDenied(opts, parsed.execution, {
       reason: "approval-required",
@@ -599,16 +603,11 @@ async function evaluateSystemRunPolicyPhase(
   }
   if (requiresSecurityAuditSuppressionApproval && !policy.approvedByAsk) {
     policy = {
+      ...policy,
       allowed: false,
       eventReason: "approval-required",
       errorMessage: "SYSTEM_RUN_DENIED: approval required",
-      analysisOk: policy.analysisOk,
-      allowlistSatisfied: policy.allowlistSatisfied,
-      shellWrapperBlocked: policy.shellWrapperBlocked,
-      windowsShellWrapperBlocked: policy.windowsShellWrapperBlocked,
       requiresAsk: true,
-      approvalDecision: policy.approvalDecision,
-      approvedByAsk: policy.approvedByAsk,
     };
   }
   let autoReviewDeferredMessage: string | undefined;
@@ -631,10 +630,7 @@ async function evaluateSystemRunPolicyPhase(
   let executableBinding: SystemRunMutableFileBinding | undefined;
   if (
     security !== "deny" &&
-    (policy.approvedByAsk ||
-      fallbackRequest ||
-      security === "allowlist" ||
-      effectivePolicy.autoReview)
+    (policy.approvedByAsk || fallbackRequest || policyBound || effectivePolicy.autoReview)
   ) {
     const prepared = prepareSystemRunExecutableIdentityBinding({
       segments,
@@ -811,7 +807,7 @@ async function evaluateSystemRunPolicyPhase(
   }
   let executionCwd = hardenedPaths.cwd;
   let approvedCwdSnapshot = approvalContextBound ? hardenedPaths.approvedCwdSnapshot : undefined;
-  if (security === "allowlist" && !approvedCwdSnapshot) {
+  if (policyBound && !approvedCwdSnapshot) {
     const capturedCwd = captureApprovedCwdSnapshotSync(executionCwd ?? process.cwd());
     if (!capturedCwd.ok) {
       await sendSystemRunDenied(opts, parsed.execution, {
@@ -823,7 +819,7 @@ async function evaluateSystemRunPolicyPhase(
     executionCwd = capturedCwd.snapshot.cwd;
     approvedCwdSnapshot = capturedCwd.snapshot;
   }
-  if ((approvalContextBound || security === "allowlist") && !approvedCwdSnapshot) {
+  if ((approvalContextBound || policyBound) && !approvedCwdSnapshot) {
     await sendSystemRunDenied(opts, parsed.execution, {
       reason: "approval-required",
       message: APPROVAL_CWD_DRIFT_DENIED_MESSAGE,
@@ -831,13 +827,15 @@ async function evaluateSystemRunPolicyPhase(
     return null;
   }
 
-  const plannedAllowlistArgv = resolvePlannedAllowlistArgv({
-    security,
-    shellCommand: parsed.shellPayload,
-    policy,
-    segments,
-  });
-  if (plannedAllowlistArgv === null) {
+  const plannedExecArgv =
+    inspectionArgv ??
+    resolvePlannedAllowlistArgv({
+      security,
+      shellCommand: parsed.shellPayload,
+      policy,
+      segments,
+    });
+  if (plannedExecArgv === null) {
     await sendSystemRunDenied(opts, parsed.execution, {
       reason: "execution-plan-miss",
       message: "SYSTEM_RUN_DENIED: execution plan mismatch",
@@ -864,7 +862,7 @@ async function evaluateSystemRunPolicyPhase(
     segments,
     segmentSatisfiedBy,
     authorizationPlan: allowlistEvaluation.authorizationPlan,
-    plannedAllowlistArgv: plannedAllowlistArgv ?? undefined,
+    plannedExecArgv: plannedExecArgv ?? undefined,
     isWindows,
     approvedCwdSnapshot,
     executableBinding,
@@ -950,7 +948,7 @@ async function executeSystemRunPhase(
     return;
   }
   const execArgv = await resolveSystemRunExecArgv({
-    plannedAllowlistArgv: phase.plannedAllowlistArgv,
+    plannedExecArgv: phase.plannedExecArgv,
     argv: phase.argv,
     security: phase.security,
     isWindows: phase.isWindows,

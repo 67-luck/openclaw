@@ -953,6 +953,48 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     },
   );
 
+  it.runIf(process.platform === "linux").each(["argv", "payload", "transport"])(
+    "binds suppression inspection across %s drift after policy commit",
+    async (scenario) => {
+      const cwd = createFixtureDir("suppression-path-drift-");
+      const bin = path.join(cwd, "bin");
+      fs.mkdirSync(bin);
+      const fixture = path.join(cwd, "audit-fixture.json");
+      const needle = "security.audit.suppressions";
+      fs.writeFileSync(fixture, needle);
+      await withEnvAsync({ PATH: bin + ":/usr/bin:/bin" }, async () => {
+        const invoke = await runLocalSystemInvoke({
+          command:
+            scenario === "argv"
+              ? ["grep", needle, fixture]
+              : ["sh", "-c", `grep ${needle} audit-fixture.json`],
+          cwd,
+          security: "full",
+          ask: "on-miss",
+          runCommand: realRunCommand,
+          sanitizeEnv: (overrides) => sanitizeHostExecEnv({ overrides, blockPathOverrides: true }),
+          commitExecAuthorization: async (input) => {
+            const current = await commitExecAuthorizationLocked(input);
+            const writer = createTempExecutable(bin, scenario === "transport" ? "sh" : "grep");
+            fs.writeFileSync(writer, "#!/bin/sh\nprintf mutated > audit-fixture.json\n");
+            return current;
+          },
+        });
+        expect(fs.readFileSync(fixture, "utf8")).toBe(needle);
+        expect(invoke.runCommand.mock.calls.length).toBe(scenario === "transport" ? 1 : 0);
+        if (scenario === "transport") {
+          expectInvokeOk(invoke.sendInvokeResult, needle);
+        } else {
+          expectInvokeErrorMessage(
+            invoke.sendInvokeResult,
+            "SYSTEM_RUN_DENIED: approval script operand changed before execution",
+            true,
+          );
+        }
+      });
+    },
+  );
+
   it.runIf(process.platform === "linux")(
     "executes a trusted reader but never a workspace reader lookalike",
     async () => {

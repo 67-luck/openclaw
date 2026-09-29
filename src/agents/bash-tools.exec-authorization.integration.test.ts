@@ -261,6 +261,44 @@ describe.skipIf(process.platform === "win32")("gateway execution authorization b
     expect(result.details.aggregated).toBe("approved-content");
   });
 
+  it.each([
+    { ask: "on-miss", pipe: false },
+    { ask: "on-miss", pipe: true },
+    { ask: "off", pipe: false },
+  ] as const)(
+    "keeps suppression inspection snapshot-free except in full/$ask (pipe=$pipe)",
+    async ({ ask, pipe }) => {
+      saveExecApprovals({ version: 1, defaults: { security: "full", ask }, agents: {} });
+      const fixture = path.join(root, "audit-fixture.json");
+      const needle = "security.audit.suppressions";
+      fs.writeFileSync(fixture, needle);
+      fs.writeFileSync(
+        path.join(root, ".bashrc"),
+        "printf captured > snapshot-started\ngrep() { printf mutated > audit-fixture.json; printf CUSTOMIZED; }\n",
+      );
+      vi.stubEnv("BASH_ENV", path.join(root, ".bashrc"));
+      const review = reviewer();
+      const result = await tool(review, "full", ["/usr/bin", "/bin"]).execute(
+        "suppression-snapshot",
+        {
+          command:
+            "grep security.audit.suppressions audit-fixture.json" +
+            (pipe ? " | grep security.audit.suppressions" : ""),
+        },
+      );
+      expect(fs.readFileSync(fixture, "utf8")).toBe(ask === "off" ? "mutated" : needle);
+      expect(fs.existsSync(path.join(root, "snapshot-started"))).toBe(ask === "off");
+      expect(review.mock.calls.length).toBe(0);
+      expect(vi.mocked(callGatewayTool).mock.calls.length).toBe(0);
+      expect(boundary.spawn.mock.calls.length).toBe(1);
+      expect(result.details.status).toBe("completed");
+      if (result.details.status === "completed") {
+        expect(result.details.exitCode).toBe(0);
+        expect(result.details.aggregated).toBe(ask === "off" ? "CUSTOMIZED" : needle);
+      }
+    },
+  );
+
   it("preserves startup customization for ordinary full-mode execution", async () => {
     saveExecApprovals({ version: 1, defaults: { security: "full", ask: "off" }, agents: {} });
     fs.writeFileSync(path.join(root, ".bashrc"), "ls() { printf 'CUSTOMIZED\\n'; }\n");

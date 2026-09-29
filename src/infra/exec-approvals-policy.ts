@@ -147,7 +147,8 @@ function isTrustedInspectionCommand(
   );
 }
 
-export function commandRequiresSecurityAuditSuppressionApproval(params: {
+/** File inspections require the execution host to preserve the analyzed dispatch. */
+export function resolveSecurityAuditSuppressionPolicy(params: {
   command: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -159,7 +160,7 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
   transportResolution?: CommandResolution;
   /** Remote preflight cannot resolve node executables; the node checks trust at dispatch. */
   deferReaderTrustToNode?: boolean;
-}): boolean {
+}): "none" | "inspection" | "approval" {
   if (
     !textMentionsSecurityAuditSuppressions(params.command) &&
     !textMentionsSecurityAuditSuppressions(params.originalArgv?.join(" ") ?? "") &&
@@ -167,7 +168,7 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
       textMentionsSecurityAuditSuppressions(segment.argv.join(" ")),
     )
   ) {
-    return false;
+    return "none";
   }
   if (
     hasPosixShellStartupBeforeInlineCommand(params.originalArgv ?? []) ||
@@ -175,7 +176,7 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
       !params.deferReaderTrustToNode &&
       !isTrustedInspectionCommand(params.transportResolution, params.trustedSafeBinDirs))
   ) {
-    return true;
+    return "approval";
   }
   const plan = params.authorizationPlan;
   if (plan === undefined) {
@@ -185,26 +186,28 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
     const argv = tokenizeWindowsSegment(params.command) ?? [];
     const analysisOk =
       params.analysisOk === undefined ? analyzeWindowsShellCommand(params).ok : params.analysisOk;
-    return !(
-      analysisOk &&
+    return analysisOk &&
       params.segments.length === 1 &&
       (segment?.raw ?? segment?.argv.join(" "))?.trim() === params.command.trim() &&
       argv.length === segment?.argv.length &&
       argv.every((arg, index) => arg === segment?.argv[index]) &&
       isReadOnlySecurityAuditSuppressionInspection(argv)
-    );
+      ? "none"
+      : "approval";
   }
   if (!plan.ok || plan.originalCommand !== params.command || plan.groups.length === 0) {
-    return true;
+    return "approval";
   }
   // A parsed prefix or a reader feeding a writer cannot exempt the whole command.
-  return !plan.groups.every(
+  let containsFileInspection = false;
+  const readOnly = plan.groups.every(
     (group) =>
       group.candidates.length > 0 &&
       group.candidates.every((candidate) => {
         const argv = candidate.sourceSegment.sourceArgv ?? candidate.sourceSegment.argv;
         const execution = candidate.sourceSegment.resolution?.execution;
         const configRead = isReadOnlySecurityAuditSuppressionInspection(argv);
+        containsFileInspection ||= !configRead;
         const wrapper =
           candidate.transport.kind === "shell-wrapper"
             ? candidate.transport.wrapperSegment
@@ -230,6 +233,14 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
         );
       }),
   );
+  return readOnly ? (containsFileInspection ? "inspection" : "none") : "approval";
+}
+
+/** Retains the shipped SDK boolean contract; hosts can consume the binding decision above. */
+export function commandRequiresSecurityAuditSuppressionApproval(
+  params: Parameters<typeof resolveSecurityAuditSuppressionPolicy>[0],
+): boolean {
+  return resolveSecurityAuditSuppressionPolicy(params) === "approval";
 }
 
 export function minSecurity(a: ExecSecurity, b: ExecSecurity): ExecSecurity {

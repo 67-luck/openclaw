@@ -14,7 +14,7 @@ import {
 
 function resolveWindowsShellExecArgv(segment: ExecCommandSegment) {
   return resolveSystemRunExecArgv({
-    plannedAllowlistArgv: undefined,
+    plannedExecArgv: undefined,
     argv: ["powershell.exe", "-Command", "safe --version"],
     security: "allowlist",
     isWindows: true,
@@ -94,7 +94,7 @@ describe("resolveSystemRunExecArgv", () => {
   it("fails closed for Windows opaque shell transports before inner argv rewrite", async () => {
     const trustedExecutable = "C:\\trusted-bin\\safe-tool.exe";
     const result = await resolveSystemRunExecArgv({
-      plannedAllowlistArgv: undefined,
+      plannedExecArgv: undefined,
       argv: ["nu.exe", "--commands", "safe-tool arg"],
       security: "allowlist",
       isWindows: true,
@@ -210,7 +210,7 @@ describe("resolveSystemRunExecArgv", () => {
         expect(analysis.allowlistSatisfied).toBe(true);
 
         const execArgv = await resolveSystemRunExecArgv({
-          plannedAllowlistArgv: undefined,
+          plannedExecArgv: undefined,
           argv: ["powershell.exe", "-Command", shellCommand],
           security: "allowlist",
           isWindows: true,
@@ -239,7 +239,7 @@ describe("resolveSystemRunExecArgv", () => {
     "fails closed when shell rewriting has no authorization plan",
     async () => {
       const result = await resolveSystemRunExecArgv({
-        plannedAllowlistArgv: undefined,
+        plannedExecArgv: undefined,
         argv: ["/bin/sh", "-lc", "head -c 16"],
         security: "allowlist",
         isWindows: false,
@@ -273,7 +273,7 @@ describe("resolveSystemRunExecArgv", () => {
       }
 
       const result = await resolveSystemRunExecArgv({
-        plannedAllowlistArgv: undefined,
+        plannedExecArgv: undefined,
         argv: ["nu", "--commands", "head -c 16"],
         security: "allowlist",
         isWindows: false,
