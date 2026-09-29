@@ -86,6 +86,7 @@ import {
   resolveExecHostApprovalContext,
   sendExecApprovalFollowupResult,
 } from "./bash-tools.exec-host-shared.js";
+import { canBindHostInspection } from "./bash-tools.exec-host-spawn.js";
 import { appendExecTimeoutRetryGuidance } from "./bash-tools.exec-output.js";
 import {
   createApprovalSlug,
@@ -669,7 +670,8 @@ export async function processGatewayAllowlist(
     !enforcedCommand;
   const requiresSecurityAuditSuppressionApproval =
     protectSuppressions &&
-    (suppressionPolicy === "approval" || (bindInspection && !enforcedCommand));
+    (suppressionPolicy === "approval" ||
+      (bindInspection && (!enforcedCommand || !canBindHostInspection(params))));
   const policyRequiresAsk =
     requiresExecApproval({
       ask: hostAsk,

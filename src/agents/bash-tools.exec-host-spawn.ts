@@ -1,7 +1,36 @@
+import path from "node:path";
+import { isTrustedInspectionCommand } from "../infra/exec-approvals-policy.js";
+import { resolveCommandResolutionFromArgv } from "../infra/exec-command-resolution.js";
+import {
+  hasPosixShellStartupBeforeInlineCommand,
+  POSIX_PARSEABLE_SHELL_WRAPPERS,
+} from "../infra/shell-wrapper-resolution.js";
+import type { ProcessGatewayAllowlistParams } from "./bash-tools.exec-host-gateway.types.js";
 import { wrapPosixCommandWithPathPrepend } from "./bash-tools.exec-path-prepend.js";
 import { buildGitHubExecLaunchArgv } from "./github-exec-launch.js";
 import { maybeWrapCommandWithShellSnapshot } from "./shell-snapshot.js";
 import { getShellConfig } from "./shell-utils.js";
+
+/** A pinned reader cannot attest startup code or a PATH-selected shell transport. */
+export function canBindHostInspection(
+  params: Pick<ProcessGatewayAllowlistParams, "command" | "workdir" | "env" | "trustedSafeBinDirs">,
+): boolean {
+  // Generic file-inspection bindings currently require a POSIX authorization plan.
+  if (process.platform === "win32") {
+    return false;
+  }
+  const { shell, args } = getShellConfig();
+  const argv = [shell, ...args, params.command];
+  return (
+    path.isAbsolute(shell) &&
+    POSIX_PARSEABLE_SHELL_WRAPPERS.has(path.basename(shell)) &&
+    !hasPosixShellStartupBeforeInlineCommand(argv) &&
+    isTrustedInspectionCommand(
+      resolveCommandResolutionFromArgv(argv, params.workdir, params.env) ?? undefined,
+      params.trustedSafeBinDirs,
+    )
+  );
+}
 
 export async function prepareHostExecSpawn(params: {
   command: string;

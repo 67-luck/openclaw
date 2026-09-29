@@ -132,7 +132,7 @@ function isReadOnlyFileInspection(argv: string[], env?: NodeJS.ProcessEnv): bool
   );
 }
 
-function isTrustedInspectionCommand(
+export function isTrustedInspectionCommand(
   resolution: CommandResolution | null | undefined,
   trustedDirs?: ReadonlySet<string>,
 ): boolean {
