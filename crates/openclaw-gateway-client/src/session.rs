@@ -15,23 +15,26 @@ use std::{
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, Semaphore};
 use tokio::time::Instant;
-use tokio_tungstenite::{
-    connect_async_tls_with_config,
-    tungstenite::{
-        client::IntoClientRequest,
-        http::{HeaderName, HeaderValue},
-        protocol::WebSocketConfig,
-        Error as TungsteniteError, Message,
-    },
-    Connector,
+use tokio_tungstenite::tungstenite::{
+    client::IntoClientRequest,
+    http::{HeaderName, HeaderValue},
+    Message,
 };
+#[cfg(feature = "builtin-transport")]
+use tokio_tungstenite::{
+    connect_async_tls_with_config, tungstenite::protocol::WebSocketConfig, Connector,
+};
+
+#[cfg(any(feature = "builtin-transport", test))]
+use tokio_tungstenite::tungstenite::Error as TungsteniteError;
 use url::{Host, Url};
 
+#[cfg(feature = "builtin-transport")]
+use crate::tls::{deferred_tls_config, pinned_tls_config, CapturedTlsCertificate};
 use crate::transport::BoundedWebSocket;
-use crate::{
-    deferred_tls_config, pinned_tls_config, CapturedTlsCertificate, GatewayWebSocket,
-    GatewayWebSocketConnector, TlsCertificatePolicy, TlsPeerCertificate, TlsTrust,
-};
+#[cfg(any(feature = "builtin-transport", test))]
+use crate::TlsPeerCertificate;
+use crate::{GatewayWebSocket, GatewayWebSocketConnector, TlsCertificatePolicy, TlsTrust};
 
 const DEFAULT_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -536,35 +539,29 @@ where
             "Gateway TLS certificate policy requires a wss:// URL".into(),
         ));
     }
-    let websocket_config = WebSocketConfig::default()
-        .max_message_size(Some(config.max_message_bytes))
-        .max_frame_size(Some(config.max_frame_bytes));
-    let connector = match config.tls_trust {
-        TlsTrust::SystemRoots => None,
-        TlsTrust::Pinned(expected) => Some(Connector::Rustls(Arc::new(
-            pinned_tls_config(expected).map_err(ClientError::Transport)?,
-        ))),
-    };
-    let secure_endpoint = config.request.uri().scheme_str() == Some("wss");
     let socket: Box<dyn GatewayWebSocket> = tokio::time::timeout(config.connect_timeout, async {
         if let Some(transport) = config.connector {
             transport
                 .connect(config.request, config.max_message_bytes)
                 .await
         } else {
-            let (socket, _) = if let Some(policy) = config.tls_certificate_policy {
-                connect_with_certificate_policy(config.request, websocket_config, policy).await?
-            } else {
-                connect_async_tls_with_config(
+            #[cfg(feature = "builtin-transport")]
+            {
+                connect_builtin(
                     config.request,
-                    Some(websocket_config),
-                    false,
-                    connector,
+                    config.max_message_bytes,
+                    config.max_frame_bytes,
+                    config.tls_trust,
+                    config.tls_certificate_policy,
                 )
                 .await
-                .map_err(|error| classify_connect_error(error, secure_endpoint))?
-            };
-            Ok(Box::new(socket) as Box<dyn GatewayWebSocket>)
+            }
+            #[cfg(not(feature = "builtin-transport"))]
+            {
+                Err(ClientError::Transport(
+                    "built-in Gateway transport is disabled; provide a WebSocket connector".into(),
+                ))
+            }
         }
     })
     .await
@@ -651,6 +648,35 @@ where
     })
 }
 
+#[cfg(feature = "builtin-transport")]
+async fn connect_builtin(
+    request: crate::WebSocketRequest<()>,
+    max_message_bytes: usize,
+    max_frame_bytes: usize,
+    tls_trust: TlsTrust,
+    tls_certificate_policy: Option<Arc<dyn TlsCertificatePolicy>>,
+) -> Result<Box<dyn GatewayWebSocket>, ClientError> {
+    let websocket_config = WebSocketConfig::default()
+        .max_message_size(Some(max_message_bytes))
+        .max_frame_size(Some(max_frame_bytes));
+    let connector = match tls_trust {
+        TlsTrust::SystemRoots => None,
+        TlsTrust::Pinned(expected) => Some(Connector::Rustls(Arc::new(
+            pinned_tls_config(expected).map_err(ClientError::Transport)?,
+        ))),
+    };
+    let secure_endpoint = request.uri().scheme_str() == Some("wss");
+    let (socket, _) = if let Some(policy) = tls_certificate_policy {
+        connect_with_certificate_policy(request, websocket_config, policy).await?
+    } else {
+        connect_async_tls_with_config(request, Some(websocket_config), false, connector)
+            .await
+            .map_err(|error| classify_connect_error(error, secure_endpoint))?
+    };
+    Ok(Box::new(socket) as Box<dyn GatewayWebSocket>)
+}
+
+#[cfg(feature = "builtin-transport")]
 async fn connect_with_certificate_policy(
     request: tokio_tungstenite::tungstenite::http::Request<()>,
     websocket_config: WebSocketConfig,
@@ -1617,6 +1643,7 @@ fn response_result(
     })
 }
 
+#[cfg(any(feature = "builtin-transport", test))]
 fn classify_connect_error(error: TungsteniteError, secure_endpoint: bool) -> ClientError {
     if matches!(error, TungsteniteError::Tls(_))
         || secure_endpoint
@@ -1729,6 +1756,34 @@ mod tests {
 
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Poll::Pending
+        }
+    }
+
+    #[cfg(not(feature = "builtin-transport"))]
+    #[tokio::test]
+    async fn missing_connector_fails_before_network_or_authentication() {
+        for scheme in ["ws", "wss"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let config = GatewayClientConfig::new(format!("{scheme}://{address}"))
+                .unwrap()
+                .connect_timeout(Duration::from_millis(20))
+                .challenge_timeout(Duration::from_millis(20));
+            let result = GatewayClient::connect(config, |_| async {
+                panic!("missing transport must not request authentication");
+                #[allow(unreachable_code)]
+                Ok::<Value, std::convert::Infallible>(json!({}))
+            })
+            .await;
+            assert!(
+                matches!(result, Err(ClientError::Transport(ref reason)) if reason ==
+                "built-in Gateway transport is disabled; provide a WebSocket connector")
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), listener.accept())
+                    .await
+                    .is_err()
+            );
         }
     }
 

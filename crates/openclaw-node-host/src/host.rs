@@ -782,7 +782,9 @@ const fn default_max_timeout_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "builtin-transport")]
     use futures_util::{SinkExt, StreamExt};
+    #[cfg(feature = "builtin-transport")]
     use tokio_tungstenite::{accept_async, tungstenite::Message};
 
     fn config_json(extra: &str) -> String {
@@ -855,6 +857,7 @@ mod tests {
         let _ = server.await;
     }
 
+    #[cfg(feature = "builtin-transport")]
     #[tokio::test]
     async fn rejected_adopted_device_token_retries_configured_auth_once() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -928,6 +931,7 @@ mod tests {
         server.await.unwrap();
     }
 
+    #[cfg(feature = "builtin-transport")]
     async fn send_test_json<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>, value: Value)
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -938,6 +942,7 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(feature = "builtin-transport")]
     async fn receive_test_json<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>) -> Value
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,

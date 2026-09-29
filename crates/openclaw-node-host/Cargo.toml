@@ -7,13 +7,17 @@ rust-version = "1.93"
 publish = false
 license = "MIT"
 
+[features]
+default = ["builtin-transport"]
+builtin-transport = ["openclaw-gateway-client/builtin-transport"]
+
 [dependencies]
 futures-util = "0.3.34"
 base64 = "0.23.1"
 ed25519-dalek = "3.0.0"
 getrandom = "0.4.3"
 hmac = "0.13.0"
-openclaw-gateway-client = { path = "../openclaw-gateway-client" }
+openclaw-gateway-client = { path = "../openclaw-gateway-client", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
@@ -39,6 +43,19 @@ pedantic = "warn"
 [[bin]]
 name = "openclaw-node"
 path = "src/main.rs"
+required-features = ["builtin-transport"]
 
 [dev-dependencies]
 tokio-tungstenite = "0.30.0"
+
+[[test]]
+name = "node_session"
+required-features = ["builtin-transport"]
+
+[[test]]
+name = "node_lifecycle"
+required-features = ["builtin-transport"]
+
+[[test]]
+name = "runtime_capacity"
+required-features = ["builtin-transport"]
