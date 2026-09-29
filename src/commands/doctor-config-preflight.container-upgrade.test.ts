@@ -172,8 +172,11 @@ describe("container image replacement Doctor repair and startup readiness", () =
   it("preserves completed repair evidence when a later session repair fails", async () => {
     await withContainerState(async (stateDir) => {
       seedSchema19Agent(stateDir);
-      vi.spyOn(sessionTranscripts, "noteSessionTranscriptHealth").mockRejectedValueOnce(
-        new Error("session repair failed"),
+      vi.spyOn(sessionTranscripts, "noteSessionTranscriptHealth").mockImplementationOnce(
+        async (options) => {
+          options?.onChanges?.(["Imported 1 legacy session entry(ies) into SQLite."]);
+          throw new Error("session repair failed");
+        },
       );
 
       const report = await runExternallyManagedDoctorRepair({
@@ -198,6 +201,10 @@ describe("container image replacement Doctor repair and startup readiness", () =
       expect(report.remaining).toContainEqual({
         stepId: "repair",
         message: "Repair stopped after an unexpected failure: session repair failed",
+      });
+      expect(report.applied).toContainEqual({
+        stepId: "session-state",
+        changes: ["Imported 1 legacy session entry(ies) into SQLite."],
       });
     });
   });

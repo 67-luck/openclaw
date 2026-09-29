@@ -275,6 +275,23 @@ describe("doctor session transcript repair", () => {
     ]);
   });
 
+  it("publishes committed imports before a later session repair fails", async () => {
+    runDoctorSessionSqlite.mockResolvedValueOnce(sessionSqliteReport({ importedEntries: 1 }));
+    migrateLegacyMainSessionKeys.mockRejectedValueOnce(new Error("legacy index is unreadable"));
+    const onChanges = vi.fn();
+
+    await expect(
+      noteSessionTranscriptHealth({
+        cfg: {},
+        env: { ...process.env, OPENCLAW_STATE_DIR: root },
+        shouldRepair: true,
+        onChanges,
+      }),
+    ).rejects.toThrow("legacy index is unreadable");
+
+    expect(onChanges).toHaveBeenCalledWith(["Imported 1 legacy session entry(ies) into SQLite."]);
+  });
+
   it("defers workspace writes while legacy-main source cleanup is incomplete", async () => {
     runDoctorSessionSqlite.mockResolvedValueOnce(sessionSqliteReport());
     migrateLegacyMainSessionKeys.mockResolvedValueOnce({
