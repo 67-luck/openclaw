@@ -155,12 +155,24 @@ describe("negotiated session receipt delivery", () => {
       });
       broadcastToConnIds("sessions.changed", { sessionKey, reason: "send" }, targets);
       expect(getBufferedAmount(client.connId)).toBeGreaterThan(0);
-      if (kind === "scope") client.connect.scopes = [];
-      if (kind === "sharing") allowed = false;
-      if (kind === "subscription") targets.clear();
-      if (kind === "profile") client.preparedRecipientProfileId = "new-profile";
-      if (kind === "socket") client.socket = replacement;
-      if (kind === "disconnect") socket.emit("close", 1000, Buffer.alloc(0));
+      if (kind === "scope") {
+        client.connect.scopes = [];
+      }
+      if (kind === "sharing") {
+        allowed = false;
+      }
+      if (kind === "subscription") {
+        targets.clear();
+      }
+      if (kind === "profile") {
+        client.preparedRecipientProfileId = "new-profile";
+      }
+      if (kind === "socket") {
+        client.socket = replacement;
+      }
+      if (kind === "disconnect") {
+        socket.emit("close", 1000, Buffer.alloc(0));
+      }
       vi.advanceTimersByTime(25);
       expect(socket.frames).toEqual([]);
       expect(replacement.frames).toEqual([]);

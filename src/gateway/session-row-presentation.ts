@@ -165,13 +165,13 @@ export function prepareSessionRowPublication(projection: SessionRowProjection, n
           retired = true;
           return false;
         }
-        const revision = projection.sharingRevision;
+        const authorityRevision = projection.sharingRevision;
         const modelMetadata = getGatewayPluginMetadataSnapshot();
         const policyConfig = projection.getPolicyConfig();
         const profile = client.preparedSessionProfile;
         const scopes = JSON.stringify(client.connect.scopes);
         if (
-          revision === validatedRevision &&
+          authorityRevision === validatedRevision &&
           modelMetadata === validatedModels &&
           policyConfig === validatedPolicy &&
           profile === validatedProfile &&
@@ -179,7 +179,7 @@ export function prepareSessionRowPublication(projection: SessionRowProjection, n
         ) {
           return true;
         }
-        const sharing = prepareSharing();
+        const currentSharing = prepareSharing();
         const models = prepareOperatorModelPresentation({
           cfg: projection.state.cfg,
           policyConfig,
@@ -194,9 +194,9 @@ export function prepareSessionRowPublication(projection: SessionRowProjection, n
                 current.target.generation !== target.generation ||
                 current.target.storePath !== target.storePath ||
                 hasSessionReadAccessChanged(target.entry, current.target.entry) ||
-                sharing.entryFilter?.(current.target.canonicalKey, current.target.entry) ===
+                currentSharing.entryFilter?.(current.target.canonicalKey, current.target.entry) ===
                   false ||
-                sharing.roleForTarget(current.target) !== role
+                currentSharing.roleForTarget(current.target) !== role
               : current.status !== "missing")
           ) {
             retired = true;
@@ -221,15 +221,15 @@ export function prepareSessionRowPublication(projection: SessionRowProjection, n
           if (
             !target ||
             hasSessionReadAccessChanged(captured.entry, target.entry) ||
-            sharing.entryFilter?.(target.canonicalKey, target.entry) === false ||
-            sharing.roleForTarget(target) !== captured.role ||
+            currentSharing.entryFilter?.(target.canonicalKey, target.entry) === false ||
+            currentSharing.roleForTarget(target) !== captured.role ||
             [...captured.rows].some((row) => models && models.session(row) !== row)
           ) {
             retired = true;
             return false;
           }
         }
-        validatedRevision = revision;
+        validatedRevision = authorityRevision;
         validatedModels = modelMetadata;
         validatedPolicy = policyConfig;
         validatedProfile = profile;

@@ -116,9 +116,9 @@ export function createGatewaySessionReceiptDelivery(params: {
           receipts: [],
           bytes: 0,
           close: () => {
-            const current = pending.get(client);
-            if (current?.socket === socket) {
-              take(current);
+            const held = pending.get(client);
+            if (held?.socket === socket) {
+              take(held);
             }
           },
         };
@@ -129,8 +129,10 @@ export function createGatewaySessionReceiptDelivery(params: {
       entry.bytes += receipt.bytes;
       timer ??= setTimeout(() => {
         timer = undefined;
-        for (const client of [...pending.keys()]) {
-          flush(client);
+        // Sends may synchronously enqueue the next burst.
+        const scheduledClients = [...pending.keys()];
+        for (const queuedClient of scheduledClients) {
+          flush(queuedClient);
         }
       }, BURST_MS);
       timer.unref?.();
