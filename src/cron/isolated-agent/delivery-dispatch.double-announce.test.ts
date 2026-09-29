@@ -90,10 +90,6 @@ vi.mock("../../config/sessions/main-session.js", () => ({
   resolveMainSessionKey: vi.fn(() => "global"),
 }));
 
-vi.mock("../../agents/subagents/registry/subagent-registry-read.js", () => ({
-  getLatestLiveSubagentRunByChildSessionKey: () => null,
-}));
-
 vi.mock("../../agents/agent-bundle-mcp-tools.js", () => ({
   retireSessionMcpRuntime: retireSessionMcpRuntimeMock,
 }));
