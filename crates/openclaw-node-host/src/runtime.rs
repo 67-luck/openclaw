@@ -484,15 +484,18 @@ impl CommandRuntime {
         session: &NodeSession,
         invocation: NodeInvocation,
     ) -> Result<(), RuntimeError> {
+        let (id, node_id) = (invocation.id.clone(), invocation.node_id.clone());
         if self
             .inner
             .handlers
             .get(&invocation.command)
             .is_some_and(|handler| handler.duplex)
         {
+            drop(invocation);
             return session
-                .complete_invocation(
-                    &invocation,
+                .complete_invocation_ids(
+                    &id,
+                    &node_id,
                     failure(
                         "DUPLEX_REQUIRES_RUN",
                         "duplex commands require CommandRuntime::run",
@@ -504,13 +507,15 @@ impl CommandRuntime {
         let scope = self.session_scope(session);
         let active = scope.active.clone();
         let Ok(permit) = self.inner.permits.clone().try_acquire_owned() else {
+            drop(invocation);
             let Ok(delivery) = scope.overload_permits.clone().try_acquire_owned() else {
                 session.close().await;
                 return Err(RuntimeError::DeliverySaturated);
             };
             let completion = session
-                .complete_invocation(
-                    &invocation,
+                .complete_invocation_ids(
+                    &id,
+                    &node_id,
                     failure("OVERLOADED", "command runtime is at its concurrency limit"),
                 )
                 .await;
@@ -519,7 +524,7 @@ impl CommandRuntime {
         };
         let evaluation = tokio::select! {
             evaluation = self.evaluate_with_scope(
-                invocation.clone(),
+                invocation,
                 active.clone(),
                 Some(session.clone()),
             ) => evaluation,
@@ -533,7 +538,7 @@ impl CommandRuntime {
             result,
             mut tracking,
         } = evaluation;
-        let completion = session.complete_invocation(&invocation, result).await;
+        let completion = session.complete_invocation_ids(&id, &node_id, result).await;
         if completion.is_ok() {
             if let Some(tracking) = tracking.as_mut() {
                 tracking.disarm();
@@ -560,12 +565,14 @@ impl CommandRuntime {
         let mut tasks = JoinSet::new();
         let active = self.session_scope(&session).active;
         let (overload_tx, mut overload_rx) =
-            tokio::sync::mpsc::channel(self.inner.delivery_capacity);
+            tokio::sync::mpsc::channel::<(String, String, InvocationResult)>(
+                self.inner.delivery_capacity,
+            );
         let overload_session = session.clone();
         let mut overload_task = tokio::spawn(async move {
-            while let Some((invocation, result)) = overload_rx.recv().await {
+            while let Some((id, node_id, result)) = overload_rx.recv().await {
                 overload_session
-                    .complete_invocation(&invocation, result)
+                    .complete_invocation_ids(&id, &node_id, result)
                     .await?;
             }
             Ok(())
@@ -575,43 +582,43 @@ impl CommandRuntime {
                 node_event = session.next_node_event() => {
                     match node_event {
                         Ok(NodeSessionEvent::Invocation(invocation)) => {
-                            match self.inner.permits.clone().try_acquire_owned() {
-                                Ok(permit) => {
-                                    self.spawn_handler_task(
-                                        &mut tasks,
-                                        &session,
-                                        &active,
-                                        invocation,
-                                        permit,
-                                    );
-                                }
-                                Err(_) => {
-                                    match overload_tx.try_send((
-                                        invocation,
-                                        failure(
-                                            "OVERLOADED",
-                                            "command runtime is at its concurrency limit",
-                                        ),
-                                    )) {
-                                        Ok(()) => {}
-                                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                            stop_runtime_tasks(
-                                                &active,
-                                                &mut tasks,
-                                                &mut overload_task,
-                                            ).await;
-                                            session.close().await;
-                                            return Err(RuntimeError::DeliverySaturated);
-                                        }
-                                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                            let error = runtime_task_failure(
-                                                (&mut overload_task).await,
-                                                "result delivery worker stopped",
-                                            );
-                                            stop_handler_tasks(&active, &mut tasks).await;
-                                            session.close().await;
-                                            return Err(error);
-                                        }
+                            if let Ok(permit) = self.inner.permits.clone().try_acquire_owned() {
+                                self.spawn_handler_task(
+                                    &mut tasks,
+                                    &session,
+                                    &active,
+                                    invocation,
+                                    permit,
+                                );
+                            } else {
+                                let (id, node_id) = (invocation.id.clone(), invocation.node_id.clone());
+                                drop(invocation);
+                                match overload_tx.try_send((
+                                    id,
+                                    node_id,
+                                    failure(
+                                        "OVERLOADED",
+                                        "command runtime is at its concurrency limit",
+                                    ),
+                                )) {
+                                    Ok(()) => {}
+                                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                        stop_runtime_tasks(
+                                            &active,
+                                            &mut tasks,
+                                            &mut overload_task,
+                                        ).await;
+                                        session.close().await;
+                                        return Err(RuntimeError::DeliverySaturated);
+                                    }
+                                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                        let error = runtime_task_failure(
+                                            (&mut overload_task).await,
+                                            "result delivery worker stopped",
+                                        );
+                                        stop_handler_tasks(&active, &mut tasks).await;
+                                        session.close().await;
+                                        return Err(error);
                                     }
                                 }
                             }
@@ -669,27 +676,30 @@ impl CommandRuntime {
             .get(&invocation.command)
             .is_some_and(|handler| handler.duplex);
         let tracking = active.track(&invocation.id, &invocation.node_id, &cancellation, duplex);
+        let (id, node_id) = (invocation.id.clone(), invocation.node_id.clone());
         tasks.spawn(async move {
             let Evaluation {
                 result,
                 mut tracking,
-            } = match tracking {
-                Some(tracking) => {
-                    runtime
-                        .evaluate_tracked(
-                            invocation.clone(),
-                            cancellation,
-                            tracking,
-                            Some(task_session.clone()),
-                        )
-                        .await
-                }
-                None => Evaluation::untracked(failure(
+            } = if let Some(tracking) = tracking {
+                runtime
+                    .evaluate_tracked(
+                        invocation,
+                        cancellation,
+                        tracking,
+                        Some(task_session.clone()),
+                    )
+                    .await
+            } else {
+                drop(invocation);
+                Evaluation::untracked(failure(
                     "DUPLICATE_INVOCATION",
                     "invocation id is already executing",
-                )),
+                ))
             };
-            let completion = task_session.complete_invocation(&invocation, result).await;
+            let completion = task_session
+                .complete_invocation_ids(&id, &node_id, result)
+                .await;
             if completion.is_ok() {
                 if let Some(tracking) = tracking.as_mut() {
                     tracking.disarm();
@@ -814,7 +824,7 @@ impl CommandRuntime {
         let input_overflow = tracking.input_overflow.clone();
         let Ok(future) = std::panic::catch_unwind(AssertUnwindSafe(|| {
             (registration.handler)(InvocationContext {
-                invocation: invocation.clone(),
+                invocation,
                 cancellation: cancellation.clone(),
                 io: duplex.io.clone(),
             })

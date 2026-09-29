@@ -936,10 +936,21 @@ impl NodeSession {
         invocation: &NodeInvocation,
         result: InvocationResult,
     ) -> Result<(), ClientError> {
+        self.complete_invocation_ids(&invocation.id, &invocation.node_id, result)
+            .await
+    }
+
+    // Runtime completion owns only correlation IDs once the handler owns its input.
+    pub(crate) async fn complete_invocation_ids(
+        &self,
+        id: &str,
+        node_id: &str,
+        result: InvocationResult,
+    ) -> Result<(), ClientError> {
         if !self.activated {
             return Err(ClientError::NotActivated);
         }
-        let params = invocation_result_params(invocation, result)?;
+        let params = invocation_result_params(id, node_id, result)?;
         self.gateway
             .request_delivery("node.invoke.result", params)
             .await
@@ -1038,7 +1049,8 @@ impl Serialize for SerializedPayload {
 }
 
 fn invocation_result_params(
-    invocation: &NodeInvocation,
+    id: &str,
+    node_id: &str,
     result: InvocationResult,
 ) -> Result<InvocationResultParams, ClientError> {
     let (ok, payload, error) = match result {
@@ -1051,8 +1063,8 @@ fn invocation_result_params(
     };
     Ok(InvocationResultParams {
         error,
-        id: invocation.id.clone(),
-        node_id: invocation.node_id.clone(),
+        id: id.to_owned(),
+        node_id: node_id.to_owned(),
         ok,
         payload,
     })
@@ -1280,7 +1292,8 @@ mod tests {
             ("[null,true,{}]", "[null,true,{}]"),
         ] {
             let params = invocation_result_params(
-                &invocation,
+                &invocation.id,
+                &invocation.node_id,
                 InvocationResult::success(serde_json::from_str(input).unwrap()),
             )
             .unwrap();
@@ -1352,7 +1365,8 @@ mod tests {
         assert!(parse_invocation_input(fixture["input"]["invalid"].clone()).is_err());
 
         let success = invocation_result_params(
-            &invocation,
+            &invocation.id,
+            &invocation.node_id,
             InvocationResult::success(fixture["results"]["success"]["payload"].clone()),
         )
         .expect("canonical success result");
@@ -1372,7 +1386,8 @@ mod tests {
             Value::Null,
         );
         let failure_params = invocation_result_params(
-            &failed_invocation,
+            &failed_invocation.id,
+            &failed_invocation.node_id,
             InvocationResult::failure(
                 failure["error"]["code"].as_str().expect("failure code"),
                 failure["error"]["message"]

@@ -387,11 +387,9 @@ async fn run_gateway(
                 name,
                 move |context| {
                     let native = Arc::clone(&admission);
-                    async move {
-                        native
-                            .admit(&context.invocation.id, &context.invocation.command)
-                            .await
-                    }
+                    let id = context.invocation.id;
+                    let command = context.invocation.command;
+                    async move { native.admit(&id, &command).await }
                 },
                 move |context| {
                     let native = Arc::clone(&handler);
@@ -418,11 +416,9 @@ async fn run_gateway(
             name,
             move |context| {
                 let native = Arc::clone(&admission);
-                async move {
-                    native
-                        .admit(&context.invocation.id, &context.invocation.command)
-                        .await
-                }
+                let id = context.invocation.id;
+                let command = context.invocation.command;
+                async move { native.admit(&id, &command).await }
             },
             move |context| {
                 let native = Arc::clone(&handler);
@@ -651,14 +647,18 @@ impl NativeHandlers {
                 node_id: invocation.node_id.clone(),
             },
         );
+        let request = json!({"type":"frame","frame": {
+            "type":"event","event":"node.invoke.request","payload":{
+                "id":invocation.id,"nodeId":invocation.node_id,"command":invocation.command,
+                "paramsJSON":invocation.received_params_json(),"timeoutMs":invocation.timeout_ms,
+                "sessionKey":invocation.session_key,"idempotencyKey":invocation.idempotency_key
+            }
+        }});
+        let (id, node_id) = (invocation.id.clone(), invocation.node_id.clone());
+        // The queued request owns its raw JSON; pending native work needs only IDs.
+        drop(invocation);
         self.outgoing
-            .send(json!({"type":"frame","frame": {
-                "type":"event","event":"node.invoke.request","payload":{
-                    "id":invocation.id,"nodeId":invocation.node_id,"command":invocation.command,
-                    "paramsJSON":invocation.received_params_json(),"timeoutMs":invocation.timeout_ms,
-                    "sessionKey":invocation.session_key,"idempotencyKey":invocation.idempotency_key
-                }
-            }}))
+            .send(request)
             .await
             .map_err(|_| HandlerError::new("UNAVAILABLE", "native supervisor disconnected"))?;
         let mut input_seq = 0u64;
@@ -674,7 +674,7 @@ impl NativeHandlers {
                     let Some(payload) = payload else { break Err(HandlerError::new("CANCELLED", "invocation input retired")); };
                     self.outgoing.send(json!({"type":"frame","frame":{
                         "type":"event","event":"node.invoke.input","payload":{
-                            "id":invocation.id,"nodeId":invocation.node_id,"seq":input_seq,"payloadJSON":payload
+                            "id":id,"nodeId":node_id,"seq":input_seq,"payloadJSON":payload
                         }
                     }})).await.map_err(|_| HandlerError::new("UNAVAILABLE", "native supervisor disconnected"))?;
                     input_seq += 1;
