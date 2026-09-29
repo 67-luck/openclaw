@@ -18,7 +18,7 @@ use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::{
     client::IntoClientRequest,
     http::{HeaderName, HeaderValue},
-    Message,
+    Bytes, Message,
 };
 #[cfg(feature = "builtin-transport")]
 use tokio_tungstenite::{
@@ -302,7 +302,7 @@ impl EventHubState {
 
 struct RetainedEvent {
     index: u64,
-    raw: Arc<str>,
+    raw: Box<[u8]>,
     // Only readers present at publication own this frame; later subscriptions start at the tail.
     remaining: usize,
 }
@@ -333,7 +333,9 @@ impl EventHub {
         }
     }
 
-    fn publish(&self, raw: Arc<str>) {
+    fn publish(&self, raw: Bytes) {
+        // Reclaim unique input storage, but never retain a slice of a larger shared buffer.
+        let raw = Vec::from(raw).into_boxed_slice();
         let mut state = self
             .state
             .lock()
@@ -1094,8 +1096,8 @@ async fn before_deadline<F: Future>(
     }
 }
 
-fn parse_retained_event(event: &str) -> Result<Event, ClientError> {
-    serde_json::from_str(event).map_err(|error| ClientError::InvalidFrame(error.to_string()))
+fn parse_retained_event(event: &[u8]) -> Result<Event, ClientError> {
+    serde_json::from_slice(event).map_err(|error| ClientError::InvalidFrame(error.to_string()))
 }
 
 fn closed_event_error(closed: &watch::Receiver<Option<SessionCloseCause>>) -> ClientError {
@@ -1578,7 +1580,7 @@ where
                             Ok(frame @ IncomingFrame::Event { .. }) => {
                                 // Validation is complete; release its payload before retaining raw bytes.
                                 drop(frame);
-                                events.publish(Arc::from(text.as_str()));
+                                events.publish(text.into());
                             }
                             Ok(IncomingFrame::Response { id, ok, payload, error }) => {
                                 if let Some(request) = pending.remove(&id) {
@@ -1921,8 +1923,8 @@ mod tests {
         let (_closed_tx, closed_rx) = watch::channel(None);
         let events = Arc::new(EventHub::new(3, 9));
         let mut subscription = events.subscribe(closed_rx);
-        events.publish(Arc::from(r#"{"a":1}"#));
-        events.publish(Arc::from(r#"{"b":2}"#));
+        events.publish(Bytes::from_static(br#"{"a":1}"#));
+        events.publish(Bytes::from_static(br#"{"b":2}"#));
         assert!(matches!(
             subscription.recv().await,
             Err(ClientError::EventLagged(1))
@@ -2036,8 +2038,8 @@ mod event_retention_tests {
     use super::*;
     use futures_util::FutureExt;
 
-    fn raw_event(sequence: u64, bytes: usize) -> Arc<str> {
-        Arc::from(
+    fn raw_event(sequence: u64, bytes: usize) -> Bytes {
+        Bytes::from(
             serde_json::json!({
                 "event": "node.retention", "seq": sequence, "payload": "x".repeat(bytes)
             })
@@ -2059,6 +2061,101 @@ mod event_retention_tests {
             Err(ClientError::Closed(reason)) if reason == "retention test close"));
     }
 
+    fn assert_retained(events: &EventHub, expected: &[(u64, usize)]) {
+        let state = events.state.lock().unwrap();
+        // The queue exclusively owns each Box; removing it releases that allocation.
+        assert_eq!(
+            state
+                .frames
+                .iter()
+                .map(|frame| (frame.index, frame.raw.len()))
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            state.retained_bytes,
+            expected.iter().map(|(_, bytes)| bytes).sum::<usize>()
+        );
+    }
+
+    #[test]
+    fn retained_storage_owns_only_visible_bytes_for_each_transport_backing() {
+        struct Backing {
+            bytes: Vec<u8>,
+            released: Arc<AtomicBool>,
+        }
+        impl AsRef<[u8]> for Backing {
+            fn as_ref(&self) -> &[u8] {
+                &self.bytes
+            }
+        }
+        impl Drop for Backing {
+            fn drop(&mut self) {
+                self.released.store(true, Ordering::Release);
+            }
+        }
+        const RAW: &str = r#"{"event":"node.é","payload":{"text":"😀\n\u00e9"},"seq":7}"#;
+        let mut spare = Vec::with_capacity(1024 * 1024);
+        spare.extend_from_slice(RAW.as_bytes());
+        let mut padded = vec![0xff; 1024 * 1024];
+        let range = 4096..4096 + RAW.len();
+        padded[range.clone()].copy_from_slice(RAW.as_bytes());
+        let sibling = Bytes::from(padded.clone());
+        let shared = sibling.slice(range.clone());
+        let released = Arc::new(AtomicBool::new(false));
+        let custom = Bytes::from_owner(Backing {
+            bytes: padded.clone(),
+            released: Arc::clone(&released),
+        })
+        .slice(range.clone());
+        for (name, input, original, custom_owner) in [
+            ("unique", Bytes::from(RAW.as_bytes().to_vec()), None, false),
+            ("spare capacity", Bytes::from(spare), None, false),
+            (
+                "unique slice",
+                Bytes::from(padded).slice(range.clone()),
+                None,
+                false,
+            ),
+            ("shared slice", shared, Some(sibling), false),
+            ("static", Bytes::from_static(RAW.as_bytes()), None, false),
+            ("custom owner", custom, None, true),
+        ] {
+            let (_closed, closed_rx) = watch::channel(None);
+            let events = Arc::new(EventHub::new(256, RAW.len()));
+            let receiver = events.subscribe(closed_rx);
+            events.publish(input);
+            assert_retained(&events, &[(0, RAW.len())]);
+            if custom_owner {
+                assert!(
+                    released.load(Ordering::Acquire),
+                    "backing must not outlive normalization"
+                );
+            }
+            if let Some(original) = original {
+                assert_eq!(&original[range.clone()], RAW.as_bytes(), "{name}");
+                assert!(original[..range.start].iter().all(|byte| *byte == 0xff));
+                assert!(original[range.end..].iter().all(|byte| *byte == 0xff));
+            }
+            // Inspect the actual retained allocation, not a cloned copy. This byte budget
+            // must exclude spare capacity and backing prefix/suffix even before delivery.
+            let retained = {
+                let mut state = events.state.lock().unwrap();
+                let frame = state.frames.pop_front().unwrap();
+                state.retained_bytes -= frame.raw.len();
+                frame.raw.into_vec()
+            };
+            assert_eq!(retained, RAW.as_bytes(), "{name}");
+            assert_eq!(
+                retained.capacity(),
+                RAW.len(),
+                "hidden backing capacity: {name}"
+            );
+            drop(receiver);
+            assert_retained(&events, &[]);
+        }
+    }
+
     #[tokio::test]
     async fn consumed_raw_storage_releases_after_every_current_reader_advances() {
         let (_closed, closed_rx) = watch::channel(None);
@@ -2066,18 +2163,12 @@ mod event_retention_tests {
         let mut initial = events.subscribe(closed_rx.clone());
         let mut independent = events.subscribe(closed_rx);
         let raw = raw_event(1, 256 * 1024);
-        let allocation = Arc::downgrade(&raw);
+        let raw_bytes = raw.len();
         events.publish(raw);
         assert_eq!(initial.recv().await.unwrap().seq, Some(1));
-        assert!(
-            allocation.upgrade().is_some(),
-            "slow independent reader still owns delivery"
-        );
+        assert_retained(&events, &[(0, raw_bytes)]);
         assert_eq!(independent.recv().await.unwrap().seq, Some(1));
-        assert!(
-            allocation.upgrade().is_none(),
-            "fully consumed raw storage must release while readers and session stay alive"
-        );
+        assert_retained(&events, &[]);
     }
 
     #[tokio::test]
@@ -2087,15 +2178,12 @@ mod event_retention_tests {
         let mut initial = events.subscribe(closed_rx.clone());
         let slow = events.subscribe(closed_rx);
         let raw = raw_event(1, 256 * 1024);
-        let allocation = Arc::downgrade(&raw);
+        let raw_bytes = raw.len();
         events.publish(raw);
         assert_eq!(initial.recv().await.unwrap().seq, Some(1));
-        assert!(allocation.upgrade().is_some());
+        assert_retained(&events, &[(0, raw_bytes)]);
         drop(slow);
-        assert!(
-            allocation.upgrade().is_none(),
-            "dropped reader must release its last unread ownership"
-        );
+        assert_retained(&events, &[]);
     }
 
     #[tokio::test]
@@ -2104,13 +2192,9 @@ mod event_retention_tests {
         let events = Arc::new(EventHub::new(256, 64 * 1024 * 1024));
         let initial = events.subscribe(closed_rx.clone());
         let raw = raw_event(1, 256 * 1024);
-        let allocation = Arc::downgrade(&raw);
         events.publish(raw);
         drop(initial);
-        assert!(
-            allocation.upgrade().is_none(),
-            "no remaining receiver can consume an old event"
-        );
+        assert_retained(&events, &[]);
         let mut late = events.subscribe(closed_rx);
         assert!(
             late.recv().now_or_never().is_none(),
@@ -2185,24 +2269,42 @@ mod event_retention_tests {
 
     #[tokio::test]
     async fn malformed_event_releases_consumed_storage_without_hiding_the_error() {
-        let (_closed, closed_rx) = watch::channel(None);
-        let events = Arc::new(EventHub::new(256, 64 * 1024 * 1024));
-        let mut initial = events.subscribe(closed_rx);
-        // The wire discriminator accepts this event; the public Event shape rejects its seq.
-        let raw: Arc<str> = Arc::from(r#"{"type":"event","event":"node.retention","seq":"bad"}"#);
-        assert!(matches!(
-            serde_json::from_str::<IncomingFrame>(&raw),
-            Ok(IncomingFrame::Event { .. })
-        ));
-        let allocation = Arc::downgrade(&raw);
-        events.publish(raw);
-        assert!(matches!(
-            initial.recv().await,
-            Err(ClientError::InvalidFrame(_))
-        ));
-        assert!(allocation.upgrade().is_none());
-        events.publish(raw_event(2, 0));
-        assert_eq!(initial.recv().await.unwrap().seq, Some(2));
+        for invalid_metadata in [
+            serde_json::json!({"seq":"bad"}),
+            serde_json::json!({"seq":-1}),
+            serde_json::json!({"recipientProfileId":7}),
+        ] {
+            let (_closed, closed_rx) = watch::channel(None);
+            let events = Arc::new(EventHub::new(256, 64 * 1024 * 1024));
+            let mut initial = events.subscribe(closed_rx.clone());
+            let mut independent = events.subscribe(closed_rx);
+            let mut value = serde_json::json!({"type":"event", "event":"node.é", "payload":"😀"});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(invalid_metadata.as_object().unwrap().clone());
+            let raw = Bytes::from(value.to_string());
+            assert!(matches!(
+                serde_json::from_slice::<IncomingFrame>(&raw),
+                Ok(IncomingFrame::Event { .. })
+            ));
+            let raw_bytes = raw.len();
+            events.publish(raw);
+            assert!(matches!(
+                initial.recv().await,
+                Err(ClientError::InvalidFrame(_))
+            ));
+            assert_retained(&events, &[(0, raw_bytes)]);
+            assert!(matches!(
+                independent.recv().await,
+                Err(ClientError::InvalidFrame(_))
+            ));
+            assert_retained(&events, &[]);
+            events.publish(raw_event(2, 0));
+            assert_eq!(initial.recv().await.unwrap().seq, Some(2));
+            assert_eq!(independent.recv().await.unwrap().seq, Some(2));
+            assert_retained(&events, &[]);
+        }
     }
 
     #[tokio::test]
@@ -2210,9 +2312,8 @@ mod event_retention_tests {
         let (_closed, closed_rx) = watch::channel(None);
         let events = Arc::new(EventHub::new(256, 64 * 1024 * 1024));
         let raw = raw_event(1, 256 * 1024);
-        let allocation = Arc::downgrade(&raw);
         events.publish(raw);
-        assert!(allocation.upgrade().is_none());
+        assert_retained(&events, &[]);
         let mut late = events.subscribe(closed_rx);
         assert!(late.recv().now_or_never().is_none());
         events.publish(raw_event(2, 0));
@@ -2225,24 +2326,19 @@ mod event_retention_tests {
         let events = Arc::new(EventHub::new(2, 64 * 1024 * 1024));
         let mut slow = events.subscribe(closed_rx.clone());
         let mut fast = events.subscribe(closed_rx);
-        let mut allocations = Vec::new();
+        let frame_bytes = raw_event(1, 256 * 1024).len();
         for sequence in 1..=3 {
             let raw = raw_event(sequence, 256 * 1024);
-            allocations.push(Arc::downgrade(&raw));
             events.publish(raw);
             assert_eq!(fast.recv().await.unwrap().seq, Some(sequence));
         }
-        assert!(
-            allocations[0].upgrade().is_none(),
-            "evicted storage is already released"
-        );
-        assert!(allocations[1..].iter().all(|raw| raw.upgrade().is_some()));
+        assert_retained(&events, &[(1, frame_bytes), (2, frame_bytes)]);
         assert!(matches!(
             slow.recv().await,
             Err(ClientError::EventLagged(1))
         ));
         drop(slow);
-        assert!(allocations.iter().all(|raw| raw.upgrade().is_none()));
+        assert_retained(&events, &[]);
         events.publish(raw_event(4, 0));
         assert_eq!(fast.recv().await.unwrap().seq, Some(4));
     }
@@ -2253,16 +2349,14 @@ mod event_retention_tests {
         let events = Arc::new(EventHub::new(256, 64 * 1024 * 1024));
         let early = events.subscribe(closed_rx.clone());
         let first = raw_event(1, 256 * 1024);
-        let first_owner = Arc::downgrade(&first);
         events.publish(first);
         let mut late = events.subscribe(closed_rx);
         let second = raw_event(2, 256 * 1024);
-        let second_owner = Arc::downgrade(&second);
+        let second_bytes = second.len();
         events.publish(second);
         drop(early);
-        assert!(first_owner.upgrade().is_none());
-        assert!(second_owner.upgrade().is_some());
+        assert_retained(&events, &[(1, second_bytes)]);
         assert_eq!(late.recv().await.unwrap().seq, Some(2));
-        assert!(second_owner.upgrade().is_none());
+        assert_retained(&events, &[]);
     }
 }

@@ -121,6 +121,7 @@ async fn connects_publishes_events_and_correlates_requests() {
     for binary in [false, true] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.unwrap();
             let mut socket = accept_async(tcp).await.unwrap();
@@ -145,10 +146,11 @@ async fn connects_publishes_events_and_correlates_requests() {
                 binary,
             )
             .await;
+            ready_rx.await.unwrap();
             send_json_as(
                 &mut socket,
                 json!({
-                    "type":"event", "event":"node.test", "payload":{"ready":true}, "seq":7,
+                    "type":"event", "event":"node.test", "payload":{"ready":true,"text":"é😀\n\""}, "seq":7,
                     "stateVersion":{"presence":9}, "recipientProfileId":"profile-1"
                 }),
                 binary,
@@ -186,16 +188,21 @@ async fn connects_publishes_events_and_correlates_requests() {
         .await
         .unwrap();
         assert_eq!(session.hello()["protocol"], 4);
-        assert_eq!(
-            session.next_event().await.unwrap(),
-            Event {
-                event: "node.test".into(),
-                payload: json!({"ready":true}),
-                seq: Some(7),
-                state_version: Some(json!({"presence":9})),
-                recipient_profile_id: Some("profile-1".into()),
-            }
-        );
+        let mut independent = session.subscribe();
+        ready_tx.send(()).unwrap();
+        let expected = Event {
+            event: "node.test".into(),
+            payload: json!({"ready":true,"text":"é😀\n\""}),
+            seq: Some(7),
+            state_version: Some(json!({"presence":9})),
+            recipient_profile_id: Some("profile-1".into()),
+        };
+        let mut first = session.next_event().await.unwrap();
+        assert_eq!(first, expected);
+        first.payload["text"] = json!("changed by first reader");
+        first.state_version = None;
+        first.recipient_profile_id = None;
+        assert_eq!(independent.recv().await.unwrap(), expected);
         assert_eq!(
             session
                 .request("node.echo", json!({"value":42}))
