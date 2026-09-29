@@ -74,6 +74,7 @@ const snapshot: ConfigFileSnapshot = {
 const pluginUpdate: PostCorePluginUpdateResult = {
   status: "ok",
   changed: true,
+  deferredMigrationsPending: false,
   sync: {
     changed: false,
     switchedToBundled: [],
@@ -249,7 +250,7 @@ await fs.writeFile(process.env.OPENCLAW_UPDATE_POST_CORE_RESULT_PATH, ${JSON.str
             pluginUpdate: {
               ...pluginUpdate,
               changed: false,
-              ...(pending === undefined ? {} : { deferredMigrationsPending: pending }),
+              deferredMigrationsPending: pending,
             },
           };
         });
