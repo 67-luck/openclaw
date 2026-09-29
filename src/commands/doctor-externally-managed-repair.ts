@@ -142,6 +142,7 @@ export async function runExternallyManagedDoctorRepair(params: {
           remaining.push(
             ...result.warnings.map((message) => ({ stepId: "shared-state", message })),
           );
+          return;
         }
         if (result.changes.length > 0) {
           applied.push({ stepId: "shared-state", changes: [...result.changes] });
@@ -164,6 +165,22 @@ export async function runExternallyManagedDoctorRepair(params: {
         ...backups.warnings.map((message) => ({ stepId: "database-backup", message })),
       );
       if (backups.warnings.length > 0) {
+        return;
+      }
+
+      const { repairDoctorAgentDeletionJournal } =
+        await import("./doctor-agent-deletion-journal.js");
+      const deletionJournal = await repairDoctorAgentDeletionJournal({
+        preflight: schemas,
+        shouldRepair: true,
+        env: process.env,
+      });
+      collectMigrationMessages(
+        [{ stepId: "agent-deletion-journal", result: deletionJournal }],
+        applied,
+        remaining,
+      );
+      if (deletionJournal.warnings.length > 0) {
         return;
       }
 

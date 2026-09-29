@@ -630,6 +630,7 @@ describe("doctor session transcript repair", () => {
     ),
   ])("reports the lock failure when session SQLite import is unavailable: %s", async (cause) => {
     const env = { ...process.env, OPENCLAW_STATE_DIR: root };
+    const onWarnings = vi.fn();
     withDoctorSqliteMaintenanceLock.mockRejectedValueOnce(
       new DoctorSqliteMaintenanceLockUnavailableError("session SQLite import", cause),
     );
@@ -639,10 +640,12 @@ describe("doctor session transcript repair", () => {
         cfg: {},
         env,
         shouldRepair: true,
+        onWarnings,
       }),
     ).resolves.toBeUndefined();
 
     expect(runDoctorSessionSqlite).not.toHaveBeenCalled();
+    expect(onWarnings).toHaveBeenCalledWith([expect.stringContaining(cause.message)]);
     expect(note).toHaveBeenCalledWith(expect.stringContaining(cause.message), "Session SQLite");
     if (cause.cause) {
       expect(note).toHaveBeenCalledWith(expect.stringContaining("ENOSYS"), "Session SQLite");

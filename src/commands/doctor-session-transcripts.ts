@@ -394,6 +394,7 @@ export async function noteSessionTranscriptHealth(options?: {
       `- Skipped: ${failure} Then run "${formatCliCommand("openclaw doctor --fix", params.env)}" for session-store maintenance.`,
       "Session SQLite",
     );
+    params.onWarnings?.([failure]);
     recordPostSessionRefusal({
       code: "sqlite-maintenance-unavailable",
       message: failure,
