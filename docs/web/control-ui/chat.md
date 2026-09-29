@@ -42,7 +42,9 @@ Editing a Side chat draft does not interrupt loading its earlier answers. **Clea
 
 The Control UI keeps the latest 24 Side chat turns, including failed questions. Sending a follow-up keeps earlier failures in order; **Retry** resends that question in place. Failed questions stay in the current pane through a reconnect, but are not persisted across a page reload.
 
-The question box wraps and grows like the main composer; Enter (or your configured send shortcut) asks the question, and Shift+Enter adds a line. Highlighting text in a chat message offers **Ask in side chat**, which opens the rail with a quoted draft ready to edit.
+The question box wraps and grows like the main composer; Enter (or your configured send shortcut) asks the question, and Shift+Enter adds a line. Highlighting text in a chat message offers **Ask in side chat**. Add an optional comment in the selection editor, then save it to stage an editable comment in Side chat. An empty question box starts with a short quote; an existing Side chat draft and the main composer stay unchanged. The full selection and comment accompany that question as bounded, temporary context. After the answer, the restored thread keeps the question text, including its quote, but not the attached context. Reselect the passage for a later question.
+
+If the selection alone exceeds the context limit, Side chat opens without adding the selection and shows a notification. An empty question box still gets a short quote; an existing draft stays intact. If a comment or the combined selections exceed the limit, the editor stays open so you can shorten the comment or adjust the pending selections.
 
 Drop an image onto Side chat or paste one into its question box. You can send it
 with a written question or on its own. Side chat accepts image attachments, not
@@ -320,6 +322,8 @@ Run-error banners offer **Refresh** to reload the conversation without resending
 
     The Talk control itself is the microphone button in the composer toolbar. Its caret lists **System default** and every microphone exposed by the browser, including USB, Bluetooth, and virtual inputs. The selected device ID stays browser-local and is never sent to the Gateway; if that exact device disappears or the browser cannot open it, Talk asks you to choose another input instead of silently recording from a different microphone.
 
+    If Talk is unavailable or its provider is still being checked, clicking the microphone opens its picker with **Configure** actions, even while chat history is loading. Starting a Talk session still waits for history to load.
+
     For a selected-microphone constraint failure, click **Use System default for this call** to explicitly retry with the system default. This does not change your saved microphone preference. Until you click, no different microphone opens and no provider session is allocated. Dismissing the error, leaving the chat, disconnecting, or starting another call cancels that recovery action. For dictation, choose another input or **System default** from the existing microphone picker, then start again; dictation never switches microphones automatically.
 
     While Talk is live, the microphone button becomes a pill showing the live input-level meter; clicking it stops voice input, and hovering it reveals the stop glyph. Screen readers announce `Connecting voice input...`, `Listening...`, or `Asking OpenClaw...` while a realtime tool call is consulting the configured larger model through `talk.client.toolCall`. Stopping a running agent response stays a separate square **Stop** control next to the pill.
@@ -403,7 +407,9 @@ side panel and copy the original text, preserving markup, line breaks, and
 indentation. The excerpt and chip also support keyboard activation. Select
 **Show in text field** on the second row inside the composer card to return its
 text to the draft without opening the side panel.
-The composer side panel also offers the same action and removal. Messages
+Use the **X** at the card's top-right corner to discard the pasted text without
+changing your draft or other attachments. The composer side panel also offers
+the same action and removal. Messages
 containing only comment or pasted-text chips
 use a transparent shell.
 Newly uploaded text files remain file cards, even when their names resemble
