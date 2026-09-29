@@ -57,6 +57,7 @@ function createContext(
       },
       subscribe,
     },
+    config: { current: {}, subscribe },
     agents: { subscribe, ensureList: vi.fn(async () => null) },
     agentIdentity: { subscribe, ensure: vi.fn(async () => undefined) },
   } as unknown as ApplicationContext;

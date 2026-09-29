@@ -102,6 +102,7 @@ import {
   sendControlUiHtmlBody,
   serveControlUiAsset,
 } from "./control-ui-static.js";
+import { isCloudflareAccessTrustedProxyAuth } from "./github-user-identity.js";
 import {
   createGatewayByteStream,
   resolveByteResponse,
@@ -1055,19 +1056,18 @@ export async function handleControlUiHttpRequest(
 
   if (matchesControlUiBootstrapConfigPath(pathname, basePath)) {
     let pluginFrameGrants: readonly ControlUiPluginFrameGrantAck[] = [];
-    if (
-      !(await authorizeControlUiReadRequestOrReply({
-        req,
-        res,
-        auth: opts?.auth,
-        trustedProxies: opts?.trustedProxies,
-        allowRealIpFallback: opts?.allowRealIpFallback,
-        rateLimiter: opts?.rateLimiter,
-        onPluginFrameGrants: (grants) => {
-          pluginFrameGrants = grants;
-        },
-      }))
-    ) {
+    const requestAuth = await authorizeControlUiReadRequestOrReply({
+      req,
+      res,
+      auth: opts?.auth,
+      trustedProxies: opts?.trustedProxies,
+      allowRealIpFallback: opts?.allowRealIpFallback,
+      rateLimiter: opts?.rateLimiter,
+      onPluginFrameGrants: (grants) => {
+        pluginFrameGrants = grants;
+      },
+    });
+    if (!requestAuth) {
       return true;
     }
     if (req.method === "HEAD") {
@@ -1119,6 +1119,10 @@ export async function handleControlUiHttpRequest(
       communityInvite: config?.gateway?.controlUi?.communityInvite !== false,
       terminalEnabled,
       cliAgentsEnabled: config?.gateway?.cliAgents?.enabled !== false,
+      logout:
+        requestAuth.authMethod === "trusted-proxy" && isCloudflareAccessTrustedProxyAuth(opts?.auth)
+          ? { provider: "cloudflare-access", path: "/cdn-cgi/access/logout" }
+          : undefined,
       pluginAssetsRequireAuth: opts?.auth !== undefined && opts.auth.mode !== "none",
       pluginFrameGrants: pluginFrameGrants.map(({ pluginId, path: grantPath, match }) => ({
         pluginId,

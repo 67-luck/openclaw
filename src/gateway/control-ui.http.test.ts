@@ -2005,6 +2005,76 @@ describe("handleControlUiHttpRequest", () => {
     });
   });
 
+  it.each(["", "/operator"])(
+    "advertises Cloudflare logout outside the UI base path %s only for authenticated Access ingress",
+    async (basePath) => {
+      await withControlUiRoot({
+        fn: async (tmp) => {
+          const auth: ResolvedGatewayAuth = {
+            mode: "trusted-proxy",
+            allowTailscale: false,
+            trustedProxy: {
+              userHeader: "cf-access-authenticated-user-email",
+              requiredHeaders: ["cf-access-jwt-assertion"],
+              allowLoopback: true,
+            },
+          };
+          const request = {
+            rootPath: tmp,
+            basePath,
+            auth,
+            trustedProxies: ["127.0.0.1"],
+          };
+          const headers = createTrustedProxyHeaders({
+            "cf-access-authenticated-user-email": "nick@example.com",
+            "cf-access-jwt-assertion": "access-assertion",
+          });
+          const allowed = await runBootstrapConfigRequest({ ...request, headers });
+          expect(allowed.res.statusCode).toBe(200);
+          expect(parseBootstrapPayload(allowed.end).logout).toEqual({
+            provider: "cloudflare-access",
+            path: "/cdn-cgi/access/logout",
+          });
+
+          const denied = await runBootstrapConfigRequest({
+            ...request,
+            headers: createTrustedProxyHeaders({
+              "cf-access-authenticated-user-email": "nick@example.com",
+            }),
+          });
+          expect(denied.res.statusCode).toBe(401);
+          expect(responseJson(denied.end)).not.toHaveProperty("logout");
+
+          const otherProxy = await runBootstrapConfigRequest({
+            ...request,
+            auth: createTrustedProxyAuth(),
+            remoteAddress: "192.0.2.1",
+            trustedProxies: ["192.0.2.1"],
+            headers,
+          });
+          expect(otherProxy.res.statusCode).toBe(200);
+          expect(parseBootstrapPayload(otherProxy.end)).not.toHaveProperty("logout");
+
+          const local = await runBootstrapConfigRequest({
+            ...request,
+            auth: { ...auth, password: "local-password" },
+            headers: { host: "localhost", authorization: "Bearer local-password" },
+          });
+          expect(local.res.statusCode).toBe(200);
+          expect(parseBootstrapPayload(local.end)).not.toHaveProperty("logout");
+
+          const noAuth = await runBootstrapConfigRequest({
+            ...request,
+            auth: { mode: "none", allowTailscale: false },
+            headers,
+          });
+          expect(noAuth.res.statusCode).toBe(200);
+          expect(parseBootstrapPayload(noAuth.end)).not.toHaveProperty("logout");
+        },
+      });
+    },
+  );
+
   it("penalizes both credential scopes when a Control UI read token is invalid", async () => {
     await withControlUiHome("openclaw-ui-invalid-token-", async () => {
       await withControlUiRoot({

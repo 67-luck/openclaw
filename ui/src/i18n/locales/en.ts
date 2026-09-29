@@ -2790,6 +2790,12 @@ export const en: TranslationMap & {
     manageCommon: "Manage connections in Profile",
   },
   profilePage: {
+    logout: {
+      action: "Log out",
+      title: "Cloudflare Access session",
+      description:
+        "Log out of Cloudflare Access across its protected apps. Your GitHub sign-in and connected accounts stay unchanged.",
+    },
     offline: "Connect to the gateway to meet your agent.",
     usageStatistics: "Usage statistics",
     usageStatisticsDescription: "View activity, costs, and usage trends.",

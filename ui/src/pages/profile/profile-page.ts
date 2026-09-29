@@ -29,6 +29,7 @@ import {
   renderSettingsLoadingSkeleton,
   renderSettingsNavRow,
   renderSettingsPage,
+  renderSettingsRow,
   renderSettingsSection,
 } from "../../components/settings-ui.ts";
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
@@ -83,6 +84,7 @@ export class ProfilePage extends OpenClawLightDomElement {
     this.subscriptions = [
       this.context.gateway.subscribe((snapshot) => this.applyGatewaySnapshot(snapshot)),
       this.context.agents.subscribe(() => this.requestUpdate()),
+      this.context.config.subscribe(() => this.requestUpdate()),
       this.context.agentIdentity.subscribe(() => this.requestUpdate()),
     ];
     this.applyGatewaySnapshot(this.context.gateway.snapshot);
@@ -387,6 +389,23 @@ export class ProfilePage extends OpenClawLightDomElement {
     });
   }
 
+  private renderLogout() {
+    const logout = this.context.config.current.logout;
+    if (!logout) {
+      return nothing;
+    }
+    return renderSettingsGroup(
+      renderSettingsRow({
+        title: t("profilePage.logout.title"),
+        description: t("profilePage.logout.description"),
+        stackedOnNarrow: true,
+        control: html`<button class="btn" @click=${() => window.location.assign(logout.path)}>
+          ${t("profilePage.logout.action")}
+        </button>`,
+      }),
+    );
+  }
+
   private renderBody() {
     if (!this.connected || !this.client) {
       return renderSettingsPage(renderSettingsGroup(renderSettingsEmpty(t("profilePage.offline"))));
@@ -394,6 +413,7 @@ export class ProfilePage extends OpenClawLightDomElement {
     return renderSettingsPage(html`
       ${this.renderHero()} ${this.renderIdentity()} ${this.renderModelAccounts()}
       <openclaw-github-connections></openclaw-github-connections>
+      ${this.renderLogout()}
       ${renderSettingsGroup(
         renderSettingsNavRow({
           title: t("profilePage.usageStatistics"),
