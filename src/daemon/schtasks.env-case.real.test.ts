@@ -1,4 +1,9 @@
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import {
+  spawn,
+  type ChildProcess,
+  type SpawnOptions,
+  type SpawnSyncReturns,
+} from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +11,7 @@ import { PassThrough } from "node:stream";
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { withTestTimeout } from "../../test/helpers/promise.js";
+import { isErrno } from "../infra/errno.js";
 import { getWindowsCmdExePath } from "../infra/windows-install-roots.js";
 import { readWindowsProcessArgsSync } from "../infra/windows-port-pids.js";
 import { withEnvAsync } from "../test-utils/env.js";
@@ -29,11 +35,25 @@ type LaunchedChild = {
 
 const launchCapture = vi.hoisted(() => ({
   observe: undefined as ((child: ChildProcess, options?: SpawnOptions) => void) | undefined,
+  observeSync: undefined as
+    | ((
+        file: string,
+        result: SpawnSyncReturns<string | Buffer>,
+        timeoutMs: number | undefined,
+        elapsedMs: number,
+      ) => void)
+    | undefined,
 }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
+    spawnSync: (...args: Parameters<typeof actual.spawnSync>) => {
+      const started = performance.now();
+      const result = actual.spawnSync(...args);
+      launchCapture.observeSync?.(args[0], result, args[2]?.timeout, performance.now() - started);
+      return result;
+    },
     spawn: (...args: Parameters<typeof actual.spawn>) => {
       const child = actual.spawn(...args);
       launchCapture.observe?.(child, args[2]);
@@ -164,7 +184,44 @@ server.listen(port, "127.0.0.1", () => {
         port,
       });
       expect(observed.pid).not.toBe(child.pid);
-      expect(readWindowsProcessArgsSync(observed.pid)).toEqual(observed.argv);
+      const nativeObservations: object[] = [];
+      launchCapture.observeSync = (file, result, timeoutMs, elapsedMs) => {
+        nativeObservations.push({
+          executable: path.win32.basename(file),
+          timeoutMs,
+          elapsedMs,
+          status: result.status,
+          signal: result.signal,
+          errorCode: isErrno(result.error) ? result.error.code : undefined,
+          stdoutLength: result.stdout?.length,
+          stdoutTrimmedLength: result.stdout?.toString().trim().length,
+          stderrLength: result.stderr?.length,
+        });
+      };
+      try {
+        const actualArgs = readWindowsProcessArgsSync(observed.pid);
+        let processSignal0: string | undefined;
+        if (actualArgs === null) {
+          processSignal0 = "success";
+          try {
+            process.kill(observed.pid, 0);
+          } catch (error) {
+            processSignal0 = isErrno(error) ? (error.code ?? error.name) : "unknown-error";
+          }
+        }
+        const diagnostic = JSON.stringify({
+          message,
+          observedPid: observed.pid,
+          processSignal0,
+          launcherExitCode: child.exitCode,
+          launcherSignalCode: child.signalCode,
+          nativeObservations,
+        });
+        console.error(`[windows-argv-observation] ${diagnostic}`);
+        expect(actualArgs, diagnostic).toEqual(observed.argv);
+      } finally {
+        launchCapture.observeSync = undefined;
+      }
       if (!normalized) {
         await expect(readScheduledTaskCommand(env, { requireEffective: true })).rejects.toThrow(
           "Effective Scheduled Task service command could not be inspected.",
