@@ -12,6 +12,7 @@ import {
 } from "../../scripts/lib/managed-child-process.mts";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
+import { WINDOWS_POWERSHELL_COLD_SPAWN_TIMEOUT_MS } from "../infra/windows-powershell-spawn.js";
 import type { InstalledFileIoDescriptor } from "./schtasks.installed-retirement-observation.test-support.js";
 
 const sourceRoot = fileURLToPath(new URL("../../scripts/qa/windows-fileio/", import.meta.url));
@@ -384,7 +385,7 @@ function fileIoCommand(
         env,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
-        timeoutMs: 30_000,
+        timeoutMs: phase === "prepare" ? WINDOWS_POWERSHELL_COLD_SPAWN_TIMEOUT_MS : 30_000,
         signal: phase === "prepare" ? signal : undefined,
         onReady(launched) {
           child = launched;

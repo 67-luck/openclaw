@@ -231,6 +231,15 @@ it("admits exact custody before preparation and releases the trace before privat
   expect(() => f.resourceOwner.assertReleased()).not.toThrow();
   expect(f.phases).toEqual(["prepare", "cleanup"]);
   expect(
+    managed.run.mock.calls.map(([options]) => ({
+      phase: options.args[options.args.indexOf("-Mode") + 1],
+      timeoutMs: options.timeoutMs,
+    })),
+  ).toEqual([
+    { phase: "prepare", timeoutMs: 60_000 },
+    { phase: "cleanup", timeoutMs: 30_000 },
+  ]);
+  expect(
     f.commandFacts.every((fact) => fact.joined && fact.jobObserved && fact.outcome === "verified"),
   ).toBe(true);
   await expect(fs.stat(f.privateRoot)).rejects.toMatchObject({ code: "ENOENT" });
