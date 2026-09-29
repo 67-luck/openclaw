@@ -10,11 +10,14 @@ import {
   hasExplicitlyVisibleAgentPayload,
   type AgentDeliveryEvidence,
 } from "../agents/embedded-agent-runner/delivery-evidence.js";
+import { hasIntentionalSilentAgentPayload } from "../agents/embedded-agent-runner/message-visibility.js";
 import {
   buildGeneratedMediaDeliveryContext,
   formatGeneratedMediaDeliveryRetryForPrompt,
 } from "../agents/internal-events.js";
 import type { RuntimeContextFragment } from "../agents/internal-runtime-context.js";
+import { sendCompletionTextDirect } from "../agents/subagents/announce/subagent-announce-completion-delivery.js";
+import type { SubagentAnnounceDeliveryResult } from "../agents/subagents/announce/subagent-announce-dispatch.js";
 import { resolveDurableCompletionDeliveryMode } from "../auto-reply/reply/completion-delivery-policy.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
@@ -150,6 +153,7 @@ async function evaluateQueuedGeneratedMediaAgentResult(params: {
   route: SessionDeliveryRoute;
   queueContext: OpenClawStateWorkerContext;
   persistInternalMedia?: (mediaUrls: string[]) => Promise<void>;
+  sendFailureNotice?: () => Promise<SubagentAnnounceDeliveryResult | undefined>;
 }) {
   if (hasUnexpectedRecoverySideEffects(params.result)) {
     log.warn("queued generated-media recovery reported an unexpected committed side effect", {
@@ -279,6 +283,26 @@ async function evaluateQueuedGeneratedMediaAgentResult(params: {
     });
   }
   if (expectedMediaUrls.length === 0 && !hasQueuedVisibleReplyEvidence(params)) {
+    // A failed generation owes one notice even when its completion turn stays
+    // empty; intentional silence keeps the ordinary retry path.
+    if (params.sendFailureNotice && !hasIntentionalSilentAgentPayload(params.result)) {
+      const notice = await params.sendFailureNotice();
+      if (notice?.delivered) {
+        return;
+      }
+      if (
+        notice &&
+        (notice.terminal ||
+          notice.disposition === "ambiguous" ||
+          notice.disposition === "permanent_failure")
+      ) {
+        await deadLetterSessionDelivery(
+          params.entry,
+          `queued generated-media failure notice was not delivered: ${notice.error ?? notice.reason ?? "unknown reason"}`,
+          params.queueContext,
+        );
+      }
+    }
     await rearmAgentRun("queued generated-media agent turn completed without a visible reply");
   }
 }
@@ -524,6 +548,30 @@ export async function deliverQueuedGeneratedMediaAgentTurn(params: {
           }
         }
       : undefined;
+  const failureNotice = entry.failureNotice;
+  const sendFailureNotice =
+    failureNotice && route.channel !== INTERNAL_MESSAGE_CHANNEL
+      ? async () => {
+          assertRequesterAdmissionCurrent();
+          return await sendCompletionTextDirect({
+            cfg: params.resolveGatewayContext?.()?.getRuntimeConfig() ?? getRuntimeConfig(),
+            requesterSessionKey: params.canonicalKey,
+            requesterAgentId: params.agentId,
+            directIdempotencyKey: entry.idempotencyKey ?? entry.messageId,
+            deliveryTarget: route,
+            conversationType: route.chatType,
+            content: failureNotice,
+            isSourceSessionEffectsAllowed: () => {
+              try {
+                assertRequesterAdmissionCurrent();
+                return true;
+              } catch {
+                return false;
+              }
+            },
+          });
+        }
+      : undefined;
   const evaluateResult = async (
     result: AgentDeliveryEvidence,
     transcriptRunId: string | null = queuedRunId,
@@ -536,6 +584,7 @@ export async function deliverQueuedGeneratedMediaAgentTurn(params: {
       ...(persistInternalMedia
         ? { persistInternalMedia: (mediaUrls) => persistInternalMedia(mediaUrls, transcriptRunId) }
         : {}),
+      ...(sendFailureNotice ? { sendFailureNotice } : {}),
     });
     return true;
   };

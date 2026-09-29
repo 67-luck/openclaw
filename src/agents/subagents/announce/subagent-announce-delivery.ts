@@ -35,6 +35,7 @@ import {
 import { admitCorrelatedSubagentSessionDelivery } from "../completion/subagent-completion-delivery.js";
 import { getSubagentDepthFromSessionStore } from "../spawn/subagent-depth.js";
 import { maybeSteerSubagentAnnounce } from "./subagent-announce-active-wake.js";
+import { resolveGeneratedMediaFailureNotice } from "./subagent-announce-completion-delivery.js";
 import {
   resolveSubagentAnnounceTimeoutMs,
   runAnnounceDeliveryWithRetry,
@@ -190,6 +191,7 @@ export async function deliverSubagentAnnouncement(
             ? "message_tool_only"
             : "automatic";
       const expectedMedia = collectExpectedMediaFromInternalEvents(params.internalEvents);
+      const failureNotice = resolveGeneratedMediaFailureNotice(params.internalEvents);
       const queuePayload = {
         kind: "agentTurn",
         sessionKey: canonicalSessionKey,
@@ -205,6 +207,7 @@ export async function deliverSubagentAnnouncement(
         },
         sourceReplyDeliveryMode,
         ...expectedMedia,
+        ...(failureNotice ? { failureNotice } : {}),
         idempotencyKey: `${params.directIdempotencyKey}:agent-loop`,
         ...(params.preparedRequester ? { requesterBinding: params.preparedRequester.binding } : {}),
       } as const;

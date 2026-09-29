@@ -1,0 +1,145 @@
+title: Failed detached image with an empty completion turn posts one failure notice
+
+scenario:
+  id: media-completion-empty-failure-notice
+  surface: channel
+  coverage:
+    primary:
+      - media.generated-image-persistence-and-delivery
+    secondary:
+      - media.generated-image-task-lifecycle
+      - channels.message-final-reply
+  objective: Under message_tool visible replies, a group turn that starts detached image generation and acknowledges it must still get one user-facing failure message when the image provider later fails and the generation completion turn replies with empty text; a successful image with the same empty completion turn is delivered once with no failure message.
+  gatewayConfigPatch:
+    messages:
+      visibleReplies: message_tool
+      groupChat:
+        visibleReplies: message_tool
+  successCriteria:
+    - The mock turn calls image_generate, then message(action=send) with the ack marker, then ends with empty text.
+    - The image provider rejects the delayed request, and every generation completion turn replies with empty text.
+    - The failure group receives the ack once and exactly one later failure notice, and nothing else.
+    - The success group receives the ack once and the generated image once, and nothing else.
+  docsRefs:
+    - docs/channels/qa-channel.md
+    - docs/tools/image-generation.md
+  codeRefs:
+    - src/gateway/server-restart-sentinel-agent-delivery.ts
+    - src/agents/subagents/announce/subagent-announce-completion-delivery.ts
+    - src/agents/tools/media-generate-background-completion.ts
+    - extensions/qa-lab/src/providers/mock-openai/server.ts
+  execution:
+    kind: flow
+    summary: Drive image_generate -> message ack -> empty final in two message_tool_only groups (failing and succeeding image provider) with an empty completion turn and verify one failure notice or one image.
+    config:
+      requiredProviderMode: mock-openai
+      failureConversationId: qa-media-completion-empty-failure-group
+      successConversationId: qa-media-completion-empty-success-group
+      failurePromptSnippet: media completion empty failure qa check
+      failurePrompt: "@openclaw media completion empty failure qa check: generate a QA lighthouse image."
+      successPrompt: "@openclaw media completion empty success qa check: generate a QA lighthouse image."
+      ackMarker: QA-MEDIA-COMPLETION-EMPTY-ACK
+      failureNoticePattern: "couldn't be generated"
+      # The mock image provider answers after 4s.
+      completionMinDelayMs: 2000
+      settleMs: 15000
+
+flow:
+  steps:
+    - name: posts one failure notice after a failed image and an empty completion turn
+      actions:
+        - assert:
+            expr: "env.providerMode === config.requiredProviderMode"
+            message: this seeded scenario is mock-openai only
+        - call: ensureImageGenerationConfigured
+          args:
+            - ref: env
+        - call: reset
+        - set: requestCursorBefore
+          value:
+            expr: "(await fetchJson(`${env.mock.baseUrl}/debug/request-cursor`)).cursor"
+        - sendInbound:
+            conversation:
+              id:
+                expr: config.failureConversationId
+              kind: group
+            senderId: qa-media-completion-operator
+            senderName: QA Media Completion Operator
+            text:
+              expr: config.failurePrompt
+        # Poll the snapshot directly: transport waits abort on failure-marked outbound.
+        - set: ackMessage
+          value:
+            expr: "(async () => { const deadline = Date.now() + liveTurnTimeoutMs(env, 60000); do { const message = state.getSnapshot().messages.find((candidate) => candidate.direction === 'outbound' && candidate.conversation.id === config.failureConversationId && String(candidate.text ?? '').includes(config.ackMarker)); if (message) { return message; } await sleep(100); } while (Date.now() < deadline); throw new Error('timed out waiting for the image ack'); })()"
+        - call: sleep
+          args:
+            - expr: config.settleMs
+        - set: groupOutbound
+          value:
+            expr: "state.getSnapshot().messages.filter((message) => message.direction === 'outbound' && message.conversation.id === config.failureConversationId)"
+        - set: outboundSummary
+          value:
+            expr: "JSON.stringify(groupOutbound.map((message) => ({ text: message.text, isError: message.isError ?? false, attachments: message.attachments?.length ?? 0, msAfterAck: message.timestamp - ackMessage.timestamp })))"
+        - set: scenarioRequests
+          value:
+            expr: "(await fetchJson(`${env.mock.baseUrl}/debug/requests?after=${requestCursorBefore}`)).filter((request) => String(request.allInputText ?? '').includes(config.failurePromptSnippet))"
+        - set: completionTurnCount
+          value:
+            expr: "scenarioRequests.filter((request) => /Internal task completion event/i.test(String(request.allInputText ?? ''))).length"
+        - set: laterOutbound
+          value:
+            expr: "groupOutbound.filter((message) => !String(message.text ?? '').includes(config.ackMarker))"
+        - assert:
+            expr: "completionTurnCount >= 1"
+            message:
+              expr: "`expected the failed image to wake an empty completion turn; outbound=${outboundSummary}`"
+        - assert:
+            expr: "groupOutbound.length - laterOutbound.length === 1"
+            message:
+              expr: "`expected exactly one image ack in the group; outbound=${outboundSummary}`"
+        - assert:
+            expr: "laterOutbound.length === 1 && String(laterOutbound[0].text ?? '').includes(config.failureNoticePattern)"
+            message:
+              expr: "`expected exactly one image failure notice besides the ack; completionTurns=${completionTurnCount}; outbound=${outboundSummary}`"
+        - assert:
+            expr: "laterOutbound[0].timestamp - ackMessage.timestamp >= config.completionMinDelayMs"
+            message:
+              expr: "`expected the failure notice after the delayed provider failure; outbound=${outboundSummary}`"
+      detailsExpr: "`completionTurns=${completionTurnCount}; outbound=${outboundSummary}`"
+
+    - name: delivers a successful image once with the same empty completion turn
+      actions:
+        - sendInbound:
+            conversation:
+              id:
+                expr: config.successConversationId
+              kind: group
+            senderId: qa-media-completion-operator
+            senderName: QA Media Completion Operator
+            text:
+              expr: config.successPrompt
+        - set: mediaMessage
+          value:
+            expr: "(async () => { const deadline = Date.now() + liveTurnTimeoutMs(env, 60000); do { const message = state.getSnapshot().messages.find((candidate) => candidate.direction === 'outbound' && candidate.conversation.id === config.successConversationId && (candidate.attachments?.length ?? 0) > 0); if (message) { return message; } await sleep(100); } while (Date.now() < deadline); throw new Error(`timed out waiting for the generated image; outbound=${JSON.stringify(state.getSnapshot().messages.filter((candidate) => candidate.direction === 'outbound' && candidate.conversation.id === config.successConversationId).map((candidate) => candidate.text))}`); })()"
+        - call: sleep
+          args:
+            - 5000
+        - set: groupOutbound
+          value:
+            expr: "state.getSnapshot().messages.filter((message) => message.direction === 'outbound' && message.conversation.id === config.successConversationId)"
+        - set: outboundSummary
+          value:
+            expr: "JSON.stringify(groupOutbound.map((message) => ({ text: message.text, isError: message.isError ?? false, attachments: message.attachments?.length ?? 0, msAfterImage: message.timestamp - mediaMessage.timestamp })))"
+        - assert:
+            expr: "groupOutbound.filter((message) => String(message.text ?? '').includes(config.ackMarker)).length === 1"
+            message:
+              expr: "`expected exactly one image ack in the success group; outbound=${outboundSummary}`"
+        - assert:
+            expr: "groupOutbound.filter((message) => (message.attachments?.length ?? 0) > 0).length === 1"
+            message:
+              expr: "`expected the generated image exactly once; outbound=${outboundSummary}`"
+        - assert:
+            expr: "groupOutbound.length === 2 && !groupOutbound.some((message) => message.isError === true || String(message.text ?? '').includes(config.failureNoticePattern))"
+            message:
+              expr: "`a successful image must not post a failure notice or any other message; outbound=${outboundSummary}`"
+      detailsExpr: "`outbound=${outboundSummary}`"

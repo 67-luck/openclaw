@@ -3,6 +3,7 @@
  */
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { sanitizePendingFinalDeliveryText } from "../../../auto-reply/reply/pending-final-delivery-state.js";
+import type { ChatType } from "../../../channels/chat-type.js";
 import {
   getRestartRecoveryTerminalDeliveryEvidence,
   hasRestartRecoverySourceClaim,
@@ -158,6 +159,27 @@ export async function runAnnounceAgentCall(params: {
 
 const FAILED_COMPLETION_NOTICE =
   "A delegated task failed before it could report a result. Please retry the task.";
+
+const GENERATED_MEDIA_FAILURE_LABELS: Partial<Record<AgentInternalEvent["source"], string>> = {
+  image_generation: "image",
+  video_generation: "video",
+  music_generation: "music",
+};
+
+/** Fixed user-facing copy for a failed generated-media completion; none for other completions. */
+export function resolveGeneratedMediaFailureNotice(
+  events: readonly AgentInternalEvent[] | undefined,
+): string | undefined {
+  const failed = events?.find(
+    (event) =>
+      event.type === "task_completion" &&
+      event.status !== "ok" &&
+      GENERATED_MEDIA_FAILURE_LABELS[event.source],
+  );
+  return failed
+    ? `The ${GENERATED_MEDIA_FAILURE_LABELS[failed.source]} couldn't be generated. Please try again.`
+    : undefined;
+}
 
 export function isGatewayAgentRunPending(response: unknown): boolean {
   if (!response || typeof response !== "object") {
@@ -325,15 +347,37 @@ export async function deliverCompletionDirect(params: {
   isSourceSessionEffectsAllowed?: () => boolean;
 }): Promise<SubagentAnnounceDeliveryResult | undefined> {
   const content = resolveTextCompletionDirectFallback(params.internalEvents, params.contentKind);
+  const { channel, to, accountId, threadId } = params.deliveryTarget;
   if (
     !content ||
     !params.deliveryTarget.deliver ||
-    !params.deliveryTarget.channel ||
-    !params.deliveryTarget.to ||
+    !channel ||
+    !to ||
     !isDirectMessageDeliveryTarget(params.deliveryTarget, params.requesterSessionKey)
   ) {
     return undefined;
   }
+  return await sendCompletionTextDirect({
+    ...params,
+    deliveryTarget: { channel, to, accountId, threadId },
+    conversationType: "direct",
+    content,
+  });
+}
+
+/** Sends one idempotent completion notice to its original target; callers own eligibility. */
+export async function sendCompletionTextDirect(params: {
+  cfg: OpenClawConfig;
+  requesterSessionKey: string;
+  requesterAgentId?: string;
+  directIdempotencyKey: string;
+  deliveryTarget: { channel: string; to: string; accountId?: string; threadId?: string };
+  conversationType: ChatType;
+  content: string;
+  signal?: AbortSignal;
+  onDeliveryResult?: (delivery: SubagentAnnounceDeliveryResult) => void | Promise<void>;
+  isSourceSessionEffectsAllowed?: () => boolean;
+}): Promise<SubagentAnnounceDeliveryResult | undefined> {
   const agentId = tryResolveSubagentRequesterAgentId(
     params.cfg,
     params.requesterSessionKey,
@@ -360,8 +404,8 @@ export async function deliverCompletionDirect(params: {
       threadId: params.deliveryTarget.threadId,
       requesterSessionKey: params.requesterSessionKey,
       agentId,
-      conversationType: "direct",
-      content,
+      conversationType: params.conversationType,
+      content: params.content,
       idempotencyKey,
       skipQueue: true,
       abortSignal: params.signal,

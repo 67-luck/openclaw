@@ -222,6 +222,9 @@ The media runtime reports generation progress:
 | `succeeded` | Track ready; the agent wakes and posts it to the conversation.                                 |
 | `failed`    | Provider error or timeout; the agent wakes with error details.                                 |
 
+If the completion turn for a failed task produces no visible reply in a channel
+conversation, OpenClaw posts one fixed failure notice there instead.
+
 ## Configuration
 
 ### Model selection

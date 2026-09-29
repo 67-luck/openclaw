@@ -77,6 +77,8 @@ export type QueuedSessionDeliveryPayload =
       expectedMediaAttachments?: Record<string, ReplyMediaAttachment>;
       preparedMediaBlocks?: Record<string, Array<Record<string, unknown>>>;
       suppressTextDelivery?: true;
+      /** Fixed copy owed to the route when a failed completion turn stays empty. */
+      failureNotice?: string;
       idempotencyKey?: string;
       owner?: SessionDeliveryOwnerReference;
     } & SessionDeliveryRetryPolicy);

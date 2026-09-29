@@ -289,6 +289,18 @@ export const QA_WHATSAPP_REPLY_TO_BOT_TRIGGER_MARKER_RE =
 export const QA_WHATSAPP_BATCHED_FINAL_MARKER_RE = /\bWHATSAPP_QA_BATCHED_FINAL_([A-Z0-9]+)\b/u;
 export const QA_SUBAGENT_DIRECT_FALLBACK_PROMPT_RE = /subagent direct fallback qa check/i;
 export const QA_SUBAGENT_DIRECT_FALLBACK_WORKER_RE = /subagent direct fallback worker/i;
+// Group turns that start a delayed detached image run, acknowledge it with the
+// message tool, and end empty. The generation completion turn also replies
+// empty; the failure variant's image provider rejects the delayed request.
+export const QA_MEDIA_COMPLETION_EMPTY_FAILURE_PROMPT_RE =
+  /media completion empty failure qa check/i;
+export const QA_MEDIA_COMPLETION_EMPTY_SUCCESS_PROMPT_RE =
+  /media completion empty success qa check/i;
+export const QA_MEDIA_COMPLETION_EMPTY_ACK_MARKER = "QA-MEDIA-COMPLETION-EMPTY-ACK";
+export const QA_MEDIA_COMPLETION_EMPTY_IMAGE_PROMPT = "QA media completion empty lighthouse image.";
+export const QA_MEDIA_COMPLETION_EMPTY_FAILING_IMAGE_PROMPT =
+  "QA media completion empty failing lighthouse image.";
+export const QA_MEDIA_COMPLETION_EMPTY_IMAGE_DELAY_MS = 4_000;
 // A subagent that yields on its own behalf, then finishes on a later follow-up
 // dispatched to the same paused child session. The worker regex must not match
 // the follow-up text, so the two turns carry deliberately disjoint wording: the

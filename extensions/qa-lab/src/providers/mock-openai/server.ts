@@ -70,6 +70,12 @@ import {
   QA_MESSAGE_DECISION_SEND_PROMPT_RE,
   QA_SUBAGENT_DIRECT_FALLBACK_PROMPT_RE,
   QA_SUBAGENT_DIRECT_FALLBACK_WORKER_RE,
+  QA_MEDIA_COMPLETION_EMPTY_ACK_MARKER,
+  QA_MEDIA_COMPLETION_EMPTY_FAILING_IMAGE_PROMPT,
+  QA_MEDIA_COMPLETION_EMPTY_FAILURE_PROMPT_RE,
+  QA_MEDIA_COMPLETION_EMPTY_IMAGE_DELAY_MS,
+  QA_MEDIA_COMPLETION_EMPTY_IMAGE_PROMPT,
+  QA_MEDIA_COMPLETION_EMPTY_SUCCESS_PROMPT_RE,
   QA_SUBAGENT_EMPTY_PARENT_VISIBLE_MARKER,
   QA_SUBAGENT_EMPTY_PARENT_VISIBLE_PROMPT_RE,
   QA_SUBAGENT_EMPTY_WORKER_NO_OUTPUT_PROMPT_RE,
@@ -1017,6 +1023,37 @@ async function buildResponsesPayload(
         message: `Waiting for ${QA_SUBAGENT_DIRECT_FALLBACK_MARKER}.`,
       });
     }
+  }
+  const mediaCompletionEmptyFailure =
+    QA_MEDIA_COMPLETION_EMPTY_FAILURE_PROMPT_RE.test(allInputText);
+  if (
+    mediaCompletionEmptyFailure ||
+    QA_MEDIA_COMPLETION_EMPTY_SUCCESS_PROMPT_RE.test(allInputText)
+  ) {
+    // The generation completion turn and every retry reply empty; only the
+    // original turn starts the image and acknowledges it once.
+    if (/Internal task completion event/i.test(allInputText)) {
+      return buildAssistantEvents("");
+    }
+    if (!hasCompletedToolOutput && canCallScenarioTool(toolDeclarationBody, "image_generate")) {
+      return buildToolCallEventsWithArgs("image_generate", {
+        prompt: mediaCompletionEmptyFailure
+          ? QA_MEDIA_COMPLETION_EMPTY_FAILING_IMAGE_PROMPT
+          : QA_MEDIA_COMPLETION_EMPTY_IMAGE_PROMPT,
+        filename: "qa-media-completion-empty.png",
+        size: "1024x1024",
+      });
+    }
+    if (
+      completedToolName === "image_generate" &&
+      canCallScenarioTool(toolDeclarationBody, "message")
+    ) {
+      return buildToolCallEventsWithArgs("message", {
+        action: "send",
+        message: QA_MEDIA_COMPLETION_EMPTY_ACK_MARKER,
+      });
+    }
+    return buildAssistantEvents("");
   }
   if (/remember this fact/i.test(prompt)) {
     return buildAssistantEvents(buildAssistantText(input, body));
@@ -2295,6 +2332,23 @@ export async function startQaMockOpenAiServer(params?: QaMockOpenAiServerOptions
         imageGenerationRequests.push(body);
         if (imageGenerationRequests.length > 20) {
           imageGenerationRequests.splice(0, imageGenerationRequests.length - 20);
+        }
+        // Keep the detached run pending after the originating turn ends.
+        if (
+          body.prompt === QA_MEDIA_COMPLETION_EMPTY_IMAGE_PROMPT ||
+          body.prompt === QA_MEDIA_COMPLETION_EMPTY_FAILING_IMAGE_PROMPT
+        ) {
+          await sleep(QA_MEDIA_COMPLETION_EMPTY_IMAGE_DELAY_MS);
+        }
+        if (body.prompt === QA_MEDIA_COMPLETION_EMPTY_FAILING_IMAGE_PROMPT) {
+          writeJson(res, 400, {
+            error: {
+              message: "QA image provider rejected the request.",
+              type: "invalid_request_error",
+              code: "qa_image_generation_failure",
+            },
+          });
+          return;
         }
         writeJson(res, 200, {
           data: [

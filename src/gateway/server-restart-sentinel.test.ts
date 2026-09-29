@@ -188,6 +188,7 @@ const mocks = vi.hoisted(() => {
       async () => null,
     ),
     removeCronRunContinuationSessionIfIdle: vi.fn(async () => {}),
+    sendMessage: vi.fn(),
     settleCorrelatedSubagentDelivery: vi.fn(async () => {}),
     loadPendingSessionDelivery: vi.fn(),
     drainPendingSessionDelivery: vi.fn<DrainPendingSessionDeliveryMock>(),
@@ -394,6 +395,11 @@ vi.mock("../infra/outbound/targets.js", () => ({
 vi.mock("../infra/outbound/deliver.js", () => ({
   deliverOutboundPayloads: mocks.deliverOutboundPayloads,
   deliverOutboundPayloadsInternal: mocks.deliverOutboundPayloads,
+}));
+
+vi.mock("../infra/outbound/message.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/outbound/message.js")>()),
+  sendMessage: mocks.sendMessage,
 }));
 
 vi.mock("../infra/outbound/delivery-queue-storage.js", () => ({
@@ -680,6 +686,7 @@ describe("scheduleRestartSentinelWake", () => {
     mocks.resolveOutboundTarget.mockReturnValue({ ok: true as const, to: "+15550002" });
     mocks.deliverOutboundPayloads.mockReset();
     mocks.deliverOutboundPayloads.mockResolvedValue([{ channel: "whatsapp", messageId: "msg-1" }]);
+    mocks.sendMessage.mockReset();
     mocks.enqueueDeliveryOnce.mockReset();
     mocks.enqueueDeliveryOnce.mockImplementation(async (_payload, id) => ({ id, created: true }));
     mocks.findDeliveryIntentOwner.mockReset();
@@ -1921,6 +1928,87 @@ describe("scheduleRestartSentinelWake", () => {
       1_000,
       expectQueueContext(),
     );
+  });
+
+  const failedImageNotice = "The image couldn't be generated. Please try again.";
+  const failedImageEntry = {
+    id: "session-delivery-media-failed",
+    message: "image generation failed",
+    messageId: "image_generate:task-failed:error:agent-loop",
+    idempotencyKey: "image_generate:task-failed:error:agent-loop",
+    expectedMediaUrls: [],
+    failureNotice: failedImageNotice,
+  };
+
+  it.each([
+    {
+      target: "group",
+      route: { channel: "discord", to: "channel:123", chatType: "channel" as const },
+      expectedThread: {},
+    },
+    {
+      target: "topic",
+      route: { channel: "telegram", to: "-100123", threadId: "42", chatType: "group" as const },
+      expectedThread: { threadId: "42" },
+    },
+  ])(
+    "posts one failure notice to the $target when a failed image completion turn is empty",
+    async ({ route, expectedThread }) => {
+      mocks.dispatchGatewayMethodInProcess.mockResolvedValueOnce({
+        status: "ok",
+        result: { payloads: [] },
+      });
+      mocks.sendMessage.mockImplementationOnce(
+        async (params: { onDeliveredPayload?: () => void }) => {
+          params.onDeliveredPayload?.();
+          return { channel: route.channel, to: route.to, via: "direct" };
+        },
+      );
+
+      await deliverGeneratedMedia({ ...failedImageEntry, route });
+
+      expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
+      expect(mocks.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: route.channel,
+          to: route.to,
+          ...expectedThread,
+          conversationType: route.chatType,
+          content: failedImageNotice,
+          idempotencyKey: "image_generate:task-failed:error:agent-loop:text-direct",
+        }),
+      );
+      expect(mocks.advanceSessionDeliveryAgentRun).not.toHaveBeenCalled();
+      expect(mocks.failSessionDelivery).not.toHaveBeenCalled();
+    },
+  );
+
+  it("adds no failure notice when the completion turn delivered its own failure reply", async () => {
+    mocks.dispatchGatewayMethodInProcess.mockResolvedValueOnce({
+      status: "ok",
+      result: {
+        payloads: [{ text: "Sorry, I couldn't make that image." }],
+        deliveryStatus: { status: "sent", resultCount: 1 },
+      },
+    });
+
+    await deliverGeneratedMedia(failedImageEntry);
+
+    expect(mocks.sendMessage).not.toHaveBeenCalled();
+    expect(mocks.advanceSessionDeliveryAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps intentional completion silence on the retry path without a failure notice", async () => {
+    mocks.dispatchGatewayMethodInProcess.mockResolvedValueOnce({
+      status: "ok",
+      result: { payloads: [{ text: "NO_REPLY" }] },
+    });
+
+    await expect(deliverGeneratedMedia(failedImageEntry)).rejects.toThrow(
+      "completed without a visible reply",
+    );
+
+    expect(mocks.sendMessage).not.toHaveBeenCalled();
   });
 
   it("uses durable terminal evidence to retry media omitted before queue acknowledgement", async () => {

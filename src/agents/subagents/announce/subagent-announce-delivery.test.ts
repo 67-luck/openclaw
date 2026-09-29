@@ -3287,6 +3287,9 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         expect.any(Number),
         expectQueueContext(),
       );
+      expect(
+        sessionDeliveryQueueMocks.enqueueClaimedSessionDelivery.mock.calls.at(-1)?.[0],
+      ).not.toHaveProperty("failureNotice");
       expect(sessionDeliveryQueueMocks.releaseSessionDeliveryClaim).toHaveBeenCalledWith(
         "session-delivery-media",
         expectQueueContext(),
@@ -3316,7 +3319,10 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expectDeliveryPath(result, "queued");
     const queuedPayload =
       sessionDeliveryQueueMocks.enqueueClaimedSessionDelivery.mock.calls.at(-1)?.[0];
-    expect(queuedPayload).toMatchObject({ expectedMediaUrls: [] });
+    expect(queuedPayload).toMatchObject({
+      expectedMediaUrls: [],
+      failureNotice: "The music couldn't be generated. Please try again.",
+    });
     expect(queuedPayload).not.toHaveProperty("expectedMediaAttachments");
     expect(callGateway).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();

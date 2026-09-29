@@ -14,9 +14,12 @@ owner tracks the operation, returns the task id immediately, and wakes the agent
 when the provider finishes. The completion agent follows the session's current
 visible-reply contract with a short
 user-facing caption and every structured generated attachment. If generation
-fails, the agent returns a concise visible failure instead. If the requester
-session is inactive or its active wake fails, OpenClaw sends an idempotent
-direct fallback with the generated images so the result is not lost.
+fails, the agent returns a concise visible failure instead; if that completion
+turn produces no visible reply in a channel conversation (DM, group, or
+thread), OpenClaw sends one fixed notice there ("The image couldn't be
+generated. Please try again."). If the requester session is inactive or its
+active wake fails, OpenClaw sends an idempotent direct fallback with the
+generated images so the result is not lost.
 
 In WebChat and the macOS app, generated attachments stay on the completion
 reply instead of appearing again in a separate image-only message. Replaying
