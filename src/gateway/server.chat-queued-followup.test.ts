@@ -1,5 +1,15 @@
 import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  vi,
+  type MockInstance,
+} from "vitest";
 import type { WebSocket, RawData } from "ws";
 import { mergeChatStreamMessage } from "../../packages/gateway-client/src/chat-stream-message.js";
 import type { ChatEvent } from "../../packages/gateway-protocol/src/index.js";
@@ -15,6 +25,7 @@ import { drainOpenClawAgentWriteQueuesForTest } from "../state/openclaw-agent-wr
 import { observeGatewayRunExecution } from "./agent-command.test-helpers.js";
 import { flushPendingSessionsChangedEvents } from "./server-methods/session-change-event.js";
 import { createMainChatSessionStoreFixture } from "./server.chat-session-store.test-support.js";
+import * as lifecycleState from "./session-lifecycle-state.js";
 import {
   dispatchInboundMessageMock,
   installGatewayTestHooks,
@@ -39,19 +50,25 @@ function waitForFast<T>(
 
 describe("queued WebChat follow-up delivery", () => {
   let requestExecution: Awaited<ReturnType<typeof observeGatewayRunExecution>>;
+  let lifecyclePersistence: MockInstance<typeof lifecycleState.persistGatewaySessionLifecycleEvent>;
   beforeEach(async () => {
     dispatchInboundMessageMock.mockReset();
     requestExecution = await observeGatewayRunExecution();
+    lifecyclePersistence = vi.spyOn(lifecycleState, "persistGatewaySessionLifecycleEvent");
   });
   afterEach(async () => {
     try {
       await settleGatewayFixture();
     } finally {
+      lifecyclePersistence.mockRestore();
       await requestExecution.restore();
     }
   });
   const settleGatewayFixture = async () => {
     await requestExecution.waitForCompletion();
+    // Synthetic follow-up events run outside the observed request. Join their full
+    // terminal writes, including the failure receipt appended after the row patch.
+    await Promise.all(lifecyclePersistence.mock.results.map(({ value }) => value));
     await drainOpenClawAgentWriteQueuesForTest();
     await flushPendingSessionsChangedEvents();
     expect(getActiveGatewayRootWorkCount(), getActiveGatewayRootWorkHolders().join(", ")).toBe(0);
