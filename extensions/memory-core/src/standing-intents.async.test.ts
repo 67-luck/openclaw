@@ -20,8 +20,11 @@ import {
   resolveOpenClawAgentSqlitePath,
 } from "openclaw/plugin-sdk/sqlite-runtime";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
+  observeHostDataSql,
 } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -54,7 +57,9 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
     await Promise.allSettled(writerDrains.splice(0).map((drain) => drain()));
     resetGlobalHookRunner();
     resetPluginRuntimeStateForTest();
+    await closeOpenClawAgentDatabasesAsync();
     closeOpenClawAgentDatabasesForTest();
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     vi.unstubAllEnvs();
     cleanup();
@@ -142,6 +147,33 @@ function readStored(id: string) {
     .get(id);
 }
 
+function observeStandingIntentHostSql() {
+  const db = openOpenClawAgentDatabase({ agentId: "main" }).db;
+  const calibration = "SELECT id FROM standing_intents LIMIT 1";
+  const statement = db.prepare(calibration);
+  const observation = observeHostDataSql();
+  try {
+    // Prove that already-prepared native statements remain visible to the observer.
+    statement.get();
+    expect(observation.queries).toContain(calibration);
+    observation.queries.length = 0;
+    for (const call of observation.calls) {
+      call.mockClear();
+    }
+    return observation;
+  } catch (error) {
+    observation.restore();
+    throw error;
+  }
+}
+
+function expectNoHostStandingIntentSql(observation: ReturnType<typeof observeHostDataSql>) {
+  // Keep other observed SQL visible; this cut excludes cold bootstrap and native lease checks.
+  expect(observation.queries.filter((sql) => /\bstanding_intents(?:_fts)?\b/i.test(sql))).toEqual(
+    [],
+  );
+}
+
 async function registerHooks() {
   const config: OpenClawConfig = { agents: { ownership: "explicit", entries: { main: {} } } };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
@@ -223,6 +255,7 @@ describe("standing-intent admitted operations", () => {
       await expect(work).rejects.toThrow("owner revoked");
       await held.drain();
       const databasePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+      await closeOpenClawAgentDatabasesAsync();
       closeOpenClawAgentDatabasesForTest();
       const reopened = new DatabaseSync(databasePath);
       try {
@@ -269,8 +302,14 @@ describe("standing-intent admitted operations", () => {
         }),
       );
       await expectWaiting(work, held.entered);
-      held.release();
-      const result = await work;
+      const observation = observeStandingIntentHostSql();
+      let result: Awaited<typeof work>;
+      try {
+        held.release();
+        result = await work;
+      } finally {
+        observation.restore();
+      }
       const text = result.content.find((item) => item.type === "text")?.text ?? "";
       const payload: unknown = JSON.parse(text);
       expect(payload).toMatchObject(
@@ -281,6 +320,7 @@ describe("standing-intent admitted operations", () => {
             : { intent: { description: "Check the migration." } },
       );
       const databasePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+      await closeOpenClawAgentDatabasesAsync();
       closeOpenClawAgentDatabasesForTest();
       const reopened = new DatabaseSync(databasePath);
       try {
@@ -296,6 +336,7 @@ describe("standing-intent admitted operations", () => {
       } finally {
         reopened.close();
       }
+      expectNoHostStandingIntentSql(observation);
     },
   );
 
@@ -342,10 +383,16 @@ describe("standing-intent admitted operations", () => {
     );
     await expectWaiting(work, held.entered);
     expect(readStored(existing.id)?.fire_count).toBe(0);
-    held.release();
-    expect((await work)?.prependContext).toContain("Confirm the rollback owner.");
+    const observation = observeStandingIntentHostSql();
+    try {
+      held.release();
+      expect((await work)?.prependContext).toContain("Confirm the rollback owner.");
+    } finally {
+      observation.restore();
+    }
     expect(readStored(existing.id)?.fire_count).toBe(1);
     expect(readStored(existing.id)?.status).toBe("done");
+    expectNoHostStandingIntentSql(observation);
   });
 
   it("keeps rejected prompt matching fail-open without spending its fire budget", async () => {
@@ -455,11 +502,97 @@ describe("standing-intent admitted operations", () => {
       );
       await expectWaiting(work, held.entered);
       expect(readStored(existing.id)?.status).toBe("armed");
-      held.release();
-      await work;
+      const observation = observeStandingIntentHostSql();
+      try {
+        held.release();
+        await work;
+      } finally {
+        observation.restore();
+      }
       expect(readStored(existing.id)?.status).toBe("expired");
+      expectNoHostStandingIntentSql(observation);
     },
   );
+
+  it("refuses a queued create when its original database path is replaced", async () => {
+    const replacementState = tempDirs.make("standing-intent-replacement-");
+    vi.stubEnv("OPENCLAW_STATE_DIR", replacementState);
+    const replacement = await seed();
+    const replacementPath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+    await closeOpenClawAgentDatabasesAsync();
+    closeOpenClawAgentDatabasesForTest();
+
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    const original = await seed();
+    const databasePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+    const retiredPath = `${databasePath}.retired`;
+    await closeOpenClawAgentDatabasesAsync();
+    closeOpenClawAgentDatabasesForTest();
+    const originalStat = fs.statSync(databasePath);
+    const replacementStat = fs.statSync(replacementPath);
+    expect([replacementStat.dev, replacementStat.ino]).not.toEqual([
+      originalStat.dev,
+      originalStat.ino,
+    ]);
+
+    const held = await holdWriter(() => {
+      // No worker has entered this queued operation; do not await our own writer drain.
+      closeOpenClawAgentDatabasesForTest();
+      expect(sourceDb.isOpen).toBe(false);
+      fs.renameSync(databasePath, retiredPath);
+      fs.renameSync(replacementPath, databasePath);
+    });
+    const sourceDb = openOpenClawAgentDatabase({ agentId: "main" }).db;
+    const work = keep(seed());
+    await expectWaiting(work, held.entered);
+    held.release();
+    await expect(work).rejects.toThrow("Agent database target changed before write admission");
+    await held.done;
+    await closeOpenClawAgentDatabasesAsync();
+    closeOpenClawAgentDatabasesForTest();
+
+    for (const { filename, expectedId } of [
+      { filename: retiredPath, expectedId: original.id },
+      { filename: databasePath, expectedId: replacement.id },
+    ]) {
+      const reopened = new DatabaseSync(filename, { readOnly: true });
+      try {
+        expect(
+          reopened.prepare("SELECT id, status, fire_count FROM standing_intents").all(),
+        ).toEqual([{ id: expectedId, status: "armed", fire_count: 0 }]);
+      } finally {
+        reopened.close();
+      }
+    }
+  });
+
+  it("uses admission-time default matching time after waiting for a writer", async () => {
+    const existing = await seed();
+    let expiresAt = 0;
+    const held = await holdWriter(() => {
+      expiresAt = Date.now();
+      expect(expiresAt).toBeGreaterThan(enqueuedAt);
+      openOpenClawAgentDatabase({ agentId: "main" })
+        .db.prepare("UPDATE standing_intents SET expires_at = ? WHERE id = ?")
+        .run(expiresAt, existing.id);
+    });
+    const work = keep(matchStandingIntents({ agentId: "main", prompt: "launch" }));
+    const enqueuedAt = Date.now();
+    await expectWaiting(work, held.entered);
+    // Establish real clock ordering without changing the worker's clock.
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 5);
+    });
+    held.release();
+    await expect(work).resolves.toEqual([]);
+    await held.done;
+    expect(readStored(existing.id)).toMatchObject({ status: "expired", fire_count: 0 });
+    expect(
+      openOpenClawAgentDatabase({ agentId: "main" })
+        .db.prepare("SELECT expires_at FROM standing_intents WHERE id = ?")
+        .get(existing.id)?.expires_at,
+    ).toBe(expiresAt);
+  });
 
   it("serializes concurrent matching inside the original fire-budget transaction", async () => {
     const existing = await seed();
@@ -488,6 +621,7 @@ describe("standing-intent admitted operations", () => {
     held.release();
     const created = await work;
     expect(fs.existsSync(otherPath)).toBe(false);
+    await closeOpenClawAgentDatabasesAsync();
     closeOpenClawAgentDatabasesForTest();
     const reopened = new DatabaseSync(databasePath);
     try {
