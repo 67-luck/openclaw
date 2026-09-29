@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -20,7 +20,45 @@ import {
   replaceSessionEntry,
 } from "./session-accessor.js";
 import { prunePublishedSessionArchivesByRetention } from "./session-accessor.sqlite-archive-store.js";
+import { revokeSqliteReclamationCommit } from "./session-accessor.sqlite-reclamation-commit.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
+
+const deletion = vi.hoisted(() => ({
+  beforeCommit: undefined as ((gate: SharedArrayBuffer) => void) | undefined,
+}));
+vi.mock("./session-accessor.sqlite-reclamation-worker.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./session-accessor.sqlite-reclamation-worker.js")>();
+  return {
+    ...actual,
+    withSqliteReclamationWorker: ((options, claim, run, assertRequestCurrent, signal) =>
+      actual.withSqliteReclamationWorker(
+        options,
+        claim,
+        async (worker) => {
+          const originalRun = worker.run.bind(worker);
+          const spy = vi.spyOn(worker, "run").mockImplementation((params) =>
+            originalRun({
+              ...params,
+              onCommitRequest: () => {
+                if (params.plan.kind === "lifecycle-projection-commit") {
+                  deletion.beforeCommit?.(params.commitGate);
+                }
+                params.onCommitRequest();
+              },
+            }),
+          );
+          try {
+            return await run(worker);
+          } finally {
+            spy.mockRestore();
+          }
+        },
+        assertRequestCurrent,
+        signal,
+      )) satisfies typeof actual.withSqliteReclamationWorker,
+  };
+});
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -43,6 +81,7 @@ describe("sessions cleanup --fix-missing", () => {
   });
 
   afterEach(() => {
+    deletion.beforeCommit = undefined;
     closeOpenClawAgentDatabasesForTest();
   });
 
@@ -281,14 +320,12 @@ describe("sessions cleanup --fix-missing", () => {
       throw new Error("expected SQLite session store");
     }
     const database = openOpenClawAgentDatabase({ agentId: "main", path: sqlitePath });
-    database.db.exec(`
-      CREATE TEMP TRIGGER fail_session_window_delete
-      BEFORE DELETE ON main.session_windows
-      WHEN OLD.session_id = '${sessionId}'
-      BEGIN
-        SELECT RAISE(ABORT, 'injected lifecycle delete failure');
-      END;
-    `);
+    // The real worker has written the archive and deletion but has not committed.
+    const refuseCommit = vi.fn((gate: SharedArrayBuffer) => {
+      revokeSqliteReclamationCommit(gate);
+      throw new Error("injected lifecycle delete failure");
+    });
+    deletion.beforeCommit = refuseCommit;
 
     await expect(
       runSessionsCleanup({
@@ -297,6 +334,7 @@ describe("sessions cleanup --fix-missing", () => {
         targets: [{ agentId: "main", storePath }],
       }),
     ).rejects.toThrow("injected lifecycle delete failure");
+    expect(refuseCommit).toHaveBeenCalledOnce();
 
     expect(loadSessionEntry({ sessionKey, storePath })).toMatchObject({ sessionId });
     expect(

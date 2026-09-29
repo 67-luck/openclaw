@@ -1,11 +1,9 @@
 // Budget deletion retains the logical owner while reusing the captured physical store.
 import { randomUUID } from "node:crypto";
-import { channel } from "node:diagnostics_channel";
 import fs from "node:fs";
 import path from "node:path";
 import type { SQLInputValue } from "node:sqlite";
-import type { Worker } from "node:worker_threads";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   insertRepositoryGitHubPublication,
   readRepositoryGitHubPublication,
@@ -25,12 +23,12 @@ import {
   resolveOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
+import { drainSessionDiskBudgetWorkers } from "./disk-budget-runtime.js";
 import { appendTranscriptMessage } from "./session-accessor.js";
 import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
@@ -47,31 +45,15 @@ import { resolveMaintenanceConfigFromInput } from "./store-maintenance.js";
 const states: OpenClawTestState[] = [];
 const pending: Promise<unknown>[] = [];
 const listeners: Array<() => void> = [];
-const workers: Worker[] = [];
-const workerChannel = channel("worker_threads");
-const recordWorker = (message: unknown) => workers.push((message as { worker: Worker }).worker);
-beforeEach(() => workerChannel.subscribe(recordWorker));
+
 afterEach(async () => {
   for (const unsubscribe of listeners.splice(0)) {
     unsubscribe();
   }
   await Promise.allSettled(pending.splice(0));
-  try {
-    for (const state of states) {
-      await closeOpenClawAgentDatabasesAsync(state.root);
-    }
-    for (const state of states) {
-      closeOpenClawAgentDatabasesForTest(state.root);
-    }
-  } finally {
-    closeOpenClawStateDatabaseForTest();
-    workerChannel.unsubscribe(recordWorker);
-    // Real archive/reclamation calls settle their workers. Only this test's idle
-    // measurement pool remains; join termination before removing the fixture.
-    await Promise.all(workers.splice(0).map((worker) => worker.terminate()));
-    for (const state of states.splice(0).toReversed()) {
-      await state.cleanup();
-    }
+  await drainSessionDiskBudgetWorkers();
+  for (const state of states.splice(0).toReversed()) {
+    await state.cleanup();
   }
 });
 
