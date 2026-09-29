@@ -1,3 +1,4 @@
+import type { ApplicationConfigCapability } from "../../../app/config.ts";
 import type { ChatAttachment } from "../../../lib/chat/chat-types.ts";
 import { showToast } from "../../../lib/toast.ts";
 import { uploadsEnabled, uploadsDisabledMessage } from "../../../lib/uploads.ts";
@@ -10,10 +11,16 @@ import {
   attachmentReservationBytes,
   type ChatAttachmentLimits,
 } from "./chat-attachment-admission.ts";
-import type { ChatAttachmentControlsProps } from "./chat-attachment-controls.types.ts";
 import { resizeChatAttachmentImage } from "./chat-attachment-image.ts";
 
 const CHAT_ATTACHMENT_READ_TIMEOUT_MS = 15_000;
+
+// The controls contract imports this module, so keep read options independent of it.
+type ChatAttachmentReadOptions = {
+  readSignal?: AbortSignal;
+  attachmentLimits?: ChatAttachmentLimits;
+  uploadConfig?: ApplicationConfigCapability;
+};
 
 type ChatAttachmentReadDestination = {
   getAttachments: () => ChatAttachment[];
@@ -154,7 +161,7 @@ export function readChatAttachmentFile(
   file: File,
   entry: PendingChatAttachmentRead,
   reads: ChatAttachmentReadLifecycle,
-  props: Pick<ChatAttachmentControlsProps, "readSignal" | "attachmentLimits" | "uploadConfig">,
+  props: ChatAttachmentReadOptions,
 ): void {
   const signal = props.readSignal ?? reads.readSignal;
   if (signal.aborted) {
