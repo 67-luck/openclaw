@@ -533,7 +533,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       sessions: state.sessionsResult,
       selectedSession: catalogKey ? undefined : selectedSession,
       toolOverrides: selectedSession?.toolOverrides,
-      capabilityMenu: catalogKey
+      capabilityMenu: !composerAccess.canBrowseCapabilities
         ? undefined
         : this.composerCapabilities.props(
             this.context,

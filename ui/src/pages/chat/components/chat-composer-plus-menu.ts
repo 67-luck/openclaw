@@ -151,7 +151,9 @@ function renderRootView(props: ChatComposerPlusMenuProps) {
         ? t("chat.composer.menu.webSearchGloballyDisabled")
         : "");
   const canUpload = uploadsEnabled(props.attachments.uploadConfig);
-  const attachments = canUpload ? renderChatAttachmentMenuOptions(icons.paperclip) : nothing;
+  const attachments = canUpload
+    ? renderChatAttachmentMenuOptions(icons.paperclip, props.attachments.disabled)
+    : nothing;
   const rootToggles = props.rootToggles ?? [];
   if (!props.showCapabilities && rootToggles.length === 0) {
     return attachments;
@@ -428,7 +430,11 @@ function handleMenuSelection(
   props: ChatComposerPlusMenuProps,
 ) {
   const value = event.detail.item.value ?? "";
-  if (uploadsEnabled(props.attachments.uploadConfig) && handleChatAttachmentMenuSelection(event)) {
+  if (
+    !props.attachments.disabled &&
+    uploadsEnabled(props.attachments.uploadConfig) &&
+    handleChatAttachmentMenuSelection(event)
+  ) {
     return;
   }
   const rootToggle = props.rootToggles?.find((toggle) => toggle.value === value);

@@ -613,23 +613,23 @@ suite.define(() => {
 
         await page.goto(`${suite.server.baseUrl}chat`);
         await gateway.waitForRequest("chat.startup");
+        const composer = await openMenu(page);
+        const menu = composer.locator("wa-dropdown.agent-chat__capability-menu");
         if (!operatorScopes.includes("operator.write")) {
-          const composer = page.locator(".agent-chat__input");
           const input = composer.locator("textarea");
           await input.waitFor();
           expect(await input.isDisabled()).toBe(true);
-          expect(await composer.getByRole("button", { name: "Add attachment" }).isDisabled()).toBe(
-            true,
-          );
+          const attachmentOptions = menu.locator("wa-dropdown-item.agent-chat__attach-menu-option");
+          expect(await attachmentOptions.count()).toBeGreaterThan(0);
+          for (const option of await attachmentOptions.all()) {
+            expect(await option.isDisabled()).toBe(true);
+          }
           expect(
             await composer.getByRole("button", { name: "Write a message to send." }).isDisabled(),
           ).toBe(true);
           expect(await gateway.getRequests("chat.send")).toHaveLength(0);
           expect(await gateway.getRequests("sessions.patch")).toHaveLength(0);
-          return;
         }
-        const composer = await openMenu(page);
-        const menu = composer.locator("wa-dropdown.agent-chat__capability-menu");
         const clear = menu.locator('wa-dropdown-item[value="clear-overrides"]');
         await expect.poll(() => clear.isDisabled()).toBe(true);
         await expect.poll(() => tooltipTitleText(clear)).toContain("operator.admin access");

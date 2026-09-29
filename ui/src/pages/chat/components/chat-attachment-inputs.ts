@@ -115,7 +115,7 @@ export function renderChatAttachmentMenuTrigger(
   `;
 }
 
-export function renderChatAttachmentMenuOptions(fileIcon = icons.folder) {
+export function renderChatAttachmentMenuOptions(fileIcon = icons.folder, disabled = false) {
   const options = [
     { value: "camera", icon: icons.camera, label: t("chat.composer.takePhoto") },
     ...(useSingleAttachmentPicker()
@@ -127,7 +127,7 @@ export function renderChatAttachmentMenuOptions(fileIcon = icons.folder) {
   ];
   return options.map(
     ({ value, icon, label }) => html`
-      <wa-dropdown-item class="agent-chat__attach-menu-option" value=${value}>
+      <wa-dropdown-item class="agent-chat__attach-menu-option" value=${value} ?disabled=${disabled}>
         <span slot="icon" aria-hidden="true">${icon}</span>
         <span>${label}</span>
       </wa-dropdown-item>

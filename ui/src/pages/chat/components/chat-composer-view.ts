@@ -591,9 +591,14 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
               <div class="agent-chat__composer-footer">
                 <div class="agent-chat__composer-lead agent-chat__composer-meta">
                   ${renderChatComposerPlusMenu({
-                    attachments: props,
+                    attachments: {
+                      ...props,
+                      disabled: !canCompose || props.suggestionComposer === true,
+                    },
                     capabilityMenu: props.capabilityMenu,
-                    disabled: !canCompose || props.suggestionComposer === true,
+                    disabled:
+                      (!canCompose && (!props.connected || !props.capabilityMenu)) ||
+                      props.suggestionComposer === true,
                     open: state.capabilityMenuOpen,
                     view: state.capabilityMenuView,
                     toolOverrides: props.toolOverrides,
