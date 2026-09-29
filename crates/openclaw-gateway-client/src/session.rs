@@ -246,6 +246,26 @@ impl EventSubscription {
     }
 }
 
+impl Drop for EventSubscription {
+    fn drop(&mut self) {
+        let mut state = self
+            .events
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.receivers -= 1;
+        // A dropped or lagged receiver releases only the frames it has not consumed.
+        for frame in state
+            .frames
+            .iter_mut()
+            .filter(|frame| frame.index >= self.cursor)
+        {
+            frame.remaining -= 1;
+        }
+        state.trim_consumed();
+    }
+}
+
 struct EventHub {
     state: StdMutex<EventHubState>,
     notify: Notify,
@@ -258,12 +278,33 @@ struct EventHubState {
     frames: VecDeque<RetainedEvent>,
     next_index: u64,
     retained_bytes: usize,
+    receivers: usize,
     closed: bool,
+}
+
+impl EventHubState {
+    fn remove_front(&mut self) {
+        if let Some(frame) = self.frames.pop_front() {
+            self.retained_bytes -= frame.raw.len();
+        }
+    }
+
+    fn trim_consumed(&mut self) {
+        while self
+            .frames
+            .front()
+            .is_some_and(|frame| frame.remaining == 0)
+        {
+            self.remove_front();
+        }
+    }
 }
 
 struct RetainedEvent {
     index: u64,
     raw: Arc<str>,
+    // Only readers present at publication own this frame; later subscriptions start at the tail.
+    remaining: usize,
 }
 
 impl EventHub {
@@ -276,29 +317,18 @@ impl EventHub {
         }
     }
 
-    fn initial_subscription(
-        self: &Arc<Self>,
-        closed: watch::Receiver<Option<SessionCloseCause>>,
-    ) -> EventSubscription {
-        EventSubscription {
-            events: Arc::clone(self),
-            cursor: 0,
-            closed,
-        }
-    }
-
     fn subscribe(
         self: &Arc<Self>,
         closed: watch::Receiver<Option<SessionCloseCause>>,
     ) -> EventSubscription {
-        let cursor = self
+        let mut state = self
             .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .next_index;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.receivers += 1;
         EventSubscription {
             events: Arc::clone(self),
-            cursor,
+            cursor: state.next_index,
             closed,
         }
     }
@@ -310,7 +340,7 @@ impl EventHub {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let index = state.next_index;
         state.next_index = state.next_index.wrapping_add(1);
-        if raw.len() > self.max_bytes {
+        if raw.len() > self.max_bytes || state.receivers == 0 {
             drop(state);
             self.notify.notify_waiters();
             return;
@@ -318,13 +348,15 @@ impl EventHub {
         while state.frames.len() >= self.capacity
             || state.retained_bytes.saturating_add(raw.len()) > self.max_bytes
         {
-            let Some(evicted) = state.frames.pop_front() else {
-                break;
-            };
-            state.retained_bytes = state.retained_bytes.saturating_sub(evicted.raw.len());
+            state.remove_front();
         }
         state.retained_bytes += raw.len();
-        state.frames.push_back(RetainedEvent { index, raw });
+        let remaining = state.receivers;
+        state.frames.push_back(RetainedEvent {
+            index,
+            raw,
+            remaining,
+        });
         drop(state);
         self.notify.notify_waiters();
     }
@@ -345,11 +377,11 @@ impl EventHub {
         loop {
             let notified = self.notify.notified();
             let outcome = {
-                let state = self
+                let mut state = self
                     .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let next = state.frames.iter().find(|frame| frame.index >= *cursor);
+                let next = state.frames.iter_mut().find(|frame| frame.index >= *cursor);
                 if let Some(frame) = next {
                     if frame.index > *cursor {
                         let lag = frame.index - *cursor;
@@ -357,7 +389,10 @@ impl EventHub {
                         Some(Err(ClientError::EventLagged(lag)))
                     } else {
                         *cursor = cursor.wrapping_add(1);
-                        Some(parse_retained_event(&frame.raw))
+                        frame.remaining -= 1;
+                        let event = parse_retained_event(&frame.raw);
+                        state.trim_consumed();
+                        Some(event)
                     }
                 } else if *cursor < state.next_index {
                     let lag = state.next_index - *cursor;
@@ -614,6 +649,8 @@ where
     let (activity_tx, activity_rx) = watch::channel(0_u64);
     let (closed_tx, closed_rx) = watch::channel(None);
     let (close_tx, close_rx) = watch::channel(false);
+    // Register the shared default cursor before the reader can publish on another thread.
+    let event_rx = Arc::new(Mutex::new(events.subscribe(closed_rx.clone())));
     tokio::spawn(run_session(
         socket,
         SessionChannels {
@@ -633,7 +670,7 @@ where
         hello: Arc::new(hello),
         command_tx,
         control_tx,
-        event_rx: Arc::new(Mutex::new(events.initial_subscription(closed_rx.clone()))),
+        event_rx,
         events,
         activity_rx,
         closed_rx,
@@ -1881,7 +1918,7 @@ mod tests {
     async fn event_hub_evicts_by_count_and_aggregate_bytes() {
         let (_closed_tx, closed_rx) = watch::channel(None);
         let events = Arc::new(EventHub::new(3, 9));
-        let mut subscription = events.initial_subscription(closed_rx);
+        let mut subscription = events.subscribe(closed_rx);
         events.publish(Arc::from(r#"{"a":1}"#));
         events.publish(Arc::from(r#"{"b":2}"#));
         assert!(matches!(
@@ -1900,7 +1937,7 @@ mod tests {
         let events = Arc::new(EventHub::new(1, 1024));
         let (activity_tx, _activity_rx) = watch::channel(0);
         let (closed_tx, mut closed_rx) = watch::channel(None);
-        let mut event_rx = events.initial_subscription(closed_rx.clone());
+        let mut event_rx = events.subscribe(closed_rx.clone());
         let (_close_tx, close_rx) = watch::channel(false);
         let task = tokio::spawn(run_session(
             socket,
@@ -1989,5 +2026,241 @@ mod tests {
             .max_frame_bytes(8 * 1024 * 1024);
         assert_eq!(config.max_message_bytes, 32 * 1024 * 1024);
         assert_eq!(config.max_frame_bytes, 8 * 1024 * 1024);
+    }
+}
+
+#[cfg(test)]
+mod event_retention_tests {
+    use super::*;
+    use futures_util::FutureExt;
+
+    fn raw_event(sequence: u64, bytes: usize) -> Arc<str> {
+        Arc::from(
+            serde_json::json!({
+                "event": "node.retention", "seq": sequence, "payload": "x".repeat(bytes)
+            })
+            .to_string(),
+        )
+    }
+
+    fn close(events: &EventHub, closed: &watch::Sender<Option<SessionCloseCause>>) {
+        closed
+            .send(Some(SessionCloseCause::Closed(
+                "retention test close".into(),
+            )))
+            .unwrap();
+        events.close();
+    }
+
+    async fn assert_closed(receiver: &mut EventSubscription) {
+        assert!(matches!(receiver.recv().await,
+            Err(ClientError::Closed(reason)) if reason == "retention test close"));
+    }
+
+    #[tokio::test]
+    async fn consumed_raw_storage_releases_after_every_current_reader_advances() {
+        let (_closed, closed_rx) = watch::channel(None);
+        let events = Arc::new(EventHub::new(256, 64 * 1024 * 1024));
+        let mut initial = events.subscribe(closed_rx.clone());
+        let mut independent = events.subscribe(closed_rx);
+        let raw = raw_event(1, 256 * 1024);
+        let allocation = Arc::downgrade(&raw);
+        events.publish(raw);
+        assert_eq!(initial.recv().await.unwrap().seq, Some(1));
+        assert!(
+            allocation.upgrade().is_some(),
+            "slow independent reader still owns delivery"
+        );
+        assert_eq!(independent.recv().await.unwrap().seq, Some(1));
+        assert!(
+            allocation.upgrade().is_none(),
+            "fully consumed raw storage must release while readers and session stay alive"
+        );
+    }
+
+    #[tokio::test]
+    async fn unread_storage_releases_when_the_only_slow_reader_drops() {
+        let (_closed, closed_rx) = watch::channel(None);
+        let events = Arc::new(EventHub::new(256, 64 * 1024 * 1024));
+        let mut initial = events.subscribe(closed_rx.clone());
+        let slow = events.subscribe(closed_rx);
+        let raw = raw_event(1, 256 * 1024);
+        let allocation = Arc::downgrade(&raw);
+        events.publish(raw);
+        assert_eq!(initial.recv().await.unwrap().seq, Some(1));
+        assert!(allocation.upgrade().is_some());
+        drop(slow);
+        assert!(
+            allocation.upgrade().is_none(),
+            "dropped reader must release its last unread ownership"
+        );
+    }
+
+    #[tokio::test]
+    async fn unread_storage_releases_when_the_last_receiver_drops() {
+        let (_closed, closed_rx) = watch::channel(None);
+        let events = Arc::new(EventHub::new(256, 64 * 1024 * 1024));
+        let initial = events.subscribe(closed_rx.clone());
+        let raw = raw_event(1, 256 * 1024);
+        let allocation = Arc::downgrade(&raw);
+        events.publish(raw);
+        drop(initial);
+        assert!(
+            allocation.upgrade().is_none(),
+            "no remaining receiver can consume an old event"
+        );
+        let mut late = events.subscribe(closed_rx);
+        assert!(
+            late.recv().now_or_never().is_none(),
+            "late receivers never replay prior events"
+        );
+        events.publish(raw_event(2, 0));
+        assert_eq!(late.recv().await.unwrap().seq, Some(2));
+    }
+
+    #[tokio::test]
+    async fn default_backlog_late_subscription_and_close_drain_stay_independent() {
+        let (closed, closed_rx) = watch::channel(None);
+        let events = Arc::new(EventHub::new(256, 64 * 1024 * 1024));
+        let mut initial = events.subscribe(closed_rx.clone());
+        events.publish(raw_event(1, 0));
+        let mut late = events.subscribe(closed_rx);
+        assert!(
+            late.recv().now_or_never().is_none(),
+            "a cancelled pending receive cannot consume backlog"
+        );
+        events.publish(raw_event(2, 0));
+        close(&events, &closed);
+        assert_eq!(late.recv().await.unwrap().seq, Some(2));
+        assert_closed(&mut late).await;
+        // The never-polled initial receiver remains a real owner from connection establishment.
+        assert_eq!(initial.recv().await.unwrap().seq, Some(1));
+        assert_eq!(initial.recv().await.unwrap().seq, Some(2));
+        assert_closed(&mut initial).await;
+    }
+
+    #[tokio::test]
+    async fn slow_reader_keeps_exact_count_and_byte_lag_boundaries() {
+        let frame_bytes = raw_event(1, 0).len();
+        for (capacity, byte_limit, count, lost) in
+            [(3, 4096, 4, 1), (10, frame_bytes * 2 - 1, 2, 1)]
+        {
+            let (closed, closed_rx) = watch::channel(None);
+            let events = Arc::new(EventHub::new(capacity, byte_limit));
+            let mut slow = events.subscribe(closed_rx.clone());
+            let mut fast = events.subscribe(closed_rx);
+            for sequence in 1..=count {
+                events.publish(raw_event(sequence, 0));
+                assert_eq!(fast.recv().await.unwrap().seq, Some(sequence));
+            }
+            close(&events, &closed);
+            assert!(matches!(slow.recv().await, Err(ClientError::EventLagged(n)) if n == lost));
+            for sequence in (lost + 1)..=count {
+                assert_eq!(slow.recv().await.unwrap().seq, Some(sequence));
+            }
+            assert_closed(&mut slow).await;
+            assert_closed(&mut fast).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_gap_preserves_events_on_both_sides_and_close_reason() {
+        let (closed, closed_rx) = watch::channel(None);
+        let events = Arc::new(EventHub::new(4, 256));
+        let mut initial = events.subscribe(closed_rx);
+        events.publish(raw_event(1, 0));
+        events.publish(raw_event(2, 512));
+        events.publish(raw_event(3, 0));
+        close(&events, &closed);
+        assert_eq!(initial.recv().await.unwrap().seq, Some(1));
+        assert!(matches!(
+            initial.recv().await,
+            Err(ClientError::EventLagged(1))
+        ));
+        assert_eq!(initial.recv().await.unwrap().seq, Some(3));
+        assert_closed(&mut initial).await;
+    }
+
+    #[tokio::test]
+    async fn malformed_event_releases_consumed_storage_without_hiding_the_error() {
+        let (_closed, closed_rx) = watch::channel(None);
+        let events = Arc::new(EventHub::new(256, 64 * 1024 * 1024));
+        let mut initial = events.subscribe(closed_rx);
+        // The wire discriminator accepts this event; the public Event shape rejects its seq.
+        let raw: Arc<str> = Arc::from(r#"{"type":"event","event":"node.retention","seq":"bad"}"#);
+        assert!(matches!(
+            serde_json::from_str::<IncomingFrame>(&raw),
+            Ok(IncomingFrame::Event { .. })
+        ));
+        let allocation = Arc::downgrade(&raw);
+        events.publish(raw);
+        assert!(matches!(
+            initial.recv().await,
+            Err(ClientError::InvalidFrame(_))
+        ));
+        assert!(allocation.upgrade().is_none());
+        events.publish(raw_event(2, 0));
+        assert_eq!(initial.recv().await.unwrap().seq, Some(2));
+    }
+
+    #[tokio::test]
+    async fn publishing_without_receivers_does_not_retain_unobservable_storage() {
+        let (_closed, closed_rx) = watch::channel(None);
+        let events = Arc::new(EventHub::new(256, 64 * 1024 * 1024));
+        let raw = raw_event(1, 256 * 1024);
+        let allocation = Arc::downgrade(&raw);
+        events.publish(raw);
+        assert!(allocation.upgrade().is_none());
+        let mut late = events.subscribe(closed_rx);
+        assert!(late.recv().now_or_never().is_none());
+        events.publish(raw_event(2, 0));
+        assert_eq!(late.recv().await.unwrap().seq, Some(2));
+    }
+
+    #[tokio::test]
+    async fn dropping_a_lagged_reader_releases_only_remaining_unread_frames() {
+        let (_closed, closed_rx) = watch::channel(None);
+        let events = Arc::new(EventHub::new(2, 64 * 1024 * 1024));
+        let mut slow = events.subscribe(closed_rx.clone());
+        let mut fast = events.subscribe(closed_rx);
+        let mut allocations = Vec::new();
+        for sequence in 1..=3 {
+            let raw = raw_event(sequence, 256 * 1024);
+            allocations.push(Arc::downgrade(&raw));
+            events.publish(raw);
+            assert_eq!(fast.recv().await.unwrap().seq, Some(sequence));
+        }
+        assert!(
+            allocations[0].upgrade().is_none(),
+            "evicted storage is already released"
+        );
+        assert!(allocations[1..].iter().all(|raw| raw.upgrade().is_some()));
+        assert!(matches!(
+            slow.recv().await,
+            Err(ClientError::EventLagged(1))
+        ));
+        drop(slow);
+        assert!(allocations.iter().all(|raw| raw.upgrade().is_none()));
+        events.publish(raw_event(4, 0));
+        assert_eq!(fast.recv().await.unwrap().seq, Some(4));
+    }
+
+    #[tokio::test]
+    async fn dropping_an_early_reader_preserves_only_the_late_readers_backlog() {
+        let (_closed, closed_rx) = watch::channel(None);
+        let events = Arc::new(EventHub::new(256, 64 * 1024 * 1024));
+        let early = events.subscribe(closed_rx.clone());
+        let first = raw_event(1, 256 * 1024);
+        let first_owner = Arc::downgrade(&first);
+        events.publish(first);
+        let mut late = events.subscribe(closed_rx);
+        let second = raw_event(2, 256 * 1024);
+        let second_owner = Arc::downgrade(&second);
+        events.publish(second);
+        drop(early);
+        assert!(first_owner.upgrade().is_none());
+        assert!(second_owner.upgrade().is_some());
+        assert_eq!(late.recv().await.unwrap().seq, Some(2));
+        assert!(second_owner.upgrade().is_none());
     }
 }
