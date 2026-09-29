@@ -112,7 +112,6 @@ export async function resolveHeartbeatPreflight(params: {
   const pendingEventEntries = peekSystemEventEntries(
     resolveSystemEventQueueKey(session.sessionKey, params.agentId),
   ).filter((event) => !isHeartbeatDeliveryAwarenessEvent(event));
-  const turnSourceDeliveryContext = resolveSystemEventDeliveryContext(pendingEventEntries);
   const hasTaggedCronEvents = pendingEventEntries.some((event) =>
     event.contextKey?.startsWith("cron:"),
   );
@@ -123,6 +122,16 @@ export async function resolveHeartbeatPreflight(params: {
     wakeFlags.isCronWake ||
     shouldInspectWakePendingEvents ||
     hasTaggedCronEvents;
+  const execCompletionEntries = pendingEventEntries.filter((event) =>
+    isExecCompletionEvent(event.text),
+  );
+  // A queued exec completion owns its final route. Later generic events stay
+  // pending and must not replace the route before outbound delivery.
+  const turnSourceDeliveryContext = resolveSystemEventDeliveryContext(
+    shouldInspectPendingEvents && !params.scheduledTasks?.length && execCompletionEntries.length > 0
+      ? execCompletionEntries
+      : pendingEventEntries,
+  );
   const shouldBypassScratchGates =
     wakeFlags.isExecEventWake ||
     wakeFlags.isCronWake ||

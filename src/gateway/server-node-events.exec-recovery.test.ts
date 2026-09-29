@@ -129,6 +129,33 @@ describe("result-first node exec completion", () => {
     expect(requestHeartbeatMock).not.toHaveBeenCalled();
   });
 
+  it("preserves an ordinary route-less Telegram completion", async () => {
+    const sessionKey = "agent:main:telegram:direct:123456789";
+    const runId = "run-ordinary-route-less";
+    await handleNodeEvent(
+      buildCtx(() => ({ invokeResultReceived: false })),
+      "node-1",
+      nodeEvent("exec.finished", {
+        sessionKey,
+        runId,
+        exitCode: 0,
+        output: "ordinary output",
+      }),
+      { connId: "conn-1" },
+    );
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledExactlyOnceWith(
+      `Exec finished (node=node-1 id=${runId}, code 0)\nordinary output`,
+      {
+        sessionKey,
+        contextKey: `exec:${runId}`,
+      },
+    );
+    expect(requestHeartbeatMock).toHaveBeenCalledExactlyOnceWith(
+      execEventHeartbeatOptions(sessionKey),
+    );
+  });
+
   it.each([
     ["result-first recovery", true],
     ["ordinary completion", undefined],

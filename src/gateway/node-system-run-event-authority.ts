@@ -199,7 +199,7 @@ function resolveTelegramRouteMismatch(
   const originScope =
     originTopic?.[2]?.toLowerCase() === "direct-topic" ? "direct-topic" : "thread";
   if (!deliveryContext) {
-    return true;
+    return null;
   }
   if (deliveryContext.channel?.trim().toLowerCase() !== "telegram") {
     return true;
