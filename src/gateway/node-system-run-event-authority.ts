@@ -166,35 +166,38 @@ export function shouldSuppressRun(
     authorization !== null &&
     "invokeResultReceived" in authorization &&
     authorization.invokeResultReceived === true;
+  const telegramRouteMismatch = resolveTelegramRouteMismatch(sessionKey, deliveryContext);
   return (
     !globallyEnabled ||
     payload.notifyOnExit === false ||
-    isTelegramTopicRouteMismatch(sessionKey, deliveryContext) ||
+    telegramRouteMismatch === true ||
     (payload.suppressNotifyOnExit === true &&
-      (payload.invokeResultSentFirst !== true || invokeResultReceived || !deliveryContext))
+      (payload.invokeResultSentFirst !== true ||
+        invokeResultReceived ||
+        !deliveryContext ||
+        telegramRouteMismatch === null))
   );
 }
 
-const TELEGRAM_TOPIC_SUFFIX = /^(.*):topic:(\d+)$/i;
-const TELEGRAM_TARGET_THREAD_SUFFIX = /^(.*):(?:topic|thread):(\d+)$/i;
+const TELEGRAM_TOPIC_SUFFIX = /^(.*):(direct-topic|topic):(\d+)$/i;
+const TELEGRAM_TARGET_THREAD_SUFFIX = /^(.*):(direct-topic|topic|thread):(\d+)$/i;
 
-function isTelegramTopicRouteMismatch(
+function resolveTelegramRouteMismatch(
   sessionKey: string,
   deliveryContext: DeliveryContext | undefined,
-): boolean {
+): boolean | null {
   const origin = parseSessionDeliveryRoute(sessionKey);
   if (origin?.channel !== "telegram") {
-    return false;
+    return null;
   }
   const originTopic = TELEGRAM_TOPIC_SUFFIX.exec(origin.peerId);
-  const originThread = origin.threadId ?? originTopic?.[2];
-  if (!originThread) {
-    return false;
-  }
-  if (origin.threadId && originTopic?.[2] && origin.threadId !== originTopic[2]) {
+  const originThread = origin.threadId ?? originTopic?.[3];
+  if (origin.threadId && originTopic?.[3] && origin.threadId !== originTopic[3]) {
     return true;
   }
   const originChat = originTopic?.[1] ?? origin.peerId;
+  const originScope =
+    originTopic?.[2]?.toLowerCase() === "direct-topic" ? "direct-topic" : "thread";
   if (!deliveryContext) {
     return true;
   }
@@ -208,9 +211,20 @@ function isTelegramTopicRouteMismatch(
   const targetThreadSuffix = TELEGRAM_TARGET_THREAD_SUFFIX.exec(rawTarget);
   const targetChat = targetThreadSuffix?.[1] ?? rawTarget;
   const explicitThread = String(deliveryContext.threadId ?? "").trim();
-  if (explicitThread && targetThreadSuffix?.[2] && explicitThread !== targetThreadSuffix[2]) {
+  if (explicitThread && targetThreadSuffix?.[3] && explicitThread !== targetThreadSuffix[3]) {
     return true;
   }
-  const targetThread = explicitThread || targetThreadSuffix?.[2];
-  return targetChat !== originChat || targetThread !== originThread;
+  const targetThread = explicitThread || targetThreadSuffix?.[3];
+  const targetScope = targetThreadSuffix?.[2]
+    ? targetThreadSuffix[2].toLowerCase() === "direct-topic"
+      ? "direct-topic"
+      : "thread"
+    : originScope;
+  if (originScope === "direct-topic" && targetThreadSuffix?.[2]?.toLowerCase() !== "direct-topic") {
+    return true;
+  }
+  if (!originThread) {
+    return targetChat !== originChat || Boolean(targetThread);
+  }
+  return targetChat !== originChat || targetThread !== originThread || targetScope !== originScope;
 }

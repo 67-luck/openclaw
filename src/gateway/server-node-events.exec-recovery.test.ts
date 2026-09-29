@@ -217,6 +217,139 @@ describe("result-first node exec completion", () => {
     );
   });
 
+  it.each([
+    ["matching", "-100155462274:direct-topic:42", undefined, true],
+    ["case-insensitive matching", "-100155462274:DIRECT-TOPIC:42", undefined, true],
+    ["cross-chat", "-100999999999:direct-topic:42", undefined, false],
+    ["forum-topic scope", "-100155462274:topic:42", undefined, false],
+    ["ambiguous explicit thread", "-100155462274", 42, false],
+  ])(
+    "handles a %s Telegram Direct Messages topic route",
+    async (_label, lastTo, lastThreadId, allowed) => {
+      const sessionKey = "agent:main:telegram:group:-100155462274:direct-topic:42";
+      const runId = `run-direct-topic-${_label}`;
+      loadSessionEntryMock.mockReturnValue(
+        buildSessionLookup(sessionKey, {
+          lastChannel: "telegram",
+          lastTo,
+          lastThreadId,
+        }),
+      );
+      await handleNodeEvent(
+        buildCtx(() => ({ invokeResultReceived: false })),
+        "node-1",
+        nodeEvent("exec.finished", {
+          sessionKey,
+          runId,
+          exitCode: 0,
+          output: "direct topic output",
+          suppressNotifyOnExit: true,
+          invokeResultSentFirst: true,
+        }),
+        { connId: "conn-1" },
+      );
+
+      if (allowed) {
+        expect(enqueueSystemEventMock).toHaveBeenCalledOnce();
+        expect(requestHeartbeatMock).toHaveBeenCalledOnce();
+      } else {
+        expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+        expect(requestHeartbeatMock).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("accepts a forum topic route encoded with a thread suffix", async () => {
+    const sessionKey = "agent:main:telegram:group:-100155462274:topic:42";
+    loadSessionEntryMock.mockReturnValue(
+      buildSessionLookup(sessionKey, {
+        lastChannel: "telegram",
+        lastTo: "-100155462274:thread:42",
+      }),
+    );
+    await handleNodeEvent(
+      buildCtx(() => ({ invokeResultReceived: false })),
+      "node-1",
+      nodeEvent("exec.finished", {
+        sessionKey,
+        runId: "run-forum-thread-suffix",
+        exitCode: 0,
+        output: "forum topic output",
+      }),
+      { connId: "conn-1" },
+    );
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledOnce();
+    expect(requestHeartbeatMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["matching", "123456789", true],
+    ["cross-chat", "987654321", false],
+    ["unexpected thread", "123456789:topic:42", false],
+  ])("handles a %s unthreaded Telegram DM route", async (_label, lastTo, allowed) => {
+    const sessionKey = "agent:main:telegram:direct:123456789";
+    loadSessionEntryMock.mockReturnValue(
+      buildSessionLookup(sessionKey, {
+        lastChannel: "telegram",
+        lastTo,
+      }),
+    );
+    await handleNodeEvent(
+      buildCtx(() => ({ invokeResultReceived: false })),
+      "node-1",
+      nodeEvent("exec.finished", {
+        sessionKey,
+        runId: `run-unthreaded-dm-${_label}`,
+        exitCode: 0,
+        output: "dm output",
+      }),
+      { connId: "conn-1" },
+    );
+
+    if (allowed) {
+      expect(enqueueSystemEventMock).toHaveBeenCalledOnce();
+      expect(requestHeartbeatMock).toHaveBeenCalledOnce();
+    } else {
+      expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+      expect(requestHeartbeatMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    ["ordinary completion", false, true],
+    ["result-first recovery", true, false],
+  ])("preserves %s behavior for a non-Telegram route", async (_label, recovery, allowed) => {
+    const sessionKey = "agent:main:slack:channel:C123:thread:42";
+    loadSessionEntryMock.mockReturnValue(
+      buildSessionLookup(sessionKey, {
+        lastChannel: "slack",
+        lastTo: "C123",
+        lastThreadId: "42",
+      }),
+    );
+    await handleNodeEvent(
+      buildCtx(() => ({ invokeResultReceived: false })),
+      "node-1",
+      nodeEvent("exec.finished", {
+        sessionKey,
+        runId: `run-slack-${_label}`,
+        exitCode: 0,
+        output: "slack output",
+        ...(recovery ? { suppressNotifyOnExit: true, invokeResultSentFirst: true } : {}),
+      }),
+      { connId: "conn-1" },
+    );
+
+    if (allowed) {
+      expect(enqueueSystemEventMock).toHaveBeenCalledOnce();
+      expect(requestHeartbeatMock).toHaveBeenCalledOnce();
+    } else {
+      expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+      expect(requestHeartbeatMock).not.toHaveBeenCalled();
+    }
+  });
+
   it("suppresses a topic completion when saved route topic fields conflict", async () => {
     const sessionKey = "agent:main:telegram:group:-100155462274:topic:42";
     loadSessionEntryMock.mockReturnValue(
