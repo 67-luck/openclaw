@@ -5,7 +5,7 @@ mod session;
 #[cfg(feature = "builtin-transport")]
 mod tls;
 mod transport;
-pub use json::{encode_json, json_encoded_len};
+pub use json::json_encoded_len;
 #[cfg(feature = "builtin-transport")]
 pub use tls::pinned_tls_config;
 pub use transport::{GatewayWebSocket, GatewayWebSocketConnector};

@@ -1,6 +1,6 @@
 use serde::Serialize;
 use serde_json::Value;
-use std::{fmt::Write as _, io};
+use std::io;
 
 /// Measure compact Gateway JSON without allocating an encoded payload.
 /// Returns `None` once the serialized value exceeds `maximum` bytes.
@@ -31,17 +31,6 @@ fn serialized_len<T: Serialize>(value: &T, maximum: usize) -> Result<usize, crat
         }
     })?;
     Ok(writer.written)
-}
-
-/// Encode immutable JSON into one exactly sized allocation.
-/// A media string followed by its closing quote otherwise doubles the buffer.
-#[must_use]
-pub fn encode_json(value: &Value) -> String {
-    // Value has no user-defined serializer: both passes see the same compact bytes.
-    let length = json_encoded_len(value, usize::MAX).expect("JSON value length overflow");
-    let mut encoded = String::with_capacity(length);
-    write!(&mut encoded, "{value}").expect("writing JSON to a String cannot fail");
-    encoded
 }
 
 /// Typed requests keep their normalized values until this final encoding. A fixed
@@ -103,9 +92,6 @@ mod tests {
             json!({"nested": ["\"\\\n\t\u{0000}é🦀", {"media": "x".repeat(3 * 1024)}]}),
         ] {
             let expected = value.to_string();
-            let encoded = encode_json(&value);
-            assert_eq!(encoded, expected);
-            assert_eq!(encoded.capacity(), encoded.len());
             assert_eq!(
                 json_encoded_len(&value, expected.len()),
                 Some(expected.len())
