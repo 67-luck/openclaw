@@ -368,6 +368,11 @@ class ChatQuestionPanel extends OpenClawLightDomElement {
       (event.metaKey || event.ctrlKey) &&
       !event.altKey &&
       !event.shiftKey &&
+      (event.target === event.currentTarget ||
+        event.target instanceof HTMLInputElement ||
+        event.target instanceof HTMLTextAreaElement ||
+        (event.target instanceof HTMLButtonElement &&
+          ["radio", "checkbox"].includes(event.target.getAttribute("role") ?? ""))) &&
       this.answerValues(model, question).length > 0
     ) {
       event.preventDefault();

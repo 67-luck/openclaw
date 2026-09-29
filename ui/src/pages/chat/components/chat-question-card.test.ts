@@ -72,16 +72,14 @@ describe("shared question panel", () => {
 
   function drawGateway(
     prompt: QuestionPrompt,
-    callbacks: {
-      onSubmit?: (answers: Record<string, string[]>) => void | Promise<void>;
-      onSkip?: () => void | Promise<void>;
-    } = {},
+    callbacks: Parameters<typeof createGatewayQuestionPanelProps>[1] = {},
   ) {
     let collapsed = false;
     const redraw = () => {
       render(
         html`<openclaw-chat-question-panel
           .props=${createGatewayQuestionPanelProps(prompt, {
+            ...callbacks,
             collapsed,
             onCollapsedChange: (nextCollapsed) => {
               collapsed = nextCollapsed;
@@ -357,30 +355,60 @@ describe("shared question panel", () => {
     expect(onSubmit).toHaveBeenCalledExactlyOnceWith({ format: ["Detailed"] });
   });
 
-  it.each([{}, { ctrlKey: true }, { metaKey: true }])(
-    "leaves external-step activation to the link: %j",
-    async (keys) => {
-      const prompt = gatewayPrompt();
-      prompt.questions[0]!.url = "https://example.test/confirm";
-      const onSubmit = vi.fn();
-      drawGateway(prompt, { onSubmit });
-      const panel = await panelIn(container);
-      container.querySelector<HTMLButtonElement>('[role="radio"]')!.click();
-      await panel.updateComplete;
-      const link = container.querySelector<HTMLAnchorElement>("a")!;
-      link.focus();
+  it.each([
+    { name: "external step", selector: "a" },
+    { name: "Skip", selector: ".chat-question-panel__skip" },
+    { name: "Back", selector: ".chat-question-panel__back" },
+    { name: "previous request", selector: ".chat-question-panel__request-nav button:first-child" },
+    { name: "next request", selector: ".chat-question-panel__request-nav button:last-child" },
+    { name: "collapse", selector: ".chat-question-panel__collapse" },
+    { name: "dismiss error", selector: ".chat-question-panel__error-dismiss" },
+    { name: "Submit", selector: ".chat-question-panel__advance" },
+  ])("leaves Enter activation to the focused $name control", async ({ selector }) => {
+    const prompt = gatewayPrompt({
+      error: "Try again",
+      questions: [
+        ...gatewayPrompt().questions,
+        freeTextQuestion({ url: "https://example.test/confirm" }),
+      ],
+      drafts: new Map([["value", { selected: new Set<string>(), freeText: "Confirmed" }]]),
+    });
+    const onSubmit = vi.fn();
+    const onSkip = vi.fn();
+    const onPreviousRequest = vi.fn();
+    const onNextRequest = vi.fn();
+    drawGateway(prompt, {
+      onSubmit,
+      onSkip,
+      onPreviousRequest,
+      onNextRequest,
+      requestPosition: { current: 2, total: 3 },
+    });
+    const panel = await panelIn(container);
+    container.querySelector<HTMLButtonElement>('[role="radio"]')!.click();
+    await panel.updateComplete;
+    expect(container.querySelector(".chat-question-panel__progress")?.textContent).toBe("2/2");
+    expect(
+      container.querySelector<HTMLButtonElement>(".chat-question-panel__advance")!.disabled,
+    ).toBe(false);
+    const target = container.querySelector<HTMLElement>(selector)!;
+    target.focus();
+
+    for (const keys of [{}, { ctrlKey: true }, { metaKey: true }]) {
       const event = new KeyboardEvent("keydown", {
         key: "Enter",
         ...keys,
         bubbles: true,
         cancelable: true,
       });
-      link.dispatchEvent(event);
-
+      target.dispatchEvent(event);
       expect(event.defaultPrevented).toBe(false);
       expect(onSubmit).not.toHaveBeenCalled();
-    },
-  );
+      expect(onSkip).not.toHaveBeenCalled();
+      expect(onPreviousRequest).not.toHaveBeenCalled();
+      expect(onNextRequest).not.toHaveBeenCalled();
+    }
+  });
 
   it("leaves modified numeric shortcuts to the browser", async () => {
     const onSubmit = vi.fn();
