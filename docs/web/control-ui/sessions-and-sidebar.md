@@ -490,12 +490,13 @@ For device and cloud sessions, the submitted prompt also starts background namin
 
 For a remote target, the Control UI creates the repository or managed-worktree session with an empty initial message and no `execNode`, dispatches it by exact `deviceId`, `autoDevice: true`, or `profileId` (plus an optional cloud machine class), waits for active placement, and then sends the first message and attachments with the same idempotency key used by recovery. Explicit and automatic device dispatch require `operator.write`; cloud profile dispatch requires `operator.admin`. The composer footer chooses the new session's model and reasoning level.
 
-Admin connections can enable **Require sandbox** in the New Session composer or
+Users can choose **Require sandbox** in the New Session composer or
 compact launcher settings. The choice applies to local, device, and cloud
 creation and permanently requires sandboxed tool execution for that session.
-Leaving it off follows the creator role and agent sandbox policy. A selected
-requirement is retained and creation is blocked if the connection later loses
-admin scope; the UI never silently weakens it.
+For a creator role with `sandbox: "required"`, the control is checked and cannot
+be changed. Otherwise, leaving it off follows the agent sandbox policy.
+Creating a session still requires session-write access; sandbox selection does
+not grant any additional permissions.
 
 Model and **Effort** are separate adjacent composer controls in chat and New session, on desktop and mobile. The model picker never contains Effort or Fast-mode controls. Long model labels ellipsize to leave room for the other controls; the full name remains in the open picker and accessible label. Narrow composers, including split panes in wider windows, use compact controls so each picker stays independently clickable. Effort uses a gauge in these layouts whose needle reflects the current level, with a lightning badge when Fast mode is active. In chat, Fast mode stays in the Effort menu, or appears as the adjacent control when reasoning is unavailable. Models with neither available control omit it.
 

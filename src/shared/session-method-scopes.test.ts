@@ -9,6 +9,7 @@ describe("resolveDynamicSessionMutationRequiredScope", () => {
   it.each([
     { agentId: "main", message: "hello", worktree: true },
     { agentId: "main", message: "hello", projectId: "openclaw" },
+    { agentId: "main", sandbox: "required" },
   ])("keeps ordinary session creation write-scoped %#", (params) => {
     expect(resolveDynamicSessionMutationRequiredScope("sessions.create", params)).toBe(
       "operator.write",
@@ -20,7 +21,6 @@ describe("resolveDynamicSessionMutationRequiredScope", () => {
     { key: "agent:main:dashboard:incognito-123" },
     { parentSessionKey: "agent:main:subagent:incognito-123" },
     { execNode: "node-1" },
-    { sandbox: "required" },
   ])("requires admin for privileged session creation params %#", (params) => {
     expect(resolveDynamicSessionMutationRequiredScope("sessions.create", params)).toBe(
       "operator.admin",

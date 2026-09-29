@@ -72,6 +72,7 @@ describe("session-scoped method admission", () => {
   it.each([
     ["chat.send", { sessionKey: "agent:main:own", message: "hello" }],
     ["sessions.create", {}],
+    ["sessions.create", { sandbox: "required" }],
     ["sessions.patch", { key: "agent:main:own", label: "updated" }],
     ["sessions.patchMany", { targets: [{ key: "agent:main:own" }], patch: { unread: true } }],
   ] as const)("requires the narrow write grant for %s", (method, params) => {
@@ -102,7 +103,6 @@ describe("session-scoped method admission", () => {
     ["sessions.create", { execNode: "remote" }],
     ["sessions.create", { toolOverrides: { allow: [] } }],
     ["sessions.create", { permissionMode: "full" }],
-    ["sessions.create", { sandbox: "required" }],
     ["sessions.patch", { key: "agent:main:own", permissionMode: "full" }],
     ["sessions.patchMany", { targets: [{ key: "agent:main:own" }], patch: { sandboxMode: "off" } }],
     ["sessions.patch", { key: "agent:main:own", unknownMutation: true }],

@@ -135,11 +135,15 @@ export class DraftSubmissionFlow {
   }
 
   get sandbox(): SessionCreateParams["sandbox"] {
-    return this.sandboxValue;
+    return this.sandboxRequiredByRole ? "required" : this.sandboxValue;
+  }
+
+  get sandboxRequiredByRole(): boolean {
+    return this.read().context?.gateway.snapshot.hello?.policy?.sandbox === "required";
   }
 
   get sandboxRequired(): boolean {
-    return this.sandboxValue === "required";
+    return this.sandbox === "required";
   }
 
   get message(): string {
@@ -241,6 +245,9 @@ export class DraftSubmissionFlow {
   }
 
   setSandboxRequired(required: boolean) {
+    if (this.sandboxRequiredByRole) {
+      return;
+    }
     const sandbox = required ? ("required" as const) : undefined;
     if (sandbox === this.sandboxValue) {
       return;

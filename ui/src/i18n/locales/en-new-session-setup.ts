@@ -106,7 +106,7 @@ const enNewSessionSetup = {
     requireSandbox: "Require sandbox",
     requireSandboxDescription:
       "Permanently require sandboxed tool execution for this session. This cannot be changed after creation.",
-    requireSandboxAdmin: "Only admins can change this setting",
+    requireSandboxRole: "Your role requires sandboxing",
     messagePlaceholder: "What should this session work on?",
     dictate: "Dictate",
     readingAttachment: "Reading attachment",

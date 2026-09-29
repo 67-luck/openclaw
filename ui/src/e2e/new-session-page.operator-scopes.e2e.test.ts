@@ -1,4 +1,7 @@
+import path from "node:path";
+import type { Page } from "playwright";
 import { expect, it } from "vitest";
+import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import {
   createControlUiE2eContextOptions,
   tooltipTitleText,
@@ -12,6 +15,17 @@ import {
 
 const suite = createNewSessionPageE2eSuite();
 
+async function captureSandboxProof(page: Page, state: string) {
+  if (process.env.OPENCLAW_CAPTURE_UI_PROOF === "1") {
+    const directory = createControlUiE2eArtifactDir("sandbox-" + state, suite.artifactDir);
+    await page.screenshot({
+      path: path.join(directory, "new-session.png"),
+      animations: "disabled",
+      mask: [page.locator("[data-chat-model-select]")],
+    });
+  }
+}
+
 async function openDraft(
   operatorScopes: string[],
   featureMethods = [
@@ -21,12 +35,14 @@ async function openDraft(
     "sessions.create",
     "sessions.dispatch",
   ],
+  sandbox?: "required",
 ) {
   const context = await suite.browser.newContext(createControlUiE2eContextOptions());
   const page = await context.newPage();
   const gateway = await installMockGateway(page, {
     featureMethods,
     operatorScopes,
+    sandbox,
     methodResponses: {
       "environments.list": {
         environments: [
@@ -69,7 +85,7 @@ suite.define(() => {
       await expect.poll(() => sidebarCreate.isDisabled()).toBe(true);
       await expect.poll(() => submit.isDisabled()).toBe(true);
       await expect.poll(() => incognito.isDisabled()).toBe(true);
-      await expect.poll(() => requireSandbox.count()).toBe(0);
+      await expect.poll(() => requireSandbox.count()).toBe(1);
       expect(await incognito.getAttribute("title")).toBe(
         "This action requires operator.admin access.",
       );
@@ -124,18 +140,21 @@ suite.define(() => {
     }
   });
 
-  it("lets admins require sandboxing in the atomic create request", async () => {
-    const { context, gateway, page } = await openDraft([
-      "operator.admin",
-      "operator.read",
-      "operator.write",
-    ]);
+  it("lets write-scoped users choose sandboxing in the atomic create request", async () => {
+    const { context, gateway, page } = await openDraft(["operator.read", "operator.write"]);
     try {
       const requireSandbox = page.getByRole("switch", {
         name: "Require sandbox",
         exact: true,
       });
       await expect.poll(() => requireSandbox.isEnabled()).toBe(true);
+      await expect.poll(() => requireSandbox.getAttribute("aria-checked")).toBe("false");
+      await captureSandboxProof(page, "optional-unchecked");
+      await requireSandbox.click();
+      await expect.poll(() => requireSandbox.getAttribute("aria-checked")).toBe("true");
+      await captureSandboxProof(page, "optional-checked");
+      await requireSandbox.click();
+      await expect.poll(() => requireSandbox.getAttribute("aria-checked")).toBe("false");
       await requireSandbox.click();
       await expect.poll(() => requireSandbox.getAttribute("aria-checked")).toBe("true");
       await page.getByRole("button", { name: "Start session" }).click();
@@ -148,34 +167,27 @@ suite.define(() => {
     }
   });
 
-  it("keeps a sandbox requirement fail-closed after admin scope is lost", async () => {
-    const { context, gateway, page } = await openDraft([
-      "operator.admin",
-      "operator.read",
-      "operator.write",
-    ]);
+  it("locks sandboxing on for users whose role requires it", async () => {
+    const { context, gateway, page } = await openDraft(
+      ["operator.read", "operator.write"],
+      undefined,
+      "required",
+    );
     try {
       const requireSandbox = page.getByRole("switch", {
         name: "Require sandbox",
         exact: true,
       });
-      await requireSandbox.click();
-      await expect.poll(() => requireSandbox.getAttribute("aria-checked")).toBe("true");
-
-      await gateway.setOperatorScopes(["operator.read", "operator.write"]);
-      await gateway.closeLatest(1001, "sandbox scope downgraded");
-      await expect.poll(async () => (await gateway.getRequests("connect")).length).toBe(2);
-
       await expect.poll(() => requireSandbox.isDisabled()).toBe(true);
       expect(await requireSandbox.getAttribute("aria-checked")).toBe("true");
-      expect(await tooltipTitleText(requireSandbox)).toBe("Only admins can change this setting");
+      expect(await tooltipTitleText(requireSandbox)).toBe("Your role requires sandboxing");
+      await captureSandboxProof(page, "role-required");
       const submit = page.getByRole("button", { name: "Start session" });
-      await expect.poll(() => submit.isDisabled()).toBe(true);
-      await page.locator(".new-session-page__message").press("Enter");
-      await pollLocatorText(
-        page.locator('.new-session-page__blocked-submit[role="status"]'),
-      ).toContain("This action requires operator.admin access.");
-      expect(await gateway.getRequests("sessions.create")).toHaveLength(0);
+      await expect.poll(() => submit.isEnabled()).toBe(true);
+      await submit.click();
+      await expect(gateway.waitForRequest("sessions.create")).resolves.toMatchObject({
+        params: { agentId: "main", message: "scope proof", sandbox: "required" },
+      });
     } finally {
       await context.close();
     }

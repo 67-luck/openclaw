@@ -100,14 +100,6 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
     }
     const p = structuredClone(params);
     const clientScopes = Array.isArray(client?.connect?.scopes) ? [...client.connect.scopes] : [];
-    if (p.sandbox === "required" && client !== null && !clientScopes.includes(ADMIN_SCOPE)) {
-      respond(
-        false,
-        undefined,
-        missingScopeErrorShape({ missingScope: ADMIN_SCOPE, requiredScopes: [ADMIN_SCOPE] }),
-      );
-      return;
-    }
     const requestAuthority = readGatewayRequestMutationAuthority(options);
     const getCurrentConfig = context.getRuntimeConfig;
     const requestingOperatorProfileId = client?.authenticatedUserProfile?.profileId;

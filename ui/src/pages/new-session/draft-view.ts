@@ -88,8 +88,8 @@ export function renderNewSessionDraftView(options: {
         getMentions: () => submission.mentions,
         visibility: submission.visibility,
         draftAvailable: capabilities.canStartAsDraft(context),
-        sandboxAvailable: place.isAdmin() || submission.sandboxRequired,
-        sandboxCanChange: place.isAdmin(),
+        sandboxAvailable: true,
+        sandboxCanChange: !submission.sandboxRequiredByRole,
         sandboxRequired: submission.sandboxRequired,
         ...capabilities.composerProps(context, gateway, place.agentId),
         modelControl: place.modelControl,
@@ -126,7 +126,7 @@ export function renderNewSessionDraftView(options: {
         },
         onSandboxRequiredChange: (required) => {
           if (
-            place.isAdmin() &&
+            !submission.sandboxRequiredByRole &&
             !submission.submitting &&
             !submission.pendingPlacement.sessionKey
           ) {

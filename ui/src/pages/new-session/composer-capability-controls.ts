@@ -67,7 +67,7 @@ export function renderNewSessionSandboxRequirement(options: NewSessionComposerCa
   const label = t("newSession.requireSandbox");
   const title = options.sandboxCanChange
     ? t("newSession.requireSandboxDescription")
-    : t("newSession.requireSandboxAdmin");
+    : t("newSession.requireSandboxRole");
   return html`
     <button
       type="button"
@@ -120,7 +120,7 @@ export function renderNewSessionPlusMenu(
             title:
               options.sandboxCanChange === true
                 ? t("newSession.requireSandboxDescription")
-                : t("newSession.requireSandboxAdmin"),
+                : t("newSession.requireSandboxRole"),
             onChange: (checked: boolean) => options.onSandboxRequiredChange?.(checked),
           },
         ]

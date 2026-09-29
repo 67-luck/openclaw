@@ -525,8 +525,10 @@ describe("method scope resolution", () => {
     });
   });
 
-  it("keeps sessions.create project IDs at write scope", () => {
-    const params = { projectId: "openclaw", worktree: true };
+  it.each([
+    { projectId: "openclaw", worktree: true },
+    { agentId: "main", sandbox: "required" },
+  ])("keeps non-privileged session creation write-scoped %#", (params) => {
     expect(resolveLeastPrivilegeOperatorScopesForMethod("sessions.create", params)).toEqual([
       "operator.write",
     ]);
@@ -545,7 +547,6 @@ describe("method scope resolution", () => {
       { parentSessionKey: incognitoKey, spawnDepth: 1 },
       { parentSessionKey: incognitoKey, succeedsParent: false, emitCommandHooks: true },
       { agentId: "main", toolOverrides: { skills: { release: false } } },
-      { agentId: "main", sandbox: "required" },
     ]) {
       const required = resolveLeastPrivilegeOperatorScopesForMethod("sessions.create", params);
       expect(required).toEqual(["operator.admin"]);

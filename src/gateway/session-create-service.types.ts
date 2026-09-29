@@ -173,7 +173,7 @@ export type CreateGatewaySessionParams = {
   succeedsParent?: boolean;
   emitCommandHooks?: boolean;
   resetMainWhenUnspecified?: boolean;
-  /** Admin-admitted public intent; requires a new or already sandbox-required row. */
+  /** Creation-only public intent; requires a new or already sandbox-required row. */
   explicitSandboxRequirement?: true;
   commandSource: string;
   loadGatewayModelCatalogSnapshot?: () => Promise<ModelCatalogSnapshot>;
