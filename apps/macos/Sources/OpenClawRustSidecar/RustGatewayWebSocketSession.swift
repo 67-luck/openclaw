@@ -2,7 +2,6 @@ import CryptoKit
 import Darwin
 import Foundation
 import OpenClawKit
-import Security
 
 /// A product-owned process transport. Gateway credentials still come from the native auth owner.
 package final class RustGatewayWebSocketSession: WebSocketSessioning, GatewayTLSRouteMetadataProviding,
@@ -270,7 +269,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
             throw Self.startupError(3, "The macOS node runtime helper is missing or not executable.")
         }
         if self.executableURL == RustGatewayWebSocketSession.bundledExecutableURL {
-            try Self.verifyBundledArtifact()
+            try self.verifyBundledArtifact()
         }
         let child = Process()
         let stdinPipe = Pipe()
@@ -282,19 +281,6 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         // No inherited Gateway/provider credentials, shell, working directory, or operator HOME.
         child.environment = ["LANG": "en_US.UTF-8"]
         child.currentDirectoryURL = FileManager.default.temporaryDirectory
-        try child.run()
-        try stdinPipe.fileHandleForReading.close()
-        try stdoutPipe.fileHandleForWriting.close()
-        let installed = self.lock.withLock {
-            guard self.taskState == .running else { return false }
-            self.process = child
-            self.input = stdinPipe.fileHandleForWriting
-            self.output = stdoutPipe.fileHandleForReading
-            return true
-        }
-        guard installed else { child.terminate()
-            return
-        }
         defer { try? stdoutPipe.fileHandleForReading.close() }
         for descriptor in [
             stdinPipe.fileHandleForWriting.fileDescriptor,
@@ -307,6 +293,9 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         guard fcntl(stdinPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
             throw POSIXError(.EIO)
         }
+        try self.launch(child, input: stdinPipe.fileHandleForWriting, output: stdoutPipe.fileHandleForReading)
+        try stdinPipe.fileHandleForReading.close()
+        try stdoutPipe.fileHandleForWriting.close()
         let key = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
         let sessionBytes = SymmetricKey(size: .bits128).withUnsafeBytes { Data($0) }
         let sessionID = sessionBytes.map { String(format: "%02x", $0) }.joined()
@@ -462,19 +451,53 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         }
     }
 
-    /// The bundle seal covers this exact helper; verify immediately before handing it session keys.
-    private static func verifyBundledArtifact() throws {
-        let flags = SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckAllArchitectures | kSecCSCheckNestedCode)
-        for url in [Bundle.main.bundleURL, RustGatewayWebSocketSession.bundledExecutableURL] {
-            var code: SecStaticCode?
-            guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess,
-                  let code, SecStaticCodeCheckValidity(code, flags, nil) == errSecSuccess
-            else {
-                throw NSError(domain: "OpenClawRustSidecar", code: 2, userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "The bundled node runtime failed signature verification. Reinstall the signed app.",
-                ])
+    private func launch(_ child: Process, input: FileHandle? = nil, output: FileHandle? = nil) throws {
+        try self.lock.withLock {
+            // Publish the child in the same critical section as launch: cancellation
+            // must either prevent execution or own its cleanup before any keys exist.
+            guard self.taskState == .running, self.process == nil else {
+                throw self.failure ?? URLError(.cancelled)
             }
+            try child.run()
+            self.process = child
+            self.input = input
+            self.output = output
+        }
+    }
+
+    private func verifyBundledArtifact() throws {
+        let verifier = Process()
+        verifier.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        verifier.arguments = [
+            "--verify", "--deep", "--strict", "--all-architectures",
+            Bundle.main.bundleURL.path, RustGatewayWebSocketSession.bundledExecutableURL.path,
+        ]
+        verifier.environment = ["LANG": "en_US.UTF-8"]
+        verifier.currentDirectoryURL = FileManager.default.temporaryDirectory
+        verifier.standardInput = FileHandle.nullDevice
+        verifier.standardOutput = FileHandle.nullDevice
+        verifier.standardError = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0)
+        verifier.terminationHandler = { _ in exited.signal() }
+        let deadline = DispatchTime.now() + 10
+        // Match the packaged app's strict verification policy in an ephemeral OS
+        // process, so signature-validation scratch memory dies before helper startup.
+        try self.launch(verifier)
+        guard exited.wait(timeout: deadline) == .success else {
+            if verifier.isRunning { kill(verifier.processIdentifier, SIGKILL) }
+            throw URLError(.timedOut)
+        }
+        guard verifier.terminationReason == .exit, verifier.terminationStatus == 0 else {
+            throw NSError(domain: "OpenClawRustSidecar", code: 2, userInfo: [
+                NSLocalizedDescriptionKey:
+                    "The bundled node runtime failed signature verification. Reinstall the signed app.",
+            ])
+        }
+        try self.lock.withLock {
+            guard self.taskState == .running, self.process === verifier else {
+                throw self.failure ?? URLError(.cancelled)
+            }
+            self.process = nil
         }
     }
 
