@@ -455,8 +455,13 @@ PR-owned local branches, and remote head branch absence. It never merges or dele
 resources. It may post a first completion comment from `merged`; uncertain
 comment attempts only look up the existing marker and never POST again.
 Missing or ambiguous markers remain pending. Re-read the OID after any state
-transition. A first admin-route comment requires its original landing audit
-and remains outside this delayed completion path.
+transition. A first admin-route comment is supported only with retained prior-CI
+admission evidence. Before requiring cleanup, it verifies the landed commit's
+historical parent and compares it with the retained admission main. The comment
+labels this audit as reconstructed after merge, claims no original at-landing
+audit, and preserves the historical CI qualification without claiming current-head
+CI success. Other admin receipts still require owner review of their original
+audit and completion record.
 
 Preserve the operator-facing narrative: what failed, the owning repair, important
 proof and limitations, human credit, and linked final state. Record material
