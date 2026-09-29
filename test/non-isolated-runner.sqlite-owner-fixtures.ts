@@ -24,17 +24,18 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 
+const home = path.join(import.meta.dirname, "policy-home");
+const stateDir = path.join(home, ".openclaw");
+vi.stubEnv("HOME", home);
+vi.stubEnv("USERPROFILE", home);
+vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(stateDir, "openclaw.json"));
+vi.stubEnv("OPENCLAW_AGENT_DIR", undefined);
+const { publishCanonicalUserChannelPolicy } = await import(${JSON.stringify(import.meta.resolve("../src/state/user-channel-identity-operations.ts"))});
+const { closeOpenClawStateDatabaseAsync } = await import(${JSON.stringify(import.meta.resolve("../src/state/openclaw-state-db-cache.ts"))});
+const { readConfigMachineState } = await import(${JSON.stringify(import.meta.resolve("../src/state/config-machine-state.ts"))});
+
 it("publishes durable policy into a cold database after the previous file's owner retires", async () => {
-  const home = path.join(import.meta.dirname, "policy-home");
-  const stateDir = path.join(home, ".openclaw");
-  vi.stubEnv("HOME", home);
-  vi.stubEnv("USERPROFILE", home);
-  vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
-  vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(stateDir, "openclaw.json"));
-  vi.stubEnv("OPENCLAW_AGENT_DIR", undefined);
-  const { publishCanonicalUserChannelPolicy } = await import(${JSON.stringify(import.meta.resolve("../src/state/user-channel-identity-operations.ts"))});
-  const { closeOpenClawStateDatabaseAsync } = await import(${JSON.stringify(import.meta.resolve("../src/state/openclaw-state-db-cache.ts"))});
-  const { readConfigMachineState } = await import(${JSON.stringify(import.meta.resolve("../src/state/config-machine-state.ts"))});
   expect(existsSync(path.join(stateDir, "state", "openclaw.sqlite"))).toBe(false);
   try {
     await publishCanonicalUserChannelPolicy(undefined);
