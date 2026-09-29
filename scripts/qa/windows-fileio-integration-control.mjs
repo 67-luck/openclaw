@@ -62,7 +62,7 @@ export function instrumentCensus(script, blockAfterEnable = false) {
 }
 
 const censusStages = [
-  "bootstrap-entered",
+  "binding-started",
   "census-entered",
   "process-query-returned",
   "binding-decoded",
@@ -75,16 +75,21 @@ function instrumentCensusInvocation(script) {
     `[Console]::Error.WriteLine('{"event":"census-stage","stage":"${stage}"}');`;
   const query = "$all=@(Get-CimInstance Win32_Process)";
   assert.equal(script.split(query).length, 2, "Expected exactly one process query");
+  const bindings = script
+    .split("\n")
+    .filter((line) => line.startsWith("$binding=") && line.endsWith(" | ConvertFrom-Json"));
+  assert.equal(bindings.length, 1, "Expected exactly one binding pipeline");
+  const instrumented = script
+    .replace(bindings[0], `${emit("binding-started")}\n${bindings[0]}\n${emit("binding-decoded")}`)
+    .replace(query, `${query}\n${emit("process-query-returned")}`);
   // Apply the existing byte limit to the complete instrumented input.
-  const invocation = buildInstalledCensusInvocation(
-    `${emit("census-entered")}\n${script.replace(query, `${emit("binding-decoded")}\n${query}\n${emit("process-query-returned")}`)}`,
-  );
+  const invocation = buildInstalledCensusInvocation(`${emit("census-entered")}\n${instrumented}`);
   assert.equal(invocation.args.length, 4);
   assert.equal(invocation.args[2], "-Command");
   return {
     args: [
       ...invocation.args.slice(0, 3),
-      `try {${emit("bootstrap-entered")} ${invocation.args[3]}} catch {${emit("bootstrap-failed")} throw}`,
+      `try {${invocation.args[3]}} catch {${emit("bootstrap-failed")} throw}`,
     ],
     input: invocation.input,
   };

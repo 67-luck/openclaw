@@ -176,7 +176,7 @@ describe("actual managed census diagnostic boundary", () => {
   });
   it("records only five unique complete fixed markers and preserves unknown-line refusal", async () => {
     const stages = [
-      "bootstrap-entered",
+      "binding-started",
       "census-entered",
       "process-query-returned",
       "binding-decoded",
@@ -200,12 +200,20 @@ describe("actual managed census diagnostic boundary", () => {
 });
 
 it("instruments a trusted copy under the existing byte cap and refuses ambiguous query placement", () => {
-  const script = "$all=@(Get-CimInstance Win32_Process)\n'{\"ok\":true}'";
+  const binding =
+    "$binding=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('e30=')) | ConvertFrom-Json";
+  const script = `${binding}\n$all=@(Get-CimInstance Win32_Process)\n'{"ok":true}'`;
   const invocation = buildInstalledCensusInvocation(script);
   const instrumented = instrumentCensusInvocation(script);
   expect(instrumented.args.slice(0, 3)).toEqual(invocation.args.slice(0, 3));
   expect(() => instrumentCensusInvocation(script + script)).toThrow(
     "Expected exactly one process query",
+  );
+  expect(() => instrumentCensusInvocation(`${binding}\n${script}`)).toThrow(
+    "Expected exactly one binding pipeline",
+  );
+  expect(() => instrumentCensusInvocation(script.replace(binding, ""))).toThrow(
+    "Expected exactly one binding pipeline",
   );
   const atLimit = script + " ".repeat(1024 * 1024 - Buffer.byteLength(script));
   expect(() => buildInstalledCensusInvocation(atLimit)).not.toThrow();
