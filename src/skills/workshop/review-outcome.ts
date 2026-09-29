@@ -59,11 +59,24 @@ export function formatWorkshopChangeNotice(changes: readonly WorkshopChange[]): 
   return `💾 Learned: ${parts.join("; ")}. Say "undo" to revert this skill change.`;
 }
 
+/** Model-facing context for the next turn: exactly how to revert each change. */
+function formatWorkshopUndoContext(changes: readonly WorkshopChange[]): string {
+  const created = new Set(
+    changes.filter((change) => change.action === "create").map((change) => change.skillName),
+  );
+  const reverts = [...new Set(changes.map((change) => change.skillName))].map((name) =>
+    created.has(name)
+      ? `skill_workshop action=archive name=${name} reason="undo"`
+      : `skill_workshop action=restore name=${name}`,
+  );
+  return `A background skill review just changed your learned skills and told the user: ${formatWorkshopChangeNotice(changes)} If the user asks to undo or revert it, call ${reverts.join("; then ")}.`;
+}
+
 /**
- * Posts the notice into the originating conversation. External channels get a durable send
+ * Posts the notice into the originating conversation: external channels get a durable send
  * mirrored into the session transcript; channel-less sessions (Control UI) get a transcript
- * entry. Either way the foreground agent sees it on its next turn, so "undo" can call
- * skill_workshop restore. Failures fall back to a system event for the next turn.
+ * entry. The next foreground turn also gets a system event naming the exact revert call,
+ * because an assistant line the model did not write is weak evidence that "undo" means it.
  */
 export async function postWorkshopChangeNotice(params: {
   config: OpenClawConfig;
@@ -75,6 +88,9 @@ export async function postWorkshopChangeNotice(params: {
   if (params.changes.length === 0) {
     return;
   }
+  enqueueSystemEvent(formatWorkshopUndoContext(params.changes), {
+    sessionKey: resolveSystemEventQueueKey(params.sessionKey, params.agentId),
+  });
   const text = formatWorkshopChangeNotice(params.changes);
   const idempotencyKey = `skill-workshop-notice:${params.runId}`;
   try {
@@ -118,9 +134,7 @@ export async function postWorkshopChangeNotice(params: {
       throw new Error(appended.reason);
     }
   } catch (error) {
+    // The system event above still carries the change to the next turn.
     log.warn(`skill workshop notice delivery failed: ${String(error)}`);
-    enqueueSystemEvent(text, {
-      sessionKey: resolveSystemEventQueueKey(params.sessionKey, params.agentId),
-    });
   }
 }

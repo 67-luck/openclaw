@@ -128,6 +128,11 @@ describe("postWorkshopChangeNotice", () => {
       }),
     );
     expect(mocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
+    // The next turn learns the exact revert: archive what was created, restore what was edited.
+    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
+    const [context] = mocks.enqueueSystemEvent.mock.calls[0] as [string];
+    expect(context).toContain("skill_workshop action=restore name=actual-budget-operations");
+    expect(context).toContain('skill_workshop action=archive name=release-notes reason="undo"');
   });
 
   it("writes the notice into the transcript of a channel-less session", async () => {
