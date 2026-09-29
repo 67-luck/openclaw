@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   run: vi.fn(),
   httpProbe: vi.fn(),
   probeAuth: vi.fn(),
+  readiness: vi.fn(),
+  portUsage: vi.fn(),
 }));
 vi.mock("../config/config.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../config/config.js")>()),
@@ -24,10 +26,14 @@ vi.mock("../wizard/clack-prompter.js", () => ({
   createClackPrompter: () => ({ select: mocks.select, confirm: mocks.confirm, note: mocks.note }),
 }));
 vi.mock("./daemon-cli/lifecycle.js", () => ({ runDaemonRestart: mocks.restart }));
+vi.mock("./daemon-cli/diagnostic-readiness.js", () => ({
+  waitForGatewayDiagnosticReadiness: mocks.readiness,
+}));
 vi.mock("../process/exec.js", () => ({ runCommandWithTimeout: mocks.run }));
 vi.mock("../gateway/local-http-probe.js", () => ({
   createConfiguredGatewayLocalProbe: () => ({ requestHttp: mocks.httpProbe }),
 }));
+vi.mock("../infra/ports-inspect.js", () => ({ inspectPortUsage: mocks.portUsage }));
 vi.mock("../gateway/probe-auth.js", () => ({
   resolveGatewayProbeAuthSafeWithSecretInputs: mocks.probeAuth,
 }));
@@ -60,6 +66,12 @@ describe("QR phone setup", () => {
     mocks.select.mockResolvedValue("lan");
     mocks.confirm.mockResolvedValue(true);
     mocks.restart.mockResolvedValue(true);
+    mocks.readiness.mockResolvedValue({
+      healthy: true,
+      runtime: { status: "running", pid: 7300 },
+      portUsage: { status: "busy", listeners: [{ pid: 7300 }] },
+    });
+    mocks.portUsage.mockResolvedValue({ status: "busy", listeners: [{ pid: 7300 }] });
     mocks.httpProbe.mockResolvedValue({ statusCode: 200 });
     mocks.probeAuth.mockResolvedValue({ auth: { token: "resolved-test-token" } });
     mocks.run.mockResolvedValue({
@@ -190,6 +202,43 @@ describe("QR phone setup", () => {
         mocks.restart.mockRejectedValue(new Error("restart failed"));
       }
       await expect(setupQrPhoneAccess()).rejects.toThrow("settings were saved");
+      expect(mocks.write).toHaveBeenCalledOnce();
+      expect(mocks.httpProbe).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["wrong-port", "foreign-listener", "unattributed-listener"])(
+    "does not accept an unrelated HTTP-200 endpoint (%s)",
+    async (failure) => {
+      vi.stubEnv("OPENCLAW_GATEWAY_PORT", "19999");
+      mocks.readiness.mockResolvedValue({
+        healthy: failure !== "wrong-port",
+        runtime: { status: "running", pid: 7300 },
+        portUsage: {
+          status: "busy",
+          listeners: failure === "unattributed-listener" ? [] : [{ pid: 8400 }],
+        },
+      });
+      await expect(setupQrPhoneAccess()).rejects.toThrow("phone address");
+      expect(mocks.httpProbe).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+      expect(mocks.restart).not.toHaveBeenCalled();
+      expect(config.gateway?.port).toBe(18789);
+    },
+  );
+
+  it.each(["local-owner", "LAN-listener"])(
+    "rejects a changed listener after restart (%s)",
+    async (failure) => {
+      mocks.restart.mockImplementation(async () => {
+        if (failure === "local-owner") {
+          mocks.readiness.mockResolvedValue({ healthy: false });
+        } else {
+          mocks.portUsage.mockResolvedValue({ status: "busy", listeners: [{ pid: 8400 }] });
+        }
+        return true;
+      });
+      await expect(setupQrPhoneAccess()).rejects.toThrow("owner of the phone address");
       expect(mocks.write).toHaveBeenCalledOnce();
       expect(mocks.httpProbe).not.toHaveBeenCalled();
     },

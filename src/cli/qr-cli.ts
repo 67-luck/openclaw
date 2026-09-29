@@ -183,10 +183,26 @@ export function registerQrCli(program: Command) {
             ? undefined
             : trimToUndefined(cfg.plugins?.entries?.["device-pair"]?.config?.["publicUrl"]));
 
+        const interactiveLocalPairing =
+          !opts.json &&
+          !opts.setupCodeOnly &&
+          !wantsRemote &&
+          !publicUrl &&
+          !token &&
+          !password &&
+          isTerminalInteractive();
         const resolveSetup = (config: OpenClawConfig) =>
           resolvePairingSetupFromConfig(config, {
             publicUrl,
             preferRemoteUrl: wantsRemote,
+            beforeIssue: interactiveLocalPairing
+              ? async ({ url, source }) => {
+                  if (source === "gateway.bind=lan") {
+                    const { verifyQrPhoneGateway } = await import("./qr-setup.js");
+                    await verifyQrPhoneGateway(config, url);
+                  }
+                }
+              : undefined,
             ...(opts.voiceNode
               ? { bootstrapProfile: VOICE_NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE }
               : opts.limited
@@ -203,17 +219,7 @@ export function registerQrCli(program: Command) {
           });
 
         let resolved = await resolveSetup(cfg);
-        if (
-          !resolved.ok &&
-          resolved.reason === "loopback" &&
-          !opts.json &&
-          !opts.setupCodeOnly &&
-          !wantsRemote &&
-          !publicUrl &&
-          !token &&
-          !password &&
-          isTerminalInteractive()
-        ) {
+        if (!resolved.ok && resolved.reason === "loopback" && interactiveLocalPairing) {
           const { setupQrPhoneAccess } = await import("./qr-setup.js");
           const configured = await setupQrPhoneAccess();
           resolved = await resolveSetup(configured);

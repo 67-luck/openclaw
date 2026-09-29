@@ -1,3 +1,4 @@
+import os from "node:os";
 import { expectDefined } from "@openclaw/normalization-core";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,7 @@ import {
 const mocks = vi.hoisted(() => ({
   loadConfig: vi.fn(),
   setupQrPhoneAccess: vi.fn(),
+  verifyQrPhoneGateway: vi.fn(),
   runCommandWithTimeout: vi.fn(),
   resolveCommandSecretRefsViaGateway: vi.fn(async ({ config }: { config: unknown }) => ({
     resolvedConfig: config,
@@ -39,7 +41,10 @@ vi.doMock("../runtime.js", async () => {
     runtime,
   );
 });
-vi.mock("./qr-setup.js", () => ({ setupQrPhoneAccess: mocks.setupQrPhoneAccess }));
+vi.mock("./qr-setup.js", () => ({
+  setupQrPhoneAccess: mocks.setupQrPhoneAccess,
+  verifyQrPhoneGateway: mocks.verifyQrPhoneGateway,
+}));
 vi.mock("../config/config.js", () => ({
   getRuntimeConfig: mocks.loadConfig,
   loadConfig: mocks.loadConfig,
@@ -560,6 +565,40 @@ describe("registerQrCli", () => {
       "wss://gateway.example.test",
     );
   });
+
+  it.each([false, true])(
+    "rejects an unowned local address before issuing a token (recovery=%s)",
+    async (recovery) => {
+      tty.set(true);
+      const network = vi.spyOn(os, "networkInterfaces").mockReturnValue({
+        eth0: [
+          {
+            address: "192.168.1.8",
+            family: "IPv4",
+            internal: false,
+            netmask: "255.255.255.0",
+            mac: "00:00:00:00:00:00",
+            cidr: "192.168.1.8/24",
+          },
+        ],
+      });
+      try {
+        const local = { gateway: { bind: "lan", auth: { mode: "token", token: "tok" } } };
+        loadConfig.mockReturnValue(
+          recovery ? { gateway: { ...local.gateway, bind: "loopback" } } : local,
+        );
+        mocks.setupQrPhoneAccess.mockResolvedValue(local);
+        mocks.verifyQrPhoneGateway.mockRejectedValueOnce(new Error("unowned phone address"));
+        await expectQrExit([]);
+        expect(mocks.setupQrPhoneAccess).toHaveBeenCalledTimes(recovery ? 1 : 0);
+        expect(issueDevicePairSetupBootstrapToken).not.toHaveBeenCalled();
+        expect(renderTerminal).not.toHaveBeenCalled();
+        expect(runtimeError).toHaveBeenCalledWith(expect.stringContaining("unowned phone address"));
+      } finally {
+        network.mockRestore();
+      }
+    },
+  );
 
   it("never prints a QR when recovery is cancelled or fails", async () => {
     tty.set(true);

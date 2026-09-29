@@ -4,6 +4,7 @@ import { readConfigFileSnapshotForWrite, resolveGatewayPort } from "../config/co
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createConfiguredGatewayLocalProbe } from "../gateway/local-http-probe.js";
 import { resolveGatewayProbeAuthSafeWithSecretInputs } from "../gateway/probe-auth.js";
+import { inspectPortUsage } from "../infra/ports-inspect.js";
 import {
   resolveConfiguredPairingPublicUrl,
   resolvePairingGatewayUrl,
@@ -14,10 +15,63 @@ import { createClackPrompter } from "../wizard/clack-prompter.js";
 import { WizardCancelledError } from "../wizard/prompts.js";
 import { configureGatewayNetworkForSetup } from "../wizard/setup.gateway-config.js";
 import { writeWizardConfigFile } from "../wizard/setup.shared.js";
+import { waitForGatewayDiagnosticReadiness } from "./daemon-cli/diagnostic-readiness.js";
 import { runDaemonRestart } from "./daemon-cli/lifecycle.js";
+import { allListenersOwnedByRuntimePid } from "./daemon-cli/restart-port-ownership.js";
 
 const RESTART_HELP =
   "Phone access settings were saved, but the Gateway restart did not complete. Run openclaw gateway restart, then openclaw qr. No setup code was issued.";
+
+async function resolveQrPhoneGatewayPid(
+  config: OpenClawConfig,
+  port: number,
+): Promise<number | undefined> {
+  const readiness = await waitForGatewayDiagnosticReadiness({
+    config,
+    localPortOverride: port,
+    ignoreEnvUrlOverride: true,
+    timeoutMs: 10_000,
+  });
+  return readiness?.healthy === true &&
+    readiness.runtime.pid !== undefined &&
+    allListenersOwnedByRuntimePid(readiness.portUsage.listeners, readiness.runtime.pid)
+    ? readiness.runtime.pid
+    : undefined;
+}
+
+/** Shared by activation and issuance, including a retry with already-saved LAN settings. */
+export async function verifyQrPhoneGateway(config: OpenClawConfig, url: string): Promise<void> {
+  const endpoint = new URL(url);
+  const port = Number(endpoint.port || (endpoint.protocol === "wss:" ? 443 : 80));
+  const host = endpoint.hostname.replace(/^\[|\]$/g, "");
+  const pid = await resolveQrPhoneGatewayPid(config, port);
+  // Diagnostic readiness observes loopback. A different process can own the
+  // LAN interface at that same port, so inspect the exact advertised host too.
+  const advertised =
+    pid === undefined ? undefined : await inspectPortUsage(port, { probeHosts: [host] });
+  if (
+    pid === undefined ||
+    !advertised ||
+    advertised.status !== "busy" ||
+    !allListenersOwnedByRuntimePid(advertised.listeners, pid)
+  ) {
+    throw new Error(
+      "The Gateway could not be verified as the owner of the phone address. Run openclaw gateway status and check any OPENCLAW_GATEWAY_PORT override, then run openclaw qr again. No setup code was issued.",
+    );
+  }
+  // Never send the shared Gateway credential across plaintext LAN during this check.
+  const reachable = await createConfiguredGatewayLocalProbe(config).requestHttp({
+    host,
+    port,
+    pathname: "/readyz",
+    timeoutMs: 10_000,
+  });
+  if (reachable?.statusCode !== 200) {
+    throw new Error(
+      "The phone address is not ready yet. Run openclaw gateway status, then openclaw qr after the Gateway is ready. No setup code was issued.",
+    );
+  }
+}
 
 export async function setupQrPhoneAccess(): Promise<OpenClawConfig> {
   const { snapshot, writeOptions } = await readConfigFileSnapshotForWrite();
@@ -86,6 +140,12 @@ export async function setupQrPhoneAccess(): Promise<OpenClawConfig> {
       "No local network address was found. Connect this computer to the same Wi-Fi or network as your phone, then run openclaw qr again. Nothing changed.",
     );
   }
+  const plannedPort = resolveGatewayPort(nextConfig);
+  if ((await resolveQrPhoneGatewayPid(snapshot.config, plannedPort)) === undefined) {
+    throw new Error(
+      "The Gateway could not be verified as the owner of the phone address. Run openclaw gateway status and check any OPENCLAW_GATEWAY_PORT override, then run openclaw qr again. Nothing changed; no setup code was issued.",
+    );
+  }
   await prompter.note(
     "This allows connections to your Gateway on all network interfaces, not just this computer. Use a trusted network and keep your firewall enabled. Authentication stays enabled. Without TLS, pairing is unencrypted and grants limited access.",
     "Phone access",
@@ -115,23 +175,6 @@ export async function setupQrPhoneAccess(): Promise<OpenClawConfig> {
   } catch {
     throw new Error(RESTART_HELP);
   }
-  // A service manager can acknowledge a scheduled restart before it activates.
-  // Check the advertised endpoint, not just the old loopback listener. Never send
-  // the shared Gateway credential across a plaintext LAN during this check.
-  const endpoint = new URL(planned.url);
-  const reachable =
-    (
-      await createConfiguredGatewayLocalProbe(committed.nextConfig).requestHttp({
-        host: endpoint.hostname.replace(/^\[|\]$/g, ""),
-        port: resolveGatewayPort(committed.nextConfig),
-        pathname: "/readyz",
-        timeoutMs: 10_000,
-      })
-    )?.statusCode === 200;
-  if (!reachable) {
-    throw new Error(
-      "Phone access settings were saved, but the phone address is not ready yet. Run openclaw gateway status, then openclaw qr after the Gateway is ready. No setup code was issued.",
-    );
-  }
+  await verifyQrPhoneGateway(committed.nextConfig, planned.url);
   return committed.nextConfig;
 }

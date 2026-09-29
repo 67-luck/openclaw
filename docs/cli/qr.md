@@ -48,7 +48,14 @@ routes. Pairing through already configured Tailscale access or an explicit secur
 `--url` remains supported. Cancel or select **Not now** before confirmation to
 leave settings and the running Gateway unchanged.
 
-If saving succeeds but restart or readiness fails, the command explains how to
+Before changing settings and again after restart, recovery verifies that the
+running Gateway owns the advertised port; a different service returning HTTP
+200 is not sufficient. Default interactive LAN pairing repeats this check
+before each setup code, including retries after a failed activation.
+If a shell-only `OPENCLAW_GATEWAY_PORT` override points elsewhere, check or remove
+that override before trying again.
+
+If saving succeeds but restart, listener ownership, or readiness fails, the command explains how to
 finish and does not issue a setup code. The saved settings remain in place; run
 `openclaw gateway status` or `openclaw gateway restart`, then `openclaw qr` again.
 

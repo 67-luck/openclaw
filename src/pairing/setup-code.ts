@@ -76,6 +76,8 @@ type ResolvePairingSetupOptions = {
   bootstrapProfile?: DeviceBootstrapProfileInput;
   issuedBootstrap?: { token: string; expiresAtMs: number; setupId: string };
   pairingBaseDir?: string;
+  /** Caller admission for the resolved destination before exposing a bootstrap credential. */
+  beforeIssue?: (target: { url: string; source?: string }) => Promise<void>;
   runCommandWithTimeout?: PairingSetupCommandRunner;
   networkInterfaces?: () => ReturnType<typeof os.networkInterfaces>;
   localTlsFingerprint?: string;
@@ -552,6 +554,7 @@ export async function resolvePairingSetupFromConfig(
   if (directGatewayTlsFingerprintRaw !== undefined && !directGatewayTlsFingerprint) {
     return { ok: false, error: "Gateway TLS fingerprint is invalid." };
   }
+  await options.beforeIssue?.({ url: urlResult.url, source: urlResult.source });
   const issued =
     options.issuedBootstrap ??
     (await issueDevicePairSetupBootstrapToken({
