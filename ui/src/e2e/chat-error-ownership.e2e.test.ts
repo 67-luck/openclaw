@@ -1,22 +1,42 @@
+import path from "node:path";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
+import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import { controlUiSessionUrl, installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "Chat terminal error ownership" });
+
+async function captureOwnershipProof(page: Page, name: string) {
+  if (process.env.OPENCLAW_CAPTURE_UI_PROOF === "1") {
+    await page.screenshot({
+      path: path.join(suite.artifactDir, `${name}.png`),
+      fullPage: false,
+      animations: "disabled",
+    });
+  }
+}
 suite.define(() => {
   it("moves a live diagnostic into durable history, preserving partial output and separate errors after reconnect", async () => {
     await suite.withPage(
       {
         viewport: { width: 1280, height: 900 },
         permissions: ["clipboard-read", "clipboard-write"],
+        colorScheme: "dark",
       },
       async ({ page }) => {
         const sessionKey = "agent:main:main";
         const diagnostic =
           "⚠️ Request failed.\nFile /workspace/example.txt could not be read.\npassword=synthetic-password";
         const safeDiagnostic = diagnostic.replace("synthetic-password", "[redacted]");
-        const gateway = await installMockGateway(page, { sessionKey });
+        const gateway = await installMockGateway(page, {
+          sessionKey,
+          agentModel: "openai/gpt-4.1",
+          models: [{ id: "gpt-4.1", name: "GPT-4.1", provider: "openai" }],
+          sessions: [
+            { key: sessionKey, kind: "direct", model: "gpt-4.1", modelProvider: "openai" },
+          ],
+        });
         await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
         await page.locator(".agent-chat__input textarea").fill("Review the example project");
         await page.getByRole("button", { name: "Send message" }).click();
@@ -119,6 +139,37 @@ suite.define(() => {
         await gateway.closeLatest();
         await expect.poll(() => page.locator(".chat-bubble .chat-error").count()).toBe(2);
         expect(await page.locator(".chat-error").count()).toBe(2);
+
+        // Replayed copies of the same persisted row retain their canonical identity.
+        // The grouping owner collapses them; the diagnostic must retain that count
+        // alongside its pane-owned Refresh control.
+        await gateway.setHistoryMessages([...rows.slice(0, 2), rows[2], { ...rows[2] }]);
+        const repeatedHistoryCount = (await gateway.getRequests("chat.history")).length;
+        await page.locator(".chat-bubble--run-error .chat-error__refresh").first().click();
+        await gateway.waitForRequest("chat.history", { after: repeatedHistoryCount });
+        await expect.poll(() => page.locator(".chat-error").count()).toBe(1);
+        const repeated = page.locator(".chat-bubble--run-error");
+        await expect
+          .poll(async () => (await repeated.locator(".chat-duplicate-count").textContent())?.trim())
+          .toBe("×2");
+        expect(
+          await repeated.getByRole("button", { name: "Refresh", exact: true }).isEnabled(),
+        ).toBe(true);
+        expect(await gateway.getRequests("chat.send")).toHaveLength(1);
+        await expect
+          .poll(() => repeated.evaluate((node) => node.scrollWidth <= node.clientWidth))
+          .toBe(true);
+        await captureOwnershipProof(page, "repeated-error-mobile");
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await captureOwnershipProof(page, "repeated-error-desktop");
+        await repeated.locator("summary").click();
+        await expect
+          .poll(() => repeated.getByLabel("Error details", { exact: true }).isVisible())
+          .toBe(true);
+        expect(await repeated.getByLabel("Error details", { exact: true }).textContent()).toBe(
+          "Error: " + safeDiagnostic,
+        );
+        await captureOwnershipProof(page, "repeated-error-expanded");
       },
     );
   });

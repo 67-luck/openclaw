@@ -7,16 +7,20 @@ import { normalizeMessage } from "../../lib/chat/message-normalizer.ts";
 import type { ChatRunError } from "./run-lifecycle.ts";
 
 function normalizeDiagnostic(text: string): string {
-  const undecorated = formatWebUiIconErrorText(text).trim();
-  const diagnostic = undecorated.replace(
-    /^(?:Error:|This turn did not run:|This turn ended before a reply:)\s*/iu,
-    "",
-  );
-  // A transcript wrapper can hide the diagnostic's own leading decoration.
-  // Only unwrap that boundary; meaningful emoji inside the body stays intact.
-  return (diagnostic === undecorated ? diagnostic : formatWebUiIconErrorText(diagnostic))
-    .replace(/\s+/gu, " ")
-    .trim();
+  let diagnostic = formatWebUiIconErrorText(text).trim();
+  // The diagnostic may already carry a prefix before a transcript wraps it.
+  // Peel only recognized leading wrappers, including decoration they expose;
+  // never change the stored/displayed diagnostic or meaningful body emoji.
+  while (true) {
+    const unwrapped = diagnostic.replace(
+      /^(?:Error:|This turn did not run:|This turn ended before a reply:)\s*/iu,
+      "",
+    );
+    if (unwrapped === diagnostic) {
+      return diagnostic.replace(/\s+/gu, " ").trim();
+    }
+    diagnostic = formatWebUiIconErrorText(unwrapped).trim();
+  }
 }
 
 /** Recognize diagnostic rows, not ordinary assistant text or partial output. */

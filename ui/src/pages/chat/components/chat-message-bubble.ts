@@ -58,6 +58,7 @@ import {
   type AttachmentItem,
 } from "./chat-message-media.ts";
 import {
+  renderMessageDuplicateCount,
   renderMessageJson,
   renderMessageMarkdown,
   type AssistantMessageDisclosure,
@@ -711,15 +712,8 @@ export function renderGroupedMessage(
           : nothing
       }
       ${
-        duplicateCount > 1 && (diagnostic || !markdown || jsonResult)
-          ? html`<div
-              class="chat-duplicate-count"
-              aria-label=${t("chat.messages.duplicatesCollapsed", {
-                count: String(duplicateCount),
-              })}
-            >
-              ×${duplicateCount}
-            </div>`
+        diagnostic || !markdown || jsonResult
+          ? renderMessageDuplicateCount(duplicateSuffix)
           : nothing
       }
     </div>

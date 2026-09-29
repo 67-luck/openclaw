@@ -123,5 +123,19 @@ it.each(["assistant", "custom"] as const)(
     expect(refresh().disabled).toBe(false);
     refresh().click();
     expect(nextRefresh).toHaveBeenCalledTimes(2);
+
+    // Replayed copies retain their canonical entry identity. Exercise the real
+    // grouping path rather than injecting duplicateCount.
+    draw({
+      messages: [messages[0], { ...messages[0] }],
+      onRefresh: nextRefresh,
+    });
+    expect(container.querySelectorAll(".chat-error")).toHaveLength(1);
+    expect(container.querySelector(".agent-chat__composer-notices .chat-error")).toBeNull();
+    expect(
+      container.querySelector(".chat-bubble--run-error .chat-duplicate-count")?.textContent?.trim(),
+    ).toBe("×2");
+    refresh().click();
+    expect(nextRefresh).toHaveBeenCalledTimes(3);
   },
 );

@@ -13,6 +13,19 @@ function failure(runId = "run-1", diagnostic = summary) {
   };
 }
 describe("run error presentation ownership", () => {
+  it.each(["Error: Request failed.", "⚠️ Error: Request failed."])(
+    "recognizes a transcript wrapper around an already prefixed diagnostic: %s",
+    (diagnostic) => {
+      const content = "Error: " + diagnostic;
+      const row = { ...failure("run-1", diagnostic), content };
+      expect(readTranscriptRunError(row)).toBe(content);
+      expect(hasTranscriptRunError([row], { runId: "run-1", summary: diagnostic })).toBe(true);
+      expect(hasTranscriptRunError([row], { runId: "run-1", summary: "Error: Disk full." })).toBe(
+        false,
+      );
+      expect(row.content).toBe(content);
+    },
+  );
   it.each([
     ["custom", "This turn did not run:"],
     ["custom", "This turn ended before a reply:"],
