@@ -1095,7 +1095,12 @@ export function validateWorkerCapabilities(source, assetName = "script") {
   }
 }
 
-/** Hash final emitted bytes, requiring exactly the complete Vite bundle file list. */
+/**
+ * Hash final emitted bytes, requiring exactly the complete Vite bundle file list.
+ * SVG content is not inspected. Manifest validity is inventory evidence, not
+ * authorization to serve assets; SVG handling, origin isolation and CSP belong
+ * to the serving boundary.
+ */
 export function createAssetManifest(root, emittedFiles) {
   assertRealDirectory(root);
   if (

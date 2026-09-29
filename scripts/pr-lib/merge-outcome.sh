@@ -233,7 +233,7 @@ merge_outcome_load_local() {
              .route == "auto" and .method == "squash" and .cancellation.state == "confirmed" and
              $next.priorCiAdmin.dispatchTransport == "rest" and
              $next.recovery.preDispatchRefusal == null and
-             $next.recovery.replacementHead == $next.head and .head != $next.head
+             $next.recovery.replacementHead == $next.head
            else
              ((.accepted == false and (.route == "immediate" or
                 (.route == "auto" and $next.recovery.preDispatchRefusal != null))) or
@@ -592,14 +592,13 @@ merge_outcome_stable() {
       previous_main="${MERGE_PRIOR_CI_OBSERVED_MAIN:-$(printf '%s\n' "$MERGE_OBSERVATION" | jq -r .main)}"
       if [ "${MERGE_USE_PRIOR_CI_ADMIN:-false}" != true ] ||
         printf '%s\n' "$reread" | jq -e --argjson observed "$MERGE_OBSERVATION" \
-          --arg previous "$previous_main" --argjson settling "$settling" \
-          --argjson priorRest "${MERGE_PRIOR_CI_REST_OBSERVATION:-false}" '
+          --arg previous "$previous_main" --argjson settling "$settling" '
           def facts: del(.main,.pr.mergeable,.pr.mergeStateStatus);
           (if .transport != $observed.transport then
              (facts | del(.transport,.restPolicy)) == ($observed | facts | del(.transport,.restPolicy))
            else facts == ($observed | facts) end) and
           ((.pr.mergeable == $observed.pr.mergeable and .pr.mergeStateStatus == $observed.pr.mergeStateStatus) or
-           ($priorRest and .transport == "rest" and .pr.state == "OPEN" and
+           (.pr.state == "OPEN" and
             ($settling or .main != $previous) and
             $observed.pr.mergeable == "MERGEABLE" and $observed.pr.mergeStateStatus != "UNKNOWN" and
             (.pr.mergeable == "UNKNOWN" or .pr.mergeable == $observed.pr.mergeable) and
@@ -617,6 +616,7 @@ merge_outcome_stable() {
             fi
             [ "$settling" = true ] || echo "Waiting for prior-CI mergeability recalculation after verified main advance (up to 3 observations)."
             settling=true
+            MERGE_PRIOR_CI_RECALCULATED=true
             sleep "$observation_attempt"
             continue
           fi
