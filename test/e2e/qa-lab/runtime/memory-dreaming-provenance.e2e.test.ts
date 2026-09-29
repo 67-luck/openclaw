@@ -345,6 +345,8 @@ describe("memory provenance through a real Gateway", () => {
         enabledPluginIds: ["memory-core"],
         mockAuthAgentIds: ["qa", "researcher"],
         mutateConfig: configureExplicitOwnerProof,
+        // Managed dreaming jobs need scheduling even when the parent disables cron.
+        runtimeEnvPatch: { OPENCLAW_SKIP_CRON: "0" },
       });
       const activeGateway = gateway;
       const memoryFileName = `${new Date().toISOString().slice(0, 10)}-explicit-owner.md`;
