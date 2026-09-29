@@ -4,7 +4,6 @@ import type {
   SkillWorkshopSkillSummary,
 } from "@openclaw/gateway-protocol";
 import { html, nothing } from "lit";
-import { pathForRoute } from "../../app-route-paths.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { renderAgentScopeControl } from "../../components/agent-scope-control.ts";
 import { icons } from "../../components/icons.ts";
@@ -18,7 +17,7 @@ import { renderPluginsHubHeader } from "../plugins/plugins-hub-header.ts";
 import { PLUGINS_HUB_PANEL_ID } from "../plugins/plugins-hub.ts";
 import type { SkillWorkshopAccess } from "./access.ts";
 import { undoMutationFor, type WorkshopMutation, type WorkshopSnapshot } from "./api.ts";
-import type { SkillWorkshopMode, SkillWorkshopModeState } from "./mode.ts";
+import type { SkillWorkshopMode } from "./mode.ts";
 
 registerSkillWorkshopEnglish();
 
@@ -39,7 +38,7 @@ type SkillWorkshopViewProps = {
   viewer: WorkshopViewer | null;
   pendingAction: string | null;
   actionError: string | null;
-  mode: SkillWorkshopModeState | null;
+  mode: SkillWorkshopMode | null;
   modeBusy: boolean;
   modeError: string | null;
   learningAccess: SessionMethodAccess;
@@ -84,7 +83,7 @@ export function renderSkillWorkshop(props: SkillWorkshopViewProps) {
                   ${renderSettingsSegmented<SkillWorkshopMode>({
                     mode: "buttons",
                     ariaLabel: t("skillWorkshop.mode.aria"),
-                    value: mode.mode,
+                    value: mode,
                     disabled: props.modeBusy || !props.access.canSetMode,
                     options: MODES.map((value) => ({
                       value,
@@ -94,15 +93,6 @@ export function renderSkillWorkshop(props: SkillWorkshopViewProps) {
                     onChange: props.onModeChange,
                   })}
                 </div>`
-              : nothing
-          }
-          ${
-            mode?.weeklyReviewsPaused
-              ? html`<a
-                  class="sw-warning"
-                  href=${`${pathForRoute("automation", context.basePath)}?section=cron`}
-                  >${icons.alertTriangle} ${t("skillWorkshop.mode.weeklyReviewsPaused")}</a
-                >`
               : nothing
           }
           <button

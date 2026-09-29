@@ -13,7 +13,6 @@ const enSkillWorkshop = {
       offTitle: "The agent does not save or update skills on its own.",
       autoTitle:
         "The agent saves and improves skills as it works, announces each change, and every change can be undone.",
-      weeklyReviewsPaused: "Weekly reviews paused. Enable cron in Automation settings.",
       updateError: "Could not update the learning mode.",
     },
     skills: {
@@ -32,13 +31,14 @@ const enSkillWorkshop = {
       actors: {
         agent: "Agent",
         review: "Background review",
-        curator: "Weekly review",
+        curator: "Cleanup",
         user: "You",
       },
       actions: {
         create: "created",
         patch: "updated",
         write_file: "updated",
+        remove_file: "updated",
         archive: "archived",
         restore: "restored",
       },

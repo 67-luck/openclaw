@@ -506,6 +506,7 @@ const SkillWorkshopChangeActionSchema = Type.Union([
   Type.Literal("create"),
   Type.Literal("patch"),
   Type.Literal("write_file"),
+  Type.Literal("remove_file"),
   Type.Literal("archive"),
   Type.Literal("restore"),
 ]);

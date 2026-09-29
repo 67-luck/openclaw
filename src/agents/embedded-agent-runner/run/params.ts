@@ -8,7 +8,6 @@ import type { RuntimePluginToolGrant } from "../../../plugins/runtime/tool-grant
 import type { CommandQueueEnqueueFn } from "../../../process/command-queue.types.js";
 import type { SkillLibraryAuthoringCapability } from "../../../skills/library/authoring.js";
 import type { ExplicitSkillSelection } from "../../../skills/types.js";
-import type { WorkshopActor } from "../../../skills/workshop/library.js";
 import type { ModelFallbackAvailability } from "../../agent-scope.js";
 import type { AssistantErrorTranscript } from "../../assistant-error-transcript.js";
 import type { ExecApprovalContinuationPromptRange } from "../../bash-tools.exec-approval-output.js";
@@ -117,10 +116,8 @@ export type RunEmbeddedAgentParams = {
   retryConnectionErrors?: boolean;
   /** Disable trajectory persistence for auxiliary runs with no durable session owner. */
   disableTrajectory?: boolean;
-  /** Background Workshop runs: edits of existing skills require a prior view in this run. */
+  /** Background Workshop review: edits of existing skills require a prior view; changes credit "review". */
   skillWorkshopReviewGuard?: boolean;
-  /** Who Workshop change rows credit for this run; foreground runs default to "agent". */
-  skillWorkshopActor?: WorkshopActor;
   skillLibraryAuthoring?: SkillLibraryAuthoringCapability;
   /** Explicit system prompt mode override for trusted callers. */
   promptMode?: PromptMode;

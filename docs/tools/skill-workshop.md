@@ -1,5 +1,5 @@
 ---
-summary: "Skills your agent learns on its own: how they are saved, undo, the weekly curator, /learn, config, storage, and operator surfaces"
+summary: "Skills your agent learns on its own: how they are saved, undo, unused-skill cleanup, /learn, config, storage, and operator surfaces"
 read_when:
   - You want to know how your agent saves and updates its own skills
   - You want to undo, archive, or restore a learned skill
@@ -9,8 +9,8 @@ sidebarTitle: "Skill Workshop"
 ---
 
 Skill Workshop holds the skills an agent writes for itself, called **learned
-skills**. The agent saves a procedure after hard multi-step work, fixes a learned
-skill that misled it, and consolidates overlapping skills once a week. Every
+skills**. The agent saves a procedure after hard multi-step work and fixes a
+learned skill that misled it; skills nobody uses for 30 days are archived. Every
 change applies immediately, saves the previous version first, and can be undone.
 
 Learned skills belong to one agent and are always visible to it: they bypass
@@ -28,15 +28,15 @@ Gateway, see [Personal library authoring](/tools/skill-workshop/personal-library
   incomplete, it views the skill and patches the misleading step. After hard
   multi-step work you are likely to repeat, it saves the working procedure,
   patching the skill that covers that kind of task or creating one when none does.
-- **Background review:** after enough model work in a conversation, a background
-  run reviews it and saves anything worth keeping. See
-  [Self-learning](/tools/self-learning).
+- **Background review:** after enough model work in a conversation, or right
+  after a turn that used a learned skill, a background run reviews it and saves
+  anything worth keeping. See [Self-learning](/tools/self-learning).
 - **`/learn [request]`:** asks the agent to save a skill now, from the current
   conversation or from sources you name. See [`/learn`](#learn).
 - **Learn from past conversations:** the Control UI button opens a normal chat
   in which the agent reviews earlier conversations and saves what it finds.
-- **Weekly curator:** consolidates the whole collection. See
-  [Weekly curator](#weekly-curator).
+- **Unused-skill cleanup:** learned skills nobody used for 30 days are archived.
+  See [Unused-skill cleanup](#unused-skill-cleanup).
 
 Changed skills load in new sessions. A running session keeps the skill snapshot
 it started with.
@@ -68,21 +68,26 @@ Restore saves the current copy before replacing it, so an undo can itself be
 undone. A skill that was just created has no earlier version; archive it instead.
 
 <a id="collection-review" />
+<a id="weekly-curator" />
 
-## Weekly curator
+## Unused-skill cleanup
 
-When learning is on, each agent has a system-owned weekly automation,
-**Skill Workshop curator (`<agentId>`)**, with declaration key
-`skill-collection-review:<agentId>`. It starts a fresh run that reads the
-agent's learned skills and uses `skill_workshop` to merge overlap, tighten
-bloated skills, and archive skills that another skill now covers. It never
-deletes: removal is always an archive, and archived skills can be restored. The
-run is skipped when the agent has fewer than two learned skills.
+When learning is on, OpenClaw archives a learned skill with no activity for 30
+days, with the reason `unused for 30 days` and actor `curator` in the change
+feed. Activity is the latest of: a recorded read of its `SKILL.md`, a
+foreground `skill_workshop` `view`, and its last change (create, patch,
+restore). A skill younger than 30 days is never archived. The check runs at
+most once a day per agent, after a finished turn, and never delays the turn.
+Archive is the normal versioned archive: restore it any time.
 
-The curator runs through automations, so it does not run when `cron.enabled` is
-`false` or `OPENCLAW_SKIP_CRON=1`. Its results appear in the automation run
-history and in the Workshop change feed. See
-[Automation payloads](/automation/cron-jobs/payloads) for how the job is stored.
+Cleanup only runs for agents whose default runtime is the embedded OpenClaw
+harness, in the Gateway process. The Codex app-server harness reads skills with
+its native shell, which OpenClaw cannot attribute to a skill, so cleanup stays
+off for Codex agents rather than archiving skills that are in use.
+
+Earlier versions ran a weekly curator automation
+(`skill-collection-review:<agentId>`). It is retired: the Gateway deletes those
+cron rows on upgrade and creates no replacement.
 
 <a id="learn" />
 
@@ -111,15 +116,16 @@ The built-in `skill_workshop` tool is how every learned-skill change is made.
 It is part of `tools.profile: "coding"`; with a stricter policy, add it to
 `tools.allow` or `tools.alsoAllow`.
 
-| Action       | Parameters                                           | Effect                                                                   |
-| ------------ | ---------------------------------------------------- | ------------------------------------------------------------------------ |
-| `list`       | —                                                    | Lists live skills and archived skills                                    |
-| `view`       | `name`, optional `file_path`, `version`              | Reads a file, current or from a saved version                            |
-| `create`     | `name`, `content` (full `SKILL.md`)                  | Creates a new skill                                                      |
-| `patch`      | `name`, `old_text`, `new_text`, optional `file_path` | Replaces one exact, unique span                                          |
-| `write_file` | `name`, `file_path`, `content`                       | Writes a support file, or rewrites `SKILL.md`                            |
-| `archive`    | `name`, optional `absorbed_into`, `reason`           | Hides the skill; `absorbed_into` names the live skill that now covers it |
-| `restore`    | `name`, optional `version`                           | Restores the newest saved version, or the one named                      |
+| Action        | Parameters                                           | Effect                                                                   |
+| ------------- | ---------------------------------------------------- | ------------------------------------------------------------------------ |
+| `list`        | —                                                    | Lists live skills and archived skills                                    |
+| `view`        | `name`, optional `file_path`, `version`              | Reads a file, current or from a saved version                            |
+| `create`      | `name`, `content` (full `SKILL.md`)                  | Creates a new skill                                                      |
+| `patch`       | `name`, `old_text`, `new_text`, optional `file_path` | Replaces one exact, unique span                                          |
+| `write_file`  | `name`, `file_path`, `content`                       | Writes a support file, or rewrites `SKILL.md`                            |
+| `remove_file` | `name`, `file_path`                                  | Deletes one support file; `SKILL.md` goes only through `archive`         |
+| `archive`     | `name`, optional `absorbed_into`, `reason`           | Hides the skill; `absorbed_into` names the live skill that now covers it |
+| `restore`     | `name`, optional `version`                           | Restores the newest saved version, or the one named                      |
 
 Every mutating action accepts `reason`, one short line that appears in the
 change feed and the chat notice. Every change saves the previous version first.
@@ -135,9 +141,9 @@ Writes are validated before they land:
 - A critical security-scanner finding, including a literal secret, refuses the
   write and names the file, line, and rule.
 
-Background runs (review and curator) must `view` an existing skill before they
-`patch`, `write_file`, or `archive` it, and their archives need `absorbed_into`
-or `reason`.
+The background review must `view` an existing skill before it can `patch`,
+`write_file`, `remove_file`, or `archive` it, and its archives need
+`absorbed_into` or `reason`. A foreground `view` counts as using the skill.
 
 ## Configuration
 
@@ -152,10 +158,10 @@ or `reason`.
 }
 ```
 
-| Setting                           | Default  | Effect                                                                                |
-| --------------------------------- | -------- | ------------------------------------------------------------------------------------- |
-| `skills.workshop.autonomous.mode` | `"auto"` | `"auto"` enables the background review and the weekly curator. `"off"` disables both. |
-| `skills.workshop.maxSkillBytes`   | `40000`  | Maximum `SKILL.md` size in bytes (1024-200000).                                       |
+| Setting                           | Default  | Effect                                                                                  |
+| --------------------------------- | -------- | --------------------------------------------------------------------------------------- |
+| `skills.workshop.autonomous.mode` | `"auto"` | `"auto"` enables the background review and unused-skill cleanup. `"off"` disables both. |
+| `skills.workshop.maxSkillBytes`   | `40000`  | Maximum `SKILL.md` size in bytes (1024-200000).                                         |
 
 ```bash
 openclaw config set skills.workshop.autonomous.mode off
@@ -237,7 +243,7 @@ files you need from them by hand; OpenClaw does not restore them.
 | Agent cannot call `skill_workshop` | Sandboxed runs do not get the tool. Use a non-sandboxed session or the CLI. Otherwise add the tool to `tools.allow` or `tools.alsoAllow`.                                      |
 | A write is refused                 | The error names the fix: rename the skill, correct the frontmatter, shorten the description or `SKILL.md`, or remove the flagged line.                                         |
 | An unwanted change was made        | Say "undo", press **Undo** in the Control UI, or run `openclaw skills workshop restore <name>`.                                                                                |
-| The curator never runs             | Mode is `auto`, automations are enabled, and the agent has at least two learned skills.                                                                                        |
+| A skill was archived unexpectedly  | Unused-skill cleanup archives skills with no activity for 30 days. Run `openclaw skills workshop restore <name>`.                                                              |
 
 In `auto` mode, `openclaw doctor` runs the `core/doctor/skill-workshop-tool-policy`
 check for each agent. It names the sandbox setting or the config layer that

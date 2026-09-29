@@ -307,7 +307,6 @@ export async function prepareEmbeddedAttemptToolBase(params: {
             abortSignal,
             skillWorkshop: {
               ...(attempt.skillWorkshopReviewGuard ? { reviewGuard: true } : {}),
-              ...(attempt.skillWorkshopActor ? { actor: attempt.skillWorkshopActor } : {}),
               libraryAuthoring: attempt.skillLibraryAuthoring,
             },
             modelCompat: extractModelCompat(attempt.model),

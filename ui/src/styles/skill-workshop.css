@@ -50,19 +50,6 @@
   font-size: 13px;
 }
 
-.sw-warning {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--warn);
-  font-size: 12px;
-}
-
-.sw-warning svg {
-  width: 14px;
-  height: 14px;
-}
-
 .sw-learn {
   display: inline-flex;
   align-items: center;

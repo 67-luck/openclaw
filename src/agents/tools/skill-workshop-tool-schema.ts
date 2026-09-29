@@ -9,6 +9,7 @@ const SKILL_WORKSHOP_ACTIONS = [
   "create",
   "patch",
   "write_file",
+  "remove_file",
   "archive",
   "restore",
 ] as const;

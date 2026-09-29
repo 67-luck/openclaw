@@ -52,7 +52,6 @@ import {
   resolveCronDeliverySessionKey,
   resolveCronSessionTargetSessionKey,
 } from "../cron/session-target.js";
-import { skillCollectionReviewMonitorAgentId } from "../cron/skill-collection-review-monitor.js";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import { cronStreamScheduleKey } from "../cron/stream-schedule.js";
 import { createCronScriptRuntime } from "../cron/trigger-script.js";
@@ -127,8 +126,6 @@ import {
   sendGatewayCronFailureAlert,
 } from "./server-cron-notifications.js";
 import { toPluginCronJob } from "./server-cron-plugin-job.js";
-import { runSkillWorkshopCuratorJob } from "./server-cron-skill-curator.js";
-import { reconcileSkillCollectionReviewJobs } from "./server-cron-skill-review-jobs.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import {
   invalidateSessionAutomationIndex,
@@ -814,9 +811,6 @@ export function buildGatewayCronService(params: {
       const { job } = request;
       const { agentId, cfg: runtimeConfig } = resolveCronAgent(job.agentId);
       const sessionKey = resolveCronSessionTargetSessionKey(job.sessionTarget) ?? `cron:${job.id}`;
-      if (skillCollectionReviewMonitorAgentId(job)) {
-        return await runSkillWorkshopCuratorJob({ request, agentId, config: runtimeConfig });
-      }
       return await runCronIsolatedAgentTurn({
         ...request,
         cfg: runtimeConfig,
@@ -1446,20 +1440,13 @@ export function buildGatewayCronService(params: {
       };
       try {
         assertCurrent();
-        let converged = true;
-        for (const reconcile of [
-          reconcileHeartbeatMonitorJobs,
-          reconcileSkillCollectionReviewJobs,
-        ]) {
-          const { ok } = await reconcile({
-            cron,
-            cfg,
-            logger: cronServiceLogger,
-            commitGuard: assertCurrent,
-          });
-          assertCurrent();
-          converged &&= ok;
-        }
+        const { ok: converged } = await reconcileHeartbeatMonitorJobs({
+          cron,
+          cfg,
+          logger: cronServiceLogger,
+          commitGuard: assertCurrent,
+        });
+        assertCurrent();
         if (!converged) {
           systemJobRetryTimer = params.scheduler.schedule({
             id: `cron:${storePath}:system-jobs`,

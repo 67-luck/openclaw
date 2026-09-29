@@ -1,5 +1,7 @@
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { runWithGatewayDetachedWorkContinuation } from "../../process/gateway-work-admission.js";
 import { resolveSkillWorkshopConfig } from "./config.js";
 import {
   createSkillExperienceReviewScheduler,
@@ -7,6 +9,8 @@ import {
 } from "./experience-review-scheduler.js";
 
 const log = createSubsystemLogger("skills/workshop");
+const UNUSED_ARCHIVE_INTERVAL_MS = 24 * 60 * 60_000;
+const lastUnusedArchiveByAgent = new Map<string, number>();
 
 const defaultScheduler = createSkillExperienceReviewScheduler({
   isSystemActive: async () => {
@@ -46,4 +50,27 @@ export function scheduleSkillExperienceReview(
     .catch((error: unknown) => {
       log.warn(`skill experience review scheduling failed: ${formatErrorMessage(error)}`);
     });
+}
+
+/**
+ * Archives an agent's long-unused learned skills, at most once a day per agent. Runs detached
+ * from the finished turn and never affects its result; no scheduler owns this work.
+ */
+export function scheduleUnusedWorkshopSkillArchive(config: OpenClawConfig, agentId: string): void {
+  if (resolveSkillWorkshopConfig(config).autonomous.mode !== "auto") {
+    return;
+  }
+  const nowMs = Date.now();
+  const lastMs = lastUnusedArchiveByAgent.get(agentId);
+  if (lastMs !== undefined && nowMs - lastMs < UNUSED_ARCHIVE_INTERVAL_MS) {
+    return;
+  }
+  lastUnusedArchiveByAgent.set(agentId, nowMs);
+  void runWithGatewayDetachedWorkContinuation(async () => {
+    // The archive pass loads the library and runtime policy; most turns never need them.
+    const { archiveUnusedWorkshopSkills } = await import("./unused-archive.js");
+    await archiveUnusedWorkshopSkills(config, agentId, nowMs);
+  }, "skills:workshop-unused-archive").catch((error: unknown) => {
+    log.warn(`unused skill archive failed: ${formatErrorMessage(error)}`);
+  });
 }

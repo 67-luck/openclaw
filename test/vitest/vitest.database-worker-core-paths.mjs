@@ -227,6 +227,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/mcp-oauth-refresh-issuer.test.ts",
   "src/agents/tools/skill-workshop-tool.test.ts",
   "src/skills/workshop/library.test.ts",
+  "src/skills/workshop/unused-archive.test.ts",
   "src/auto-reply/reply/commands-plugins.test.ts",
   "src/boards/board-generated-identity.test.ts",
   "src/boards/board-store.native.test.ts",

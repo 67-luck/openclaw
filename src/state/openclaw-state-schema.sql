@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS skill_workshop_changes (
   change_id TEXT NOT NULL PRIMARY KEY,
   agent_id TEXT NOT NULL,
   skill_name TEXT NOT NULL,
-  action TEXT NOT NULL CHECK (action IN ('create', 'patch', 'write_file', 'archive', 'restore')),
+  action TEXT NOT NULL CHECK (action IN ('create', 'patch', 'write_file', 'remove_file', 'archive', 'restore')),
   actor TEXT NOT NULL CHECK (actor IN ('agent', 'review', 'curator', 'user')),
   summary TEXT NOT NULL,
   version_id TEXT,

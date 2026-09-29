@@ -37,6 +37,7 @@ const ACTION_VERB: Record<WorkshopChange["action"], string> = {
   create: "created",
   patch: "updated",
   write_file: "updated",
+  remove_file: "updated",
   archive: "archived",
   restore: "restored",
 };

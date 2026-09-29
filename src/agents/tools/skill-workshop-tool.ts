@@ -10,11 +10,11 @@ import {
   listWorkshopArchive,
   listWorkshopSkills,
   patchWorkshopSkill,
+  removeWorkshopSkillFile,
   restoreWorkshopSkill,
   viewWorkshopSkill,
   WorkshopWriteError,
   writeWorkshopSkillFile,
-  type WorkshopActor,
   type WorkshopChange,
   type WorkshopMutationContext,
 } from "../../skills/workshop/library.js";
@@ -32,16 +32,16 @@ import { SkillWorkshopToolSchema } from "./skill-workshop-tool-schema.js";
 import { textResult } from "./tool-results.js";
 
 const SKILL_WORKSHOP_DESCRIPTION = `Your learned skills: reusable procedures saved as <name>/SKILL.md that load in future sessions. Changes apply immediately, are versioned, and are shown to the user.
-Actions: list | view name [file_path] [version] | create name content | patch name old_text new_text [file_path] | write_file name file_path content | archive name (absorbed_into or reason) | restore name [version].
+Actions: list | view name [file_path] [version] | create name content | patch name old_text new_text [file_path] | write_file name file_path content | remove_file name file_path | archive name (absorbed_into or reason) | restore name [version].
 - create: content is the full SKILL.md: frontmatter name (= name) and description (≤160 bytes, triggers first), then the procedure.
 - patch: replaces one exact, unique old_text; view first and copy the text exactly. Prefer patch over rewrites.
-- file_path: SKILL.md or files under references/, templates/, scripts/, assets/.
+- file_path: SKILL.md or files under references/, templates/, scripts/, assets/. remove_file deletes one of those support files; archive removes a whole skill.
 - reason: one short line saying what changed; shown to the user.
 - restore without version undoes the last change.
 
 ${SKILL_AUTHORING_STANDARDS_PROMPT}`;
 
-const GUARDED_ACTIONS = new Set(["patch", "write_file", "archive"]);
+const GUARDED_ACTIONS = new Set(["patch", "write_file", "remove_file", "archive"]);
 const MAX_TRACKED_RUNS = 256;
 // Retries and fallbacks rebuild tools within one run; reads must survive that.
 const viewedSkillsByRun = new Map<string, Set<string>>();
@@ -51,9 +51,8 @@ export type SkillWorkshopToolOptions = {
   agentId: string;
   sessionKey?: string;
   runId?: string;
-  /** Background runs: edits of existing skills require a prior view; archive needs a why. */
+  /** Background review runs: edits of existing skills require a prior view; archive needs a why. */
   reviewGuard?: boolean;
-  actor?: WorkshopActor;
 };
 
 function formatChange(verb: string, change: WorkshopChange): string {
@@ -73,7 +72,8 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
   const ctx: WorkshopMutationContext = {
     config: options.config,
     agentId: options.agentId,
-    actor: options.actor ?? "agent",
+    // The review guard marks the background review run; every other caller is the agent.
+    actor: options.reviewGuard ? "review" : "agent",
     ...(options.sessionKey ? { sessionKey: options.sessionKey } : {}),
     ...(options.runId ? { runId: options.runId } : {}),
   };
@@ -114,7 +114,9 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
         version,
       );
       viewed.add(name);
-      if (!version) {
+      if (!version && !options.reviewGuard) {
+        // A foreground view is skill use: it feeds this turn's review trigger and the
+        // unused-skill archive clock through the same skill_usage owner as file reads.
         const skillFile = canonicalizePath(path.join(skillsRoot, name, "SKILL.md"));
         recordRunSkillUsage({
           runId: options.runId,
@@ -186,6 +188,14 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
         });
         verb = "Updated";
         break;
+      case "remove_file":
+        change = await removeWorkshopSkillFile(ctx, {
+          name,
+          filePath: readToolStringParam(params, "file_path", { required: true }),
+          ...(reason ? { summary: reason } : {}),
+        });
+        verb = "Updated";
+        break;
       case "archive": {
         const absorbedInto = readToolStringParam(params, "absorbed_into");
         if (options.reviewGuard && !absorbedInto && !reason) {
@@ -211,7 +221,7 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
         break;
       default:
         throw new ToolInputError(
-          `Unknown action "${action}". Use list, view, create, patch, write_file, archive, or restore.`,
+          `Unknown action "${action}". Use list, view, create, patch, write_file, remove_file, archive, or restore.`,
         );
     }
     return textResult(formatChange(verb, change), { change });

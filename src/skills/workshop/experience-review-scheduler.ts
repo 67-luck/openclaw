@@ -1,7 +1,9 @@
+import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { EmbeddedForegroundPromptContext } from "../../agents/embedded-agent-runner/run/params.js";
 import { runOutsidePreparedModelRuntimePluginGenerationScope } from "../../agents/prepared-model-runtime-generation-scope.js";
 import { getCanonicalSkillWorkspace } from "../../agents/skill-workshop-workspace-context.js";
+import { canonicalizePath } from "../../agents/utils/paths.js";
 import { isInternalSessionEffectsKey } from "../../config/sessions/internal-session-key.js";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -12,6 +14,7 @@ import { runOutsidePluginRuntimeGenerationScope } from "../../plugins/runtime/ge
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import type { RunSkillUsage } from "../runtime/run-usage.js";
 import { resolveSkillWorkshopConfig } from "./config.js";
+import { resolveWorkshopSkillsDir } from "./skills-root.js";
 
 /** Model iterations a session accumulates across turns before a review is due. */
 export const EXPERIENCE_REVIEW_ITERATION_THRESHOLD = 10;
@@ -127,10 +130,22 @@ function resolveTurnModelIterations(params: SkillExperienceReviewParams): number
   return count;
 }
 
+/** A learned skill the turn read or viewed; its outcome is fresh evidence for that skill. */
+function usedWorkshopSkill(params: SkillExperienceReviewParams): boolean {
+  if (!params.usedSkills?.length) {
+    return false;
+  }
+  const root = canonicalizePath(
+    resolveWorkshopSkillsDir(params.config, params.ctx.foregroundPromptContext.agentId),
+  );
+  return params.usedSkills.some((skill) => skill.skillFile?.startsWith(`${root}${path.sep}`));
+}
+
 /**
  * Counts model iterations per (agent, session) across turns and queues one background review
- * once a session has done enough work since its last review or its last own Workshop edit.
- * Reviews wait for a quiet period and run one at a time.
+ * once a session has done enough work since its last review or its last own Workshop edit,
+ * or right after a turn that used a learned skill. Reviews wait for a quiet period and run
+ * one at a time.
  */
 export function createSkillExperienceReviewScheduler(deps: ExperienceReviewSchedulerDeps) {
   const iterationsBySession = new Map<string, number>();
@@ -219,7 +234,7 @@ export function createSkillExperienceReviewScheduler(deps: ExperienceReviewSched
       }
       const iterations = (iterationsBySession.get(key) ?? 0) + resolveTurnModelIterations(params);
       iterationsBySession.delete(key);
-      if (iterations < EXPERIENCE_REVIEW_ITERATION_THRESHOLD) {
+      if (iterations < EXPERIENCE_REVIEW_ITERATION_THRESHOLD && !usedWorkshopSkill(params)) {
         // Re-insert so the least recently active session is the one pruned.
         iterationsBySession.set(key, iterations);
         pruneMapToMaxSize(iterationsBySession, EXPERIENCE_REVIEW_MAX_COUNTERS);

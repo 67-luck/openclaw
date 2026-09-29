@@ -59,12 +59,20 @@ async function recordSkillUsage(
   });
 }
 
+let activeTrackers = 0;
+
+/** True while this process persists skill.used events (the Gateway registers the listener). */
+export function isSkillUsageTracked(): boolean {
+  return activeTrackers > 0;
+}
+
 /** Listener failures must never propagate into the tool execution that emitted usage. */
 export function registerSkillUsageTracking(
   options: Pick<OpenClawStateDatabaseOptions, "path" | "env"> = {},
 ): () => Promise<void> {
   const context = captureOpenClawStateWorkerContext(options);
   const work = new AsyncWorkScope();
+  activeTrackers += 1;
   let closing: Promise<void> | undefined;
   const unregister = onTrustedInternalDiagnosticEvent(
     (event, metadata, privateData) => {
@@ -85,6 +93,9 @@ export function registerSkillUsageTracking(
     { include: ["skill.used"] },
   );
   return () => {
+    if (!closing) {
+      activeTrackers -= 1;
+    }
     unregister();
     // Stop acceptance first; closing the scope must not cancel accepted persistence.
     return (closing ??= AsyncWorkScope.runWhenAllIdle(

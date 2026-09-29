@@ -10,13 +10,10 @@ import {
 } from "../../agents/model-runtime-aliases.js";
 import { supportsModelTools } from "../../agents/model-tool-support.js";
 import { resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
-import {
-  isToolAllowedByPolicies,
-  isToolAllowedByPolicyName,
-} from "../../agents/tool-policy-match.js";
-import { mergeAlsoAllowPolicy } from "../../agents/tool-policy.js";
+import { isToolAllowedByPolicyName } from "../../agents/tool-policy-match.js";
 import { resolveConfiguredModelCompat } from "../../agents/tools-effective-inventory.js";
 import { buildLearnPrompt, DEFAULT_LEARN_REQUEST } from "../../skills/workshop/learn-prompt.js";
+import { resolveSkillWorkshopToolPolicyAvailability } from "../../skills/workshop/tool-policy-diagnostic.js";
 import { applyCommandTextToParams } from "./command-context-rewrite.js";
 import { commandReply, defineAuthorizedTextCommand } from "./command-gates.js";
 import { matchSlashCommandToken } from "./commands-slash-parse.js";
@@ -60,6 +57,10 @@ function isWorkshopAvailable(params: HandleCommandsParams): boolean {
     sessionKey: params.sessionKey,
     classificationSessionKey: policySessionKey,
   });
+  // Workshop skills live on the host under the agent dir, outside a sandboxed workspace.
+  if (sandboxRuntime.sandboxed) {
+    return false;
+  }
 
   try {
     const targetSessionEntry = params.sessionStore?.[params.sessionKey] ?? params.sessionEntry;
@@ -134,23 +135,10 @@ function isWorkshopAvailable(params: HandleCommandsParams): boolean {
       groupChannel: params.sessionEntry?.groupChannel ?? params.ctx.GroupChannel,
       groupSpace: params.sessionEntry?.space ?? params.ctx.GroupSpace,
     });
-    const policy = capabilityProfile.policy;
-    // Workshop skills live on the host under the agent dir, outside a sandboxed workspace.
-    return (
-      !sandboxRuntime.sandboxed &&
-      isToolAllowedByPolicies(SKILL_WORKSHOP_TOOL_NAME, [
-        mergeAlsoAllowPolicy(policy.profilePolicy, policy.profileAlsoAllow),
-        mergeAlsoAllowPolicy(policy.providerProfilePolicy, policy.providerProfileAlsoAllow),
-        policy.globalPolicy,
-        policy.globalProviderPolicy,
-        policy.agentPolicy,
-        policy.agentProviderPolicy,
-        policy.groupPolicy,
-        policy.senderPolicy,
-        policy.subagentPolicy,
-        policy.inheritedToolPolicy,
-      ])
-    );
+    return resolveSkillWorkshopToolPolicyAvailability({
+      config: params.cfg,
+      conversationCapabilityProfile: capabilityProfile,
+    }).available;
   } catch {
     return false;
   }

@@ -1,4 +1,4 @@
-// Shared authoring text for every Workshop writer: the tool description, reviews, curator, and /learn.
+// Shared authoring text for every Workshop writer: the tool description, reviews, and /learn.
 export const SKILL_AUTHORING_STANDARDS_PROMPT = [
   "Skill authoring standard:",
   "- A skill is how to do one class of task for this user: ordered steps with the exact commands, tools, paths, and checks that worked, then the user's standing preferences for the result.",

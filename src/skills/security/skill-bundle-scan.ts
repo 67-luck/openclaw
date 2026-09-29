@@ -5,20 +5,28 @@ export type SkillBundleScan = {
   findings: SkillScanFinding[];
 };
 
-/** Scans SKILL.md plus support files; support-file paths are checked for literal secrets only. */
+/** Scans one skill file's content with the skill-instruction and embedded-source rules. */
+export function scanSkillFile(content: string, label: string): SkillScanFinding[] {
+  return [...scanSkillContent(content, label), ...scanSource(content, label)];
+}
+
+/** Support-file paths are checked for literal secrets only. */
+export function scanSupportFilePath(path: string): SkillScanFinding[] {
+  return scanSkillContent(path, "support-file-path").filter(
+    (finding) => finding.ruleId === "literal-secret",
+  );
+}
+
+/** Scans SKILL.md plus support files and their paths. */
 export function scanSkillBundle(
   content: string,
   supportFiles: readonly { path: string; content: string }[] = [],
 ): SkillBundleScan {
   const findings = [
-    ...scanSkillContent(content, "SKILL.md"),
-    ...scanSource(content, "SKILL.md"),
+    ...scanSkillFile(content, "SKILL.md"),
     ...supportFiles.flatMap((file) => [
-      ...scanSkillContent(file.path, "support-file-path").filter(
-        (finding) => finding.ruleId === "literal-secret",
-      ),
-      ...scanSkillContent(file.content, file.path),
-      ...scanSource(file.content, file.path),
+      ...scanSupportFilePath(file.path),
+      ...scanSkillFile(file.content, file.path),
     ]),
   ];
   return {

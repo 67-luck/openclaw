@@ -1,7 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { SkillLibraryAuthoringCapability } from "../../skills/library/authoring.js";
-import type { WorkshopActor } from "../../skills/workshop/library.js";
 import type { AnyAgentTool } from "./common.js";
 import { createLibrarySkillWorkshopTool } from "./skill-workshop-tool-library.js";
 import { createSkillWorkshopTool } from "./skill-workshop-tool.js";
@@ -9,7 +8,6 @@ import { createSkillWorkshopTool } from "./skill-workshop-tool.js";
 /** Run-scoped Workshop authority chosen by the run owner, never by tool arguments. */
 export type SkillWorkshopRunOptions = {
   reviewGuard?: boolean;
-  actor?: WorkshopActor;
   libraryAuthoring?: SkillLibraryAuthoringCapability;
 };
 
@@ -29,7 +27,6 @@ export function createConfiguredSkillWorkshopTool(params: {
       ...(sessionKey ? { sessionKey } : {}),
       ...(runId ? { runId } : {}),
       ...(params.run?.reviewGuard ? { reviewGuard: true } : {}),
-      ...(params.run?.actor ? { actor: params.run.actor } : {}),
     });
   const libraryAuthoring = params.run?.libraryAuthoring;
   if (!libraryAuthoring) {

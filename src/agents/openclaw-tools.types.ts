@@ -60,7 +60,7 @@ export type OpenClawSharedToolsOptions = {
    * boundary should opt out explicitly.
    */
   wrapBeforeToolCallHook?: boolean;
-  /** Run-owned Workshop authority: review guard, change actor, personal library access. */
+  /** Run-owned Workshop authority: review guard and personal library access. */
   skillWorkshop?: SkillWorkshopRunOptions;
   webFetchHostnameAllowlistRef?: { value?: string[] };
   webSearchEnabled?: boolean;

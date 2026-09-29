@@ -219,7 +219,6 @@ describe("runEmbeddedAttempt skill policy projections", () => {
                 sessionPersistence: "detached" as const,
                 toolExecutionAllow: ["skill_workshop"],
                 skillWorkshopReviewGuard: true,
-                skillWorkshopActor: "review" as const,
                 disableTrajectory: true,
                 verboseLevel: "off" as const,
                 trigger: "user" as const,

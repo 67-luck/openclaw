@@ -5,6 +5,7 @@ import path from "node:path";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope-config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage, hasErrnoCode } from "../../infra/errors.js";
+import { removePathWithinRoot } from "../../infra/fs-safe-remove.js";
 import { pathExists, root } from "../../infra/fs-safe.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { executeOpenClawStateWorker } from "../../state/openclaw-state-worker-store.js";
@@ -22,12 +23,19 @@ import {
 } from "../lifecycle/workspace-skill-write.js";
 import { parseSkillFrontmatter } from "../loading/frontmatter.js";
 import { bumpSkillsSnapshotVersion } from "../runtime/refresh-state.js";
-import { scanSkillContent, scanSource } from "../security/scanner.js";
+import { scanSkillFile, scanSupportFilePath } from "../security/skill-bundle-scan.js";
 import { resolveSkillWorkshopConfig } from "./config.js";
 import { resolveWorkshopSkillsDir } from "./skills-root.js";
 
 const WORKSHOP_ACTORS = ["agent", "review", "curator", "user"] as const;
-const WORKSHOP_CHANGE_ACTIONS = ["create", "patch", "write_file", "archive", "restore"] as const;
+const WORKSHOP_CHANGE_ACTIONS = [
+  "create",
+  "patch",
+  "write_file",
+  "remove_file",
+  "archive",
+  "restore",
+] as const;
 export type WorkshopActor = (typeof WORKSHOP_ACTORS)[number];
 export type WorkshopChangeAction = (typeof WORKSHOP_CHANGE_ACTIONS)[number];
 
@@ -84,8 +92,9 @@ const MAX_VERSIONS_PER_SKILL = 10;
 const MAX_DESCRIPTION_BYTES = 160;
 const MAX_CHANGES_LIMIT = 500;
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
-const VERSION_ID_PATTERN =
-  /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(\d{3})Z-(create|patch|write_file|archive|restore)$/;
+const VERSION_ID_PATTERN = new RegExp(
+  `^(\\d{4})(\\d{2})(\\d{2})T(\\d{2})(\\d{2})(\\d{2})(\\d{3})Z-(${WORKSHOP_CHANGE_ACTIONS.join("|")})$`,
+);
 
 type SkillPaths = { root: string; skillDir: string; versionsDir: string };
 type SkillVersion = WorkshopArchivedSkill["versions"][number];
@@ -239,9 +248,7 @@ function validateSkillMarkdown(name: string, content: string, maxSkillBytes: num
 
 function assertSafeContent(name: string, filePath: string, content: string): void {
   const label = `${name}/${filePath}`;
-  const finding = [...scanSkillContent(content, label), ...scanSource(content, label)].find(
-    (entry) => entry.severity === "critical",
-  );
+  const finding = scanSkillFile(content, label).find((entry) => entry.severity === "critical");
   if (!finding) {
     return;
   }
@@ -261,12 +268,7 @@ function validateSkillFile(
   filePath: string,
   content: string,
 ): string | undefined {
-  if (
-    filePath !== SKILL_FILE &&
-    scanSkillContent(filePath, "support-file-path").some(
-      (finding) => finding.ruleId === "literal-secret",
-    )
-  ) {
+  if (filePath !== SKILL_FILE && scanSupportFilePath(filePath).length > 0) {
     throw new WorkshopWriteError(
       `Refused: a file path in "${name}" looks like it contains a credential. Name the file after its topic (e.g. "references/api.md"); never store real secrets in skills.`,
     );
@@ -635,6 +637,31 @@ export async function writeWorkshopSkillFile(
       summary: params.summary ?? (file === SKILL_FILE ? "rewrote SKILL.md" : `wrote ${file}`),
       versionId,
     };
+  });
+}
+
+/** Deletes one support file; SKILL.md goes only with the whole skill, through archive. */
+export async function removeWorkshopSkillFile(
+  ctx: WorkshopMutationContext,
+  params: { name: string; filePath: string; summary?: string },
+): Promise<WorkshopChange> {
+  const file = normalizeSkillFilePath(params.filePath);
+  if (file === SKILL_FILE) {
+    throw new WorkshopWriteError(
+      `SKILL.md cannot be removed. Archive the skill with action=archive name=${params.name} instead.`,
+    );
+  }
+  return await mutateSkill(ctx, params.name, "remove_file", async (paths) => {
+    await requireLiveSkill(paths, params.name);
+    const { files } = await listSkillFiles(paths.skillDir);
+    if (!files.includes(file)) {
+      throw new WorkshopWriteError(
+        `${file} does not exist in "${params.name}". Files: ${files.join(", ")}.`,
+      );
+    }
+    const versionId = await snapshotSkill(paths, "remove_file");
+    await removePathWithinRoot({ rootDir: paths.skillDir, relativePath: file, force: false });
+    return { summary: params.summary ?? `removed ${file}`, versionId };
   });
 }
 

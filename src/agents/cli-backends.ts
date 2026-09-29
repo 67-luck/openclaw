@@ -62,7 +62,6 @@ export type ResolvedCliBackend = {
   parseJsonlEvent?: CliBackendPlugin["parseJsonlEvent"];
   parseJsonlLifecycleEvent?: CliBackendPlugin["parseJsonlLifecycleEvent"];
   toolAvailabilityEnforcement?: CliBackendToolAvailabilityEnforcement;
-  isolatesInstructionsWithExactTools?: true;
   projectNativeToolAuthority?: CliBackendPlugin["projectNativeToolAuthority"];
   nativeToolMode?: CliBackendNativeToolMode;
   sideQuestionToolMode?: CliBackendSideQuestionToolMode;
@@ -323,7 +322,6 @@ export function resolveCliBackendConfig(
     parseJsonlEvent: backend.parseJsonlEvent,
     parseJsonlLifecycleEvent: backend.parseJsonlLifecycleEvent,
     toolAvailabilityEnforcement: backend.toolAvailabilityEnforcement,
-    isolatesInstructionsWithExactTools: backend.isolatesInstructionsWithExactTools,
     projectNativeToolAuthority: backend.projectNativeToolAuthority,
     nativeToolMode: backend.nativeToolMode,
     sideQuestionToolMode: backend.sideQuestionToolMode,

@@ -180,7 +180,6 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
         : {}),
       timeoutMs: resolveAgentTimeoutMs({ cfg: config }),
       runId,
-      skillWorkshopActor: "review",
       ...(capability ? { cronCreatorAuthorityCapability: capability } : {}),
     });
   const result = capability

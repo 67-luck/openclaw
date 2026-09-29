@@ -360,10 +360,11 @@ different visible skill set per agent.
 
 <ParamField path="skills.workshop.autonomous.mode" type='"off" | "auto"' default='"auto"'>
   `auto` lets agents save and update Workshop skills: a background review runs
-  after substantial work and a weekly review consolidates Workshop skills. Every
-  change is announced in the conversation and can be undone. `off` disables the
-  background and weekly reviews. User-prompted skill creation, `/learn`, and
-  manual learning sessions work in both modes.
+  after substantial work, and learned skills unused for 30 days are archived.
+  Review changes are announced in the conversation, and every change can be
+  undone. `off` disables the background review and unused-skill cleanup.
+  User-prompted skill creation, `/learn`, and manual learning sessions work in
+  both modes.
 </ParamField>
 
 See [Self-learning](/tools/self-learning) for eligibility, privacy, cost,

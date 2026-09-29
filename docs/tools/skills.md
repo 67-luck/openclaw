@@ -842,7 +842,7 @@ read every admitted skill. Native harnesses retain their own prompt policy.
     Step-by-step guide to authoring a custom skill.
   </Card>
   <Card title="Skill Workshop" href="/tools/skill-workshop" icon="flask">
-    Proposal queue for agent-drafted skills.
+    Skills your agent saves and updates on its own, with undo.
   </Card>
   <Card title="Skills config" href="/tools/skills-config" icon="gear">
     Full `skills.*` config schema and agent allowlists.

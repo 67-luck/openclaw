@@ -864,7 +864,7 @@
     },
     {
       "source": "/tools/skill-workshop/collection-review",
-      "destination": "/tools/skill-workshop#weekly-curator"
+      "destination": "/tools/skill-workshop#unused-skill-cleanup"
     },
     {
       "source": "/tools/skill-workshop/authoring",
@@ -872,7 +872,7 @@
     },
     {
       "source": "/tools/skill-workshop/proposals",
-      "destination": "/tools/skill-workshop#agent-tool"
+      "destination": "/tools/skill-workshop#upgrading-from-earlier-releases"
     },
     {
       "source": "/tools/skill-workshop/configuration",

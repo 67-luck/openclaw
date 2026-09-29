@@ -19,8 +19,8 @@ Learning happens in three places:
   procedure after hard multi-step work, in the same turn.
 - **A background review** looks back over a conversation after enough work and
   saves what the foreground agent did not. This page covers it.
-- **A weekly curator** consolidates the collection. See
-  [Weekly curator](/tools/skill-workshop#weekly-curator).
+- **Unused-skill cleanup** archives learned skills unused for 30 days. See
+  [Unused-skill cleanup](/tools/skill-workshop#unused-skill-cleanup).
 
 Every change applies immediately, is announced in the conversation, and can be
 undone. See [Undo](/tools/skill-workshop#undo).
@@ -31,6 +31,11 @@ OpenClaw counts model iterations per session, across turns. When a session
 reaches 10 since its last review, a review is queued and the count starts over.
 The count also resets when the foreground turn itself changed a learned skill,
 so work the agent already saved is not reviewed again.
+
+A turn that read or viewed a learned skill also queues a review, whatever the
+count, so a skill that just misled or helped the agent gets a fresh look. The
+same eligibility rules apply, and a turn that changed a learned skill itself
+still skips the review.
 
 A queued review starts after 30 seconds with no agent or reply run active; later
 activity in the same session restarts that wait. Reviews run one at a time.
@@ -106,7 +111,7 @@ openclaw config set skills.workshop.autonomous.mode auto
 ```
 
 The Control UI **Plugins → Skill workshop** page has the same switch. `off`
-stops background reviews and the weekly curator. The agent can still create or
+stops background reviews and unused-skill cleanup. The agent can still create or
 update learned skills when you ask, through `/learn`, or in a
 **Learn from past conversations** session.
 
@@ -152,7 +157,7 @@ mode to `off`.
 
 ## Related
 
-- [Skill Workshop](/tools/skill-workshop) for the tool, storage, undo, and curator
+- [Skill Workshop](/tools/skill-workshop) for the tool, storage, undo, and unused-skill cleanup
 - [Creating skills](/tools/creating-skills) for hand-written skills
 - [Skills config](/tools/skills-config#workshop-skills-workshop) for `skills.workshop`
 - [Skills CLI](/cli/skills#skill-workshop) for `openclaw skills workshop`

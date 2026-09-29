@@ -8,30 +8,18 @@ registerSkillWorkshopEnglish();
 
 export type SkillWorkshopMode = "off" | "auto";
 
-export type SkillWorkshopModeState = {
-  mode: SkillWorkshopMode;
-  weeklyReviewsPaused: boolean;
-};
-
 const CONFIG_CHANGED_SINCE_LOAD = "config changed since last load";
 
 export function resolveWorkshopMode(
   runtimeConfig: RuntimeConfigCapability | undefined,
-): SkillWorkshopModeState | null {
+): SkillWorkshopMode | null {
   const config = resolveEditableSnapshotConfig(runtimeConfig?.state.configSnapshot);
   if (!config) {
     return null;
   }
   // The Gateway defaults an absent mode to auto; any other value learns nothing.
   const configured = asRecord(asRecord(asRecord(config.skills)?.workshop)?.autonomous)?.mode;
-  const mode = configured === undefined || configured === "auto" ? "auto" : "off";
-  return {
-    mode,
-    weeklyReviewsPaused:
-      mode === "auto" &&
-      runtimeConfig?.state.configLoading === false &&
-      asRecord(config.cron)?.enabled === false,
-  };
+  return configured === undefined || configured === "auto" ? "auto" : "off";
 }
 
 /** Patch the canonical config key; returns an error message or null on success. */

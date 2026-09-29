@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import {
@@ -5,6 +6,7 @@ import {
   type ExperienceReviewCandidate,
   type SkillExperienceReviewParams,
 } from "./experience-review-scheduler.js";
+import { resolveWorkshopSkillsDir } from "./skills-root.js";
 
 const source = {
   agentId: "main",
@@ -88,6 +90,38 @@ describe("skill experience review scheduler", () => {
     expect(timers).toHaveLength(0);
     turn(1);
     expect(timers).toHaveLength(1);
+  });
+
+  it("reviews right after a turn that used a learned skill, but not other skills", async () => {
+    const { turn, fireTimers, runReview, timers } = createHarness();
+    const workshopSkill = path.join(resolveWorkshopSkillsDir({}, "main"), "deploy", "SKILL.md");
+
+    turn(1, {
+      usedSkills: [
+        { name: "notes", source: "workspace", activation: "read", skillFile: "/ws/notes/SKILL.md" },
+      ],
+    });
+    expect(timers).toHaveLength(0);
+    turn(1, {
+      usedSkills: [
+        { name: "deploy", source: "workspace", activation: "read", skillFile: workshopSkill },
+      ],
+    });
+    expect(timers).toHaveLength(1);
+    fireTimers();
+    await vi.waitFor(() => expect(runReview).toHaveBeenCalledTimes(1));
+    expect(runReview.mock.calls[0]?.[0].usedSkills).toEqual([
+      expect.objectContaining({ name: "deploy" }),
+    ]);
+
+    // Saving its own change already captured the lesson; the used skill does not re-trigger.
+    turn(1, {
+      workshopMutated: true,
+      usedSkills: [
+        { name: "deploy", source: "workspace", activation: "read", skillFile: workshopSkill },
+      ],
+    });
+    expect(timers).toHaveLength(0);
   });
 
   it("ignores errored turns and sessions while Workshop is off", () => {

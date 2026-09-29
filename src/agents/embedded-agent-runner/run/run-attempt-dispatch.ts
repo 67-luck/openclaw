@@ -622,7 +622,6 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     modelRun: params.modelRun,
     disableTrajectory: params.disableTrajectory,
     skillWorkshopReviewGuard: params.skillWorkshopReviewGuard,
-    skillWorkshopActor: params.skillWorkshopActor,
     skillLibraryAuthoring: params.skillLibraryAuthoring,
     promptMode: params.promptMode,
     ownerNumbers: params.ownerNumbers,
