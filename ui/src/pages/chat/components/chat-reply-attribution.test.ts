@@ -546,6 +546,22 @@ it.each([
   },
 );
 
+it("hides a 1:1 reply to a paged-out original with no author or run", () => {
+  draw(
+    prompt,
+    [{ role: "assistant", content: "Deploying", __openclaw: { replyToId: "p1" } }],
+    false,
+    "group",
+    {
+      runId: "run-a",
+      replyToSender: undefined,
+      replyToMessage: undefined,
+      fetched: { p1: { role: "user", content: "Deploy?", __openclaw: { id: "p1" } } },
+    },
+  );
+  expect(container.querySelector(".chat-reply-attribution")).toBeNull();
+});
+
 it.each([
   { shared: false, location: "fetched", snapshot: undefined, name: "Message" },
   { shared: true, location: "fetched", snapshot: undefined, name: undefined },

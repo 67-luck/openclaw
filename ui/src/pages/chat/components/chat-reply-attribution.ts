@@ -119,7 +119,9 @@ function resolveTarget(
     context &&
     !context.replyShared &&
     ((context.replyTurnSource && persistedMessageEntryId(context.replyTurnSource.message) === id) ||
-      (context.runId && preview?.turnRunId === context.runId));
+      (context.runId && preview?.turnRunId === context.runId) ||
+      // Without the turn's prompt, an original with no author or run may be that prompt.
+      (!context.replyTurnSource && preview && !preview.sender && !preview.turnRunId));
   if (name && !ownPrompt) {
     return {
       state: "named",
