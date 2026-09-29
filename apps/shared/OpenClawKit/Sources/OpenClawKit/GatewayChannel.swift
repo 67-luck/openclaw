@@ -1464,7 +1464,9 @@ extension GatewayChannelActor {
     {
         // Zero leaves terminal-operation deadlines to the Gateway owner.
         let effectiveTimeout = Self.resolveRequestTimeoutMs(timeoutMs, defaultMs: self.defaultRequestTimeoutMs)
-        let payload = try self.encodeRequest(method: method, params: params, kind: "request", task: task)
+        var payload: PreparedGatewayRequest? = try self.encodeRequest(
+            method: method, params: params, kind: "request", task: task)
+        let id = payload!.id
         let cancellationGate = GatewayRequestCancellationGate()
         let response: GatewayFrame
         do {
@@ -1475,6 +1477,10 @@ extension GatewayChannelActor {
                         cont.resume(throwing: CancellationError())
                         return
                     }
+                    // This continuation runs once. Its send task owns the body; response
+                    // waiting, timeout and cancellation retain only the request identity.
+                    let outgoing = payload!
+                    payload = nil
                     var request = PendingRequest(
                         continuation: cont, transportLifetime: WebSocketRequestLifetime(method: method))
                     if let effectiveTimeout {
@@ -1488,22 +1494,22 @@ extension GatewayChannelActor {
                                 code: 5,
                                 userInfo: [NSLocalizedDescriptionKey:
                                     "gateway request timed out after \(Int(effectiveTimeout))ms"])
-                            await self.finishRequest(id: payload.id, result: .failure(error))
+                            await self.finishRequest(id: id, result: .failure(error))
                         }
                     }
-                    self.pending[payload.id] = request
+                    self.pending[id] = request
                     let transportLifetime = request.transportLifetime
                     Task {
                         guard !cancellationGate.isCancelled else {
-                            self.finishRequest(id: payload.id, result: .failure(CancellationError()))
+                            self.finishRequest(id: id, result: .failure(CancellationError()))
                             return
                         }
                         do {
-                            try await task.sendRequest(payload, lifetime: transportLifetime)
+                            try await task.sendRequest(outgoing, lifetime: transportLifetime)
                         } catch is CancellationError {
                             // Cancellation owns only this request. Treating it as socket loss
                             // starts disconnect cleanup and can reject an immediate safe retry.
-                            self.finishRequest(id: payload.id, result: .failure(CancellationError()))
+                            self.finishRequest(id: id, result: .failure(CancellationError()))
                         } catch {
                             let wrapped = self.wrap(error, context: "gateway send \(method)")
                             await self.transitionToDisconnected(
@@ -1516,7 +1522,7 @@ extension GatewayChannelActor {
                 }
             } onCancel: {
                 cancellationGate.cancel()
-                Task { await self.finishRequest(id: payload.id, result: .failure(CancellationError())) }
+                Task { await self.finishRequest(id: id, result: .failure(CancellationError())) }
             }
         } catch {
             #if DEBUG

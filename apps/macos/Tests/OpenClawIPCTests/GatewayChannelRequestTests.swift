@@ -476,4 +476,44 @@ struct GatewayChannelRequestTests {
         #expect(await channel._test_connectWaiterCount() == 0)
         #expect(socket.snapshotSendCount() == 1)
     }
+
+    @Test(arguments: [false, true])
+    func `encoding failure does not admit a request or retire its socket`(_ cancelled: Bool) async throws {
+        let session = GatewayTestWebSocketSession(taskFactory: {
+            GatewayTestWebSocketTask(sendHook: { task, message, sendIndex in
+                guard sendIndex == 1,
+                      let requestID = GatewayWebSocketTestSupport.requestID(from: message)
+                else { return }
+                task.emitReceiveSuccess(.data(GatewayWebSocketTestSupport.okResponseData(id: requestID)))
+            })
+        })
+        let channel = try GatewayChannelActor(
+            url: #require(URL(string: "ws://example.invalid")),
+            token: nil,
+            session: WebSocketSessionBox(session: session),
+            connectOptions: GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions)
+        try await channel.connect()
+        let generation = try #require(await channel.currentConnectionGeneration())
+        let socket = try #require(session.latestTask())
+        let gate = GatewayRequestStartGate()
+        let request = Task {
+            await gate.wait()
+            return try await channel.request(
+                method: "cannot-encode", params: ["number": OpenClawKit.AnyCodable(Double.nan)], timeoutMs: 100,
+                ifCurrentConnectionGeneration: generation)
+        }
+        await gate.waitUntilEntered()
+        if cancelled { request.cancel() }
+        await gate.release()
+
+        // Generation-bound requests encode before installing their cancellation handler.
+        await #expect(throws: EncodingError.self) { try await request.value }
+        #expect(socket.snapshotSendCount() == 1)
+        #expect(await channel._test_pendingRequestCount() == 0)
+        let response = try await channel.request(method: "still-usable", params: nil, timeoutMs: 1000)
+        #expect(!response.isEmpty)
+        #expect(session.snapshotMakeCount() == 1)
+        #expect(socket.snapshotSendCount() == 2)
+        await channel.shutdown()
+    }
 }
