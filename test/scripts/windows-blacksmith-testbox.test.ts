@@ -138,7 +138,7 @@ describe.skipIf(process.platform !== "win32")("native Windows Testbox OpenSSH ad
       String.raw`param([string]$Resolver)
 $ErrorActionPreference = 'Stop'
 $observationClock = [Diagnostics.Stopwatch]::StartNew()
-function Observe-AdmissionPhase($Name) { [Console]::Error.WriteLine("admission_phase=$Name elapsed_ms=$($observationClock.ElapsedMilliseconds)") }
+function Observe-AdmissionPhase($Name) { [Console]::Error.WriteLine("admission_phase=$Name elapsed_ms=$($observationClock.ElapsedMilliseconds) utc_ms=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())") }
 Observe-AdmissionPhase 'script-start'
 . $Resolver
 Observe-AdmissionPhase 'resolver-loaded'
@@ -168,8 +168,11 @@ $aclCases = @(
   @{ Name='deny does not cancel allow'; Sddl='O:BAG:SYD:(D;;GA;;;BU)(A;;GW;;;BU)'; Expected='unsafe' }
 )
 foreach ($case in $aclCases) {
+  Observe-AdmissionPhase "descriptor-start:$($case.Name)"
   $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new($case.Sddl)
+  Observe-AdmissionPhase "descriptor-parsed:$($case.Name)"
   Assert ((Get-OpenSshAclDisposition $descriptor $true) -eq $case.Expected) $case.Name
+  Observe-AdmissionPhase "descriptor-complete:$($case.Name)"
 }
 Assert ((Get-OpenSshAclDisposition $null $true) -eq 'unknown') 'missing descriptor'
 $outsider = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
@@ -321,6 +324,7 @@ Observe-AdmissionPhase 'complete'
 @{ installations=$cases.Count; descriptors=($aclCases.Count + 4) } | ConvertTo-Json -Compress
 `,
     );
+    const nativeStartedAtMs = Date.now();
     const nativeStartedAt = performance.now();
     const result = spawnSync(
       "pwsh",
@@ -355,6 +359,7 @@ Observe-AdmissionPhase 'complete'
     };
     const diagnostic = JSON.stringify({
       ...outcome,
+      nativeStartedAtMs,
       elapsedMs: performance.now() - nativeStartedAt,
       stdout: redact(result.stdout),
       stderr: redact(result.stderr),
