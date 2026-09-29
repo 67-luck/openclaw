@@ -838,7 +838,20 @@ describe("node host invoke", () => {
         )?.[1] as { payloadJSON?: string | null } | undefined;
         expect(JSON.parse(event?.payloadJSON ?? "{}")).toMatchObject({
           suppressNotifyOnExit: true,
+          invokeResultSentFirst: true,
         });
+        const resultIndex = request.mock.calls.findIndex(
+          ([method, params]) =>
+            method === "node.invoke.result" &&
+            (params as { id?: string } | undefined)?.id === "invoke-suppress-notify",
+        );
+        const eventIndex = request.mock.calls.findIndex(
+          ([method, params]) =>
+            method === "node.event" &&
+            (params as { event?: string } | undefined)?.event === "exec.finished",
+        );
+        expect(resultIndex).toBeGreaterThanOrEqual(0);
+        expect(eventIndex).toBeGreaterThan(resultIndex);
       });
     } finally {
       closeOpenClawStateDatabaseForTest();

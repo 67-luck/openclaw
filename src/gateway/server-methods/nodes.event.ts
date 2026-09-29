@@ -84,13 +84,13 @@ export const nodeEventHandlers: GatewayRequestHandlers = {
         loadGatewayModelCatalog: context.loadGatewayModelCatalog,
         loadGatewayModelCatalogSnapshot: context.loadGatewayModelCatalogSnapshot,
         authorizeNodeSystemRunEvent: (eventParams) =>
-          context.nodeRegistry.authorizeSystemRunEvent({
+          context.nodeRegistry.authorizeSystemRunEventWithState({
             nodeId: eventParams.nodeId,
             connId: eventParams.connId,
             runId: eventParams.runId,
             sessionKey: eventParams.sessionKey,
             terminal: eventParams.terminal,
-          }),
+          }) ?? false,
         updateNodePresenceActivity: (activity) => {
           const updated = context.nodeRegistry.updatePresenceActivity(activity);
           return updated?.lastActiveAtMs !== undefined && updated.presenceUpdatedAtMs !== undefined

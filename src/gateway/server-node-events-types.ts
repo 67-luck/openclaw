@@ -30,7 +30,7 @@ export type NodeEventContext = Pick<
     runId?: string;
     sessionKey: string;
     terminal: boolean;
-  }) => boolean;
+  }) => boolean | { invokeResultReceived: boolean };
   updateNodePresenceActivity?: (params: {
     nodeId: string;
     connId?: string;

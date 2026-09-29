@@ -56,6 +56,7 @@ import {
   type NodeHostInvokeRuntime,
 } from "./invoke-agent-cli-claude-handler.js";
 import { invokeDeviceApps } from "./invoke-device-apps.js";
+import { buildExecFinishedEventPayload } from "./invoke-exec-finished-event.js";
 import { invokeNodeFileCommand } from "./invoke-file-commands.js";
 import { boundMcpToolResultPayload } from "./invoke-mcp-result.js";
 import { decodeNodeInvokeParams as decodeParams } from "./invoke-payload.js";
@@ -304,23 +305,10 @@ async function sendExecFinishedEvent(
     client: NodeHostClient;
   },
 ) {
-  const combined = [params.result.stdout, params.result.stderr, params.result.error]
-    .filter(Boolean)
-    .join("\n");
   await sendNodeEvent(
     params.client,
     "exec.finished",
-    buildExecEventPayload({
-      sessionKey: params.sessionKey,
-      runId: params.runId,
-      host: "node",
-      command: params.commandText,
-      exitCode: params.result.exitCode ?? undefined,
-      timedOut: params.result.timedOut,
-      success: params.result.success,
-      output: combined,
-      suppressNotifyOnExit: params.suppressNotifyOnExit,
-    }),
+    buildExecEventPayload(buildExecFinishedEventPayload(params)),
   );
 }
 

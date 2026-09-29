@@ -59,6 +59,7 @@ import {
   parseMessageWithAttachments,
   persistInboundImagesForTranscript,
 } from "./chat-attachments.js";
+import { shouldSuppressSystemRunCompletion } from "./node-system-run-event-authority.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./server-methods/attachment-normalize.js";
 import { registerNodeApnsEvent } from "./server-node-events-apns.js";
 import type { NodeEvent, NodeEventContext } from "./server-node-events-types.js";
@@ -943,16 +944,15 @@ export const handleNodeEvent = async (
 
       const cfg = getRuntimeConfig();
       const runId = normalizeOptionalString(obj.runId) ?? "";
-      if (
-        !ctx.authorizeNodeSystemRunEvent({
-          nodeId,
-          connId: opts?.connId,
-          ...(runId ? { runId } : {}),
-          // Match the key sent in system.run params; canonicalization below is for routing.
-          sessionKey: sessionKeyRaw,
-          terminal: evt.event === "exec.finished" || evt.event === "exec.denied",
-        })
-      ) {
+      const eventAuthorization = ctx.authorizeNodeSystemRunEvent({
+        nodeId,
+        connId: opts?.connId,
+        ...(runId ? { runId } : {}),
+        // Match the key sent in system.run params; canonicalization below is for routing.
+        sessionKey: sessionKeyRaw,
+        terminal: evt.event === "exec.finished" || evt.event === "exec.denied",
+      });
+      if (!eventAuthorization) {
         return {
           ok: true,
           event: evt.event,
@@ -960,11 +960,16 @@ export const handleNodeEvent = async (
           reason: "unmatched_exec_event",
         };
       }
-      if (
-        cfg.tools?.exec?.notifyOnExit === false ||
-        obj.suppressNotifyOnExit === true ||
-        evt.event === "exec.denied"
-      ) {
+      // Respect tools.exec.notifyOnExit setting (default: true)
+      // When false, skip system event notifications for node exec events.
+      const notifyOnExit = cfg.tools?.exec?.notifyOnExit !== false;
+      if (!notifyOnExit) {
+        return undefined;
+      }
+      if (shouldSuppressSystemRunCompletion(obj, eventAuthorization)) {
+        return undefined;
+      }
+      if (evt.event === "exec.denied") {
         return undefined;
       }
       const command = normalizeOptionalString(obj.command) ?? "";
