@@ -5,6 +5,7 @@ import type { OpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { revokeDeviceBootstrapTokensForDeviceInDatabase } from "./device-bootstrap.worker-kernel.js";
 import type {
   RequestDevicePairingResult,
+  PairedDeviceMetadataBinding,
   PairedDeviceMetadataPatch,
   PrunedSupersededPairedDevice,
 } from "./device-pairing-core.types.js";
@@ -427,9 +428,21 @@ export function updatePairedDeviceMetadataInWorker(
   deviceId: string,
   patch: Partial<PairedDeviceMetadataPatch>,
   baseDir?: string,
+  expectedPairing?: PairedDeviceMetadataBinding,
 ): boolean {
   return updatePairedDeviceInTransaction(deviceId, baseDir, (device) => {
     if (!device) {
+      return { value: false };
+    }
+    // Delayed observations cannot update a replacement pairing or supersede
+    // a newer connection's metadata after waiting in the existing writer queue.
+    if (
+      expectedPairing &&
+      (device.publicKey !== expectedPairing.publicKey ||
+        device.createdAtMs !== expectedPairing.createdAtMs ||
+        device.approvedAtMs !== expectedPairing.approvedAtMs ||
+        (patch.lastSeenAtMs !== undefined && (device.lastSeenAtMs ?? 0) > patch.lastSeenAtMs))
+    ) {
       return { value: false };
     }
     const next: Partial<PairedDeviceMetadataPatch> = {};

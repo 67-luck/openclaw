@@ -9,6 +9,7 @@ import { ConnectErrorDetailCodes } from "../../../../packages/gateway-protocol/s
 import { ErrorCodes, PROTOCOL_VERSION } from "../../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import * as devicePairing from "../../../infra/device-pairing.js";
 import { resetDiagnosticEventsForTest } from "../../../infra/diagnostic-events.js";
 import { tryBeginGatewaySuspendAdmission } from "../../../process/gateway-work-admission.js";
 import {
@@ -54,6 +55,8 @@ import {
   createBackendClient,
   createConnectedTestClient,
   createHealthSummary,
+  createPairedGatewayConnectDevice,
+  createTrustedProxyUserConnector,
   createSetCloseCauseMock,
   createTestAgentRuntimeIdentityLease,
   DEVICE_TOKEN_MUTATION_PARAMS,
@@ -183,70 +186,7 @@ beforeEach(() => {
   loadConfigMock.mockReset();
 });
 
-function connectTrustedProxyUser(
-  connId: string,
-  clientOverrides: Record<string, unknown> = {},
-  scopes: string[] = [],
-  handoffAuthenticatedReceive?: () => void,
-) {
-  loadConfigMock.mockImplementation(() => ({
-    gateway: {
-      auth: {
-        mode: "trusted-proxy",
-        identityScopes: { "alice@example.com": scopes },
-        trustedProxy: {
-          userHeader: "x-forwarded-user",
-          requiredHeaders: ["x-forwarded-proto"],
-        },
-      },
-      trustedProxies: ["10.0.0.1"],
-      controlUi: {
-        allowedOrigins: ["http://127.0.0.1:19001"],
-      },
-    },
-  }));
-  const harness = attachGatewayHarness({
-    connId,
-    handoffAuthenticatedReceive,
-    connectNonce: `nonce-${connId}`,
-    requestHost: "gateway.example.com:18789",
-    requestOrigin: "http://127.0.0.1:19001",
-    remoteAddr: "10.0.0.1",
-    resolvedAuth: {
-      mode: "trusted-proxy",
-      allowTailscale: false,
-      trustedProxy: {
-        userHeader: "x-forwarded-user",
-        requiredHeaders: ["x-forwarded-proto"],
-      },
-    },
-    headers: {
-      "x-forwarded-for": "203.0.113.10",
-      "x-forwarded-user": "alice@example.com",
-      "x-forwarded-proto": "https",
-    },
-    ingressAttribution: {
-      kind: "trusted-proxy",
-      clientIp: "203.0.113.10",
-      rateLimit: { subject: { key: "203.0.113.10" }, resetOnSuccess: true },
-    },
-  });
-  harness.sendConnect(`connect-${connId}`, {
-    minProtocol: PROTOCOL_VERSION,
-    maxProtocol: PROTOCOL_VERSION,
-    client: {
-      id: "openclaw-control-ui",
-      version: "dev",
-      platform: "test",
-      mode: "ui",
-      ...clientOverrides,
-    },
-    role: "operator",
-    scopes,
-    caps: [],
-  });
-  return harness;
-}
+const connectTrustedProxyUser = createTrustedProxyUserConnector(loadConfigMock);
 
 describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
   beforeEach(() => {
@@ -306,6 +246,48 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
       prewarm.resolve();
     }
   });
+
+  it.each([false, true])(
+    "sends hello before paired metadata settles (closed=%s)",
+    async (closed) => {
+      await withGatewayTestState({ label: "gateway-paired-metadata" }, async () => {
+        const connId = "paired-metadata";
+        const { device, pairing } = createPairedGatewayConnectDevice(connId);
+        const metadataStarted = createGatewayHarnessGate();
+        const metadata = createGatewayHarnessGate<boolean>();
+        const paired = vi.spyOn(devicePairing, "getPairedDevice").mockResolvedValue(pairing);
+        let refreshed = false;
+        const update = vi
+          .spyOn(devicePairing, "updatePairedDeviceMetadata")
+          .mockImplementation(async (_id, _patch, _baseDir, options) => {
+            metadataStarted.resolve();
+            await metadata.promise;
+            options?.assertCurrent();
+            refreshed = true;
+            return true;
+          });
+        const harness = connectTrustedProxyUser(connId, {}, [], undefined, device);
+        try {
+          await metadataStarted.promise;
+          expect(harness.socketSend).toHaveBeenCalledOnce();
+          expect(JSON.parse(harness.socketSend.mock.calls[0]![0])).toMatchObject({
+            ok: true,
+            payload: { type: "hello-ok", auth: { role: "operator" } },
+          });
+          expect(harness.clearHandshakeTimer).toHaveBeenCalledOnce();
+          if (closed) {
+            (harness.client as GatewayWsClient).invalidated = true;
+          }
+        } finally {
+          metadata.resolve(true);
+          await harness.runWhenIdle();
+          update.mockRestore();
+          paired.mockRestore();
+        }
+        expect(refreshed).toBe(!closed);
+      });
+    },
+  );
 
   it("skips history prewarm for an admitted backend operator", async () => {
     const harness = attachGatewayHarness({

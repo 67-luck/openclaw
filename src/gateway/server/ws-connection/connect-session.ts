@@ -9,6 +9,7 @@ import { ConnectErrorDetailCodes } from "../../../../packages/gateway-protocol/s
 import { ErrorCodes, PROTOCOL_VERSION } from "../../../../packages/gateway-protocol/src/index.js";
 import { getRuntimeConfig } from "../../../config/io.js";
 import { captureAuthenticatedNodePairingState } from "../../../infra/device-pairing-node-state.js";
+import { updatePairedDeviceMetadata } from "../../../infra/device-pairing.js";
 import { compareOpenClawReleaseVersions } from "../../../infra/npm-registry-spec.js";
 import { upsertPresence } from "../../../infra/system-presence.js";
 import { loadVoiceWakeRoutingConfig } from "../../../infra/voicewake-routing.js";
@@ -17,7 +18,6 @@ import { resolveLocalNodeId } from "../../../node-host/local-id.js";
 import { intersectOperatorScopes } from "../../../shared/operator-scope-compat.js";
 import { recordRemoteNodeInfo, refreshRemoteNodeBins } from "../../../skills/runtime/remote.js";
 import { classifyTailscaleLogin } from "../../../state/user-profiles-tailscale-login.js";
-import { adoptTailscaleProfileAvatar } from "../../../state/user-profiles.js";
 import {
   isBrowserCopilotClient,
   isEphemeralGatewayClient,
@@ -62,6 +62,7 @@ import {
 } from "./connect-operator-access.js";
 import {
   createGatewayConnectProfileLifecycle,
+  refreshGatewayConnectProfile,
   resolveGatewayConnectProfileAdmission,
 } from "./connect-user-profile.js";
 import { resolveControlUiBuildMismatch } from "./control-ui-build-admission.js";
@@ -684,49 +685,27 @@ export async function attachAuthenticatedGatewayConnect(
 
   await sendGatewayHello(context, state, pluginSurfaceUrls, authenticatedUserProfile?.profileId);
 
-  if (nextClient.authenticatedGitHubIdentitySync) {
+  if (state.pairedDeviceMetadata && device && devicePublicKey) {
+    const { createdAtMs, approvedAtMs, patch } = state.pairedDeviceMetadata;
+    // Observation writes retain normal FIFO/commit ownership, but cannot hold
+    // an authenticated connection behind the shared-state writer queue.
     runDetachedConnectWork(
       async () => {
-        const result = await nextClient.authenticatedGitHubIdentitySync!();
-        const profile = nextClient.authenticatedUserProfile;
-        const profilePic = authResult.tailscaleIdentity?.profilePic;
-        if (!profile?.hasAvatar && profilePic) {
-          try {
-            const updated = await adoptTailscaleProfileAvatar(result.profileId, profilePic);
-            if (updated.avatarMime) {
-              await profileLifecycle.attach(updated.id, updated.updatedAt, prepareLocalUserIngress);
-            }
-          } catch (error) {
-            logGateway.warn(
-              `Tailscale avatar adoption failed conn=${connId}: ${formatForLog(error)}`,
-            );
-          }
-        }
+        await updatePairedDeviceMetadata(device.id, patch, undefined, {
+          expectedPairing: { publicKey: devicePublicKey, createdAtMs, approvedAtMs },
+          assertCurrent: profileLifecycle.assertCurrent,
+        });
       },
-      (error) => {
-        logGateway.warn(`GitHub identity sync failed conn=${connId}: ${formatForLog(error)}`);
-      },
+      (error) =>
+        logGateway.warn(`device metadata refresh failed conn=${connId}: ${formatForLog(error)}`),
     );
   }
 
-  const tailscaleProfilePic = authResult.tailscaleIdentity?.profilePic;
-  const tailscaleProfileId = nextClient.authenticatedUserProfile?.profileId;
-  if (
-    !nextClient.authenticatedGitHubIdentitySync &&
-    tailscaleProfileId &&
-    !nextClient.authenticatedUserProfile?.hasAvatar &&
-    tailscaleProfilePic
-  ) {
-    runDetachedConnectWork(
-      async () => {
-        const updated = await adoptTailscaleProfileAvatar(tailscaleProfileId, tailscaleProfilePic);
-        if (!updated.avatarMime) {
-          return;
-        }
-        await profileLifecycle.attach(updated.id, updated.updatedAt, prepareLocalUserIngress);
-      },
-      (error) =>
-        logGateway.warn(`Tailscale avatar adoption failed conn=${connId}: ${formatForLog(error)}`),
-    );
-  }
+  refreshGatewayConnectProfile({
+    context,
+    authResult,
+    client: nextClient,
+    lifecycle: profileLifecycle,
+    prepareIngress: prepareLocalUserIngress,
+  });
 }

@@ -1,9 +1,13 @@
 import type { IncomingMessage } from "node:http";
 import { afterEach, beforeEach, onTestFinished, vi, type Mock } from "vitest";
 import type { WebSocket } from "ws";
+import type { ConnectParams } from "../../../../packages/gateway-protocol/src/index.js";
 import { PROTOCOL_VERSION } from "../../../../packages/gateway-protocol/src/version.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { prepareSystemAgentRunAdmission } from "../../../agents/admitted-run-context.js";
+import { generateStoredDeviceIdentity } from "../../../infra/device-identity-store.js";
+import { publicKeyRawBase64UrlFromPem, signDevicePayload } from "../../../infra/device-identity.js";
+import type { PairedDevice } from "../../../infra/device-pairing.types.js";
 import {
   onInternalDiagnosticEvent,
   type DiagnosticSecurityEvent,
@@ -12,6 +16,7 @@ import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.j
 import { mintAgentRuntimeIdentityToken } from "../../agent-runtime-identity-token.js";
 import type { AuthRateLimiter } from "../../auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "../../auth.js";
+import { buildDeviceAuthPayload } from "../../device-auth.js";
 import type { HealthSummary } from "../../health/types.js";
 import type { GatewayAttributedIngress } from "../../ingress-attribution.js";
 import { getGatewayLocalUserIngress } from "../../local-user-ingress.js";
@@ -109,6 +114,117 @@ export function useGatewayTestConfig<T>(mock: Mock<() => T>, implementation: () 
     }
   });
   mock.mockImplementation(implementation);
+}
+
+export function createTrustedProxyUserConnector(
+  loadConfig: Mock<
+    () => {
+      gateway: { auth: { mode: string }; controlUi: { allowedOrigins: string[] } };
+    }
+  >,
+) {
+  return (
+    connId: string,
+    clientOverrides: Record<string, unknown> = {},
+    scopes: string[] = [],
+    handoffAuthenticatedReceive?: () => void,
+    device?: ConnectParams["device"],
+  ) => {
+    loadConfig.mockImplementation(() => ({
+      gateway: {
+        auth: {
+          mode: "trusted-proxy",
+          identityScopes: { "alice@example.com": scopes },
+          trustedProxy: {
+            userHeader: "x-forwarded-user",
+            requiredHeaders: ["x-forwarded-proto"],
+          },
+        },
+        trustedProxies: ["10.0.0.1"],
+        controlUi: { allowedOrigins: ["http://127.0.0.1:19001"] },
+      },
+    }));
+    const harness = attachGatewayHarness({
+      connId,
+      handoffAuthenticatedReceive,
+      connectNonce: `nonce-${connId}`,
+      requestHost: "gateway.example.com:18789",
+      requestOrigin: "http://127.0.0.1:19001",
+      remoteAddr: "10.0.0.1",
+      resolvedAuth: {
+        mode: "trusted-proxy",
+        allowTailscale: false,
+        trustedProxy: {
+          userHeader: "x-forwarded-user",
+          requiredHeaders: ["x-forwarded-proto"],
+        },
+      },
+      headers: {
+        "x-forwarded-for": "203.0.113.10",
+        "x-forwarded-user": "alice@example.com",
+        "x-forwarded-proto": "https",
+      },
+      ingressAttribution: {
+        kind: "trusted-proxy",
+        clientIp: "203.0.113.10",
+        rateLimit: { subject: { key: "203.0.113.10" }, resetOnSuccess: true },
+      },
+    });
+    harness.sendConnect(`connect-${connId}`, {
+      minProtocol: PROTOCOL_VERSION,
+      maxProtocol: PROTOCOL_VERSION,
+      client: {
+        id: "openclaw-control-ui",
+        version: "dev",
+        platform: "test",
+        mode: "ui",
+        ...clientOverrides,
+      },
+      role: "operator",
+      scopes,
+      caps: [],
+      ...(device ? { device } : {}),
+    });
+    return harness;
+  };
+}
+
+export function createPairedGatewayConnectDevice(connId: string) {
+  const identity = generateStoredDeviceIdentity();
+  const publicKey = publicKeyRawBase64UrlFromPem(identity.publicKeyPem);
+  const signedAt = Date.now();
+  const nonce = `nonce-${connId}`;
+  const device: NonNullable<ConnectParams["device"]> = {
+    id: identity.deviceId,
+    publicKey,
+    signedAt,
+    nonce,
+    signature: signDevicePayload(
+      identity.privateKeyPem,
+      buildDeviceAuthPayload({
+        deviceId: identity.deviceId,
+        clientId: "openclaw-control-ui",
+        clientMode: "ui",
+        role: "operator",
+        scopes: [],
+        signedAtMs: signedAt,
+        nonce,
+      }),
+    ),
+  };
+  const pairing: PairedDevice = {
+    deviceId: identity.deviceId,
+    publicKey,
+    platform: "test",
+    role: "operator",
+    scopes: [],
+    createdAtMs: 1,
+    approvedAtMs: 1,
+    tokens: {
+      operator: { token: "synthetic-paired-token", role: "operator", scopes: [], createdAtMs: 1 },
+    },
+  };
+  return { device, pairing };
 }
 
 export function createHealthSummary(): HealthSummary {

@@ -23,7 +23,6 @@ import {
   listDevicePairing,
   listEffectivePairedDeviceRoles,
   requestDevicePairing,
-  updatePairedDeviceMetadata,
 } from "../../../infra/device-pairing.js";
 import { roleScopesAllow } from "../../../shared/operator-scope-compat.js";
 import { isBrowserCopilotClient } from "../../../utils/message-channel.js";
@@ -128,6 +127,7 @@ export async function authorizeGatewayConnectDevice(
   let hasServerApprovedDeviceTokenBaseline = false;
   let pairedClientId: string | undefined;
   let pairedBrowserOrigin: string | undefined;
+  let pairedDeviceMetadata: DeviceAuthorizedGatewayConnect["pairedDeviceMetadata"];
   // Canonicalize protocol-v3 desktop aliases before pairing persistence and comparison.
   connectParams.client = normalizeNodeHostCompatibilityMetadata(connectParams.client);
   const browserCopilotOrigin = isBrowserCopilotClient(connectParams.client)
@@ -492,7 +492,11 @@ export async function authorizeGatewayConnectDevice(
         pairedClientId = paired.clientId;
         pairedBrowserOrigin = paired.browserOrigin;
         hasServerApprovedDeviceTokenBaseline = true;
-        await updatePairedDeviceMetadata(device.id, clientAccessMetadata);
+        pairedDeviceMetadata = {
+          createdAtMs: paired.createdAtMs,
+          approvedAtMs: paired.approvedAtMs,
+          patch: clientAccessMetadata,
+        };
       } else if (
         controlUiPairingKind === "auth-none" ||
         (skipLocalBackendSelfPairing && authMethod !== "device-token")
@@ -526,6 +530,13 @@ export async function authorizeGatewayConnectDevice(
         return undefined;
       }
       handoffBootstrapProfile = existingDevice.handoffBootstrapProfile;
+      if (existingDevice.metadata) {
+        pairedDeviceMetadata = {
+          createdAtMs: paired.createdAtMs,
+          approvedAtMs: paired.approvedAtMs,
+          patch: existingDevice.metadata,
+        };
+      }
     }
   }
 
@@ -558,6 +569,7 @@ export async function authorizeGatewayConnectDevice(
     ...state,
     scopes,
     handoffBootstrapProfile,
+    pairedDeviceMetadata,
     deviceToken,
     bootstrapDeviceTokens,
   };

@@ -22,6 +22,7 @@ import {
   listDevicePairing,
   listDevicePairingReadOnly,
   removePairedDevice,
+  updatePairedDeviceMetadata,
 } from "./device-pairing.js";
 
 let baseDir: string;
@@ -139,11 +140,12 @@ test("keeps inspection snapshot bytes without republishing revoked node authorit
   );
 });
 
-test.each(["worker commit", "external commit"] as const)(
-  "does not restore revoked node authority from a read delayed past a newer %s",
+test.each(["worker commit", "external commit", "observation commit"] as const)(
+  "does not republish a pairing read delayed past a newer %s",
   async (commit) => {
     await listDevicePairing(baseDir);
-    expect(getPublishedPairedDeviceBinding("node", baseDir)).not.toBeNull();
+    const previousBinding = getPublishedPairedDeviceBinding("node", baseDir);
+    expect(previousBinding).not.toBeNull();
     const releaseRead = createDeferredCore();
     const releaseMutation = createDeferredCore();
     const mutationQueued = createDeferredCore();
@@ -173,7 +175,11 @@ test.each(["worker commit", "external commit"] as const)(
     try {
       await withDevicePairingLock(async () => {
         const mutation =
-          commit === "worker commit" ? removePairedDevice("node", baseDir) : undefined;
+          commit === "worker commit"
+            ? removePairedDevice("node", baseDir)
+            : commit === "observation commit"
+              ? updatePairedDeviceMetadata("node", { displayName: "Reconnected node" }, baseDir)
+              : undefined;
         if (mutation) {
           await Promise.race([mutationQueued.promise, mutation]);
         }
@@ -198,14 +204,21 @@ test.each(["worker commit", "external commit"] as const)(
             }
             expect(await getPairedDevice("node", baseDir)).toBeNull();
           }
-          expect(getPublishedPairedDeviceBinding("node", baseDir)).toBeNull();
+          const expected = await getPairedDevice("node", baseDir);
+          if (commit === "observation commit") {
+            expect(expected?.displayName).toBe("Reconnected node");
+          } else {
+            expect(expected).toBeNull();
+          }
+          const expectedBinding = commit === "observation commit" ? previousBinding : null;
+          expect(getPublishedPairedDeviceBinding("node", baseDir)).toEqual(expectedBinding);
           releaseRead.resolve();
           const settled = await delayed;
           // An obsolete read may refuse or reread; it must never return the old authority.
           if ("device" in settled) {
-            expect(settled.device).toBeNull();
+            expect(settled.device).toEqual(expected);
           }
-          expect(getPublishedPairedDeviceBinding("node", baseDir)).toBeNull();
+          expect(getPublishedPairedDeviceBinding("node", baseDir)).toEqual(expectedBinding);
         } finally {
           releaseRead.resolve();
           releaseMutation.resolve();

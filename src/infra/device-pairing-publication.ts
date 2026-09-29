@@ -17,7 +17,7 @@ type Publication = {
   epoch: number;
   revision?: string;
   blocked: boolean;
-  mutation?: object;
+  mutation?: { blocksReads: boolean };
   complete: boolean;
   rows: Map<string, DevicePairingBinding | null>;
   pending: Set<() => void>;
@@ -88,9 +88,17 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
       captured.rows.set(row.deviceId, row.binding ? { ...row.binding } : null);
     }
   };
+  const requiresWriterAdmission = () => {
+    for (const service of captured.pending) {
+      service();
+    }
+    return Boolean(captured.mutation?.blocksReads);
+  };
+  const isCurrent = () =>
+    !requiresWriterAdmission() && publications.get(path) === captured && captured.epoch === epoch;
   return {
-    isCurrent: () =>
-      publications.get(path) === captured && captured.epoch === epoch && !captured.mutation,
+    isCurrent,
+    requiresWriterAdmission,
     completeRevision: () =>
       !captured.blocked && captured.complete ? captured.revision : undefined,
     fail() {
@@ -103,7 +111,7 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
       rows: readonly DevicePairingBindingFact[] | undefined,
       complete = false,
     ) {
-      if (publications.get(path) !== captured || captured.epoch !== epoch || captured.mutation) {
+      if (!isCurrent()) {
         return false;
       }
       if (!rows) {
@@ -126,10 +134,16 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
       captured.blocked = false;
       return true;
     },
-    beginMutation() {
-      captured.epoch++;
-      captured.blocked = true;
-      const mutation = {};
+    beginMutation(changesAuthority: boolean) {
+      const mutation = {
+        blocksReads: changesAuthority || captured.blocked || Boolean(captured.mutation),
+      };
+      // Observation writes retain committed authority while queued. An unknown
+      // predecessor or an authorizing mutation must still fence all readers.
+      if (mutation.blocksReads) {
+        captured.epoch++;
+        captured.blocked = true;
+      }
       captured.mutation = mutation;
       return {
         publish(receipt: DevicePairingCommitReceipt) {
@@ -148,8 +162,13 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
           captured.epoch++;
         },
         finish(settled: boolean) {
-          if (settled && captured.mutation === mutation) {
-            captured.mutation = undefined;
+          if (captured.mutation === mutation) {
+            if (settled) {
+              captured.mutation = undefined;
+            } else {
+              mutation.blocksReads = true;
+              captured.blocked = true;
+            }
             captured.epoch++;
           }
         },

@@ -34,28 +34,30 @@ async function readPairing(command: DevicePairingReadCommand, baseDir?: string, 
     if (snapshot) {
       return { reply };
     }
-    if (!publication.isCurrent()) {
-      return undefined;
-    }
-    if (reply?.ok && "bindings" in reply) {
-      publication.publish(reply.revision, reply.bindings, reply.type === "devicePairing.list");
-    } else if (!reply) {
-      publication.publish("missing", [], true);
-    }
-    return { reply };
+    const published =
+      reply?.ok && "bindings" in reply
+        ? publication.publish(reply.revision, reply.bindings, reply.type === "devicePairing.list")
+        : !reply
+          ? publication.publish("missing", [], true)
+          : publication.isCurrent();
+    return published ? { reply } : undefined;
   };
   const observed = await read();
   if (observed) {
     return observed.reply;
   }
-  // Only a superseded read joins writer admission; unrelated queued history must not block auth.
-  return withDevicePairingLock(async () => {
+  const refresh = async () => {
     const refreshed = await read();
     if (!refreshed) {
       throw new Error("Device pairing read publication was replaced");
     }
     return refreshed.reply;
-  });
+  };
+  // A committed observation only invalidates the old snapshot; its delayed
+  // worker reply must not hold the fresh read behind the writer queue.
+  return captureDevicePairingPublication(context.admission).requiresWriterAdmission()
+    ? withDevicePairingLock(refresh)
+    : refresh();
 }
 
 /** Readers never create, migrate, or synchronously open the shared database. */

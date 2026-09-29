@@ -40,6 +40,11 @@ export type PairedDeviceMetadataPatch = Pick<
   | "lastSeenReason"
 >;
 
+export type PairedDeviceMetadataBinding = Pick<
+  PairedDevice,
+  "publicKey" | "createdAtMs" | "approvedAtMs"
+>;
+
 /** Deny reasons returned when rotating an existing paired-device token. */
 export type RotateDeviceTokenDenyReason =
   | "unknown-device-or-role"

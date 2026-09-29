@@ -7,6 +7,7 @@ import {
   ensureCanonicalUserProfileForEmail,
   ensureCanonicalUserProfileForTailscaleIdentity,
 } from "../../../state/user-profile-writes.js";
+import { adoptTailscaleProfileAvatar } from "../../../state/user-profiles.js";
 import type { GatewayAuthResult } from "../../auth.js";
 import { prepareGatewayRecipientProfile } from "../../expected-profile.js";
 import type { createAuthenticatedGitHubIdentitySync } from "../../github-user-identity.js";
@@ -85,6 +86,66 @@ export function createGatewayConnectProfileLifecycle(
       handler.buildRequestContext().refreshConnectedUserProfile?.({ id, ...display });
     },
   };
+}
+
+/** Optional identity and avatar refreshes retain the admitted connection's lifecycle. */
+export function refreshGatewayConnectProfile(params: {
+  context: GatewayConnectPhaseContext;
+  authResult: GatewayAuthResult;
+  client: GatewayWsClient;
+  lifecycle: ReturnType<typeof createGatewayConnectProfileLifecycle>;
+  prepareIngress: (
+    profile: PreparedConnectProfile["profile"],
+  ) => ReturnType<typeof prepareGatewayLocalUserIngress>;
+}): void {
+  const { context, authResult, client, lifecycle, prepareIngress } = params;
+  const { runDetachedConnectWork } = context;
+  const { logGateway, connId } = context.handler;
+  if (client.authenticatedGitHubIdentitySync) {
+    runDetachedConnectWork(
+      async () => {
+        const result = await client.authenticatedGitHubIdentitySync!();
+        const profile = client.authenticatedUserProfile;
+        const profilePic = authResult.tailscaleIdentity?.profilePic;
+        if (!profile?.hasAvatar && profilePic) {
+          try {
+            const updated = await adoptTailscaleProfileAvatar(result.profileId, profilePic);
+            if (updated.avatarMime) {
+              await lifecycle.attach(updated.id, updated.updatedAt, prepareIngress);
+            }
+          } catch (error) {
+            logGateway.warn(
+              `Tailscale avatar adoption failed conn=${connId}: ${formatForLog(error)}`,
+            );
+          }
+        }
+      },
+      (error) => {
+        logGateway.warn(`GitHub identity sync failed conn=${connId}: ${formatForLog(error)}`);
+      },
+    );
+  }
+
+  const tailscaleProfilePic = authResult.tailscaleIdentity?.profilePic;
+  const tailscaleProfileId = client.authenticatedUserProfile?.profileId;
+  if (
+    !client.authenticatedGitHubIdentitySync &&
+    tailscaleProfileId &&
+    !client.authenticatedUserProfile?.hasAvatar &&
+    tailscaleProfilePic
+  ) {
+    runDetachedConnectWork(
+      async () => {
+        const updated = await adoptTailscaleProfileAvatar(tailscaleProfileId, tailscaleProfilePic);
+        if (!updated.avatarMime) {
+          return;
+        }
+        await lifecycle.attach(updated.id, updated.updatedAt, prepareIngress);
+      },
+      (error) =>
+        logGateway.warn(`Tailscale avatar adoption failed conn=${connId}: ${formatForLog(error)}`),
+    );
+  }
 }
 
 async function resolveAuthenticatedProfile(

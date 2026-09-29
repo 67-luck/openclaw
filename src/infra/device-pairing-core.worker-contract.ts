@@ -4,6 +4,7 @@ import type {
   DevicePairingAccessMetadata,
   DevicePairingApprovalOptions,
   NodePairingGeneration,
+  PairedDeviceMetadataBinding,
   PairedDeviceMetadataPatch,
   PrunedSupersededPairedDevice,
   RequestDevicePairingResult,
@@ -51,7 +52,11 @@ export type DevicePairingCoreWorkerOperations = {
     output: { deviceId: string; role: string; removedDevice: boolean } | null;
   };
   "devicePairing.updateMetadata": {
-    input: { deviceId: string; patch: Partial<PairedDeviceMetadataPatch> };
+    input: {
+      deviceId: string;
+      patch: Partial<PairedDeviceMetadataPatch>;
+      expectedPairing?: PairedDeviceMetadataBinding;
+    };
     output: boolean;
   };
   "devicePairing.updatePresence": {
