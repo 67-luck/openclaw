@@ -273,6 +273,7 @@ export function compareContainmentState(
   let updateRows = 0;
   let recoveryRows = 0;
   let leaseRenewals = 0;
+  const runIdentity = runId === undefined ? undefined : digest(runId);
   const databases = before.map((prior, index) => {
     const current = after[index]!;
     assert.equal(current.present, prior.present, "Containment database presence changed");
@@ -317,6 +318,12 @@ export function compareContainmentState(
           if (table.name === "update_runs") {
             updateRows++;
           } else {
+            const recovery = current.recoveries.find((entry) => entry.identity === runIdentity);
+            assert.equal(
+              recovery?.packageActivationEffects,
+              0,
+              "Recovery recorded package activation before containment",
+            );
             recoveryRows++;
           }
         } else if (table.name === "state_leases") {

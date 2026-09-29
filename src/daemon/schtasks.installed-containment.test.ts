@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -17,6 +17,18 @@ import {
 } from "./schtasks.installed-containment.test-support.js";
 import type { InstalledTask } from "./schtasks.installed-diagnostics.test-support.js";
 import * as nativeObservations from "./schtasks.integration-observation.test-support.js";
+
+const processCapture = vi.hoisted(() => vi.fn());
+vi.mock("node:child_process", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...original,
+    spawnSync: (...args: Parameters<typeof original.spawnSync>) =>
+      processCapture.getMockImplementation()
+        ? processCapture(...args)
+        : original.spawnSync(...args),
+  };
+});
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const refusalLine =
@@ -165,6 +177,52 @@ it("compares all logical data while admitting only the command row and exact lea
         );
       }
     }
+    // These are synthetic retained bytes, never a live claim or restoration grant.
+    const recovery = {
+      runId,
+      transactionId: randomUUID(),
+      revision: 0,
+      claimId: randomUUID(),
+      claimKind: "initial",
+      handoff: null,
+      from: { root, nodePath: process.execPath, version: "2026.9.4", buildId: null },
+      to: { root, nodePath: process.execPath, version: "2026.9.6", buildId: null },
+      createdAtMs: 1,
+      updatedAtMs: 1,
+      effects: [],
+      restore: null,
+      verification: null,
+      primaryFailure: null,
+    };
+    const putRecovery = db.prepare(
+      "INSERT INTO config_machine_state VALUES(?,?,1) ON CONFLICT(state_key) DO UPDATE SET value_json=excluded.value_json",
+    );
+    putRecovery.run(`update.recovery.${runId}`, JSON.stringify(recovery));
+    const preparedRecovery = await capture();
+    expect(compareContainmentState([before], [preparedRecovery], runId)).toMatchObject({
+      recoveryRows: 1,
+    });
+    putRecovery.run(
+      `update.recovery.${runId}`,
+      JSON.stringify({
+        ...recovery,
+        effects: [
+          {
+            effectId: randomUUID(),
+            kind: "package-activation",
+            resourceId: root,
+            runtime: "candidate",
+            state: "intent",
+            observedIdentity: null,
+          },
+        ],
+      }),
+    );
+    const activationIntent = await capture();
+    expect(activationIntent.recoveries).toMatchObject([{ packageActivationEffects: 1 }]);
+    expect(() => compareContainmentState([before], [activationIntent], runId)).toThrow(
+      "Recovery recorded package activation before containment",
+    );
     await expect(
       captureContainmentDatabase(filename, "bounded", true, { rows: 100_000 }),
     ).rejects.toThrow("Containment row count exceeds capture bound");
@@ -279,6 +337,11 @@ it.each([
   "unexpected-result",
   "unjoined",
   "qualified-refusal",
+  "overloaded-peer-tree",
+  "missing-peer-process",
+  "foreign-peer-process",
+  "null-peer-creation",
+  "changed-peer-process",
 ] as const)("retains completed observations when containment encounters %s", async (mode) => {
   const root = tempDirs.make("installed-containment-retention-");
   const filename = path.join(root, "state.sqlite");
@@ -345,19 +408,53 @@ it.each([
     logonType: 3,
     runLevel: 0,
   });
-  const processes = vi
-    .spyOn(nativeObservations, "readRelatedProcessDiagnostics")
-    .mockImplementation(([profile]) => ({
-      ok: true,
-      error: null,
-      truncated: false,
-      processes: [
-        {
-          ProcessId: profile === "selected" ? 101 : 202,
-          CreationDate: "2026-09-28T00:00:00.000Z",
-        },
-      ],
-    }));
+  // Native rows feed the real relation expansion and display cap, including an overfull peer tree.
+  processCapture.mockImplementation(() => ({
+    status: 0,
+    signal: null,
+    stderr: "",
+    stdout: JSON.stringify([
+      ...(mode === "overloaded-peer-tree"
+        ? Array.from({ length: 40 }, (_, index) => ({
+            ProcessId: 1000 + index,
+            ParentProcessId: 202,
+            CommandLine: "synthetic-private-descendant-argument",
+            CreationDate: "2026-09-28T00:00:01.0001234Z",
+          }))
+        : []),
+      { ProcessId: 101, CommandLine: "selected", CreationDate: "2026-09-28T00:00:00.0001234Z" },
+      ...(mode === "missing-peer-process"
+        ? []
+        : [
+            {
+              ProcessId: 202,
+              CommandLine: mode === "foreign-peer-process" ? "unrelated" : "peer",
+              CreationDate:
+                mode === "null-peer-creation"
+                  ? null
+                  : updateAttempted && mode === "changed-peer-process"
+                    ? "2026-09-28T00:00:00.0001235Z"
+                    : "2026-09-28T00:00:00.0001234Z",
+            },
+          ]),
+    ]),
+  }));
+  if (mode === "overloaded-peer-tree") {
+    const broad = nativeObservations.readRelatedProcessDiagnostics(["peer"]);
+    expect(broad.ok).toBe(true);
+    expect(broad.truncated).toBe(true);
+    expect(broad.processes).toHaveLength(32);
+    expect(broad.processes.some((entry) => entry.ProcessId === 202)).toBe(false);
+    for (const exactPid of [0, -1, 1.5, Number.NaN, 0x1_0000_0000]) {
+      expect(
+        nativeObservations.readRelatedProcessDiagnostics(["peer"], { exactPid }),
+      ).toMatchObject({
+        ok: false,
+        processes: [],
+        truncated: false,
+      });
+    }
+  }
   // Deliver real snapshot facts; inject only the asynchronous capture failure boundary.
   const state = vi
     .spyOn(stateObservations, "captureContainmentState")
@@ -427,16 +524,35 @@ it.each([
     failure = error;
   } finally {
     state.mockRestore();
-    processes.mockRestore();
+    processCapture.mockReset();
     principal.mockRestore();
     xml.mockRestore();
   }
-  if (mode === "qualified-refusal") {
+  if (
+    mode === "missing-peer-process" ||
+    mode === "foreign-peer-process" ||
+    mode === "null-peer-creation"
+  ) {
+    expect(updateAttempted).toBe(false);
+    expect(commands).toHaveLength(0);
+    expect(failure).toBeInstanceOf(Error);
+    expect(observations.containment).toMatchObject({
+      qualified: false,
+      phase: "capturing-before",
+      before: { selected: { pid: 101 } },
+      stateBefore: {},
+    });
+    return;
+  }
+  if (mode === "qualified-refusal" || mode === "overloaded-peer-tree") {
     expect(failure).toBe(updateFailure);
     expect(observations.containment).toMatchObject({
       qualified: true,
       phase: "refused-before-activation",
+      before: { peer: { pid: 202, creationDate: "2026-09-28T00:00:00.0001234Z" } },
+      after: { peer: { pid: 202, creationDate: "2026-09-28T00:00:00.0001234Z" } },
     });
+    expect(JSON.stringify(observations)).not.toContain("synthetic-private-descendant-argument");
     return;
   }
   expect(failure).toBeInstanceOf(AggregateError);
@@ -467,6 +583,11 @@ it.each([
         },
       },
     });
+    if (mode === "changed-peer-process") {
+      expect(observations.containment).toMatchObject({
+        after: { peer: { pid: 202, creationDate: "2026-09-28T00:00:00.0001235Z" } },
+      });
+    }
     if (mode === "native-mismatch" || mode === "unexpected-result") {
       expect(observations.containment).toMatchObject({ after: { peer: { pid: 202 } } });
     }

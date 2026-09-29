@@ -99,9 +99,10 @@ async function captureTask(task: InstalledTask, pid: number) {
   const principal = readTaskPrincipal(task.taskName);
   assert.equal(principal.enabled, true);
   assert.equal(principal.taskState, 4);
-  const capture = readRelatedProcessDiagnostics([task.profile]);
+  const capture = readRelatedProcessDiagnostics([task.profile], { exactPid: pid });
   assert.equal(capture.ok, true, "Native process inspection failed");
   assert.equal(capture.truncated, false);
+  assert.equal(capture.processes.length, 1, "Native process identity is missing or ambiguous");
   const process = capture.processes.find((entry) => entry.ProcessId === pid);
   assert.ok(process && typeof process.CreationDate === "string" && process.CreationDate.length > 0);
   return {

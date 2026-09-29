@@ -153,12 +153,23 @@ export function readTaskPrincipal(taskName: string): ScheduledTaskPrincipal {
   };
 }
 
-export function readRelatedProcessDiagnostics(needles: string[]): {
+export function readRelatedProcessDiagnostics(
+  needles: string[],
+  selection?: { exactPid: number },
+): {
   error: string | null;
   ok: boolean;
   processes: WindowsProcessDiagnostic[];
   truncated: boolean;
 } {
+  if (
+    selection &&
+    (!Number.isInteger(selection.exactPid) ||
+      selection.exactPid <= 0 ||
+      selection.exactPid > 0xffff_ffff)
+  ) {
+    return { error: "Invalid exact process selector", ok: false, processes: [], truncated: false };
+  }
   const script = [
     "$ErrorActionPreference='Stop'",
     "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine,UserModeTime,KernelModeTime,ReadOperationCount,WriteOperationCount,@{Name='CreationDate';Expression={if ($_.CreationDate) {$_.CreationDate.ToUniversalTime().ToString('o')}}} | ConvertTo-Json -Compress",
@@ -230,11 +241,13 @@ export function readRelatedProcessDiagnostics(needles: string[]): {
       .map((entry) => entry.ParentProcessId)
       .filter((pid): pid is number => typeof pid === "number"),
   );
+  // An exact identity observation must not inherit the unrelated tree's display truncation.
   const processes = entries.filter(
     (entry) =>
-      matching.includes(entry) ||
-      (typeof entry.ProcessId === "number" &&
-        (matchingPids.has(entry.ProcessId) || parentPids.has(entry.ProcessId))),
+      (selection === undefined || entry.ProcessId === selection.exactPid) &&
+      (matching.includes(entry) ||
+        (typeof entry.ProcessId === "number" &&
+          (matchingPids.has(entry.ProcessId) || parentPids.has(entry.ProcessId)))),
   );
   return {
     error: null,
