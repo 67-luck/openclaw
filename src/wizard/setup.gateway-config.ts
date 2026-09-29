@@ -68,7 +68,9 @@ function validateGatewayPortInput(value: unknown): string | undefined {
 /** Shared network/origin defaults; callers own consent, persistence, and activation. */
 export async function configureGatewayNetworkForSetup(
   config: OpenClawConfig,
-  settings: Pick<GatewayWizardSettings, "port" | "bind" | "customBindHost" | "tailscaleMode">,
+  settings: Pick<GatewayWizardSettings, "bind" | "customBindHost" | "tailscaleMode"> & {
+    port?: number;
+  },
   tailscaleBin?: string | null,
 ): Promise<OpenClawConfig> {
   const { port, bind, customBindHost, tailscaleMode } = settings;
@@ -76,7 +78,7 @@ export async function configureGatewayNetworkForSetup(
     ...config,
     gateway: {
       ...config.gateway,
-      port,
+      ...(port !== undefined ? { port } : {}),
       bind,
       ...(bind === "custom" && customBindHost ? { customBindHost } : {}),
       tailscale: {

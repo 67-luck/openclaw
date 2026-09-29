@@ -1,11 +1,9 @@
 // Interactive phone access recovery. Network defaults and writes remain setup-owned.
 import os from "node:os";
-import { probeGatewayReachable } from "../commands/onboard-helpers.js";
 import { readConfigFileSnapshotForWrite, resolveGatewayPort } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createConfiguredGatewayLocalProbe } from "../gateway/local-http-probe.js";
 import { resolveGatewayProbeAuthSafeWithSecretInputs } from "../gateway/probe-auth.js";
-import { findTailscaleBinary } from "../infra/tailscale.js";
 import {
   resolveConfiguredPairingPublicUrl,
   resolvePairingGatewayUrl,
@@ -72,44 +70,24 @@ export async function setupQrPhoneAccess(): Promise<OpenClawConfig> {
         label: "Same Wi-Fi or local network",
         hint: "Use only on a network you trust",
       },
-      {
-        value: "serve",
-        label: "Tailscale",
-        hint: "Encrypted access; Tailscale must be connected on both devices",
-      },
       { value: "cancel", label: "Not now", hint: "Leave the Gateway unchanged" },
     ],
   });
-  if (connection === "cancel") {
+  if (connection !== "lan") {
     throw new WizardCancelledError("Phone setup cancelled. Nothing changed.");
   }
-  const tailscaleBin = connection === "serve" ? await findTailscaleBinary() : null;
-  if (connection === "serve" && !tailscaleBin) {
-    throw new Error(
-      "Install and connect Tailscale on this computer and your phone, then run openclaw qr again. Nothing changed.",
-    );
-  }
-  const nextConfig = await configureGatewayNetworkForSetup(
-    config,
-    {
-      port: resolveGatewayPort(snapshot.config),
-      bind: connection === "lan" ? "lan" : "loopback",
-      tailscaleMode: connection === "serve" ? "serve" : "off",
-    },
-    tailscaleBin,
-  );
+  const nextConfig = await configureGatewayNetworkForSetup(config, {
+    bind: "lan",
+    tailscaleMode: "off",
+  });
   const planned = await resolveUrl(nextConfig);
   if (!planned.url) {
     throw new Error(
-      connection === "lan"
-        ? "No local network address was found. Connect this computer to the same Wi-Fi or network as your phone, then run openclaw qr again. Nothing changed."
-        : "Tailscale is not ready. Connect Tailscale on both devices and enable MagicDNS and HTTPS in Tailscale, then run openclaw qr again. Nothing changed.",
+      "No local network address was found. Connect this computer to the same Wi-Fi or network as your phone, then run openclaw qr again. Nothing changed.",
     );
   }
   await prompter.note(
-    connection === "lan"
-      ? "This allows connections to your Gateway on all network interfaces, not just this computer. Use a trusted network and keep your firewall enabled. Authentication stays enabled. Without TLS, pairing is unencrypted and grants limited access."
-      : "This enables encrypted Tailscale Serve access for devices allowed by your tailnet policy. It does not publish your Gateway to the public internet. Your existing Gateway authentication is preserved.",
+    "This allows connections to your Gateway on all network interfaces, not just this computer. Use a trusted network and keep your firewall enabled. Authentication stays enabled. Without TLS, pairing is unencrypted and grants limited access.",
     "Phone access",
   );
   if (
@@ -142,23 +120,14 @@ export async function setupQrPhoneAccess(): Promise<OpenClawConfig> {
   // the shared Gateway credential across a plaintext LAN during this check.
   const endpoint = new URL(planned.url);
   const reachable =
-    connection === "serve"
-      ? (
-          await probeGatewayReachable({
-            url: planned.url,
-            config: committed.nextConfig,
-            ...probeAuth.auth,
-            timeoutMs: 10_000,
-          })
-        ).ok
-      : (
-          await createConfiguredGatewayLocalProbe(committed.nextConfig).requestHttp({
-            host: endpoint.hostname.replace(/^\[|\]$/g, ""),
-            port: resolveGatewayPort(committed.nextConfig),
-            pathname: "/readyz",
-            timeoutMs: 10_000,
-          })
-        )?.statusCode === 200;
+    (
+      await createConfiguredGatewayLocalProbe(committed.nextConfig).requestHttp({
+        host: endpoint.hostname.replace(/^\[|\]$/g, ""),
+        port: resolveGatewayPort(committed.nextConfig),
+        pathname: "/readyz",
+        timeoutMs: 10_000,
+      })
+    )?.statusCode === 200;
   if (!reachable) {
     throw new Error(
       "Phone access settings were saved, but the phone address is not ready yet. Run openclaw gateway status, then openclaw qr after the Gateway is ready. No setup code was issued.",

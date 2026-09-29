@@ -11,10 +11,8 @@ const mocks = vi.hoisted(() => ({
   confirm: vi.fn(),
   note: vi.fn(),
   restart: vi.fn(),
-  findTailscale: vi.fn(),
   run: vi.fn(),
   httpProbe: vi.fn(),
-  probeGateway: vi.fn(),
   probeAuth: vi.fn(),
 }));
 vi.mock("../config/config.js", async (importOriginal) => ({
@@ -26,15 +24,10 @@ vi.mock("../wizard/clack-prompter.js", () => ({
   createClackPrompter: () => ({ select: mocks.select, confirm: mocks.confirm, note: mocks.note }),
 }));
 vi.mock("./daemon-cli/lifecycle.js", () => ({ runDaemonRestart: mocks.restart }));
-vi.mock("../infra/tailscale.js", () => ({
-  findTailscaleBinary: mocks.findTailscale,
-  getTailnetHostname: async () => "gateway.tailnet.ts.net",
-}));
 vi.mock("../process/exec.js", () => ({ runCommandWithTimeout: mocks.run }));
 vi.mock("../gateway/local-http-probe.js", () => ({
   createConfiguredGatewayLocalProbe: () => ({ requestHttp: mocks.httpProbe }),
 }));
-vi.mock("../commands/onboard-helpers.js", () => ({ probeGatewayReachable: mocks.probeGateway }));
 vi.mock("../gateway/probe-auth.js", () => ({
   resolveGatewayProbeAuthSafeWithSecretInputs: mocks.probeAuth,
 }));
@@ -68,9 +61,7 @@ describe("QR phone setup", () => {
     mocks.confirm.mockResolvedValue(true);
     mocks.restart.mockResolvedValue(true);
     mocks.httpProbe.mockResolvedValue({ statusCode: 200 });
-    mocks.probeGateway.mockResolvedValue({ ok: true });
     mocks.probeAuth.mockResolvedValue({ auth: { token: "resolved-test-token" } });
-    mocks.findTailscale.mockResolvedValue("/fixture/tailscale");
     mocks.run.mockResolvedValue({
       code: 0,
       stdout: JSON.stringify({ Self: { DNSName: "gateway.tailnet.ts.net." } }),
@@ -121,7 +112,6 @@ describe("QR phone setup", () => {
     expect(mocks.httpProbe).toHaveBeenCalledWith(
       expect.objectContaining({ host: "192.168.1.8", port: 18789, pathname: "/readyz" }),
     );
-    expect(mocks.probeGateway).not.toHaveBeenCalled();
     expect(JSON.stringify(mocks.write.mock.calls)).not.toContain("resolved-test-token");
     expect(config.gateway?.bind).toBe("loopback");
   });
@@ -135,23 +125,27 @@ describe("QR phone setup", () => {
     },
   );
 
-  it("keeps Tailscale private and verifies the encrypted advertised endpoint", async () => {
-    mocks.select.mockResolvedValue("serve");
+  it.each([undefined, 18789])("does not persist a CLI port override over %s", async (port) => {
+    if (port === undefined) {
+      delete config.gateway!.port;
+    }
+    vi.stubEnv("OPENCLAW_GATEWAY_PORT", "19999");
     const result = await setupQrPhoneAccess();
-    expect(result.gateway).toMatchObject({
-      bind: "loopback",
-      tailscale: { mode: "serve" },
-      auth: config.gateway?.auth,
-    });
-    expect(result.gateway?.controlUi?.allowedOrigins).toContain("https://gateway.tailnet.ts.net");
-    expect(mocks.note).toHaveBeenCalledWith(
-      expect.stringContaining("does not publish"),
-      "Phone access",
-    );
-    expect(mocks.probeGateway).toHaveBeenCalledWith(
-      expect.objectContaining({ url: "wss://gateway.tailnet.ts.net" }),
-    );
-    expect(mocks.httpProbe).not.toHaveBeenCalled();
+    expect(result.gateway?.port).toBe(port);
+    expect(mocks.httpProbe).toHaveBeenCalledWith(expect.objectContaining({ port: 19999 }));
+    if (port === undefined) {
+      expect(result.gateway).not.toHaveProperty("port");
+    }
+  });
+
+  it("offers LAN without activating or replacing Tailscale routes", async () => {
+    mocks.select.mockResolvedValue("serve");
+    await expect(setupQrPhoneAccess()).rejects.toBeInstanceOf(WizardCancelledError);
+    expect(
+      mocks.select.mock.calls[0]?.[0].options.map((option: { value: string }) => option.value),
+    ).toEqual(["lan", "cancel"]);
+    expect(mocks.write).not.toHaveBeenCalled();
+    expect(mocks.restart).not.toHaveBeenCalled();
   });
 
   it.each(["not-now", "decline", "cancel-selection", "cancel-confirmation"])(
@@ -172,21 +166,6 @@ describe("QR phone setup", () => {
       await expect(setupQrPhoneAccess()).rejects.toBeInstanceOf(WizardCancelledError);
       expect(mocks.write).not.toHaveBeenCalled();
       expect(mocks.restart).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(["missing-binary", "disconnected"])(
-    "does not save unusable Tailscale access (%s)",
-    async (failure) => {
-      mocks.select.mockResolvedValue("serve");
-      if (failure === "missing-binary") {
-        mocks.findTailscale.mockResolvedValue(null);
-      } else {
-        mocks.run.mockResolvedValue({ code: 1, stdout: "" });
-      }
-      await expect(setupQrPhoneAccess()).rejects.toThrow("Tailscale");
-      expect(mocks.write).not.toHaveBeenCalled();
-      expect(mocks.confirm).not.toHaveBeenCalled();
     },
   );
 

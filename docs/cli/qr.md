@@ -34,17 +34,19 @@ openclaw devices approve <requestId>
 ## Connect your phone without editing settings
 
 If the Gateway is only reachable on this computer, run `openclaw qr` in an
-interactive terminal. It offers **Same Wi-Fi or local network** and **Tailscale**,
-checks that an address is available, and explains who will be able to connect.
+interactive terminal. It offers **Same Wi-Fi or local network**, checks that an
+address is available, and explains who will be able to connect.
 Confirm to save the network settings and restart the Gateway. Once the phone
 address is ready, the command continues with the QR code. Existing authentication
-and unrelated settings are preserved.
+and unrelated settings, including the authored port, are preserved. A temporary
+`OPENCLAW_GATEWAY_PORT` override is never saved to the configuration.
 
 Local-network access listens on all interfaces: use a trusted network and keep
 your firewall enabled. Plaintext LAN pairing still grants limited access.
-Tailscale uses private Serve access, not public Funnel, and requires Tailscale on
-both devices. Cancel or select **Not now** before confirmation to leave settings
-and the running Gateway unchanged.
+This recovery does not enable Tailscale Serve or replace existing Tailscale
+routes. Pairing through already configured Tailscale access or an explicit secure
+`--url` remains supported. Cancel or select **Not now** before confirmation to
+leave settings and the running Gateway unchanged.
 
 If saving succeeds but restart or readiness fails, the command explains how to
 finish and does not issue a setup code. The saved settings remain in place; run
