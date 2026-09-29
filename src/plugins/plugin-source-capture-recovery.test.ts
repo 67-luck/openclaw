@@ -56,6 +56,78 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+it("retains a capture without warning on real held-token contention, then reclaims after release", async () => {
+  const stateDir = temp.make("capture-held-token-");
+  const root = path.join(stateDir, "tmp", "plugin-captures", "held-producer");
+  const captures = path.join(root, "captures");
+  const payload = path.join(captures, "source.js");
+  fs.mkdirSync(captures, { recursive: true });
+  fs.writeFileSync(payload, "source held by the original producer");
+  const producer = stagingToken.acquireSqliteStagingToken(root, "create");
+  let held = true;
+  const old = new Date(Date.now() - 2 * hour);
+  fs.utimesSync(root, old, old);
+  const admissions: Array<ReturnType<typeof stagingOwner.startWorkerOwnedSqliteStagingToken>> = [];
+  const start = stagingOwner.startWorkerOwnedSqliteStagingToken;
+  const observing = vi
+    .spyOn(stagingOwner, "startWorkerOwnedSqliteStagingToken")
+    .mockImplementation((...args) => {
+      const admission = start(...args);
+      if (args[0] === root && args[1] === "reclaim") {
+        admissions.push(admission);
+      }
+      return admission;
+    });
+  const warning = vi.spyOn(process, "emitWarning");
+  warning.mockClear();
+  try {
+    // Only stat the held token; closing another descriptor could drop its POSIX lock.
+    await sweepPluginSourceCapturesForTest(stateDir);
+    expect(admissions.length).toBe(1);
+    const blocked = admissions[0];
+    if (!blocked) {
+      throw new Error("Expected an actual reclaim attempt against the held token");
+    }
+    const refusal = blocked.read();
+    expect(refusal.status).toBe("rejected");
+    if (refusal.status !== "rejected") {
+      throw new Error("The original producer did not fence native reclamation");
+    }
+    expect(fs.existsSync(root)).toBe(true);
+    expect(fs.readFileSync(payload, "utf8")).toBe("source held by the original producer");
+    expect(warning.mock.calls.length).toBe(0);
+    expect(sqliteDiagnostics.sqliteErrorCode(refusal.error)).toBe("ERR_SQLITE_ERROR");
+    expect(sqliteDiagnostics.sqliteExtendedResultCode(refusal.error)).toBe(5);
+    await blocked.startClose().result;
+    producer();
+    held = false;
+    fs.utimesSync(root, old, old);
+    await sweepPluginSourceCapturesForTest(stateDir);
+    expect(admissions.length).toBe(2);
+    const resumed = admissions[1];
+    if (!resumed) {
+      throw new Error("Expected native reclamation after the producer released its token");
+    }
+    expect(resumed.read().status).toBe("fulfilled");
+    expect(fs.existsSync(root)).toBe(false);
+    expect(warning.mock.calls.length).toBe(0);
+  } finally {
+    observing.mockRestore();
+    try {
+      if (held) {
+        producer();
+      }
+    } finally {
+      const closed = await Promise.allSettled(
+        admissions.map(async (admission) => await admission.startClose().result),
+      );
+      for (const outcome of closed) {
+        expect(outcome.status).toBe("fulfilled");
+      }
+    }
+  }
+});
+
 it("reports reclamation failure when token close also reports SQLite busy, then retries cleanup", async () => {
   const stateDir = temp.make("capture-reclamation-errors-");
   const root = path.join(stateDir, "tmp", "plugin-captures", "released-producer");

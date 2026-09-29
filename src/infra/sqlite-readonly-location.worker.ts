@@ -7,6 +7,7 @@ import {
   formatSqliteErrorCodeSuffix,
   formatSqliteReadOnlyInspectionFailure,
   isSqliteLockError,
+  sqliteExtendedResultCode,
 } from "./sqlite-error-diagnostics.js";
 import { encodeSqliteAuthTransferFrame } from "./sqlite-readonly-auth-transfer.js";
 import {
@@ -235,8 +236,12 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
     const prefix =
       (contention ? SQLITE_INSPECTION_CONTENTION_PREFIX : "") +
       (allocationRefused ? SQLITE_SNAPSHOT_ALLOCATION_REFUSED_PREFIX : "");
+    const errcode = isSqliteStagingTokenWorkerMode(mode)
+      ? sqliteExtendedResultCode(error)
+      : undefined;
     return {
       ok: false,
+      ...(errcode !== undefined && errcode >= 0 && errcode <= 0x7fff_ffff ? { errcode } : {}),
       ...(isSqliteStagingTokenWorkerMode(mode) &&
       error instanceof Error &&
       "code" in error &&

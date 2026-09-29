@@ -55,7 +55,7 @@ export type SqliteReadOnlyWorkerResult =
   | { ok: true; contentVersion: string }
   | { ok: true; warnings: string[] }
   | { ok: true; tokenIdentity: SqliteStagingTokenIdentity }
-  | { ok: false; message: string; code?: string | number };
+  | { ok: false; message: string; code?: string | number; errcode?: number };
 
 export class SqliteReadOnlyInspectionContentionError extends Error {}
 export class SqliteSnapshotAllocationRefusedError extends Error {}
@@ -144,12 +144,19 @@ export function isSqliteReadOnlyWorkerResult(value: unknown): value is SqliteRea
     "ok" in value &&
     value.ok === false &&
     "message" in value &&
-    typeof value.message === "string" &&
-    "code" in value &&
-    (typeof value.code === "string" || typeof value.code === "number") &&
-    Object.keys(value).length === 3
+    typeof value.message === "string"
   ) {
-    return true;
+    return (
+      Object.keys(value).every(
+        (key) => key === "ok" || key === "message" || key === "code" || key === "errcode",
+      ) &&
+      (!("code" in value) || typeof value.code === "string" || typeof value.code === "number") &&
+      (!("errcode" in value) ||
+        (typeof value.errcode === "number" &&
+          Number.isInteger(value.errcode) &&
+          value.errcode >= 0 &&
+          value.errcode <= 0x7fff_ffff))
+    );
   }
   if (Object.keys(value).length !== 2 || !("ok" in value)) {
     return false;
@@ -163,8 +170,7 @@ export function isSqliteReadOnlyWorkerResult(value: unknown): value is SqliteRea
     (value.ok === true &&
       "warnings" in value &&
       Array.isArray(value.warnings) &&
-      value.warnings.every((warning) => typeof warning === "string")) ||
-    (value.ok === false && "message" in value && typeof value.message === "string")
+      value.warnings.every((warning) => typeof warning === "string"))
   );
 }
 
@@ -214,7 +220,11 @@ export function readSqliteReadOnlyWorkerValue(
   let result: SqliteReadOnlyWorkerResult;
   try {
     result = parseSqliteReadOnlyWorkerResult(params.stdout, params.stderr);
-    if (!result.ok && result.code !== undefined && !isSqliteStagingTokenWorkerMode(mode)) {
+    if (
+      !result.ok &&
+      (result.code !== undefined || result.errcode !== undefined) &&
+      !isSqliteStagingTokenWorkerMode(mode)
+    ) {
       throw createSqliteReadOnlyWorkerError("returned an invalid result", params.stderr);
     }
   } catch (error) {
@@ -246,8 +256,13 @@ export function readSqliteReadOnlyWorkerValue(
     if (allocationRefused) {
       markPrivateDirectoryCreationRefused(failure);
     }
-    if (!result.ok && isSqliteStagingTokenWorkerMode(mode) && result.code !== undefined) {
-      Object.assign(failure, { code: result.code });
+    if (!result.ok && isSqliteStagingTokenWorkerMode(mode)) {
+      if (result.code !== undefined) {
+        Object.assign(failure, { code: result.code });
+      }
+      if (result.errcode !== undefined) {
+        Object.assign(failure, { errcode: result.errcode });
+      }
     }
     throw failure;
   }

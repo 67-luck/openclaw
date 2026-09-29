@@ -111,6 +111,65 @@ describe("SQLite read-only worker diagnostics", () => {
     },
   );
 
+  it.each([
+    { errcode: 5, contention: true },
+    { errcode: 6, contention: true },
+    { errcode: 261, contention: true },
+    { errcode: 11, contention: false },
+  ])(
+    "preserves token SQLite result code $errcode for native classification",
+    async ({ errcode, contention }) => {
+      const { readSqliteReadOnlyWorkerValue, SqliteReadOnlyInspectionContentionError } =
+        await import("./sqlite-readonly-worker-protocol.js");
+      const { isSqliteLockError } = await import("./sqlite-error-diagnostics.js");
+      const code = "ERR_SQLITE_ERROR";
+      const stdout = JSON.stringify({
+        ok: false,
+        message:
+          (contention ? "Retryable SQLite inspection contention: " : "") + "token admission failed",
+        code,
+        errcode,
+      });
+      let received: unknown;
+      try {
+        readSqliteReadOnlyWorkerValue({ stdout, stderr: "" }, "token-reclaim");
+      } catch (error) {
+        received = error;
+      }
+      expect(received).toBeInstanceOf(Error);
+      expect(received instanceof SqliteReadOnlyInspectionContentionError).toBe(contention);
+      expect(received).toMatchObject({ code, errcode });
+      expect(isSqliteLockError(received)).toBe(contention);
+    },
+  );
+
+  it.each([-1, 1.5, 2 ** 31, "5"])(
+    "rejects invalid token SQLite result metadata: %s",
+    async (errcode) => {
+      const { readSqliteReadOnlyWorkerValue, SqliteReadOnlyInspectionContentionError } =
+        await import("./sqlite-readonly-worker-protocol.js");
+      const { isSqliteLockError } = await import("./sqlite-error-diagnostics.js");
+      const stdout = JSON.stringify({
+        ok: false,
+        message: "Retryable SQLite inspection contention: token admission failed",
+        code: "ERR_SQLITE_ERROR",
+        errcode,
+      });
+      let received: unknown;
+      try {
+        readSqliteReadOnlyWorkerValue({ stdout, stderr: "" }, "token-reclaim");
+      } catch (error) {
+        received = error;
+      }
+      expect(received).toBeInstanceOf(Error);
+      expect(received).toMatchObject({
+        message: expect.stringContaining("returned an invalid result"),
+      });
+      expect(received).not.toBeInstanceOf(SqliteReadOnlyInspectionContentionError);
+      expect(isSqliteLockError(received)).toBe(false);
+    },
+  );
+
   it("keeps combined refusal compatible with the existing parent contention decoder", async () => {
     const { readSqliteReadOnlyWorkerValue, SqliteReadOnlyInspectionContentionError } =
       await import("./sqlite-readonly-worker-protocol.js");
@@ -181,6 +240,8 @@ describe("SQLite read-only worker diagnostics", () => {
         "malformed-result",
         "token-code",
         "token-code-transport",
+        "token-errcode",
+        "token-errcode-transport",
       ] as const
     ).flatMap((kind) => [false, true].map((contention) => ({ kind, contention }))),
   )(
@@ -197,6 +258,7 @@ describe("SQLite read-only worker diagnostics", () => {
         ...(kind === "token-code" || kind === "token-code-transport"
           ? { code: "ERR_SQLITE_ERROR" }
           : {}),
+        ...(kind === "token-errcode" || kind === "token-errcode-transport" ? { errcode: 5 } : {}),
       });
       let received: unknown;
       try {
@@ -204,7 +266,9 @@ describe("SQLite read-only worker diagnostics", () => {
           {
             stdout,
             stderr: "",
-            ...(kind === "transport-failure" || kind === "token-code-transport"
+            ...(kind === "transport-failure" ||
+            kind === "token-code-transport" ||
+            kind === "token-errcode-transport"
               ? { failure: "native transport failed" }
               : {}),
             ...(kind === "empty-failure" ? { failure: "" } : {}),
@@ -220,7 +284,7 @@ describe("SQLite read-only worker diagnostics", () => {
       }
       expect(received).toBeInstanceOf(Error);
       expect(received).not.toBeInstanceOf(SqliteSnapshotAllocationRefusedError);
-      if (kind === "token-code-transport") {
+      if (kind === "token-code-transport" || kind === "token-errcode-transport") {
         expect(received).toMatchObject({
           message: expect.stringContaining("native transport failed"),
         });
