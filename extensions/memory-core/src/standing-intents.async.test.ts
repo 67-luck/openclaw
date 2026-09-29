@@ -567,23 +567,17 @@ describe("standing-intent admitted operations", () => {
   });
 
   it("uses admission-time default matching time after waiting for a writer", async () => {
-    const existing = await seed();
-    let expiresAt = 0;
-    const held = await holdWriter(() => {
-      expiresAt = Date.now();
-      expect(expiresAt).toBeGreaterThan(enqueuedAt);
-      openOpenClawAgentDatabase({ agentId: "main" })
-        .db.prepare("UPDATE standing_intents SET expires_at = ? WHERE id = ?")
-        .run(expiresAt, existing.id);
-    });
+    const existing = await seed(true);
+    const held = await holdWriter();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(100);
     const work = keep(matchStandingIntents({ agentId: "main", prompt: "launch" }));
-    const enqueuedAt = Date.now();
-    await expectWaiting(work, held.entered);
-    // Establish real clock ordering without changing the worker's clock.
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 5);
-    });
-    held.release();
+    try {
+      await expectWaiting(work, held.entered);
+    } finally {
+      // Only queue-time host reads see 100; the admitted native worker keeps its real clock.
+      clock.mockRestore();
+      held.release();
+    }
     await expect(work).resolves.toEqual([]);
     await held.done;
     expect(readStored(existing.id)).toMatchObject({ status: "expired", fire_count: 0 });
@@ -591,7 +585,7 @@ describe("standing-intent admitted operations", () => {
       openOpenClawAgentDatabase({ agentId: "main" })
         .db.prepare("SELECT expires_at FROM standing_intents WHERE id = ?")
         .get(existing.id)?.expires_at,
-    ).toBe(expiresAt);
+    ).toBe(200);
   });
 
   it("serializes concurrent matching inside the original fire-budget transaction", async () => {
