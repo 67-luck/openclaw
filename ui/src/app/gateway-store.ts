@@ -53,7 +53,10 @@ import { readSuspensionPhase } from "./gateway-readiness.ts";
 import { createAvailabilityIndicators } from "./gateway-store.availability.ts";
 import { createDeviceCredentialMethods } from "./gateway-store.device-credential.ts";
 import { createGatewaySelfProfile } from "./gateway-store.self-profile.ts";
-import { readHelloPluginCapabilities } from "./plugin-capabilities.ts";
+import {
+  loadAndRefreshPluginCapabilities,
+  readHelloPluginCapabilities,
+} from "./plugin-capabilities.ts";
 import {
   loadGatewaySessionSelection,
   loadSettings,
@@ -216,17 +219,9 @@ export function createApplicationGateway(
       snapshot.phase === "connected"
         ? snapshot
         : null;
-    void import("./plugin-capabilities.runtime.ts")
-      .then(({ refreshPluginCapabilities }) =>
-        refreshPluginCapabilities(event, eventClient, readCurrent, setSnapshot, (url) =>
-          canvasSurface.start(eventClient, canvasSurface.generation, url),
-        ),
-      )
-      .catch((error: unknown) => {
-        if (readCurrent()) {
-          setSnapshot({ lastError: formatUiError(error) });
-        }
-      });
+    void loadAndRefreshPluginCapabilities(event, eventClient, readCurrent, setSnapshot, (url) =>
+      canvasSurface.start(eventClient, canvasSurface.generation, url),
+    );
   };
   const recordGatewayEvent = (event: Parameters<GatewayEventListener>[0]) => {
     const eventClient = client;

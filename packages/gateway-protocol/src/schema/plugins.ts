@@ -9,6 +9,7 @@ import {
 } from "./control-ui-link-reader.js";
 import { PluginCredentialDescriptorSchema } from "./plugin-credentials.js";
 import {
+  PluginBlockedHookSchema,
   PluginDecisionProviderStatusSchema,
   PluginDeclaredSurfaceSchema,
   PluginHookGrantSchema,
@@ -33,6 +34,7 @@ export {
 } from "./plugin-install-progress.js";
 
 export {
+  PluginBlockedHookSchema,
   PluginDecisionProviderStatusSchema,
   PluginDeclaredSurfaceSchema,
   PluginHookGrantSchema,
@@ -103,21 +105,6 @@ export const ControlUiPluginWidgetKindSchema = closedObject({
   pluginId: NonEmptyString,
   kind: NonEmptyString,
   label: NonEmptyString,
-});
-
-/** Host policy refusals; not plugin-authored health or evidence of hook execution. */
-export const PluginBlockedHookSchema = closedObject({
-  pluginId: NonEmptyString,
-  pluginName: NonEmptyString,
-  hookName: NonEmptyString,
-  reason: Type.Union([
-    Type.Literal("conversation-access-missing"),
-    Type.Literal("conversation-access-denied"),
-    Type.Literal("prompt-injection-denied"),
-  ]),
-  severity: Type.Union([Type.Literal("warn"), Type.Literal("error")]),
-  configPath: NonEmptyString,
-  message: Type.String(),
 });
 
 /** Response payload containing all plugin UI descriptors visible to the client. */
