@@ -562,7 +562,7 @@ describe("cross-OS manual gateway lane evidence", () => {
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
       const child = new ChildProcess();
-      child.pid = 4242;
+      Object.defineProperty(child, "pid", { value: 4242 });
       vi.spyOn(child, "kill").mockReturnValue(true);
       vi.mocked(spawn).mockReturnValue(child);
       vi.mocked(spawnSync).mockReturnValue({
