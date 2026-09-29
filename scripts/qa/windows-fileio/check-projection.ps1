@@ -127,6 +127,52 @@ foreach($case in @(
   [pscustomobject]@{scenario=$case.name;passed=$true;diagnosticOnly=$true} | ConvertTo-Json -Compress
 }
 
+# Explicit owned paths select diagnostics only after the original parsing guards.
+$lookup['26:1']=@{id=26;version=1;task='DeletePath';opcode='Info'}
+foreach($scenario in @('owned-unverified','owned-zero-irp','owned-missing-thread','owned-header',
+  'foreign-path','prefix-sibling','unnamed','before-capture','query-failure','unknown-schema')) {
+  $start=[DateTime]::UtcNow;$end=$start.AddSeconds(1);$clock=[Diagnostics.Stopwatch]::StartNew()
+  $script:queryFailure=$scenario -eq 'query-failure';$script:queryCount=0;$script:lifetimeEnd=[long]::MaxValue
+  $rows=[Collections.Generic.List[object]]::new();$partial=[Collections.Generic.HashSet[string]]::new()
+  $pending=@{};$objects=@{};$ownedKeys=@{};$excludedObjects=[Collections.Generic.HashSet[string]]::new()
+  $counts=@{parsed=0;ownBegins=0;unmatchedEnds=0;unresolvedTargets=0;unresolvedThreads=0;outOfScope=0}
+  $diagnosticFacts=New-FileTraceFacts;$filterCensus=New-FileTraceCensus
+  $fields=@{Irp='0xC0FFEE';IssuingThreadId='987654321';FilePath='C:\owned\PRIVATE_CANARY';InfoClass='64'}
+  $tick=1;$version=1
+  switch($scenario){
+    'owned-zero-irp' {$fields.Irp='0'}
+    'owned-missing-thread' {$fields.Remove('IssuingThreadId')}
+    'foreign-path' {$fields.FilePath='C:\foreign\PRIVATE_CANARY'}
+    'prefix-sibling' {$fields.FilePath='C:\owned-sibling\PRIVATE_CANARY'}
+    'unnamed' {$fields.Remove('FilePath');$ownedKeys['0xBEEF']='PRIVATE_CANARY';$fields.FileKey='0xBEEF'}
+    'before-capture' {$tick=-1}
+    'unknown-schema' {$version=99}
+  }
+  $event=Event 26 $fields $tick $version
+  $event | Add-Member NoteProperty ProcessId $(if($scenario -eq 'owned-header'){$TargetProcessId}else{0})
+  $event | Add-Member NoteProperty XmlReads 0
+  $event | Add-Member ScriptMethod ToXml {$this.XmlReads++;return $this.Xml} -Force
+  @($event) | ForEach-Object $processor
+  $fact=Get-FileTraceCensus $filterCensus
+  $selected=$scenario.StartsWith('owned-')
+  if($fact.events.Count -ne [int]$selected){throw "Explicit-path diagnostic selection lost: $scenario"}
+  if($selected){
+    $row=$fact.events[0];$header=$scenario -eq 'owned-header'
+    if($row.headerPidMatched -ne $header -or $row.selectionReason -ne $(if($header){'header-pid'}else{'owned-path'})){throw 'Selector provenance changed'}
+    if(-not $row.timeWindowMatched -or -not $row.processLifetimeMatched -or -not $row.processTime.querySucceeded -or -not $row.fieldPresence.FilePath){throw 'Existing interval/field observations lost'}
+    $expectedReason=switch($scenario){'owned-zero-irp'{'missing-or-zero-irp'};'owned-missing-thread'{'missing-issuing-thread'};default{'unverified-issuing-thread'}}
+    if($row.filterReason -ne $expectedReason){throw 'Path selector bypassed original refusal'}
+  }
+  if($rows.Count -ne 0 -or $pending.Count -ne 0 -or $diagnosticFacts.entries.Count -ne 0){throw 'Diagnostic path granted request or completion authority'}
+  if($fact.relevantEventCounts['26'] -ne 1 -or $fact.headerPidMatchCounts['26'] -ne [int]($scenario -eq 'owned-header')){throw 'Late selection changed early counts'}
+  $expectedReads=if($scenario -eq 'owned-header'){2}elseif($scenario -in @('before-capture','query-failure','unknown-schema')){0}else{1}
+  if($event.XmlReads -ne $expectedReads -or $script:queryCount -ne [int]($scenario -ne 'before-capture')){throw 'Selector reparsed payload or repeated native query'}
+  $encoded=$fact | ConvertTo-Json -Depth 8 -Compress
+  foreach($canary in @('PRIVATE_CANARY','C0FFEE','BEEF','987654321')){if($encoded.Contains($canary)){throw 'Path selector leaked native value'}}
+  @{scenario=('path-selector-'+$scenario);passed=$true;diagnosticOnly=$true} | ConvertTo-Json -Compress
+}
+$script:queryFailure=$false
+
 # Earlier nonpriority traffic must not consume deletion facts; the parser still
 # invalidates the same pending IRP and suppresses its result exactly as before.
 $lookup['18:0']=@{id=18;version=0;task='SetDelete';opcode='Info'}
@@ -192,6 +238,32 @@ if($fact.events.Count -ne 32 -or -not $fact.truncated){throw 'Census row cap fai
 if($fact.relevantEventCounts.Count+$fact.headerPidMatchCounts.Count+$fact.filterReasonCounts.Count -ne 32){throw 'Census count keys grew'}
 if([Text.Encoding]::UTF8.GetByteCount(($fact | ConvertTo-Json -Depth 8 -Compress)) -gt 32768){throw 'Census byte cap failed'}
 @{scenario='header-selector-and-census-bounds';passed=$true;diagnosticOnly=$true} | ConvertTo-Json -Compress
+
+# Header and path selections share each quota; neither can refill the other's overflow.
+$start=[DateTime]::UtcNow;$end=$start.AddSeconds(1);$clock=[Diagnostics.Stopwatch]::StartNew()
+$script:queryFailure=$false;$script:queryCount=0;$script:lifetimeEnd=[long]::MaxValue
+$rows=[Collections.Generic.List[object]]::new();$partial=[Collections.Generic.HashSet[string]]::new()
+$pending=@{};$objects=@{};$ownedKeys=@{};$excludedObjects=[Collections.Generic.HashSet[string]]::new()
+$counts=@{parsed=0;ownBegins=0;unmatchedEnds=0;unresolvedTargets=0;unresolvedThreads=0;outOfScope=0}
+$diagnosticFacts=New-FileTraceFacts;$filterCensus=New-FileTraceCensus
+foreach($id in @(12,26)){
+  for($n=0;$n -lt 20;$n++){
+    $event=Event $id @{Irp='0xC0FFEE';IssuingThreadId='987654321';FilePath='C:\owned\PRIVATE_CANARY'} 1 $(if($id -eq 26){1}else{0})
+    $event | Add-Member NoteProperty ProcessId $(if($n%2){0}else{$TargetProcessId})
+    @($event) | ForEach-Object $processor
+  }
+}
+$fact=Get-FileTraceCensus $filterCensus
+if($fact.events.Count -ne 32 -or -not $fact.priorityTruncated -or -not $fact.nonPriorityTruncated -or -not $fact.truncated){throw 'Selectors did not share capped quotas'}
+foreach($id in @(12,26)){
+  $selected=@($fact.events | Where-Object {$_.eventId -eq $id})
+  if($selected.Count -ne 16 -or @($selected | Where-Object {$_.selectionReason -eq 'owned-path'}).Count -ne 8 -or
+    $fact.relevantEventCounts[[string]$id] -ne 20 -or $fact.headerPidMatchCounts[[string]$id] -ne 10){throw 'Mixed selector overflow changed counters or admitted duplicates'}
+}
+if($script:queryCount -ne 40 -or $rows.Count -ne 0 -or $pending.Count -ne 0 -or $diagnosticFacts.entries.Count -ne 0){throw 'Mixed selection changed native calls or attribution'}
+if($fact.relevantEventCounts.Count+$fact.headerPidMatchCounts.Count+$fact.filterReasonCounts.Count -ne 32 -or
+  [Text.Encoding]::UTF8.GetByteCount(($fact | ConvertTo-Json -Depth 8 -Compress)) -gt 32768){throw 'Mixed selection expanded diagnostic bounds'}
+@{scenario='mixed-selectors-share-quotas-without-authority';passed=$true;diagnosticOnly=$true} | ConvertTo-Json -Compress
 
 # Request evidence comes from the actual admitted event, never maps or relation facts.
 $lookup['18:1']=@{id=18;version=1;task='SetDelete';opcode='Info'}

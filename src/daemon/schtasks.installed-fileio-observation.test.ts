@@ -117,17 +117,18 @@ function input(extraRecords: unknown[] = []) {
   };
 }
 
-function filterCensus() {
+function filterCensus(selectionReason: "header-pid" | "owned-path" = "header-pid") {
   const counts = () =>
     Object.fromEntries([10, 11, 12, 13, 14, 15, 17, 18, 24, 26].map((id) => [id, 0]));
   const relevantEventCounts = counts();
   const headerPidMatchCounts = counts();
   relevantEventCounts[26] = 1;
-  headerPidMatchCounts[26] = 1;
+  headerPidMatchCounts[26] = selectionReason === "header-pid" ? 1 : 0;
   const row = {
     eventId: 26,
     eventVersion: 1,
-    headerPidMatched: true,
+    selectionReason,
+    headerPidMatched: selectionReason === "header-pid",
     priorityEventFamily: true,
     timeWindowMatched: true,
     processLifetimeMatched: true,
@@ -163,7 +164,7 @@ function filterCensus() {
     phase: "filter-census",
     diagnosticOnly: true,
     meaning:
-      "provider event counts and header PID equality only; neither grants process, path, or operation authority",
+      "provider event counts; header PID or explicit owned-path selection grants no process, thread, or operation authority",
     relevantEventCounts,
     headerPidMatchCounts,
     filterReasonCounts: {
@@ -212,49 +213,176 @@ describe("installed FileIO receiving boundary", () => {
     expect(JSON.stringify(read)).not.toContain("HOST_PRIVATE_CANARY");
   });
 
-  it("retains emitted filter facts through the real census receiver without admitting an owned request", () => {
-    const { census } = filterCensus();
-    const value = input([census]);
-    value.facts.events = [];
-    value.result.counts.ownBegins = 0;
-    value.result.counts.unresolvedThreads = 86;
-    value.result.partial = ["unverified-issuing-threads"];
-    const read = readRelatedProcessDiagnosticsResult(
-      {
-        status: 0,
-        stdout: JSON.stringify({ processes: [], retirement: null, fileIo: value.outcome }),
-        stderr: "",
-      },
-      [value.binding.globalRoot],
-      value.binding,
-    );
-    assert.ok("fileIo" in read);
-    expect(read.fileIo).toMatchObject({
-      result: {
-        observation: "insufficient-evidence",
-        records: [],
-        counts: { ownBegins: 0, unresolvedThreads: 86 },
-      },
-      facts: { events: [] },
-      filterCensus: {
+  it.each(["header-pid", "owned-path"] as const)(
+    "retains %s filter facts through the real census receiver without admitting an owned request",
+    (selectionReason) => {
+      const { census } = filterCensus(selectionReason);
+      const value = input([census]);
+      value.facts.events = [];
+      value.result.counts.ownBegins = 0;
+      value.result.counts.unresolvedThreads = 86;
+      value.result.partial = ["unverified-issuing-threads"];
+      const read = readRelatedProcessDiagnosticsResult(
+        {
+          status: 0,
+          stdout: JSON.stringify({ processes: [], retirement: null, fileIo: value.outcome }),
+          stderr: "",
+        },
+        [value.binding.globalRoot],
+        value.binding,
+      );
+      assert.ok("fileIo" in read);
+      expect(read.fileIo).toMatchObject({
+        result: {
+          observation: "insufficient-evidence",
+          records: [],
+          counts: { ownBegins: 0, unresolvedThreads: 86 },
+        },
+        facts: { events: [] },
+        filterCensus: {
+          phase: "filter-census",
+          diagnosticOnly: true,
+          unavailable: false,
+          relevantEventCounts: { "26": 1 },
+          headerPidMatchCounts: { "26": selectionReason === "header-pid" ? 1 : 0 },
+          filterReasonCounts: { "unverified-issuing-thread": 1 },
+          events: [
+            {
+              eventId: 26,
+              selectionReason,
+              headerPidMatched: selectionReason === "header-pid",
+              issuingThreadVerified: false,
+              filterReason: "unverified-issuing-thread",
+              processTime: { eventNotAfterExit: null },
+            },
+          ],
+        },
+      });
+    },
+  );
+
+  it.each(["FileName", "OpenPath", "FilePath"] as const)(
+    "retains owned-path %s presence within an exited process lifetime without granting authority",
+    (field) => {
+      const { census, row } = filterCensus("owned-path");
+      row.fieldPresence.FilePath = false;
+      row.fieldPresence[field] = true;
+      Object.assign(row.processTime, { exitTimePresent: true, eventNotAfterExit: true });
+      Object.assign(row, { rawPath: "HOST_PRIVATE_CENSUS_CANARY", rawPid: 987654 });
+      const value = input([census]);
+      value.facts.events = [];
+      const read = readInstalledFileIoObservation(value.outcome, value.binding);
+      expect(read).toMatchObject({
+        result: { observation: "insufficient-evidence", records: [] },
+        facts: { events: [] },
+        filterCensus: {
+          unavailable: false,
+          events: [
+            {
+              selectionReason: "owned-path",
+              headerPidMatched: false,
+              issuingThreadVerified: false,
+              processTime: { exitTimePresent: true, eventNotAfterExit: true },
+            },
+          ],
+        },
+      });
+      expect(JSON.stringify(read)).not.toContain("HOST_PRIVATE_CENSUS_CANARY");
+      expect(JSON.stringify(read)).not.toContain("987654");
+    },
+  );
+
+  it.each([
+    "header-matched",
+    "window-false",
+    "window-unknown",
+    "lifetime-false",
+    "lifetime-unknown",
+    "process-time-missing",
+    "query-failed",
+    "creation-mismatch",
+    "creation-unknown",
+    "before-creation",
+    "creation-window-unknown",
+    "exit-unknown",
+    "after-exit",
+    "exit-comparison-unknown",
+    "missing-explicit-path",
+    "incomplete-shape",
+    "outside-capture-window",
+    "outside-original-lifetime",
+    "unknown-schema",
+  ])(
+    "refuses inconsistent owned-path %s diagnostics without changing results or request facts",
+    (scenario) => {
+      const { census, row } = filterCensus("owned-path");
+      const value = input([census]);
+      const before = readInstalledFileIoObservation(value.outcome, value.binding);
+      expect(before).toHaveProperty("filterCensus.events.0.selectionReason", "owned-path");
+      if (scenario === "header-matched") {
+        row.headerPidMatched = true;
+      }
+      if (scenario === "window-false") {
+        row.timeWindowMatched = false;
+      }
+      if (scenario === "window-unknown") {
+        Object.assign(row, { timeWindowMatched: null });
+      }
+      if (scenario === "lifetime-false") {
+        row.processLifetimeMatched = false;
+      }
+      if (scenario === "lifetime-unknown") {
+        Object.assign(row, { processLifetimeMatched: null });
+      }
+      if (scenario === "process-time-missing") {
+        Object.assign(row, { processTime: null });
+      }
+      if (scenario === "query-failed") {
+        row.processTime.querySucceeded = false;
+      }
+      if (scenario === "creation-mismatch") {
+        row.processTime.creationMatches = false;
+      }
+      if (scenario === "creation-unknown") {
+        Object.assign(row.processTime, { creationMatches: null });
+      }
+      if (scenario === "before-creation") {
+        row.processTime.eventNotBeforeCreation = false;
+      }
+      if (scenario === "creation-window-unknown") {
+        Object.assign(row.processTime, { eventNotBeforeCreation: null });
+      }
+      if (scenario === "exit-unknown") {
+        Object.assign(row.processTime, { exitTimePresent: null });
+      }
+      if (scenario === "after-exit") {
+        Object.assign(row.processTime, { exitTimePresent: true, eventNotAfterExit: false });
+      }
+      if (scenario === "exit-comparison-unknown") {
+        Object.assign(row.processTime, { exitTimePresent: true, eventNotAfterExit: null });
+      }
+      if (scenario === "missing-explicit-path") {
+        row.fieldPresence.FilePath = false;
+      }
+      if (scenario === "incomplete-shape") {
+        row.fieldShapeUnavailable = true;
+      }
+      if (
+        ["outside-capture-window", "outside-original-lifetime", "unknown-schema"].includes(scenario)
+      ) {
+        row.filterReason = scenario;
+      }
+      const read = readInstalledFileIoObservation(value.outcome, value.binding);
+      assert.ok("result" in before && "result" in read);
+      expect(read.result).toEqual(before.result);
+      expect(read.facts).toEqual(before.facts);
+      expect(read).toHaveProperty("filterCensus", {
         phase: "filter-census",
         diagnosticOnly: true,
-        unavailable: false,
-        relevantEventCounts: { "26": 1 },
-        headerPidMatchCounts: { "26": 1 },
-        filterReasonCounts: { "unverified-issuing-thread": 1 },
-        events: [
-          {
-            eventId: 26,
-            headerPidMatched: true,
-            issuingThreadVerified: false,
-            filterReason: "unverified-issuing-thread",
-            processTime: { eventNotAfterExit: null },
-          },
-        ],
-      },
-    });
-  });
+        unavailable: true,
+      });
+    },
+  );
 
   it("strips raw diagnostic canaries while preserving fixed nullable observations", () => {
     const { census, row } = filterCensus();
@@ -336,6 +464,8 @@ describe("installed FileIO receiving boundary", () => {
     "unknown-phase",
     "unknown-reason",
     "unknown-id",
+    "missing-selection",
+    "unknown-selection",
     "header-mismatch",
     "missing-boolean",
     "invalid-boolean",
@@ -373,6 +503,12 @@ describe("installed FileIO receiving boundary", () => {
     }
     if (scenario === "unknown-id") {
       row.eventId = 999;
+    }
+    if (scenario === "missing-selection") {
+      Reflect.deleteProperty(row, "selectionReason");
+    }
+    if (scenario === "unknown-selection") {
+      Object.assign(row, { selectionReason: "HOST_PRIVATE_CENSUS_CANARY" });
     }
     if (scenario === "header-mismatch") {
       row.headerPidMatched = false;

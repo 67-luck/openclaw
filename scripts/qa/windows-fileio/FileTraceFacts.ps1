@@ -150,19 +150,37 @@ function New-FileTraceCensus {
   return @{seen=$seen;header=$header;reasons=$reasons;rows=[Collections.Generic.List[object]]::new();
     priorityKept=0;otherKept=0;priorityTruncated=$false;nonPriorityTruncated=$false;truncated=$false;unavailable=$false}
 }
+function New-FileTraceCensusRow($State,$Event,[string]$SelectionReason) {
+  $priority=[int]$Event.Id -in @(17,18,26)
+  if(-not (Use-FileTraceDetailSlot $State $priority 16)){return $null}
+  $row=@{eventId=[int]$Event.Id;eventVersion=[int]$Event.Version;
+    headerPidMatched=($SelectionReason -eq 'header-pid');selectionReason=$SelectionReason;priorityEventFamily=$priority;
+    timeWindowMatched=$null;processLifetimeMatched=$null;processTime=$null;issuingThreadVerified=$null;
+    fieldPresence=@{};irpValueNonzero=$null;fieldShapeUnavailable=$false;filterReason='processing-interrupted'}
+  $State.rows.Add($row)
+  return $row
+}
+function Set-FileTraceCensusFields($Row,$Fields) {
+  foreach($name in @('Irp','IrpPtr','FileObject','FileKey','IssuingThreadId','TTID','ThreadId',
+    'Status','FileName','OpenPath','FilePath','CreateOptions','InfoClass')){$Row.fieldPresence[$name]=$Fields.ContainsKey($name)}
+  $irp=if($Fields.ContainsKey('Irp')){$Fields.Irp}else{$Fields.IrpPtr}
+  if(-not $irp){$Row.irpValueNonzero=$false}
+  elseif($irp -cmatch '^(?:0[xX])?0+$'){$Row.irpValueNonzero=$false}
+  elseif($irp -cmatch '^(?:0[xX][0-9A-Fa-f]{1,16}|[0-9]{1,20})$'){$Row.irpValueNonzero=$true}
+}
+function Set-FileTraceCensusProcessTime($Row,$ProcessTime) {
+  $Row.processTime=@{querySucceeded=$ProcessTime.QuerySucceeded;nativeError=$ProcessTime.NativeError;
+    creationMatches=$ProcessTime.CreationMatches;eventNotBeforeCreation=$ProcessTime.EventNotBeforeCreation;
+    exitTimePresent=$ProcessTime.ExitTimePresent;eventNotAfterExit=$ProcessTime.EventNotAfterExit}
+}
 function Start-FileTraceCensusEvent($State,$Event,[uint32]$TargetPid) {
   $id=[string][int]$Event.Id
   if(-not $State.seen.ContainsKey($id)){return $null}
   $State.seen[$id]++
   if($null -eq $Event.ProcessId -or [long]$Event.ProcessId -ne [long]$TargetPid){return $null}
   $State.header[$id]++
-  $priority=[int]$Event.Id -in @(17,18,26)
-  if(-not (Use-FileTraceDetailSlot $State $priority 16)){return $null}
-  # Header equality is only a census selector, never process/operation authority.
-  $row=@{eventId=[int]$Event.Id;eventVersion=[int]$Event.Version;headerPidMatched=$true;priorityEventFamily=$priority;
-    timeWindowMatched=$null;processLifetimeMatched=$null;processTime=$null;issuingThreadVerified=$null;
-    fieldPresence=@{};irpValueNonzero=$null;fieldShapeUnavailable=$false;filterReason='processing-interrupted'}
-  $State.rows.Add($row)
+  $row=New-FileTraceCensusRow $State $Event 'header-pid'
+  if($null -eq $row){return $null}
   try {
     $text=$Event.ToXml()
     if($text.Length -gt 16384){throw 'Diagnostic XML bound'}
@@ -173,13 +191,20 @@ function Start-FileTraceCensusEvent($State,$Event,[uint32]$TargetPid) {
       if($name -in @('Irp','IrpPtr','FileObject','FileKey','IssuingThreadId','TTID','ThreadId',
         'Status','FileName','OpenPath','FilePath','CreateOptions','InfoClass')){$fields[$name]=[string]$data.'#text'}
     }
-    foreach($name in @('Irp','IrpPtr','FileObject','FileKey','IssuingThreadId','TTID','ThreadId',
-      'Status','FileName','OpenPath','FilePath','CreateOptions','InfoClass')){$row.fieldPresence[$name]=$fields.ContainsKey($name)}
-    $irp=if($fields.ContainsKey('Irp')){$fields.Irp}else{$fields.IrpPtr}
-    if(-not $irp){$row.irpValueNonzero=$false}
-    elseif($irp -cmatch '^(?:0[xX])?0+$'){$row.irpValueNonzero=$false}
-    elseif($irp -cmatch '^(?:0[xX][0-9A-Fa-f]{1,16}|[0-9]{1,20})$'){$row.irpValueNonzero=$true}
+    Set-FileTraceCensusFields $row $fields
   } catch {$row.fieldShapeUnavailable=$true;$State.unavailable=$true}
+  return $row
+}
+function Add-OwnedPathFileTraceCensusEvent($State,$Event,[uint32]$TargetPid,$Fields,$ProcessTime) {
+  # Called only after the original interval/schema parsing and explicit path match.
+  # Header-selected events already consumed (or exhausted) this same row quota.
+  if(-not $State.seen.ContainsKey([string][int]$Event.Id) -or
+    ($null -ne $Event.ProcessId -and [long]$Event.ProcessId -eq [long]$TargetPid)){return $null}
+  $row=New-FileTraceCensusRow $State $Event 'owned-path'
+  if($null -eq $row){return $null}
+  $row.timeWindowMatched=$true;$row.processLifetimeMatched=$true
+  Set-FileTraceCensusProcessTime $row $ProcessTime
+  Set-FileTraceCensusFields $row $Fields
   return $row
 }
 function Complete-FileTraceCensusEvent($State,[int]$EventId,$Row,[string]$Reason) {
@@ -190,7 +215,7 @@ function Complete-FileTraceCensusEvent($State,[int]$EventId,$Row,[string]$Reason
 }
 function Get-FileTraceCensus($State) {
   $result=@{phase='filter-census';diagnosticOnly=$true;
-    meaning='provider event counts and header PID equality only; neither grants process, path, or operation authority';
+    meaning='provider event counts; header PID or explicit owned-path selection grants no process, thread, or operation authority';
     relevantEventCounts=$State.seen;headerPidMatchCounts=$State.header;filterReasonCounts=$State.reasons;
     events=@($State.rows.ToArray());truncated=$State.truncated;unavailable=$State.unavailable;
     rowLimit=32;byteLimit=32768;countKeyLimit=32;priorityRowLimit=16;nonPriorityRowLimit=16;

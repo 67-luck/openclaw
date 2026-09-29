@@ -140,7 +140,8 @@ const censusRow = z
   .object({
     eventId: censusEventId,
     eventVersion: uint,
-    headerPidMatched: z.literal(true),
+    selectionReason: z.enum(["header-pid", "owned-path"]),
+    headerPidMatched: z.boolean(),
     priorityEventFamily: z.boolean(),
     timeWindowMatched: z.boolean().nullable(),
     processLifetimeMatched: z.boolean().nullable(),
@@ -160,6 +161,30 @@ const censusRow = z
     fieldShapeUnavailable: z.boolean(),
     filterReason: censusReason,
   })
+  .refine((event) => event.headerPidMatched === (event.selectionReason === "header-pid"))
+  .refine((event) => {
+    if (event.selectionReason === "header-pid") {
+      return true;
+    }
+    const time = event.processTime;
+    return (
+      event.timeWindowMatched === true &&
+      event.processLifetimeMatched === true &&
+      time !== null &&
+      time.querySucceeded &&
+      time.creationMatches === true &&
+      time.eventNotBeforeCreation === true &&
+      (time.exitTimePresent === false ||
+        (time.exitTimePresent === true && time.eventNotAfterExit === true)) &&
+      !event.fieldShapeUnavailable &&
+      (event.fieldPresence.FileName === true ||
+        event.fieldPresence.OpenPath === true ||
+        event.fieldPresence.FilePath === true) &&
+      !["outside-capture-window", "outside-original-lifetime", "unknown-schema"].includes(
+        event.filterReason,
+      )
+    );
+  })
   .refine((event) => event.priorityEventFamily === [17, 18, 26].includes(event.eventId))
   .refine(
     (event) => event.fieldShapeUnavailable || fieldPresence.safeParse(event.fieldPresence).success,
@@ -169,7 +194,7 @@ const censusSchema = z
     phase: z.literal("filter-census"),
     diagnosticOnly: z.literal(true),
     meaning: z.literal(
-      "provider event counts and header PID equality only; neither grants process, path, or operation authority",
+      "provider event counts; header PID or explicit owned-path selection grants no process, thread, or operation authority",
     ),
     // Exhaustive finite records admit 10 + 10 + 12 count keys in total.
     relevantEventCounts: z.record(censusEventId, censusCount),

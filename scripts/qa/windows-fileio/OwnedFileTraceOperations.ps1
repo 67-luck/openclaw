@@ -287,9 +287,7 @@ try {
         if($null -ne $censusRow){$censusRow.timeWindowMatched=$true}
         $processTime=$threadLease.ObserveProcessTime($time.ToFileTimeUtc())
         if($null -ne $censusRow){
-          $censusRow.processTime=@{querySucceeded=$processTime.QuerySucceeded;nativeError=$processTime.NativeError;
-            creationMatches=$processTime.CreationMatches;eventNotBeforeCreation=$processTime.EventNotBeforeCreation;
-            exitTimePresent=$processTime.ExitTimePresent;eventNotAfterExit=$processTime.EventNotAfterExit}
+          Set-FileTraceCensusProcessTime $censusRow $processTime
         }
         if (-not $processTime.ContainsTime) {
           if($null -ne $censusRow){$censusRow.processLifetimeMatched=$false}
@@ -309,6 +307,10 @@ try {
         $name = Field $fields @('FileName','OpenPath','FilePath')
         $pathFact = Resolve-OwnedPath $name
         $relative = $pathFact.relative
+        if($diagnosticAvailable -and $null -eq $censusRow -and $pathFact.scope -eq 'owned'){
+          try {$censusRow=Add-OwnedPathFileTraceCensusEvent $filterCensus $event $TargetProcessId $fields $processTime}
+          catch {$filterCensus.unavailable=$true}
+        }
         if($diagnosticAvailable){
           try { Update-FileTraceFacts $diagnosticFacts ([int]$event.Id) $irp $key ([bool]$ntstatus) ($pathFact.scope -eq 'owned') $fields $obj ([int]$event.Version) }
           catch { $diagnosticFacts.unavailable=$true }
