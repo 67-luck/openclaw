@@ -335,14 +335,16 @@ The RPC accepts a JSON string in `payloadJSON` or an object in `payload`. A stri
 Current headless nodes include `sessionKey`, `runId`, and `host: "node"`.
 Additional fields are:
 
-| Field                  | Meaning                                                      |
-| ---------------------- | ------------------------------------------------------------ |
-| `command`              | Raw or formatted command text.                               |
-| `exitCode`, `timedOut` | Process completion code and timeout flag.                    |
-| `success`              | Producer result flag, not the notification-gating predicate. |
-| `output`               | Bounded combined stdout, stderr, and error text.             |
-| `reason`               | Denial reason for `exec.denied`.                             |
-| `suppressNotifyOnExit` | Suppress this invocation's system notification.              |
+| Field                   | Meaning                                                             |
+| ----------------------- | ------------------------------------------------------------------- |
+| `command`               | Raw or formatted command text.                                      |
+| `exitCode`, `timedOut`  | Process completion code and timeout flag.                           |
+| `success`               | Producer result flag, not the notification-gating predicate.        |
+| `output`                | Bounded combined stdout, stderr, and error text.                    |
+| `reason`                | Denial reason for `exec.denied`.                                    |
+| `suppressNotifyOnExit`  | Suppress this invocation's ordinary system notification.            |
+| `notifyOnExit`          | Invocation-level notification setting; `false` always suppresses.   |
+| `invokeResultSentFirst` | The node attempted `node.invoke.result` before this terminal event. |
 
 Echo the correlation fields forwarded with `system.run`; neither an ID nor the
 payload's `host` field grants authority. The Gateway matches the authenticated
@@ -354,11 +356,19 @@ connection/session; new clients must send the issued run ID.
 
 `exec.started` retains the authorization record; `exec.finished` and
 `exec.denied` consume it before notification filtering. `tools.exec.notifyOnExit:
-false` or `suppressNotifyOnExit: true` suppresses notifications. Denied events
-never enqueue a system event or wake agent work. Finished events notify only for
-timeout, nonzero or unknown exit code, or nonempty compacted output; successful
-exit 0 with no output stays quiet. Finished notifications with a run ID are
-deduplicated by canonical session and run ID. A heartbeat wake is requested only
-after a system event is queued.
+false` or payload `notifyOnExit: false` always suppresses notifications. For a
+foreground invocation with `suppressNotifyOnExit: true`, legacy nodes and events
+without `invokeResultSentFirst: true` remain suppressed. For Telegram sessions,
+updated nodes may use a result-first terminal event to recover only when the
+Gateway did not receive the matching invoke result; other channels retain legacy
+foreground suppression. After receipt, the terminal event stays suppressed.
+Telegram recovery also requires a saved external route that matches the
+originating session chat and topic/thread, so it never falls back to another
+conversation.
+Denied events never enqueue a system event or wake agent work. Finished events
+notify only for timeout, nonzero or unknown exit code, or nonempty compacted
+output; successful exit 0 with no output stays quiet. Finished notifications
+with a run ID are deduplicated by canonical session and run ID. A heartbeat wake
+is requested only after a system event is queued.
 
 Node event delivery is best-effort, not a durable completion ledger.
