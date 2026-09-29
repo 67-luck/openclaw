@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { consumeRunSkillUsage } from "../../skills/runtime/run-usage.js";
-import { createWorkshopSkill, listWorkshopChanges } from "../../skills/workshop/library.js";
+import {
+  createWorkshopSkill,
+  listWorkshopArchive,
+  listWorkshopChanges,
+} from "../../skills/workshop/library.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -90,10 +94,27 @@ describe("skill_workshop review guard", () => {
     });
     const remove = { action: "remove_file", name: "deploy", file_path: "references/old.md" };
     await expect(tool.execute("1", remove)).rejects.toThrow("View it first");
-    await tool.execute("2", { action: "view", name: "deploy" });
+    // Reading an old saved version is not reading the live skill it would edit.
+    const [entry] = await listWorkshopArchive({}, "main");
+    await tool.execute("2", { action: "view", name: "deploy", version: entry?.versions[0]?.id });
+    await expect(tool.execute("2b", remove)).rejects.toThrow("View it first");
+    await tool.execute("2c", { action: "view", name: "deploy" });
     expect(text(await tool.execute("3", remove))).toBe(
       'Updated "deploy" (removed references/old.md). Saved previous version; undo with action=restore name=deploy.',
     );
+  });
+
+  it("does not write once the invoking run is aborted", async () => {
+    const tool = createSkillWorkshopTool({ config: {}, agentId: "main" });
+    const aborted = AbortSignal.abort(new Error("run aborted"));
+    await expect(
+      tool.execute(
+        "1",
+        { action: "patch", name: "deploy", old_text: "make deploy", new_text: "make ship" },
+        aborted,
+      ),
+    ).rejects.toThrow("run aborted");
+    expect(await listWorkshopChanges("main", {})).toHaveLength(1);
   });
 
   it("lets foreground runs patch without a prior view and counts their views as use", async () => {

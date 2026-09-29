@@ -30,16 +30,23 @@ export type WorkshopMutation =
   | { method: "skills.workshop.archive"; name: string }
   | { method: "skills.workshop.restore"; name: string; versionId?: string };
 
-/** Undo reverts to the version saved before the change; a creation has none, so it archives. */
-export function undoMutationFor(change: SkillWorkshopChange): WorkshopMutation | null {
-  if (change.versionId) {
-    return {
-      method: "skills.workshop.restore",
-      name: change.skillName,
-      versionId: change.versionId,
-    };
+/**
+ * Undo reverts to the version saved before the change. A creation, or a restore of an archived
+ * skill, had no live copy to save, so its undo archives. Changes outlive pruned versions, so a
+ * change whose version is no longer retained offers no undo.
+ */
+export function undoMutationFor(
+  change: SkillWorkshopChange,
+  list: SkillsWorkshopListResult,
+): WorkshopMutation | null {
+  const { skillName: name, versionId } = change;
+  if (!versionId) {
+    return change.action === "create" || change.action === "restore"
+      ? { method: "skills.workshop.archive", name }
+      : null;
   }
-  return change.action === "create"
-    ? { method: "skills.workshop.archive", name: change.skillName }
-    : null;
+  const retained = list.archived
+    .find((skill) => skill.name === name)
+    ?.versions.some((version) => version.id === versionId);
+  return retained ? { method: "skills.workshop.restore", name, versionId } : null;
 }

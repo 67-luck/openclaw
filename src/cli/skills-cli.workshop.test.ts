@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   archiveWorkshopSkill: vi.fn(),
   callGateway: vi.fn(),
   config: {},
+  listWorkshopChanges: vi.fn(),
+  restoreWorkshopSkill: vi.fn(),
   defaultRuntime: {
     log: vi.fn(),
     error: vi.fn(),
@@ -35,8 +37,8 @@ vi.mock("../infra/gateway-lock.js", () => ({
 }));
 vi.mock("../skills/workshop/library.js", () => ({
   archiveWorkshopSkill: mocks.archiveWorkshopSkill,
-  listWorkshopChanges: vi.fn(),
-  restoreWorkshopSkill: vi.fn(),
+  listWorkshopChanges: mocks.listWorkshopChanges,
+  restoreWorkshopSkill: mocks.restoreWorkshopSkill,
   viewWorkshopSkill: vi.fn(),
 }));
 vi.mock("../skills/workshop/workshop-list.js", () => ({
@@ -74,8 +76,10 @@ function runCli(argv: string[]) {
 describe("skills workshop cli", () => {
   beforeEach(() => {
     mocks.callGateway.mockReset();
-    mocks.acquireGatewayLock.mockReset();
+    mocks.acquireGatewayLock.mockReset().mockRejectedValue(new Error("lock held"));
     mocks.archiveWorkshopSkill.mockReset();
+    mocks.listWorkshopChanges.mockReset();
+    mocks.restoreWorkshopSkill.mockReset();
     for (const fn of Object.values(mocks.defaultRuntime)) {
       fn.mockClear();
     }
@@ -163,20 +167,20 @@ describe("skills workshop cli", () => {
     );
   });
 
-  it("archives locally as the user only while holding the Gateway lock", async () => {
-    mocks.callGateway.mockRejectedValue(
-      new GatewayTransportError({
-        kind: "closed",
-        code: 1006,
-        reason: "abnormal closure",
-        message: "gateway closed (1006): abnormal closure",
-        connectionDetails: {
-          url: "ws://127.0.0.1:18789",
-          urlSource: "local loopback",
-          message: "",
-        },
-      }),
-    );
+  const gatewayClosed = () =>
+    new GatewayTransportError({
+      kind: "closed",
+      code: 1006,
+      reason: "abnormal closure",
+      message: "gateway closed (1006): abnormal closure",
+      connectionDetails: {
+        url: "ws://127.0.0.1:18789",
+        urlSource: "local loopback",
+        message: "",
+      },
+    });
+
+  it("archives locally as the user without a Gateway while holding the Gateway lock", async () => {
     const release = vi.fn();
     mocks.acquireGatewayLock.mockResolvedValue({
       run: (action: () => unknown) => action(),
@@ -186,6 +190,7 @@ describe("skills workshop cli", () => {
 
     await runCli(["skills", "workshop", "archive", "release-notes", "--reason", "superseded"]);
 
+    expect(mocks.callGateway).not.toHaveBeenCalled();
     expect(mocks.archiveWorkshopSkill).toHaveBeenCalledWith(
       { config: mocks.config, agentId: "main", actor: "user" },
       { name: "release-notes", reason: "superseded" },
@@ -194,10 +199,36 @@ describe("skills workshop cli", () => {
     expect(mocks.defaultRuntime.writeStdout).toHaveBeenCalledWith(
       expect.stringContaining("Archived release-notes. Undo with:"),
     );
+  });
 
-    mocks.archiveWorkshopSkill.mockClear();
-    mocks.acquireGatewayLock.mockRejectedValue(new Error("lock held"));
-    await expect(runCli(["skills", "workshop", "archive", "release-notes"])).rejects.toThrow();
-    expect(mocks.archiveWorkshopSkill).not.toHaveBeenCalled();
+  it("never replays a mutation locally after dispatching it to the Gateway", async () => {
+    // The Gateway owns the lock until it receives the restore, then exits before replying.
+    mocks.acquireGatewayLock.mockImplementation(async () => {
+      if (mocks.callGateway.mock.calls.length === 0) {
+        throw new Error("lock held");
+      }
+      return { run: (action: () => unknown) => action(), release: vi.fn() };
+    });
+    mocks.callGateway.mockRejectedValue(gatewayClosed());
+
+    await expect(runCli(["skills", "workshop", "restore", "release-notes"])).rejects.toThrow(
+      "gateway closed (1006)",
+    );
+
+    expect(mocks.callGateway).toHaveBeenCalledOnce();
+    expect(mocks.callGateway.mock.calls[0]?.[0]).toMatchObject({
+      method: "skills.workshop.restore",
+    });
+    expect(mocks.restoreWorkshopSkill).not.toHaveBeenCalled();
+  });
+
+  it("falls back to local reads when the Gateway is unavailable", async () => {
+    mocks.callGateway.mockRejectedValue(gatewayClosed());
+    mocks.listWorkshopChanges.mockResolvedValue([change]);
+
+    await runCli(["skills", "workshop", "changes", "--json"]);
+
+    expect(mocks.listWorkshopChanges).toHaveBeenCalledOnce();
+    expect(mocks.acquireGatewayLock).not.toHaveBeenCalled();
   });
 });

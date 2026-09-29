@@ -4,13 +4,16 @@ import { resolveDefaultModelForAgent } from "../../agents/model-selection-config
 import { resolveSandboxConfigForAgent } from "../../agents/sandbox/config.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import { canonicalizePath } from "../../agents/utils/paths.js";
+import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { resolveSkillWorkshopConfig } from "./config.js";
 import {
   archiveWorkshopSkill,
   listWorkshopChanges,
   listWorkshopSkills,
+  WorkshopWriteError,
   type WorkshopChange,
 } from "./library.js";
 import { isSkillUsageTracked, readSkillUsage } from "./skill-usage.js";
@@ -81,6 +84,14 @@ export async function archiveUnusedWorkshopSkills(
   }
   const cutoffMs = nowMs - UNUSED_ARCHIVE_MS;
   const archived: WorkshopChange[] = [];
+  // The pass was admitted under the turn's config; the operator may switch Learning Off since.
+  const learningOn = () =>
+    resolveSkillWorkshopConfig(getRuntimeConfig()).autonomous.mode === "auto";
+  const assertLive = () => {
+    if (!learningOn()) {
+      throw new WorkshopWriteError("Learning is off.");
+    }
+  };
   for (const { skill, skillFile } of entries) {
     const stat = await fs.stat(skillFile).catch(() => undefined);
     const lastActivityMs = Math.max(
@@ -92,10 +103,13 @@ export async function archiveUnusedWorkshopSkills(
     if (lastActivityMs > cutoffMs) {
       continue;
     }
+    if (!learningOn()) {
+      break;
+    }
     try {
       archived.push(
         await archiveWorkshopSkill(
-          { config, agentId, actor: "curator" },
+          { config, agentId, actor: "curator", assertLive },
           { name: skill.name, reason: UNUSED_ARCHIVE_REASON },
         ),
       );

@@ -1,6 +1,10 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { canonicalizePath } from "../../agents/utils/paths.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { executeOpenClawStateWorker } from "../../state/openclaw-state-worker-store.js";
@@ -137,5 +141,21 @@ describe("archiveUnusedWorkshopSkills", () => {
     expect(
       await archiveUnusedWorkshopSkills(openclawAgent, "main", Date.now() + 31 * DAY_MS),
     ).toEqual([]);
+  });
+
+  it("stops when Learning was switched Off after the pass was admitted", async () => {
+    await createSkill("stale");
+    setRuntimeConfigSnapshot({
+      ...openclawAgent,
+      skills: { workshop: { autonomous: { mode: "off" } } },
+    });
+    try {
+      expect(
+        await archiveUnusedWorkshopSkills(openclawAgent, "main", Date.now() + 31 * DAY_MS),
+      ).toEqual([]);
+    } finally {
+      clearRuntimeConfigSnapshot();
+    }
+    expect(await listWorkshopSkills(openclawAgent, "main")).toHaveLength(1);
   });
 });

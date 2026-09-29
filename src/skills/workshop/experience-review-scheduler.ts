@@ -197,6 +197,15 @@ export function createSkillExperienceReviewScheduler(deps: ExperienceReviewSched
     timer.unref?.();
   };
 
+  const cancel = (key: string) => {
+    const pending = pendingBySession.get(key);
+    if (pending?.timer) {
+      clearTimer(pending.timer);
+    }
+    pendingBySession.delete(key);
+    iterationsBySession.delete(key);
+  };
+
   return {
     schedule(params: SkillExperienceReviewParams): void {
       const sessionKey = params.ctx.sessionKey?.trim();
@@ -221,15 +230,16 @@ export function createSkillExperienceReviewScheduler(deps: ExperienceReviewSched
         return;
       }
       if (resolveSkillWorkshopConfig(params.config).autonomous.mode !== "auto") {
-        iterationsBySession.delete(key);
+        cancel(key);
         return;
       }
       if (!isEligibleContext(params.ctx)) {
         log.debug(`experience review skipped: reason=ineligible-context session=${sessionKey}`);
         return;
       }
+      // The foreground turn already saved its learning; an older queued review is stale.
       if (params.workshopMutated) {
-        iterationsBySession.set(key, 0);
+        cancel(key);
         return;
       }
       const iterations = (iterationsBySession.get(key) ?? 0) + resolveTurnModelIterations(params);

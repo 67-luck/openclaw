@@ -2,11 +2,7 @@ import { rmSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import {
-  listAgentIds,
-  resolveAgentWorkspaceDir,
-  resolveDefaultAgentId,
-} from "../agents/agent-scope-config.js";
+import { listAgentIds, resolveAgentWorkspaceDir } from "../agents/agent-scope-config.js";
 import { resolveCanonicalWorkspacePath } from "../agents/workspace-state-identity.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -17,6 +13,12 @@ import { isPathInside } from "../infra/path-guards.js";
 import type { MigrationMessages } from "../infra/state-migrations.types.js";
 import { isUpdateRehearsalReadOnlyPath } from "../infra/update-rehearsal-paths.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
+import {
+  isWorkspaceSkillMutationRestored,
+  prepareWorkspaceSkillRestoration,
+  readWorkspaceSkillFile,
+  restoreWorkspaceSkillMutation,
+} from "../skills/lifecycle/workspace-skill-write.js";
 import { resolveWorkshopSkillsDir } from "../skills/workshop/skills-root.js";
 import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
@@ -34,22 +36,36 @@ const PROPOSAL_ID_PATTERN = /^[a-z0-9][a-z0-9-]{5,120}$/u;
 const DRAFT_FILE_PATTERN =
   /^(?:generations\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/)?PROPOSAL\.md$/u;
 const MAX_EXPORT_FILE_BYTES = 8 * 1024 * 1024;
+// Legacy rollback JSON holds a whole SKILL.md plus every replaced support file.
+const MAX_ROLLBACK_BYTES = 128 * 1024 * 1024;
 const EXPORTED_STATUSES = new Set(["pending", "quarantined"]);
 
 type RetiredProposal = {
   id: string;
-  ownerAgentId: string | null;
+  /** Unset when no configured agent provably owns the proposal. */
+  ownerAgentId: string | undefined;
   draftFile: string;
   supportFiles: string[];
+};
+
+/** Pre-apply contents an apply recorded before its first write and never committed. */
+type UnfinishedApply = {
+  proposalId: string;
+  skillFile: string;
+  previousContent: string | null;
+  supportFiles: Array<{
+    path: string;
+    previousContent: string | null;
+    proposedContentHash: string;
+  }>;
 };
 
 /** Reads only the export-relevant fields; malformed records keep their tables for manual review. */
 function parseRetiredProposal(
   id: string,
-  recordJson: string,
-  ownerAgentId: string | null,
+  record: unknown,
+  ownerAgentId: string | undefined,
 ): RetiredProposal {
-  const record: unknown = JSON.parse(recordJson);
   if (!isRecord(record)) {
     throw new Error("proposal record is not an object");
   }
@@ -75,8 +91,60 @@ function parseRetiredProposal(
   return { id, ownerAgentId, draftFile, supportFiles: supportPaths };
 }
 
-function readDatabaseProposals(env: NodeJS.ProcessEnv): {
+/**
+ * Pairs a rollback (SQLite row or legacy `rollback.json`) with the hashes its proposal wrote, so
+ * recovery only ever replaces bytes that apply itself put there.
+ */
+function parseUnfinishedApply(
+  proposalId: string,
+  record: unknown,
+  rollback: Record<string, unknown>,
+): UnfinishedApply {
+  const target = isRecord(record) && isRecord(record.target) ? record.target : {};
+  const skillFile = rollback.targetSkillFile;
+  if (
+    typeof skillFile !== "string" ||
+    !path.isAbsolute(skillFile) ||
+    path.basename(skillFile) !== "SKILL.md" ||
+    target.skillFile !== skillFile
+  ) {
+    throw new Error("rollback does not match its proposal target");
+  }
+  const proposedHashes = new Map(
+    (isRecord(record) && Array.isArray(record.supportFiles) ? record.supportFiles : [])
+      .filter(isRecord)
+      .map((file) => [file.path, file.hash]),
+  );
+  const rollbackSupport = rollback.supportFiles ?? [];
+  if (!Array.isArray(rollbackSupport)) {
+    throw new Error("rollback has invalid support files");
+  }
+  const supportFiles = rollbackSupport.map((file: unknown) => {
+    const filePath = isRecord(file) ? file.path : undefined;
+    const proposedContentHash = proposedHashes.get(filePath);
+    const previousContent = isRecord(file) && file.existed === true ? file.previousContent : null;
+    if (
+      typeof filePath !== "string" ||
+      typeof proposedContentHash !== "string" ||
+      (previousContent !== null && typeof previousContent !== "string")
+    ) {
+      throw new Error("rollback has an invalid support file");
+    }
+    return { path: filePath, previousContent, proposedContentHash };
+  });
+  const previousContent = rollback.previousContent ?? null;
+  if (previousContent !== null && typeof previousContent !== "string") {
+    throw new Error("rollback has invalid previous content");
+  }
+  return { proposalId, skillFile, previousContent, supportFiles };
+}
+
+function readDatabaseProposals(
+  config: OpenClawConfig,
+  env: NodeJS.ProcessEnv,
+): {
   proposals: RetiredProposal[];
+  unfinishedApplies: UnfinishedApply[];
   /** Every proposal id with a row, whatever its status; their bundles need no sidecar. */
   recordedIds: Set<string>;
   failures: string[];
@@ -90,7 +158,13 @@ function readDatabaseProposals(env: NodeJS.ProcessEnv): {
     "skill_workshop_collection_reviews",
   ].some((table) => tableExists(db, table));
   if (!tableExists(db, "skill_workshop_proposals")) {
-    return { proposals: [], recordedIds: new Set(), failures: [], hasTables };
+    return {
+      proposals: [],
+      unfinishedApplies: [],
+      recordedIds: new Set(),
+      failures: [],
+      hasTables,
+    };
   }
   const rows = db // sqlite-allow-raw -- Retired table has no generated Kysely type; Doctor reads it once before dropping it.
     .prepare(
@@ -108,26 +182,60 @@ function readDatabaseProposals(env: NodeJS.ProcessEnv): {
       continue;
     }
     try {
-      proposals.push(
-        parseRetiredProposal(
-          id,
-          String(row.record_json),
-          typeof row.owner_agent_id === "string" ? row.owner_agent_id : null,
-        ),
-      );
+      const record: unknown = JSON.parse(String(row.record_json));
+      const ownerAgentId =
+        typeof row.owner_agent_id === "string"
+          ? row.owner_agent_id
+          : isRecord(record)
+            ? inferOwnerAgentId(record, config, env)
+            : undefined;
+      proposals.push(parseRetiredProposal(id, record, ownerAgentId));
     } catch (error) {
       failures.push(`Could not read Skill Workshop proposal ${id}: ${String(error)}`);
     }
   }
-  return { proposals, recordedIds, failures, hasTables };
+  // Apply wrote its rollback before touching files and committed `applied` last, so any other
+  // status still holding a rollback may have stopped between the two.
+  const rollbackRows = tableExists(db, "skill_workshop_proposal_rollbacks")
+    ? db // sqlite-allow-raw -- Retired table has no generated Kysely type; Doctor reads it once before dropping it.
+        .prepare(
+          `SELECT r.proposal_id, r.target_skill_file, r.previous_content, r.support_files_json,
+                  p.record_json
+             FROM skill_workshop_proposal_rollbacks r
+             JOIN skill_workshop_proposals p USING (proposal_id)
+            WHERE p.status != 'applied'
+            ORDER BY r.proposal_id`,
+        )
+        .all()
+    : [];
+  const unfinishedApplies: UnfinishedApply[] = [];
+  for (const row of rollbackRows) {
+    const id = String(row.proposal_id);
+    try {
+      unfinishedApplies.push(
+        parseUnfinishedApply(id, JSON.parse(String(row.record_json)), {
+          targetSkillFile: row.target_skill_file,
+          previousContent: row.previous_content,
+          supportFiles:
+            typeof row.support_files_json === "string" ? JSON.parse(row.support_files_json) : [],
+        }),
+      );
+    } catch (error) {
+      failures.push(
+        `Could not read the unfinished apply of Skill Workshop proposal ${id}: ${String(error)}`,
+      );
+    }
+  }
+  return { proposals, unfinishedApplies, recordedIds, failures, hasTables };
 }
 
 /**
- * Legacy sidecars carry no owner column: use the recorded origin agent, else the one agent whose
- * workspace or Workshop holds the target skill, else the sole configured agent. A recorded owner
- * that is no longer configured is never reassigned; that bundle stays for manual recovery.
+ * Records without an owner (legacy sidecars, NULL owner rows) use the recorded origin agent, else
+ * the one agent whose workspace or Workshop holds the target skill, else the sole configured
+ * agent. A recorded owner that is no longer configured is never reassigned; that proposal stays
+ * for manual recovery.
  */
-function inferLegacyOwnerAgentId(
+function inferOwnerAgentId(
   record: Record<string, unknown>,
   config: OpenClawConfig,
   env: NodeJS.ProcessEnv,
@@ -177,10 +285,16 @@ async function readLegacyJsonProposals(params: {
   recordedIds: ReadonlySet<string>;
   config: OpenClawConfig;
   env: NodeJS.ProcessEnv;
-}): Promise<{ proposals: RetiredProposal[]; failures: string[] }> {
+}): Promise<{
+  proposals: RetiredProposal[];
+  unfinishedApplies: UnfinishedApply[];
+  failures: string[];
+}> {
   const proposals: RetiredProposal[] = [];
+  const unfinishedApplies: UnfinishedApply[] = [];
   const failures: string[] = [];
   const stateRoot = await root(params.stateDir);
+  const readOptions = { hardlinks: "reject", symlinks: "reject" } as const;
   for (const entry of await stateRoot.list(LEGACY_PROPOSALS_DIR, { withFileTypes: true })) {
     if (
       !entry.isDirectory ||
@@ -192,26 +306,43 @@ async function readLegacyJsonProposals(params: {
     const bundleDir = path.join(params.stateDir, LEGACY_PROPOSALS_DIR, entry.name);
     try {
       const read = await stateRoot.read(`${LEGACY_PROPOSALS_DIR}/${entry.name}/proposal.json`, {
-        hardlinks: "reject",
+        ...readOptions,
         maxBytes: MAX_EXPORT_FILE_BYTES,
-        symlinks: "reject",
       });
-      const recordJson = read.buffer.toString("utf8");
-      const record: unknown = JSON.parse(recordJson);
+      const record: unknown = JSON.parse(read.buffer.toString("utf8"));
       if (!isRecord(record) || typeof record.status !== "string") {
         throw new Error("proposal record has no status");
+      }
+      if (record.status !== "applied") {
+        const rollback = await stateRoot
+          .read(`${LEGACY_PROPOSALS_DIR}/${entry.name}/rollback.json`, {
+            ...readOptions,
+            maxBytes: MAX_ROLLBACK_BYTES,
+          })
+          .catch((error: unknown) => {
+            if (isMissingPathError(error)) {
+              return undefined;
+            }
+            throw error;
+          });
+        if (rollback) {
+          const facts: unknown = JSON.parse(rollback.buffer.toString("utf8"));
+          if (!isRecord(facts)) {
+            throw new Error("rollback is not an object");
+          }
+          unfinishedApplies.push(parseUnfinishedApply(entry.name, record, facts));
+        }
       }
       if (!EXPORTED_STATUSES.has(record.status)) {
         continue;
       }
-      const ownerAgentId = inferLegacyOwnerAgentId(record, params.config, params.env);
-      if (!ownerAgentId) {
-        failures.push(
-          `Could not tell which agent owns Skill Workshop proposal ${entry.name}; kept ${bundleDir}. Copy its PROPOSAL.md into the owning agent's workshop skills, delete that directory, then rerun openclaw doctor --fix.`,
-        );
-        continue;
-      }
-      proposals.push(parseRetiredProposal(entry.name, recordJson, ownerAgentId));
+      proposals.push(
+        parseRetiredProposal(
+          entry.name,
+          record,
+          inferOwnerAgentId(record, params.config, params.env),
+        ),
+      );
     } catch (error) {
       failures.push(
         isMissingPathError(error)
@@ -220,7 +351,37 @@ async function readLegacyJsonProposals(params: {
       );
     }
   }
-  return { proposals, failures };
+  return { proposals, unfinishedApplies, failures };
+}
+
+/**
+ * Apply wrote support files first and SKILL.md last. While SKILL.md still holds its pre-apply
+ * content the apply never finished, so every support file it provably wrote is put back. Past
+ * that point the apply completed or the skill changed since; neither is Doctor's to undo.
+ */
+async function undoUnfinishedApply(apply: UnfinishedApply): Promise<boolean> {
+  const skillDir = path.dirname(apply.skillFile);
+  if (
+    !(await pathExists(skillDir)) ||
+    (await readWorkspaceSkillFile(apply.skillFile)) !== apply.previousContent
+  ) {
+    return false;
+  }
+  const restoration = await prepareWorkspaceSkillRestoration({
+    skillsRoot: path.dirname(skillDir),
+    skillDir,
+    skillFile: apply.skillFile,
+    previousContent: apply.previousContent,
+    // Never compared: SKILL.md already holds its previous content, so restoration skips it.
+    proposedContentHash: "",
+    supportFiles: apply.supportFiles,
+    mode: "update",
+  });
+  if (await isWorkspaceSkillMutationRestored(restoration)) {
+    return false;
+  }
+  await restoreWorkspaceSkillMutation(restoration);
+  return true;
 }
 
 /** Copies one draft bundle; an existing export is never overwritten. */
@@ -277,7 +438,7 @@ async function retireProposals(params: {
   const { config, env, assertCurrent } = params;
   const stateDir = resolveStateDir(env);
   const legacyDirExists = await pathExists(path.join(stateDir, LEGACY_PROPOSALS_DIR));
-  const database = readDatabaseProposals(env);
+  const database = readDatabaseProposals(config, env);
   if (!database.hasTables && !legacyDirExists) {
     return { changes: [], warnings: [] };
   }
@@ -288,18 +449,55 @@ async function retireProposals(params: {
         config,
         env,
       })
-    : { proposals: [], failures: [] };
+    : { proposals: [], unfinishedApplies: [], failures: [] };
   const warnings = [...database.failures, ...legacy.failures];
   // Any unread or unexported proposal keeps the tables and files for the next Doctor run.
   let blocked = warnings.length > 0;
   const changes: string[] = [];
+  // Dropping the rollbacks forgets what an interrupted apply half-wrote, so undo that first.
+  for (const apply of [...database.unfinishedApplies, ...legacy.unfinishedApplies]) {
+    assertCurrent();
+    const skillDir = path.dirname(apply.skillFile);
+    // An update rehearsal must not write outside its copied state; the real Doctor run restores.
+    if (isUpdateRehearsalReadOnlyPath(skillDir, env)) {
+      blocked = true;
+      continue;
+    }
+    try {
+      if (await undoUnfinishedApply(apply)) {
+        changes.push(
+          `Restored ${skillDir} from the unfinished apply of Skill Workshop proposal ${apply.proposalId}.`,
+        );
+      }
+    } catch (error) {
+      blocked = true;
+      const causes = error instanceof AggregateError ? error.errors : [error];
+      warnings.push(
+        `Could not undo the unfinished apply of Skill Workshop proposal ${apply.proposalId} in ${skillDir}: ${causes.map(String).join("; ")}. Its proposal tables and files are kept with the recorded pre-apply contents; restore those files by hand, then rerun openclaw doctor --fix.`,
+      );
+    }
+  }
   const exportedIds = new Set<string>();
   const exportedByRoot = new Map<string, number>();
-  const defaultAgentId = resolveDefaultAgentId(config);
   for (const proposal of [...database.proposals, ...legacy.proposals]) {
     assertCurrent();
+    const proposalDir = path.join(stateDir, LEGACY_PROPOSALS_DIR, proposal.id);
+    if (!(await pathExists(proposalDir))) {
+      warnings.push(
+        `Skill Workshop proposal ${proposal.id} has no draft left to export; retired its record.`,
+      );
+      exportedIds.add(proposal.id);
+      continue;
+    }
+    if (!proposal.ownerAgentId) {
+      blocked = true;
+      warnings.push(
+        `Could not tell which agent owns Skill Workshop proposal ${proposal.id}; kept ${proposalDir}. Copy its PROPOSAL.md into the owning agent's workshop skills, delete that directory, then rerun openclaw doctor --fix.`,
+      );
+      continue;
+    }
     const exportRoot = path.join(
-      resolveWorkshopSkillsDir(config, proposal.ownerAgentId ?? defaultAgentId, env),
+      resolveWorkshopSkillsDir(config, proposal.ownerAgentId, env),
       ".archive",
       ".retired-proposals",
     );
@@ -312,10 +510,14 @@ async function retireProposals(params: {
       await fs.mkdir(exportRoot, { recursive: true });
       const outcome = await exportProposal(proposal, stateDir, exportRoot);
       if (outcome === "missing-draft") {
+        // Its directory may still hold support files or other generations.
+        blocked = true;
         warnings.push(
-          `Skill Workshop proposal ${proposal.id} has no draft left to export; retired its record.`,
+          `Skill Workshop proposal ${proposal.id} has no draft; kept ${proposalDir}. Copy anything worth keeping, delete that directory, then rerun openclaw doctor --fix.`,
         );
-      } else if (outcome === "exported") {
+        continue;
+      }
+      if (outcome === "exported") {
         exportedByRoot.set(exportRoot, (exportedByRoot.get(exportRoot) ?? 0) + 1);
       }
       exportedIds.add(proposal.id);

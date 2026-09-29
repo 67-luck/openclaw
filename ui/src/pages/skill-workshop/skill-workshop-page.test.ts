@@ -45,15 +45,17 @@ const change: SkillWorkshopChange = {
   createdAtMs: Date.now() - 60_000,
 };
 
-function workshopGateway() {
+function workshopGateway(changes: SkillWorkshopChange[] = [change]) {
   return vi.fn(async (method: string) => {
     switch (method) {
       case "skills.workshop.list":
         return list;
       case "skills.workshop.changes":
-        return { changes: [change] };
+        return { changes };
       case "skills.workshop.restore":
         return { change: { ...change, id: "change-2", action: "restore", actor: "user" } };
+      case "skills.workshop.archive":
+        return { change: { ...change, id: "change-3", action: "archive", actor: "user" } };
       default:
         throw new Error(`unexpected ${method}`);
     }
@@ -104,6 +106,40 @@ describe("Skill Workshop page", () => {
       name: SKILL,
       versionId: VERSION,
     });
+  });
+
+  it("undoes restoring an archived skill by archiving it again", async () => {
+    const request = workshopGateway([
+      { ...change, action: "restore", actor: "user", summary: "restored", versionId: undefined },
+    ]);
+    const page = await mount(
+      createContext(request, {
+        methods: ["skills.workshop.archive", "skills.workshop.restore"],
+      }),
+    );
+    await vi.waitFor(() => expect(button(page, "Undo")).toBeDefined());
+
+    button(page, "Undo")?.click();
+
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith("skills.workshop.archive", {
+        agentId: "research",
+        name: SKILL,
+      }),
+    );
+  });
+
+  it("offers no undo once the change's saved version has been pruned", async () => {
+    const page = await mount(
+      createContext(
+        workshopGateway([
+          { ...change, summary: "an older patch", versionId: "20260101T000000000Z-patch" },
+        ]),
+        { methods: ["skills.workshop.archive", "skills.workshop.restore"] },
+      ),
+    );
+    await vi.waitFor(() => expect(page.textContent).toContain("an older patch"));
+    expect(button(page, "Undo")).toBeUndefined();
   });
 
   it("offers no undo to an operator without admin scope", async () => {

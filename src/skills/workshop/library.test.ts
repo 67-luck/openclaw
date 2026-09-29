@@ -212,4 +212,35 @@ describe("workshop library", () => {
     const view = await viewWorkshopSkill({}, "main", "deploy", undefined, oldest);
     expect(view.content).toContain("step 2");
   });
+
+  it("keeps a review's pre-review version until the review is over", async () => {
+    await createWorkshopSkill(ctx, { name: "deploy", content: skill("deploy", "step 0") });
+    const review = { ...ctx, actor: "review" as const, runId: "review-run" };
+    let firstReviewVersion = "";
+    for (let step = 1; step <= 12; step += 1) {
+      const change = await patchWorkshopSkill(review, {
+        name: "deploy",
+        oldText: `step ${step - 1}`,
+        newText: `step ${step}`,
+      });
+      firstReviewVersion ||= change.versionId ?? "";
+    }
+    await restoreWorkshopSkill(ctx, { name: "deploy", versionId: firstReviewVersion });
+    expect(await readLive("deploy")).toContain("step 0");
+  });
+
+  it("checks the caller's live authority before touching files", async () => {
+    await createWorkshopSkill(ctx, { name: "deploy", content: skill("deploy", "step 0") });
+    const revoked = {
+      ...ctx,
+      assertLive: () => {
+        throw new Error("Learning is off.");
+      },
+    };
+    await expect(
+      patchWorkshopSkill(revoked, { name: "deploy", oldText: "step 0", newText: "step 1" }),
+    ).rejects.toThrow("Learning is off.");
+    expect(await readLive("deploy")).toContain("step 0");
+    expect(await listWorkshopArchive({}, "main")).toEqual([]);
+  });
 });

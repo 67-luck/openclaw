@@ -1,6 +1,7 @@
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
 import { getReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import { extractDeliveryInfo } from "../../config/sessions/delivery-info.js";
+import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { buildOutboundSessionContext } from "../../infra/outbound/session-context.js";
 import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
@@ -84,15 +85,30 @@ function formatWorkshopUndoContext(changes: readonly WorkshopChange[]): string {
  * mirrored into the session transcript; channel-less sessions (Control UI) get a transcript
  * entry. The next foreground turn also gets a system event naming the exact revert call,
  * because an assistant line the model did not write is weak evidence that "undo" means it.
+ * A conversation reset since the review started gets neither.
  */
 export async function postWorkshopChangeNotice(params: {
   config: OpenClawConfig;
   agentId: string;
   sessionKey: string;
+  /** The reviewed session generation; the notice belongs to it, not to a later reset. */
+  sessionId: string;
+  storePath: string;
   runId: string;
   changes: readonly WorkshopChange[];
 }): Promise<void> {
   if (params.changes.length === 0) {
+    return;
+  }
+  const current = loadSessionEntryReadOnly({
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    storePath: params.storePath,
+    hydrateSkillPromptRefs: false,
+    readConsistency: "latest",
+  });
+  if (current?.sessionId !== params.sessionId) {
+    log.debug(`skill workshop notice skipped: session ${params.sessionKey} was reset`);
     return;
   }
   enqueueSystemEvent(formatWorkshopUndoContext(params.changes), {
@@ -101,7 +117,7 @@ export async function postWorkshopChangeNotice(params: {
   const text = formatWorkshopChangeNotice(params.changes);
   const idempotencyKey = `skill-workshop-notice:${params.runId}`;
   try {
-    const { deliveryContext: target } = extractDeliveryInfo(params.sessionKey, {
+    const { deliveryContext: target, threadId } = extractDeliveryInfo(params.sessionKey, {
       cfg: params.config,
     });
     const channel = target?.channel ? normalizeMessageChannel(target.channel) : undefined;
@@ -113,14 +129,20 @@ export async function postWorkshopChangeNotice(params: {
         channel,
         to: target.to,
         accountId: target.accountId,
-        threadId: target.threadId,
+        // The session key's thread is canonical; stored context may name a stale thread.
+        threadId: threadId ?? target.threadId,
         payloads: [{ text }],
         session: buildOutboundSessionContext({
           cfg: params.config,
           sessionKey: params.sessionKey,
           agentId: params.agentId,
         }),
-        mirror: { sessionKey: params.sessionKey, agentId: params.agentId, idempotencyKey },
+        mirror: {
+          sessionKey: params.sessionKey,
+          agentId: params.agentId,
+          idempotencyKey,
+          expectedSessionId: params.sessionId,
+        },
         bestEffort: true,
       });
       if (send.status === "failed" || send.status === "partial_failed") {
@@ -133,11 +155,17 @@ export async function postWorkshopChangeNotice(params: {
     const appended = await appendAssistantMessageToSessionTranscript({
       agentId: params.agentId,
       sessionKey: params.sessionKey,
+      expectedSessionId: params.sessionId,
+      storePath: params.storePath,
       text,
       idempotencyKey,
       config: params.config,
     });
     if (!appended.ok) {
+      if (appended.code === "session-rebound") {
+        log.debug(`skill workshop notice skipped: session ${params.sessionKey} was reset`);
+        return;
+      }
       throw new Error(appended.reason);
     }
   } catch (error) {

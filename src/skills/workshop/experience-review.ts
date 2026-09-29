@@ -183,11 +183,22 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
       runId,
       ...(capability ? { cronCreatorAuthorityCapability: capability } : {}),
     });
-  const result = capability
-    ? await runWithCronCreatorAuthorityCapability(capability, run)
-    : await run();
-  assertSkillReviewRunSucceeded(result);
-  const changes = await listWorkshopChanges(agentId, { runId });
-  log.debug(`experience review finished: session=${sessionKey} changes=${changes.length}`);
-  await postWorkshopChangeNotice({ config, agentId, sessionKey, runId, changes });
+  try {
+    assertSkillReviewRunSucceeded(
+      capability ? await runWithCronCreatorAuthorityCapability(capability, run) : await run(),
+    );
+  } finally {
+    // Each skill_workshop call commits on its own, so a failed or aborted run may have changed skills.
+    const changes = await listWorkshopChanges(agentId, { runId });
+    log.debug(`experience review finished: session=${sessionKey} changes=${changes.length}`);
+    await postWorkshopChangeNotice({
+      config,
+      agentId,
+      sessionKey,
+      sessionId: candidate.source.sessionId,
+      storePath: candidate.source.storePath,
+      runId,
+      changes,
+    });
+  }
 }

@@ -262,51 +262,49 @@ function readVerifiedSkillCardUrl(
   return { ok: true, url };
 }
 
-async function withOfflineGatewayLock<T>(
-  config: ReturnType<typeof getRuntimeConfig>,
-  gatewayError: unknown,
-  action: () => T | Promise<T>,
-): Promise<T> {
-  const { acquireGatewayLock } = await import("../infra/gateway-lock.js");
-  const lock = await acquireGatewayLock({
-    allowInTests: true,
-    port: resolveGatewayPort(config, process.env),
-    role: "sqlite-maintenance",
-    timeoutMs: GATEWAY_SKILLS_OFFLINE_LOCK_TIMEOUT_MS,
-  }).catch(() => undefined);
-  if (!lock) {
-    throw gatewayError;
-  }
-  // Missing credentials cannot prove a Gateway is absent; only its ownership lock can.
-  try {
-    return await lock.run(action);
-  } finally {
-    await lock.release();
-  }
-}
-
 async function callSkillsWorkshop<T>(
   resolved: ResolvedSkillsWorkspace,
   method: "list" | "changes" | "read" | "archive" | "restore",
   params: Record<string, unknown>,
   loadLocal: () => Promise<T>,
 ): Promise<T> {
-  const mutation = method === "archive" || method === "restore";
+  const request = {
+    config: resolved.config,
+    method: `skills.workshop.${method}`,
+    params: { agentId: resolved.agentId, ...params },
+  };
+  if (method === "archive" || method === "restore") {
+    // A dispatched mutation may already have committed, so choose the route before sending
+    // and never replay it locally: run here only while no Gateway owns the state lock.
+    const { isImplicitLocalGatewayTarget } = await import("../gateway/call.js");
+    const { acquireGatewayLock } = await import("../infra/gateway-lock.js");
+    const lock = (await isImplicitLocalGatewayTarget({ config: resolved.config }))
+      ? await acquireGatewayLock({
+          allowInTests: true,
+          port: resolveGatewayPort(resolved.config, process.env),
+          role: "sqlite-maintenance",
+          timeoutMs: GATEWAY_SKILLS_OFFLINE_LOCK_TIMEOUT_MS,
+        }).catch(() => undefined)
+      : undefined;
+    if (!lock) {
+      return await callSkillsGateway<T>({
+        ...request,
+        timeoutMs: GATEWAY_SKILLS_WORKSHOP_MUTATION_TIMEOUT_MS,
+      });
+    }
+    try {
+      return await lock.run(loadLocal);
+    } finally {
+      await lock.release();
+    }
+  }
   try {
-    return await callSkillsGateway<T>({
-      config: resolved.config,
-      method: `skills.workshop.${method}`,
-      params: { agentId: resolved.agentId, ...params },
-      ...(mutation ? { timeoutMs: GATEWAY_SKILLS_WORKSHOP_MUTATION_TIMEOUT_MS } : {}),
-    });
+    return await callSkillsGateway<T>(request);
   } catch (error) {
     if (!(await canFallbackToImplicitLocalGateway({ config: resolved.config, error }))) {
       throw error;
     }
-    // Local mutations are safe only when no Gateway owns the state lock.
-    return mutation
-      ? await withOfflineGatewayLock(resolved.config, error, loadLocal)
-      : await loadLocal();
+    return await loadLocal();
   }
 }
 

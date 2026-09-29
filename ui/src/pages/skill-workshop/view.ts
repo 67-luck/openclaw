@@ -1,4 +1,5 @@
 import type {
+  SkillsWorkshopListResult,
   SkillsWorkshopReadResult,
   SkillWorkshopChange,
   SkillWorkshopSkillSummary,
@@ -213,8 +214,12 @@ function renderSkills(props: SkillWorkshopViewProps) {
   </section>`;
 }
 
-function renderChangeRow(change: SkillWorkshopChange, props: SkillWorkshopViewProps) {
-  const undo = undoMutationFor(change);
+function renderChangeRow(
+  change: SkillWorkshopChange,
+  list: SkillsWorkshopListResult,
+  props: SkillWorkshopViewProps,
+) {
+  const undo = undoMutationFor(change, list);
   return html`<li class="sw-change">
     <div class="sw-change__line">
       <span class="sw-change__actor">${t(`skillWorkshop.changes.actors.${change.actor}`)}</span>
@@ -240,15 +245,16 @@ function renderChangeRow(change: SkillWorkshopChange, props: SkillWorkshopViewPr
 
 function renderChanges(props: SkillWorkshopViewProps) {
   const changes = props.snapshot?.changes;
+  const list = props.snapshot?.list;
   return html`<section class="sw-panel" aria-labelledby="sw-changes-title">
     <h2 id="sw-changes-title" class="sw-panel__title">${t("skillWorkshop.changes.title")}</h2>
     ${
-      !changes
+      !changes || !list
         ? nothing
         : changes.length === 0
           ? html`<p class="sw-muted">${t("skillWorkshop.changes.empty")}</p>`
           : html`<ol class="sw-list sw-changes">
-              ${changes.map((change) => renderChangeRow(change, props))}
+              ${changes.map((change) => renderChangeRow(change, list, props))}
             </ol>`
     }
   </section>`;

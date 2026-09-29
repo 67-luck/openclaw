@@ -5,12 +5,17 @@ import { assertSkillReviewRunSucceeded, postWorkshopChangeNotice } from "./revie
 
 const mocks = vi.hoisted(() => ({
   extractDeliveryInfo: vi.fn(),
+  loadSessionEntryReadOnly: vi.fn(),
   sendDurableMessageBatchCore: vi.fn(async () => ({ status: "sent" })),
   appendAssistantMessageToSessionTranscript: vi.fn(async () => ({ ok: true })),
   enqueueSystemEvent: vi.fn(() => true),
 }));
 vi.mock("../../config/sessions/delivery-info.js", () => ({
   extractDeliveryInfo: mocks.extractDeliveryInfo,
+}));
+vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/sessions/session-accessor.js")>()),
+  loadSessionEntryReadOnly: mocks.loadSessionEntryReadOnly,
 }));
 vi.mock("../../channels/message/runtime.js", () => ({
   sendDurableMessageBatchCore: mocks.sendDurableMessageBatchCore,
@@ -71,17 +76,20 @@ describe("postWorkshopChangeNotice", () => {
     createdAtMs: 1,
     ...overrides,
   });
-  const post = (changes: WorkshopChange[]) =>
+  const post = (changes: WorkshopChange[], sessionKey = "agent:main:telegram:direct:42") =>
     postWorkshopChangeNotice({
       config: {},
       agentId: "main",
-      sessionKey: "agent:main:telegram:direct:42",
+      sessionKey,
+      sessionId: "reviewed-session",
+      storePath: "/tmp/sessions.json",
       runId: "skill-workshop-review:1",
       changes,
     });
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.loadSessionEntryReadOnly.mockReturnValue({ sessionId: "reviewed-session" });
   });
 
   it("stays quiet when the review changed nothing", async () => {
@@ -158,5 +166,32 @@ describe("postWorkshopChangeNotice", () => {
         text: expect.stringContaining("💾 Learned: updated `actual-budget-operations`"),
       }),
     );
+  });
+
+  it("delivers into the thread named by the session key", async () => {
+    mocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: { channel: "slack", to: "slack:C0123ABC", accountId: "workspace-1" },
+      threadId: "1234567890.123456",
+    });
+    await post([change({})], "agent:main:slack:channel:C0123ABC:thread:1234567890.123456");
+    expect(mocks.sendDurableMessageBatchCore).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "slack",
+        to: "slack:C0123ABC",
+        threadId: "1234567890.123456",
+      }),
+    );
+  });
+
+  it("leaves a conversation reset since the review started untouched", async () => {
+    mocks.loadSessionEntryReadOnly.mockReturnValue({ sessionId: "fresh-session" });
+    mocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: { channel: "telegram", to: "42" },
+      threadId: undefined,
+    });
+    await post([change({})]);
+    expect(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
+    expect(mocks.sendDurableMessageBatchCore).not.toHaveBeenCalled();
+    expect(mocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
   });
 });

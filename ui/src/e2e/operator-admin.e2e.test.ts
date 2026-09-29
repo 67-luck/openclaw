@@ -379,7 +379,15 @@ suite.define(() => {
               files: ["SKILL.md"],
             },
           ],
-          archived: [],
+          archived: [
+            {
+              name: "read-only-skill",
+              live: true,
+              versions: [
+                { id: "20260804T080000000Z-patch", action: "patch", createdAtMs: learnedAtMs },
+              ],
+            },
+          ],
         },
         "skills.workshop.changes": {
           changes: [

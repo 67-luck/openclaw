@@ -54,6 +54,8 @@ export type WorkshopMutationContext = {
   actor: WorkshopActor;
   sessionKey?: string;
   runId?: string;
+  /** Throws once the caller lost write authority; checked under the skill locks before any write. */
+  assertLive?: () => void;
 };
 export type WorkshopChange = {
   id: string;
@@ -210,12 +212,17 @@ async function snapshotSkill(
   const createdAtMs = Math.max(Date.now(), (newest?.createdAtMs ?? 0) + 1);
   const versionId = `${new Date(createdAtMs).toISOString().replace(/[-:.]/g, "")}-${action}`;
   await fs.mkdir(paths.versionsDir, { recursive: true });
-  await fs.cp(paths.skillDir, path.join(paths.versionsDir, versionId), {
-    recursive: true,
-    errorOnExist: true,
-    force: false,
-    filter: async (source) => !(await fs.lstat(source)).isSymbolicLink(),
-  });
+  // Copy under a name listVersions ignores; only a complete copy becomes a restorable version.
+  const staging = path.join(paths.versionsDir, `.snapshot-${randomUUID()}`);
+  try {
+    await fs.cp(paths.skillDir, staging, {
+      recursive: true,
+      filter: async (source) => !(await fs.lstat(source)).isSymbolicLink(),
+    });
+    await fs.rename(staging, path.join(paths.versionsDir, versionId));
+  } finally {
+    await fs.rm(staging, { recursive: true, force: true });
+  }
   return versionId;
 }
 
@@ -391,6 +398,7 @@ async function mutateSkill(
   const paths = resolveSkillPaths(ctx.config, ctx.agentId, name);
   const lockKeys = [paths.skillDir, ...alsoLock.map((other) => other.skillDir)];
   return await withSkillLocks(lockKeys, async () => {
+    ctx.assertLive?.();
     // Plugin skill_changed observers see Workshop edits like any committed skill change.
     const hooked = hasCommittedSkillChangeHooks();
     const snapshotArtifact = async () =>
@@ -404,7 +412,9 @@ async function mutateSkill(
     const before = await snapshotArtifact();
     const { summary, versionId } = await apply(paths);
     const after = await snapshotArtifact();
-    for (const version of (await listVersions(paths.versionsDir)).slice(MAX_VERSIONS_PER_SKILL)) {
+    // Keep a review's pre-review undo target; reviews are bounded and the next change prunes.
+    const keep = ctx.actor === "review" ? Number.POSITIVE_INFINITY : MAX_VERSIONS_PER_SKILL;
+    for (const version of (await listVersions(paths.versionsDir)).slice(keep)) {
       await fs.rm(path.join(paths.versionsDir, version.id), { recursive: true, force: true });
     }
     bumpSkillsSnapshotVersion({

@@ -1,7 +1,9 @@
 import path from "node:path";
+import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { pathExists } from "../../infra/fs-safe.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
+import { resolveSkillWorkshopConfig } from "../../skills/workshop/config.js";
 import {
   archiveWorkshopSkill,
   createWorkshopSkill,
@@ -18,6 +20,7 @@ import {
 } from "../../skills/workshop/library.js";
 import { SKILL_AUTHORING_STANDARDS_PROMPT } from "../../skills/workshop/skill-authoring-standards.js";
 import { resolveWorkshopSkillsDir } from "../../skills/workshop/skills-root.js";
+import { captureAgentToolSourceExecutionGuard } from "../agent-tool-source-execution-guard.js";
 import { recordSkillUsed } from "../agent-tools.before-tool-call.diagnostics.js";
 import { SKILL_WORKSHOP_TOOL_DISPLAY_SUMMARY } from "../tool-description-presets.js";
 import { canonicalizePath } from "../utils/paths.js";
@@ -71,7 +74,7 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
     viewedSkillsByRun.set(options.runId, viewed);
     pruneMapToMaxSize(viewedSkillsByRun, MAX_TRACKED_RUNS);
   }
-  const ctx: WorkshopMutationContext = {
+  const baseCtx: WorkshopMutationContext = {
     config: options.config,
     agentId: options.agentId,
     // A background review credits "review" and records the conversation it learned from.
@@ -83,7 +86,24 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
   };
   const skillsRoot = resolveWorkshopSkillsDir(options.config, options.agentId);
 
-  const execute = async (params: Record<string, unknown>) => {
+  const execute = async (params: Record<string, unknown>, signal?: AbortSignal) => {
+    // Captured before any await; library writes recheck it under the skill lock.
+    const assertSourceCurrent = captureAgentToolSourceExecutionGuard(signal);
+    const ctx: WorkshopMutationContext = {
+      ...baseCtx,
+      assertLive: () => {
+        assertSourceCurrent();
+        // The operator may switch Learning Off mid-review.
+        if (
+          options.reviewOf &&
+          resolveSkillWorkshopConfig(getRuntimeConfig()).autonomous.mode !== "auto"
+        ) {
+          throw new WorkshopWriteError(
+            "Learning is off; background reviews may not change skills.",
+          );
+        }
+      },
+    };
     const action = readToolStringParam(params, "action", { required: true });
     if (action === "list") {
       const [skills, archive] = await Promise.all([
@@ -117,10 +137,13 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
         filePath,
         version,
       );
-      viewed.add(name);
+      // Only a view of the live skill counts: it satisfies the review read-before-edit guard,
+      // and a foreground view is skill use (review trigger and unused-skill archive clock,
+      // through the same skill_usage owner as file reads).
+      if (!version) {
+        viewed.add(name);
+      }
       if (!version && !options.reviewOf) {
-        // A foreground view is skill use: it feeds this turn's review trigger and the
-        // unused-skill archive clock through the same skill_usage owner as file reads.
         recordSkillUsed({
           ctx: options,
           match: {
@@ -226,9 +249,9 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
     displaySummary: SKILL_WORKSHOP_TOOL_DISPLAY_SUMMARY,
     description: SKILL_WORKSHOP_DESCRIPTION,
     parameters: SkillWorkshopToolSchema,
-    execute: async (_toolCallId, args) => {
+    execute: async (_toolCallId, args, signal) => {
       try {
-        return await execute(asToolParamsRecord(args));
+        return await execute(asToolParamsRecord(args), signal);
       } catch (error) {
         if (error instanceof WorkshopWriteError) {
           throw new ToolInputError(error.message);

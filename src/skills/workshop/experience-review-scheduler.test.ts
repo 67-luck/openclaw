@@ -1,4 +1,5 @@
 import path from "node:path";
+import { setImmediate } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import {
@@ -90,6 +91,17 @@ describe("skill experience review scheduler", () => {
     expect(timers).toHaveLength(0);
     turn(1);
     expect(timers).toHaveLength(1);
+  });
+
+  it("drops an already queued review when a later foreground turn saves its own change", async () => {
+    const { turn, fireTimers, runReview, timers } = createHarness();
+
+    turn(10);
+    expect(timers).toHaveLength(1);
+    turn(1, { workshopMutated: true });
+    fireTimers();
+    await setImmediate();
+    expect(runReview).not.toHaveBeenCalled();
   });
 
   it("reviews right after a turn that used a learned skill, but not other skills", async () => {
