@@ -774,7 +774,7 @@ async function main() {
       lifetime,
       commands,
       env,
-      label: "unloaded:native-lifetime-contract",
+      label: `${cell.name}:native-lifetime-contract`,
       bin: descriptor.powerShellExe,
       args: [
         "-NoProfile",
@@ -1012,7 +1012,7 @@ async function main() {
     };
     const failures = [];
     try {
-      if (name === "unloaded") {
+      if (name === "sync-timeout") {
         // Qualify the independent API prerequisite before the addon fixture's clock starts.
         await nativeLifetimeControl(prepared.descriptor, cell);
       }
@@ -1219,6 +1219,7 @@ async function main() {
         projection: canary,
       });
       for (const name of [
+        "sync-timeout",
         "unloaded",
         "loaded",
         "absent-pin",
@@ -1226,7 +1227,6 @@ async function main() {
         "wrong-dll",
         "wrong-runtime",
         "wrong-custody",
-        "sync-timeout",
         "fixture-abort",
       ]) {
         try {

@@ -168,6 +168,7 @@ it.each([
     const addonSha256 = "939156f310bd7a7d9d1db1b5249a5d135739b049c24c79fd3c201701333ddbf3";
     let lifetimeJoins = 0;
     const order: string[] = [];
+    const nativeCells: string[] = [];
     let markNativeEntered!: () => void;
     const nativeEntered = new Promise<void>((resolve) => {
       markNativeEntered = resolve;
@@ -251,19 +252,19 @@ it.each([
           descriptor,
           async cleanup() {
             cleaned.push(name);
+            order.push(`cleanup:${name}`);
             if (
-              name === "unloaded" &&
-              (scenario === "cleanup" ||
-                scenario === "joined-failure-and-cleanup" ||
-                scenario === "native-lifetime-and-cleanup")
+              (name === "unloaded" &&
+                (scenario === "cleanup" || scenario === "joined-failure-and-cleanup")) ||
+              (name === "sync-timeout" && scenario === "native-lifetime-and-cleanup")
             ) {
               throw cleanupFailure;
             }
           },
         };
       },
-      async nativeLifetimeControl() {
-        expect(started).toEqual(["unloaded"]);
+      async nativeLifetimeControl(_descriptor: unknown, cell: { name: string }) {
+        nativeCells.push(cell.name);
         order.push("api-enter");
         markNativeEntered();
         if (scenario === "native-pending") {
@@ -443,7 +444,10 @@ it.each([
           },
         };
       },
-      synchronousTimeoutControl: () => ({ capture: {}, receipt: { pid: 9876 } }),
+      synchronousTimeoutControl: () => {
+        order.push("timeout:sync-timeout");
+        return { capture: {}, receipt: { pid: 9876 } };
+      },
       async verifyInstalledFileIoExecutable(value: unknown) {
         expect(value).toBe(descriptors.get("sync-timeout"));
         directOrder.push(directReceipt.joined ? "verify-after" : "verify-before");
@@ -503,20 +507,30 @@ it.each([
     }
     expect(lifetimeJoins).toBe(1);
     expect(processState.exitCode).toBe(1);
+    expect(nativeCells).toEqual(["sync-timeout"]);
+    if (started.includes("unloaded")) {
+      expect(order.indexOf("api-joined")).toBeLessThan(order.indexOf("timeout:sync-timeout"));
+      expect(order.indexOf("cleanup:sync-timeout")).toBeLessThan(order.indexOf("prepare:unloaded"));
+    }
     if (["native-lifetime", "native-lifetime-and-cleanup", "native-unjoined"].includes(scenario)) {
       expect(targets.size).toBe(0);
-      expect(order).toEqual(["prepare:unloaded", "api-enter"]);
+      expect(order).toEqual([
+        "prepare:sync-timeout",
+        "api-enter",
+        ...(scenario === "native-unjoined" ? [] : ["cleanup:sync-timeout"]),
+      ]);
     } else {
       expect(order.slice(0, 5)).toEqual([
-        "prepare:unloaded",
+        "prepare:sync-timeout",
         "api-enter",
         "api-joined",
-        "fixture:unloaded",
-        "census:unloaded:pin",
+        "fixture:sync-timeout",
+        "census:sync-timeout:pin",
       ]);
     }
     if (scenario === "known-completion" || scenario === "native-pending") {
       expect(started).toEqual([
+        "sync-timeout",
         "unloaded",
         "loaded",
         "absent-pin",
@@ -524,25 +538,29 @@ it.each([
         "wrong-dll",
         "wrong-runtime",
         "wrong-custody",
-        "sync-timeout",
         "fixture-abort",
       ]);
       expect(cleaned).toEqual(started);
       expect(directOrder).toEqual(["verify-before", "launch", "completion", "verify-after"]);
-      expect(cells.slice(0, 2).map((cell) => cell.completedDeletionFailure?.message)).toEqual([
+      expect(cells.slice(1, 3).map((cell) => cell.completedDeletionFailure?.message)).toEqual([
         "No deletion-disposition completion was attributed",
         "No deletion-disposition completion was attributed",
       ]);
     } else {
-      expect(started).toEqual(["unloaded"]);
+      const nativeFailureFirst = [
+        "native-lifetime",
+        "native-lifetime-and-cleanup",
+        "native-unjoined",
+      ].includes(scenario);
+      expect(started).toEqual(nativeFailureFirst ? ["sync-timeout"] : ["sync-timeout", "unloaded"]);
       expect(cleaned).toEqual(
-        scenario === "unjoined" ||
-          scenario === "native-unjoined" ||
-          scenario === "secondary-unjoined"
+        scenario === "native-unjoined"
           ? []
-          : ["unloaded"],
+          : nativeFailureFirst || scenario === "unjoined" || scenario === "secondary-unjoined"
+            ? ["sync-timeout"]
+            : ["sync-timeout", "unloaded"],
       );
-      expect(cells[0]?.qualified).toBe(false);
+      expect(cells.at(-1)?.qualified).toBe(false);
       if (
         scenario === "joined-failure" ||
         scenario === "timeout" ||
@@ -877,7 +895,8 @@ it.each([
         expect(value).toBe(descriptor);
         verifications++;
       },
-      launchManaged: (options: { bin: string; args: string[] }) => {
+      launchManaged: (options: { bin: string; args: string[]; label: string }) => {
+        expect(options.label).toBe("sync-timeout:native-lifetime-contract");
         expect(verifications).toBe(1);
         expect(options.bin).toBe(descriptor.powerShellExe);
         const encoded = options.args[options.args.indexOf("-ExpectedRuntimeBase64") + 1];
@@ -899,7 +918,9 @@ it.each([
       `return ${source.slice(declaration.start, declaration.end)}`,
       Object.keys(dependencies),
     )(...Object.values(dependencies));
-    const cell: { nativeLifetimeControl?: Record<string, unknown> } = {};
+    const cell: { name: string; nativeLifetimeControl?: Record<string, unknown> } = {
+      name: "sync-timeout",
+    };
     const call = invoke(descriptor, cell);
     if (scenario === "complete" || scenario === "input-unknown") {
       await call;
