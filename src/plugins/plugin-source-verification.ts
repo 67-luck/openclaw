@@ -38,36 +38,59 @@ export type PluginSourceInput = {
   native?: boolean;
 };
 
+function isPluginSourceInputCurrent(
+  source: string,
+  input: PluginSourceInput,
+  rereadFiles: boolean,
+): boolean {
+  const identity = input.native
+    ? pluginSourceFileIdentity(source, input.boundary)
+    : pluginSourceInputIdentity(fs.statSync(source, { bigint: true }));
+  // Retaining native namespaces also hardlinks ordinary companion files.
+  if (
+    !input.directory &&
+    identity !== input.identity &&
+    pluginSourceIdentityChangedOnlyByCtime(input.identity, identity) &&
+    hashPluginSourceFile(source, input.boundary).contentHash === input.contentHash
+  ) {
+    input.identity = identity;
+  }
+  return (
+    fs.realpathSync(source) === source &&
+    identity === input.identity &&
+    (input.directory
+      ? readPluginSourceDirectory(source).contentHash === input.contentHash
+      : input.native ||
+        !rereadFiles ||
+        hashPluginSourceFile(source, input.boundary).contentHash === input.contentHash)
+  );
+}
+
 export function verifyPluginSourceInputs(
   inputs: ReadonlyMap<string, PluginSourceInput>,
   sources: Iterable<string>,
 ): void {
   for (const source of sources) {
-    const input = inputs.get(source)!;
-    const identity = input.native
-      ? pluginSourceFileIdentity(source, input.boundary)
-      : pluginSourceInputIdentity(fs.statSync(source, { bigint: true }));
-    // Retaining native namespaces also hardlinks ordinary companion files.
-    if (
-      !input.directory &&
-      identity !== input.identity &&
-      pluginSourceIdentityChangedOnlyByCtime(input.identity, identity) &&
-      hashPluginSourceFile(source, input.boundary).contentHash === input.contentHash
-    ) {
-      input.identity = identity;
-    }
-    if (
-      fs.realpathSync(source) !== source ||
-      identity !== input.identity ||
-      (input.directory
-        ? readPluginSourceDirectory(source).contentHash
-        : input.native
-          ? input.contentHash
-          : hashPluginSourceFile(source, input.boundary).contentHash) !== input.contentHash
-    ) {
+    if (!isPluginSourceInputCurrent(source, inputs.get(source)!, true)) {
       throw new Error(
         "Plugin source changed while preparing its reload; retry after the edit finishes.",
       );
     }
+  }
+}
+
+/** Reuse trusts unchanged stat identities (ctime included) instead of rereading every captured byte. */
+export function arePluginSourceInputsUnchanged(
+  inputs: ReadonlyMap<string, PluginSourceInput>,
+): boolean {
+  try {
+    for (const [source, input] of inputs) {
+      if (!isPluginSourceInputCurrent(source, input, false)) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
   }
 }

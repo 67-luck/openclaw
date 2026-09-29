@@ -38,7 +38,12 @@ import {
   capturedPluginModuleUrl,
   visitPluginSourceReferences,
 } from "./plugin-source-references.js";
-import { verifyPluginSourceInputs } from "./plugin-source-verification.js";
+import {
+  arePluginSourceInputsUnchanged,
+  verifyPluginSourceInputs,
+} from "./plugin-source-verification.js";
+
+export type PluginGenerationArtifact = ReturnType<typeof capturePluginGenerationArtifact>;
 
 /** Capture selective entries and whole dependencies without replacing earlier file bytes. */
 export function capturePluginGenerationArtifact(
@@ -633,6 +638,21 @@ export function capturePluginGenerationArtifact(
         captureNativeRecovery: () => nativeAdmission.captureRecovery(initialReceipt, sourceAliases),
       }),
       assertSourceCurrent,
+      /** Reuse gate: stat identities of every captured input, without rereading file bytes. */
+      isSourceUnchanged: () => {
+        try {
+          if (
+            fs.realpathSync(rootDir) !== sourceRoot ||
+            (entryFile && fs.realpathSync(entryFile) !== entry)
+          ) {
+            return false;
+          }
+          nativeAdmission.reconcileSourceInputs(inputs);
+        } catch {
+          return false;
+        }
+        return arePluginSourceInputsUnchanged(inputs) && nativeAdmission.namespacesAreCurrent();
+      },
       moduleRoot: (filename: string) =>
         originalSources.has(filename) ? packageForFile(filename)?.capturedRoot : undefined,
       assertModuleAvailable,

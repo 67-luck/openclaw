@@ -12,8 +12,17 @@ import {
   supportsBunRuntimeOnResolveTargets,
 } from "./native-module-require.js";
 import type { PluginModuleLoader } from "./plugin-cache-artifacts.js";
-import { bindPluginCacheRoot, getPluginCache, withPluginCache } from "./plugin-cache.js";
-import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
+import {
+  bindPluginCacheRoot,
+  getPluginCache,
+  withPluginCache,
+  type PluginCache,
+} from "./plugin-cache.js";
+import {
+  capturePluginGenerationArtifact,
+  type PluginGenerationArtifact,
+} from "./plugin-generation-artifact.js";
+import type { PluginModuleLoaderOwner } from "./plugin-instance.types.js";
 import { getCachedPluginModuleLoader } from "./plugin-module-loader-cache.js";
 import {
   preparePluginModuleLoaderRecovery,
@@ -30,6 +39,64 @@ import {
 } from "./plugin-source-build.js";
 import { inspectPluginTypeScriptExecutionFacts } from "./plugin-source-references.js";
 import { preparePluginLoaderAliases, isPluginSdkAliasSpecifier } from "./sdk-alias.js";
+
+type SharedCapturedCode = {
+  identity: string | undefined;
+  cache: PluginCache;
+  artifact: PluginGenerationArtifact;
+  holders: Set<PluginModuleLoaderOwner>;
+  cleanups: Array<() => void | Promise<void>>;
+  load: (source: string) => unknown;
+  hasSource?: (source: string) => boolean;
+};
+
+// Unchanged installed code keeps one capture per inventory, like bundled code keeps process
+// identity. Each holder retains it; the last holder's module disposal releases the snapshot.
+const sharedCapturedCode = new WeakMap<PluginCache, Map<string, SharedCapturedCode>>();
+
+function attachCapturedCode(
+  code: SharedCapturedCode,
+  params: PluginInstanceModuleLoaderParams,
+): void {
+  const { instance } = params;
+  instance.onModuleDispose(async () => {
+    code.holders.delete(instance);
+    if (code.holders.size > 0) {
+      return;
+    }
+    const published = code.identity ? sharedCapturedCode.get(code.cache) : undefined;
+    if (code.identity && published?.get(code.identity) === code) {
+      published.delete(code.identity);
+    }
+    const failures: unknown[] = [];
+    for (const cleanup of code.cleanups.splice(0).toReversed()) {
+      try {
+        await cleanup();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures,
+        `Plugin ${instance.pluginId} captured code cleanup failed`,
+      );
+    }
+    if (failures.length === 1) {
+      throw failures[0];
+    }
+  });
+  code.holders.add(instance);
+  instance.sourceDigest = code.artifact.sourceDigest;
+  preparePluginModuleLoaderRecovery(
+    params,
+    code.artifact,
+    bindPluginInstanceModuleLoader,
+  )(
+    (source) => code.load(source),
+    (source) => code.hasSource?.(source) ?? false,
+  );
+}
 
 /** Runtime and setup share code identity policy while keeping separate instance authority. */
 export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoaderParams): void {
@@ -65,6 +132,48 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
     });
     return;
   }
+  // Recovery binds a predecessor's snapshot; only ordinary loads share an unchanged capture.
+  const identity =
+    params.nativeRecovery || params.recoverySourceMap
+      ? undefined
+      : JSON.stringify([
+          params.origin,
+          fs.realpathSync(params.rootDir),
+          params.source,
+          params.standalone === true,
+          params.devSourceRoot ?? null,
+          params.pluginSdkResolution ?? null,
+        ]);
+  const published = identity ? sharedCapturedCode.get(cache)?.get(identity) : undefined;
+  if (
+    published &&
+    (params.expectedSourceDigest === undefined ||
+      published.artifact.sourceDigest === params.expectedSourceDigest) &&
+    published.artifact.isSourceUnchanged()
+  ) {
+    bindPluginCacheRoot(params.rootDir, published.artifact.sourceRoot);
+    attachCapturedCode(published, params);
+    return;
+  }
+  const holders = new Set([params.instance]);
+  const cleanups: Array<() => void | Promise<void>> = [];
+  // Hooks outlive the binding call; admit their work through a live holder of this code.
+  const owner = {
+    run<T>(run: () => T): T {
+      const candidates = [...holders];
+      const holder =
+        candidates.find((candidate) => candidate.hasActiveCall) ??
+        candidates.findLast((candidate) => candidate.acceptingCalls) ??
+        candidates.at(-1);
+      if (!holder) {
+        throw new Error(`Plugin ${params.instance.pluginId} captured code has retired`);
+      }
+      return holder.run(run);
+    },
+    onModuleDispose(cleanup: () => void | Promise<void>) {
+      cleanups.push(cleanup);
+    },
+  };
   const nativeHooks = typeof Module.registerHooks === "function";
   const sourceBuilds = new Map<string, ReturnType<typeof buildPluginTypeScriptSource>>();
   const sourceForOutput = (filename: string): PluginSourceFile => {
@@ -79,7 +188,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
   const artifact = capturePluginGenerationArtifact(
     params.rootDir,
     params.standalone ? params.source : undefined,
-    (run) => params.instance.run(run),
+    (run) => owner.run(run),
     (filename) => {
       const entry = sourceForOutput(filename);
       return entry.generated ? filename : entry.source;
@@ -95,14 +204,31 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
       `Plugin ${params.instance.pluginId} source changed after installation; inspect it before reloading.`,
     );
   }
-  bindPluginCacheRoot(params.rootDir, artifact.sourceRoot);
-  params.instance.sourceDigest = artifact.sourceDigest;
-  params.instance.onModuleDispose(artifact.disposeAsync);
-  const bindModuleLoader = preparePluginModuleLoaderRecovery(
-    params,
+  const code: SharedCapturedCode = {
+    identity,
+    cache,
     artifact,
-    bindPluginInstanceModuleLoader,
-  );
+    holders,
+    cleanups,
+    load: () => {
+      throw new Error(`Plugin ${params.instance.pluginId} captured code is still binding`);
+    },
+  };
+  owner.onModuleDispose(artifact.disposeAsync);
+  attachCapturedCode(code, params);
+  const bindModuleLoader: PluginModuleLoaderOwner["bindModuleLoader"] = (load, hasSource) => {
+    code.load = load;
+    code.hasSource = hasSource;
+    if (identity) {
+      let published = sharedCapturedCode.get(cache);
+      if (!published) {
+        published = new Map();
+        sharedCapturedCode.set(cache, published);
+      }
+      published.set(identity, code);
+    }
+  };
+  bindPluginCacheRoot(params.rootDir, artifact.sourceRoot);
   const aliases = preparePluginLoaderAliases({
     modulePath: params.source,
     argv1: process.argv[1],
@@ -162,7 +288,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
       },
     });
     bindNativePluginInstanceModuleLoader(
-      { ...params, bindModuleLoader },
+      { ...params, instance: owner, bindModuleLoader },
       cache,
       artifact,
       loader,
@@ -187,7 +313,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
   const tsconfigPaths = entryPaths.resolver.options.tsconfigPaths;
   const demandedModules = new Map<string, { url: string } | { error: unknown }>();
   let resolvingPaths = false;
-  params.instance.onModuleDispose(() => {
+  owner.onModuleDispose(() => {
     for (const build of sourceBuilds.values()) {
       build.dispose();
     }
@@ -206,7 +332,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
     if (!root) {
       return filename;
     }
-    return params.instance.run(() => {
+    return owner.run(() => {
       let build = sourceBuilds.get(root);
       if (!build) {
         build = buildPluginTypeScriptSource(root);
@@ -235,7 +361,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
         parentRoot &&
         specifier.startsWith(PLUGIN_SOURCE_RESOLVE_PREFIX)
       ) {
-        return params.instance.run(() => {
+        return owner.run(() => {
           const requestJson = decodeURIComponent(
             specifier.slice(PLUGIN_SOURCE_RESOLVE_PREFIX.length),
           );
@@ -275,7 +401,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
           : "native";
       let resolved =
         parentSource && parentRoot
-          ? params.instance.run(() =>
+          ? owner.run(() =>
               withPluginCache(cache, () => {
                 if (
                   tsconfigPaths &&
@@ -433,7 +559,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
       return resolved;
     },
   });
-  params.instance.onModuleDispose(() => hooks.deregister());
+  owner.onModuleDispose(() => hooks.deregister());
   const results = new Map<string, { value: unknown } | { error: unknown }>();
   bindModuleLoader(
     (source) =>

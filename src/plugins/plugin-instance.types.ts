@@ -61,6 +61,9 @@ export type PluginModuleLoaderRecovery = {
 /** Runtime and setup loaders use the same instance-owned captured source. */
 export interface PluginModuleLoaderOwner extends PluginInstanceResource, PluginInstanceAdmission {
   controlPlaneInitialized: boolean;
+  /** Shared captured code runs its hooks in a caller's active call, else a live holder. */
+  readonly hasActiveCall: boolean;
+  readonly acceptingCalls: boolean;
   sourceDigest?: string;
   onModuleDispose(cleanup: () => void | Promise<void>): void;
   bindModuleLoader(

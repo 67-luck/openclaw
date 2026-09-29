@@ -163,6 +163,8 @@ export function createPluginNativeAdmission(
   const targets = new Map<string, string>();
   const hardlinkedTargets = new Set<string>();
   const recoveredFiles = new Map<string, PluginNativeArtifactFact>();
+  // Admission boundaries let reuse re-inspect selected namespaces exactly as selection did.
+  const namespaceBoundaries = new Map<PluginNativeNamespaceFact, string>();
   let hostRoot: string | undefined;
   let finalReceipt: NativeReceipt | undefined;
   const namespaces = () => [...new Set(selected.values())];
@@ -400,6 +402,7 @@ export function createPluginNativeAdmission(
         for (const [alias, selectedNamespace] of selected) {
           if (selectedNamespace === namespace) {
             selected.set(alias, replacement);
+            namespaceBoundaries.set(replacement, namespace.sourceDirectory);
           }
         }
         for (const [source, fact] of files) {
@@ -576,6 +579,7 @@ export function createPluginNativeAdmission(
         );
         alias = namespace.sourceDirectory;
         selected.set(alias, namespace);
+        namespaceBoundaries.set(namespace, admittedBoundary);
       } else if (recovered) {
         alias = [...selected].find(([, candidate]) => candidate === namespace)?.[0] ?? alias;
       }
@@ -647,6 +651,20 @@ export function createPluginNativeAdmission(
       assertReferenceNamespaces();
       publish();
       return new Map([...files].map(([source, fact]) => [source, fact.sourceIdentity]));
+    },
+    /** Reuse gate: every selected native namespace still matches its source names and identities. */
+    namespacesAreCurrent(): boolean {
+      return namespaces().every((namespace) => {
+        const boundary = namespaceBoundaries.get(namespace);
+        try {
+          return (
+            boundary !== undefined &&
+            pluginNativeNamespaceIsCurrent(namespace, boundary, outputRoot)
+          );
+        } catch {
+          return false;
+        }
+      });
     },
   };
 }

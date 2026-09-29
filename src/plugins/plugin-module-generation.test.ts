@@ -1000,4 +1000,44 @@ describe("plugin module generations", () => {
       expect(() => a.read()).toThrow("reloaded or disabled");
     },
   );
+
+  it("shares one unchanged capture across live instances and recaptures edited source", async () => {
+    const root = temp.make("plugin-shared-capture-");
+    const source = path.join(root, "index.cjs");
+    fs.writeFileSync(
+      source,
+      'exports.filename = __filename; exports.read = () => require("./value.cjs");',
+    );
+    fs.writeFileSync(path.join(root, "value.cjs"), 'module.exports = "before";');
+    type Captured = { filename: string; read(): string };
+    const cache = createPluginCache();
+    const bind = () => {
+      const instance = new PluginInstance("shared-capture-fixture");
+      withPluginCache(cache, () =>
+        bindPluginInstanceModuleLoader({ instance, origin: "config", source, rootDir: root }),
+      );
+      return { instance, value: instance.loadModule(source) as Captured };
+    };
+    const gateway = bind();
+    const agent = bind();
+    instances.push(gateway.instance, agent.instance);
+    expect(agent.value.filename).toBe(gateway.value.filename);
+    expect(agent.instance.sourceDigest).toBe(gateway.instance.sourceDigest);
+
+    await gateway.instance.dispose();
+    expect(() => gateway.value.read()).toThrow("reloaded or disabled");
+    expect(fs.existsSync(agent.value.filename)).toBe(true);
+    expect(agent.value.read()).toBe("before");
+
+    fs.writeFileSync(path.join(root, "value.cjs"), 'module.exports = "edited";');
+    const edited = bind();
+    instances.push(edited.instance);
+    expect(edited.value.filename).not.toBe(agent.value.filename);
+    expect(edited.value.read()).toBe("edited");
+    expect(agent.value.read()).toBe("before");
+
+    await agent.instance.dispose();
+    expect(fs.existsSync(agent.value.filename)).toBe(false);
+    expect(fs.existsSync(edited.value.filename)).toBe(true);
+  });
 });

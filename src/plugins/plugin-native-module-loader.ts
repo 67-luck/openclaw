@@ -37,10 +37,10 @@ function getBunConditions(requireMode: boolean): Set<string> {
 /** Native adapters acquire source through the instance's artifact without replacing evaluation. */
 export function bindNativePluginInstanceModuleLoader(
   params: {
-    instance: PluginModuleLoaderOwner;
+    instance: Pick<PluginModuleLoaderOwner, "run" | "onModuleDispose">;
     rootDir: string;
     origin: PluginOrigin;
-    bindModuleLoader?: PluginModuleLoaderOwner["bindModuleLoader"];
+    bindModuleLoader: PluginModuleLoaderOwner["bindModuleLoader"];
   },
   cache: ReturnType<typeof getPluginCache>,
   artifact: ReturnType<typeof capturePluginGenerationArtifact>,
@@ -242,7 +242,7 @@ export function bindNativePluginInstanceModuleLoader(
     origin: params.origin,
     rootDir: params.rootDir,
   });
-  (params.bindModuleLoader ?? params.instance.bindModuleLoader.bind(params.instance))(
+  params.bindModuleLoader(
     (source) =>
       withPluginCache(cache, () => {
         const captured = artifact.resolve(source, rejectHardlinks);
