@@ -157,6 +157,76 @@ describe("result-first node exec completion", () => {
   });
 
   it.each([
+    ["ordinary matching", false, "work", true],
+    ["ordinary different", false, "personal", false],
+    ["ordinary missing", false, undefined, false],
+    ["recovery matching", true, "work", true],
+    ["recovery different", true, "personal", false],
+    ["recovery missing", true, undefined, false],
+  ])(
+    "handles an account-qualified Telegram route for %s",
+    async (_label, recovery, lastAccountId, allowed) => {
+      const sessionKey = "agent:main:telegram:work:direct:123456789";
+      loadSessionEntryMock.mockReturnValue(
+        buildSessionLookup(sessionKey, {
+          lastChannel: "telegram",
+          lastTo: "123456789",
+          lastAccountId,
+        }),
+      );
+      await handleNodeEvent(
+        buildCtx(() => ({ invokeResultReceived: false })),
+        "node-1",
+        nodeEvent("exec.finished", {
+          sessionKey,
+          runId: `run-account-${_label}`,
+          exitCode: 0,
+          output: "account-bound output",
+          ...(recovery ? { suppressNotifyOnExit: true, invokeResultSentFirst: true } : {}),
+        }),
+        { connId: "conn-1" },
+      );
+
+      if (allowed) {
+        expect(enqueueSystemEventMock).toHaveBeenCalledExactlyOnceWith(
+          expect.any(String),
+          expect.objectContaining({
+            deliveryContext: expect.objectContaining({ accountId: "work" }),
+          }),
+        );
+        expect(requestHeartbeatMock).toHaveBeenCalledOnce();
+      } else {
+        expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+        expect(requestHeartbeatMock).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("preserves an omitted default account for a default-account session", async () => {
+    const sessionKey = "agent:main:telegram:default:direct:123456789";
+    loadSessionEntryMock.mockReturnValue(
+      buildSessionLookup(sessionKey, {
+        lastChannel: "telegram",
+        lastTo: "123456789",
+      }),
+    );
+    await handleNodeEvent(
+      buildCtx(() => ({ invokeResultReceived: false })),
+      "node-1",
+      nodeEvent("exec.finished", {
+        sessionKey,
+        runId: "run-default-account-omitted",
+        exitCode: 0,
+        output: "default account output",
+      }),
+      { connId: "conn-1" },
+    );
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledOnce();
+    expect(requestHeartbeatMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
     ["result-first recovery", true],
     ["ordinary completion", undefined],
   ])("suppresses %s when the saved route points outside the topic", async (_label, suppress) => {
