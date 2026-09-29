@@ -11,6 +11,7 @@ import { isOpenClawAbortableWrapper } from "./embedded-agent-runner/run/abortabl
 import {
   FailoverError,
   buildFailoverRemediationHint,
+  buildProviderReauthCommand,
   describeFailoverError,
   hasModelFallbackStop,
   isFailoverError,
@@ -80,6 +81,21 @@ export function resolveFallbackAuthScope(params: {
 }): string | undefined {
   // resolveAuthProfileOrder places the profile selected for this model first.
   return params.userLockedAuthProfileId || params.profileIds?.find((id) => id.trim())?.trim();
+}
+
+export function buildFallbackAuthSkipMessage(
+  candidate: ModelCandidate,
+  reason: string,
+  authOwner?: "host",
+): string {
+  const reauthCommand = buildProviderReauthCommand(candidate.provider);
+  const reauthHint =
+    authOwner === "host"
+      ? "the app-server host manages credentials; ask its operator to check authentication"
+      : reauthCommand
+        ? `run \`${reauthCommand}\` to re-authenticate`
+        : "re-authenticate that provider";
+  return `Skipping ${candidate.provider}/${candidate.model}: recent ${reason} failure in this session (${reauthHint})`;
 }
 
 export type ModelFallbackRuntimeContext = {
@@ -529,6 +545,7 @@ function buildFailedCandidateAttempt(
         : described.message,
     reason: described.reason ?? "unknown",
     authMode: described.authMode,
+    authOwner: described.authOwner,
     status: described.status,
     code: described.code,
   };
@@ -645,6 +662,7 @@ export function throwFallbackFailureSummary(params: {
     model: lastAttempt?.model,
     // Recovery must not infer OAuth from the provider after candidate errors collapse here.
     authMode: lastAttempt?.authMode,
+    authOwner: lastAttempt?.authOwner,
     status: lastAttempt?.status,
     code: lastAttempt?.code,
     cause: params.lastError instanceof Error ? params.lastError : undefined,

@@ -693,6 +693,7 @@ export async function applyCodexAppServerAuthProfile(params: {
       params.client,
       params.authRequirement,
       params.assertCurrent,
+      params.startOptions?.authMode,
     );
     return undefined;
   }
@@ -757,6 +758,7 @@ async function assertNativeCodexAccountMatchesRoute(
   client: CodexAppServerClient,
   authRequirement: CodexAppServerAuthRequirement | undefined,
   assertCurrent?: () => void,
+  authMode?: CodexAppServerStartOptions["authMode"],
 ): Promise<void> {
   if (!authRequirement) {
     return;
@@ -770,14 +772,18 @@ async function assertNativeCodexAccountMatchesRoute(
   if (authRequirement === "subscription") {
     if (accountType !== "chatgpt") {
       throw createCodexAppServerAuthError(
-        'Codex subscription route requires ChatGPT auth in the native Codex home. Run `codex login` for that home, or use appServer.homeScope="agent" with an OpenClaw OAuth profile, then retry.',
+        authMode === "host"
+          ? "Codex subscription route requires ChatGPT authentication, but the app-server host is not using a ChatGPT account. The host manages credentials automatically. Ask the host operator to check the account and route configuration."
+          : 'Codex subscription route requires ChatGPT auth in the native Codex home. Run `codex login` for that home, or use appServer.homeScope="agent" with an OpenClaw OAuth profile, then retry.',
       );
     }
     return;
   }
   if (accountType === "chatgpt") {
     throw createCodexAppServerAuthError(
-      'Codex Platform route requires an API-key account, but the native Codex home is signed in with a ChatGPT subscription. Sign that home in with `codex login --with-api-key`, or set appServer.homeScope="agent" so OpenClaw can inject its own key.',
+      authMode === "host"
+        ? "Codex Platform route requires an API-key account, but the app-server host is using a ChatGPT subscription. The host manages credentials automatically. Ask the host operator to check the account and route configuration."
+        : 'Codex Platform route requires an API-key account, but the native Codex home is signed in with a ChatGPT subscription. Sign that home in with `codex login --with-api-key`, or set appServer.homeScope="agent" so OpenClaw can inject its own key.',
     );
   }
 }

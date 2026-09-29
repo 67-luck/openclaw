@@ -87,6 +87,10 @@ OpenClaw credentials and cannot use host authentication.
 In this mode, `/login` refuses to start sign-in or refresh credentials for the
 host-owned provider and explains that the app-server host manages authentication.
 Explicit login choices for unrelated providers and `/login cancel` remain available.
+Authentication failures from a host-owned request direct recovery to the host
+operator. Chat and terminal clients do not suggest OpenClaw `/auth` or a new
+provider login for those failures. Other providers retain their normal sign-in
+guidance, including when a model fallback uses a different authentication owner.
 
 Stdio app-server launches inherit OpenClaw's process environment by default.
 OpenClaw owns the Codex app-server account bridge and sets `CODEX_HOME` to a

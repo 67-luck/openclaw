@@ -3037,6 +3037,39 @@ describe("bridgeCodexAppServerStartOptions", () => {
     },
   );
 
+  it.each([
+    {
+      authRequirement: "subscription",
+      account: { type: "apiKey" },
+      message:
+        "Codex subscription route requires ChatGPT authentication, but the app-server host is not using a ChatGPT account. The host manages credentials automatically. Ask the host operator to check the account and route configuration.",
+    },
+    {
+      authRequirement: "api-key",
+      account: { type: "chatgpt", email: null, planType: "plus" },
+      message:
+        "Codex Platform route requires an API-key account, but the app-server host is using a ChatGPT subscription. The host manages credentials automatically. Ask the host operator to check the account and route configuration.",
+    },
+  ] as const)(
+    "directs host-owned $authRequirement route failures to the host operator",
+    async ({ authRequirement, account, message }) => {
+      const request = vi.fn(async () => ({ account, requiresOpenaiAuth: true }));
+      await expect(
+        applyCodexAppServerAuthProfile({
+          client: { request } as never,
+          authProfileId: null,
+          authRequirement,
+          startOptions: { authMode: "host" },
+        }),
+      ).rejects.toMatchObject({ status: 401, message });
+      expect(request).toHaveBeenCalledExactlyOnceWith(
+        "account/read",
+        { refreshToken: false },
+        { assertCurrent: undefined },
+      );
+    },
+  );
+
   it("accepts native ChatGPT auth for subscription routes", async () => {
     const request = vi.fn(async () => ({
       account: { type: "chatgpt", email: null, planType: "plus" },
