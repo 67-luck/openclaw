@@ -522,6 +522,10 @@ ${build}
         expect(call).toContain("build --locked");
         expect(call).toContain("--package openclaw-mac-node-sidecar");
         expect(call).toContain(`--profile ${config === "debug" ? "dev" : "release"}`);
+        expect(call.includes('--config profile.release.lto="thin"')).toBe(config === "release");
+        expect(call.includes("--config profile.release.codegen-units=1")).toBe(
+          config === "release",
+        );
       }
     },
   );

@@ -427,6 +427,10 @@ RUST_SIDECAR_INPUTS=()
 RUST_SIDECAR_PROFILE="$BUILD_CONFIG"
 if [[ "$BUILD_CONFIG" == "debug" ]]; then RUST_SIDECAR_PROFILE=dev; fi
 RUST_SIDECAR_ARGS=(--profile "$RUST_SIDECAR_PROFILE")
+if [[ "$BUILD_CONFIG" == "release" ]]; then
+  # Keep the bundled helper small without changing shared crate or debug defaults.
+  RUST_SIDECAR_ARGS+=(--config 'profile.release.lto="thin"' --config 'profile.release.codegen-units=1')
+fi
 for rust_target in "${RUST_SIDECAR_TARGETS[@]}"; do
   cargo build --locked --manifest-path "$ROOT_DIR/crates/Cargo.toml" \
     --package openclaw-mac-node-sidecar --target "$rust_target" \
