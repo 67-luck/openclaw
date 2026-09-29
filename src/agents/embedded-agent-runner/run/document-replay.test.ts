@@ -48,6 +48,7 @@ const model = makeProviderModelFixture({
   baseUrl: "https://example.test",
   input: ["text", "image"],
 });
+const replayRoutes = ["native", "plugin-host"] as const;
 const assistant = () => makeAgentAssistantMessage({ content: [], timestamp: 2 });
 function user(media: MediaFact[], text = "", timestamp = 1): AgentMessage {
   return castAgentMessage(buildPersistedUserTurnMessage({ media, text, timestamp }));
@@ -61,6 +62,20 @@ async function writeMedia(
   const file = path.join(root, name);
   await fs.writeFile(file, data);
   return { path: file, contentType };
+}
+async function prepareHostMedia(workspaceDir: string, message: AgentMessage, maxChars = 60000) {
+  const prepare = bindHarnessContextMedia({
+    attempt: { workspaceDir, model },
+    config: {},
+    assertActive: () => {},
+  });
+  if (!prepare) {
+    throw new Error("Expected the host media capability");
+  }
+  const original = structuredClone(message);
+  const context = await prepare({ message, maxChars });
+  expect(message).toEqual(original);
+  return context;
 }
 function fixture(
   workspaceDir = tempDirs.make("openclaw-document-replay-"),
@@ -152,18 +167,23 @@ function forkHistory(history: AgentMessage[]): AgentMessage[] {
 }
 
 describe("native document replay", () => {
-  it.each([
-    { fork: false, relocated: false, alias: false },
-    { fork: true, relocated: false, alias: false },
-    { fork: false, relocated: true, alias: false },
-    { fork: true, relocated: true, alias: false },
-    { fork: true, relocated: true, alias: true },
-  ])(
-    "authorizes saved documents (fork=$fork, relocated=$relocated, alias=$alias)",
-    async ({ fork, relocated, alias }) => {
+  it.each(
+    [
+      { fork: false, relocated: false, alias: false },
+      { fork: true, relocated: false, alias: false },
+      { fork: false, relocated: true, alias: false },
+      { fork: true, relocated: true, alias: false },
+      { fork: true, relocated: true, alias: true },
+    ].flatMap((scenario) => replayRoutes.map((route) => ({ ...scenario, route }))),
+  )(
+    "authorizes saved documents via $route (fork=$fork, relocated=$relocated, alias=$alias)",
+    async ({ fork, relocated, alias, route }) => {
       const f = fixture();
       const source = relocated ? tempDirs.make("openclaw-former-workspace-") : f.workspaceDir;
       const file = await writeMedia(source, "brief.txt", "remember the blue lighthouse");
+      if (relocated) {
+        await f.file("brief.txt", "current-workspace decoy must not replace the saved file");
+      }
       const recorded = alias
         ? path.join(tempDirs.make("openclaw-former-alias-"), "workspace")
         : source;
@@ -184,10 +204,19 @@ describe("native document replay", () => {
         assistant(),
       ];
       const open = vi.spyOn(fsSafe, "openLocalFileSafely");
-      const text = JSON.stringify(await f.replay(fork ? forkHistory(history) : history));
+      const retained = fork ? forkHistory(history) : history;
+      const [message] = retained;
+      if (!message) {
+        throw new Error("Expected the retained user message");
+      }
+      const text = JSON.stringify(
+        route === "plugin-host"
+          ? await prepareHostMedia(f.workspaceDir, message)
+          : await f.replay(retained),
+      );
       const opened = open.mock.calls.map(([input]) => input.filePath);
       if (relocated) {
-        expect(opened).not.toContain(path.join(recorded, "brief.txt"));
+        expect(open).not.toHaveBeenCalled();
         expect(text).not.toContain("remember the blue lighthouse");
         expect(text).toContain("could not be read");
       } else {
@@ -198,31 +227,35 @@ describe("native document replay", () => {
     },
   );
 
-  it("keeps managed uploads readable without restoring a former workspace grant", async () => {
-    const stateDir = tempDirs.make("openclaw-managed-document-");
-    const workspaceDir = path.join(stateDir, "sandboxes", "current");
-    const formerWorkspace = path.join(stateDir, "sandboxes", "former");
-    await fs.mkdir(workspaceDir, { recursive: true });
-    await fs.mkdir(formerWorkspace, { recursive: true });
-    const env = captureEnv(["OPENCLAW_STATE_DIR"]);
-    onTestFinished(() => env.restore());
-    setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
-    const saved = await saveMediaBuffer(Buffer.from("admitted upload sentinel"), "text/plain");
-    const open = vi.spyOn(fsSafe, "openLocalFileSafely");
-    const content = await fixture(workspaceDir).replay([
-      user([
+  it.each(replayRoutes)(
+    "keeps managed uploads readable without a former workspace grant (%s)",
+    async (route) => {
+      const stateDir = tempDirs.make("openclaw-managed-document-");
+      const workspaceDir = path.join(stateDir, "sandboxes", "current");
+      const formerWorkspace = path.join(stateDir, "sandboxes", "former");
+      await fs.mkdir(workspaceDir, { recursive: true });
+      await fs.mkdir(formerWorkspace, { recursive: true });
+      const env = captureEnv(["OPENCLAW_STATE_DIR"]);
+      onTestFinished(() => env.restore());
+      setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
+      const saved = await saveMediaBuffer(Buffer.from("admitted upload sentinel"), "text/plain");
+      const open = vi.spyOn(fsSafe, "openLocalFileSafely");
+      const message = user([
         {
           url: `media://inbound/${saved.id}`,
           workspaceDir: formerWorkspace,
           contentType: "text/plain",
           hydrationSuppressed: true,
         },
-      ]),
-      assistant(),
-    ]);
-    expect(JSON.stringify(content)).toContain("admitted upload sentinel");
-    expect(open.mock.calls.map(([input]) => input.filePath)).toContain(saved.path);
-  });
+      ]);
+      const content =
+        route === "plugin-host"
+          ? await prepareHostMedia(workspaceDir, message)
+          : await fixture(workspaceDir).replay([message, assistant()]);
+      expect(JSON.stringify(content)).toContain("admitted upload sentinel");
+      expect(open.mock.calls.map(([input]) => input.filePath)).toContain(saved.path);
+    },
+  );
 
   it.each([
     { pdfFirst: false, video: false, inline: false, described: false, exhausted: false },
@@ -417,15 +450,7 @@ describe("native document replay", () => {
       await writeMedia(workspaceDir, "one.txt", "aaaaX"),
       await writeMedia(workspaceDir, "two.txt", "bbbbY"),
     ]);
-    const prepare = bindHarnessContextMedia({
-      attempt: { workspaceDir, model },
-      config: {},
-      assertActive: () => {},
-    });
-    if (!prepare) {
-      throw new Error("Expected the host media capability");
-    }
-    const context = await prepare({ message, maxChars: 4 });
+    const context = await prepareHostMedia(workspaceDir, message, 4);
     expect(context.text).toContain("\n---\naaaa\n");
     expect(context.text).toContain("\n---\nbbbb\n");
     expect(context.text).not.toContain("aaaaX");
