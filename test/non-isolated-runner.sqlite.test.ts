@@ -7,11 +7,15 @@ import type { VitestReportCapture } from "../scripts/lib/vitest-report-capture.m
 import { resolveTestNodeExecPath } from "../src/test-utils/node-process.js";
 import { runVitestShutdownCommand } from "./helpers/vitest-shutdown-command.ts";
 import { sqliteLifecycleFixtureFiles } from "./non-isolated-runner.sqlite-fixtures.ts";
+import { sqliteOwnerColdWriteFixtureFiles } from "./non-isolated-runner.sqlite-owner-fixtures.ts";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const require = createRequire(import.meta.url);
 
-async function verifySqliteOwnerRetirement(signal: AbortSignal) {
+async function runSqliteLifecycleFixture(
+  signal: AbortSignal,
+  fixture: { pool: "threads" | "forks"; files: Record<string, string> },
+) {
   const fixtureRoots = path.join(repoRoot, ".artifacts", "non-isolated-sqlite-lifecycle");
   await fs.mkdir(fixtureRoots, { recursive: true });
   // openclaw-temp-dir: allow retains an unjoined or failed child fixture for diagnosis.
@@ -19,7 +23,7 @@ async function verifySqliteOwnerRetirement(signal: AbortSignal) {
   try {
     const vitestDir = path.dirname(require.resolve("vitest/package.json"));
     await fs.symlink(path.dirname(vitestDir), path.join(root, "node_modules"), "junction");
-    const files = sqliteLifecycleFixtureFiles();
+    const { files } = fixture;
     for (const [name, content] of Object.entries(files)) {
       await fs.writeFile(path.join(root, name), content);
     }
@@ -35,7 +39,7 @@ export default defineConfig({
   cacheDir: ${JSON.stringify(path.join(root, ".vite"))},
   resolve: sharedVitestConfig.resolve,
   test: {
-    name: "sqlite-owner-retirement", pool: "threads", isolate: false,
+    name: "sqlite-owner-retirement", pool: ${JSON.stringify(fixture.pool)}, isolate: false,
     maxWorkers: 1, fileParallelism: false,
     runner: ${JSON.stringify(path.join(repoRoot, "test/non-isolated-runner.ts"))},
     sequence: { sequencer: Ordered },
@@ -74,6 +78,21 @@ export default defineConfig({
       maxBytes: 4 * 1024 * 1024,
       signal,
     });
+    return { root, result, files, reportPath };
+  } catch (error) {
+    if (error instanceof Error) {
+      error.message += `; retained fixture ${root}`;
+    }
+    throw error;
+  }
+}
+
+async function verifySqliteOwnerRetirement(signal: AbortSignal) {
+  const { root, result, files, reportPath } = await runSqliteLifecycleFixture(signal, {
+    pool: "threads",
+    files: sqliteLifecycleFixtureFiles(),
+  });
+  try {
     expect(result.code, result.stdout + result.stderr).toBe(1);
     const output = result.stdout + result.stderr;
     for (const file of Object.keys(files).filter((name) => /^1[12]-/u.test(name))) {
@@ -151,6 +170,43 @@ export default defineConfig({
 
 it("retires settled SQLite owners and attributes retained custody without poisoning the next file", (context) => {
   const run = verifySqliteOwnerRetirement(context.signal);
+  context.onTestFinished(() => run);
+  return run;
+});
+
+async function verifySqliteOwnerColdWrite(signal: AbortSignal) {
+  const { root, result, reportPath } = await runSqliteLifecycleFixture(signal, {
+    pool: "forks",
+    files: sqliteOwnerColdWriteFixtureFiles(),
+  });
+  try {
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    const report: JsonTestResults = JSON.parse(await fs.readFile(reportPath, "utf8"));
+    expect(report).toMatchObject({
+      numTotalTests: 2,
+      numPassedTests: 2,
+      numFailedTests: 0,
+      numPendingTests: 0,
+      numTodoTests: 0,
+    });
+    const capture: VitestReportCapture = JSON.parse(
+      await fs.readFile(`${reportPath}.capture.json`, "utf8"),
+    );
+    expect(capture).toMatchObject({
+      processTimedOut: false,
+      ended: { reason: "passed", unhandledErrors: 0, failedModules: 0, suiteErrors: 0 },
+    });
+    await fs.rm(root, { recursive: true, force: true });
+  } catch (error) {
+    if (error instanceof Error) {
+      error.message += `; retained fixture ${root}`;
+    }
+    throw error;
+  }
+}
+
+it("retires a directly acquired shared-state owner before the next file's cold policy write", (context) => {
+  const run = verifySqliteOwnerColdWrite(context.signal);
   context.onTestFinished(() => run);
   return run;
 });
