@@ -20,6 +20,7 @@ export type SessionDeliveryStateRepairReport = {
   found: number;
   repaired: number;
   scannedStores: number;
+  warnings?: string[];
 };
 
 /** Scan or rewrite legacy delivery fields inside existing session row JSON. */
@@ -61,6 +62,7 @@ export function repairCanonicalSessionEntries(params: {
   const targets = params.targets ?? listExistingAgentDatabaseTargets(params.cfg, params.env);
   let found = 0;
   let repaired = 0;
+  const warnings: string[] = [];
   for (const target of targets) {
     const sessionKeys: string[] = [];
     const operation = runDoctorAgentDatabaseOperation({
@@ -82,6 +84,7 @@ export function repairCanonicalSessionEntries(params: {
       },
     });
     if (!operation.ok) {
+      warnings.push(operation.message);
       continue;
     }
     found += operation.value;
@@ -102,5 +105,10 @@ export function repairCanonicalSessionEntries(params: {
       }
     }
   }
-  return { found, repaired, scannedStores: targets.length };
+  return {
+    found,
+    repaired,
+    scannedStores: targets.length,
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
 }

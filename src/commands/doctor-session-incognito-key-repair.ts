@@ -43,6 +43,7 @@ import {
 export type ReservedIncognitoKeyRepairReport = {
   found: number;
   repaired: number;
+  warnings?: string[];
 };
 
 export async function repairReservedIncognitoSessionKeys(params: {
@@ -58,6 +59,7 @@ export async function repairReservedIncognitoSessionKeys(params: {
     }),
   );
   const reservedKeys = new Set<string>();
+  const warnings: string[] = [];
   const sharedDatabase = params.apply ? openOpenClawStateDatabase({ env: params.env }) : undefined;
   const journalRenames = sharedDatabase
     ? readRepairJournal(sharedDatabase.db)
@@ -72,7 +74,11 @@ export async function repairReservedIncognitoSessionKeys(params: {
           databaseOptions,
         ),
     });
-    if (!operation.ok || !operation.value.found) {
+    if (!operation.ok) {
+      warnings.push(operation.message);
+      continue;
+    }
+    if (!operation.value.found) {
       continue;
     }
     for (const key of operation.value.value) {
@@ -84,10 +90,14 @@ export async function repairReservedIncognitoSessionKeys(params: {
     pendingKeys.add(rename.from);
   }
   if (!params.apply) {
-    return { found: pendingKeys.size, repaired: 0 };
+    return {
+      found: pendingKeys.size,
+      repaired: 0,
+      ...(warnings.length > 0 ? { warnings } : {}),
+    };
   }
   if (reservedKeys.size === 0 && journalRenames.length === 0) {
-    return { found: 0, repaired: 0 };
+    return { found: 0, repaired: 0, ...(warnings.length > 0 ? { warnings } : {}) };
   }
 
   const occupiedKeys = sharedDatabase
@@ -107,6 +117,8 @@ export async function repairReservedIncognitoSessionKeys(params: {
       for (const key of operation.value.value) {
         occupiedKeys.add(key);
       }
+    } else if (!operation.ok) {
+      warnings.push(operation.message);
     }
   }
   for (const rename of journalRenames) {
@@ -157,7 +169,11 @@ export async function repairReservedIncognitoSessionKeys(params: {
     { env: params.env },
     { operationLabel: "doctor.complete-reserved-incognito-session-keys" },
   );
-  return { found: pendingKeys.size, repaired: renames.length };
+  return {
+    found: pendingKeys.size,
+    repaired: renames.length,
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
 }
 
 function planReservedIncognitoKeyRenames(

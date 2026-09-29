@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { withSuppressedNotes } from "../../packages/terminal-core/src/note.js";
 import { resolveConfigPath } from "../config/paths.js";
+import { formatErrorMessage } from "../infra/errors.js";
 import type {
   LegacyStateMigrationStepReceipt,
   MigrationMessages,
@@ -244,7 +245,10 @@ export async function runExternallyManagedDoctorRepair(params: {
     if (error instanceof DoctorStateMigrationRefusalError) {
       collectReceiptEvidence(error.stepReceipts, applied, remaining);
     } else {
-      throw error;
+      remaining.push({
+        stepId: "repair",
+        message: `Repair stopped after an unexpected failure: ${formatErrorMessage(error)}`,
+      });
     }
   } finally {
     try {

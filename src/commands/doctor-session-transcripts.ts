@@ -222,6 +222,11 @@ export async function noteSessionTranscriptHealth(options?: {
     repaired: 0,
     scannedStores: 0,
   };
+  let execPolicyReport: SessionDeliveryStateRepairReport = {
+    found: 0,
+    repaired: 0,
+    scannedStores: 0,
+  };
   let canonicalKeyReport: CanonicalSessionKeyRepairReport = {
     archivedTranscriptDirectories: [],
     foundGroups: 0,
@@ -230,7 +235,12 @@ export async function noteSessionTranscriptHealth(options?: {
     repairedGroups: 0,
     scannedStores: 0,
   };
-  let worktreeWorkspaceReport = { found: 0, repaired: 0, scannedStores: 0 };
+  let worktreeWorkspaceReport: Awaited<ReturnType<typeof repairLegacySessionWorktreeWorkspaces>> = {
+    found: 0,
+    repaired: 0,
+    scannedStores: 0,
+    warnings: [],
+  };
   let acpKeyReport: AcpSessionKeyRepairReport = {
     found: 0,
     repaired: 0,
@@ -292,7 +302,7 @@ export async function noteSessionTranscriptHealth(options?: {
     // Import may create the first durable SQLite row for a colliding legacy key.
     reservedKeyReport = await repairReservedIncognitoSessionKeys(rowRepairParams);
     deliveryReport = repairCanonicalSessionDeliveryStates(rowRepairParams);
-    repairLegacySessionExecPolicy(rowRepairParams);
+    execPolicyReport = repairLegacySessionExecPolicy(rowRepairParams);
     acpKeyReport = await repairAcpSessionMetaKeysForDoctor({
       ...repairParams,
       authority: maintenanceAuthority,
@@ -434,6 +444,17 @@ export async function noteSessionTranscriptHealth(options?: {
               `Stripped the runtime-only skills catalog from ${resolvedSkillsReport.repaired} durable session row(s).`,
             ]
           : []),
+        ...(execPolicyReport.repaired > 0
+          ? [`Retired legacy exec policy from ${execPolicyReport.repaired} durable session row(s).`]
+          : []),
+        ...(report.totals.importedEntries > 0
+          ? [`Imported ${report.totals.importedEntries} legacy session entry(ies) into SQLite.`]
+          : []),
+        ...((report.totals.archivedLegacyStoreFiles ?? 0) > 0
+          ? [
+              `Archived ${report.totals.archivedLegacyStoreFiles} migrated legacy session index file(s).`,
+            ]
+          : []),
         ...(report.totals.archivedTranscriptFiles > 0
           ? [
               `Archived ${report.totals.archivedTranscriptFiles} migrated session transcript file(s).`,
@@ -451,6 +472,11 @@ export async function noteSessionTranscriptHealth(options?: {
   }
   const repairWarnings = [
     ...(legacyMainSessionResult?.warnings ?? []),
+    ...worktreeWorkspaceReport.warnings,
+    ...(reservedKeyReport.warnings ?? []),
+    ...(deliveryReport.warnings ?? []),
+    ...(resolvedSkillsReport.warnings ?? []),
+    ...(execPolicyReport.warnings ?? []),
     ...acpKeyReport.warnings,
     ...titleReport.warnings,
   ];

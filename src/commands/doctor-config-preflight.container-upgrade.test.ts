@@ -31,6 +31,7 @@ import * as configPreflight from "./doctor-config-preflight.js";
 import { withDoctorConfigPreflightHome } from "./doctor-config-preflight.test-support.js";
 import { runExternallyManagedDoctorRepair } from "./doctor-externally-managed-repair.js";
 import * as migrationBackup from "./doctor-migration-backup.js";
+import * as sessionTranscripts from "./doctor-session-transcripts.js";
 import { runStartupConfigPreflight } from "./startup-config-preflight.js";
 
 const { mocks } = await import("../flows/doctor-health.test-support.js");
@@ -165,6 +166,39 @@ describe("container image replacement Doctor repair and startup readiness", () =
       } finally {
         database.close();
       }
+    });
+  });
+
+  it("preserves completed repair evidence when a later session repair fails", async () => {
+    await withContainerState(async (stateDir) => {
+      seedSchema19Agent(stateDir);
+      vi.spyOn(sessionTranscripts, "noteSessionTranscriptHealth").mockRejectedValueOnce(
+        new Error("session repair failed"),
+      );
+
+      const report = await runExternallyManagedDoctorRepair({
+        options: {
+          repair: true,
+          externallyManaged: true,
+          nonInteractive: true,
+          json: true,
+        },
+        runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+      });
+
+      expect(report.ok).toBe(false);
+      expect(report.applied).toContainEqual(
+        expect.objectContaining({
+          stepId: "database-backup",
+          changes: expect.arrayContaining([
+            expect.stringContaining("Saved pre-migration SQLite backup"),
+          ]),
+        }),
+      );
+      expect(report.remaining).toContainEqual({
+        stepId: "repair",
+        message: "Repair stopped after an unexpected failure: session repair failed",
+      });
     });
   });
 
