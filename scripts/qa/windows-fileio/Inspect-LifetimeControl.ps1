@@ -87,7 +87,22 @@ public static class FileTraceLifetimeControl {
       OwnedFileTrace.ThreadLease lease=null;
       Exception processFailure=null;
       try {
-        ChildStartAttempted=true;started=child.Start();Require(started);
+        // Framework captures this encoding in StandardInput during Start.
+        System.Text.Encoding previousEncoding=Console.InputEncoding;
+        Exception startFailure=null;
+        bool encodingAttempted=false;
+        try {
+          encodingAttempted=true;
+          Console.InputEncoding=new System.Text.UTF8Encoding(false);
+          ChildStartAttempted=true;started=child.Start();Require(started);
+        } catch(Exception error) {startFailure=error;}
+        finally {
+          if(encodingAttempted) {
+            try {Console.InputEncoding=previousEncoding;}
+            catch(Exception error) {startFailure=Combine(startFailure,error);}
+          }
+        }
+        if(startFailure != null)throw startFailure;
         Stage="process-ready";
         Require(child.StandardOutput.ReadLine() == "lifetime-ready");
         Stage="process-creation";

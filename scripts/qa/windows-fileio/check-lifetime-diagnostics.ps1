@@ -15,10 +15,11 @@ if($threadBoundary -lt 0){throw 'Thread-control boundary missing'}
 $control=$control.Substring(0,$threadBoundary)+"    Stage=`"complete`";`n  }`n}"
 $realControl=[regex]::Replace($control,'(?m)^using [^\r\n]+;\r?\n','')
 $realControl=[regex]::Replace($realControl,'\bProcess\b','System.Diagnostics.Process')
+$realControl=[regex]::Replace($realControl,'\bConsole\b','System.Console')
 $realControl=$realControl.Replace('FileTraceLifetimeControl','FileTraceLifetimeControlReal')
 # Test-copy observation after the owner's real wait, without changing its decision.
 $realControl=$realControl.Replace('child.WaitForExit();','child.WaitForExit();LifetimeDiagnosticFixture.State.JoinedExitZero=child.ExitCode==0;')
-$control=$control.Replace('using System.Diagnostics;',"using System.Diagnostics;`nusing Process=LifetimeDiagnosticFixture.Child;")
+$control=$control.Replace('using System.Diagnostics;',"using System.Diagnostics;`nusing Process=LifetimeDiagnosticFixture.Child;`nusing Console=LifetimeDiagnosticFixture.ConsoleState;")
 $native=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'OwnedFileTrace.cs'))
 $structStart=$native.IndexOf('  public struct ProcessTimeObservation {')
 $structEnd=$native.IndexOf('  public sealed class ThreadLease', $structStart)
@@ -30,10 +31,37 @@ namespace LifetimeDiagnosticFixture {
     public static bool Exited,JoinedExitZero;
     public static int Starts,Releases,Joins,Disposals,LeaseDisposals,Closes,Observations;
     public static System.Action AfterWait;
+    public static System.Text.Encoding PriorEncoding,CurrentEncoding,WriterEncoding;
+    public static int EncodingGets,EncodingSets;
+    public static bool ReadyReadRestored;
+
     public static long LiveTime;
     public static System.DateTime ExitTime;
     public static void Reset(string scenario) {
+      PriorEncoding=new System.Text.UTF8Encoding(true);CurrentEncoding=PriorEncoding;WriterEncoding=null;
+      EncodingGets=EncodingSets=0;ReadyReadRestored=true;
       Scenario=scenario;Exited=false;JoinedExitZero=false;AfterWait=null;Starts=Releases=Joins=Disposals=LeaseDisposals=Closes=Observations=0;
+    }
+  }
+  public static class ConsoleState {
+    public static System.Text.Encoding InputEncoding {
+      get {
+        State.EncodingGets++;
+        if(State.Scenario=="encoding-get-failed")throw new System.IO.IOException("PRIVATE_ENCODING_GET");
+        return State.CurrentEncoding;
+      }
+      set {
+        State.EncodingSets++;
+        if(State.EncodingSets==1) {
+          State.CurrentEncoding=(System.Text.Encoding)value.Clone();
+          if(State.Scenario=="encoding-set-failed" || State.Scenario=="encoding-set-and-restore-failed")
+            throw new System.IO.IOException("PRIVATE_ENCODING_SET");
+        } else {
+          if(State.Scenario=="encoding-restore-failed" || State.Scenario=="start-and-restore-failed" || State.Scenario=="encoding-set-and-restore-failed")
+            throw new System.IO.IOException("PRIVATE_ENCODING_RESTORE");
+          State.CurrentEncoding=(System.Text.Encoding)value.Clone();
+        }
+      }
     }
   }
   public sealed class Input : System.IO.StringWriter {
@@ -48,7 +76,10 @@ namespace LifetimeDiagnosticFixture {
     int reads;
     public Output():base(""){}
     public override string ReadLine() {
-      if(++reads==1)return State.Scenario=="ready-read-failed" ? "PRIVATE_WRONG_READY" : "lifetime-ready";
+      if(++reads==1) {
+        State.ReadyReadRestored=State.CurrentEncoding.Equals(State.PriorEncoding);
+        return State.Scenario=="ready-read-failed" ? "PRIVATE_WRONG_READY" : "lifetime-ready";
+      }
       if(State.Scenario.StartsWith("marker-"))return "lifetime-terminal-failure:"+State.Scenario.Substring(7);
       if(State.Scenario=="terminal-null")return null;
       return State.Scenario=="terminal-ack-failed" ? "PRIVATE_WRONG_ACK" : "lifetime-terminal";
@@ -56,7 +87,8 @@ namespace LifetimeDiagnosticFixture {
   }
   public sealed class Child : System.IDisposable {
     public System.Diagnostics.ProcessStartInfo StartInfo {get;set;}
-    public bool Start(){State.Starts++;if(State.Scenario=="start-throws")throw new System.Exception("PRIVATE_START_FAILURE");return true;}
+    public bool Start(){State.Starts++;State.WriterEncoding=State.CurrentEncoding;
+      if(State.Scenario=="start-throws" || State.Scenario=="start-and-restore-failed")throw new System.Exception("PRIVATE_START_FAILURE");return true;}
     public Output StandardOutput=new Output();
     public Input StandardInput=new Input();
     public System.DateTime StartTime {get{if(State.Scenario=="creation-failed")throw new System.Exception("PRIVATE_CREATION_FAILURE");return System.DateTime.FromFileTimeUtc(100);}}
@@ -120,13 +152,16 @@ $catch=$catch.Replace('  exit 2','  $script:capturedExit=2').Replace('catch {',"
 $entry=[scriptblock]::Create("try {`n"+$tail+"`n}`n"+$catch)
 $failed=0
 $beforeLiveStages=@{
+  'encoding-get-failed'='process-start';'encoding-set-failed'='process-start';'encoding-restore-failed'='process-start'
+  'encoding-set-and-restore-failed'='process-start';'start-and-restore-failed'='process-start'
   'start-throws'='process-start';'ready-read-failed'='process-ready';'creation-failed'='process-creation'
   'before-observation'='process-hold';'lease-failed'='process-lease'
   'terminal-write-failed'='process-terminal-write';'terminal-ack-failed'='process-terminal-ack'
   'marker-bom-prefix'='process-terminal-ack';'marker-eof'='process-terminal-ack';'marker-mismatch'='process-terminal-ack'
   'marker-other'='process-terminal-ack';'marker-PRIVATE_UNKNOWN'='process-terminal-ack';'terminal-null'='process-terminal-ack'
 }
-foreach($scenario in @('start-throws','ready-read-failed','creation-failed','before-observation','lease-failed',
+foreach($scenario in @('encoding-get-failed','encoding-set-failed','encoding-restore-failed',
+  'encoding-set-and-restore-failed','start-and-restore-failed','start-throws','ready-read-failed','creation-failed','before-observation','lease-failed',
   'terminal-write-failed','terminal-ack-failed','marker-bom-prefix','marker-eof','marker-mismatch','marker-other',
   'marker-PRIVATE_UNKNOWN','terminal-null','query-threw','query-failed','query-release-failed','query-join-failed','creation-mismatch','early-exit','live')) {
   [LifetimeDiagnosticFixture.State]::Reset($scenario)
@@ -160,26 +195,43 @@ foreach($scenario in @('start-throws','ready-read-failed','creation-failed','bef
     $property=if($null -ne $record.processLiveObservation){$record.processLiveObservation.PSObject.Properties[$key]}else{$null}
     if(-not $property -or $property.Value -cne $expected[$key]){$factsCorrect=$false}
   }
-  $released=[LifetimeDiagnosticFixture.State]::Releases -eq $(if($scenario -in @('early-exit','start-throws')){0}else{1})
-  $cleanup=[LifetimeDiagnosticFixture.State]::Joins -eq $(if($scenario -in @('query-join-failed','start-throws')){0}elseif($scenario -eq 'live'){2}else{1}) -and [LifetimeDiagnosticFixture.State]::Disposals -eq 1 -and
-    [LifetimeDiagnosticFixture.State]::Closes -eq $(if($scenario -in @('before-observation','start-throws','ready-read-failed','creation-failed')){0}else{1}) -and
-    [LifetimeDiagnosticFixture.State]::LeaseDisposals -eq $(if($scenario -in @('before-observation','start-throws','ready-read-failed','creation-failed','lease-failed')){0}else{1})
+  $noStart=$scenario -in @('encoding-get-failed','encoding-set-failed','encoding-set-and-restore-failed')
+  $unreturnedStart=$scenario -in @('start-throws','start-and-restore-failed')
+  $beforeHandle=$noStart -or $unreturnedStart -or $scenario -in @('encoding-restore-failed','before-observation','ready-read-failed','creation-failed')
+  $restoreFailed=$scenario -in @('encoding-restore-failed','encoding-set-and-restore-failed','start-and-restore-failed')
+  $restored=[LifetimeDiagnosticFixture.State]::CurrentEncoding.Equals([LifetimeDiagnosticFixture.State]::PriorEncoding)
+  $writer=[LifetimeDiagnosticFixture.State]::WriterEncoding
+  $writerCorrect=if($noStart){$null -eq $writer}else{$null -ne $writer -and $writer.CodePage -eq 65001 -and $writer.GetPreamble().Length -eq 0}
+  $encodingScopeCorrect=$writerCorrect -and $restored -eq (-not $restoreFailed) -and
+    [LifetimeDiagnosticFixture.State]::ReadyReadRestored -and [LifetimeDiagnosticFixture.State]::EncodingGets -eq 1 -and
+    [LifetimeDiagnosticFixture.State]::EncodingSets -eq $(if($scenario -eq 'encoding-get-failed'){0}else{2}) -and
+    [LifetimeDiagnosticFixture.State]::Starts -eq $(if($noStart){0}else{1})
+  $released=[LifetimeDiagnosticFixture.State]::Releases -eq $(if($noStart -or $unreturnedStart -or $scenario -eq 'early-exit'){0}else{1})
+  $cleanup=[LifetimeDiagnosticFixture.State]::Joins -eq $(if($noStart -or $unreturnedStart -or $scenario -eq 'query-join-failed'){0}elseif($scenario -eq 'live'){2}else{1}) -and [LifetimeDiagnosticFixture.State]::Disposals -eq 1 -and
+    [LifetimeDiagnosticFixture.State]::Closes -eq $(if($beforeHandle){0}else{1}) -and
+    [LifetimeDiagnosticFixture.State]::LeaseDisposals -eq $(if($beforeHandle -or $scenario -eq 'lease-failed'){0}else{1})
   $failurePreserved=$true
-  if($scenario -eq 'start-throws'){$failurePreserved=$script:capturedFailure.ToString().Contains('PRIVATE_START_FAILURE')}
+  if($unreturnedStart){$failurePreserved=$script:capturedFailure.ToString().Contains('PRIVATE_START_FAILURE')}
   if($scenario -in @('query-release-failed','query-join-failed')) {
     $failureText=$script:capturedFailure.ToString()
     $failurePreserved=$failureText.Contains('Lifetime control assertion failed') -and
       $failureText.Contains($(if($scenario -eq 'query-release-failed'){'PRIVATE_RELEASE_FAILURE'}else{'PRIVATE_JOIN_FAILURE'}))
   }
-  $joinAdmission=$script:bindingChecks -eq $(if($scenario -in @('query-join-failed','start-throws')){1}else{2})
+  if($scenario.StartsWith('encoding-') -or $scenario -eq 'start-and-restore-failed') {
+    $text=if($script:capturedFailure){$script:capturedFailure.ToString()}else{''}
+    if($scenario -eq 'encoding-get-failed'){$failurePreserved=$text.Contains('PRIVATE_ENCODING_GET')}
+    if($scenario -in @('encoding-set-failed','encoding-set-and-restore-failed')){$failurePreserved=$text.Contains('PRIVATE_ENCODING_SET')}
+    if($restoreFailed){$failurePreserved=$failurePreserved -and $text.Contains('PRIVATE_ENCODING_RESTORE')}
+  }
+  $joinAdmission=$script:bindingChecks -eq $(if($unreturnedStart -or $scenario -eq 'query-join-failed'){1}else{2})
   $expectedStage=if($beforeLiveStages.ContainsKey($scenario)){$beforeLiveStages[$scenario]}elseif($scenario -eq 'live'){'complete'}else{'process-live'}
   $stageCorrect=$record.stage -ceq $expectedStage
   $expectedCategory=if($scenario -in @('marker-bom-prefix','marker-eof','marker-mismatch','marker-other')){$scenario.Substring(7)}else{$null}
   $categoryCorrect=$record.terminalInputFailure -ceq $expectedCategory
-  $passed=$categoryCorrect -and $stageCorrect -and $failurePreserved -and $joinAdmission -and $factsCorrect -and $released -and $cleanup -and $record.passed -eq ($scenario -eq 'live') -and
+  $passed=$encodingScopeCorrect -and $categoryCorrect -and $stageCorrect -and $failurePreserved -and $joinAdmission -and $factsCorrect -and $released -and $cleanup -and $record.passed -eq ($scenario -eq 'live') -and
     $script:capturedExit -eq $(if($scenario -eq 'live'){0}else{2}) -and -not $output.Contains('PRIVATE_')
   if(-not $passed){$failed++}
-  @{scenario=$scenario;passed=$passed;categoryCorrect=$categoryCorrect;stageCorrect=$stageCorrect;stage=$record.stage;factsCorrect=$factsCorrect;naturalReleaseCorrect=$released;
+  @{scenario=$scenario;passed=$passed;encodingScopeCorrect=$encodingScopeCorrect;encodingRestored=$restored;categoryCorrect=$categoryCorrect;stageCorrect=$stageCorrect;stage=$record.stage;factsCorrect=$factsCorrect;naturalReleaseCorrect=$released;
     cleanupCorrect=$cleanup;failurePreserved=$failurePreserved;postBindingJoinAdmission=$joinAdmission;
     nativeProof=$false;controlSha256=(Get-FileHash $SourcePath -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json -Compress
 }
