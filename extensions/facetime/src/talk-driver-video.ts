@@ -131,7 +131,7 @@ export function createFaceTimeTalkVideo(params: {
         bridge.stop(reason),
         VIDEO_STOP_TIMEOUT_MS,
         "video bridge cleanup timed out after 2 seconds",
-      ).catch((error) => {
+      ).catch((error: unknown) => {
         params.logger.warn?.(`[facetime] ${formatErrorMessage(error)}`);
       });
     },

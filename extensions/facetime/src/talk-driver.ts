@@ -23,7 +23,6 @@ import {
   agentIdFromSessionKey,
   assertAuthenticatedSenderConsultSupport,
   buildRealtimeInstructions,
-  FACETIME_END_CALL_TOOL,
   INPUT_AUDIO_STATUS_INTERVAL_MS,
   MAX_TRANSCRIPT_CHARS,
   MAX_TRANSCRIPT_ENTRY_CHARS,
@@ -56,7 +55,6 @@ export async function startFaceTimeTalkDriver(params: {
   senderIsOwner: true;
   captureBinary: string;
   signal?: AbortSignal;
-  onHangupRequested: () => Promise<void>;
   onFailure?: (error: Error) => boolean | Promise<boolean>;
 }): Promise<FaceTimeTalkDriver> {
   if (params.signal?.aborted) {
@@ -355,7 +353,6 @@ export async function startFaceTimeTalkDriver(params: {
     suspendMedia,
     reportFailure,
     close,
-    onHangupRequested: params.onHangupRequested,
   });
   consultRef.current = consultController;
 
@@ -459,9 +456,7 @@ export async function startFaceTimeTalkDriver(params: {
         triggerGreetingOnReady: false,
         initialGreetingInstructions: initialGreeting.instructions,
         markStrategy: "ack-immediately",
-        tools: resolveRealtimeVoiceAgentConsultTools(params.config.realtime.toolPolicy, [
-          FACETIME_END_CALL_TOOL,
-        ]),
+        tools: resolveRealtimeVoiceAgentConsultTools(params.config.realtime.toolPolicy),
         audioSink: {
           isOpen: () => !stopped && !mediaSuspended,
           sendAudio(audio, metadata) {

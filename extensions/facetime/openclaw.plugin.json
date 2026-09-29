@@ -1,7 +1,7 @@
 {
   "id": "facetime",
   "name": "FaceTime",
-  "description": "Experimental FaceTime realtime voice carrier for OpenClaw agents",
+  "description": "Operator-assisted FaceTime realtime voice and video bridge for OpenClaw agents",
   "categories": ["voice"],
   "enabledByDefault": false,
   "activation": {

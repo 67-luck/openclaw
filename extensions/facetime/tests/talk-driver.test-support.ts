@@ -185,7 +185,6 @@ export function startParams(overrides: Record<string, unknown> = {}) {
     senderId: "caller@example.com",
     senderIsOwner: true as const,
     captureBinary: "/capture",
-    onHangupRequested: mocks.hangupRequested,
     ...overrides,
   };
 }

@@ -9,7 +9,9 @@ const VIRTUAL_CAMERA_STATUS_ATTEMPTS = 20;
 const VIRTUAL_CAMERA_STATUS_INTERVAL_MS = 50;
 
 function waitForVirtualCameraStatus(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, VIRTUAL_CAMERA_STATUS_INTERVAL_MS));
+  return new Promise((resolve) => {
+    setTimeout(resolve, VIRTUAL_CAMERA_STATUS_INTERVAL_MS);
+  });
 }
 
 /** Owns the plugin-created OBS browser input and virtual-camera lease for one call. */

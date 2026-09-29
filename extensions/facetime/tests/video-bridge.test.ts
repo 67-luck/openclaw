@@ -141,7 +141,7 @@ describe("FaceTime video bridge", () => {
   });
 
   it("degrades and retires video on provider backpressure without throwing", async () => {
-    const { config, logger, obs, provider, session, setHealth } = createHarness();
+    const { config, logger, obs, provider, setHealth } = createHarness();
     const bridge = await startFaceTimeVideoBridge({
       config,
       fullConfig: {},
@@ -163,7 +163,7 @@ describe("FaceTime video bridge", () => {
   });
 
   it("retires a provider that closes after startup", async () => {
-    const { config, logger, obs, provider, session, setHealth } = createHarness();
+    const { config, logger, obs, provider, setHealth } = createHarness();
     const bridge = await startFaceTimeVideoBridge({
       config,
       fullConfig: {},
