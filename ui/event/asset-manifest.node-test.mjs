@@ -42,6 +42,19 @@ function fixture(t) {
 }
 const expected = ["index.html", "assets/main.js"];
 
+function bundleForFiles(files) {
+  return Object.fromEntries(
+    files.map((name) => [
+      name,
+      {
+        type: name.endsWith(".js") ? "chunk" : "asset",
+        ...(name.endsWith(".js") ? { imports: [], dynamicImports: [] } : {}),
+        viteMetadata: { importedCss: new Set(), importedAssets: new Set() },
+      },
+    ]),
+  );
+}
+
 // Execute the production walk with real Windows path semantics on every host.
 // A recording filesystem verifies each lstat boundary without requiring a Windows share.
 const windowsDirectories = [
@@ -106,12 +119,53 @@ test("hashes exact bytes with stable order and excludes the manifest itself", (t
   assert.equal(html.mimeType, "text/html; charset=utf-8");
   assert.equal(manifest.assets[1].mimeType, "text/css; charset=utf-8");
   assert.deepEqual(Object.keys(html).toSorted(), ["mimeType", "path", "sha256", "size"]);
-  writeAssetManifest(root, paths);
+  writeAssetManifest(root, paths, bundleForFiles(paths));
   assert.deepEqual(
     JSON.parse(readFileSync(path.join(root, "asset-manifest.json"), "utf8")),
     manifest,
   );
-  assert.throws(() => writeAssetManifest(root, paths));
+  assert.throws(() => writeAssetManifest(root, paths, bundleForFiles(paths)));
+});
+
+test("requires complete matching bundle metadata before writing a manifest", (t) => {
+  const incomplete = bundleForFiles(expected);
+  delete incomplete["assets/main.js"].viteMetadata;
+  for (const bundle of [
+    undefined,
+    null,
+    {},
+    expected,
+    incomplete,
+    bundleForFiles(["index.html"]),
+    bundleForFiles([...expected, "assets/extra.js"]),
+  ]) {
+    const root = fixture(t);
+    assert.throws(() => writeAssetManifest(root, expected, bundle));
+    assert.throws(() => readFileSync(path.join(root, "asset-manifest.json")), { code: "ENOENT" });
+  }
+});
+
+test("rejects missing and external bundle dependencies before manifest publication", (t) => {
+  for (const field of ["imports", "dynamicImports", "importedCss", "importedAssets"]) {
+    for (const dependency of ["assets/missing.js", "https://example.invalid/external.js"]) {
+      const root = fixture(t);
+      const bundle = bundleForFiles(expected);
+      const chunk = bundle["assets/main.js"];
+      if (field === "imports" || field === "dynamicImports") {
+        chunk[field] = [dependency];
+        writeFileSync(
+          path.join(root, "assets/main.js"),
+          field === "imports"
+            ? `import ${JSON.stringify(dependency)};`
+            : `import(${JSON.stringify(dependency)});`,
+        );
+      } else {
+        chunk.viteMetadata[field].add(dependency);
+      }
+      assert.throws(() => writeAssetManifest(root, expected, bundle));
+      assert.throws(() => readFileSync(path.join(root, "asset-manifest.json")), { code: "ENOENT" });
+    }
+  }
 });
 
 test("rejects missing, extra, duplicate, unsafe and unsupported paths", (t) => {
@@ -506,14 +560,15 @@ test("worker guard rejects qualified, computed and aliased capability access", (
   }
 });
 
-test("preserves the composer quoted content escape", (t) => {
-  const source = readFileSync(new URL("../src/styles/chat/composer.css", import.meta.url), "utf8");
-  const rule = source.match(/\.chat-controls__model-option-auth-warning::before\s*\{[^}]*\}/)?.[0];
-  assert.ok(rule);
-  assert.match(rule, /content:\s*"\\00b7"/);
+test("preserves equivalent quoted CSS content escapes", (t) => {
   const root = fixture(t);
-  writeFileSync(path.join(root, "assets/a.css"), rule);
-  assert.doesNotThrow(() => createAssetManifest(root, [...expected, "assets/a.css"]));
+  for (const rule of [
+    String.raw`.event-marker::before { content: "\00b7"; }`,
+    String.raw`.event-marker::before { content: "\b7"; }`,
+  ]) {
+    writeFileSync(path.join(root, "assets/a.css"), rule);
+    assert.doesNotThrow(() => createAssetManifest(root, [...expected, "assets/a.css"]));
+  }
 });
 
 test("inert worker words and comments are allowed but malformed scripts fail", (t) => {

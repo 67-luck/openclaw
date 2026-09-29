@@ -1168,7 +1168,16 @@ export function createAssetManifest(root, emittedFiles) {
   return { version: 1, assets };
 }
 
-export function writeAssetManifest(root, emittedFiles) {
+/** Publish only after Vite's complete bundle agrees with the emitted file inventory. */
+export function writeAssetManifest(root, emittedFiles, bundle) {
+  validateBundleClosure(bundle);
+  if (
+    !Array.isArray(emittedFiles) ||
+    JSON.stringify(Object.keys(bundle).toSorted()) !==
+      JSON.stringify(emittedFiles.map(validateAssetPath).toSorted())
+  ) {
+    throw new Error("Bundle and emitted files differ");
+  }
   const manifest = createAssetManifest(root, emittedFiles);
   const bytes = `${JSON.stringify(manifest, null, 2)}\n`;
   if (Buffer.byteLength(bytes) > MAX_MANIFEST_BYTES) {
