@@ -1,5 +1,24 @@
+import type { dispatchCronDelivery } from "./delivery-dispatch.js";
+
 /** Shared loose cron fixtures for isolated-agent tests. */
 type LooseRecord = Record<string, unknown>;
+type SourceOutcome = Parameters<typeof dispatchCronDelivery>[0]["sourceDeliveryOutcome"];
+
+export function messageToolOutcome(
+  targets: SourceOutcome["visibleDeliveries"][number]["target"][],
+  verified = true,
+): SourceOutcome {
+  return {
+    visibleDeliveries: targets.map((target) => ({
+      via: "message_tool",
+      target,
+      verifiedTarget: verified,
+    })),
+    verifiedMessageToolDelivery: verified,
+    satisfiesSourceDelivery: verified,
+    unverifiedMessageToolDelivery: !verified,
+  };
+}
 
 /** Builds a loose cron job fixture for isolated-agent unit tests. */
 export function makeIsolatedAgentJobFixture(overrides?: LooseRecord) {

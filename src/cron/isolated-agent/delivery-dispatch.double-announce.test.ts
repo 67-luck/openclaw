@@ -91,6 +91,10 @@ vi.mock("../../config/sessions/main-session.js", () => ({
 }));
 
 vi.mock("../../agents/subagents/registry/subagent-registry-read.js", () => ({
+  countPendingDescendantRuns: async (_key: string, assertCurrent: () => void) => {
+    assertCurrent();
+    return 0;
+  },
   getLatestLiveSubagentRunByChildSessionKey: () => null,
 }));
 
@@ -196,28 +200,12 @@ import {
 } from "./delivery-dispatch.js";
 import { hasUnsettledCronDescendants } from "./delivery-subagent-registry.runtime.js";
 import type { DeliveryTargetResolution } from "./delivery-target.js";
+import { messageToolOutcome } from "./job-fixtures.js";
 import { expectsSubagentFollowup, isLikelyInterimCronMessage } from "./subagent-followup-hints.js";
 import {
   readDescendantSubagentFallbackReply,
   waitForDescendantSubagentSummary,
 } from "./subagent-followup.runtime.js";
-
-type SourceOutcome = Parameters<typeof dispatchCronDelivery>[0]["sourceDeliveryOutcome"];
-function messageToolOutcome(
-  targets: SourceOutcome["visibleDeliveries"][number]["target"][],
-  verified = true,
-): SourceOutcome {
-  return {
-    visibleDeliveries: targets.map((target) => ({
-      via: "message_tool",
-      target,
-      verifiedTarget: verified,
-    })),
-    verifiedMessageToolDelivery: verified,
-    satisfiesSourceDelivery: verified,
-    unverifiedMessageToolDelivery: !verified,
-  };
-}
 
 type SuccessfulDeliveryResolution = Extract<DeliveryTargetResolution, { ok: true }>;
 type ResolvedOutboundSessionRoute = NonNullable<
