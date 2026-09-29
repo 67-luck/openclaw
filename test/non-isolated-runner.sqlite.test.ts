@@ -30,6 +30,7 @@ async function runSqliteLifecycleFixture(
     await fs.writeFile(
       path.join(root, "vitest.config.ts"),
       `import { sharedVitestConfig } from ${JSON.stringify(path.join(repoRoot, "test/vitest/vitest.shared.config.ts"))};
+import { compiledSubprocessesPlugin } from ${JSON.stringify(path.join(repoRoot, "test/vitest/vitest.worker-artifacts.ts"))};
 import { defineConfig } from "vitest/config";
 import { BaseSequencer } from "vitest/node";
 class Ordered extends BaseSequencer {
@@ -37,6 +38,7 @@ class Ordered extends BaseSequencer {
 }
 export default defineConfig({
   cacheDir: ${JSON.stringify(path.join(root, ".vite"))},
+  plugins: [compiledSubprocessesPlugin()],
   resolve: sharedVitestConfig.resolve,
   test: {
     name: "sqlite-owner-retirement", pool: ${JSON.stringify(fixture.pool)}, isolate: false,
@@ -51,7 +53,7 @@ export default defineConfig({
       Object.entries(process.env).filter(
         ([key]) =>
           !key.startsWith("VITEST") &&
-          !key.startsWith("OPENCLAW_VITEST") &&
+          (!key.startsWith("OPENCLAW_VITEST") || key === "OPENCLAW_VITEST_WORKER_CACHE") &&
           key !== "GITHUB_ACTIONS" &&
           key !== "FORCE_COLOR",
       ),
@@ -60,7 +62,7 @@ export default defineConfig({
     const result = await runVitestShutdownCommand({
       bin: resolveTestNodeExecPath(),
       args: [
-        path.join(vitestDir, "vitest.mjs"),
+        path.join(repoRoot, "scripts/run-vitest.mjs"),
         "run",
         "--root",
         root,
