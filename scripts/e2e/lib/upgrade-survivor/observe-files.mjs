@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { sleep } from "../../../lib/sleep.mjs";
 import { createConfigReloadLogScanner } from "../config-reload/log-scanner.mjs";
 import { onceFrame } from "../gateway-network/ws-frames.mts";
@@ -36,6 +37,7 @@ if (command === "cleanup") {
   await fs.writeFile(configPath, fixture.originalConfig);
   assert.equal(await fs.readFile(configPath, "utf8"), fixture.originalConfig);
   await fs.rm(fixture.skillDir, { recursive: true, force: true });
+  await fs.rm(fixture.memoryDir, { recursive: true, force: true });
   await Promise.all(fixture.files.map((file) => fs.rm(file, { force: true })));
   const evidence = JSON.parse(await fs.readFile(evidencePath, "utf8"));
   evidence.configRestored = true;
@@ -54,6 +56,12 @@ const nonce =
 const skillName = `upgrade-observation-${nonce}`;
 const skillDir = path.join(workspace, "skills", skillName);
 const skillPath = path.join(skillDir, "SKILL.md");
+const memoryDir = path.join(workspace, "memory", skillName);
+const memoryPath = path.join(memoryDir, "note.md");
+const memoryRelativePath = path.relative(workspace, memoryPath).split(path.sep).join("/");
+const memoryTokens = ["seed", "warmup", "edited"].map(
+  (label) => `clawmemory${label}${nonce.replaceAll("-", "")}`,
+);
 const includePath = path.join(path.dirname(configPath), `upgrade-observation-${nonce}.json`);
 if (command === "prepare") {
   assert.equal(process.env.OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE ?? "manual", "manual");
@@ -64,6 +72,7 @@ if (command === "prepare") {
       originalConfig: currentConfig,
       nonce,
       skillDir,
+      memoryDir,
       files: [includePath, `${configPath}.${nonce}.tmp`, `${includePath}.${nonce}.tmp`],
     }),
     { mode: 0o600, flag: "wx" },
@@ -74,10 +83,44 @@ if (command === "prepare") {
   );
   // Prime discovery in the Gateway before any watcher can publish its initial scan.
   config.skills = { ...config.skills, load: { ...config.skills?.load, watch: false } };
+  const agent = config.agents?.entries?.main;
+  assert(agent, "Memory observation requires the fixture's main agent");
+  agent.memory = {
+    ...agent.memory,
+    search: {
+      ...agent.memory?.search,
+      enabled: true,
+      provider: "none",
+      fallback: "none",
+      sources: ["memory"],
+      rememberAcrossConversations: false,
+    },
+  };
+  config.plugins = {
+    ...config.plugins,
+    slots: { ...config.plugins?.slots, memory: "memory-core" },
+    entries: {
+      ...config.plugins?.entries,
+      "memory-core": { ...config.plugins?.entries?.["memory-core"], enabled: true },
+    },
+  };
+  if (config.plugins.allow) {
+    config.plugins.allow = [...new Set([...config.plugins.allow, "memory-core"])];
+  }
+  await fs.mkdir(memoryDir, { recursive: true });
+  await fs.writeFile(memoryPath, memoryTokens[0], { flag: "wx" });
   await writeJson(configPath, config);
   process.exit(0);
 }
 assert(packageRoot && gatewayLog && token);
+assert(process.env.OPENCLAW_STATE_DIR);
+const memoryDatabase = path.join(
+  process.env.OPENCLAW_STATE_DIR,
+  "agents",
+  "main",
+  "agent",
+  "openclaw-agent.sqlite",
+);
 assert.equal(config.skills?.load?.watch, false, "Skills observation requires prepared startup");
 const startedAt = Date.now();
 const observationBudgetMs = 120_000;
@@ -85,6 +128,7 @@ const deadline = startedAt + observationBudgetMs;
 const evidence = {
   config: [],
   skills: [],
+  memory: [],
   observationsPassed: false,
   socketClosed: false,
   activeLabel: "connect",
@@ -92,6 +136,7 @@ const evidence = {
   failureStage: null,
   lastConfigAttempt: null,
   lastSkillAttempt: null,
+  lastMemoryAttempt: null,
   primedAgents: [],
   reloadTail: [],
 };
@@ -254,6 +299,85 @@ async function observeSkill(label, mutate, description) {
   });
 }
 
+function readMemorySnapshot() {
+  const db = new DatabaseSync(memoryDatabase, { readOnly: true, timeout: 0 });
+  try {
+    db.exec("BEGIN");
+    const chunks = db
+      .prepare(
+        "SELECT id, text FROM memory_index_chunks WHERE path = ? AND source = 'memory' ORDER BY id",
+      )
+      .all(memoryRelativePath);
+    const ftsRows = db
+      .prepare(
+        "SELECT id, text FROM memory_index_chunks_fts WHERE path = ? AND source = 'memory' ORDER BY id",
+      )
+      .all(memoryRelativePath);
+    const match = db.prepare(
+      "SELECT id, text FROM memory_index_chunks_fts WHERE memory_index_chunks_fts MATCH ? AND path = ? AND source = 'memory' ORDER BY id",
+    );
+    return {
+      chunks,
+      ftsRows,
+      matches: memoryTokens.map((marker) => match.all(marker, memoryRelativePath)),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+async function observeMemory(label, markerIndex) {
+  evidence.activeLabel = `memory-${label}`;
+  evidence.activeStage = "memory-durable-observe";
+  const began = Date.now();
+  while (true) {
+    remainingMs();
+    let snapshot;
+    try {
+      snapshot = readMemorySnapshot();
+    } catch (error) {
+      if (error.code !== "ERR_SQLITE_ERROR" || ![5, 6].includes(error.errcode)) {
+        throw error;
+      }
+      await sleep(Math.min(100, remainingMs()));
+      continue;
+    }
+    const expected = markerIndex === undefined ? undefined : memoryTokens[markerIndex];
+    const matches = expected === undefined ? [] : snapshot.matches[markerIndex];
+    const priorAbsent = snapshot.matches.every(
+      (rows, index) => index === markerIndex || rows.length === 0,
+    );
+    const chunksMatch =
+      expected === undefined
+        ? snapshot.chunks.length === 0
+        : snapshot.chunks.length === 1 && snapshot.chunks[0].text === expected;
+    const ftsMatch =
+      expected === undefined
+        ? snapshot.ftsRows.length === 0
+        : matches.length === 1 &&
+          snapshot.ftsRows.length === 1 &&
+          matches[0].id === snapshot.chunks[0]?.id &&
+          matches[0].text === snapshot.chunks[0]?.text &&
+          snapshot.ftsRows[0].id === matches[0].id &&
+          snapshot.ftsRows[0].text === matches[0].text;
+    evidence.lastMemoryAttempt = {
+      label,
+      elapsedMs: Date.now() - began,
+      chunks: snapshot.chunks.length,
+      ftsRows: snapshot.ftsRows.length,
+      tokenMatches: snapshot.matches.map((rows) => rows.length),
+      chunksMatch,
+      ftsMatch,
+      priorAbsent,
+    };
+    if (chunksMatch && ftsMatch && priorAbsent) {
+      evidence.memory.push(evidence.lastMemoryAttempt);
+      return;
+    }
+    await sleep(Math.min(100, remainingMs()));
+  }
+}
+
 try {
   const challenge = onceFrame(
     socket,
@@ -267,7 +391,7 @@ try {
     maxProtocol: 4,
     client: { id: "cli", mode: "cli", version: "1.0.0", platform: process.platform },
     role: "operator",
-    scopes: ["operator.read"],
+    scopes: ["operator.read", "operator.write"],
     caps: ["agent-kind"],
     auth: { token },
   });
@@ -332,6 +456,45 @@ try {
       await fs.writeFile(skillPath, skillContent("Created after upgrade"));
     },
     "Created after upgrade",
+  );
+  evidence.activeLabel = "memory-initialize";
+  evidence.activeStage = "memory-tool-rpc";
+  const invoked = await request("tools.invoke", {
+    name: "memory_search",
+    agentId: "main",
+    sessionKey: "main",
+    args: { query: memoryTokens[0], corpus: "memory", minScore: 0 },
+  });
+  assert.equal(invoked.ok, true, "Memory initialization tool failed");
+  assert.equal(invoked.toolName, "memory_search");
+  const memoryResult = invoked.output?.details;
+  assert.equal(memoryResult?.provider, "none");
+  for (const key of ["unavailable", "disabled", "partial", "stale"]) {
+    assert(!memoryResult[key], `Memory initialization returned ${key}`);
+  }
+  assert(
+    memoryResult.results.some(
+      (entry) => entry.path === memoryRelativePath && entry.snippet.includes(memoryTokens[0]),
+    ),
+    "Memory initialization did not return the seeded note",
+  );
+  await observeMemory("seed", 0);
+  // Sequential durable states prove automatic convergence, not a drained OS event queue.
+  for (const [index, label] of [
+    [1, "warmup"],
+    [2, "edit"],
+  ]) {
+    evidence.activeLabel = `memory-${label}`;
+    evidence.activeStage = "memory-write";
+    await fs.writeFile(memoryPath, memoryTokens[index]);
+    await observeMemory(label, index);
+  }
+  evidence.activeLabel = "memory-delete";
+  evidence.activeStage = "memory-remove";
+  await fs.rm(memoryPath);
+  await observeMemory("delete");
+  console.log(
+    `Published-upgrade Memory automatic convergence passed: ${JSON.stringify(evidence.memory)}`,
   );
   evidence.activeLabel = "health";
   evidence.activeStage = "health-rpc";
