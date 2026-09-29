@@ -415,8 +415,10 @@ if (isDirectPostinstallInvocation()) {
     !isSourceCheckoutRoot({ packageRoot: DEFAULT_PACKAGE_ROOT })
   ) {
     try {
-      const { preflightUpdatePackageLifecycle } =
-        await import("../dist/commands/doctor-update-schema-guard.js");
+      const { preflightUpdatePackageLifecycle } = await import(
+        pathToFileURL(join(DEFAULT_PACKAGE_ROOT, "dist/commands/doctor-update-schema-guard.js"))
+          .href
+      );
       await preflightUpdatePackageLifecycle();
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));

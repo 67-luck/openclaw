@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { build } from "tsdown";
 import { describe, expect, it, vi } from "vitest";
 import { writePackageDistInventory } from "../../scripts/lib/package-dist-inventory.ts";
 import { PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH } from "../../scripts/lib/package-lifecycle-marker.mjs";
@@ -46,6 +47,39 @@ async function expectPathMissing(filePath: string) {
 }
 
 describe("bundled plugin postinstall", () => {
+  it("compiles source without consuming an installed runtime artifact", async () => {
+    const packageRoot = await createTempDirAsync("openclaw-postinstall-source-build-");
+    await copyPostinstallFixture(packageRoot);
+    const installedGuard = path.join(packageRoot, "dist/commands/doctor-update-schema-guard.js");
+    await fs.mkdir(path.dirname(installedGuard), { recursive: true });
+    await fs.writeFile(
+      installedGuard,
+      "export async function preflightUpdatePackageLifecycle() {}\n",
+    );
+    const { bundles } = await build({
+      config: false,
+      cwd: packageRoot,
+      root: packageRoot,
+      entry: ["scripts/postinstall-bundled-plugins.mjs"],
+      outDir: path.join(packageRoot, "compiled"),
+      unbundle: true,
+      treeshake: false,
+      dts: false,
+      logLevel: "silent",
+    });
+    try {
+      const inputs = bundles.flatMap(({ chunks }) =>
+        chunks.flatMap((chunk) => (chunk.type === "chunk" ? chunk.moduleIds : [])),
+      );
+      expect(inputs).toContain(path.join(packageRoot, "scripts/postinstall-bundled-plugins.mjs"));
+      expect(inputs).not.toContain(installedGuard);
+    } finally {
+      for (const bundle of bundles) {
+        await bundle[Symbol.asyncDispose]();
+      }
+    }
+  });
+
   it.each([
     { name: "marked Windows update", platform: "win32", update: "1", source: false, refused: true },
     {
