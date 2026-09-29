@@ -17,6 +17,7 @@ import {
 } from "./client.js";
 import { assertCodexInferenceRouteConfig } from "./inference-routing.js";
 import { markStartedCodexManagedThread } from "./managed-thread-store.js";
+import { readCodexModelMultiAgentVersion } from "./model-runtime.js";
 import { applyCodexNativeSkillIsolation } from "./native-skill-isolation.js";
 import { buildCodexAppServerConnectionFingerprint } from "./plugin-app-cache-key.js";
 import {
@@ -32,6 +33,7 @@ import {
 import { isCodexThreadReadMissingError } from "./rpc-error.js";
 import type { CodexAppServerThreadBinding } from "./session-binding.js";
 import { getCurrentSharedClientEntry } from "./shared-client-lifecycle.js";
+import { resolveCodexMultiAgentVersion } from "./thread-binding-policy.js";
 import {
   fingerprintCodexThreadConfig,
   readActiveCodexTurnIdsFromResume,
@@ -249,6 +251,9 @@ export async function resumeExistingCodexThread(
       authProfileId,
       // Loaded native threads can ignore resume overrides; keep the prepared model for turn/start.
       model: resumeParams.model ?? response.model ?? params.params.modelId,
+      // Resume preserves the generation in native history. A requested fallback
+      // cannot establish the generation of a legacy binding that omitted it.
+      nativeMultiAgentVersion: resumeBinding.nativeMultiAgentVersion,
       preserveNativeModel: resumeBinding.preserveNativeModel === true ? true : undefined,
       modelProvider: normalizeBindingModelProvider(
         authProfileId,
@@ -331,6 +336,9 @@ export async function resumeExistingCodexThread(
         },
         authProfileId,
         dynamicToolsFingerprint,
+        resumeBinding.preserveNativeModel || resumeBinding.connectionScope === "supervision"
+          ? undefined
+          : readCodexModelMultiAgentVersion(params.params.model),
       ),
       lifecycle: {
         action: "resumed",
@@ -562,6 +570,13 @@ export async function startFreshCodexThread(
     authProfileId: params.params.authProfileId,
     agentWorkspaceDeveloperInstructions: params.agentWorkspaceDeveloperInstructions,
     model: response.model ?? startParams.model ?? params.params.modelId,
+    nativeMultiAgentVersion: resolveCodexMultiAgentVersion(
+      response.model ?? startParams.model ?? params.params.modelId,
+      (!response.model || response.model === startParams.model) &&
+        (!requestModelProvider || response.modelProvider === requestModelProvider)
+        ? readCodexModelMultiAgentVersion(params.params.model)
+        : undefined,
+    ),
     modelProvider: bindingModelProvider,
     ...buildCodexThreadBindingPolicy(params, context),
     mcpServersFingerprint: nextMcpServersFingerprint,
@@ -659,6 +674,7 @@ export async function startFreshCodexThread(
             },
             params.params.authProfileId,
             dynamicToolsFingerprint,
+            readCodexModelMultiAgentVersion(params.params.model),
           ),
         }
       : {}),

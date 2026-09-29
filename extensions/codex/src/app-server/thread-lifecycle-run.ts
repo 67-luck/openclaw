@@ -4,6 +4,7 @@ import { isIncognitoSessionKey } from "openclaw/plugin-sdk/session-key-runtime";
 import { closeCodexStartupClientBestEffort } from "./attempt-client-cleanup.js";
 import { resolveCodexAppServerClientInstanceId } from "./client.js";
 import { assertCodexInferenceRouteConfig } from "./inference-routing.js";
+import { readCodexModelMultiAgentVersion } from "./model-runtime.js";
 import { applyCodexNativeSkillIsolation } from "./native-skill-isolation.js";
 import { hasCodexNativeToolCatalog, loadCodexNativeToolCatalog } from "./native-tool-catalog.js";
 import { buildCodexAppServerConnectionFingerprint } from "./plugin-app-cache-key.js";
@@ -21,7 +22,7 @@ import {
   isTransientWebSearchRestriction,
   shouldRecheckRecoverablePluginBinding,
   shouldRotateCodexAppServerBindingForRuntime,
-  shouldRotateCodexGpt56MultiAgentBinding,
+  shouldRotateCodexMultiAgentBinding,
 } from "./thread-binding-policy.js";
 import { isContextEngineBindingCompatible } from "./thread-context-engine.js";
 import {
@@ -323,22 +324,26 @@ export async function startOrResumeThread(
     }
     if (
       binding?.threadId &&
-      shouldRotateCodexGpt56MultiAgentBinding({
+      !binding.preserveNativeModel &&
+      binding.connectionScope !== "supervision" &&
+      shouldRotateCodexMultiAgentBinding({
         bindingModel: binding.model,
         requestedModel: params.params.modelId,
+        bindingVersion: binding.nativeMultiAgentVersion,
+        requestedVersion: readCodexModelMultiAgentVersion(params.params.model),
       })
     ) {
       // Codex locks the model-selected multi-agent version on the first turn.
-      // Sol/Terra (V2) and Luna (V1) therefore cannot share one resumed thread.
+      // Different model-selected generations cannot share one resumed thread.
       embeddedAgentLog.debug(
-        "codex app-server GPT-5.6 multi-agent version changed; starting a new thread",
+        "codex app-server model multi-agent version changed; starting a new thread",
         {
           threadId: binding.threadId,
           bindingModel: binding.model,
           requestedModel: params.params.modelId,
         },
       );
-      await clearCurrentBinding("rotating a GPT-5.6 multi-agent thread binding");
+      await clearCurrentBinding("rotating a model multi-agent thread binding");
     }
     selectionBinding = binding;
     // Capability read failures use managed search for this turn but must not

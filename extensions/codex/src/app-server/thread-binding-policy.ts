@@ -1,5 +1,6 @@
 import type { CodexAppServerConnectionClass } from "./config-contracts.js";
 import { normalizeCodexDynamicToolName } from "./dynamic-tool-profile.js";
+import type { CodexMultiAgentVersion } from "./model-runtime.js";
 import type { CodexAppServerThreadBinding } from "./session-binding.js";
 import type {
   CodexPluginThreadConfigProvider,
@@ -20,11 +21,14 @@ export function shouldRotateCodexAppServerBindingForRuntime(params: {
   return params.connectionClass === "remote" || Boolean(params.binding);
 }
 
-type CodexGpt56MultiAgentVersion = "v1" | "v2";
-
-export function resolveCodexGpt56MultiAgentVersion(
+export function resolveCodexMultiAgentVersion(
   modelRef: string | undefined,
-): CodexGpt56MultiAgentVersion | undefined {
+  catalogVersion?: CodexMultiAgentVersion,
+): CodexMultiAgentVersion | undefined {
+  if (catalogVersion !== undefined) {
+    return catalogVersion;
+  }
+  // Older catalogs omit metadata. Preserve their existing compatibility rules.
   let modelId = modelRef?.trim().toLowerCase();
   if (!modelId) {
     return undefined;
@@ -43,12 +47,17 @@ export function resolveCodexGpt56MultiAgentVersion(
   return modelId === "gpt-5.6-luna" ? "v1" : undefined;
 }
 
-export function shouldRotateCodexGpt56MultiAgentBinding(params: {
+export function shouldRotateCodexMultiAgentBinding(params: {
   bindingModel?: string;
   requestedModel: string;
+  bindingVersion?: CodexMultiAgentVersion;
+  requestedVersion?: CodexMultiAgentVersion;
 }): boolean {
-  const bindingVersion = resolveCodexGpt56MultiAgentVersion(params.bindingModel);
-  const requestedVersion = resolveCodexGpt56MultiAgentVersion(params.requestedModel);
+  const bindingVersion = resolveCodexMultiAgentVersion(params.bindingModel, params.bindingVersion);
+  const requestedVersion = resolveCodexMultiAgentVersion(
+    params.requestedModel,
+    params.requestedVersion,
+  );
   return Boolean(bindingVersion && requestedVersion && bindingVersion !== requestedVersion);
 }
 

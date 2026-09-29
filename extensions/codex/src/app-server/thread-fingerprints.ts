@@ -1,4 +1,5 @@
 import * as crypto from "node:crypto";
+import type { CodexMultiAgentVersion } from "./model-runtime.js";
 import {
   isJsonObject,
   type CodexTurn,
@@ -7,7 +8,7 @@ import {
   type JsonValue,
 } from "./protocol.js";
 import { hashCodexAppServerBindingFingerprint } from "./session-binding.js";
-import { resolveCodexGpt56MultiAgentVersion } from "./thread-binding-policy.js";
+import { resolveCodexMultiAgentVersion } from "./thread-binding-policy.js";
 
 export function codexDynamicToolsFingerprint(dynamicTools: readonly JsonValue[]): string {
   return hashCodexAppServerBindingFingerprint(codexLegacyDynamicToolsFingerprint(dynamicTools));
@@ -88,6 +89,7 @@ export function fingerprintCodexThreadConfig(
   request: JsonObject,
   authProfileId?: string,
   dynamicToolsFingerprint?: string,
+  modelMultiAgentVersion?: CodexMultiAgentVersion,
 ): string {
   return hashCodexAppServerBindingFingerprint(
     fingerprintJsonObject({
@@ -96,12 +98,13 @@ export function fingerprintCodexThreadConfig(
       // Codex fixes its model-selected native multi-agent generation for the
       // whole session; only same-generation model changes are turn-mutable.
       nativeMultiAgentVersion:
-        resolveCodexGpt56MultiAgentVersion(
+        resolveCodexMultiAgentVersion(
           typeof request.requestedModel === "string"
             ? request.requestedModel
             : typeof request.model === "string"
               ? request.model
               : undefined,
+          modelMultiAgentVersion,
         ) ?? null,
       modelProvider: request.modelProvider ?? null,
       requestedModelProvider:
