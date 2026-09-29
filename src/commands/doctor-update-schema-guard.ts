@@ -164,8 +164,8 @@ export async function guardUpdateDoctorSchemaUpgrade(options: {
   schemas?: DoctorDatabasePreflight;
   runtime?: RuntimeEnv;
   json?: boolean;
-  /** Raw CLI bootstrap runs before a shipped parent can delegate Doctor. */
-  cliBootstrap?: true;
+  /** These entry points run before a shipped parent can delegate Doctor. */
+  entry?: "cli-bootstrap" | "package-lifecycle";
   postCoreSchemaRepair?: UpdateDoctorWriteAuthority["postCoreSchemaRepair"];
   onVerifiedBackup?: (snapshots: readonly BackupSqliteSnapshotFact[]) => void;
 }): Promise<DoctorDatabasePreflight | undefined> {
@@ -178,7 +178,7 @@ export async function guardUpdateDoctorSchemaUpgrade(options: {
   }
   let updater: Awaited<ReturnType<typeof readDrivingUpdater>>;
   const sharedContentUpgrade =
-    options.cliBootstrap === true &&
+    options.entry !== undefined &&
     schemas.pendingMigrations.some(
       (database) => database.kind === "state" && database.supportedVersion > 17,
     );
@@ -186,6 +186,9 @@ export async function guardUpdateDoctorSchemaUpgrade(options: {
     updater = await readDrivingUpdater(sharedContentUpgrade);
   } catch {
     // A missing or unreadable run cannot prove that the driver writes the ledger.
+  }
+  if (options.entry === "package-lifecycle" && !updater?.requiresReadableSharedContent) {
+    return schemas;
   }
   if (!updater) {
     return schemas;
@@ -381,13 +384,33 @@ export async function guardUpdateDoctorSchemaUpgrade(options: {
 export async function preflightUpdateDoctorCli(options: { json?: boolean }) {
   // Pin the invoking parent before schema admission can yield or reparent us.
   const parent = readUpdateRunDriver(process.ppid);
-  const schemas = await guardUpdateDoctorSchemaUpgrade({ ...options, cliBootstrap: true });
+  const schemas = await guardUpdateDoctorSchemaUpgrade({ ...options, entry: "cli-bootstrap" });
   if (schemas?.updateSchemaRehearsal) {
     await rehearseDeferredUpdateDoctorSchemaForParent(schemas, defaultRuntime, parent);
     // The existing one-shot owner joins cleanup and drains the warning before exit.
     exitCliAfterOutput(defaultRuntime, 0);
   }
   return schemas;
+}
+
+/** The shipped Windows driver can still discard a failed npm stage before entering repair. */
+export async function preflightUpdatePackageLifecycle(): Promise<void> {
+  if (process.platform !== "win32" || process.env.OPENCLAW_UPDATE_IN_PROGRESS !== "1") {
+    return;
+  }
+  let updater: DrivingUpdater | undefined;
+  try {
+    updater = await readDrivingUpdater(true);
+  } catch {
+    // Unavailable legacy-driver evidence does not expand package admission.
+  }
+  if (!updater?.requiresReadableSharedContent) {
+    return;
+  }
+  await guardUpdateDoctorSchemaUpgrade({
+    schemas: await prepareDoctorDatabasePreflight({ scope: "state" }),
+    entry: "package-lifecycle",
+  });
 }
 
 /** The shipped package validator may still roll back; it must never reach live Doctor writers. */
