@@ -173,20 +173,11 @@ describe("container image replacement Doctor repair and startup readiness", () =
       const runPreflight = configPreflight.runDoctorConfigPreflight;
       vi.spyOn(configPreflight, "runDoctorConfigPreflight").mockImplementationOnce(
         async (options) => {
-          const result = await runPreflight(options);
-          return {
-            ...result,
-            stateMigrationMessages: [
-              ...(result.stateMigrationMessages ?? []),
-              {
-                stepId: "state-directory",
-                result: {
-                  changes: [],
-                  warnings: ["Legacy state directory requires operator recovery."],
-                },
-              },
-            ],
-          };
+          options.onStateMigrationMessage?.("state-directory", {
+            changes: [],
+            warnings: ["Legacy state directory requires operator recovery."],
+          });
+          return runPreflight(options);
         },
       );
 
@@ -373,6 +364,16 @@ describe("container image replacement Doctor repair and startup readiness", () =
     await withContainerState(async (stateDir) => {
       const databasePath = seedSchema19Agent(stateDir, true);
       const original = fs.readFileSync(databasePath);
+      const runPreflight = configPreflight.runDoctorConfigPreflight;
+      vi.spyOn(configPreflight, "runDoctorConfigPreflight").mockImplementationOnce(
+        async (options) => {
+          options.onStateMigrationMessage?.("state-directory", {
+            changes: [],
+            warnings: ["Legacy state directory requires operator recovery."],
+          });
+          return runPreflight(options);
+        },
+      );
       await withAgentDatabaseStartupAdmission(async () => {
         await expect(runStartupConfigPreflight({ gateway: true })).rejects.toMatchObject({
           code: 78,
@@ -391,6 +392,10 @@ describe("container image replacement Doctor repair and startup readiness", () =
       expect(report.ok).toBe(false);
       expect(report.remaining).toEqual(
         expect.arrayContaining([
+          expect.objectContaining({
+            stepId: "state-directory",
+            message: "Legacy state directory requires operator recovery.",
+          }),
           expect.objectContaining({
             stepId: "media-persistence",
             message: expect.stringContaining(

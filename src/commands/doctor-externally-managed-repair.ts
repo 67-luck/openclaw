@@ -176,13 +176,14 @@ export async function runExternallyManagedDoctorRepair(params: {
           recoverCorruptTargetStore: true,
           doctorOnlyStateMigrations: true,
           preparePluginMetadataSnapshot: true,
+          onStateMigrationMessage: (stepId, result) =>
+            collectMigrationMessages([{ stepId, result }], applied, remaining),
           ...(schemas.agentDatabaseMigrationDiscovery
             ? { agentDatabaseMigrationDiscovery: schemas.agentDatabaseMigrationDiscovery }
             : {}),
         }),
       );
       config = preflight.baseConfig;
-      collectMigrationMessages(preflight.stateMigrationMessages, applied, remaining);
       collectReceiptEvidence(preflight.stateMigrationStepReceipts, applied, remaining);
 
       if (!preflight.snapshot.valid) {

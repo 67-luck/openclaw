@@ -108,6 +108,7 @@ async function runDoctorConfigPreflightOperation(
   const noteDoctorStateMigrationResult = (stepId: string, result: MigrationMessages) => {
     pluginMigrations.observe(result);
     stateMigrationMessages.push({ stepId, result });
+    options.onStateMigrationMessage?.(stepId, result);
     noteStateMigrationResult(result);
   };
   const getSnapshotPreparation = createDoctorRehearsalSnapshotPreparation((result) =>
