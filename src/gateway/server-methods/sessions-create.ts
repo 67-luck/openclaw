@@ -99,6 +99,15 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       return;
     }
     const p = structuredClone(params);
+    const clientScopes = Array.isArray(client?.connect?.scopes) ? [...client.connect.scopes] : [];
+    if (p.sandbox === "required" && client !== null && !clientScopes.includes(ADMIN_SCOPE)) {
+      respond(
+        false,
+        undefined,
+        missingScopeErrorShape({ missingScope: ADMIN_SCOPE, requiredScopes: [ADMIN_SCOPE] }),
+      );
+      return;
+    }
     const requestAuthority = readGatewayRequestMutationAuthority(options);
     const getCurrentConfig = context.getRuntimeConfig;
     const requestingOperatorProfileId = client?.authenticatedUserProfile?.profileId;
@@ -112,10 +121,15 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       return;
     }
     const parentSessionKey = normalizeOptionalString(p.parentSessionKey);
+    const operatorSessionCreation = resolveOperatorSessionCreation(client, {
+      allowTrustedHint: true,
+    });
     const sessionCreation = prepareSkillLibrarySessionCreation(
       client,
       context.getRuntimeConfig,
-      resolveOperatorSessionCreation(client, { allowTrustedHint: true }),
+      p.sandbox === "required"
+        ? { ...operatorSessionCreation, sandbox: "required" }
+        : operatorSessionCreation,
     );
     const spawnRequesterSessionKey =
       sessionCreation.via === "spawn"
@@ -301,7 +315,6 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const clientScopes = Array.isArray(client?.connect?.scopes) ? [...client.connect.scopes] : [];
     if (p.permissionMode === "full" && client !== null && !clientScopes.includes(ADMIN_SCOPE)) {
       respond(
         false,
@@ -552,6 +565,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       succeedsParent: p.succeedsParent,
       emitCommandHooks: p.emitCommandHooks,
       resetMainWhenUnspecified: !hasInitialTurn,
+      ...(p.sandbox === "required" ? { explicitSandboxRequirement: true } : {}),
       commandSource: "webchat",
       creation: sessionCreation,
       authorizedPluginId: normalizeOptionalString(client?.internal?.pluginRuntimeOwnerId),

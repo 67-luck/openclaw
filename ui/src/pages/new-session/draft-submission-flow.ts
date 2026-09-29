@@ -61,6 +61,7 @@ type SubmittedDraft = ReturnType<NewSessionDraftPersistence["captureSubmission"]
 
 export class DraftSubmissionFlow {
   private visibilityValue: NewSessionVisibility = "normal";
+  private sandboxValue: SessionCreateParams["sandbox"];
   private messageText = "";
 
   private get messageValue(): string {
@@ -131,6 +132,14 @@ export class DraftSubmissionFlow {
 
   get visibility(): NewSessionVisibility {
     return this.visibilityValue;
+  }
+
+  get sandbox(): SessionCreateParams["sandbox"] {
+    return this.sandboxValue;
+  }
+
+  get sandboxRequired(): boolean {
+    return this.sandboxValue === "required";
   }
 
   get message(): string {
@@ -207,6 +216,7 @@ export class DraftSubmissionFlow {
     visibility: NewSessionVisibility;
     toolOverrides?: NewSessionCapabilityController["toolOverrides"];
     permissionMode?: SessionCreateParams["permissionMode"];
+    sandbox?: SessionCreateParams["sandbox"];
   }) {
     this.draftPersistence.noteDraftReplaced();
     this.messageValue = state.message;
@@ -215,6 +225,9 @@ export class DraftSubmissionFlow {
     this.capabilities.restoreToolOverrides(state.toolOverrides);
     if ("permissionMode" in state) {
       this.permission.restore(state.permissionMode);
+    }
+    if ("sandbox" in state) {
+      this.sandboxValue = state.sandbox;
     }
     this.attachmentDraft.restore(state.attachments);
   }
@@ -225,6 +238,16 @@ export class DraftSubmissionFlow {
     const publish = this.callbacks.requestUpdate;
     this.visibilityValue = visibility;
     this.draftPersistence.transitionIncognito(wasIncognito, visibility === "incognito", publish);
+  }
+
+  setSandboxRequired(required: boolean) {
+    const sandbox = required ? ("required" as const) : undefined;
+    if (sandbox === this.sandboxValue) {
+      return;
+    }
+    this.startedSession.current = null;
+    this.sandboxValue = sandbox;
+    this.callbacks.requestUpdate();
   }
 
   setError(error: string | null) {
@@ -359,6 +382,7 @@ export class DraftSubmissionFlow {
       ? (this.submissionOutcomeUnknown ?? "placement-interrupted")
       : null;
     this.visibilityValue = "normal";
+    this.sandboxValue = undefined;
     this.capabilities.reset();
     this.permission.reset();
     this.attachmentDraft.reset({ release: true });

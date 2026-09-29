@@ -102,6 +102,7 @@ describe("session-scoped method admission", () => {
     ["sessions.create", { execNode: "remote" }],
     ["sessions.create", { toolOverrides: { allow: [] } }],
     ["sessions.create", { permissionMode: "full" }],
+    ["sessions.create", { sandbox: "required" }],
     ["sessions.patch", { key: "agent:main:own", permissionMode: "full" }],
     ["sessions.patchMany", { targets: [{ key: "agent:main:own" }], patch: { sandboxMode: "off" } }],
     ["sessions.patch", { key: "agent:main:own", unknownMutation: true }],

@@ -602,6 +602,44 @@ suite.define(() => {
     });
   });
 
+  it("includes an admin-selected sandbox requirement in compact creation", async () => {
+    await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
+      const gateway = await installMockGateway(page, {
+        ...scenario({
+          "sessions.create": {
+            key: "agent:main:dashboard:palette-sandbox-required",
+            runStarted: true,
+            runId: "palette-sandbox-run",
+          },
+        }),
+        operatorScopes: ["operator.read", "operator.write", "operator.admin"],
+      });
+      const { palette, input } = await openFromForeground(page, suite.server.baseUrl);
+      await input.fill("Run this compact task in a sandbox");
+      const settings = palette.locator("wa-popover.palette-session-settings");
+      await changePicker(settings, "wa-after-show", () =>
+        palette.getByRole("button", { name: "New session settings", exact: true }).click(),
+      );
+      const requireSandbox = settings.getByRole("switch", {
+        name: "Require sandbox",
+        exact: true,
+      });
+      await requireSandbox.click();
+      await expect.poll(() => requireSandbox.getAttribute("aria-checked")).toBe("true");
+      await changePicker(settings, "wa-after-hide", () => requireSandbox.press("Escape"));
+      await input.focus();
+      await input.press("ControlOrMeta+Enter");
+
+      await expect(gateway.waitForRequest("sessions.create")).resolves.toMatchObject({
+        params: {
+          agentId: "main",
+          message: "Run this compact task in a sandbox",
+          sandbox: "required",
+        },
+      });
+    });
+  });
+
   it.each([
     { destination: "local", width: 1280 },
     { destination: "device", width: 390 },

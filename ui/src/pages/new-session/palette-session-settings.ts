@@ -347,7 +347,7 @@ export class PaletteSessionSettings {
                     ><span class="palette-session-settings__chevron">${icons.chevronRight}</span>
                   </button>
                   <button
-                    class="palette-session-settings__row palette-session-settings__worktree"
+                    class="palette-session-settings__row palette-session-settings__toggle palette-session-settings__worktree"
                     type="button"
                     role="switch"
                     aria-checked=${String(place.worktree)}
@@ -363,6 +363,28 @@ export class PaletteSessionSettings {
                     ><span>${t("newSession.checkoutWorktree")}</span
                     ><span class="palette-session-settings__switch" aria-hidden="true"></span>
                   </button>
+                  ${
+                    place.isAdmin() || submission.sandboxRequired
+                      ? html`<button
+                          class="palette-session-settings__row palette-session-settings__toggle palette-session-settings__sandbox"
+                          type="button"
+                          role="switch"
+                          aria-checked=${String(submission.sandboxRequired)}
+                          aria-label=${t("newSession.requireSandbox")}
+                          title=${
+                            place.isAdmin()
+                              ? t("newSession.requireSandboxDescription")
+                              : t("newSession.requireSandboxAdmin")
+                          }
+                          ?disabled=${locked || !place.isAdmin()}
+                          @click=${() => submission.setSandboxRequired(!submission.sandboxRequired)}
+                        >
+                          <span class="palette-session-settings__icon">${icons.shieldLock}</span
+                          ><span>${t("newSession.requireSandbox")}</span
+                          ><span class="palette-session-settings__switch" aria-hidden="true"></span>
+                        </button>`
+                      : nothing
+                  }
                 `
           }
           ${

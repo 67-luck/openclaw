@@ -1,3 +1,4 @@
+import path from "node:path";
 import { expect, test, vi } from "vitest";
 import { getRuntimeConfig } from "../config/io.js";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
@@ -22,7 +23,7 @@ import {
   SessionMutationAuthorizationChangedError,
 } from "./session-sharing.js";
 import { resolveGatewaySessionStoreTarget } from "./session-utils.js";
-import { testState, writeSessionStore } from "./test-helpers.js";
+import { rpcReq, testState, writeSessionStore } from "./test-helpers.js";
 import {
   createCompactedSessionFixture,
   sessionStoreEntry,
@@ -30,7 +31,142 @@ import {
   seedSessionTranscript,
 } from "./test/server-sessions.test-helpers.js";
 
-const { createSessionStoreDir } = setupSessionCreateTestHarness();
+const { createSessionStoreDir, openClient } = setupSessionCreateTestHarness();
+
+test("sessions.create lets admins require immutable sandboxing for a new session", async () => {
+  const { dir, storePath } = await createSessionStoreDir();
+  const writer = await openClient({
+    scopes: ["operator.read", "operator.write"],
+    deviceIdentityPath: path.join(dir, "sandbox-writer.json"),
+  });
+  const admin = await openClient({
+    scopes: ["operator.read", "operator.write", "operator.admin"],
+    deviceIdentityPath: path.join(dir, "sandbox-admin.json"),
+  });
+  const ordinaryKey = "agent:main:dashboard:admin-sandbox-ordinary";
+  const requiredKey = "agent:main:dashboard:admin-sandbox-required";
+  const roleRequiredKey = "agent:main:dashboard:role-sandbox-required";
+  const deniedKey = "agent:main:dashboard:admin-sandbox-denied";
+  const mainKey = "agent:main:main";
+  try {
+    await expect(
+      rpcReq(writer.ws, "sessions.create", { agentId: "main", key: ordinaryKey }),
+    ).resolves.toMatchObject({ ok: true, payload: { key: ordinaryKey } });
+    expect(loadSessionEntry({ agentId: "main", sessionKey: ordinaryKey, storePath })?.sandbox).toBe(
+      undefined,
+    );
+
+    await expect(
+      rpcReq(writer.ws, "sessions.create", {
+        agentId: "main",
+        key: deniedKey,
+        sandbox: "required",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "FORBIDDEN", message: "missing scope: operator.admin" },
+    });
+    expect(loadSessionEntry({ agentId: "main", sessionKey: deniedKey, storePath })).toBeUndefined();
+
+    const required = await rpcReq<{
+      key: string;
+      entry?: Record<string, unknown>;
+    }>(admin.ws, "sessions.create", {
+      agentId: "main",
+      key: requiredKey,
+      sandbox: "required",
+    });
+    expect(required).toMatchObject({
+      ok: true,
+      payload: { key: requiredKey, entry: { sandbox: "required" } },
+    });
+    expect(loadSessionEntry({ agentId: "main", sessionKey: requiredKey, storePath })).toMatchObject(
+      {
+        sandbox: "required",
+      },
+    );
+    await expect(
+      rpcReq<{ session: { key: string } | null }>(admin.ws, "sessions.describe", {
+        key: requiredKey,
+      }),
+    ).resolves.toMatchObject({ ok: true, payload: { session: { key: requiredKey } } });
+    await expect(
+      rpcReq(admin.ws, "sessions.create", {
+        agentId: "main",
+        key: requiredKey,
+        sandbox: "required",
+      }),
+    ).resolves.toMatchObject({ ok: true, payload: { key: requiredKey } });
+
+    await expect(
+      rpcReq(admin.ws, "sessions.create", {
+        agentId: "main",
+        key: ordinaryKey,
+        sandbox: "required",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "INVALID_REQUEST",
+        message: "sessions.create sandbox requires a new session",
+      },
+    });
+    expect(loadSessionEntry({ agentId: "main", sessionKey: ordinaryKey, storePath })?.sandbox).toBe(
+      undefined,
+    );
+
+    await writeSessionStore({
+      storePath,
+      entries: { main: sessionStoreEntry("ordinary-main") },
+    });
+    const generated = await rpcReq<{ key: string; entry?: Record<string, unknown> }>(
+      admin.ws,
+      "sessions.create",
+      {
+        agentId: "main",
+        parentSessionKey: "main",
+        emitCommandHooks: true,
+        sandbox: "required",
+      },
+    );
+    expect(generated).toMatchObject({ ok: true, payload: { entry: { sandbox: "required" } } });
+    expect(generated.payload?.key).not.toBe(mainKey);
+    expect(
+      loadSessionEntry({ agentId: "main", sessionKey: generated.payload!.key, storePath }),
+    ).toMatchObject({ sandbox: "required" });
+    expect(loadSessionEntry({ agentId: "main", sessionKey: mainKey, storePath })).toMatchObject({
+      sessionId: "ordinary-main",
+    });
+    expect(loadSessionEntry({ agentId: "main", sessionKey: mainKey, storePath })?.sandbox).toBe(
+      undefined,
+    );
+
+    await writeSessionStore({
+      storePath,
+      entries: {
+        [roleRequiredKey]: sessionStoreEntry("role-sandbox-required", {
+          sandbox: "required",
+        }),
+      },
+    });
+    await expect(
+      rpcReq(admin.ws, "sessions.create", {
+        agentId: "main",
+        key: roleRequiredKey,
+        sandbox: "required",
+      }),
+    ).resolves.toMatchObject({ ok: true, payload: { key: roleRequiredKey } });
+    const roleRequiredEntry = loadSessionEntry({
+      agentId: "main",
+      sessionKey: roleRequiredKey,
+      storePath,
+    });
+    expect(roleRequiredEntry).toMatchObject({ sandbox: "required" });
+  } finally {
+    writer.ws.close();
+    admin.ws.close();
+  }
+});
 
 test("required operator sandbox follows new session ownership across create, patch, and patchMany", async () => {
   const { storePath } = await createSessionStoreDir();

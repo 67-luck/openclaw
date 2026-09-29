@@ -20,6 +20,7 @@ describe("resolveDynamicSessionMutationRequiredScope", () => {
     { key: "agent:main:dashboard:incognito-123" },
     { parentSessionKey: "agent:main:subagent:incognito-123" },
     { execNode: "node-1" },
+    { sandbox: "required" },
   ])("requires admin for privileged session creation params %#", (params) => {
     expect(resolveDynamicSessionMutationRequiredScope("sessions.create", params)).toBe(
       "operator.admin",
