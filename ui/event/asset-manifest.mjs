@@ -50,8 +50,9 @@ export function validateAssetPath(name) {
 // a local build precondition, not a defense against a concurrent filesystem writer.
 export function assertRealDirectory(directory) {
   const absolute = path.resolve(directory);
-  const parts = absolute.split(path.sep).filter(Boolean);
-  let current = path.parse(absolute).root;
+  const root = path.parse(absolute).root;
+  const parts = absolute.slice(root.length).split(path.sep).filter(Boolean);
+  let current = root;
   for (const part of parts) {
     current = path.join(current, part);
     const stat = lstatSync(current);

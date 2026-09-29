@@ -15,7 +15,9 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 import {
+  assertRealDirectory,
   createAssetManifest,
   validateAssetPath,
   validateBundleClosure,
@@ -39,6 +41,53 @@ function fixture(t) {
   return root;
 }
 const expected = ["index.html", "assets/main.js"];
+
+// Execute the production walk with real Windows path semantics on every host.
+// A recording filesystem verifies each lstat boundary without requiring a Windows share.
+const windowsDirectories = [
+  { input: "C:\\work\\out", visited: ["C:\\work", "C:\\work\\out"] },
+  {
+    input: "\\\\server\\share\\work\\out",
+    visited: ["\\\\server\\share\\work", "\\\\server\\share\\work\\out"],
+  },
+];
+
+test("walks drive and UNC directories without repeating their root", () => {
+  for (const { input, visited } of windowsDirectories) {
+    const actual = [];
+    const walk = runInNewContext(`(${assertRealDirectory.toString()})`, {
+      path: path.win32,
+      lstatSync: (directory) => {
+        actual.push(directory);
+        return { isSymbolicLink: () => false, isDirectory: () => true };
+      },
+    });
+    walk(input);
+    assert.deepEqual(actual, visited);
+  }
+});
+
+test("rejects symlinks and non-directories at each drive and UNC component", () => {
+  for (const { input, visited } of windowsDirectories) {
+    for (const [index, rejected] of visited.entries()) {
+      for (const symbolic of [true, false]) {
+        const actual = [];
+        const walk = runInNewContext(`(${assertRealDirectory.toString()})`, {
+          path: path.win32,
+          lstatSync: (directory) => {
+            actual.push(directory);
+            return {
+              isSymbolicLink: () => directory === rejected && symbolic,
+              isDirectory: () => symbolic || directory !== rejected,
+            };
+          },
+        });
+        assert.throws(() => walk(input), /Unsafe directory:/);
+        assert.deepEqual(actual, visited.slice(0, index + 1));
+      }
+    }
+  }
+});
 
 test("hashes exact bytes with stable order and excludes the manifest itself", (t) => {
   const root = fixture(t);
