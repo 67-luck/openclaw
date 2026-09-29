@@ -137,7 +137,11 @@ describe.skipIf(process.platform !== "win32")("native Windows Testbox OpenSSH ad
       fixture,
       String.raw`param([string]$Resolver)
 $ErrorActionPreference = 'Stop'
+$observationClock = [Diagnostics.Stopwatch]::StartNew()
+function Observe-AdmissionPhase($Name) { [Console]::Error.WriteLine("admission_phase=$Name elapsed_ms=$($observationClock.ElapsedMilliseconds)") }
+Observe-AdmissionPhase 'script-start'
 . $Resolver
+Observe-AdmissionPhase 'resolver-loaded'
 function Assert($Condition, $Name) { if (-not $Condition) { throw "Admission fixture failed: $Name" } }
 $trustedInstaller = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
 $aclCases = @(
@@ -178,6 +182,8 @@ foreach ($ace in @(
   $descriptor.DiscretionaryAcl.InsertAce(0, $ace)
   Assert ((Get-OpenSshAclDisposition $descriptor $true) -eq 'unknown') 'unsupported applying ACE'
 }
+
+Observe-AdmissionPhase 'descriptors-complete'
 
 # One process supplies read-only OS observations; the resolver must never execute a binary.
 $env:WINDIR = 'C:\Windows'
@@ -285,7 +291,10 @@ $cases = @(
   @{ Name='process path changed'; ChangeProcess='ExecutablePath'; ChangeValue='C:\other\sshd.exe' },
   @{ Name='process became unavailable'; ChangeProcess='CreationDate'; ChangeValue=$null }
 )
+$caseIndex = 0
 foreach ($case in $cases) {
+  $caseIndex++
+  Observe-AdmissionPhase "installation-$caseIndex"
   $script:case = $case
   $directory = if ($case.Directory) { $case.Directory } else { $inbox }
   $script:sshd = "$directory\sshd.exe"
@@ -308,9 +317,11 @@ foreach ($case in $cases) {
     Assert ($script:items[-1] -eq $case.Reparse -and $script:acls.Count -eq 0 -and $script:signatures.Count -eq 0) 'stop before following reparse'
   }
 }
+Observe-AdmissionPhase 'complete'
 @{ installations=$cases.Count; descriptors=($aclCases.Count + 4) } | ConvertTo-Json -Compress
 `,
     );
+    const nativeStartedAt = performance.now();
     const result = spawnSync(
       "pwsh",
       [
@@ -333,7 +344,7 @@ foreach ($case in $cases) {
           .replaceAll(root, replacement)
           .replaceAll(root.replaceAll("\\", "/"), replacement);
       }
-      return value.slice(0, 2048);
+      return value.slice(-2048);
     };
     // A failed or timed-out spawn can have no status or stderr; expose its cause without paths.
     const error = result.error as NodeJS.ErrnoException | undefined;
@@ -344,9 +355,11 @@ foreach ($case in $cases) {
     };
     const diagnostic = JSON.stringify({
       ...outcome,
+      elapsedMs: performance.now() - nativeStartedAt,
       stdout: redact(result.stdout),
       stderr: redact(result.stderr),
     });
+    console.error(`[openssh-admission-observation] ${diagnostic}`);
     expect(outcome, diagnostic).toEqual({ status: 0, signal: null, error: undefined });
     expect(JSON.parse(result.stdout)).toEqual({ installations: 40, descriptors: 25 });
   });
