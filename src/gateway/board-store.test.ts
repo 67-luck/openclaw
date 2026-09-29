@@ -152,7 +152,7 @@ it("keeps global boards and progress under each owner's canonical row across reo
   expect((await progressCardStore.get("global", "main"))?.revision).toBe(1);
 });
 
-it("keeps retained global progress separate from an ordinary qualified global row in per-sender mode", async () => {
+it("dismisses retained note-only global progress without clearing an ordinary qualified global row", async () => {
   const stateDir = tempDirs.make("openclaw-gateway-retained-global-progress-");
   vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
   const cfg = {
@@ -178,7 +178,6 @@ it("keeps retained global progress separate from an ordinary qualified global ro
     const written = await invoke("progressCard.put", {
       ...target,
       markdown: `${target.agentId}/${target.sessionKey}`,
-      plan: [{ step: "Done", status: "completed" }],
     });
     expect(written).toHaveBeenCalledWith(
       true,

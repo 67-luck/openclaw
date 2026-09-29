@@ -195,7 +195,7 @@ describe("session progress card store", () => {
     expect(readSessionProgressCard(db, SESSION_KEY)).toBeNull();
   });
 
-  it("dismisses only a completed card at the expected revision", () => {
+  it("dismisses only the expected revision", () => {
     vi.spyOn(Date, "now").mockReturnValue(1000);
     writeSessionProgressCard(db, SESSION_KEY, {
       steps: [{ step: "Done", status: "completed" }],
@@ -232,15 +232,23 @@ describe("session progress card store", () => {
     });
   });
 
-  it("does not dismiss an active or note-only card", () => {
-    writeSessionProgressCard(db, SESSION_KEY, { steps: STEPS });
+  it.each([
+    { name: "active", input: { steps: STEPS } },
+    { name: "pending", input: { steps: [{ step: "Verify", status: "pending" as const }] } },
+    { name: "note-only", input: { markdown: "Still relevant" } },
+  ])("dismisses $name progress at the expected revision", ({ input }) => {
+    writeSessionProgressCard(db, SESSION_KEY, input);
     expect(writeSessionProgressCard(db, SESSION_KEY, { expectedRevision: 1 })).toEqual({
-      card: expect.objectContaining({ revision: 1 }),
+      cleared: true,
     });
+    expect(readSessionProgressCard(db, SESSION_KEY)).toBeNull();
 
-    writeSessionProgressCard(db, SESSION_KEY, { markdown: "Still relevant" });
-    expect(writeSessionProgressCard(db, SESSION_KEY, { expectedRevision: 2 })).toEqual({
-      card: expect.objectContaining({ revision: 2 }),
+    // Clearing keeps the revision tombstone; an old click cannot erase later work.
+    expect(writeSessionProgressCard(db, SESSION_KEY, input)).toEqual({
+      card: expect.objectContaining({ revision: 3 }),
+    });
+    expect(writeSessionProgressCard(db, SESSION_KEY, { expectedRevision: 1 })).toEqual({
+      card: expect.objectContaining({ revision: 3 }),
     });
   });
 
