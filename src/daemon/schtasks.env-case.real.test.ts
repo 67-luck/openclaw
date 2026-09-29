@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions, type spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -29,6 +29,13 @@ type LaunchedChild = {
 
 const launchCapture = vi.hoisted(() => ({
   observe: undefined as ((child: ChildProcess, options?: SpawnOptions) => void) | undefined,
+  observeSync: undefined as
+    | ((
+        args: Parameters<typeof spawnSync>,
+        result: ReturnType<typeof spawnSync>,
+        elapsedMs: number,
+      ) => void)
+    | undefined,
 }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -38,6 +45,12 @@ vi.mock("node:child_process", async (importOriginal) => {
       const child = actual.spawn(...args);
       launchCapture.observe?.(child, args[2]);
       return child;
+    },
+    spawnSync: (...args: Parameters<typeof actual.spawnSync>) => {
+      const startedAt = performance.now();
+      const result = actual.spawnSync(...args);
+      launchCapture.observeSync?.(args, result, performance.now() - startedAt);
+      return result;
     },
   };
 });
@@ -164,7 +177,37 @@ server.listen(port, "127.0.0.1", () => {
         port,
       });
       expect(observed.pid).not.toBe(child.pid);
-      expect(readWindowsProcessArgsSync(observed.pid)).toEqual(observed.argv);
+      const probes: unknown[] = [];
+      launchCapture.observeSync = ([command, args, options], result, elapsedMs) => {
+        probes.push({
+          command,
+          args,
+          timeoutMs: options?.timeout,
+          elapsedMs,
+          status: result.status,
+          signal: result.signal,
+          error: result.error ?? null,
+          errorName: result.error?.name,
+          errorMessage: result.error?.message,
+          stdout: result.stdout ?? null,
+          stderr: result.stderr ?? null,
+        });
+      };
+      try {
+        expect(readWindowsProcessArgsSync(observed.pid)).toEqual(observed.argv);
+      } finally {
+        launchCapture.observeSync = undefined;
+        let processObservation = "signal 0 succeeded";
+        try {
+          process.kill(observed.pid, 0);
+        } catch (error) {
+          processObservation = String(error);
+        }
+        console.error(
+          "[windows-cim-observation]",
+          JSON.stringify({ message, pid: observed.pid, processObservation, probes }),
+        );
+      }
       if (!normalized) {
         await expect(readScheduledTaskCommand(env, { requireEffective: true })).rejects.toThrow(
           "Effective Scheduled Task service command could not be inspected.",
