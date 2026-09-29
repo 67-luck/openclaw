@@ -1503,3 +1503,130 @@ async fn delivery_streaming_and_ping_reserve_bounded_independent_capacity() {
         server.await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn cloned_handles_share_one_hello_snapshot_across_pending_requests() {
+    const REQUESTS: usize = 64;
+    const TEXT_BYTES: usize = 64 * 1024;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(tcp).await.unwrap();
+        send_json(
+            &mut socket,
+            json!({
+                "type":"event", "event":"connect.challenge",
+                "payload":{"nonce":"hello-owner-fixture","ts":1700000000000_u64}
+            }),
+        )
+        .await;
+        let connect = receive_json(&mut socket).await;
+        send_json(&mut socket, json!({
+            "type":"res", "id":connect["id"], "ok":true,
+            "payload":{
+                "type":"hello-ok", "protocol":4,
+                "server":{"version":"fixture","connId":"hello-owner"},
+                "features":{"methods":["node.echo"],"events":[]},
+                "snapshot":{
+                    "presence":[{"ts":1,"text":"h".repeat(TEXT_BYTES)}],
+                    "health":{}, "stateVersion":{"presence":0,"health":0}, "uptimeMs":0
+                },
+                "auth":{"role":"node","scopes":[]},
+                "policy":{"maxPayload":26214400,"maxBufferedBytes":52428800,"tickIntervalMs":30000}
+            }
+        })).await;
+        let mut pending = Vec::with_capacity(REQUESTS);
+        for _ in 0..REQUESTS {
+            let request = receive_json(&mut socket).await;
+            assert_eq!(request["method"], "node.echo");
+            pending.push(request);
+        }
+        seen_tx.send(()).unwrap();
+        release_rx.await.unwrap();
+        for request in pending {
+            send_json(
+                &mut socket,
+                json!({
+                    "type":"res", "id":request["id"], "ok":true,
+                    "payload":{"index":request["params"]["index"]}
+                }),
+            )
+            .await;
+        }
+        while let Some(message) = socket.next().await {
+            if matches!(message.unwrap(), Message::Close(_)) {
+                break;
+            }
+        }
+    });
+    let session = GatewayClient::connect(
+        GatewayClientConfig::new(format!("ws://{address}"))
+            .unwrap()
+            .max_in_flight(REQUESTS),
+        |_| async { Ok::<_, io::Error>(json!({"role":"node"})) },
+    )
+    .await
+    .unwrap();
+    let mut storage = std::collections::HashSet::new();
+    let text = session.hello()["snapshot"]["presence"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert_eq!(text.len(), TEXT_BYTES);
+    let mut requests = tokio::task::JoinSet::new();
+    for index in 0..REQUESTS {
+        let handle = session.clone();
+        let text = handle.hello()["snapshot"]["presence"][0]["text"]
+            .as_str()
+            .unwrap();
+        storage.insert(text.as_ptr() as usize);
+        requests.spawn(async move {
+            let result = handle
+                .request_until_cancelled("node.echo", json!({"index":index}))
+                .await
+                .unwrap();
+            assert_eq!(result, json!({"index":index}));
+            let text = handle.hello()["snapshot"]["presence"][0]["text"]
+                .as_str()
+                .unwrap();
+            assert_eq!(text.len(), TEXT_BYTES);
+            assert!(text.bytes().all(|byte| byte == b'h'));
+        });
+    }
+    let retained = session.clone();
+    storage.insert(
+        retained.hello()["snapshot"]["presence"][0]["text"]
+            .as_str()
+            .unwrap()
+            .as_ptr() as usize,
+    );
+    drop(session);
+    tokio::time::timeout(Duration::from_secs(5), seen_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    // Every handle is still alive in a real pending request. Count storage,
+    // not timing or allocator RSS, to protect the immutable snapshot's one owner.
+    let distinct_backing_stores = storage.len();
+    release_tx.send(()).unwrap();
+    while let Some(result) = requests.join_next().await {
+        result.unwrap();
+    }
+    retained.close().await;
+    server.await.unwrap();
+    let hello: &Value = retained.hello();
+    assert_eq!(hello["protocol"], 4);
+    assert_eq!(
+        hello["snapshot"]["presence"][0]["text"]
+            .as_str()
+            .unwrap()
+            .len(),
+        TEXT_BYTES
+    );
+    assert_eq!(
+        distinct_backing_stores, 1,
+        "session clones must share the immutable hello allocation"
+    );
+}

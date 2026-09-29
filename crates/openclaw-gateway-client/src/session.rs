@@ -632,7 +632,7 @@ where
     ));
 
     Ok(GatewaySession {
-        hello,
+        hello: Arc::new(hello),
         command_tx,
         control_tx,
         event_rx: Arc::new(Mutex::new(events.initial_subscription(closed_rx.clone()))),
@@ -724,7 +724,7 @@ enum RequestLane {
 
 #[derive(Clone)]
 pub struct GatewaySession {
-    hello: Value,
+    hello: Arc<Value>,
     command_tx: mpsc::Sender<SessionCommand>,
     control_tx: mpsc::Sender<SessionControl>,
     events: Arc<EventHub>,
