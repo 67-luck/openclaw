@@ -8,6 +8,115 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 #[tokio::test]
+async fn typed_delivery_releases_payload_before_ack_and_enforces_wire_limit() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    struct OwnedPayload {
+        media: String,
+        released: Arc<AtomicBool>,
+    }
+    impl serde::Serialize for OwnedPayload {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_str(&self.media)
+        }
+    }
+    impl Drop for OwnedPayload {
+        fn drop(&mut self) {
+            self.released.store(true, Ordering::Release);
+        }
+    }
+    const MAXIMUM: usize = 4096;
+    const PREFIX: &[u8] = br#"{"id":"rust-gateway-1","method":"test.media","params":""#;
+    const SUFFIX: &[u8] = br#"","type":"req"}"#;
+    let media_bytes = MAXIMUM - PREFIX.len() - SUFFIX.len();
+    let released = Arc::new(AtomicBool::new(false));
+    let observed_release = released.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(tcp).await.unwrap();
+        send_json(
+            &mut socket,
+            json!({
+                "type":"event", "event":"connect.challenge", "payload":{"nonce":"typed","ts":1}
+            }),
+        )
+        .await;
+        let connect = receive_json(&mut socket).await;
+        send_json(
+            &mut socket,
+            json!({
+                "type":"res", "id":connect["id"], "ok":true,
+                "payload":{"type":"hello-ok","protocol":4}
+            }),
+        )
+        .await;
+        let Message::Binary(frame) = socket.next().await.unwrap().unwrap() else {
+            panic!("expected binary JSON request");
+        };
+        assert_eq!(frame.len(), MAXIMUM);
+        assert!(frame.starts_with(PREFIX));
+        assert!(frame.ends_with(SUFFIX));
+        assert!(frame[PREFIX.len()..MAXIMUM - SUFFIX.len()]
+            .iter()
+            .all(|byte| *byte == b'x'));
+        // The Gateway has not acknowledged the write; normalized media must already be released.
+        assert!(observed_release.load(Ordering::Acquire));
+        send_json(
+            &mut socket,
+            json!({
+                "type":"res", "id":"rust-gateway-1", "ok":true, "payload":null
+            }),
+        )
+        .await;
+        assert!(!matches!(
+            socket.next().await,
+            Some(Ok(Message::Binary(_) | Message::Text(_)))
+        ));
+    });
+    let session = GatewayClient::connect(
+        GatewayClientConfig::new(format!("ws://{address}"))
+            .unwrap()
+            .max_message_bytes(MAXIMUM),
+        |_| async { Ok::<_, io::Error>(json!({"role":"node"})) },
+    )
+    .await
+    .unwrap();
+    session
+        .request_delivery(
+            "test.media",
+            OwnedPayload {
+                media: "x".repeat(media_bytes),
+                released,
+            },
+        )
+        .await
+        .unwrap();
+    let rejected_release = Arc::new(AtomicBool::new(false));
+    assert!(matches!(
+        session
+            .request_delivery(
+                "test.media",
+                OwnedPayload {
+                    media: "x".repeat(media_bytes + 1),
+                    released: rejected_release.clone(),
+                }
+            )
+            .await,
+        Err(ClientError::Transport(_))
+    ));
+    assert!(rejected_release.load(Ordering::Acquire));
+    assert!(session.wait_closed().await.is_err());
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn connects_publishes_events_and_correlates_requests() {
     for binary in [false, true] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -135,11 +244,25 @@ async fn dispatch_guard_rejects_before_wire_without_closing_the_session() {
     });
 
     let session = GatewayClient::connect(
-        GatewayClientConfig::new(format!("ws://{address}")).unwrap(),
+        GatewayClientConfig::new(format!("ws://{address}"))
+            .unwrap()
+            .max_message_bytes(4096),
         |_| async { Ok::<_, io::Error>(json!({"role":"node"})) },
     )
     .await
     .unwrap();
+    // Denied authority must win over an oversized frame, without retiring a healthy session.
+    let oversized = session
+        .request_with_deadline(
+            "node.rejected",
+            json!({"media": "x".repeat(4096)}),
+            tokio::time::Instant::now() + Duration::from_secs(1),
+            || Err(DispatchRejection::new("generation changed")),
+        )
+        .await;
+    assert!(
+        matches!(oversized, Err(ClientError::DispatchRejected(reason)) if reason == "generation changed")
+    );
     let rejected = session
         .request_with_deadline(
             "node.rejected",

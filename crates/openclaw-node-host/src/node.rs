@@ -1015,33 +1015,46 @@ impl NodeSession {
     }
 }
 
+#[derive(Serialize)]
+struct InvocationResultParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<Value>,
+    id: String,
+    #[serde(rename = "nodeId")]
+    node_id: String,
+    ok: bool,
+    #[serde(rename = "payloadJSON", skip_serializing_if = "Option::is_none")]
+    payload: Option<SerializedPayload>,
+}
+
+struct SerializedPayload(Value);
+
+impl Serialize for SerializedPayload {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // serde_json escapes Display chunks directly into the final Gateway frame;
+        // normalized Value/output checks stay intact without a payloadJSON allocation.
+        serializer.collect_str(&self.0)
+    }
+}
+
 fn invocation_result_params(
     invocation: &NodeInvocation,
     result: InvocationResult,
-) -> Result<Value, ClientError> {
-    Ok(match result {
-        InvocationResult::Success(payload) => {
-            let mut params = json!({
-                "id": invocation.id,
-                "nodeId": invocation.node_id,
-                "ok": true,
-            });
-            // Private worker controls consume the serialized result contract
-            // directly; only public node.invoke also normalizes typed payloads.
-            // Move the serialized media result: json! would clone its full string.
-            params["payloadJSON"] = Value::String(openclaw_gateway_client::encode_json(&payload));
-            params
-        }
+) -> Result<InvocationResultParams, ClientError> {
+    let (ok, payload, error) = match result {
+        InvocationResult::Success(payload) => (true, Some(SerializedPayload(payload)), None),
         InvocationResult::Failure { code, message } => {
             let code = require_non_empty_result_field("error code", code)?;
             let message = require_non_empty_result_field("error message", message)?;
-            json!({
-                "id": invocation.id,
-                "nodeId": invocation.node_id,
-                "ok": false,
-                "error": { "code": code, "message": message },
-            })
+            (false, None, Some(json!({"code": code, "message": message})))
         }
+    };
+    Ok(InvocationResultParams {
+        error,
+        id: invocation.id.clone(),
+        node_id: invocation.node_id.clone(),
+        ok,
+        payload,
     })
 }
 
@@ -1254,21 +1267,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn serialized_media_result_does_not_retain_a_doubled_allocation() {
+    fn typed_results_preserve_normalized_payload_json() {
         let invocation = NodeInvocation::new("media", "node", "camera.snap", Value::Null);
-        let params = invocation_result_params(
-            &invocation,
-            InvocationResult::success(Value::String("x".repeat(3 * 1024))),
-        )
-        .unwrap();
-        let Value::String(encoded) = &params["payloadJSON"] else {
-            panic!("serialized result contract missing");
-        };
-        assert_eq!(encoded.capacity(), encoded.len());
-        assert_eq!(
-            serde_json::from_str::<String>(encoded).unwrap().len(),
-            3 * 1024
-        );
+        for (input, expected) in [
+            (r#"{"duplicate":1,"duplicate":2}"#, r#"{"duplicate":2}"#),
+            (
+                r#"{"escaped":"\"\\\n\t\u0000é🦀"}"#,
+                r#"{"escaped":"\"\\\n\t\u0000é🦀"}"#,
+            ),
+            ("1.20", "1.2"),
+            ("18446744073709551615", "18446744073709551615"),
+            ("[null,true,{}]", "[null,true,{}]"),
+        ] {
+            let params = invocation_result_params(
+                &invocation,
+                InvocationResult::success(serde_json::from_str(input).unwrap()),
+            )
+            .unwrap();
+            let encoded = serde_json::to_vec(&params).unwrap();
+            let wire: Value = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(
+                wire,
+                json!({
+                    "id": "media", "nodeId": "node", "ok": true, "payloadJSON": expected,
+                })
+            );
+        }
     }
 
     #[test]
@@ -1327,11 +1351,12 @@ mod tests {
         }
         assert!(parse_invocation_input(fixture["input"]["invalid"].clone()).is_err());
 
-        let mut success = invocation_result_params(
+        let success = invocation_result_params(
             &invocation,
             InvocationResult::success(fixture["results"]["success"]["payload"].clone()),
         )
         .expect("canonical success result");
+        let mut success = serde_json::to_value(success).unwrap();
         let payload_json = success
             .as_object_mut()
             .unwrap()
@@ -1356,7 +1381,10 @@ mod tests {
             ),
         )
         .expect("canonical failure result");
-        assert_eq!(failure_params, failure.clone());
+        assert_eq!(
+            serde_json::to_value(failure_params).unwrap(),
+            failure.clone()
+        );
 
         assert_eq!(
             parse_invocation_cancel(fixture["cancel"]["canonical"].clone())

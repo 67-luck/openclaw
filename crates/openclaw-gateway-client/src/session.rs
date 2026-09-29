@@ -1,6 +1,6 @@
 use futures_util::{future::poll_fn, SinkExt, StreamExt};
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
@@ -43,6 +43,7 @@ const DEFAULT_MAX_EVENT_BUFFER_BYTES: usize = 64 * 1024 * 1024;
 
 type DispatchGuard =
     Box<dyn for<'a> FnOnce(&mut DispatchContext<'a>) -> Result<(), DispatchRejection> + Send>;
+type RequestEncoder = Box<dyn FnOnce(&str, &str) -> Result<Message, ClientError> + Send>;
 
 #[derive(Clone, Debug)]
 pub struct GatewayClientConfig {
@@ -588,7 +589,7 @@ where
         &mut socket,
         connect_id,
         "connect",
-        params,
+        request_encoder(params, config.max_message_bytes),
         config.write_timeout,
         None,
     )
@@ -642,6 +643,7 @@ where
         close_tx,
         next_request_id: Arc::new(AtomicU64::new(1)),
         request_timeout: config.request_timeout,
+        max_message_bytes: config.max_message_bytes,
         in_flight: Arc::new(Semaphore::new(lane_capacity)),
         control_in_flight: Arc::new(Semaphore::new(1)),
         delivery_in_flight: Arc::new(Semaphore::new(lane_capacity)),
@@ -734,6 +736,7 @@ pub struct GatewaySession {
     close_tx: watch::Sender<bool>,
     next_request_id: Arc<AtomicU64>,
     request_timeout: Duration,
+    max_message_bytes: usize,
     in_flight: Arc<Semaphore>,
     control_in_flight: Arc<Semaphore>,
     delivery_in_flight: Arc<Semaphore>,
@@ -885,10 +888,12 @@ impl GatewaySession {
 
     /// Deliver terminal work using its reserved RPC capacity, independent of
     /// ordinary requests and streaming updates. The normal deadline and cancellation rules apply.
-    pub async fn request_delivery(
+    /// Parameters are measured and encoded at dispatch, then released before the socket write.
+    /// Serializers must emit stable bytes on both passes.
+    pub async fn request_delivery<P: Serialize + Send + 'static>(
         &self,
         method: impl Into<String>,
-        params: Value,
+        params: P,
     ) -> Result<Value, ClientError> {
         self.request_inner(
             method.into(),
@@ -923,10 +928,10 @@ impl GatewaySession {
         .await
     }
 
-    async fn request_inner(
+    async fn request_inner<P: Serialize + Send + 'static>(
         &self,
         method: String,
-        params: Value,
+        params: P,
         deadline: Option<Instant>,
         guard: Option<DispatchGuard>,
         lane: RequestLane,
@@ -956,7 +961,7 @@ impl GatewaySession {
             self.command_tx.send(SessionCommand::Request {
                 id: id.clone(),
                 method: method.clone(),
-                params,
+                params: request_encoder(params, self.max_message_bytes),
                 reply: reply_tx,
                 permit,
                 deadline,
@@ -1098,7 +1103,7 @@ enum SessionCommand {
     Request {
         id: String,
         method: String,
-        params: Value,
+        params: RequestEncoder,
         reply: oneshot::Sender<Result<Value, ClientError>>,
         permit: tokio::sync::OwnedSemaphorePermit,
         deadline: Option<Instant>,
@@ -1238,24 +1243,44 @@ where
     }
 }
 
+fn request_encoder<P: Serialize + Send + 'static>(params: P, maximum: usize) -> RequestEncoder {
+    Box::new(move |id, method| {
+        #[derive(Serialize)]
+        struct RequestFrame<'a, P> {
+            id: &'a str,
+            method: &'a str,
+            params: P,
+            #[serde(rename = "type")]
+            kind: &'static str,
+        }
+        crate::json::encode_bounded_json(
+            &RequestFrame {
+                id,
+                method,
+                params,
+                kind: "req",
+            },
+            maximum,
+        )
+        .map(|bytes| Message::Binary(bytes.into()))
+    })
+}
+
 async fn send_request<S>(
     socket: &mut S,
     id: &str,
     method: &str,
-    params: Value,
+    params: RequestEncoder,
     write_timeout: Duration,
     guard: Option<DispatchGuard>,
 ) -> Result<(), ClientError>
 where
     S: GatewayWebSocket,
 {
-    let mut frame = json!({ "type": "req", "id": id, "method": method });
-    frame["params"] = params;
-    // Gateway accepts UTF-8 JSON bytes, as sent by the native Swift client.
-    // Binary avoids a native transport decoding and re-encoding the same text.
-    let message = Message::Binary(crate::encode_json(&frame).into_bytes().into());
-    // Pending network writes need only the serialized message, not a second media payload.
-    drop(frame);
+    // Consuming the encoder releases normalized media before any network await.
+    // Native Swift also sends UTF-8 JSON bytes; binary avoids another text conversion.
+    // Keep encoding errors at guarded enqueue, so denied authority wins as before.
+    let message = params(id, method);
     send_message_guarded(socket, message, write_timeout, method, guard).await
 }
 
@@ -1268,12 +1293,12 @@ async fn send_message<S>(
 where
     S: GatewayWebSocket,
 {
-    send_message_guarded(socket, message, timeout, operation, None).await
+    send_message_guarded(socket, Ok(message), timeout, operation, None).await
 }
 
 async fn send_message_guarded<S>(
     socket: &mut S,
-    message: Message,
+    message: Result<Message, ClientError>,
     timeout: Duration,
     operation: &str,
     guard: Option<DispatchGuard>,
@@ -1290,9 +1315,14 @@ where
             let mut enqueue_result = None;
             let mut enqueue = || {
                 enqueue_result = Some(
-                    Pin::new(&mut *socket)
-                        .start_send(message.take().expect("dispatch frame already consumed"))
-                        .map_err(|error| ClientError::Transport(error.to_string())),
+                    message
+                        .take()
+                        .expect("dispatch frame already consumed")
+                        .and_then(|message| {
+                            Pin::new(&mut *socket)
+                                .start_send(message)
+                                .map_err(|error| ClientError::Transport(error.to_string()))
+                        }),
                 );
             };
             let (guard_result, enqueued) = {
@@ -1321,7 +1351,7 @@ where
             enqueue_result.expect("enqueued dispatch must record a result")?;
         } else {
             Pin::new(&mut *socket)
-                .start_send(message)
+                .start_send(message?)
                 .map_err(|error| ClientError::Transport(error.to_string()))?;
         }
         socket
@@ -1664,6 +1694,7 @@ fn format_close(frame: Option<&tokio_tungstenite::tungstenite::protocol::CloseFr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::{
         pin::Pin,
         task::{Context, Poll},
@@ -1839,7 +1870,7 @@ mod tests {
             .send(SessionCommand::Request {
                 id: "stalled-request".into(),
                 method: "node.stalled".into(),
-                params: json!({}),
+                params: request_encoder(json!({}), DEFAULT_MAX_MESSAGE_BYTES),
                 reply: reply_tx,
                 permit,
                 deadline: Some(Instant::now() + Duration::from_secs(1)),
