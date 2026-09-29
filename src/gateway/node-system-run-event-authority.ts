@@ -3,6 +3,7 @@ import {
   isFutureDateTimestampMs,
   resolveExpiresAtMsFromDurationMs,
 } from "@openclaw/normalization-core/number-coercion";
+import { normalizeAccountId } from "../routing/account-id.js";
 import { parseSessionDeliveryRoute } from "../routing/session-key.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import type { PendingSystemRunEvent } from "./node-registry.invoke-stream.js";
@@ -202,6 +203,12 @@ function resolveTelegramRouteMismatch(
     return null;
   }
   if (deliveryContext.channel?.trim().toLowerCase() !== "telegram") {
+    return true;
+  }
+  if (
+    origin.accountId &&
+    normalizeAccountId(deliveryContext.accountId) !== normalizeAccountId(origin.accountId)
+  ) {
     return true;
   }
   const rawTarget = deliveryContext.to?.trim().replace(/^telegram:/i, "");
