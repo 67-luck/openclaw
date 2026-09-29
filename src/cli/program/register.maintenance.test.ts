@@ -155,13 +155,7 @@ describe("registered maintenance commands", () => {
   it("forwards the externally managed repair posture without selecting lint", async () => {
     doctorCommand.mockResolvedValue(undefined);
 
-    await runCli([
-      "doctor",
-      "--fix",
-      "--externally-managed",
-      "--non-interactive",
-      "--json",
-    ]);
+    await runCli(["doctor", "--fix", "--externally-managed", "--non-interactive", "--json"]);
 
     expect(runDoctorLintCli).not.toHaveBeenCalled();
     expect(doctorCommand).toHaveBeenCalledExactlyOnceWith(

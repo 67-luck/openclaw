@@ -27,6 +27,7 @@ import {
 import { withEnvAsync } from "../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import * as configFlow from "./doctor-config-flow.js";
+import * as configPreflight from "./doctor-config-preflight.js";
 import { withDoctorConfigPreflightHome } from "./doctor-config-preflight.test-support.js";
 import { runExternallyManagedDoctorRepair } from "./doctor-externally-managed-repair.js";
 import * as migrationBackup from "./doctor-migration-backup.js";
@@ -164,6 +165,46 @@ describe("container image replacement Doctor repair and startup readiness", () =
       } finally {
         database.close();
       }
+    });
+  });
+
+  it("reports non-receipt migration warnings as unresolved repair work", async () => {
+    await withContainerState(async () => {
+      const runPreflight = configPreflight.runDoctorConfigPreflight;
+      vi.spyOn(configPreflight, "runDoctorConfigPreflight").mockImplementationOnce(
+        async (options) => {
+          const result = await runPreflight(options);
+          return {
+            ...result,
+            stateMigrationMessages: [
+              ...(result.stateMigrationMessages ?? []),
+              {
+                stepId: "state-directory",
+                result: {
+                  changes: [],
+                  warnings: ["Legacy state directory requires operator recovery."],
+                },
+              },
+            ],
+          };
+        },
+      );
+
+      const report = await runExternallyManagedDoctorRepair({
+        options: {
+          repair: true,
+          externallyManaged: true,
+          nonInteractive: true,
+          json: true,
+        },
+        runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+      });
+
+      expect(report.ok).toBe(false);
+      expect(report.remaining).toContainEqual({
+        stepId: "state-directory",
+        message: "Legacy state directory requires operator recovery.",
+      });
     });
   });
 
@@ -338,25 +379,27 @@ describe("container image replacement Doctor repair and startup readiness", () =
         });
       });
       expect(fs.readFileSync(databasePath)).toEqual(original);
-      await expect(repairContainerState()).rejects.toMatchObject({
-        name: "DoctorStateMigrationRefusalError",
-        stepReceipts: expect.arrayContaining([
-          expect.objectContaining({
-            id: "media-persistence",
-            outcome: "refused",
-            refusal: { code: "step-refused", message: expect.any(String) },
-            warnings: expect.arrayContaining([
-              expect.stringContaining(
-                `${databasePath} metadata schema version 18 does not match 19`,
-              ),
-            ]),
-          }),
-          expect.objectContaining({
-            id: "transcript-directives",
-            refusal: expect.objectContaining({ code: "blocked-by-prior-refusal" }),
-          }),
-        ]),
+      const report = await runExternallyManagedDoctorRepair({
+        options: {
+          repair: true,
+          externallyManaged: true,
+          nonInteractive: true,
+          json: true,
+        },
+        runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
       });
+      expect(report.ok).toBe(false);
+      expect(report.remaining).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            stepId: "media-persistence",
+            message: expect.stringContaining(
+              `${databasePath} metadata schema version 18 does not match 19`,
+            ),
+          }),
+          expect.objectContaining({ stepId: "transcript-directives" }),
+        ]),
+      );
       expect(fs.readFileSync(databasePath)).toEqual(original);
       await withAgentDatabaseStartupAdmission(async () => {
         await expect(runStartupConfigPreflight({ gateway: true })).rejects.toMatchObject({

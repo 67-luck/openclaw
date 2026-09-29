@@ -54,6 +54,21 @@ export async function doctorCommand(
 ): Promise<void> {
   const outputRuntime = runtime ?? defaultRuntime;
   if (options?.externallyManaged) {
+    let preparedPreflight = databasePreflight;
+    if (process.env.OPENCLAW_UPDATE_IN_PROGRESS === "1") {
+      const { guardUpdateDoctorSchemaUpgrade, rehearseDeferredUpdateDoctorSchema } =
+        await import("./doctor-update-schema-guard.js");
+      preparedPreflight =
+        (await guardUpdateDoctorSchemaUpgrade({
+          schemas: preparedPreflight,
+          runtime: outputRuntime,
+          json: options.json,
+        })) ?? preparedPreflight;
+      if (preparedPreflight?.updateSchemaRehearsal) {
+        await rehearseDeferredUpdateDoctorSchema(preparedPreflight, outputRuntime);
+        return;
+      }
+    }
     const { runExternallyManagedDoctorRepair } =
       await import("./doctor-externally-managed-repair.js");
     const diagnostics: Array<{ level: "info" | "error"; message: string }> = [];
@@ -74,7 +89,7 @@ export async function doctorCommand(
       runExternallyManagedDoctorRepair({
         options,
         runtime: repairRuntime,
-        databasePreflight,
+        databasePreflight: preparedPreflight,
       });
     const report = options.json
       ? await (

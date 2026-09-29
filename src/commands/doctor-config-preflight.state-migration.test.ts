@@ -427,7 +427,17 @@ describe("runDoctorConfigPreflight state migration", () => {
       changes: [],
       warnings: ["Left legacy config health state in place."],
     });
-    await expect(runDoctorConfigPreflight(doctorMigrationOptions)).resolves.toBeDefined();
+    await expect(runDoctorConfigPreflight(doctorMigrationOptions)).resolves.toMatchObject({
+      stateMigrationMessages: expect.arrayContaining([
+        expect.objectContaining({
+          stepId: "state-directory",
+          result: expect.objectContaining({
+            changes: [],
+            warnings: ["Left legacy config health state in place."],
+          }),
+        }),
+      ]),
+    });
     expect(note).toHaveBeenCalledWith(
       "- Left legacy config health state in place.",
       "Doctor warnings",

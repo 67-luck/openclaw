@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { withSuppressedNotes } from "../../packages/terminal-core/src/note.js";
 import { resolveConfigPath } from "../config/paths.js";
-import type { LegacyStateMigrationStepReceipt } from "../infra/state-migrations.types.js";
+import type {
+  LegacyStateMigrationStepReceipt,
+  MigrationMessages,
+} from "../infra/state-migrations.types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import type { DoctorDatabasePreflight } from "./doctor-database-preflight.js";
 import type { DoctorOptions } from "./doctor.types.js";
@@ -70,6 +73,19 @@ function collectReceiptEvidence(
         message: receipt.refusal?.message ?? "Repair was refused.",
       });
     }
+  }
+}
+
+function collectMigrationMessages(
+  messages: readonly { stepId: string; result: MigrationMessages }[] | undefined,
+  applied: AppliedRepair[],
+  remaining: RemainingRepair[],
+): void {
+  for (const { stepId, result } of messages ?? []) {
+    if (result.changes.length > 0) {
+      applied.push({ stepId, changes: [...result.changes] });
+    }
+    remaining.push(...result.warnings.map((message) => ({ stepId, message })));
   }
 }
 
@@ -166,6 +182,7 @@ export async function runExternallyManagedDoctorRepair(params: {
         }),
       );
       config = preflight.baseConfig;
+      collectMigrationMessages(preflight.stateMigrationMessages, applied, remaining);
       collectReceiptEvidence(preflight.stateMigrationStepReceipts, applied, remaining);
 
       if (!preflight.snapshot.valid) {
@@ -199,7 +216,13 @@ export async function runExternallyManagedDoctorRepair(params: {
     });
   } catch (error) {
     failure = error;
-    throw error;
+    const { DoctorStateMigrationRefusalError } =
+      await import("../infra/state-migrations.messages.js");
+    if (error instanceof DoctorStateMigrationRefusalError) {
+      collectReceiptEvidence(error.stepReceipts, applied, remaining);
+    } else {
+      throw error;
+    }
   } finally {
     try {
       await maintenance.finish(config, undefined, failure);
@@ -220,13 +243,22 @@ export async function runExternallyManagedDoctorRepair(params: {
         (candidate) => candidate.stepId === entry.stepId && candidate.message === entry.message,
       ) === index,
   );
+  const dedupedApplied = applied.filter(
+    (entry, index, entries) =>
+      entries.findIndex(
+        (candidate) =>
+          candidate.stepId === entry.stepId &&
+          candidate.changes.length === entry.changes.length &&
+          candidate.changes.every((change, changeIndex) => change === entry.changes[changeIndex]),
+      ) === index,
+  );
   return {
     schemaVersion: REPORT_SCHEMA_VERSION,
     mode: "externally-managed",
     ok: dedupedRemaining.length === 0,
     config: { path: configPath, status: "unchanged", sha256: sha256(configAfter) },
     service: { status: "externally-managed" },
-    applied,
+    applied: dedupedApplied,
     skipped: [
       {
         scope: "config",

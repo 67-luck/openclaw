@@ -6,6 +6,7 @@ import type { PreparedAgentDatabaseMigrationDiscovery } from "../../../infra/sta
 import type {
   LegacyStateMigrationInvocationPurpose,
   LegacyStateMigrationStepReceipt,
+  MigrationMessages,
   PreparedPostSessionPluginMigration,
 } from "../../../infra/state-migrations.types.js";
 import type { PluginMetadataSnapshot } from "../../../plugins/plugin-metadata-snapshot.types.js";
@@ -37,6 +38,7 @@ export type DoctorConfigPreflightResult = {
   pluginMetadataSnapshot?: PluginMetadataSnapshot;
   cronCodexRuntimePolicyTargets?: CronCodexRuntimePolicyTarget[];
   stateMigrationStepReceipts?: LegacyStateMigrationStepReceipt[];
+  stateMigrationMessages?: Array<{ stepId: string; result: MigrationMessages }>;
   postSessionPluginMigration?: PreparedPostSessionPluginMigration;
   postSessionPluginMigrationPlanBound?: boolean;
 };
