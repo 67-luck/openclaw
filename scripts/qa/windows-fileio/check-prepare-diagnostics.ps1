@@ -1,6 +1,6 @@
 # Actual preparation entry with synthetic native/compiler/provider primitives.
-# The trusted copy removes the Windows prerequisite and supplies a typed null
-# to File.Replace on this host. All receipt writes and hashes remain real.
+# The trusted copy removes only the Windows prerequisite. All receipt writes,
+# replacement arguments, and hashes are the actual operations source.
 param([string]$SourcePath=(Join-Path $PSScriptRoot 'OwnedFileTraceOperations.ps1'))
 $ErrorActionPreference='Stop'
 function Require([bool]$Condition,[string]$Message){if(-not $Condition){throw $Message}}
@@ -14,10 +14,7 @@ $guard=$ast.Find({param($node)
 },$true)
 Require ($null -ne $guard) 'Windows prerequisite was not found'
 $copy=$source.Remove($guard.Extent.StartOffset,$guard.Extent.EndOffset-$guard.Extent.StartOffset)
-$replaceCall='[IO.File]::Replace($temporary,$receiptFile,$null)'
-Require ([regex]::Matches($copy,[regex]::Escape($replaceCall)).Count -eq 1) 'Receipt replacement boundary was not unique'
-$copy=$copy.Replace($replaceCall,'[IO.File]::Replace($temporary,$receiptFile,[NullString]::Value)')
-$substitutions=@('windows-platform-prerequisite-removed','file-replace-nullstring-argument')
+$substitutions=@('windows-platform-prerequisite-removed')
 $root=Join-Path ([IO.Path]::GetTempPath()) ('owned-prepare-diagnostics-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)
 $failed=0
@@ -120,13 +117,17 @@ $cases=@(
     }
     if($collision){[IO.File]::WriteAllText($collision,'PRIVATE_COLLISION')}
     $streamed=[Collections.Generic.List[object]]::new()
+    $custody=@{initial=$null;verified=$false}
     $callback={param($fact)
       $streamed.Add($fact)
       if($fact.phase -ne 'prepare-stage'){return}
       Require ($fact.diagnosticOnly -eq $true -and $fact.Keys.Count -eq 3) 'Stage marker added authority or unbounded fields'
       switch($fact.stage){
         'entered'{Require (-not [IO.File]::Exists($fixtureReceipt)) 'Entry was emitted after custody'}
-        'custody-written'{Require ([IO.File]::Exists($fixtureReceipt)) 'Custody marker preceded its real write'}
+        'custody-written'{
+          Require ([IO.File]::Exists($fixtureReceipt)) 'Custody marker preceded its real write'
+          $custody.initial=[IO.File]::ReadAllText($fixtureReceipt)|ConvertFrom-Json
+        }
         'dll-compiled'{Require ($script:compiled -eq 1 -and [IO.File]::Exists((Join-Path $directory 'OwnedFileTrace.dll'))) 'Compilation marker preceded output'}
         'dll-loaded'{Require ($script:loaded -eq 1) 'Load marker preceded the loader'}
         'schema-discovered'{Require ($script:providerCalls -eq 1) 'Schema marker preceded provider discovery'}
@@ -135,6 +136,18 @@ $cases=@(
           $bound=[IO.File]::ReadAllText($fixtureReceipt)|ConvertFrom-Json
           Require ($bound.dllSha256 -eq (Get-FileHash (Join-Path $directory 'OwnedFileTrace.dll')).Hash.ToLowerInvariant()) 'Inputs marker preceded bound DLL hash'
           Require ($bound.schemaSha256 -eq (Get-FileHash (Join-Path $directory 'provider-schema.json')).Hash.ToLowerInvariant()) 'Inputs marker preceded bound schema hash'
+          foreach($key in @('contract','guid','name','raw','dll','provider','preparedAt','sourceSha256','helperSha256','factsSha256','cliSha256')){
+            Require ($bound.$key -ceq $custody.initial.$key) 'Receipt replacement changed custody'
+          }
+          foreach($key in @('executable','psVersion','edition','clrVersion','is64BitProcess')){
+            Require ($bound.runtime.$key -ceq $custody.initial.runtime.$key) 'Receipt replacement changed runtime binding'
+          }
+          Require (-not [IO.File]::Exists($fixtureReceipt+'.ready-pending')) 'Replacement did not consume staged receipt'
+          if($script:scenario -eq 'success'){
+            $files=@([IO.Directory]::GetFiles($directory)|ForEach-Object {[IO.Path]::GetFileName($_)}|Sort-Object)
+            Require (($files -join ',') -ceq 'OwnedFileTrace.dll,provider-schema.json,trace.json') 'Replacement left a backup or unexpected file'
+          }
+          $custody.verified=$true
         }
         'trace-absent'{Require ([OwnedFileTrace]::Queries -eq 1 -and [OwnedFileTrace]::Starts -eq 0) 'Absence marker preceded its native query'}
         'trace-started'{Require ([OwnedFileTrace]::Starts -eq 1 -and [IO.File]::Exists((Join-Path $directory 'private-host-events.etl'))) 'Start marker preceded acquisition'}
@@ -142,13 +155,24 @@ $cases=@(
         default{throw 'Unknown stage was streamed'}
       }
     }
+    $Error.Clear()
     $result=Invoke-OwnedFileTraceOperation -Mode prepare -ReceiptPath $fixtureReceipt -ExpectedGuid ([guid]::NewGuid()) -PublishFact $callback
+    $replaceArgumentFailure=$false
+    foreach($record in @($Error|Select-Object -First 8)){
+      $atReplace=([string]$record.InvocationInfo.Line).Contains('::Replace(') -or $record.CategoryInfo.Activity -eq 'Replace'
+      $cause=$record.Exception
+      for($depth=0;$depth -lt 8 -and $null -ne $cause;$depth++){
+        if($atReplace -and $cause -is [ArgumentException]){$replaceArgumentFailure=$true}
+        $cause=$cause.InnerException
+      }
+    }
     $stages=@($streamed | Where-Object {$_.phase -eq 'prepare-stage'} | ForEach-Object {$_.stage})
     $failure=@($streamed | Where-Object {$_.phase -eq 'prepare-failure'})
     $issues=[Collections.Generic.List[string]]::new()
     if(($stages -join ',') -cne ($stageNames[0..($case.count-1)] -join ',')){$issues.Add('stage-order-or-presence')}
     if(($result.records|ConvertTo-Json -Depth 12 -Compress) -cne ($streamed.ToArray()|ConvertTo-Json -Depth 12 -Compress)){$issues.Add('stream-return-divergence')}
     if($case.name -eq 'success'){
+      if(-not $custody.verified){$issues.Add('receipt-custody-not-updated')}
       if($result.exitCode -ne 0 -or $failure.Count -ne 0 -or $result.records[-1].phase -ne 'prepared' -or $result.records[-1].cleanupVerified -ne $false -or $result.records[-1].providerEnabled -ne $false){$issues.Add('success-policy-changed')}
     } else {
       if($result.exitCode -ne 2 -or $result.records[-1].phase -ne 'prepare' -or $result.records[-1].reason -ne 'native-probe-failed-or-ownership-refused' -or $result.records[-1].cleanupVerified -ne $false){$issues.Add('failure-policy-changed')}
@@ -166,6 +190,7 @@ $cases=@(
     }
     if($issues.Count){$failed++}
     @{case=$case.name;passed=($issues.Count -eq 0);stages=$stages;issues=@($issues.ToArray());
+      replacementCustodyVerified=$custody.verified;replaceArgumentFailureObserved=$replaceArgumentFailure;
       platform=[Environment]::OSVersion.Platform.ToString();substitutions=$substitutions;nativeProof=$false} | ConvertTo-Json -Depth 4 -Compress
   }
 } finally {

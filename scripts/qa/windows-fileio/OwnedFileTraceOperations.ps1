@@ -55,7 +55,7 @@ function Read-TraceRuntime {
 function Update-PrivateReceipt($Value) {
   $temporary=$receiptFile+'.ready-pending'
   Write-ExclusiveJson $temporary $Value
-  [IO.File]::Replace($temporary,$receiptFile,$null)
+  [IO.File]::Replace($temporary,$receiptFile,[NullString]::Value)
 }
 function Assert-PreparedInput($Receipt) {
   $runtime=Read-TraceRuntime
