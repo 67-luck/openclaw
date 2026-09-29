@@ -270,6 +270,8 @@ async function fixture({
     "update-command-post-update-maintenance",
     // Recovery and reporting stay real; only their I/O uses finite fixture facts.
     "update-command-failure-recovery",
+    // Exercise the production migrated-state admission guard, not a permissive stub.
+    "update-command-service-recovery",
     "update-command-plugins-internals",
     "../../process/exec-result",
     "../../shared/update-outcome",
