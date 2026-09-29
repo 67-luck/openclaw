@@ -179,7 +179,7 @@ describe("actual managed census diagnostic boundary", () => {
       "bootstrap-entered",
       "census-entered",
       "process-query-returned",
-      "census-returned",
+      "binding-decoded",
       "bootstrap-failed",
     ];
     const { command } = launchCase({

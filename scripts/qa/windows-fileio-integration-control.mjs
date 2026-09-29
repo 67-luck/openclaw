@@ -65,7 +65,7 @@ const censusStages = [
   "bootstrap-entered",
   "census-entered",
   "process-query-returned",
-  "census-returned",
+  "binding-decoded",
   "bootstrap-failed",
 ];
 
@@ -77,7 +77,7 @@ function instrumentCensusInvocation(script) {
   assert.equal(script.split(query).length, 2, "Expected exactly one process query");
   // Apply the existing byte limit to the complete instrumented input.
   const invocation = buildInstalledCensusInvocation(
-    `${emit("census-entered")}\n${script.replace(query, `${query}\n${emit("process-query-returned")}`)}\n${emit("census-returned")}`,
+    `${emit("census-entered")}\n${script.replace(query, `${emit("binding-decoded")}\n${query}\n${emit("process-query-returned")}`)}`,
   );
   assert.equal(invocation.args.length, 4);
   assert.equal(invocation.args[2], "-Command");
@@ -695,10 +695,7 @@ async function main() {
       globalRoot,
     ];
     const abort = new AbortController();
-    const target = fixtureTarget(
-      { lifetime, commands, env, context, label: `${name}:fixture`, signal: abort.signal },
-      argv,
-    );
+    let target;
     let release;
     let terminalSent = false;
     let inputError;
@@ -713,7 +710,7 @@ async function main() {
       }
     };
     const sendTerminal = () => {
-      if (terminalSent || inputError || target.receipt.joined) {
+      if (!target || terminalSent || inputError || target.receipt.joined) {
         return;
       }
       terminalSent = true;
@@ -724,6 +721,9 @@ async function main() {
       }
     };
     const joinTarget = async () => {
+      if (!target) {
+        return;
+      }
       if (!target.receipt.joined) {
         if (release) {
           sendTerminal();
@@ -759,16 +759,19 @@ async function main() {
     };
     const failures = [];
     try {
+      if (name === "unloaded") {
+        // Qualify the independent API prerequisite before the addon fixture's clock starts.
+        await nativeLifetimeControl(prepared.descriptor, cell);
+      }
+      target = fixtureTarget(
+        { lifetime, commands, env, context, label: `${name}:fixture`, signal: abort.signal },
+        argv,
+      );
       const ready = await target.waitFor("ready");
       assert.equal(ready.modulePresent, fixtureMode === "loaded");
       assert.equal(ready.addonSha256, addonSha256);
       assert.ok(target.receipt.jobObserved);
       release = createFixtureRelease(target.child.stdin, false, reportInputError);
-      if (name === "unloaded") {
-        // The existing managed allowance owns this API control before either
-        // census or ETW enable. It does not create deletion evidence.
-        await nativeLifetimeControl(prepared.descriptor, cell);
-      }
       const binding = {
         launcherPid: target.receipt.launcherPid,
         commandPid: target.receipt.commandPid,
@@ -909,7 +912,7 @@ async function main() {
           failures.push(error);
         }
       }
-      if (target.receipt.joined && !failures.some(hasUnjoinedWork)) {
+      if ((!target || target.receipt.joined) && !failures.some(hasUnjoinedWork)) {
         try {
           await prepared.cleanup();
           admission.cleanupVerified = true;

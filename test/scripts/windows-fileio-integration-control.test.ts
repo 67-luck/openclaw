@@ -99,6 +99,9 @@ describe("integrated FileIO control evidence boundary", () => {
 it.each([
   "known-completion",
   "native-lifetime",
+  "native-lifetime-and-cleanup",
+  "native-unjoined",
+  "native-pending",
   "guard",
   "timeout",
   "cleanup",
@@ -133,7 +136,9 @@ it.each([
     const failures: unknown[] = [];
     const nativeFailure = Object.assign(
       new Error("Synthetic native boundary failure"),
-      scenario === "unjoined" ? { processTreeState: "indeterminate" } : { code: "ETIMEDOUT" },
+      scenario === "unjoined" || scenario === "native-unjoined"
+        ? { processTreeState: "indeterminate" }
+        : { code: "ETIMEDOUT" },
     );
     const cleanupFailure = new Error("Synthetic exact cleanup failure");
     const targets = new Map<string, { release: () => void }>();
@@ -141,6 +146,15 @@ it.each([
     const identity = { pid: 1234, nativeStartFileTime: "133000000000000000" };
     const addonSha256 = "939156f310bd7a7d9d1db1b5249a5d135739b049c24c79fd3c201701333ddbf3";
     let lifetimeJoins = 0;
+    const order: string[] = [];
+    let markNativeEntered!: () => void;
+    const nativeEntered = new Promise<void>((resolve) => {
+      markNativeEntered = resolve;
+    });
+    let releaseNative!: () => void;
+    const nativeRelease = new Promise<void>((resolve) => {
+      releaseNative = resolve;
+    });
     // Execute the unchanged driver and runCell bodies in this realm so the real
     // recorder's AssertionError identity remains part of the continuation gate.
     const dependencies = {
@@ -179,13 +193,16 @@ it.each([
       async prepareInstalledFileIo({ task }: { task: { rootDir: string } }) {
         const name = path.basename(task.rootDir);
         started.push(name);
+        order.push(`prepare:${name}`);
         return {
           descriptor: { runtime: {} },
           async cleanup() {
             cleaned.push(name);
             if (
               name === "unloaded" &&
-              (scenario === "cleanup" || scenario === "joined-failure-and-cleanup")
+              (scenario === "cleanup" ||
+                scenario === "joined-failure-and-cleanup" ||
+                scenario === "native-lifetime-and-cleanup")
             ) {
               throw cleanupFailure;
             }
@@ -194,13 +211,22 @@ it.each([
       },
       async nativeLifetimeControl() {
         expect(started).toEqual(["unloaded"]);
-        if (scenario === "native-lifetime") {
+        order.push("api-enter");
+        markNativeEntered();
+        if (scenario === "native-pending") {
+          await nativeRelease;
+        }
+        if (
+          ["native-lifetime", "native-lifetime-and-cleanup", "native-unjoined"].includes(scenario)
+        ) {
           throw nativeFailure;
         }
+        order.push("api-joined");
       },
       fixtureTarget(options: { label: string; signal: AbortSignal }, argv: string[]) {
         const name = options.label.split(":")[0];
         assert.ok(name);
+        order.push(`fixture:${name}`);
         const loaded = argv[4] === "__fileio_loaded";
         const terminal = createInstalledTerminalJsonCapture((value) => value);
         const stdout =
@@ -289,6 +315,7 @@ it.each([
         onEnabled?: () => void,
       ) {
         const name = current.runId;
+        order.push(`census:${label}`);
         if (label.endsWith(":pin")) {
           if (name === "unloaded" && scenario === "timeout") {
             throw nativeFailure;
@@ -367,13 +394,35 @@ it.each([
         result: () => ({ stdout: '{"directCensusProcessAbsent":true}' }),
       }),
     };
-    await compileFunction(
+    const driverCompletion = compileFunction(
       `return (async () => {let failed = false; ${source.slice(cellFunction.start, cellFunction.end)}\n${source.slice(driver.start, driver.end)}})();`,
       Object.keys(dependencies),
     )(...Object.values(dependencies));
+    let pendingFixtureCount: number | undefined;
+    if (scenario === "native-pending") {
+      await nativeEntered;
+      pendingFixtureCount = targets.size;
+      releaseNative();
+    }
+    await driverCompletion;
+    if (scenario === "native-pending") {
+      expect(pendingFixtureCount).toBe(0);
+    }
     expect(lifetimeJoins).toBe(1);
     expect(processState.exitCode).toBe(1);
-    if (scenario === "known-completion") {
+    if (["native-lifetime", "native-lifetime-and-cleanup", "native-unjoined"].includes(scenario)) {
+      expect(targets.size).toBe(0);
+      expect(order).toEqual(["prepare:unloaded", "api-enter"]);
+    } else {
+      expect(order.slice(0, 5)).toEqual([
+        "prepare:unloaded",
+        "api-enter",
+        "api-joined",
+        "fixture:unloaded",
+        "census:unloaded:pin",
+      ]);
+    }
+    if (scenario === "known-completion" || scenario === "native-pending") {
       expect(started).toEqual([
         "unloaded",
         "loaded",
@@ -392,16 +441,19 @@ it.each([
       ]);
     } else {
       expect(started).toEqual(["unloaded"]);
-      expect(cleaned).toEqual(scenario === "unjoined" ? [] : ["unloaded"]);
+      expect(cleaned).toEqual(
+        scenario === "unjoined" || scenario === "native-unjoined" ? [] : ["unloaded"],
+      );
       expect(cells[0]?.qualified).toBe(false);
       if (
         scenario === "joined-failure" ||
         scenario === "timeout" ||
-        scenario === "native-lifetime"
+        scenario === "native-lifetime" ||
+        scenario === "native-unjoined"
       ) {
         expect(failures).toContain(nativeFailure);
       }
-      if (scenario === "joined-failure-and-cleanup") {
+      if (scenario === "joined-failure-and-cleanup" || scenario === "native-lifetime-and-cleanup") {
         const failure = failures[0];
         assert.ok(failure instanceof AggregateError);
         expect(failure.errors).toEqual([nativeFailure, cleanupFailure]);

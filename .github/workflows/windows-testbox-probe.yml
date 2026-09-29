@@ -1638,7 +1638,7 @@ jobs:
       - name: Run owned FileIO controls
         id: control
         shell: pwsh
-        timeout-minutes: 5
+        timeout-minutes: 20
         run: |
           & $env:FILEIO_NODE --import ./scripts/tsx.mjs scripts/qa/windows-fileio-integration-control.mjs run $env:FILEIO_ADDON $env:FILEIO_EVIDENCE $env:FILEIO_PRIVATE
           if ($LASTEXITCODE -ne 0) { throw 'FileIO controls failed; preserve bounded evidence.' }
