@@ -19,6 +19,7 @@ import {
 } from "./failover-error.js";
 import { isLikelyContextOverflowError } from "./failover/classify.js";
 import type { FailoverReason } from "./failover/signal.js";
+import { resolveAgentHarnessAuthOwnership } from "./harness/auth-ownership.js";
 import { MissingAgentHarnessError, isAgentHarnessPreflightError } from "./harness/errors.js";
 import { resolveAgentHarnessPolicy } from "./harness/policy.js";
 import { getRegisteredAgentHarness } from "./harness/registry.js";
@@ -418,13 +419,28 @@ export function resolveNextFallbackCandidateIndex(params: {
 
 export async function resolveModelFallbackCandidateHarnessAuthPrecheck(
   params: ModelFallbackRuntimeContext & ModelCandidate,
-): Promise<{ skipsProviderAuthCooldown: boolean; agentHarnessRuntimeOverride?: string }> {
+): Promise<{
+  skipsProviderAuthCooldown: boolean;
+  agentHarnessRuntimeOverride?: string;
+  authOwner?: "host";
+}> {
   const { agentHarnessRuntimeOverride, explicitAgentRuntime, runtime, runtimeSource } =
     resolveModelFallbackCandidateAgentRuntime(params);
-  const result = (skipsProviderAuthCooldown: boolean) => ({
-    skipsProviderAuthCooldown,
-    agentHarnessRuntimeOverride,
-  });
+  const result = (skipsProviderAuthCooldown: boolean) => {
+    const authOwner = resolveAgentHarnessAuthOwnership({
+      config: params.cfg,
+      agentId: params.agentId,
+      sessionKey: params.sessionKey,
+      provider: params.provider,
+      modelId: params.model,
+      runtimeId: agentHarnessRuntimeOverride,
+    });
+    return {
+      skipsProviderAuthCooldown: skipsProviderAuthCooldown || authOwner === "host",
+      agentHarnessRuntimeOverride,
+      authOwner,
+    };
+  };
   if (!params.cfg) {
     return result(false);
   }

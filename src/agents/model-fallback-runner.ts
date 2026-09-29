@@ -324,7 +324,7 @@ async function runWithModelFallbackInternal<T>(
     let candidateAuthProfileIds: string[] | undefined;
     let quotaRequiresAuthPreparation = false;
     let userLockedAuthProfileEligible = false;
-    if (authRuntime && authStore) {
+    if (authRuntime && authStore && candidateHarnessAuth.authOwner !== "host") {
       userLockedAuthProfileEligible =
         userLockedAuthProfileId !== undefined &&
         authRuntime.resolveAuthProfileEligibility({

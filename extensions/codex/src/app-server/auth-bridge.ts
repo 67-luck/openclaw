@@ -279,22 +279,33 @@ export async function resolveCodexAppServerPreparedAuthHandoff(params: {
   agentDir?: string;
   /** Required: an omitted scope would silently reintroduce prepared logins on native homes. */
   homeScope: CodexAppServerHomeScope;
+  /** Host-owned WebSocket auth does not change the agent's home or thread scope. */
+  authMode?: "host";
   /** Remote execution must never rely on ambient or native-home credentials. */
   requirePreparedAuth?: boolean;
   config?: AuthProfileOrderConfig;
   subscriptionProfileRequiredError: string;
   subscriptionProfileUnusableError: string;
 }) {
-  // A user-home app-server owns the operator's native Codex account. Codex persists
+  // Native homes and explicit host-auth connections own their Codex account. Codex persists
   // api-key logins into CODEX_HOME/auth.json and swaps the live account for external
   // token logins, so a prepared OpenClaw handoff here would rewrite the account that
-  // Codex CLI and Desktop share. Native homes are verified, never logged into.
-  const usesNativeHome = params.homeScope === "user";
+  // Codex CLI and Desktop share. Host-owned accounts are verified, never logged into.
+  const usesNativeAuth = params.homeScope === "user" || params.authMode === "host";
+  if (params.requirePreparedAuth && usesNativeAuth) {
+    throw createCodexAppServerAuthError(
+      'Codex remote-exec cloud placement requires prepared OpenAI auth. Configure an OpenAI API-key, OAuth, or token profile and use appServer.homeScope="agent"; ambient credentials and native Codex auth are not allowed.',
+    );
+  }
+  // A forwarded Gateway profile cannot select credentials for a host-owned connection.
+  if (params.authMode === "host") {
+    return { nativeAuthProfile: true };
+  }
   const selectedCredential = params.authProfileId
     ? params.authProfileStore.profiles[params.authProfileId]
     : undefined;
   if (isCodexResponsesOAuthCredential(selectedCredential)) {
-    if (usesNativeHome || params.requirePreparedAuth || params.authRequirement !== "api-key") {
+    if (usesNativeAuth || params.requirePreparedAuth || params.authRequirement !== "api-key") {
       throw new Error(
         "ChatGPT subscription sharing requires the managed local Codex API route and an isolated home.",
       );
@@ -314,12 +325,7 @@ export async function resolveCodexAppServerPreparedAuthHandoff(params: {
       },
     };
   }
-  if (params.requirePreparedAuth && usesNativeHome) {
-    throw createCodexAppServerAuthError(
-      'Codex remote-exec cloud placement requires prepared OpenAI auth. Configure an OpenAI API-key, OAuth, or token profile and use appServer.homeScope="agent"; ambient credentials and native Codex auth are not allowed.',
-    );
-  }
-  if (usesNativeHome) {
+  if (usesNativeAuth) {
     return { nativeAuthProfile: true };
   }
   if (params.authRequirement === "api-key") {
