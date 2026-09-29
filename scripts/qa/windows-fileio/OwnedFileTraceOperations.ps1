@@ -104,6 +104,7 @@ function Stop-OwnedTrace {
 }
 
 try {
+  if($Mode -eq 'prepare'){Emit @{phase='prepare-stage';diagnosticOnly=$true;stage='entered'}}
   if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Windows required' }
   if (-not [Environment]::Is64BitProcess) {throw '64-bit PowerShell required'}
   if ($Mode -ne 'cleanup' -and -not [IO.Directory]::Exists($privateDirectory)) { throw 'Owner must admit and create private directory first' }
@@ -120,9 +121,12 @@ try {
       cliSha256=(Hash-OwnedFile (Join-Path $PSScriptRoot 'Invoke-OwnedFileTrace.ps1'));
       runtime=(Read-TraceRuntime) }
     Write-ExclusiveJson $receiptFile $receipt
+    Emit @{phase='prepare-stage';diagnosticOnly=$true;stage='custody-written'}
     # All slow preparation precedes updater execution; no provider is enabled here.
     Add-Type -Path ([IO.Path]::Combine($PSScriptRoot,'OwnedFileTrace.cs')) -OutputAssembly $dll
+    Emit @{phase='prepare-stage';diagnosticOnly=$true;stage='dll-compiled'}
     Add-Type -Path $dll
+    Emit @{phase='prepare-stage';diagnosticOnly=$true;stage='dll-loaded'}
     $provider = Get-WinEvent -ListProvider $providerName
     if($provider.Id -ne [guid]$providerGuid){throw 'Unexpected provider identity'}
     $schemas = @($provider.Events | ForEach-Object {
@@ -130,16 +134,22 @@ try {
          opcode=[string]$_.Opcode.Name; template=[string]$_.Template }
     })
     if ($schemas.Count -eq 0 -or $schemas.Count -gt 512) { throw 'Provider schema unavailable or oversized' }
+    Emit @{phase='prepare-stage';diagnosticOnly=$true;stage='schema-discovered'}
     Write-ExclusiveJson $schemaFile $schemas
+    Emit @{phase='prepare-stage';diagnosticOnly=$true;stage='schema-written'}
     $receipt.dllSha256=Hash-OwnedFile $dll
     $receipt.schemaSha256=Hash-OwnedFile $schemaFile
     Update-PrivateReceipt $receipt
+    Emit @{phase='prepare-stage';diagnosticOnly=$true;stage='inputs-bound'}
     . (Join-Path $PSScriptRoot 'FileTraceFacts.ps1')
     try { Emit (Get-FileTracePublicSchema $schemas) }
     catch { Emit @{phase='provider-metadata';diagnosticOnly=$true;unavailable=$true;events=@()} }
     if (-not (Test-TraceAbsent)) { throw 'Session name occupied; refusing acquisition' }
+    Emit @{phase='prepare-stage';diagnosticOnly=$true;stage='trace-absent'}
     $handle = [OwnedFileTrace]::Start($sessionName,$ExpectedGuid,$raw)
+    Emit @{phase='prepare-stage';diagnosticOnly=$true;stage='trace-started'}
     Write-ExclusiveJson ([IO.Path]::Combine($privateDirectory,'acquired.json')) @{ handle=$handle.ToString() }
+    Emit @{phase='prepare-stage';diagnosticOnly=$true;stage='acquisition-written'}
     Emit @{ phase='prepared'; guid=$ExpectedGuid.ToString(); name=$sessionName;
       providerEnabled=$false; rawArtifactUploadAllowed=$false; cleanupVerified=$false; runtime=$receipt.runtime }
     return @{records=@($emitted.ToArray());exitCode=0}
@@ -456,6 +466,23 @@ try {
   Emit $result
   return @{records=@($emitted.ToArray());exitCode=$(if($stopped){0}else{2})}
 } catch {
+  if($Mode -eq 'prepare'){
+    $failure=$_.Exception
+    $diagnostic=@{phase='prepare-failure';diagnosticOnly=$true;errorCategory='other';truncated=$false}
+    for($depth=0;$depth -lt 8 -and $null -ne $failure;$depth++){
+      if($failure -is [ComponentModel.Win32Exception]){
+        $diagnostic.errorCategory='win32'
+        $diagnostic.nativeErrorCode=$failure.NativeErrorCode
+      } elseif($diagnostic.errorCategory -ne 'win32'){
+        if($failure -is [UnauthorizedAccessException]){$diagnostic.errorCategory='unauthorized-access'}
+        elseif($failure -is [IO.IOException]){$diagnostic.errorCategory='io'}
+        elseif($failure -is [InvalidOperationException]){$diagnostic.errorCategory='invalid-operation'}
+      }
+      $failure=$failure.InnerException
+    }
+    $diagnostic.truncated=$null -ne $failure
+    Emit $diagnostic
+  }
   Emit @{ phase=$Mode; observation='insufficient-evidence'; cleanupVerified=$false;
     reason='native-probe-failed-or-ownership-refused'; rawArtifactUploadAllowed=$false }
   return @{records=@($emitted.ToArray());exitCode=2}

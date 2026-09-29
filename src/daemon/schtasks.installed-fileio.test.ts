@@ -361,3 +361,167 @@ it.each(["before", "during"] as const)(
     }
   },
 );
+
+it.each([
+  [
+    "explicit timeout",
+    Object.assign(new Error("synthetic-private-timeout"), { code: "ETIMEDOUT" }),
+    "ETIMEDOUT",
+  ],
+  [
+    "abort cause",
+    new AggregateError(
+      [
+        new Error("synthetic-private-wrapper", {
+          cause: Object.assign(new Error("synthetic-private-abort"), { code: "ABORT_ERR" }),
+        }),
+      ],
+      "synthetic-private-aggregate",
+    ),
+    "ABORT_ERR",
+  ],
+  [
+    "unknown code",
+    Object.assign(new Error("synthetic-private-error"), { code: "synthetic-private-code" }),
+    null,
+  ],
+  ["non-error rejection", "synthetic-private-rejection", null],
+] as const)(
+  "retains bounded %s facts before sanitized rollback",
+  async (_label, failure, expectedCode) => {
+    const f = await fixture();
+    managed.run.mockImplementationOnce(async (options) => {
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+      });
+      options.onReady(child);
+      child.emit("message", { type: "spawned", pid: 124 });
+      const lines =
+        JSON.stringify({
+          phase: "prepare-stage",
+          diagnosticOnly: true,
+          stage: "dll-compiled",
+          secret: "synthetic-private-stage",
+        }) +
+        "\n" +
+        JSON.stringify({
+          phase: "prepare-failure",
+          diagnosticOnly: true,
+          errorCategory: "win32",
+          nativeErrorCode: 5,
+          truncated: false,
+        }) +
+        "\n" +
+        JSON.stringify({
+          phase: "prepare-stage",
+          diagnosticOnly: true,
+          stage: "synthetic-private-unknown",
+        }) +
+        "\n" +
+        '{"phase":"prepare-stage"';
+      child.stdout.write(lines.slice(0, 19));
+      child.stdout.write(lines.slice(19));
+      child.stderr.write("synthetic-private-stderr");
+      const result = Promise.withResolvers<number>();
+      result.reject(failure);
+      return result.promise;
+    });
+    await expect(f.prepare()).rejects.toThrow("FileIO preparation or custody validation failed");
+    await f.lifetime.cleanup();
+    expect(f.commandFacts[0]).toMatchObject({
+      outcome: "failed",
+      joined: true,
+      jobObserved: true,
+      exitCode: null,
+      diagnostics: {
+        commandStage: "spawned",
+        lastPrepareStage: "dll-compiled",
+        incompleteOutputLine: true,
+        outputTruncated: false,
+        nativeFailure: { errorCategory: "win32", nativeErrorCode: 5, truncated: false },
+        errorsTruncated: false,
+      },
+    });
+    const diagnostics = f.commandFacts[0]!.diagnostics;
+    expect(diagnostics.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(diagnostics.elapsedMs).toBeLessThan(30_000);
+    expect(diagnostics.errors.some((error) => error.code === expectedCode)).toBe(true);
+    if (expectedCode === null) {
+      expect(diagnostics.errors.every((error) => error.code === null)).toBe(true);
+    }
+    expect(JSON.stringify(f.commandFacts)).not.toContain("synthetic-private");
+    expect(f.phases).toEqual(["cleanup"]);
+    await expect(fs.stat(f.privateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  },
+);
+
+it("caps failure traversal and output without claiming an unseen stage", async () => {
+  const f = await fixture();
+  const failure = new AggregateError(
+    Array.from({ length: 20 }, () => new Error("synthetic-private-member")),
+    "synthetic-private-root",
+  );
+  managed.run.mockImplementationOnce(async (options) => {
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+    options.onReady(child);
+    child.stdout.write("x".repeat(65_536));
+    child.stdout.write(
+      '\n{"phase":"prepare-stage","diagnosticOnly":true,"stage":"trace-started"}\n',
+    );
+    throw failure;
+  });
+  await expect(f.prepare()).rejects.toThrow("FileIO preparation or custody validation failed");
+  await f.lifetime.cleanup();
+  expect(f.commandFacts[0]!.diagnostics).toMatchObject({
+    commandStage: "on-ready",
+    lastPrepareStage: null,
+    outputTruncated: true,
+    errorsTruncated: true,
+  });
+  expect(f.commandFacts[0]!.diagnostics.errors).toHaveLength(8);
+  expect(JSON.stringify(f.commandFacts)).not.toContain("synthetic-private");
+});
+
+it("retains native refusal facts on nonzero exit without inventing a managed error", async () => {
+  const f = await fixture();
+  managed.run.mockImplementationOnce(async (options) => {
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+    options.onReady(child);
+    child.emit("message", { type: "spawned", pid: 124 });
+    child.stdout.write(
+      JSON.stringify({ phase: "prepare-stage", diagnosticOnly: true, stage: "custody-written" }) +
+        "\n",
+    );
+    child.stdout.write(
+      JSON.stringify({
+        phase: "prepare-failure",
+        diagnosticOnly: true,
+        errorCategory: "other",
+        truncated: false,
+      }) + "\n",
+    );
+    return 2;
+  });
+  await expect(f.prepare()).rejects.toThrow("FileIO preparation or custody validation failed");
+  await f.lifetime.cleanup();
+  expect(f.commandFacts[0]).toMatchObject({
+    exitCode: 2,
+    outcome: "failed",
+    joined: true,
+    diagnostics: {
+      commandStage: "spawned",
+      lastPrepareStage: "custody-written",
+      errors: [],
+      errorsTruncated: false,
+      nativeFailure: { errorCategory: "other", truncated: false },
+    },
+  });
+  expect(f.commandFacts[0]!.diagnostics.nativeFailure).not.toHaveProperty("nativeErrorCode");
+});

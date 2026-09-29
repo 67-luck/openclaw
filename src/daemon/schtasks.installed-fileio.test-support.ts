@@ -46,6 +46,99 @@ const receiptSchema = z.object({
   runtime: runtimeSchema,
 });
 
+const prepareStageSchema = z.enum([
+  "entered",
+  "custody-written",
+  "dll-compiled",
+  "dll-loaded",
+  "schema-discovered",
+  "schema-written",
+  "inputs-bound",
+  "trace-absent",
+  "trace-started",
+  "acquisition-written",
+]);
+const nativeFailureSchema = z.object({
+  errorCategory: z.enum(["win32", "unauthorized-access", "io", "invalid-operation", "other"]),
+  nativeErrorCode: z.number().int().min(-2_147_483_648).max(2_147_483_647).optional(),
+  truncated: z.boolean(),
+});
+const commandErrorCodeSchema = z.enum([
+  "ETIMEDOUT",
+  "ABORT_ERR",
+  "ENOENT",
+  "EACCES",
+  "EPERM",
+  "EINVAL",
+  "EPIPE",
+  "ERR_STREAM_DESTROYED",
+  "ERR_IPC_CHANNEL_CLOSED",
+  "EPROCESSGROUP_CLEANUP_FAILED",
+  "EPROCESS_TREE_VERIFICATION_UNSUPPORTED",
+]);
+const commandErrorReasonSchema = z.enum([
+  "job-create-failed",
+  "job-configuration-failed",
+  "job-admission-failed",
+]);
+type CommandErrorFact = {
+  category: "aggregate" | "error" | "non-error";
+  code: z.infer<typeof commandErrorCodeSchema> | null;
+  codePresent: boolean;
+  reason: z.infer<typeof commandErrorReasonSchema> | null;
+};
+
+// Exceptions remain private. Traverse only a bounded cause/member prefix and
+// copy fixed categories before the acquisition owner replaces the failure.
+function commandFailureFacts(failure: unknown) {
+  const pending: unknown[] = [failure];
+  const seen = new Set<unknown>();
+  const errors: CommandErrorFact[] = [];
+  let errorsTruncated = false;
+  while (pending.length && errors.length < 8) {
+    const error = pending.shift();
+    if (seen.has(error)) {
+      errorsTruncated = true;
+      continue;
+    }
+    seen.add(error);
+    const fields = z
+      .object({ code: z.unknown().optional(), reason: z.unknown().optional() })
+      .safeParse(error);
+    const code = commandErrorCodeSchema.safeParse(fields.success ? fields.data.code : undefined);
+    const reason = commandErrorReasonSchema.safeParse(
+      fields.success ? fields.data.reason : undefined,
+    );
+    errors.push({
+      category:
+        error instanceof AggregateError
+          ? "aggregate"
+          : error instanceof Error
+            ? "error"
+            : "non-error",
+      code: code.success ? code.data : null,
+      codePresent: fields.success && fields.data.code !== undefined,
+      reason: reason.success ? reason.data : null,
+    });
+    const remaining = 8 - errors.length - pending.length;
+    if (error instanceof Error && error.cause !== undefined) {
+      if (remaining > 0) {
+        pending.push(error.cause);
+      } else {
+        errorsTruncated = true;
+      }
+    }
+    if (error instanceof AggregateError) {
+      const available = Math.max(0, 8 - errors.length - pending.length);
+      pending.push(...error.errors.slice(0, available));
+      if (error.errors.length > available) {
+        errorsTruncated = true;
+      }
+    }
+  }
+  return { errors, errorsTruncated: errorsTruncated || pending.length > 0 };
+}
+
 export type InstalledFileIoCommandFact = {
   phase: "prepare" | "cleanup";
   outcome: "failed" | "verified";
@@ -55,6 +148,16 @@ export type InstalledFileIoCommandFact = {
   stdoutBytes: number;
   stderrBytes: number;
   runtime?: z.infer<typeof runtimeSchema>;
+  diagnostics: {
+    elapsedMs: number;
+    commandStage: "requested" | "on-ready" | "spawned";
+    lastPrepareStage: z.infer<typeof prepareStageSchema> | null;
+    nativeFailure: z.infer<typeof nativeFailureSchema> | null;
+    incompleteOutputLine: boolean;
+    outputTruncated: boolean;
+    errors: CommandErrorFact[];
+    errorsTruncated: boolean;
+  };
 };
 
 async function hashRegularFile(file: string, maximumBytes = 2_097_152) {
@@ -194,11 +297,22 @@ function fileIoCommand(
       exitCode: null,
       stdoutBytes: 0,
       stderrBytes: 0,
+      diagnostics: {
+        elapsedMs: 0,
+        commandStage: "requested",
+        lastPrepareStage: null,
+        nativeFailure: null,
+        incompleteOutputLine: false,
+        outputTruncated: false,
+        errors: [],
+        errorsTruncated: false,
+      },
     };
     commandFacts.push(fact);
     let child: ChildProcess | undefined;
     let output = "";
     let failure: unknown;
+    const started = performance.now();
     try {
       fact.exitCode = await runManagedCommand({
         bin: powerShellExe,
@@ -224,12 +338,14 @@ function fileIoCommand(
         signal: phase === "prepare" ? signal : undefined,
         onReady(launched) {
           child = launched;
+          fact.diagnostics.commandStage = "on-ready";
           launched.on("message", (message: unknown) => {
             const control = z
               .object({ type: z.literal("spawned"), pid: z.number().int().positive() })
               .safeParse(message);
             if (control.success) {
               fact.jobObserved = true;
+              fact.diagnostics.commandStage = "spawned";
             }
           });
           launched.stdout?.on("data", (chunk: Buffer) => {
@@ -245,6 +361,38 @@ function fileIoCommand(
       });
     } catch (error) {
       failure = error;
+      Object.assign(fact.diagnostics, commandFailureFacts(error));
+    }
+    fact.diagnostics.elapsedMs = Math.round(performance.now() - started);
+    fact.diagnostics.outputTruncated = fact.stdoutBytes > 65_536;
+    fact.diagnostics.incompleteOutputLine = output.length > 0 && !output.endsWith("\n");
+    // Only complete captured lines can acknowledge preparation progress. These
+    // facts never participate in readiness, custody, or cleanup decisions.
+    if (phase === "prepare") {
+      for (const line of output.split(/\r?\n/u).slice(0, -1)) {
+        let value: unknown;
+        try {
+          value = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const stage = z
+          .object({
+            phase: z.literal("prepare-stage"),
+            diagnosticOnly: z.literal(true),
+            stage: prepareStageSchema,
+          })
+          .safeParse(value);
+        if (stage.success) {
+          fact.diagnostics.lastPrepareStage = stage.data.stage;
+        }
+        const nativeFailure = nativeFailureSchema
+          .extend({ phase: z.literal("prepare-failure"), diagnosticOnly: z.literal(true) })
+          .safeParse(value);
+        if (nativeFailure.success) {
+          fact.diagnostics.nativeFailure = nativeFailureSchema.parse(nativeFailure.data);
+        }
+      }
     }
     fact.joined =
       (!child || inspectManagedProcessGroup(child, { errorPolicy: "indeterminate" }) === "dead") &&
