@@ -84,6 +84,10 @@ it does not enable native thread browsing. Leave it unset when OpenClaw owns
 the selected auth profile. Cloud remote-exec placement still requires prepared
 OpenClaw credentials and cannot use host authentication.
 
+In this mode, `/login` refuses to start sign-in or refresh credentials for the
+host-owned provider and explains that the app-server host manages authentication.
+Explicit login choices for unrelated providers and `/login cancel` remain available.
+
 Stdio app-server launches inherit OpenClaw's process environment by default.
 OpenClaw owns the Codex app-server account bridge and sets `CODEX_HOME` to a
 per-agent directory under that agent's OpenClaw state. That keeps Codex
