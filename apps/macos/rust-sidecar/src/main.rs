@@ -250,10 +250,10 @@ async fn run() -> Result<(), Failure> {
     let (outgoing, mut outgoing_rx) = mpsc::channel::<Value>(usize::from(MAX_IN_FLIGHT));
     let writer_channel = Arc::clone(&channel);
     let mut writer = tokio::spawn(async move {
-        // Only JSON controls use this scratch buffer. Transport writes borrow the
-        // existing Gateway message and allocate just a header and authentication tag.
-        let mut frame = Vec::new();
+        // Each JSON control owns its buffer through one write, so an idle writer
+        // cannot retain a prior large frame. Transport writes borrow Gateway bytes.
         loop {
+            let mut frame = Vec::new();
             tokio::select! {
                 Some(value) = outgoing_rx.recv() => writer_channel.lock().await.seal_into(&value, &mut frame)?,
                 Some(value) = transport_writes.recv() => {
