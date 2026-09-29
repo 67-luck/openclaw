@@ -554,10 +554,8 @@ async function main() {
     admission.cleanupVerified = true;
     await persistAdmission();
   }
-  async function census(binding, context, label, onEnabled) {
-    if (binding.fileIo) {
-      await verifyInstalledFileIoExecutable(binding.fileIo, env);
-    }
+  async function census(binding, context, label, descriptor, onEnabled) {
+    await verifyInstalledFileIoExecutable(descriptor, env);
     const generated = buildInstalledUpdateRetirementCensus(binding);
     const script = binding.fileIo ? instrumentCensus(generated) : generated;
     const invocation = instrumentCensusInvocation(script);
@@ -566,7 +564,7 @@ async function main() {
       commands,
       env,
       label,
-      bin: binding.fileIo?.powerShellExe ?? getWindowsPowerShellExePath(),
+      bin: descriptor.powerShellExe,
       args: invocation.args,
       input: invocation.input,
       timeoutMs: 5000,
@@ -585,9 +583,9 @@ async function main() {
     } catch (error) {
       errors.push(error);
     } finally {
-      if (binding.fileIo && observer.receipt.joined && !errors.some(hasUnjoinedWork)) {
+      if (observer.receipt.joined && !errors.some(hasUnjoinedWork)) {
         try {
-          await verifyInstalledFileIoExecutable(binding.fileIo, env);
+          await verifyInstalledFileIoExecutable(descriptor, env);
         } catch (error) {
           errors.push(error);
         }
@@ -600,6 +598,48 @@ async function main() {
       throw new AggregateError(errors, "Census or executable verification failed");
     }
     return { observer, capture };
+  }
+  async function verifyDirectCensusProcessAbsent(descriptor, pid, label) {
+    await verifyInstalledFileIoExecutable(descriptor, env);
+    const absence = launchManaged({
+      lifetime,
+      commands,
+      env,
+      label,
+      bin: descriptor.powerShellExe,
+      args: [
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(
+          `$ErrorActionPreference='Stop';$p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue;if($p){$p.Dispose();throw 'Direct census process remains'};[Console]::Out.Write('{"directCensusProcessAbsent":true}')`,
+          "utf16le",
+        ).toString("base64"),
+      ],
+      timeoutMs: 5000,
+    });
+    const errors = [];
+    try {
+      assert.equal(await absence.completion, 0);
+      assert.ok(absence.receipt.joined && absence.receipt.jobObserved);
+      assert.deepEqual(JSON.parse(absence.result().stdout), { directCensusProcessAbsent: true });
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      if (absence.receipt.joined && !errors.some(hasUnjoinedWork)) {
+        try {
+          await verifyInstalledFileIoExecutable(descriptor, env);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+    }
+    if (errors.length === 1) {
+      throw errors[0];
+    }
+    if (errors.length) {
+      throw new AggregateError(errors, "Direct process absence or executable verification failed");
+    }
   }
   async function compareSameEtl(descriptor, identity, admission, primary, primaryReceipt) {
     assert.ok(primaryReceipt.joined && primaryReceipt.jobObserved);
@@ -1005,7 +1045,7 @@ async function main() {
           bytes: 1044480,
         },
       };
-      const first = await census(binding, context, `${name}:pin`);
+      const first = await census(binding, context, `${name}:pin`, prepared.descriptor);
       cell.before = first.capture;
       assert.equal(first.capture.retirement?.complete, true);
       assert.equal(first.capture.retirement.originalProcess.pid, ready.pid);
@@ -1045,25 +1085,11 @@ async function main() {
         const result = await synchronousTimeoutControl(binding, context, [globalRoot]);
         cell.after = result.capture;
         cell.syncOwner = result.receipt;
-        const absence = launchManaged({
-          lifetime,
-          commands,
-          env,
-          label: `${name}:direct-pid-absence`,
-          bin: getWindowsPowerShellExePath(),
-          args: [
-            "-NoProfile",
-            "-NonInteractive",
-            "-EncodedCommand",
-            Buffer.from(
-              `$ErrorActionPreference='Stop';$p=Get-Process -Id ${result.receipt.pid} -ErrorAction SilentlyContinue;if($p){$p.Dispose();throw 'Direct census process remains'};[Console]::Out.Write('{"directCensusProcessAbsent":true}')`,
-              "utf16le",
-            ).toString("base64"),
-          ],
-          timeoutMs: 5000,
-        });
-        assert.equal(await absence.completion, 0);
-        assert.deepEqual(JSON.parse(absence.result().stdout), { directCensusProcessAbsent: true });
+        await verifyDirectCensusProcessAbsent(
+          prepared.descriptor,
+          result.receipt.pid,
+          `${name}:direct-pid-absence`,
+        );
         cell.directCensusProcessAbsent = true;
         cell.descendantCleanupClaimed = false;
       } else if (name === "fixture-abort") {
@@ -1075,10 +1101,16 @@ async function main() {
         assert.equal(target.receipt.joined, true);
         cell.managedFixtureAbortJoined = true;
       } else {
-        const observed = await census(binding, context, `${name}:observe`, () => {
-          cell.enabledAcknowledged = true;
-          release.observe();
-        });
+        const observed = await census(
+          binding,
+          context,
+          `${name}:observe`,
+          prepared.descriptor,
+          () => {
+            cell.enabledAcknowledged = true;
+            release.observe();
+          },
+        );
         cell.after = observed.capture;
         cell.targetJoinedAtObserverCompletion = target.receipt.joined;
         assert.equal(cell.targetJoinedAtObserverCompletion, false);

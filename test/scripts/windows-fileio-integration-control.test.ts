@@ -127,7 +127,11 @@ it.each([
       (node) => node.type === "FunctionDeclaration" && node.id?.name === "runCell",
     );
     const driver = main.body.body.find((node) => node.type === "TryStatement");
-    assert.ok(cellFunction && driver);
+    const directFunction = main.body.body.find(
+      (node) =>
+        node.type === "FunctionDeclaration" && node.id?.name === "verifyDirectCensusProcessAbsent",
+    );
+    assert.ok(cellFunction && driver && directFunction);
     const cells: Array<{
       name: string;
       qualified: boolean;
@@ -136,6 +140,12 @@ it.each([
     }> = [];
     const started: string[] = [];
     const cleaned: string[] = [];
+    const descriptors = new Map<
+      string,
+      { powerShellExe: string; powerShellSha256: string; runtime: Record<string, unknown> }
+    >();
+    const directOrder: string[] = [];
+    const directReceipt = { joined: false, jobObserved: true };
     const failures: unknown[] = [];
     const nativeFailure = Object.assign(
       new Error("Synthetic native boundary failure"),
@@ -231,8 +241,14 @@ it.each([
         const name = path.basename(task.rootDir);
         started.push(name);
         order.push(`prepare:${name}`);
+        const descriptor = {
+          powerShellExe: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+          powerShellSha256: "a".repeat(64),
+          runtime: {},
+        };
+        descriptors.set(name, descriptor);
         return {
-          descriptor: { runtime: {} },
+          descriptor,
           async cleanup() {
             cleaned.push(name);
             if (
@@ -349,11 +365,14 @@ it.each([
         current: InstalledUpdateRetirementBinding,
         _context: unknown,
         label: string,
+        descriptor: unknown,
         onEnabled?: () => void,
       ) {
         const name = current.runId;
         order.push(`census:${label}`);
+        expect(descriptor).toBe(descriptors.get(name));
         if (label.endsWith(":pin")) {
+          expect(current).not.toHaveProperty("fileIo");
           if (name === "unloaded" && scenario === "timeout") {
             throw nativeFailure;
           }
@@ -425,14 +444,36 @@ it.each([
         };
       },
       synchronousTimeoutControl: () => ({ capture: {}, receipt: { pid: 9876 } }),
-      getWindowsPowerShellExePath: () => "synthetic-powershell",
-      launchManaged: () => ({
-        completion: Promise.resolve(0),
-        result: () => ({ stdout: '{"directCensusProcessAbsent":true}' }),
-      }),
+      async verifyInstalledFileIoExecutable(value: unknown) {
+        expect(value).toBe(descriptors.get("sync-timeout"));
+        directOrder.push(directReceipt.joined ? "verify-after" : "verify-before");
+      },
+      launchManaged(options: { bin: string; timeoutMs: number; args: string[]; label: string }) {
+        expect(directOrder).toEqual(["verify-before"]);
+        directOrder.push("launch");
+        expect(options).toMatchObject({
+          bin: descriptors.get("sync-timeout")?.powerShellExe,
+          timeoutMs: 5000,
+          label: "sync-timeout:direct-pid-absence",
+        });
+        const encoded = options.args[options.args.indexOf("-EncodedCommand") + 1];
+        assert.ok(encoded);
+        expect(Buffer.from(encoded, "base64").toString("utf16le")).toContain(
+          "Get-Process -Id 9876",
+        );
+        return {
+          receipt: directReceipt,
+          completion: (async () => {
+            directOrder.push("completion");
+            directReceipt.joined = true;
+            return 0;
+          })(),
+          result: () => ({ stdout: '{"directCensusProcessAbsent":true}' }),
+        };
+      },
     };
     const driverCompletion = compileFunction(
-      `return (async () => {let failed = false; ${source.slice(cellFunction.start, cellFunction.end)}\n${source.slice(driver.start, driver.end)}})();`,
+      `return (async () => {let failed = false; ${source.slice(directFunction.start, directFunction.end)}\n${source.slice(cellFunction.start, cellFunction.end)}\n${source.slice(driver.start, driver.end)}})();`,
       Object.keys(dependencies),
     )(...Object.values(dependencies));
     let pendingFixtureCount: number | undefined;
@@ -487,6 +528,7 @@ it.each([
         "fixture-abort",
       ]);
       expect(cleaned).toEqual(started);
+      expect(directOrder).toEqual(["verify-before", "launch", "completion", "verify-after"]);
       expect(cells.slice(0, 2).map((cell) => cell.completedDeletionFailure?.message)).toEqual([
         "No deletion-disposition completion was attributed",
         "No deletion-disposition completion was attributed",
@@ -1097,113 +1139,151 @@ it.each(["marker", "close", "marker-and-close"] as const)(
   },
 );
 
-it.each(["initial-pin", "trace", "refused", "changed", "failed-and-changed", "unjoined"] as const)(
-  "uses admitted Core only for trace-bearing census (%s)",
-  async (scenario) => {
-    const source = fs.readFileSync(
-      new URL("../../scripts/qa/windows-fileio-integration-control.mjs", import.meta.url),
-      "utf8",
-    );
-    const ast = parse(source, { ecmaVersion: "latest", sourceType: "module" });
-    const main = ast.body.find(
-      (node) => node.type === "FunctionDeclaration" && node.id?.name === "main",
-    );
-    assert.ok(main?.type === "FunctionDeclaration");
-    const declaration = main.body.body.find(
-      (node) => node.type === "FunctionDeclaration" && node.id?.name === "census",
-    );
-    assert.ok(declaration);
-    const descriptor = {
-      powerShellExe: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
-      powerShellSha256: "a".repeat(64),
-    };
-    const censusBinding = {
-      globalRoot: "C:\\fixture",
-      ...(scenario === "initial-pin" ? {} : { fileIo: descriptor }),
-    };
-    const order: string[] = [];
-    const changed = new Error("Synthetic executable changed");
-    const failed = new Error("Synthetic census failed");
-    const unjoined = Object.assign(new Error("Synthetic census unjoined"), {
-      processTreeState: "indeterminate",
-    });
-    const receipt = { joined: false, jobObserved: true };
-    const dependencies = {
-      assert,
-      hasUnjoinedWork,
-      env: {},
-      lifetime: {},
-      commands: [],
-      async verifyInstalledFileIoExecutable(value: unknown) {
-        expect(value).toBe(descriptor);
-        order.push(receipt.joined ? "verify-after" : "verify-before");
-        if (
-          scenario === "refused" ||
-          (receipt.joined && ["changed", "failed-and-changed"].includes(scenario))
-        ) {
-          throw changed;
-        }
-      },
-      buildInstalledUpdateRetirementCensus: () => "synthetic-census",
-      instrumentCensus: (script: string) => script,
-      instrumentCensusInvocation: (script: string) => ({
-        args: ["synthetic-bootstrap"],
-        input: script,
-      }),
-      getWindowsPowerShellExePath: () => "windows-powershell-5.1",
-      projectCensusResult: () => ({ diagnosticOnly: true }),
-      launchManaged(options: { bin: string; timeoutMs: number; input: string }) {
-        order.push("launch");
-        expect(options).toMatchObject({
-          bin: scenario === "initial-pin" ? "windows-powershell-5.1" : descriptor.powerShellExe,
-          timeoutMs: 5000,
-          input: "synthetic-census",
-        });
-        return {
-          receipt,
-          completion: (async () => {
-            order.push("completion");
-            if (scenario === "unjoined") {
-              throw unjoined;
-            }
-            receipt.joined = true;
-            if (scenario === "failed-and-changed") {
-              throw failed;
-            }
-            return 0;
-          })(),
-          result: () => ({ stdout: "{}" }),
-        };
-      },
-    };
-    const invoke = compileFunction(
-      `return ${source.slice(declaration.start, declaration.end)}`,
-      Object.keys(dependencies),
-    )(...Object.values(dependencies));
-    let caught: unknown;
-    const result = await invoke(censusBinding, {}, "census").catch((error: unknown) => {
-      caught = error;
-    });
-    if (scenario === "initial-pin" || scenario === "trace") {
-      expect(caught).toBeUndefined();
+it.each(
+  (["census", "direct-absence"] as const).flatMap((surface) =>
+    (["initial-pin", "success", "refused", "changed", "failed-and-changed", "unjoined"] as const)
+      .filter((scenario) => surface !== "direct-absence" || scenario !== "initial-pin")
+      .map((scenario) => ({ surface, scenario })),
+  ),
+)("uses admitted Core for private $surface calls ($scenario)", async ({ surface, scenario }) => {
+  const source = fs.readFileSync(
+    new URL("../../scripts/qa/windows-fileio-integration-control.mjs", import.meta.url),
+    "utf8",
+  );
+  const ast = parse(source, { ecmaVersion: "latest", sourceType: "module" });
+  const main = ast.body.find(
+    (node) => node.type === "FunctionDeclaration" && node.id?.name === "main",
+  );
+  assert.ok(main?.type === "FunctionDeclaration");
+  const declaration = main.body.body.find(
+    (node) =>
+      node.type === "FunctionDeclaration" &&
+      node.id?.name === (surface === "census" ? "census" : "verifyDirectCensusProcessAbsent"),
+  );
+  assert.ok(declaration);
+  const descriptor = {
+    powerShellExe: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+    powerShellSha256: "a".repeat(64),
+  };
+  const censusBinding = {
+    globalRoot: "C:\\fixture",
+    ...(scenario === "initial-pin" ? {} : { fileIo: descriptor }),
+  };
+  const order: string[] = [];
+  const changed = new Error("Synthetic executable changed");
+  const failed = new Error("Synthetic census failed");
+  const unjoined = Object.assign(new Error("Synthetic census unjoined"), {
+    processTreeState: "indeterminate",
+  });
+  const receipt = { joined: false, jobObserved: true };
+  const dependencies = {
+    assert,
+    hasUnjoinedWork,
+    env: {},
+    lifetime: {},
+    commands: [],
+    async verifyInstalledFileIoExecutable(value: unknown) {
+      expect(value).toBe(descriptor);
+      order.push(receipt.joined ? "verify-after" : "verify-before");
+      if (
+        scenario === "refused" ||
+        (receipt.joined && ["changed", "failed-and-changed"].includes(scenario))
+      ) {
+        throw changed;
+      }
+    },
+    buildInstalledUpdateRetirementCensus: (value: unknown) => {
+      expect(value).toBe(censusBinding);
+      if (scenario === "initial-pin") {
+        expect(value).not.toHaveProperty("fileIo");
+      }
+      return "synthetic-census";
+    },
+    instrumentCensus: (script: string) => script,
+    instrumentCensusInvocation: (script: string) => ({
+      args: ["synthetic-bootstrap"],
+      input: script,
+    }),
+    projectCensusResult: (
+      _context: unknown,
+      _result: unknown,
+      _needles: unknown,
+      value: unknown,
+    ) => {
+      expect(value).toBe(censusBinding);
+      if (scenario === "initial-pin") {
+        expect(value).not.toHaveProperty("fileIo");
+      }
+      return { diagnosticOnly: true };
+    },
+    launchManaged(options: { bin: string; timeoutMs: number; input?: string; args: string[] }) {
+      order.push("launch");
+      expect(options).toMatchObject({
+        bin: descriptor.powerShellExe,
+        timeoutMs: 5000,
+      });
+      if (surface === "census") {
+        expect(options.input).toBe("synthetic-census");
+      } else {
+        const encoded = options.args[options.args.indexOf("-EncodedCommand") + 1];
+        assert.ok(encoded);
+        expect(Buffer.from(encoded, "base64").toString("utf16le")).toContain(
+          "Get-Process -Id 9876",
+        );
+      }
+      return {
+        receipt,
+        completion: (async () => {
+          order.push("completion");
+          if (scenario === "unjoined") {
+            throw unjoined;
+          }
+          receipt.joined = true;
+          if (scenario === "failed-and-changed") {
+            throw failed;
+          }
+          return 0;
+        })(),
+        result: () => {
+          expect(receipt.joined).toBe(true);
+          return { stdout: surface === "census" ? "{}" : '{"directCensusProcessAbsent":true}' };
+        },
+      };
+    },
+  };
+  const invoke = compileFunction(
+    `return ${source.slice(declaration.start, declaration.end)}`,
+    Object.keys(dependencies),
+  )(...Object.values(dependencies));
+  let caught: unknown;
+  const call =
+    surface === "census"
+      ? invoke(censusBinding, {}, "census", descriptor)
+      : invoke(descriptor, 9876, "direct-absence");
+  const result = await call.catch((error: unknown) => {
+    caught = error;
+  });
+  if (scenario === "initial-pin" || scenario === "success") {
+    expect(caught).toBeUndefined();
+    if (surface === "census") {
       expect(result).toMatchObject({ capture: { diagnosticOnly: true } });
     } else {
       expect(result).toBeUndefined();
-      if (scenario === "failed-and-changed") {
-        assert.ok(caught instanceof AggregateError);
-        expect(caught.errors).toEqual([failed, changed]);
-      } else {
-        expect(caught).toBe(scenario === "unjoined" ? unjoined : changed);
-      }
     }
-    expect(order).toEqual(
-      scenario === "initial-pin"
-        ? ["launch", "completion"]
-        : scenario === "refused"
-          ? ["verify-before"]
-          : scenario === "unjoined"
-            ? ["verify-before", "launch", "completion"]
-            : ["verify-before", "launch", "completion", "verify-after"],
-    );
-  },
-);
+  } else {
+    expect(result).toBeUndefined();
+    if (scenario === "failed-and-changed") {
+      assert.ok(caught instanceof AggregateError);
+      expect(caught.errors).toEqual([failed, changed]);
+    } else {
+      expect(caught).toBe(scenario === "unjoined" ? unjoined : changed);
+    }
+  }
+  expect(order).toEqual(
+    scenario === "refused"
+      ? ["verify-before"]
+      : scenario === "unjoined"
+        ? ["verify-before", "launch", "completion"]
+        : ["verify-before", "launch", "completion", "verify-after"],
+  );
+});
