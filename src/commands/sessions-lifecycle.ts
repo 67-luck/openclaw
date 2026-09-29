@@ -1,4 +1,5 @@
 /** Gateway-backed archive and delete commands for stored sessions. */
+import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import type {
   PreservedSessionWorktree,
   SessionsDeleteResult,
@@ -211,7 +212,7 @@ async function runSessionsLifecycleCommand(
   opts: SessionsLifecycleCliOptions,
   runtime: RuntimeEnv,
 ): Promise<void> {
-  const keys = opts.keys.map((key) => key.trim());
+  const keys = uniqueStrings(opts.keys.map((key) => key.trim()));
   const rpcOptions: SessionsLifecycleRpcOptions = {
     url: opts.url,
     token: opts.token,

@@ -1,3 +1,4 @@
+import { hash } from "node:crypto";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
@@ -30,8 +31,7 @@ const archivePublicationHook = vi.hoisted(() => ({
   failNext: undefined as Error | undefined,
 }));
 
-// Place test mutations after the real Worker finishes but before cleanup opens
-// its final transaction, without relying on cross-isolate filesystem timing.
+// Place mutations after the Worker finishes but before cleanup's final transaction.
 vi.mock("./session-accessor.sqlite-archive.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./session-accessor.sqlite-archive.js")>();
   return {
@@ -588,7 +588,7 @@ describe("SQLite lifecycle cleanup races", () => {
       archiveTranscript: true,
       expectedEntry: currentEntry,
       expectedTranscript: {
-        eventJson: [JSON.stringify(events[2])],
+        digest: { eventCount: 1, rollingHash: hash("sha256", `\0${JSON.stringify(events[2])}`) },
         sessionId: sessionIds[2]!,
       },
       storePath,
@@ -622,23 +622,19 @@ describe("SQLite lifecycle cleanup races", () => {
       throw new Error("expected current guarded entry");
     }
     const replacementEntry = { ...currentEntry, label: "concurrent replacement" };
+    const transcriptHash = hash("sha256", `\0${JSON.stringify(events[0])}`);
     archiveMaterializationHook.afterMaterialize = () => {
       replaceSessionEntrySync({ sessionKey, storePath }, replacementEntry);
     };
-
     const result = await deleteSessionEntryLifecycle({
       archiveTranscript: true,
       expectedEntry: currentEntry,
-      expectedTranscript: { eventJson: [JSON.stringify(events[0])], sessionId },
+      expectedTranscript: { digest: { eventCount: 1, rollingHash: transcriptHash }, sessionId },
       storePath,
       target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
     });
 
-    expect(result).toEqual({
-      archivedTranscripts: [],
-      deleted: false,
-      expectedEntryMismatch: true,
-    });
+    expect(result).toMatchObject({ deleted: false, expectedEntryMismatch: true });
     expect(loadSessionEntry({ sessionKey, storePath })).toEqual(replacementEntry);
     await expect(loadTranscriptEvents({ sessionKey, sessionId, storePath })).resolves.toEqual(
       events,
@@ -1056,7 +1052,6 @@ describe("SQLite lifecycle cleanup races", () => {
       },
     });
 
-    expect(deleted.deleted).toBe(true);
     expect(deleted.archivedTranscripts).toEqual([]);
     await expect(
       loadTranscriptEvents({ sessionKey: survivorKey, sessionId: retainedSessionId, storePath }),

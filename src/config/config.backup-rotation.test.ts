@@ -83,6 +83,37 @@ describe("config backup rotation", () => {
     });
   });
 
+  it("stops backup mutations when delegated authority closes during rotation", async () => {
+    await withTempHome(async () => {
+      const configPath = resolveConfigPathFromTempState();
+      await fs.writeFile(configPath, "current", "utf-8");
+      await fs.writeFile(`${configPath}.bak.3`, "three", "utf-8");
+      await fs.writeFile(`${configPath}.bak.4`, "four", "utf-8");
+      let authorityOpen = true;
+      const guardedFs = {
+        ...fs,
+        unlink: async (filePath: string) => {
+          await fs.unlink(filePath);
+          authorityOpen = false;
+        },
+      };
+
+      await expect(
+        maintainConfigBackups(configPath, guardedFs, {
+          assertMutation: () => {
+            if (!authorityOpen) {
+              throw new Error("delegated authority closed");
+            }
+          },
+        }),
+      ).rejects.toThrow("delegated authority closed");
+
+      await expect(fs.readFile(`${configPath}.bak.3`, "utf-8")).resolves.toBe("three");
+      await expectPathMissing(`${configPath}.bak.4`);
+      await expectPathMissing(`${configPath}.bak`);
+    });
+  });
+
   it("createPreUpdateConfigSnapshot writes .pre-update outside rotation ring", async () => {
     await withTempHome(async () => {
       const configPath = resolveConfigPathFromTempState();

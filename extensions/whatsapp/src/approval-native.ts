@@ -10,6 +10,7 @@ import { buildTypedApprovalPresentation } from "openclaw/plugin-sdk/approval-rep
 import type {
   ExecApprovalRequest,
   PluginApprovalRequest,
+  SystemAgentApprovalRequest,
 } from "openclaw/plugin-sdk/approval-runtime";
 import type { ChannelApprovalCapability } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
@@ -63,7 +64,7 @@ const whatsappApproval = createApproverRestrictedNativeApprovalCapabilityFromFor
   },
   createNativeRuntime: (routing) =>
     createLazyChannelApprovalNativeRuntimeAdapter({
-      eventKinds: ["exec", "plugin"],
+      eventKinds: ["exec", "plugin", "system-agent"],
       isConfigured: ({ cfg, accountId, context }) =>
         Boolean(context) &&
         routing.canAnyApprovalPotentiallyRouteToChannel({
@@ -81,7 +82,10 @@ const whatsappApproval = createApproverRestrictedNativeApprovalCapabilityFromFor
 });
 
 function buildWhatsAppPendingPayload(
-  params: { request: ExecApprovalRequest | PluginApprovalRequest; nowMs: number },
+  params: {
+    request: ExecApprovalRequest | PluginApprovalRequest | SystemAgentApprovalRequest;
+    nowMs: number;
+  },
   approvalKind: ChannelApprovalKind,
 ) {
   const payload = buildApprovalReactionPromptPayloadForRequest(params);

@@ -101,7 +101,9 @@ function readPersistedTarget(value: unknown): IMessageApprovalReactionTarget | n
   if (
     !target ||
     typeof target.approvalId !== "string" ||
-    (target.approvalKind !== "exec" && target.approvalKind !== "plugin")
+    (target.approvalKind !== "exec" &&
+      target.approvalKind !== "plugin" &&
+      target.approvalKind !== "system-agent")
   ) {
     return null;
   }
@@ -242,7 +244,9 @@ export function registerIMessageApprovalReactionTarget(params: {
     !accountId ||
     !messageId ||
     !approvalId ||
-    (params.approvalKind !== "exec" && params.approvalKind !== "plugin") ||
+    (params.approvalKind !== "exec" &&
+      params.approvalKind !== "plugin" &&
+      params.approvalKind !== "system-agent") ||
     allowedDecisions.length === 0
   ) {
     return null;

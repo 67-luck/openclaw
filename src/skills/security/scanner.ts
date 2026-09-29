@@ -4,6 +4,7 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { hasErrnoCode } from "../../infra/errors.js";
+import { walkDirectory, type WalkDirectoryEntry } from "../../infra/fs-safe.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import { isPathInside } from "../../security/scan-paths.js";
 import { formatScanEvidence, LITERAL_SECRET_SKILL_CONTENT_RULE } from "./scan-evidence.js";
@@ -62,7 +63,7 @@ const DEFAULT_MAX_SCAN_FILES = 500;
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 const MAX_LINE_RULE_FINDINGS_PER_RULE = 32;
 const FILE_SCAN_CACHE_MAX = 5000;
-const DIR_ENTRY_CACHE_MAX = 5000;
+const MAX_SCAN_DIRECTORY_ENTRIES = 100_000;
 const TEST_DIRECTORY_NAMES = new Set(["__fixtures__", "__mocks__", "__tests__", "test", "tests"]);
 const TEST_FILE_NAME_PATTERN = /\.(?:mock|spec|test|test-helper|test-support)\.[^.]+$/i;
 
@@ -75,19 +76,10 @@ type FileScanCacheEntry = {
 };
 
 const FILE_SCAN_CACHE = new Map<string, FileScanCacheEntry>();
-type CachedDirEntry = {
-  name: string;
-  kind: "file" | "dir";
-};
 type CollectedScannableFiles = {
   files: string[];
   truncated: boolean;
 };
-type DirEntryCacheEntry = {
-  mtimeMs: number;
-  entries: CachedDirEntry[];
-};
-const DIR_ENTRY_CACHE = new Map<string, DirEntryCacheEntry>();
 
 export function isScannable(filePath: string): boolean {
   return SCANNABLE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
@@ -117,11 +109,6 @@ function getCachedFileScanResult(params: {
 function setCachedFileScanResult(filePath: string, entry: FileScanCacheEntry): void {
   pruneMapToMaxSize(FILE_SCAN_CACHE, FILE_SCAN_CACHE_MAX - 1);
   FILE_SCAN_CACHE.set(filePath, entry);
-}
-
-function setCachedDirEntries(dirPath: string, entry: DirEntryCacheEntry): void {
-  pruneMapToMaxSize(DIR_ENTRY_CACHE, DIR_ENTRY_CACHE_MAX - 1);
-  DIR_ENTRY_CACHE.set(dirPath, entry);
 }
 
 // ---------------------------------------------------------------------------
@@ -596,6 +583,10 @@ export function scanSource(source: string, filePath: string): SkillScanFinding[]
           }
         }
 
+        if (rule.ruleId === "dangerous-exec") {
+          literalDangerousExecIndexes.add(match.index ?? -1);
+        }
+
         if (acceptedMatches >= MAX_LINE_RULE_FINDINGS_PER_RULE) {
           omittedMatches += 1;
           lastOmittedLine = i + 1;
@@ -613,9 +604,6 @@ export function scanSource(source: string, filePath: string): SkillScanFinding[]
           evidence: formatScanEvidence(line),
         });
         acceptedMatches += 1;
-        if (rule.ruleId === "dangerous-exec") {
-          literalDangerousExecIndexes.add(match.index ?? -1);
-        }
       }
 
       // Attribute aliased child_process calls (`launch(...)`, `run(...)`) that
@@ -756,7 +744,6 @@ function pathContainsNodeModulesSegment(relativePath: string): boolean {
 }
 
 async function walkDirWithLimit(
-  rootDir: string,
   dirPath: string,
   candidateLimit: number,
   excludeTestFiles: boolean,
@@ -765,84 +752,37 @@ async function walkDirWithLimit(
   includeNodeModules: boolean,
 ): Promise<CollectedScannableFiles> {
   const files: string[] = [];
-  const stack: string[] = [dirPath];
-
-  while (stack.length > 0 && files.length < candidateLimit) {
-    const currentDir = stack.pop();
-    if (!currentDir) {
-      break;
-    }
-
-    const entries = await readDirEntriesWithCache(currentDir);
-    for (const entry of entries) {
-      if (files.length >= candidateLimit) {
-        break;
-      }
+  const include = ({ name, kind, relativePath }: WalkDirectoryEntry) =>
+    (includeHiddenDirectories || !name.startsWith(".")) &&
+    (includeNodeModules || name !== "node_modules") &&
+    (!excludeTestFiles ||
+      !(kind === "directory" ? isExcludedTestDirectoryName(name) : isExcludedTestFileName(name)) ||
+      (includeNestedNodeModulesTestFiles && pathContainsNodeModulesSegment(relativePath)));
+  const walked = await walkDirectory(dirPath, {
+    maxEntries: Math.max(
+      MAX_SCAN_DIRECTORY_ENTRIES,
+      Math.min(Number.MAX_SAFE_INTEGER, Math.ceil(candidateLimit) * 100),
+    ),
+    symlinks: "skip",
+    include: (entry) => {
       if (
-        (!includeHiddenDirectories && entry.name.startsWith(".")) ||
-        (!includeNodeModules && entry.name === "node_modules")
+        files.length < candidateLimit &&
+        entry.kind === "file" &&
+        isScannable(entry.name) &&
+        include(entry)
       ) {
-        continue;
+        files.push(entry.path);
       }
-      const fullPath = path.join(currentDir, entry.name);
-      const isExcludedTestPath =
-        entry.kind === "dir"
-          ? isExcludedTestDirectoryName(entry.name)
-          : isExcludedTestFileName(entry.name);
-      if (
-        excludeTestFiles &&
-        isExcludedTestPath &&
-        !(
-          includeNestedNodeModulesTestFiles &&
-          pathContainsNodeModulesSegment(path.relative(rootDir, fullPath))
-        )
-      ) {
-        continue;
-      }
-      if (entry.kind === "dir") {
-        stack.push(fullPath);
-      } else if (entry.kind === "file" && isScannable(entry.name)) {
-        files.push(fullPath);
-      }
-    }
-  }
-
-  return { files, truncated: files.length >= candidateLimit };
-}
-
-async function readDirEntriesWithCache(dirPath: string): Promise<CachedDirEntry[]> {
-  let st: Awaited<ReturnType<typeof fs.stat>> | null;
-  try {
-    st = await fs.stat(dirPath);
-  } catch (err) {
-    if (hasErrnoCode(err, "ENOENT")) {
-      return [];
-    }
-    throw err;
-  }
-  if (!st?.isDirectory()) {
-    return [];
-  }
-
-  const cached = DIR_ENTRY_CACHE.get(dirPath);
-  if (cached && cached.mtimeMs === st.mtimeMs) {
-    return cached.entries;
-  }
-
-  const dirents = await fs.readdir(dirPath, { withFileTypes: true });
-  const entries: CachedDirEntry[] = [];
-  for (const entry of dirents) {
-    if (entry.isDirectory()) {
-      entries.push({ name: entry.name, kind: "dir" });
-    } else if (entry.isFile()) {
-      entries.push({ name: entry.name, kind: "file" });
-    }
-  }
-  setCachedDirEntries(dirPath, {
-    mtimeMs: st.mtimeMs,
-    entries,
+      return false;
+    },
+    descend: (entry) => files.length < candidateLimit && include(entry),
   });
-  return entries;
+  for (const { error } of walked.failedDirs) {
+    if (!hasErrnoCode(error, "ENOENT")) {
+      throw error;
+    }
+  }
+  return { files, truncated: walked.truncated || files.length >= candidateLimit };
 }
 
 async function resolveForcedFiles(params: {
@@ -907,7 +847,6 @@ async function collectScannableFiles(
   }
 
   const walked = await walkDirWithLimit(
-    dirPath,
     dirPath,
     opts.maxFiles + 1,
     opts.excludeTestFiles,

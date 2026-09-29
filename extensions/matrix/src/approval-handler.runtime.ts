@@ -12,10 +12,7 @@ import {
   type ExecApprovalReplyDecision,
 } from "openclaw/plugin-sdk/approval-reply-runtime";
 import { buildPluginApprovalResolvedReplyPayload } from "openclaw/plugin-sdk/approval-runtime";
-import type {
-  ExecApprovalRequest,
-  PluginApprovalRequest,
-} from "openclaw/plugin-sdk/approval-runtime";
+import type { PluginApprovalRequest } from "openclaw/plugin-sdk/approval-runtime";
 import {
   listMessageReceiptPlatformIds,
   resolveMessageReceiptPrimaryId,
@@ -387,7 +384,7 @@ export const matrixApprovalNativeRuntime = createChannelApprovalNativeRuntimeAda
   ReactionTargetRef,
   string
 >({
-  eventKinds: ["exec", "plugin"],
+  eventKinds: ["exec", "plugin", "system-agent"],
   availability: {
     isConfigured: ({ cfg, accountId, context }) => {
       const resolved = resolveHandlerContext({ cfg, accountId, context });
@@ -408,7 +405,7 @@ export const matrixApprovalNativeRuntime = createChannelApprovalNativeRuntimeAda
         cfg,
         accountId: resolved.accountId,
         approvalKind,
-        request: request as ExecApprovalRequest | PluginApprovalRequest,
+        request,
       });
     },
   },

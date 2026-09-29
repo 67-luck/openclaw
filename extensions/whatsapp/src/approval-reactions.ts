@@ -119,7 +119,9 @@ function readPersistedTarget(target: unknown): WhatsAppApprovalReactionTarget | 
   if (
     !value ||
     typeof value.approvalId !== "string" ||
-    (value.approvalKind !== "exec" && value.approvalKind !== "plugin")
+    (value.approvalKind !== "exec" &&
+      value.approvalKind !== "plugin" &&
+      value.approvalKind !== "system-agent")
   ) {
     return null;
   }
@@ -237,7 +239,9 @@ export function registerWhatsAppApprovalReactionTarget(params: {
   if (
     !key ||
     !approvalId ||
-    (params.approvalKind !== "exec" && params.approvalKind !== "plugin") ||
+    (params.approvalKind !== "exec" &&
+      params.approvalKind !== "plugin" &&
+      params.approvalKind !== "system-agent") ||
     allowedDecisions.length === 0
   ) {
     return null;

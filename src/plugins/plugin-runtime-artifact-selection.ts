@@ -9,6 +9,24 @@ import { pluginCacheExistsSync, pluginCacheRealpathSync } from "./plugin-cache-f
 import { getPluginCacheRoot } from "./plugin-cache.js";
 import type { PluginOrigin } from "./plugin-origin.types.js";
 
+export type PluginRuntimeArtifactPreference = "all" | "bundled" | "source";
+
+export function resolvePluginRuntimeArtifactPreference(
+  preferBuiltPluginArtifacts?: boolean,
+): PluginRuntimeArtifactPreference {
+  if (preferBuiltPluginArtifacts !== undefined) {
+    return preferBuiltPluginArtifacts ? "all" : "source";
+  }
+  return /\.[cm]?js$/.test(new URL(import.meta.url).pathname) ? "bundled" : "source";
+}
+
+export function prefersBuiltPluginArtifacts(
+  preference: PluginRuntimeArtifactPreference,
+  origin: PluginOrigin,
+): boolean {
+  return preference === "all" || (preference === "bundled" && origin === "bundled");
+}
+
 function rewriteBundledRuntimeArtifactRelativePath(relativePath: string): string {
   return relativePath.replace(/\.[^.]+$/u, ".js");
 }

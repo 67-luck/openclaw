@@ -296,7 +296,6 @@ class RemoteShellSandboxFsBridge implements SandboxFsBridge {
       mountRootPath: target.mountRootPath,
       action: "remove files",
       requireWritable: true,
-      allowFinalSymlinkForUnlink: true,
       signal: params.signal,
     });
     await this.runMutation({
@@ -327,7 +326,6 @@ class RemoteShellSandboxFsBridge implements SandboxFsBridge {
       mountRootPath: from.mountRootPath,
       action: "rename files",
       requireWritable: true,
-      allowFinalSymlinkForUnlink: true,
       signal: params.signal,
     });
     const toPinned = await this.resolvePinnedParent({
@@ -595,7 +593,6 @@ class RemoteShellSandboxFsBridge implements SandboxFsBridge {
     containerPath: string;
     mountRootPath: string;
     action: string;
-    allowFinalSymlinkForUnlink?: boolean;
     signal?: AbortSignal;
   }): Promise<RemoteCanonicalPath> {
     return await resolveRemoteCanonicalPath({
@@ -638,7 +635,6 @@ class RemoteShellSandboxFsBridge implements SandboxFsBridge {
     mountRootPath: string;
     action: string;
     requireWritable?: boolean;
-    allowFinalSymlinkForUnlink?: boolean;
     signal?: AbortSignal;
   }): Promise<{ mountRootPath: string; relativeParentPath: string; basename: string }> {
     const basename = path.posix.basename(params.containerPath);
@@ -649,7 +645,6 @@ class RemoteShellSandboxFsBridge implements SandboxFsBridge {
       containerPath: normalizeContainerPath(path.posix.dirname(params.containerPath)),
       mountRootPath: params.mountRootPath,
       action: params.action,
-      allowFinalSymlinkForUnlink: params.allowFinalSymlinkForUnlink,
       signal: params.signal,
     });
     const mount = this.resolveMountByContainerPath(this.getMounts(), logicalPath);

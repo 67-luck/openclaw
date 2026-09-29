@@ -113,6 +113,24 @@ describe("context-window-guard", () => {
     });
   });
 
+  it("caps configured contextTokens at the physical contextWindow", () => {
+    const cfg = openRouterModelConfig({ contextWindow: 3_000, contextTokens: 16_000 });
+
+    const info = resolveContextWindowInfo({
+      cfg,
+      provider: "openrouter",
+      modelId: "tiny",
+      modelContextWindow: 64_000,
+      modelContextTokens: 48_000,
+      defaultTokens: 200_000,
+    });
+
+    expect(info).toEqual({
+      source: "modelsConfig",
+      tokens: 3_000,
+    });
+  });
+
   it("matches bare provider model config ids against provider-scoped runtime model ids", () => {
     const cfg = openRouterModelConfig({ contextWindow: 1_000_000, contextTokens: 936_000 });
 

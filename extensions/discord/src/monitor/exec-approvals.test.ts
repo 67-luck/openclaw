@@ -71,6 +71,7 @@ describe("discord exec approval monitor helpers", () => {
   it.each([
     ["exec", "plugin:looks-like-plugin", "allow-once"],
     ["plugin", "plain-plugin-id", "deny"],
+    ["system-agent", "system-agent:approval-1", "allow-once"],
   ] as const)("round-trips %s approval custom ids", (approvalKind, approvalId, action) => {
     const customId = buildExecApprovalCustomId(approvalId, approvalKind, action);
     const parsed = parseCustomId(customId);

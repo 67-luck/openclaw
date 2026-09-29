@@ -152,7 +152,11 @@ describe("slack native approval adapter", () => {
   });
 
   it("subscribes the native runtime to exec and plugin approval events", () => {
-    expect(slackApprovalCapability.nativeRuntime?.eventKinds).toEqual(["exec", "plugin"]);
+    expect(slackApprovalCapability.nativeRuntime?.eventKinds).toEqual([
+      "exec",
+      "plugin",
+      "system-agent",
+    ]);
   });
 
   it("keeps approval availability enabled when approvers exist but native delivery is off", () => {

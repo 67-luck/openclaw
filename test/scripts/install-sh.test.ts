@@ -2841,9 +2841,9 @@ EOF
     }
   });
 
-  it("loads nvm before checking Node.js so stale system Node does not win", () => {
+  it("selects a supported nvm Node before checking a stale system Node", () => {
     expect(script).toMatch(
-      /# Step 1: Node\.js[\s\S]*?load_nvm_for_node_detection\s+if ! check_node; then/,
+      /# Step 1: Node\.js[\s\S]*?load_nvm_for_node_detection[\s\S]*?if ! check_node; then/,
     );
 
     const tmp = mkdtempSync(join(tmpdir(), "openclaw-install-nvm-"));
@@ -2884,6 +2884,9 @@ EOF
           `source ${JSON.stringify(SCRIPT_PATH)}`,
           "set +e",
           "load_nvm_for_node_detection",
+          "if ! node_is_supported; then",
+          "  use_supported_nvm_node || activate_supported_node_on_path || true",
+          "fi",
           "check_node",
           "status=$?",
           'printf "status=%s\\npath=%s\\nversion=%s\\n" "$status" "$(command -v node)" "$(node -v)"',

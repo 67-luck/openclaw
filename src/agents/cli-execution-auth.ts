@@ -10,6 +10,7 @@ import { resolveBundledCliBackendAuthPolicy } from "./cli-runner/cli-backend-aut
 const GOOGLE_GEMINI_CLI_PROVIDER_ID = "google-gemini-cli";
 const GOOGLE_PROVIDER_ID = "google";
 const CLAUDE_CLI_PROVIDER_ID = "claude-cli";
+const ANTHROPIC_PROVIDER_ID = "anthropic";
 
 type CliExecutionAuthProfileSelection = {
   authProfileId?: string;
@@ -32,10 +33,8 @@ export function cliBackendAcceptsAuthProfileForwarding(params: {
 }
 
 /**
- * Resolve the profile a CLI backend may consume. Claude and Gemini use their
- * native profile identities; Gemini may additionally bridge a canonical
- * Google API key. A user-locked profile must fail closed here because falling
- * through would silently run the request as another user.
+ * Resolve native profiles and explicitly selected credentials the CLI can consume.
+ * A user-locked profile must fail closed rather than run as another user.
  */
 export function resolveCliExecutionAuthProfileId(params: {
   cliExecutionProvider: string;
@@ -63,11 +62,18 @@ export function resolveCliExecutionAuthProfileId(params: {
     if (credential?.provider === params.cliExecutionProvider) {
       return selectedAuthProfileId;
     }
+    // Canonical credentials require an explicit choice and the bundled backend's
+    // owner. Automatic selection must not replace the CLI's native identity.
     if (
-      params.cliExecutionProvider === GOOGLE_GEMINI_CLI_PROVIDER_ID &&
-      credential?.provider === GOOGLE_PROVIDER_ID &&
-      credential.type === "api_key" &&
-      params.selected?.authProfileIdSource !== "auto"
+      credential &&
+      params.selected?.authProfileIdSource !== "auto" &&
+      (params.cliExecutionProvider === CLAUDE_CLI_PROVIDER_ID ||
+        (params.cliExecutionProvider === GOOGLE_GEMINI_CLI_PROVIDER_ID &&
+          credential.type === "api_key")) &&
+      credential.provider ===
+        (params.cliExecutionProvider === CLAUDE_CLI_PROVIDER_ID
+          ? ANTHROPIC_PROVIDER_ID
+          : GOOGLE_PROVIDER_ID)
     ) {
       return selectedAuthProfileId;
     }

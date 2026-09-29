@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 // OpenClaw gateway methods host the setup/repair conversation for clients.
 import {
   buildSystemAgentInferenceUnavailableErrorDetails,
@@ -14,13 +13,7 @@ import {
   validateSystemAgentSetupVerifyParams,
   type SystemAgentChatQuestion,
 } from "../../../packages/gateway-protocol/src/index.js";
-import {
-  SYSTEM_AGENT_APPROVAL_DECISIONS,
-  SYSTEM_AGENT_APPROVAL_TIMEOUT_MS,
-  type SystemAgentApprovalRequestPayload,
-} from "../../infra/system-agent-approvals.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
-import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
 import { defaultRuntime } from "../../runtime.js";
 import {
   SystemAgentChatEngine,
@@ -35,7 +28,6 @@ import {
 import { isSystemAgentInferenceUnavailableError } from "../../system-agent/inference-error.js";
 import { buildNewAgentWelcome } from "../../system-agent/new-agent-welcome.js";
 import { buildOnboardingWelcome } from "../../system-agent/onboarding-welcome.js";
-import { describeSystemAgentPersistentOperation } from "../../system-agent/operations.js";
 import {
   appendTranscriptReset,
   appendTranscriptTurn,
@@ -43,11 +35,7 @@ import {
 } from "../../system-agent/transcript-store.js";
 import { resolveUserPath } from "../../utils.js";
 import { WizardSession } from "../../wizard/session.js";
-import {
-  buildRequestedApprovalEvent,
-  handlePendingApprovalRequest,
-  listVisiblePendingApprovalRequests,
-} from "./approval-shared.js";
+import { listVisiblePendingApprovalRequests } from "./approval-shared.js";
 import {
   authenticatedProfileUnavailableError,
   isGatewayClientProfilePending,
@@ -58,6 +46,7 @@ import {
   respondSetupAdmissionBusy,
   SetupAdmissionBusyError,
 } from "./setup-admission.js";
+import { queueDelegatedApproval } from "./system-agent-approval.js";
 import { sanitizeSystemAgentChatParams } from "./system-agent-chat-params.js";
 import {
   buildSystemAgentChatResult,
@@ -154,77 +143,6 @@ function persistEngineHistory(engine: SystemAgentChatSession["engine"], startInd
     // been replaced by the mask marker before it crosses this boundary.
     appendTranscriptTurn({ ...turn, at });
   }
-}
-
-function queueDelegatedApproval(params: {
-  context: GatewayRequestContext;
-  sessions: Map<string, SystemAgentChatSession>;
-  session: SystemAgentChatSession;
-  sessionId: string;
-  delegation: {
-    agentId?: string;
-    sessionKey?: string;
-  };
-  proposal: NonNullable<ReturnType<SystemAgentChatSession["engine"]["getPendingOperatorProposal"]>>;
-}): string {
-  if (params.session.pendingApproval?.proposalHash === params.proposal.hash) {
-    return params.session.pendingApproval.id;
-  }
-  const manager = params.context.systemAgentApprovalManager;
-  if (!manager) {
-    throw new Error("OpenClaw approval registry unavailable");
-  }
-  const description = describeSystemAgentPersistentOperation(params.proposal.operation);
-  const request: SystemAgentApprovalRequestPayload = {
-    title: "OpenClaw change",
-    description,
-    command: description,
-    proposalHash: params.proposal.hash,
-    allowedDecisions: SYSTEM_AGENT_APPROVAL_DECISIONS,
-    agentId: params.delegation?.agentId ?? null,
-    sessionKey: params.delegation?.sessionKey ?? null,
-    sessionId: params.sessionId,
-    turnSourceChannel: null,
-    turnSourceAccountId: null,
-  };
-  const record = manager.create(
-    request,
-    SYSTEM_AGENT_APPROVAL_TIMEOUT_MS,
-    `system-agent:${randomUUID()}`,
-  );
-  const decisionPromise = manager.register(record, SYSTEM_AGENT_APPROVAL_TIMEOUT_MS);
-  params.session.pendingApproval = { id: record.id, proposalHash: params.proposal.hash };
-  const requestEvent = buildRequestedApprovalEvent(record);
-  void handlePendingApprovalRequest({
-    manager,
-    record,
-    decisionPromise,
-    respond: () => undefined,
-    context: params.context,
-    requestEventName: "openclaw.approval.requested",
-    requestEvent,
-    twoPhase: true,
-    deliverRequest: () => false,
-    keepPendingWithoutRoute: true,
-    requireDeliveryRoute: false,
-    afterDecision: async (decision) =>
-      await runWithGatewayIndependentRootWorkContinuation(
-        () =>
-          runSystemAgentGatewayTask(async () => {
-            // The original request has returned; keep approval, audit, and restart drain-visible.
-            if (params.sessions.get(params.sessionId) !== params.session) {
-              return;
-            }
-            if (params.session.pendingApproval?.id === record.id) {
-              params.session.pendingApproval = undefined;
-            }
-            await params.session.engine.resolveOperatorApproval(decision, params.proposal.hash);
-          }),
-        "system-agent:task",
-      ),
-    afterDecisionErrorLabel: "OpenClaw approval apply failed",
-  });
-  return record.id;
 }
 
 export const systemAgentHandlers: GatewayRequestHandlers = {

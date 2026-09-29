@@ -4,7 +4,7 @@ import {
   resolveApprovalOverGateway,
   type ApprovalResolveResult,
 } from "openclaw/plugin-sdk/approval-gateway-runtime";
-import type { PendingApprovalView } from "openclaw/plugin-sdk/approval-handler-runtime";
+import type { ChannelApprovalKind } from "openclaw/plugin-sdk/approval-handler-runtime";
 import type { ExecApprovalDecision } from "openclaw/plugin-sdk/approval-runtime";
 import type {
   DiscordExecApprovalConfig,
@@ -30,7 +30,7 @@ type ExecApprovalButtonContext = {
   getApprovers: () => string[];
   resolveApproval: (
     approvalId: string,
-    approvalKind: PendingApprovalView["approvalKind"],
+    approvalKind: ChannelApprovalKind,
     decision: ExecApprovalDecision,
     senderId: string,
   ) => Promise<ExecApprovalResolveResult>;

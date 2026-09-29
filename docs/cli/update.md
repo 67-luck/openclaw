@@ -16,6 +16,27 @@ If you installed via **npm/pnpm/bun** (global install, no git metadata),
 updates go through the package-manager flow described in
 [Updating](/install/updating).
 
+Custom npm prefixes such as `~/.npm-global` are recognized from npm's configured
+prefix and the installed OpenClaw launcher. A prefix configured in `~/.npmrc`
+does not need a matching `NPM_CONFIG_PREFIX` environment variable. If no owner
+can be identified, the CLI includes the inspected package, prefix, and launcher
+paths and the package-manager probe results in its guidance.
+
+An older updater that stops before staging cannot use this repair. For a known
+npm installation, supply its configured prefix explicitly for that update:
+`NPM_CONFIG_PREFIX="$(npm prefix -g)" openclaw update`.
+
+An installation without a detected package-manager owner records a **skipped**
+update, exits successfully, and leaves the Gateway running. For Docker/container
+images, pull or build the new image and recreate the container with the same
+state/config mounts. For a standalone or extracted tarball installation, reinstall
+using the original method; Yarn global installations must be updated with Yarn.
+The CLI displays this next action. Existing profiles also record it in update
+history and include it in JSON as `run.origin.nextAction`. With `--json`, a fresh
+profile emits the guidance to stderr and does not create a state database for a
+skipped update. These non-outcomes do not run rollback verification or offer an
+update failure report.
+
 ## Usage
 
 ```bash

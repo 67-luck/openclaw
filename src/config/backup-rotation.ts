@@ -19,20 +19,27 @@ interface BackupMaintenanceFs extends BackupRotationFs {
  * Missing slots are ignored so interrupted writes or first-run configs do not
  * block the next config write.
  */
-async function rotateConfigBackups(configPath: string, ioFs: BackupRotationFs): Promise<void> {
+async function rotateConfigBackups(
+  configPath: string,
+  ioFs: BackupRotationFs,
+  assertMutation?: () => void,
+): Promise<void> {
   if (CONFIG_BACKUP_COUNT <= 1) {
     return;
   }
   const backupBase = `${configPath}.bak`;
   const maxIndex = CONFIG_BACKUP_COUNT - 1;
+  assertMutation?.();
   await ioFs.unlink(`${backupBase}.${maxIndex}`).catch(() => {
     // best-effort
   });
   for (let index = maxIndex - 1; index >= 1; index -= 1) {
+    assertMutation?.();
     await ioFs.rename(`${backupBase}.${index}`, `${backupBase}.${index + 1}`).catch(() => {
       // best-effort
     });
   }
+  assertMutation?.();
   await ioFs.rename(backupBase, `${backupBase}.1`).catch(() => {
     // best-effort
   });
@@ -44,15 +51,21 @@ async function rotateConfigBackups(configPath: string, ioFs: BackupRotationFs): 
  * Backups are copied on mixed filesystems, so copy mode preservation is not a
  * portable security guarantee.
  */
-async function hardenBackupPermissions(configPath: string, ioFs: BackupRotationFs): Promise<void> {
+async function hardenBackupPermissions(
+  configPath: string,
+  ioFs: BackupRotationFs,
+  assertMutation?: () => void,
+): Promise<void> {
   if (!ioFs.chmod) {
     return;
   }
   const backupBase = `${configPath}.bak`;
+  assertMutation?.();
   await ioFs.chmod(backupBase, 0o600).catch(() => {
     // best-effort
   });
   for (let i = 1; i < CONFIG_BACKUP_COUNT; i++) {
+    assertMutation?.();
     await ioFs.chmod(`${backupBase}.${i}`, 0o600).catch(() => {
       // best-effort
     });
@@ -108,10 +121,12 @@ export async function createPreUpdateConfigSnapshot(params: {
 export async function maintainConfigBackups(
   configPath: string,
   ioFs: BackupMaintenanceFs,
+  options: { assertMutation?: () => void } = {},
 ): Promise<void> {
-  await rotateConfigBackups(configPath, ioFs);
+  await rotateConfigBackups(configPath, ioFs, options.assertMutation);
+  options.assertMutation?.();
   await ioFs.copyFile(configPath, `${configPath}.bak`).catch(() => {
     // best-effort
   });
-  await hardenBackupPermissions(configPath, ioFs);
+  await hardenBackupPermissions(configPath, ioFs, options.assertMutation);
 }

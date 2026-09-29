@@ -52,6 +52,7 @@ export type SystemAgentCommandDeps = {
     path?: string;
     value?: string;
     cliOptions: ConfigSetOptions;
+    beforePersistentApply?: () => void;
   }) => Promise<void>;
   runDoctor?: (runtime: RuntimeEnv, options: DoctorOptions) => Promise<void>;
   runGatewayRestart?: () => Promise<void | boolean>;

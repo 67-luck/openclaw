@@ -12,7 +12,7 @@ import { diffConfigPaths } from "../gateway/config-diff.js";
 import { buildGatewayReloadPlan } from "../gateway/config-reload-plan.js";
 import { resolveGatewayReloadSettings } from "../gateway/config-reload-settings.js";
 import { danger, info } from "../globals.js";
-import { formatErrorMessage } from "../infra/errors.js";
+import { extractErrorCode, formatErrorMessage } from "../infra/errors.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { ExitError, writeRuntimeJson } from "../runtime.js";
 import { toDotPath } from "../shared/dot-path.js";
@@ -250,6 +250,7 @@ export async function runConfigOperations(params: {
   operations: ConfigSetOperation[];
   options: ConfigMutationOptions;
   successMode: "set" | "patch";
+  beforePersistentApply?: () => void;
 }) {
   const { runtime, operations, options } = params;
   if (
@@ -392,6 +393,11 @@ export async function runConfigOperations(params: {
     writeOptions: {
       ...mutationStart.writeOptions,
       auditOrigin: "cli",
+      ...(params.beforePersistentApply
+        ? {
+            assertConfigMutationAuthority: params.beforePersistentApply,
+          }
+        : {}),
       ...(unsetPaths.length > 0 ? { unsetPaths } : {}),
       ...(normalizedExplicitSetPaths.length > 0
         ? { explicitSetPaths: normalizedExplicitSetPaths }
@@ -426,15 +432,21 @@ export function handleConfigMutationError(params: {
   err: unknown;
   runtime: RuntimeEnv;
   options: ConfigMutationOptions;
+  delegatedAuthorityGuarded?: boolean;
 }) {
   if (params.err instanceof ExitError) {
     throw params.err;
   }
   const isConflict = params.err instanceof ConfigMutationConflictError;
   const detail = formatErrorMessage(params.err);
+  const errorCode = extractErrorCode(params.err);
+  const isGuardedPermissionFailure =
+    params.delegatedAuthorityGuarded && (errorCode === "EPERM" || errorCode === "EEXIST");
   const message = isConflict
     ? `The config file changed while this command was writing (${detail}), so nothing was changed. Re-run the same command to pick up the new file and try again.`
-    : detail;
+    : isGuardedPermissionFailure
+      ? `The approved config change stopped safely because the guarded rename failed with ${errorCode}. Repair the config file and parent directory ownership or permissions for the user running OpenClaw, then retry the change.`
+      : detail;
   if (params.options.dryRun && params.options.json) {
     if (params.err instanceof ConfigSetDryRunValidationError) {
       writeRuntimeJson(params.runtime, params.err.result);

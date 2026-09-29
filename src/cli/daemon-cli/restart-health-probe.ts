@@ -8,7 +8,9 @@ import { classifyGatewayConnectFailure } from "../../../packages/gateway-protoco
 import { sanitizeTerminalText } from "../../../packages/terminal-core/src/safe-text.js";
 import { createConfigIO } from "../../config/io.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { callGateway } from "../../gateway/call.js";
 import type { PluginHealthErrorSummary } from "../../gateway/health/types.js";
+import { READ_SCOPE } from "../../gateway/method-scopes.js";
 import { resolveGatewayProbeAuthSafeWithSecretInputs } from "../../gateway/probe-auth.js";
 import { probeGateway } from "../../gateway/probe.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -164,6 +166,38 @@ export async function confirmGatewayReachable(params: {
   const password = normalizeOptionalString(
     params.auth?.password ?? process.env.OPENCLAW_GATEWAY_PASSWORD,
   );
+  if (!token && !password) {
+    try {
+      const mergedEnv = { ...process.env, ...params.env };
+      const config = await createConfigIO({ env: mergedEnv, observe: false })
+        .readBestEffortConfig()
+        .catch((): OpenClawConfig => ({}));
+      let gatewayVersion: string | null = null;
+      let gatewayBuildId: string | null | undefined;
+      const health = await callGateway({
+        config,
+        localPortOverride: params.port,
+        method: "health",
+        scopes: [READ_SCOPE],
+        useStoredDeviceAuth: true,
+        sharedStateMode: "read-only",
+        timeoutMs: 3_000,
+        onHelloOk: (hello) => {
+          gatewayVersion = hello.server.version;
+          gatewayBuildId = hello.server.buildId ?? null;
+        },
+      });
+      return {
+        reachable: true,
+        gatewayVersion,
+        gatewayBuildId,
+        activatedPluginErrors: readActivatedPluginErrors(health),
+        channelProbeErrors: readChannelProbeErrors(health),
+      };
+    } catch {
+      // Fall through to the protocol probe so ordinary auth failures retain their diagnostics.
+    }
+  }
   try {
     const probe = await probeGateway({
       url: `ws://127.0.0.1:${params.port}`,

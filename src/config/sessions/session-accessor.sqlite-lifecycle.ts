@@ -58,13 +58,13 @@ import { deleteSessionDeliveryArtifacts } from "./session-accessor.sqlite-node-a
 import { loadTranscriptEventsFromDatabase } from "./session-accessor.sqlite-read.js";
 import {
   cloneSessionEntry,
-  getSessionKysely,
   resolveSqliteReadScope,
   resolveSqliteStoreScope,
   resolveSqliteTranscriptArchiveDirectory,
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
+import { readSessionTranscriptDigest } from "./session-accessor.sqlite-transcript-digest.js";
 import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import {
   collectAdmissionProtectedSessionIds,
@@ -627,18 +627,11 @@ function shouldDeleteSqliteSessionEntryLifecycle(
   }
   if (params.expectedTranscript) {
     const expectedTranscript = params.expectedTranscript;
-    const rows = executeSqliteQuerySync(
-      database.db,
-      getSessionKysely(database.db)
-        .selectFrom("transcript_events")
-        .select("event_json")
-        .where("session_id", "=", expectedTranscript.sessionId)
-        .orderBy("seq", "asc"),
-    ).rows;
+    const digest = readSessionTranscriptDigest(database, expectedTranscript.sessionId);
     if (
       entry.sessionId !== expectedTranscript.sessionId ||
-      rows.length !== expectedTranscript.eventJson.length ||
-      rows.some((row, index) => row.event_json !== expectedTranscript.eventJson[index])
+      digest.eventCount !== expectedTranscript.digest.eventCount ||
+      digest.rollingHash !== expectedTranscript.digest.rollingHash
     ) {
       return false;
     }

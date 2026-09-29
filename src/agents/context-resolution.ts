@@ -81,12 +81,15 @@ function resolveConfiguredProviderModel(
   const bareModel = stripSelfProviderModelPrefix(normalizedProvider, model);
   const spellings = bareModel === model ? [model] : [model, bareModel];
   for (const spelling of spellings) {
+    const exactMatch = providerConfig?.models?.find((entry) => entry.id?.trim() === spelling);
+    if (exactMatch) {
+      return exactMatch;
+    }
     const match = providerConfig?.models?.find((entry) => {
       const entryId = entry.id?.trim();
       return (
-        entryId === spelling ||
-        (entryId !== undefined &&
-          stripSelfProviderModelPrefix(normalizedProvider, entryId) === spelling)
+        entryId !== undefined &&
+        stripSelfProviderModelPrefix(normalizedProvider, entryId) === spelling
       );
     });
     if (match) {

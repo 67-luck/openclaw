@@ -361,6 +361,7 @@ export function shouldCompareProviderRuntimeResolvedModel(params: {
 export function normalizeProviderModelRef(params: {
   provider: string;
   modelId: string;
+  modelIdSource?: "input" | "selected";
   cfg?: OpenClawConfig;
   workspaceDir?: string;
 }): {
@@ -376,10 +377,13 @@ export function normalizeProviderModelRef(params: {
   });
   return {
     provider: manifestAlias.provider,
-    model: normalizeStaticProviderModelId(
-      normalizeProviderId(manifestAlias.provider),
-      params.modelId,
-    ),
+    model:
+      params.modelIdSource === "selected"
+        ? params.modelId
+        : normalizeStaticProviderModelId(
+            normalizeProviderId(manifestAlias.provider),
+            params.modelId,
+          ),
     manifestAlias,
   };
 }

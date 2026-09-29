@@ -364,6 +364,7 @@ function readSessionNodeArtifactTables(database: OpenClawAgentDatabase): Set<str
           "board_tabs",
           "board_widgets",
           "heartbeat_outcomes",
+          "session_input_completions",
           "session_members",
           "session_participants",
           "session_progress_cards",

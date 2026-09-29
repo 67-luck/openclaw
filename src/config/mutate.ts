@@ -643,9 +643,8 @@ async function writeRootBoundJsonFile(params: {
     throw new ConfigMutationConflictError("included config changed while preparing write");
   }
   const content = formatJsonFileValue(params.value);
-  // The include fast path bypasses writeConfigFile(); keep its authority guard
-  // and comment warning on the final conflict-checked target. No later await may
-  // run before the write.
+  // The include fast path bypasses writeConfigFile(); delegated calls are rejected
+  // above. Keep the config path guard on the final conflict-checked target.
   await params.preCommitRuntimePreflight?.();
   params.assertConfigPathForWrite();
   warnIfJSON5CommentsWillBeStripped({
@@ -716,6 +715,15 @@ async function tryWriteSingleTopLevelIncludeMutation(params: {
     allowedRoots,
     expectedAbsolutePath: expectedIncludeTarget,
   });
+  params.writeOptions?.assertConfigMutationAuthority?.();
+  if (params.writeOptions?.assertConfigMutationAuthority) {
+    // oxlint-disable-next-line no-warning-comments -- required deferred-capability marker
+    // TODO(approval authority): Allow delegated included-file writes when FsSafeRoot
+    // can enforce live approval authority at its final publication boundary.
+    throw new Error(
+      "OpenClaw change cancelled: delegated writes to included config files are unavailable until rooted publication can enforce live approval authority.",
+    );
+  }
   const previousIncludeRaw = await readRootBoundFileRawIfExists(includeTarget);
   const previousIncludeHash = hashConfigIncludeRaw(previousIncludeRaw);
   const expectedIncludeHash = params.writeOptions?.includeFileHashesForWrite?.[includePath];

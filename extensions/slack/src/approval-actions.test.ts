@@ -5,6 +5,17 @@ import { decodeSlackApprovalAction, encodeSlackApprovalAction } from "./approval
 import { SLACK_BUTTON_VALUE_MAX } from "./presentation.js";
 
 describe("Slack approval actions", () => {
+  it("round-trips system-agent actions", () => {
+    const action = {
+      type: "approval" as const,
+      approvalId: "system-agent:approval-1",
+      approvalKind: "system-agent" as const,
+      decision: "allow-once" as const,
+    };
+
+    expect(decodeSlackApprovalAction(encodeSlackApprovalAction(action))).toEqual(action);
+  });
+
   it("round-trips explicit approval facts without slash-command inference", () => {
     const action = {
       type: "approval" as const,

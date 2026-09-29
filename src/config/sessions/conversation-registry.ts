@@ -12,6 +12,7 @@ import { upsertConversationIdentity } from "./session-accessor.sqlite-conversati
 import {
   getSessionKysely,
   resolveSqliteReadScope,
+  runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import { parseSessionEntryJson } from "./session-accessor.sqlite-status.js";
@@ -60,6 +61,23 @@ export function resolveConversationRegistryScope(params: {
       ? { storePath: resolveSessionStorePathCore(configuredStore, { agentId: params.agentId }) }
       : {}),
   };
+}
+
+/** Keep the resolved physical conversation store fixed while its write waits. */
+export function runConversationDatabaseWrite<T>(
+  input: ConversationRegistryScope,
+  operation: (scope: ConversationRegistryScope) => T,
+): Promise<T> {
+  const resolved = resolveSqliteReadScope({
+    agentId: input.agentId,
+    ...(input.env ? { env: input.env } : {}),
+    ...(input.storePath ? { storePath: input.storePath } : {}),
+  });
+  const scope = {
+    ...input,
+    ...(resolved.path ? { storePath: resolved.path } : {}),
+  };
+  return runExclusiveSqliteSessionWrite(resolved, async () => operation(scope));
 }
 
 function normalizeConversationRef(value: string): string {

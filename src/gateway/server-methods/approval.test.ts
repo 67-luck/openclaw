@@ -3,13 +3,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type ApprovalHistoryResult,
   validateApprovalGetResult,
   validateApprovalHistoryResult,
   validateApprovalResolveResult,
 } from "../../../packages/gateway-protocol/src/index.js";
+import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ExecApprovalForwarder } from "../../infra/exec-approval-forwarder.js";
@@ -31,6 +32,7 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
 import { ensureProfileForEmail, setUserProfileRole } from "../../state/user-profiles.js";
+import { createChannelTestPluginBase } from "../../test-utils/channel-plugins.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { ExecApprovalManager } from "../exec-approval-manager.js";
 import { getOperatorApprovalDetailed, insertOperatorApproval } from "../operator-approval-store.js";
@@ -47,11 +49,17 @@ import {
 import { createApprovalHandlers } from "./approval.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
-const prepareApprovalChannelCustodyMock = vi.hoisted(() => vi.fn());
-
-vi.mock("../approval-channel-custody.js", () => ({
-  prepareApprovalChannelCustody: prepareApprovalChannelCustodyMock,
+const channelCustodyMocks = vi.hoisted(() => ({
+  getLoadedChannelPlugin: vi.fn(),
 }));
+
+vi.mock("../../channels/plugins/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../channels/plugins/index.js")>();
+  return {
+    ...actual,
+    getLoadedChannelPlugin: channelCustodyMocks.getLoadedChannelPlugin,
+  };
+});
 
 const tempDirs: string[] = [];
 type OperatorApprovalDatabase = Pick<OpenClawStateKyselyDatabase, "operator_approvals">;
@@ -248,6 +256,36 @@ function createContext(
   } as unknown as GatewayRequestHandlerOptions["context"];
 }
 
+function configureTelegramApprovalCustody(params: {
+  accountIds: string[];
+  defaultAccountId: string;
+  authorize: (input: {
+    accountId?: string | null;
+    senderId?: string | null;
+    approvalKind: string;
+  }) => boolean;
+}): void {
+  channelCustodyMocks.getLoadedChannelPlugin.mockImplementation((channel: string) =>
+    channel === "telegram"
+      ? ({
+          ...createChannelTestPluginBase({ id: "telegram" }),
+          config: {
+            listAccountIds: () => params.accountIds,
+            resolveAccount: () => ({}),
+            defaultAccountId: () => params.defaultAccountId,
+          },
+          approvalCapability: {
+            authorizeActorAction: (input: {
+              accountId?: string | null;
+              senderId?: string | null;
+              approvalKind: string;
+            }) => ({ authorized: params.authorize(input) }),
+          },
+        } as ChannelPlugin)
+      : undefined,
+  );
+}
+
 async function invoke(params: {
   handlers: ReturnType<typeof createApprovalHandlers>;
   method: "approval.get" | "approval.history" | "approval.resolve";
@@ -283,6 +321,10 @@ function approvalFromResult(result: unknown) {
 }
 
 describe("unified approval handlers", () => {
+  beforeEach(() => {
+    channelCustodyMocks.getLoadedChannelPlugin.mockReset();
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     for (const manager of managersForCleanup.splice(0)) {
@@ -335,6 +377,90 @@ describe("unified approval handlers", () => {
     );
   });
 
+  it("resolves a system-agent proposal through its live channel custody", async () => {
+    const databaseOptions = createDatabaseOptions();
+    const managers = createManagers(databaseOptions);
+    const pending = registerSystemAgent(managers.systemAgent, "system-agent:channel-reviewer");
+    let authorityIsCurrent = true;
+    configureTelegramApprovalCustody({
+      accountIds: ["ops", "other"],
+      defaultAccountId: "ops",
+      authorize: ({ accountId, senderId, approvalKind }) =>
+        authorityIsCurrent &&
+        accountId === "ops" &&
+        senderId === "owner" &&
+        approvalKind === "system-agent",
+    });
+    const handlers = createApprovalHandlers({
+      execApprovalManager: managers.exec,
+      pluginApprovalManager: managers.plugin,
+      systemAgentApprovalManager: managers.systemAgent,
+      databaseOptions,
+    });
+
+    const response = await invoke({
+      handlers,
+      method: "approval.resolve",
+      body: {
+        id: pending.record.id,
+        kind: "system-agent",
+        decision: "allow-once",
+        reviewer: { channel: "telegram", accountId: "ops", senderId: "owner" },
+      },
+      client: createClient({ internal: true }),
+    });
+
+    expect(response.result).toMatchObject({
+      applied: true,
+      approval: { status: "allowed", decision: "allow-once" },
+    });
+    await expect(pending.decision).resolves.toBe("allow-once");
+
+    const unauthorized = registerSystemAgent(
+      managers.systemAgent,
+      "system-agent:unauthorized-reviewer",
+    );
+    const deniedResponse = await invoke({
+      handlers,
+      method: "approval.resolve",
+      body: {
+        id: unauthorized.record.id,
+        kind: "system-agent",
+        decision: "allow-once",
+        reviewer: { channel: "telegram", accountId: "other", senderId: "stranger" },
+      },
+      client: createClient({ internal: true }),
+    });
+
+    expect(deniedResponse).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_REQUEST", details: { reason: "APPROVAL_NOT_FOUND" } },
+    });
+    expect(getOperatorApproval({ id: unauthorized.record.id, databaseOptions })?.status).toBe(
+      "pending",
+    );
+
+    const stale = registerSystemAgent(managers.systemAgent, "system-agent:stale-reviewer");
+    authorityIsCurrent = false;
+    const staleResponse = await invoke({
+      handlers,
+      method: "approval.resolve",
+      body: {
+        id: stale.record.id,
+        kind: "system-agent",
+        decision: "allow-once",
+        reviewer: { channel: "telegram", accountId: "ops", senderId: "owner" },
+      },
+      client: createClient({ internal: true }),
+    });
+
+    expect(staleResponse).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_REQUEST", details: { reason: "APPROVAL_NOT_FOUND" } },
+    });
+    expect(getOperatorApproval({ id: stale.record.id, databaseOptions })?.status).toBe("pending");
+  });
+
   it("checks live channel custody before the canonical resolution CAS", async () => {
     const databaseOptions = createDatabaseOptions();
     const managers = createManagers(databaseOptions);
@@ -343,10 +469,11 @@ describe("unified approval handlers", () => {
       request: { turnSourceChannel: "telegram", turnSourceAccountId: "ops" },
       reviewerDeviceIds: [],
     });
-    prepareApprovalChannelCustodyMock.mockReturnValue({
-      resolverId: "telegram:ops",
-      authorizes: (request: { request: ExecApprovalRequestPayload }) =>
-        request.request.turnSourceAccountId === "ops",
+    configureTelegramApprovalCustody({
+      accountIds: ["ops"],
+      defaultAccountId: "ops",
+      authorize: ({ accountId, senderId, approvalKind }) =>
+        accountId === "ops" && senderId === "owner" && approvalKind === "exec",
     });
     const handlers = createApprovalHandlers({
       execApprovalManager: managers.exec,

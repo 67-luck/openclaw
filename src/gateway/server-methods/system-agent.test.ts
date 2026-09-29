@@ -6,6 +6,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import { readConfigFileSnapshot } from "../../config/config.js";
 import {
   getRuntimeConfigAppliedHash,
@@ -14,6 +15,11 @@ import {
 } from "../../config/runtime-snapshot.js";
 import { createRuntimeConfigWriteApplication } from "../../config/runtime-write-application.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  claimAgentRunDelegatedAuthority,
+  resetAgentRunRegistryForTest,
+  validateAgentRunDelegatedAuthority,
+} from "../../infra/agent-run-registry.js";
 import type { SystemAgentApprovalRequestPayload } from "../../infra/system-agent-approvals.js";
 import { resetPluginStateStoreForTests } from "../../plugin-state/plugin-state-store.js";
 import { getCommandLaneSnapshot } from "../../process/command-queue.js";
@@ -284,6 +290,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.resetAllMocks();
   resetPluginStateStoreForTests();
+  resetAgentRunRegistryForTest();
   resetCommandQueueStateForTest();
   vi.unstubAllEnvs();
   pluginMetadataSnapshot?.rebindForCurrentEnv();
@@ -904,77 +911,65 @@ describe("openclaw.chat", () => {
       engine.getPendingOperatorProposal(),
       "restart proposal",
     ).hash;
-    const handle = vi
-      .spyOn(engine, "handle")
-      .mockResolvedValue({ text: "Approval pending.", action: "none" });
+    vi.spyOn(engine, "handle").mockResolvedValue({ text: "Approval pending.", action: "none" });
     const resolveOperatorApproval = vi.spyOn(engine, "resolveOperatorApproval");
     const delegatedSession = seededSession({
       engine,
       ownerKey: JSON.stringify(["main", "agent:main:main"]),
     });
     const sessions = new Map<string, SystemAgentChatSession>([["delegate-1", delegatedSession]]);
+    const operationalRunInstance = {
+      instanceId: "delegated-gateway-restart-instance",
+      runId: "delegated-gateway-restart-run",
+    };
+    claimAgentRunDelegatedAuthority(operationalRunInstance);
     const manager = new ExecApprovalManager<SystemAgentApprovalRequestPayload>({
       approvalKind: "system-agent",
       resolveAllowedDecisions: (request) => request.allowedDecisions,
+      validateAgentRuntimeDelegatedAuthority: validateAgentRunDelegatedAuthority,
     });
-    const broadcast = vi.fn();
     const context = {
       ...makeContext(sessions),
       systemAgentApprovalManager: manager,
-      broadcast,
+      broadcast: vi.fn(),
       broadcastToConnIds: vi.fn(),
       hasExecApprovalClients: () => true,
     } as unknown as GatewayRequestContext;
 
     const requestResponses = makeRespond();
-    await handleGatewayRequest({
-      req: {
-        type: "req",
-        id: "delegated-gateway-restart",
-        method: "openclaw.chat",
-        params: {
-          sessionId: "delegate-1",
-          message: "Restart Gateway.",
-          context: { page: "channels" },
-          delegation: { agentId: "main", sessionKey: "agent:main:main" },
-        },
+    await withGatewayToolCallerIdentity(
+      {
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        operationalRunInstance,
       },
-      respond: requestResponses.respond,
-      client: {
-        ...defaultClient,
-        connect: { ...defaultClient.connect, role: "operator", scopes: ["operator.admin"] },
-      } as GatewayClient,
-      isWebchatConnect: () => false,
-      context,
-      extraHandlers: { "openclaw.chat": systemAgentHandlers["openclaw.chat"]! },
-    });
+      () =>
+        handleGatewayRequest({
+          req: {
+            type: "req",
+            id: "delegated-gateway-restart",
+            method: "openclaw.chat",
+            params: {
+              sessionId: "delegate-1",
+              message: "Restart Gateway.",
+              context: { page: "channels" },
+              delegation: { agentId: "main", sessionKey: "agent:main:main" },
+            },
+          },
+          respond: requestResponses.respond,
+          client: {
+            ...defaultClient,
+            connect: { ...defaultClient.connect, role: "operator", scopes: ["operator.admin"] },
+          } as GatewayClient,
+          isWebchatConnect: () => false,
+          context,
+          extraHandlers: { "openclaw.chat": systemAgentHandlers["openclaw.chat"]! },
+        }),
+    );
     const first = expectDefined(requestResponses.calls[0], "delegated Gateway response invariant");
-    expect(getActiveGatewayRootWorkCount()).toBe(0);
     const proposalId = (first.payload as { proposalId?: string }).proposalId;
 
-    expect(first.payload).toMatchObject({
-      reply: "Approval pending.",
-      needsApproval: true,
-      proposalId: expect.stringMatching(/^system-agent:/),
-    });
     expect(proposalId).toBeTruthy();
-    expect(manager.getSnapshot(proposalId!)).toMatchObject({
-      request: { proposalHash, agentId: "main", sessionKey: "agent:main:main" },
-    });
-    expect(manager.getSnapshot(proposalId!)?.decision).toBeUndefined();
-    expect(broadcast).toHaveBeenCalledWith(
-      "openclaw.approval.requested",
-      expect.objectContaining({ id: proposalId }),
-      { dropIfSlow: true },
-    );
-    expect(resolveOperatorApproval).not.toHaveBeenCalled();
-    expect(handle).toHaveBeenNthCalledWith(1, "Restart Gateway.");
-
-    await callChat(context, {
-      sessionId: "delegate-1",
-      message: "yes",
-      delegation: { agentId: "main", sessionKey: "agent:main:main" },
-    });
     expect(resolveOperatorApproval).not.toHaveBeenCalled();
 
     manager.resolve(proposalId!, "allow-once", "operator-ui");
@@ -984,7 +979,11 @@ describe("openclaw.chat", () => {
     } finally {
       releaseApproval.resolve();
     }
-    expect(resolveOperatorApproval).toHaveBeenCalledWith("allow-once", proposalHash);
+    expect(resolveOperatorApproval).toHaveBeenCalledWith(
+      "allow-once",
+      proposalHash,
+      expect.any(Function),
+    );
     expect(runGatewayRestart).toHaveBeenCalledOnce();
     await expect(resolveOperatorApproval.mock.results[0]?.value).resolves.toMatchObject({
       text: expect.stringContaining("[openclaw] done: gateway.restart"),

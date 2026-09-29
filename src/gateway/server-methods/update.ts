@@ -74,6 +74,17 @@ import { assertValidParams } from "./validation.js";
 const MANAGED_HANDOFF_RESTART_DELAY_MS = 2000;
 const MANAGED_HANDOFF_ALREADY_RUNNING_REASON = "managed-service-handoff-already-running";
 
+function resolveUpdateRequester(params: Record<string, unknown>) {
+  const requester = params.requester;
+  if (!isRecord(requester)) {
+    return undefined;
+  }
+  const channel = typeof requester.channel === "string" ? requester.channel : undefined;
+  const accountId = typeof requester.accountId === "string" ? requester.accountId : undefined;
+  const senderId = typeof requester.senderId === "string" ? requester.senderId : undefined;
+  return { channel, accountId, senderId };
+}
+
 function formatUpdateRunErrorMessage(err: unknown): string {
   if (err instanceof Error) {
     return err.message || err.name;
@@ -402,7 +413,9 @@ export const updateHandlers: GatewayRequestHandlers = {
             // Managed services update from a detached helper so the running
             // gateway does not replace its own package or git-built dist tree
             // while still serving RPCs.
+            const requester = resolveUpdateRequester(params);
             const started = await startManagedServiceUpdateHandoff({
+              requester,
               root: installRoot,
               timeoutMs,
               restartDrainTimeoutMs: resolveGatewayRestartDeferralTimeoutMs(),

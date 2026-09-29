@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
+import { bumpSkillsSnapshotVersion } from "../skills/runtime/refresh-state.js";
 import {
   createGatewayKernel,
   gatewayKernelLogs,
@@ -41,6 +42,8 @@ export async function startGatewayServerCore(
     releasePostReadyWork = resolve;
   });
   const gatewayKernel = await createGatewayKernel(port, opts);
+  // A Gateway restart must refresh restored skill catalogs, even in the same process.
+  bumpSkillsSnapshotVersion({ reason: "manual" });
   if (!gatewayKernel.minimalTestGateway) {
     // Start the Keychain read early so it overlaps bootstrap; post-attach awaits the
     // shared promise before plugins can use TLS.

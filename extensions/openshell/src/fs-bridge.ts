@@ -530,7 +530,8 @@ async function mkdirParentPath(root: FsSafeRoot, relativePath: string): Promise<
 
 function relativeToRoot(target: ResolvedMountPath, hostPath: string): string {
   const relativePath = path.relative(target.mountHostRoot, hostPath);
-  return relativePath === "." ? "" : relativePath;
+  // Computed relative names must not trigger home expansion.
+  return relativePath ? `.${path.sep}${relativePath}` : "";
 }
 
 async function assertRenameSourceSupported(fromHostPath: string): Promise<void> {

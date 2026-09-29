@@ -33,6 +33,12 @@ type GoalOperation = {
 
 const goalOperations = new WeakMap<ChatHost, GoalOperation>();
 
+function rejectGoalOperation(host: ChatHost, message: string): false {
+  setChatError(host, message);
+  host.requestUpdate?.();
+  return false;
+}
+
 export async function submitChatGoalDraft(
   host: ChatGoalHost,
   draft: ChatGoalDraft,
@@ -42,8 +48,7 @@ export async function submitChatGoalDraft(
     return false;
   }
   if (draft.sessionId && draft.sessionId !== host.currentSessionId) {
-    setChatError(host, t("chat.goals.sessionChanged"));
-    return false;
+    return rejectGoalOperation(host, t("chat.goals.sessionChanged"));
   }
   if (draft.action === "edit") {
     return mutateChatGoal(host, {
@@ -73,8 +78,7 @@ export async function mutateChatGoal(
 ): Promise<boolean> {
   const client = host.client;
   if (!client || !host.connected) {
-    setChatError(host, t("chat.goals.offline"));
-    return false;
+    return rejectGoalOperation(host, t("chat.goals.offline"));
   }
   const sessionKey = host.sessionKey;
   const agentId = scopedAgentIdForSession(host, sessionKey);
@@ -96,8 +100,7 @@ export async function mutateChatGoal(
   ]);
   let operation = goalOperations.get(host);
   if (operation?.pending) {
-    setChatError(host, t("chat.goals.actionPending"));
-    return false;
+    return rejectGoalOperation(host, t("chat.goals.actionPending"));
   }
   if (!operation || operation.signature !== signature) {
     const identity = {

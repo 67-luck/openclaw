@@ -222,7 +222,7 @@ function withCandidateSnapshot<T>(
     const tree = execFileSync(
       "git",
       ["ls-tree", "-r", "-z", candidateSha, "--", "package.json", "extensions", "packages"],
-      { cwd: repoRoot },
+      { cwd: repoRoot, maxBuffer: 16 * 1024 * 1024 },
     ).toString("utf8");
     const inventoryPaths: string[] = [];
     for (const entry of tree.split("\0").filter(Boolean)) {

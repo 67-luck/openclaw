@@ -171,15 +171,17 @@ function snapshotCookieDatabase(source: string): { databasePath: string; cleanup
   fs.mkdirSync(tmpRoot, { recursive: true });
   const tempDir = fs.mkdtempSync(path.join(tmpRoot, "openclaw-system-cookies-"));
   const databasePath = path.join(tempDir, "Cookies");
-  const sourceDatabase = openNodeSqliteDatabase(source, { readOnly: true });
   try {
-    sourceDatabase.exec("PRAGMA busy_timeout = 5000");
-    sourceDatabase.prepare("VACUUM INTO ?").run(databasePath);
+    const sourceDatabase = openNodeSqliteDatabase(source, { readOnly: true });
+    try {
+      sourceDatabase.exec("PRAGMA busy_timeout = 5000");
+      sourceDatabase.prepare("VACUUM INTO ?").run(databasePath);
+    } finally {
+      sourceDatabase.close();
+    }
   } catch (error) {
     fs.rmSync(tempDir, { recursive: true, force: true });
     throw error;
-  } finally {
-    sourceDatabase.close();
   }
   return {
     databasePath,

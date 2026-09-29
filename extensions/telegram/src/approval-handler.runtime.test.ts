@@ -143,6 +143,75 @@ describe("telegramApprovalNativeRuntime", () => {
     );
   });
 
+  it("renders actionable system-agent approval prompts", async () => {
+    const approvalId = "system-agent:approval-1";
+    const description = "Set gateway.port to 19001";
+    const payload = (await telegramApprovalNativeRuntime.presentation.buildPendingPayload({
+      cfg: {} as never,
+      accountId: "default",
+      context: { token: "tg-token" },
+      request: {
+        id: approvalId,
+        request: {
+          title: "OpenClaw change",
+          description,
+          command: description,
+          proposalHash: "a".repeat(64),
+          sessionId: "delegation-1",
+          allowedDecisions: ["allow-once", "deny"],
+        },
+        createdAtMs: 0,
+        expiresAtMs: 60_000,
+      },
+      approvalKind: "system-agent",
+      nowMs: 0,
+      view: {
+        approvalKind: "system-agent",
+        phase: "pending",
+        approvalId,
+        title: "OpenClaw change requires approval",
+        description,
+        metadata: [],
+        commandText: description,
+        operationSummary: description,
+        expiresAtMs: 60_000,
+        actions: [
+          {
+            decision: "allow-once",
+            label: "Allow Once",
+            action: {
+              type: "approval",
+              approvalId,
+              approvalKind: "system-agent",
+              decision: "allow-once",
+            },
+            command: `/approve ${approvalId} allow-once`,
+            style: "success",
+          },
+          {
+            decision: "deny",
+            label: "Deny",
+            action: {
+              type: "approval",
+              approvalId,
+              approvalKind: "system-agent",
+              decision: "deny",
+            },
+            command: `/approve ${approvalId} deny`,
+            style: "danger",
+          },
+        ],
+      } as never,
+    })) as TelegramPayload;
+
+    expect(payload.text).toContain("OpenClaw change requires approval");
+    expect(payload.text).toContain(`Change: ${description}`);
+    expect(payload.buttons?.[0]?.map((button) => button.callback_data)).toEqual([
+      `tga1:s:o:${approvalId}`,
+      `tga1:s:d:${approvalId}`,
+    ]);
+  });
+
   it("renders resolved and expired events as visible terminal receipts", async () => {
     const request = {
       id: "req-1",

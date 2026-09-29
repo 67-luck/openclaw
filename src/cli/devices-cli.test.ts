@@ -71,7 +71,7 @@ async function runDevicesApprove(argv: string[]) {
 }
 
 async function runDevicesCommand(argv: string[]) {
-  const program = new Command();
+  const program = new Command().exitOverride();
   registerDevicesCli(program);
   await program.parseAsync(["devices", ...argv], { from: "user" });
 }
@@ -685,43 +685,64 @@ describe("devices cli clear", () => {
 
 describe("devices cli tokens", () => {
   it.each([
-    {
-      label: "rotates a token for a device role",
-      argv: [
+    { name: "omitted", flags: [], requestedScopes: undefined },
+    { name: "explicitly empty", flags: ["--no-scopes"], requestedScopes: [] },
+  ])("preserves $name rotation scope intent", async ({ flags, requestedScopes }) => {
+    callGateway.mockResolvedValueOnce({ ok: true });
+
+    await runDevicesCommand(["rotate", "--device", "device-1", "--role", "node", ...flags]);
+
+    expectGatewayCall(0, {
+      method: "device.token.rotate",
+      params: { deviceId: "device-1", role: "node", scopes: requestedScopes },
+      scopes: ["operator.admin"],
+    });
+    expect(callGateway).toHaveBeenCalledOnce();
+  });
+
+  it("rejects conflicting scope options before rotating a token", async () => {
+    await expect(
+      runDevicesCommand([
         "rotate",
         "--device",
         "device-1",
         "--role",
-        "main",
+        "node",
         "--scope",
-        "messages:send",
-        "--scope",
-        "messages:read",
-      ],
-      expectedCall: {
-        method: "device.token.rotate",
+        "node.read",
+        "--no-scopes",
+      ]),
+    ).rejects.toThrow("cannot be used with option");
+    expect(callGateway).not.toHaveBeenCalled();
+  });
+
+  describe.each(["rotate", "revoke"])("%s", (command) => {
+    it.each([
+      { role: "node", scopes: ["operator.admin"] },
+      { role: "custom-role", scopes: ["operator.admin"] },
+      { role: "operator", scopes: undefined },
+    ])("selects connection scopes for the $role role", async ({ role, scopes }) => {
+      const argv = [command, "--device", " device-1 ", "--role", ` ${role} `];
+      const tokenScopes = [`${role}.read`, `${role}.write`] as const;
+      if (command === "rotate") {
+        argv.push("--scope", tokenScopes[0], "--scope", tokenScopes[1]);
+      }
+      callGateway.mockResolvedValueOnce({ ok: true });
+
+      await runDevicesCommand(argv);
+
+      expect(callGateway).toHaveBeenCalledOnce();
+      expectGatewayCall(0, {
+        method: `device.token.${command}`,
         params: {
           deviceId: "device-1",
-          role: "main",
-          scopes: ["messages:send", "messages:read"],
+          role,
+          ...(command === "rotate" ? { scopes: tokenScopes } : {}),
         },
-      },
-    },
-    {
-      label: "revokes a token for a device role",
-      argv: ["revoke", "--device", "device-1", "--role", "main"],
-      expectedCall: {
-        method: "device.token.revoke",
-        params: {
-          deviceId: "device-1",
-          role: "main",
-        },
-      },
-    },
-  ])("$label", async ({ argv, expectedCall }) => {
-    callGateway.mockResolvedValueOnce({ ok: true });
-    await runDevicesCommand(argv);
-    expectGatewayCall(0, expectedCall);
+        scopes,
+      });
+      expect(runtime.writeJson).toHaveBeenCalledWith({ ok: true });
+    });
   });
 
   it("rejects blank device or role values", async () => {

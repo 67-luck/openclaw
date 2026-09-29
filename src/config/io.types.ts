@@ -39,6 +39,8 @@ export type ConfigWriteOptions = {
   ownedConfigPathForWrite?: string;
   /** Rechecks that the config path captured at mutation start is still active. */
   assertConfigPathForWrite?: () => void;
+  /** Rechecks delegated authority immediately before each persistent effect. */
+  assertConfigMutationAuthority?: () => void;
   /** Paths that must be removed from the persisted payload. */
   unsetPaths?: string[][];
   /** Caller-authored paths that stay persisted even when equal to defaults. */

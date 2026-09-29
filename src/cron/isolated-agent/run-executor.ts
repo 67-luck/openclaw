@@ -6,6 +6,10 @@ import {
   prepareAgentRunAdmission,
 } from "../../agents/admitted-run-context.js";
 import type { BootstrapContextMode } from "../../agents/bootstrap-files.js";
+import {
+  cliBackendAcceptsAuthProfileForwarding,
+  resolveCliExecutionAuthProfileId,
+} from "../../agents/cli-execution-auth.js";
 import { resolveCliRuntimeToolsAllow } from "../../agents/cli-runner/tool-policy.js";
 import type { FastModeAutoProgressState } from "../../agents/fast-mode.js";
 import { createContextEngineLogicalTurnLease } from "../../agents/harness/context-engine-logical-turn.js";
@@ -619,6 +623,26 @@ function createCronPromptExecutor(params: {
             cliSessionBinding && hasCliSessionReuseMetadata(cliSessionBinding)
               ? cliSessionBinding
               : undefined;
+          const allowCliAuthProfileForwarding = cliBackendAcceptsAuthProfileForwarding({
+            provider: executionProvider,
+            config: params.cfgWithAgentDefaults,
+            agentId: params.agentId,
+          });
+          const authProfileId = allowCliAuthProfileForwarding
+            ? resolveCliExecutionAuthProfileId({
+                cliExecutionProvider: executionProvider,
+                authProfileProvider: providerOverride,
+                config: params.cfgWithAgentDefaults,
+                agentDir: params.agentDir,
+                selected: params.liveSelection.authProfileId
+                  ? {
+                      authProfileId: params.liveSelection.authProfileId,
+                      authProfileIdSource:
+                        params.liveSelection.authProfileIdSource === "user" ? "user" : "auto",
+                    }
+                  : undefined,
+              })
+            : undefined;
           // Cron intentionally reuses its durable session id as the run id; turn
           // claims stay unique via per-claim ids and the worker gate handles this
           // via credential rotation (see worker-environments/service.ts fences).
@@ -655,6 +679,7 @@ function createCronPromptExecutor(params: {
                 ),
                 provider: executionProvider,
                 model: modelOverride,
+                authProfileId,
                 thinkLevel: candidateThinkLevel,
                 timeoutMs: params.timeoutMs,
                 runId,

@@ -4,6 +4,7 @@ import { vi, type Mock } from "vitest";
 import { resolveFastModeState as resolveFastModeStateImpl } from "../../agents/fast-mode.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { resolveAgentModelFallbackValues } from "../../config/model-input.js";
+import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 
 // Central mock harness for isolated cron agent run orchestration tests.
@@ -587,8 +588,10 @@ function resetRunConfigMocks(): void {
   loadPublishedReplyDispatchRuntimeMock.mockResolvedValue(undefined);
   acquirePreparedModelRuntimeMock.mockImplementation(async (input, options) => {
     const registry = preparedRunPluginRegistryMock();
-    const metadata = options?.pluginGeneration?.pluginMetadataSnapshot ??
-      options?.pluginMetadataSnapshot ?? { plugins: [], index: { plugins: [] } };
+    const metadata =
+      options?.pluginGeneration?.pluginMetadataSnapshot ??
+      options?.pluginMetadataSnapshot ??
+      createPluginMetadataSnapshotFixture();
     return {
       snapshot: { ...input, metadataSnapshot: metadata, pluginRegistry: registry },
       pluginGeneration: {

@@ -24,6 +24,7 @@ import {
 } from "./doctor-contract-module.js";
 import { pluginDoctorContractRegistryLoaderState } from "./doctor-contract-registry-loader-state.js";
 import type { DoctorSessionRouteStateOwner } from "./doctor-session-route-state-owner-types.js";
+import { loadInstalledPluginIndexInstallRecordsSync } from "./installed-plugin-index-records.js";
 import { isActivatedManifestOwner } from "./manifest-owner-policy.js";
 import type { PluginManifestRegistry } from "./manifest-registry.js";
 import type { PluginManifestDoctorContract } from "./manifest-types.js";
@@ -326,6 +327,7 @@ function resolvePluginDoctorManifestRecords(params: {
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
   pluginIds?: readonly string[];
+  completeInventory?: boolean;
 }): PluginManifestRegistryRecord[] {
   const env = params?.env ?? process.env;
   if (params?.pluginIds && params.pluginIds.length === 0) {
@@ -337,6 +339,12 @@ function resolvePluginDoctorManifestRecords(params: {
     workspaceDir: params?.workspaceDir,
     env,
     includeDisabled: true,
+    ...(params.completeInventory
+      ? {
+          preferPersisted: false,
+          installRecords: loadInstalledPluginIndexInstallRecordsSync({ env }),
+        }
+      : {}),
   });
 
   const scopedPluginIds = params?.pluginIds ? new Set(params.pluginIds) : null;
@@ -525,7 +533,10 @@ export function listPluginDoctorStateMigrationEntries(params?: {
 }): PluginDoctorStateMigrationEntry[] {
   const entries: PluginDoctorStateMigrationEntry[] = [];
   const normalizedConfig = normalizePluginsConfig(params?.config?.plugins);
-  for (const record of resolvePluginDoctorManifestRecords(params ?? {})) {
+  for (const record of resolvePluginDoctorManifestRecords({
+    ...params,
+    completeInventory: true,
+  })) {
     const channelOwner = record.channels.length > 0;
     // Config repair intentionally includes disabled plugins; channel state must never be moved
     // after its operator has disabled the owning plugin or every configured channel.

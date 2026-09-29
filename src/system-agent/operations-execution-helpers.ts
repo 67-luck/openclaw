@@ -209,6 +209,8 @@ export type ExecuteOptions = {
    * immediately followed by the persistent effect it authorizes.
    */
   beforePersistentApply?: () => Promise<void>;
+  /** Synchronous live-owner check carried to the final persistent effect. */
+  assertPersistentApply?: () => void;
   /** Adopt the exact final binding after a verified model-route write commits. */
   onVerifiedInferenceChanged?: (binding: SystemAgentVerifiedInferenceBinding) => void;
 };
@@ -222,6 +224,8 @@ export type ExecuteOptions = {
 type PersistentApplyContext = {
   runtime: RuntimeEnv;
   deps?: SystemAgentCommandDeps;
+  /** Synchronous live-owner guard for the final effect owner. */
+  assertPersistentApply?: () => void;
   /** Re-check authority, then enter one persistent side-effect boundary. */
   commit<T>(effect: () => Promise<T> | T): Promise<T>;
 };
@@ -253,9 +257,15 @@ export async function applyPersistentOperation(params: {
   const before = await readConfigFileSnapshot();
   const commit: PersistentApplyContext["commit"] = async (effect) => {
     await opts.beforePersistentApply?.();
+    opts.assertPersistentApply?.();
     return await effect();
   };
-  const outcome = await params.run({ runtime, deps: opts.deps, commit });
+  const outcome = await params.run({
+    runtime,
+    deps: opts.deps,
+    ...(opts.assertPersistentApply ? { assertPersistentApply: opts.assertPersistentApply } : {}),
+    commit,
+  });
   const after = await readConfigFileSnapshot();
   try {
     await appendSystemAgentAuditEntry({
@@ -297,6 +307,9 @@ export async function runConfigSetOperation(params: {
         runtime: createNoExitRuntime(ctx.runtime),
       });
     });
+  const finalEffectGuard = ctx.assertPersistentApply
+    ? { beforePersistentApply: ctx.assertPersistentApply }
+    : {};
   if (operation.kind === "config-set") {
     await ctx.commit(async () => {
       // Conditional verdicts (per-agent routing, plugin entries) depend on the
@@ -304,7 +317,12 @@ export async function runConfigSetOperation(params: {
       // pre-approval check and this write. Re-verify at the commit boundary,
       // like the plugin-uninstall path.
       await assertConfigWriteDoesNotBypassInferenceVerification(operation);
-      await runConfigSet({ path: operation.path, value: operation.value, cliOptions: {} });
+      await runConfigSet({
+        path: operation.path,
+        value: operation.value,
+        cliOptions: {},
+        ...finalEffectGuard,
+      });
     });
     return;
   }
@@ -317,6 +335,7 @@ export async function runConfigSetOperation(params: {
         refSource: operation.source,
         refId: operation.id,
       },
+      ...finalEffectGuard,
     });
   });
 }

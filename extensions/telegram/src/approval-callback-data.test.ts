@@ -51,6 +51,7 @@ describe("approval callback data", () => {
     ["exec", "allow-once", "tga1:e:o:approval:with:delimiters"],
     ["exec", "allow-always", "tga1:e:a:approval:with:delimiters"],
     ["plugin", "deny", "tga1:p:d:approval:with:delimiters"],
+    ["system-agent", "allow-once", "tga1:s:o:approval:with:delimiters"],
   ] as const)("round-trips explicit %s %s actions", (approvalKind, decision, callbackData) => {
     const action = {
       type: "approval" as const,

@@ -114,6 +114,8 @@ vi.mock("./channel-health-monitor.js", () => ({
 }));
 
 import {
+  bindGatewayContextResolver,
+  getGatewayContextResolver,
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
 } from "../plugins/runtime/gateway-request-scope.js";
@@ -397,17 +399,18 @@ describe("server-runtime-services", () => {
       terminalSessions: {},
       resolveGatewayContext: () => gatewayContext,
     } as never;
+    const resolveGatewayContext = () => gatewayContext;
+    const admittedOwner = {};
     let observed: unknown = "never-ran";
     let observedClient: unknown = "never-ran";
     hoisted.runHeartbeatOnce.mockImplementationOnce(async () => {
       const scope = getPluginRuntimeGatewayRequestScope();
+      bindGatewayContextResolver(admittedOwner, scope?.resolveGatewayContext);
       observed = scope?.resolveGatewayContext?.();
       observedClient = scope?.client;
       return { status: "ran", durationMs: 1 };
     });
-    const { services } = activateScheduledServicesForTest({
-      resolveGatewayContext: () => gatewayContext,
-    });
+    const { services } = activateScheduledServicesForTest({ resolveGatewayContext });
     const runnerParams = hoisted.startHeartbeatRunner.mock.calls[0]?.[0] as
       | { runOnce?: (opts: never) => Promise<unknown> }
       | undefined;
@@ -418,6 +421,9 @@ describe("server-runtime-services", () => {
 
     expect(observed).toBe(gatewayContext);
     expect(observedClient).toBeUndefined();
+    const scheduledOwner = getGatewayContextResolver(admittedOwner);
+    expect(scheduledOwner).toBeTypeOf("function");
+    expect(getGatewayContextResolver(scheduledOwner!)).toBe(resolveGatewayContext);
     services.heartbeatRunner.stop();
   });
 

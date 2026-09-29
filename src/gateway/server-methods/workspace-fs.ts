@@ -172,6 +172,18 @@ export async function updateWorkspaceFile(
     if (currentHash !== expectedHash) {
       return { status: "conflict", currentHash };
     }
+    // Revalidate editor authority immediately before handing the mutation to
+    // fs-safe so delayed preparation cannot overwrite a newer save.
+    const latest = await workspaceRoot.read(browserPath, {
+      hardlinks: "reject",
+      maxBytes: WORKSPACE_PREVIEW_MAX_BYTES,
+      nonBlockingRead: true,
+      symlinks: "reject",
+    });
+    const latestHash = createHash("sha256").update(latest.buffer).digest("hex");
+    if (latestHash !== expectedHash) {
+      return { status: "conflict", currentHash: latestHash };
+    }
     await workspaceRoot.write(browserPath, content, {
       encoding: "utf8",
       renameIdentity: "strict",

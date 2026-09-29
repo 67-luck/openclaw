@@ -163,6 +163,31 @@ describe("SystemAgentChatEngine approval", () => {
     expect(engine.getPendingOperatorProposal()).toBeNull();
   });
 
+  it("rechecks delegated authority immediately before the persistent write", async () => {
+    useTempStateDir();
+    const runConfigSet = vi.fn(async () => {});
+    const operation = { kind: "config-set" as const, path: "gateway.port", value: "19001" };
+    const engine = new SystemAgentChatEngine({
+      operatorApprovalOnly: true,
+      deps: { runConfigSet, loadOverview: fakeOverviewLoader() },
+    });
+    engine.propose(operation);
+    const assertAuthority = vi.fn(() => {
+      throw new Error("delegated authority ended");
+    });
+
+    const reply = await engine.resolveOperatorApproval(
+      "allow-once",
+      hashSystemAgentOperation(operation),
+      assertAuthority,
+    );
+
+    expect(assertAuthority).toHaveBeenCalledOnce();
+    expect(runConfigSet).not.toHaveBeenCalled();
+    expect(reply?.text).toContain("delegated authority ended");
+    expect(reply?.applied).toBe(false);
+  });
+
   it("applies a seeded proposal on a bare yes with verified inference", async () => {
     useTempStateDir();
     const runConfigSet = vi.fn(async () => {});

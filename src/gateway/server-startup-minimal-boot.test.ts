@@ -9,6 +9,7 @@ import { readLoggingConfig } from "../logging/config.js";
 import { resetLogger } from "../logging/logger.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
+import { getSkillsSnapshotVersion } from "../skills/runtime/refresh-state.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { getFreePort } from "../test-utils/ports.js";
 
@@ -78,45 +79,51 @@ describe("gateway minimal boot smoke", () => {
     }
   });
 
-  it("boots a minimal test gateway within budget", { timeout: BOOT_BUDGET_MS }, async () => {
-    const port = await getFreePort();
-    const state = await createOpenClawTestState({
-      label: "gateway-minimal-boot-smoke",
-      layout: "home",
-      env: {
-        OPENCLAW_GATEWAY_PASSWORD: undefined,
-        OPENCLAW_GATEWAY_TOKEN: undefined,
-        OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: "1",
-        OPENCLAW_SKIP_CANVAS_HOST: "1",
-        OPENCLAW_SKIP_CHANNELS: "1",
-        OPENCLAW_SKIP_CRON: "1",
-        OPENCLAW_SKIP_GMAIL_WATCHER: "1",
-        OPENCLAW_SKIP_PROVIDERS: "1",
-        OPENCLAW_TEST_MINIMAL_GATEWAY: "1",
-        VITEST: "1",
-      },
-    });
-    const token = "gateway-minimal-boot-smoke-token";
-    await state.writeConfig({
-      gateway: {
-        auth: { mode: "token", token },
-        controlUi: { enabled: false },
-        port,
-      },
-    });
-    state.applyEnv();
-    try {
-      const { startGatewayServer } = await import("./server.js");
-      const server = await startGatewayServer(port, {
-        auth: { mode: "token", token },
-        bind: "loopback",
-        controlUiEnabled: false,
-        sidecarStartup: "defer",
+  it(
+    "boots a minimal test gateway and refreshes skill snapshots",
+    { timeout: BOOT_BUDGET_MS },
+    async () => {
+      const port = await getFreePort();
+      const state = await createOpenClawTestState({
+        label: "gateway-minimal-boot-smoke",
+        layout: "home",
+        env: {
+          OPENCLAW_GATEWAY_PASSWORD: undefined,
+          OPENCLAW_GATEWAY_TOKEN: undefined,
+          OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: "1",
+          OPENCLAW_SKIP_CANVAS_HOST: "1",
+          OPENCLAW_SKIP_CHANNELS: "1",
+          OPENCLAW_SKIP_CRON: "1",
+          OPENCLAW_SKIP_GMAIL_WATCHER: "1",
+          OPENCLAW_SKIP_PROVIDERS: "1",
+          OPENCLAW_TEST_MINIMAL_GATEWAY: "1",
+          VITEST: "1",
+        },
       });
-      expect(server).toBeTruthy();
-      await server.close({ reason: "minimal boot smoke complete" });
-    } finally {
-      await state.cleanup();
-    }
-  });
+      const token = "gateway-minimal-boot-smoke-token";
+      await state.writeConfig({
+        gateway: {
+          auth: { mode: "token", token },
+          controlUi: { enabled: false },
+          port,
+        },
+      });
+      state.applyEnv();
+      try {
+        const { startGatewayServer } = await import("./server.js");
+        const snapshotVersion = getSkillsSnapshotVersion();
+        const server = await startGatewayServer(port, {
+          auth: { mode: "token", token },
+          bind: "loopback",
+          controlUiEnabled: false,
+          sidecarStartup: "defer",
+        });
+        expect(server).toBeTruthy();
+        expect(getSkillsSnapshotVersion()).toBeGreaterThan(snapshotVersion);
+        await server.close({ reason: "minimal boot smoke complete" });
+      } finally {
+        await state.cleanup();
+      }
+    },
+  );
 });

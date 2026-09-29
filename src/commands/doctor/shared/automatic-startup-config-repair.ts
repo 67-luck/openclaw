@@ -6,6 +6,7 @@ import {
 import { replaceConfigFile } from "../../../config/config.js";
 import { stampConfigWriteMetadata } from "../../../config/io.meta.js";
 import { containsConfigIncludeDirective } from "../../../config/io.read-helpers.js";
+import { prepareConfigWriteTopology } from "../../../config/io.write-topology.js";
 import { findLegacyConfigIssues } from "../../../config/legacy.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../../../config/types.js";
 import {
@@ -132,9 +133,19 @@ export function isStartupConfigRepairResult(
   after: ConfigFileSnapshot,
 ): boolean {
   const plan = planAutomaticConfigRepair(before);
+  const unsetPaths = resolveManagedUnsetPathsForWrite(undefined);
   const expected = plan
     ? stampConfigWriteMetadata(
-        applyUnsetPathsForWrite(plan.config, resolveManagedUnsetPathsForWrite(undefined)),
+        applyUnsetPathsForWrite(
+          prepareConfigWriteTopology({
+            snapshot: before,
+            nextConfig: plan.config,
+            options: { explicitSetPaths: [["agents", "entries"]] },
+            unsetPaths,
+            env: process.env,
+          }).nextConfig,
+          unsetPaths,
+        ),
         undefined,
         undefined,
         before.parsed,
@@ -161,6 +172,9 @@ export async function commitAutomaticConfigRepair(
       auditOrigin: "doctor",
       skipOutputLogs: true,
       skipRuntimeSnapshotRefresh: true,
+      // The reader retired legacy markers; persist their canonical owners in this write.
+      // Startup verification above uses the same writer topology preparation.
+      explicitSetPaths: [["agents", "entries"]],
     },
   });
 }

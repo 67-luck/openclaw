@@ -20,7 +20,7 @@ import {
 } from "./openclaw-agent-db.paths.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "./openclaw-state-db-contract.js";
 
-type OpenClawAgentReadOnlyDatabase = {
+export type OpenClawAgentReadOnlyDatabase = {
   agentId: string;
   db: DatabaseSync;
   path: string;

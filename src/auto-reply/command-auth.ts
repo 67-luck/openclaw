@@ -8,6 +8,7 @@ import {
   getLoadedChannelPluginById,
   listLoadedChannelPlugins,
 } from "../channels/plugins/registry-loaded.js";
+import { getLoadedChannelPlugin } from "../channels/plugins/registry.js";
 import type { ChannelPlugin } from "../channels/plugins/types.plugin.js";
 import type { ChannelId } from "../channels/plugins/types.public.js";
 import { normalizeAnyChannelId } from "../channels/registry.js";
@@ -414,6 +415,19 @@ function resolveSenderCandidates(
     }
   }
   return normalized;
+}
+
+export function isConfiguredCommandOwner(
+  cfg: OpenClawConfig,
+  requester: { channel?: string; accountId?: string; senderId?: string },
+): boolean {
+  const providerId = normalizeAnyChannelId(requester.channel) ?? requester.channel;
+  const plugin = providerId ? getLoadedChannelPlugin(providerId) : undefined;
+  const params = { cfg, plugin, providerId, accountId: requester.accountId };
+  const owners = stripWildcardAllowFrom(resolveOwnerAllowFromList(params));
+  return resolveSenderCandidates({ ...params, senderId: requester.senderId }).some((sender) =>
+    owners.includes(sender),
+  );
 }
 
 function resolveFallbackAllowFrom(params: {

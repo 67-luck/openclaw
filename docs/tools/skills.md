@@ -591,15 +591,15 @@ eligible skill snapshot as a temporary Claude Code plugin and passes it via
 ## Snapshots and refresh
 
 OpenClaw snapshots eligible skills **when a session starts** and reuses that
-list for all subsequent turns in the session. Changes to skills or config take
-effect on the next new session.
+list until a refresh trigger below applies.
 
-Skills refresh mid-session in two cases:
+File-backed skills refresh mid-session when:
 
 - The skills watcher detects a `SKILL.md` change.
+- The Gateway restarts, including when `skills.load.watch` is `false`.
 - A new eligible remote node connects.
 
-The refreshed list is picked up on the next agent turn. If the effective agent
+The refreshed list is picked up on the next agent turn in the same session. If the effective agent
 allowlist changes, OpenClaw refreshes the snapshot to keep visible skills
 aligned.
 

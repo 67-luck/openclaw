@@ -90,6 +90,22 @@ describe("resolveApprovalOverGateway", () => {
     expect(result).toEqual({ applied: true, approval: recordedApproval });
   });
 
+  it("routes an explicit system-agent kind through the canonical method", async () => {
+    const result = await resolveApprovalOverGateway({
+      cfg: {} as never,
+      approvalId: "system-agent:approval-1",
+      approvalKind: "system-agent",
+      decision: "allow-once",
+    });
+
+    expect(hoisted.clientRequest).toHaveBeenCalledWith("approval.resolve", {
+      id: "system-agent:approval-1",
+      kind: "system-agent",
+      decision: "allow-once",
+    });
+    expect(result).toEqual({ applied: true, approval: recordedApproval });
+  });
+
   it("sends complete reviewer facts directly to the canonical owner", async () => {
     await expect(
       withApprovalAccountContext(() =>

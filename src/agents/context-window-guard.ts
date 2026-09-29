@@ -29,6 +29,13 @@ function normalizePositiveInt(value: unknown): number | null {
   return int > 0 ? int : null;
 }
 
+function resolveBoundedContextTokens(...values: unknown[]): number | null {
+  const normalized = values
+    .map((value) => normalizePositiveInt(value))
+    .filter((value): value is number => value !== null);
+  return normalized.length > 0 ? Math.min(...normalized) : null;
+}
+
 function modelIdMatchesProviderScope(params: {
   configuredId?: string;
   provider: string;
@@ -75,11 +82,12 @@ export function resolveContextWindowInfo(params: {
         modelId: params.modelId,
       }),
     );
-    return normalizePositiveInt(match?.contextTokens) ?? normalizePositiveInt(match?.contextWindow);
+    return resolveBoundedContextTokens(match?.contextTokens, match?.contextWindow);
   })();
-  const fromModel =
-    normalizePositiveInt(params.modelContextTokens) ??
-    normalizePositiveInt(params.modelContextWindow);
+  const fromModel = resolveBoundedContextTokens(
+    params.modelContextTokens,
+    params.modelContextWindow,
+  );
   const defaultTokens =
     normalizePositiveInt(params.defaultTokens) ?? CONTEXT_WINDOW_WARN_BELOW_TOKENS;
   return fromModelsConfig

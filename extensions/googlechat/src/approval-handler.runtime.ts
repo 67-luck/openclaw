@@ -301,7 +301,7 @@ export const googleChatApprovalNativeRuntime = createChannelApprovalNativeRuntim
   readonly string[],
   GoogleChatFinalDelivery
 >({
-  eventKinds: ["exec", "plugin"],
+  eventKinds: ["exec", "plugin", "system-agent"],
   availability: {
     isConfigured: ({ cfg, accountId }) =>
       isGoogleChatNativeApprovalClientEnabled({ cfg, accountId }),

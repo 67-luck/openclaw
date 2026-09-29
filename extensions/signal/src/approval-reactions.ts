@@ -163,7 +163,9 @@ function readPersistedTarget(target: unknown): SignalApprovalReactionTarget | nu
   if (
     !value ||
     typeof value.approvalId !== "string" ||
-    (value.approvalKind !== "exec" && value.approvalKind !== "plugin") ||
+    (value.approvalKind !== "exec" &&
+      value.approvalKind !== "plugin" &&
+      value.approvalKind !== "system-agent") ||
     !value.route ||
     (value.route.deliveryMode !== "session" && value.route.deliveryMode !== "target") ||
     !Array.isArray(value.targetAuthorKeys)
@@ -243,7 +245,9 @@ export function registerSignalApprovalReactionTarget(params: {
   }).map((binding) => binding.decision);
   if (
     !params.routeAllowed ||
-    (params.approvalKind !== "exec" && params.approvalKind !== "plugin") ||
+    (params.approvalKind !== "exec" &&
+      params.approvalKind !== "plugin" &&
+      params.approvalKind !== "system-agent") ||
     !key ||
     !approvalId ||
     allowedDecisions.length === 0

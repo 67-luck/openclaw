@@ -14,3 +14,7 @@ export type {
   DaemonStatusOptions,
   GatewayRpcOpts,
 } from "./daemon-cli/types.js";
+export {
+  isManagedUpdateRequesterOwner,
+  waitForGatewayUpdateRecovery,
+} from "./daemon-cli/lifecycle-context.js";

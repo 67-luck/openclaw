@@ -1547,6 +1547,48 @@ describe("runDoctorSessionSqlite", () => {
     }
   });
 
+  it("imports every legacy Codex assistant message, not only the last one", async () => {
+    const codexReply = (id: string, parentId: string, content: string) =>
+      JSON.stringify({
+        type: "message",
+        id,
+        parentId,
+        message: { role: "assistant", provider: "codex", api: "openai-chatgpt-responses", content },
+      });
+    const userMessage = (id: string, parentId: string | null, content: string) =>
+      JSON.stringify({ type: "message", id, parentId, message: { role: "user", content } });
+    const store = createLegacyStore({
+      transcriptLines: [
+        JSON.stringify({ type: "session", id: "session-1", version: 3 }),
+        userMessage("user-1", null, "hi"),
+        codexReply("reply-1", "user-1", "a"),
+        userMessage("user-2", "reply-1", "b"),
+        codexReply("reply-2", "user-2", "c"),
+        userMessage("user-3", "reply-2", "d"),
+      ],
+    });
+
+    const imported = await runDoctorSessionSqlite({
+      env: store.env,
+      mode: "import",
+      store: store.storePath,
+    });
+
+    expect(imported.targets[0]?.issues).toEqual([]);
+    expect(imported.totals).toMatchObject({ importedTranscriptEvents: 6 });
+    expect(
+      loadTranscriptEventsSync({
+        agentId: "main",
+        storePath: store.storePath,
+        sessionId: "session-1",
+      }),
+    ).toEqual(
+      ["session-1", "user-1", "reply-1", "user-2", "reply-2", "user-3"].map((id) =>
+        expect.objectContaining({ id }),
+      ),
+    );
+  });
+
   it("retires verified exact originals while preserving current SQLite and unknown archives", async () => {
     const store = createLegacyStore({
       transcriptLines: [
@@ -1730,6 +1772,7 @@ describe("runDoctorSessionSqlite", () => {
       ok: true,
       snapshot: {
         sessionIdsBySessionKey: new Map([["agent:main:v13-reader", "v13-reader-session"]]),
+        sessionKeysBySessionId: new Map(),
         transcriptEventCountsBySessionId: new Map(),
       },
     });
@@ -1765,6 +1808,7 @@ describe("runDoctorSessionSqlite", () => {
       ok: true,
       snapshot: {
         sessionIdsBySessionKey: new Map([["agent:main:v14-reader", "v14-reader-session"]]),
+        sessionKeysBySessionId: new Map(),
         transcriptEventCountsBySessionId: new Map(),
       },
     });
@@ -1813,6 +1857,7 @@ describe("runDoctorSessionSqlite", () => {
         ok: true,
         snapshot: {
           sessionIdsBySessionKey: new Map([["agent:main:compact", "promoted-session-id"]]),
+          sessionKeysBySessionId: new Map(),
           transcriptEventCountsBySessionId: new Map([["promoted-session-id", 2]]),
         },
       });

@@ -2,12 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runCommandWithTimeout } from "../process/exec.js";
-import {
-  detectPackageManager as detectPackageManagerImpl,
-  isBunOwnedPackageRoot,
-  isPnpmOwnedPackageRoot,
-  resolvePnpmNodeModulesRoot,
-} from "./detect-package-manager.js";
+import { detectPackageManager as detectPackageManagerImpl } from "./detect-package-manager.js";
 import { GIT_TIMEOUT_MS } from "./git-exec.js";
 import { compareOpenClawReleaseVersions } from "./npm-registry-spec.js";
 import { compareValidSemver, normalizeLegacyDotBetaVersion } from "./semver.js";
@@ -21,6 +16,7 @@ import {
   fetchNpmPackageTargetStatus,
   type NpmMetadataCommandRunner,
 } from "./update-check-package-target.js";
+import { detectGlobalInstallManagerForRoot } from "./update-global.js";
 import { resolveGitRoot } from "./update-install-root.js";
 
 type PackageManager = "pnpm" | "bun" | "npm" | "unknown";
@@ -203,36 +199,6 @@ async function exists(p: string): Promise<boolean> {
 
 async function detectPackageManager(root: string): Promise<PackageManager> {
   return (await detectPackageManagerImpl(root)) ?? "unknown";
-}
-
-// Packed manifests advertise the workspace pnpm packageManager, so installed roots need
-// topology proof (pnpm virtual store, Bun global root, or otherwise npm); mistakes break self-update.
-async function isLocklessOpenClawNpmInstall(params: {
-  root: string;
-  manager: PackageManager;
-}): Promise<boolean> {
-  if (
-    ["npm", "bun"].includes(params.manager) ||
-    (await exists(path.join(params.root, "pnpm-lock.yaml")))
-  ) {
-    return false;
-  }
-  try {
-    const manifest = JSON.parse(await fs.readFile(path.join(params.root, "package.json"), "utf8"));
-    if (manifest?.name !== "openclaw") {
-      return false;
-    }
-    if (
-      !resolvePnpmNodeModulesRoot(params.root) ||
-      (await isPnpmOwnedPackageRoot(params.root)) ||
-      (await isBunOwnedPackageRoot(params.root))
-    ) {
-      return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** Classify installation ownership without reading Git history or dependency state. */
@@ -621,6 +587,7 @@ export function compareSemverStrings(a: string | null, b: string | null): number
 
 export async function checkUpdateStatus(params: {
   root: string | null;
+  signal?: AbortSignal;
   timeoutMs?: number;
   fetchGit?: boolean;
   useDetachedDevUpstream?: boolean;
@@ -650,19 +617,23 @@ export async function checkUpdateStatus(params: {
     };
   }
 
-  const [detectedPackageManager, installKind] = await Promise.all([
-    detectPackageManager(root),
-    resolveUpdateInstallKind(root),
-  ]);
+  const installKind = await resolveUpdateInstallKind(root);
   const isGit = installKind === "git";
-  const packageManager =
-    !isGit &&
-    (await isLocklessOpenClawNpmInstall({
-      root,
-      manager: detectedPackageManager,
-    }))
-      ? "npm"
-      : detectedPackageManager;
+  const packageManager = isGit
+    ? await detectPackageManager(root)
+    : ((await detectGlobalInstallManagerForRoot(
+        async (argv, options) => {
+          params.signal?.throwIfAborted();
+          return runCommandWithTimeout(argv, {
+            ...options,
+            signal: params.signal,
+            killProcessTree: true,
+          });
+        },
+        root,
+        timeoutMs,
+      )) ?? "unknown");
+  params.signal?.throwIfAborted();
 
   // Start all local Git reads together; only registry selection needs to wait
   // for branch/tag identity, independently of worktree and remote freshness.

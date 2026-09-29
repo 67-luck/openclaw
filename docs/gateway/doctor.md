@@ -159,7 +159,7 @@ Flags:
     - Config normalization for legacy value shapes.
     - Safe migration of legacy default HTTPS Tailscale Serve routes from a LAN-bound Gateway to managed loopback ingress. Retired named-Service config is removed with managed ingress disabled until the operator chooses a device route; custom external routes receive manual guidance.
     - Talk config migration from legacy flat `talk.*` fields into `talk.provider` + `talk.providers.<provider>`.
-    - Browser migration checks for legacy Chrome extension configs, owned native-bootstrap registration drift, and Chrome MCP readiness.
+    - Browser migration checks for legacy Chrome extension configs and Chrome MCP readiness, with explicit commands for native-bootstrap inspection and repair.
     - OpenCode provider override warnings (`models.providers.opencode` / `opencode-zen` / `opencode-go`).
     - Legacy OpenAI Codex provider/profile migration (`openai-codex` → `openai`) and shadowing warnings for stale `models.providers.openai-codex`.
     - OAuth TLS prerequisites check for OpenAI Codex OAuth profiles.
@@ -254,6 +254,9 @@ That stages grounded durable candidates into the short-term dreaming store while
 
     Other commands that encounter legacy keys still ask you to run `openclaw doctor`. Doctor explains the issues, shows its migrations, and rewrites `~/.openclaw/openclaw.json` with the updated schema. Cron job store migrations are also handled by `openclaw doctor --fix`; automatic config-key migration does not import legacy session stores or repair services.
 
+    When a readable active config can be fully migrated, Doctor preserves it before considering last-known-good recovery. This includes legacy multi-agent rosters with a `default: true` owner: unrelated settings and the original agent ownership survive the migration.
+
+    Per-agent migrations apply to both keyed `agents.entries` and legacy `agents.list` rosters, including rosters that already set `agents.ownership: "explicit"`. For example, Doctor preserves an agent's legacy `memorySearch` settings under `memory.search` and converts `sandbox.perSession` to `sandbox.scope`. Existing values at the current config paths take precedence.
     <Note>
       Doctor only carries automatic migrations for roughly two months after a
       key is retired. Older legacy keys (for example the original
@@ -370,13 +373,27 @@ That stages grounded durable candidates into the short-term dreaming store while
 
     Doctor warns while `browser.extensionRelay.allowLegacyAuth` is enabled. Upgrade paired Chrome extensions and external CDP clients to Browser Relay Authentication v2, then set the flag to `false`. V2 clients do not downgrade to legacy authentication.
 
-    When a stable Chrome extension copy and owned native-host registration already
-    exist, doctor reports registration drift. `openclaw doctor --fix` may repair
-    that owned registration, but it never installs the host for every OpenClaw
-    user and never overwrites a foreign same-name manifest or launcher. For
-    initial setup, run `openclaw browser extension install` first, then add the
-    official Chrome Web Store extension. The unpacked stable path is a
-    development fallback.
+    Doctor does not inspect personal browser profiles for optional extension
+    readiness or cookie-import availability. It reports the importable cookie
+    database count as unavailable, not zero. When a stable Chrome extension copy
+    exists, Doctor reports its native-bootstrap status as not inspected;
+    `openclaw doctor --fix` skips native-host registration repair.
+
+    On the machine hosting Chrome, run `openclaw browser extension status --json`
+    to inspect registration explicitly; this may request browser-profile access.
+    If an upgrade leaves stale native-host targets, run
+    `openclaw browser extension install` to repair through the explicit
+    installer. The installer refuses to
+    overwrite a foreign same-name manifest or launcher. Status distinguishes a
+    requested installation, Chrome approval, and native-host registration health;
+    it does not prove a live relay connection.
+
+    For initial setup, run `openclaw browser extension install`, then add the
+    official Chrome Web Store extension. The installer pre-registers the native
+    host for both the Store extension and approved development copies; it does
+    not install the Store extension itself. The unpacked stable path remains a
+    development fallback. Explicit cookie import still requires its separate
+    consent.
 
     Doctor also audits the host-local Chrome MCP path when you use `defaultProfile: "user"` or a configured `existing-session` profile:
 
@@ -524,6 +541,7 @@ That stages grounded durable candidates into the short-term dreaming store while
     - paired records missing an active token for an approved role
     - paired tokens whose scopes drift outside the approved pairing baseline
     - local cached device-token entries for the current machine that predate a gateway-side token rotation or carry stale scope metadata
+    - a retired `identity/device-auth.json` file that is still present and blocks inspection of locally cached tokens, including in remote Gateway mode; stop the Gateway and run `openclaw doctor --fix` to finish migration or cleanup
 
     Doctor does not auto-approve pair requests or auto-rotate device tokens. It prints the exact next steps:
 

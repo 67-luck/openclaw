@@ -19,8 +19,9 @@ export function resolveDiscordReplyReference(params: {
   }
   const singleUse =
     params.replyToIdSource !== "explicit" &&
-    params.replyToMode !== undefined &&
-    isSingleUseReplyToMode(params.replyToMode);
+    (params.replyToMode !== undefined
+      ? isSingleUseReplyToMode(params.replyToMode)
+      : params.replyToIdSource === "implicit");
   return { messageId: params.replyToId, scope: singleUse ? "first" : "all" };
 }
 

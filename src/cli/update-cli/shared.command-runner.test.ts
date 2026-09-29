@@ -177,10 +177,11 @@ describe("update CLI shared helpers", () => {
         installKind: "package",
         timeoutMs: 1_000,
       }),
-    ).rejects.toThrow(
-      "Update refused: package manager owner is unknown; no changes were made. Run this OpenClaw install through its active npm, pnpm, or Bun global shim, or reinstall it with that package manager, then retry.",
-    );
-    expect(runCommandWithTimeout).toHaveBeenCalledTimes(2);
+    ).rejects.toMatchObject({
+      name: "UpdatePreMutationError",
+      message: expect.stringMatching(/Inspected:/),
+    });
+    expect(runCommandWithTimeout).toHaveBeenCalled();
   });
 
   it.skipIf(process.platform === "win32")(

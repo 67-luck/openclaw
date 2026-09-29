@@ -20,6 +20,7 @@ import {
   isPidDefinitelyDead,
 } from "../shared/pid-alive.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { isInternalMessageChannel } from "../utils/message-channel.js";
 import { resolveExecutableFromPathEnv } from "./executable-path.js";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { openNodeSqliteDatabase, resolveNodeSqliteLocation } from "./node-sqlite.js";
@@ -1083,6 +1084,12 @@ async function runOwnedUpdateCommand(commandArgv, timeoutMs) {
       }
     }
 
+    if (params.requester) {
+      const { isManagedUpdateRequesterOwner } = await import(pathToFileURL(params.recoveryModulePath).href);
+      if (!(await isManagedUpdateRequesterOwner(params.requester))) {
+        throw Object.assign(new Error("owner_required: chat requester is no longer a configured command owner"), { code: "owner_required" });
+      }
+    }
     appendLog("starting managed update command: " + params.commandLabel);
     const exit = await runOwnedUpdateCommand(params.commandArgv);
     if (exit.signal || exit.code !== 0) {
@@ -1105,8 +1112,9 @@ async function runOwnedUpdateCommand(commandArgv, timeoutMs) {
     appendLog("handoff failed: " + (err && err.stack ? err.stack : String(err)));
     if (managedUpdateLeaseOwned) {
       bindManagedUpdateLeaseToProcess(process.pid);
-      if (restorationArmed) await restoreGatewayService("managed-service-handoff-helper-failed");
-      else markUpdateSentinelFailureIfPending("managed-service-handoff-helper-failed", undefined, recoverySentinelRevision);
+      const reason = err?.code === "owner_required" ? "owner_required" : "managed-service-handoff-helper-failed";
+      if (restorationArmed) await restoreGatewayService(reason);
+      else markUpdateSentinelFailureIfPending(reason, undefined, recoverySentinelRevision);
     }
     process.exitCode = 1;
   } finally {
@@ -1130,6 +1138,7 @@ type ManagedServiceUpdateHandoffParams = {
   channel?: UpdateChannel;
   tag?: string;
   meta: UpdateRestartSentinelMeta;
+  requester?: { channel?: string; accountId?: string; senderId?: string };
   handoffId?: string;
   supervisor?: RespawnSupervisor | null;
   env?: NodeJS.ProcessEnv;
@@ -1364,6 +1373,10 @@ async function spawnManagedServiceUpdateHandoff(
       PARENT_EXIT_SHUTDOWN_RESERVE_MS,
   );
   const helperParams = {
+    requester:
+      params.requester?.channel && !isInternalMessageChannel(params.requester.channel)
+        ? params.requester
+        : undefined,
     parentPid,
     parentStartIdentity: String(parentStartIdentity),
     parentExitTimeoutMs,

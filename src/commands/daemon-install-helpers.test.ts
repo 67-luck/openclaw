@@ -1847,7 +1847,7 @@ describe("buildGatewayInstallPlan — dotenv merge", () => {
     expect(rewritten?.environmentValueSources?.OPENCLAW_GATEWAY_AUTH_TOKEN).toBe("file");
   });
 
-  it.each([
+  const gatewayAuthPersistenceCases = [
     {
       name: "token file-backed match",
       surface: "token",
@@ -1888,17 +1888,21 @@ describe("buildGatewayInstallPlan — dotenv merge", () => {
       name: "token inline-only match",
       surface: "token",
       mode: "token",
-      configuredKey: "OPENCLAW_GATEWAY_AUTH_TOKEN",
-      existingKey: "OPENCLAW_GATEWAY_AUTH_TOKEN",
+      configuredKey: "OPENCLAW_GATEWAY_TOKEN",
+      existingKey: "OPENCLAW_GATEWAY_TOKEN",
       existingSource: "inline",
+      expectedValue: "existing-secret",
+      processValue: "process-secret",
     },
     {
       name: "password inline-only match",
       surface: "password",
       mode: "password",
-      configuredKey: "OPENCLAW_GATEWAY_AUTH_PASSWORD",
-      existingKey: "OPENCLAW_GATEWAY_AUTH_PASSWORD",
+      configuredKey: "OPENCLAW_GATEWAY_PASSWORD",
+      existingKey: "OPENCLAW_GATEWAY_PASSWORD",
       existingSource: "inline",
+      expectedValue: "existing-secret",
+      processValue: "process-secret",
     },
     {
       name: "token ref mismatch",
@@ -1960,7 +1964,12 @@ describe("buildGatewayInstallPlan — dotenv merge", () => {
       configuredKey: "OPENCLAW_GATEWAY_AUTH_PASSWORD",
       processValue: "process-secret",
     },
-  ] as const)("calibrates gateway auth persistence: $name", async (testCase) => {
+  ] as const;
+  it.each(
+    gatewayAuthPersistenceCases.flatMap((testCase) =>
+      (["darwin", "linux", "win32"] as const).map((platform) => ({ platform, testCase })),
+    ),
+  )("preserves $platform gateway auth: $testCase.name", async ({ platform, testCase }) => {
     mockNodeGatewayPlanFixture({
       serviceEnvironment: {
         HOME: "/from-service",
@@ -1986,7 +1995,9 @@ describe("buildGatewayInstallPlan — dotenv merge", () => {
     const existingEnvironment = existingKey
       ? {
           [existingKey]: "existing-secret",
-          OPENCLAW_SERVICE_MANAGED_ENV_KEYS: existingKey,
+          ...(existingSource === "inline"
+            ? {}
+            : { OPENCLAW_SERVICE_MANAGED_ENV_KEYS: existingKey }),
         }
       : undefined;
     const existingEnvironmentValueSources =
@@ -1998,16 +2009,17 @@ describe("buildGatewayInstallPlan — dotenv merge", () => {
       env: { HOME: tmpDir, ...processEnvironment },
       port: 3000,
       runtime: "node",
-      platform: "darwin",
+      platform,
       existingEnvironment,
       existingEnvironmentValueSources,
       config: { gateway: { auth } } as unknown as OpenClawConfig,
     });
 
     if (existingKey) {
-      expect(plan.environment[existingKey]).toBe(
-        "expectedValue" in testCase ? testCase.expectedValue : undefined,
-      );
+      const expectedValue =
+        platform !== "win32" && "expectedValue" in testCase ? testCase.expectedValue : undefined;
+      expect(plan.environment[existingKey]).toBe(expectedValue);
+      expect(plan.environmentValueSources?.[existingKey]).toBe(expectedValue ? "file" : undefined);
     }
     if (configuredKey && configuredKey !== existingKey) {
       expect(plan.environment[configuredKey]).toBeUndefined();

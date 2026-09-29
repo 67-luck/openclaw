@@ -22,6 +22,55 @@ function historyEntry(params: {
 }
 
 describe("discord buildDiscordMessageProcessContext sender bot status", () => {
+  it.each([
+    {
+      name: "batched messages",
+      replyToMode: "batched" as const,
+      sourceMessageIds: ["1000", "1001"],
+      expected: {
+        MessageSids: ["1000", "1001"],
+        MessageSidFirst: "1000",
+        MessageSidLast: "1001",
+        ReplyThreading: { implicitCurrentMessage: "allow" },
+      },
+    },
+    {
+      name: "a single message",
+      replyToMode: "batched" as const,
+      sourceMessageIds: ["1001"],
+      expected: {
+        MessageSids: undefined,
+        MessageSidFirst: undefined,
+        MessageSidLast: undefined,
+        ReplyThreading: { implicitCurrentMessage: "deny" },
+      },
+    },
+    {
+      name: "a batch with first-reply mode",
+      replyToMode: "first" as const,
+      sourceMessageIds: ["1000", "1001"],
+      expected: {
+        MessageSids: ["1000", "1001"],
+        MessageSidFirst: "1000",
+        MessageSidLast: "1001",
+        ReplyThreading: undefined,
+      },
+    },
+  ])("preserves reply policy and source identities for $name", async (testCase) => {
+    const ctx = await createBaseDiscordMessageContext({
+      replyToMode: testCase.replyToMode,
+      sourceMessageIds: testCase.sourceMessageIds,
+      canonicalMessageId: "pluralkit-original",
+    });
+    const result = await buildDiscordMessageProcessContext({ ctx, text: "hi", mediaList: [] });
+
+    expect(result?.ctxPayload).toMatchObject({
+      MessageSid: "pluralkit-original",
+      MessageSidFull: "1001",
+      ...testCase.expected,
+    });
+  });
+
   it("preserves the native Discord channel id for tool authorization", async () => {
     const ctx = await createBaseDiscordMessageContext();
 

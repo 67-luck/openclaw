@@ -18,10 +18,14 @@ import {
 } from "./approval-types.js";
 import type { ExecApprovalRequest } from "./exec-approvals.js";
 import type { PluginApprovalRequest } from "./plugin-approvals.js";
+import type { SystemAgentApprovalRequest } from "./system-agent-approvals.js";
 
 export type ApprovalRequestLike = {
   id: string;
-  request: ExecApprovalRequest["request"] | PluginApprovalRequest["request"];
+  request:
+    | ExecApprovalRequest["request"]
+    | PluginApprovalRequest["request"]
+    | SystemAgentApprovalRequest["request"];
   createdAtMs: number;
   expiresAtMs: number;
 };
@@ -32,10 +36,13 @@ function resolveApprovalForwardAccountIds(params: {
   channel?: string | null;
   defaultAccountId?: string | null;
 }): string[] {
+  const approvalKind = resolveApprovalRequestKind(params.request);
   const forwarding =
-    resolveApprovalRequestKind(params.request) === "exec"
+    approvalKind === "exec"
       ? params.cfg.approvals?.exec
-      : params.cfg.approvals?.plugin;
+      : approvalKind === "plugin"
+        ? params.cfg.approvals?.plugin
+        : undefined;
   const channel = normalizeOptionalChannel(params.channel);
   if (!forwarding?.enabled || (forwarding.mode !== "targets" && forwarding.mode !== "both")) {
     return [];
@@ -64,10 +71,13 @@ function hasApprovalForwardTarget(params: {
   request: ApprovalRequestLike;
   channel?: string | null;
 }): boolean {
+  const approvalKind = resolveApprovalRequestKind(params.request);
   const forwarding =
-    resolveApprovalRequestKind(params.request) === "exec"
+    approvalKind === "exec"
       ? params.cfg.approvals?.exec
-      : params.cfg.approvals?.plugin;
+      : approvalKind === "plugin"
+        ? params.cfg.approvals?.plugin
+        : undefined;
   if (
     !forwarding?.enabled ||
     (forwarding.mode !== "targets" && forwarding.mode !== "both") ||

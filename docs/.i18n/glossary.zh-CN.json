@@ -1680,6 +1680,10 @@
     "target": "安全审计"
   },
   {
+    "source": "Security audit checks",
+    "target": "安全审计检查项"
+  },
+  {
     "source": "Linux Canvas plugin",
     "target": "Linux Canvas plugin"
   },

@@ -15,9 +15,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2026.8.33</string>
+    <string>2026.8.34</string>
     <key>CFBundleVersion</key>
-    <string>2026083300</string>
+    <string>2026083400</string>
     <key>CFBundleIconFile</key>
     <string>OpenClaw</string>
     <key>CFBundleURLTypes</key>

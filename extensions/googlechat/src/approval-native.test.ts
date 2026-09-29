@@ -43,7 +43,7 @@ const activeExecApprovalHint: ChannelOutboundPayloadHint = {
 describe("googleChatApprovalCapability", () => {
   it("declares native exec and plugin approval runtime support", async () => {
     const runtime = googleChatApprovalCapability.nativeRuntime;
-    expect(runtime?.eventKinds).toEqual(["exec", "plugin"]);
+    expect(runtime?.eventKinds).toEqual(["exec", "plugin", "system-agent"]);
     expect(
       runtime?.availability.isConfigured({
         cfg: {

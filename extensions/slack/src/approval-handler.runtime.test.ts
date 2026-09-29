@@ -320,8 +320,8 @@ function findApprovalMrkdwn(payload: SlackPayload, prefix: string): string {
 }
 
 describe("slackApprovalNativeRuntime", () => {
-  it("subscribes to plugin approval events", () => {
-    expect(slackApprovalNativeRuntime.eventKinds).toEqual(["exec", "plugin"]);
+  it("subscribes to every native approval event kind", () => {
+    expect(slackApprovalNativeRuntime.eventKinds).toEqual(["exec", "plugin", "system-agent"]);
   });
 
   it("does not leave dangling surrogates when truncating exec approval command mrkdwn", async () => {

@@ -152,6 +152,9 @@ export class SqliteSessionImportStage {
     const update = this.database.prepare(
       "UPDATE rows SET event_json = ? WHERE source = ? AND seq = ?",
     );
+    // Updating rows while this cursor is open can make SQLite deliver the row again.
+    // Defer legacy metadata rewrites until the navigation scan is complete.
+    const normalizedRows = diskSet("normalized");
     let changed = false;
     let recognized = true;
     let headerSeq: number | undefined;
@@ -166,7 +169,7 @@ export class SqliteSessionImportStage {
           continue;
         }
         if (normalizeLegacyOpenAICodexTranscriptMetadata([entry]) > 0) {
-          update.run(JSON.stringify(entry), source, row.seq);
+          normalizedRows.add(String(row.seq));
           changed = true;
         }
         if (entry.type === "session") {
@@ -222,6 +225,20 @@ export class SqliteSessionImportStage {
       resetDescendantIds: diskSet("reset"),
       invalidLeafControlIds: diskSet("invalid"),
     });
+    for (const pending of this.database
+      .prepare(
+        `SELECT rows.seq, rows.event_json
+         FROM rows JOIN tree_sets
+           ON tree_sets.kind = 'normalized' AND tree_sets.id = CAST(rows.seq AS TEXT)
+         WHERE rows.source = ?`,
+      )
+      .iterate(source)) {
+      const entry: unknown = JSON.parse(String(pending.event_json));
+      if (isRecord(entry)) {
+        normalizeLegacyOpenAICodexTranscriptMetadata([entry]);
+        update.run(JSON.stringify(entry), source, pending.seq!);
+      }
+    }
     const select = this.database.prepare("INSERT OR REPLACE INTO selected VALUES (?, ?, ?, ?)");
     const selected = this.database.prepare("SELECT 1 FROM selected WHERE id = ?");
     const walk = (leaf: string | null, visible: boolean): boolean => {

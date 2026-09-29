@@ -6,6 +6,10 @@ import { withGatewayNativeApprovalRuntime } from "./approval-gateway-runtime-con
 import type { GatewayNativeApprovalRuntime } from "./approval-gateway-runtime.types.js";
 import type { ExecApprovalRequest } from "./exec-approvals.js";
 import type { PluginApprovalRequest, PluginApprovalResolved } from "./plugin-approvals.js";
+import type {
+  SystemAgentApprovalRequest,
+  SystemAgentApprovalResolved,
+} from "./system-agent-approvals.js";
 
 const mockGatewayClientStarts = vi.hoisted(() => vi.fn());
 const mockGatewayClientStops = vi.hoisted(() => vi.fn());
@@ -85,9 +89,28 @@ function createPluginReplayRequest(id = "plugin:abc"): PluginApprovalRequest {
   };
 }
 
+function createSystemAgentReplayRequest(
+  id = "system-agent:approval-1",
+): SystemAgentApprovalRequest {
+  return {
+    id,
+    request: {
+      title: "OpenClaw change",
+      description: "Set gateway.port to 19001",
+      command: "Set gateway.port to 19001",
+      proposalHash: "a".repeat(64),
+      sessionId: "delegation-1",
+      allowedDecisions: ["allow-once", "deny"],
+    },
+    createdAtMs: 1000,
+    expiresAtMs: 2000,
+  };
+}
+
 function mockReplayLists(params: {
   exec?: ExecApprovalRequest[];
   plugin?: PluginApprovalRequest[];
+  systemAgent?: SystemAgentApprovalRequest[];
 }) {
   mockGatewayClientRequests.mockImplementation(async (method: string) => {
     if (method === "exec.approval.list") {
@@ -95,6 +118,9 @@ function mockReplayLists(params: {
     }
     if (method === "plugin.approval.list") {
       return params.plugin ?? [];
+    }
+    if (method === "openclaw.approval.list") {
+      return params.systemAgent ?? [];
     }
     return { ok: true };
   });
@@ -674,6 +700,50 @@ describe("createExecApprovalChannelRuntime", () => {
         id: "plugin:abc",
         decision: "allow-once",
         entries: [{ id: "plugin:abc" }],
+      });
+    });
+  });
+
+  it("replays and resolves pending system-agent approvals", async () => {
+    const request = createSystemAgentReplayRequest();
+    mockReplayLists({ systemAgent: [request] });
+    const deliverRequested = vi.fn(async (approval) => [{ id: approval.id }]);
+    const finalizeResolved = vi.fn(async () => undefined);
+    const runtime = createExecApprovalChannelRuntime<
+      { id: string },
+      SystemAgentApprovalRequest,
+      SystemAgentApprovalResolved
+    >({
+      label: "test/system-agent-approvals",
+      clientDisplayName: "Test System Agent Approvals",
+      cfg: {} as never,
+      eventKinds: ["system-agent"],
+      isConfigured: () => true,
+      shouldHandle: () => true,
+      deliverRequested,
+      finalizeResolved,
+    });
+
+    await runtime.start();
+    await vi.waitFor(() => {
+      expect(mockGatewayClientRequests).toHaveBeenCalledWith("openclaw.approval.list", {});
+      expectDeliveredRequestId(deliverRequested, request.id);
+    });
+
+    lastGatewayEventClientParams()?.onEvent?.({
+      event: "openclaw.approval.resolved",
+      payload: {
+        id: request.id,
+        decision: "deny",
+        resolvedBy: "telegram:9",
+        ts: 1500,
+      },
+    });
+    await vi.waitFor(() => {
+      expectFinalizedResolved(finalizeResolved, {
+        id: request.id,
+        decision: "deny",
+        entries: [{ id: request.id }],
       });
     });
   });

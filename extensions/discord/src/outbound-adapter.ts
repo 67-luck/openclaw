@@ -48,6 +48,8 @@ import {
 } from "./send.receipt.js";
 
 export const DISCORD_TEXT_CHUNK_LIMIT = 2000;
+// Shared planning owns explicit per-send limits; Discord's sender resolves account config/defaults.
+const DISCORD_PRECHUNK_MAX_LINES = Number.MAX_SAFE_INTEGER;
 const log = createSubsystemLogger("discord/outbound");
 const loadDiscordThreadBindings = createLazyRuntimeModule(
   () => import("./monitor/thread-bindings.js"),
@@ -74,6 +76,9 @@ async function maybeSendDiscordWebhookText(params: {
   accountId?: string | null;
   identity?: OutboundIdentity;
   replyToId?: string | null;
+  replyToIdSource?: DiscordOutboundMessageContext["replyToIdSource"];
+  replyToMode?: DiscordOutboundMessageContext["replyToMode"];
+  maxLinesPerMessage?: number;
   onPlatformSendDispatch?: () => Promise<void>;
   assertPlatformSendAuthorized?: () => void;
 }): Promise<{ messageId: string; channelId: string } | null> {
@@ -104,7 +109,12 @@ async function maybeSendDiscordWebhookText(params: {
     accountId: binding.accountId,
     threadId: binding.threadId,
     cfg: params.cfg,
-    replyTo: params.replyToId ?? undefined,
+    replyTo: resolveDiscordReplyReference({
+      replyToId: params.replyToId,
+      replyToIdSource: params.replyToIdSource,
+      replyToMode: params.replyToMode,
+    }),
+    maxLinesPerMessage: params.maxLinesPerMessage,
     username: persona.username,
     avatarUrl: persona.avatarUrl,
     onPlatformSendDispatch: params.onPlatformSendDispatch,
@@ -156,7 +166,7 @@ export const discordOutbound: ChannelOutboundAdapter = {
   chunker: (text, limit, ctx) =>
     chunkDiscordTextWithMode(text, {
       maxChars: limit,
-      maxLines: ctx?.formatting?.maxLinesPerMessage,
+      maxLines: ctx?.formatting?.maxLinesPerMessage ?? DISCORD_PRECHUNK_MAX_LINES,
     }),
   textChunkLimit: DISCORD_TEXT_CHUNK_LIMIT,
   pollMaxOptions: 10,
@@ -199,6 +209,9 @@ export const discordOutbound: ChannelOutboundAdapter = {
             accountId: ctx.accountId,
             identity: ctx.identity,
             replyToId: ctx.replyToId,
+            replyToIdSource: ctx.replyToIdSource,
+            replyToMode: ctx.replyToMode,
+            maxLinesPerMessage: ctx.formatting?.maxLinesPerMessage,
             onPlatformSendDispatch: ctx.onPlatformSendDispatch
               ? async () => {
                   webhookSelected = true;

@@ -1,4 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { isEmbeddedRunHandleCompacting } from "../../agents/embedded-agent-runner/runs.probes.js";
 import { hasPromptImageInput } from "../../media/prompt-image-input.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
@@ -124,7 +125,10 @@ export function resolveReplyMessageInjectionRejection(params: {
     return { reason: "injection_unavailable" };
   }
   try {
-    if (!injection.isAvailable()) {
+    if (
+      !injection.isAvailable() ||
+      isEmbeddedRunHandleCompacting(operation.sessionId, backend) !== false
+    ) {
       return { reason: "injection_unavailable" };
     }
   } catch (error) {

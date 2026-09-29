@@ -169,18 +169,8 @@ export function createCopilotClientPool(options: CopilotClientPoolOptions = {}):
   };
 
   const createEntry = (key: PoolKey, cacheKey: string, clientOptions: CopilotClientOptions) => {
-    const entry: PoolEntry = {
-      key,
-      cacheKey,
-      refCount: 1,
-      stopRan: false,
-      state: {
-        kind: "creating",
-        promise: Promise.resolve(undefined as unknown as CopilotClient),
-      },
-    };
-
-    const createPromise = (async () => {
+    // Register the entry before invoking a factory that may throw synchronously.
+    const createPromise = Promise.resolve().then(async () => {
       try {
         const client = await sdkFactory(clientOptions);
         entry.state = { kind: "ready", client };
@@ -190,9 +180,14 @@ export function createCopilotClientPool(options: CopilotClientPoolOptions = {}):
         maybeDeleteEntry(entry);
         throw toCopilotRuntimeError(error);
       }
-    })();
-
-    entry.state = { kind: "creating", promise: createPromise };
+    });
+    const entry: PoolEntry = {
+      key,
+      cacheKey,
+      refCount: 1,
+      stopRan: false,
+      state: { kind: "creating", promise: createPromise },
+    };
     entries.set(cacheKey, entry);
     return { entry, createPromise };
   };

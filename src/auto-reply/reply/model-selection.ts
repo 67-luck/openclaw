@@ -580,7 +580,9 @@ export async function createModelSelectionState(params: {
     if (cached) {
       return cached.length > 0 ? cached : undefined;
     }
-    let catalog = allowedModelCatalog;
+    // Capability resolution may need prepared automatic candidates that are not
+    // manually selectable under the current visibility policy.
+    let catalog = configuredModelCatalog;
     const hasReasoning = (entries: ModelCatalog) =>
       findSelectedCatalogEntry({
         catalog: entries,

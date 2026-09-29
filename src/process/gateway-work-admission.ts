@@ -265,6 +265,17 @@ export function rollbackGatewayRestartSignalFence(): boolean {
   return clearRestartSignalFence();
 }
 
+/** Resolves when one-way drain commits or the reversible signal fence clears. */
+export async function waitForGatewayRestartFenceSettlement(): Promise<void> {
+  if (!GATEWAY_WORK_ADMISSION_STATE.restartSignalPending) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    GATEWAY_WORK_ADMISSION_STATE.suspendOpenWaiters.add(resolve);
+  });
+  await waitForGatewayRestartFenceSettlement();
+}
+
 /** Root RPC/timer admission. Nested work in the same async chain counts once. */
 export function tryBeginGatewayRootWorkAdmission(
   origin = "gateway",

@@ -15,6 +15,7 @@ import type { ExecApprovalPendingReplyParams } from "openclaw/plugin-sdk/approva
 import type {
   ExecApprovalRequest,
   PluginApprovalRequest,
+  SystemAgentApprovalRequest,
 } from "openclaw/plugin-sdk/approval-runtime";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -37,7 +38,7 @@ import {
 
 const log = createSubsystemLogger("telegram/approvals");
 
-type ApprovalRequest = ExecApprovalRequest | PluginApprovalRequest;
+type ApprovalRequest = ExecApprovalRequest | PluginApprovalRequest | SystemAgentApprovalRequest;
 type PendingMessage = {
   chatId: string;
   messageId: string;
@@ -81,6 +82,21 @@ function buildPendingPayload(params: {
   nowMs: number;
   view: PendingApprovalView;
 }): TelegramPendingDelivery {
+  if (params.approvalKind === "system-agent") {
+    if (params.view.approvalKind !== "system-agent") {
+      throw new Error("system-agent approval request and view kinds do not match");
+    }
+    return {
+      text: [
+        "🔒 OpenClaw change requires approval",
+        `Change: ${params.view.operationSummary}`,
+        ...(params.view.agentId ? [`Agent: ${params.view.agentId}`] : []),
+      ].join("\n"),
+      buttons: resolveTelegramInlineButtons({
+        presentation: buildApprovalPresentationFromActionDescriptors(params.view.actions),
+      }),
+    };
+  }
   const payload =
     params.approvalKind === "plugin"
       ? buildPluginApprovalPendingReplyPayload({
@@ -121,7 +137,7 @@ export const telegramApprovalNativeRuntime = createChannelApprovalNativeRuntimeA
   never,
   TelegramFinalDelivery
 >({
-  eventKinds: ["exec", "plugin"],
+  eventKinds: ["exec", "plugin", "system-agent"],
   availability: {
     isConfigured: (params) => {
       const resolved = resolveHandlerContext(params);

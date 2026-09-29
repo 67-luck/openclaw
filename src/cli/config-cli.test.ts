@@ -509,6 +509,7 @@ function requireResolveSecretRefCall(index: number): [unknown, unknown] {
 
 let registerConfigCli: typeof import("./config-cli.js").registerConfigCli;
 let parseConfigSetPath: typeof import("./config-cli.js").parseConfigSetPath;
+let runGuardedConfigSet: typeof import("./config-cli.js").runConfigSet;
 let sharedProgram: Command;
 
 async function runConfigCommand(args: string[]) {
@@ -523,7 +524,11 @@ let ExitError: new (code: number, message?: string) => Error;
 
 describe("config cli", () => {
   beforeAll(async () => {
-    ({ parseConfigSetPath, registerConfigCli } = await import("./config-cli.js"));
+    ({
+      parseConfigSetPath,
+      registerConfigCli,
+      runConfigSet: runGuardedConfigSet,
+    } = await import("./config-cli.js"));
     sharedProgram = new Command();
     sharedProgram.exitOverride();
     registerConfigCli(sharedProgram);
@@ -3777,6 +3782,30 @@ describe("config cli", () => {
         "The config file changed while this command was writing",
       );
     });
+
+    it.each(["EPERM", "EEXIST"] as const)(
+      "gives guarded %s rename failures a redacted permission-repair path",
+      async (code) => {
+        mockWriteConfigFile.mockRejectedValueOnce(
+          Object.assign(new Error(`rename failed for /private/operator/config (${code})`), {
+            code,
+          }),
+        );
+
+        await expect(
+          runGuardedConfigSet({
+            path: "gateway.port",
+            value: "19000",
+            cliOptions: {},
+            beforePersistentApply: () => {},
+          }),
+        ).rejects.toMatchObject({ name: "ExitError", code: 1 });
+        expectErrorIncludes(
+          `The approved config change stopped safely because the guarded rename failed with ${code}. Repair the config file and parent directory ownership or permissions for the user running OpenClaw, then retry the change.`,
+        );
+        expect(mockError.mock.calls.flat().join("\n")).not.toContain("/private/operator/config");
+      },
+    );
 
     it("emits structured JSON for --dry-run --json success", async () => {
       setGatewaySnapshot({ providers: { default: { source: "env" } } });

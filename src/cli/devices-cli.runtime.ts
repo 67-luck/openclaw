@@ -50,6 +50,7 @@ type DevicesRpcOpts = {
   device?: string;
   role?: string;
   scope?: string[];
+  scopes?: boolean;
   name?: string;
 };
 
@@ -1164,11 +1165,11 @@ export async function runDevicesRotateCommand(opts: DevicesRpcOpts): Promise<voi
   if (!required) {
     return;
   }
-  const result = await callGatewayCli("device.token.rotate", opts, {
-    deviceId: required.deviceId,
-    role: required.role,
-    scopes: Array.isArray(opts.scope) ? opts.scope : undefined,
-  });
+  // Non-operator token management requires admin even with shared Gateway auth.
+  const scopes: OperatorScope[] | undefined =
+    required.role === OPERATOR_ROLE ? undefined : [ADMIN_SCOPE];
+  const params = { ...required, scopes: opts.scopes === false ? [] : opts.scope };
+  const result = await callGatewayCli("device.token.rotate", opts, params, { scopes });
   defaultRuntime.writeJson(result);
 }
 
@@ -1177,10 +1178,9 @@ export async function runDevicesRevokeCommand(opts: DevicesRpcOpts): Promise<voi
   if (!required) {
     return;
   }
-  const result = await callGatewayCli("device.token.revoke", opts, {
-    deviceId: required.deviceId,
-    role: required.role,
-  });
+  const scopes: OperatorScope[] | undefined =
+    required.role === OPERATOR_ROLE ? undefined : [ADMIN_SCOPE];
+  const result = await callGatewayCli("device.token.revoke", opts, required, { scopes });
   defaultRuntime.writeJson(result);
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

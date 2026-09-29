@@ -8,6 +8,12 @@ import type { OpenClawPackageBuild } from "./manifest.js";
 import { safeRealpathSync } from "./path-safety.js";
 import type { PluginOrigin } from "./plugin-origin.types.js";
 import { resolvePluginRuntimeArtifact } from "./plugin-runtime-artifact-resolution.js";
+import {
+  prefersBuiltPluginArtifacts,
+  resolvePluginRuntimeArtifactPreference,
+} from "./plugin-runtime-artifact-selection.js";
+import { getPluginRegistryForContext } from "./runtime.js";
+import { getPluginRuntimeLoadContext } from "./runtime/load-context.js";
 
 const MAX_RUNTIME_ARTIFACT_DEPTH = 64;
 const MAX_RUNTIME_ARTIFACT_ENTRIES = 50_000;
@@ -124,8 +130,13 @@ export function fingerprintPluginRuntimeArtifact(
         source: record.source,
         rootDir: record.rootDir,
         origin: record.origin,
-        // Gateway and standalone agent runtimes select built artifacts.
-        preferBuiltPluginArtifacts: true,
+        preferBuiltPluginArtifacts: prefersBuiltPluginArtifacts(
+          resolvePluginRuntimeArtifactPreference(
+            getPluginRuntimeLoadContext(getPluginRegistryForContext() ?? undefined)
+              ?.preferBuiltPluginArtifacts,
+          ),
+          record.origin,
+        ),
         ...(record.packageBuild ? { packageManifest: { build: record.packageBuild } } : {}),
       })
     : { rootDir: record.rootDir, source: undefined };

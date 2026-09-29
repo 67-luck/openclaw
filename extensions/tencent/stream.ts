@@ -54,7 +54,9 @@ function mapEffortForTencent(model: StreamModel, effort: string | undefined): st
     // model fallback that already normalized the underlying payload.
     return TOKENHUB_HY3_PREVIEW_REASONING_EFFORTS.has(effort) ? effort : undefined;
   }
-  return TENCENT_REASONING_EFFORT_MAP[effort];
+  return Object.hasOwn(TENCENT_REASONING_EFFORT_MAP, effort)
+    ? TENCENT_REASONING_EFFORT_MAP[effort]
+    : undefined;
 }
 
 function isTencentCompletionsCall(model: StreamModel): boolean {

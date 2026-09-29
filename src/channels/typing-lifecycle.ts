@@ -45,7 +45,7 @@ export function createTypingKeepaliveLoop(params: {
     }
     clearInterval(timer);
     timer = undefined;
-    tickInFlight = false;
+    // Stopping cannot cancel an admitted provider request; completion releases exclusivity.
   };
 
   const isRunning = () => timer !== undefined;

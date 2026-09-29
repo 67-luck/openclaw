@@ -44,7 +44,7 @@ const UPDATE_RESPAWN_HEALTH_POLL_MS = 200;
 const LOG_FLUSH_EXIT_TIMEOUT_MS = 4_000;
 const HARD_EXIT_WATCHDOG_GRACE_MS = 2_000;
 
-type GatewayRunSignalAction = "stop" | "restart";
+type GatewayRunSignalAction = "stop" | "restart" | "external-restart";
 type GatewayRunSignalRequest = {
   action: GatewayRunSignalAction;
   signal: string;
@@ -527,7 +527,7 @@ export async function runGatewayLoop(params: {
 
   const runAcceptedRequest = (acceptedRequest: GatewayRunSignalRequest) => {
     const { action, restartIntent } = acceptedRequest;
-    const isRestart = action === "restart";
+    const isRestart = action !== "stop";
     if (isRestart) {
       activeRestartRequest = acceptedRequest;
     }
@@ -745,7 +745,7 @@ export async function runGatewayLoop(params: {
         if (handoffClosed) {
           server = null;
         }
-        if (isRestart) {
+        if (action === "restart") {
           try {
             if (shutdownFailed) {
               await forceExitAfterStabilityBundle("gateway.restart_close_failed");
@@ -761,9 +761,23 @@ export async function runGatewayLoop(params: {
           }
         } else {
           clearForceExitTimer();
-          params.completeBoot?.({ outcome: "clean_stop", reason: "gateway.stop" });
-          await releaseLockIfHeld();
-          await exitProcessAfterLogFlush(0);
+          if (action === "external-restart" && shutdownFailed) {
+            await forceExitAfterStabilityBundle("gateway.restart_close_failed");
+          } else {
+            params.completeBoot?.(
+              isRestart
+                ? {
+                    outcome: "planned_restart",
+                    reason: acceptedRequest.restartReason ?? "gateway.restart.external",
+                  }
+                : {
+                    outcome: shutdownFailed ? "forced_stop" : "clean_stop",
+                    reason: shutdownFailed ? "gateway.stop_close_failed" : "gateway.stop",
+                  },
+            );
+            await releaseLockIfHeld();
+            await exitProcessAfterLogFlush(0);
+          }
         }
       }
     })();
@@ -832,7 +846,7 @@ export async function runGatewayLoop(params: {
       gatewayLog.info(`received ${signal} during shutdown; ignoring`);
       return;
     }
-    const isRestart = action === "restart";
+    const isRestart = action !== "stop";
     // Fence new roots synchronously for stops as well as restarts so admitted
     // detached finalizers can drain before the signal tears down the gateway.
     markRestartDraining();
@@ -870,8 +884,10 @@ export async function runGatewayLoop(params: {
     void (async () => {
       const { consumeGatewayRestartIntentPayloadSync } = await loadGatewayLifecycleRuntimeModule();
       const restartIntent = consumeGatewayRestartIntentPayloadSync();
+      // SIGTERM hands replacement to the caller (e.g. systemctl restart).
+      // Drain as a restart, then exit even when in-process respawn is configured.
       request(
-        restartIntent ? "restart" : "stop",
+        restartIntent ? "external-restart" : "stop",
         "SIGTERM",
         restartIntent?.reason,
         restartIntent ?? undefined,

@@ -1,8 +1,140 @@
 ﻿# Changelog
 
 Docs: https://docs.openclaw.ai
+2026.8.34 release notes: https://docs.openclaw.ai/releases/2026.8.34
 2026.8.33 release notes: https://docs.openclaw.ai/releases/2026.8.33
 2026.8.2 release notes: https://docs.openclaw.ai/releases/2026.8.2
+
+## 2026.8.34
+
+### Highlights
+
+- **Extended-stable correctness rollup:** backport 113 audit-selected fix units across upgrades, Doctor, authentication, sessions, channels, plugins, sandboxing, filesystem safety, model runtimes, and release packaging.
+- **Complete rescan:** re-evaluate the full 2026.8.33 discovery range, large mixed-purpose pull requests, and the 2026.7.35 lineage instead of advancing only from the previous backport cursor.
+- **Upgrade and recovery hardening:** preserve credentials, agent state, plugin inventory, transcripts, schedules, service ownership, and runtime links through upgrades, restarts, and Doctor repair.
+- **Boundary fixes:** tighten remote filesystem mutation, plugin and skill scanning, browser authentication, channel reply identity, private skill ingress, and scoped runtime ownership.
+
+### Changes
+
+- **Extended-stable release preparation:** align OpenClaw, publishable plugins, native version metadata, generated channel catalogs, and npm package inventories to 2026.8.34.
+
+### Fixes
+
+- **Plugins:** Recover orphan installs without weakening ownership.
+- **Doctor:** Repair keyed multi-agent rosters without ownership (#134706)
+- Prevent device pairing migration crash on contaminated records.
+- **Doctor:** Preserve per-agent memory search during upgrades.
+- **Doctor:** Detect shared auth migration by provenance (#134808)
+- **Cron:** Refuse stale doctor store rewrites.
+- **Gateway:** Refresh model catalog after auth changes (#134361)
+- **Openai:** Repair stale doctor route pins.
+- **Auth:** Verify shared credential migration receipts (#134952)
+- **Cron:** Keep model aliases scoped to the selected owner (#135069)
+- **Memory:** Resolve profile auth for compatible embeddings (#134744)
+- **Auth:** Recover credentials stranded by completed migrations (#135346)
+- **Auth:** Relogin repairs stale profile order after upgrade.
+- **Auth:** Preserve custom provider SecretRefs in Doctor.
+- **Docker:** Install libgomp1 in the runtime image for managed llama.cpp (#134532)
+- **Devices:** Allow authorized scoped node token management (#135617)
+- **Msteams:** Thread context is dropped when a channel reply has no replyToId (#129345)
+- **Ui:** Ignore tool-only model auth rows (#134218)
+- **Cron:** Kind change fails with "command env must be an object" when env is omitted (#134639)
+- **Backup:** Exclude workspaces before traversal.
+- **Infra:** Drop empty PATHEXT entries from Windows extension lookup (#135807)
+- **Anthropic:** Context usage is lost when a proxy omits message_delta usage (#135467)
+- **Systemd:** Protect credentials in managed backups (#131786)
+- **Agents:** Preserve requester MCP runtime ownership (#134819)
+- **Plugins:** Refresh persisted registry when source mounts change (#136517)
+- Gateway restart hangs while followup drain retries a draining error (#136713)
+- **Auth:** Preserve OAuth metadata during session SDK refresh (#127988)
+- **Doctor:** Recognize configured memory provider secret references (#137782)
+- **Sessions:** Preserve logical shared-store ownership (#138380)
+- Full-access tasks lose tools after Gateway restart (#138701)
+- Keep unchanged files out of session diffs (#138877)
+- **Auth:** Recover billing-disabled profiles in minutes instead of hours (#136364)
+- **Auth:** Keep an unset default model unchanged during login (#139218)
+- **Gateway:** Avoid crashes when an upgrading client disconnects (#139061)
+- **Shell-env:** Preserve CLI terminal ownership during login imports (#139308)
+- **Auto-reply:** Fold trailing transcript growth into memory-flush fresh totals (#138928)
+- **Cron:** Preserve pending paced checks across restart (#140083)
+- **Daemon:** Systemd install no longer aborts on "ownership could not be verified" after a clock step (#137253)
+- **Config:** Apply environment changes after in-process restart (#141296)
+- Pasted text is missing in model-locked Codex sessions (#142021)
+- **Docker:** Restore source builds after dependency ownership guard (#142073)
+- **Security:** Preserve existing WhatsApp group allowlists (#142589)
+- **Doctor:** Avoid installing unselected search providers (#142640)
+- **Doctor:** Migrate legacy Codex music model selectors (#143235)
+- **Doctor:** Preserve selected model metadata in diagnostics (#144332)
+- **Discord:** Report parent channel denies for thread permissions (#121144)
+- **Config:** Avoid false model changes when saving settings (#144807)
+- **Doctor:** Preserve legacy registry files when quarantine fails (#144787)
+- Retain route ownership while discovering conversations (#146927)
+- **Install:** Preserve runtime links when Node validation fails (#147221)
+- Doctor reports missing OAuth dir for channel config with no installed plugin (#147888)
+- **Doctor:** Stop private pending inputs replaying after session repair (#148625)
+- **Channels:** Settle task-scoped context leases once (#148922)
+- **Push:** Normalize malformed proxy auth errors (#149112)
+- **Cron:** Reject invalid stagger before silent schedule changes (#151740)
+- **Cli:** Keep model validation out of session execution (#154763)
+- **Agents:** Treat empty credential environment variables as unresolved (#155558)
+- **Doctor:** Apply ambient-owner fallback to dream diary and all memory target handlers (#156437)
+- **Sandbox:** Unblock scoped recreation across runtime targets (#157808)
+- **Security:** Parse gpt generation numbers in the audit tier check (#140012)
+- **Doctor:** Report shared auth health without a default agent (#134902)
+- **Doctor:** Converge redundant shared auth relocation subsets (#135096)
+- **Doctor:** Report retained device-auth files (#133978)
+- **Update:** Stop detached updates after chat ownership is revoked (#137312)
+- **Doctor:** Inspect source auth stores during full lint (#137610)
+- **Gateway:** Recover queued RPC replies across restart (#138565)
+- **Doctor:** Preserve legacy ownership during config repair (#138837)
+- Prevent browser profile permission hangs in Doctor (#139612)
+- **Gateway:** Prevent systemd restarts from hanging (#140914)
+- **Doctor:** Recover legacy node tokens with invalid scopes (#143599)
+- **Skills:** Refresh session snapshots on gateway restart (#122110)
+- **Doctor:** Session SQLite import drops Codex assistant messages from legacy transcripts (#140296)
+- **Cron:** Forward claude-cli auth profile on scheduled runs to prevent OAuth expiration (#144266)
+- **Discord:** Preserve sender-owned line limits and reply scope (#137969)
+- **Install:** Never replace or break an existing nvm during installation (#145317)
+- **Sessions:** Recover omitted historical transcripts in Doctor (#120781)
+- **Update:** Recognize custom npm prefix installations (#146091)
+- **Context:** Preserve provider-scoped prompt budgets before reply maintenance (#141052)
+- **Sessions:** Prevent Doctor and startup memory exhaustion (#149704)
+- **Daemon:** Preserve inline auth through service upgrades (#149686)
+- **Update:** Verify paired trusted-proxy gateways with service credentials (#153540)
+- Background continuations lose session access and GitHub tools (#141865)
+- **Doctor:** Decode session headers across read chunk boundaries (#154034)
+- Faulty compaction probe wedges run steering and restart aborts (#154868)
+- **Ui:** Publish rejected goal operations (#156363)
+- **Commands:** Deduplicate session lifecycle keys (#158487)
+- **Plugins:** Preserve runtime artifact preference (#158487)
+- **Agents:** Strip private skill authoring from public ingress (#159220)
+- **Plugins:** Preserve include ownership during uninstall (#159945)
+- **Channels:** Restore system-agent approval reactions (#159132)
+- **Moonshot:** Reject inherited thinking-model keys (#158437)
+- **Tencent:** Ignore inherited effort-map keys (#158437)
+- **Workers:** Observe already-aborted operation promises (#158228)
+- **Gateway:** Reject non-object Claude history rows (#158228)
+- **Copilot:** Recover pool after synchronous factory failures (#157819)
+- **Tlon:** Preserve IPv6 ship origins (#157825)
+- **Sms:** Clean revoked inbound media (#157825)
+- **Slack:** Preserve replacement webhook registrations (#158085)
+- **Matrix:** Accept system-agent approval reactions (#158164)
+- **Channels:** Retain typing tick exclusivity across restart (#158830)
+- **Acp:** Format unset optional tool arguments (#159417)
+- **Meeting:** Clean up partial audio startup (#157982)
+- **Exec:** Retain prepared plugin environment (#158378)
+- **Mxc:** Clean temp directory after bridge failure (#158532)
+- **Discord:** Preserve batched native reply identities (#158886)
+- **Skills:** Count omitted dangerous exec aliases once (#158906)
+- **Sandbox:** Preserve remote mutation path bytes (#159346)
+- **Browser:** Accept standard CDP header containers (#159430)
+- **Plugins:** Preserve sparse catalog preferences (#159945)
+- **Doctor:** Preserve complete plugin inventory (#153901)
+- **Fs:** Preserve bounded filesystem correctness (#157524)
+
+### Complete contribution record
+
+This release represents 113 approved units: 60 exact source commits, 25 material adaptations, 27 narrow slices extracted from large or mixed-purpose pull requests, and one 2026.7.35 plugin-inventory parity repair. Units already covered by the 2026.8.33 architecture, or whose newer storage contract does not exist on this release line, are recorded as evidence-backed inclusions rather than duplicate or speculative code.
 
 ## 2026.8.33
 

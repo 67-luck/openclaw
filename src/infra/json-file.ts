@@ -3,6 +3,7 @@ import "./fs-safe-defaults.js";
 import fs from "node:fs";
 import path from "node:path";
 import { tryReadJsonSync, writeJsonSync } from "@openclaw/fs-safe/json";
+import { hasErrnoCode } from "./errors.js";
 
 function resolveJsonSymlinkTarget(pathname: string): string | undefined {
   let stat: fs.Stats;
@@ -36,10 +37,14 @@ export function writeJsonTarget(pathname: string, data: unknown): void {
 
 // oxlint-disable-next-line typescript-eslint/no-unnecessary-type-parameters -- legacy typed JSON loader alias.
 export function loadJsonFileThroughSymlink<T = unknown>(pathname: string): T | undefined {
-  const direct = tryReadJsonSync<T>(pathname);
-  if (direct !== null) {
-    return direct;
+  let resolved: string;
+  try {
+    resolved = fs.realpathSync(pathname);
+  } catch (error) {
+    if (hasErrnoCode(error, "ENOENT") || hasErrnoCode(error, "ELOOP")) {
+      return undefined;
+    }
+    throw error;
   }
-  const target = resolveJsonSymlinkTarget(pathname);
-  return target ? (tryReadJsonSync<T>(target) ?? undefined) : undefined;
+  return tryReadJsonSync<T>(resolved) ?? undefined;
 }

@@ -34,6 +34,17 @@ function goalHost(requestHandlers: Record<string, unknown>) {
 }
 
 describe("Goal control requests", () => {
+  it("renders rejected goal operations immediately", async () => {
+    const host = goalHost({});
+    const requestUpdate = vi.fn();
+    host.connected = false;
+    host.requestUpdate = requestUpdate;
+
+    expect(await mutateChatGoal(host, { action: "resume", goalId: goal.id })).toBe(false);
+    expect(host.chatError).toBeTruthy();
+    expect(requestUpdate).toHaveBeenCalledOnce();
+  });
+
   it("edits literal objective text through the typed owner and leaves the chat draft alone", async () => {
     const objective = "  /goal clear\n  is literal text ";
     const host = goalHost({

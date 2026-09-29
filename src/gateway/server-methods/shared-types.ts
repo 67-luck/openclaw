@@ -147,6 +147,7 @@ type GatewaySystemAgentSession = {
     resolveOperatorApproval: (
       decision: "allow-once" | "allow-always" | "deny" | null,
       proposalHash: string,
+      beforePersistentApply?: () => void,
     ) => Promise<unknown>;
     dispose: () => Promise<void>;
   };
