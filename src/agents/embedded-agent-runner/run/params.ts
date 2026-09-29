@@ -116,8 +116,11 @@ export type RunEmbeddedAgentParams = {
   retryConnectionErrors?: boolean;
   /** Disable trajectory persistence for auxiliary runs with no durable session owner. */
   disableTrajectory?: boolean;
-  /** Background Workshop review: edits of existing skills require a prior view; changes credit "review". */
-  skillWorkshopReviewGuard?: boolean;
+  /**
+   * Background Workshop review of this conversation: edits of existing skills require a prior
+   * view, and changes credit "review" with this originating session key as their provenance.
+   */
+  skillWorkshopReviewOf?: string;
   skillLibraryAuthoring?: SkillLibraryAuthoringCapability;
   /** Explicit system prompt mode override for trusted callers. */
   promptMode?: PromptMode;

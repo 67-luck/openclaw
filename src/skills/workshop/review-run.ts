@@ -11,13 +11,14 @@ export const SKILL_WORKSHOP_REVIEW_TOOLS = ["skill_workshop"] as const;
 
 /**
  * The background Workshop review run: the openclaw harness on a locked model, executing
- * only skill_workshop behind the review guard.
+ * only skill_workshop behind the review guard, crediting changes to the reviewed session.
  */
 export async function runSkillWorkshopReview(
   params: RunEmbeddedAgentParams & {
     agentId: string;
     config: OpenClawConfig;
     preparedRunAdmission: NonNullable<RunEmbeddedAgentParams["preparedRunAdmission"]>;
+    skillWorkshopReviewOf: string;
   },
 ) {
   const restartSignal = getGatewayRestartDrainSignal();
@@ -49,7 +50,6 @@ export async function runSkillWorkshopReview(
       requestedRouteResolution: "resolved",
       sessionPersistence: "detached",
       toolExecutionAllow: SKILL_WORKSHOP_REVIEW_TOOLS,
-      skillWorkshopReviewGuard: true,
       disableTrajectory: true,
       silentExpected: true,
       allowEmptyAssistantReplyAsSilent: true,

@@ -32,7 +32,7 @@ import { textResult } from "./tool-results.js";
 
 const SKILL_WORKSHOP_DESCRIPTION = `Your learned skills: reusable procedures saved as <name>/SKILL.md that load in future sessions. Changes apply immediately, are versioned, and are shown to the user.
 Actions: list | view name [file_path] [version] | create name content | patch name old_text new_text [file_path] | write_file name file_path content | remove_file name file_path | archive name (absorbed_into or reason) | restore name [version].
-- create: content is the full SKILL.md: frontmatter name (= name) and description (≤160 bytes, triggers first), then the procedure.
+- create: content is the full SKILL.md: frontmatter name (= name) and description (aim for ≤160 bytes, triggers first), then the procedure.
 - patch: replaces one exact, unique old_text; view first and copy the text exactly. Prefer patch over rewrites.
 - file_path: SKILL.md or files under references/, templates/, scripts/, assets/. remove_file deletes one of those support files; archive removes a whole skill.
 - reason: one short line saying what changed; shown to the user.
@@ -50,8 +50,11 @@ export type SkillWorkshopToolOptions = {
   agentId: string;
   sessionKey?: string;
   runId?: string;
-  /** Background review runs: edits of existing skills require a prior view; archive needs a why. */
-  reviewGuard?: boolean;
+  /**
+   * Background review of this originating session: edits of existing skills require a prior
+   * view, archive needs a why, and change rows credit the review to that conversation.
+   */
+  reviewOf?: string;
 };
 
 function formatChange(verb: string, change: WorkshopChange): string {
@@ -71,9 +74,11 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
   const ctx: WorkshopMutationContext = {
     config: options.config,
     agentId: options.agentId,
-    // The review guard marks the background review run; every other caller is the agent.
-    actor: options.reviewGuard ? "review" : "agent",
-    ...(options.sessionKey ? { sessionKey: options.sessionKey } : {}),
+    // A background review credits "review" and records the conversation it learned from.
+    actor: options.reviewOf ? "review" : "agent",
+    ...((options.reviewOf ?? options.sessionKey)
+      ? { sessionKey: options.reviewOf ?? options.sessionKey }
+      : {}),
     ...(options.runId ? { runId: options.runId } : {}),
   };
   const skillsRoot = resolveWorkshopSkillsDir(options.config, options.agentId);
@@ -113,7 +118,7 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
         version,
       );
       viewed.add(name);
-      if (!version && !options.reviewGuard) {
+      if (!version && !options.reviewOf) {
         // A foreground view is skill use: it feeds this turn's review trigger and the
         // unused-skill archive clock through the same skill_usage owner as file reads.
         recordSkillUsed({
@@ -135,7 +140,7 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
     }
 
     if (
-      options.reviewGuard &&
+      options.reviewOf &&
       GUARDED_ACTIONS.has(action) &&
       !viewed.has(name) &&
       (await pathExists(path.join(skillsRoot, name, "SKILL.md")))
@@ -186,7 +191,7 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
         break;
       case "archive": {
         const absorbedInto = readToolStringParam(params, "absorbed_into");
-        if (options.reviewGuard && !absorbedInto && !reason) {
+        if (options.reviewOf && !absorbedInto && !reason) {
           throw new ToolInputError(
             "archive needs absorbed_into (the live skill that now covers this one) or a reason.",
           );

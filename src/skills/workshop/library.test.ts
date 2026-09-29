@@ -126,8 +126,8 @@ describe("workshop library", () => {
       createWorkshopSkill(ctx, { name: "deploy", content: skill("other", "x") }),
     ).rejects.toThrow(/must contain "name: deploy"/);
     await expect(
-      createWorkshopSkill(ctx, { name: "deploy", content: skill("deploy", "x", "d".repeat(161)) }),
-    ).rejects.toThrow(/description" must be 1-160 bytes/);
+      createWorkshopSkill(ctx, { name: "deploy", content: skill("deploy", "x", "d".repeat(1025)) }),
+    ).rejects.toThrow(/description" must be 1-1024 bytes/);
     const token = `ghp_${"A".repeat(30)}`;
     await expect(
       createWorkshopSkill(ctx, {

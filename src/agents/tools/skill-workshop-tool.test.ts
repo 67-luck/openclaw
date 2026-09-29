@@ -34,7 +34,7 @@ describe("skill_workshop review guard", () => {
       config: {},
       agentId: "main",
       runId: "review-run",
-      reviewGuard: true,
+      reviewOf: "agent:main:main",
     });
     const patch = {
       action: "patch",
@@ -51,8 +51,9 @@ describe("skill_workshop review guard", () => {
     const retried = createSkillWorkshopTool({
       config: {},
       agentId: "main",
+      sessionKey: "agent:main:internal-session-effects:skill-workshop-review_1",
       runId: "review-run",
-      reviewGuard: true,
+      reviewOf: "agent:main:telegram:direct:42",
     });
     expect(text(await retried.execute("3", { ...patch, reason: "renamed target" }))).toBe(
       'Patched "deploy" (renamed target). Saved previous version; undo with action=restore name=deploy.',
@@ -63,8 +64,14 @@ describe("skill_workshop review guard", () => {
 
     // The reviewer reading a skill is not use; only foreground views count.
     expect(consumeRunSkillUsage("review-run")).toEqual([]);
+    // Changes credit the conversation the review learned from, not its internal session.
     expect(await listWorkshopChanges("main", { runId: "review-run" })).toEqual([
-      expect.objectContaining({ action: "patch", actor: "review", summary: "renamed target" }),
+      expect.objectContaining({
+        action: "patch",
+        actor: "review",
+        summary: "renamed target",
+        sessionKey: "agent:main:telegram:direct:42",
+      }),
     ]);
   });
 
@@ -79,7 +86,7 @@ describe("skill_workshop review guard", () => {
       config: {},
       agentId: "main",
       runId: "review-remove-run",
-      reviewGuard: true,
+      reviewOf: "agent:main:main",
     });
     const remove = { action: "remove_file", name: "deploy", file_path: "references/old.md" };
     await expect(tool.execute("1", remove)).rejects.toThrow("View it first");

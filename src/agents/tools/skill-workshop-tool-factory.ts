@@ -7,7 +7,8 @@ import { createSkillWorkshopTool } from "./skill-workshop-tool.js";
 
 /** Run-scoped Workshop authority chosen by the run owner, never by tool arguments. */
 export type SkillWorkshopRunOptions = {
-  reviewGuard?: boolean;
+  /** Originating session of a background review; turns on the review guard. */
+  reviewOf?: string;
   libraryAuthoring?: SkillLibraryAuthoringCapability;
 };
 
@@ -26,7 +27,7 @@ export function createConfiguredSkillWorkshopTool(params: {
       agentId: params.agentId,
       ...(sessionKey ? { sessionKey } : {}),
       ...(runId ? { runId } : {}),
-      ...(params.run?.reviewGuard ? { reviewGuard: true } : {}),
+      ...(params.run?.reviewOf ? { reviewOf: params.run.reviewOf } : {}),
     });
   const libraryAuthoring = params.run?.libraryAuthoring;
   if (!libraryAuthoring) {

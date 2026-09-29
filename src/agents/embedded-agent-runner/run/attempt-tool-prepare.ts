@@ -306,7 +306,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
             githubPublicationAvailable: attempt.githubPublicationAvailable,
             abortSignal,
             skillWorkshop: {
-              ...(attempt.skillWorkshopReviewGuard ? { reviewGuard: true } : {}),
+              ...(attempt.skillWorkshopReviewOf ? { reviewOf: attempt.skillWorkshopReviewOf } : {}),
               libraryAuthoring: attempt.skillLibraryAuthoring,
             },
             modelCompat: extractModelCompat(attempt.model),

@@ -372,8 +372,8 @@ and troubleshooting.
 
 <ParamField path="skills.workshop.maxSkillBytes" type="number" default="40000">
   Maximum `SKILL.md` size in bytes for Workshop skills (allowed range:
-  1024-200000). Skill descriptions are capped at 160 bytes separately, because
-  they appear in discovery and listing output.
+  1024-200000). Skill descriptions are capped at 1024 bytes separately; keep
+  them near 160 bytes because they appear in discovery and listing output.
 </ParamField>
 
 `openclaw doctor --fix` migrates configs from the removed proposal flow: it

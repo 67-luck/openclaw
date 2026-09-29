@@ -90,7 +90,9 @@ export class WorkshopWriteError extends Error {
 const SKILL_FILE = "SKILL.md";
 const ARCHIVE_DIR = ".archive";
 const MAX_VERSIONS_PER_SKILL = 10;
-const MAX_DESCRIPTION_BYTES = 160;
+// The Agent Skills limit. Authoring guidance asks for ~160 bytes, but a hard 160 cap forced
+// lossy description rewrites whenever a review patched an older skill, and blocked restores.
+const MAX_DESCRIPTION_BYTES = 1024;
 const MAX_CHANGES_LIMIT = 500;
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const VERSION_ID_PATTERN = new RegExp(

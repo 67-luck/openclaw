@@ -4,7 +4,7 @@ export const SKILL_AUTHORING_STANDARDS_PROMPT = [
   "- A skill is how to do one class of task for this user: ordered steps with the exact commands, tools, paths, and checks that worked, then the user's standing preferences for the result.",
   "- Each rule is an imperative plus one clause of why, attached to the step it affects. One rule per lesson; a repeated lesson strengthens the existing rule.",
   "- Fix the misleading sentence in place; never append UPDATE/NOTE lines or incident narratives. No dates, ticket or PR ids, or quoted user text.",
-  "- description (≤160 bytes): trigger phrases and situations first, then what the skill produces. Name the class of work, not today's task.",
+  "- description (aim for ≤160 bytes; keep existing triggers when editing): trigger phrases and situations first, then what the skill produces. Name the class of work, not today's task.",
   "- Keep SKILL.md short; move sometimes-needed depth into references/, templates/, or scripts/ and point to it from the step that needs it.",
 ].join("\n");
 

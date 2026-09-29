@@ -135,7 +135,7 @@ Writes are validated before they land:
 - Names use 1-63 lowercase letters, digits, or hyphens and start with a letter
   or digit.
 - `SKILL.md` needs frontmatter whose `name` matches the skill directory and a
-  `description` of 1-160 bytes. It must fit within `skills.workshop.maxSkillBytes`.
+  `description` of 1-1024 bytes (aim for about 160). It must fit within `skills.workshop.maxSkillBytes`.
 - Support files go under `references/`, `templates/`, `scripts/`, or `assets/`,
   up to 256 KiB each. Absolute paths, traversal, and symlinks are refused.
 - A critical security-scanner finding, including a literal secret, refuses the
