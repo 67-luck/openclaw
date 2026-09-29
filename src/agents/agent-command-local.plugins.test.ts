@@ -54,13 +54,18 @@ afterAll(cleanupPluginLoaderFixturesForTest);
 
 it.each([false, true])("owns only the admitted local registry (CLI preaction=%s)", async (cli) => {
   const event = "local-custody:" + state.root;
+  const effectFile = state.path("local-effects.txt");
+  fs.writeFileSync(effectFile, "");
+  const effects = () => fs.readFileSync(effectFile, "utf8");
   const captures: Array<{ mode: string; directory: string }> = [];
   const onRegistration = (mode: string, directory: string) => captures.push({ mode, directory });
   const plugin = writePlugin({
     id: "local-owner",
     registration: [
       "process.emit(" + JSON.stringify(event) + ", api.registrationMode, __dirname);",
-      'api.registerTool(() => ({ name: "local_probe", description: api.registrationMode, parameters: { type: "object", properties: {} }, execute: async () => ({ content: [] }) }), { name: "local_probe" });',
+      'api.registerTool(() => ({ name: "local_probe", description: api.registrationMode, parameters: { type: "object", properties: {} }, execute: async (callId) => { require("node:fs").appendFileSync(' +
+        JSON.stringify(effectFile) +
+        ', callId + "\\n"); return { content: [{ type: "text", text: "written" }] }; } }), { name: "local_probe" });',
       'api.on("before_prompt_build", async () => ({ prependContext: "local hook" }));',
       'api.registerChannel({ plugin: { id: "local-channel", meta: { id: "local-channel", label: "Local", aliases: ["local-alias"] }, capabilities: { chatTypes: ["direct"] }, config: { listAccountIds: () => ["selected"], resolveAccount: () => ({ accountId: "selected" }) } } });',
       'if (api.registrationMode === "full") api.registerTool(() => ({ name: "full_probe", description: "full only", parameters: { type: "object", properties: {} }, execute: async () => ({ content: [] }) }), { name: "full_probe" });',
@@ -113,9 +118,17 @@ it.each([false, true])("owns only the admitted local registry (CLI preaction=%s)
       runtime,
       run: async () => {
         const registry = getPluginRuntimeGenerationRegistry()!;
-        const probe = () =>
-          registry.tools.find(({ names }) => names.includes("local_probe"))!.factory({});
-        expect(probe()).toMatchObject({ name: "local_probe" });
+        const probe = () => {
+          const tool = registry.tools
+            .find(({ names }) => names.includes("local_probe"))!
+            .factory({});
+          if (!tool || Array.isArray(tool)) {
+            throw new Error("Expected the local fixture tool");
+          }
+          return tool;
+        };
+        await probe().execute("parent-before", {});
+        expect(effects()).toBe("parent-before\n");
         if (cli) {
           expect(normalizeMessageChannel("local-alias")).toBe("local-channel");
         }
@@ -131,16 +144,27 @@ it.each([false, true])("owns only the admitted local registry (CLI preaction=%s)
           runtime,
           run: async () => {
             const innerRegistry = getPluginRuntimeGenerationRegistry()!;
-            late = AsyncLocalStorage.bind(() =>
-              innerRegistry.tools.find(({ names }) => names.includes("local_probe"))!.factory({}),
-            );
+            const tool = innerRegistry.tools
+              .find(({ names }) => names.includes("local_probe"))!
+              .factory({});
+            if (!tool || Array.isArray(tool)) {
+              throw new Error("Expected the nested fixture tool");
+            }
+            const execute = tool.execute;
+            // This executable callback carries the nested async invocation, not a new factory lookup.
+            late = AsyncLocalStorage.bind(() => execute("nested", {}));
             return late();
           },
         });
-        expect(inner).toMatchObject({ name: "local_probe" });
+        expect(inner).toMatchObject({ content: [{ type: "text", text: "written" }] });
+        expect(effects()).toBe("parent-before\nnested\n");
         // The outer lease still owns physical resources; only the nested invocation has ended.
-        expect.soft(() => late?.()).toThrow();
-        expect(probe()).toMatchObject({ name: "local_probe" });
+        await expect(async () => await late?.()).rejects.toThrow(
+          "Plugin invocation scope is closed",
+        );
+        expect(effects()).toBe("parent-before\nnested\n");
+        await probe().execute("parent-after", {});
+        expect(effects()).toBe("parent-before\nnested\nparent-after\n");
         return "done";
       },
     });
@@ -170,7 +194,8 @@ it.each([false, true])("owns only the admitted local registry (CLI preaction=%s)
           } else {
             expect(await command()).toBe("done");
           }
-          expect(() => late?.()).toThrow();
+          await expect(async () => await late?.()).rejects.toThrow();
+          expect(effects()).toBe("parent-before\nnested\nparent-after\n");
         } finally {
           await cleanup?.pluginResources?.release();
         }
