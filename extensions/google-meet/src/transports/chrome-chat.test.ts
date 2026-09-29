@@ -116,7 +116,7 @@ describe("parseGoogleMeetChatRead", () => {
 
 function createChatReadFixture(
   transport: "chrome" | "chrome-node" = "chrome-node",
-  options?: { actResult: unknown },
+  options?: { actResult: unknown; joinTimeoutMs?: number },
 ) {
   const browser = createMeetingBrowserFixture({
     url: MEET_URL_EN,
@@ -155,7 +155,9 @@ function createChatReadFixture(
   const read = (assertCurrent?: () => void) =>
     readChromeMeetChat({
       runtime: browser.runtime,
-      config: resolveGoogleMeetConfig({ chrome: { joinTimeoutMs: 1_000 } }),
+      config: resolveGoogleMeetConfig({
+        chrome: { joinTimeoutMs: options?.joinTimeoutMs ?? 1_000 },
+      }),
       session,
       assertCurrent,
     });
@@ -163,6 +165,80 @@ function createChatReadFixture(
 }
 
 describe("readChromeMeetChat", () => {
+  it.each(["chrome", "chrome-node"] as const)(
+    "keeps audio control available during a slow %s chat inventory read",
+    async (transport) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+      const entered = createDeferred<void>();
+      const release = createDeferred<void>();
+      const fixture = createChatReadFixture(transport, {
+        actResult: wire(snapshot),
+        joinTimeoutMs: 30_000,
+      });
+      fixture.browserRequest.mockImplementationOnce(async (request) => {
+        entered.resolve();
+        await release.promise;
+        return fixture.browserResult(request);
+      });
+      const read = fixture.read();
+      void read.catch(() => undefined);
+      try {
+        await entered.promise;
+        const audioOperation = vi.fn(async () => undefined);
+        // The browser-isolated audio transport uses this same five-second lock budget.
+        const audio = runMeetingBrowserAct({
+          deadline: performance.now() + 5_000,
+          targetId: "chat-tab",
+          operation: audioOperation,
+        }).then(
+          () => true,
+          () => false,
+        );
+
+        await vi.advanceTimersByTimeAsync(5_001);
+        expect(audioOperation).toHaveBeenCalledOnce();
+        expect(await audio).toBe(true);
+        expect(fixture.browserRequest).toHaveBeenCalledTimes(1);
+
+        release.resolve();
+        await expect(read).resolves.toEqual({ epoch: source.epoch, sources: [source] });
+      } finally {
+        release.resolve();
+        await read.catch(() => undefined);
+        try {
+          await runMeetingBrowserAct({
+            deadline: performance.now() + 1_000,
+            targetId: "chat-tab",
+            operation: async () => undefined,
+          });
+        } finally {
+          vi.useRealTimers();
+        }
+      }
+    },
+  );
+
+  it.each(["chrome", "chrome-node"] as const)(
+    "bounds the optional %s chat evaluation below the audio control budget",
+    async (transport) => {
+      const monotonic = vi.spyOn(performance, "now").mockReturnValue(100);
+      try {
+        const fixture = createChatReadFixture(transport, {
+          actResult: wire(snapshot),
+          joinTimeoutMs: 30_000,
+        });
+
+        await expect(fixture.read()).resolves.toEqual({ epoch: source.epoch, sources: [source] });
+
+        expect(fixture.browserRequest.mock.calls.map(([request]) => request.timeoutMs)).toEqual([
+          10_000, 1_000,
+        ]);
+      } finally {
+        monotonic.mockRestore();
+      }
+    },
+  );
+
   it.each(["chrome", "chrome-node"] as const)(
     "keeps a finite monotonic %s budget when the wall clock jumps",
     async (transport) => {
@@ -208,7 +284,9 @@ describe("readChromeMeetChat", () => {
 
       await vi.advanceTimersByTimeAsync(999);
       expect(settled).not.toHaveBeenCalled();
-      expect(fixture.browserRequest).not.toHaveBeenCalled();
+      expect(fixture.browserRequest).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ path: "/tabs" }),
+      );
 
       await vi.advanceTimersByTimeAsync(1);
       await read;
@@ -230,7 +308,9 @@ describe("readChromeMeetChat", () => {
         vi.useRealTimers();
       }
     }
-    expect(fixture.browserRequest).not.toHaveBeenCalled();
+    expect(fixture.browserRequest).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ path: "/tabs" }),
+    );
   });
 
   it.each(["chrome", "chrome-node"] as const)(

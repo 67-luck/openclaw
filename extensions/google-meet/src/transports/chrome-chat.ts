@@ -127,25 +127,27 @@ export async function readChromeMeetChat(params: {
     callBrowser = await resolveLocalMeetingBrowserRequest(params.runtime);
   }
   assertCurrent();
+  const inventoryTimeoutMs = Math.floor(deadline - performance.now());
+  if (inventoryTimeoutMs <= 0) {
+    throw new Error("Meet chat capture timed out before reading the tracked tab.");
+  }
+  // Inventory does not mutate the tab and must not hold up realtime audio pulls.
+  const tabs = asMeetingBrowserTabs(
+    await callBrowser({ method: "GET", path: "/tabs", timeoutMs: inventoryTimeoutMs }),
+  );
+  assertCurrent();
+  const matches = tabs.filter((tab) => tab?.targetId === targetId);
+  const tab = matches.length === 1 ? matches[0] : undefined;
+  if (!tab || !isSameMeetUrlForReuse(tab.url, meetingUrl)) {
+    throw new Error("The tracked browser tab no longer shows this meeting.");
+  }
   const result = await runMeetingBrowserAct({
-    deadline,
+    // Optional polling leaves headroom inside audio capture's five-second control budget.
+    deadline: Math.min(deadline, performance.now() + 1_000),
     targetId,
-    operation: async (remainingMs) => {
+    operation: async (timeoutMs) => {
       assertCurrent();
-      const tabs = asMeetingBrowserTabs(
-        await callBrowser({ method: "GET", path: "/tabs", timeoutMs: remainingMs }),
-      );
-      assertCurrent();
-      const matches = tabs.filter((tab) => tab?.targetId === targetId);
-      const tab = matches.length === 1 ? matches[0] : undefined;
-      if (!tab || !isSameMeetUrlForReuse(tab.url, meetingUrl)) {
-        throw new Error("The tracked browser tab no longer shows this meeting.");
-      }
-      const timeoutMs = Math.floor(deadline - performance.now());
-      if (timeoutMs <= 0) {
-        throw new Error("Meet chat capture timed out before reading the tracked tab.");
-      }
-      assertCurrent();
+      // The page script rechecks the session marker and URL after lock acquisition.
       const evaluated = await callBrowser({
         method: "POST",
         path: "/act",
