@@ -239,7 +239,7 @@ export function createGatewayBroadcaster(params: {
     let outboundEventLogged = false;
     let lastFrameSequence = 0;
     let lastFrameRecipientProfileId: string | undefined;
-    let lastFrame: string | undefined;
+    let lastFrame: string | Buffer | undefined;
     let lastPayloadFragment: string | undefined;
     const frames: PreparedFrames = retained?.frames ?? {};
     // Private coalescers preserve inputs; identical pending histories can share this merge.
@@ -533,7 +533,7 @@ export function createGatewayBroadcaster(params: {
         useDelta && projection
           ? (frames.delta ??= frameBaseFor(projection.delta(payload)))
           : getFrameBase();
-      let frame: string;
+      let frame: string | Buffer;
       let delivered: (() => void) | undefined = retained?.delivered;
       let projectionIsCurrent: (() => boolean) | undefined;
       try {
@@ -651,6 +651,10 @@ export function createGatewayBroadcaster(params: {
         } else {
           frame = frameWithSequence(base, nextSeq, payloadFragment, recipientProfileId);
           if (!presencePayload && !projectSession) {
+            // Share UTF-8 bytes too: ws otherwise encodes the same string for every socket.
+            if (!retained && (targetConnIds?.size ?? params.clients.size) > 1) {
+              frame = Buffer.from(frame);
+            }
             lastFrameSequence = nextSeq;
             lastFrameRecipientProfileId = recipientProfileId;
             lastPayloadFragment = payloadFragment;
@@ -692,7 +696,11 @@ export function createGatewayBroadcaster(params: {
       try {
         // Publish the baseline before send can reenter; failures retire this transport.
         delivered?.();
-        state.socket.send(frame, sent);
+        if (typeof frame === "string") {
+          state.socket.send(frame, sent);
+        } else {
+          state.socket.send(frame, { binary: false }, sent);
+        }
       } catch (err) {
         sent(err instanceof Error ? err : new Error(String(err)));
       }
