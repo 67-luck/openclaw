@@ -173,7 +173,7 @@ describe("container image replacement Doctor repair and startup readiness", () =
       const runPreflight = configPreflight.runDoctorConfigPreflight;
       vi.spyOn(configPreflight, "runDoctorConfigPreflight").mockImplementationOnce(
         async (options) => {
-          options.onStateMigrationMessage?.("state-directory", {
+          options?.onStateMigrationMessage?.("state-directory", {
             changes: [],
             warnings: ["Legacy state directory requires operator recovery."],
           });
@@ -367,7 +367,7 @@ describe("container image replacement Doctor repair and startup readiness", () =
       const runPreflight = configPreflight.runDoctorConfigPreflight;
       vi.spyOn(configPreflight, "runDoctorConfigPreflight").mockImplementationOnce(
         async (options) => {
-          options.onStateMigrationMessage?.("state-directory", {
+          options?.onStateMigrationMessage?.("state-directory", {
             changes: [],
             warnings: ["Legacy state directory requires operator recovery."],
           });
