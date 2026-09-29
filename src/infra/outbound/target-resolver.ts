@@ -497,16 +497,28 @@ export async function resolveChannelTarget(params: {
     });
   }
   const query = stripTargetPrefixes(raw, params.channel, plugin);
-  const entries = await getDirectoryEntries({
-    cfg: params.cfg,
-    channel: params.channel,
-    accountId: params.accountId,
-    kind: kind === "user" ? "user" : "group",
-    query,
-    runtime: params.runtime,
-    preferLiveOnMiss: true,
-    plugin,
-  });
+  const primaryDirectoryKind: ChannelDirectoryEntryKind = kind === "user" ? "user" : "group";
+  // A bare channel namespace has no peer/group syntax. Search both directory
+  // owners before treating it as a missing destination.
+  const directoryKinds: ChannelDirectoryEntryKind[] = channelNamespace
+    ? [primaryDirectoryKind, primaryDirectoryKind === "user" ? "group" : "user"]
+    : [primaryDirectoryKind];
+  const entries = (
+    await Promise.all(
+      directoryKinds.map((directoryKind) =>
+        getDirectoryEntries({
+          cfg: params.cfg,
+          channel: params.channel,
+          accountId: params.accountId,
+          kind: directoryKind,
+          query,
+          runtime: params.runtime,
+          preferLiveOnMiss: true,
+          plugin,
+        }),
+      ),
+    )
+  ).flat();
   const match = resolveMatch({
     channel: params.channel,
     entries,

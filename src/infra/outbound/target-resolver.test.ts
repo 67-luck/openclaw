@@ -190,6 +190,53 @@ describe("resolveMessagingTarget (directory fallback)", () => {
     expect(mocks.resolveTarget).not.toHaveBeenCalled();
   });
 
+  it("searches exact peers before rejecting a same-name channel namespace", async () => {
+    const outboundResolveTarget = vi.fn(({ to }: { to?: string }) => ({
+      ok: true as const,
+      to: to ?? "",
+    }));
+    const plugin = {
+      ...createChannelTestPluginBase({ id: "richchat", label: "Rich Chat" }),
+      directory: { listPeers: mocks.listPeers, listGroups: mocks.listGroups },
+      outbound: { deliveryMode: "direct", resolveTarget: outboundResolveTarget },
+      messaging: {
+        targetPrefixes: ["rc"],
+        targetResolver: { resolveTarget: mocks.resolveTarget },
+      },
+    } satisfies ChannelPlugin;
+    mocks.listGroups.mockResolvedValue([]);
+    mocks.listPeers.mockResolvedValue([
+      { kind: "user", id: "peer-1", name: "richchat" } satisfies ChannelDirectoryEntry,
+    ]);
+
+    const result = await resolveMessagingTarget({
+      cfg,
+      channel: "richchat",
+      input: "richchat",
+      preferredKind: "group",
+      allowNativeChannelNamespace: false,
+      nativeTargetMode: "explicit",
+      allowFrom: ["peer-1"],
+      plugin,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      target: {
+        to: "peer-1",
+        kind: "user",
+        source: "directory",
+        resolutionSource: "directory",
+      },
+    });
+    expect(mocks.listGroups).toHaveBeenCalledWith(expect.objectContaining({ query: "richchat" }));
+    expect(mocks.listPeers).toHaveBeenCalledWith(expect.objectContaining({ query: "richchat" }));
+    expect(outboundResolveTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "peer-1", mode: "explicit", allowFrom: ["peer-1"] }),
+    );
+    expect(mocks.resolveTarget).not.toHaveBeenCalled();
+  });
+
   it("preserves an explicit plugin-native target over an exact same-name directory entry", async () => {
     const plugin = {
       ...createChannelTestPluginBase({ id: "irc", label: "IRC" }),
