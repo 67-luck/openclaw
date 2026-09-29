@@ -53,6 +53,11 @@ export function recordRequestOnlyControl(input) {
         event.completion === "unknown" &&
         event.ntStatus === null,
     );
+  const fixture = input.target.records.find((record) => record.event === "result");
+  if (fixture) {
+    const { pid, mode, operation, target, unlinkCode, beganAt, endedAt } = fixture;
+    cell.unlinkResult = { pid, mode, operation, target, unlinkCode, beganAt, endedAt };
+  }
   assert.ok(request, "No admitted explicit-path deletion request event was observed");
   // The existing verifier still owns all completed-deletion and capture checks.
   // Only its final missing-completion assertion permits diagnostic continuation.
@@ -78,9 +83,6 @@ export function recordRequestOnlyControl(input) {
       expected: error.expected,
     };
     cell.requestEventEvidence = request;
-    const { pid, mode, operation, target, unlinkCode, beganAt, endedAt } =
-      input.target.records.find((record) => record.event === "result");
-    cell.unlinkResult = { pid, mode, operation, target, unlinkCode, beganAt, endedAt };
     return;
   }
   throw new Error("Unexpected completed-deletion verdict requires review");

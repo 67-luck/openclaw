@@ -161,6 +161,48 @@ function requestControl(mode: "loaded" | "unloaded") {
 }
 
 describe("request-only diagnostic continuation", () => {
+  it("retains the observed unlink interval when request attribution fails", () => {
+    const input = requestControl("unloaded");
+    input.observer.records[0].events.splice(0);
+    input.cell.observation.records.splice(0);
+    input.cell.observation.observation = "insufficient-evidence";
+    const fixture = input.target.records[0];
+    assert.ok(fixture);
+    Object.assign(fixture, {
+      beganAt: "2026-09-28T00:00:01.010Z",
+      endedAt: "2026-09-28T00:00:01.020Z",
+      root: "C:\\PRIVATE_ROOT_CANARY",
+      raw: "PRIVATE_FIELD_CANARY",
+    });
+    let failure: unknown;
+    try {
+      recordRequestOnlyControl(input);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(assert.AssertionError);
+    expect(failure).toMatchObject({
+      code: "ERR_ASSERTION",
+      message: "No admitted explicit-path deletion request event was observed",
+      operator: "==",
+      actual: undefined,
+      expected: true,
+    });
+    expect(input.cell).toHaveProperty("unlinkResult", {
+      pid: 1234,
+      mode: "unloaded",
+      operation: "unlink",
+      target: "koffi.node",
+      unlinkCode: null,
+      beganAt: "2026-09-28T00:00:01.010Z",
+      endedAt: "2026-09-28T00:00:01.020Z",
+    });
+    expect(input.cell).not.toHaveProperty("requestEventEvidence");
+    expect(input.cell).not.toHaveProperty("completedDeletionFailure");
+    expect(input.cell).not.toHaveProperty("deletionCompletions");
+    expect(JSON.stringify(input.cell)).not.toContain("PRIVATE_");
+  });
+
   it.each(["loaded", "unloaded"] as const)(
     "preserves the %s completed-deletion failure",
     (mode) => {
