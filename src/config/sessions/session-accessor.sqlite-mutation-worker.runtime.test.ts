@@ -32,6 +32,10 @@ vi.mock("../../state/openclaw-agent-db-readonly-open.js", () => ({}));
 vi.mock("../../state/openclaw-state-db-cache.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-identity.js", () => ({
   createOpenClawAgentDatabaseClaim: () => ({ assertCurrent() {}, release() {} }),
+  readOpenClawAgentDatabaseIdentity: () => ({
+    identity: "fixture-database",
+    filename: "/fixture/agent.sqlite",
+  }),
 }));
 vi.mock("../../state/openclaw-agent-db-lease.js", () => ({
   assertOpenClawAgentDatabaseLease: () => {},
@@ -68,9 +72,6 @@ vi.mock("./session-accessor.sqlite-worker-coordination.js", () => ({
 }));
 vi.mock("./session-accessor.sqlite-reclamation.js", () => ({
   reclaimSqliteSessionInTransaction: () => ({ kind: "maintenance-statistics", value: true }),
-}));
-vi.mock("./session-accessor.sqlite-reclamation-commit.js", () => ({
-  markSqliteReclamationSettled: () => {},
 }));
 
 it("keeps idle collection after buffered admission replies and cancels it for the next request", async () => {

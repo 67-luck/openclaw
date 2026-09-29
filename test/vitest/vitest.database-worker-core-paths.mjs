@@ -668,6 +668,8 @@ export const databaseWorkerCoreTestFiles = [
   "src/tts/tts-summary.static-catalog.test.ts",
   "src/tts/tts-summary.selection.test.ts",
   "src/agents/prepared-model-catalog.resources.test.ts",
+  "src/agents/context.opencode-go.test.ts",
+  "src/agents/simple-completion-runtime.selected-model.test.ts",
   "src/agents/prepared-model-catalog-worker.chat-metadata.integration.test.ts",
   "src/agents/prepared-model-catalog-worker.custody.integration.test.ts",
   "src/agents/prepared-model-catalog-worker.directory.test.ts",
