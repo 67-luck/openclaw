@@ -143,11 +143,20 @@ describe("FileIO entry environment custody", () => {
             lifetimeCleanups++;
           },
         }),
+        async verifyInstalledFileIoExecutable() {},
         async prepareInstalledFileIo(params: { task: { env: NodeJS.ProcessEnv } }) {
           prepareEnvironments.push(structuredClone(params.task.env));
           return {
             descriptor: {
               powerShellExe: "fixture-powershell",
+              powerShellSha256: "f".repeat(64),
+              runtime: {
+                executable: "fixture-powershell",
+                psVersion: "7.6.0",
+                edition: "Core",
+                clrVersion: "10.0.0",
+                is64BitProcess: true,
+              },
               dllPath: "fixture-dll",
               dllSha256: "d".repeat(64),
               sourceSha256: "e".repeat(64),

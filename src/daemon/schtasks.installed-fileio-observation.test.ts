@@ -676,7 +676,8 @@ it.each([false, true])(
     expect(JSON.stringify(result)).not.toContain("host-foreign-canary");
     const script = buildInstalledUpdateRetirementCensus(binding);
     expect(Buffer.from(script, "utf16le").toString("base64").length).toBeGreaterThan(32767);
-    const [, args, options] = spawn.mock.calls[0]!;
+    const [executable, args, options] = spawn.mock.calls[0]!;
+    expect(executable).toBe(binding.fileIo?.powerShellExe);
     expect(options.input).toBe(script);
     expect(options).toMatchObject({ encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024 });
     expect(args.join(" ").length).toBeLessThan(1024);

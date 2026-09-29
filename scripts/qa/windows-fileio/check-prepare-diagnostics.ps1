@@ -136,7 +136,7 @@ $cases=@(
           $bound=[IO.File]::ReadAllText($fixtureReceipt)|ConvertFrom-Json
           Require ($bound.dllSha256 -eq (Get-FileHash (Join-Path $directory 'OwnedFileTrace.dll')).Hash.ToLowerInvariant()) 'Inputs marker preceded bound DLL hash'
           Require ($bound.schemaSha256 -eq (Get-FileHash (Join-Path $directory 'provider-schema.json')).Hash.ToLowerInvariant()) 'Inputs marker preceded bound schema hash'
-          foreach($key in @('contract','guid','name','raw','dll','provider','preparedAt','sourceSha256','helperSha256','factsSha256','cliSha256')){
+          foreach($key in @('contract','guid','name','raw','dll','provider','preparedAt','sourceSha256','helperSha256','factsSha256','cliSha256','powerShellSha256')){
             Require ($bound.$key -ceq $custody.initial.$key) 'Receipt replacement changed custody'
           }
           foreach($key in @('executable','psVersion','edition','clrVersion','is64BitProcess')){
@@ -192,6 +192,39 @@ $cases=@(
     @{case=$case.name;passed=($issues.Count -eq 0);stages=$stages;issues=@($issues.ToArray());
       replacementCustodyVerified=$custody.verified;replaceArgumentFailureObserved=$replaceArgumentFailure;
       platform=[Environment]::OSVersion.Platform.ToString();substitutions=$substitutions;nativeProof=$false} | ConvertTo-Json -Depth 4 -Compress
+  }
+  # Cleanup reuses the actual own-runtime predicate, even when compilation never produced a DLL.
+  foreach($field in @('partial-match','no-receipt','executable','psVersion','edition','clrVersion','is64BitProcess','hash')){
+    $directory=Join-Path $root ('cleanup-'+$field)
+    [void][IO.Directory]::CreateDirectory($directory)
+    $fixtureReceipt=Join-Path $directory 'trace.json'
+    $raw=Join-Path $directory 'private-host-events.etl'
+    $guid=[guid]::NewGuid()
+    $script:scenario='compile-failure';[OwnedFileTrace]::Occupied=$false;[OwnedFileTrace]::StartFailure=$null
+    $partial=Invoke-OwnedFileTraceOperation -Mode prepare -ReceiptPath $fixtureReceipt -ExpectedGuid $guid
+    Require ($partial.exitCode -eq 2 -and [IO.File]::Exists($fixtureReceipt) -and
+      -not [IO.File]::Exists((Join-Path $directory 'OwnedFileTrace.dll'))) 'Partial compilation fixture did not reach custody'
+    if($field -eq 'no-receipt'){[IO.File]::Delete($fixtureReceipt)}else{
+      [IO.File]::WriteAllText($raw,'PRIVATE_RAW_CANARY')
+      $receipt=[IO.File]::ReadAllText($fixtureReceipt)|ConvertFrom-Json
+      if($field -in @('executable','psVersion','edition','clrVersion')){$receipt.runtime.$field='PRIVATE_RUNTIME_MISMATCH'}
+      if($field -eq 'is64BitProcess'){$receipt.runtime.is64BitProcess=$false}
+      if($field -eq 'hash'){$receipt.powerShellSha256='0'*64}
+      [IO.File]::WriteAllText($fixtureReceipt,($receipt|ConvertTo-Json -Depth 12 -Compress),[Text.UTF8Encoding]::new($false))
+    }
+    $script:scenario='runtime-cleanup';$script:loaded=0;[OwnedFileTrace]::Queries=0
+    $cleanup=Invoke-OwnedFileTraceOperation -Mode cleanup -ReceiptPath $fixtureReceipt -ExpectedGuid $guid
+    $allowed=$field -in @('partial-match','no-receipt')
+    $passed=$cleanup.exitCode -eq $(if($allowed){0}else{2}) -and
+      $cleanup.records[-1].cleanupVerified -eq $allowed -and
+      [IO.File]::Exists($raw) -eq (-not $allowed) -and
+      $script:loaded -eq $(if($allowed){1}else{0}) -and
+      ([OwnedFileTrace]::Queries -gt 0) -eq $allowed -and
+      -not (($cleanup.records|ConvertTo-Json -Depth 12 -Compress).Contains('PRIVATE_'))
+    if(-not $passed){$failed++}
+    @{case=('cleanup-runtime-'+$field);passed=[bool]$passed;nativeCleanupQueried=([OwnedFileTrace]::Queries -gt 0);
+      cleanupCompilerEntered=($script:loaded -gt 0);rawPreserved=[IO.File]::Exists($raw);
+      partialDllAbsent=$true;nativeProof=$false} | ConvertTo-Json -Compress
   }
 } finally {
   [IO.Directory]::Delete($root,$true)

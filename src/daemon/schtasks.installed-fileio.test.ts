@@ -15,13 +15,14 @@ import {
   type InstalledFileIoCommandFact,
 } from "./schtasks.installed-fileio.test-support.js";
 
-const managed = vi.hoisted(() => ({ run: vi.fn(), inspect: vi.fn() }));
+const managed = vi.hoisted(() => ({ run: vi.fn(), inspect: vi.fn(), programFiles: "" }));
 vi.mock("../../scripts/lib/managed-child-process.mts", async (original) => ({
   ...(await original<typeof import("../../scripts/lib/managed-child-process.mts")>()),
   runManagedCommand: managed.run,
   inspectManagedProcessGroup: managed.inspect,
 }));
 vi.mock("../infra/windows-install-roots.js", () => ({
+  getWindowsInstallRoots: () => ({ programFiles: managed.programFiles }),
   getWindowsPowerShellExePath: () =>
     "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
 }));
@@ -54,6 +55,10 @@ async function fixture(
   const installRoot = path.join(rootDir, "install");
   const ownedPrefix = path.join(installRoot, "node_modules");
   await fs.mkdir(ownedPrefix, { recursive: true });
+  managed.programFiles = path.join(rootDir, "Program Files");
+  const coreExe = path.join(managed.programFiles, "PowerShell", "7", "pwsh.exe");
+  await fs.mkdir(path.dirname(coreExe), { recursive: true });
+  await fs.writeFile(coreExe, "synthetic-core-runtime");
   const admission: Record<string, unknown> = { role: "selected", rootDir, installRoot };
   // Simulated cleanup uncertainty must retain its own claim, not the test runner's namespace.
   const resourceOwner = createVitestResourceOwner(rootDir);
@@ -92,7 +97,7 @@ async function fixture(
   });
   managed.run.mockImplementation(async (options) => {
     expect(persisted).toBe(true);
-    expect(options.bin).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    expect(options.bin).toBe(coreExe);
     commandEnvironments.push({ ...options.env });
     if (!environment) {
       expect(options.env).toEqual({ SystemRoot: "C:\\Windows", TEMP: rootDir });
@@ -143,14 +148,12 @@ async function fixture(
           helperSha256: custody.helperSha256,
           factsSha256: custody.factsSha256,
           cliSha256: custody.cliSha256,
+          powerShellSha256: sha256("synthetic-core-runtime"),
           runtime: {
-            executable:
-              fault === "runtime-executable"
-                ? "C:\\foreign\\powershell.exe"
-                : "c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe",
-            psVersion: fault === "runtime-version" ? "7.5.2" : "5.1.26100.4652",
-            edition: fault === "runtime-edition" ? "Core" : "Desktop",
-            clrVersion: fault === "runtime-clr" ? "9.0.0" : "4.0.30319.42000",
+            executable: fault === "runtime-executable" ? "C:\\foreign\\powershell.exe" : coreExe,
+            psVersion: fault === "runtime-version" ? "5.1.26100.4652" : "7.6.6",
+            edition: fault === "runtime-edition" ? "Desktop" : "Core",
+            clrVersion: fault === "runtime-clr" ? "PRIVATE_VERSION" : "10.0.12",
             is64BitProcess: fault !== "runtime-bitness",
           },
         }),
@@ -277,10 +280,12 @@ it("admits exact custody before preparation and releases the trace before privat
     privateRoot: f.privateRoot,
     dllSha256: sha256("synthetic-dll"),
     schemaSha256: sha256("[]"),
+    powerShellExe: path.join(managed.programFiles, "PowerShell", "7", "pwsh.exe"),
+    powerShellSha256: sha256("synthetic-core-runtime"),
     runtime: {
-      psVersion: "5.1.26100.4652",
-      edition: "Desktop",
-      clrVersion: "4.0.30319.42000",
+      psVersion: "7.6.6",
+      edition: "Core",
+      clrVersion: "10.0.12",
       is64BitProcess: true,
     },
   });
@@ -293,10 +298,11 @@ it("admits exact custody before preparation and releases the trace before privat
     managed.run.mock.calls.map(([options]) => ({
       phase: options.args[options.args.indexOf("-Mode") + 1],
       timeoutMs: options.timeoutMs,
+      executable: options.bin,
     })),
   ).toEqual([
-    { phase: "prepare", timeoutMs: 60_000 },
-    { phase: "cleanup", timeoutMs: 30_000 },
+    { phase: "prepare", timeoutMs: 60_000, executable: resource.descriptor.powerShellExe },
+    { phase: "cleanup", timeoutMs: 30_000, executable: resource.descriptor.powerShellExe },
   ]);
   expect(
     f.commandFacts.every((fact) => fact.joined && fact.jobObserved && fact.outcome === "verified"),
@@ -357,6 +363,34 @@ it.each(["prepared", "recovery", "lifetime", "unknown-state"] as const)(
     await f.recover();
     await expect(fs.stat(f.privateRoot)).rejects.toMatchObject({ code: "ENOENT" });
     await f.lifetime.cleanup().catch(() => {});
+  },
+);
+
+it.each(["changed-bytes", "redirected"] as const)(
+  "refuses changed Core executable %s before cleanup and retains recovery custody",
+  async (change) => {
+    const f = await fixture();
+    const resource = await f.prepare();
+    const executable = resource.descriptor.powerShellExe;
+    const original = await fs.readFile(executable);
+    if (change === "changed-bytes") {
+      await fs.writeFile(executable, "changed-core-runtime");
+    } else {
+      await fs.rename(executable, `${executable}.original`);
+      await fs.symlink(`${executable}.original`, executable);
+    }
+    await expect(resource.cleanup()).rejects.toThrow("FileIO cleanup or custody validation failed");
+    expect(f.phases).toEqual(["prepare"]);
+    expect((await fs.stat(f.privateRoot)).isDirectory()).toBe(true);
+    if (change === "redirected") {
+      await fs.unlink(executable);
+      await fs.rename(`${executable}.original`, executable);
+    } else {
+      await fs.writeFile(executable, original);
+    }
+    await f.recover();
+    await expect(fs.stat(f.privateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(f.lifetime.cleanup()).rejects.toThrow("Fixture cleanup unverified");
   },
 );
 

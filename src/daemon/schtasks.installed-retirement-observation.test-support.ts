@@ -16,11 +16,12 @@ export type InstalledFileIoDescriptor = Readonly<{
   factsPath: string;
   factsSha256: string;
   powerShellExe: string;
+  powerShellSha256: string;
   ownedPrefix: string;
   runtime: Readonly<{
     executable: string;
     psVersion: string;
-    edition: "Desktop";
+    edition: "Core";
     clrVersion: string;
     is64BitProcess: true;
   }>;
@@ -467,6 +468,8 @@ if($binding.fileIo) {
         [string]$trace.runtime.edition -cne $PSVersionTable.PSEdition -or
         [string]$trace.runtime.clrVersion -cne [Environment]::Version.ToString() -or
         $trace.runtime.is64BitProcess -ne $true -or -not [Environment]::Is64BitProcess){throw 'fileio-runtime-mismatch'}
+      if([string]$trace.powerShellSha256 -cnotmatch '^[a-f0-9]{64}$' -or
+        (Get-FileHash -LiteralPath $runtimeProcess.MainModule.FileName -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$trace.powerShellSha256){throw 'fileio-runtime-mismatch'}
     } finally {$runtimeProcess.Dispose()}
     foreach($source in @(@($trace.helperPath,$trace.helperSha256),@($trace.factsPath,$trace.factsSha256))) {
       Check-Budget 4500

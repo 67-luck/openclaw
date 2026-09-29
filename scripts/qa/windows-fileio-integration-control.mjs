@@ -17,6 +17,7 @@ import {
   commandFailureFacts,
   prepareInstalledFileIo,
   cleanupInstalledFileIo,
+  verifyInstalledFileIoExecutable,
 } from "../../src/daemon/schtasks.installed-fileio.test-support.ts";
 import { buildInstalledUpdateRetirementCensus } from "../../src/daemon/schtasks.installed-retirement-observation.test-support.ts";
 import {
@@ -25,10 +26,7 @@ import {
 } from "../../src/daemon/schtasks.integration-observation.test-support.ts";
 import { hasErrnoCode } from "../../src/infra/errno.ts";
 import { resolveDiagnosticProcessEnv } from "../../src/infra/process-env.ts";
-import {
-  getWindowsInstallRoots,
-  getWindowsPowerShellExePath,
-} from "../../src/infra/windows-install-roots.ts";
+import { getWindowsPowerShellExePath } from "../../src/infra/windows-install-roots.ts";
 import { redactSupportString } from "../../src/logging/diagnostic-support-redaction.ts";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.ts";
 import {
@@ -127,7 +125,9 @@ export function projectCensusResult(context, result, needles, binding) {
 // This copy preserves the real synchronous caller and its original 5000ms timeout.
 // Its builder is the sole replaced dependency; the spawn delegate observes only
 // fixed result metadata and then returns the untouched result to the real receiver.
-function synchronousTimeoutControl(binding, context, needles) {
+async function synchronousTimeoutControl(binding, context, needles) {
+  assert.ok(binding.fileIo);
+  await verifyInstalledFileIoExecutable(binding.fileIo, context.env);
   const source = fs.readFileSync(
     fileURLToPath(
       new URL("../../src/daemon/schtasks.integration-observation.test-support.ts", import.meta.url),
@@ -163,10 +163,34 @@ function synchronousTimeoutControl(binding, context, needles) {
     readRelatedProcessDiagnosticsResult,
   );
   const started = performance.now();
-  const capture = projectInstalledUpdateProcessCapture(context, invoke(needles, binding));
-  assert.equal(receipt?.errorCode, "ETIMEDOUT");
-  assert.equal(receipt.enabledAcknowledged, true);
-  assert.ok(Number.isSafeInteger(receipt.pid) && receipt.pid > 0);
+  let capture;
+  const errors = [];
+  try {
+    capture = projectInstalledUpdateProcessCapture(context, invoke(needles, binding));
+    assert.equal(receipt?.errorCode, "ETIMEDOUT");
+    assert.equal(receipt.enabledAcknowledged, true);
+    assert.ok(Number.isSafeInteger(receipt.pid) && receipt.pid > 0);
+  } catch (error) {
+    errors.push(error);
+  } finally {
+    if (
+      receipt?.pid > 0 &&
+      (Number.isInteger(receipt.status) || receipt.signal) &&
+      !errors.some(hasUnjoinedWork)
+    ) {
+      try {
+        await verifyInstalledFileIoExecutable(binding.fileIo, context.env);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+  }
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length) {
+    throw new AggregateError(errors, "Synchronous census or executable verification failed");
+  }
   return { capture, receipt: { ...receipt, elapsedMs: performance.now() - started } };
 }
 
@@ -531,6 +555,9 @@ async function main() {
     await persistAdmission();
   }
   async function census(binding, context, label, onEnabled) {
+    if (binding.fileIo) {
+      await verifyInstalledFileIoExecutable(binding.fileIo, env);
+    }
     const generated = buildInstalledUpdateRetirementCensus(binding);
     const script = binding.fileIo ? instrumentCensus(generated) : generated;
     const invocation = instrumentCensusInvocation(script);
@@ -539,7 +566,7 @@ async function main() {
       commands,
       env,
       label,
-      bin: getWindowsPowerShellExePath(),
+      bin: binding.fileIo?.powerShellExe ?? getWindowsPowerShellExePath(),
       args: invocation.args,
       input: invocation.input,
       timeoutMs: 5000,
@@ -549,9 +576,29 @@ async function main() {
         onEnabled?.();
       },
     });
-    assert.equal(await observer.completion, 0);
-    assert.ok(observer.receipt.joined && observer.receipt.jobObserved);
-    const capture = projectCensusResult(context, observer.result(), [binding.globalRoot], binding);
+    let capture;
+    const errors = [];
+    try {
+      assert.equal(await observer.completion, 0);
+      assert.ok(observer.receipt.joined && observer.receipt.jobObserved);
+      capture = projectCensusResult(context, observer.result(), [binding.globalRoot], binding);
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      if (binding.fileIo && observer.receipt.joined && !errors.some(hasUnjoinedWork)) {
+        try {
+          await verifyInstalledFileIoExecutable(binding.fileIo, env);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+    }
+    if (errors.length === 1) {
+      throw errors[0];
+    }
+    if (errors.length) {
+      throw new AggregateError(errors, "Census or executable verification failed");
+    }
     return { observer, capture };
   }
   async function compareSameEtl(descriptor, identity, admission, primary, primaryReceipt) {
@@ -562,20 +609,7 @@ async function main() {
     assert.ok(primary.captureInterval?.endedAt);
     const script = path.join(helper, "Read-OwnedFileTrace.ps1");
     const scriptSha256 = hash(script);
-    // The copied diagnostic environment uses the existing pure root resolver.
-    const core = path.win32.join(
-      getWindowsInstallRoots(env).programFiles,
-      "PowerShell",
-      "7",
-      "pwsh.exe",
-    );
-    const coreStat = fs.lstatSync(core);
-    assert.ok(coreStat.isFile() && !coreStat.isSymbolicLink());
-    assert.equal(
-      path.win32.toNamespacedPath(fs.realpathSync.native(core)).toLowerCase(),
-      path.win32.toNamespacedPath(core).toLowerCase(),
-    );
-    const coreSha256 = hash(core);
+    await verifyInstalledFileIoExecutable(descriptor, env);
     let reader;
     let projection;
     const errors = [];
@@ -588,7 +622,7 @@ async function main() {
         commands,
         env,
         label: `${admission.rootDir === path.join(privateRoot, "unloaded") ? "unloaded" : "loaded"}:same-etl-reader`,
-        bin: core,
+        bin: descriptor.powerShellExe,
         args: [
           "-NoProfile",
           "-NonInteractive",
@@ -618,6 +652,9 @@ async function main() {
         assert.equal(typeof version, "string");
         assert.ok(version.length <= 64);
         assert.match(version, /^\d+\.\d+\.\d+(?:\.\d+)?$/u);
+      }
+      for (const field of ["psVersion", "edition", "clrVersion", "is64BitProcess"]) {
+        assert.equal(runtime[field], descriptor.runtime[field]);
       }
       const ids = [10, 11, 12, 13, 14, 15, 17, 18, 24, 26];
       const counts = (value) => {
@@ -652,7 +689,11 @@ async function main() {
       if (reader?.receipt.joined === true && !errors.some(hasUnjoinedWork)) {
         try {
           assert.equal(hash(script), scriptSha256);
-          assert.equal(hash(core), coreSha256);
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          await verifyInstalledFileIoExecutable(descriptor, env);
         } catch (error) {
           errors.push(error);
         }
@@ -681,6 +722,7 @@ async function main() {
     return projection;
   }
   async function nativeLifetimeControl(descriptor, cell) {
+    await verifyInstalledFileIoExecutable(descriptor, env);
     const script = path.join(helper, "Inspect-LifetimeControl.ps1");
     const scriptSha256 = hash(script);
     const fixture = path.join(helper, "lifetime-fixture.cjs");
@@ -713,104 +755,127 @@ async function main() {
         fixtureSha256,
         "-ExpectedFixtureInputSha256",
         fixtureInputSha256,
+        "-ExpectedRuntimeBase64",
+        Buffer.from(JSON.stringify(descriptor.runtime), "utf8").toString("base64"),
+        "-ExpectedPowerShellSha256",
+        descriptor.powerShellSha256,
       ],
       timeoutMs: 30_000,
       stdoutLimit: 4096,
     });
-    const code = await control.completion;
-    const record = JSON.parse(control.result().stdout);
-    const stages = [
-      "binding",
-      "compile-control",
-      "process-start",
-      "process-ready",
-      "process-creation",
-      "process-hold",
-      "process-lease",
-      "process-terminal-write",
-      "process-terminal-ack",
-      "process-live",
-      "process-exited",
-      "thread-start",
-      "thread-live",
-      "thread-exited",
-      "complete",
-    ];
-    const fields = [
-      "processLive",
-      "processInsideExit",
-      "processAfterExit",
-      "threadLive",
-      "threadInsideExit",
-      "threadAfterExit",
-      "naturalRelease",
-    ];
-    const facts = Object.fromEntries(
-      fields.map((field) => [field, typeof record[field] === "boolean" ? record[field] : null]),
-    );
-    const observationFields = [
-      "childHasExited",
-      "callCompleted",
-      "querySucceeded",
-      "creationMatches",
-      "eventNotBeforeCreation",
-      "exitTimePresent",
-      "eventNotAfterExit",
-      "containsTime",
-    ];
-    const processLiveObservation = Object.fromEntries(
-      observationFields.map((field) => {
-        const value = record.processLiveObservation?.[field];
-        return [field, typeof value === "boolean" ? value : null];
-      }),
-    );
-    const threadObservationFields = [
-      "workerAlive",
-      "belongsAtCallCompleted",
-      "belongsAt",
-      "oracleCallCompleted",
-      "oracleQuerySucceeded",
-      "oracleCreationNotAfterSample",
-    ];
-    const threadLiveObservation = Object.fromEntries(
-      threadObservationFields.map((field) => {
-        const value = record.threadLiveObservation?.[field];
-        return [field, typeof value === "boolean" ? value : null];
-      }),
-    );
-    const terminalFailureCategories = ["bom-prefix", "eof", "mismatch", "other"];
-    cell.nativeLifetimeControl = {
-      passed: typeof record.passed === "boolean" ? record.passed : null,
-      stage: stages.includes(record.stage) ? record.stage : "unknown",
-      scriptSha256,
-      sourceSha256: descriptor.sourceSha256,
-      dllSha256: descriptor.dllSha256,
-      nodeSha256,
-      fixtureSha256,
-      fixtureInputSha256,
-      ...facts,
-      processLiveObservation,
-      threadLiveObservation,
-      terminalInputFailure: terminalFailureCategories.includes(record.terminalInputFailure)
-        ? record.terminalInputFailure
-        : null,
-    };
-    assert.equal(code, 0);
-    assert.ok(control.receipt.joined && control.receipt.jobObserved);
-    assert.equal(record.phase, "native-lifetime-control");
-    assert.equal(record.sourceSha256, descriptor.sourceSha256);
-    assert.equal(record.dllSha256, descriptor.dllSha256);
-    assert.equal(hash(script), scriptSha256);
-    assert.equal(hash(process.execPath), nodeSha256);
-    assert.equal(hash(fixture), fixtureSha256);
-    assert.equal(hash(fixtureInput), fixtureInputSha256);
-    assert.equal(record.nodeSha256, nodeSha256);
-    assert.equal(record.fixtureSha256, fixtureSha256);
-    assert.equal(record.fixtureInputSha256, fixtureInputSha256);
-    assert.equal(cell.nativeLifetimeControl.stage, "complete");
-    assert.equal(cell.nativeLifetimeControl.passed, true);
-    assert.equal(cell.nativeLifetimeControl.terminalInputFailure, null);
-    assert.ok(Object.values(facts).every((value) => value === true));
+    const errors = [];
+    try {
+      const code = await control.completion;
+      const record = JSON.parse(control.result().stdout);
+      const stages = [
+        "binding",
+        "compile-control",
+        "process-start",
+        "process-ready",
+        "process-creation",
+        "process-hold",
+        "process-lease",
+        "process-terminal-write",
+        "process-terminal-ack",
+        "process-live",
+        "process-exited",
+        "thread-start",
+        "thread-live",
+        "thread-exited",
+        "complete",
+      ];
+      const fields = [
+        "processLive",
+        "processInsideExit",
+        "processAfterExit",
+        "threadLive",
+        "threadInsideExit",
+        "threadAfterExit",
+        "naturalRelease",
+      ];
+      const facts = Object.fromEntries(
+        fields.map((field) => [field, typeof record[field] === "boolean" ? record[field] : null]),
+      );
+      const observationFields = [
+        "childHasExited",
+        "callCompleted",
+        "querySucceeded",
+        "creationMatches",
+        "eventNotBeforeCreation",
+        "exitTimePresent",
+        "eventNotAfterExit",
+        "containsTime",
+      ];
+      const processLiveObservation = Object.fromEntries(
+        observationFields.map((field) => {
+          const value = record.processLiveObservation?.[field];
+          return [field, typeof value === "boolean" ? value : null];
+        }),
+      );
+      const threadObservationFields = [
+        "workerAlive",
+        "belongsAtCallCompleted",
+        "belongsAt",
+        "oracleCallCompleted",
+        "oracleQuerySucceeded",
+        "oracleCreationNotAfterSample",
+      ];
+      const threadLiveObservation = Object.fromEntries(
+        threadObservationFields.map((field) => {
+          const value = record.threadLiveObservation?.[field];
+          return [field, typeof value === "boolean" ? value : null];
+        }),
+      );
+      const terminalFailureCategories = ["bom-prefix", "eof", "mismatch", "other"];
+      cell.nativeLifetimeControl = {
+        passed: typeof record.passed === "boolean" ? record.passed : null,
+        stage: stages.includes(record.stage) ? record.stage : "unknown",
+        scriptSha256,
+        sourceSha256: descriptor.sourceSha256,
+        dllSha256: descriptor.dllSha256,
+        nodeSha256,
+        fixtureSha256,
+        fixtureInputSha256,
+        ...facts,
+        processLiveObservation,
+        threadLiveObservation,
+        terminalInputFailure: terminalFailureCategories.includes(record.terminalInputFailure)
+          ? record.terminalInputFailure
+          : null,
+      };
+      assert.equal(code, 0);
+      assert.ok(control.receipt.joined && control.receipt.jobObserved);
+      assert.equal(record.phase, "native-lifetime-control");
+      assert.equal(record.sourceSha256, descriptor.sourceSha256);
+      assert.equal(record.dllSha256, descriptor.dllSha256);
+      assert.equal(hash(script), scriptSha256);
+      assert.equal(hash(process.execPath), nodeSha256);
+      assert.equal(hash(fixture), fixtureSha256);
+      assert.equal(hash(fixtureInput), fixtureInputSha256);
+      assert.equal(record.nodeSha256, nodeSha256);
+      assert.equal(record.fixtureSha256, fixtureSha256);
+      assert.equal(record.fixtureInputSha256, fixtureInputSha256);
+      assert.equal(cell.nativeLifetimeControl.stage, "complete");
+      assert.equal(cell.nativeLifetimeControl.passed, true);
+      assert.equal(cell.nativeLifetimeControl.terminalInputFailure, null);
+      assert.ok(Object.values(facts).every((value) => value === true));
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      if (control.receipt.joined && !errors.some(hasUnjoinedWork)) {
+        try {
+          await verifyInstalledFileIoExecutable(descriptor, env);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+    }
+    if (errors.length === 1) {
+      throw errors[0];
+    }
+    if (errors.length) {
+      throw new AggregateError(errors, "Lifetime control or executable verification failed");
+    }
   }
   async function runCell(name, fixtureMode) {
     const rootDir = path.join(privateRoot, name);
@@ -977,7 +1042,7 @@ async function main() {
         binding.fileIo.expectedGuid = "00000000-0000-0000-0000-000000000001";
       }
       if (name === "sync-timeout") {
-        const result = synchronousTimeoutControl(binding, context, [globalRoot]);
+        const result = await synchronousTimeoutControl(binding, context, [globalRoot]);
         cell.after = result.capture;
         cell.syncOwner = result.receipt;
         const absence = launchManaged({

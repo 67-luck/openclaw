@@ -4,7 +4,7 @@ import type { InstalledFileIoDescriptor } from "./schtasks.installed-retirement-
 export function createInstalledFileIoDescriptorFixture(
   ownedPrefix: string,
 ): InstalledFileIoDescriptor {
-  const powerShellExe = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+  const powerShellExe = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
   return {
     privateRoot: "C:\\synthetic-private",
     receiptPath: "C:\\synthetic-private\\receipt.json",
@@ -18,12 +18,13 @@ export function createInstalledFileIoDescriptorFixture(
     factsPath: "C:\\synthetic-tools\\FileTraceFacts.ps1",
     factsSha256: "e".repeat(64),
     powerShellExe,
+    powerShellSha256: "f".repeat(64),
     ownedPrefix,
     runtime: {
       executable: powerShellExe,
-      psVersion: "5.1.0",
-      edition: "Desktop",
-      clrVersion: "4.0.30319.42000",
+      psVersion: "7.6.6",
+      edition: "Core",
+      clrVersion: "10.0.12",
       is64BitProcess: true,
     },
   };

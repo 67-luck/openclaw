@@ -12,7 +12,7 @@ import {
 } from "../../scripts/lib/managed-child-process.mts";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { resolveDiagnosticProcessEnv } from "../infra/process-env.js";
-import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
+import { getWindowsInstallRoots } from "../infra/windows-install-roots.js";
 import { WINDOWS_POWERSHELL_COLD_SPAWN_TIMEOUT_MS } from "../infra/windows-powershell-spawn.js";
 import type { InstalledFileIoDescriptor } from "./schtasks.installed-retirement-observation.test-support.js";
 
@@ -24,12 +24,12 @@ const runtimeSchema = z.object({
   psVersion: z
     .string()
     .max(64)
-    .regex(/^5\.1\.\d+(?:\.\d+)?$/u),
-  edition: z.literal("Desktop"),
+    .regex(/^7\.\d+\.\d+(?:\.\d+)?$/u),
+  edition: z.literal("Core"),
   clrVersion: z
     .string()
     .max(64)
-    .regex(/^4\.\d+(?:\.\d+){1,2}$/u),
+    .regex(/^\d+\.\d+\.\d+(?:\.\d+)?$/u),
   is64BitProcess: z.literal(true),
 });
 const receiptSchema = z.object({
@@ -45,6 +45,7 @@ const receiptSchema = z.object({
   helperSha256: sha256,
   factsSha256: sha256,
   cliSha256: sha256,
+  powerShellSha256: sha256,
   runtime: runtimeSchema,
 });
 
@@ -190,6 +191,39 @@ async function hashRegularFile(file: string, maximumBytes = 2_097_152) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function coreExecutablePath(env: NodeJS.ProcessEnv) {
+  const diagnosticEnv = resolveDiagnosticProcessEnv(env, "win32");
+  return path.join(
+    getWindowsInstallRoots(diagnosticEnv).programFiles,
+    "PowerShell",
+    "7",
+    "pwsh.exe",
+  );
+}
+
+/** Bind the fixed private capture host; no PATH lookup or registry subprocess. */
+async function captureInstalledFileIoExecutable(env: NodeJS.ProcessEnv) {
+  const powerShellExe = coreExecutablePath(env);
+  assert.ok(path.isAbsolute(powerShellExe));
+  assert.equal(
+    path.toNamespacedPath(await fs.realpath(powerShellExe)).toLowerCase(),
+    path.toNamespacedPath(powerShellExe).toLowerCase(),
+    "FileIO runtime executable was redirected",
+  );
+  return { powerShellExe, powerShellSha256: await hashRegularFile(powerShellExe) };
+}
+
+export async function verifyInstalledFileIoExecutable(
+  binding: Pick<InstalledFileIoDescriptor, "powerShellExe" | "powerShellSha256">,
+  env: NodeJS.ProcessEnv,
+) {
+  assert.deepEqual(
+    await captureInstalledFileIoExecutable(env),
+    { powerShellExe: binding.powerShellExe, powerShellSha256: binding.powerShellSha256 },
+    "FileIO runtime executable differs from captured custody",
+  );
+}
+
 type FileIoTask = { rootDir: string; installRoot: string; env: NodeJS.ProcessEnv };
 const directoryIdentitySchema = z.object({
   device: z.string().regex(/^\d{1,32}$/u),
@@ -212,6 +246,7 @@ const custodySchema = z.object({
   factsPath: z.string(),
   factsSha256: sha256,
   powerShellExe: z.string(),
+  powerShellSha256: sha256,
   ownedPrefix: z.string(),
   directoryIdentity: directoryIdentitySchema.optional(),
 });
@@ -252,7 +287,7 @@ function readCustody(admission: Record<string, unknown>, task: FileIoTask, tooli
   assert.equal(custody.cliPath, path.join(sourceRoot, "Invoke-OwnedFileTrace.ps1"));
   assert.equal(custody.helperPath, path.join(sourceRoot, "OwnedFileTraceOperations.ps1"));
   assert.equal(custody.factsPath, path.join(sourceRoot, "FileTraceFacts.ps1"));
-  assert.equal(custody.powerShellExe, getWindowsPowerShellExePath());
+  assert.equal(custody.powerShellExe, coreExecutablePath(task.env));
   assert.equal(
     path.toNamespacedPath(custody.ownedPrefix).toLowerCase(),
     path.toNamespacedPath(path.join(task.installRoot, "node_modules")).toLowerCase(),
@@ -286,6 +321,7 @@ function fileIoCommand(
   const env = resolveDiagnosticProcessEnv(task.env, "win32");
   return async (phase: "prepare" | "cleanup") => {
     const directoryIdentity = await verifySources(custody);
+    await verifyInstalledFileIoExecutable(custody, task.env);
     const fact: InstalledFileIoCommandFact = {
       phase,
       outcome: "failed",
@@ -411,6 +447,13 @@ function fileIoCommand(
         processTreeState: "indeterminate",
       });
     }
+    try {
+      await verifyInstalledFileIoExecutable(custody, task.env);
+    } catch (error) {
+      throw failure
+        ? new AggregateError([failure, error], "FileIO command and runtime consistency failed")
+        : error;
+    }
     assert.ok(!failure && fact.exitCode === 0 && fact.jobObserved, "FileIO managed command failed");
     assert.ok(
       fact.stdoutBytes <= 65_536 && fact.stderrBytes === 0,
@@ -500,7 +543,6 @@ export async function prepareInstalledFileIo(params: {
     const helperPath = path.join(sourceRoot, "OwnedFileTraceOperations.ps1");
     const factsPath = path.join(sourceRoot, "FileTraceFacts.ps1");
     const sourcePath = path.join(sourceRoot, "OwnedFileTrace.cs");
-    const powerShellExe = getWindowsPowerShellExePath();
     const cleanup = async () => {
       if (!allocated) {
         return;
@@ -527,6 +569,9 @@ export async function prepareInstalledFileIo(params: {
         await fs.realpath(params.ownedPrefix),
         await fs.realpath(path.join(params.task.installRoot, "node_modules")),
       );
+      const { powerShellExe, powerShellSha256 } = await captureInstalledFileIoExecutable(
+        params.task.env,
+      );
       assert.equal(await hashRegularFile(sourcePath), sourceSha256);
       const cliSha256 = await hashRegularFile(cliPath);
       const helperSha256 = await hashRegularFile(helperPath);
@@ -547,6 +592,7 @@ export async function prepareInstalledFileIo(params: {
         factsPath,
         factsSha256,
         powerShellExe,
+        powerShellSha256,
         ownedPrefix: params.ownedPrefix,
       };
       // Publish exact recovery authority before any compiler, trace, or private allocation.
@@ -573,6 +619,7 @@ export async function prepareInstalledFileIo(params: {
       assert.equal(receipt.raw, path.join(privateRoot, "private-host-events.etl"));
       assert.equal(receipt.dll, path.join(privateRoot, "OwnedFileTrace.dll"));
       assert.equal(receipt.sourceSha256, sourceSha256);
+      assert.equal(receipt.powerShellSha256, powerShellSha256);
       assert.equal(receipt.helperSha256, helperSha256);
       assert.equal(receipt.factsSha256, factsSha256);
       assert.equal(receipt.cliSha256, cliSha256);
@@ -599,6 +646,7 @@ export async function prepareInstalledFileIo(params: {
         factsPath,
         factsSha256,
         powerShellExe,
+        powerShellSha256,
         ownedPrefix: params.ownedPrefix,
         runtime: receipt.runtime,
       };

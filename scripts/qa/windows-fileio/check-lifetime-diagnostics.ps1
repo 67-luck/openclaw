@@ -468,3 +468,55 @@ foreach($scenario in @('worker-not-alive','belongs-throws','creation-before','cr
     controlSha256=(Get-FileHash $SourcePath -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json -Compress
 }
 if($threadFailed){throw "Thread diagnostic contract failures: $threadFailed"}
+
+# Execute the actual runtime/hash admission prefix, stopping at the DLL load.
+# Existing fake control types prevent a real DLL load in this checker process;
+# a separate fresh managed process qualifies the real Core compiler boundary.
+$loadStatement=$outer.Body.Statements | Where-Object {$_.Extent.Text -ceq 'Add-Type -LiteralPath $DllPath'} | Select-Object -First 1
+$runtimeGuard=$outer.Body.Statements | Where-Object {
+  $_ -is [Management.Automation.Language.IfStatementAst] -and $_.Extent.Text.Contains('[Environment]::OSVersion.Platform')
+} | Select-Object -First 1
+if(-not $loadStatement -or -not $runtimeGuard){throw 'Runtime binding prefix missing'}
+$prefix=$source.Substring($outer.Body.Extent.StartOffset+1,$loadStatement.Extent.EndOffset-$outer.Body.Extent.StartOffset-1)
+$prefix=$prefix.Replace($runtimeGuard.Extent.Text,'')
+$prefix=$prefix.Replace('$PSScriptRoot',("'"+$PSScriptRoot.Replace("'","''")+"'"))
+$runtimeEntry=[scriptblock]::Create($prefix)
+$self=[Diagnostics.Process]::GetCurrentProcess()
+try {$ownExe=$self.MainModule.FileName} finally {$self.Dispose()}
+$actualRuntime=@{executable=$ownExe;psVersion=$PSVersionTable.PSVersion.ToString();edition=$PSVersionTable.PSEdition;
+  clrVersion=[Environment]::Version.ToString();is64BitProcess=[Environment]::Is64BitProcess}
+$DllPath=Join-Path $PSScriptRoot 'OwnedFileTrace.cs'
+$ExpectedDllSha256=(Get-FileHash $DllPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$ExpectedSourceSha256=$ExpectedDllSha256
+$NodeExe=$ownExe
+$ExpectedNodeSha256=(Get-FileHash $ownExe -Algorithm SHA256).Hash.ToLowerInvariant()
+$ExpectedFixtureSha256=(Get-FileHash (Join-Path $PSScriptRoot 'lifetime-fixture.cjs') -Algorithm SHA256).Hash.ToLowerInvariant()
+$ExpectedFixtureInputSha256=(Get-FileHash (Join-Path $PSScriptRoot 'fixture-input.cjs') -Algorithm SHA256).Hash.ToLowerInvariant()
+$runtimeFailed=0
+foreach($scenario in @('match','executable','psVersion','edition','clrVersion','is64BitProcess','boolean-string','hash','json','base64','array')){
+  $expectedBinding=$actualRuntime.Clone()
+  if($scenario -in @('executable','psVersion','edition','clrVersion')){$expectedBinding[$scenario]='PRIVATE_RUNTIME_MISMATCH'}
+  if($scenario -eq 'is64BitProcess'){$expectedBinding.is64BitProcess=$false}
+  if($scenario -eq 'boolean-string'){$expectedBinding.is64BitProcess='true'}
+  $json=$expectedBinding | ConvertTo-Json -Compress
+  if($scenario -eq 'json'){$json='PRIVATE_INVALID_JSON'}
+  if($scenario -eq 'array'){$json='['+$json+']'}
+  $ExpectedRuntimeBase64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+  if($scenario -eq 'base64'){$ExpectedRuntimeBase64='PRIVATE_INVALID_BASE64!'}
+  $ExpectedPowerShellSha256=if($scenario -eq 'hash'){'0'*64}else{$ExpectedNodeSha256}
+  $script:runtimeLoads=0;$script:runtimeRefused=$false
+  & {
+    function Add-Type {param([string]$LiteralPath)
+      if($LiteralPath -cne $DllPath){throw 'Unexpected DLL admission target'}
+      $script:runtimeLoads++
+    }
+    try {$null=& $runtimeEntry} catch {$script:runtimeRefused=$true}
+  }
+  $passed=$script:runtimeLoads -eq $(if($scenario -eq 'match'){1}else{0}) -and
+    $script:runtimeRefused -eq ($scenario -ne 'match')
+  if(-not $passed){$runtimeFailed++}
+  @{scenario=('runtime-binding-'+$scenario);passed=$passed;loadAttempts=$script:runtimeLoads;
+    refused=$script:runtimeRefused;nativeProof=$false;dllLoaded=$false;
+    substitutions=@('runtime-prerequisite','source-directory','dll-load-boundary')} | ConvertTo-Json -Compress
+}
+if($runtimeFailed){throw "Runtime binding prefix failures: $runtimeFailed"}

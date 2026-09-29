@@ -5,7 +5,6 @@ import { compileFunction } from "node:vm";
 import { parse } from "acorn";
 import { expect, it } from "vitest";
 import { hasUnjoinedWork } from "../../scripts/lib/managed-child-process.mts";
-import { getWindowsInstallRoots } from "../../src/infra/windows-install-roots.js";
 import { createDeferred } from "../helpers/promise.js";
 
 const source = fs.readFileSync(
@@ -24,11 +23,11 @@ assert.ok(declaration);
 
 it.each([
   "success",
-  "core-missing",
-  "core-symlink",
-  "core-directory",
-  "core-redirected",
-  "core-changed",
+  "executable-refused",
+  "executable-changed",
+  "timeout-and-executable-changed",
+  "runtime-version-mismatch",
+  "runtime-clr-mismatch",
   "pending",
   "primary-unjoined",
   "trace-not-stopped",
@@ -112,7 +111,29 @@ it.each([
   if (scenario === "invalid-runtime") {
     record.runtime.edition = "PRIVATE_EDITION";
   }
+  if (scenario === "runtime-version-mismatch") {
+    record.runtime.psVersion = "7.6.1";
+  }
+  if (scenario === "runtime-clr-mismatch") {
+    record.runtime.clrVersion = "10.0.1";
+  }
   const core = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
+  const descriptor = {
+    receiptPath: "/private/unloaded/.fileio-private/trace.json",
+    expectedGuid: "11111111-1111-4111-8111-111111111111",
+    powerShellExe: core,
+    powerShellSha256: "e".repeat(64),
+    runtime: {
+      executable: core,
+      psVersion: "7.6.0",
+      edition: "Core",
+      clrVersion: "10.0.0",
+      is64BitProcess: true,
+    },
+  };
+  const verifierFailure = new Error("PRIVATE_EXECUTABLE_REFUSAL");
+  let verifications = 0;
+  let commandJoined = false;
   const hashCalls = new Map<string, number>();
   const dependencies = {
     assert,
@@ -124,31 +145,25 @@ it.each([
     lifetime: {},
     commands: [],
     env: { PATH: "PRIVATE_SHADOW_PWSH" },
-    getWindowsInstallRoots: (env: Record<string, string>) => {
+    async verifyInstalledFileIoExecutable(value: unknown, env: unknown) {
+      expect(value).toBe(descriptor);
       expect(env).toEqual({ PATH: "PRIVATE_SHADOW_PWSH" });
-      return getWindowsInstallRoots(env);
-    },
-    fs: {
-      lstatSync(file: string) {
-        expect(file).toBe(core);
-        if (scenario === "core-missing") {
-          throw ownerFailure;
-        }
-        return {
-          isFile: () => scenario !== "core-directory",
-          isSymbolicLink: () => scenario === "core-symlink",
-        };
-      },
-      realpathSync: {
-        native: () => (scenario === "core-redirected" ? "C:\\PRIVATE_SHADOW\\pwsh.exe" : core),
-      },
+      verifications++;
+      if (verifications > 1) {
+        expect(commandJoined).toBe(true);
+      }
+      if (
+        scenario === "executable-refused" ||
+        (verifications > 1 &&
+          ["executable-changed", "timeout-and-executable-changed"].includes(scenario))
+      ) {
+        throw verifierFailure;
+      }
     },
     hash(file: string) {
       const count = (hashCalls.get(file) ?? 0) + 1;
       hashCalls.set(file, count);
-      return count > 1 &&
-        ((scenario === "script-changed" && file.endsWith(".ps1")) ||
-          (scenario === "core-changed" && file === core))
+      return count > 1 && scenario === "script-changed" && file.endsWith(".ps1")
         ? "b".repeat(64)
         : "a".repeat(64);
     },
@@ -174,10 +189,15 @@ it.each([
           await gate.promise;
         }
         receipt.joined = scenario !== "unjoined";
+        commandJoined = receipt.joined;
         if (
-          ["launch-refused-joined", "timeout-joined", "unjoined", "nested-unjoined"].includes(
-            scenario,
-          )
+          [
+            "launch-refused-joined",
+            "timeout-joined",
+            "timeout-and-executable-changed",
+            "unjoined",
+            "nested-unjoined",
+          ].includes(scenario)
         ) {
           throw failure;
         }
@@ -213,10 +233,7 @@ it.each([
     primary.pid++;
   }
   const completion = compare(
-    {
-      receiptPath: "/private/unloaded/.fileio-private/trace.json",
-      expectedGuid: "11111111-1111-4111-8111-111111111111",
-    },
+    descriptor,
     { pid: 1234, startTicks: "133000000000000000" },
     admission,
     primary,
@@ -236,13 +253,11 @@ it.each([
     "primary-unjoined",
     "trace-not-stopped",
     "wrong-primary-identity",
-    "core-missing",
-    "core-symlink",
-    "core-directory",
-    "core-redirected",
+    "executable-refused",
   ].includes(scenario);
   if (beforeLaunch) {
     expect(launches).toEqual([]);
+    expect(verifications).toBe(scenario === "executable-refused" ? 1 : 0);
     expect(persisted).toEqual([]);
     expect(admission.fileIoReaderState).toBeUndefined();
   } else {
@@ -254,6 +269,7 @@ it.each([
     ].includes(scenario);
     expect(admission.fileIoReaderState).toBe(uncertain ? "pending" : "joined");
     expect(hasUnjoinedWork(caught)).toBe(uncertain);
+    expect(verifications).toBe(uncertain ? 1 : 2);
     if (launches.length) {
       expect(launches).toHaveLength(1);
       expect(launches[0]).toMatchObject({ bin: core, timeoutMs: 5000, stdoutLimit: 4096 });
@@ -284,6 +300,10 @@ it.each([
   } else {
     expect(caught).toBeInstanceOf(Error);
     expect(result).toBeUndefined();
+    if (scenario === "timeout-and-executable-changed") {
+      assert.ok(caught instanceof AggregateError);
+      expect(caught.errors).toEqual([ownerFailure, verifierFailure]);
+    }
     if (["launch-refused-joined", "timeout-joined", "persist-joined-fails"].includes(scenario)) {
       expect(caught).toBe(ownerFailure);
     }

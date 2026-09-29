@@ -7,7 +7,9 @@ param(
   [Parameter(Mandatory)][string]$NodeExe,
   [Parameter(Mandatory)][string]$ExpectedNodeSha256,
   [Parameter(Mandatory)][string]$ExpectedFixtureSha256,
-  [Parameter(Mandatory)][string]$ExpectedFixtureInputSha256
+  [Parameter(Mandatory)][string]$ExpectedFixtureInputSha256,
+  [Parameter(Mandatory)][string]$ExpectedRuntimeBase64,
+  [Parameter(Mandatory)][string]$ExpectedPowerShellSha256
 )
 $ErrorActionPreference='Stop'
 $stage='binding'
@@ -48,12 +50,27 @@ function Assert-LifetimeBindings($Bindings) {
 }
 try {
   if([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
-    -not [Environment]::Is64BitProcess -or $PSVersionTable.PSEdition -cne 'Desktop' -or
-    $PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1){throw 'Exact native runtime required'}
+    -not [Environment]::Is64BitProcess -or $PSVersionTable.PSEdition -cne 'Core' -or
+    $PSVersionTable.PSVersion.Major -ne 7){throw 'Exact native runtime required'}
+  if($ExpectedRuntimeBase64.Length -gt 16384){throw 'Native runtime binding byte bound'}
+  $expectedRuntime=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($ExpectedRuntimeBase64)) | ConvertFrom-Json -NoEnumerate
+  if($expectedRuntime -isnot [System.Management.Automation.PSCustomObject]){throw 'Native runtime binding shape refused'}
+  $current=[Diagnostics.Process]::GetCurrentProcess()
+  try {$powerShellExe=$current.MainModule.FileName} finally {$current.Dispose()}
+  $runtime=@{executable=$powerShellExe;psVersion=$PSVersionTable.PSVersion.ToString();
+    edition=$PSVersionTable.PSEdition;clrVersion=[Environment]::Version.ToString();is64BitProcess=[Environment]::Is64BitProcess}
+  foreach($field in @('executable','psVersion','edition','clrVersion')){
+    if($expectedRuntime.$field -isnot [string]){throw 'Native runtime binding field refused'}
+  }
+  if(-not [string]::Equals($expectedRuntime.executable,$runtime.executable,[StringComparison]::OrdinalIgnoreCase) -or
+      $expectedRuntime.psVersion -cne $runtime.psVersion -or $expectedRuntime.edition -cne $runtime.edition -or
+      $expectedRuntime.clrVersion -cne $runtime.clrVersion -or $expectedRuntime.is64BitProcess -isnot [bool] -or
+      $expectedRuntime.is64BitProcess -ne $runtime.is64BitProcess){throw 'Native runtime binding mismatch'}
   $fixturePath=Join-Path $PSScriptRoot 'lifetime-fixture.cjs'
   $fixtureInputPath=Join-Path $PSScriptRoot 'fixture-input.cjs'
   $bindings=@(@($DllPath,$ExpectedDllSha256),@((Join-Path $PSScriptRoot 'OwnedFileTrace.cs'),$ExpectedSourceSha256),
-    @($NodeExe,$ExpectedNodeSha256),@($fixturePath,$ExpectedFixtureSha256),@($fixtureInputPath,$ExpectedFixtureInputSha256))
+    @($NodeExe,$ExpectedNodeSha256),@($fixturePath,$ExpectedFixtureSha256),@($fixtureInputPath,$ExpectedFixtureInputSha256),
+    @($powerShellExe,$ExpectedPowerShellSha256))
   Assert-LifetimeBindings $bindings
   Add-Type -LiteralPath $DllPath
   $stage='compile-control'
@@ -232,7 +249,11 @@ public static class FileTraceLifetimeControl {
   }
 }
 '@
-  Add-Type -TypeDefinition $control -ReferencedAssemblies @($DllPath,'System.dll')
+  # An explicit owned DLL replaces Core's defaults; preserve its shipped reference set.
+  $references=@([IO.Directory]::EnumerateFiles((Join-Path $PSHOME 'ref'),'*.dll',[IO.SearchOption]::TopDirectoryOnly))
+  $references += [System.Management.Automation.PSObject].Assembly.Location
+  $references += $DllPath
+  Add-Type -TypeDefinition $control -ReferencedAssemblies $references
   Assert-LifetimeBindings $bindings
   $runFailure=$null
   try {[FileTraceLifetimeControl]::Run($NodeExe,$fixturePath)} catch {$runFailure=$_.Exception}

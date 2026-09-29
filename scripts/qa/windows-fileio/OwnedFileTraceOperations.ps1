@@ -57,11 +57,16 @@ function Update-PrivateReceipt($Value) {
   Write-ExclusiveJson $temporary $Value
   [IO.File]::Replace($temporary,$receiptFile,[NullString]::Value)
 }
-function Assert-PreparedInput($Receipt) {
+function Assert-TraceRuntime($Receipt) {
   $runtime=Read-TraceRuntime
   foreach($key in @('executable','psVersion','edition','clrVersion','is64BitProcess')) {
     if([string]$Receipt.runtime.$key -ine [string]$runtime[$key]){throw 'Prepared runtime mismatch'}
   }
+  if([string]$Receipt.powerShellSha256 -cnotmatch '^[a-f0-9]{64}$' -or
+    (Hash-OwnedFile $runtime.executable) -cne [string]$Receipt.powerShellSha256){throw 'Prepared runtime executable mismatch'}
+}
+function Assert-PreparedInput($Receipt) {
+  Assert-TraceRuntime $Receipt
   foreach($entry in @(
     @('dllSha256',$dll,$ExpectedDllSha256),
     @('sourceSha256',(Join-Path $PSScriptRoot 'OwnedFileTrace.cs'),$ExpectedSourceSha256),
@@ -107,19 +112,21 @@ try {
   if($Mode -eq 'prepare'){Emit @{phase='prepare-stage';diagnosticOnly=$true;stage='entered'}}
   if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Windows required' }
   if (-not [Environment]::Is64BitProcess) {throw '64-bit PowerShell required'}
+  if($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.Major -ne 7){throw 'Core 7 required'}
   if ($Mode -ne 'cleanup' -and -not [IO.Directory]::Exists($privateDirectory)) { throw 'Owner must admit and create private directory first' }
   if ($ExpectedGuid -eq [guid]::Empty) { throw 'Nonempty owner-admitted GUID required' }
   if ($Mode -eq 'prepare') {
     if ([IO.File]::Exists($receiptFile) -or [IO.File]::Exists($raw) -or [IO.File]::Exists($dll)) { throw 'Preparation paths already occupied' }
     # Kernel-File's manifest GUID is stable; discovery must independently agree.
     $providerGuid='edd08927-9cc4-4e65-b970-c2560fb5c289'
+    $preparedRuntime=Read-TraceRuntime
     $receipt = @{ contract='owned-fileio-v1'; guid=$ExpectedGuid.ToString(); name=$sessionName;
       raw=$raw; dll=$dll; provider=$providerGuid; preparedAt=[DateTime]::UtcNow.ToString('O');
       sourceSha256=(Hash-OwnedFile (Join-Path $PSScriptRoot 'OwnedFileTrace.cs'));
       helperSha256=(Hash-OwnedFile (Join-Path $PSScriptRoot 'OwnedFileTraceOperations.ps1'));
       factsSha256=(Hash-OwnedFile (Join-Path $PSScriptRoot 'FileTraceFacts.ps1'));
       cliSha256=(Hash-OwnedFile (Join-Path $PSScriptRoot 'Invoke-OwnedFileTrace.ps1'));
-      runtime=(Read-TraceRuntime) }
+      runtime=$preparedRuntime;powerShellSha256=(Hash-OwnedFile $preparedRuntime.executable) }
     Write-ExclusiveJson $receiptFile $receipt
     Emit @{phase='prepare-stage';diagnosticOnly=$true;stage='custody-written'}
     # All slow preparation precedes updater execution; no provider is enabled here.
@@ -157,14 +164,15 @@ try {
   if ($Mode -eq 'cleanup') {
     # Cleanup must also work after interrupted DLL compilation. This runs only
     # in the existing owner's teardown budget, never in the five-second census.
+    $receiptExists=[IO.File]::Exists($receiptFile)
+    if($receiptExists){$receipt=Read-Receipt;Assert-TraceRuntime $receipt}
     Add-Type -Path ([IO.Path]::Combine($PSScriptRoot,'OwnedFileTrace.cs'))
-    if(-not [IO.File]::Exists($receiptFile)) {
+    if(-not $receiptExists) {
       if(-not (Test-TraceAbsent) -or [IO.File]::Exists($raw)){throw 'Missing acquisition custody'}
       Emit @{phase='cleanup';name=$sessionName;guid=$ExpectedGuid.ToString();traceAbsent=$true;
         rawAbsent=$true;cleanupVerified=$true;acquisition=$(if([IO.Directory]::Exists($privateDirectory)){'not-started'}else{'previously-cleaned-or-never-started'});loss=$null}
       return @{records=@($emitted.ToArray());exitCode=0}
     }
-    $receipt = Read-Receipt
     $stats = Stop-OwnedTrace
     # Delete only the receipt-bound raw ETL, never a directory or foreign session.
     if ([IO.File]::Exists($raw)) { [IO.File]::Delete($raw) }

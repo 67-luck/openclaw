@@ -1149,13 +1149,13 @@ jobs:
                 if ($trace.toolingSha -cnotmatch '^[a-f0-9]{40}$' -or $trace.toolingSha -cne (git rev-parse HEAD)) { throw 'FileIO source revision differs from its admission.' }
                 if ($trace.expectedGuid -cnotmatch '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$' -or $trace.name -cne ('OpenClaw-Owned-FileIO-' + $trace.expectedGuid.Replace('-', ''))) { throw 'FileIO session identity is not exact.' }
                 $sourceRoot = Join-Path $env:GITHUB_WORKSPACE 'scripts/qa/windows-fileio'
-                $expectedPowerShell = Join-Path ([Environment]::GetFolderPath('Windows')) 'System32/WindowsPowerShell/v1.0/powershell.exe'
+                $expectedPowerShell = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'PowerShell/7/pwsh.exe'
                 foreach ($pair in @(@($trace.privateRoot, $expectedPrivate), @($trace.receiptPath, (Join-Path $expectedPrivate 'trace.json')), @($trace.ownedPrefix, (Join-Path $expectedInstall 'node_modules')), @($trace.powerShellExe, $expectedPowerShell), @($trace.sourcePath, (Join-Path $sourceRoot 'OwnedFileTrace.cs')), @($trace.cliPath, (Join-Path $sourceRoot 'Invoke-OwnedFileTrace.ps1')), @($trace.helperPath, (Join-Path $sourceRoot 'OwnedFileTraceOperations.ps1')), @($trace.factsPath, (Join-Path $sourceRoot 'FileTraceFacts.ps1')))) {
                   if ([string]::IsNullOrEmpty($pair[0]) -or [IO.Path]::GetFullPath($pair[0]) -ine [IO.Path]::GetFullPath($pair[1])) { throw 'FileIO path differs from its admitted task.' }
                   if ((Test-Path -LiteralPath $pair[0]) -and ((Get-Item -LiteralPath $pair[0] -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'FileIO recovery refuses redirected custody.' }
                 }
                 if ($trace.sourceSha256 -cne '8fc1495a0d7a828cdd611d376aebc4590747d1d855ed7e48d69d765eca3fe45d') { throw 'FileIO native source differs from the pinned observer.' }
-                foreach ($pair in @(@($trace.sourcePath, $trace.sourceSha256), @($trace.cliPath, $trace.cliSha256), @($trace.helperPath, $trace.helperSha256), @($trace.factsPath, $trace.factsSha256))) {
+                foreach ($pair in @(@($trace.sourcePath, $trace.sourceSha256), @($trace.cliPath, $trace.cliSha256), @($trace.helperPath, $trace.helperSha256), @($trace.factsPath, $trace.factsSha256), @($trace.powerShellExe, $trace.powerShellSha256))) {
                   if ($pair[1] -cnotmatch '^[a-f0-9]{64}$' -or (Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne $pair[1]) { throw 'FileIO recovery source binding changed.' }
                 }
               } elseif ($record.role -cne 'peer' -and (Test-Path -LiteralPath $expectedPrivate)) { throw 'Private FileIO state has no admitted descriptor.' }
