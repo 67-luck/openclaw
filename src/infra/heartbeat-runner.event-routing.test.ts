@@ -487,6 +487,50 @@ describe("Heartbeat event routing", () => {
     );
   });
 
+  it("keeps the exec route when a cron wake sees both queued payloads", async () => {
+    await withRouting(async ({ storePath, replySpy, sendTelegram, run }) => {
+      const sessionKey = "agent:main:telegram:group:-1003774691294:topic:47";
+      await writeTelegramSessionStore(storePath, sessionKey, {
+        lastTo: "telegram:-1003774691294:topic:99",
+        lastThreadId: 99,
+      });
+      enqueueSystemEvent("Exec completed (mixed-run, code 0) :: ready", {
+        sessionKey,
+        deliveryContext: {
+          channel: "telegram",
+          to: "telegram:-1003774691294:topic:47",
+          threadId: 47,
+        },
+      });
+      enqueueSystemEvent("Reminder: mixed cron follow-up", {
+        sessionKey,
+        contextKey: "cron:mixed-run",
+        deliveryContext: {
+          channel: "telegram",
+          to: "telegram:-1003774691294:topic:99",
+          threadId: 99,
+        },
+      });
+      replySpy.mockResolvedValue({ text: "Command completed." });
+
+      const result = await run({
+        sessionKey,
+        source: "cron",
+        intent: "immediate",
+        reason: "cron:mixed-run",
+      });
+
+      expect(result.status).toBe("ran");
+      expect(getFirstReplyContext(replySpy).InternalTurnSource).toBe("exec");
+      expectTelegramSend(sendTelegram, {
+        to: "telegram:-1003774691294:topic:47",
+        text: "Command completed.",
+        messageThreadId: 47,
+      });
+      expect(peekSystemEvents(sessionKey)).toEqual(["Reminder: mixed cron follow-up"]);
+    }, false);
+  });
+
   it.each([
     { name: "metadata-only", output: "", reply: "HEARTBEAT_OK" },
     {
@@ -511,6 +555,10 @@ describe("Heartbeat event routing", () => {
           threadId: 47,
         },
       });
+      enqueueSystemEvent("Node connected", {
+        sessionKey,
+        deliveryContext: { channel: "telegram", to: "123456789" },
+      });
 
       const result = await run({ sessionKey, reason: "exec-event" });
 
@@ -525,6 +573,7 @@ describe("Heartbeat event routing", () => {
         expect(getFirstReplyContext(replySpy).Body).toContain("no command output was found");
         expect(sendTelegram).not.toHaveBeenCalled();
       }
+      expect(peekSystemEvents(sessionKey)).toEqual(["Node connected"]);
     }, false);
   });
 });
