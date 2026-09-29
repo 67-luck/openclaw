@@ -83,6 +83,8 @@ def build_variant(repo, root, scripts, base, variant):
             ("AuxiliaryProbe", "Auxiliary.swift", "auxiliary-probe"),
             ("TLSProbe", "TLS.swift", "tls-probe"),
             ("BackpressureProbe", "Backpressure.swift", "backpressure-probe"),
+            ("FramingProbe", "Framing.swift", "framing-probe"),
+            ("FramingHelper", "FramingHelper.swift", "framing-helper"),
         ]
         shutil.copytree(
             repo / "apps/macos/Sources/OpenClawRustSidecar",
@@ -112,6 +114,9 @@ def build_variant(repo, root, scripts, base, variant):
             check=True,
         )
         shutil.copy2(package / ".build/release" / target, root / "bin" / binary)
+        if target == "FramingHelper":
+            for scenario in ["idle-after-control", "within-budget", "partial-prefix", "combined-budget"]:
+                (root / "bin" / (binary + "-" + scenario)).symlink_to(binary)
     return {
         str(path.relative_to(sources)): digest(path)
         for path in sorted(sources.rglob("*"))

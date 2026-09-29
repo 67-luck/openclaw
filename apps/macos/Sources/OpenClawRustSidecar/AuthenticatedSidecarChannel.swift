@@ -3,6 +3,8 @@ import Foundation
 
 /// Envelopes borrow the original body; only their small prefix and suffix are copied.
 struct SidecarPayload: Sendable {
+    enum Format: Sendable { case json, transport }
+
     enum Body: Sendable {
         case data(Data)
         case utf8(String)
@@ -22,6 +24,7 @@ struct SidecarPayload: Sendable {
         }
     }
 
+    let format: Format
     let body: Body
     let prefix: Data
     let suffix: Data
@@ -30,7 +33,8 @@ struct SidecarPayload: Sendable {
         self.init(body: .data(data), prefix: prefix, suffix: suffix)
     }
 
-    init(body: Body, prefix: Data = Data(), suffix: Data = Data()) {
+    init(body: Body, prefix: Data = Data(), suffix: Data = Data(), format: Format = .json) {
+        self.format = format
         if case var .utf8(text) = body {
             text.makeContiguousUTF8()
             self.body = .utf8(text)
@@ -53,8 +57,8 @@ struct SidecarPayload: Sendable {
 /// Supervisor half of `openclaw-node-host`'s authenticated sidecar protocol v1.
 /// The owning process session serializes access; reference identity keeps retirement and sequences shared.
 final class AuthenticatedSidecarChannel {
-    /// Base64 preserves a full 25 MiB Gateway message across the JSON relay.
-    /// Reserve its exact expansion plus the IPC envelope; keep the helper offer aligned.
+    /// Preserve the negotiated JSON/native-result frame ceiling; opaque transport
+    /// has its own 25 MiB body bound. Keep the helper offer aligned.
     static let defaultMaxFrameBytes = ((25 * 1024 * 1024 + 2) / 3) * 4 + 4096
 
     enum Failure: Error, Equatable {
@@ -76,6 +80,7 @@ final class AuthenticatedSidecarChannel {
     private var sendSequence: UInt64 = 0
     private var receiveSequence: UInt64 = 0
     private var frameLimitLocked = false
+    private var opaqueTransport = false
     private(set) var maxFrameBytes: Int
 
     var isRetired: Bool {
@@ -116,20 +121,23 @@ final class AuthenticatedSidecarChannel {
         self.maxFrameBytes = limit
     }
 
-    func lockFrameLimit() {
+    func lockFrameLimit(opaqueTransport: Bool = false) {
+        guard !self.frameLimitLocked else { return }
         self.frameLimitLocked = true
+        self.opaqueTransport = opaqueTransport
     }
 
-    /// The prefix is transport framing; the HMAC covers the header, session ID, and exact JSON bytes.
+    /// The prefix is transport framing; the HMAC covers the header, session ID, and exact payload bytes.
     func seal(_ payload: SidecarPayload) throws -> SidecarPayload {
         guard let key = self.key else { throw Failure.retired }
         guard payload.count <= self.maxPayloadBytes else { throw Failure.frameTooLarge }
+        guard payload.format != .transport || self.opaqueTransport else { throw Failure.invalidHeader }
         guard self.sendSequence < UInt64.max else { throw Failure.wrongSequence }
         let sequence = self.sendSequence + 1
         let frameBytes = Self.headerBytes + self.sessionID.count + payload.count + Self.tagBytes
         var frame = Data(capacity: Self.headerBytes + self.sessionID.count + payload.prefix.count + 4)
         Self.append(UInt32(frameBytes), to: &frame)
-        frame.append(contentsOf: "OCSC".utf8)
+        frame.append(contentsOf: (payload.format == .transport ? "OCMT" : "OCSC").utf8)
         Self.append(UInt16(1), to: &frame)
         Self.append(UInt16(0), to: &frame)
         frame.append(1) // Supervisor -> runtime; accepting this direction would permit reflection.
@@ -151,7 +159,11 @@ final class AuthenticatedSidecarChannel {
     }
 
     /// The caller bounds the length prefix before allocating and retires on I/O or typed-message errors.
-    func open<Payload>(_ frame: Data, decode: (Data) throws -> Payload) throws -> Payload {
+    func open<Payload>(
+        _ frame: Data,
+        decode: (Data) throws -> Payload,
+        transport: ((Data) throws -> Payload)? = nil) throws -> Payload
+    {
         guard let key = self.key else { throw Failure.retired }
         do {
             guard frame.count <= self.maxFrameBytes else { throw Failure.frameTooLarge }
@@ -161,7 +173,10 @@ final class AuthenticatedSidecarChannel {
                 frame.suffix(Self.tagBytes), authenticating: authenticated, using: key)
             else { throw Failure.authentication }
             // Authenticate before parsing any peer-controlled header fields.
-            guard authenticated.prefix(4).elementsEqual("OCSC".utf8),
+            let isTransport = authenticated.prefix(4).elementsEqual("OCMT".utf8)
+            let knownFormat = isTransport ? self.opaqueTransport && transport != nil :
+                authenticated.prefix(4).elementsEqual("OCSC".utf8)
+            guard knownFormat,
                   Self.integer(authenticated, at: 4, bytes: 2) == 1,
                   Self.integer(authenticated, at: 6, bytes: 2) == 0
             else { throw Failure.invalidHeader }
@@ -178,8 +193,14 @@ final class AuthenticatedSidecarChannel {
             guard authenticated.dropFirst(Self.headerBytes).prefix(sessionBytes) == self.sessionID
             else { throw Failure.wrongSession }
             // Decode only after authentication; typed-payload failures retire the same session.
-            guard let payload = try? decode(authenticated.suffix(payloadBytes))
-            else { throw Failure.invalidPayload }
+            let payload: Payload
+            do {
+                if isTransport, let transport {
+                    payload = try transport(authenticated.suffix(payloadBytes))
+                } else {
+                    payload = try decode(authenticated.suffix(payloadBytes))
+                }
+            } catch { throw Failure.invalidPayload }
             self.receiveSequence += 1
             return payload
         } catch {

@@ -5,13 +5,14 @@ mod transport;
 
 use openclaw_gateway_client::{Event, GatewayClientConfig};
 use openclaw_node_host::{
-    read_sidecar_frame, write_sidecar_frame, AuthenticatedSidecarChannel, ClientError,
-    CommandRuntime, HandlerError, InvocationContext, InvocationIo, NodeClient, SidecarHandshake,
-    SidecarLimits, SidecarPeerIdentity, SidecarPeerRole, SidecarProtocolOffer, SidecarSessionKey,
+    read_sidecar_frame, write_sidecar_frame, write_sidecar_frame_parts,
+    AuthenticatedSidecarChannel, ClientError, CommandRuntime, HandlerError, InvocationContext,
+    InvocationIo, NodeClient, SidecarHandshake, SidecarLimits, SidecarPeerIdentity,
+    SidecarPeerRole, SidecarProtocolOffer, SidecarSessionKey,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{collections::HashMap, error::Error, sync::Arc, time::Duration};
+use std::{collections::HashMap, error::Error, os::fd::AsFd, sync::Arc, time::Duration};
 use tokio::{
     io::AsyncReadExt,
     sync::{mpsc, oneshot, Mutex},
@@ -19,12 +20,22 @@ use tokio::{
 };
 
 const GATEWAY_PAYLOAD_LIMIT: usize = 25 * 1024 * 1024;
-// Relay bytes use base64 so valid Gateway text is unchanged by nested JSON.
-// Preserve the full payload contract plus its expansion and authenticated envelope.
+// Keep the negotiated ceiling for existing JSON/native-result envelopes unchanged.
+// Private transport records use the original bounded Gateway bytes without base64.
 const FRAME_LIMIT: u32 = (GATEWAY_PAYLOAD_LIMIT.div_ceil(3) * 4 + 4096) as u32;
 const MAX_IN_FLIGHT: u16 = 64;
-// Product IPC requires the native relay; never open a Gateway for an older supervisor.
-const NATIVE_TRANSPORT_FEATURE: u64 = 31; // Native relay, independent Pong, binary relay, and transport/result tuples.
+const NATIVE_RELAY: u64 = 1;
+const INDEPENDENT_PONG: u64 = 2;
+const BINARY_GATEWAY_WRITES: u64 = 4;
+const NATIVE_RESULT_TUPLES: u64 = 16;
+const OPAQUE_TRANSPORT: u64 = 64;
+// Require the current product contract before any Gateway effect. Retired
+// base64 transport tuples (bit 8) are no longer offered or accepted.
+const NATIVE_TRANSPORT_FEATURE: u64 = NATIVE_RELAY
+    | INDEPENDENT_PONG
+    | BINARY_GATEWAY_WRITES
+    | NATIVE_RESULT_TUPLES
+    | OPAQUE_TRANSPORT;
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 type Failure = Box<dyn Error + Send + Sync>;
@@ -64,9 +75,10 @@ enum SupervisorMessage {
         id: String,
         allowed: bool,
     },
+    #[serde(skip)]
     TransportFrame {
-        kind: String,
-        data: String,
+        kind: u8,
+        data: std::ops::Range<usize>,
     },
     TransportSent {
         id: u64,
@@ -124,8 +136,14 @@ async fn run() -> Result<(), Failure> {
     if std::env::args_os().len() != 1 {
         return Err("sidecar accepts configuration only through its inherited pipe".into());
     }
-    let mut input = tokio::io::stdin();
-    let mut output = tokio::io::stdout();
+    // Foundation supplies anonymous pipes. Reactor-owned descriptors avoid stdio's
+    // blocking-worker buffers and let session retirement cancel pending I/O.
+    let mut input = tokio::net::unix::pipe::Receiver::from_owned_fd(
+        std::io::stdin().as_fd().try_clone_to_owned()?,
+    )?;
+    let mut output = tokio::net::unix::pipe::Sender::from_owned_fd(
+        std::io::stdout().as_fd().try_clone_to_owned()?,
+    )?;
     let mut bootstrap = [0u8; 56];
     tokio::time::timeout(BOOTSTRAP_TIMEOUT, input.read_exact(&mut bootstrap)).await??;
     let key = SidecarSessionKey::from_bytes(bootstrap[..32].try_into()?);
@@ -180,28 +198,42 @@ async fn run() -> Result<(), Failure> {
     let (transport, transport_input) =
         transport::NativeTransport::new(transport_outgoing, transport_receipts);
     let reader_channel = Arc::clone(&channel);
-    let reader = tokio::spawn(async move {
+    let reader = async move {
         loop {
-            // No idle deadline: app suspension must not kill a healthy native session.
-            let mut prefix = [0; 4];
-            input.read_exact(&mut prefix).await?;
-            let size = u32::from_be_bytes(prefix);
-            if size > frame_limit || size < 65 {
+            // Idle suspension has no deadline; after the first byte, the canonical
+            // reader gives the remaining prefix and body one shared frame deadline.
+            let mut first = [0];
+            if input.read(&mut first).await? == 0 {
+                return Ok::<(), Failure>(());
+            }
+            let mut frame = read_sidecar_frame(
+                &mut std::io::Cursor::new(first).chain(&mut input),
+                frame_limit,
+                WRITE_TIMEOUT,
+            )
+            .await?;
+            // The shared reader bounds allocation before body I/O; lengths 1–64
+            // can hold only 64 bytes and the same deadline, never authenticated work.
+            if frame.len() < 65 {
                 return Err::<(), Failure>("invalid frame length".into());
             }
-            // Decoding returns owned messages. Release media-sized input storage after
-            // dispatch instead of retaining its high-water capacity while the reader is idle.
-            let mut frame = Vec::new();
-            frame.reserve_exact(size as usize);
-            frame.resize(size as usize, 0);
-            tokio::time::timeout(WRITE_TIMEOUT, input.read_exact(&mut frame)).await??;
             let message = reader_channel
                 .lock()
                 .await
-                .open_reusing_with::<SupervisorMessage>(&mut frame, decode_native_result)?;
+                .open_reusing_with_opaque::<SupervisorMessage>(
+                    &mut frame,
+                    transport::TRANSPORT_DOMAIN,
+                    decode_native_result,
+                    |payload, range| {
+                        let (kind, data) = transport::decode_record(payload, range)?;
+                        Ok(SupervisorMessage::TransportFrame { kind, data })
+                    },
+                )?;
             match message {
                 SupervisorMessage::TransportFrame { kind, data } => {
-                    transport_input.receive(&kind, &data)?
+                    // Transfer the authenticated input allocation to the Gateway receive owner.
+                    // The next IPC read cannot mutate or retain this message's storage.
+                    transport_input.receive(kind, bytes::Bytes::from(frame).slice(data))?
                 }
                 SupervisorMessage::TransportSent { id, ok } => {
                     transport_input.acknowledge(id, ok)?
@@ -214,17 +246,25 @@ async fn run() -> Result<(), Failure> {
                     .map_err(|_| "supervisor queue full or closed")?,
             }
         }
-    });
+    };
     let (outgoing, mut outgoing_rx) = mpsc::channel::<Value>(usize::from(MAX_IN_FLIGHT));
     let writer_channel = Arc::clone(&channel);
     let mut writer = tokio::spawn(async move {
-        // Reuse encoded output: growing base64 frames afresh retains large intermediate
-        // allocations on every burst, even after the completed frame is released.
+        // Only JSON controls use this scratch buffer. Transport writes borrow the
+        // existing Gateway message and allocate just a header and authentication tag.
         let mut frame = Vec::new();
         loop {
             tokio::select! {
                 Some(value) = outgoing_rx.recv() => writer_channel.lock().await.seal_into(&value, &mut frame)?,
-                Some(value) = transport_writes.recv() => writer_channel.lock().await.seal_into(&value, &mut frame)?,
+                Some(value) = transport_writes.recv() => {
+                    let (metadata, body) = value.payload_parts();
+                    let (header, tag) = writer_channel.lock().await
+                        .seal_opaque_parts(transport::TRANSPORT_DOMAIN, &[&metadata, body])?;
+                    write_sidecar_frame_parts(
+                        &mut output, &[&header, &metadata, body, &tag], frame_limit, WRITE_TIMEOUT,
+                    ).await?;
+                    continue;
+                },
                 Some(value) = receipt_writes.recv() => writer_channel.lock().await.seal_into(&value, &mut frame)?,
                 else => break,
             };
@@ -232,9 +272,14 @@ async fn run() -> Result<(), Failure> {
         }
         Ok::<(), Failure>(())
     });
-    // A failed output pipe retires the session immediately, even while stdin stays
-    // open and the Gateway is waiting for a native receipt that can never arrive.
+    // Own the reader future here: a framing failure must not become a graceful
+    // queue EOF before its error is observed. Either pipe can retire the session.
     let (mut result, drain_writer) = tokio::select! {
+        result = reader => {
+            // Invalid input has no terminal message to flush; retire a blocked writer now.
+            let drain_writer = result.is_ok();
+            (result, drain_writer)
+        },
         result = run_gateway(incoming, &outgoing, max_in_flight, transport) => (result, true),
         completed = &mut writer => (
             completed
@@ -243,7 +288,6 @@ async fn run() -> Result<(), Failure> {
             false,
         ),
     };
-    reader.abort();
     drop(outgoing);
     if drain_writer {
         // Await output before exit so an authenticated terminal error is not lost.
@@ -730,6 +774,83 @@ fn event_frame(event: Event) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opaque_transport_requires_matching_peers_before_active_effects() {
+        use openclaw_node_host::{SidecarHandshakeError, SidecarHandshakeState};
+        let offer = |role, bits| SidecarProtocolOffer {
+            protocol_major: 1,
+            protocol_minor: 0,
+            peer: SidecarPeerIdentity {
+                role,
+                name: "test".into(),
+                version: "1".into(),
+                artifact_identity: "test".into(),
+            },
+            feature_bits: bits,
+            limits: SidecarLimits {
+                max_frame_bytes: FRAME_LIMIT,
+                max_in_flight: MAX_IN_FLIGHT,
+                bootstrap_timeout_ms: 10_000,
+            },
+        };
+        let channel = |role| {
+            AuthenticatedSidecarChannel::new(
+                role,
+                "negotiation".into(),
+                7,
+                SidecarSessionKey::from_bytes([0x5a; 32]),
+                FRAME_LIMIT,
+            )
+            .unwrap()
+        };
+        for (supervisor_bits, runtime_bits) in [
+            (31, NATIVE_TRANSPORT_FEATURE),
+            (NATIVE_TRANSPORT_FEATURE, 31),
+            (63, NATIVE_TRANSPORT_FEATURE),
+            (NATIVE_TRANSPORT_FEATURE, 63),
+            (95, NATIVE_TRANSPORT_FEATURE),
+            (NATIVE_TRANSPORT_FEATURE, 95),
+        ] {
+            let mut supervisor = SidecarHandshake::with_required_features(
+                offer(SidecarPeerRole::Supervisor, supervisor_bits),
+                supervisor_bits,
+            )
+            .unwrap();
+            let mut runtime = SidecarHandshake::with_required_features(
+                offer(SidecarPeerRole::Runtime, runtime_bits),
+                runtime_bits,
+            )
+            .unwrap();
+            let mut supervisor_channel = channel(SidecarPeerRole::Supervisor);
+            let mut runtime_channel = channel(SidecarPeerRole::Runtime);
+            let first = supervisor.start(&mut supervisor_channel).unwrap();
+            let (error, failed, retired) = match runtime.receive(&mut runtime_channel, &first) {
+                Err(error) => (error, runtime.state(), runtime_channel.is_retired()),
+                Ok(Some(acceptance)) => {
+                    runtime.complete_acceptance(&mut runtime_channel).unwrap();
+                    (
+                        supervisor
+                            .receive(&mut supervisor_channel, &acceptance)
+                            .unwrap_err(),
+                        supervisor.state(),
+                        supervisor_channel.is_retired(),
+                    )
+                }
+                _ => panic!("missing acceptance"),
+            };
+            assert!(matches!(
+                error,
+                SidecarHandshakeError::RequiredFeaturesUnavailable { .. }
+            ));
+            assert_eq!(failed, SidecarHandshakeState::Failed);
+            assert!(retired);
+        }
+        assert!(serde_json::from_value::<SupervisorMessage>(json!({
+            "type":"transport-frame", "kind":"binary", "data":"AA=="
+        }))
+        .is_err());
+    }
 
     fn native_result_bytes(raw: &str) -> Vec<u8> {
         format!(r#"["native-result",{{"type":"req","id":"request-1","method":"node.invoke.result","params":{{"id":"invoke-1","nodeId":"node-1","ok":true,"payload":{{"ignored":true}}}}}},{raw}]"#).into_bytes()

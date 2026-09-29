@@ -23,83 +23,111 @@ struct AuthenticatedSidecarChannelTests {
         #expect(throws: AuthenticatedSidecarChannel.Failure.frameTooLarge) { try channel.seal(tooLarge) }
     }
 
-    @Test(arguments: ["", "AP+A", #"\u002f\u002f8="#])
-    func `authenticated transport tuples decode exact binary data`(encoded: String) throws {
+    @Test(arguments: [Data(), Data([0, 255, 128]), Data("🦞 café / \"".utf8)])
+    func `authenticated opaque transport preserves binary bytes and full receipt ID`(bytes: Data) throws {
         let fixture = try Self.fixture("handshake")
         let session = try #require(fixture["session"] as? [String: Any])
-        let payload = Data("[\"transport-send\",18446744073709551615,\"binary\",\"\(encoded)\"]".utf8)
         let channel = try Self.channel(session)
-        let message = try channel.open(Self.runtimeFrame(payload, fixture: fixture), decode: SidecarRuntimeMessage.init)
-        guard case let .transport(write) = message else {
-            Issue.record("Expected decoded transport tuple")
+        channel.lockFrameLimit(opaqueTransport: true)
+        let payload = Data([2] + Array(repeating: 255, count: 8)) + bytes
+        let message = try channel.open(
+            Self.runtimeFrame(payload, fixture: fixture, opaque: true),
+            decode: { try SidecarRuntimeMessage($0) }, transport: { try SidecarRuntimeMessage(transport: $0) })
+        guard case let .transport(write) = message, case let .data(decoded) = write.message else {
+            Issue.record("Expected binary transport record")
             return
         }
         #expect(write.id == UInt64.max)
-        #expect(write.kind == "binary")
-        #expect(write.data == (encoded.isEmpty ? Data() : encoded == "AP+A" ? Data([0, 255, 128]) : Data([255, 255])))
+        #expect(write.kind == .binary)
+        #expect(decoded == bytes)
         #expect(!channel.isRetired)
     }
 
     @Test(arguments: [
-        #"["other",1,"binary",""]"#,
-        #"["transport-send",1,"binary"]"#,
-        #"["transport-send",1,"binary","",0]"#,
-        #"["transport-send",1,"binary","",{"ignored":"\q"}]"#,
-        #"["transport-send",true,"binary",""]"#,
-        #"["transport-send","1","binary",""]"#,
-        #"["transport-send",-1,"binary",""]"#,
-        #"["transport-send",18446744073709551616,"binary",""]"#,
-        #"["transport-send",01,"binary",""]"#,
-        #"["transport-send",1e,"binary",""]"#,
-        #"["transport-send",1e309,"binary",""]"#,
-        #"["transport-send",1.5,"binary",""]"#,
-        #"["\q",1,"binary",""]"#,
-        #"["\uD800",1,"binary",""]"#,
-        #"["transport-send",1,{},""]"#,
-        #"["transport-send",1,"\q",""]"#,
-        #"["transport-send",1,"\uD800",""]"#,
-        #"["transport-send",1,"binary",null]"#,
-        #"["transport-send",1,"binary",[]]"#,
-        #"["transport-send",1,"binary","%%%"]"#,
-        #"["transport-send",1,"binary","\q"]"#,
-        #"["transport-send",1,"binary","\uZZZZ"]"#,
-        #"["transport-send",1,"binary","\uD800"]"#,
-        #"["transport-send",1,"binary",""]{}"#,
+        Data(), Data([2]), Data([2] + Array(repeating: 0, count: 7)),
+        Data([2] + Array(repeating: 0, count: 8)),
+        Data([0, 0, 0, 0, 0, 0, 0, 0, 1]),
+        Data([5, 0, 0, 0, 0, 0, 0, 0, 1]),
+        Data([1, 0, 0, 0, 0, 0, 0, 0, 1, 255]),
+        Data([1, 0, 0, 0, 0, 0, 0, 0, 1, 0xED, 0xA0, 0x80]),
+        Data([3, 0, 0, 0, 0, 0, 0, 0, 1, 0]),
+        Data([4, 0, 0, 0, 0, 0, 0, 0, 1, 0]),
+    ])
+    func `malformed authenticated opaque records retire before delivery`(payload: Data) throws {
+        try Self.rejectRuntimePayload(payload, opaque: true)
+    }
+
+    @Test(arguments: [
+        #"["transport-send",1,"binary",""]"#,
         #"{"type":"transport-send","id":1,"kind":"binary","data":""}"#,
         #"{"type":"pong","ignored":"\q"}"#,
+        #"{"type":"pong"}{}"#,
     ])
-    func `malformed authenticated transport tuples retire before delivery`(input: String) throws {
+    func `retired transport encoding and malformed JSON controls are rejected`(input: String) throws {
         try Self.rejectRuntimePayload(Data(input.utf8))
     }
 
-    @Test func `invalid UTF8 in every transport string retires before delivery`() throws {
-        for payload in [
-            Data("[\"".utf8) + Data([255]) + Data("\",1,\"binary\",\"\"]".utf8),
-            Data("[\"transport-send\",1,\"".utf8) + Data([255]) + Data("\",\"\"]".utf8),
-            Data("[\"transport-send\",1,\"binary\",\"".utf8) + Data([255]) + Data("\"]".utf8),
-        ] {
-            try Self.rejectRuntimePayload(payload)
+    @Test(arguments: [false, true])
+    func `opaque records require committed negotiation and cannot enable themselves`(lockWithoutFeature: Bool) throws {
+        let fixture = try Self.fixture("handshake")
+        let session = try #require(fixture["session"] as? [String: Any])
+        let channel = try Self.channel(session)
+        if lockWithoutFeature {
+            channel.lockFrameLimit()
+            channel.lockFrameLimit(opaqueTransport: true)
         }
-        let tuple = #"["transport-send",1,"binary",""]"#
-        for encoding in [
-            String.Encoding.utf16,
-            .utf16LittleEndian,
-            .utf16BigEndian,
-            .utf32,
-            .utf32LittleEndian,
-            .utf32BigEndian,
-        ] {
-            try Self.rejectRuntimePayload(#require(tuple.data(using: encoding)))
+        let payload = Data([2, 0, 0, 0, 0, 0, 0, 0, 1])
+        #expect(throws: AuthenticatedSidecarChannel.Failure.invalidHeader) {
+            try channel.seal(SidecarPayload(body: .data(payload), format: .transport))
         }
-        try Self.rejectRuntimePayload(Data([0xEF, 0xBB, 0xBF]) + Data(tuple.utf8))
+        #expect(!channel.isRetired)
+        #expect(throws: AuthenticatedSidecarChannel.Failure.invalidHeader) {
+            try channel.open(
+                Self.runtimeFrame(payload, fixture: fixture, opaque: true),
+                decode: { try SidecarRuntimeMessage($0) }, transport: { try SidecarRuntimeMessage(transport: $0) })
+        }
+        #expect(channel.isRetired)
     }
 
-    @Test func `control messages enforce the same UTF8 wire contract as tuples`() throws {
+    @Test func `opaque headers are authenticated before dispatch and share control sequencing`() throws {
+        let fixture = try Self.fixture("handshake")
+        let session = try #require(fixture["session"] as? [String: Any])
+        let channel = try Self.channel(session)
+        channel.lockFrameLimit(opaqueTransport: true)
+        _ = try channel.open(Self.frame(fixture, "acceptFrameBase64"))
+        let payload = Data([1, 0, 0, 0, 0, 0, 0, 0, 1]) + Data("🦞 café".utf8)
+        let frame = try Self.runtimeFrame(payload, fixture: fixture, opaque: true, sequence: 2)
+        let message = try channel.open(
+            frame, decode: { try SidecarRuntimeMessage($0) }, transport: { try SidecarRuntimeMessage(transport: $0) })
+        guard case let .transport(write) = message, case let .string(text) = write.message else {
+            Issue.record("Expected UTF8 transport record")
+            return
+        }
+        #expect(text == "🦞 café")
+        #expect(throws: AuthenticatedSidecarChannel.Failure.wrongSequence) {
+            try channel.open(
+                frame, decode: { try SidecarRuntimeMessage($0) },
+                transport: { try SidecarRuntimeMessage(transport: $0) })
+        }
+        #expect(channel.isRetired)
+
+        let unauthenticated = try Self.channel(session)
+        var wrongMagic = frame
+        wrongMagic[0] ^= 1 // Deliberately retain the original tag.
+        #expect(throws: AuthenticatedSidecarChannel.Failure.authentication) {
+            try unauthenticated.open(wrongMagic, decode: { _ in
+                Issue.record("Unauthenticated bytes reached the decoder")
+            }, transport: { _ in Issue.record("Unauthenticated bytes reached the transport") })
+        }
+        #expect(unauthenticated.isRetired)
+    }
+
+    @Test func `control messages enforce the UTF8 JSON wire contract`() throws {
         let control = #"{"type":"pong","id":"ping-1","ok":true}"#
         let fixture = try Self.fixture("handshake")
         let session = try #require(fixture["session"] as? [String: Any])
         let valid = try Self.channel(session).open(
-            Self.runtimeFrame(Data(control.utf8), fixture: fixture), decode: SidecarRuntimeMessage.init)
+            Self.runtimeFrame(Data(control.utf8), fixture: fixture), decode: { try SidecarRuntimeMessage($0) })
         guard case let .control(message) = valid else {
             Issue.record("Expected control message")
             return
@@ -116,6 +144,31 @@ struct AuthenticatedSidecarChannelTests {
             try Self.rejectRuntimePayload(#require(control.data(using: encoding)))
         }
         try Self.rejectRuntimePayload(Data([0xEF, 0xBB, 0xBF]) + Data(control.utf8))
+    }
+
+    @Test func `opaque records match independent HMAC vectors in both directions`() throws {
+        // Independently generated with Python hashlib/HMAC; shared JSON v1 fixtures stay unchanged.
+        let outgoing = try #require(Data(base64Encoded:
+            "T0NNVAABAAABAAAAAAAAAAcAAAAAAAAAAQAIAAAAEHYyMi10ZXN0AgAAAAAAAAAAAP8iXArDqcOF2inOTDTFlU+6AlqSqioNopWsyTNFc/NG7L9fla4j"))
+        let incoming = try #require(Data(base64Encoded:
+            "T0NNVAABAAACAAAAAAAAAAcAAAAAAAAAAQAIAAAAEHYyMi10ZXN0AgECAwQFBgcIAP8iXArDqTObeSd9wy/YqU+fj3KroCTLJdxRXOpvOQ+9b6TLAo+R"))
+        let channel = try AuthenticatedSidecarChannel(
+            key: Data(repeating: 0x5A, count: 32), sessionID: "v22-test", generation: 7)
+        channel.lockFrameLimit(opaqueTransport: true)
+        let bytes = Data([0, 255, 0x22, 0x5C, 0x0A, 0xC3, 0xA9])
+        let sealed = try channel.seal(SidecarPayload(
+            body: .data(bytes), prefix: Data([2, 0, 0, 0, 0, 0, 0, 0, 0]), format: .transport)).bytes
+        #expect(sealed.dropFirst(4) == outgoing)
+        #expect(sealed.prefix(4).reduce(0) { ($0 << 8) | Int($1) } == outgoing.count)
+        let message = try channel.open(
+            incoming, decode: { try SidecarRuntimeMessage($0) },
+            transport: { try SidecarRuntimeMessage(transport: $0) })
+        guard case let .transport(write) = message, case let .data(decoded) = write.message else {
+            Issue.record("Expected binary transport record")
+            return
+        }
+        #expect(write.id == 0x0102_0304_0506_0708)
+        #expect(decoded == bytes)
     }
 
     @Test(arguments: [false, true])
@@ -265,12 +318,15 @@ struct AuthenticatedSidecarChannelTests {
         return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
-    private static func rejectRuntimePayload(_ payload: Data) throws {
+    private static func rejectRuntimePayload(_ payload: Data, opaque: Bool = false) throws {
         let fixture = try Self.fixture("handshake")
         let session = try #require(fixture["session"] as? [String: Any])
         let channel = try Self.channel(session)
+        channel.lockFrameLimit(opaqueTransport: true)
         #expect(throws: AuthenticatedSidecarChannel.Failure.invalidPayload) {
-            try channel.open(Self.runtimeFrame(payload, fixture: fixture), decode: SidecarRuntimeMessage.init)
+            try channel.open(
+                Self.runtimeFrame(payload, fixture: fixture, opaque: opaque),
+                decode: { try SidecarRuntimeMessage($0) }, transport: { try SidecarRuntimeMessage(transport: $0) })
         }
         #expect(channel.isRetired)
         #expect(throws: AuthenticatedSidecarChannel.Failure.retired) {
@@ -278,10 +334,15 @@ struct AuthenticatedSidecarChannelTests {
         }
     }
 
-    private static func runtimeFrame(_ payload: Data, fixture: [String: Any]) throws -> Data {
+    private static func runtimeFrame(
+        _ payload: Data, fixture: [String: Any], opaque: Bool = false, sequence: UInt64 = 1) throws -> Data
+    {
         let session = try #require(fixture["session"] as? [String: Any])
         let id = try #require(session["id"] as? String)
         var header = try Self.frame(fixture, "acceptFrameBase64").prefix(31 + id.utf8.count)
+        if opaque { header.replaceSubrange(0..<4, with: "OCMT".utf8) }
+        var sequence = sequence.bigEndian
+        withUnsafeBytes(of: &sequence) { header.replaceSubrange(17..<25, with: $0) }
         var count = UInt32(payload.count).bigEndian
         withUnsafeBytes(of: &count) { header.replaceSubrange(27..<31, with: $0) }
         return try Self.resign(header + payload + Data(repeating: 0, count: 32), session: session)
@@ -321,6 +382,6 @@ extension SidecarPayload {
 
 extension AuthenticatedSidecarChannel {
     func open(_ frame: Data) throws -> Any {
-        try self.open(frame) { try JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
+        try self.open(frame, decode: { try JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) })
     }
 }

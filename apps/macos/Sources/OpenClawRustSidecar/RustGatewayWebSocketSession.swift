@@ -91,8 +91,16 @@ GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Se
 }
 
 private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecked Sendable {
-    // Product IPC requires the native relay; older helpers must fail before opening a Gateway socket.
-    private static let nativeTransportFeature = 31 // Native relay, Pong, binary writes, transport and result tuples.
+    /// Product IPC requires the native relay; older helpers must fail before opening a Gateway socket.
+    private enum Feature {
+        static let nativeRelay = 1
+        static let pongReceipt = 2
+        static let binaryMessage = 4
+        static let nativeResult = 16
+        static let opaqueTransport = 64
+        static let required = nativeRelay | pongReceipt | binaryMessage | nativeResult | opaqueTransport
+    }
+
     private let lock = NSLock()
     private let writes = SidecarWriteQueue()
     private let reader = DispatchQueue(label: "ai.openclaw.sidecar.read")
@@ -314,7 +322,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
             "maxFrameBytes": channel.maxFrameBytes, "maxInFlight": 64, "bootstrapTimeoutMs": 10000,
         ]
         let offer: [String: Any] = [
-            "protocolMajor": 1, "protocolMinor": 0, "featureBits": Self.nativeTransportFeature, "limits": limits,
+            "protocolMajor": 1, "protocolMinor": 0, "featureBits": Feature.required, "limits": limits,
             "peer": [
                 "role": "supervisor",
                 "name": "openclaw-macos",
@@ -322,13 +330,11 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
                 "artifactIdentity": "bundled-macos-app",
             ],
         ]
-        var frame = Data()
         let acceptance: [String: Any]
         do {
             try self.writeNow(["type": "offer", "offer": offer])
             guard case let .control(message) = try self.readMessage(
                 stdoutPipe.fileHandleForReading,
-                frame: &frame,
                 bootstrap: true)
             else { throw URLError(.cannotParseResponse) }
             acceptance = message
@@ -343,7 +349,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
               let remoteLimits = remote["limits"] as? [String: Int],
               let selection = acceptance["selection"] as? [String: Any],
               selection["protocolMajor"] as? Int == 1, selection["protocolMinor"] as? Int == 0,
-              selection["featureBits"] as? Int == Self.nativeTransportFeature,
+              selection["featureBits"] as? Int == Feature.required,
               let selectedLimits = selection["limits"] as? [String: Int],
               selectedLimits["maxFrameBytes"] == min(remoteLimits["maxFrameBytes"] ?? 0, channel.maxFrameBytes),
               selectedLimits["maxInFlight"] == min(remoteLimits["maxInFlight"] ?? 0, 64),
@@ -354,7 +360,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         else { throw Self.startupError(4, "The macOS node runtime helper protocol is incompatible.") }
         try self.lock.withLock {
             try channel.lowerFrameLimit(frameLimit)
-            channel.lockFrameLimit()
+            channel.lockFrameLimit(opaqueTransport: true)
         }
         guard let url = self.request.url else { throw URLError(.badURL) }
         try self.writeNow(["type": "open", "url": url.absoluteString, "privateCommands": self.privateCommands.sorted()])
@@ -376,8 +382,8 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         network.start()
         while self.state == .running {
             try autoreleasepool {
-                // Release parsed objects before refilling the reader-owned bounded buffer.
-                let message = try self.readMessage(stdoutPipe.fileHandleForReading, frame: &frame)
+                // Release parsed control objects after dispatch; each read owns its frame.
+                let message = try self.readMessage(stdoutPipe.fileHandleForReading)
                 try self.handle(message)
             }
         }
@@ -387,7 +393,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         switch message {
         case let .transport(write):
             guard let network = self.lock.withLock({ self.network }) else { throw URLError(.cancelled) }
-            try network.send(id: write.id, kind: write.kind, data: write.data)
+            try network.send(write)
         case let .control(control): try self.handleControl(control)
         }
     }
@@ -436,18 +442,29 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
 
     private func readMessage(
         _ handle: FileHandle,
-        frame: inout Data,
         bootstrap: Bool = false) throws -> SidecarRuntimeMessage
     {
-        let prefix = try Self.readExactly(4, from: handle, bounded: bootstrap)
+        // A healthy connection may stay idle indefinitely. Once a frame is readable,
+        // one budget covers its whole prefix and body, including a peer that dribbles bytes.
+        if !bootstrap { try Self.waitForPipe(handle.fileDescriptor, events: Int16(POLLIN), deadline: nil) }
+        let deadline = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
+        let prefix = try Self.readExactly(4, from: handle, deadline: deadline)
         let count = prefix.reduce(0) { ($0 << 8) | Int($1) }
         guard count >= 65, count <= self.lock.withLock({ self.channel?.maxFrameBytes ?? 0 }) else {
             throw URLError(.dataLengthExceedsMaximum)
         }
-        try Self.readExactly(count, from: handle, bounded: true, into: &frame)
+        // This bounded frame has a final size. Own its storage through Data so the
+        // authenticated network slice can outlive the reader without growth headroom.
+        let storage = UnsafeMutableRawPointer.allocate(byteCount: count, alignment: 1)
+        storage.initializeMemory(as: UInt8.self, repeating: 0, count: count)
+        var frame = Data(bytesNoCopy: storage, count: count, deallocator: .custom { bytes, _ in bytes.deallocate() })
+        try Self.readExactly(count, from: handle, deadline: deadline, into: &frame)
         return try self.lock.withLock {
             guard let channel = self.channel else { throw URLError(.cancelled) }
-            return try channel.open(frame, decode: SidecarRuntimeMessage.init)
+            return try channel.open(
+                frame,
+                decode: { try SidecarRuntimeMessage($0) },
+                transport: bootstrap ? nil : { try SidecarRuntimeMessage(transport: $0) })
         }
     }
 
@@ -523,19 +540,18 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         }
     }
 
-    private static func readExactly(_ count: Int, from handle: FileHandle, bounded: Bool) throws -> Data {
+    private static func readExactly(_ count: Int, from handle: FileHandle, deadline: UInt64) throws -> Data {
         var data = Data()
-        try Self.readExactly(count, from: handle, bounded: bounded, into: &data)
+        try Self.readExactly(count, from: handle, deadline: deadline, into: &data)
         return data
     }
 
     private static func readExactly(
         _ count: Int,
         from handle: FileHandle,
-        bounded: Bool,
+        deadline: UInt64,
         into data: inout Data) throws
     {
-        let deadline = bounded ? DispatchTime.now().uptimeNanoseconds + 10_000_000_000 : nil
         let descriptor = handle.fileDescriptor
         data.count = count
         try data.withUnsafeMutableBytes { bytes in

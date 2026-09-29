@@ -5,37 +5,45 @@ enum SidecarRuntimeMessage {
     case control([String: Any])
     case transport(TransportWrite)
 
-    struct TransportWrite: Decodable {
+    struct TransportWrite {
+        enum Kind: UInt8 { case text = 1, binary = 2, ping = 3, close = 4 }
         let id: UInt64
-        let kind: String
-        let data: Data
+        let kind: Kind
+        let message: URLSessionWebSocketTask.Message?
 
-        init(from decoder: any Decoder) throws {
-            var fields = try decoder.unkeyedContainer()
-            guard try fields.decode(String.self) == "transport-send" else {
-                throw URLError(.cannotParseResponse)
+        init(_ payload: Data) throws {
+            guard payload.count >= 9, payload.count - 9 <= NativeGatewayTransport.maximumMessageBytes,
+                  let first = payload.first, let kind = Kind(rawValue: first)
+            else { throw URLError(.cannotParseResponse) }
+            let id = payload.dropFirst().prefix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            guard id != 0 else { throw URLError(.cannotParseResponse) }
+            let body = payload.dropFirst(9)
+            self.id = id
+            self.kind = kind
+            switch kind {
+            case .text:
+                guard let text = body.withUnsafeBytes({ String(validating: $0, as: UTF8.self) })
+                else { throw URLError(.cannotParseResponse) }
+                self.message = .string(text)
+            case .binary: self.message = .data(body)
+            case .ping, .close:
+                guard body.isEmpty else { throw URLError(.cannotParseResponse) }
+                self.message = nil
             }
-            self.id = try fields.decode(UInt64.self)
-            self.kind = try fields.decode(String.self)
-            self.data = try fields.decode(Data.self)
-            guard fields.isAtEnd else { throw URLError(.cannotParseResponse) }
         }
     }
 
     init(_ payload: Data) throws {
         let start = payload.drop(while: { [0x20, 0x09, 0x0A, 0x0D].contains($0) })
-        if start.first == 0x5B {
-            guard start.dropFirst().first != 0 else { throw URLError(.cannotParseResponse) }
-            // Every tuple field is decoded, including base64 directly into Data. Keyed
-            // partial decoding would skip malformed values and retain a large base64 String.
-            self = try .transport(JSONDecoder().decode(TransportWrite.self, from: payload))
-        } else {
-            guard start.first == 0x7B, start.dropFirst().first != 0,
-                  let control = try JSONSerialization.jsonObject(with: payload) as? [String: Any],
-                  control["type"] as? String != "transport-send"
-            else { throw URLError(.cannotParseResponse) }
-            self = .control(control)
-        }
+        guard start.first == 0x7B, start.dropFirst().first != 0,
+              let control = try JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              control["type"] as? String != "transport-send"
+        else { throw URLError(.cannotParseResponse) }
+        self = .control(control)
+    }
+
+    init(transport payload: Data) throws {
+        self = try .transport(TransportWrite(payload))
     }
 }
 
@@ -75,25 +83,7 @@ final class NativeGatewayTransport: @unchecked Sendable {
             self.receiver = Task { [self] in
                 do {
                     while !Task.isCancelled {
-                        let message = try await self.socket.receive()
-                        let kind: String
-                        let data: Data
-                        switch message {
-                        case let .string(text): kind = "text"
-                            data = Data(text.utf8)
-                        case let .data(bytes): kind = "binary"
-                            data = bytes
-                        @unknown default: throw URLError(.cannotParseResponse)
-                        }
-                        guard data.count <= Self.maximumMessageBytes else {
-                            throw URLError(.dataLengthExceedsMaximum)
-                        }
-                        // Base64's ASCII alphabet needs no JSON escaping. Keep the encoded
-                        // bytes separate so JSON and authenticated framing do not copy them.
-                        let payload = SidecarPayload(
-                            data.base64EncodedData(),
-                            prefix: Data("{\"type\":\"transport-frame\",\"kind\":\"\(kind)\",\"data\":\"".utf8),
-                            suffix: Data("\"}".utf8))
+                        var payload: SidecarPayload? = try await self.receivePayload()
                         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<
                             Void,
                             any Error,
@@ -106,8 +96,15 @@ final class NativeGatewayTransport: @unchecked Sendable {
                             guard accepted else { continuation.resume(throwing: URLError(.cancelled))
                                 return
                             }
+                            guard let outgoing = payload else {
+                                continuation.resume(throwing: URLError(.cancelled))
+                                return
+                            }
+                            // The writer task owns these bytes only until the pipe write finishes;
+                            // the receiver waiting for its receipt must not retain another copy.
+                            payload = nil
                             Task {
-                                do { try await self.write(payload, .transport) } catch { self.fail(error) }
+                                do { try await self.write(outgoing, .transport) } catch { self.fail(error) }
                             }
                         }
                     }
@@ -125,19 +122,32 @@ final class NativeGatewayTransport: @unchecked Sendable {
         receipt.resume()
     }
 
-    func send(id: UInt64, kind: String, data: Data) throws {
-        guard data.count <= Self.maximumMessageBytes,
-              ["text", "binary", "ping", "close"].contains(kind)
-        else { throw URLError(.cannotParseResponse) }
-        let message: URLSessionWebSocketTask.Message? = switch kind {
-        case "text": String(data: data, encoding: .utf8).map { .string($0) }
-        case "binary": .data(data)
-        default: nil
+    private func receivePayload() async throws -> SidecarPayload {
+        let kind: SidecarRuntimeMessage.TransportWrite.Kind
+        let body: SidecarPayload.Body
+        switch try await self.socket.receive() {
+        case let .string(text): kind = .text
+            body = .utf8(text)
+        case let .data(data): kind = .binary
+            body = .data(data)
+        @unknown default: throw URLError(.cannotParseResponse)
         }
+        guard body.count <= Self.maximumMessageBytes else { throw URLError(.dataLengthExceedsMaximum) }
+        // Native receive records have no write receipt ID. The shared authenticated
+        // channel supplies ordering; Gateway bytes stay outside JSON and base64.
+        return SidecarPayload(
+            body: body,
+            prefix: Data([kind.rawValue] + Array(repeating: 0, count: 8)),
+            format: .transport)
+    }
+
+    func send(_ write: SidecarRuntimeMessage.TransportWrite) throws {
+        let id = write.id
+        let kind = write.kind
         let accepted = self.lock.withLock {
-            guard !self.stopped, !self.sending, kind != "ping" || self.ping == nil else { return false }
+            guard !self.stopped, !self.sending, kind != .ping || self.ping == nil else { return false }
             self.sending = true
-            self.pendingMessage = message
+            self.pendingMessage = write.message
             return true
         }
         guard accepted else { throw URLError(.networkConnectionLost) }
@@ -151,14 +161,13 @@ final class NativeGatewayTransport: @unchecked Sendable {
                     return self.pendingMessage
                 }
                 switch kind {
-                case "text", "binary":
+                case .text, .binary:
                     guard let message else {
                         throw URLError(.cannotParseResponse)
                     }
                     try await self.socket.send(message)
-                case "ping": self.startPing(id: id)
-                case "close": self.socket.cancel(with: .normalClosure, reason: nil)
-                default: throw URLError(.cannotParseResponse)
+                case .ping: self.startPing(id: id)
+                case .close: self.socket.cancel(with: .normalClosure, reason: nil)
                 }
                 message = nil
                 self.lock.withLock { self.sending = false }

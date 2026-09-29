@@ -20,6 +20,8 @@ node validate-sandbox.cjs
 # Functional contracts and native TLS pinning.
 node functional-smoke.cjs "$RFC54_BENCH_ROOT/bin/openclaw-mac-node-sidecar" functional
 node probe-runner.cjs backpressure "$RFC54_BENCH_ROOT/bin/openclaw-mac-node-sidecar" backpressure
+# Real inherited-pipe framing: idle, valid slow delivery, stalled prefix, combined budget.
+node probe-runner.cjs framing
 RFC54_CHECK_RETIREMENT=helper node functional-smoke.cjs "$RFC54_BENCH_ROOT/bin/openclaw-mac-node-sidecar" helper-retirement
 RFC54_CHECK_RETIREMENT=gateway node functional-smoke.cjs "$RFC54_BENCH_ROOT/bin/openclaw-mac-node-sidecar" gateway-retirement
 # Both original Swift and candidate auxiliary RPC lifetime/cancellation owners.
@@ -69,6 +71,8 @@ The fixture uses plain WebSocket with a test token. Identity signing, credential
 CPU is the sum of cumulative process CPU deltas reported by `ps`. RSS sums the Swift harness and its sidecar descendants before and after each measured phase. These are snapshots, not peaks or physical-footprint measurements, and shared pages can be counted in multiple processes. Process startup ends at the native harness's ready output; connect duration is measured inside Swift. Neither is complete GUI app startup.
 
 The backpressure probe stops consuming native WebSocket messages while the fixture sends 512 events. It verifies that the 256-frame native buffer retires the transport with a size-limit error, then reconnects and completes an RPC. A burst sent to an actively draining consumer does not reliably overflow the Rust input queue; its separate runtime test controls that queue directly.
+
+The framing probe uses an authenticated compiled fixture peer with the real Swift session, inherited pipes, and loopback WebSocket. It verifies an 11.5-second idle interval remains connected, an eight-second prefix-plus-body delivery succeeds byte-for-byte, and both a stalled one-byte prefix and a six-plus-six-second delivery fail within the same ten-second frame budget. Timeout cases must deliver no WebSocket message. The fixture is test support, not the Rust runtime.
 
 The runner verifies owned descendant processes terminate after each run. Forced cleanup fails the run. Never reinterpret a failed cleanup or corrupted response as a performance sample.
 

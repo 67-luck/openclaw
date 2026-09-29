@@ -41,6 +41,7 @@ async function run(pinMode) {
   const echoedBatches = [];
   const nativeCapacity = { progress: false, result: false };
   const timers = [];
+  const framingBytes = [];
   if (kind === "tls") {
     const der = fs.readFileSync(fixtureDir + "/localhost.der");
     observedPin = crypto.createHash("sha256").update(der).digest("hex");
@@ -68,6 +69,14 @@ async function run(pinMode) {
   }
   const port = (httpServer || server).address().port;
   server.on("connection", (ws) => {
+    if (kind === "framing") {
+      connectCount++;
+      ws.on("message", (raw, binary) => {
+        framingBytes.push({ binary, hex: raw.toString("hex") });
+        ws.send(JSON.stringify({ fixtureServerReceipt: true }));
+      });
+      return;
+    }
     ws.send(
       JSON.stringify({
         type: "event",
@@ -167,14 +176,17 @@ async function run(pinMode) {
     });
   });
   const name =
-    kind === "tls"
-      ? "tls-probe"
-      : kind === "backpressure"
-        ? "backpressure-probe"
-        : mode === "baseline"
-          ? "auxiliary-baseline"
-          : "auxiliary-probe";
+    kind === "framing"
+      ? "framing-probe"
+      : kind === "tls"
+        ? "tls-probe"
+        : kind === "backpressure"
+          ? "backpressure-probe"
+          : mode === "baseline"
+            ? "auxiliary-baseline"
+            : "auxiliary-probe";
   const url = `${kind === "tls" ? "wss" : "ws"}://127.0.0.1:${port}`;
+  const started = performance.now();
   const child = spawn(
     "/usr/bin/sandbox-exec",
     [
@@ -186,7 +198,7 @@ async function run(pinMode) {
       root + "/sandbox.sb",
       root + "/bin/" + name,
       url,
-      mode,
+      kind === "framing" ? root + "/bin/framing-helper-" + pinMode : mode,
       ...(pin ? [pin, ...(process.env.RFC54_EMPTY_MANIFEST === "1" ? ["empty"] : [])] : []),
       ...(process.env.RFC54_CAPACITY_ONLY === "1"
         ? ["capacity", process.env.RFC54_CAPACITY_BATCHES || "10"]
@@ -220,7 +232,7 @@ async function run(pinMode) {
   try {
     const ended = await Promise.race([
       exit,
-      delay(kind === "aux" ? 75000 : 15000).then(() => null),
+      delay(kind === "aux" ? 75000 : kind === "framing" ? 18000 : 15000).then(() => null),
     ]);
     if (!ended) {
       throw new Error("probe deadline expired");
@@ -233,6 +245,37 @@ async function run(pinMode) {
     result = rows.at(-1);
     if (!result) {
       throw new Error("no result: " + stderr);
+    }
+    if (kind === "framing") {
+      const shouldDeliver = ["idle-after-control", "within-budget"].includes(pinMode);
+      const elapsedSeconds = (performance.now() - started) / 1000;
+      const minimumSeconds = pinMode === "idle-after-control" ? 11.5 : 7.5;
+      const delivered =
+        result.fixtureAck === 1 &&
+        result.receiptCount === 1 &&
+        result.ok === true &&
+        elapsedSeconds >= minimumSeconds;
+      const timedOut =
+        result.failureDomain === "NSURLErrorDomain" &&
+        result.failureCode === -1001 &&
+        result.elapsedSeconds >= 9.5 &&
+        result.elapsedSeconds < 13;
+      const expectedBytes = shouldDeliver
+        ? [{ binary: true, hex: Buffer.from("trigger").toString("hex") }]
+        : [];
+      if (
+        ended[0] !== 0 ||
+        ended[1] !== null ||
+        connectCount !== 1 ||
+        JSON.stringify(framingBytes) !== JSON.stringify(expectedBytes) ||
+        (shouldDeliver ? !delivered : !timedOut)
+      ) {
+        throw new Error(
+          "whole-frame deadline failed: " + JSON.stringify({ result, framingBytes, connectCount }),
+        );
+      }
+      result.passed = true;
+      result.probeElapsedSeconds = elapsedSeconds;
     }
     if (
       kind === "backpressure" &&
@@ -348,6 +391,7 @@ async function run(pinMode) {
       admittedNeverRequestsByBatch: Object.fromEntries(batchCounts),
       echoedBatches,
       nativeCapacity,
+      ...(kind === "framing" ? { framingBytes } : {}),
       cleanup: { observedPIDs: [...owned], forcedPIDs: forced, remainingPIDs: remaining },
       stderr,
     };
@@ -359,7 +403,13 @@ async function run(pinMode) {
   }
 }
 (async () => {
-  for (const scenario of kind === "tls" ? ["match", "mismatch"] : [kind]) {
+  const scenarios =
+    kind === "tls"
+      ? ["match", "mismatch"]
+      : kind === "framing"
+        ? ["idle-after-control", "within-budget", "partial-prefix", "combined-budget"]
+        : [kind];
+  for (const scenario of scenarios) {
     await run(scenario);
   }
 })().catch((/** @type {unknown} */ error) => {

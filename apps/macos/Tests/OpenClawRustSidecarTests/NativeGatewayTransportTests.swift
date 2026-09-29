@@ -36,12 +36,12 @@ struct NativeGatewayTransportTests {
             transport.close()
         }
         try autoreleasepool {
-            try transport.send(id: 1, kind: "binary", data: lifetime.makeData())
+            try transport.send(SidecarRuntimeMessage.TransportWrite(lifetime.makeData(transportHeader: true)))
         }
         try await waitForCondition { lifetime.sendEntered }
         #expect(!lifetime.isReleased)
         #expect(throws: (any Error).self) {
-            try transport.send(id: 2, kind: "binary", data: Data([0]))
+            try transport.send(Self.write(id: 2, kind: .binary, data: Data([0])))
         }
         releaseSend.yield(())
         try await writes.waitForCount(1)
@@ -51,25 +51,58 @@ struct NativeGatewayTransportTests {
         #expect(lifetime.isReleased)
     }
 
-    @Test func `typed writes reject unknown kind and oversized bytes before socket effects`() throws {
+    @Test func `incoming binary storage releases after IPC write before its receipt`() async throws {
+        let lifetime = PayloadLifetime()
+        let (writeReleases, releaseWrite) = AsyncStream<Void>.makeStream()
+        let socket = RelaySocket()
+        let transport = NativeGatewayTransport(
+            socket: WebSocketTaskBox(task: socket),
+            write: { payload, lane in
+                #expect(lane == .transport)
+                #expect(payload.format == .transport)
+                #expect(payload.prefix == Data([2, 0, 0, 0, 0, 0, 0, 0, 0]))
+                #expect(payload.body.count == 1024)
+                #expect(!lifetime.isReleased)
+                lifetime.enteredSend()
+                var release = writeReleases.makeAsyncIterator()
+                _ = await release.next()
+            }, failed: { error in Issue.record("Unexpected transport failure: \(error)") })
+        defer {
+            releaseWrite.finish()
+            transport.close()
+        }
+        transport.start()
+        autoreleasepool { socket.provide(.data(lifetime.makeData())) }
+        try await waitForCondition { lifetime.sendEntered }
+        #expect(!lifetime.isReleased)
+        releaseWrite.yield(())
+        try await waitForCondition { lifetime.isReleased }
+        // The peer has not acknowledged this frame; receipt wait must own no body bytes.
+        #expect(socket.receiveCount == 1)
+        try transport.received()
+    }
+
+    @Test(arguments: [SidecarRuntimeMessage.TransportWrite.Kind.text, .binary])
+    func `oversized opaque messages fail before socket effects`(kind: SidecarRuntimeMessage.TransportWrite
+        .Kind) throws
+    {
         let socket = RelaySocket()
         let transport = NativeGatewayTransport(
             socket: WebSocketTaskBox(task: socket), write: { _, _ in }, failed: { _ in })
         defer { transport.close() }
         #expect(throws: (any Error).self) {
-            try transport.send(id: 1, kind: "unknown", data: Data())
-        }
-        #expect(throws: (any Error).self) {
-            try transport.send(id: 2, kind: "binary", data: Data(
-                repeating: 0, count: NativeGatewayTransport.maximumMessageBytes + 1))
+            try transport.send(Self.write(id: 1, kind: kind, data: Data(
+                repeating: 0, count: NativeGatewayTransport.maximumMessageBytes + 1)))
         }
         #expect(socket.sent.isEmpty)
         #expect(socket.sentBinary.isEmpty)
         #expect(!socket.pongPending)
     }
 
-    @Test(arguments: ["text", "binary"])
-    func `incoming backpressure does not block outgoing write receipts`(kind: String) async throws {
+    @Test(arguments: [SidecarRuntimeMessage.TransportWrite.Kind.text, .binary])
+    func `incoming backpressure does not block outgoing write receipts`(kind: SidecarRuntimeMessage.TransportWrite
+        .Kind) async throws
+    {
         let socket = RelaySocket()
         let (writes, capture) = AsyncStream<SidecarPayload>.makeStream()
         let transport = NativeGatewayTransport(
@@ -84,27 +117,29 @@ struct NativeGatewayTransportTests {
         socket.provide(.string("challenge"))
         var iterator = writes.makeAsyncIterator()
         let first = try #require(await iterator.next())
-        #expect(try Self.message(first)["type"] as? String == "transport-frame")
+        #expect(first.format == .transport)
+        #expect(first.bytes == Data([1, 0, 0, 0, 0, 0, 0, 0, 0]) + Data("challenge".utf8))
         #expect(socket.receiveCount == 1)
         // Incoming consumption is paused, but an independent native send/receipt can finish.
-        let outgoing = kind == "text" ? Data("connect 🦞 café".utf8) : Data([0, 255, 128])
-        try transport.send(id: 1, kind: kind, data: outgoing)
+        let outgoing = kind == .text ? Data("connect 🦞 café".utf8) : Data([0, 255, 128])
+        try transport.send(Self.write(id: 1, kind: kind, data: outgoing))
         let receipt = try #require(await iterator.next())
         #expect(try Self.message(receipt)["type"] as? String == "transport-sent")
         #expect(socket.receiveCount == 1)
-        #expect(socket.sent == (kind == "text" ? ["connect 🦞 café"] : []))
-        #expect(socket.sentBinary == (kind == "binary" ? [outgoing] : []))
+        #expect(socket.sent == (kind == .text ? ["connect 🦞 café"] : []))
+        #expect(socket.sentBinary == (kind == .binary ? [outgoing] : []))
         try transport.received()
         socket.provide(.string("hello"))
         let second = try #require(await iterator.next())
-        #expect(try Self.message(second)["type"] as? String == "transport-frame")
+        #expect(second.format == .transport)
+        #expect(second.bytes == Data([1, 0, 0, 0, 0, 0, 0, 0, 0]) + Data("hello".utf8))
         #expect(socket.receiveCount == 2)
         transport.close()
         #expect(throws: (any Error).self) {
-            try transport.send(id: 2, kind: kind, data: Data("retired".utf8))
+            try transport.send(Self.write(id: 2, kind: kind, data: Data("retired".utf8)))
         }
-        #expect(socket.sent == (kind == "text" ? ["connect 🦞 café"] : []))
-        #expect(socket.sentBinary == (kind == "binary" ? [outgoing] : []))
+        #expect(socket.sent == (kind == .text ? ["connect 🦞 café"] : []))
+        #expect(socket.sentBinary == (kind == .binary ? [outgoing] : []))
     }
 
     @Test func `ping submission lets inbound messages progress before real Pong`() async throws {
@@ -119,13 +154,13 @@ struct NativeGatewayTransportTests {
         transport.start()
         socket.provide(.string("tick"))
         try await writes.waitForCount(1)
-        try transport.send(id: 1, kind: "ping", data: Data())
+        try transport.send(Self.write(id: 1, kind: .ping))
         try await writes.waitForCount(2)
-        #expect(try writes.types() == ["transport-frame", "transport-sent"])
+        #expect(try writes.types() == ["opaque-transport", "transport-sent"])
         #expect(socket.receiveCount == 1)
-        #expect(throws: (any Error).self) { try transport.send(id: 2, kind: "ping", data: Data()) }
+        #expect(throws: (any Error).self) { try transport.send(Self.write(id: 2, kind: .ping)) }
         // Application writes remain available while the single Ping awaits its actual Pong.
-        try transport.send(id: 3, kind: "text", data: Data("result".utf8))
+        try transport.send(Self.write(id: 3, kind: .text, data: Data("result".utf8)))
         try await writes.waitForCount(3)
         #expect(socket.sent == ["result"])
         try transport.received()
@@ -149,7 +184,7 @@ struct NativeGatewayTransportTests {
                 writes.append(data, lane: lane)
             }, failed: { _ in })
         transport.start()
-        try transport.send(id: 1, kind: "ping", data: Data())
+        try transport.send(Self.write(id: 1, kind: .ping))
         try await writes.waitForCount(1)
         try await waitForCondition { socket.pongPending }
         transport.close()
@@ -158,7 +193,7 @@ struct NativeGatewayTransportTests {
         #expect(try writes.types() == ["transport-sent"])
     }
 
-    @Test func `full gateway binary payload fits authenticated envelope even with all slashes`() async throws {
+    @Test func `full gateway binary payload stays byte exact without base64 expansion`() async throws {
         let socket = RelaySocket()
         let (writes, capture) = AsyncStream<SidecarPayload>.makeStream()
         let transport = NativeGatewayTransport(
@@ -174,13 +209,26 @@ struct NativeGatewayTransportTests {
         socket.provide(.data(bytes))
         var iterator = writes.makeAsyncIterator()
         let frame = try #require(await iterator.next())
-        let message = try Self.message(frame)
-        let encoded = try #require(message["data"] as? String)
-        #expect(Data(base64Encoded: encoded) == bytes)
+        #expect(frame.format == .transport)
+        #expect(frame.bytes.prefix(9) == Data([2, 0, 0, 0, 0, 0, 0, 0, 0]))
+        #expect(frame.bytes.dropFirst(9) == bytes)
         let channel = try AuthenticatedSidecarChannel(
             key: Data(repeating: 1, count: 32), sessionID: "media", generation: 1)
+        channel.lockFrameLimit(opaqueTransport: true)
         let authenticated = try channel.seal(frame)
+        #expect(authenticated.count == bytes.count + 9 + 31 + "media".utf8.count + 32 + 4)
         #expect(authenticated.count <= channel.maxFrameBytes + 4)
+    }
+
+    private static func write(
+        id: UInt64, kind: SidecarRuntimeMessage.TransportWrite.Kind, data: Data = Data()) throws
+        -> SidecarRuntimeMessage.TransportWrite
+    {
+        var payload = Data([kind.rawValue])
+        var id = id.bigEndian
+        withUnsafeBytes(of: &id) { payload.append(contentsOf: $0) }
+        payload.append(data)
+        return try SidecarRuntimeMessage.TransportWrite(payload)
     }
 
     private static func message(_ data: SidecarPayload) throws -> [String: Any] {
@@ -303,9 +351,10 @@ private final class RelayWrites: @unchecked Sendable {
     }
 
     func types() throws -> [String] {
-        try self.values
-            .map { try #require((JSONSerialization.jsonObject(with: $0.0.bytes) as? [String: Any])?["type"] as? String)
-            }
+        try self.values.map {
+            if $0.0.format == .transport { return "opaque-transport" }
+            return try #require((JSONSerialization.jsonObject(with: $0.0.bytes) as? [String: Any])?["type"] as? String)
+        }
     }
 
     func waitForCount(_ count: Int) async throws {
@@ -338,10 +387,18 @@ private final class PayloadLifetime: @unchecked Sendable {
         self.lock.withLock { self.entered = true }
     }
 
-    func makeData() -> Data {
-        let bytes = UnsafeMutableRawPointer.allocate(byteCount: 1024, alignment: 1)
-        bytes.initializeMemory(as: UInt8.self, repeating: 0x5A, count: 1024)
-        return Data(bytesNoCopy: bytes, count: 1024, deallocator: .custom { bytes, _ in
+    func makeData(transportHeader: Bool = false) -> Data {
+        let count = 1024 + (transportHeader ? 9 : 0)
+        let bytes = UnsafeMutableRawPointer.allocate(byteCount: count, alignment: 1)
+        let initialized = bytes.initializeMemory(as: UInt8.self, repeating: 0x5A, count: count)
+        if transportHeader {
+            initialized[0] = 2
+            for index in 1..<9 {
+                initialized[index] = 0
+            }
+            initialized[8] = 1
+        }
+        return Data(bytesNoCopy: bytes, count: count, deallocator: .custom { bytes, _ in
             bytes.deallocate()
             self.lock.withLock { self.released = true }
         })
