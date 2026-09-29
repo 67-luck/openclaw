@@ -30,9 +30,6 @@ vi.mock("../../infra/kysely-sync-cache-state.js", () => ({
 vi.mock("../../state/openclaw-agent-canonical-validation-receipt.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-readonly-open.js", () => ({}));
 vi.mock("../../state/openclaw-state-db-cache.js", () => ({}));
-vi.mock("../../state/openclaw-agent-db-identity.js", () => ({
-  createOpenClawAgentDatabaseClaim: () => ({ assertCurrent() {}, release() {} }),
-}));
 vi.mock("../../state/openclaw-agent-db-lease.js", () => ({
   assertOpenClawAgentDatabaseLease: () => {},
 }));
@@ -42,18 +39,30 @@ vi.mock("../../state/openclaw-agent-db-lifecycle.js", () => ({
 vi.mock("../../state/openclaw-agent-db-validation-cache.js", () => ({
   getOpenClawAgentDatabaseValidation: () => undefined,
 }));
-vi.mock("../../state/openclaw-agent-db.js", () => {
-  const database = { db: { isOpen: true, isTransaction: false } };
+vi.mock("../../state/openclaw-agent-db.js", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { registerOpenClawAgentDatabaseIdentity } =
+    await import("../../state/openclaw-agent-db-identity.js");
+  type FixtureDatabase = { db: InstanceType<typeof DatabaseSync> };
+  let database: FixtureDatabase | undefined;
   return {
     borrowOpenClawAgentDatabase: () => ({ release() {} }),
-    settleOpenClawAgentDatabaseWorkerClose: () => ({ errors: [], settled: true }),
+    settleOpenClawAgentDatabaseWorkerClose: () => {
+      database?.db.close();
+      database = undefined;
+      return { errors: [], settled: true };
+    },
     withOpenClawAgentDatabaseAdmission: <T>(
       _options: unknown,
       withAdmission: OpenClawAgentDatabaseWriteAdmission,
-      run: (opened: typeof database) => T | Promise<T>,
+      run: (opened: FixtureDatabase) => T | Promise<T>,
     ) =>
       withAdmission((assertCurrent) => {
         assertCurrent();
+        if (!database) {
+          database = { db: new DatabaseSync(":memory:") };
+          registerOpenClawAgentDatabaseIdentity(database.db);
+        }
         return run(database);
       }),
   };
@@ -68,9 +77,6 @@ vi.mock("./session-accessor.sqlite-worker-coordination.js", () => ({
 }));
 vi.mock("./session-accessor.sqlite-reclamation.js", () => ({
   reclaimSqliteSessionInTransaction: () => ({ kind: "maintenance-statistics", value: true }),
-}));
-vi.mock("./session-accessor.sqlite-reclamation-commit.js", () => ({
-  markSqliteReclamationSettled: () => {},
 }));
 
 it("keeps idle collection after buffered admission replies and cancels it for the next request", async () => {
@@ -88,7 +94,15 @@ it("keeps idle collection after buffered admission replies and cancels it for th
   let operationId = 0;
   let pendingAdmission: Record<string, unknown> | undefined;
   const receive = async (type: string) => {
-    const [reply]: unknown[] = (await replies.next()).value ?? [];
+    const [reply]: unknown[] =
+      (
+        await Promise.race([
+          replies.next(),
+          running.then(() => {
+            throw new Error(`Reclamation worker closed before ${type}`);
+          }),
+        ])
+      ).value ?? [];
     assert.ok(isRecord(reply));
     expect(reply.type).toBe(type);
     if (type === "admission-request") {
