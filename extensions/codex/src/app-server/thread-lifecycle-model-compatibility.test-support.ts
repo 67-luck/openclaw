@@ -9,6 +9,7 @@ import {
 } from "./session-binding.test-helpers.js";
 import type { startOrResumeThread as startOrResumeThreadImpl } from "./thread-lifecycle.js";
 import { createLeasedCodexLifecycleHarness } from "./thread-lifecycle.test-fixtures.js";
+import { retainCodexAppServerBindingSubscription } from "./thread-ownership.js";
 
 type StartParams = Omit<Parameters<typeof startOrResumeThreadImpl>[0], "bindingStore">;
 type LifecycleRespond = (method: string, requestParams?: unknown) => Promise<unknown>;
@@ -39,20 +40,43 @@ export function registerThreadModelCompatibilityTests({
   coldResumeMethods,
 }: ModelCompatibilityFixtures) {
   it.each([
-    { bindingModel: "gpt-5.4-codex", requestedModel: "gpt-5.5", multiAgentVersion: undefined },
     {
-      bindingModel: "synthetic-primary",
-      requestedModel: "synthetic-fallback",
-      multiAgentVersion: "v2",
+      scenario: "a legacy model change",
+      bindingModel: "gpt-5.4-codex",
+      multiAgentVersion: undefined,
+      requestedModels: [{ model: "gpt-5.5", version: undefined }],
     },
     {
+      scenario: "v2, unknown, and v2 model selections",
       bindingModel: "synthetic-primary",
-      requestedModel: "gpt-5.6-sol",
       multiAgentVersion: "v2",
+      requestedModels: [
+        { model: "synthetic-fallback", version: "v2" },
+        { model: "synthetic-unclassified-model", version: undefined },
+        { model: "synthetic-primary", version: "v2" },
+      ],
+    },
+    {
+      scenario: "catalog and legacy v2 model selections",
+      bindingModel: "synthetic-primary",
+      multiAgentVersion: "v2",
+      requestedModels: [{ model: "gpt-5.6-sol", version: "v2" }],
+    },
+    {
+      scenario: "v1 and unknown model selections",
+      bindingModel: "synthetic-v1-model",
+      multiAgentVersion: "v1",
+      requestedModels: [{ model: "synthetic-unclassified-model", version: undefined }],
+    },
+    {
+      scenario: "disabled and unknown model selections",
+      bindingModel: "synthetic-disabled-model",
+      multiAgentVersion: "disabled",
+      requestedModels: [{ model: "synthetic-unclassified-model", version: undefined }],
     },
   ] as const)(
-    "refreshes model and workspace ownership when reusing $bindingModel as $requestedModel",
-    async ({ bindingModel, requestedModel, multiAgentVersion }) => {
+    "preserves thread generation and workspace ownership across $scenario",
+    async ({ bindingModel, requestedModels, multiAgentVersion }) => {
       const sessionFile = path.join(tempDir, "warm-model-workspace.jsonl");
       const originalWorkspace = path.join(tempDir, "workspace-original");
       const currentWorkspace = path.join(tempDir, "workspace-current");
@@ -88,36 +112,45 @@ export function registerThreadModelCompatibilityTests({
         userMcpServersEnabled: false,
       };
       const started = await startOrResumeThread(common);
-      await retainThread(client, started);
-      params.modelId = requestedModel;
-      params.model = {
-        ...params.model,
-        id: requestedModel,
-        params: buildCodexRuntimeModelParams(requestedModel, requestedModel, multiAgentVersion),
-      };
+      await expect(retainThread(client, started)).resolves.toBe(true);
+      expect(started.nativeMultiAgentVersion).toBe(multiAgentVersion);
       params.workspaceDir = currentWorkspace;
+      const expectedMethods = [...preflightMethods, "thread/start"];
 
-      const reused = await startOrResumeThread({ ...common, cwd: currentWorkspace });
+      for (const [index, requested] of requestedModels.entries()) {
+        params.modelId = requested.model;
+        params.model = {
+          ...params.model,
+          id: requested.model,
+          params: buildCodexRuntimeModelParams(requested.model, requested.model, requested.version),
+        };
 
-      if (multiAgentVersion) {
-        expect(started.nativeMultiAgentVersion).toBe(multiAgentVersion);
+        const reused = await startOrResumeThread({ ...common, cwd: currentWorkspace });
+
+        expectedMethods.push(...preflightMethods);
+        expect(request.mock.calls.map(([method]) => method)).toEqual(expectedMethods);
+        expect(reused).toMatchObject({
+          threadId: "thread-warm-model-workspace",
+          cwd: currentWorkspace,
+          model: requested.model,
+        });
+        expect(reused.nativeMultiAgentVersion).toBe(multiAgentVersion);
+        const saved = await readCodexAppServerBinding(sessionFile);
+        expect(saved).toMatchObject({
+          cwd: currentWorkspace,
+          model: requested.model,
+        });
+        expect(saved?.nativeMultiAgentVersion).toBe(multiAgentVersion);
+        if (index < requestedModels.length - 1) {
+          await expect(
+            retainCodexAppServerBindingSubscription(
+              client,
+              reused.threadId,
+              reused.liveThreadOwnership,
+            ),
+          ).resolves.toBe(true);
+        }
       }
-      expect(request.mock.calls.map(([method]) => method)).toEqual([
-        ...preflightMethods,
-        "thread/start",
-        ...preflightMethods,
-      ]);
-      expect(reused).toMatchObject({
-        threadId: "thread-warm-model-workspace",
-        cwd: currentWorkspace,
-        model: requestedModel,
-        ...(multiAgentVersion ? { nativeMultiAgentVersion: multiAgentVersion } : {}),
-      });
-      await expect(readCodexAppServerBinding(sessionFile)).resolves.toMatchObject({
-        cwd: currentWorkspace,
-        model: requestedModel,
-        ...(multiAgentVersion ? { nativeMultiAgentVersion: multiAgentVersion } : {}),
-      });
     },
   );
 
@@ -208,7 +241,7 @@ export function registerThreadModelCompatibilityTests({
       requestedVersion: "v2",
     },
   ] as const)(
-    "resumes the thread when switching from $bindingModel to $requestedModel",
+    "retains the generation through cold resume from $bindingModel to $requestedModel and warm continuation",
     async ({ bindingModel, requestedModel, bindingVersion, requestedVersion }) => {
       const sessionFile = path.join(tempDir, `${bindingModel}-${requestedModel}.jsonl`);
       const workspaceDir = path.join(tempDir, "workspace");
@@ -259,6 +292,29 @@ export function registerThreadModelCompatibilityTests({
       expect((await readCodexAppServerBinding(sessionFile))?.nativeMultiAgentVersion).toBe(
         bindingVersion,
       );
+      await expect(retainThread(client, binding)).resolves.toBe(true);
+      params.modelId = bindingModel;
+      params.model = {
+        ...params.model,
+        id: bindingModel,
+        params: buildCodexRuntimeModelParams(bindingModel, bindingModel, bindingVersion),
+      };
+
+      const continued = await startOrResumeThread({ client, params });
+
+      expect(request.mock.calls.map(([method]) => method)).toEqual([
+        ...coldResumeMethods,
+        ...preflightMethods,
+      ]);
+      expect(continued).toMatchObject({
+        threadId: "thread-existing",
+        model: bindingModel,
+        lifecycle: { action: "resumed" },
+      });
+      expect(continued.nativeMultiAgentVersion).toBe(bindingVersion);
+      const saved = await readCodexAppServerBinding(sessionFile);
+      expect(saved).toMatchObject({ threadId: "thread-existing", model: bindingModel });
+      expect(saved?.nativeMultiAgentVersion).toBe(bindingVersion);
     },
   );
 }

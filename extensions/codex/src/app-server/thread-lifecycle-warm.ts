@@ -18,7 +18,6 @@ import {
   getCodexInferenceThread,
   getCodexInferenceThreadQualification,
 } from "./inference-routing.js";
-import { readCodexModelMultiAgentVersion } from "./model-runtime.js";
 import { applyCodexNativeSkillIsolation } from "./native-skill-isolation.js";
 import { attestCodexThreadToolSurface } from "./plugin-thread-attestation.js";
 import {
@@ -335,10 +334,6 @@ export async function tryReuseCodexLiveThread(
             ...resumeParams,
             // Keep the actual loaded provider separate from caller-selected
             // overrides so account or provider changes always invalidate reuse.
-            model: binding.preserveNativeModel
-              ? null
-              : (binding.model ?? resumeParams.model ?? null),
-            requestedModel: binding.preserveNativeModel ? null : (resumeParams.model ?? null),
             modelProvider: binding.preserveNativeModel
               ? null
               : (binding.modelProvider ?? resumeParams.modelProvider ?? null),
@@ -348,9 +343,7 @@ export async function tryReuseCodexLiveThread(
           },
           resumeAuthProfileId,
           dynamicToolsFingerprint,
-          binding.preserveNativeModel || binding.connectionScope === "supervision"
-            ? undefined
-            : readCodexModelMultiAgentVersion(params.params.model),
+          binding.nativeMultiAgentVersion,
         );
     const ephemeralPolicy = retainedThread.ephemeralPolicy;
     if (

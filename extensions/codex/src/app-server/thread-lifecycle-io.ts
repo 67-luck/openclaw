@@ -321,12 +321,6 @@ export async function resumeExistingCodexThread(
       liveThreadConfigFingerprint: fingerprintCodexThreadConfig(
         {
           ...resumeParams,
-          model:
-            resumeBinding.preserveNativeModel === true
-              ? null
-              : (response.model ?? resumeParams.model ?? null),
-          requestedModel:
-            resumeBinding.preserveNativeModel === true ? null : (resumeParams.model ?? null),
           modelProvider:
             resumeBinding.preserveNativeModel === true ? null : (resumePatch.modelProvider ?? null),
           requestedModelProvider:
@@ -336,9 +330,7 @@ export async function resumeExistingCodexThread(
         },
         authProfileId,
         dynamicToolsFingerprint,
-        resumeBinding.preserveNativeModel || resumeBinding.connectionScope === "supervision"
-          ? undefined
-          : readCodexModelMultiAgentVersion(params.params.model),
+        resumeBinding.nativeMultiAgentVersion,
       ),
       lifecycle: {
         action: "resumed",
@@ -667,14 +659,12 @@ export async function startFreshCodexThread(
           liveThreadConfigFingerprint: fingerprintCodexThreadConfig(
             {
               ...startParams,
-              model: response.model ?? startParams.model ?? null,
-              requestedModel: startParams.model ?? null,
               modelProvider: bindingModelProvider ?? null,
               requestedModelProvider: startParams.modelProvider ?? bindingModelProvider ?? null,
             },
             params.params.authProfileId,
             dynamicToolsFingerprint,
-            readCodexModelMultiAgentVersion(params.params.model),
+            startedBinding.nativeMultiAgentVersion,
           ),
         }
       : {}),
