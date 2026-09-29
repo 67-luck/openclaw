@@ -217,7 +217,7 @@ async fn run() -> Result<(), Failure> {
     });
     let (outgoing, mut outgoing_rx) = mpsc::channel::<Value>(usize::from(MAX_IN_FLIGHT));
     let writer_channel = Arc::clone(&channel);
-    let writer = tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         // Reuse encoded output: growing base64 frames afresh retains large intermediate
         // allocations on every burst, even after the completed frame is released.
         let mut frame = Vec::new();
@@ -232,11 +232,28 @@ async fn run() -> Result<(), Failure> {
         }
         Ok::<(), Failure>(())
     });
-    let result = run_gateway(incoming, &outgoing, max_in_flight, transport).await;
+    // A failed output pipe retires the session immediately, even while stdin stays
+    // open and the Gateway is waiting for a native receipt that can never arrive.
+    let (mut result, drain_writer) = tokio::select! {
+        result = run_gateway(incoming, &outgoing, max_in_flight, transport) => (result, true),
+        completed = &mut writer => (
+            completed
+                .unwrap_or_else(|error| Err(error.into()))
+                .and(Err("authenticated sidecar output stopped".into())),
+            false,
+        ),
+    };
     reader.abort();
     drop(outgoing);
-    // Await output before exit so an authenticated terminal error is not lost.
-    let _ = tokio::time::timeout(WRITE_TIMEOUT, writer).await;
+    if drain_writer {
+        // Await output before exit so an authenticated terminal error is not lost.
+        let flushed = match tokio::time::timeout(WRITE_TIMEOUT, &mut writer).await {
+            Ok(completed) => completed.unwrap_or_else(|error| Err(error.into())),
+            Err(error) => Err(error.into()),
+        };
+        result = result.and(flushed);
+    }
+    writer.abort();
     channel.lock().await.retire();
     result
 }

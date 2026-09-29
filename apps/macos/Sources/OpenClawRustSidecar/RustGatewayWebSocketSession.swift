@@ -167,13 +167,15 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         let payload = switch request.body {
         case let .frame(data):
             SidecarPayload(
-                data, prefix: RustGatewayWebSocketSession.framePrefix(callerOwnsLifetime: lifetime != nil),
+                data,
+                prefix: RustGatewayWebSocketSession.framePrefix(callerOwnsLifetime: lifetime != nil),
                 suffix: Data([0x7D]))
         case let .nativeResult(metadata, payloadJSON):
             // Raw JSON is last in a closed tuple: it cannot inject or replace frozen
             // metadata. Rust validates the tuple and standalone value before delivery.
             SidecarPayload(
-                body: .utf8(payloadJSON), prefix: Data("[\"native-result\",".utf8) + metadata + Data([0x2C]),
+                body: .utf8(payloadJSON),
+                prefix: Data("[\"native-result\",".utf8) + metadata + Data([0x2C]),
                 suffix: Data([0x5D]))
         }
         try await self.send(payload, lifetime: lifetime) {
