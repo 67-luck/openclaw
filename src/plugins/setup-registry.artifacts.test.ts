@@ -2,9 +2,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { withPluginMetadataSnapshotScope } from "./current-plugin-metadata-snapshot.js";
 import type { PluginManifestRegistry } from "./manifest-registry.js";
-import { createPluginCache, retirePluginCache, withPluginCache } from "./plugin-cache.js";
+import {
+  createPluginCache,
+  getPluginMetadataSnapshotCache,
+  retirePluginCache,
+  withPluginCache,
+} from "./plugin-cache.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
+import {
+  loadPluginMetadataSnapshot,
+  projectPluginMetadataSnapshot,
+} from "./plugin-metadata-snapshot.js";
 import { resolvePluginSetupRegistry } from "./setup-registry.js";
 
 const temp = useAutoCleanupTempDirTracker(afterEach);
@@ -87,6 +99,72 @@ describe("bundled setup code identity", () => {
 
 describe("installed setup artifacts", () => {
   afterEach(clearPluginMetadataLifecycleCaches);
+
+  it("uses each explicit metadata projection when setup views share a module cache", async () => {
+    await withOpenClawTestState(
+      { scenario: "minimal", env: { OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" } },
+      async (state) => {
+        const ids = ["snapshot-first", "snapshot-second"];
+        const roots = ids.map((id) => {
+          const root = state.path(id);
+          fs.mkdirSync(root);
+          fs.writeFileSync(
+            path.join(root, "package.json"),
+            JSON.stringify({
+              name: id,
+              version: "1.0.0",
+              openclaw: { extensions: ["./runtime.cjs"], setupEntry: "./setup-api.cjs" },
+            }),
+          );
+          fs.writeFileSync(
+            path.join(root, "openclaw.plugin.json"),
+            JSON.stringify({
+              id,
+              providers: [id],
+              configSchema: { type: "object", properties: {} },
+              setup: { requiresRuntime: true, providers: [{ id }] },
+            }),
+          );
+          fs.writeFileSync(
+            path.join(root, "runtime.cjs"),
+            'throw new Error("Setup inspection must not load the runtime entry");',
+          );
+          fs.writeFileSync(
+            path.join(root, "setup-api.cjs"),
+            `module.exports = { register(api) {
+              api.registerProvider({ id: ${JSON.stringify(id)}, label: "Snapshot setup", auth: [] });
+            } };`,
+          );
+          return root;
+        });
+        const config: OpenClawConfig = {
+          plugins: { allow: ids, load: { paths: roots }, slots: { memory: "none" } },
+        };
+        const snapshot = loadPluginMetadataSnapshot({ config, allowCurrent: false });
+        const narrowed = projectPluginMetadataSnapshot(snapshot, ["snapshot-first"]);
+        const cache = getPluginMetadataSnapshotCache(snapshot);
+        try {
+          expect(getPluginMetadataSnapshotCache(narrowed)).toBe(cache);
+          withPluginMetadataSnapshotScope(
+            snapshot,
+            () => {
+              const read = (metadataSnapshot: typeof snapshot) => {
+                const registry = resolvePluginSetupRegistry({ config, metadataSnapshot });
+                expect(registry.diagnostics).toEqual([]);
+                return registry.providers.map(({ provider }) => provider.id).toSorted();
+              };
+              expect(read(snapshot)).toEqual(["snapshot-first", "snapshot-second"]);
+              expect(read(narrowed)).toEqual(["snapshot-first"]);
+              expect(read(snapshot)).toEqual(["snapshot-first", "snapshot-second"]);
+            },
+            { config },
+          );
+        } finally {
+          await retirePluginCache(cache);
+        }
+      },
+    );
+  });
 
   it.each<{
     artifactDir: string;

@@ -1,6 +1,7 @@
 import { registryContainsRuntimePluginIds } from "../plugins/active-runtime-registry.js";
 import { capturePluginLifecycleAuthority } from "../plugins/registry-lifecycle.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
+import { getReusablePluginRuntimeActivation } from "../plugins/runtime/load-context.js";
 import { augmentPreparedModelCatalogWithAgentHarness } from "./harness/model-catalog.js";
 import { resolveAgentRuntimePluginSelectionOwners } from "./harness/runtime-plugin-load-plan.js";
 import { buildPreparedModelCatalogSnapshot } from "./model-catalog.js";
@@ -65,6 +66,25 @@ const derivedGenerationBases = new WeakMap<
   PreparedModelRuntimePluginGeneration
 >();
 
+/** Passive views retain identity facts only along the unchanged source lineage. */
+export function canReusePreparedCliBackendModels(
+  generation: PreparedModelRuntimePluginGeneration,
+  params: Parameters<typeof getReusablePluginRuntimeActivation>[1],
+): boolean {
+  if (generation.pluginMetadataSnapshot !== params.metadataSnapshot) {
+    return false;
+  }
+  let source = generation;
+  while (!source.pluginRegistry) {
+    const base = derivedGenerationBases.get(source);
+    if (!base || base.cliBackendModels !== source.cliBackendModels) {
+      return false;
+    }
+    source = base;
+  }
+  return getReusablePluginRuntimeActivation(source.pluginRegistry, params) !== undefined;
+}
+
 /** Borrowing may narrow a prepared selection, but cannot acquire a different plugin owner. */
 export function preparedPluginGenerationSupportsSelections(
   generation: PreparedModelRuntimePluginGeneration,
@@ -108,6 +128,7 @@ export function preparedPluginGenerationReusesBase(
 
 export function createPreparedPluginGeneration(params: {
   catalogMode: PreparedModelRuntimeCatalogMode;
+  cliBackendModels: PreparedModelRuntimePluginGeneration["cliBackendModels"];
   configuredCatalogEntries: PreparedModelRuntimePluginGeneration["configuredCatalogEntries"];
   inboundPluginRegistry: PreparedModelRuntimePluginGeneration["inboundPluginRegistry"];
   inlineProviderModels: PreparedModelRuntimePluginGeneration["inlineProviderModels"];
@@ -125,12 +146,14 @@ export function createPreparedPluginGeneration(params: {
   if (reusable) {
     if (
       params.pluginMetadataSnapshot === reusable.pluginMetadataSnapshot &&
-      params.runtimePluginRegistry === reusable.pluginRegistry
+      params.runtimePluginRegistry === reusable.pluginRegistry &&
+      params.cliBackendModels === reusable.cliBackendModels
     ) {
       return reusable;
     }
     const derived = Object.freeze({
       ...reusable,
+      cliBackendModels: params.cliBackendModels,
       pluginMetadataSnapshot: params.pluginMetadataSnapshot,
       pluginRegistry: params.runtimePluginRegistry,
       mediaCapabilityProviders: params.mediaCapabilityProviders,
@@ -146,6 +169,7 @@ export function createPreparedPluginGeneration(params: {
   }
   const generation = Object.freeze({
     pluginMetadataSnapshot: params.pluginMetadataSnapshot,
+    cliBackendModels: params.cliBackendModels,
     inlineProviderModels: Object.freeze([...params.inlineProviderModels]),
     configuredCatalogEntries: Object.freeze([...params.configuredCatalogEntries]),
     ...(params.messageToolCatalog ? { messageToolCatalog: params.messageToolCatalog } : {}),

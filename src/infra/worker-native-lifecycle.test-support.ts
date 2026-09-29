@@ -12,10 +12,13 @@ import {
   withRuntimeWorkerGeneration,
 } from "./runtime-worker-generation.js";
 import { getTrackedWorkerLifecycleSnapshot } from "./worker-cpu.js";
+import { runNativeColdRecovery } from "./worker-native-lifecycle.cold-recovery.test-support.js";
+import { runNativeGenerationRefusal } from "./worker-native-lifecycle.generation.test-support.js";
 import {
   captureRetainedNativeWorkerSource,
   createRetainedNativeWorker,
 } from "./worker-native-lifecycle.js";
+import { runNativeReferenceLifecycle } from "./worker-native-lifecycle.reference.test-support.js";
 import {
   assertNativeWorkerDiagnosticMatches,
   runNativeResourceLifecycle,
@@ -583,19 +586,34 @@ assert.ok(
   ending === "terminate" ||
     ending === "natural-exit" ||
     ending === "generation" ||
+    ending === "generation-refusal" ||
     ending === "explicit-unbound" ||
     ending === "supervisor-loss" ||
     ending === "native-resource" ||
     ending === "resource-supervisor-loss" ||
+    ending === "resource-cold-supervisor-loss" ||
     ending === "resource-close-supervisor-loss" ||
     ending === "resource-late-attachment" ||
     ending === "resource-owner-reply-loss" ||
-    ending === "callback-context",
+    ending === "callback-context" ||
+    ending === "resource-passive-exit" ||
+    ending === "resource-reference-retry" ||
+    ending === "resource-idle-supervisor-loss" ||
+    ending === "resource-diagnostic-references",
 );
 const directory = process.argv[3];
 assert.ok(directory);
 const databasePath = path.join(directory, "nested.sqlite");
-if (ending === "generation") {
+if (
+  ending === "resource-passive-exit" ||
+  ending === "resource-reference-retry" ||
+  ending === "resource-idle-supervisor-loss" ||
+  ending === "resource-diagnostic-references"
+) {
+  await runNativeReferenceLifecycle(directory, ending);
+} else if (ending === "generation-refusal") {
+  await runNativeGenerationRefusal(directory);
+} else if (ending === "generation") {
   await runGenerationLifecycle(directory, databasePath);
 } else if (ending === "explicit-unbound") {
   await runExplicitUnboundLifecycle();
@@ -603,6 +621,8 @@ if (ending === "generation") {
   await runSupervisorLoss();
 } else if (ending === "native-resource") {
   await runNativeResourceLifecycle(directory, serviceNativeUntil);
+} else if (ending === "resource-cold-supervisor-loss") {
+  await runNativeColdRecovery(directory, serviceNativeUntil);
 } else if (ending === "resource-supervisor-loss") {
   await runNativeResourceLifecycle(directory, serviceNativeUntil, true);
 } else if (ending === "resource-close-supervisor-loss") {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { PreparedAgentCredentialModes } from "../../agents/agent-auth-credential-modes.js";
 import type { AuthProfileStore } from "../../agents/auth-profiles/types.js";
+import { listCliRuntimeModelBackendBindings } from "../../agents/cli-backends.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import { createModelAuthAvailabilityResolver } from "../../agents/model-auth-availability.js";
 import * as modelDecisions from "../../agents/model-catalog-decisions.js";
@@ -10,8 +11,12 @@ import * as preparedCatalog from "../../agents/prepared-model-catalog.js";
 import {
   getPreparedModelRuntimeAuthStore,
   bindPreparedModelRuntimeAuth,
+  bindPreparedModelRuntimeCliBackendModels,
+  readPreparedModelRuntimeCliBackendModels,
+  copyPreparedModelRuntimeBindings,
   setPreparedModelFullCatalogAuth,
 } from "../../agents/prepared-model-runtime-auth.js";
+import { prepareFixtureCliBackendModelIdentities } from "../../agents/prepared-model-runtime.cli-fixture.test-support.js";
 import {
   PreparedModelRuntimeOwnerNotPublishedError,
   PreparedModelRuntimePublicationSupersededError,
@@ -54,6 +59,27 @@ beforeEach(() => {
           "Model catalog is not ready. Retry after Gateway startup or refresh finishes.",
         );
       }
+      const config = preset?.config ?? params.config;
+      const metadataSnapshot =
+        preset?.metadataSnapshot ??
+        createPluginMetadataSnapshotFixture({
+          plugins: [{ id: "anthropic", cliBackends: ["claude-cli"] }],
+        });
+      const cliBackendModels =
+        (preset ? readPreparedModelRuntimeCliBackendModels(preset) : undefined) ??
+        (await prepareFixtureCliBackendModelIdentities({
+          config,
+          metadataSnapshot,
+          runtimeBackends: preset?.pluginRegistry
+            ? preset.pluginRegistry.cliBackends.map(({ backend }) => ({
+                id: backend.id,
+                modelProvider: backend.modelProvider,
+              }))
+            : listCliRuntimeModelBackendBindings({ config }).map(({ runtime, provider }) => ({
+                id: runtime,
+                modelProvider: provider,
+              })),
+        }));
       const owner: PreparedModelRuntimeSnapshot = {
         catalogOwner: {
           agentId: params.agentId ?? "main",
@@ -66,9 +92,7 @@ beforeEach(() => {
         config: params.config,
         observationConfig: params.config,
         authModes: catalogMocks.authModes,
-        metadataSnapshot: createPluginMetadataSnapshotFixture({
-          plugins: [{ id: "anthropic", cliBackends: ["claude-cli"] }],
-        }),
+        metadataSnapshot,
         isCurrent: catalogMocks.isCurrent,
         allowGatewaySubagentBinding: false,
         modelCatalog,
@@ -80,6 +104,10 @@ beforeEach(() => {
         },
         ...preset,
       };
+      if (preset) {
+        copyPreparedModelRuntimeBindings(preset, owner);
+      }
+      bindPreparedModelRuntimeCliBackendModels(owner, cliBackendModels);
       const retainedAuth = preset ? getPreparedModelRuntimeAuthStore(preset) : undefined;
       bindPreparedModelRuntimeAuth(owner, { store: retainedAuth ?? catalogMocks.authStore });
       return preparedCatalog.materializePreparedModelCatalogOwner(owner);

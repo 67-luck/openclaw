@@ -218,6 +218,11 @@ export class SpawnBrokerHost {
   }
 
   sealNativeResources(): Promise<void> {
+    if (this.resourceClaims && !this.available) {
+      return Promise.reject(
+        new SpawnBrokerError("Native resource broker is not ready for cleanup"),
+      );
+    }
     return (
       this.resourceClaims?.seal() ??
       Promise.reject(new SpawnBrokerError("Native resources are disabled"))
@@ -232,7 +237,7 @@ export class SpawnBrokerHost {
     if (!this.resourceClaims || !this.process) {
       return;
     }
-    if (this.closing || this.resourceClaims.hasOpenClaims || this.requests.size > 0) {
+    if (this.closing || this.resourceClaims.hasReferencedClaims || this.requests.size > 0) {
       this.process.ref();
       // Bun's ChildProcess owns the reference; its channel is only an EventEmitter.
       if (!process.versions.bun) {

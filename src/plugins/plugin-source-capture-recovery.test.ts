@@ -9,6 +9,8 @@ import { noteLegacyPluginSourceCaptures } from "../commands/doctor-plugin-source
 import * as temporaryDirectories from "../commands/doctor/shared/temporary-directories.js";
 import { acquireGatewayStateOwner } from "../infra/gateway-state-owner.js";
 import * as census from "../infra/openclaw-process-census.js";
+import * as sqliteDiagnostics from "../infra/sqlite-error-diagnostics.js";
+import * as stagingOwner from "../infra/sqlite-snapshot-staging-owner.js";
 import * as stagingToken from "../infra/sqlite-staging-token.js";
 import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
@@ -16,11 +18,15 @@ import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths
 import { writePersistedInstalledPluginIndex } from "./installed-plugin-index-store-write.js";
 import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
-import { withPluginSourceCaptureStorage } from "./plugin-source-capture-context.js";
+import {
+  withPluginSourceCaptureStorage,
+  withPluginSourceCaptureScope,
+} from "./plugin-source-capture-context.js";
 import * as captureDirectory from "./plugin-source-capture-directory.js";
 import {
+  acquirePluginSourceCaptureScope,
   createPluginNativeCaptureRoot,
-  createPluginSourceCaptureRoot,
+  createPluginSourceCaptureRootAsync,
   retainPluginNativeCapturePath,
   retainPluginSourceCaptureInstance,
 } from "./plugin-source-capture-directory.js";
@@ -50,66 +56,185 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("preserves the preparation cause when synchronous token cleanup also fails", async () => {
-  const stateDir = temp.make("capture-error-cause-");
-  const instance = retainPluginSourceCaptureInstance(stateDir);
-  await sweepPluginSourceCapturesForTest(stateDir);
-  const primary = new Error("Fixture first capture refused");
-  const cleanup = new Error("Fixture token retirement refused once");
-  let ownedRoot: string | undefined;
-  let refuseCleanup = true;
-  const acquire = stagingToken.acquireSqliteStagingToken;
-  vi.spyOn(stagingToken, "acquireSqliteStagingToken").mockImplementation((...args) => {
-    const token = acquire(...args);
-    ownedRoot = args[0];
-    return Object.assign((retiring?: boolean) => {
-      if (retiring && refuseCleanup) {
-        refuseCleanup = false;
-        throw cleanup;
-      }
-      token(retiring);
-    }, token);
+it("reports reclamation failure when token close also reports SQLite busy, then retries cleanup", async () => {
+  const stateDir = temp.make("capture-reclamation-errors-");
+  const root = path.join(stateDir, "tmp", "plugin-captures", "released-producer");
+  const captures = path.join(root, "captures");
+  const payload = path.join(captures, "source.js");
+  fs.mkdirSync(captures, { recursive: true });
+  const producer = stagingToken.acquireSqliteStagingToken(root, "create");
+  try {
+    fs.writeFileSync(payload, "retained source bytes");
+  } finally {
+    producer();
+  }
+  const old = new Date(Date.now() - 2 * hour);
+  fs.utimesSync(root, old, old);
+  const primary = Object.assign(new Error("Fixture capture removal refused"), { code: "EACCES" });
+  const cleanup = Object.assign(new Error("Fixture reclamation token close refused once"), {
+    code: "SQLITE_BUSY",
   });
-  const mkdtemp = fs.mkdtempSync.bind(fs);
-  vi.spyOn(fs, "mkdtempSync").mockImplementation((...args) => {
-    if (ownedRoot && args[0].startsWith(path.join(ownedRoot, "captures") + path.sep)) {
+  let closeRefused = false;
+  let admission: ReturnType<typeof stagingOwner.startWorkerOwnedSqliteStagingToken> | undefined;
+  const start = stagingOwner.startWorkerOwnedSqliteStagingToken;
+  const acquire = vi
+    .spyOn(stagingOwner, "startWorkerOwnedSqliteStagingToken")
+    .mockImplementation((...args) => {
+      const original = start(...args);
+      if (args[0] !== root || args[1] !== "reclaim") {
+        return original;
+      }
+      admission = original;
+      return {
+        ...original,
+        result: original.result.then((token) => ({
+          ...token,
+          async close() {
+            if (!closeRefused) {
+              closeRefused = true;
+              throw cleanup;
+            }
+            await token.close();
+          },
+        })),
+      };
+    });
+  const remove = fsPromises.rm.bind(fsPromises);
+  const removal = vi.spyOn(fsPromises, "rm").mockImplementation(async (target, options) => {
+    if (target === captures) {
       throw primary;
     }
-    return mkdtemp(...args);
+    await remove(target, options);
   });
+  const classification = vi.spyOn(sqliteDiagnostics, "isSqliteLockError");
+  const warning = vi.spyOn(process, "emitWarning");
+  warning.mockClear();
   try {
-    let failure: unknown;
-    try {
-      instance.createDirectory();
-    } catch (error) {
-      failure = error;
-    }
+    await sweepPluginSourceCapturesForTest(stateDir);
+    expect(closeRefused).toBe(true);
+    expect(warning.mock.calls.length).toBe(1);
+    expect(String(warning.mock.calls[0]?.[0]).includes("1 cleanup failure(s)")).toBe(true);
+    const failure = classification.mock.calls.find(
+      ([error]) => error instanceof AggregateError && error.cause === primary,
+    )?.[0];
     if (!(failure instanceof AggregateError)) {
-      throw new Error("Expected the paired preparation and cleanup refusal", { cause: failure });
+      throw new Error("Expected the original reclamation and cleanup failures at classification");
     }
-    expect(failure.cause).toBe(primary);
+    expect(failure.cause === primary).toBe(true);
     expect(failure.errors.length).toBe(2);
-    expect(failure.errors[0]).toBe(primary);
-    expect(failure.errors[1]).toBe(cleanup);
-    expect(refuseCleanup).toBe(false);
+    expect(failure.errors[0] === primary).toBe(true);
+    expect(failure.errors[1] === cleanup).toBe(true);
+    expect(fs.readFileSync(payload, "utf8")).toBe("retained source bytes");
+    expect(fs.existsSync(path.join(root, stagingToken.SQLITE_STAGING_TOKEN_FILES[0]))).toBe(true);
+    if (!admission) {
+      throw new Error("Expected the original worker-backed reclaim admission");
+    }
+    removal.mockRestore();
+    acquire.mockRestore();
+    await admission.startClose().result;
+    fs.utimesSync(root, old, old);
+    await sweepPluginSourceCapturesForTest(stateDir);
+    expect(fs.existsSync(root)).toBe(false);
+    expect(warning.mock.calls.length).toBe(1);
   } finally {
-    vi.restoreAllMocks();
-    await instance.releaseAsync();
+    removal.mockRestore();
+    acquire.mockRestore();
+    classification.mockRestore();
+    await admission?.startClose().result;
   }
-  expect(ownedRoot !== undefined && fs.existsSync(ownedRoot)).toBe(false);
 });
+
+it.each(["sync", "async"] as const)(
+  "preserves the original %s preparation failure when token cleanup also fails",
+  async (mode) => {
+    const stateDir = temp.make("capture-error-cause-");
+    const instance = mode === "sync" ? retainPluginSourceCaptureInstance(stateDir) : undefined;
+    await sweepPluginSourceCapturesForTest(stateDir);
+    const primary = new Error("Fixture first capture refused");
+    const cleanup = new Error("Fixture token retirement refused once");
+    let ownedRoot: string | undefined;
+    let refuseCleanup = true;
+    let admission: ReturnType<typeof stagingOwner.startWorkerOwnedSqliteStagingToken> | undefined;
+    if (mode === "sync") {
+      const acquire = stagingToken.acquireSqliteStagingToken;
+      vi.spyOn(stagingToken, "acquireSqliteStagingToken").mockImplementation((...args) => {
+        const token = acquire(...args);
+        ownedRoot = args[0];
+        return Object.assign((retiring?: boolean) => {
+          if (retiring && refuseCleanup) {
+            refuseCleanup = false;
+            throw cleanup;
+          }
+          token(retiring);
+        }, token);
+      });
+      const mkdtemp = fs.mkdtempSync.bind(fs);
+      vi.spyOn(fs, "mkdtempSync").mockImplementation((...args) => {
+        if (ownedRoot && args[0].startsWith(path.join(ownedRoot, "captures") + path.sep)) {
+          throw primary;
+        }
+        return mkdtemp(...args);
+      });
+    } else {
+      const start = stagingOwner.startWorkerOwnedSqliteStagingToken;
+      vi.spyOn(stagingOwner, "startWorkerOwnedSqliteStagingToken").mockImplementation((...args) => {
+        const started = start(...args);
+        admission = started;
+        ownedRoot = args[0];
+        vi.spyOn(started, "startClose").mockImplementationOnce(() => {
+          refuseCleanup = false;
+          throw cleanup;
+        });
+        return started;
+      });
+      const mkdtemp = fsPromises.mkdtemp.bind(fsPromises);
+      vi.spyOn(fsPromises, "mkdtemp").mockImplementation(async (...args) => {
+        if (ownedRoot && args[0].startsWith(path.join(ownedRoot, "captures") + path.sep)) {
+          throw primary;
+        }
+        return mkdtemp(...args);
+      });
+    }
+    try {
+      let failure: unknown;
+      try {
+        if (instance) {
+          instance.createDirectory();
+        } else {
+          await acquirePluginSourceCaptureScope(stateDir);
+        }
+      } catch (error) {
+        failure = error;
+      }
+      if (!(failure instanceof AggregateError)) {
+        throw new Error("Expected the paired preparation and cleanup refusal", { cause: failure });
+      }
+      expect(failure.cause).toBe(primary);
+      expect(failure.errors.length).toBe(2);
+      expect(failure.errors[0]).toBe(primary);
+      expect(failure.errors[1]).toBe(cleanup);
+      expect(refuseCleanup).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
+      await instance?.releaseAsync();
+      await admission?.startClose().result;
+    }
+    expect(ownedRoot !== undefined && fs.existsSync(ownedRoot)).toBe(false);
+  },
+);
 
 it("recovers a removed captures directory without releasing a live instance", async () => {
   const stateDir = temp.make("capture-recovery-missing-");
-  const instance = retainPluginSourceCaptureInstance(stateDir);
+  const prepared = await acquirePluginSourceCaptureScope(stateDir);
+  const instance = prepared.scope.retain();
   const first = instance.createDirectory();
   const captures = path.dirname(first);
   const root = path.dirname(captures);
   await sweepPluginSourceCapturesForTest(stateDir);
   fs.rmSync(captures, { recursive: true });
-  let worker: ReturnType<typeof createPluginSourceCaptureRoot> | undefined;
+  let worker: Awaited<ReturnType<typeof createPluginSourceCaptureRootAsync>> | undefined;
   try {
-    worker = createPluginSourceCaptureRoot(stateDir, "openclaw-model-catalog-");
+    worker = await createPluginSourceCaptureRootAsync(stateDir, "openclaw-model-catalog-");
     fs.writeFileSync(path.join(worker.directory, "source.js"), "recovered capture");
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 2 * hour);
@@ -122,8 +247,15 @@ it("recovers a removed captures directory without releasing a live instance", as
     const next = instance.createDirectory();
     expect(fs.readdirSync(captures)).toEqual([path.basename(next)]);
   } finally {
-    await worker?.release();
-    await instance.releaseAsync();
+    try {
+      await worker?.release();
+    } finally {
+      try {
+        await instance.releaseAsync();
+      } finally {
+        await prepared.release();
+      }
+    }
   }
   expect(fs.existsSync(root)).toBe(false);
 });
@@ -134,7 +266,7 @@ it.each(["sync", "async"])(
     const stateDir = temp.make("native-capture-retention-");
     const committed = createPluginNativeCaptureRoot(stateDir);
     const pending = createPluginNativeCaptureRoot(stateDir);
-    const worker = createPluginSourceCaptureRoot(stateDir, "openclaw-model-catalog-");
+    const worker = await createPluginSourceCaptureRootAsync(stateDir, "openclaw-model-catalog-");
     const payload = path.join(committed.directory, "package", "bin", "native");
     fs.mkdirSync(path.dirname(payload), { recursive: true });
     fs.writeFileSync(payload, "retained native bytes");
@@ -202,7 +334,7 @@ it.each(["sync", "async"])("preserves custody after partial %s disposal", async 
   const instance = mode === "sync" ? retainPluginSourceCaptureInstance(stateDir) : undefined;
   const worker =
     mode === "async"
-      ? createPluginSourceCaptureRoot(stateDir, "openclaw-model-catalog-")
+      ? await createPluginSourceCaptureRootAsync(stateDir, "openclaw-model-catalog-")
       : undefined;
   await sweepPluginSourceCapturesForTest(stateDir);
   const directory = worker?.directory ?? instance!.createDirectory();
@@ -233,7 +365,7 @@ it.each(["sync", "async"])("preserves custody after partial %s disposal", async 
     if (instance) {
       expect(() => instance.release()).toThrow(locked);
     } else {
-      await worker!.release();
+      await expect(worker!.release()).rejects.toBe(locked);
     }
     expect(fs.readFileSync(payload, "utf8")).toBe("export default 1");
     const tokenless = fs
@@ -631,4 +763,57 @@ it("preserves artifact setup failure and borrowed custody when partial removal f
     }
   }
   expect(fs.existsSync(root)).toBe(false);
+});
+
+it("preserves artifact setup failure when its borrowed writer is withdrawn", async () => {
+  const stateDir = temp.make("capture-artifact-withdrawal-");
+  const source = temp.make("capture-artifact-source-");
+  const prepared = await acquirePluginSourceCaptureScope(stateDir);
+  let borrowed: ReturnType<typeof prepared.scope.retain> | undefined;
+  const scope = {
+    ...prepared.scope,
+    retain() {
+      borrowed = prepared.scope.retain();
+      return borrowed;
+    },
+  };
+  const primary = new Error("Fixture artifact permissions refused after withdrawal");
+  let created: string | undefined;
+  const chmod = fs.chmodSync.bind(fs);
+  vi.spyOn(fs, "chmodSync").mockImplementation((target, mode) => {
+    if (borrowed && typeof target === "string") {
+      created = target;
+      borrowed.release();
+      throw primary;
+    }
+    return chmod(target, mode);
+  });
+  try {
+    let failure: unknown;
+    try {
+      withPluginSourceCaptureScope(scope, () => capturePluginGenerationArtifact(source));
+    } catch (error) {
+      failure = error;
+    }
+    if (!(failure instanceof AggregateError)) {
+      throw new Error("Expected setup and withdrawn-writer cleanup failures", { cause: failure });
+    }
+    expect(failure.cause).toBe(primary);
+    expect(failure.errors.length).toBe(2);
+    expect(failure.errors[0]).toBe(primary);
+    const cleanupFailure: unknown = failure.errors[1];
+    if (!(cleanupFailure instanceof Error)) {
+      throw new Error("Expected the original writer withdrawal refusal");
+    }
+    expect(cleanupFailure.message).toBe("Plugin source instance has been released");
+    expect(created !== undefined && fs.existsSync(created)).toBe(true);
+  } finally {
+    vi.restoreAllMocks();
+    try {
+      await borrowed?.releaseAsync();
+    } finally {
+      await prepared.release();
+    }
+  }
+  expect(created !== undefined && fs.existsSync(created)).toBe(false);
 });

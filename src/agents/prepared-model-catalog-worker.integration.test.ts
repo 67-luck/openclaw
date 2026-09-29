@@ -42,9 +42,11 @@ import {
 } from "./prepared-model-catalog-worker.test-support.js";
 import { materializePreparedModelCatalogOwner } from "./prepared-model-catalog.js";
 import {
+  copyPreparedModelRuntimeBindings,
   getPreparedModelFullCatalogAuth,
   getPreparedModelRuntimeAuthStore,
   loadPreparedModelRuntimeAuth,
+  readPreparedModelRuntimeCliBackendModels,
 } from "./prepared-model-runtime-auth.js";
 import { startSerializedSnapshotBuildBatch } from "./prepared-model-runtime.build.js";
 import type { PreparedModelRuntimeAgentFacts } from "./prepared-model-runtime.catalog-contract.js";
@@ -535,6 +537,7 @@ describe("prepared model catalog worker boundary", () => {
       config,
       modelCatalog: { entries: [route], routeVariants: [route] },
     });
+    copyPreparedModelRuntimeBindings(fixture.snapshot, owner);
     const project = async (refresh = true) => {
       const fullCatalog = refresh
         ? await loadCompletedFullCatalog(fixture.snapshot, { refresh: true })
@@ -544,13 +547,15 @@ describe("prepared model catalog worker boundary", () => {
       if (!authStore) {
         throw new Error("full catalog omitted prepared auth");
       }
+      const projectedOwner = {
+        ...owner,
+        authModes: materialized.authModes,
+        authStore,
+      };
+      copyPreparedModelRuntimeBindings(materialized, projectedOwner);
       return await loadPreparedGatewayModelCatalogSnapshot({
         getConfig: () => config,
-        loadPublishedPreparedModelCatalogOwnerSnapshot: async () => ({
-          ...owner,
-          authModes: materialized.authModes,
-          authStore,
-        }),
+        loadPublishedPreparedModelCatalogOwnerSnapshot: async () => projectedOwner,
       });
     };
     const projectModels = async (refresh = true) => {
@@ -968,6 +973,10 @@ describe("prepared model catalog worker boundary", () => {
 
   it("preserves ref-only api-key and token profiles through the real worker", async () => {
     const fixture = await createStaticSnapshot(0);
+    const cliBackendModels = readPreparedModelRuntimeCliBackendModels(fixture.snapshot);
+    if (cliBackendModels === undefined) {
+      throw new Error("Expected CLI identities bound to the prepared snapshot");
+    }
     const authStore = {
       version: 1,
       profiles: {
@@ -1003,6 +1012,7 @@ describe("prepared model catalog worker boundary", () => {
         templateAuthStorage: AuthStorage.inMemory({}),
       } satisfies PreparedModelRuntimeAgentFacts,
       pluginMetadataSnapshot: fixture.pluginMetadataSnapshot,
+      cliBackendModels,
       isCurrent: fixture.isCurrent,
       retirementSignal: fixture.retirementSignal,
     });

@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import type {
-  ErrorShape,
   QuestionResolveParams,
   SessionsPatchResult,
 } from "../../packages/gateway-protocol/src/index.js";
@@ -15,8 +14,8 @@ import {
   type AgentRunTerminalOutcome,
 } from "../agents/agent-run-terminal-outcome.js";
 import {
+  listAgentIds,
   resolveAgentDir,
-  resolveAgentWorkspaceDir,
   resolveDefaultAgentId,
   resolveSessionAgentId,
 } from "../agents/agent-scope.js";
@@ -30,12 +29,13 @@ import { QuestionAnswerUnconfirmedError } from "../agents/harness/gateway-questi
 import { resolveThinkingDefault } from "../agents/model-selection.js";
 import { resolvePublishedModelCatalogOwner } from "../agents/prepared-model-catalog-owner.js";
 import {
-  readPreparedModelCatalog,
   loadPreparedModelCatalogSnapshot,
   withPreparedModelCatalogOwner,
 } from "../agents/prepared-model-catalog.js";
-import { getPreparedModelRuntimeAuthMaterializations } from "../agents/prepared-model-runtime-auth.js";
-import { loadAgentRuntimePluginRegistryHandle } from "../agents/runtime-plugins.js";
+import {
+  getPreparedModelRuntimeAuthMaterializations,
+  readPreparedModelRuntimeCliBackendModels,
+} from "../agents/prepared-model-runtime-auth.js";
 import {
   getSubagentSessionListReadSnapshotIdentity,
   prepareOptionalSubagentSessionListReadCache,
@@ -53,9 +53,6 @@ import {
 import type { QueueSettings } from "../auto-reply/reply/queue/types.js";
 import { createDefaultDeps } from "../cli/deps.js";
 import { getRuntimeConfig, registerConfigWriteListener } from "../config/config.js";
-import type { SessionEntry } from "../config/sessions.js";
-import { applySessionPatchProjection } from "../config/sessions/session-accessor.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   mergeAssistantText,
   resolveAssistantTextInput,
@@ -80,6 +77,7 @@ import {
   replaceOversizedChatHistoryMessages,
 } from "../gateway/server-methods/chat.js";
 import { buildModelsListResult } from "../gateway/server-methods/models-list-result.js";
+import { createPreparedGatewayModelCatalog } from "../gateway/server-model-catalog-view.js";
 import { createGatewaySession } from "../gateway/session-create-service.js";
 import { performGatewaySessionReset } from "../gateway/session-reset-service.js";
 import {
@@ -87,7 +85,7 @@ import {
   type SessionRowProjection,
 } from "../gateway/session-row-projection.js";
 import { capArrayByJsonBytes } from "../gateway/session-transcript-readers.js";
-import { projectSessionPatchResult } from "../gateway/session-utils-model.js";
+import { resolveSessionDefaultsAgentId } from "../gateway/session-utils-model.js";
 import { buildGatewaySessionRow } from "../gateway/session-utils-row.js";
 import { createGatewaySessionEntryReader } from "../gateway/session-utils-store-lookup.js";
 import {
@@ -95,11 +93,8 @@ import {
   listAgentsForGateway,
   loadSessionEntry,
   loadGatewaySessionEntryReadOnly,
-  resolveCanonicalGatewaySessionStoreKey,
-  resolveGatewaySessionStoreTargetWithStore,
   resolveSessionModelRef,
 } from "../gateway/session-utils.js";
-import { projectSessionsPatchEntry } from "../gateway/sessions-patch.js";
 import { waitForAbortSignal } from "../infra/abort-signal.js";
 import { type AgentEventPayload, onAgentEvent } from "../infra/agent-events.js";
 import { setEmbeddedMode } from "../infra/embedded-mode.js";
@@ -139,8 +134,10 @@ import {
   type QueuedSessionRun,
 } from "./embedded-local-run.js";
 import { EmbeddedPreparedModelRuntimeHost } from "./embedded-prepared-runtime.js";
+import { patchEmbeddedSession } from "./embedded-session-patch.js";
 import {
   createEmbeddedSessionReader,
+  ensureEmbeddedHistoryRuntimePluginsLoaded,
   readEmbeddedHistorySessionInfo,
 } from "./embedded-session-reader.js";
 import type {
@@ -175,22 +172,6 @@ const embeddedSessionStartupMigrationLog = {
   info: (message: string) => logInfo(message, silentRuntime),
   warn: (message: string) => logWarn(message, silentRuntime),
 };
-
-function ensureEmbeddedHistoryRuntimePluginsLoaded(params: {
-  cfg: OpenClawConfig;
-  sessionAgentId: string;
-}): { status: "warmed" } | { status: "failed"; error: string } {
-  try {
-    const workspaceDir = resolveAgentWorkspaceDir(params.cfg, params.sessionAgentId);
-    loadAgentRuntimePluginRegistryHandle({
-      config: params.cfg,
-      workspaceDir,
-    });
-    return { status: "warmed" };
-  } catch (err) {
-    return { status: "failed", error: formatTuiErrorMessage(err) };
-  }
-}
 
 export class EmbeddedTuiBackend implements TuiBackend {
   readonly connection = { url: "local embedded" };
@@ -260,7 +241,25 @@ export class EmbeddedTuiBackend implements TuiBackend {
         env: process.env,
         log: embeddedSessionStartupMigrationLog,
       });
-      return createSessionRowProjection({ cfg: getRuntimeConfig(), getConfig: getRuntimeConfig });
+      return createSessionRowProjection({
+        cfg: getRuntimeConfig(),
+        getConfig: getRuntimeConfig,
+        getModelCatalog: async () => {
+          const cfg = getRuntimeConfig();
+          const agentIds = listAgentIds(cfg);
+          const { readPreparedGatewayModelCatalogBatch } =
+            await import("../gateway/server-model-catalog.js");
+          const catalogs = await readPreparedGatewayModelCatalogBatch(agentIds, {
+            getConfig: () => cfg,
+          });
+          return new Map(
+            agentIds.map((agentId, index) => {
+              const catalog = catalogs[index];
+              return [agentId, catalog?.status === "fulfilled" ? catalog.value : undefined];
+            }),
+          );
+        },
+      });
     })();
     this.ready = this.sessionProjection.then(() => {});
     this.unbindSessionProjection = bindEmbeddedSessionRowProjection(this.sessionProjection);
@@ -555,67 +554,103 @@ export class EmbeddedTuiBackend implements TuiBackend {
         }
       : undefined;
 
-    let thinkingLevel = entry?.thinkingLevel;
-    if (!thinkingLevel) {
-      const catalog = await readPreparedModelCatalog({
-        config: cfg,
-        agentId: sessionAgentId,
-        readOnly: true,
-      });
-      thinkingLevel = resolveThinkingDefault({
-        cfg,
-        agentId: sessionAgentId,
-        provider: resolvedSessionModel.provider,
-        model: resolvedSessionModel.model,
-        catalog,
-      });
-    }
-
-    const defaults = getSessionDefaults(cfg, undefined, { allowPluginNormalization: false });
-    const projection = await this.sessionProjection;
-    const target = {
-      key: canonicalKey,
-      agentId: sessionAgentId,
-      storePath: readSource?.path ?? storePath,
-    };
-    const sessionInfo =
-      entry && (entry.incognito || isIncognitoSessionKey(canonicalKey))
-        ? buildGatewaySessionRow({
+    return await withPreparedModelCatalogOwner(
+      { config: cfg, agentId: sessionAgentId, readOnly: true },
+      async (snapshot) => {
+        const readCurrentCliBackendModels = (defaultSnapshot = snapshot) => {
+          if (!snapshot.isCurrent() || !defaultSnapshot.isCurrent()) {
+            throw new Error("Embedded history model catalog changed; retry the request");
+          }
+          const models = readPreparedModelRuntimeCliBackendModels(defaultSnapshot);
+          if (models === undefined) {
+            throw new Error("Embedded history model catalog has no prepared CLI model facts");
+          }
+          return models;
+        };
+        const cliBackendModels = readCurrentCliBackendModels();
+        const sessionCatalog = createPreparedGatewayModelCatalog({
+          ...snapshot.modelCatalog,
+          pluginRegistry: snapshot.pluginRegistry,
+          metadataSnapshot: snapshot.metadataSnapshot,
+          cliBackendModels,
+        });
+        let thinkingLevel = entry?.thinkingLevel;
+        if (!thinkingLevel) {
+          thinkingLevel = resolveThinkingDefault({
             cfg,
-            storePath,
-            store,
-            key: canonicalKey,
-            entry,
             agentId: sessionAgentId,
-            modelSource: { entry, readSourceEntry: createGatewaySessionEntryReader(selected) },
-            lightweightListRow: true,
-            skipTranscriptUsageFallback: true,
-          })
-        : entry && projection
-          ? await readEmbeddedHistorySessionInfo(projection, target, {
-              sessionId,
-              lifecycleRevision: entry.lifecycleRevision,
-            })
-          : undefined;
-    const verboseLevel = entry?.verboseLevel ?? cfg.agents?.defaults?.verboseDefault;
-    if (sessionInfo) {
-      sessionInfo.thinkingLevel = thinkingLevel;
-      sessionInfo.verboseLevel = verboseLevel;
-    }
+            provider: resolvedSessionModel.provider,
+            model: resolvedSessionModel.model,
+            catalog: snapshot.modelCatalog.entries,
+          });
+        }
+        const finish = async (defaultSnapshot: typeof snapshot) => {
+          const defaultCliBackendModels = readCurrentCliBackendModels(defaultSnapshot);
+          const defaults = getSessionDefaults(cfg, undefined, {
+            allowPluginNormalization: false,
+            metadataSnapshot: defaultSnapshot.metadataSnapshot,
+            preparedCliBackendModels: defaultCliBackendModels,
+          });
+          const projection = await this.sessionProjection;
+          readCurrentCliBackendModels(defaultSnapshot);
+          const target = {
+            key: canonicalKey,
+            agentId: sessionAgentId,
+            storePath: readSource?.path ?? storePath,
+          };
+          const sessionInfo =
+            entry && (entry.incognito || isIncognitoSessionKey(canonicalKey))
+              ? buildGatewaySessionRow({
+                  cfg,
+                  storePath,
+                  store,
+                  key: canonicalKey,
+                  entry,
+                  agentId: sessionAgentId,
+                  modelSource: {
+                    entry,
+                    readSourceEntry: createGatewaySessionEntryReader(selected),
+                  },
+                  modelCatalog: new Map([[sessionAgentId, sessionCatalog]]),
+                  lightweightListRow: true,
+                  skipTranscriptUsageFallback: true,
+                })
+              : entry && projection
+                ? await readEmbeddedHistorySessionInfo(projection, target, {
+                    sessionId,
+                    lifecycleRevision: entry.lifecycleRevision,
+                  })
+                : undefined;
+          readCurrentCliBackendModels(defaultSnapshot);
+          const verboseLevel = entry?.verboseLevel ?? cfg.agents?.defaults?.verboseDefault;
+          if (sessionInfo) {
+            sessionInfo.thinkingLevel = thinkingLevel;
+            sessionInfo.verboseLevel = verboseLevel;
+          }
 
-    return {
-      sessionKey: opts.sessionKey,
-      sessionId,
-      messages,
-      defaults,
-      activity: messages.flatMap((message) => activity.get(message) ?? []),
-      ...(sessionInfo ? { sessionInfo } : {}),
-      thinkingLevel,
-      fastMode: entry?.fastMode,
-      verboseLevel,
-      runtimePluginsPrewarm,
-      ...(inFlightRun ? { inFlightRun } : {}),
-    };
+          return {
+            sessionKey: opts.sessionKey,
+            sessionId,
+            messages,
+            defaults,
+            activity: messages.flatMap((message) => activity.get(message) ?? []),
+            ...(sessionInfo ? { sessionInfo } : {}),
+            thinkingLevel,
+            fastMode: entry?.fastMode,
+            verboseLevel,
+            runtimePluginsPrewarm,
+            ...(inFlightRun ? { inFlightRun } : {}),
+          };
+        };
+        const defaultsAgentId = resolveSessionDefaultsAgentId(cfg);
+        return defaultsAgentId === sessionAgentId
+          ? await finish(snapshot)
+          : await withPreparedModelCatalogOwner(
+              { config: cfg, agentId: defaultsAgentId, readOnly: true },
+              finish,
+            );
+      },
+    );
   }
 
   listSessions = this.sessionReader.listSessions;
@@ -625,58 +660,11 @@ export class EmbeddedTuiBackend implements TuiBackend {
     return await listAgentsForGateway(getRuntimeConfig());
   }
 
-  async patchSession(
-    opts: Parameters<TuiBackend["patchSession"]>[0],
-  ): Promise<SessionsPatchResult> {
-    await this.ready;
-    await this.preparedModelRuntime.waitUntilReady();
-    const cfg = getRuntimeConfig();
-    const target = resolveGatewaySessionStoreTargetWithStore({
-      cfg,
-      key: opts.key,
-      agentId: opts.agentId,
-      exactRead: true,
+  patchSession(opts: Parameters<TuiBackend["patchSession"]>[0]): Promise<SessionsPatchResult> {
+    return patchEmbeddedSession(opts, {
+      ready: this.ready,
+      waitForModelRuntime: () => this.preparedModelRuntime.waitUntilReady(),
     });
-    const applied = await applySessionPatchProjection<{ ok: false; error: ErrorShape }>({
-      ...(opts.label === undefined ? { sessionKeys: target.storeKeys } : {}),
-      storePath: target.storePath,
-      resolveTarget: ({ store }) => {
-        const { target: migratedTarget, primaryKey } = resolveCanonicalGatewaySessionStoreKey({
-          cfg,
-          key: opts.key,
-          store: store as Record<string, SessionEntry>,
-          agentId: opts.agentId,
-        });
-        return { primaryKey, candidateKeys: migratedTarget.storeKeys };
-      },
-      project: async ({ primaryKey, existingEntry, isLabelInUse }) =>
-        await projectSessionsPatchEntry({
-          cfg,
-          existingEntry,
-          isLabelInUse,
-          storeKey: primaryKey,
-          agentId: target.agentId,
-          patch: opts,
-          loadGatewayModelCatalogSnapshot: () =>
-            loadPreparedModelCatalogSnapshot({
-              config: cfg,
-              agentId: target.agentId,
-              readOnly: true,
-            }),
-        }),
-    });
-    if (!applied.ok) {
-      throw new Error(applied.error.message);
-    }
-
-    const projected = projectSessionPatchResult({
-      canonicalKey: target.canonicalKey ?? opts.key,
-      cfg,
-      entry: applied.entry,
-      storePath: target.storePath,
-      targetAgentId: target.agentId,
-    });
-    return { ...projected, entry: { ...projected.entry } };
   }
 
   async resetSession(key: string, reason?: "new" | "reset", opts?: { agentId?: string }) {

@@ -5,6 +5,10 @@ import * as extraParamsRuntime from "../../agents/embedded-agent-runner/extra-pa
 import * as diagnosticModelCallRuntime from "../../agents/embedded-agent-runner/run/attempt.model-diagnostic-events.js";
 import * as streamResolutionRuntime from "../../agents/embedded-agent-runner/stream-resolution.js";
 import * as modelSelectionRuntime from "../../agents/model-selection.js";
+import {
+  bindPreparedModelRuntimeCliBackendModels,
+  copyPreparedModelRuntimeBindings,
+} from "../../agents/prepared-model-runtime-auth.js";
 import * as preparedRuntime from "../../agents/prepared-model-runtime.js";
 import * as providerStreamRuntime from "../../agents/provider-stream.js";
 import type { BoundAgentRunSessionTarget } from "../../agents/run-session-target.types.js";
@@ -230,6 +234,12 @@ export function setup(
     inlineProviderModels: [],
     createStores: () => ({ authStorage: {} as never, modelRegistry: {} as never }),
   } satisfies preparedRuntime.PreparedModelRuntimeSnapshot;
+  const cliBackendModels =
+    options.pluginRegistry?.cliBackends.map(({ backend }) => ({
+      id: backend.id,
+      modelProvider: backend.modelProvider,
+    })) ?? [];
+  bindPreparedModelRuntimeCliBackendModels(preparedModelRuntime, cliBackendModels);
   let leasedPreparedModelRuntime: preparedRuntime.PreparedModelRuntimeSnapshot | undefined;
   const prepareModel = vi.fn<Deps["prepareModel"]>(async (modelParams) => {
     if (options.catalogOnlyModel && !modelParams.allowBundledStaticCatalogFallback) {
@@ -289,6 +299,7 @@ export function setup(
   const acquireRuntimeLease = vi.fn<Deps["acquireRuntimeLease"]>(async (runtimeParams) => {
     scope.agentDir = runtimeParams.agentDir;
     const leased = { ...preparedModelRuntime, agentDir: runtimeParams.agentDir };
+    copyPreparedModelRuntimeBindings(preparedModelRuntime, leased);
     leasedPreparedModelRuntime = leased;
     return {
       snapshot: leased,
@@ -296,6 +307,7 @@ export function setup(
         configuredCatalogEntries: [],
         inlineProviderModels: [],
         pluginMetadataSnapshot: leased.metadataSnapshot,
+        cliBackendModels,
         pluginRegistry: leased.pluginRegistry,
       },
       [Symbol.asyncDispose]: releaseRuntime,

@@ -10,7 +10,7 @@ import { createSessionRowProjectionCatalog } from "./session-row-projection-cata
 it("retains completed catalog facts during runtime replacement and adopts completed or failed publications", async () => {
   const pluginRegistry = createEmptyPluginRegistry();
   const metadataSnapshot = createPluginMetadataSnapshotFixture();
-  const view = (contextTokens: number) =>
+  const view = (contextTokens: number, modelProvider = "unit-test") =>
     new Map([
       [
         "main",
@@ -18,6 +18,7 @@ it("retains completed catalog facts during runtime replacement and adopts comple
           entries: [{ provider: "unit-test", id: "model", name: "Model", contextTokens }],
           pluginRegistry,
           metadataSnapshot,
+          cliBackendModels: [{ id: "fixture-cli", modelProvider }],
         }),
       ],
     ]);
@@ -65,6 +66,18 @@ it("retains completed catalog facts during runtime replacement and adopts comple
     next = view(16_384);
     await catalog.refresh();
     expect(refreshed).toHaveBeenLastCalledWith(true);
+    expect(catalog.current).toBe(next);
+
+    notifyPreparedModelRuntimePublication({ phase: "catalog-published" });
+    next = view(16_384, "replacement-provider");
+    await catalog.refresh();
+    expect(refreshed).toHaveBeenLastCalledWith(true);
+    expect(catalog.current).toBe(next);
+
+    notifyPreparedModelRuntimePublication({ phase: "catalog-published" });
+    next = view(16_384, "replacement-provider");
+    await catalog.refresh();
+    expect(refreshed).toHaveBeenLastCalledWith(false);
     expect(catalog.current).toBe(next);
 
     const failed = createDeferredCore();

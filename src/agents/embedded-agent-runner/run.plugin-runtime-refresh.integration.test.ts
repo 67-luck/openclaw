@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildReplyPayloads } from "../../auto-reply/reply/agent-runner-payloads.js";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -103,6 +104,8 @@ describe("plugin runtime refresh admission", () => {
   );
 
   it("reacquires generations while preserving run authority, committed work, and one terminal", async () => {
+    const { copyPreparedModelRuntimeBindings, readPreparedModelRuntimeCliBackendModels } =
+      await import("../prepared-model-runtime-auth.js");
     const { getPluginRuntimeGatewayRequestScope, withPluginRuntimeGatewayRequestScope } =
       await import("../../plugins/runtime/gateway-request-scope.js");
     const { getPluginRuntimeGenerationRegistry, withPluginRuntimeGenerationScope } =
@@ -126,23 +129,31 @@ describe("plugin runtime refresh admission", () => {
     });
     // Distinct registries prove that an old ambient owner cannot supply the next generation.
     // oxlint-disable-next-line no-map-spread -- Every generation needs an independent registry, not mutations of its predecessor.
-    const snapshots = ["first", "next", "final"].map((policyHash) => ({
-      ...base.snapshot,
-      metadataSnapshot: {
-        ...base.snapshot.metadataSnapshot,
-        policyHash,
-        workspaceDir: state.workspaceDir,
-      },
-      pluginRegistry: {
-        ...base.snapshot.pluginRegistry!,
-        tools: [...(base.snapshot.pluginRegistry?.tools ?? [])],
-      },
-    }));
+    const snapshots = ["first", "next", "final"].map((policyHash) => {
+      const snapshot = {
+        ...base.snapshot,
+        metadataSnapshot: {
+          ...base.snapshot.metadataSnapshot,
+          policyHash,
+          workspaceDir: state.workspaceDir,
+        },
+        pluginRegistry: {
+          ...base.snapshot.pluginRegistry!,
+          tools: [...(base.snapshot.pluginRegistry?.tools ?? [])],
+        },
+      };
+      copyPreparedModelRuntimeBindings(base.snapshot, snapshot);
+      return snapshot;
+    });
     const first = snapshots[0]!;
     const generation: PreparedModelRuntimePluginGeneration = {
       configuredCatalogEntries: [],
       inlineProviderModels: [],
       pluginMetadataSnapshot: first.metadataSnapshot,
+      cliBackendModels: expectDefined(
+        readPreparedModelRuntimeCliBackendModels(first),
+        "captured CLI backend models",
+      ),
       pluginRegistry: first.pluginRegistry,
     };
     const releases = snapshots.map(() => vi.fn(async () => {}));

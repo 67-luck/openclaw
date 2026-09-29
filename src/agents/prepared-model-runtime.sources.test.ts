@@ -68,6 +68,7 @@ function fixture(mode: "merge" | "replace" = "merge") {
   };
   const generation = {
     pluginMetadataSnapshot: metadata,
+    cliBackendModels: [],
     inlineProviderModels: [],
     configuredCatalogEntries: [],
     providerStaticModels: [],

@@ -7,6 +7,11 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import * as preparedModelCatalog from "../agents/prepared-model-catalog.js";
 import type { PublishedModelCatalogOwnerCandidate } from "../agents/prepared-model-catalog.types.js";
+import {
+  bindPreparedModelRuntimeAuth,
+  bindPreparedModelRuntimeCliBackendModels,
+  copyPreparedModelRuntimeBindings,
+} from "../agents/prepared-model-runtime-auth.js";
 import { withGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
 import {
   callInProcessGatewayTool,
@@ -40,8 +45,14 @@ type PublishedOwnerSnapshot = Awaited<
   ReturnType<typeof preparedModelCatalog.loadPublishedPreparedModelCatalogOwnerSnapshot>
 >;
 
-const asPublishedOwner = (value: PublishedModelCatalogOwnerCandidate): PublishedOwnerSnapshot =>
-  value as unknown as PublishedOwnerSnapshot;
+const asPublishedOwner = (value: PublishedModelCatalogOwnerCandidate): PublishedOwnerSnapshot => {
+  const { authStore, ...owner } = value;
+  bindPreparedModelRuntimeCliBackendModels(owner, []);
+  if (authStore) {
+    bindPreparedModelRuntimeAuth(owner, { store: authStore });
+  }
+  return owner as unknown as PublishedOwnerSnapshot;
+};
 
 describe("local gateway request context", () => {
   it("keeps local RPC available without claiming Gateway routing or readiness", async () => {
@@ -219,7 +230,7 @@ describe("local gateway request context", () => {
       name: "Local auth model",
       api: "openai-completions" as const,
     };
-    const candidate = {
+    const candidate = asPublishedOwner({
       catalogOwner: { agentId: "main", workspaceDir: "/tmp/local-model-auth-workspace" },
       agentId: "main",
       agentDir: "/tmp/local-model-auth-agent",
@@ -231,7 +242,7 @@ describe("local gateway request context", () => {
       authStore: { version: 1 as const, profiles: {} },
       metadataSnapshot: createPluginMetadataSnapshotFixture(),
       modelCatalog: { entries: [model], routeVariants: [model] },
-    } satisfies PublishedModelCatalogOwnerCandidate;
+    } satisfies PublishedModelCatalogOwnerCandidate);
     const refreshAuth = vi
       .fn()
       .mockResolvedValueOnce({
@@ -256,12 +267,11 @@ describe("local gateway request context", () => {
       .spyOn(preparedModelCatalog, "loadPublishedPreparedModelCatalogOwnerSnapshot")
       .mockImplementation(async () => {
         const auth = await refreshAuth({ providerIds: ["local-auth-provider"] });
-        published = asPublishedOwner({
-          ...candidate,
-          authModes: auth.authModes,
-          authStore: auth.authStore,
-        });
-        return published;
+        const refreshed = { ...candidate, authModes: auth.authModes };
+        copyPreparedModelRuntimeBindings(candidate, refreshed);
+        bindPreparedModelRuntimeAuth(refreshed, { store: auth.authStore });
+        published = refreshed;
+        return refreshed;
       });
 
     const list = () =>
@@ -310,7 +320,7 @@ describe("local gateway request context", () => {
         ],
       },
     } as OpenClawConfig;
-    const candidate = {
+    const candidate = asPublishedOwner({
       catalogOwner: { agentId: "main", workspaceDir: "/tmp/local-model-timeout-workspace" },
       agentId: "main",
       agentDir: "/tmp/local-model-timeout-agent",
@@ -322,13 +332,13 @@ describe("local gateway request context", () => {
       authStore: { version: 1 as const, profiles: {} },
       metadataSnapshot: createPluginMetadataSnapshotFixture(),
       modelCatalog: { entries: [], routeVariants: [] },
-    } satisfies PublishedModelCatalogOwnerCandidate;
+    } satisfies PublishedModelCatalogOwnerCandidate);
     const loadOwner = vi
       .spyOn(preparedModelCatalog, "loadPublishedPreparedModelCatalogOwnerSnapshot")
       .mockImplementation(() => new Promise(() => {}));
     const readOwner = vi
       .spyOn(preparedModelCatalog, "getPublishedPreparedModelCatalogOwnerSnapshot")
-      .mockReturnValue(asPublishedOwner(candidate));
+      .mockReturnValue(candidate);
 
     const result = await withLocalGatewayRequestScope(
       { deps: {} as CliDeps, getRuntimeConfig: () => cfg },

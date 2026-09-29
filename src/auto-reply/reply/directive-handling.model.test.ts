@@ -5,21 +5,16 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { resolveAuthStorePathForDisplay } from "../../agents/auth-profiles/paths.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
-import { prepareModelCatalogAuthLabels } from "../../agents/model-catalog-auth-labels.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.js";
-import { bindPreparedModelRuntimeAuth } from "../../agents/prepared-model-runtime-auth.js";
+import { loadPublishedPreparedModelCatalogOwnerSnapshot } from "../../agents/prepared-model-catalog.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import type {
   ProviderDefaultThinkingPolicyContext,
   ProviderThinkingProfile,
 } from "../../plugins/provider-thinking.types.js";
 import { MODEL_SELECTION_LOCKED_MESSAGE } from "../../sessions/model-overrides.js";
-import {
-  createModelsTestOwner,
-  setFastModelsCliBackendDeps,
-} from "./commands-models.test-support.js";
+import { setFastModelsCliBackendDeps } from "./commands-models.test-support.js";
 
 const authProfilesStoreMock = vi.hoisted(() => ({
   profiles: {} as Record<
@@ -28,6 +23,12 @@ const authProfilesStoreMock = vi.hoisted(() => ({
     | { type: "oauth"; provider: string; access: string; refresh: string; expires: number }
     | { type: "token"; provider: string; token: string }
   >,
+}));
+const preparedCatalogMock = vi.hoisted(() => ({
+  getPublishedOwner:
+    vi.fn<
+      typeof import("../../agents/prepared-model-catalog.js").getPublishedPreparedModelCatalogOwnerSnapshot
+    >(),
 }));
 const stickyModelMock = vi.hoisted(() => ({
   persistBestEffort: vi.fn(),
@@ -161,51 +162,13 @@ vi.mock("../../agents/agent-scope.js", () => ({
   resolveSessionAgentId: vi.fn(() => "main"),
 }));
 
-vi.mock("../../agents/prepared-model-catalog.js", () => {
-  const entries = [
-    { provider: "anthropic", id: "claude-opus-4-6", name: "Claude Opus" },
-    { provider: "localai", id: "ultra-chat", name: "Ultra Chat" },
-  ];
-  const loadOwner = (params: {
-    config: OpenClawConfig;
-    agentId?: string;
-    agentDir?: string;
-    workspaceDir?: string;
-  }) => {
-    const owner = createModelsTestOwner(params.config, entries, params);
-    const store = readAuthProfileStoreForTest();
-    bindPreparedModelRuntimeAuth(owner, {
-      store,
-      labels: prepareModelCatalogAuthLabels({
-        config: params.config,
-        agentDir: owner.agentDir,
-        authStorePath: resolveAuthStorePathForDisplay(owner.agentDir),
-        workspaceDir: owner.workspaceDir,
-        env: {},
-        store,
-        providers: [
-          "openai",
-          "anthropic",
-          "openrouter",
-          "localai",
-          ...Object.keys(params.config.models?.providers ?? {}),
-        ],
-      }),
-    });
-    return owner;
-  };
-  return {
-    readPreparedModelCatalog: async () => entries,
-    loadProviderScopedThinkingCatalog: async () => entries,
-    getPublishedPreparedModelCatalogOwnerSnapshot: loadOwner,
-    loadPreparedModelCatalogOwnerSnapshot: () => {
-      throw new Error("Status must use the published catalog owner");
-    },
-    loadPublishedPreparedModelCatalogOwnerSnapshot: async (
-      params: Parameters<typeof loadOwner>[0],
-    ) => loadOwner(params),
-    materializePreparedModelCatalogOwner: (owner: object) => owner,
-  };
+vi.mock("../../agents/prepared-model-catalog.js", async () => {
+  const { createDirectiveModelCatalogMock } =
+    await import("./directive-handling.model-catalog.test-support.js");
+  return createDirectiveModelCatalogMock({
+    readAuthProfileStore: readAuthProfileStoreForTest,
+    getPublishedOwner: preparedCatalogMock.getPublishedOwner,
+  });
 });
 
 vi.mock("../../agents/sandbox.js", () => ({
@@ -304,6 +267,7 @@ function setOpenAiRuntimeScopedUltraProvider(): void {
 beforeEach(() => {
   vi.useRealTimers();
   setFastModelsCliBackendDeps();
+  preparedCatalogMock.getPublishedOwner.mockReset();
   setDirectiveTestProviders([]);
   pluginPolicyMock.channels.clear();
   authProfilesStoreMock.profiles = {};
@@ -547,7 +511,7 @@ function expectExecDefaults(sessionEntry: SessionEntry, persisted: boolean) {
 async function resolveModelInfoReply(
   overrides: Partial<Parameters<typeof maybeHandleModelDirectiveInfo>[0]> = {},
 ) {
-  return maybeHandleModelDirectiveInfo({
+  const params: Parameters<typeof maybeHandleModelDirectiveInfo>[0] = {
     directives: parseInlineSessionDirectives("/model"),
     cfg: baseConfig(),
     agentDir: TEST_AGENT_DIR,
@@ -562,7 +526,14 @@ async function resolveModelInfoReply(
     runtimePolicySessionKey: "agent:main:main",
     resetModelOverride: false,
     ...overrides,
+  };
+  await loadPublishedPreparedModelCatalogOwnerSnapshot({
+    config: params.cfg,
+    agentId: params.activeAgentId,
+    agentDir: params.agentDir,
+    workspaceDir: params.workspaceDir,
   });
+  return maybeHandleModelDirectiveInfo(params);
 }
 
 describe("/model chat UX", () => {
@@ -726,15 +697,19 @@ describe("/model chat UX", () => {
           });
           const sessionEntry = expectDefined(loadSessionEntry(scope), "persisted model session");
           const before = structuredClone(sessionEntry);
-          const reply = await handleDirectiveOnly(
-            createDirectiveHandlingParams({
-              directives: parseInlineSessionDirectives(command),
-              sessionEntry,
-              sessionKey,
-              storePath,
-              ctx: { RuntimePolicySessionKey: "agent:main:telegram:default:direct:fixture-user" },
-            }),
-          );
+          const params = createDirectiveHandlingParams({
+            directives: parseInlineSessionDirectives(command),
+            sessionEntry,
+            sessionKey,
+            storePath,
+            ctx: { RuntimePolicySessionKey: "agent:main:telegram:default:direct:fixture-user" },
+          });
+          await loadPublishedPreparedModelCatalogOwnerSnapshot({
+            config: params.cfg,
+            agentId: params.agentId,
+            agentDir: TEST_AGENT_DIR,
+          });
+          const reply = await handleDirectiveOnly(params);
           expect(reply?.text).toContain("Current: anthropic/claude-opus-4-6");
           expect(reply?.text).toContain("Active: anthropic/claude-haiku-4-5 (runtime)");
           expect(sessionEntry).toEqual(before);

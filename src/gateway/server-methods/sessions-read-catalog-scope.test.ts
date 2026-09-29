@@ -5,6 +5,10 @@ import type {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../../agents/agent-scope-config.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
+import {
+  bindPreparedModelRuntimeCliBackendModels,
+  copyPreparedModelRuntimeBindings,
+} from "../../agents/prepared-model-runtime-auth.js";
 import * as preparedRuntime from "../../agents/prepared-model-runtime.js";
 import { notifyPreparedModelRuntimePublication } from "../../agents/prepared-model-runtime.publication-events.js";
 import type { PreparedModelRuntimeSnapshot } from "../../agents/prepared-model-runtime.types.js";
@@ -111,7 +115,7 @@ function preparedOwner(params: {
   readFullModelCatalog?: () => ModelCatalogSnapshot | undefined;
 }): PreparedModelRuntimeSnapshot {
   const workspaceDir = resolveAgentWorkspaceDir(params.config, params.agentId);
-  return {
+  const owner: PreparedModelRuntimeSnapshot = {
     catalogOwner: { agentId: params.agentId, workspaceDir },
     agentId: params.agentId,
     agentDir: resolveAgentDir(params.config, params.agentId),
@@ -136,6 +140,8 @@ function preparedOwner(params: {
       throw new Error("session listing must not create execution stores");
     },
   };
+  bindPreparedModelRuntimeCliBackendModels(owner, []);
+  return owner;
 }
 
 function publishedCatalogContext(
@@ -357,7 +363,9 @@ describe("sessions.list catalog scoping", () => {
       ]);
 
       // An empty replacement restores the generic native ladder without disabling harness Ultra.
-      owners.set("main", { ...mainOwner, pluginRegistry: createEmptyPluginRegistry() });
+      const replacementOwner = { ...mainOwner, pluginRegistry: createEmptyPluginRegistry() };
+      copyPreparedModelRuntimeBindings(mainOwner, replacementOwner);
+      owners.set("main", replacementOwner);
       notifyPreparedModelRuntimePublication({ phase: "published" });
       const replaced = await listSessions(request);
       expect(replaced.sessions.find((row) => row.agentId === "main")?.thinkingOptions).toEqual([
@@ -401,10 +409,15 @@ describe("sessions.list catalog scoping", () => {
         { id: "main", default: true },
         { id: "work", agentDir: workAgentDir },
       ];
-      owners.set("work", {
-        ...preparedOwner({ config, agentId: "work", entries, pluginRegistry: mainRegistry }),
-        agentDir: workAgentDir,
+      const workOwner = preparedOwner({
+        config,
+        agentId: "work",
+        entries,
+        pluginRegistry: mainRegistry,
       });
+      const relocatedOwner = { ...workOwner, agentDir: workAgentDir };
+      copyPreparedModelRuntimeBindings(workOwner, relocatedOwner);
+      owners.set("work", relocatedOwner);
       setRuntimeConfigSnapshot(config);
       const changedRoster = await listSessions(request);
       expect(changedRoster.sessions.find((row) => row.agentId === "work")?.thinkingOptions).toEqual(
@@ -422,15 +435,15 @@ describe("sessions.list catalog scoping", () => {
         },
       };
       currentConfig = nextConfig;
-      owners.set("work", {
-        ...preparedOwner({
-          config: nextConfig,
-          agentId: "work",
-          entries,
-          pluginRegistry: workRegistry,
-        }),
-        agentDir: `${workAgentDir}-next`,
+      const nextOwner = preparedOwner({
+        config: nextConfig,
+        agentId: "work",
+        entries,
+        pluginRegistry: workRegistry,
       });
+      const nextRelocatedOwner = { ...nextOwner, agentDir: `${workAgentDir}-next` };
+      copyPreparedModelRuntimeBindings(nextOwner, nextRelocatedOwner);
+      owners.set("work", nextRelocatedOwner);
       setRuntimeConfigSnapshot(nextConfig);
       const changedConfig = await listSessions(request);
       expect(changedConfig.sessions.find((row) => row.agentId === "work")?.thinkingOptions).toEqual(

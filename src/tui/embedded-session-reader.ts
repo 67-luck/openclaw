@@ -1,10 +1,30 @@
+import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
+import { loadAgentRuntimePluginRegistryHandle } from "../agents/runtime-plugins.js";
 import type { SessionEntry } from "../config/sessions/types.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withReadySessionRows } from "../gateway/session-row-prepared-read.js";
 import type * as records from "../gateway/session-row-projection-record.js";
 import type { SessionRowProjection } from "../gateway/session-row-projection.js";
 import { listProjectedSessions } from "../gateway/session-utils-list.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import type { TuiBackend } from "./tui-backend.js";
+import { formatTuiErrorMessage } from "./tui-formatters.js";
+
+export function ensureEmbeddedHistoryRuntimePluginsLoaded(params: {
+  cfg: OpenClawConfig;
+  sessionAgentId: string;
+}): { status: "warmed" } | { status: "failed"; error: string } {
+  try {
+    const workspaceDir = resolveAgentWorkspaceDir(params.cfg, params.sessionAgentId);
+    loadAgentRuntimePluginRegistryHandle({
+      config: params.cfg,
+      workspaceDir,
+    });
+    return { status: "warmed" };
+  } catch (err) {
+    return { status: "failed", error: formatTuiErrorMessage(err) };
+  }
+}
 
 export function readEmbeddedHistorySessionInfo(
   projection: SessionRowProjection,

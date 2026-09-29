@@ -2,7 +2,10 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { buildInlineProviderModels } from "./embedded-agent-runner/model.inline-provider.js";
 import { createPreparedConfiguredRuntimeModelLookup } from "./embedded-agent-runner/model.static-id.js";
-import { bindPreparedModelRuntimeAuth } from "./prepared-model-runtime-auth.js";
+import {
+  bindPreparedModelRuntimeAuth,
+  bindPreparedModelRuntimeCliBackendModels,
+} from "./prepared-model-runtime-auth.js";
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.types.js";
 import { AuthStorage, ModelRegistry } from "./sessions/index.js";
 
@@ -55,6 +58,13 @@ export function createModelRuntimeChoiceOwnerFixture(
     },
     ...facts,
   };
+  bindPreparedModelRuntimeCliBackendModels(
+    owner,
+    facts.pluginRegistry?.cliBackends.map(({ backend }) => ({
+      id: backend.id,
+      modelProvider: backend.modelProvider,
+    })) ?? [],
+  );
   bindPreparedModelRuntimeAuth(owner, {
     store: {
       version: 1,

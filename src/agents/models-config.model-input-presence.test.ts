@@ -297,6 +297,7 @@ describe("models config input presence", () => {
             templateAuthStorage: {} as never,
           },
           pluginMetadataSnapshot,
+          cliBackendModels: [],
         }),
       );
       // Workers retain the captured pair after losing the parent's process-local snapshot.

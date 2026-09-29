@@ -1423,7 +1423,7 @@ src/agents/embedded-agent-runner/prompt-cache-observability.ts	2
 src/agents/embedded-agent-runner/replay-history.ts	23
 src/agents/embedded-agent-runner/result-fallback-classifier.ts	2
 src/agents/embedded-agent-runner/run-entry.ts	2
-src/agents/embedded-agent-runner/run.overflow-compaction.harness.ts	4
+src/agents/embedded-agent-runner/run.overflow-compaction.harness.ts	3
 src/agents/embedded-agent-runner/run/attempt-before-agent-run.ts	2
 src/agents/embedded-agent-runner/run/attempt-client-tools.ts	2
 src/agents/embedded-agent-runner/run/attempt-context-summary.ts	2
@@ -2791,7 +2791,7 @@ src/plugins/runtime/runtime-llm-isolated.ts	2
 src/plugins/runtime/runtime-llm.runtime.ts	1
 src/plugins/schema-validator.ts	6
 src/plugins/session-catalog-history-import.ts	1
-src/plugins/setup-registry.ts	11
+src/plugins/setup-registry.ts	3
 src/plugins/slots.ts	1
 src/plugins/toggle-config.ts	3
 src/plugins/tools.ts	1
@@ -2953,7 +2953,7 @@ src/tts/tts-settings.ts	3
 src/tts/tts-telephony.ts	1
 src/tts/voice-models.ts	3
 src/tui/components/chat-log.ts	2
-src/tui/embedded-backend.ts	2
+src/tui/embedded-backend.ts	1
 src/tui/gateway-chat.ts	2
 src/tui/tui-autocomplete.ts	1
 src/tui/tui-command-handlers.ts	5

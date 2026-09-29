@@ -84,6 +84,7 @@ function fixture(
     },
     {
       pluginMetadataSnapshot: metadataSnapshot,
+      cliBackendModels: [],
       inlineProviderModels: [],
       configuredCatalogEntries: [],
     },

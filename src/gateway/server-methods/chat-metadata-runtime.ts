@@ -1,6 +1,7 @@
 import { getPreparedRuntimeAuthProfileStoreSnapshot } from "../../agents/auth-profiles.js";
 import { getRuntimeAuthProfileStoreMetadataRevision } from "../../agents/auth-profiles/runtime-snapshots.js";
 import { getPublishedPreparedModelCatalogOwnerSnapshot } from "../../agents/prepared-model-catalog.js";
+import { readPreparedModelRuntimeCliBackendModels } from "../../agents/prepared-model-runtime-auth.js";
 import { PreparedModelRuntimePublicationSupersededError } from "../../agents/prepared-model-runtime.errors.js";
 import { resolveSwarmConfig } from "../../agents/subagents/swarm/swarm-config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -34,6 +35,7 @@ import {
   resolveSessionCatalogProfiles,
   projectChatSessionMetadata,
 } from "./chat-metadata-session-projection.js";
+import { bindChatStartupModelFacts } from "./chat-startup-model-facts.js";
 import type {
   ChatStartupProjectionReadParams,
   ChatStartupProjectionResult,
@@ -491,6 +493,20 @@ export function createGatewayChatMetadataRuntime(params: {
     }
   };
 
+  const isReadyGeneration = (generation: PreparedMetadataGeneration) => {
+    if (stoppedError || replacement || pending || !isCurrentGeneration(generation)) {
+      return false;
+    }
+    if (params.refreshOnRead) {
+      try {
+        return generationFactsMatch(generation.facts, captureGenerationFacts(deps));
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  };
+
   const read = async (readParams: ChatMetadataReadParams): Promise<ChatMetadataResult> => {
     assertAgentDatabaseAdmitted(readParams.agentId);
     const draft = readParams.draftAccountSelection;
@@ -553,25 +569,41 @@ export function createGatewayChatMetadataRuntime(params: {
     );
     const hasSessionContext = hasSessionCatalogContext(profiles);
     const assemble = (
+      generation: PreparedMetadataGeneration,
       neutral: PreparedChatMetadataProjection,
       session: PreparedChatMetadataProjection,
-    ): ChatStartupProjectionResult => ({
-      // History consumes stable catalogs only; live readiness stays inside the current-read fence.
-      ...(readParams.readPolicy === "ready"
-        ? {}
-        : {
-            metadata: readPreparedChatMetadata(
-              session,
-              {
-                ...readParams,
-                requesterProfileId: readParams.readRequesterProfileId?.(),
-              },
-              deps.getConfig(),
-            ),
-          }),
-      sessionModelCatalog: session.modelCatalog,
-      defaultModelCatalog: neutral.modelCatalog,
-    });
+    ): ChatStartupProjectionResult => {
+      const cliBackendModels = readPreparedModelRuntimeCliBackendModels(neutral.agent.owner);
+      const modelFacts =
+        cliBackendModels &&
+        Object.freeze({
+          metadataSnapshot: neutral.agent.owner.metadataSnapshot,
+          cliBackendModels,
+        });
+      return bindChatStartupModelFacts(
+        {
+          // History consumes stable catalogs only; live readiness stays inside the current-read fence.
+          ...(readParams.readPolicy === "ready"
+            ? {}
+            : {
+                metadata: readPreparedChatMetadata(
+                  session,
+                  {
+                    ...readParams,
+                    requesterProfileId: readParams.readRequesterProfileId?.(),
+                  },
+                  deps.getConfig(),
+                ),
+              }),
+          sessionModelCatalog: session.modelCatalog,
+          defaultModelCatalog: neutral.modelCatalog,
+        },
+        () =>
+          isReadyGeneration(generation) && neutral.isCurrent() && session.isCurrent()
+            ? modelFacts
+            : undefined,
+      );
+    };
     const projectStartup = async (
       generation: PreparedMetadataGeneration,
     ): Promise<PreparedProjection<ChatStartupProjectionResult>> => {
@@ -593,7 +625,7 @@ export function createGatewayChatMetadataRuntime(params: {
         : readNeutral;
       return {
         isCurrent: () => readNeutral.isCurrent() && readSession.isCurrent(),
-        read: () => assemble(readNeutral, readSession),
+        read: () => assemble(generation, readNeutral, readSession),
       };
     };
     if (readParams.readPolicy !== "ready" && hasSessionContext) {
@@ -605,17 +637,8 @@ export function createGatewayChatMetadataRuntime(params: {
     const generation = current;
     // Optional reads consume only settled exact-profile facts. Never start preparation
     // or wait for a lifecycle replacement just to decorate an available transcript.
-    if (!generation || replacement || pending || !isCurrentGeneration(generation)) {
+    if (!generation || !isReadyGeneration(generation)) {
       return undefined;
-    }
-    if (params.refreshOnRead) {
-      try {
-        if (!generationFactsMatch(generation.facts, captureGenerationFacts(deps))) {
-          return undefined;
-        }
-      } catch {
-        return undefined;
-      }
     }
     const agentId = normalizeAgentId(readParams.agentId);
     const neutral = generation.neutralProjectionByAgentId.get(agentId);
@@ -630,7 +653,7 @@ export function createGatewayChatMetadataRuntime(params: {
     ) {
       return undefined;
     }
-    return assemble(neutral.projection, session.projection);
+    return assemble(generation, neutral.projection, session.projection);
   };
 
   const invalidate = (retainNotifiedFacts = false) => {

@@ -127,6 +127,7 @@ module.exports = {
         createPreparedModelCatalogWorker({
           agentFacts,
           pluginMetadataSnapshot: prepared.pluginGeneration.pluginMetadataSnapshot,
+          cliBackendModels: prepared.pluginGeneration.cliBackendModels,
           pluginRegistry: prepared.pluginGeneration.pluginRegistry,
           isCurrent: () => current,
           retirementSignal: retirement.signal,

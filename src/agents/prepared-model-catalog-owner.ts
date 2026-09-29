@@ -4,7 +4,11 @@ import type {
   PublishedModelCatalogOwnerCandidate,
   ResolvedPublishedModelCatalogOwner,
 } from "./prepared-model-catalog.types.js";
-import { getPreparedModelRuntimeAuthStore } from "./prepared-model-runtime-auth.js";
+import {
+  getPreparedModelRuntimeAuthStore,
+  copyPreparedModelRuntimeBindings,
+  readPreparedModelRuntimeCliBackendModels,
+} from "./prepared-model-runtime-auth.js";
 import type { PreparedModelRuntimeInput } from "./prepared-model-runtime.types.js";
 
 class PublishedModelCatalogOwnerResolutionError extends Error {
@@ -54,7 +58,8 @@ export function resolvePublishedModelCatalogOwner(
       `published model catalog owner is missing prepared auth state (${agentId})`,
     );
   }
-  return Object.freeze({
+  const cliBackendModels = readPreparedModelRuntimeCliBackendModels(snapshot);
+  const resolved = Object.freeze({
     catalogOwner,
     agentId,
     agentDir: snapshot.agentDir,
@@ -64,10 +69,13 @@ export function resolvePublishedModelCatalogOwner(
     authModes: snapshot.authModes,
     authStore,
     metadataSnapshot: snapshot.metadataSnapshot,
+    cliBackendModels,
     pluginRegistry: snapshot.pluginRegistry,
     isCurrent: snapshot.isCurrent,
     modelCatalog: snapshot.modelCatalog,
   });
+  copyPreparedModelRuntimeBindings(snapshot, resolved);
+  return resolved;
 }
 
 export function publishedModelCatalogOwnerMatchesAgent(

@@ -7,12 +7,13 @@ import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { WorkerTaskPool } from "../infra/worker-task-pool.js";
 import { loadPluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
-import {
-  createPreparedModelCatalogWorkerInput,
-  type PreparedModelCatalogWorkerTask,
-  type PreparedModelWorkerResult,
-} from "./prepared-model-catalog-worker.js";
+import { createPreparedModelCatalogWorkerInput } from "./prepared-model-catalog-worker.js";
 import { createCatalogFixture, PROVIDER_ID } from "./prepared-model-catalog-worker.test-support.js";
+import type {
+  PreparedModelCatalogWorkerTask,
+  PreparedModelWorkerResult,
+} from "./prepared-model-catalog-worker.types.js";
+import { prepareFixtureCliBackendModelIdentities } from "./prepared-model-runtime.cli-fixture.test-support.js";
 import { AuthStorage } from "./sessions/auth-storage.js";
 import { usePreparedCatalogWorkerFixtures } from "./test-helpers/prepared-model-catalog-worker-fixture.js";
 
@@ -54,7 +55,8 @@ module.exports = { id: ${JSON.stringify(PROVIDER_ID)}, register(api) {
     env: fixture.env,
     workspaceDir: fixture.workspaceDir,
   });
-  const inputs = Array.from({ length: 4 }, (_, revision) => {
+  const inputs: ReturnType<typeof createPreparedModelCatalogWorkerInput>[] = [];
+  for (let revision = 0; revision < 4; revision++) {
     const config = {
       ...fixture.config,
       plugins: {
@@ -71,29 +73,37 @@ module.exports = { id: ${JSON.stringify(PROVIDER_ID)}, register(api) {
         },
       },
     };
-    return createPreparedModelCatalogWorkerInput({
-      agentFacts: {
-        input: {
-          agentId: "main",
-          agentDir: fixture.agentDir,
-          inheritedAuthDir: fixture.agentDir,
-          workspaceDir: fixture.workspaceDir,
+    inputs.push(
+      createPreparedModelCatalogWorkerInput({
+        agentFacts: {
+          input: {
+            agentId: "main",
+            agentDir: fixture.agentDir,
+            inheritedAuthDir: fixture.agentDir,
+            workspaceDir: fixture.workspaceDir,
+            config,
+            env: fixture.env,
+          },
+          env: fixture.env,
+          authStore: { version: 1, profiles: {} },
+          credentials: {},
+          templateAuthStorage: AuthStorage.inMemory({}),
+          providerIds: [PROVIDER_ID],
+          configuredModelRefs: [],
+          configuredRuntimeModels: [],
+          runtimeCapabilityModels: [],
+          configuredGeneratedCatalogPluginIds: [],
+        },
+        pluginMetadataSnapshot: metadata,
+        cliBackendModels: await prepareFixtureCliBackendModelIdentities({
           config,
           env: fixture.env,
-        },
-        env: fixture.env,
-        authStore: { version: 1, profiles: {} },
-        credentials: {},
-        templateAuthStorage: AuthStorage.inMemory({}),
-        providerIds: [PROVIDER_ID],
-        configuredModelRefs: [],
-        configuredRuntimeModels: [],
-        runtimeCapabilityModels: [],
-        configuredGeneratedCatalogPluginIds: [],
-      },
-      pluginMetadataSnapshot: metadata,
-    });
-  });
+          metadataSnapshot: metadata,
+          runtimeBackends: [],
+        }),
+      }),
+    );
+  }
   const pool = new WorkerTaskPool<PreparedModelCatalogWorkerTask, PreparedModelWorkerResult>({
     workerUrl: resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.preparedModelCatalog),
     maxWorkers: 1,

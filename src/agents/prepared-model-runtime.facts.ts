@@ -12,8 +12,8 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { sha256Base64Url } from "../infra/crypto-digest.js";
 import { prepareMediaCapabilityProviders } from "../plugins/capability-provider-runtime.js";
 import { normalizePluginsConfig } from "../plugins/config-state.js";
+import { resolvePluginControlPlaneWorkspace } from "../plugins/control-plane-workspace.js";
 import { getPluginMetadataSnapshotCache, retainPluginCache } from "../plugins/plugin-cache.js";
-import { resolvePluginMetadataSnapshotAsync } from "../plugins/plugin-metadata-snapshot.js";
 import {
   getPreparedMessageToolCatalog,
   getPreparedMessageToolCatalogForRegistry,
@@ -28,6 +28,7 @@ import { prepareAmbientAgentCredentialsForDiscovery } from "./agent-auth-discove
 import { discoverModelsFromCapturedSources } from "./agent-model-discovery.js";
 import { withAgentRosterFactsBatch } from "./agent-scope-config.js";
 import { getPreparedRuntimeAuthProfileStoreSnapshotCore } from "./auth-profiles/runtime-snapshots.js";
+import { prepareCliBackendModelIdentitiesWithSource } from "./cli-backends.js";
 import { buildInlineProviderModels } from "./embedded-agent-runner/model.inline-provider.js";
 import {
   createBundledStaticCatalogModelResolver,
@@ -66,10 +67,14 @@ import {
 } from "./prepared-model-runtime.inbound-registry.js";
 import { hasSameOAuthProviderGeneration } from "./prepared-model-runtime.oauth-providers.js";
 import {
+  assertPreparedPluginInputsCurrent,
   prepareOwnedPluginLoadContext,
-  prepareOwnedPluginMetadataSnapshotParams,
+  prepareWorkspacePluginMetadata,
 } from "./prepared-model-runtime.plugin-context.js";
-import { createPreparedPluginGeneration } from "./prepared-model-runtime.plugin-generation.js";
+import {
+  canReusePreparedCliBackendModels,
+  createPreparedPluginGeneration,
+} from "./prepared-model-runtime.plugin-generation.js";
 import {
   discardPreparedPluginGeneration,
   retainPreparedPluginRegistry,
@@ -163,15 +168,8 @@ export async function prepareWorkspaceBuildGroup(
   let selectedMetadataSnapshot =
     preparedPluginMetadataSnapshot ?? reusablePluginGeneration?.pluginMetadataSnapshot;
   if (!selectedMetadataSnapshot) {
-    for (const candidate of inputs) {
-      options.assertCurrent?.(candidate);
-    }
-    selectedMetadataSnapshot = await resolvePluginMetadataSnapshotAsync(
-      prepareOwnedPluginMetadataSnapshotParams(input, env),
-    );
-    for (const candidate of inputs) {
-      options.assertCurrent?.(candidate);
-    }
+    selectedMetadataSnapshot = await prepareWorkspacePluginMetadata(inputs, env, options);
+    assertPreparedPluginInputsCurrent(inputs, options);
   }
   const pluginMetadataSnapshot = selectedMetadataSnapshot;
   // Raw preparation owns its facts across awaited auth/catalog work. Successful
@@ -230,6 +228,47 @@ export async function prepareWorkspaceBuildGroup(
   );
   let preparedGeneration: PreparedModelRuntimePluginGeneration | undefined;
   const prepare = async () => {
+    options.assertCurrent?.(input);
+    const preparingCliModels =
+      reusablePluginGeneration &&
+      reusablePluginGeneration.pluginMetadataSnapshot === pluginMetadataSnapshot &&
+      ((reusablePluginGeneration.pluginRegistry &&
+        reusablePluginGeneration.pluginRegistry === runtimePluginRegistry) ||
+        (options.purpose !== "model-catalog" &&
+          input.readOnly &&
+          !input.loadRuntimePlugins &&
+          !input.runtimePluginSelections &&
+          canReusePreparedCliBackendModels(reusablePluginGeneration, {
+            config: input.config,
+            env,
+            workspaceDir: resolvePluginControlPlaneWorkspace({
+              config: input.config,
+              env,
+              workspaceDir: pluginMetadataSnapshot.workspaceDir ?? input.workspaceDir,
+            }).workspaceDir,
+            metadataSnapshot: pluginMetadataSnapshot,
+          })))
+        ? reusablePluginGeneration.cliBackendModels
+        : prepareCliBackendModelIdentitiesWithSource(
+            {
+              config: input.config,
+              env,
+              metadataSnapshot: pluginMetadataSnapshot,
+              runtimeBackends:
+                runtimePluginRegistry?.cliBackends.map(({ backend, pluginId }) => ({
+                  id: backend.id,
+                  modelProvider: backend.modelProvider,
+                  pluginId,
+                })) ?? [],
+            },
+            (read) =>
+              registryResources.prepareSetup(read, () => {
+                options.signal?.throwIfAborted();
+                options.assertCurrent?.(input);
+              }),
+          );
+    const cliBackendModels =
+      preparingCliModels instanceof Promise ? await preparingCliModels : preparingCliModels;
     options.assertCurrent?.(input);
     const matchesStaticModelId = createStaticModelIdMatcher({
       manifestPlugins: pluginMetadataSnapshot,
@@ -473,6 +512,7 @@ export async function prepareWorkspaceBuildGroup(
     const configuredProjectionMs = performance.now() - configuredProjectionStartedAt;
     const pluginGeneration = createPreparedPluginGeneration({
       catalogMode,
+      cliBackendModels,
       configuredCatalogEntries,
       inboundPluginRegistry,
       inlineProviderModels,

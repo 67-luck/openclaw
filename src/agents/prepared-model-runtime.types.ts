@@ -2,6 +2,7 @@ import type { PreparedMessageToolCatalog } from "../channels/plugins/message-act
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { Model } from "../llm/types.js";
 import type { prepareMediaCapabilityProviders } from "../plugins/capability-provider-runtime.js";
+import type { PreparedCliBackendModelIdentity } from "../plugins/cli-backend.types.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import type { PreparedProviderStaticCatalog } from "../plugins/provider-discovery.js";
 import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.types.js";
@@ -57,6 +58,7 @@ export type PreparedMediaCapabilityProviderAcquisition = Readonly<{
 
 export type PreparedModelRuntimePluginGeneration = Readonly<{
   pluginMetadataSnapshot: PluginMetadataSnapshot;
+  cliBackendModels: readonly PreparedCliBackendModelIdentity[];
   messageToolCatalog?: PreparedMessageToolCatalog;
   mediaCapabilityProviders?: ReturnType<typeof prepareMediaCapabilityProviders>;
   mediaCapabilityProviderSource?: PreparedMediaCapabilityProviderSource;

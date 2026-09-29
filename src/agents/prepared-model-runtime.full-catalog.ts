@@ -24,6 +24,7 @@ import {
   hasSamePreparedModelCatalogAuth,
   setPreparedModelFullCatalogAuth,
   bindPreparedModelRuntimeAuth,
+  bindPreparedModelRuntimeCliBackendModels,
   type PreparedModelRuntimeAuth,
   type PreparedModelRuntimeAuthScope,
   type PreparedModelCatalogAuth,
@@ -682,6 +683,7 @@ export function createPreparedModelRuntimeSnapshot(
     createStores,
     routeModelResolutionMemo: new Map<string, Promise<Model>>(),
   });
+  bindPreparedModelRuntimeCliBackendModels(snapshot, pluginGeneration.cliBackendModels);
   bindPreparedModelRuntimeAuth(snapshot, {
     labels: catalogAccess.initialAuth.providerAuthLabels,
     store: catalogAccess.initialAuth.authStore,

@@ -598,6 +598,7 @@ export function capturePluginGenerationArtifact(
       verifyPluginSourceInputs(inputs, inputs.keys());
     };
     const initialReceipt = receipt.finish();
+    sourceCapture.assertCurrent();
     assertSourceCurrent();
     nativeAdmission.finish(initialReceipt);
     pendingInputs.clear();

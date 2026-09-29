@@ -26,6 +26,7 @@ import { resolveClaudeCliBindingSessionId } from "../cli-session-history.js";
 import { projectOperatorModelRead } from "../operator-model-presentation.js";
 import { SerializedJsonArray } from "../serialized-json.js";
 import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
+import { createPreparedGatewayModelCatalog } from "../server-model-catalog-view.js";
 import { buildGatewaySessionSnapshot } from "../session-event-payload.js";
 import { resolveSessionHistoryUnavailableMessage } from "../session-history-error.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
@@ -51,6 +52,7 @@ import { prepareChatHistorySessionRead } from "./chat-history-session-read.js";
 import { handleChatMetadataRequest } from "./chat-metadata-handler.js";
 import { readChatPendingInputs } from "./chat-pending-inputs.js";
 import { handleChatStartupRequest } from "./chat-startup-handler.js";
+import { getChatStartupModelFactsReader } from "./chat-startup-model-facts.js";
 import { prepareChatStartupRequester } from "./chat-startup-requester.js";
 import { resolveVisibleActiveSessionRunState } from "./session-active-runs.js";
 import { resolveGatewayModelSelectionPolicy } from "./session-model-selection-policy.js";
@@ -319,11 +321,36 @@ export async function handleChatHistoryRequest({
     const startupProjection = await (startupProjectionPromise ?? readStartupProjection());
     const startupMetadata = method === "chat.startup" ? startupProjection?.metadata : undefined;
     const { sessionModelCatalog, defaultModelCatalog } = startupProjection ?? {};
+    const readPreparedModelFacts = getChatStartupModelFactsReader(startupProjection);
+    const preparedModelFacts = readPreparedModelFacts?.();
+    const assertPreparedModelFacts = () => {
+      if (
+        readPreparedModelFacts &&
+        (!preparedModelFacts || readPreparedModelFacts() !== preparedModelFacts)
+      ) {
+        throw new Error("Prepared startup model facts changed while reading history");
+      }
+    };
+    const rowModelCatalog =
+      preparedModelFacts && sessionModelCatalog
+        ? new Map([
+            [
+              sessionAgentId,
+              createPreparedGatewayModelCatalog({
+                entries: sessionModelCatalog,
+                metadataSnapshot: preparedModelFacts.metadataSnapshot,
+                cliBackendModels: preparedModelFacts.cliBackendModels,
+              }),
+            ],
+          ])
+        : sessionModelCatalog;
     const modelReadScope = {
       context,
       client,
       agentId: sessionAgentId,
       catalog: defaultModelCatalog,
+      metadataSnapshot: preparedModelFacts?.metadataSnapshot,
+      preparedCliBackendModels: preparedModelFacts?.cliBackendModels,
     };
     const query = {
       key: canonicalKey,
@@ -331,6 +358,7 @@ export async function handleChatHistoryRequest({
       storePath,
     };
     const publishDelta = await withReadySessionRows(rowProjection, queries, (read) => {
+      assertPreparedModelFacts();
       const currentSharing = readCurrentSharing(read);
       if (!currentSharing) {
         return undefined;
@@ -344,7 +372,7 @@ export async function handleChatHistoryRequest({
             : buildGatewaySessionRow({
                 ...selectedSession,
                 key: canonicalKey,
-                modelCatalog: sessionModelCatalog,
+                modelCatalog: rowModelCatalog,
                 rowContext: rowProjection.state.rowContext,
               })),
         { config: cfg, phase: method },
@@ -400,6 +428,8 @@ export async function handleChatHistoryRequest({
           ? {
               ...getSessionDefaults(cfg, defaultModelCatalog, {
                 agentId: sessionAgentId,
+                metadataSnapshot: preparedModelFacts?.metadataSnapshot,
+                preparedCliBackendModels: preparedModelFacts?.cliBackendModels,
                 allowPluginNormalization: false,
                 providerPolicySource: "active",
               }),
@@ -533,6 +563,7 @@ export async function handleChatHistoryRequest({
               respond(true, delta);
               return undefined;
             }
+            assertPreparedModelFacts();
             sessionInfo.activeLeafEntryId = delta.activeLeafEntryId;
             const boundedInFlightRun = boundInFlightRunSnapshotForChatHistory({
               snapshot: inFlightRun,
@@ -589,7 +620,10 @@ export async function handleChatHistoryRequest({
               ((await retainedTranscript.verifyRetainedState?.()) ?? true),
             requireCurrentSession: retainedTranscript.requireCurrentSession === true,
             sharing: currentSharing,
-            publish: () => respond(true, projectOperatorModelRead(modelReadScope, payload)),
+            publish: () => {
+              assertPreparedModelFacts();
+              respond(true, projectOperatorModelRead(modelReadScope, payload));
+            },
           });
       }
       respond(true, projectOperatorModelRead(modelReadScope, payload));

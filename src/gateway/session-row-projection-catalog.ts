@@ -1,6 +1,9 @@
 import { isDeepStrictEqual } from "node:util";
 import { registerPreparedModelRuntimePublicationListener } from "../agents/prepared-model-runtime.publication-events.js";
-import { readPreparedGatewayModelCatalogMetadata } from "./server-model-catalog-view.js";
+import {
+  readPreparedGatewayCliBackendModels,
+  readPreparedGatewayModelCatalogMetadata,
+} from "./server-model-catalog-view.js";
 import type { Inputs } from "./session-row-projection-record.js";
 
 function hasSameModelFacts(previous: Inputs["modelCatalog"], next: Inputs["modelCatalog"]) {
@@ -20,6 +23,10 @@ function hasSameModelFacts(previous: Inputs["modelCatalog"], next: Inputs["model
         metadata !== undefined &&
         catalog.pluginRegistry === replacement.pluginRegistry &&
         metadata === readPreparedGatewayModelCatalogMetadata(replacement) &&
+        isDeepStrictEqual(
+          readPreparedGatewayCliBackendModels(catalog),
+          readPreparedGatewayCliBackendModels(replacement),
+        ) &&
         isDeepStrictEqual(catalog.entries, replacement.entries) &&
         isDeepStrictEqual(catalog.routeVariants, replacement.routeVariants)
       );

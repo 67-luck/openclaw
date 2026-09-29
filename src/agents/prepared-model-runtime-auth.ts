@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import type { PreparedCliBackendModelIdentity } from "../plugins/cli-backend.types.js";
 import type { PreparedAgentCredentialModes } from "./agent-auth-credential-modes.js";
 import { isOAuthRefreshFence } from "./auth-profiles/oauth-refresh-marker.js";
 import { hasOAuthIdentity } from "./auth-profiles/oauth-shared.js";
@@ -94,7 +95,10 @@ type RuntimeAuthBinding = {
   materializations?: readonly RuntimeAuthMaterialization[];
   load?: (scope: PreparedModelRuntimeAuthScope) => Promise<PreparedModelRuntimeAuth>;
 };
-const runtimeAuth = new WeakMap<object, RuntimeAuthBinding>();
+type RuntimeSnapshotBinding = RuntimeAuthBinding & {
+  cliBackendModels?: readonly PreparedCliBackendModelIdentity[];
+};
+const runtimeBindings = new WeakMap<object, RuntimeSnapshotBinding>();
 const authByFullCatalog = new WeakMap<
   object,
   {
@@ -105,15 +109,15 @@ const authByFullCatalog = new WeakMap<
 
 // Secret-bearing state stays lifecycle-owned without becoming part of the public snapshot shape.
 export function bindPreparedModelRuntimeAuth(snapshot: object, binding: RuntimeAuthBinding): void {
-  runtimeAuth.set(snapshot, { ...runtimeAuth.get(snapshot), ...binding });
+  runtimeBindings.set(snapshot, { ...runtimeBindings.get(snapshot), ...binding });
 }
 
 export function getPreparedModelRuntimeAuthStore(snapshot: object): AuthProfileStore | undefined {
-  return runtimeAuth.get(snapshot)?.store;
+  return runtimeBindings.get(snapshot)?.store;
 }
 
 export function getPreparedModelRuntimeAuthLabels(snapshot: object): ModelCatalogAuthLabels {
-  const labels = runtimeAuth.get(snapshot)?.labels;
+  const labels = runtimeBindings.get(snapshot)?.labels;
   if (!labels) {
     throw new Error("Prepared model runtime omitted auth display labels");
   }
@@ -151,7 +155,7 @@ export async function loadPreparedModelRuntimeAuth(
   snapshot: object & { authModes?: PreparedAgentCredentialModes },
   scope: PreparedModelRuntimeAuthScope,
 ): Promise<PreparedModelRuntimeAuth | undefined> {
-  const binding = runtimeAuth.get(snapshot);
+  const binding = runtimeBindings.get(snapshot);
   const load = binding?.load;
   if (load) {
     return await load(scope);
@@ -163,12 +167,25 @@ export async function loadPreparedModelRuntimeAuth(
 export function getPreparedModelRuntimeAuthMaterializations(
   snapshot: object,
 ): readonly RuntimeAuthMaterialization[] {
-  return runtimeAuth.get(snapshot)?.materializations ?? [];
+  return runtimeBindings.get(snapshot)?.materializations ?? [];
 }
 
-export function copyPreparedModelRuntimeAuthBindings(source: object, target: object): void {
-  const binding = runtimeAuth.get(source);
+export function copyPreparedModelRuntimeBindings(source: object, target: object): void {
+  const binding = runtimeBindings.get(source);
   if (binding) {
     bindPreparedModelRuntimeAuth(target, binding);
   }
+}
+
+export function bindPreparedModelRuntimeCliBackendModels(
+  snapshot: object,
+  cliBackendModels: readonly PreparedCliBackendModelIdentity[],
+): void {
+  runtimeBindings.set(snapshot, { ...runtimeBindings.get(snapshot), cliBackendModels });
+}
+
+export function readPreparedModelRuntimeCliBackendModels(
+  snapshot: object,
+): readonly PreparedCliBackendModelIdentity[] | undefined {
+  return runtimeBindings.get(snapshot)?.cliBackendModels;
 }

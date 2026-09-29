@@ -86,8 +86,15 @@ import {
   getPreparedModelRuntimeAuthStore,
   setPreparedModelFullCatalogAuth,
   bindPreparedModelRuntimeAuth,
+  bindPreparedModelRuntimeCliBackendModels,
+  copyPreparedModelRuntimeBindings,
 } from "./prepared-model-runtime-auth.js";
 import { PreparedModelRuntimeOwnerNotPublishedError } from "./prepared-model-runtime.js";
+
+function copySnapshot<T extends object>(source: object, snapshot: T): T {
+  copyPreparedModelRuntimeBindings(source, snapshot);
+  return snapshot;
+}
 
 const fullSnapshot = {
   config: mocks.config,
@@ -97,6 +104,7 @@ const fullSnapshot = {
   metadataSnapshot: { index: { plugins: [] }, plugins: [] },
   modelCatalog: { entries: [{ provider: "test", id: "full", name: "Full" }], routeVariants: [] },
 };
+bindPreparedModelRuntimeCliBackendModels(fullSnapshot, []);
 const readOnlySnapshot = {
   config: mocks.config,
   modelCatalog: {
@@ -104,6 +112,7 @@ const readOnlySnapshot = {
     routeVariants: [],
   },
 };
+bindPreparedModelRuntimeCliBackendModels(readOnlySnapshot, []);
 
 describe("prepared model catalog access", () => {
   beforeEach(() => {
@@ -159,7 +168,10 @@ describe("prepared model catalog access", () => {
     const entered = createDeferred();
     const resume = createDeferred();
     const failure = new Error("catalog refresh failed");
-    const snapshot = { ...fullSnapshot, loadFullModelCatalog: vi.fn() };
+    const snapshot = copySnapshot(fullSnapshot, {
+      ...fullSnapshot,
+      loadFullModelCatalog: vi.fn(),
+    });
     mocks.prepareSnapshot.mockResolvedValue(snapshot);
     mocks.refreshStaleCatalog.mockImplementation(async () => {
       entered.resolve();
@@ -179,10 +191,12 @@ describe("prepared model catalog access", () => {
   });
 
   it("releases a published claim rejected by the exact config policy", async () => {
-    mocks.prepareSnapshot.mockResolvedValue({
-      ...fullSnapshot,
-      config: { agents: { defaults: { model: "openai/old" } } },
-    });
+    mocks.prepareSnapshot.mockResolvedValue(
+      copySnapshot(fullSnapshot, {
+        ...fullSnapshot,
+        config: { agents: { defaults: { model: "openai/old" } } },
+      }),
+    );
     const project = vi.fn();
     await expect(withPreparedModelCatalogOwner({}, project)).rejects.toBeInstanceOf(
       PreparedModelCatalogConfigReplacedError,
@@ -201,7 +215,10 @@ describe("prepared model catalog access", () => {
     "retains the temporary owner through projection and releases it (readOnly=$readOnly, reject=$rejectProjection)",
     async ({ readOnly, rejectProjection }) => {
       let current = true;
-      const snapshot = { ...readOnlySnapshot, isCurrent: () => current };
+      const snapshot = copySnapshot(readOnlySnapshot, {
+        ...readOnlySnapshot,
+        isCurrent: () => current,
+      });
       const started = createDeferred();
       const resume = createDeferred();
       const failure = new Error("projection failed");
@@ -258,7 +275,9 @@ describe("prepared model catalog access", () => {
 
   it("does not return a full nonblocking generation from another config", () => {
     mocks.getSnapshot
-      .mockReturnValueOnce({ ...fullSnapshot, config: { logging: { level: "debug" } } })
+      .mockReturnValueOnce(
+        copySnapshot(fullSnapshot, { ...fullSnapshot, config: { logging: { level: "debug" } } }),
+      )
       .mockReturnValueOnce(undefined)
       .mockReturnValueOnce(readOnlySnapshot);
 
@@ -270,11 +289,11 @@ describe("prepared model catalog access", () => {
   });
 
   it("returns the published owner without config matching or catalog materialization", () => {
-    const committedSnapshot = {
+    const committedSnapshot = copySnapshot(fullSnapshot, {
       ...fullSnapshot,
       config: { agents: { defaults: { model: "openai/committed" } } },
       loadFullModelCatalog: vi.fn(),
-    };
+    });
     mocks.getSnapshot.mockReturnValue(committedSnapshot);
 
     expect(
@@ -311,11 +330,11 @@ describe("prepared model catalog access", () => {
         entries: [{ provider: "test", id: "fresh", name: "Fresh" }],
         routeVariants: [],
       };
-      const snapshot = {
+      const snapshot = copySnapshot(fullSnapshot, {
         ...fullSnapshot,
         loadFullModelCatalog: vi.fn(),
         readFullModelCatalog: vi.fn(() => fullSnapshot.modelCatalog),
-      };
+      });
       mocks.getSnapshot.mockReturnValue(snapshot);
       mocks.prepareSnapshot.mockResolvedValue(snapshot);
       mocks.refreshStaleCatalog.mockResolvedValue(staleCatalog);
@@ -343,11 +362,11 @@ describe("prepared model catalog access", () => {
   ] as const)(
     "does not refresh current facts without intent (readOnly=$readOnly, refresh=$refreshFullCatalog)",
     async ({ readOnly, refreshFullCatalog }) => {
-      const snapshot = {
+      const snapshot = copySnapshot(fullSnapshot, {
         ...fullSnapshot,
         loadFullModelCatalog: vi.fn(async () => fullSnapshot.modelCatalog),
         readFullModelCatalog: vi.fn(() => fullSnapshot.modelCatalog),
-      };
+      });
       mocks.getSnapshot.mockReturnValue(snapshot);
       mocks.prepareSnapshot.mockResolvedValue(snapshot);
       mocks.refreshStaleCatalog.mockRejectedValue(new Error("full discovery was awaited"));
@@ -430,11 +449,11 @@ describe("prepared model catalog access", () => {
       providerAuthLabels: new Map(),
     });
     const loadFullModelCatalog = vi.fn(async () => discoveredCatalog);
-    const snapshot = {
+    const snapshot = copySnapshot(fullSnapshot, {
       ...snapshotFacts,
       modelCatalog: configuredCatalog,
       loadFullModelCatalog,
-    };
+    });
     bindPreparedModelRuntimeAuth(snapshot, { store: authStore });
     mocks.prepareSnapshot.mockResolvedValue(snapshot);
 
@@ -478,7 +497,10 @@ describe("prepared model catalog access", () => {
 
   it("rejects a full generation replaced with another config", async () => {
     const committedConfig = { agents: { defaults: { model: "openai/committed" } } };
-    const committedSnapshot = { ...fullSnapshot, config: committedConfig };
+    const committedSnapshot = copySnapshot(fullSnapshot, {
+      ...fullSnapshot,
+      config: committedConfig,
+    });
     mocks.prepareSnapshot.mockResolvedValue(committedSnapshot);
 
     await expect(loadPreparedModelCatalogSnapshot({ readOnly: true })).rejects.toThrow(
@@ -494,11 +516,11 @@ describe("prepared model catalog access", () => {
     "returns the published replacement owner for Gateway reads (readOnly=$readOnly)",
     async ({ readOnly }) => {
       const committedConfig = { agents: { defaults: { model: "openai/committed" } } };
-      const committedSnapshot = {
+      const committedSnapshot = copySnapshot(fullSnapshot, {
         ...fullSnapshot,
         agentDir: "/tmp/prepared-model-catalog-agent",
         config: committedConfig,
-      };
+      });
       mocks.prepareSnapshot.mockResolvedValue(committedSnapshot);
 
       await expect(loadPublishedPreparedModelCatalogOwnerSnapshot({ readOnly })).resolves.toBe(
@@ -511,11 +533,11 @@ describe("prepared model catalog access", () => {
   );
 
   it("resolves a complete published owner for runtime consumers", async () => {
-    const committedSnapshot = {
+    const committedSnapshot = copySnapshot(fullSnapshot, {
       ...fullSnapshot,
       agentDir: "/tmp/prepared-model-catalog-agent",
       config: { agents: { list: [{ id: "main", default: true }] } },
-    };
+    });
     mocks.prepareSnapshot.mockResolvedValue(committedSnapshot);
 
     await expect(
@@ -529,6 +551,7 @@ describe("prepared model catalog access", () => {
       authModes: {},
       authStore: { version: 1, profiles: {} },
       metadataSnapshot: fullSnapshot.metadataSnapshot,
+      cliBackendModels: [],
       modelCatalog: committedSnapshot.modelCatalog,
     });
   });
@@ -537,12 +560,12 @@ describe("prepared model catalog access", () => {
     mocks.agentIds = ["main", "worker"];
     mocks.agentDirs.set("main", "/tmp/shared-agent-dir");
     mocks.agentDirs.set("worker", "/tmp/shared-agent-dir");
-    const committedSnapshot = {
+    const committedSnapshot = copySnapshot(fullSnapshot, {
       ...fullSnapshot,
       agentDir: "/tmp/shared-agent-dir",
       catalogOwner: undefined,
       config: { agents: { list: [{ id: "main", default: true }, { id: "worker" }] } },
-    };
+    });
     mocks.prepareSnapshot.mockResolvedValue(committedSnapshot);
 
     await expect(
@@ -554,10 +577,10 @@ describe("prepared model catalog access", () => {
   });
 
   it("projects published replacement entries for runtime callers", async () => {
-    const committedSnapshot = {
+    const committedSnapshot = copySnapshot(fullSnapshot, {
       ...fullSnapshot,
       config: { agents: { defaults: { model: "openai/committed" } } },
-    };
+    });
     mocks.prepareSnapshot.mockResolvedValue(committedSnapshot);
 
     await expect(loadPublishedPreparedModelCatalog({ readOnly: true })).resolves.toBe(
@@ -585,11 +608,11 @@ describe("prepared model catalog access", () => {
       entries: [{ provider: "test", id: "completed", name: "Completed" }],
       routeVariants: [],
     };
-    const snapshot = {
+    const snapshot = copySnapshot(fullSnapshot, {
       ...fullSnapshot,
       readFullModelCatalog: vi.fn(() => completedCatalog),
       loadFullModelCatalog: vi.fn().mockRejectedValue(new Error("unrequested discovery")),
-    };
+    });
     setPreparedModelFullCatalogAuth(completedCatalog, {
       providerAuthLabels: new Map(),
       authStore: fullSnapshot.authStore,
@@ -633,10 +656,12 @@ describe("prepared model catalog access", () => {
 
   it("rejects a standalone catalog owner built from another config", async () => {
     mocks.prepareSnapshot.mockRejectedValue(new PreparedModelRuntimeOwnerNotPublishedError());
-    mocks.activateSnapshot.mockResolvedValue({
-      ...fullSnapshot,
-      config: { agents: { defaults: { model: "openai/old" } } },
-    });
+    mocks.activateSnapshot.mockResolvedValue(
+      copySnapshot(fullSnapshot, {
+        ...fullSnapshot,
+        config: { agents: { defaults: { model: "openai/old" } } },
+      }),
+    );
 
     await expect(loadPreparedModelCatalogSnapshot({ readOnly: false })).rejects.toThrow(
       "requested config",
@@ -662,10 +687,12 @@ describe("prepared model catalog access", () => {
   it("rejects a full fallback lease built from another config", async () => {
     mocks.prepareSnapshot.mockRejectedValue(new PreparedModelRuntimeOwnerNotPublishedError());
     mocks.activateSnapshot.mockResolvedValue(undefined);
-    mocks.acquireSnapshot.mockResolvedValue({
-      ...fullSnapshot,
-      config: { agents: { defaults: { model: "openai/old" } } },
-    });
+    mocks.acquireSnapshot.mockResolvedValue(
+      copySnapshot(fullSnapshot, {
+        ...fullSnapshot,
+        config: { agents: { defaults: { model: "openai/old" } } },
+      }),
+    );
 
     await expect(loadPreparedModelCatalogSnapshot({ readOnly: false })).rejects.toThrow(
       "requested config",

@@ -3,7 +3,10 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import type { AgentCredentialMap } from "../../agents/agent-auth-credentials.js";
 import type { AuthProfileStore } from "../../agents/auth-profiles.js";
 import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
-import { setPreparedModelFullCatalogAuth } from "../../agents/prepared-model-runtime-auth.js";
+import {
+  readPreparedModelRuntimeCliBackendModels,
+  setPreparedModelFullCatalogAuth,
+} from "../../agents/prepared-model-runtime-auth.js";
 import { markPreparedModelCatalogFull } from "../../agents/prepared-model-runtime.full-catalog.js";
 import {
   clearRuntimeConfigSnapshot,
@@ -16,6 +19,7 @@ import {
   createDraftChatMetadataScope,
   createOpenAIChatMetadataConfig,
 } from "./chat-metadata-runtime.test-support.js";
+import { getChatStartupModelFactsReader } from "./chat-startup-model-facts.js";
 
 describe("gateway chat metadata runtime", () => {
   test("retains an unsuperseded preparation failure without silently retrying", async () => {
@@ -239,12 +243,26 @@ describe("gateway chat metadata runtime", () => {
       ]);
       expect(projection?.defaultModelCatalog).toBe(projection?.sessionModelCatalog);
       expect(projection).not.toHaveProperty("metadata");
+      expect(projection).not.toHaveProperty("readPreparedModelFacts");
+      const readFacts = getChatStartupModelFactsReader(projection);
+      const facts = readFacts?.();
+      expect(facts?.metadataSnapshot).toBe(harness.getPreparedOwner()!.metadataSnapshot);
+      const cliBackendModels = readPreparedModelRuntimeCliBackendModels(
+        harness.getPreparedOwner()!,
+      );
+      expect(cliBackendModels).toBeDefined();
+      expect(facts?.cliBackendModels).toBe(cliBackendModels);
+      expect(readFacts?.()).toBe(facts);
     }
 
     expect(harness.readProjection).not.toHaveBeenCalled();
     const startup = await harness.runtime.readStartup({ agentId: "main" });
     expect(startup?.metadata?.models).toEqual(startup?.sessionModelCatalog);
     expect(harness.readProjection).toHaveBeenCalledOnce();
+    const readFacts = getChatStartupModelFactsReader(startup);
+    expect(readFacts?.()).toBeDefined();
+    await harness.runtime.stop();
+    expect(readFacts?.()).toBeUndefined();
   });
 
   test("caches a session auth projection separately from the neutral projection", async () => {
@@ -337,9 +355,12 @@ describe("gateway chat metadata runtime", () => {
       const params = { agentId: "main", sessionEntry };
       await harness.runtime.refresh();
       const initial = await harness.runtime.readStartup(params);
+      const readFacts = getChatStartupModelFactsReader(initial);
+      expect(readFacts?.()).toBeDefined();
       const stale =
         await harness.buildProjection.mock.results[invalid === "neutral" ? 0 : 1]!.value;
       harness.invalidProjections.add(stale);
+      expect(readFacts?.()).toBeUndefined();
 
       await expect(
         harness.runtime.readStartup({ ...params, readPolicy: "ready" }),
@@ -376,7 +397,9 @@ describe("gateway chat metadata runtime", () => {
       const harness = createChatMetadataHarness(undefined, { refreshOnRead: true, beforeRefresh });
       const sessionEntry = { authProfileOverride: "test:session" };
       await harness.runtime.refresh();
-      await harness.runtime.readStartup({ agentId: "main", sessionEntry });
+      const startup = await harness.runtime.readStartup({ agentId: "main", sessionEntry });
+      const readFacts = getChatStartupModelFactsReader(startup);
+      expect(readFacts?.()).toBeDefined();
       const release = createDeferred();
       let refresh: Promise<void> | undefined;
       if (state === "invalidate") {
@@ -384,7 +407,9 @@ describe("gateway chat metadata runtime", () => {
       } else if (state === "failed") {
         harness.runtime.fail(new Error("owner unavailable"));
       } else {
-        harness.setSkillsVersion(2);
+        if (state === "stale facts") {
+          harness.setSkillsVersion(2);
+        }
         if (state === "pending refresh") {
           beforeRefresh.mockImplementationOnce(() => release.promise);
           refresh = harness.runtime.refresh();
@@ -392,6 +417,7 @@ describe("gateway chat metadata runtime", () => {
         }
       }
       try {
+        expect(readFacts?.()).toBeUndefined();
         for (const entry of [undefined, sessionEntry]) {
           await expect(
             harness.runtime.readStartup({

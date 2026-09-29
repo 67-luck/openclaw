@@ -146,6 +146,7 @@ describe("skill experience review scheduler", () => {
 
   it("runs detached review work outside the foreground prepared generation", async () => {
     const generation: PreparedModelRuntimePluginGeneration = {
+      cliBackendModels: [],
       configuredCatalogEntries: [],
       inlineProviderModels: [],
       pluginMetadataSnapshot: {} as never,

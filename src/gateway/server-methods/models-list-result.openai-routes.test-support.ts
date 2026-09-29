@@ -1,7 +1,9 @@
 import type { PreparedAgentCredentialModes } from "../../agents/agent-auth-credential-modes.js";
 import { loadAuthProfileStoreWithoutExternalProfiles } from "../../agents/auth-profiles.js";
+import { listCliRuntimeModelBackendBindings } from "../../agents/cli-backends.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import type { createOpenAIModelRoutesResolver } from "../../agents/openai-model-routes.js";
+import { prepareFixtureCliBackendModelIdentities } from "../../agents/prepared-model-runtime.cli-fixture.test-support.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
@@ -87,8 +89,28 @@ const chatMetadataSnapshot = createPluginMetadataSnapshotFixture({
 export function createModelsListTestContext(params: ListModelsParams) {
   const agentId = params.agentId ?? "main";
   const config = params.cfg ?? ({} as OpenClawConfig);
-  const createCatalogSnapshot = (entries: ModelCatalogEntry[]) =>
-    ({
+  const metadataSnapshot = params.metadataSnapshot ?? chatMetadataSnapshot;
+  const cliIdentityParams = {
+    config,
+    env: { ...process.env },
+    metadataSnapshot,
+    runtimeBackends:
+      params.pluginRegistry?.cliBackends.map(({ backend, pluginId }) => ({
+        ...backend,
+        pluginId,
+      })) ??
+      listCliRuntimeModelBackendBindings({ config }).map(({ runtime, provider }) => ({
+        id: runtime,
+        modelProvider: provider,
+      })),
+  } satisfies Parameters<typeof prepareFixtureCliBackendModelIdentities>[0];
+  let preparingCliBackendModels:
+    | ReturnType<typeof prepareFixtureCliBackendModelIdentities>
+    | undefined;
+  const createCatalogSnapshot = async (entries: ModelCatalogEntry[]) => {
+    const cliBackendModels = await (preparingCliBackendModels ??=
+      prepareFixtureCliBackendModelIdentities(cliIdentityParams));
+    return {
       agentId,
       agentDir: params.agentDir ?? "/tmp/models-list-openai-agent",
       catalogComplete: params.catalogComplete ?? false,
@@ -104,13 +126,15 @@ export function createModelsListTestContext(params: ListModelsParams) {
           allowKeychainPrompt: false,
         },
       ),
-      metadataSnapshot: params.metadataSnapshot ?? chatMetadataSnapshot,
+      metadataSnapshot,
+      cliBackendModels,
       entries,
       routeVariants: entries,
       ...(params.staticEntries ? { staticEntries: params.staticEntries } : {}),
       authMaterializations: [],
       ...params.catalogDiagnostics,
-    }) satisfies PreparedGatewayModelCatalogSnapshot;
+    } satisfies PreparedGatewayModelCatalogSnapshot;
+  };
   let publishedEntries = params.publishedCatalog ?? params.catalog;
   const loadGatewayModelCatalogSnapshot = async (loadParams?: object) => {
     if (params.catalogLoadDelayMs !== undefined) {

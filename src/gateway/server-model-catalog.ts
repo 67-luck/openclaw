@@ -8,6 +8,7 @@ import type {
 import {
   getPreparedModelRuntimeAuthMaterializations,
   loadPreparedModelRuntimeAuth,
+  readPreparedModelRuntimeCliBackendModels,
   type PreparedModelRuntimeAuthScope,
 } from "../agents/prepared-model-runtime-auth.js";
 import { PreparedModelRuntimePublicationSupersededError } from "../agents/prepared-model-runtime.errors.js";
@@ -15,7 +16,10 @@ import { isPreparedModelCatalogFull } from "../agents/prepared-model-runtime.ful
 // Gateway catalog reads use the atomic prepared runtime generation.
 import { getRuntimeConfig } from "../config/io.js";
 import type { PreparedGatewayModelCatalogSnapshot } from "./server-model-catalog-auth.js";
-import { createPreparedGatewayModelCatalog } from "./server-model-catalog-view.js";
+import {
+  bindPreparedGatewayModelCatalogFacts,
+  createPreparedGatewayModelCatalog,
+} from "./server-model-catalog-view.js";
 import type {
   GatewayModelCatalogSnapshot,
   PreparedGatewayModelCatalog,
@@ -139,6 +143,7 @@ export async function loadPreparedGatewayModelCatalogSnapshot(
       authModes: refreshedAuth?.authModes ?? owner.authModes,
       authStore: refreshedAuth?.authStore ?? owner.authStore,
       metadataSnapshot: owner.metadataSnapshot,
+      cliBackendModels: owner.cliBackendModels,
       authMaterializations: owner.authMaterializations,
       pluginRegistry: owner.pluginRegistry,
       isCurrent: owner.isCurrent,
@@ -153,13 +158,15 @@ export async function loadGatewayModelCatalogSnapshot(
   const {
     authModes: _authModes,
     authStore: _authStore,
-    metadataSnapshot: _metadataSnapshot,
+    metadataSnapshot,
+    cliBackendModels,
     authMaterializations: _authMaterializations,
     pluginRegistry: _pluginRegistry,
     isCurrent: _isCurrent,
     observationConfig: _observationConfig,
     ...snapshot
   } = await loadPreparedGatewayModelCatalogSnapshot(params);
+  bindPreparedGatewayModelCatalogFacts(snapshot, { metadataSnapshot, cliBackendModels });
   return snapshot;
 }
 
@@ -190,6 +197,7 @@ function readPreparedGatewayModelCatalogSync(
     routeVariants: catalog.routeVariants,
     pluginRegistry: owner.pluginRegistry,
     metadataSnapshot: owner.metadataSnapshot,
+    cliBackendModels: readPreparedModelRuntimeCliBackendModels(owner),
   });
 }
 
@@ -270,6 +278,7 @@ export async function readPreparedGatewayModelCatalogOwnerSnapshot(
     authModes: owner.authModes,
     authStore: owner.authStore,
     metadataSnapshot: owner.metadataSnapshot,
+    cliBackendModels: owner.cliBackendModels,
     authMaterializations: getPreparedModelRuntimeAuthMaterializations(published),
     pluginRegistry: owner.pluginRegistry,
     isCurrent: owner.isCurrent,

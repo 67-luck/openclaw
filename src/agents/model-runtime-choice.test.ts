@@ -1,4 +1,5 @@
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
@@ -9,6 +10,7 @@ import { createModelRuntimeChoiceOwnerFixture } from "./model-runtime-choice.tes
 import {
   getPreparedModelRuntimeAuthStore,
   bindPreparedModelRuntimeAuth,
+  readPreparedModelRuntimeCliBackendModels,
 } from "./prepared-model-runtime-auth.js";
 import { prepareConfiguredModelAliases } from "./prepared-model-runtime.configured-completion.js";
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.types.js";
@@ -77,6 +79,10 @@ function renderPublishedAliases(owner: PreparedModelRuntimeSnapshot) {
     },
     {
       pluginMetadataSnapshot: owner.metadataSnapshot,
+      cliBackendModels: expectDefined(
+        readPreparedModelRuntimeCliBackendModels(owner),
+        "model-choice fixture CLI identities",
+      ),
       pluginRegistry: owner.pluginRegistry,
       inlineProviderModels: [],
       configuredCatalogEntries: owner.modelCatalog.entries,

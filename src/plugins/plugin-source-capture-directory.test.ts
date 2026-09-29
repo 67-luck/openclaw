@@ -17,7 +17,7 @@ import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js
 import { retainGatewayPluginMetadata } from "./plugin-metadata-lifecycle.js";
 import { withPluginSourceCaptureDirectory } from "./plugin-package-metadata-capture.js";
 import {
-  createPluginSourceCaptureRoot,
+  createPluginSourceCaptureRootAsync,
   retainPluginSourceCaptureInstance,
 } from "./plugin-source-capture-directory.js";
 import { sweepPluginSourceCapturesForTest } from "./plugin-source-capture-directory.test-support.js";
@@ -76,11 +76,11 @@ const childCapture = `
   import fs from "node:fs";
   import path from "node:path";
   import { capturePluginGenerationArtifact } from ${JSON.stringify(artifactModule)};
-  import { createPluginSourceCaptureRoot } from ${JSON.stringify(resolveRuntimeWorkerUrl(pluginProcessRuntimeEntrypoints.captureDirectory).href)};
+  import { createPluginSourceCaptureRootAsync } from ${JSON.stringify(resolveRuntimeWorkerUrl(pluginProcessRuntimeEntrypoints.captureDirectory).href)};
   import { withPluginSourceCaptureDirectory } from ${JSON.stringify(resolveRuntimeWorkerUrl(pluginProcessRuntimeEntrypoints.metadataCapture).href)};
   const source = process.argv[1];
   const worker = process.argv[2] === "worker"
-    ? createPluginSourceCaptureRoot(process.env.OPENCLAW_STATE_DIR, "openclaw-model-catalog-")
+    ? await createPluginSourceCaptureRootAsync(process.env.OPENCLAW_STATE_DIR, "openclaw-model-catalog-")
     : undefined;
   const artifact = worker
     ? withPluginSourceCaptureDirectory(worker.directory, () => capturePluginGenerationArtifact(source))
@@ -761,7 +761,7 @@ it("leaves explicit worker capture directories under their caller's custody", as
 
 it("excludes managed worker output when the state directory is also plugin source", async () => {
   const source = createSource();
-  const root = createPluginSourceCaptureRoot(source, "openclaw-model-catalog-");
+  const root = await createPluginSourceCaptureRootAsync(source, "openclaw-model-catalog-");
   let artifact: ReturnType<typeof capturePluginGenerationArtifact> | undefined;
   try {
     artifact = withPluginSourceCaptureDirectory(

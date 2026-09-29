@@ -113,6 +113,7 @@ describe("models.list provider catalog outcomes", () => {
         authModes: {},
         authStore: emptyAuthStore,
         metadataSnapshot,
+        cliBackendModels: [],
         authMaterializations: [],
         ...reporter.withRefreshStatus({ entries: [], routeVariants: [], providerOutcomes }),
       };

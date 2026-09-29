@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import * as agentHarnessToolRuntime from "openclaw/plugin-sdk/agent-harness-tool-runtime";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -610,6 +611,8 @@ describe("prepared harness source delivery", () => {
 
   it("completes an admitted turn on A after plugin-runtime generation B publishes", async () => {
     const { runEmbeddedAgent } = await loadSourceDeliveryHarness();
+    const { copyPreparedModelRuntimeBindings, readPreparedModelRuntimeCliBackendModels } =
+      await import("../prepared-model-runtime-auth.js");
     const config = {};
     const workspaceDir = state.workspaceDir;
     const pluginRegistry = createEmptyPluginRegistry();
@@ -627,6 +630,10 @@ describe("prepared harness source delivery", () => {
       configuredCatalogEntries: [],
       inlineProviderModels: [],
       pluginMetadataSnapshot: admittedMetadataSnapshot,
+      cliBackendModels: expectDefined(
+        readPreparedModelRuntimeCliBackendModels(baseLease.snapshot),
+        "captured CLI backend models",
+      ),
       pluginRegistry,
     };
     const replacementMetadataSnapshot = {
@@ -641,6 +648,7 @@ describe("prepared harness source delivery", () => {
       pluginRegistry,
       metadataSnapshot: admittedMetadataSnapshot,
     } as NonNullable<ReturnType<typeof getPreparedModelRuntimeBorrowedSnapshot>>;
+    copyPreparedModelRuntimeBindings(baseLease.snapshot, admittedSnapshot);
     let publishedMetadataSnapshot = admittedMetadataSnapshot;
     const release = vi.fn(async () => {});
     let servedMetadataSnapshot: unknown;
@@ -702,6 +710,8 @@ describe("prepared harness source delivery", () => {
     "starts an isolated probe outside its caller's admitted generation (%s)",
     async (outcome) => {
       const { runEmbeddedAgent } = await loadSourceDeliveryHarness();
+      const { copyPreparedModelRuntimeBindings, readPreparedModelRuntimeCliBackendModels } =
+        await import("../prepared-model-runtime-auth.js");
       const config = {};
       const workspaceDir = state.workspaceDir;
       const baseLease = await mockedAcquireAgentRunPreparedModelRuntime({
@@ -710,6 +720,10 @@ describe("prepared harness source delivery", () => {
         workspaceDir,
       });
       const admittedGeneration: PreparedModelRuntimePluginGeneration = {
+        cliBackendModels: expectDefined(
+          readPreparedModelRuntimeCliBackendModels(baseLease.snapshot),
+          "captured CLI backend models",
+        ),
         configuredCatalogEntries: [],
         inlineProviderModels: [],
         pluginMetadataSnapshot: {
@@ -738,14 +752,16 @@ describe("prepared harness source delivery", () => {
           acquisitionStarted.resolve();
           await resumeAcquisition.promise;
           signal?.throwIfAborted();
+          const snapshot = {
+            ...baseLease.snapshot,
+            config,
+            workspaceDir,
+            metadataSnapshot: isolatedMetadataSnapshot,
+          };
+          copyPreparedModelRuntimeBindings(baseLease.snapshot, snapshot);
           return {
             ...baseLease,
-            snapshot: {
-              ...baseLease.snapshot,
-              config,
-              workspaceDir,
-              metadataSnapshot: isolatedMetadataSnapshot,
-            },
+            snapshot,
             [Symbol.asyncDispose]: release,
           };
         },

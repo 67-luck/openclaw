@@ -2,6 +2,12 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ContextEngineHostCapability } from "../context-engine/types.js";
 
+/** Captured identity used by internal prepared model consumers. */
+export type PreparedCliBackendModelIdentity = Readonly<{
+  id: string;
+  modelProvider?: string;
+}>;
+
 type CliBackendNoOutputWatchdog = {
   /** Fraction of overall timeout used when fixed timeout is not set. */
   noOutputTimeoutRatio?: number;

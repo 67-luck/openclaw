@@ -1,6 +1,5 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { types } from "node:util";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -21,6 +20,7 @@ import { resolvePluginModuleExport } from "./module-export.js";
 import {
   getPluginCache,
   getPluginCacheRoot,
+  getPluginMetadataSnapshotCache,
   getProcessPluginCache,
   withPluginCache,
   type PluginCache,
@@ -30,6 +30,7 @@ import { getPluginValueInstance, type PluginInstanceHandle } from "./plugin-inst
 import { tracePluginLifecyclePhase } from "./plugin-lifecycle-trace.js";
 import { PluginLruCache } from "./plugin-lru-cache.js";
 import { resolvePluginMetadataEnvFingerprint } from "./plugin-metadata-snapshot.js";
+import type { PluginMetadataSnapshot } from "./plugin-metadata-snapshot.types.js";
 import { loadPluginRegistrySnapshotWithMetadata } from "./plugin-registry.js";
 import {
   resolvePluginRuntimeExecutionArtifact,
@@ -37,7 +38,14 @@ import {
 } from "./plugin-runtime-artifact-selection.js";
 import { getPluginSetupModuleLoader } from "./plugin-setup-module.js";
 import { resolvePluginRootArtifactPath } from "./root-artifact-path.js";
-import { listSetupCliBackendIds, listSetupProviderIds } from "./setup-descriptors.js";
+import {
+  listSetupCliBackendIds,
+  listSetupProviderIds,
+  matchesProvider,
+  pushSetupDescriptorDriftDiagnostics,
+  type PluginSetupRegistryDiagnostic,
+} from "./setup-descriptors.js";
+import { cloneSetupRegistryValue } from "./setup-registry-value.js";
 import type {
   CliBackendPlugin,
   OpenClawPluginModule,
@@ -73,22 +81,6 @@ type SetupConfigMigrationEntry = {
 type SetupAutoEnableProbeEntry = {
   pluginId: string;
   probe: PluginSetupAutoEnableProbe;
-};
-
-type PluginSetupRegistryDiagnosticCode =
-  | "setup-descriptor-runtime-disabled"
-  | "setup-descriptor-provider-runtime-undeclared"
-  | "setup-descriptor-cli-backend-missing-runtime"
-  | "setup-descriptor-cli-backend-runtime-undeclared"
-  | "setup-entry-load-failed"
-  | "setup-registration-failed";
-
-type PluginSetupRegistryDiagnostic = {
-  pluginId: string;
-  code: PluginSetupRegistryDiagnosticCode;
-  declaredId?: string;
-  runtimeId?: string;
-  message: string;
 };
 
 type PluginSetupRegistry = {
@@ -294,16 +286,6 @@ function buildSetupPluginApi(params: {
   });
 }
 
-function matchesProvider(provider: ProviderPlugin, providerId: string): boolean {
-  const normalized = normalizeProviderId(providerId);
-  if (normalizeProviderId(provider.id) === normalized) {
-    return true;
-  }
-  return [...(provider.aliases ?? []), ...(provider.hookAliases ?? [])].some(
-    (alias) => normalizeProviderId(alias) === normalized,
-  );
-}
-
 function resolveSetupRegistryCacheKey(params?: {
   config?: OpenClawConfig;
   workspaceDir?: string;
@@ -327,75 +309,19 @@ function resolveSetupRegistryCacheKey(params?: {
   ]);
 }
 
-function cloneSetupRegistryValue<T>(value: T, seen = new WeakMap<object, unknown>()): T {
-  if (!value || typeof value !== "object") {
-    return value;
-  }
-  const cached = seen.get(value);
-  if (cached !== undefined) {
-    return cached as T;
-  }
-  if (types.isDate(value)) {
-    const clone = new Date(value);
-    seen.set(value, clone);
-    return clone as T;
-  }
-  if (types.isRegExp(value)) {
-    const clone = new RegExp(value.source, value.flags);
-    clone.lastIndex = value.lastIndex;
-    seen.set(value, clone);
-    return clone as T;
-  }
-  if (Array.isArray(value)) {
-    const clone: unknown[] = [];
-    seen.set(value, clone);
-    clone.push(...value.map((entry) => cloneSetupRegistryValue(entry, seen)));
-    return clone as T;
-  }
-  if (types.isMap(value)) {
-    const clone = new Map<unknown, unknown>();
-    seen.set(value, clone);
-    for (const [key, entry] of value.entries()) {
-      clone.set(cloneSetupRegistryValue(key, seen), cloneSetupRegistryValue(entry, seen));
-    }
-    return clone as T;
-  }
-  if (types.isSet(value)) {
-    const clone = new Set<unknown>();
-    seen.set(value, clone);
-    for (const entry of value.values()) {
-      clone.add(cloneSetupRegistryValue(entry, seen));
-    }
-    return clone as T;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== null && Object.getPrototypeOf(prototype) !== null) {
-    // Class-prototyped values are shared by reference: setup registrations must
-    // treat them as immutable, or a caller mutation corrupts later cache hits.
-    return value;
-  }
-  const clone = Object.create(prototype) as Record<PropertyKey, unknown>;
-  seen.set(value, clone);
-  for (const key of Reflect.ownKeys(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor) {
-      continue;
-    }
-    if ("value" in descriptor) {
-      descriptor.value = cloneSetupRegistryValue(descriptor.value, seen);
-    }
-    Object.defineProperty(clone, key, descriptor);
-  }
-  return clone as T;
-}
-
 function loadSetupManifestRecords(params: {
   config?: OpenClawConfig;
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
   pluginIds?: readonly string[];
+  metadataSnapshot?: PluginMetadataSnapshot;
 }) {
-  const { snapshot: index, manifestRegistry } = loadPluginRegistrySnapshotWithMetadata(params);
+  const { snapshot: index, manifestRegistry } = params.metadataSnapshot
+    ? {
+        snapshot: params.metadataSnapshot.index,
+        manifestRegistry: params.metadataSnapshot.manifestRegistry,
+      }
+    : loadPluginRegistrySnapshotWithMetadata(params);
   if (!manifestRegistry) {
     return loadPluginManifestRegistryForInstalledIndex({ ...params, index, includeDisabled: true })
       .plugins;
@@ -437,22 +363,14 @@ function findUniqueSetupManifestOwner({
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-function resolveSetupRegistryForManifestOwner(record: PluginManifestRecord): PluginSetupRegistry {
+function resolveSetupRegistryForManifestOwner(
+  record: PluginManifestRecord,
+  metadataSnapshot?: PluginMetadataSnapshot,
+): PluginSetupRegistry {
   return resolvePluginSetupRegistry({
     manifestRegistry: { plugins: [record], diagnostics: [] },
+    metadataSnapshot,
   });
-}
-
-function mapNormalizedIds(ids: readonly string[]): Map<string, string> {
-  const mapped = new Map<string, string>();
-  for (const id of ids) {
-    const normalized = normalizeProviderId(id);
-    if (!normalized || mapped.has(normalized)) {
-      continue;
-    }
-    mapped.set(normalized, id);
-  }
-  return mapped;
 }
 
 function pushDescriptorRuntimeDisabledDiagnostic(params: {
@@ -470,221 +388,202 @@ function pushDescriptorRuntimeDisabledDiagnostic(params: {
   });
 }
 
-function pushSetupDescriptorDriftDiagnostics(params: {
-  record: PluginManifestRecord;
-  providers: readonly ProviderPlugin[];
-  cliBackends: readonly CliBackendPlugin[];
-  diagnostics: PluginSetupRegistryDiagnostic[];
-}): void {
-  const declaredProviderIds = params.record.setup?.providers?.map((entry) => entry.id);
-  if (declaredProviderIds) {
-    for (const provider of params.providers) {
-      if (!declaredProviderIds.some((declaredId) => matchesProvider(provider, declaredId))) {
-        params.diagnostics.push({
-          pluginId: params.record.id,
-          code: "setup-descriptor-provider-runtime-undeclared",
-          runtimeId: provider.id,
-          message: `setup runtime registered provider "${provider.id}" but setup.providers does not declare it.`,
-        });
-      }
-    }
-  }
-
-  const declaredCliBackendIds = params.record.setup?.cliBackends;
-  if (declaredCliBackendIds) {
-    const declaredCliBackends = mapNormalizedIds(declaredCliBackendIds);
-    const runtimeCliBackends = mapNormalizedIds(params.cliBackends.map((backend) => backend.id));
-    for (const [normalized, declaredId] of declaredCliBackends) {
-      if (!runtimeCliBackends.has(normalized)) {
-        params.diagnostics.push({
-          pluginId: params.record.id,
-          code: "setup-descriptor-cli-backend-missing-runtime",
-          declaredId,
-          message: `setup.cliBackends declares "${declaredId}" but setup runtime did not register a matching CLI backend.`,
-        });
-      }
-    }
-    for (const [normalized, runtimeId] of runtimeCliBackends) {
-      if (!declaredCliBackends.has(normalized)) {
-        params.diagnostics.push({
-          pluginId: params.record.id,
-          code: "setup-descriptor-cli-backend-runtime-undeclared",
-          runtimeId,
-          message: `setup runtime registered CLI backend "${runtimeId}" but setup.cliBackends does not declare it.`,
-        });
-      }
-    }
-  }
-}
-
 function withPluginSetupCache<TArgs extends unknown[], TResult>(
   query: (...args: TArgs) => TResult,
+  metadata?: (...args: TArgs) => PluginMetadataSnapshot | undefined,
 ) {
   return (...args: TArgs): TResult => {
+    const captured = metadata?.(...args);
     const ambient = getPluginCache();
-    // Retained runtime callbacks keep captured package facts, but new setup
-    // queries belong to the published inventory. Candidate operations stay isolated.
-    return withPluginCache(ambient.kind === "process" ? getProcessPluginCache() : ambient, () =>
-      query(...args),
+    // Explicitly prepared queries retain their inventory cache; unprepared process
+    // queries use the published inventory. Candidate operations stay isolated.
+    return withPluginCache(
+      captured
+        ? getPluginMetadataSnapshotCache(captured)
+        : ambient.kind === "process"
+          ? getProcessPluginCache()
+          : ambient,
+      () => query(...args),
     );
   };
 }
 
-export const resolvePluginSetupRegistry = withPluginSetupCache(function (params?: {
-  config?: OpenClawConfig;
-  workspaceDir?: string;
-  env?: NodeJS.ProcessEnv;
-  pluginIds?: readonly string[];
-  manifestRegistry?: PluginManifestRegistry;
-}): PluginSetupRegistry {
-  const env = params?.env ?? process.env;
-  const scopedPluginIds = params?.pluginIds
-    ? new Set(normalizeStringEntries(params.pluginIds))
-    : null;
-  if (scopedPluginIds && scopedPluginIds.size === 0) {
-    return {
-      providers: [],
-      cliBackends: [],
-      configMigrations: [],
-      autoEnableProbes: [],
-      diagnostics: [],
-    };
-  }
-
-  // Caller-supplied manifests own their registration; only implicit inventory requests reuse it.
-  const resultCacheKey = params?.manifestRegistry ? null : resolveSetupRegistryCacheKey(params);
-  const resultCache = getSetupRegistryCache();
-  if (resultCacheKey !== null) {
-    const cached = resultCache.get(resultCacheKey);
-    if (cached) {
-      return cloneSetupRegistryValue(cached);
-    }
-  }
-
-  const providers: SetupProviderEntry[] = [];
-  const cliBackends: SetupCliBackendEntry[] = [];
-  const configMigrations: SetupConfigMigrationEntry[] = [];
-  const autoEnableProbes: SetupAutoEnableProbeEntry[] = [];
-  const diagnostics: PluginSetupRegistryDiagnostic[] = [];
-  const providerKeys = new Set<string>();
-  const cliBackendKeys = new Set<string>();
-
-  const plugins =
-    params?.manifestRegistry == null
-      ? loadSetupManifestRecords({
-          config: params?.config,
-          workspaceDir: params?.workspaceDir,
-          env,
-          pluginIds: params?.pluginIds,
-        })
-      : params.manifestRegistry.plugins;
-
-  for (const record of plugins) {
-    if (scopedPluginIds && !scopedPluginIds.has(record.id)) {
-      continue;
-    }
-    if (record.setup?.requiresRuntime === false) {
-      pushDescriptorRuntimeDisabledDiagnostic({
-        record,
-        diagnostics,
-      });
-      continue;
-    }
-    const setupRegistration = resolveSetupRegistration(record, diagnostics);
-    if (!setupRegistration) {
-      continue;
+export const resolvePluginSetupRegistry = withPluginSetupCache(
+  function (params?: {
+    config?: OpenClawConfig;
+    workspaceDir?: string;
+    env?: NodeJS.ProcessEnv;
+    pluginIds?: readonly string[];
+    manifestRegistry?: PluginManifestRegistry;
+    metadataSnapshot?: PluginMetadataSnapshot;
+  }): PluginSetupRegistry {
+    const env = params?.env ?? process.env;
+    const scopedPluginIds = params?.pluginIds
+      ? new Set(normalizeStringEntries(params.pluginIds))
+      : null;
+    if (scopedPluginIds && scopedPluginIds.size === 0) {
+      const empty = {
+        providers: [],
+        cliBackends: [],
+        configMigrations: [],
+        autoEnableProbes: [],
+        diagnostics: [],
+      } satisfies PluginSetupRegistry;
+      return empty;
     }
 
-    const recordProviders = new Map<string, SetupProviderEntry>();
-    const recordCliBackends = new Map<string, SetupCliBackendEntry>();
-    const recordConfigMigrations: SetupConfigMigrationEntry[] = [];
-    const recordAutoEnableProbes: SetupAutoEnableProbeEntry[] = [];
-    const api = buildSetupPluginApi({
-      record,
-      setupSource: setupRegistration.setupSource,
-      handlers: {
-        registerProvider(provider) {
-          const key = `${record.id}:${normalizeProviderId(provider.id)}`;
-          if (providerKeys.has(key) || recordProviders.has(key)) {
-            return;
-          }
-          recordProviders.set(key, { pluginId: record.id, provider });
-        },
-        registerCliBackend(backend) {
-          const key = `${record.id}:${normalizeProviderId(backend.id)}`;
-          if (cliBackendKeys.has(key) || recordCliBackends.has(key)) {
-            return;
-          }
-          recordCliBackends.set(key, { pluginId: record.id, backend });
-        },
-        registerConfigMigration(migrate) {
-          recordConfigMigrations.push({
-            pluginId: record.id,
-            migrate,
-          });
-        },
-        registerAutoEnableProbe(probe) {
-          recordAutoEnableProbes.push({
-            pluginId: record.id,
-            probe,
-          });
-        },
-      },
-    });
+    // Explicit inventories own their registration; projections can share the same module cache.
+    const resultCacheKey =
+      params?.manifestRegistry || params?.metadataSnapshot
+        ? null
+        : resolveSetupRegistryCacheKey(params);
+    const resultCache = getSetupRegistryCache();
+    if (resultCacheKey !== null) {
+      const cached = resultCache.get(resultCacheKey);
+      if (cached) {
+        return cloneSetupRegistryValue(cached);
+      }
+    }
 
-    try {
-      if (
-        !setupRegistration.initialize(() =>
-          setupRegistration.register(instrumentPluginInstanceApi(api, setupRegistration.instance)),
-        )
-      ) {
+    const providers: SetupProviderEntry[] = [];
+    const cliBackends: SetupCliBackendEntry[] = [];
+    const configMigrations: SetupConfigMigrationEntry[] = [];
+    const autoEnableProbes: SetupAutoEnableProbeEntry[] = [];
+    const diagnostics: PluginSetupRegistryDiagnostic[] = [];
+    const providerKeys = new Set<string>();
+    const cliBackendKeys = new Set<string>();
+
+    const plugins =
+      params?.manifestRegistry == null
+        ? loadSetupManifestRecords({
+            config: params?.config,
+            workspaceDir: params?.workspaceDir,
+            env,
+            pluginIds: params?.pluginIds,
+            metadataSnapshot: params?.metadataSnapshot,
+          })
+        : params.manifestRegistry.plugins;
+
+    for (const record of plugins) {
+      if (scopedPluginIds && !scopedPluginIds.has(record.id)) {
         continue;
       }
-    } catch (error) {
-      diagnostics.push({
-        pluginId: record.id,
-        code: "setup-registration-failed",
-        message: `setup registration threw: ${formatErrorMessage(error)}`,
-      });
-      continue;
-    }
-    configMigrations.push(...recordConfigMigrations);
-    autoEnableProbes.push(...recordAutoEnableProbes);
-    for (const [key, entry] of recordProviders) {
-      providerKeys.add(key);
-      providers.push(entry);
-    }
-    for (const [key, entry] of recordCliBackends) {
-      cliBackendKeys.add(key);
-      cliBackends.push(entry);
-    }
-    pushSetupDescriptorDriftDiagnostics({
-      record,
-      providers: [...recordProviders.values()].map((entry) => entry.provider),
-      cliBackends: [...recordCliBackends.values()].map((entry) => entry.backend),
-      diagnostics,
-    });
-  }
+      if (record.setup?.requiresRuntime === false) {
+        pushDescriptorRuntimeDisabledDiagnostic({
+          record,
+          diagnostics,
+        });
+        continue;
+      }
+      const setupRegistration = resolveSetupRegistration(record, diagnostics);
+      if (!setupRegistration) {
+        continue;
+      }
 
-  const registry = {
-    providers,
-    cliBackends,
-    configMigrations,
-    autoEnableProbes,
-    diagnostics,
-  } satisfies PluginSetupRegistry;
-  // The diagnostics array has no other operator surface; warn once per
-  // (uncached) build so broken setup entries and descriptor drift are
-  // visible instead of silently narrowing onboarding.
-  for (const diagnostic of diagnostics) {
-    log.warn(`plugin setup [${diagnostic.pluginId}] ${diagnostic.code}: ${diagnostic.message}`);
-  }
-  if (resultCacheKey === null) {
+      const recordProviders: SetupProviderEntry[] = [];
+      const recordCliBackends: SetupCliBackendEntry[] = [];
+      const recordConfigMigrations: SetupConfigMigrationEntry[] = [];
+      const recordAutoEnableProbes: SetupAutoEnableProbeEntry[] = [];
+      const recordProviderKeys = new Set<string>();
+      const recordCliBackendKeys = new Set<string>();
+      const api = buildSetupPluginApi({
+        record,
+        setupSource: setupRegistration.setupSource,
+        handlers: {
+          registerProvider(provider) {
+            const key = `${record.id}:${normalizeProviderId(provider.id)}`;
+            if (providerKeys.has(key) || recordProviderKeys.has(key)) {
+              return;
+            }
+            recordProviderKeys.add(key);
+            recordProviders.push({
+              pluginId: record.id,
+              provider,
+            });
+          },
+          registerCliBackend(backend) {
+            const key = `${record.id}:${normalizeProviderId(backend.id)}`;
+            if (cliBackendKeys.has(key) || recordCliBackendKeys.has(key)) {
+              return;
+            }
+            recordCliBackendKeys.add(key);
+            recordCliBackends.push({
+              pluginId: record.id,
+              backend,
+            });
+          },
+          registerConfigMigration(migrate) {
+            recordConfigMigrations.push({
+              pluginId: record.id,
+              migrate,
+            });
+          },
+          registerAutoEnableProbe(probe) {
+            recordAutoEnableProbes.push({
+              pluginId: record.id,
+              probe,
+            });
+          },
+        },
+      });
+
+      try {
+        if (
+          !setupRegistration.initialize(() =>
+            setupRegistration.register(
+              instrumentPluginInstanceApi(api, setupRegistration.instance),
+            ),
+          )
+        ) {
+          continue;
+        }
+      } catch (error) {
+        diagnostics.push({
+          pluginId: record.id,
+          code: "setup-registration-failed",
+          message: `setup registration threw: ${formatErrorMessage(error)}`,
+        });
+        continue;
+      }
+      providers.push(...recordProviders);
+      cliBackends.push(...recordCliBackends);
+      configMigrations.push(...recordConfigMigrations);
+      autoEnableProbes.push(...recordAutoEnableProbes);
+      for (const key of recordProviderKeys) {
+        providerKeys.add(key);
+      }
+      for (const key of recordCliBackendKeys) {
+        cliBackendKeys.add(key);
+      }
+      pushSetupDescriptorDriftDiagnostics({
+        record,
+        providers: recordProviders.map((entry) => entry.provider),
+        cliBackends: recordCliBackends.map((entry) => entry.backend),
+        diagnostics,
+      });
+    }
+
+    const registry = {
+      providers,
+      cliBackends,
+      configMigrations,
+      autoEnableProbes,
+      diagnostics,
+    } satisfies PluginSetupRegistry;
+    // The diagnostics array has no other operator surface; warn once per
+    // (uncached) build so broken setup entries and descriptor drift are
+    // visible instead of silently narrowing onboarding.
+    for (const diagnostic of diagnostics) {
+      log.warn(`plugin setup [${diagnostic.pluginId}] ${diagnostic.code}: ${diagnostic.message}`);
+    }
+    if (resultCacheKey === null) {
+      return registry;
+    }
+    resultCache.set(resultCacheKey, cloneSetupRegistryValue(registry));
     return registry;
-  }
-  resultCache.set(resultCacheKey, cloneSetupRegistryValue(registry));
-  return registry;
-});
+  },
+  (params?) => params?.metadataSnapshot,
+);
 
 export const resolvePluginSetupProviderCore = withPluginSetupCache(function (params: {
   provider: string;
@@ -711,32 +610,53 @@ export const resolvePluginSetupProviderCore = withPluginSetupCache(function (par
   )?.provider;
 });
 
-export const resolvePluginSetupCliBackend = withPluginSetupCache(function (params: {
+type SetupCliBackendLookupParams = {
   backend: string;
   config?: OpenClawConfig;
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
-}): SetupCliBackendEntry | undefined {
-  const normalized = normalizeProviderId(params.backend);
+  metadataSnapshot?: PluginMetadataSnapshot;
+};
 
+function selectSetupCliBackendLookup(
+  params: SetupCliBackendLookupParams,
+): SetupCliBackendEntry | (() => SetupCliBackendEntry | undefined) | undefined {
+  const normalized = normalizeProviderId(params.backend);
   const env = params.env ?? process.env;
-  // Narrow setup lookup from manifest-owned descriptors before executing any
-  // plugin setup module. This avoids booting every setup-api just to find one
-  // backend owner.
   const record = findUniqueSetupManifestOwner({
     config: params.config,
     workspaceDir: params.workspaceDir,
     env,
+    metadataSnapshot: params.metadataSnapshot,
     normalizedId: normalized,
     listIds: listSetupCliBackendIds,
   });
   if (!record) {
     return undefined;
   }
-  return resolveSetupRegistryForManifestOwner(record).cliBackends.find(
-    (entry) => normalizeProviderId(entry.backend.id) === normalized,
-  );
-});
+  const cache = getPluginCache();
+  const read = () =>
+    withPluginCache(cache, () =>
+      resolveSetupRegistryForManifestOwner(record, params.metadataSnapshot).cliBackends.find(
+        (entry) => normalizeProviderId(entry.backend.id) === normalized,
+      ),
+    );
+  return record.setup?.requiresRuntime === false ? read() : read;
+}
+
+/** Private preparation carries the selected owner through asynchronous source admission. */
+export const selectPluginSetupCliBackendLookup = withPluginSetupCache(
+  selectSetupCliBackendLookup,
+  (params) => params.metadataSnapshot,
+);
+
+export const resolvePluginSetupCliBackend = withPluginSetupCache(
+  (params: SetupCliBackendLookupParams): SetupCliBackendEntry | undefined => {
+    const selected = selectSetupCliBackendLookup(params);
+    return typeof selected === "function" ? selected() : selected;
+  },
+  (params) => params.metadataSnapshot,
+);
 
 export const runPluginSetupConfigMigrations = withPluginSetupCache(function (params: {
   config: OpenClawConfig;
@@ -810,4 +730,3 @@ export const resolvePluginSetupAutoEnableReasons = withPluginSetupCache(function
 
   return reasons;
 });
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

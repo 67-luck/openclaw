@@ -11,6 +11,7 @@ export type PreparedGatewayModelCatalogSnapshot = GatewayModelCatalogSnapshot &
     | "authModes"
     | "authStore"
     | "metadataSnapshot"
+    | "cliBackendModels"
     | "pluginRegistry"
     | "isCurrent"
     | "observationConfig"

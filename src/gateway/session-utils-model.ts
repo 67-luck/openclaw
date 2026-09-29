@@ -19,6 +19,7 @@ import type { ModelRef } from "../agents/model-ref-shared.js";
 import {
   findNormalizedProviderValue,
   isCliProvider,
+  normalizeProviderId,
   parseModelRef,
   resolveConfiguredModelRef,
   resolveDefaultModelForAgent,
@@ -41,6 +42,7 @@ import { resolveAgentMainSessionKey, type SessionEntry } from "../config/session
 import { projectPublicSessionEntry } from "../config/sessions/session-entry-projection.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { PreparedCliBackendModelIdentity } from "../plugins/cli-backend.types.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
 import type { GatewayModelCatalogSnapshot } from "./server-model-catalog.types.js";
@@ -258,6 +260,12 @@ export function resolveGatewaySessionThinkingProjectionInternal(
   };
 }
 
+export function resolveSessionDefaultsAgentId(cfg: OpenClawConfig, agentId?: string): string {
+  return normalizeAgentId(
+    agentId ?? tryResolveLegacyCompatibilityAgentId(cfg) ?? LEGACY_IMPLICIT_AGENT_ID,
+  );
+}
+
 export function getSessionDefaults(
   cfg: OpenClawConfig,
   modelCatalog?: ModelCatalogEntry[],
@@ -266,12 +274,11 @@ export function getSessionDefaults(
     modelRef?: ModelRef;
     allowPluginNormalization?: boolean;
     metadataSnapshot?: PluginMetadataSnapshot;
+    preparedCliBackendModels?: readonly PreparedCliBackendModelIdentity[];
     providerPolicySource?: ThinkingProviderPolicySource;
   },
 ): GatewaySessionsDefaults {
-  const agentId = normalizeAgentId(
-    options?.agentId ?? tryResolveLegacyCompatibilityAgentId(cfg) ?? LEGACY_IMPLICIT_AGENT_ID,
-  );
+  const agentId = resolveSessionDefaultsAgentId(cfg, options?.agentId);
   const resolved =
     options?.modelRef ??
     (options?.agentId
@@ -292,6 +299,8 @@ export function getSessionDefaults(
     cfg,
     provider: resolved.provider,
     model: resolved.model,
+    metadataSnapshot: options?.metadataSnapshot,
+    preparedCliBackendModels: options?.preparedCliBackendModels,
   });
   const catalogEntry = modelCatalog
     ? findModelCatalogEntry(modelCatalog, {
@@ -553,12 +562,20 @@ export async function resolveGatewayModelSupportsImages(params: {
 
 export function resolveSessionDisplayModelIdentityRefCached(params: {
   cfg: OpenClawConfig;
+  agentId?: string;
   provider?: string;
   model?: string;
+  metadataSnapshot?: PluginMetadataSnapshot;
+  preparedCliBackendModels?: readonly PreparedCliBackendModelIdentity[];
   rowContext?: SessionListRowContext;
 }): { provider?: string; model?: string } {
   const ctx = params.rowContext;
-  const key = ctx ? createSessionRowModelCacheKey(params.provider, params.model) : undefined;
+  const modelKey = createSessionRowModelCacheKey(params.provider, params.model);
+  const key = ctx
+    ? params.agentId
+      ? JSON.stringify([normalizeAgentId(params.agentId), modelKey])
+      : modelKey
+    : undefined;
   const cached = key === undefined ? undefined : ctx?.displayModelIdentityByKey.get(key);
   if (cached) {
     return cached;
@@ -566,7 +583,14 @@ export function resolveSessionDisplayModelIdentityRefCached(params: {
   const provider = normalizeOptionalString(params.provider);
   const model = normalizeOptionalString(params.model);
   let value = { provider, model };
-  if (provider && model && isCliProvider(provider, params.cfg)) {
+  const cliProvider =
+    provider &&
+    (params.preparedCliBackendModels === undefined
+      ? isCliProvider(provider, params.cfg, params.metadataSnapshot)
+      : params.preparedCliBackendModels.some(
+          (backend) => backend.id === normalizeProviderId(provider),
+        ));
+  if (provider && model && cliProvider) {
     const identity = (model.includes("/")
       ? parseModelRef(model, provider, {
           allowPluginNormalization: false,
@@ -579,6 +603,7 @@ export function resolveSessionDisplayModelIdentityRefCached(params: {
           runtime: identity.provider,
           config: params.cfg,
           includeSetupRegistry: true,
+          preparedCliBackendModels: params.preparedCliBackendModels,
         }) ?? identity.provider,
       model: identity.model,
     };
@@ -595,6 +620,8 @@ export function projectSessionPatchResult(params: {
   entry: SessionEntry;
   modelCatalog?: ModelCatalogEntry[];
   modelCatalogRouteVariants?: readonly ModelCatalogEntry[];
+  metadataSnapshot?: PluginMetadataSnapshot;
+  preparedCliBackendModels?: readonly PreparedCliBackendModelIdentity[];
   storePath: string;
   targetAgentId: string;
 }): SessionsPatchResult {
@@ -606,8 +633,11 @@ export function projectSessionPatchResult(params: {
   const resolved = resolveSessionModelRef(params.cfg, params.entry, agentId);
   const displayModel = resolveSessionDisplayModelIdentityRefCached({
     cfg: params.cfg,
+    agentId,
     provider: resolved.provider,
     model: resolved.model,
+    metadataSnapshot: params.metadataSnapshot,
+    preparedCliBackendModels: params.preparedCliBackendModels,
   });
   const modelCatalog = params.modelCatalog;
   const thinking = resolveGatewaySessionThinkingProjectionInternal({

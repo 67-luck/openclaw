@@ -7,6 +7,7 @@ import { validateAgentsListParams } from "../../../packages/gateway-protocol/src
 import { listAgentIds } from "../../agents/agent-scope.js";
 import { prepareOperatorModelPresentation } from "../operator-model-presentation.js";
 import { authorizeCurrentOperatorRoleScopes } from "../operator-role-policy.js";
+import { readPreparedGatewayCliBackendModels } from "../server-model-catalog-view.js";
 import { listAgentsForGateway } from "../session-utils.js";
 import {
   readPreparedServerMethodModelCatalog,
@@ -62,7 +63,13 @@ export const agentListHandler: GatewayRequestHandler = async ({
       ? {
           ...result,
           agents: result.agents.map((agent) =>
-            policy.forAgent(agent.id, modelCatalogByAgentId.get(agent.id)?.entries).agent(agent),
+            policy
+              .forAgent(
+                agent.id,
+                modelCatalogByAgentId.get(agent.id)?.entries,
+                readPreparedGatewayCliBackendModels(modelCatalogByAgentId.get(agent.id)),
+              )
+              .agent(agent),
           ),
         }
       : result,

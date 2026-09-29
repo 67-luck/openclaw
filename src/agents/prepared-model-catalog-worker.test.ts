@@ -6,6 +6,7 @@ import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.
 import {
   createPreparedModelCatalogWorkerInput,
   fingerprintPreparedModelCatalogGeneration,
+  fingerprintPreparedModelCatalogPluginContext,
   fingerprintPreparedModelWorkerRequest,
 } from "./prepared-model-catalog-worker.js";
 import type { PreparedModelRuntimeAgentFacts } from "./prepared-model-runtime.catalog-contract.js";
@@ -42,6 +43,7 @@ describe("prepared model catalog worker input", () => {
         captured = createPreparedModelCatalogWorkerInput({
           agentFacts: { ...agentFacts, input: { config, agentDir: `/tmp/catalog-agent-${index}` } },
           pluginMetadataSnapshot,
+          cliBackendModels: [],
         });
       }
       expect(
@@ -97,7 +99,11 @@ describe("prepared model catalog worker input", () => {
       order: { shared: ["shared:named"] },
       lastGood: { shared: "shared:named" },
     };
+    const cliBackendModels = Object.freeze([
+      Object.freeze({ id: "retained-cli", modelProvider: "canonical-provider" }),
+    ]);
     const params = {
+      cliBackendModels,
       agentFacts: {
         input: {
           agentDir: "/tmp/agent",
@@ -124,7 +130,25 @@ describe("prepared model catalog worker input", () => {
     };
     const workerInput = createPreparedModelCatalogWorkerInput(params);
 
+    expect(workerInput.cliBackendModels).toBe(cliBackendModels);
     const cloned = structuredClone(workerInput);
+    expect(cloned.cliBackendModels).toEqual(cliBackendModels);
+    expect(fingerprintPreparedModelCatalogGeneration(cloned)).toBe(
+      workerInput.generationFingerprint,
+    );
+    const changedCli = {
+      ...cloned,
+      cliBackendModels: [{ id: "retained-cli", modelProvider: "different-provider" }],
+    };
+    expect(fingerprintPreparedModelCatalogGeneration(changedCli)).not.toBe(
+      workerInput.generationFingerprint,
+    );
+    expect(fingerprintPreparedModelCatalogPluginContext(changedCli)).not.toBe(
+      fingerprintPreparedModelCatalogPluginContext(cloned),
+    );
+    expect(fingerprintPreparedModelCatalogPluginContext(structuredClone(cloned))).toBe(
+      fingerprintPreparedModelCatalogPluginContext(cloned),
+    );
     expect(cloned.authStore.profiles).toEqual({
       "shared:named": authStore.profiles["shared:named"],
       "unrelated:default": {

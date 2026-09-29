@@ -80,6 +80,7 @@ function withAdmitted<T>(snapshot: PreparedModelRuntimeSnapshot, run: () => T, a
   return withPreparedModelRuntimePluginGenerationScope(
     {
       pluginMetadataSnapshot: snapshot.metadataSnapshot,
+      cliBackendModels: [],
       inlineProviderModels: [],
       configuredCatalogEntries: snapshot.modelCatalog.entries,
     },

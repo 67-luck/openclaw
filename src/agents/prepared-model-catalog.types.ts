@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { PreparedCliBackendModelIdentity } from "../plugins/cli-backend.types.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import type { PreparedAgentCredentialModes } from "./agent-auth-credential-modes.js";
@@ -29,5 +30,6 @@ export type ResolvedPublishedModelCatalogOwner = Readonly<
     agentId: string;
     workspaceDir: string;
     authStore: AuthProfileStore;
+    cliBackendModels: readonly PreparedCliBackendModelIdentity[] | undefined;
   }
 >;

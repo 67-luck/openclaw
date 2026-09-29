@@ -16,6 +16,7 @@ import { PreparedModelCatalogConfigReplacedError } from "./prepared-model-catalo
 import type { ResolvedPublishedModelCatalogOwner } from "./prepared-model-catalog.types.js";
 import {
   getPreparedModelFullCatalogAuth,
+  copyPreparedModelRuntimeBindings,
   getPreparedModelRuntimeAuthMaterializations,
   loadPreparedModelRuntimeAuth,
   bindPreparedModelRuntimeAuth,
@@ -129,6 +130,7 @@ export function materializePreparedModelCatalogOwner(
   });
   // Later explicit auth refreshes stay bound to the original owner generation. Ordinary reads
   // consume the full worker's paired auth without invoking this loader.
+  copyPreparedModelRuntimeBindings(snapshot, materialized);
   bindPreparedModelRuntimeAuth(materialized, {
     store: fullAuth.authStore,
     labels: fullAuth.providerAuthLabels,

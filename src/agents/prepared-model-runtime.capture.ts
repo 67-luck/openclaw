@@ -1,6 +1,6 @@
 import type { Model } from "../llm/types.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
-import { copyPreparedModelRuntimeAuthBindings } from "./prepared-model-runtime-auth.js";
+import { copyPreparedModelRuntimeBindings } from "./prepared-model-runtime-auth.js";
 import { mergePreparedNativeCatalog } from "./prepared-model-runtime.full-catalog.js";
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.types.js";
 import { AuthStorage } from "./sessions/auth-storage.js";
@@ -71,7 +71,7 @@ export function capturePreparedModelRuntimeCatalog(
   admittedCatalogs.set(capturedNative, cached.admittedCatalog);
   if (!models?.size) {
     if (capturedNative !== snapshot) {
-      copyPreparedModelRuntimeAuthBindings(snapshot, capturedNative);
+      copyPreparedModelRuntimeBindings(snapshot, capturedNative);
     }
     return capturedNative;
   }
@@ -87,7 +87,7 @@ export function capturePreparedModelRuntimeCatalog(
       return { authStorage, modelRegistry: registry.fork(authStorage) };
     },
   });
-  copyPreparedModelRuntimeAuthBindings(snapshot, captured);
+  copyPreparedModelRuntimeBindings(snapshot, captured);
   admittedCatalogs.set(captured, cached.admittedCatalog);
   return captured;
 }

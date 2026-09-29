@@ -12,11 +12,14 @@ export class InvocationFrame implements PluginExecutionFrame {
   readonly cacheScope: PluginExecutionScopes["cacheScope"];
   readonly sourceCaptureStorage: PluginExecutionScopes["sourceCaptureStorage"];
 
+  readonly sourceCaptureScope: PluginExecutionScopes["sourceCaptureScope"];
+
   constructor(scopes: PluginExecutionScopes) {
     this.invocation = scopes.invocation;
     this.metadataScope = scopes.metadataScope;
     this.cacheScope = scopes.cacheScope;
     this.sourceCaptureStorage = scopes.sourceCaptureStorage;
+    this.sourceCaptureScope = scopes.sourceCaptureScope;
   }
 
   withScopes(scopes: PluginExecutionScopes): InvocationFrame {

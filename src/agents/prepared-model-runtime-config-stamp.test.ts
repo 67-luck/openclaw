@@ -13,6 +13,7 @@ import {
   getPreparedModelRuntimeAuthStore,
   loadPreparedModelRuntimeAuth,
   bindPreparedModelRuntimeAuth,
+  readPreparedModelRuntimeCliBackendModels,
 } from "./prepared-model-runtime-auth.js";
 import {
   advancePreparedModelRuntimeConfig,
@@ -35,6 +36,10 @@ describe("prepared model runtime config stamps", () => {
     await refreshPreparedModelRuntimeSnapshots(initialConfig, { gatewayLifecycle: true });
     const input = fixture.agentInput("default", initialConfig);
     const existingReader = await prepareModelRuntimeSnapshot(input);
+    const cliBackendModels = readPreparedModelRuntimeCliBackendModels(existingReader);
+    expect(cliBackendModels).toEqual([]);
+    expect(existingReader).not.toHaveProperty("cliBackendModels");
+    expect(readPreparedModelRuntimeCliBackendModels({ ...existingReader })).toBeUndefined();
     const materializations = [
       {
         provider: "test",
@@ -64,6 +69,8 @@ describe("prepared model runtime config stamps", () => {
     });
     expect(getPreparedModelRuntimeAuthStore(advanced)).toBe(authStore);
     expect(getPreparedModelRuntimeAuthMaterializations(advanced)).toBe(materializations);
+    expect(readPreparedModelRuntimeCliBackendModels(advanced)).toBe(cliBackendModels);
+    expect(advanced).not.toHaveProperty("cliBackendModels");
     await expect(loadPreparedModelRuntimeAuth(advanced, { providerIds: [] })).resolves.toEqual(
       loadedAuth,
     );

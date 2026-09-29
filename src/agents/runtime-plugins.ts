@@ -246,19 +246,22 @@ export type AcquiredAgentRuntimePluginRegistry =
 /** Prepared read-only owners reuse the load plan while owning fresh, uncached registrations. */
 export async function acquireAgentRuntimePluginRegistry(
   params: AgentRuntimePluginRegistryParams,
+  assertOwnerCurrent?: () => void,
 ): Promise<AcquiredAgentRuntimePluginRegistry> {
+  assertOwnerCurrent?.();
   const loadOptions = resolveAgentRuntimePluginRegistryLoad(params);
   const reusable = reusableAgentRuntimeRegistry(params, loadOptions);
   if (reusable) {
     return { registry: bindAdmittingGateway(reusable), primaryRegistry: reusable };
   }
-  const acquire = () => acquirePluginRegistryForInspection(loadOptions);
+  const acquire = () => acquirePluginRegistryForInspection(loadOptions, assertOwnerCurrent);
   const channelSource = captureRuntimeChannelSource(getActivePluginRegistry());
   const acquired = await (params.metadataSnapshot
     ? withPluginMetadataSnapshotScope(params.metadataSnapshot, acquire)
     : acquire());
   let releaseWork = () => {};
   try {
+    assertOwnerCurrent?.();
     const { registry, donor, toolDonor } = adoptAgentRuntimeRegistrations(
       acquired.registry,
       params,

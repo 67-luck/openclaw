@@ -5,8 +5,12 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import * as ttsSettings from "../tts/tts-settings.js";
 import * as preparedModelCatalog from "./prepared-model-catalog.js";
+import { bindPreparedModelRuntimeCliBackendModels } from "./prepared-model-runtime-auth.js";
 import { prepareConfiguredModelAliases } from "./prepared-model-runtime.configured-completion.js";
-import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.types.js";
+import type {
+  PreparedModelRuntimePluginGeneration,
+  PreparedModelRuntimeSnapshot,
+} from "./prepared-model-runtime.types.js";
 import { AuthStorage, ModelRegistry } from "./sessions/index.js";
 import { buildConfiguredAgentSystemPrompt } from "./system-prompt-config.js";
 import * as systemPrompt from "./system-prompt.js";
@@ -42,6 +46,7 @@ function preparedOwner(
     id: modelId,
     name: model.name,
   }));
+  const cliBackendModels: PreparedModelRuntimePluginGeneration["cliBackendModels"] = [];
   const templateAuthStorage = AuthStorage.inMemory({});
   const configuredModelAliases = prepareConfiguredModelAliases(
     {
@@ -58,6 +63,7 @@ function preparedOwner(
     },
     {
       pluginMetadataSnapshot: metadataSnapshot,
+      cliBackendModels,
       inlineProviderModels: [],
       configuredCatalogEntries: entries,
     },
@@ -92,6 +98,7 @@ function preparedOwner(
       },
     ),
   } satisfies PreparedModelRuntimeSnapshot;
+  bindPreparedModelRuntimeCliBackendModels(owner, cliBackendModels);
   return owner;
 }
 

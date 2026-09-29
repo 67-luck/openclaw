@@ -190,6 +190,14 @@ function nativeRuntime(source: NativeSource): NativeRuntime {
       },
       refreshReference() {
         retireSource();
+        if (source.closing && handles.size === 0 && !nativeOwnerJoined) {
+          // A refused owner close can finish later through its original native handle.
+          void runtime.close().catch(ownerJoined.reject);
+          return;
+        }
+        for (const handle of handles.values()) {
+          handle.refreshResourceReference();
+        }
         if ([...handles.values()].some((handle) => handle.needsReference)) {
           worker.ref();
           port1.ref();
@@ -300,10 +308,14 @@ export function captureRetainedNativeWorkerSource(options?: {
               inContext(() => {
                 const connection = connect();
                 const decode = connection.decodeCloseError?.bind(connection);
+                const setReferenced = connection.setReferenced?.bind(connection);
                 return {
                   port: connection.port,
                   service: () => inContext(() => connection.service()),
                   dispose: () => inContext(() => connection.dispose()),
+                  setReferenced: setReferenced
+                    ? (referenced: boolean) => inContext(() => setReferenced(referenced))
+                    : undefined,
                   decodeCloseError: decode
                     ? (payload: unknown) => inContext(() => decode(payload))
                     : undefined,

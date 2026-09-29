@@ -25,6 +25,7 @@ import type { EmbeddedTuiBackend as EmbeddedTuiBackendType } from "./embedded-ba
 import { registerEmbeddedBackendStreamTests } from "./embedded-backend.stream.test-support.js";
 import {
   registerEmbeddedModelCatalogTests,
+  registerEmbeddedNonmodelPatchTests,
   withEmbeddedModelCatalogOwnerFixture,
 } from "./embedded-model-catalog.test-support.js";
 import {
@@ -109,7 +110,13 @@ const buildModelsListResultMock = vi.fn(
     >[0],
   ): Promise<{ models: TuiModelChoice[] }> => ({ models: [] }),
 );
-const withPreparedModelCatalogOwnerMock = vi.fn(withEmbeddedModelCatalogOwnerFixture);
+let publishedModelCatalog: ModelCatalogEntry[] = [];
+const withPreparedModelCatalogOwnerMock = vi.fn<typeof withEmbeddedModelCatalogOwnerFixture>(
+  (params, read) => withEmbeddedModelCatalogOwnerFixture(params, read, publishedModelCatalog),
+);
+const getPreparedModelCatalogOwnerSnapshotMock = vi.fn(
+  (_params: LoadPreparedModelCatalogParams) => undefined,
+);
 const readChatHistoryPageMock = vi.fn(
   async (
     _params?: unknown,
@@ -240,6 +247,8 @@ vi.mock("../agents/model-selection.js", () => ({
 }));
 
 vi.mock("../agents/prepared-model-catalog.js", () => ({
+  getPreparedModelCatalogOwnerSnapshot: (params: LoadPreparedModelCatalogParams) =>
+    getPreparedModelCatalogOwnerSnapshotMock(params),
   readPreparedModelCatalog: (params?: LoadPreparedModelCatalogParams) =>
     loadPreparedModelCatalogMock(params),
   loadPreparedModelCatalogSnapshot: async (params?: LoadPreparedModelCatalogParams) => {
@@ -342,7 +351,10 @@ vi.mock("../gateway/session-utils.js", () => ({
   resolveSessionModelRef: () => ({ provider: "openai", model: "gpt-5.4" }),
 }));
 
-vi.mock("../gateway/session-utils-model.js", () => ({
+vi.mock("../gateway/session-utils-model.js", async (importOriginal) => ({
+  resolveSessionDefaultsAgentId: (
+    await importOriginal<typeof import("../gateway/session-utils-model.js")>()
+  ).resolveSessionDefaultsAgentId,
   projectSessionPatchResult: (...args: unknown[]) => projectSessionPatchResultMock(...args),
 }));
 
@@ -523,7 +535,13 @@ describe("EmbeddedTuiBackend", () => {
     loadPreparedModelCatalogMock.mockReturnValue([]);
     buildModelsListResultMock.mockReset();
     buildModelsListResultMock.mockResolvedValue({ models: [] });
-    withPreparedModelCatalogOwnerMock.mockClear();
+    publishedModelCatalog = [];
+    withPreparedModelCatalogOwnerMock
+      .mockReset()
+      .mockImplementation((params, read) =>
+        withEmbeddedModelCatalogOwnerFixture(params, read, publishedModelCatalog),
+      );
+    getPreparedModelCatalogOwnerSnapshotMock.mockClear();
     resolveThinkingDefaultMock.mockReset();
     readChatHistoryPageMock.mockReset();
     readChatHistoryPageMock.mockResolvedValue({ messages: [] });
@@ -843,7 +861,11 @@ describe("EmbeddedTuiBackend", () => {
     loadPreparedModelCatalogMock,
     buildModelsListResultMock,
     withPreparedModelCatalogOwnerMock,
+    setPublishedModelCatalog: (catalog) => {
+      publishedModelCatalog = catalog;
+    },
     projectSessionsPatchEntryMock,
+    projectSessionPatchResultMock,
     applySessionPatchProjectionMock,
     deferred,
     flushMicrotasks,
@@ -1202,7 +1224,7 @@ describe("EmbeddedTuiBackend", () => {
     const catalog: ModelCatalogEntry[] = [
       { id: "gpt-5.4", name: "Reasoning model", provider: "openai", reasoning: true },
     ];
-    loadPreparedModelCatalogMock.mockReturnValue(catalog);
+    publishedModelCatalog = catalog;
     resolveThinkingDefaultMock.mockImplementationOnce(resolveThinkingDefault);
     loadSessionEntryMock.mockReturnValue({
       cfg: {
@@ -1242,9 +1264,11 @@ describe("EmbeddedTuiBackend", () => {
     } finally {
       await backend.stop();
     }
-    expect(loadPreparedModelCatalogMock).toHaveBeenCalledWith(
+    expect(withPreparedModelCatalogOwnerMock).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "work", readOnly: true }),
+      expect.any(Function),
     );
+    expect(loadPreparedModelCatalogMock).not.toHaveBeenCalled();
     expect(resolveThinkingDefaultMock).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "openai", model: "gpt-5.4", catalog }),
     );
@@ -2928,57 +2952,17 @@ describe("EmbeddedTuiBackend", () => {
     await flushMicrotasks();
   });
 
-  it.each(selectedGlobalSessionCases)(
-    "scopes selected global patch policy and result to the stored owner: $input.sessionKey",
-    async ({ input, owner }) => {
-      const sessionUtils = await import("../gateway/session-utils.js");
-      const entry = { sessionId: `session-${owner}`, updatedAt: embeddedEventTimestamp };
-      const target = {
-        agentId: owner,
-        canonicalKey: "global",
-        storePath: `/tmp/openclaw-${owner}-sessions.json`,
-        storeKeys: ["global"],
-        store: { global: entry },
-      };
-      const resolveTarget = vi
-        .spyOn(sessionUtils, "resolveGatewaySessionStoreTargetWithStore")
-        .mockReturnValue(target);
-      const resolveCanonical = vi
-        .spyOn(sessionUtils, "resolveCanonicalGatewaySessionStoreKey")
-        .mockReturnValue({ target, primaryKey: "global", entry });
-      projectSessionsPatchEntryMock.mockResolvedValueOnce({ ok: true, entry });
-      const backend = new EmbeddedTuiBackend();
-      const patch = {
-        key: input.sessionKey,
-        ...(input.agentId ? { agentId: input.agentId } : {}),
-        fastMode: true,
-      };
-      try {
-        await expect(backend.patchSession(patch)).resolves.toMatchObject({
-          ok: true,
-          key: "global",
-          entry,
-        });
-        expect.soft(projectSessionsPatchEntryMock).toHaveBeenCalledWith(
-          expect.objectContaining({
-            storeKey: "global",
-            agentId: owner,
-            patch,
-          }),
-        );
-        expect.soft(projectSessionPatchResultMock).toHaveBeenCalledWith({
-          canonicalKey: "global",
-          cfg: expect.anything(),
-          entry,
-          storePath: target.storePath,
-          targetAgentId: owner,
-        });
-      } finally {
-        resolveTarget.mockRestore();
-        resolveCanonical.mockRestore();
-      }
-    },
-  );
+  registerEmbeddedNonmodelPatchTests({
+    createBackend: () => new EmbeddedTuiBackend(),
+    selectedGlobalSessionCases,
+    embeddedEventTimestamp,
+    getRuntimeConfigMock,
+    getPreparedModelCatalogOwnerSnapshotMock,
+    withPreparedModelCatalogOwnerMock,
+    loadPreparedModelCatalogMock,
+    projectSessionsPatchEntryMock,
+    projectSessionPatchResultMock,
+  });
 
   it("fails a queued local send when the previous finishing run does not settle", async () => {
     await withEnvAsync({ OPENCLAW_TUI_LOCAL_RUN_SHUTDOWN_GRACE_MS: "5" }, async () => {

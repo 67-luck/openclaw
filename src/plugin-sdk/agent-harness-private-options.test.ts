@@ -6,6 +6,8 @@ import * as toolSurfaceCore from "../agents/harness/tool-surface-bridge.js";
 import type {
   AgentHarnessAttemptParams,
   AgentHarnessAttemptParamsV2,
+  AgentHarnessSideQuestionParams,
+  AgentHarnessSideQuestionParamsV2,
   EmbeddedRunAttemptParams,
   EmbeddedRunAttemptParamsV2,
 } from "./agent-harness-runtime.js";
@@ -56,6 +58,28 @@ describe("agent harness private options", () => {
     expectTypeOf<CodingToolsOptions>().toMatchTypeOf<
       NonNullable<Parameters<typeof createCoreCodingTools>[0]>
     >();
+  });
+
+  it("keeps prepared CLI identities out of nested public runtime inputs", () => {
+    type PublicInputs = {
+      attempt: AgentHarnessAttemptParams;
+      attemptV2: AgentHarnessAttemptParamsV2;
+      embedded: EmbeddedRunAttemptParams;
+      embeddedV2: EmbeddedRunAttemptParamsV2;
+      sideQuestion: AgentHarnessSideQuestionParams;
+      sideQuestionV2: AgentHarnessSideQuestionParamsV2;
+      codingTools: CodingToolsOptions;
+      hostTools: HostToolsOptions;
+      hostTest: HostTestAttempt;
+    };
+    expectTypeOf<
+      {
+        [I in keyof PublicInputs]: Extract<
+          keyof NonNullable<PublicInputs[I]["preparedModelRuntime"]>,
+          "cliBackendModels"
+        >;
+      }[keyof PublicInputs]
+    >().toEqualTypeOf<never>();
   });
 
   it("keeps the public factory on the existing shared implementation", () => {

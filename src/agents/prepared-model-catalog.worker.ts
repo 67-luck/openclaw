@@ -50,12 +50,14 @@ import {
   fingerprintPreparedModelCatalogGeneration,
   fingerprintPreparedModelCatalogPluginContext,
   fingerprintPreparedModelWorkerRequest,
-  type PreparedModelCatalogWorkerInput,
-  type PreparedModelCatalogWorkerData,
-  type PreparedModelCatalogWorkerTask,
-  type PreparedModelWorkerRequest,
-  type PreparedModelWorkerResult,
 } from "./prepared-model-catalog-worker.js";
+import type {
+  PreparedModelCatalogWorkerInput,
+  PreparedModelCatalogWorkerData,
+  PreparedModelCatalogWorkerTask,
+  PreparedModelWorkerRequest,
+  PreparedModelWorkerResult,
+} from "./prepared-model-catalog-worker.types.js";
 import { prepareOwnedPluginLoadContext } from "./prepared-model-runtime.plugin-context.js";
 import {
   ownPreparedPluginGeneration,
@@ -185,6 +187,9 @@ async function prepareWorkerGeneration(
   const pluginGeneration = Object.freeze({
     ...(previous?.pluginGeneration ?? prepareConfiguredModelFacts(value.input.config, metadata)),
     pluginMetadataSnapshot: metadata,
+    cliBackendModels:
+      previous?.pluginGeneration.cliBackendModels ??
+      Object.freeze(value.cliBackendModels.map((backend) => Object.freeze(backend))),
     pluginRegistry,
     preparedStaticProviderCatalog: undefined,
     preferBuiltPluginArtifacts: value.preferBuiltPluginArtifacts,
@@ -236,6 +241,7 @@ async function runCatalogRequest(
       ...value,
       preferBuiltPluginArtifacts: prepared.pluginGeneration.preferBuiltPluginArtifacts === true,
       pluginMetadataSnapshot: prepared.pluginGeneration.pluginMetadataSnapshot,
+      cliBackendModels: prepared.pluginGeneration.cliBackendModels,
     });
     if (reconstructedFingerprint !== value.generationFingerprint) {
       return {

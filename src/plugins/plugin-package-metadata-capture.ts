@@ -7,13 +7,12 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { isPathInside } from "../infra/path-guards.js";
-import { createSqliteLifecycleAggregateError } from "../infra/sqlite-lifecycle-errors.js";
 import { escapeRegExp } from "../shared/regexp.js";
 import {
   retainLoadedPluginSourceCapture,
   retainPluginSourceCaptureInstance,
 } from "./plugin-source-capture-directory.js";
-import { PLUGIN_SOURCE_CAPTURE_PREFIX } from "./plugin-source-capture-path.js";
+import { createPluginSourceCapturePayload } from "./plugin-source-capture-payload.js";
 import { isPluginSourceEntry } from "./plugin-source-file.js";
 import { verifyPluginSourceInputs, type PluginSourceInput } from "./plugin-source-verification.js";
 
@@ -613,49 +612,22 @@ export function withPluginSourceCaptureDirectory<T>(
 export function createPluginSourceCapture(execute?: <T>(run: () => T) => T) {
   const override = sourceCaptureDirectory.getStore();
   const instance = override === undefined ? retainPluginSourceCaptureInstance() : undefined;
-  let created: string | undefined;
-  let directory: string;
-  try {
-    created =
-      override !== undefined
-        ? fs.mkdtempSync(path.join(override.directory, PLUGIN_SOURCE_CAPTURE_PREFIX))
-        : instance!.createDirectory();
-    directory = fs.realpathSync(created);
-    fs.chmodSync(directory, 0o700);
-  } catch (error) {
-    const cleanupErrors: unknown[] = [];
-    try {
-      if (created) {
-        fs.rmSync(created, { recursive: true, force: true });
-      }
-    } catch (cleanupError) {
-      cleanupErrors.push(cleanupError);
-    }
-    try {
-      instance?.release();
-    } catch (cleanupError) {
-      cleanupErrors.push(cleanupError);
-    }
-    if (cleanupErrors.length > 0) {
-      throw createSqliteLifecycleAggregateError(
-        [error, ...cleanupErrors],
-        "Plugin source capture setup and cleanup failed",
-        error,
-      );
-    }
-    throw error;
-  }
+  const directory = createPluginSourceCapturePayload(instance, override?.directory);
   const inputs = new Map<string, PluginSourceInput>();
   const pendingInputs = new Set<string>();
   const additions = new Set<string>();
   const captureFailures = new Map<string, unknown>();
   let disposed = false;
+  let disposalComplete = false;
+  let disposal: Promise<void> | undefined;
   const acquire = <T>(capture: () => T) => {
     if (disposed) {
       throw new Error("Plugin module capture has been disposed");
     }
     try {
+      instance?.assertCurrent();
       const value = capture();
+      instance?.assertCurrent();
       verifyPluginSourceInputs(inputs, pendingInputs);
       return { value, additions: [...additions] };
     } catch (error) {
@@ -670,6 +642,7 @@ export function createPluginSourceCapture(execute?: <T>(run: () => T) => T) {
     }
   };
   const assertModuleAvailable = (filename: string) => {
+    instance?.assertCurrent();
     if (captureFailures.has(filename)) {
       throw captureFailures.get(filename);
     }
@@ -695,29 +668,46 @@ export function createPluginSourceCapture(execute?: <T>(run: () => T) => T) {
     inputs,
     pendingInputs,
     additions,
+    assertCurrent: () => instance?.assertCurrent(),
     capture: captureAdmitted,
     assertModuleAvailable,
     directory,
     outputRoot: override?.managedRoot ?? instance?.managedRoot,
     linkHost: (hostRoot: string) => {
+      instance?.assertCurrent();
       const modules = path.join(directory, "node_modules");
       fs.mkdirSync(modules, { recursive: true, mode: 0o700 });
       // Native ESM follows the selected host's real public exports and identity.
       fs.symlinkSync(hostRoot, path.join(modules, "openclaw"), "junction");
     },
     dispose() {
+      if (disposalComplete) {
+        return;
+      }
+      if (disposal) {
+        throw new Error("Plugin module capture asynchronous disposal is still pending");
+      }
       beginDisposal();
-      if (!retainLoadedPluginSourceCapture(directory)) {
+      if ((!instance || instance.isCurrent()) && !retainLoadedPluginSourceCapture(directory)) {
         fs.rmSync(directory, { recursive: true, force: true });
       }
       instance?.release();
+      disposalComplete = true;
     },
-    async disposeAsync() {
-      beginDisposal();
-      if (!retainLoadedPluginSourceCapture(directory)) {
-        await fsPromises.rm(directory, { recursive: true, force: true });
+    disposeAsync() {
+      if (disposalComplete) {
+        return Promise.resolve();
       }
-      await instance?.releaseAsync();
+      return (disposal ??= (async () => {
+        beginDisposal();
+        if ((!instance || instance.isCurrent()) && !retainLoadedPluginSourceCapture(directory)) {
+          await fsPromises.rm(directory, { recursive: true, force: true });
+        }
+        await instance?.releaseAsync();
+        disposalComplete = true;
+      })().finally(() => {
+        disposal = undefined;
+      }));
     },
   };
 }

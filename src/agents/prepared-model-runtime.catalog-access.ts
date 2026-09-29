@@ -217,6 +217,7 @@ export async function createFullModelCatalogAccess(
     pluginRegistry: params.pluginGeneration.pluginRegistry,
     agentFacts: params.agentFacts,
     pluginMetadataSnapshot: params.pluginGeneration.pluginMetadataSnapshot,
+    cliBackendModels: params.pluginGeneration.cliBackendModels,
     preferBuiltPluginArtifacts: params.pluginGeneration.preferBuiltPluginArtifacts,
     isCurrent: params.isCurrent,
     retirementSignal: params.retirementSignal,

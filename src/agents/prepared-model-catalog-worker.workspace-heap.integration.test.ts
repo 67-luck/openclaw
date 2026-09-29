@@ -8,6 +8,7 @@ import {
   getPreparedModelCatalogWorkerPoolSnapshot,
 } from "./prepared-model-catalog-worker.js";
 import { createCatalogFixture, PROVIDER_ID } from "./prepared-model-catalog-worker.test-support.js";
+import { prepareFixtureCliBackendModelIdentities } from "./prepared-model-runtime.cli-fixture.test-support.js";
 import { AuthStorage } from "./sessions/auth-storage.js";
 import { usePreparedCatalogWorkerFixtures } from "./test-helpers/prepared-model-catalog-worker-fixture.js";
 
@@ -73,7 +74,8 @@ module.exports = { id: ${JSON.stringify(PROVIDER_ID)}, register(api) {
     }),
   );
   const inventories: ReturnType<typeof loadPluginMetadataSnapshot>[] = [];
-  const workers = ["one", "two"].map((agentId) => {
+  const workers: ReturnType<typeof createPreparedModelCatalogWorker>[] = [];
+  for (const agentId of ["one", "two"]) {
     const workspaceDir = path.join(fixture.root, `workspace-${agentId}`);
     const agentDir = path.join(fixture.env.OPENCLAW_STATE_DIR!, "agents", agentId, "agent");
     fs.mkdirSync(workspaceDir, { recursive: true });
@@ -86,35 +88,43 @@ module.exports = { id: ${JSON.stringify(PROVIDER_ID)}, register(api) {
       workspaceDir,
     });
     inventories.push(metadata);
-    return createPreparedModelCatalogWorker({
-      agentFacts: {
-        input: {
-          agentId,
-          agentDir,
-          workspaceDir,
-          config: fixture.config,
-          allowGatewaySubagentBinding: true,
-        },
-        env: process.env,
-        authStore: {
-          version: 1,
-          profiles: {
-            fixture: { type: "api_key", provider: PROVIDER_ID, key: `synthetic-${agentId}` },
+    workers.push(
+      createPreparedModelCatalogWorker({
+        agentFacts: {
+          input: {
+            agentId,
+            agentDir,
+            workspaceDir,
+            config: fixture.config,
+            allowGatewaySubagentBinding: true,
           },
+          env: process.env,
+          authStore: {
+            version: 1,
+            profiles: {
+              fixture: { type: "api_key", provider: PROVIDER_ID, key: `synthetic-${agentId}` },
+            },
+          },
+          credentials: {},
+          templateAuthStorage: AuthStorage.inMemory({}),
+          providerIds: [PROVIDER_ID],
+          configuredModelRefs: [],
+          configuredRuntimeModels: [],
+          runtimeCapabilityModels: [],
+          configuredGeneratedCatalogPluginIds: [],
         },
-        credentials: {},
-        templateAuthStorage: AuthStorage.inMemory({}),
-        providerIds: [PROVIDER_ID],
-        configuredModelRefs: [],
-        configuredRuntimeModels: [],
-        runtimeCapabilityModels: [],
-        configuredGeneratedCatalogPluginIds: [],
-      },
-      pluginMetadataSnapshot: metadata,
-      isCurrent: () => !retirement.signal.aborted,
-      retirementSignal: retirement.signal,
-    });
-  });
+        pluginMetadataSnapshot: metadata,
+        cliBackendModels: await prepareFixtureCliBackendModelIdentities({
+          config: fixture.config,
+          env: process.env,
+          metadataSnapshot: metadata,
+          runtimeBackends: [],
+        }),
+        isCurrent: () => !retirement.signal.aborted,
+        retirementSignal: retirement.signal,
+      }),
+    );
+  }
   expect(inventories[0]!.workspaceDir).not.toBe(inventories[1]!.workspaceDir);
   expect(getPluginMetadataSnapshotCache(inventories[0]!)).toBe(
     getPluginMetadataSnapshotCache(inventories[1]!),

@@ -25,6 +25,10 @@ import { resolveCurrentUserProfileDisplay } from "../current-user-profile-displa
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import {
+  readPreparedGatewayCliBackendModels,
+  readPreparedGatewayModelCatalogMetadata,
+} from "../server-model-catalog-view.js";
+import {
   projectAssignableSessionOwner,
   projectSessionActor,
 } from "../session-identity-projection.js";
@@ -185,6 +189,8 @@ function createSessionPatchHandler(
           entry: outcome.entry,
           modelCatalog: catalog?.entries,
           modelCatalogRouteVariants: catalog?.routeVariants,
+          metadataSnapshot: readPreparedGatewayModelCatalogMetadata(catalog),
+          preparedCliBackendModels: readPreparedGatewayCliBackendModels(catalog),
         }),
         undefined,
       );

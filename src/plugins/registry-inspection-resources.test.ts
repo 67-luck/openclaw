@@ -1,10 +1,29 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import fs from "node:fs";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { retainPreparedPluginRegistry } from "../agents/prepared-model-runtime.plugin-lifetime.js";
+import { PreparedModelRuntimeBuildResources } from "../agents/prepared-model-runtime.resources.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { SQLITE_STAGING_TOKEN_FILES } from "../infra/sqlite-staging-token.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { withPluginMetadataSnapshotScope } from "./current-plugin-metadata-snapshot.js";
 import { acquirePluginRegistryForInspection, loadPluginRegistryHandle } from "./loader.js";
-import { resetPluginLoaderTestStateForTest } from "./loader.test-fixtures.js";
+import {
+  resetPluginLoaderTestStateForTest,
+  useNoBundledPlugins,
+  writePlugin,
+} from "./loader.test-fixtures.js";
+import { getPluginCacheRetirementSignal, getPluginMetadataSnapshotCache } from "./plugin-cache.js";
+import { executeRegisteredPluginCommand } from "./plugin-command-execution.js";
+import { listRegisteredPluginCommands } from "./plugin-command-registry.js";
+import { loadPluginMetadataSnapshot } from "./plugin-metadata-snapshot.js";
+import * as sourceCapture from "./plugin-source-capture-directory.js";
+import { resolvePluginSourceCapturesDirectory } from "./plugin-source-capture-path.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
 import {
   getPluginRegistryInspectionResources,
@@ -32,6 +51,205 @@ afterEach(() => resetPluginRuntimeStateForTest());
 afterEach(resetPluginLoaderTestStateForTest);
 
 describe("owned plugin inspections", () => {
+  it("refuses registration when the original build owner closes during capture admission", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      useNoBundledPlugins();
+      const id = "withdrawn-inspection-owner";
+      const marker = state.path("registration.txt");
+      const plugin = writePlugin({
+        id,
+        dir: path.join(state.workspaceDir, id),
+        body: `const fs = require("node:fs");
+          module.exports = {
+            id: ${JSON.stringify(id)},
+            register(api) {
+              fs.writeFileSync(${JSON.stringify(marker)}, "registered");
+              api.lifecycle.onDispose(() => fs.appendFileSync(${JSON.stringify(marker)}, ":disposed"));
+            }
+          };`,
+      });
+      const config: OpenClawConfig = {
+        plugins: { allow: [id], load: { paths: [plugin.file] }, slots: { memory: "none" } },
+      };
+      const snapshot = loadPluginMetadataSnapshot({ config });
+      await withPluginMetadataSnapshotScope(
+        snapshot,
+        async () => {
+          const captures = resolvePluginSourceCapturesDirectory(state.stateDir);
+          expect(fs.existsSync(captures) ? fs.readdirSync(captures) : []).toEqual([]);
+          const admitted = createDeferredCore<string>();
+          const resume = createDeferredCore();
+          const acquire = sourceCapture.acquirePluginSourceCaptureScope;
+          const held = vi
+            .spyOn(sourceCapture, "acquirePluginSourceCaptureScope")
+            .mockImplementationOnce(async (...args) => {
+              const original = await acquire(...args);
+              let returned = false;
+              try {
+                const roots = fs.readdirSync(captures);
+                expect(roots).toHaveLength(1);
+                const root = path.join(captures, roots[0]!);
+                admitted.resolve(root);
+                await resume.promise;
+                returned = true;
+                return original;
+              } finally {
+                if (!returned) {
+                  await original.release();
+                }
+              }
+            });
+          const resources = new PreparedModelRuntimeBuildResources(retainPreparedPluginRegistry);
+          const loading = resources.load(
+            {
+              config,
+              metadataSnapshot: snapshot,
+              basePluginIds: [id],
+              purpose: "model-catalog",
+            },
+            () => {
+              throw new Error("Withdrawn build published a primary registry");
+            },
+          );
+          const settled = Promise.allSettled([loading]);
+          try {
+            const root = await Promise.race([
+              admitted.promise,
+              loading.then(() => {
+                throw new Error("Inspection bypassed actual capture admission");
+              }),
+            ]);
+            expect(fs.existsSync(marker)).toBe(false);
+            await resources[Symbol.asyncDispose]();
+            expect(
+              getPluginCacheRetirementSignal(getPluginMetadataSnapshotCache(snapshot)).aborted,
+            ).toBe(false);
+            expect(fs.existsSync(path.join(root, SQLITE_STAGING_TOKEN_FILES[0]))).toBe(true);
+            resume.resolve();
+            await expect(loading).rejects.toThrow(
+              "Prepared registry construction resources have been released",
+            );
+            expect(fs.existsSync(marker)).toBe(false);
+            expect(fs.existsSync(root)).toBe(false);
+          } finally {
+            resume.resolve();
+            try {
+              await settled;
+              await resources[Symbol.asyncDispose]();
+            } finally {
+              held.mockRestore();
+            }
+          }
+        },
+        { config },
+      );
+    });
+  });
+
+  it("captures a first-demand command import and retires a prepared inspection without host SQL", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      useNoBundledPlugins();
+      const id = "inspection-late-source";
+      const dependency = "inspection-late-dependency";
+      const plugin = writePlugin({
+        id,
+        dir: path.join(state.workspaceDir, id),
+        filename: `${id}.mjs`,
+        body: `export default {
+          id: ${JSON.stringify(id)},
+          register(api) {
+            api.registerCommand({
+              name: "inspectionlate", description: "Read a first-demand module", acceptsArgs: true,
+              async handler(ctx) {
+                const module = await import(ctx.args);
+                return { text: module.value };
+              }
+            });
+          }
+        };`,
+      });
+      // Explicit standalone entries capture computed package edges on first demand.
+      fs.unlinkSync(path.join(plugin.dir, "openclaw.plugin.json"));
+      fs.writeFileSync(
+        path.join(plugin.dir, "package.json"),
+        JSON.stringify({ dependencies: { [dependency]: "1.0.0" } }),
+      );
+      const packageRoot = path.join(plugin.dir, "node_modules", dependency);
+      fs.mkdirSync(packageRoot, { recursive: true });
+      fs.writeFileSync(
+        path.join(packageRoot, "package.json"),
+        JSON.stringify({ exports: { import: "./helper.mjs" } }),
+      );
+      const writeBody = (value: string) =>
+        fs.writeFileSync(
+          path.join(packageRoot, "helper.mjs"),
+          `export const value = ${JSON.stringify(value)};`,
+        );
+      writeBody("before");
+      const config: OpenClawConfig = {
+        plugins: {
+          allow: [id],
+          load: { paths: [plugin.file] },
+          slots: { memory: "none" },
+        },
+      };
+      // Prepare declaration facts only; registry acquisition and source capture stay measured.
+      const snapshot = loadPluginMetadataSnapshot({ config });
+      await withPluginMetadataSnapshotScope(
+        snapshot,
+        async () => {
+          const captures = resolvePluginSourceCapturesDirectory(state.stateDir);
+          expect(fs.existsSync(captures) ? fs.readdirSync(captures) : []).toEqual([]);
+          let inspection:
+            | Awaited<ReturnType<typeof acquirePluginRegistryForInspection>>
+            | undefined;
+          const sql = observeMainThreadSql({ includeClose: true });
+          try {
+            sql.calibrate();
+            inspection = await acquirePluginRegistryForInspection({
+              config,
+              throwOnLoadError: true,
+            });
+            const registry = inspection.registry;
+            const command = listRegisteredPluginCommands(registry).find(
+              (entry) => entry.name === "inspectionlate",
+            );
+            if (!command) {
+              throw new Error("Expected the registered first-demand inspection command");
+            }
+            const execute = () =>
+              executeRegisteredPluginCommand(registry, {
+                command,
+                args: dependency,
+                channel: "test",
+                isAuthorizedSender: true,
+                commandBody: `/inspectionlate ${dependency}`,
+                config,
+              });
+            writeBody("first-demand");
+            await expect(execute()).resolves.toEqual({ text: "first-demand" });
+            writeBody("replacement");
+            await expect(execute()).resolves.toEqual({ text: "first-demand" });
+            await inspection.release();
+            sql.expectIdle();
+            await expect(execute()).resolves.toMatchObject({
+              text: expect.stringContaining(
+                "no longer available after the plugin registry changed",
+              ),
+            });
+          } finally {
+            try {
+              await inspection?.release();
+            } finally {
+              sql.restore();
+            }
+          }
+        },
+        { config },
+      );
+    });
+  });
+
   it.each([false, true])(
     "keeps borrowed sources through final native cleanup (failure: %s)",
     async (fails) => {

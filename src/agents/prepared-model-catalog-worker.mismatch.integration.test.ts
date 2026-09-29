@@ -143,6 +143,7 @@ async function createMismatchFixture() {
       templateAuthStorage: AuthStorage.inMemory({}),
     } satisfies PreparedModelRuntimeAgentFacts,
     pluginMetadataSnapshot: build.pluginGeneration.pluginMetadataSnapshot,
+    cliBackendModels: build.pluginGeneration.cliBackendModels,
     preferBuiltPluginArtifacts: build.pluginGeneration.preferBuiltPluginArtifacts,
   };
   const fingerprint = createPreparedModelCatalogWorkerInput(workerParams).generationFingerprint;

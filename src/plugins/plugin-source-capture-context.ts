@@ -8,7 +8,10 @@ import {
   getPluginExecutionFrame,
   runWithPluginExecutionFrame,
 } from "./plugin-instance-invocation.js";
-import type { PluginSourceCaptureStorage } from "./plugin-instance-invocation.types.js";
+import type {
+  PluginSourceCaptureScope,
+  PluginSourceCaptureStorage,
+} from "./plugin-instance-invocation.types.js";
 
 export function getPluginSourceCaptureStorage(): PluginSourceCaptureStorage | undefined {
   return getPluginExecutionFrame()?.sourceCaptureStorage;
@@ -40,6 +43,21 @@ export function withPluginSourceCaptureStorage<T>(
           storage.placement,
         ),
       },
+      current,
+    ),
+    run,
+  );
+}
+
+export function getPluginSourceCaptureScope(): PluginSourceCaptureScope | undefined {
+  return getPluginExecutionFrame()?.sourceCaptureScope;
+}
+
+export function withPluginSourceCaptureScope<T>(scope: PluginSourceCaptureScope, run: () => T): T {
+  const current = getPluginExecutionFrame();
+  return runWithPluginExecutionFrame(
+    createPluginExecutionFrame(
+      { ...current, sourceCaptureStorage: scope.storage, sourceCaptureScope: scope },
       current,
     ),
     run,

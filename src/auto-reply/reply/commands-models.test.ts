@@ -5,7 +5,10 @@ import type { AuthProfileStore } from "../../agents/auth-profiles/types.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import * as preparedCatalog from "../../agents/prepared-model-catalog.js";
-import { bindPreparedModelRuntimeAuth } from "../../agents/prepared-model-runtime-auth.js";
+import {
+  bindPreparedModelRuntimeAuth,
+  copyPreparedModelRuntimeBindings,
+} from "../../agents/prepared-model-runtime-auth.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
@@ -79,13 +82,14 @@ beforeEach(() => {
         throw new Error("The browse fixture requires its captured config");
       }
       const entries = modelCatalogMocks.loadModelCatalog(params);
-      const baseOwner = createModelsTestOwner(params.config, entries, params);
+      const baseOwner = await createModelsTestOwner(params.config, entries, params);
       const owner = {
         ...baseOwner,
         authModes,
         modelCatalog: { ...baseOwner.modelCatalog, providerOutcomes },
         metadataSnapshot: pluginMetadataMocks.getCurrent(),
       };
+      copyPreparedModelRuntimeBindings(baseOwner, owner);
       bindPreparedModelRuntimeAuth(owner, { store: authStore });
       return owner;
     },

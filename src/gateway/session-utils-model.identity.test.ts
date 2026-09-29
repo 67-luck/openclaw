@@ -11,6 +11,7 @@ import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-
 import { applyModelOverrideToSessionEntry } from "../sessions/model-overrides.js";
 import { resolveDirectStoredModelOverride } from "../sessions/stored-model-overrides.js";
 import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
+import { createPreparedGatewayModelCatalog } from "./server-model-catalog-view.js";
 import { listSessionFixture } from "./session-list.test-support.js";
 import { resolveSessionSelectedModelRef } from "./session-utils-model-selection.js";
 import { getSessionDefaults, projectSessionPatchResult } from "./session-utils-model.js";
@@ -282,5 +283,63 @@ test.each([
       agents: { ...cfg.agents, defaults: { ...cfg.agents?.defaults, model: selected } },
     };
     expect(getSessionDefaults(defaultConfig, [], { agentId: "main" })).toMatchObject(expected);
+  });
+});
+
+test("keeps captured CLI display identities separate across agent rows", async () => {
+  await withStateDirEnv("session-captured-cli-identities-", async ({ stateDir }) => {
+    const cfg: OpenClawConfig = {
+      plugins: { enabled: false },
+      agents: {
+        entries: { main: {}, work: {} },
+        defaults: {
+          model: "fixture-cli/shared-model",
+          models: { "fixture-cli/shared-model": { agentRuntime: { id: "openclaw" } } },
+        },
+      },
+    };
+    setRuntimeConfigSnapshot(cfg);
+    setActivePluginRegistry(createEmptyPluginRegistry());
+    const metadataSnapshot = createPluginMetadataSnapshotFixture();
+    const identities = [
+      ["main", "main-provider"],
+      ["work", "work-provider"],
+    ] as const;
+    const modelCatalog = new Map(
+      identities.map(([agentId, modelProvider]) => [
+        agentId,
+        createPreparedGatewayModelCatalog({
+          entries: [],
+          metadataSnapshot,
+          cliBackendModels: [{ id: "fixture-cli", modelProvider }],
+        }),
+      ]),
+    );
+    const rowContext = buildSessionListRowMetadataContext({ now: 1 });
+    for (const [agentId, modelProvider] of [...identities, identities[0]]) {
+      const key = `agent:${agentId}:captured-cli`;
+      const entry: SessionEntry = {
+        sessionId: `${agentId}-captured-cli`,
+        updatedAt: 1,
+        providerOverride: "fixture-cli",
+        modelOverride: "shared-model",
+        modelOverrideRouteResolution: "resolved",
+      };
+      expect(
+        buildGatewaySessionRow({
+          cfg,
+          agentId,
+          key,
+          entry,
+          store: { [key]: entry },
+          storePath: stateDir,
+          modelCatalog,
+          rowContext,
+          preparedAcpMeta: null,
+          lightweightListRow: true,
+          skipTranscriptUsageFallback: true,
+        }),
+      ).toMatchObject({ modelProvider, model: "shared-model" });
+    }
   });
 });

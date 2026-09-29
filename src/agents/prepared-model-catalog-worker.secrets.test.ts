@@ -228,6 +228,7 @@ module.exports = {
             input: { ...prepared.agentFacts[0]!.input, config: captureRuntimeConfig(runtime) },
           },
           pluginMetadataSnapshot: prepared.pluginGeneration.pluginMetadataSnapshot,
+          cliBackendModels: prepared.pluginGeneration.cliBackendModels,
         };
         expect(params.agentFacts.providerIds).toContain(provider);
         const expectedAuth = loader?.pending ? undefined : value;
@@ -294,7 +295,7 @@ module.exports = {
         clearRuntimeConfigSnapshot();
         clearRuntimeAuthProfileStoreSnapshots();
         const request = async (failCatalog = false) => {
-          const { pool, captureDirectory } = createCatalogInspectionPool(env);
+          const { pool, captureDirectory } = await createCatalogInspectionPool(env);
           try {
             const result = await pool.run(
               {

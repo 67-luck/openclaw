@@ -674,6 +674,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/tts/tts-summary.static-catalog.test.ts",
   "src/tts/tts-summary.selection.test.ts",
   "src/agents/prepared-model-catalog.resources.test.ts",
+  "src/agents/prepared-model-runtime.cli-identities.test.ts",
   "src/agents/embedded-agent-runner/compaction-runtime-admission.test.ts",
   "src/media-understanding/image.resources.test.ts",
   "src/tts/tts-summary.resources.test.ts",

@@ -1,5 +1,7 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { onTestFinished, vi } from "vitest";
 import { createModelRuntimeChoiceOwnerFixture } from "../agents/model-runtime-choice.test-support.js";
+import { readPreparedModelRuntimeCliBackendModels } from "../agents/prepared-model-runtime-auth.js";
 import * as preparedModelRuntime from "../agents/prepared-model-runtime.js";
 import * as providerUsage from "../infra/provider-usage.load.js";
 
@@ -17,6 +19,10 @@ export function mockSessionStatusModelDependencies() {
         snapshot,
         pluginGeneration: {
           pluginMetadataSnapshot: snapshot.metadataSnapshot,
+          cliBackendModels: expectDefined(
+            readPreparedModelRuntimeCliBackendModels(snapshot),
+            "Expected CLI identities from the prepared session-status fixture",
+          ),
           inlineProviderModels: snapshot.inlineProviderModels,
           configuredCatalogEntries: snapshot.modelCatalog.entries,
         },

@@ -16,12 +16,15 @@ import type { PluginLoadOptions } from "./loader-types.js";
 import {
   createPluginCache,
   getPluginCache,
+  getPluginCacheRetirementSignal,
   releasePluginCacheInstance,
   retirePluginCache,
   withPluginCache,
 } from "./plugin-cache.js";
 import { getPluginInstance } from "./plugin-instance-scope.js";
 import { inheritPluginNativeAdmissions } from "./plugin-native-admission-state.js";
+import { withPluginSourceCaptureScope } from "./plugin-source-capture-context.js";
+import { acquirePluginSourceCaptureScope } from "./plugin-source-capture-directory.js";
 import { createProviderAuthAvailability } from "./provider-auth-availability-core.js";
 import { createProviderExternalAuthResolver } from "./provider-external-auth-core.js";
 import { createProviderHookRuntime } from "./provider-hook-runtime-core.js";
@@ -95,20 +98,29 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
 /** Acquires a fresh discovery registry; release waits for its registration resources. */
 export async function acquirePluginRegistryForInspection(
   options: Omit<PluginLoadOptions, "activate" | "cache"> = {},
+  assertOwnerCurrent?: () => void,
 ): Promise<{ registry: PluginRegistry; release: () => Promise<void> }> {
-  return acquireRegistryResources((resources) =>
-    loadOpenClawPluginsCore(
-      { ...options, activate: false, cache: false },
-      loaderBindings,
-      undefined,
-      resources,
-    ),
+  return acquireRegistryResources(
+    (resources) =>
+      loadOpenClawPluginsCore(
+        { ...options, activate: false, cache: false },
+        loaderBindings,
+        undefined,
+        resources,
+      ),
+    assertOwnerCurrent,
   );
 }
 
 async function acquireRegistryResources(
   load: (resources: PluginRegistryInspectionResources) => PluginRegistry,
+  assertOwnerCurrent?: () => void,
 ): Promise<{ registry: PluginRegistry; release: () => Promise<void> }> {
+  assertOwnerCurrent?.();
+  const sourceCache = getPluginCache();
+  const sourceRetirement = getPluginCacheRetirementSignal(sourceCache);
+  sourceRetirement.throwIfAborted();
+  const capture = await acquirePluginSourceCaptureScope();
   const cache = createPluginCache();
   const resources = new PluginRegistryInspectionResources(async (registry, rollbackInstances) => {
     const instances = new Set(cache.instances);
@@ -136,6 +148,13 @@ async function acquireRegistryResources(
     const failures = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
     );
+    if (failures.length === 0) {
+      try {
+        await capture.release();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
     if (failures.length) {
       throw new PluginRuntimeCloseRetainedError(
         new AggregateError(failures, "Plugin inspection instances failed to retire"),
@@ -143,8 +162,14 @@ async function acquireRegistryResources(
     }
   });
   try {
-    inheritPluginNativeAdmissions(getPluginCache(), cache);
-    const registry = withPluginCache(cache, () => load(resources));
+    sourceRetirement.throwIfAborted();
+    assertOwnerCurrent?.();
+    const registry = withPluginSourceCaptureScope(capture.scope, () => {
+      inheritPluginNativeAdmissions(sourceCache, cache);
+      return withPluginCache(cache, () => load(resources));
+    });
+    sourceRetirement.throwIfAborted();
+    assertOwnerCurrent?.();
     return { registry, release: () => resources.release() };
   } catch (error) {
     try {

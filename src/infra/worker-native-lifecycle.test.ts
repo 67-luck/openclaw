@@ -1,5 +1,9 @@
 import { execFile } from "node:child_process";
+import { existsSync, readFileSync, watch } from "node:fs";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
@@ -12,16 +16,22 @@ async function runFixture(
     | "terminate"
     | "natural-exit"
     | "generation"
+    | "generation-refusal"
     | "explicit-unbound"
     | "supervisor-loss"
     | "native-resource"
     | "resource-supervisor-loss"
+    | "resource-cold-supervisor-loss"
     | "resource-close-supervisor-loss"
     | "resource-late-attachment"
     | "resource-owner-reply-loss"
-    | "callback-context",
+    | "callback-context"
+    | "resource-passive-exit"
+    | "resource-reference-retry"
+    | "resource-idle-supervisor-loss"
+    | "resource-diagnostic-references",
+  home = directories.make("worker-native-lifecycle-"),
 ): Promise<unknown> {
-  const home = directories.make("worker-native-lifecycle-");
   const { stdout } = await promisify(execFile)(
     process.execPath,
     [
@@ -39,6 +49,109 @@ async function runFixture(
 }
 
 describe("retained native worker lifecycle", () => {
+  it("exits naturally with a passive resource and separately observes the original child close", async () => {
+    const home = directories.make("worker-native-passive-");
+    const receiptPath = path.join(home, "original-child-close.json");
+    let stopWatching = () => {};
+    const receipt = new Promise<unknown>((resolve, reject) => {
+      let settled = false;
+      const watcher = watch(home, () => {
+        if (!settled && existsSync(receiptPath)) {
+          settled = true;
+          try {
+            resolve(JSON.parse(readFileSync(receiptPath, "utf8")));
+          } catch (error) {
+            reject(
+              error instanceof Error
+                ? error
+                : new Error("Cannot read original native child close receipt", { cause: error }),
+            );
+          }
+        }
+      });
+      watcher.on("error", reject);
+      const deadline = setTimeout(
+        () => reject(new Error("original child close receipt missing")),
+        15_000,
+      );
+      stopWatching = () => {
+        watcher.close();
+        clearTimeout(deadline);
+      };
+    });
+    void receipt.catch(() => undefined);
+    try {
+      // execFile resolves only after actual fixture close; the fixture never calls process.exit.
+      expect(await runFixture("resource-passive-exit", home)).toEqual({
+        ending: "resource-passive-exit",
+        passiveReady: true,
+      });
+      const observed = await receipt;
+      expect([
+        { kind: "child-close", code: null, signal: "SIGTERM" },
+        { kind: "child-close", code: null, signal: "SIGKILL" },
+        { kind: "child-close", code: 0, signal: null },
+      ]).toContainEqual(observed);
+      const database = new DatabaseSync(path.join(home, "reference-child.sqlite"));
+      try {
+        database.exec("PRAGMA busy_timeout=0; BEGIN IMMEDIATE");
+        expect(database.prepare("SELECT COUNT(*) AS count FROM proof").get()?.count).toBe(1);
+        database.exec("ROLLBACK");
+      } finally {
+        database.close();
+      }
+    } catch (error) {
+      // Keep only scalar original-close evidence when a passive-exit control fails.
+      try {
+        const closed: unknown = JSON.parse(readFileSync(receiptPath, "utf8"));
+        if (
+          isRecord(closed) &&
+          closed.kind === "child-close" &&
+          (closed.code === null || typeof closed.code === "number") &&
+          (closed.signal === null || closed.signal === "SIGTERM" || closed.signal === "SIGKILL")
+        ) {
+          console.error(
+            JSON.stringify({
+              proof: "passive-original-child-close",
+              code: closed.code,
+              signal: closed.signal,
+            }),
+          );
+        }
+      } catch {
+        // Absence or malformed evidence is not a native-close receipt.
+      }
+      throw error;
+    } finally {
+      stopWatching();
+    }
+  }, 20_000);
+
+  it("refs both resource ports while actual CPU and heap replies are pending", async () => {
+    expect(await runFixture("resource-diagnostic-references")).toEqual({
+      ending: "resource-diagnostic-references",
+      originalChildClosed: true,
+      childCloseNotifiedBeforeExit: expect.any(Boolean),
+      sqliteReusable: true,
+      diagnostics: [
+        { kind: "cpu", outcome: expect.stringMatching(/^(fulfilled|rejected)$/) },
+        { kind: "heap", outcome: expect.stringMatching(/^(fulfilled|rejected)$/) },
+      ],
+    });
+  }, 20_000);
+
+  it.each(["resource-reference-retry", "resource-idle-supervisor-loss"] as const)(
+    "retains real operation and cleanup references through %s",
+    async (ending) => {
+      expect(await runFixture(ending)).toEqual({
+        ending,
+        originalChildClosed: true,
+        childCloseNotifiedBeforeExit: expect.any(Boolean),
+        sqliteReusable: true,
+      });
+    },
+    20_000,
+  );
   it("preserves constructor ALS for callbacks serviced from another context", async () => {
     const expected = ["message", "error", "exit"].map((event) => ({
       event,
@@ -59,6 +172,17 @@ describe("retained native worker lifecycle", () => {
       rejectedWhileBlocked: true,
       retryRejectedWhileBlocked: true,
       joinedOnlyAfterYield: true,
+    });
+  }, 20_000);
+
+  it("rejects cold supervisor recovery until the original broker becomes ready, then retries", async () => {
+    expect(await runFixture("resource-cold-supervisor-loss")).toEqual({
+      ending: "resource-cold-supervisor-loss",
+      unavailableBeforeReady: true,
+      sameSourceRetained: true,
+      sameBrokerRetried: true,
+      neverAdmittedResourceClosed: true,
+      brokerClosed: true,
     });
   }, 20_000);
 
@@ -148,6 +272,18 @@ describe("retained native worker lifecycle", () => {
     },
     20_000,
   );
+
+  it("joins the original supervisor after a refused generation owner releases its native token", async () => {
+    expect(await runFixture("generation-refusal")).toEqual({
+      ending: "generation-refusal",
+      originalFailurePreserved: true,
+      generationRetained: true,
+      tokenClosedWithoutRetirement: true,
+      nativeTargetJoined: true,
+      supervisorJoined: true,
+      brokerJoined: true,
+    });
+  }, 20_000);
 
   it("joins all admitted owners before releasing their shared supervisor and generation", async () => {
     expect(await runFixture("generation")).toEqual({

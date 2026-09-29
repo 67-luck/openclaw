@@ -155,6 +155,7 @@ describe("models.list plugin metadata handoff", () => {
         authModes: {},
         authStore: { version: 1 as const, profiles: {} },
         metadataSnapshot,
+        cliBackendModels: [],
         authMaterializations: [],
         isCurrent: () => true,
       };
@@ -390,6 +391,7 @@ describe("models.list plugin metadata handoff", () => {
             authModes: {},
             authStore: { version: 1, profiles: {} },
             metadataSnapshot: preparedMetadataSnapshot(),
+            cliBackendModels: [],
             authMaterializations: [],
             pluginRegistry: preparedRegistry,
             isCurrent: () => generationCurrent,

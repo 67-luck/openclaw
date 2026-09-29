@@ -13,15 +13,16 @@ import { acquireTestPortBlock } from "../../test-utils/port-claims.js";
 import { loadPersistedAuthProfileStore } from "../auth-profiles/persisted.js";
 import { saveAuthProfileStore } from "../auth-profiles/store-runtime.js";
 import type { AuthProfileCredential, OAuthCredential } from "../auth-profiles/types.js";
-import {
-  createPreparedModelCatalogWorkerInput,
-  type PreparedModelCatalogWorkerTask,
-  type PreparedModelWorkerResult,
-} from "../prepared-model-catalog-worker.js";
+import { createPreparedModelCatalogWorkerInput } from "../prepared-model-catalog-worker.js";
 import {
   createCatalogFixture,
   PROVIDER_ID,
 } from "../prepared-model-catalog-worker.test-support.js";
+import type {
+  PreparedModelCatalogWorkerTask,
+  PreparedModelWorkerResult,
+} from "../prepared-model-catalog-worker.types.js";
+import { prepareFixtureCliBackendModelIdentities } from "../prepared-model-runtime.cli-fixture.test-support.js";
 import { AuthStorage } from "../sessions/auth-storage.js";
 
 type HeldCatalogOAuthRefresh = {
@@ -131,6 +132,12 @@ api.registerProvider({
             configuredGeneratedCatalogPluginIds: [],
           },
           pluginMetadataSnapshot: metadata,
+          cliBackendModels: await prepareFixtureCliBackendModelIdentities({
+            config: fixture.config,
+            env: fixture.env,
+            metadataSnapshot: metadata,
+            runtimeBackends: [],
+          }),
         });
         pool = new WorkerTaskPool({
           workerUrl: resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.preparedModelCatalog),

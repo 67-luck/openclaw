@@ -18,6 +18,7 @@ import {
   resolveOperatorModelDefault,
 } from "../agents/operator-model-policy.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { PreparedCliBackendModelIdentity } from "../plugins/cli-backend.types.js";
 import { getGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { isTranscriptOnlyOpenClawAssistantModel } from "../shared/transcript-only-openclaw-assistant.js";
@@ -108,6 +109,8 @@ export function projectOperatorModelRead<
     client: GatewayClient | null;
     agentId: string;
     catalog?: ModelCatalogEntry[];
+    metadataSnapshot?: PluginMetadataSnapshot;
+    preparedCliBackendModels?: readonly PreparedCliBackendModelIdentity[];
   },
   result: T,
 ): T {
@@ -116,13 +119,14 @@ export function projectOperatorModelRead<
     cfg,
     policyConfig: scope.context.getCommittedRuntimeConfig?.() ?? cfg,
     client: scope.client,
+    metadataSnapshot: scope.metadataSnapshot,
   });
   if (!presentation) {
     return result;
   }
   const policy =
     result.defaults || result.metadata
-      ? presentation.forAgent(scope.agentId, scope.catalog)
+      ? presentation.forAgent(scope.agentId, scope.catalog, scope.preparedCliBackendModels)
       : undefined;
   return {
     ...result,
@@ -234,7 +238,11 @@ export function prepareOperatorModelPresentation(params: {
           : {}),
       };
     },
-    forAgent(agentId: string, catalog: ModelCatalogEntry[] = []) {
+    forAgent(
+      agentId: string,
+      catalog: ModelCatalogEntry[] = [],
+      preparedCliBackendModels?: readonly PreparedCliBackendModelIdentity[],
+    ) {
       const normalization = {
         cfg,
         agentId,
@@ -292,6 +300,7 @@ export function prepareOperatorModelPresentation(params: {
             agentId,
             modelRef: defaultModel,
             metadataSnapshot,
+            preparedCliBackendModels,
             allowPluginNormalization: false,
             providerPolicySource: "active",
           }),

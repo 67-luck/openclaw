@@ -1,9 +1,15 @@
+import { listCliRuntimeModelBackendBindings } from "../../agents/cli-backends.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
-import { bindPreparedModelRuntimeAuth } from "../../agents/prepared-model-runtime-auth.js";
+import {
+  bindPreparedModelRuntimeAuth,
+  bindPreparedModelRuntimeCliBackendModels,
+} from "../../agents/prepared-model-runtime-auth.js";
+import { prepareFixtureCliBackendModelIdentities } from "../../agents/prepared-model-runtime.cli-fixture.test-support.js";
 import type { PreparedModelRuntimeSnapshot } from "../../agents/prepared-model-runtime.types.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { getCurrentPluginMetadataSnapshot } from "../../plugins/current-plugin-metadata-snapshot.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import {
   createChannelTestPluginBase,
@@ -129,11 +135,23 @@ export function setFastModelsCliBackendDeps(): void {
   });
 }
 
-export function createModelsTestOwner(
+export async function createModelsTestOwner(
   config: OpenClawConfig,
   entries: ModelCatalogEntry[],
   params: { agentId?: string; agentDir?: string; workspaceDir?: string },
-): PreparedModelRuntimeSnapshot {
+): Promise<PreparedModelRuntimeSnapshot> {
+  const metadataSnapshot =
+    getCurrentPluginMetadataSnapshot({ config }) ?? createPluginMetadataSnapshotFixture();
+  const cliBackendModels = await prepareFixtureCliBackendModelIdentities({
+    config,
+    metadataSnapshot,
+    runtimeBackends: listCliRuntimeModelBackendBindings({ config }).map(
+      ({ runtime, provider }) => ({
+        id: runtime,
+        modelProvider: provider,
+      }),
+    ),
+  });
   const owner: PreparedModelRuntimeSnapshot = {
     catalogOwner: {
       agentId: params.agentId ?? "main",
@@ -146,7 +164,7 @@ export function createModelsTestOwner(
     config,
     observationConfig: config,
     authModes: {},
-    metadataSnapshot: createPluginMetadataSnapshotFixture(),
+    metadataSnapshot,
     isCurrent: () => true,
     allowGatewaySubagentBinding: false,
     modelCatalog: { entries, routeVariants: entries },
@@ -157,6 +175,7 @@ export function createModelsTestOwner(
       throw new Error("Browsing must not start model execution");
     },
   };
+  bindPreparedModelRuntimeCliBackendModels(owner, cliBackendModels);
   bindPreparedModelRuntimeAuth(owner, { store: { version: 1, profiles: {} } });
   return owner;
 }

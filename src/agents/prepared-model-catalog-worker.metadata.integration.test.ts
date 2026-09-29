@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { Worker } from "node:worker_threads";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -13,7 +15,11 @@ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import { disposePluginRegistryInstances } from "../plugins/runtime.js";
 import { preparePublishedModelCatalogOwnerIdentity } from "./prepared-model-catalog-owner.js";
-import { createCatalogFixture, PROVIDER_ID } from "./prepared-model-catalog-worker.test-support.js";
+import {
+  createCatalogFixture,
+  PROVIDER_ID,
+  HARNESS_ID,
+} from "./prepared-model-catalog-worker.test-support.js";
 import type { PreparedModelRuntimeAgentFacts } from "./prepared-model-runtime.catalog-contract.js";
 import { prepareFullCatalogFacts } from "./prepared-model-runtime.full-catalog.js";
 import { prepareOwnedPluginLoadContext } from "./prepared-model-runtime.plugin-context.js";
@@ -124,6 +130,7 @@ describe("prepared catalog parent metadata ownership", () => {
           agentFacts,
           {
             pluginMetadataSnapshot: metadata,
+            cliBackendModels: [],
             pluginRegistry: registry,
             inlineProviderModels: [],
             configuredCatalogEntries: [],
@@ -179,13 +186,25 @@ describe("prepared catalog parent metadata ownership", () => {
     // The operation owns this frozen graph across module evaluation, as retained
     // Gateway generations do. A new module must not reinstall its Map mutators.
     vi.resetModules();
-    const [runtimeBuild, providerRuntime, metadataRuntime, generationScope] = await Promise.all([
+    const [
+      runtimeBuild,
+      providerRuntime,
+      metadataRuntime,
+      generationScope,
+      pluginLifetime,
+      { loadCompletedFullCatalog },
+      { readPreparedModelRuntimeCliBackendModels },
+    ] = await Promise.all([
       import("./prepared-model-runtime.build.js"),
       import("../plugins/provider-runtime.js"),
       import("../plugins/current-plugin-metadata-snapshot.js"),
       import("../plugins/runtime/generation-scope.js"),
+      import("./prepared-model-runtime.plugin-lifetime.js"),
+      import("./test-helpers/prepared-model-catalog-worker-fixture.js"),
+      import("./prepared-model-runtime-auth.js"),
     ]);
     let registry: PluginRegistry | undefined;
+    const posted = vi.spyOn(Worker.prototype, "postMessage");
     const capture = providerRuntime.captureProviderSyntheticAuthFacts;
     const captureSpy = vi
       .spyOn(providerRuntime, "captureProviderSyntheticAuthFacts")
@@ -222,6 +241,26 @@ describe("prepared catalog parent metadata ownership", () => {
         if (!prepared) {
           throw new Error("prepared runtime produced no snapshot");
         }
+        // Raw builds need the same generation claim that publication gives their consumers.
+        await using _ = {
+          [Symbol.asyncDispose]: pluginLifetime.retainPreparedPluginGeneration(
+            prepared.pluginGeneration,
+          ),
+        };
+        const capturedCli = readPreparedModelRuntimeCliBackendModels(prepared.snapshot);
+        if (capturedCli === undefined) {
+          throw new Error("Expected CLI identities bound to the prepared snapshot");
+        }
+        expect(capturedCli).toContainEqual({ id: HARNESS_ID });
+        const catalogPosts = () =>
+          posted.mock.calls.flatMap(([envelope], index) => {
+            const task = asOptionalRecord(asOptionalRecord(envelope)?.input);
+            const value = asOptionalRecord(task?.value);
+            if (value?.cliBackendModels !== capturedCli) {
+              return [];
+            }
+            return [posted.mock.contexts[index]];
+          });
         registry = prepared.pluginGeneration.pluginRegistry;
         expect(registry).toBeDefined();
         expect(prepared.snapshot.metadataSnapshot).toBe(metadata);
@@ -238,6 +277,15 @@ describe("prepared catalog parent metadata ownership", () => {
         );
         expect(fs.readFileSync(fixture.marker, "utf8")).toBe("start\ndone\n");
         expect(Object.isFrozen(metadata.byPluginId)).toBe(true);
+        const firstPosts = catalogPosts();
+        expect(firstPosts.length).toBeGreaterThan(0);
+        const refreshed = await loadCompletedFullCatalog(prepared.snapshot, { refresh: true });
+        expect(refreshed.entries).toContainEqual(
+          expect.objectContaining({ provider: PROVIDER_ID, id: "plugin-generation-v1" }),
+        );
+        expect(catalogPosts().length).toBeGreaterThan(firstPosts.length);
+        expect(new Set(catalogPosts()).size).toBe(1);
+        expect(readPreparedModelRuntimeCliBackendModels(prepared.snapshot)).toBe(capturedCli);
       });
     } finally {
       current = false;
@@ -246,6 +294,7 @@ describe("prepared catalog parent metadata ownership", () => {
         await waitForWorkers();
       } finally {
         captureSpy.mockRestore();
+        posted.mockRestore();
         if (registry) {
           await disposePluginRegistryInstances(registry);
         }

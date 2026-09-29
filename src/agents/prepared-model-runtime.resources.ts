@@ -1,3 +1,4 @@
+import { preparePluginSetupSource } from "../plugins/plugin-setup-module.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import { hasRetainedPluginRuntimeCloseError } from "../plugins/runtime-close-error.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -162,13 +163,26 @@ export class PreparedModelRuntimeBuildResources {
     }
   }
 
+  prepareSetup<T>(read: () => T, assertCurrent: () => void): Promise<T> {
+    this.assertOpen();
+    const assertLifetime = capturePreparedModelRuntimeLifetime();
+    return preparePluginSetupSource(read, () => {
+      this.assertOpen();
+      assertLifetime();
+      assertCurrent();
+    });
+  }
+
   async load(
     params: Parameters<typeof acquireAgentRuntimePluginRegistry>[0],
     onPrimaryRegistry: (registry: PluginRegistry) => void,
   ): Promise<PluginRegistry> {
     this.assertOpen();
     const assertLifetime = capturePreparedModelRuntimeLifetime();
-    const acquired = await acquireAgentRuntimePluginRegistry(params);
+    const acquired = await acquireAgentRuntimePluginRegistry(params, () => {
+      this.assertOpen();
+      assertLifetime();
+    });
     if ("resources" in acquired) {
       const resources = new PreparedRegistryResources(acquired);
       try {

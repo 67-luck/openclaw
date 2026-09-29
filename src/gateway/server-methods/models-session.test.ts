@@ -1,7 +1,10 @@
 import { expectDefined, safeParseJsonRecord } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { getPreparedModelRuntimeAuthStore } from "../../agents/prepared-model-runtime-auth.js";
+import {
+  getPreparedModelRuntimeAuthStore,
+  readPreparedModelRuntimeCliBackendModels,
+} from "../../agents/prepared-model-runtime-auth.js";
 import {
   loadSessionEntry,
   patchSessionEntryCore,
@@ -71,6 +74,10 @@ function fixture() {
     config,
     observationConfig: config,
     metadataSnapshot: owner.metadataSnapshot,
+    cliBackendModels: expectDefined(
+      readPreparedModelRuntimeCliBackendModels(owner),
+      "fixture CLI identities",
+    ),
     isCurrent: () => snapshotCurrent && owner.isCurrent(),
     authStore,
     authModes: owner.authModes,

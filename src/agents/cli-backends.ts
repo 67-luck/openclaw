@@ -7,12 +7,16 @@ import type { ContextEngineHostCapability } from "../context-engine/types.js";
 import type {
   CliBackendConfig,
   CliBackendRuntimeArtifactPolicy,
+  PreparedCliBackendModelIdentity,
 } from "../plugins/cli-backend.types.js";
 import { resolveRuntimeCliBackends } from "../plugins/cli-backends.runtime.js";
+import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import {
   resolvePluginSetupCliBackend,
   resolvePluginSetupRegistry,
+  selectPluginSetupCliBackendLookup,
 } from "../plugins/setup-registry.js";
+import { resolvePluginSetupCliBackendDescriptor } from "../plugins/setup-registry.runtime.js";
 import { resolveRuntimeTextTransforms } from "../plugins/text-transforms.runtime.js";
 import type {
   CliBackendAuthEpochMode,
@@ -84,6 +88,8 @@ type CliRuntimeModelBackendBinding = {
   pluginId?: string;
 };
 
+type CliBackendModelSource = Pick<CliBackendPlugin, "id" | "modelProvider"> & { pluginId?: string };
+
 function normalizeBundleMcpMode(
   mode: CliBundleMcpMode | undefined,
   enabled: boolean,
@@ -130,10 +136,12 @@ export function listCliRuntimeModelBackendBindings(
     config?: OpenClawConfig;
     env?: NodeJS.ProcessEnv;
     includeSetupRegistry?: boolean;
+    runtimeBackends?: readonly CliBackendModelSource[];
   } = {},
 ): CliRuntimeModelBackendBinding[] {
   const bindings = new Map<string, CliRuntimeModelBackendBinding>();
-  for (const backend of cliBackendsDeps.resolveRuntimeCliBackends("metadata")) {
+  for (const backend of params.runtimeBackends ??
+    cliBackendsDeps.resolveRuntimeCliBackends("metadata")) {
     addCliRuntimeModelBinding(bindings, {
       backend,
       ...(backend.pluginId ? { pluginId: backend.pluginId } : {}),
@@ -173,32 +181,134 @@ export function listCliRuntimeProviderIds(
   ].toSorted();
 }
 
+type CliCanonicalSelection =
+  | { kind: "ready"; provider: string | undefined }
+  | { kind: "setup"; params: Parameters<typeof resolvePluginSetupCliBackend>[0] };
+
+function selectCliCanonicalProvider(
+  params: Parameters<typeof resolveCliRuntimeCanonicalProvider>[0],
+): CliCanonicalSelection {
+  const runtime = normalizeProviderId(params.runtime ?? "");
+  if (!runtime) {
+    return { kind: "ready", provider: undefined };
+  }
+  if (params.preparedCliBackendModels !== undefined) {
+    return {
+      kind: "ready",
+      provider: params.preparedCliBackendModels.find((backend) => backend.id === runtime)
+        ?.modelProvider,
+    };
+  }
+  const runtimeBinding = listCliRuntimeModelBackendBindings({
+    runtimeBackends: params.runtimeBackends,
+  }).find((binding) => binding.runtime === runtime);
+  if (runtimeBinding) {
+    return { kind: "ready", provider: runtimeBinding.provider };
+  }
+  if (params.includeSetupRegistry !== true) {
+    return { kind: "ready", provider: undefined };
+  }
+  return {
+    kind: "setup",
+    params: {
+      backend: runtime,
+      config: params.config,
+      env: params.env,
+      metadataSnapshot: params.metadataSnapshot,
+    },
+  };
+}
+
 /** Resolves the canonical model provider served by a CLI runtime id. */
 export function resolveCliRuntimeCanonicalProvider(params: {
   runtime: string | undefined;
   config?: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
   includeSetupRegistry?: boolean;
+  runtimeBackends?: readonly CliBackendModelSource[];
+  metadataSnapshot?: PluginMetadataSnapshot;
+  preparedCliBackendModels?: readonly PreparedCliBackendModelIdentity[];
 }): string | undefined {
-  const runtime = normalizeProviderId(params.runtime ?? "");
-  if (!runtime) {
-    return undefined;
+  const selected = selectCliCanonicalProvider(params);
+  if (selected.kind === "ready") {
+    return selected.provider;
   }
-  const runtimeBinding = listCliRuntimeModelBackendBindings().find(
-    (binding) => binding.runtime === runtime,
-  );
-  if (runtimeBinding) {
-    return runtimeBinding.provider;
-  }
-  if (params.includeSetupRegistry !== true) {
-    return undefined;
-  }
-  const setupBackend = cliBackendsDeps.resolvePluginSetupCliBackend({
-    backend: runtime,
-    config: params.config,
-    env: params.env,
-  });
+  const setupBackend = cliBackendsDeps.resolvePluginSetupCliBackend(selected.params);
   return setupBackend ? resolveCliBackendModelProvider(setupBackend.backend) : undefined;
+}
+
+type CliBackendModelIdentityParams = {
+  config: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
+  metadataSnapshot: PluginMetadataSnapshot;
+  runtimeBackends: readonly CliBackendModelSource[];
+};
+
+type SetupCliRead = () => ReturnType<typeof resolvePluginSetupCliBackend>;
+type CliIdentitySelection = Generator<
+  SetupCliRead,
+  readonly PreparedCliBackendModelIdentity[],
+  ReturnType<SetupCliRead>
+>;
+
+function* selectCliBackendModelIdentities(
+  params: CliBackendModelIdentityParams,
+): CliIdentitySelection {
+  const runtimeIds = new Set(
+    params.runtimeBackends.map((backend) => normalizeProviderId(backend.id)),
+  );
+  const ids = new Set([...runtimeIds, ...params.metadataSnapshot.owners.cliBackends.keys()]);
+  const models: PreparedCliBackendModelIdentity[] = [];
+  for (const id of [...ids].toSorted()) {
+    if (
+      !runtimeIds.has(id) &&
+      !resolvePluginSetupCliBackendDescriptor({ ...params, backend: id })
+    ) {
+      continue;
+    }
+    const selected = selectCliCanonicalProvider({
+      ...params,
+      runtime: id,
+      includeSetupRegistry: true,
+    });
+    let modelProvider: string | undefined;
+    if (selected.kind === "ready") {
+      modelProvider = selected.provider;
+    } else {
+      const read = selectPluginSetupCliBackendLookup(selected.params);
+      const setup = typeof read === "function" ? yield read : read;
+      modelProvider = setup ? resolveCliBackendModelProvider(setup.backend) : undefined;
+    }
+    models.push(Object.freeze({ id, ...(modelProvider ? { modelProvider } : {}) }));
+  }
+  return Object.freeze(models);
+}
+
+function finishCliIdentitySelection(
+  selection: CliIdentitySelection,
+  first = selection.next(),
+): readonly PreparedCliBackendModelIdentity[] {
+  let next = first;
+  while (!next.done) {
+    next = selection.next(next.value());
+  }
+  return next.value;
+}
+
+/** Read ready identities without source admission; prepare only at the first selected setup owner. */
+export function prepareCliBackendModelIdentitiesWithSource(
+  params: CliBackendModelIdentityParams,
+  prepareSource: (
+    read: () => readonly PreparedCliBackendModelIdentity[],
+  ) => Promise<readonly PreparedCliBackendModelIdentity[]>,
+):
+  | readonly PreparedCliBackendModelIdentity[]
+  | Promise<readonly PreparedCliBackendModelIdentity[]> {
+  const selection = selectCliBackendModelIdentities(params);
+  const first = selection.next();
+  return first.done
+    ? first.value
+    : prepareSource(() => finishCliIdentitySelection(selection, first));
 }
 
 /** Resolves the binding for one provider/runtime pair when registered. */

@@ -2,7 +2,10 @@ import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { readPreparedGatewayModelCatalogMetadata } from "./server-model-catalog-view.js";
+import {
+  readPreparedGatewayCliBackendModels,
+  readPreparedGatewayModelCatalogMetadata,
+} from "./server-model-catalog-view.js";
 import type {
   GatewaySessionModelSource,
   SessionListRowContext,
@@ -43,8 +46,11 @@ export function readSessionRowModelFacts(params: {
   const { provider, model } = selectedModel;
   const rowModelIdentity = resolveSessionDisplayModelIdentityRefCached({
     cfg,
+    agentId,
     provider,
     model,
+    metadataSnapshot,
+    preparedCliBackendModels: readPreparedGatewayCliBackendModels(preparedCatalog),
     rowContext,
   });
   // Entries and provider policy stay bound to the same prepared agent owner.

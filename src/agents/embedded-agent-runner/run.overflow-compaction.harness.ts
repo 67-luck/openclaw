@@ -29,6 +29,10 @@ import { clearAgentHarnesses, registerAgentHarness } from "../harness/registry.j
 import type { AgentHarnessAttemptParams } from "../harness/types.js";
 import type { ResolvedProviderAuth } from "../model-auth-runtime-shared.js";
 import type { AgentRuntimePlan } from "../runtime-plan/types.js";
+import {
+  captureOverflowCliBackendModels,
+  createOverflowCliBackendsMock,
+} from "./run.overflow-compaction.cli.test-support.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import type { RunEmbeddedAgentInternalParams } from "./run/internal-params.js";
 import type { buildEmbeddedRunPayloads } from "./run/payloads.js";
@@ -187,21 +191,26 @@ export const mockedBuildAgentRuntimePlan = vi.fn<() => AgentRuntimePlan>(buildMo
 export const mockedAcquireAgentRunPreparedModelRuntime = vi.fn(
   async (input: Record<string, unknown>) => {
     const pluginRegistry = getActivePluginRegistry();
+    const cliBackendModels = captureOverflowCliBackendModels(pluginRegistry);
+    const snapshot = {
+      agentId: input.agentId,
+      agentDir: input.agentDir,
+      config: input.config,
+      workspaceDir: input.workspaceDir,
+      pluginRegistry: pluginRegistry
+        ? {
+            ...pluginRegistry,
+            agentHarnesses: [...pluginRegistry.agentHarnesses],
+          }
+        : undefined,
+      metadataSnapshot: { ...emptyPluginMetadataSnapshot, workspaceDir: input.workspaceDir },
+      createStores: () => ({ authStorage: {}, modelRegistry: {} }),
+    };
+    const { bindPreparedModelRuntimeCliBackendModels } =
+      await import("../prepared-model-runtime-auth.js");
+    bindPreparedModelRuntimeCliBackendModels(snapshot, cliBackendModels);
     return {
-      snapshot: {
-        agentId: input.agentId,
-        agentDir: input.agentDir,
-        config: input.config,
-        workspaceDir: input.workspaceDir,
-        pluginRegistry: pluginRegistry
-          ? {
-              ...pluginRegistry,
-              agentHarnesses: [...pluginRegistry.agentHarnesses],
-            }
-          : undefined,
-        metadataSnapshot: { ...emptyPluginMetadataSnapshot, workspaceDir: input.workspaceDir },
-        createStores: () => ({ authStorage: {}, modelRegistry: {} }),
-      },
+      snapshot,
       [Symbol.asyncDispose]: vi.fn(async () => {}),
     };
   },
@@ -837,42 +846,7 @@ export async function loadRunOverflowCompactionHarness(): Promise<{
     };
   });
 
-  vi.doMock("../cli-backends.js", async () => {
-    const actual = await vi.importActual<typeof import("../cli-backends.js")>("../cli-backends.js");
-    type ResolveBindingParams = Parameters<typeof actual.resolveCliRuntimeModelBackendBinding>[0];
-    type ProviderCheckParams = Parameters<typeof actual.isCliRuntimeModelBackendForProvider>[0];
-    const claudeBinding = {
-      provider: "anthropic",
-      runtime: "claude-cli",
-      pluginId: "anthropic",
-    };
-    return {
-      ...actual,
-      listCliRuntimeModelBackendBindings: vi.fn((params?: unknown) => [
-        claudeBinding,
-        ...actual
-          .listCliRuntimeModelBackendBindings(
-            params as Parameters<typeof actual.listCliRuntimeModelBackendBindings>[0],
-          )
-          .filter(
-            (binding) =>
-              binding.provider !== claudeBinding.provider ||
-              binding.runtime !== claudeBinding.runtime,
-          ),
-      ]),
-      listCliRuntimeProviderIds: vi.fn(() => ["claude-cli"]),
-      resolveCliRuntimeModelBackendBinding: vi.fn((params: ResolveBindingParams) =>
-        params.provider === claudeBinding.provider && params.runtime === claudeBinding.runtime
-          ? claudeBinding
-          : actual.resolveCliRuntimeModelBackendBinding(params),
-      ),
-      isCliRuntimeModelBackendForProvider: vi.fn((params: ProviderCheckParams) =>
-        params.provider === claudeBinding.provider && params.runtime === claudeBinding.runtime
-          ? true
-          : actual.isCliRuntimeModelBackendForProvider(params),
-      ),
-    };
-  });
+  vi.doMock("../cli-backends.js", createOverflowCliBackendsMock);
 
   vi.doMock("../workspace-run.js", () => ({
     resolveRunWorkspaceDir: vi.fn((params: { workspaceDir: string; agentId?: string }) => ({

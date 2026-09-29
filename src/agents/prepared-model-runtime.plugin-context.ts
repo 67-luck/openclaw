@@ -1,6 +1,9 @@
 import type { PluginDiscoveryResult } from "../plugins/discovery.js";
 import { extractPluginInstallRecordsFromInstalledPluginIndex } from "../plugins/installed-plugin-index-install-records.js";
-import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import {
+  resolvePluginMetadataSnapshot,
+  resolvePluginMetadataSnapshotAsync,
+} from "../plugins/plugin-metadata-snapshot.js";
 import type {
   PluginMetadataSnapshot,
   ResolvePluginMetadataSnapshotParams,
@@ -23,7 +26,7 @@ type PreparedPluginContextInput = Pick<
 
 const emptyPluginDiscovery: PluginDiscoveryResult = { candidates: [], diagnostics: [] };
 
-export function prepareOwnedPluginMetadataSnapshotParams(
+function prepareOwnedPluginMetadataSnapshotParams(
   input: PreparedPluginContextInput,
   env: NodeJS.ProcessEnv,
 ): ResolvePluginMetadataSnapshotParams {
@@ -43,6 +46,28 @@ export function prepareOwnedPluginMetadataSnapshotParams(
         }
       : {}),
   };
+}
+
+export function assertPreparedPluginInputsCurrent(
+  inputs: readonly PreparedModelRuntimeInput[],
+  options: { assertCurrent?: (input: PreparedModelRuntimeInput) => void },
+): void {
+  for (const candidate of inputs) {
+    options.assertCurrent?.(candidate);
+  }
+}
+
+export function prepareWorkspacePluginMetadata(
+  inputs: readonly PreparedModelRuntimeInput[],
+  env: NodeJS.ProcessEnv,
+  options: { assertCurrent?: (input: PreparedModelRuntimeInput) => void },
+): Promise<PluginMetadataSnapshot> {
+  const input = inputs[0];
+  if (!input) {
+    throw new Error("prepared model runtime workspace group is empty");
+  }
+  assertPreparedPluginInputsCurrent(inputs, options);
+  return resolvePluginMetadataSnapshotAsync(prepareOwnedPluginMetadataSnapshotParams(input, env));
 }
 
 /** Resolves and attaches the plugin facts owned by one prepared workspace generation. */
