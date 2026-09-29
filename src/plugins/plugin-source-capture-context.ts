@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
+import { resolveStateDir } from "../config/state-dir.js";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import {
@@ -13,6 +14,17 @@ export function getPluginSourceCaptureStorage(): PluginSourceCaptureStorage | un
   return getPluginExecutionFrame()?.sourceCaptureStorage;
 }
 
+export function resolvePluginSourceCaptureStorage(
+  stateDir?: string,
+  placement?: PluginSourceCaptureStorage["placement"],
+): PluginSourceCaptureStorage {
+  const inherited = stateDir === undefined ? getPluginSourceCaptureStorage() : undefined;
+  return Object.freeze({
+    stateDir: path.resolve(stateDir ?? inherited?.stateDir ?? resolveStateDir()),
+    placement: placement ?? inherited?.placement ?? "state",
+  });
+}
+
 /** Capture storage outlives an inspection's private database and never redirects its writers. */
 export function withPluginSourceCaptureStorage<T>(
   storage: PluginSourceCaptureStorage,
@@ -23,10 +35,10 @@ export function withPluginSourceCaptureStorage<T>(
     createPluginExecutionFrame(
       {
         ...current,
-        sourceCaptureStorage: Object.freeze({
-          ...storage,
-          stateDir: path.resolve(storage.stateDir),
-        }),
+        sourceCaptureStorage: resolvePluginSourceCaptureStorage(
+          storage.stateDir,
+          storage.placement,
+        ),
       },
       current,
     ),

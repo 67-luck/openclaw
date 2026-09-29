@@ -3,7 +3,6 @@ import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { resolveStateDir } from "../config/state-dir.js";
 import { hasErrnoCode } from "../infra/errno.js";
 import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { isSqliteLockError } from "../infra/sqlite-error-diagnostics.js";
@@ -16,8 +15,8 @@ import { removeTemporaryArtifacts } from "../infra/temp-artifact-cleanup.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { PluginSourceCaptureStorage } from "./plugin-instance-invocation.types.js";
 import {
-  getPluginSourceCaptureStorage,
   pluginSourceCaptureMaintenance,
+  resolvePluginSourceCaptureStorage,
   runInPluginSourceCaptureContext,
 } from "./plugin-source-capture-context.js";
 import { createPluginNativeCaptureCustody } from "./plugin-source-capture-native-loads.js";
@@ -555,11 +554,7 @@ export function retainPluginSourceCaptureInstance(
   stateDir?: string,
   placement?: PluginSourceCaptureStorage["placement"],
 ) {
-  const inherited = stateDir === undefined ? getPluginSourceCaptureStorage() : undefined;
-  const storage = Object.freeze({
-    stateDir: path.resolve(stateDir ?? inherited?.stateDir ?? resolveStateDir()),
-    placement: placement ?? inherited?.placement ?? "state",
-  });
+  const storage = resolvePluginSourceCaptureStorage(stateDir, placement);
   const key = JSON.stringify([storage.stateDir, storage.placement]);
   const maintenance = pluginSourceCaptureMaintenance.getStore();
   const scheduler = maintenance?.scheduler;

@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { resolveStateDir } from "../config/state-dir.js";
 import { hasErrnoCode } from "../infra/errno.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { getPluginCache } from "./plugin-cache.js";
@@ -34,7 +33,6 @@ import type {
   PluginNativeArtifactFact,
   PluginNativeNamespaceFact,
 } from "./plugin-source-admission.types.js";
-import { getPluginSourceCaptureStorage } from "./plugin-source-capture-context.js";
 import {
   createPluginNativeCaptureRoot,
   isPluginSourceCaptureRetained,
@@ -159,10 +157,10 @@ export function createPluginNativeAdmission(
   const state = nativeAdmissionStateFor();
   const key = `${path.resolve(rootDir)}\0${entryFile ? path.resolve(entryFile) : ""}`;
   const owner = state.owners.get(path.resolve(rootDir));
-  const captureStorage =
-    getPluginSourceCaptureStorage() ??
-    Object.freeze({ stateDir: resolveStateDir(), placement: "state" as const });
-  const publishAdmission = owner ? createPluginSourceAdmissionPublisher() : undefined;
+  const publishAdmission =
+    owner && !state.artifactPreservingReadOnly
+      ? createPluginSourceAdmissionPublisher({ stateDir: state.publicationStateDir })
+      : undefined;
   const prepared = recovery?.receipt ?? state.receipts.get(key);
   const selected = new Map<string, PluginNativeNamespaceFact>();
   const priorNamespaces = new Set<PluginNativeNamespaceFact>();
@@ -230,7 +228,10 @@ export function createPluginNativeAdmission(
     previous?: PluginNativeNamespaceFact,
     retainedRoot?: string,
   ) => {
-    const root = createPluginNativeCaptureRoot(captureStorage.stateDir, captureStorage.placement);
+    const root = createPluginNativeCaptureRoot(
+      state.captureStorage.stateDir,
+      state.captureStorage.placement,
+    );
     state.roots.add(root);
     snapshotOwners.set(root, new Set([state]));
     const { fact, changed } = capturePluginNativeNamespace({
@@ -317,16 +318,10 @@ export function createPluginNativeAdmission(
     });
     const unchanged = isDeepStrictEqual(state.receipts.get(key), next);
     state.receipts.set(key, next);
-    if (!owner) {
+    if (!owner || !publishAdmission) {
       return;
     }
-    if (!publishAdmission) {
-      if (!unchanged) {
-        state.publications.set(key, null);
-      }
-      return;
-    }
-    if (unchanged && state.publications.get(key) !== null) {
+    if (unchanged) {
       startNativeAdmissionPublication(state, key);
       return;
     }
@@ -647,7 +642,7 @@ export function createPluginNativeAdmission(
         },
       };
     },
-    finish(_captureDirectory: string, receipt: NativeReceipt) {
+    finish(receipt: NativeReceipt) {
       if (!files.size) {
         return;
       }

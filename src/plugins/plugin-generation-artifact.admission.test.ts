@@ -182,9 +182,9 @@ it.each([false, true])(
       const fixture = createFixture(state.path("installed"), true);
       await writePersistedInstalledPluginIndex(fixture.index, { stateDir: state.stateDir });
       const cache = createPluginCache();
-      preparePluginNativeAdmissions(fixture.index, cache);
       try {
         await withArtifactPreservingStateReads(async () => {
+          preparePluginNativeAdmissions(fixture.index, cache);
           const artifact = withPluginCache(cache, () =>
             capturePluginGenerationArtifact(fixture.root),
           );
@@ -198,6 +198,7 @@ it.each([false, true])(
           }
         });
         if (writable) {
+          preparePluginNativeAdmissions(fixture.index, cache);
           const artifact = withPluginCache(cache, () =>
             capturePluginGenerationArtifact(fixture.root),
           );
