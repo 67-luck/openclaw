@@ -82,7 +82,8 @@ env:
 jobs:
   probe:
     name: Windows probe
-    if: ${{ false }}
+    if: >-
+      ${{ github.ref == 'refs/heads/codex/windows-fileio-integration-150153-20260928' && inputs.target_ref == github.workflow_sha && inputs.runner_label == 'windows-2025' && inputs.keepalive_minutes == '0' && inputs.run_windows_ci && !inputs.run_private_node_provisioning && !inputs.installed_repair_worker && !inputs.installed_startup_cpu_diagnostic && inputs.installed_startup_package != '' && inputs.windows_ci_replay == '' && !inputs.require_wsl2 && !inputs.import_ubuntu_wsl2 && !inputs.enable_wsl2_features && inputs.startup_node_version == '26.8.2' }}
     outputs:
       native_package_id: ${{ steps.native_package_upload.outputs.artifact-id }}
       native_package_digest: ${{ steps.native_package_upload.outputs.artifact-digest }}
@@ -302,6 +303,19 @@ jobs:
           $toolingSha = (git rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $toolingSha -cne $env:TARGET_REF) { throw "Tooling checkout differs from target_ref." }
           $selection = $env:STARTUP_PACKAGE | ConvertFrom-Json
+          if ($nativePackage) {
+            $expectedBinding = [ordered]@{
+              runId = "36263257412"; runAttempt = "1"; artifactId = "10913740491"
+              sourceSha = "82ba7ab3465cd685244198494203e8ba44653de1"
+              workflowSha = "82ba7ab3465cd685244198494203e8ba44653de1"
+              packageSha256 = "5d855650980fc9b3157bfc41c68f01eef222afcfe1b1fc67fbdbb5ce6fe9c5d0"
+              artifactDigest = "sha256:9f56ee41dd9463c93748570b92c04025fe89b3c554db79da5f876de72bf6cb21"
+            }
+            if ((($selection.PSObject.Properties.Name | Sort-Object) -join ",") -cne (($expectedBinding.Keys | Sort-Object) -join ",")) { throw "Private 2026.9.3 proof requires only the fixed Package Acceptance binding fields." }
+            foreach ($field in $expectedBinding.Keys) {
+              if ([string]$selection.$field -cne $expectedBinding[$field]) { throw "Private 2026.9.3 package binding differs: $field" }
+            }
+          }
           $paired = $selection.PSObject.Properties.Name -contains "baseline" -or $selection.PSObject.Properties.Name -contains "candidate"
           if ($env:REPAIR_WORKER -eq "true") {
             if ($paired -or $env:CPU_DIAGNOSTIC -eq "true" -or $env:REPAIR_MIXED_PROOF -eq "true" -or $env:RUNNER_LABEL -ne "windows-2025" -or $env:KEEPALIVE_MINUTES -ne "0") {
@@ -629,8 +643,27 @@ jobs:
             $armRoot = if ($paired) { Join-Path $env:RUNNER_TEMP "startup-comparison/$arm" } else { $env:RUNNER_TEMP }
             $candidateDir = Join-Path $armRoot "startup-package-resolved"
             $artifactDir = Join-Path $env:RUNNER_TEMP $(if ($arm -eq "candidate") { "startup-package-comparison-input" } else { "startup-package-input" })
-            node --import ./scripts/tsx.mjs scripts/resolve-openclaw-package-candidate.mts --source artifact --artifact-dir $artifactDir --package-sha256 $binding.packageSha256 --output-dir $candidateDir --metadata (Join-Path $candidateDir "package-candidate.json")
-            if ($LASTEXITCODE -ne 0) { throw "Canonical package resolution failed." }
+            $validationRoot = Join-Path $env:GITHUB_WORKSPACE ".tmp/package-validation-$arm"
+            if (Test-Path -LiteralPath $validationRoot) { throw "Package validation scratch must be fresh." }
+            New-Item -ItemType Directory -Path $validationRoot | Out-Null
+            $previousTemps = @{}
+            $resolverExitCode = $null
+            try {
+              foreach ($name in @("TEMP", "TMP", "TMPDIR")) {
+                $previousTemps[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+                [Environment]::SetEnvironmentVariable($name, $validationRoot, "Process")
+              }
+              $observedTemp = (node -p 'require("node:os").tmpdir()').Trim()
+              if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($observedTemp) -ine [IO.Path]::GetFullPath($validationRoot)) { throw "Package validation scratch was not selected." }
+              @{ temporaryRoot = $observedTemp; previous = $previousTemps; scope = "canonical package validation only" } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence "${prefix}package-validation-temp.json")
+              node --import ./scripts/tsx.mjs scripts/resolve-openclaw-package-candidate.mts --source artifact --artifact-dir $artifactDir --package-sha256 $binding.packageSha256 --output-dir $candidateDir --metadata (Join-Path $candidateDir "package-candidate.json")
+              $resolverExitCode = $LASTEXITCODE
+            } finally {
+              foreach ($name in $previousTemps.Keys) {
+                [Environment]::SetEnvironmentVariable($name, $previousTemps[$name], "Process")
+              }
+            }
+            if ($resolverExitCode -ne 0) { throw "Canonical package resolution failed." }
             $candidate = Get-Content -LiteralPath (Join-Path $candidateDir "package-candidate.json") -Raw | ConvertFrom-Json
             if ($candidate.packageSourceSha -cne $binding.sourceSha -or $candidate.sha256 -cne $binding.packageSha256) { throw "Resolved source or package bytes differ." }
             Copy-Item -LiteralPath (Join-Path $candidateDir "package-candidate.json") -Destination (Join-Path $evidence "${prefix}package-candidate.json")
@@ -969,6 +1002,7 @@ jobs:
           # No github-token/repository/run-id: the pinned action uses current-run scope.
 
       - name: Verify current-run handoff and retain origin identity
+        id: native_package_handoff
         if: ${{ inputs.installed_startup_package != '' }}
         shell: pwsh
         env:
@@ -1059,7 +1093,7 @@ jobs:
 
       - name: Prepare installed Scheduled Task cell fresh
         id: native_prepare_fresh
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' }}
+        if: ${{ false }}
         shell: bash
         env:
           OPENCLAW_VITEST_WORKER_CACHE: "1"
@@ -1074,7 +1108,7 @@ jobs:
 
       - name: Run installed Scheduled Task cell fresh
         id: native_schtasks_fresh
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_prepare_fresh.outcome == 'success' }}
+        if: ${{ false }}
         # 6-minute installed body, three-minute teardown hook, one-minute runner margin.
         timeout-minutes: 10
         shell: bash
@@ -1315,7 +1349,7 @@ jobs:
 
       - name: Prepare installed Scheduled Task cell 2026.9.3
         id: native_prepare_9_3
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_retire_fresh.outcome == 'success' }}
+        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_isolation.outcome == 'success' && steps.native_package_handoff.outcome == 'success' }}
         shell: bash
         env:
           CI_WINDOWS_SCHTASKS_INSTALLED_CELL: "2026.9.3"
@@ -1323,6 +1357,21 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$NODE_BIN:$PATH"
+          node --input-type=module <<'NATIVE_CELL_ROOTS'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const input = JSON.parse(fs.readFileSync('.artifacts/windows-schtasks/installed-input.json', 'utf8'));
+          const expected = {
+            stateRoot: path.join(process.env.RUNNER_TEMP, `openclaw-schtasks-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`),
+            installRoot: path.join(process.env.RUNNER_TEMP, 'native-package-installed'),
+          };
+          for (const [field, root] of Object.entries(expected)) {
+            assert.equal(path.resolve(input[field]).toLowerCase(), path.resolve(root).toLowerCase());
+            assert.throws(() => fs.lstatSync(root), { code: 'ENOENT' });
+          }
+          for (const root of Object.values(expected)) fs.mkdirSync(root);
+          NATIVE_CELL_ROOTS
           node --import ./scripts/tsx.mjs src/daemon/schtasks.installed-package.test-support.ts prepare .artifacts/windows-schtasks/installed-input.json
 
       - name: Run installed Scheduled Task cell 2026.9.3
@@ -1384,7 +1433,7 @@ jobs:
 
       - name: Prepare installed Scheduled Task cell 2026.9.4
         id: native_prepare_9_4
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_retire_9_3.outcome == 'success' }}
+        if: ${{ false }}
         shell: bash
         env:
           CI_WINDOWS_SCHTASKS_INSTALLED_CELL: "2026.9.4"
@@ -1396,7 +1445,7 @@ jobs:
 
       - name: Run installed Scheduled Task cell 2026.9.4
         id: native_schtasks_9_4
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_prepare_9_4.outcome == 'success' }}
+        if: ${{ false }}
         # 18-minute installed body, three-minute teardown hook, one-minute runner margin.
         timeout-minutes: 22
         shell: bash
@@ -1547,7 +1596,8 @@ jobs:
   # independent while package mode explicitly waits for its current-run producer.
   native-schtasks-package:
     name: Native Scheduled Task installed proof
-    if: ${{ false }}
+    if: >-
+      ${{ github.ref == 'refs/heads/codex/windows-fileio-integration-150153-20260928' && inputs.target_ref == github.workflow_sha && inputs.runner_label == 'windows-2025' && inputs.keepalive_minutes == '0' && inputs.run_windows_ci && !inputs.run_private_node_provisioning && !inputs.installed_repair_worker && !inputs.installed_startup_cpu_diagnostic && inputs.installed_startup_package != '' && inputs.windows_ci_replay == '' && !inputs.require_wsl2 && !inputs.import_ubuntu_wsl2 && !inputs.enable_wsl2_features && inputs.startup_node_version == '26.8.2' && needs.probe.result == 'success' && needs.probe.outputs.native_package_id != '' && needs.probe.outputs.native_package_digest != '' && needs.probe.outputs.native_manifest_sha256 != '' }}
     needs: probe
     permissions:
       contents: read
@@ -1561,8 +1611,7 @@ jobs:
 
   fileio-integration-control:
     name: Integrated owned FileIO diagnostic controls
-    if: >-
-      ${{ github.ref == 'refs/heads/codex/windows-fileio-integration-150153-20260928' && inputs.runner_label == 'windows-2025' && inputs.keepalive_minutes == '0' && !inputs.run_windows_ci && !inputs.run_private_node_provisioning && !inputs.installed_repair_worker && !inputs.installed_startup_cpu_diagnostic && inputs.installed_startup_package == '' && inputs.windows_ci_replay == '' && !inputs.require_wsl2 && !inputs.import_ubuntu_wsl2 && !inputs.enable_wsl2_features && inputs.startup_node_version == '26.8.2' }}
+    if: ${{ false }}
     runs-on: windows-2025
     timeout-minutes: 30
     permissions:

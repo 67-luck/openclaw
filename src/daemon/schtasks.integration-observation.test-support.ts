@@ -11,6 +11,7 @@ import { readInstalledFileIoObservation } from "./schtasks.installed-fileio-obse
 import {
   buildInstalledUpdateRetirementCensus,
   readInstalledUpdateRetirementObservation,
+  type InstalledFileIoDescriptor,
   type InstalledUpdateRetirementBinding,
 } from "./schtasks.installed-retirement-observation.test-support.js";
 import type { GatewayServiceRuntime } from "./service-runtime.js";
@@ -170,6 +171,7 @@ export function buildInstalledCensusInvocation(script: string) {
 export function readRelatedProcessDiagnostics(
   needles: string[],
   binding?: InstalledUpdateRetirementBinding,
+  censusRuntime?: Pick<InstalledFileIoDescriptor, "powerShellExe" | "powerShellSha256">,
 ): {
   error: string | null;
   ok: boolean;
@@ -186,7 +188,7 @@ export function readRelatedProcessDiagnostics(
       ].join("; ");
   const invocation = buildInstalledCensusInvocation(script);
   const result = spawnSync(
-    binding?.fileIo?.powerShellExe ?? getWindowsPowerShellExePath(),
+    censusRuntime?.powerShellExe ?? binding?.fileIo?.powerShellExe ?? getWindowsPowerShellExePath(),
     invocation.args,
     {
       input: invocation.input,

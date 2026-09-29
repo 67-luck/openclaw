@@ -1,6 +1,15 @@
 import type { InstalledRetirementBaseline } from "./schtasks.installed-retirement-baseline.test-support.js";
 import type { InstalledFileIoDescriptor } from "./schtasks.installed-retirement-observation.test-support.js";
 
+export const installedCandidateCheckNames = [
+  "candidate migration rehearsal",
+  "candidate doctor lint",
+  "candidate config validation",
+  "candidate plugin resolution",
+  "candidate migration continuation",
+  "candidate gateway canary",
+];
+
 export function createInstalledFileIoDescriptorFixture(
   ownedPrefix: string,
 ): InstalledFileIoDescriptor {

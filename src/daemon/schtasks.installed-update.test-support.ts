@@ -15,6 +15,7 @@ import {
   parseInstalledUpdateResult,
   type InstalledTask,
 } from "./schtasks.installed-diagnostics.test-support.js";
+import { verifyInstalledFileIoExecutable } from "./schtasks.installed-fileio.test-support.js";
 import {
   packageRoot,
   type readInput,
@@ -106,9 +107,27 @@ export async function runInstalledPublishedUpdate(params: {
                 ? "before-physical-cutoff"
                 : undefined;
       if (
+        params.fileIo &&
+        !processObservationWindowClosed &&
+        snapshotReason &&
+        settlementProcesses.length < 2 &&
+        remainingMs >= 15_000 &&
+        (settlementProcesses.length === 0 ||
+          (pinnedProcess &&
+            terminalJson &&
+            progress.phase === "finished" &&
+            progress.status !== "running"))
+      ) {
+        await verifyInstalledFileIoExecutable(params.fileIo, task.env);
+        if (stopObservation.signal.aborted) {
+          return;
+        }
+      }
+      const captureRemainingMs = params.fileIo ? physicalCutoffAt - performance.now() : remainingMs;
+      if (
         !processObservationWindowClosed &&
         settlementProcesses.length < 2 &&
-        remainingMs < 15_000
+        captureRemainingMs < 15_000
       ) {
         processObservationWindowClosed = true;
         observations.updateSettlementProcessCaptureUnavailable = {
@@ -155,7 +174,11 @@ export async function runInstalledPublishedUpdate(params: {
                 ...(fileIoTrigger ? { fileIo: { ...params.fileIo!, trigger: fileIoTrigger } } : {}),
               }
             : undefined,
+          params.fileIo,
         );
+        if (params.fileIo) {
+          await verifyInstalledFileIoExecutable(params.fileIo, task.env);
+        }
         if (
           settlementProcesses.length === 0 &&
           "retirement" in capture &&

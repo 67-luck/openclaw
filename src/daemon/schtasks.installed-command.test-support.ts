@@ -33,6 +33,7 @@ export function captureInstalledUpdateProcesses(
   progress: Pick<UpdateRunRecord, "runId" | "phase" | "status">,
   reason: "terminal" | "elapsed-300s" | "follow-up" | "before-physical-cutoff",
   retirementBinding?: InstalledUpdateRetirementBinding,
+  censusRuntime?: Parameters<typeof readRelatedProcessDiagnostics>[2],
 ) {
   const sample = {
     runId: progress.runId,
@@ -42,9 +43,11 @@ export function captureInstalledUpdateProcesses(
     capturedAtMs: Date.now(),
   };
   try {
-    const capture = retirementBinding
-      ? readRelatedProcessDiagnostics(needles, retirementBinding)
-      : readRelatedProcessDiagnostics(needles);
+    const capture = censusRuntime
+      ? readRelatedProcessDiagnostics(needles, retirementBinding, censusRuntime)
+      : retirementBinding
+        ? readRelatedProcessDiagnostics(needles, retirementBinding)
+        : readRelatedProcessDiagnostics(needles);
     return { ...sample, ...projectInstalledUpdateProcessCapture(context, capture) };
   } catch {
     return { ...sample, unavailable: "Process observation could not be read" };
