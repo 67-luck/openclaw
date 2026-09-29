@@ -4,10 +4,12 @@ import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
+import { updateRunLedgerSchema } from "../infra/update-run-write.js";
 import { run, type CommandRecord } from "./schtasks.installed-command.test-support.js";
 import {
   captureContainmentDatabase,
   compareContainmentState,
+  summarizeContainmentState,
 } from "./schtasks.installed-containment-state.test-support.js";
 import * as stateObservations from "./schtasks.installed-containment-state.test-support.js";
 import {
@@ -236,6 +238,91 @@ it("compares all logical data while admitting only the command row and exact lea
     db.close();
   }
   expect(fs.readdirSync(root).toSorted()).toEqual(["state.sqlite"]);
+});
+
+it("admits only the released first-update ledger bootstrap and exact command row", async () => {
+  const cases = [
+    ["bootstrap", ""],
+    ["unrelated table", "CREATE TABLE foreign_feature(value TEXT)"],
+    ["unrelated index", "CREATE INDEX foreign_index ON update_runs(trigger)"],
+    [
+      "existing definition",
+      "DROP INDEX user_note_index; CREATE INDEX user_note_index ON user_notes(id)",
+    ],
+    ["existing removal", "DROP TABLE user_notes"],
+    ["incomplete ledger", "DROP INDEX idx_update_runs_active"],
+    [
+      "wrong index definition",
+      "DROP INDEX idx_update_runs_active; CREATE INDEX idx_update_runs_active ON update_runs(status)",
+    ],
+    ["wrong driver", 'UPDATE update_runs SET before_json=\'{"version":"2026.9.3"}\''],
+    [
+      "activation",
+      "UPDATE update_runs SET phase='activating',status='running',finished_at_ms=NULL",
+    ],
+    ["malformed table", ""],
+    ["existing incomplete ledger", ""],
+    ["foreign row", ""],
+    ["wrong row", ""],
+    ["missing row", ""],
+    ["peer bootstrap", ""],
+  ] as const;
+  for (const [mode, change] of cases) {
+    const root = tempDirs.make("installed-ledger-bootstrap-");
+    const filename = path.join(root, "state.sqlite");
+    const db = openNodeSqliteDatabase(filename);
+    try {
+      db.exec(`PRAGMA user_version=17;
+        CREATE TABLE user_notes(id INTEGER PRIMARY KEY, body TEXT);
+        CREATE INDEX user_note_index ON user_notes(body);
+        INSERT INTO user_notes VALUES(1,'synthetic-private-note');`);
+      if (mode === "existing incomplete ledger") {
+        db.exec(updateRunLedgerSchema.split(";", 1)[0]! + ";");
+      }
+      const capture = async () =>
+        (
+          await captureContainmentDatabase(
+            filename,
+            createHash("sha256").update("state/openclaw.sqlite").digest("hex"),
+            true,
+            { rows: 0 },
+          )
+        ).database;
+      const before = await capture();
+      db.exec(
+        mode === "malformed table"
+          ? updateRunLedgerSchema.replace(") STRICT;", ");")
+          : updateRunLedgerSchema,
+      );
+      const insert = db.prepare(`INSERT INTO update_runs VALUES(
+        ?,1,2,'cli','finished','failed',NULL,'{}','{}','{"version":"2026.9.4"}',
+        '{}','[]','{}','[]',NULL,2,NULL)`);
+      if (mode !== "missing row") {
+        insert.run(mode === "wrong row" ? randomUUID() : runId);
+      }
+      if (mode === "foreign row") {
+        insert.run(randomUUID());
+      }
+      if (change) {
+        db.exec(change);
+      }
+      const after = await capture();
+      const compare = () =>
+        compareContainmentState([before], [after], mode === "peer bootstrap" ? undefined : runId);
+      if (mode === "bootstrap") {
+        expect(compare()).toMatchObject({ updateRows: 1, databases: [{ ledgerBootstrap: true }] });
+        expect(before.schema).not.toBe(after.schema);
+        const summary = JSON.stringify(summarizeContainmentState([before, after]));
+        expect(summary).not.toContain("CREATE TABLE");
+        expect(summary).not.toContain("user_note_index");
+        expect(summary).not.toContain("synthetic-private-note");
+      } else {
+        expect(compare, mode).toThrow();
+      }
+    } finally {
+      db.close();
+    }
+  }
 });
 
 it("requires the full shipped reason line and normal failure settlement", () => {

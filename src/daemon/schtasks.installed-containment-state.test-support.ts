@@ -12,18 +12,21 @@ import {
   isUpdateRecoveryPending,
 } from "../infra/update-run-recovery-schema.js";
 import { UpdateRunRecordSchema } from "../infra/update-run-schema.js";
+import { updateRunLedgerSchema } from "../infra/update-run-write.js";
 import { resolveOpenClawRegisteredAgentDatabasePath } from "../state/openclaw-state-db.paths.js";
 import type { InstalledTask } from "./schtasks.installed-diagnostics.test-support.js";
 
 type Row = Record<string, SQLOutputValue>;
 type HashedRow = { digest: string; key?: string; stable?: string; clocks?: bigint[] };
 type Table = { name: string; rows: HashedRow[]; digest: string };
+type SchemaObject = { identity: string; definition: string };
 export type ContainmentDatabase = {
   identity: string;
   present: boolean;
   userVersion?: number;
   contentVersion?: number;
   schema?: string;
+  schemaObjects: SchemaObject[];
   tables: Table[];
   runs: Array<{
     runId: string;
@@ -81,6 +84,50 @@ function integer(value: SQLOutputValue | undefined): number {
   return number;
 }
 
+function projectSchemaObject(row: Row): SchemaObject {
+  assert.ok(row.sql === null || typeof row.sql === "string", "Invalid schema definition");
+  return {
+    identity: digest(encode({ type: text(row, "type"), name: text(row, "name") })),
+    definition: digest(encode({ tbl_name: text(row, "tbl_name"), sql: row.sql })),
+  };
+}
+
+function publishedLedgerSchemaObjects(): SchemaObject[] {
+  // Exact shipped 3a9d69db lazy ledger DDL; current owner is reusable only while byte-identical.
+  assert.equal(
+    digest(updateRunLedgerSchema),
+    "c7c1408a52e8649cf030b636ee3d984e969c5fdb96f6834634e7cb4807e624f2",
+    "Published 9.4 ledger schema differs from the current owner",
+  );
+  const objects = updateRunLedgerSchema.split(";").flatMap((statement) => {
+    const sql = statement.trim();
+    if (!sql) {
+      return [];
+    }
+    const match = /^CREATE (TABLE|INDEX) IF NOT EXISTS ([a-z_]+)/u.exec(sql);
+    assert.ok(match?.[1] && match[2]);
+    return [
+      projectSchemaObject({
+        type: match[1].toLowerCase(),
+        name: match[2],
+        tbl_name: "update_runs",
+        // SQLite omits this creation clause and the statement terminator in its catalog.
+        sql: sql.replace(" IF NOT EXISTS", ""),
+      }),
+    ];
+  });
+  objects.push(
+    projectSchemaObject({
+      type: "index",
+      name: "sqlite_autoindex_update_runs_1",
+      tbl_name: "update_runs",
+      sql: null,
+    }),
+  );
+  assert.equal(objects.length, 4);
+  return objects.toSorted((a, b) => a.identity.localeCompare(b.identity));
+}
+
 /** The only SQLite handle opened here points at the owner's private, disposable snapshot. */
 export async function captureContainmentDatabase(
   filename: string,
@@ -92,6 +139,7 @@ export async function captureContainmentDatabase(
   const database: ContainmentDatabase = {
     identity,
     present: false,
+    schemaObjects: [],
     tables: [],
     runs: [],
     recoveries: [],
@@ -123,6 +171,9 @@ export async function captureContainmentDatabase(
         .all();
       assert.ok(schema.length <= limits.tables * 4, "Containment schema exceeds capture bound");
       database.schema = digest(schema.map(encode).join("\n"));
+      database.schemaObjects = schema
+        .map(projectSchemaObject)
+        .toSorted((a, b) => a.identity.localeCompare(b.identity));
       for (const object of schema) {
         if (object.type !== "table") {
           continue;
@@ -283,12 +334,64 @@ export function compareContainmentState(
       prior.contentVersion,
       "Containment content version changed",
     );
-    assert.equal(current.schema, prior.schema, "Containment schema changed");
+    let ledgerBootstrap = false;
+    let priorTables = prior.tables;
+    if (current.schema !== prior.schema) {
+      assert.ok(
+        runId &&
+          prior.identity === digest("state/openclaw.sqlite") &&
+          prior.userVersion === 17 &&
+          prior.contentVersion === 17 &&
+          !prior.tables.some((table) => table.name === "update_runs"),
+        "Containment schema changed",
+      );
+      const expected = publishedLedgerSchemaObjects();
+      const expectedIds = new Set(expected.map((object) => object.identity));
+      assert.equal(
+        prior.schemaObjects.some((object) => expectedIds.has(object.identity)),
+        false,
+      );
+      assert.deepEqual(
+        current.schemaObjects.filter((object) => expectedIds.has(object.identity)),
+        expected,
+        "Incomplete or changed published ledger schema",
+      );
+      assert.deepEqual(
+        current.schemaObjects.filter((object) => !expectedIds.has(object.identity)),
+        prior.schemaObjects,
+        "Existing or unrelated schema objects changed",
+      );
+      assert.deepEqual(
+        current.tables
+          .filter((table) => table.name !== "update_runs")
+          .map((table) => digest(table.name)),
+        prior.tables.map((table) => digest(table.name)),
+        "Unrelated table inventory changed",
+      );
+      const added = current.tables.find((table) => table.name === "update_runs");
+      assert.equal(added?.rows.length, 1, "Lazy ledger must contain exactly the command row");
+      assert.equal(added?.rows[0]?.key, runIdentity, "Lazy ledger row belongs to another run");
+      priorTables = current.tables.map((table) => {
+        if (table.name === "update_runs") {
+          return { name: table.name, rows: [], digest: digest("") };
+        }
+        const previous = prior.tables.find((entry) => entry.name === table.name);
+        assert.ok(previous);
+        return previous;
+      });
+      ledgerBootstrap = true;
+    } else {
+      assert.deepEqual(
+        current.schemaObjects,
+        prior.schemaObjects,
+        "Containment schema objects changed",
+      );
+    }
     assert.deepEqual(
-      current.tables.map((table) => table.name),
-      prior.tables.map((table) => table.name),
+      current.tables.map((table) => digest(table.name)),
+      priorTables.map((table) => digest(table.name)),
     );
-    const tables = prior.tables.map((table, tableIndex) => {
+    const tables = priorTables.map((table, tableIndex) => {
       const next = current.tables[tableIndex]!;
       if (table.digest !== next.digest) {
         const excludedKey =
@@ -360,6 +463,8 @@ export function compareContainmentState(
       userVersion: prior.userVersion,
       contentVersion: prior.contentVersion,
       schema: prior.schema,
+      schemaAfter: current.schema,
+      ledgerBootstrap,
       tables,
     };
   });
@@ -386,6 +491,7 @@ export function summarizeContainmentState(state: ContainmentState) {
     userVersion: db.userVersion,
     contentVersion: db.contentVersion,
     schema: db.schema,
+    schemaObjects: db.schemaObjects,
     tables: db.tables.map((table) => ({
       table: digest(table.name),
       rows: table.rows.length,
