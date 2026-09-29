@@ -3,6 +3,8 @@ import {
   isFutureDateTimestampMs,
   resolveExpiresAtMsFromDurationMs,
 } from "@openclaw/normalization-core/number-coercion";
+import { parseSessionDeliveryRoute } from "../routing/session-key.js";
+import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import type { PendingSystemRunEvent } from "./node-registry.invoke-stream.js";
 
 const AUTHORIZED_SYSTEM_RUN_EVENT_GRACE_MS = 5 * 60 * 1000;
@@ -148,9 +150,16 @@ export class NodeSystemRunEventAuthority {
   }
 }
 
-export function shouldSuppressSystemRunCompletion(
-  payload: { suppressNotifyOnExit?: boolean; invokeResultSentFirst?: boolean },
+export function shouldSuppressRun(
+  payload: {
+    suppressNotifyOnExit?: boolean;
+    notifyOnExit?: boolean;
+    invokeResultSentFirst?: boolean;
+  },
   authorization: unknown,
+  deliveryContext: DeliveryContext | undefined,
+  globallyEnabled: boolean,
+  sessionKey: string,
 ): boolean {
   const invokeResultReceived =
     typeof authorization === "object" &&
@@ -158,7 +167,50 @@ export function shouldSuppressSystemRunCompletion(
     "invokeResultReceived" in authorization &&
     authorization.invokeResultReceived === true;
   return (
-    payload.suppressNotifyOnExit === true &&
-    (payload.invokeResultSentFirst !== true || invokeResultReceived)
+    !globallyEnabled ||
+    payload.notifyOnExit === false ||
+    isTelegramTopicRouteMismatch(sessionKey, deliveryContext) ||
+    (payload.suppressNotifyOnExit === true &&
+      (payload.invokeResultSentFirst !== true || invokeResultReceived || !deliveryContext))
   );
+}
+
+const TELEGRAM_TOPIC_SUFFIX = /^(.*):topic:(\d+)$/i;
+const TELEGRAM_TARGET_THREAD_SUFFIX = /^(.*):(?:topic|thread):(\d+)$/i;
+
+function isTelegramTopicRouteMismatch(
+  sessionKey: string,
+  deliveryContext: DeliveryContext | undefined,
+): boolean {
+  const origin = parseSessionDeliveryRoute(sessionKey);
+  if (origin?.channel !== "telegram") {
+    return false;
+  }
+  const originTopic = TELEGRAM_TOPIC_SUFFIX.exec(origin.peerId);
+  const originThread = origin.threadId ?? originTopic?.[2];
+  if (!originThread) {
+    return false;
+  }
+  if (origin.threadId && originTopic?.[2] && origin.threadId !== originTopic[2]) {
+    return true;
+  }
+  const originChat = originTopic?.[1] ?? origin.peerId;
+  if (!deliveryContext) {
+    return true;
+  }
+  if (deliveryContext.channel?.trim().toLowerCase() !== "telegram") {
+    return true;
+  }
+  const rawTarget = deliveryContext.to?.trim().replace(/^telegram:/i, "");
+  if (!rawTarget) {
+    return true;
+  }
+  const targetThreadSuffix = TELEGRAM_TARGET_THREAD_SUFFIX.exec(rawTarget);
+  const targetChat = targetThreadSuffix?.[1] ?? rawTarget;
+  const explicitThread = String(deliveryContext.threadId ?? "").trim();
+  if (explicitThread && targetThreadSuffix?.[2] && explicitThread !== targetThreadSuffix[2]) {
+    return true;
+  }
+  const targetThread = explicitThread || targetThreadSuffix?.[2];
+  return targetChat !== originChat || targetThread !== originThread;
 }

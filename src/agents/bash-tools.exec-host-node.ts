@@ -650,6 +650,7 @@ export async function executeNodeHostCommand(
     approvalSource: inlineApprovalSource,
     runId: inlineApprovalId,
     suppressNotifyOnExit: true,
+    notifyOnExit: params.notifyOnExit,
     systemRunPlan: prepared.plan,
   });
   await assertCurrentNodeGatewayPolicyAllowsDispatch({

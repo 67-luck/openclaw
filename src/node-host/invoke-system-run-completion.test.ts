@@ -22,6 +22,7 @@ describe("publishSystemRunCompletion", () => {
         runId: "run-1",
         commandText: "printf done",
         suppressNotifyOnExit: true,
+        notifyOnExit: true,
       },
       result,
       JSON.stringify(result),
@@ -32,6 +33,7 @@ describe("publishSystemRunCompletion", () => {
       expect.objectContaining({
         result,
         suppressNotifyOnExit: true,
+        notifyOnExit: true,
         invokeResultSentFirst: true,
       }),
     );
