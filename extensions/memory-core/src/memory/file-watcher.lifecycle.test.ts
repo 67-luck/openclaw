@@ -117,6 +117,34 @@ describe("Memory observation lifecycle", () => {
     expect(observer.watch).not.toHaveBeenCalled();
   });
 
+  it("keeps healthy observation available after indexing fails", async () => {
+    const failure = new Error("indexing failed");
+    const onChange = vi
+      .fn<() => void | Promise<void>>()
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValue(undefined);
+    const { watcher, onUnavailable } = owner(onChange);
+    await watcher.start();
+    const entry = observer.observations[0]!;
+
+    entry.dirty();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(onUnavailable).not.toHaveBeenCalled();
+    expect(warnings).toHaveBeenCalledWith("memory sync failed (watch): " + String(failure));
+    expect(vi.getTimerCount()).toBe(0);
+
+    entry.dirty();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onChange).toHaveBeenCalledTimes(2);
+    expect(onUnavailable).not.toHaveBeenCalled();
+    expect(entry.subscription.health().state).toBe("ready");
+    expect(observer.watch).toHaveBeenCalledOnce();
+    expect(entry.close).not.toHaveBeenCalled();
+    await watcher.close();
+    expect(entry.close).toHaveBeenCalledOnce();
+  });
+
   it("makes watch-limit sticky refresh-on-search", async () => {
     const code = "watch-limit";
     const { watcher, onUnavailable, onDirty } = owner();

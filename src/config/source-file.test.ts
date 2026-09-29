@@ -294,6 +294,16 @@ describe("config file observation", () => {
     expect(subscription.health().state).toBe("closed");
   });
 
+  it("admits a root-level config directory from its stable volume root", async () => {
+    const directory = await fs.realpath(dirs.make("config-volume-root-"));
+    const volumeRoot = path.parse(directory).root;
+    const firstDirectory = path.relative(volumeRoot, directory).split(path.sep)[0]!;
+    const configPath = path.join(volumeRoot, firstDirectory, `${path.basename(directory)}.json`);
+    const admitted = await admitConfigObservationRoots(configPath, []);
+
+    expect(admitted.find((entry) => entry.primary)?.authority.rootDir).toBe(volumeRoot);
+  });
+
   it("pins configured alias boundaries and the identity of admitted Roots", async () => {
     const directory = await fs.realpath(dirs.make("config-root-admission-"));
     const first = path.join(directory, "first");

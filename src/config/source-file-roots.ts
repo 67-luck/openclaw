@@ -87,8 +87,7 @@ export async function admitConfigObservationRoots(
   }
   const admitted = new Map<string, ConfigObservationRoot>();
   for (const boundary of new Set([...boundaries, primaryBoundary])) {
-    const parent = path.dirname(boundary);
-    const stableParent = parent === path.parse(boundary).root ? boundary : parent;
+    const stableParent = path.dirname(boundary);
     let pinned = cache.roots.get(stableParent);
     if (!pinned) {
       pinned = admitObservationRoot(stableParent);

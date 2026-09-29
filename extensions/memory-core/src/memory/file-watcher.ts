@@ -328,7 +328,6 @@ export class MemoryFileWatcher {
               this.unavailable(error);
             }
             if (!this.closed) {
-              this.options.onUnavailable();
               // Do not spin indefinitely on a persistent metadata/indexing failure.
               this.pendingChange = this.revision !== revision;
               log.warn("memory sync failed (watch): " + String(error));
