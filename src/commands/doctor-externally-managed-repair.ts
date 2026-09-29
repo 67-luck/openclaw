@@ -212,6 +212,7 @@ export async function runExternallyManagedDoctorRepair(params: {
         return;
       }
 
+      const sessionChanges: string[] = [];
       const sessionWarnings: string[] = [];
       const sessionReceipt = await withSuppressedNotes(() =>
         import("./doctor-session-transcripts.js").then(({ noteSessionTranscriptHealth }) =>
@@ -225,11 +226,15 @@ export async function runExternallyManagedDoctorRepair(params: {
             ...(preflight.postSessionPluginMigrationPlanBound
               ? { postSessionPluginMigrationPlanBound: true }
               : {}),
+            onChanges: (changes) => sessionChanges.push(...changes),
             onWarnings: (warnings) => sessionWarnings.push(...warnings),
           }),
         ),
       );
       collectReceiptEvidence(sessionReceipt ? [sessionReceipt] : [], applied, remaining);
+      if (sessionChanges.length > 0) {
+        applied.push({ stepId: "session-state", changes: sessionChanges });
+      }
       remaining.push(...sessionWarnings.map((message) => ({ stepId: "session-state", message })));
     });
   } catch (error) {

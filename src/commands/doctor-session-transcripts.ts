@@ -200,6 +200,7 @@ export async function noteSessionTranscriptHealth(options?: {
   postSessionPluginMigration?: PreparedPostSessionPluginMigration;
   postSessionPluginMigrationPlanBound?: boolean;
   onStepReceipt?: (receipt: LegacyStateMigrationStepReceipt) => void;
+  onChanges?: (changes: readonly string[]) => void;
   onWarnings?: (warnings: readonly string[]) => void;
 }): Promise<LegacyStateMigrationStepReceipt | undefined> {
   const params = {
@@ -400,6 +401,53 @@ export async function noteSessionTranscriptHealth(options?: {
       message: failure,
     });
     return postSessionPluginReceipt;
+  }
+  const repairChanges = params.shouldRepair
+    ? [
+        ...(legacyMainSessionResult?.changes ?? []),
+        ...(worktreeWorkspaceReport.repaired > 0
+          ? [
+              `Repaired canonical workspace metadata for ${worktreeWorkspaceReport.repaired} managed-worktree session(s).`,
+            ]
+          : []),
+        ...(acpKeyReport.repaired > 0
+          ? [`Repaired ${acpKeyReport.repaired} legacy ACP metadata key(s).`]
+          : []),
+        ...(titleReport.repaired > 0
+          ? [`Repaired ${titleReport.repaired} missing session title(s).`]
+          : []),
+        ...(reservedKeyReport.repaired > 0
+          ? [
+              `Renamed ${reservedKeyReport.repaired} durable session key(s) that collided with the reserved incognito namespace.`,
+            ]
+          : []),
+        ...(canonicalKeyReport.repairedGroups > 0
+          ? [
+              `Canonicalized ${canonicalKeyReport.repairedGroups} session-key group(s) and removed ${canonicalKeyReport.removedRows} duplicate or alias row(s).`,
+            ]
+          : []),
+        ...(deliveryReport.repaired > 0
+          ? [`Canonicalized delivery state for ${deliveryReport.repaired} durable session row(s).`]
+          : []),
+        ...(resolvedSkillsReport.repaired > 0
+          ? [
+              `Stripped the runtime-only skills catalog from ${resolvedSkillsReport.repaired} durable session row(s).`,
+            ]
+          : []),
+        ...(report.totals.archivedTranscriptFiles > 0
+          ? [
+              `Archived ${report.totals.archivedTranscriptFiles} migrated session transcript file(s).`,
+            ]
+          : []),
+        ...(report.totals.archivedUnreferencedJsonlFiles > 0
+          ? [
+              `Archived ${report.totals.archivedUnreferencedJsonlFiles} unreferenced session transcript file(s).`,
+            ]
+          : []),
+      ]
+    : [];
+  if (repairChanges.length > 0) {
+    params.onChanges?.(repairChanges);
   }
   const repairWarnings = [
     ...(legacyMainSessionResult?.warnings ?? []),

@@ -67,12 +67,17 @@ async function withSession(
   );
 }
 
-function repair(onWarnings?: (warnings: readonly string[]) => void) {
+function repair(
+  callbacks: {
+    onChanges?: (changes: readonly string[]) => void;
+    onWarnings?: (warnings: readonly string[]) => void;
+  } = {},
+) {
   return noteSessionTranscriptHealth({
     cfg: { agents: { list: [{ id: "main", default: true }] } },
     shouldRepair: true,
     postSessionPluginMigrationPlanBound: true,
-    onWarnings,
+    ...callbacks,
   });
 }
 
@@ -81,11 +86,13 @@ describe("Doctor session title repair", () => {
     await withSession(
       async (params) => {
         const before = sessionAccessor.loadSessionEntry(params);
-        await repair();
+        const onChanges = vi.fn();
+        await repair({ onChanges });
         expect(sessionAccessor.loadSessionEntry(params)).toEqual({
           ...before,
           displayName: "Investigate why the gateway times out",
         });
+        expect(onChanges).toHaveBeenCalledWith(["Repaired 1 missing session title(s)."]);
         expect(generateConversationLabelWithFallback).not.toHaveBeenCalled();
       },
       [
@@ -202,7 +209,7 @@ describe("Doctor session title repair", () => {
       );
       const onWarnings = vi.fn();
 
-      await repair(onWarnings);
+      await repair({ onWarnings });
 
       expect(onWarnings).toHaveBeenCalledWith([
         expect.stringContaining("Could not repair the title for agent:main:dashboard:legacy"),
