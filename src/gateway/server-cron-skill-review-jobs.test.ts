@@ -2,15 +2,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { CronService } from "../cron/service.js";
 import { saveCronJobsStore } from "../cron/store.js";
 import type { CronJob } from "../cron/types.js";
-import {
-  closeOpenClawAgentDatabasesForTest,
-  getOpenClawAgentDatabaseIfOpen,
-} from "../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -28,7 +23,7 @@ function monitorJob(agentId: string, id = `job-${agentId}`): CronJob {
     id,
     declarationKey: `skill-collection-review:${agentId}`,
     name: `skill-collection-review-${agentId}`,
-    displayName: `Skill collection review (${agentId})`,
+    displayName: `Skill Workshop curator (${agentId})`,
     enabled: true,
     createdAtMs: 1,
     updatedAtMs: 1,
@@ -165,7 +160,7 @@ describe("reconcileSkillCollectionReviewJobs", () => {
           { id: "ops", workspace: "/tmp/openclaw-shared" },
         ],
       },
-      skills: { workshop: { autonomous: { mode: "propose" } } },
+      skills: { workshop: { autonomous: { mode: "off" } } },
     } as OpenClawConfig;
 
     await reconcileSkillCollectionReviewJobs({
@@ -217,7 +212,7 @@ describe("reconcileSkillCollectionReviewJobs", () => {
     );
     const cfg = {
       agents: { list: [{ id: "main", default: true, workspace: "/tmp/openclaw-main" }] },
-      skills: { workshop: { autonomous: { mode: "propose" } } },
+      skills: { workshop: { autonomous: { mode: "off" } } },
     } as OpenClawConfig;
 
     await expect(
@@ -230,66 +225,6 @@ describe("reconcileSkillCollectionReviewJobs", () => {
 
     expect(remove).toHaveBeenNthCalledWith(1, "older", { systemOwned: true });
     expect(add).toHaveBeenCalledOnce();
-  });
-
-  it.each([
-    { modelOverride: "claude-sonnet-4-6", providerOverride: "anthropic" },
-    { modelOverride: "gpt-blocked", providerOverride: "openai", agentRuntimeOverride: "openclaw" },
-  ])("preserves an existing review with stored execution preferences: %j", async (preferences) => {
-    const testState = await createOpenClawTestState({ label: "skill-review-preferences" });
-    const cron = new CronService({
-      scheduler: createTestGatewayScheduler(),
-      storePath: testState.statePath("cron", "jobs.json"),
-      cronEnabled: false,
-      log: logger,
-      enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
-      runIsolatedAgentJob: vi.fn(),
-    });
-    const cfg: OpenClawConfig = {
-      agents: {
-        entries: {
-          main: {
-            model: "openai/gpt-blocked",
-            models: {
-              "openai/gpt-blocked": { agentRuntime: { id: "codex" } },
-              "anthropic/claude-sonnet-4-6": {},
-            },
-          },
-        },
-      },
-      skills: { workshop: { autonomous: { mode: "auto" } } },
-    };
-    const existing = monitorJob("main");
-    const sessionKey = `agent:main:cron:${existing.id}`;
-    try {
-      await saveCronJobsStore(testState.statePath("cron", "jobs.json"), {
-        version: 1,
-        jobs: [existing],
-      });
-      await upsertSessionEntryCore(
-        { agentId: "main", sessionKey },
-        {
-          sessionId: "review-preference",
-          updatedAt: Date.now(),
-          ...preferences,
-        },
-      );
-      closeOpenClawAgentDatabasesForTest();
-      await expect(reconcileSkillCollectionReviewJobs({ cron, cfg, logger })).resolves.toEqual({
-        ok: true,
-      });
-      expect(Boolean(getOpenClawAgentDatabaseIfOpen({ agentId: "main" }))).toBe(false);
-      const [retained] = await cron.list({ includeDisabled: true });
-      expect(retained).toMatchObject({ id: existing.id, enabled: true });
-      expect(retained?.displayName).not.toContain("no-rooted-runtime");
-      expect(
-        loadSessionEntry({ agentId: "main", sessionKey, readConsistency: "latest" }),
-      ).toMatchObject(preferences);
-    } finally {
-      cron.stop();
-      await testState.cleanup();
-    }
   });
 
   it("replaces retired jobs on the current database and converges once per agent after restart", async () => {

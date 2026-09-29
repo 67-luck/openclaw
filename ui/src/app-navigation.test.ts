@@ -283,8 +283,7 @@ describe("subtitleForRoute", () => {
       "skill-settings": "Manage your agent skills",
       plugins: "Extend your Claw with tools",
       "plugin-settings": "Extend your Claw with tools",
-      "skill-workshop":
-        "The skills your agent uses now, suggestions waiting for review, and past decisions.",
+      "skill-workshop": "Skills your agent learned, recent changes, and undo.",
       devices: "Paired devices, pairing approvals, and exec bindings.",
       "cloud-workers": "Profiles and machine sizes for cloud sessions.",
       profile: "Your display name, avatar, and identity on this gateway.",

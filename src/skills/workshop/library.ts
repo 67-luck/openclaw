@@ -1,0 +1,740 @@
+import { randomUUID } from "node:crypto";
+import type { Dirent } from "node:fs";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { resolveAgentWorkspaceDir } from "../../agents/agent-scope-config.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { formatErrorMessage, hasErrnoCode } from "../../infra/errors.js";
+import { pathExists, root } from "../../infra/fs-safe.js";
+import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
+import { executeOpenClawStateWorker } from "../../state/openclaw-state-worker-store.js";
+import {
+  dispatchCommittedSkillChangeBestEffort,
+  hasCommittedSkillChangeHooks,
+  snapshotCommittedSkillArtifactBestEffort,
+} from "../lifecycle/skill-change-hook.js";
+import {
+  assertInsideSkillsRoot,
+  MAX_WORKSPACE_SKILL_SUPPORT_FILE_BYTES,
+  normalizeWorkspaceSkillSupportPath,
+  readWorkspaceSkillFile,
+  readWorkspaceSupportFile,
+} from "../lifecycle/workspace-skill-write.js";
+import { parseSkillFrontmatter } from "../loading/frontmatter.js";
+import { bumpSkillsSnapshotVersion } from "../runtime/refresh-state.js";
+import { scanSkillContent, scanSource } from "../security/scanner.js";
+import { resolveSkillWorkshopConfig } from "./config.js";
+import { resolveWorkshopSkillsDir } from "./skills-root.js";
+
+const WORKSHOP_ACTORS = ["agent", "review", "curator", "user"] as const;
+const WORKSHOP_CHANGE_ACTIONS = ["create", "patch", "write_file", "archive", "restore"] as const;
+export type WorkshopActor = (typeof WORKSHOP_ACTORS)[number];
+export type WorkshopChangeAction = (typeof WORKSHOP_CHANGE_ACTIONS)[number];
+
+export function isWorkshopActor(value: string): value is WorkshopActor {
+  return WORKSHOP_ACTORS.some((actor) => actor === value);
+}
+
+export function isWorkshopChangeAction(value: string): value is WorkshopChangeAction {
+  return WORKSHOP_CHANGE_ACTIONS.some((action) => action === value);
+}
+
+export type WorkshopMutationContext = {
+  config: OpenClawConfig;
+  agentId: string;
+  actor: WorkshopActor;
+  sessionKey?: string;
+  runId?: string;
+};
+export type WorkshopChange = {
+  id: string;
+  agentId: string;
+  skillName: string;
+  action: WorkshopChangeAction;
+  actor: WorkshopActor;
+  /** One short human line, e.g. "patched step 3" or "created: <description>". */
+  summary: string;
+  /** Snapshot taken before the change; absent when nothing existed to snapshot. */
+  versionId?: string;
+  sessionKey?: string;
+  runId?: string;
+  createdAtMs: number;
+};
+export type WorkshopSkillSummary = {
+  name: string;
+  description: string;
+  updatedAtMs: number;
+  sizeBytes: number;
+  files: string[];
+};
+export type WorkshopArchivedSkill = {
+  name: string;
+  live: boolean;
+  versions: { id: string; action: WorkshopChangeAction; createdAtMs: number }[];
+};
+
+/** Refusal the model (or operator) can act on; the message says what to change. */
+export class WorkshopWriteError extends Error {
+  override name = "WorkshopWriteError";
+}
+
+const SKILL_FILE = "SKILL.md";
+const ARCHIVE_DIR = ".archive";
+const MAX_VERSIONS_PER_SKILL = 10;
+const MAX_DESCRIPTION_BYTES = 160;
+const MAX_CHANGES_LIMIT = 500;
+const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const VERSION_ID_PATTERN =
+  /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(\d{3})Z-(create|patch|write_file|archive|restore)$/;
+
+type SkillPaths = { root: string; skillDir: string; versionsDir: string };
+type SkillVersion = WorkshopArchivedSkill["versions"][number];
+
+function resolveSkillPaths(config: OpenClawConfig, agentId: string, name: string): SkillPaths {
+  if (!SKILL_NAME_PATTERN.test(name)) {
+    throw new WorkshopWriteError(
+      `Invalid skill name "${name}": use 1-63 lowercase letters, digits, or hyphens, starting with a letter or digit (e.g. "deploy-staging").`,
+    );
+  }
+  const skillsRoot = resolveWorkshopSkillsDir(config, agentId);
+  return {
+    root: skillsRoot,
+    skillDir: path.join(skillsRoot, name),
+    versionsDir: path.join(skillsRoot, ARCHIVE_DIR, name),
+  };
+}
+
+function normalizeSkillFilePath(filePath: string | undefined): string {
+  const trimmed = filePath?.trim();
+  if (!trimmed || trimmed === SKILL_FILE) {
+    return SKILL_FILE;
+  }
+  try {
+    return normalizeWorkspaceSkillSupportPath(trimmed);
+  } catch (error) {
+    throw new WorkshopWriteError(
+      `Invalid file_path "${trimmed}": ${formatErrorMessage(error)} Use "SKILL.md" or a file like "references/notes.md".`,
+    );
+  }
+}
+
+async function readSkillFile(skillDir: string, filePath: string): Promise<string | null> {
+  return filePath === SKILL_FILE
+    ? await readWorkspaceSkillFile(path.join(skillDir, SKILL_FILE))
+    : await readWorkspaceSupportFile({ skillDir, relativePath: filePath });
+}
+
+/** Regular files below one skill directory, SKILL.md first; links and dot entries are skipped. */
+async function listSkillFiles(
+  skillDir: string,
+): Promise<{ files: string[]; sizeBytes: number; updatedAtMs: number }> {
+  const entries = await fs.readdir(skillDir, { recursive: true, withFileTypes: true });
+  const files: string[] = [];
+  let sizeBytes = 0;
+  let updatedAtMs = 0;
+  for (const entry of entries) {
+    if (!entry.isFile()) {
+      continue;
+    }
+    const relative = path.relative(skillDir, path.join(entry.parentPath, entry.name));
+    const segments = relative.split(path.sep);
+    if (segments.some((segment) => segment.startsWith("."))) {
+      continue;
+    }
+    const stat = await fs.stat(path.join(skillDir, relative));
+    sizeBytes += stat.size;
+    updatedAtMs = Math.max(updatedAtMs, stat.mtimeMs);
+    files.push(segments.join("/"));
+  }
+  files.sort((a, b) => (a === SKILL_FILE ? -1 : b === SKILL_FILE ? 1 : a.localeCompare(b)));
+  return { files, sizeBytes, updatedAtMs: Math.trunc(updatedAtMs) };
+}
+
+async function listVersions(versionsDir: string): Promise<SkillVersion[]> {
+  let names: string[];
+  try {
+    names = await fs.readdir(versionsDir);
+  } catch (error) {
+    if (hasErrnoCode(error, "ENOENT")) {
+      return [];
+    }
+    throw error;
+  }
+  const versions: SkillVersion[] = [];
+  for (const id of names) {
+    const match = VERSION_ID_PATTERN.exec(id);
+    const action = match?.[8];
+    if (!match || !action || !isWorkshopChangeAction(action)) {
+      continue;
+    }
+    const [, year, month, day, hour, minute, second, ms] = match;
+    versions.push({
+      id,
+      action,
+      createdAtMs: Date.UTC(
+        Number(year),
+        Number(month) - 1,
+        Number(day),
+        Number(hour),
+        Number(minute),
+        Number(second),
+        Number(ms),
+      ),
+    });
+  }
+  return versions.toSorted((a, b) => b.id.localeCompare(a.id));
+}
+
+/** Copies the live skill into `.archive/<name>/<versionId>` before it changes. */
+async function snapshotSkill(
+  paths: SkillPaths,
+  action: WorkshopChangeAction,
+): Promise<string | undefined> {
+  if (!(await pathExists(path.join(paths.skillDir, SKILL_FILE)))) {
+    return undefined;
+  }
+  // Ids sort by time; stay strictly after the newest so restore picks the right default.
+  const newest = (await listVersions(paths.versionsDir))[0];
+  const createdAtMs = Math.max(Date.now(), (newest?.createdAtMs ?? 0) + 1);
+  const versionId = `${new Date(createdAtMs).toISOString().replace(/[-:.]/g, "")}-${action}`;
+  await fs.mkdir(paths.versionsDir, { recursive: true });
+  await fs.cp(paths.skillDir, path.join(paths.versionsDir, versionId), {
+    recursive: true,
+    errorOnExist: true,
+    force: false,
+    filter: async (source) => !(await fs.lstat(source)).isSymbolicLink(),
+  });
+  return versionId;
+}
+
+function validateSkillMarkdown(name: string, content: string, maxSkillBytes: number): string {
+  const sizeBytes = Buffer.byteLength(content);
+  if (sizeBytes > maxSkillBytes) {
+    throw new WorkshopWriteError(
+      `SKILL.md is ${sizeBytes} bytes; the limit is ${maxSkillBytes}. Keep SKILL.md to the procedure and move detail into references/<topic>.md with action=write_file.`,
+    );
+  }
+  let frontmatter: Record<string, string>;
+  try {
+    frontmatter = parseSkillFrontmatter(content);
+  } catch (error) {
+    throw new WorkshopWriteError(
+      `SKILL.md frontmatter is invalid (${formatErrorMessage(error)}). Start the file with:\n---\nname: ${name}\ndescription: <when to use this skill>\n---`,
+    );
+  }
+  if (frontmatter.name?.trim() !== name) {
+    throw new WorkshopWriteError(
+      `SKILL.md frontmatter must contain "name: ${name}" (the skill directory name); found ${frontmatter.name ? `"${frontmatter.name}"` : "no name"}.`,
+    );
+  }
+  const description = frontmatter.description?.trim() ?? "";
+  const descriptionBytes = Buffer.byteLength(description);
+  if (descriptionBytes === 0 || descriptionBytes > MAX_DESCRIPTION_BYTES) {
+    throw new WorkshopWriteError(
+      `SKILL.md frontmatter "description" must be 1-${MAX_DESCRIPTION_BYTES} bytes (found ${descriptionBytes}). Lead with the situations that should trigger the skill.`,
+    );
+  }
+  return description;
+}
+
+function assertSafeContent(name: string, filePath: string, content: string): void {
+  const label = `${name}/${filePath}`;
+  const finding = [...scanSkillContent(content, label), ...scanSource(content, label)].find(
+    (entry) => entry.severity === "critical",
+  );
+  if (!finding) {
+    return;
+  }
+  const fix =
+    finding.ruleId === "literal-secret"
+      ? "Replace the credential with a placeholder such as <API_KEY>; never store real secrets in skills."
+      : "Remove or rewrite that line, then retry.";
+  throw new WorkshopWriteError(
+    `Refused: ${label} line ${finding.line} matches security rule "${finding.ruleId}" (${finding.message}). ${fix}`,
+  );
+}
+
+/** Validates one file's next content: path, SKILL.md shape or support size, then the security scan. */
+function validateSkillFile(
+  config: OpenClawConfig,
+  name: string,
+  filePath: string,
+  content: string,
+): string | undefined {
+  if (
+    filePath !== SKILL_FILE &&
+    scanSkillContent(filePath, "support-file-path").some(
+      (finding) => finding.ruleId === "literal-secret",
+    )
+  ) {
+    throw new WorkshopWriteError(
+      `Refused: a file path in "${name}" looks like it contains a credential. Name the file after its topic (e.g. "references/api.md"); never store real secrets in skills.`,
+    );
+  }
+  const description =
+    filePath === SKILL_FILE
+      ? validateSkillMarkdown(name, content, resolveSkillWorkshopConfig(config).maxSkillBytes)
+      : undefined;
+  if (
+    filePath !== SKILL_FILE &&
+    Buffer.byteLength(content) > MAX_WORKSPACE_SKILL_SUPPORT_FILE_BYTES
+  ) {
+    throw new WorkshopWriteError(
+      `${filePath} exceeds ${MAX_WORKSPACE_SKILL_SUPPORT_FILE_BYTES} bytes; split it into smaller files.`,
+    );
+  }
+  assertSafeContent(name, filePath, content);
+  return description;
+}
+
+/** Reads a saved version only when a normal write could have produced every file in it. */
+async function readRestorableVersion(
+  config: OpenClawConfig,
+  name: string,
+  versionId: string,
+  versionDir: string,
+): Promise<Array<[string, Buffer]>> {
+  const refuse = (problem: string) =>
+    new WorkshopWriteError(
+      `Cannot restore "${name}" version ${versionId}: ${problem} The live skill is unchanged; restore a different version instead.`,
+    );
+  if (!(await fs.lstat(versionDir)).isDirectory()) {
+    throw refuse("the saved version is not a directory.");
+  }
+  const versionRoot = await root(versionDir);
+  const files: Array<[string, Buffer]> = [];
+  for (const entry of await fs.readdir(versionDir, { recursive: true, withFileTypes: true })) {
+    const filePath = path
+      .relative(versionDir, path.join(entry.parentPath, entry.name))
+      .split(path.sep)
+      .join("/");
+    // Dot entries (e.g. .DS_Store) are not part of a skill and are never restored.
+    if (entry.isDirectory() || filePath.split("/").some((segment) => segment.startsWith("."))) {
+      continue;
+    }
+    if (!entry.isFile()) {
+      throw refuse(`${filePath} is a symlink or special file.`);
+    }
+    if (filePath !== SKILL_FILE) {
+      let canonical: string;
+      try {
+        canonical = normalizeWorkspaceSkillSupportPath(filePath);
+      } catch (error) {
+        throw refuse(`${filePath} is not an allowed skill file (${formatErrorMessage(error)})`);
+      }
+      // Restored files must stay addressable by view/patch, which use the canonical path.
+      if (canonical !== filePath) {
+        throw refuse(`${filePath} is not a canonical skill file path.`);
+      }
+    }
+    let content: Buffer;
+    try {
+      content = (
+        await versionRoot.read(filePath, {
+          hardlinks: "reject",
+          maxBytes:
+            filePath === SKILL_FILE
+              ? resolveSkillWorkshopConfig(config).maxSkillBytes
+              : MAX_WORKSPACE_SKILL_SUPPORT_FILE_BYTES,
+          symlinks: "reject",
+        })
+      ).buffer;
+    } catch (error) {
+      throw refuse(`${filePath} could not be read safely (${formatErrorMessage(error)}).`);
+    }
+    try {
+      validateSkillFile(config, name, filePath, content.toString("utf8"));
+    } catch (error) {
+      throw refuse(formatErrorMessage(error));
+    }
+    files.push([filePath, content]);
+  }
+  if (!files.some(([filePath]) => filePath === SKILL_FILE)) {
+    throw refuse("SKILL.md is missing.");
+  }
+  return files;
+}
+
+async function writeSkillFile(paths: SkillPaths, filePath: string, content: string) {
+  await fs.mkdir(paths.root, { recursive: true });
+  assertInsideSkillsRoot(paths.root, paths.skillDir, "skill directory");
+  await fs.mkdir(paths.skillDir, { recursive: true });
+  const skillRoot = await root(paths.skillDir);
+  await skillRoot.write(filePath, content, { encoding: "utf8", mkdir: true, overwrite: true });
+}
+
+async function requireLiveSkill(paths: SkillPaths, name: string): Promise<void> {
+  if (await pathExists(path.join(paths.skillDir, SKILL_FILE))) {
+    return;
+  }
+  const archived = (await listVersions(paths.versionsDir)).length > 0;
+  throw new WorkshopWriteError(
+    archived
+      ? `Skill "${name}" is archived. Restore it first with action=restore name=${name}.`
+      : `No workshop skill named "${name}". Call action=list to see skills, or action=create to add one.`,
+  );
+}
+
+const skillLocks = new Map<string, Promise<void>>();
+
+async function withSkillLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const previous = skillLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.then(() => current);
+  skillLocks.set(key, tail);
+  await previous;
+  try {
+    return await run();
+  } finally {
+    release();
+    if (skillLocks.get(key) === tail) {
+      skillLocks.delete(key);
+    }
+  }
+}
+
+/** Takes every key's lock in sorted order, so overlapping multi-skill mutations cannot deadlock. */
+async function withSkillLocks<T>(keys: readonly string[], run: () => Promise<T>): Promise<T> {
+  const [first, ...rest] = [...new Set(keys)].toSorted((a, b) => a.localeCompare(b));
+  return first === undefined
+    ? await run()
+    : await withSkillLock(first, () => withSkillLocks(rest, run));
+}
+
+/** Serializes one skill's mutation, then publishes the snapshot bump and change row. */
+async function mutateSkill(
+  ctx: WorkshopMutationContext,
+  name: string,
+  action: WorkshopChangeAction,
+  apply: (paths: SkillPaths) => Promise<{ summary: string; versionId?: string }>,
+  alsoLock: readonly SkillPaths[] = [],
+): Promise<WorkshopChange> {
+  const paths = resolveSkillPaths(ctx.config, ctx.agentId, name);
+  const lockKeys = [paths.skillDir, ...alsoLock.map((other) => other.skillDir)];
+  return await withSkillLocks(lockKeys, async () => {
+    // Plugin skill_changed observers see Workshop edits like any committed skill change.
+    const hooked = hasCommittedSkillChangeHooks();
+    const snapshotArtifact = async () =>
+      hooked && (await pathExists(path.join(paths.skillDir, SKILL_FILE)))
+        ? await snapshotCommittedSkillArtifactBestEffort({
+            skillDir: paths.skillDir,
+            skillKey: name,
+            source: "workshop",
+          })
+        : undefined;
+    const before = await snapshotArtifact();
+    const { summary, versionId } = await apply(paths);
+    const after = await snapshotArtifact();
+    for (const version of (await listVersions(paths.versionsDir)).slice(MAX_VERSIONS_PER_SKILL)) {
+      await fs.rm(path.join(paths.versionsDir, version.id), { recursive: true, force: true });
+    }
+    bumpSkillsSnapshotVersion({
+      reason: "workshop",
+      changedPath: path.join(paths.skillDir, SKILL_FILE),
+    });
+    const change: WorkshopChange = {
+      id: randomUUID(),
+      agentId: ctx.agentId,
+      skillName: name,
+      action,
+      actor: ctx.actor,
+      summary,
+      ...(versionId ? { versionId } : {}),
+      ...(ctx.sessionKey ? { sessionKey: ctx.sessionKey } : {}),
+      ...(ctx.runId ? { runId: ctx.runId } : {}),
+      createdAtMs: Date.now(),
+    };
+    await executeOpenClawStateWorker(captureOpenClawStateWorkerContext(), {
+      type: "skills.workshop.changes.record",
+      input: change,
+    });
+    if (before || after) {
+      await dispatchCommittedSkillChangeBestEffort({
+        action: !before ? "created" : after ? "updated" : "removed",
+        source: "workshop",
+        workspaceDir: resolveAgentWorkspaceDir(ctx.config, ctx.agentId),
+        ...(before ? { before } : {}),
+        ...(after ? { after } : {}),
+      });
+    }
+    return change;
+  });
+}
+
+export async function listWorkshopSkills(
+  config: OpenClawConfig,
+  agentId: string,
+): Promise<WorkshopSkillSummary[]> {
+  const skillsRoot = resolveWorkshopSkillsDir(config, agentId);
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(skillsRoot, { withFileTypes: true });
+  } catch (error) {
+    if (hasErrnoCode(error, "ENOENT")) {
+      return [];
+    }
+    throw error;
+  }
+  const skills: WorkshopSkillSummary[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !SKILL_NAME_PATTERN.test(entry.name)) {
+      continue;
+    }
+    const skillDir = path.join(skillsRoot, entry.name);
+    const content = await readWorkspaceSkillFile(path.join(skillDir, SKILL_FILE)).catch(() => null);
+    if (content === null) {
+      continue;
+    }
+    let description = "";
+    try {
+      description = parseSkillFrontmatter(content).description?.trim() ?? "";
+    } catch {
+      // A hand-edited skill with broken frontmatter still lists; view shows the file.
+    }
+    skills.push({ name: entry.name, description, ...(await listSkillFiles(skillDir)) });
+  }
+  return skills.toSorted((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function listWorkshopArchive(
+  config: OpenClawConfig,
+  agentId: string,
+): Promise<WorkshopArchivedSkill[]> {
+  const skillsRoot = resolveWorkshopSkillsDir(config, agentId);
+  let names: string[];
+  try {
+    names = await fs.readdir(path.join(skillsRoot, ARCHIVE_DIR));
+  } catch (error) {
+    if (hasErrnoCode(error, "ENOENT")) {
+      return [];
+    }
+    throw error;
+  }
+  const archived: WorkshopArchivedSkill[] = [];
+  for (const name of names.toSorted()) {
+    if (!SKILL_NAME_PATTERN.test(name)) {
+      continue;
+    }
+    const versions = await listVersions(path.join(skillsRoot, ARCHIVE_DIR, name));
+    if (versions.length > 0) {
+      const live = await pathExists(path.join(skillsRoot, name, SKILL_FILE));
+      archived.push({ name, live, versions });
+    }
+  }
+  return archived;
+}
+
+export async function viewWorkshopSkill(
+  config: OpenClawConfig,
+  agentId: string,
+  name: string,
+  filePath?: string,
+  versionId?: string,
+): Promise<{ name: string; filePath: string; content: string; files: string[] }> {
+  const paths = resolveSkillPaths(config, agentId, name);
+  const file = normalizeSkillFilePath(filePath);
+  let baseDir = paths.skillDir;
+  if (versionId) {
+    const versions = await listVersions(paths.versionsDir);
+    if (!versions.some((version) => version.id === versionId)) {
+      throw new WorkshopWriteError(
+        `Skill "${name}" has no version "${versionId}". Versions: ${versions.map((version) => version.id).join(", ") || "none"}.`,
+      );
+    }
+    baseDir = path.join(paths.versionsDir, versionId);
+  } else {
+    await requireLiveSkill(paths, name);
+  }
+  const { files } = await listSkillFiles(baseDir);
+  const content = await readSkillFile(baseDir, file);
+  if (content === null) {
+    throw new WorkshopWriteError(
+      `${file} does not exist in "${name}". Files: ${files.join(", ")}.`,
+    );
+  }
+  return { name, filePath: file, content, files };
+}
+
+export async function createWorkshopSkill(
+  ctx: WorkshopMutationContext,
+  params: { name: string; content: string; summary?: string },
+): Promise<WorkshopChange> {
+  return await mutateSkill(ctx, params.name, "create", async (paths) => {
+    if (await pathExists(paths.skillDir)) {
+      throw new WorkshopWriteError(
+        `Skill "${params.name}" already exists. View it and use action=patch, or choose another name.`,
+      );
+    }
+    const description = validateSkillFile(ctx.config, params.name, SKILL_FILE, params.content);
+    try {
+      await writeSkillFile(paths, SKILL_FILE, params.content);
+    } catch (error) {
+      await fs.rm(paths.skillDir, { recursive: true, force: true });
+      throw error;
+    }
+    return { summary: params.summary ?? `created: ${description}` };
+  });
+}
+
+export async function patchWorkshopSkill(
+  ctx: WorkshopMutationContext,
+  params: { name: string; oldText: string; newText: string; filePath?: string; summary?: string },
+): Promise<WorkshopChange> {
+  const file = normalizeSkillFilePath(params.filePath);
+  return await mutateSkill(ctx, params.name, "patch", async (paths) => {
+    await requireLiveSkill(paths, params.name);
+    if (!params.oldText) {
+      throw new WorkshopWriteError(
+        "old_text is required: copy the exact text to replace from view.",
+      );
+    }
+    if (params.oldText === params.newText) {
+      throw new WorkshopWriteError("old_text and new_text are identical; nothing to change.");
+    }
+    const current = await readSkillFile(paths.skillDir, file);
+    if (current === null) {
+      throw new WorkshopWriteError(
+        `${file} does not exist in "${params.name}". Use action=write_file to add it.`,
+      );
+    }
+    const matches = current.split(params.oldText).length - 1;
+    if (matches !== 1) {
+      throw new WorkshopWriteError(
+        matches === 0
+          ? `old_text was not found in ${params.name}/${file}. View the file again and copy the exact text, including whitespace.`
+          : `old_text matches ${matches} places in ${params.name}/${file}. Include more surrounding text so it matches once.`,
+      );
+    }
+    const next = current.replace(params.oldText, () => params.newText);
+    validateSkillFile(ctx.config, params.name, file, next);
+    const versionId = await snapshotSkill(paths, "patch");
+    await writeSkillFile(paths, file, next);
+    return { summary: params.summary ?? `patched ${file}`, versionId };
+  });
+}
+
+export async function writeWorkshopSkillFile(
+  ctx: WorkshopMutationContext,
+  params: { name: string; filePath: string; content: string; summary?: string },
+): Promise<WorkshopChange> {
+  const file = normalizeSkillFilePath(params.filePath);
+  return await mutateSkill(ctx, params.name, "write_file", async (paths) => {
+    await requireLiveSkill(paths, params.name);
+    if ((await readSkillFile(paths.skillDir, file)) === params.content) {
+      throw new WorkshopWriteError(
+        `${params.name}/${file} already has this content; nothing changed.`,
+      );
+    }
+    validateSkillFile(ctx.config, params.name, file, params.content);
+    const versionId = await snapshotSkill(paths, "write_file");
+    await writeSkillFile(paths, file, params.content);
+    return {
+      summary: params.summary ?? (file === SKILL_FILE ? "rewrote SKILL.md" : `wrote ${file}`),
+      versionId,
+    };
+  });
+}
+
+export async function archiveWorkshopSkill(
+  ctx: WorkshopMutationContext,
+  params: { name: string; absorbedInto?: string; reason?: string },
+): Promise<WorkshopChange> {
+  const absorbedInto =
+    params.absorbedInto === undefined
+      ? undefined
+      : resolveSkillPaths(ctx.config, ctx.agentId, params.absorbedInto);
+  // The target stays locked until the source is gone, so it cannot be archived mid-merge.
+  return await mutateSkill(
+    ctx,
+    params.name,
+    "archive",
+    async (paths) => {
+      await requireLiveSkill(paths, params.name);
+      if (
+        absorbedInto &&
+        (params.absorbedInto === params.name ||
+          !(await pathExists(path.join(absorbedInto.skillDir, SKILL_FILE))))
+      ) {
+        throw new WorkshopWriteError(
+          `absorbed_into must name another live workshop skill; "${params.absorbedInto}" is not one.`,
+        );
+      }
+      const versionId = await snapshotSkill(paths, "archive");
+      await fs.rm(paths.skillDir, { recursive: true, force: true });
+      const detail = [
+        params.absorbedInto ? `merged into ${params.absorbedInto}` : undefined,
+        params.reason?.trim() || undefined,
+      ].filter(Boolean);
+      return {
+        summary: detail.length > 0 ? `archived: ${detail.join("; ")}` : "archived",
+        versionId,
+      };
+    },
+    absorbedInto ? [absorbedInto] : [],
+  );
+}
+
+/** Restores a saved version (default: newest); the live copy is versioned first, so undo is undoable. */
+export async function restoreWorkshopSkill(
+  ctx: WorkshopMutationContext,
+  params: { name: string; versionId?: string; summary?: string },
+): Promise<WorkshopChange> {
+  return await mutateSkill(ctx, params.name, "restore", async (paths) => {
+    const versions = await listVersions(paths.versionsDir);
+    const target = params.versionId
+      ? versions.find((version) => version.id === params.versionId)
+      : versions[0];
+    if (!target) {
+      throw new WorkshopWriteError(
+        versions.length === 0
+          ? `Skill "${params.name}" has no saved versions to restore.`
+          : `Skill "${params.name}" has no version "${params.versionId}". Versions: ${versions.map((version) => version.id).join(", ")}.`,
+      );
+    }
+    const files = await readRestorableVersion(
+      ctx.config,
+      params.name,
+      target.id,
+      path.join(paths.versionsDir, target.id),
+    );
+    const staging = path.join(paths.root, ARCHIVE_DIR, `.restore-${randomUUID()}`);
+    try {
+      for (const [filePath, content] of files) {
+        const destination = path.join(staging, ...filePath.split("/"));
+        await fs.mkdir(path.dirname(destination), { recursive: true });
+        await fs.writeFile(destination, content, { flag: "wx" });
+      }
+      const versionId = await snapshotSkill(paths, "restore");
+      await fs.rm(paths.skillDir, { recursive: true, force: true });
+      await fs.rename(staging, paths.skillDir);
+      const summary =
+        params.summary ??
+        (target.action === "archive"
+          ? "restored from archive"
+          : params.versionId
+            ? `restored version ${target.id}`
+            : `undid ${target.action.replace("_", " ")}`);
+      return { summary, versionId };
+    } finally {
+      await fs.rm(staging, { recursive: true, force: true });
+    }
+  });
+}
+
+export async function listWorkshopChanges(
+  agentId: string,
+  options: { limit?: number; beforeMs?: number; runId?: string } = {},
+): Promise<WorkshopChange[]> {
+  return await executeOpenClawStateWorker(captureOpenClawStateWorkerContext(), {
+    type: "skills.workshop.changes.list",
+    input: {
+      agentId,
+      limit: Math.min(Math.max(Math.trunc(options.limit ?? 50), 1), MAX_CHANGES_LIMIT),
+      ...(options.beforeMs !== undefined ? { beforeMs: options.beforeMs } : {}),
+      ...(options.runId ? { runId: options.runId } : {}),
+    },
+  });
+}

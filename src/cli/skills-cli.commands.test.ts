@@ -628,22 +628,14 @@ describe("skills cli commands", () => {
     });
   });
 
-  it("declares inherited options on every applicable nested leaf", () => {
+  it("declares inherited --agent on every workshop leaf", () => {
     const program = new Command().enablePositionalOptions();
     registerSkillsCli(program);
-    const skills = requireCommand(program, "skills");
-    const workshop = requireCommand(skills, "workshop");
-    const curator = requireCommand(skills, "curator");
+    const workshop = requireCommand(requireCommand(program, "skills"), "workshop");
 
     for (const command of workshop.commands) {
       expect(
         command.options.some((option) => option.long === "--agent"),
-        command.name(),
-      ).toBe(true);
-    }
-    for (const command of curator.commands) {
-      expect(
-        command.options.some((option) => option.long === "--json"),
         command.name(),
       ).toBe(true);
     }
@@ -1649,23 +1641,7 @@ describe("skills cli commands", () => {
     ["install", ["skills", "install", "calendar", "--agent", "nope-agent"]],
     ["verify", ["skills", "verify", "calendar", "--card", "--agent", "nope-agent"]],
     ["workshop list", ["skills", "workshop", "list", "--agent", "nope-agent"]],
-    ["workshop inspect", ["skills", "workshop", "inspect", "proposal-id", "--agent", "nope-agent"]],
-    [
-      "workshop proposal",
-      [
-        "skills",
-        "workshop",
-        "propose-create",
-        "--name",
-        "calendar-helper",
-        "--description",
-        "Calendar helper",
-        "--proposal",
-        "/missing/proposal.md",
-        "--agent",
-        "nope-agent",
-      ],
-    ],
+    ["workshop archive", ["skills", "workshop", "archive", "some-skill", "--agent", "nope-agent"]],
   ])("rejects an unknown agent before skills %s work", async (_label, argv) => {
     resolveConfiguredAgentIdMock.mockImplementation((_config, agentId: string) =>
       resolveConfiguredAgentId({ agents: { list: [{ id: "main" }, { id: "writer" }] } }, agentId),

@@ -19,16 +19,7 @@ export type CoreGatewayMethodSpec = {
   sessionAccess?: GatewayMethodSessionAccess;
 };
 
-type CoreGatewayMethodPolicy = Pick<
-  CoreGatewayMethodSpec,
-  | "advertise"
-  | "startup"
-  | "lifetime"
-  | "controlPlaneWrite"
-  | "compatibilityRestored"
-  | "description"
-  | "sessionAccess"
->;
+type CoreGatewayMethodPolicy = Omit<CoreGatewayMethodSpec, "name" | "family" | "scope" | "since">;
 type CoreGatewayMethodSpecRow = readonly [
   name: string,
   family: string | null,
@@ -524,7 +515,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
     CONTROL_PLANE_WRITE,
   ],
   ["memory.search", "memory-search", "operator.read", "2026.7"],
-  // Additive Skill Workshop methods append so older advertised indices stay stable.
   ["skills.proposals.events.list", "skills", "operator.read", "2026.7"],
   ["skills.proposals.evaluate", "skills", "operator.admin", "2026.7", CONTROL_PLANE_WRITE],
   // Additive hook status RPC appends so older advertised method indices stay stable.
@@ -760,4 +750,8 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["users.merge", "users", "operator.admin", "2026.9"],
   ["gateway.stop.request", "restart", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
   ["diagnostics.heapSnapshot", "diagnostics", "operator.admin", "2026.9"],
+  ["skills.workshop.list", "skills", "operator.read", "2026.9"],
+  ["skills.workshop.changes", "skills", "operator.read", "2026.9"],
+  ["skills.workshop.archive", "skills", "operator.admin", "2026.9"],
+  ["skills.workshop.restore", "skills", "operator.admin", "2026.9"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

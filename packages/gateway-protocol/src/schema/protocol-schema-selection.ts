@@ -105,8 +105,6 @@ const EXCLUDED_SCHEMA_EXPORTS = [
   "SessionsReclaimParamsSchema",
   "SessionsReclaimResultPlacementSchema",
   "SessionsReclaimResultSchema",
-  "SkillProposalEvaluationSchema",
-  "SkillProposalLifecycleEventSchema",
   "SystemAgentChatQuestionSchema",
   "SystemAgentWizardCancelSchema",
   "TranscriptUtteranceSchema",

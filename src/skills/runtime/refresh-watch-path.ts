@@ -74,6 +74,8 @@ export const DEFAULT_SKILLS_WATCH_IGNORED: RegExp[] = [
   // Build artifacts and caches
   /(^|[\\/])build([\\/]|$)/,
   /(^|[\\/])\.cache([\\/]|$)/,
+  // Workshop version snapshots; discovery skips dot directories too.
+  /(^|[\\/])\.archive([\\/]|$)/,
 ];
 
 function shouldIgnoreSkillsWatchPath(

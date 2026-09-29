@@ -27,7 +27,7 @@ export async function reconcileSkillCollectionReviewJobs(params: {
   }
   params.commitGuard?.();
 
-  const specs = resolveSkillCollectionReviewMonitorSpecs(params.cfg, jobs);
+  const specs = resolveSkillCollectionReviewMonitorSpecs(params.cfg);
   const { retained, duplicates } = partitionSystemMonitors(
     jobs,
     skillCollectionReviewMonitorAgentId,

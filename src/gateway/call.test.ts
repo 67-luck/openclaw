@@ -1383,13 +1383,13 @@ describe("callGateway url resolution", () => {
     expect(startCalls).toBe(1);
   });
 
-  it("forwards optional inventory capabilities to the GatewayClient constructor", async () => {
+  it("forwards optional client capabilities to the GatewayClient constructor", async () => {
     setLocalLoopbackGatewayConfig();
-    const caps = [GATEWAY_CLIENT_CAPS.SKILL_CURATOR_LIVE_INVENTORY];
-    await callGateway({ method: "skills.curator.status", params: {}, caps });
+    const caps = [GATEWAY_CLIENT_CAPS.TOOL_EVENTS];
+    await callGateway({ method: "skills.workshop.list", params: {}, caps });
     expect(lastClientOptions?.caps).toEqual(caps);
-    expect(lastRequestOptions).toMatchObject({ method: "skills.curator.status", params: {} });
-    await callGateway({ method: "skills.curator.status", params: {} });
+    expect(lastRequestOptions).toMatchObject({ method: "skills.workshop.list", params: {} });
+    await callGateway({ method: "skills.workshop.list", params: {} });
     expect(lastClientOptions?.caps).toBeUndefined();
   });
 });

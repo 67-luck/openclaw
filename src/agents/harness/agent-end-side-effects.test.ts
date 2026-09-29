@@ -72,7 +72,7 @@ describe("agent end side effects", () => {
           skills: {
             workshop: {
               autonomous: {
-                mode: "propose",
+                mode: "auto",
               },
             },
           },

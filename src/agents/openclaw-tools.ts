@@ -488,14 +488,11 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
       ? []
       : [
           createConfiguredSkillWorkshopTool({
-            workspaceDir,
             config: resolvedConfig,
             agentId: sessionAgentId,
             sessionKey: options?.runSessionKey ?? options?.agentSessionKey,
             runId: options?.runId,
-            messageId: options?.currentMessageId,
             run: options?.skillWorkshop,
-            modelContextWindowTokens: options?.modelContextWindowTokens,
           }),
         ]),
     ...collectPresentOpenClawTools([progressCardTool]),

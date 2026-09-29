@@ -24,7 +24,6 @@ import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generati
 import { isCommandLaneTaskTimeoutError } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
-import { CronExecutionRootRuntimeError } from "../execution-root-runtime.js";
 import { removeCronRunContinuationSessionIfIdle } from "../run-continuation-cleanup.js";
 import { createCronRunDiagnosticsFromError, mergeCronRunDiagnostics } from "../run-diagnostics.js";
 import { resolveCronRunErrorReason } from "../run-error-reason.js";
@@ -89,9 +88,6 @@ export async function runCronIsolatedAgentTurn(
       onLifecycleInterrupt: () => lifecycleAbortController.abort(createAgentRunRestartAbortError()),
     });
   } catch (err) {
-    if (err instanceof CronExecutionRootRuntimeError) {
-      return { status: "error", error: err.message, admissionDisposition: "rejected" };
-    }
     if (err instanceof CronSessionLifecycleClaimError) {
       return {
         status: "error",
@@ -301,7 +297,7 @@ export async function runCronIsolatedAgentTurn(
             const admissionDisposition =
               err instanceof CronSessionLifecycleClaimError
                 ? err.admissionDisposition
-                : err instanceof CronExecutionRootRuntimeError || !executionStarted
+                : !executionStarted
                   ? "rejected"
                   : undefined;
             if (completedPromptRuns.length > 0) {

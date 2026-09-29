@@ -75,7 +75,7 @@ function inspectMonitors(
   const cfg = context.getRuntimeConfig();
   const specs = [
     ...resolveHeartbeatMonitorPlan(cfg, jobs).specs,
-    ...resolveSkillCollectionReviewMonitorSpecs(cfg, jobs),
+    ...resolveSkillCollectionReviewMonitorSpecs(cfg),
   ].filter((spec) => spec.agentId === agentId);
   const storeKey = cronStoreKey(context.cronStorePath);
   return readAttachedCronJobs(agentId, {}).flatMap((row) => {
