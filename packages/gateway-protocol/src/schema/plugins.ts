@@ -105,10 +105,26 @@ export const ControlUiPluginWidgetKindSchema = closedObject({
   label: NonEmptyString,
 });
 
+/** Host policy refusals; not plugin-authored health or evidence of hook execution. */
+export const PluginBlockedHookSchema = closedObject({
+  pluginId: NonEmptyString,
+  pluginName: NonEmptyString,
+  hookName: NonEmptyString,
+  reason: Type.Union([
+    Type.Literal("conversation-access-missing"),
+    Type.Literal("conversation-access-denied"),
+    Type.Literal("prompt-injection-denied"),
+  ]),
+  severity: Type.Union([Type.Literal("warn"), Type.Literal("error")]),
+  configPath: NonEmptyString,
+  message: Type.String(),
+});
+
 /** Response payload containing all plugin UI descriptors visible to the client. */
 export const PluginsUiDescriptorsResultSchema = closedObject({
   ok: Type.Literal(true),
   descriptors: Type.Array(PluginControlUiDescriptorSchema),
+  blockedHooks: Type.Optional(Type.Array(PluginBlockedHookSchema)),
   generation: Type.Optional(Type.Integer({ minimum: 0 })),
   methods: Type.Optional(Type.Array(NonEmptyString)),
   controlUiTabs: Type.Optional(Type.Array(ControlUiPluginTabSchema)),
@@ -228,6 +244,7 @@ export const PluginRuntimeStatusSchema = closedObject({
     Type.Literal("service-failed"),
   ]),
   error: Type.Optional(Type.String()),
+  blockedHooks: Type.Optional(Type.Array(PluginBlockedHookSchema)),
 });
 
 /** Catalog metadata and desired enablement, with optional observed runtime state. */
