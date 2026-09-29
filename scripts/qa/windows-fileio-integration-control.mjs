@@ -494,6 +494,11 @@ async function main() {
   async function nativeLifetimeControl(descriptor, cell) {
     const script = path.join(helper, "Inspect-LifetimeControl.ps1");
     const scriptSha256 = hash(script);
+    const fixture = path.join(helper, "lifetime-fixture.cjs");
+    const fixtureInput = path.join(helper, "fixture-input.cjs");
+    const fixtureSha256 = hash(fixture);
+    const fixtureInputSha256 = hash(fixtureInput);
+    assert.equal(hash(process.execPath), nodeSha256);
     const control = launchManaged({
       lifetime,
       commands,
@@ -511,6 +516,14 @@ async function main() {
         descriptor.dllSha256,
         "-ExpectedSourceSha256",
         descriptor.sourceSha256,
+        "-NodeExe",
+        process.execPath,
+        "-ExpectedNodeSha256",
+        nodeSha256,
+        "-ExpectedFixtureSha256",
+        fixtureSha256,
+        "-ExpectedFixtureInputSha256",
+        fixtureInputSha256,
       ],
       timeoutMs: 30_000,
       stdoutLimit: 4096,
@@ -563,6 +576,9 @@ async function main() {
       scriptSha256,
       sourceSha256: descriptor.sourceSha256,
       dllSha256: descriptor.dllSha256,
+      nodeSha256,
+      fixtureSha256,
+      fixtureInputSha256,
       ...facts,
       processLiveObservation,
     };
@@ -572,6 +588,12 @@ async function main() {
     assert.equal(record.sourceSha256, descriptor.sourceSha256);
     assert.equal(record.dllSha256, descriptor.dllSha256);
     assert.equal(hash(script), scriptSha256);
+    assert.equal(hash(process.execPath), nodeSha256);
+    assert.equal(hash(fixture), fixtureSha256);
+    assert.equal(hash(fixtureInput), fixtureInputSha256);
+    assert.equal(record.nodeSha256, nodeSha256);
+    assert.equal(record.fixtureSha256, fixtureSha256);
+    assert.equal(record.fixtureInputSha256, fixtureInputSha256);
     assert.equal(cell.nativeLifetimeControl.stage, "complete");
     assert.equal(cell.nativeLifetimeControl.passed, true);
     assert.ok(Object.values(facts).every((value) => value === true));

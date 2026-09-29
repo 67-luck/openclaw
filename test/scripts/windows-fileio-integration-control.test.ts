@@ -588,6 +588,9 @@ it.each(["missing", "invalid", "false", "query-threw", "early-exit", "complete"]
       stage: "complete",
       sourceSha256: "source",
       dllSha256: "dll",
+      nodeSha256: "node",
+      fixtureSha256: "fixture",
+      fixtureInputSha256: "input",
       foreign: "PRIVATE_EXCEPTION_CANARY",
     };
     if (scenario === "missing") {
@@ -611,7 +614,16 @@ it.each(["missing", "invalid", "false", "query-threw", "early-exit", "complete"]
       lifetime: {},
       commands: [],
       env: {},
-      hash: () => "script",
+      nodeSha256: "node",
+      process: { execPath: "fixture-node" },
+      hash: (file: string) =>
+        file === "fixture-node"
+          ? "node"
+          : file.endsWith("lifetime-fixture.cjs")
+            ? "fixture"
+            : file.endsWith("fixture-input.cjs")
+              ? "input"
+              : "script",
       launchManaged: () => ({
         completion: Promise.resolve(0),
         receipt: { joined: true, jobObserved: true },
@@ -641,3 +653,97 @@ it.each(["missing", "invalid", "false", "query-threw", "early-exit", "complete"]
     expect(JSON.stringify(cell)).not.toContain("PRIVATE_EXCEPTION_CANARY");
   },
 );
+
+it.each([
+  "held-until-release",
+  "cleanup-before-terminal",
+  "eof-before-terminal",
+  "eof-after-terminal",
+  "release-first",
+  "crlf-rejected",
+] as const)("Node lifetime fixture uses the actual pipe: %s", async (scenario) => {
+  const lifetime = createFixtureLifetime();
+  let completion: Promise<number> | undefined;
+  let child: ChildProcess | undefined;
+  const records: string[] = [];
+  const inputErrors: Error[] = [];
+  let heldAfterTerminal = false;
+  try {
+    const root = lifetime.createTempDir("fileio-lifetime-診断-é-");
+    const fixture = path.join(root, "lifetime-fixture.cjs");
+    const original = fs.readFileSync(
+      new URL("../../scripts/qa/windows-fileio/lifetime-fixture.cjs", import.meta.url),
+      "utf8",
+    );
+    // Local transport proof removes only the three native runtime prerequisites.
+    const runtimeGuards = /^ {2}assert\.equal\(process\.(?:platform|arch|version), [^\n]+\);\n/gm;
+    expect(original.match(runtimeGuards)).toHaveLength(3);
+    fs.writeFileSync(fixture, original.replace(runtimeGuards, ""));
+    fs.copyFileSync(
+      new URL("../../scripts/qa/windows-fileio/fixture-input.cjs", import.meta.url),
+      path.join(root, "fixture-input.cjs"),
+    );
+    completion = lifetime.track(
+      runManagedCommand({
+        bin: process.execPath,
+        args: [fixture],
+        cwd: root,
+        env: { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT },
+        timeoutMs: 30_000,
+        shell: false,
+        stdio: ["pipe", "pipe", "pipe"],
+        onReady(launched) {
+          child = launched;
+          const stdin = launched.stdin!;
+          stdin.on("error", (error) => inputErrors.push(error));
+          let carry = "";
+          launched.stdout!.on("data", (chunk: Buffer) => {
+            carry += chunk.toString("utf8");
+            let end;
+            while ((end = carry.indexOf("\n")) !== -1) {
+              const line = carry.slice(0, end);
+              carry = carry.slice(end + 1);
+              records.push(line);
+              if (line === "lifetime-ready") {
+                if (scenario === "release-first") {
+                  stdin.end("release\n");
+                } else if (scenario === "eof-before-terminal") {
+                  stdin.end();
+                } else if (scenario === "cleanup-before-terminal") {
+                  stdin.end("terminal\nrelease\n");
+                } else {
+                  stdin.write(scenario === "crlf-rejected" ? "terminal\r\n" : "terminal\n");
+                }
+              } else if (line === "lifetime-terminal" && scenario !== "cleanup-before-terminal") {
+                heldAfterTerminal =
+                  inspectManagedProcessGroup(launched, { errorPolicy: "indeterminate" }) === "live";
+                stdin.end(scenario === "eof-after-terminal" ? undefined : "release\n");
+              }
+            }
+          });
+          launched.stderr!.resume();
+        },
+      }),
+    );
+    const accepted = scenario === "held-until-release" || scenario === "cleanup-before-terminal";
+    expect(await completion).toBe(accepted ? 0 : 1);
+    expect(inputErrors).toEqual([]);
+    expect(records).toEqual([
+      "lifetime-ready",
+      ...(["held-until-release", "cleanup-before-terminal", "eof-after-terminal"].includes(scenario)
+        ? ["lifetime-terminal"]
+        : []),
+    ]);
+    if (scenario === "held-until-release" || scenario === "eof-after-terminal") {
+      expect(heldAfterTerminal).toBe(true);
+    }
+    assert.ok(child);
+    expect(inspectManagedProcessGroup(child, { errorPolicy: "indeterminate" })).toBe("dead");
+  } finally {
+    child?.stdin?.end();
+    if (completion) {
+      await completion.catch(() => undefined);
+    }
+    await lifetime.cleanup();
+  }
+});

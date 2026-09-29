@@ -3,7 +3,11 @@
 param(
   [Parameter(Mandatory)][string]$DllPath,
   [Parameter(Mandatory)][string]$ExpectedDllSha256,
-  [Parameter(Mandatory)][string]$ExpectedSourceSha256
+  [Parameter(Mandatory)][string]$ExpectedSourceSha256,
+  [Parameter(Mandatory)][string]$NodeExe,
+  [Parameter(Mandatory)][string]$ExpectedNodeSha256,
+  [Parameter(Mandatory)][string]$ExpectedFixtureSha256,
+  [Parameter(Mandatory)][string]$ExpectedFixtureInputSha256
 )
 $ErrorActionPreference='Stop'
 $stage='binding'
@@ -18,15 +22,23 @@ function Get-ProcessLiveObservation {
   }
   return $facts
 }
+function Assert-LifetimeBindings($Bindings) {
+  foreach($pair in $Bindings) {
+    $file=Get-Item -LiteralPath $pair[0]
+    if($pair[1] -cnotmatch '^[0-9a-f]{64}$' -or $file -isnot [IO.FileInfo] -or
+      ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+      (Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256).Hash.ToLowerInvariant() -cne $pair[1]){throw 'Native control binding mismatch'}
+  }
+}
 try {
   if([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
     -not [Environment]::Is64BitProcess -or $PSVersionTable.PSEdition -cne 'Desktop' -or
     $PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1){throw 'Exact native runtime required'}
-  foreach($pair in @(@($DllPath,$ExpectedDllSha256),@((Join-Path $PSScriptRoot 'OwnedFileTrace.cs'),$ExpectedSourceSha256))) {
-    if($pair[1] -cnotmatch '^[0-9a-f]{64}$' -or
-      ((Get-Item -LiteralPath $pair[0]).Attributes -band [IO.FileAttributes]::ReparsePoint) -or
-      (Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256).Hash.ToLowerInvariant() -cne $pair[1]){throw 'Native control binding mismatch'}
-  }
+  $fixturePath=Join-Path $PSScriptRoot 'lifetime-fixture.cjs'
+  $fixtureInputPath=Join-Path $PSScriptRoot 'fixture-input.cjs'
+  $bindings=@(@($DllPath,$ExpectedDllSha256),@((Join-Path $PSScriptRoot 'OwnedFileTrace.cs'),$ExpectedSourceSha256),
+    @($NodeExe,$ExpectedNodeSha256),@($fixturePath,$ExpectedFixtureSha256),@($fixtureInputPath,$ExpectedFixtureInputSha256))
+  Assert-LifetimeBindings $bindings
   Add-Type -LiteralPath $DllPath
   $stage='compile-control'
   $control=@'
@@ -41,26 +53,42 @@ public static class FileTraceLifetimeControl {
   [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetThreadTimes(IntPtr handle,out FileTime create,out FileTime exit,out FileTime kernel,out FileTime user);
   static long Stamp(FileTime value) { return unchecked((long)(((ulong)value.High << 32) | value.Low)); }
   public static string Stage="process-start";
+  public static bool ChildStartAttempted,ChildJoined;
   public static bool? ChildHasExited,ObservationCallCompleted,QuerySucceeded,CreationMatches,
     EventNotBeforeCreation,ExitTimePresent,EventNotAfterExit,ContainsTime;
   static void Require(bool value) { if(!value) throw new InvalidOperationException("Lifetime control assertion failed"); }
-  public static void Run(string executable) {
+  static Exception Combine(Exception first,Exception next) {
+    return first == null ? next : new AggregateException(first,next);
+  }
+  static void ReleaseChild(Process child,ref bool terminalAttempted,ref bool releaseAttempted) {
+    bool sendRelease=!releaseAttempted;releaseAttempted=true;
+    Exception failure=null;
+    try {
+      if(!terminalAttempted) {terminalAttempted=true;child.StandardInput.Write("terminal\n");}
+      if(sendRelease)child.StandardInput.Write("release\n");
+    } catch(Exception error) {failure=error;}
+    try {child.StandardInput.Close();} catch(Exception error) {failure=Combine(failure,error);}
+    if(failure != null)throw failure;
+  }
+  public static void Run(string executable,string fixturePath) {
     using(Process child=new Process()) {
-      child.StartInfo=new ProcessStartInfo(executable,
-        "-NoProfile -NonInteractive -Command \"[Console]::Out.WriteLine('lifetime-ready');if([Console]::In.ReadLine() -cne 'release'){exit 2}\"") {
+      child.StartInfo=new ProcessStartInfo(executable,"\""+fixturePath+"\"") {
         UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,
         RedirectStandardOutput=true,RedirectStandardError=true
       };
-      bool started=false,released=false;
+      bool started=false,terminalAttempted=false,releaseAttempted=false;
       IntPtr handle=IntPtr.Zero;
       OwnedFileTrace.ThreadLease lease=null;
+      Exception processFailure=null;
       try {
-        started=child.Start();Require(started);
+        ChildStartAttempted=true;started=child.Start();Require(started);
         Stage="process-ready";
         Require(child.StandardOutput.ReadLine() == "lifetime-ready");
         long created=child.StartTime.ToUniversalTime().ToFileTimeUtc();
         handle=OwnedFileTrace.HoldProcess((uint)child.Id,created);
         lease=new OwnedFileTrace.ThreadLease((uint)child.Id,created,handle);
+        terminalAttempted=true;child.StandardInput.Write("terminal\n");child.StandardInput.Flush();
+        Require(child.StandardOutput.ReadLine() == "lifetime-terminal");
         long liveTime=DateTime.UtcNow.ToFileTimeUtc();
         Stage="process-live";
         ObservationCallCompleted=false;
@@ -71,8 +99,8 @@ public static class FileTraceLifetimeControl {
         EventNotAfterExit=live.EventNotAfterExit;ContainsTime=live.ContainsTime;
         bool childHasExited=child.HasExited;ChildHasExited=childHasExited;
         Require(!childHasExited && live.ContainsTime && live.ExitTimePresent == false);
-        child.StandardInput.WriteLine("release");child.StandardInput.Close();released=true;
-        child.WaitForExit();Require(child.ExitCode == 0);
+        ReleaseChild(child,ref terminalAttempted,ref releaseAttempted);
+        child.WaitForExit();ChildJoined=true;Require(child.ExitCode == 0);
         Stage="process-exited";
         Require(lease.ObserveProjectionAdmission().State == OwnedFileTrace.ProcessAdmissionState.Exited);
         OwnedFileTrace.ProcessTimeObservation inside=lease.ObserveProcessTime(liveTime);
@@ -81,17 +109,20 @@ public static class FileTraceLifetimeControl {
         OwnedFileTrace.ProcessTimeObservation outside=lease.ObserveProcessTime(afterExit);
         Require(inside.ContainsTime && inside.ExitTimePresent == true);
         Require(!outside.ContainsTime && outside.ExitTimePresent == true && outside.EventNotAfterExit == false);
-      } finally {
-        try {
-          if(started) {
-            if(!released && !child.HasExited) {child.StandardInput.WriteLine("release");child.StandardInput.Close();}
-            child.WaitForExit();
-          }
-        } finally {
-          if(lease != null)lease.Dispose();
-          if(handle != IntPtr.Zero)OwnedFileTrace.CloseHandle(handle);
+      } catch(Exception error) {processFailure=error;}
+      finally {
+        if(started) {
+          try {if(!child.HasExited)ReleaseChild(child,ref terminalAttempted,ref releaseAttempted);}
+          catch(Exception error) {processFailure=Combine(processFailure,error);}
+          try {child.WaitForExit();ChildJoined=true;}
+          catch(Exception error) {processFailure=Combine(processFailure,error);}
         }
+        try {if(lease != null)lease.Dispose();}
+        catch(Exception error) {processFailure=Combine(processFailure,error);}
+        try {if(handle != IntPtr.Zero)OwnedFileTrace.CloseHandle(handle);}
+        catch(Exception error) {processFailure=Combine(processFailure,error);}
       }
+      if(processFailure != null)throw processFailure;
     }
     using(ManualResetEvent ready=new ManualResetEvent(false))
     using(ManualResetEvent release=new ManualResetEvent(false))
@@ -133,10 +164,21 @@ public static class FileTraceLifetimeControl {
 }
 '@
   Add-Type -TypeDefinition $control -ReferencedAssemblies @($DllPath,'System.dll')
-  $current=[Diagnostics.Process]::GetCurrentProcess()
-  try {[FileTraceLifetimeControl]::Run($current.MainModule.FileName)} finally {$current.Dispose()}
+  Assert-LifetimeBindings $bindings
+  $runFailure=$null
+  try {[FileTraceLifetimeControl]::Run($NodeExe,$fixturePath)} catch {$runFailure=$_.Exception}
+  if([FileTraceLifetimeControl]::ChildStartAttempted -and -not [FileTraceLifetimeControl]::ChildJoined) {
+    if($runFailure){throw $runFailure}
+    throw 'Native child join unavailable'
+  }
+  try {Assert-LifetimeBindings $bindings} catch {
+    if($runFailure){throw [AggregateException]::new([Exception[]]@($runFailure,$_.Exception))}
+    throw
+  }
+  if($runFailure){throw $runFailure}
   @{phase='native-lifetime-control';passed=$true;stage='complete';sourceSha256=$ExpectedSourceSha256;
-    dllSha256=$ExpectedDllSha256;processLive=$true;processInsideExit=$true;processAfterExit=$true;
+    dllSha256=$ExpectedDllSha256;nodeSha256=$ExpectedNodeSha256;fixtureSha256=$ExpectedFixtureSha256;
+    fixtureInputSha256=$ExpectedFixtureInputSha256;processLive=$true;processInsideExit=$true;processAfterExit=$true;
     threadLive=$true;threadInsideExit=$true;threadAfterExit=$true;naturalRelease=$true;
     processLiveObservation=(Get-ProcessLiveObservation)} | ConvertTo-Json -Depth 3 -Compress
 } catch {
