@@ -24,6 +24,7 @@ import {
   readRelatedProcessDiagnosticsResult,
 } from "../../src/daemon/schtasks.integration-observation.test-support.ts";
 import { hasErrnoCode } from "../../src/infra/errno.ts";
+import { resolveDiagnosticProcessEnv } from "../../src/infra/process-env.ts";
 import { getWindowsPowerShellExePath } from "../../src/infra/windows-install-roots.ts";
 import { redactSupportString } from "../../src/logging/diagnostic-support-redaction.ts";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.ts";
@@ -488,26 +489,7 @@ async function main() {
   const commands = [];
   const cells = [];
   const admissionFile = path.join(privateRoot, "integration-admission.json");
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) =>
-      [
-        "PATH",
-        "PATHEXT",
-        "SYSTEMROOT",
-        "WINDIR",
-        "COMSPEC",
-        "TEMP",
-        "TMP",
-        "USERPROFILE",
-        "APPDATA",
-        "LOCALAPPDATA",
-        "PROGRAMFILES",
-        "PROGRAMFILES(X86)",
-        "PROGRAMDATA",
-        "NUMBER_OF_PROCESSORS",
-      ].includes(name.toUpperCase()),
-    ),
-  );
+  const env = resolveDiagnosticProcessEnv(process.env, "win32");
   const persistAdmission = async () => {
     save(`${admissionFile}.next`, admissions);
     fs.renameSync(`${admissionFile}.next`, admissionFile);

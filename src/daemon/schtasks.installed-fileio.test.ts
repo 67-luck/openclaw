@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createVitestResourceOwner } from "../../scripts/lib/vitest-resource-ownership.mts";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   cleanupInstalledFileIo,
@@ -46,6 +47,7 @@ async function fixture(
     | "schema"
     | "unjoined"
     | (typeof runtimeFaults)[number],
+  environment?: NodeJS.ProcessEnv,
 ) {
   const rootDir = temporary.make("installed-fileio-");
   const installRoot = path.join(rootDir, "install");
@@ -57,6 +59,7 @@ async function fixture(
   const lifetime = createFixtureLifetime(rootDir);
   const commandFacts: InstalledFileIoCommandFact[] = [];
   const phases: string[] = [];
+  const commandEnvironments: NodeJS.ProcessEnv[] = [];
   let persisted = false;
   let identityPersisted = false;
   const privateRoot = path.join(rootDir, ".fileio-private");
@@ -89,7 +92,10 @@ async function fixture(
   managed.run.mockImplementation(async (options) => {
     expect(persisted).toBe(true);
     expect(options.bin).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
-    expect(options.env).toEqual({ SystemRoot: "C:\\Windows", TEMP: rootDir });
+    commandEnvironments.push({ ...options.env });
+    if (!environment) {
+      expect(options.env).toEqual({ SystemRoot: "C:\\Windows", TEMP: rootDir });
+    }
     const child = Object.assign(new EventEmitter(), {
       pid: 123,
       stdout: new PassThrough(),
@@ -179,6 +185,7 @@ async function fixture(
       TEMP: rootDir,
       NODE_OPTIONS: "synthetic-private-node-option",
       PRIVATE_TOKEN: "synthetic-private-token",
+      ...environment,
     },
   };
   const prepare = () =>
@@ -205,11 +212,62 @@ async function fixture(
     lifetime,
     privateRoot,
     phases,
+    commandEnvironments,
+    environment: task.env,
     commandFacts,
     admission,
     resourceOwner,
   };
 }
+
+it.each(["PSMODULEANALYSISCACHEPATH", "psModuleAnalysisCachePath", "undefined-duplicate"])(
+  "uses Windows diagnostic routing for prepare and cleanup (%s)",
+  async (cacheCase) => {
+    const cache =
+      cacheCase === "undefined-duplicate"
+        ? { PSMODULEANALYSISCACHEPATH: undefined, psModuleAnalysisCachePath: "masked-cache" }
+        : { [cacheCase]: "C:\\private 診断\\cache" };
+    const f = await fixture(undefined, {
+      ...cache,
+      PATH: "C:\\selected-bin",
+      Path: "C:\\masked-bin",
+      TEMP: undefined,
+      temp: "C:\\masked-temp",
+      SystemDrive: "C:",
+      HomeDrive: "C:",
+      HomePath: "\\Users\\synthetic",
+      UserDomain: "SYNTHETIC",
+      ProgramW6432: "C:\\Program Files",
+      CommonProgramFiles: "C:\\Program Files\\Common Files",
+      PSModulePath: "synthetic-private-modules",
+      HTTPS_PROXY: "synthetic-private-proxy",
+      UNKNOWN_CANARY: "synthetic-unknown",
+      NUMBER_OF_PROCESSORS: "999",
+    });
+    const original = { ...f.environment };
+    try {
+      const prepared = await f.prepare();
+      await prepared.cleanup();
+    } finally {
+      await f.lifetime.cleanup();
+    }
+    expect(f.phases).toEqual(["prepare", "cleanup"]);
+    const expected = {
+      SystemRoot: "C:\\Windows",
+      ...(cacheCase === "undefined-duplicate" ? {} : { [cacheCase]: "C:\\private 診断\\cache" }),
+      PATH: "C:\\selected-bin",
+      SystemDrive: "C:",
+      HomeDrive: "C:",
+      HomePath: "\\Users\\synthetic",
+      UserDomain: "SYNTHETIC",
+      ProgramW6432: "C:\\Program Files",
+      CommonProgramFiles: "C:\\Program Files\\Common Files",
+    };
+    expect(f.commandEnvironments).toEqual([expected, expected]);
+    expect(f.environment).toEqual(original);
+    expect(() => f.resourceOwner.assertReleased()).not.toThrow();
+  },
+);
 
 it("admits exact custody before preparation and releases the trace before private files", async () => {
   const f = await fixture();
@@ -432,7 +490,7 @@ it.each([
       child.stdout.write(lines.slice(0, 19));
       child.stdout.write(lines.slice(19));
       child.stderr.write("synthetic-private-stderr");
-      const result = Promise.withResolvers<number>();
+      const result = createDeferred<number>();
       result.reject(failure);
       return result.promise;
     });

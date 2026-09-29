@@ -6,6 +6,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
+import { resolveDiagnosticProcessEnv } from "../../src/infra/process-env.ts";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.ts";
 import {
   hasUnjoinedWork,
@@ -34,26 +35,7 @@ const lifetime = createFixtureLifetime(privateRoot);
 const admissionFile = path.join(privateRoot, "installed-cleanup.json");
 const commands = [];
 const cells = [];
-const childEnv = Object.fromEntries(
-  Object.entries(process.env).filter(([name]) =>
-    [
-      "PATH",
-      "PATHEXT",
-      "SYSTEMROOT",
-      "WINDIR",
-      "COMSPEC",
-      "TEMP",
-      "TMP",
-      "USERPROFILE",
-      "APPDATA",
-      "LOCALAPPDATA",
-      "PROGRAMFILES",
-      "PROGRAMFILES(X86)",
-      "PROGRAMDATA",
-      "NUMBER_OF_PROCESSORS",
-    ].includes(name.toUpperCase()),
-  ),
-);
+const childEnv = resolveDiagnosticProcessEnv(process.env, "win32");
 function save(file, value) {
   fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n", { flush: true });
 }

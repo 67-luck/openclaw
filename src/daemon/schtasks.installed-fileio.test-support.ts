@@ -11,6 +11,7 @@ import {
   runManagedCommand,
 } from "../../scripts/lib/managed-child-process.mts";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
+import { resolveDiagnosticProcessEnv } from "../infra/process-env.js";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
 import { WINDOWS_POWERSHELL_COLD_SPAWN_TIMEOUT_MS } from "../infra/windows-powershell-spawn.js";
 import type { InstalledFileIoDescriptor } from "./schtasks.installed-retirement-observation.test-support.js";
@@ -282,26 +283,7 @@ function fileIoCommand(
   signal?: AbortSignal,
 ) {
   const { expectedGuid, name, cliPath, receiptPath, powerShellExe } = custody;
-  const env = Object.fromEntries(
-    Object.entries(task.env).filter(([key]) =>
-      [
-        "PATH",
-        "PATHEXT",
-        "SYSTEMROOT",
-        "WINDIR",
-        "COMSPEC",
-        "TEMP",
-        "TMP",
-        "USERPROFILE",
-        "APPDATA",
-        "LOCALAPPDATA",
-        "PROGRAMFILES",
-        "PROGRAMFILES(X86)",
-        "PROGRAMDATA",
-        "NUMBER_OF_PROCESSORS",
-      ].includes(key.toUpperCase()),
-    ),
-  );
+  const env = resolveDiagnosticProcessEnv(task.env, "win32");
   return async (phase: "prepare" | "cleanup") => {
     const directoryIdentity = await verifySources(custody);
     const fact: InstalledFileIoCommandFact = {
