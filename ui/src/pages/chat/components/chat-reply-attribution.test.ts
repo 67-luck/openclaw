@@ -547,7 +547,7 @@ it.each([
 );
 
 it.each([
-  { shared: false, location: "fetched", snapshot: undefined, name: "You" },
+  { shared: false, location: "fetched", snapshot: undefined, name: "Message" },
   { shared: true, location: "fetched", snapshot: undefined, name: undefined },
   { shared: true, location: "loaded", snapshot: undefined, name: undefined },
   {
@@ -575,11 +575,11 @@ it.each([
         replyShared: shared || undefined,
         replyTurnSource: { key: "prompt-render-key", message: prompt },
         ...(location === "loaded"
-          ? { sources: { older: { message: unattributed, senderLabel: "You" } } }
+          ? { sources: { older: { message: unattributed, senderLabel: "Message" } } }
           : { fetched: { older: unattributed } }),
       },
     );
-    // A 1:1 thread has one human, so "You" is not a guess; a shared thread never falls back to it.
+    // A 1:1 thread keeps the neutral label; a shared thread never falls back to it.
     expect(row?.querySelector(".chat-reply-attribution__name")?.textContent).toBe(name);
     expect(container.querySelector(".chat-reply-attribution--pending")).toBeNull();
   },
@@ -595,7 +595,7 @@ it("does not resolve a shared reply_to_current to a prompt without sender proven
     {
       replyShared: true,
       replyCurrentSource: { key: "current-render-key", message: unattributed },
-      sources: { current: { message: unattributed, senderLabel: "You" } },
+      sources: { current: { message: unattributed, senderLabel: "Message" } },
     },
   );
   expect(container.querySelector(".chat-reply-attribution")).toBeNull();
@@ -834,7 +834,7 @@ function drawOwnReply(
 }
 
 it.each([
-  { shared: false, snapshot: undefined, name: "You" },
+  { shared: false, snapshot: undefined, name: "Message" },
   { shared: true, snapshot: undefined, name: undefined },
   { shared: true, snapshot: { senderLabel: "Jordan", text: "" }, name: "Jordan" },
 ] as const)(
@@ -845,7 +845,7 @@ it.each([
       shared,
       snapshot,
     );
-    // Only the signed-in user speaks in a 1:1 thread; a shared thread never falls back to "You".
+    // A 1:1 thread keeps the neutral label; a shared thread never falls back to it.
     expect(strip?.querySelector(".chat-reply-attribution__name")?.textContent).toBe(name);
     expect(container.querySelector(".chat-reply-attribution--pending")).toBeNull();
   },

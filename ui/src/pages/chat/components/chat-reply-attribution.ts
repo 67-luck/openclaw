@@ -94,7 +94,7 @@ function resolveTarget(
   if ((result && "missing" in result) || (reserves && !known && oversized)) {
     return reserves ? { state: "unavailable", name: known } : NO_REPLY_LINE;
   }
-  // A source without sender provenance is the local user only in a 1:1 thread;
+  // A source without sender provenance keeps its neutral label in a 1:1 thread;
   // shared, only its snapshot can name it. A shared sender with an id but no
   // name keeps the snapshot's name before its raw id, never the viewer fallback.
   const sender = preview?.sender;
