@@ -38,18 +38,26 @@ namespace LifetimeDiagnosticFixture {
   }
   public sealed class Input : System.IO.StringWriter {
     public override void Write(string value) {
-      if(value == "terminal\n")return;
+      if(value == "terminal\n") {if(State.Scenario=="terminal-write-failed")throw new System.IO.IOException("PRIVATE_TERMINAL_WRITE");return;}
       if(value != "release\n")throw new System.Exception("PRIVATE_BAD_INPUT");
       State.Releases++;State.Exited=true;State.ExitTime=System.DateTime.UtcNow;
       if(State.Scenario=="query-release-failed")throw new System.IO.IOException("PRIVATE_RELEASE_FAILURE");
     }
   }
+  public sealed class Output : System.IO.StringReader {
+    int reads;
+    public Output():base(""){}
+    public override string ReadLine() {
+      if(++reads==1)return State.Scenario=="ready-read-failed" ? "PRIVATE_WRONG_READY" : "lifetime-ready";
+      return State.Scenario=="terminal-ack-failed" ? "PRIVATE_WRONG_ACK" : "lifetime-terminal";
+    }
+  }
   public sealed class Child : System.IDisposable {
     public System.Diagnostics.ProcessStartInfo StartInfo {get;set;}
     public bool Start(){State.Starts++;if(State.Scenario=="start-throws")throw new System.Exception("PRIVATE_START_FAILURE");return true;}
-    public System.IO.StringReader StandardOutput=new System.IO.StringReader("lifetime-ready\nlifetime-terminal\n");
+    public Output StandardOutput=new Output();
     public Input StandardInput=new Input();
-    public System.DateTime StartTime {get{return System.DateTime.FromFileTimeUtc(100);}}
+    public System.DateTime StartTime {get{if(State.Scenario=="creation-failed")throw new System.Exception("PRIVATE_CREATION_FAILURE");return System.DateTime.FromFileTimeUtc(100);}}
     public System.DateTime ExitTime {get{return State.ExitTime;}}
     public int Id {get{return 1234;}}
     public int ExitCode {get{return 0;}}
@@ -67,7 +75,7 @@ public static class OwnedFileTrace {
   }
   public static bool CloseHandle(System.IntPtr handle){LifetimeDiagnosticFixture.State.Closes++;return true;}
   public sealed class ThreadLease : System.IDisposable {
-    public ThreadLease(uint pid,long created,System.IntPtr handle){}
+    public ThreadLease(uint pid,long created,System.IntPtr handle){if(LifetimeDiagnosticFixture.State.Scenario=="lease-failed")throw new System.Exception("PRIVATE_LEASE_FAILURE");}
     public Admission ObserveProjectionAdmission(){return new Admission {State=ProcessAdmissionState.Exited};}
     public ProcessTimeObservation ObserveProcessTime(long time) {
       string scenario=LifetimeDiagnosticFixture.State.Scenario;
@@ -109,7 +117,13 @@ if([regex]::Matches($catch,'(?m)^  exit 2$').Count -ne 1){throw 'Failure exit bo
 $catch=$catch.Replace('  exit 2','  $script:capturedExit=2').Replace('catch {',"catch {`n  `$script:capturedFailure=`$_.Exception")
 $entry=[scriptblock]::Create("try {`n"+$tail+"`n}`n"+$catch)
 $failed=0
-foreach($scenario in @('start-throws','before-observation','query-threw','query-failed','query-release-failed','query-join-failed','creation-mismatch','early-exit','live')) {
+$beforeLiveStages=@{
+  'start-throws'='process-start';'ready-read-failed'='process-ready';'creation-failed'='process-creation'
+  'before-observation'='process-hold';'lease-failed'='process-lease'
+  'terminal-write-failed'='process-terminal-write';'terminal-ack-failed'='process-terminal-ack'
+}
+foreach($scenario in @('start-throws','ready-read-failed','creation-failed','before-observation','lease-failed',
+  'terminal-write-failed','terminal-ack-failed','query-threw','query-failed','query-release-failed','query-join-failed','creation-mismatch','early-exit','live')) {
   [LifetimeDiagnosticFixture.State]::Reset($scenario)
   foreach($field in [FileTraceLifetimeControl].GetFields() | Where-Object {$_.FieldType -eq [Nullable[bool]]}){$field.SetValue($null,$null)}
   [FileTraceLifetimeControl]::ChildStartAttempted=$false;[FileTraceLifetimeControl]::ChildJoined=$false
@@ -126,8 +140,8 @@ foreach($scenario in @('start-throws','before-observation','query-threw','query-
   $record=$output | ConvertFrom-Json
   $expected=@{childHasExited=$null;callCompleted=$null;querySucceeded=$null;creationMatches=$null;
     eventNotBeforeCreation=$null;exitTimePresent=$null;eventNotAfterExit=$null;containsTime=$null}
-  if($scenario -notin @('before-observation','start-throws')){$expected.callCompleted=$scenario -ne 'query-threw'}
-  if($scenario -notin @('before-observation','start-throws','query-threw')) {
+  if(-not $beforeLiveStages.ContainsKey($scenario)){$expected.callCompleted=$scenario -ne 'query-threw'}
+  if(-not $beforeLiveStages.ContainsKey($scenario) -and $scenario -ne 'query-threw') {
     $expected.childHasExited=$scenario -eq 'early-exit';$expected.querySucceeded=$scenario -notin @('query-failed','query-release-failed','query-join-failed')
     $expected.containsTime=$scenario -notin @('query-failed','query-release-failed','query-join-failed','creation-mismatch')
     if($scenario -notin @('query-failed','query-release-failed','query-join-failed')) {
@@ -141,8 +155,8 @@ foreach($scenario in @('start-throws','before-observation','query-threw','query-
   }
   $released=[LifetimeDiagnosticFixture.State]::Releases -eq $(if($scenario -in @('early-exit','start-throws')){0}else{1})
   $cleanup=[LifetimeDiagnosticFixture.State]::Joins -eq $(if($scenario -in @('query-join-failed','start-throws')){0}elseif($scenario -eq 'live'){2}else{1}) -and [LifetimeDiagnosticFixture.State]::Disposals -eq 1 -and
-    [LifetimeDiagnosticFixture.State]::Closes -eq $(if($scenario -in @('before-observation','start-throws')){0}else{1}) -and
-    [LifetimeDiagnosticFixture.State]::LeaseDisposals -eq $(if($scenario -in @('before-observation','start-throws')){0}else{1})
+    [LifetimeDiagnosticFixture.State]::Closes -eq $(if($scenario -in @('before-observation','start-throws','ready-read-failed','creation-failed')){0}else{1}) -and
+    [LifetimeDiagnosticFixture.State]::LeaseDisposals -eq $(if($scenario -in @('before-observation','start-throws','ready-read-failed','creation-failed','lease-failed')){0}else{1})
   $failurePreserved=$true
   if($scenario -eq 'start-throws'){$failurePreserved=$script:capturedFailure.ToString().Contains('PRIVATE_START_FAILURE')}
   if($scenario -in @('query-release-failed','query-join-failed')) {
@@ -151,10 +165,12 @@ foreach($scenario in @('start-throws','before-observation','query-threw','query-
       $failureText.Contains($(if($scenario -eq 'query-release-failed'){'PRIVATE_RELEASE_FAILURE'}else{'PRIVATE_JOIN_FAILURE'}))
   }
   $joinAdmission=$script:bindingChecks -eq $(if($scenario -in @('query-join-failed','start-throws')){1}else{2})
-  $passed=$failurePreserved -and $joinAdmission -and $factsCorrect -and $released -and $cleanup -and $record.passed -eq ($scenario -eq 'live') -and
+  $expectedStage=if($beforeLiveStages.ContainsKey($scenario)){$beforeLiveStages[$scenario]}elseif($scenario -eq 'live'){'complete'}else{'process-live'}
+  $stageCorrect=$record.stage -ceq $expectedStage
+  $passed=$stageCorrect -and $failurePreserved -and $joinAdmission -and $factsCorrect -and $released -and $cleanup -and $record.passed -eq ($scenario -eq 'live') -and
     $script:capturedExit -eq $(if($scenario -eq 'live'){0}else{2}) -and -not $output.Contains('PRIVATE_')
   if(-not $passed){$failed++}
-  @{scenario=$scenario;passed=$passed;factsCorrect=$factsCorrect;naturalReleaseCorrect=$released;
+  @{scenario=$scenario;passed=$passed;stageCorrect=$stageCorrect;stage=$record.stage;factsCorrect=$factsCorrect;naturalReleaseCorrect=$released;
     cleanupCorrect=$cleanup;failurePreserved=$failurePreserved;postBindingJoinAdmission=$joinAdmission;
     nativeProof=$false;controlSha256=(Get-FileHash $SourcePath -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json -Compress
 }

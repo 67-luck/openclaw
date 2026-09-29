@@ -84,10 +84,15 @@ public static class FileTraceLifetimeControl {
         ChildStartAttempted=true;started=child.Start();Require(started);
         Stage="process-ready";
         Require(child.StandardOutput.ReadLine() == "lifetime-ready");
+        Stage="process-creation";
         long created=child.StartTime.ToUniversalTime().ToFileTimeUtc();
+        Stage="process-hold";
         handle=OwnedFileTrace.HoldProcess((uint)child.Id,created);
+        Stage="process-lease";
         lease=new OwnedFileTrace.ThreadLease((uint)child.Id,created,handle);
+        Stage="process-terminal-write";
         terminalAttempted=true;child.StandardInput.Write("terminal\n");child.StandardInput.Flush();
+        Stage="process-terminal-ack";
         Require(child.StandardOutput.ReadLine() == "lifetime-terminal");
         long liveTime=DateTime.UtcNow.ToFileTimeUtc();
         Stage="process-live";

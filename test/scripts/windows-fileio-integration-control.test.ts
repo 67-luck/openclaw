@@ -530,7 +530,20 @@ const input = createFixtureInput(process.stdin);
   }
 });
 
-it.each(["missing", "invalid", "false", "query-threw", "early-exit", "complete"] as const)(
+it.each([
+  "missing",
+  "invalid",
+  "false",
+  "query-threw",
+  "early-exit",
+  "complete",
+  "process-ready",
+  "process-creation",
+  "process-hold",
+  "process-lease",
+  "process-terminal-write",
+  "process-terminal-ack",
+] as const)(
   "retains nullable lifetime diagnostics without weakening admission (%s)",
   async (scenario) => {
     const source = fs.readFileSync(
@@ -582,10 +595,11 @@ it.each(["missing", "invalid", "false", "query-threw", "early-exit", "complete"]
         : scenario === "early-exit" || scenario === "complete"
           ? observed
           : emptyObservation;
+    const boundaryStage = scenario.startsWith("process-") ? scenario : undefined;
     const record: Record<string, unknown> = {
       phase: "native-lifetime-control",
-      passed: true,
-      stage: "complete",
+      passed: !boundaryStage,
+      stage: boundaryStage ?? "complete",
       sourceSha256: "source",
       dllSha256: "dll",
       nodeSha256: "node",
@@ -598,7 +612,7 @@ it.each(["missing", "invalid", "false", "query-threw", "early-exit", "complete"]
     } else if (scenario === "invalid") {
       record.passed = "true";
     }
-    if (scenario !== "missing") {
+    if (scenario !== "missing" && !boundaryStage) {
       for (const key of outcomeKeys) {
         record[key] = scenario === "invalid" ? "true" : scenario === "complete";
       }
@@ -625,7 +639,7 @@ it.each(["missing", "invalid", "false", "query-threw", "early-exit", "complete"]
               ? "input"
               : "script",
       launchManaged: () => ({
-        completion: Promise.resolve(0),
+        completion: Promise.resolve(boundaryStage ? 2 : 0),
         receipt: { joined: true, jobObserved: true },
         result: () => ({ stdout: JSON.stringify(record) }),
       }),
@@ -642,12 +656,15 @@ it.each(["missing", "invalid", "false", "query-threw", "early-exit", "complete"]
       await expect(call).rejects.toThrow(assert.AssertionError);
     }
     expect(cell.nativeLifetimeControl?.passed).toBe(
-      scenario === "missing" || scenario === "invalid" ? null : true,
+      scenario === "missing" || scenario === "invalid" ? null : !boundaryStage,
     );
+    expect(cell.nativeLifetimeControl?.stage).toBe(boundaryStage ?? "complete");
     expect(cell.nativeLifetimeControl?.processLiveObservation).toEqual(expectedObservation);
     for (const key of outcomeKeys) {
       expect(cell.nativeLifetimeControl?.[key]).toBe(
-        scenario === "missing" || scenario === "invalid" ? null : scenario === "complete",
+        scenario === "missing" || scenario === "invalid" || boundaryStage
+          ? null
+          : scenario === "complete",
       );
     }
     expect(JSON.stringify(cell)).not.toContain("PRIVATE_EXCEPTION_CANARY");
