@@ -59,15 +59,22 @@ export function formatWorkshopChangeNotice(changes: readonly WorkshopChange[]): 
   return `💾 Learned: ${parts.join("; ")}. Say "undo" to revert this skill change.`;
 }
 
-/** Model-facing context for the next turn: exactly how to revert each change. */
+/**
+ * Model-facing context for the next turn: exactly how to revert each change. A skill that
+ * existed before the review restores the version saved before the review first changed it;
+ * a skill with no such version (created by the review) is archived.
+ */
 function formatWorkshopUndoContext(changes: readonly WorkshopChange[]): string {
-  const created = new Set(
-    changes.filter((change) => change.action === "create").map((change) => change.skillName),
-  );
-  const reverts = [...new Set(changes.map((change) => change.skillName))].map((name) =>
-    created.has(name)
-      ? `skill_workshop action=archive name=${name} reason="undo"`
-      : `skill_workshop action=restore name=${name}`,
+  const firstBySkill = new Map<string, WorkshopChange>();
+  for (const change of changes.toSorted((a, b) => a.createdAtMs - b.createdAtMs)) {
+    if (!firstBySkill.has(change.skillName)) {
+      firstBySkill.set(change.skillName, change);
+    }
+  }
+  const reverts = [...firstBySkill.values()].map(({ skillName, versionId }) =>
+    versionId
+      ? `skill_workshop action=restore name=${skillName} version=${versionId}`
+      : `skill_workshop action=archive name=${skillName} reason="undo"`,
   );
   return `A background skill review just changed your learned skills and told the user: ${formatWorkshopChangeNotice(changes)} If the user asks to undo or revert it, call ${reverts.join("; then ")}.`;
 }

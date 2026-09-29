@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveDefaultModelForAgent } from "../../agents/model-selection-config.js";
+import { resolveSandboxConfigForAgent } from "../../agents/sandbox/config.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import { canonicalizePath } from "../../agents/utils/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -38,8 +39,11 @@ export async function archiveUnusedWorkshopSkills(
   // wrapper; Code Mode `skills.read` reports through the same owner). Codex app-server reads
   // skills through its native shell; the native hook relay never matches those reads to a
   // skill, so only foreground skill_workshop views would count there, and every skill read
-  // with `cat` would look unused.
-  if (!isSkillUsageTracked()) {
+  // with `cat` would look unused. Sandboxed runs read skills from paths rewritten by sandbox
+  // preparation, so their recorded usage never matches the workshop path looked up here.
+  // Accepted risk: an `exec` shell read (`cat SKILL.md`) on the openclaw harness is not
+  // recorded either; archive is versioned and undoable.
+  if (!isSkillUsageTracked() || resolveSandboxConfigForAgent(config, agentId).mode !== "off") {
     return [];
   }
   const model = resolveDefaultModelForAgent({ cfg: config, agentId });

@@ -117,6 +117,18 @@ describe("archiveUnusedWorkshopSkills", () => {
     expect(await listWorkshopSkills(openclawAgent, "main")).toHaveLength(1);
   });
 
+  it("fails closed when the agent runs sandboxed", async () => {
+    const sandboxedAgent: OpenClawConfig = {
+      agents: { defaults: { ...openclawAgent.agents?.defaults, sandbox: { mode: "non-main" } } },
+    };
+    await createSkill("stale");
+
+    expect(
+      await archiveUnusedWorkshopSkills(sandboxedAgent, "main", Date.now() + 31 * DAY_MS),
+    ).toEqual([]);
+    expect(await listWorkshopSkills(openclawAgent, "main")).toHaveLength(1);
+  });
+
   it("fails closed in a process that does not record skill usage", async () => {
     await createSkill("stale");
     await stopTracking?.();

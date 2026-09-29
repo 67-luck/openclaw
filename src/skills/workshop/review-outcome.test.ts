@@ -98,8 +98,13 @@ describe("postWorkshopChangeNotice", () => {
       threadId: undefined,
     });
     await post([
-      change({ id: "c1", summary: "first pass", createdAtMs: 1 }),
-      change({ id: "c2", createdAtMs: 2 }),
+      change({ id: "c2", versionId: "20260101T000000002Z-patch", createdAtMs: 2 }),
+      change({
+        id: "c1",
+        summary: "first pass",
+        versionId: "20260101T000000001Z-patch",
+        createdAtMs: 1,
+      }),
       change({
         id: "c3",
         skillName: "release-notes",
@@ -128,11 +133,19 @@ describe("postWorkshopChangeNotice", () => {
       }),
     );
     expect(mocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
-    // The next turn learns the exact revert: archive what was created, restore what was edited.
+    // The next turn learns the exact revert: archive what was created; restore what was edited
+    // to the version saved before the review's first change of it.
     expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    const [context] = mocks.enqueueSystemEvent.mock.calls[0] as [string];
-    expect(context).toContain("skill_workshop action=restore name=actual-budget-operations");
-    expect(context).toContain('skill_workshop action=archive name=release-notes reason="undo"');
+    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "skill_workshop action=restore name=actual-budget-operations version=20260101T000000001Z-patch;",
+      ),
+      expect.anything(),
+    );
+    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+      expect.stringContaining('skill_workshop action=archive name=release-notes reason="undo"'),
+      expect.anything(),
+    );
   });
 
   it("writes the notice into the transcript of a channel-less session", async () => {

@@ -25,6 +25,7 @@ import { parseSkillFrontmatter } from "../loading/frontmatter.js";
 import { bumpSkillsSnapshotVersion } from "../runtime/refresh-state.js";
 import { scanSkillFile, scanSupportFilePath } from "../security/skill-bundle-scan.js";
 import { resolveSkillWorkshopConfig } from "./config.js";
+import { withSkillLocks } from "./skill-locks.js";
 import { resolveWorkshopSkillsDir } from "./skills-root.js";
 
 const WORKSHOP_ACTORS = ["agent", "review", "curator", "user"] as const;
@@ -375,35 +376,6 @@ async function requireLiveSkill(paths: SkillPaths, name: string): Promise<void> 
       ? `Skill "${name}" is archived. Restore it first with action=restore name=${name}.`
       : `No workshop skill named "${name}". Call action=list to see skills, or action=create to add one.`,
   );
-}
-
-const skillLocks = new Map<string, Promise<void>>();
-
-async function withSkillLock<T>(key: string, run: () => Promise<T>): Promise<T> {
-  const previous = skillLocks.get(key) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const tail = previous.then(() => current);
-  skillLocks.set(key, tail);
-  await previous;
-  try {
-    return await run();
-  } finally {
-    release();
-    if (skillLocks.get(key) === tail) {
-      skillLocks.delete(key);
-    }
-  }
-}
-
-/** Takes every key's lock in sorted order, so overlapping multi-skill mutations cannot deadlock. */
-async function withSkillLocks<T>(keys: readonly string[], run: () => Promise<T>): Promise<T> {
-  const [first, ...rest] = [...new Set(keys)].toSorted((a, b) => a.localeCompare(b));
-  return first === undefined
-    ? await run()
-    : await withSkillLock(first, () => withSkillLocks(rest, run));
 }
 
 /** Serializes one skill's mutation, then publishes the snapshot bump and change row. */
