@@ -96,6 +96,18 @@ export async function drainSqliteTestSingletons(
       onError(`singleton ${key.description}`, error);
     }
   }
+  if (!hasRetainedSqliteTestCustody()) {
+    const nativeLifetime = (globalThis as Record<PropertyKey, unknown>)[
+      Symbol.for("openclaw.nativeWorkerLifetimes")
+    ] as { defaultSource?: { closing: boolean; runtime?: unknown; broker?: unknown } } | undefined;
+    const nativeSource = nativeLifetime?.defaultSource;
+    // A captured but unused source retains the file's Worker constructor and entrypoints.
+    // Physical runtimes and generation-bound sources keep their existing join owners.
+    if (nativeLifetime && nativeSource && !nativeSource.runtime && !nativeSource.broker) {
+      nativeSource.closing = true;
+      nativeLifetime.defaultSource = undefined;
+    }
+  }
 }
 
 /** Preserve the verified owner's closer before a test hook can reset its module exports. */

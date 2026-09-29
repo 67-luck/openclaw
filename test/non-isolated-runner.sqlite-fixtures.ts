@@ -41,6 +41,7 @@ async function useReadPool() {
 }
 `;
   return {
+    ...nativeWorkerSourceFixtureFiles(),
     ...sharedStateOwnerFixtureFiles(),
     ...scheduledCloseFixtureFiles(),
     ...subagentRetirementFixtureFiles(),
@@ -213,6 +214,32 @@ it("retains installed-schema repair ownership through retired agent lease cleanu
 });
 `,
   };
+}
+
+function nativeWorkerSourceFixtureFiles(): Record<string, string> {
+  return Object.fromEntries(
+    ["a", "b"].map((generation) => [
+      `08-${generation}-native-worker-source.test.ts`,
+      `
+import { expect, it, vi } from "vitest";
+vi.mock(${JSON.stringify(import.meta.resolve("../src/infra/runtime-process-url.ts"))}, () => ({
+  resolveRuntimeProcessEntrypointUrl: () => new URL("file:///synthetic/native-lifetime.worker.js"),
+}));
+vi.mock("node:worker_threads", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:worker_threads")>(),
+  Worker: function Worker() { throw new Error("native constructor ${generation}"); },
+}));
+import { captureRetainedNativeWorkerSource } from ${JSON.stringify(import.meta.resolve("../src/infra/worker-native-lifecycle.ts"))};
+it("binds a dormant native source to file ${generation}", () => {
+  const source = captureRetainedNativeWorkerSource({ runtimeGeneration: undefined });
+  expect(() => source.captureResource(new URL("file:///synthetic/resource.js"), "resource")).not.toThrow();
+  if (${JSON.stringify(generation)} === "b") {
+    expect(() => source.create("synthetic worker", { eval: true })).toThrow("native constructor b");
+  }
+});
+`,
+    ]),
+  );
 }
 
 function scheduledCloseFixtureFiles(): Record<string, string> {
