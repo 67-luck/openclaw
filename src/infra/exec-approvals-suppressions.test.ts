@@ -19,6 +19,20 @@ async function inspect(
 }
 
 describe("suppression inspection preflight", () => {
+  it.each(["; touch output", " > openclaw.json", " | tee output", " $(touch output)"])(
+    "keeps legacy partial config-read analysis gated for %s",
+    (suffix) => {
+      const argv = ["openclaw", "config", "get", "security.audit.suppressions"];
+      const command = argv.join(" ") + suffix;
+      expect(
+        commandRequiresSecurityAuditSuppressionApproval({
+          command,
+          segments: [{ argv, raw: command }],
+        }),
+      ).toBe(true);
+    },
+  );
+
   it.each([
     ["rg -nF --glob '*.ts' security.audit.suppressions src | head -n 10", false],
     ["grep -Rn security.audit.suppressions src", false],
@@ -62,7 +76,10 @@ describe("suppression inspection preflight", () => {
   });
 
   it.each([
+    ["openclaw config get security.audit.suppressions", false],
+    ["openclaw config schema security.audit.suppressions", false],
     ["openclaw config validate security.audit.suppressions", false],
+    ["openclaw config set security.audit.suppressions []", true],
     ["openclaw config unset security.audit.suppressions", true],
     ["rg security.audit.suppressions src", true],
     ["openclaw config get $(security.audit.suppressions)", true],
@@ -70,10 +87,16 @@ describe("suppression inspection preflight", () => {
       'powershell -File writer.ps1 -Command "openclaw config get security.audit.suppressions"',
       true,
     ],
-  ] as const)("preserves Windows config-read analysis: %s", async (command, expected) => {
+  ] as const)("preserves Windows and shipped SDK input shapes: %s", async (command, expected) => {
     const input = await inspect(command, {}, "win32");
     expect(input.authorizationPlan).toBeUndefined();
-    expect(commandRequiresSecurityAuditSuppressionApproval(input)).toBe(expected);
+    for (const shape of [
+      input,
+      { command, segments: input.segments },
+      { command, segments: input.segments.map(({ argv }) => ({ argv })) },
+    ]) {
+      expect(commandRequiresSecurityAuditSuppressionApproval(shape)).toBe(expected);
+    }
   });
 
   it("does not use incomplete or stale analysis as the config-read exception", async () => {
@@ -82,6 +105,15 @@ describe("suppression inspection preflight", () => {
       { ...input, analysisOk: false },
       { ...input, segments: [] },
       { ...input, command: input.command + "; whoami" },
+      {
+        command: input.command,
+        segments: [
+          {
+            raw: input.command,
+            argv: ["openclaw", "config", "set", "security.audit.suppressions"],
+          },
+        ],
+      },
       {
         ...input,
         transportResolution: resolveCommandResolutionFromArgv(["./powershell"]) ?? undefined,

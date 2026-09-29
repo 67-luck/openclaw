@@ -14,7 +14,7 @@ import { parseExecArgvToken, type CommandResolution } from "./exec-command-resol
 import { getTrustedSafeBinDirs, isTrustedSafeBinPath } from "./exec-safe-bin-trust.js";
 import { resolveEnvironmentValue } from "./process-env.js";
 import { hasPosixShellStartupBeforeInlineCommand } from "./shell-wrapper-resolution.js";
-import { tokenizeWindowsSegment } from "./windows-shell-command.js";
+import { analyzeWindowsShellCommand, tokenizeWindowsSegment } from "./windows-shell-command.js";
 
 export function requiresExecApproval(params: {
   ask: ExecAsk;
@@ -179,15 +179,19 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
   }
   const plan = params.authorizationPlan;
   if (plan === undefined) {
-    // Windows supplies complete shell analysis, not a POSIX authorization plan.
-    // Preserve direct config reads only: a stripped PowerShell wrapper may have
-    // -File or other flags that execute something other than the parsed payload.
+    // Shipped SDK callers omit analysis metadata; revalidate their direct source.
+    // Windows wrappers must never inherit the exception from a stripped payload.
     const [segment] = params.segments;
+    const argv = tokenizeWindowsSegment(params.command) ?? [];
+    const analysisOk =
+      params.analysisOk === undefined ? analyzeWindowsShellCommand(params).ok : params.analysisOk;
     return !(
-      params.analysisOk === true &&
+      analysisOk &&
       params.segments.length === 1 &&
-      segment?.raw === params.command &&
-      isReadOnlySecurityAuditSuppressionInspection(tokenizeWindowsSegment(params.command) ?? [])
+      (segment?.raw ?? segment?.argv.join(" "))?.trim() === params.command.trim() &&
+      argv.length === segment?.argv.length &&
+      argv.every((arg, index) => arg === segment?.argv[index]) &&
+      isReadOnlySecurityAuditSuppressionInspection(argv)
     );
   }
   if (!plan.ok || plan.originalCommand !== params.command || plan.groups.length === 0) {
