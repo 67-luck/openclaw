@@ -62,7 +62,7 @@ export function instrumentCensus(script, blockAfterEnable = false) {
 }
 
 const censusStages = [
-  "binding-started",
+  "binding-text-decoded",
   "census-entered",
   "process-query-returned",
   "binding-decoded",
@@ -79,11 +79,28 @@ function instrumentCensusInvocation(script) {
     .split("\n")
     .filter((line) => line.startsWith("$binding=") && line.endsWith(" | ConvertFrom-Json"));
   assert.equal(bindings.length, 1, "Expected exactly one binding pipeline");
+  const temporary = "__openclawFileIoBindingText";
+  assert.ok(
+    !script.toLowerCase().includes(temporary.toLowerCase()),
+    "Private binding temporary collision",
+  );
+  const rhs = bindings[0].slice("$binding=".length, -" | ConvertFrom-Json".length);
+  assert.match(
+    rhs,
+    /^\[Text\.Encoding\]::UTF8\.GetString\(\[Convert\]::FromBase64String\('[A-Za-z0-9+/]*={0,2}'\)\)$/u,
+  );
   const instrumented = script
-    .replace(bindings[0], `${emit("binding-started")}\n${bindings[0]}\n${emit("binding-decoded")}`)
+    .replace(
+      bindings[0],
+      `try {\n$${temporary}=${rhs}\n${emit("binding-text-decoded")}\n$binding=$${temporary} | ConvertFrom-Json\n} finally {$${temporary}=$null}\n${emit("binding-decoded")}`,
+    )
     .replace(query, `${query}\n${emit("process-query-returned")}`);
   // Apply the existing byte limit to the complete instrumented input.
   const invocation = buildInstalledCensusInvocation(`${emit("census-entered")}\n${instrumented}`);
+  assert.ok(
+    !invocation.args.some((arg) => arg.toLowerCase().includes(temporary.toLowerCase())),
+    "Private binding temporary collision",
+  );
   assert.equal(invocation.args.length, 4);
   assert.equal(invocation.args[2], "-Command");
   return {

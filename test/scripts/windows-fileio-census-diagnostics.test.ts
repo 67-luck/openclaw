@@ -176,7 +176,7 @@ describe("actual managed census diagnostic boundary", () => {
   });
   it("records only five unique complete fixed markers and preserves unknown-line refusal", async () => {
     const stages = [
-      "binding-started",
+      "binding-text-decoded",
       "census-entered",
       "process-query-returned",
       "binding-decoded",
@@ -215,6 +215,31 @@ it("instruments a trusted copy under the existing byte cap and refuses ambiguous
   expect(() => instrumentCensusInvocation(script.replace(binding, ""))).toThrow(
     "Expected exactly one binding pipeline",
   );
+  for (const collision of [
+    "$__OPENCLAWFILEIOBINDINGTEXT=1",
+    "${__openclawFileIoBindingText}=1",
+    "$script:__openclawFileIoBindingText=1",
+    "@__openclawFileIoBindingText",
+    "Get-Variable __openclawFileIoBindingText",
+  ]) {
+    expect(() => instrumentCensusInvocation(`${script}\n${collision}`)).toThrow(
+      "Private binding temporary collision",
+    );
+  }
+  const conflictingBootstrap = compileFunction(
+    `return ${declaration("instrumentCensusInvocation")}`,
+    ["assert", "buildInstalledCensusInvocation"],
+  )(assert, (value: string) => {
+    const conflictingInvocation = buildInstalledCensusInvocation(value);
+    conflictingInvocation.args[3] += "; $__openclawFileIoBindingText=1";
+    return conflictingInvocation;
+  });
+  expect(() => conflictingBootstrap(script)).toThrow("Private binding temporary collision");
+  expect(() =>
+    instrumentCensusInvocation(
+      script.replace("[Text.Encoding]::UTF8.GetString", "[Other]::Decode"),
+    ),
+  ).toThrow();
   const atLimit = script + " ".repeat(1024 * 1024 - Buffer.byteLength(script));
   expect(() => buildInstalledCensusInvocation(atLimit)).not.toThrow();
   expect(() => instrumentCensusInvocation(atLimit)).toThrow("Census input exceeds its byte bound");
