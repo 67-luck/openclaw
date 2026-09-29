@@ -33,7 +33,10 @@ import {
 import { isCodexThreadReadMissingError } from "./rpc-error.js";
 import type { CodexAppServerThreadBinding } from "./session-binding.js";
 import { getCurrentSharedClientEntry } from "./shared-client-lifecycle.js";
-import { resolveCodexMultiAgentVersion } from "./thread-binding-policy.js";
+import {
+  resolveCodexMultiAgentVersion,
+  shouldRotateCodexMultiAgentBinding,
+} from "./thread-binding-policy.js";
 import {
   fingerprintCodexThreadConfig,
   readActiveCodexTurnIdsFromResume,
@@ -93,33 +96,9 @@ export async function resumeExistingCodexThread(
   const abandonClient =
     params.abandonClient ?? (() => closeCodexStartupClientBestEffort(params.client));
   try {
-    // Preparation reads must share resume recovery, before any subscription is acquired.
-    const configuration = await context.prepareResume();
-    const assertHandoffCurrent = configuration.assertConfigured;
-    disposeConfiguration = configuration.dispose;
-    await context.releaseRetainedThread(configuration.assertCurrent);
-    configuration.assertCurrent();
-    const clientBoundThread =
-      ringZeroClientInstanceId !== undefined ||
-      resumeBinding.ringZeroClientInstanceId !== undefined ||
-      resumeBinding.ringZeroConfigFingerprint !== undefined ||
-      context.ringZeroActive;
-    const sharedEntry = getCurrentSharedClientEntry(params.client);
-    if (
-      configuration.settledSystemError &&
-      !clientBoundThread &&
-      resumeBinding.connectionScope !== "supervision" &&
-      // This attempt owns one lease. Other leases and pending startups can
-      // keep the retired process, including its old writer, alive.
-      (!sharedEntry || (sharedEntry.activeLeases <= 1 && sharedEntry.pendingAcquires === 0)) &&
-      !hasCodexAppServerSiblingThreadWork(params.client, resumeBinding.threadId) &&
-      !hasCodexAppServerSiblingRouteWork(params.client, resumeBinding.threadId)
-    ) {
-      // Native reload requires Idle. A sibling keeps the old writer alive after
-      // retirement, so only an otherwise inactive client can recover this way.
-      await abandonClient();
-      throw new CodexThreadClientReplacementError();
-    }
+    throwIfAborted();
+    params.params.hostCapabilities.assertActive();
+    params.assertCurrent?.();
     const authProfileId =
       resumeBinding.connectionScope === "supervision"
         ? undefined
@@ -166,6 +145,58 @@ export async function resumeExistingCodexThread(
       typeof resumeParams.modelProvider === "string" && resumeParams.modelProvider.trim()
         ? resumeParams.modelProvider
         : undefined;
+    throwIfAborted();
+    params.params.hostCapabilities.assertActive();
+    params.assertCurrent?.();
+    if (
+      !resumeBinding.preserveNativeModel &&
+      resumeBinding.connectionScope !== "supervision" &&
+      shouldRotateCodexMultiAgentBinding({
+        bindingModel: resumeBinding.model,
+        requestedModel: params.params.modelId,
+        bindingVersion: resumeBinding.nativeMultiAgentVersion,
+        requestedVersion: readCodexModelMultiAgentVersion(params.params.model),
+        config: resumeParams.config,
+        effectiveConfig: context.effectiveConfig,
+      })
+    ) {
+      if (resumeBinding.pendingResumeConfiguration) {
+        throw new Error(
+          `Cannot configure resumed Codex thread ${resumeBinding.threadId} under a transient or incompatible session policy. ` +
+            "The thread is preserved; retry from its normal session or use /new for the current policy.",
+        );
+      }
+      await clearCurrentBinding("rotating a model multi-agent thread binding", true);
+      return undefined;
+    }
+    // Decide compatibility from the complete request before unloading native state.
+    // Preparation reads still share recovery, before any subscription is acquired.
+    const configuration = await context.prepareResume();
+    const assertHandoffCurrent = configuration.assertConfigured;
+    disposeConfiguration = configuration.dispose;
+    await context.releaseRetainedThread(configuration.assertCurrent);
+    configuration.assertCurrent();
+    const clientBoundThread =
+      ringZeroClientInstanceId !== undefined ||
+      resumeBinding.ringZeroClientInstanceId !== undefined ||
+      resumeBinding.ringZeroConfigFingerprint !== undefined ||
+      context.ringZeroActive;
+    const sharedEntry = getCurrentSharedClientEntry(params.client);
+    if (
+      configuration.settledSystemError &&
+      !clientBoundThread &&
+      resumeBinding.connectionScope !== "supervision" &&
+      // This attempt owns one lease. Other leases and pending startups can
+      // keep the retired process, including its old writer, alive.
+      (!sharedEntry || (sharedEntry.activeLeases <= 1 && sharedEntry.pendingAcquires === 0)) &&
+      !hasCodexAppServerSiblingThreadWork(params.client, resumeBinding.threadId) &&
+      !hasCodexAppServerSiblingRouteWork(params.client, resumeBinding.threadId)
+    ) {
+      // Native reload requires Idle. A sibling keeps the old writer alive after
+      // retirement, so only an otherwise inactive client can recover this way.
+      await abandonClient();
+      throw new CodexThreadClientReplacementError();
+    }
     // Keep ownership accounting atomic with the resume request: a
     // pre-aborted request retains no subscription, so it must not reserve.
     throwIfAborted();
@@ -330,7 +361,10 @@ export async function resumeExistingCodexThread(
         },
         authProfileId,
         dynamicToolsFingerprint,
-        resumeBinding.nativeMultiAgentVersion,
+        resolveCodexMultiAgentVersion(undefined, resumeBinding.nativeMultiAgentVersion, {
+          config: resumeParams.config,
+          effectiveConfig: context.effectiveConfig,
+        }),
       ),
       lifecycle: {
         action: "resumed",
@@ -568,6 +602,7 @@ export async function startFreshCodexThread(
         (!requestModelProvider || response.modelProvider === requestModelProvider)
         ? readCodexModelMultiAgentVersion(params.params.model)
         : undefined,
+      { config: startParams.config, effectiveConfig: context.effectiveConfig },
     ),
     modelProvider: bindingModelProvider,
     ...buildCodexThreadBindingPolicy(params, context),

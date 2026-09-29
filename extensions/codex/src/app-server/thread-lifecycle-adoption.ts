@@ -8,7 +8,6 @@ import {
 import { assertCodexSessionRuntimeOwnership } from "./binding-connection.js";
 import { isCodexAppServerLiveThreadClaimed } from "./client-runtime.js";
 import { resolveCodexAppServerClientInstanceId } from "./client.js";
-import { readCodexModelMultiAgentVersion } from "./model-runtime.js";
 import { assertCodexThreadAcceptsDirectInput } from "./protocol-validators.js";
 import { isJsonObject, type CodexThread } from "./protocol.js";
 import {
@@ -18,7 +17,6 @@ import {
   type CodexAppServerThreadBinding,
 } from "./session-binding.js";
 import { captureCodexAppServerClientLifetime } from "./shared-client.js";
-import { shouldRotateCodexMultiAgentBinding } from "./thread-binding-policy.js";
 import { isContextEngineBindingCompatible } from "./thread-context-engine.js";
 import { codexDynamicToolsFingerprint } from "./thread-fingerprints.js";
 import {
@@ -104,7 +102,7 @@ export async function withCodexThreadLifecycleBinding(
 
 type PendingResumeContext = CodexThreadRequestContext & {
   binding: CodexAppServerThreadBinding;
-  clearCurrentBinding: (operation: string) => Promise<void>;
+  clearCurrentBinding: (operation: string, resetModelSelection?: true) => Promise<void>;
   releaseRetainedThread: (threadId: string, assertCurrent: () => void) => Promise<boolean>;
   transientRestriction: boolean;
 };
@@ -121,15 +119,7 @@ export async function resumePendingCodexThread(
     (!restrictedToolSurface && binding.nativeToolPolicyRestricted === true) ||
     (contextEngineBinding
       ? !isContextEngineBindingCompatible(binding.contextEngine, contextEngineBinding)
-      : binding.contextEngine !== undefined) ||
-    (!binding.preserveNativeModel &&
-      binding.connectionScope !== "supervision" &&
-      shouldRotateCodexMultiAgentBinding({
-        bindingModel: binding.model,
-        requestedModel: params.params.modelId,
-        bindingVersion: binding.nativeMultiAgentVersion,
-        requestedVersion: readCodexModelMultiAgentVersion(params.params.model),
-      }))
+      : binding.contextEngine !== undefined)
   ) {
     throw new Error(
       `Cannot configure resumed Codex thread ${binding.threadId} under a transient or incompatible session policy. ` +

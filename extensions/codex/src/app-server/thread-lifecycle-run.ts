@@ -4,7 +4,6 @@ import { isIncognitoSessionKey } from "openclaw/plugin-sdk/session-key-runtime";
 import { closeCodexStartupClientBestEffort } from "./attempt-client-cleanup.js";
 import { resolveCodexAppServerClientInstanceId } from "./client.js";
 import { assertCodexInferenceRouteConfig } from "./inference-routing.js";
-import { readCodexModelMultiAgentVersion } from "./model-runtime.js";
 import { applyCodexNativeSkillIsolation } from "./native-skill-isolation.js";
 import { hasCodexNativeToolCatalog, loadCodexNativeToolCatalog } from "./native-tool-catalog.js";
 import { buildCodexAppServerConnectionFingerprint } from "./plugin-app-cache-key.js";
@@ -22,7 +21,6 @@ import {
   isTransientWebSearchRestriction,
   shouldRecheckRecoverablePluginBinding,
   shouldRotateCodexAppServerBindingForRuntime,
-  shouldRotateCodexMultiAgentBinding,
 } from "./thread-binding-policy.js";
 import { isContextEngineBindingCompatible } from "./thread-context-engine.js";
 import {
@@ -235,7 +233,7 @@ export async function startOrResumeThread(
         }),
       );
     }
-    const clearCurrentBinding = async (operation: string) => {
+    const clearCurrentBinding = async (operation: string, resetModelSelection?: true) => {
       const current = binding;
       if (!current?.threadId) {
         return;
@@ -253,6 +251,9 @@ export async function startOrResumeThread(
         throw new CodexThreadBindingConflictError(current.threadId, operation);
       }
       binding = undefined;
+      if (resetModelSelection) {
+        selectionBinding = undefined;
+      }
     };
     const transientDelegationRestriction = params.params.delegationCapability === "report_only";
     const persistentWebSearchRestriction =
@@ -321,29 +322,6 @@ export async function startOrResumeThread(
         connectionClass: params.appServer.connectionClass,
       });
       await clearCurrentBinding("rotating a stale thread binding");
-    }
-    if (
-      binding?.threadId &&
-      !binding.preserveNativeModel &&
-      binding.connectionScope !== "supervision" &&
-      shouldRotateCodexMultiAgentBinding({
-        bindingModel: binding.model,
-        requestedModel: params.params.modelId,
-        bindingVersion: binding.nativeMultiAgentVersion,
-        requestedVersion: readCodexModelMultiAgentVersion(params.params.model),
-      })
-    ) {
-      // Codex locks the model-selected multi-agent version on the first turn.
-      // Different model-selected generations cannot share one resumed thread.
-      embeddedAgentLog.debug(
-        "codex app-server model multi-agent version changed; starting a new thread",
-        {
-          threadId: binding.threadId,
-          bindingModel: binding.model,
-          requestedModel: params.params.modelId,
-        },
-      );
-      await clearCurrentBinding("rotating a model multi-agent thread binding");
     }
     selectionBinding = binding;
     // Capability read failures use managed search for this turn but must not
@@ -652,7 +630,10 @@ export async function startOrResumeThread(
           await clearCurrentBinding(
             incognito
               ? "rotating an unavailable ephemeral thread binding"
-              : "rotating a stale plugin app binding",
+              : warmReuse.kind === "rotate" && warmReuse.modelGenerationChanged
+                ? "rotating a model multi-agent thread binding"
+                : "rotating a stale plugin app binding",
+            warmReuse.kind === "rotate" ? warmReuse.modelGenerationChanged : undefined,
           );
         } else {
           const resumeBinding = binding;

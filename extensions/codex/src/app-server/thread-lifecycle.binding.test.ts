@@ -51,6 +51,7 @@ import { createClientHarness } from "./test-support.js";
 import { fingerprintEnvironmentSelection } from "./thread-fingerprints.js";
 import { registerThreadModelCompatibilityTests } from "./thread-lifecycle-model-compatibility.test-support.js";
 import { registerThreadPolicyRefreshTests } from "./thread-lifecycle-policy-refresh.test-support.js";
+import { createLifecycleRequest } from "./thread-lifecycle-request.test-support.js";
 import {
   buildThreadResumeParams,
   startOrResumeThread as startOrResumeThreadImpl,
@@ -61,20 +62,6 @@ import {
   withCodexAppServerThreadMutation,
 } from "./thread-ownership.js";
 import { CodexIncognitoPolicyChangeError } from "./thread-policy.js";
-
-function createLifecycleRequest(
-  respond: (method: string, requestParams?: unknown) => Promise<unknown>,
-) {
-  return vi.fn((method: string, requestParams?: unknown) => {
-    if (method === "config/read") {
-      return Promise.resolve({ config: {}, origins: {}, layers: [] });
-    }
-    if (method === "configRequirements/read") {
-      return Promise.resolve({ requirements: null });
-    }
-    return respond(method, requestParams);
-  });
-}
 
 function createFixedThreadRequest(threadId: string, methods: string[]) {
   return createLifecycleRequest(async (method) => {
@@ -4396,7 +4383,7 @@ describe("Codex app-server thread lifecycle bindings", () => {
     ).rejects.toThrow("plugin inventory unavailable");
 
     const requestCalls = request.mock.calls as unknown as Array<[string, { config?: unknown }]>;
-    expect(requestCalls.map(([method]) => method)).toEqual([...PREFLIGHT_METHODS, "thread/read"]);
+    expect(requestCalls.map(([method]) => method)).toEqual(PREFLIGHT_METHODS);
     const binding = await readCodexAppServerBinding(sessionFile);
     expect(binding?.threadId).toBe("thread-existing");
     expect(binding?.pluginAppsFingerprint).toBe("plugin-apps-config-1");
