@@ -5,6 +5,7 @@ import { t } from "../../../i18n/index.ts";
 import { extractTextCached } from "../../../lib/chat/message-extract.ts";
 import { normalizeMessage } from "../../../lib/chat/message-normalizer.ts";
 import { formatDateTimeMs } from "../../../lib/format.ts";
+import { isChatRecoveryInputSendable } from "../chat-input-recovery-payload.ts";
 import type { ChatSavedInputs } from "../chat-saved-inputs.ts";
 import { projectChatSystemNotice } from "../chat-system-notice.ts";
 
@@ -90,6 +91,7 @@ function renderRecoveryQueueItem(
   });
   const expanded = recovery.inspections.has(input.id);
   const inspection = recovery.inspections.get(input.id)?.state;
+  // Like native Discard, do not follow a removed row onto a different input on click two.
   return html`<details
     class="chat-queue__saved-row"
     data-chat-saved-input=${input.id}
@@ -121,6 +123,40 @@ function renderRecoveryQueueItem(
             ${inspection?.status === "loading" ? html`<p role="status">${t("chat.savedInputs.loading")}</p>` : nothing}
             ${inspection?.status === "error" ? html`<p role="alert">${t("chat.savedInputs.readFailed")} <button type="button" class="chat-queue__action" ?disabled=${!recovery.canRead} @click=${() => recovery.onToggle(input, true)}>${t("common.retry")}</button></p>` : nothing}
             ${renderDetails(input)}
+            ${
+              recovery.actions
+                ? html`<div class="chat-queue__saved-actions">
+                    ${
+                      isChatRecoveryInputSendable(input.message)
+                        ? html`<button
+                            type="button"
+                            class="chat-queue__action"
+                            ?disabled=${!recovery.actions.canSend || recovery.actions.busyIds.has(input.id)}
+                            @click=${(event: MouseEvent) => {
+                              if (event.detail <= 1) {
+                                void recovery.actions?.onSend(input);
+                              }
+                            }}
+                          >
+                            ${t("chat.savedInputs.send")}
+                          </button>`
+                        : html`<span>${t("chat.savedInputs.nonUser")}</span>`
+                    }
+                    <button
+                      type="button"
+                      class="chat-queue__action"
+                      ?disabled=${recovery.actions.busyIds.has(input.id)}
+                      @click=${(event: MouseEvent) => {
+                        if (event.detail <= 1) {
+                          recovery.actions?.onDiscard(input);
+                        }
+                      }}
+                    >
+                      ${t("chat.savedInputs.discard")}
+                    </button>
+                  </div>`
+                : nothing
+            }
           </div>`
         : nothing
     }

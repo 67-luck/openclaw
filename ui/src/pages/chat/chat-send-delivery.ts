@@ -435,6 +435,9 @@ async function sendPreparedChatMessage(
       });
       return "failed";
     }
+    if (ack.inputAccepted) {
+      options?.onGatewayAccepted?.();
+    }
     const retireOnAck =
       storageMode === "memory" ||
       ack.messageSeq !== undefined ||

@@ -559,3 +559,10 @@
   height: auto;
   max-height: min(360px, 40vh);
 }
+
+.chat-queue__saved-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}

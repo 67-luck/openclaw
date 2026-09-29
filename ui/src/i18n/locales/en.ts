@@ -3854,6 +3854,12 @@ export const en: TranslationMap & {
         "Use arrow keys or Home and End to choose a marker, Enter or Space to jump, and Escape to return to the conversation. Tab leaves the rail.",
     },
     savedInputs: {
+      send: "Send",
+      discard: "Discard",
+      nonUser: "System and forwarded messages can be inspected or discarded, not sent as your own.",
+      cannotSend: "This saved attempt cannot be sent safely. No text or attachments were sent.",
+      dismissedStorageFailed:
+        "Dismissed for this tab, but the choice could not be saved for reload.",
       earlier: "Earlier",
       latest: "Latest",
       inspect: "Inspect saved attempt",

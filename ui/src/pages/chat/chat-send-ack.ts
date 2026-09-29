@@ -15,6 +15,8 @@ type ChatSendAckServerTiming = {
 export type ChatSendAck = {
   runId: string;
   status: ChatSendAckStatus;
+  /** Explicit acceptance; a synthesized started status is not a custody receipt. */
+  inputAccepted?: true;
   stopReason?: "restart";
   messageSeq?: number;
   serverTiming?: ChatSendAckServerTiming;
@@ -59,6 +61,11 @@ export function normalizeChatSendAck(payload: unknown, fallbackRunId: string): C
   return {
     runId,
     status: normalizeChatSendAckStatus(record.status),
+    ...(record.status === "started" ||
+    record.status === "ok" ||
+    (record.status === "in_flight" && messageSeq !== undefined)
+      ? { inputAccepted: true as const }
+      : {}),
     ...(serverTiming ? { serverTiming } : {}),
     ...(messageSeq !== undefined ? { messageSeq } : {}),
     ...(record.stopReason === "restart" ? { stopReason: "restart" as const } : {}),

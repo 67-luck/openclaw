@@ -16,6 +16,7 @@ import {
   resetServerUiPrefsSync,
   resolveServerUiPrefState,
 } from "./server-prefs.ts";
+import { dismissChatInputRecoveryKey } from "./settings-input-recovery.ts";
 import {
   loadLocalUserIdentity,
   patchSettings,
@@ -104,10 +105,12 @@ describe("settings preference persistence", () => {
         ...JSON.parse(localStorage.getItem(key) ?? "{}"),
         realtimeTalkInputDeviceId: "cross-tab-mic",
       };
+      next.chatInputRecoveryDismissed = ["other-tab/saved-input"];
       localStorage.setItem(key, JSON.stringify(next));
       const credentialReads = vi.spyOn(sessionStorage, "getItem");
       events.dispatchEvent(Object.assign(new Event("storage"), { key }));
       expect(theme.settings.realtimeTalkInputDeviceId).toBe("cross-tab-mic");
+      expect(theme.settings.chatInputRecoveryDismissed).toEqual(["other-tab/saved-input"]);
       expect(credentialReads).not.toHaveBeenCalled();
       expect(theme.settings).not.toHaveProperty("token");
 
@@ -130,7 +133,13 @@ describe("settings preference persistence", () => {
         )
         .toBe(true);
       expect.soft(theme.settings.chatSendShortcut).toBe("enter");
+      expect(dismissChatInputRecoveryKey(first.gatewayUrl, "this-tab/saved-input")).toBe(true);
       patchSettings({ chatSendShortcut: "modifier-enter" });
+      expect(theme.settings.chatInputRecoveryDismissed).toEqual([
+        "other-tab/saved-input",
+        "this-tab/saved-input",
+      ]);
+      expect(loadSettings(second.gatewayUrl).chatInputRecoveryDismissed).toBeUndefined();
       expect(theme.settings.chatSendShortcut).toBe("modifier-enter");
       patchSettings({ chatSendShortcut: "enter" });
       expect(theme.settings.gatewayUrl).toBe(first.gatewayUrl);

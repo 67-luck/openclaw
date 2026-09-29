@@ -51,6 +51,8 @@ import { isChatBusy } from "./run-lifecycle.ts";
 export type QueuedChatSendResult = "sent" | "pending" | "failed";
 export type QueuedChatStorageMode = "durable" | "memory";
 export type QueuedChatSendOptions = PendingComposerSnapshot & {
+  /** Current confirmed acceptance, excluding receipt-free preregistration. */
+  onGatewayAccepted?: () => void;
   /** Fresh selected-session sends may let the Gateway resolve its effective active-run mode. */
   allowActiveRunSend?: boolean;
   /** Confirmation-triggered sends retain their UI owner across preparation waits. */

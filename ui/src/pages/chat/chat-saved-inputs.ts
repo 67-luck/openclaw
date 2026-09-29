@@ -1,6 +1,7 @@
 import type { ChatPendingInputsPage } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
 import { sameSelfUserIdentity } from "../../app/user-profile.ts";
 import { resolveUiSelectedSessionAgentId } from "../../lib/sessions/session-key.ts";
+import { createSavedInputActions } from "./chat-input-recovery-actions.ts";
 import {
   resolveCappedMessageId,
   resolveSourceMessageId,
@@ -30,6 +31,7 @@ type InspectionScope = {
   viewer: ChatState["selfUser"];
   signal: AbortSignal | undefined;
   inspections: Map<string, Inspection>;
+  canSend: boolean;
 };
 const scopes = new WeakMap<ChatState, InspectionScope>();
 
@@ -56,19 +58,24 @@ function savedInputs(state: ChatState): SavedChatInput[] {
   const activeRuns = new Set(
     view.activeInputs.flatMap((input) => (input.runId ? [input.runId] : [])),
   );
+  // The logical outbox retains old physical-session payloads for review. They
+  // cannot own a saved input from the current physical conversation.
+  const currentQueue = state.chatQueue.filter(
+    (item) => !item.sessionId || item.sessionId === state.currentSessionId,
+  );
   return selectChatInputDisplay(
     state.chatMessages,
-    state.chatQueue,
+    currentQueue,
     view.page.items,
   ).pendingInputs.filter(
     (input) =>
-      isSavedChatInput(input, state.chatQueue) &&
+      isSavedChatInput(input, currentQueue) &&
       !activeIds.has(input.id) &&
       !(input.runId && activeRuns.has(input.runId)),
   );
 }
 
-/** Pane-local display only. Never admits, edits, dismisses, or sends custody. */
+/** The pane owns saved-source scope and inspection; explicit actions extend those facts. */
 export function createChatSavedInputs(props: ChatProps) {
   const state = props.historyState;
   if (!state) {
@@ -102,10 +109,12 @@ export function createChatSavedInputs(props: ChatProps) {
       viewer: state.selfUser,
       signal: props.readSignal,
       inspections: new Map(),
+      canSend: false,
     };
     scopes.set(state, scope);
   }
   const owner = scope;
+  owner.canSend = props.canSend && !props.suggestionComposer && !props.submitDisabledReason;
   const items = savedInputs(state);
   for (const [id, inspection] of owner.inspections) {
     if (!items.some((input) => sameSavedInputSource(input, inspection.source))) {
@@ -189,11 +198,24 @@ export function createChatSavedInputs(props: ChatProps) {
       }
     }
   };
+  const actions =
+    props.savedInputHost === state
+      ? createSavedInputActions(props.savedInputHost, {
+          items,
+          pageItems: page.page.items,
+          current,
+          canSend: () => owner.canSend,
+          find: (id) => savedInputs(state).find((input) => input.id === id),
+          retireInspection: (id) => owner.inspections.delete(id),
+          requestUpdate,
+        })
+      : undefined;
+  const available = actions?.items ?? items;
   const search = getTranscriptState(props.paneId);
   const recovery = props.transcript.messageRecovery;
   const visible =
     search.searchOpen && search.searchQuery.trim()
-      ? items.filter((input) =>
+      ? available.filter((input) =>
           messageMatchesSearchQuery(
             input.message,
             search.searchQuery,
@@ -202,12 +224,13 @@ export function createChatSavedInputs(props: ChatProps) {
               : undefined,
           ),
         )
-      : items;
+      : available;
   if (
     !visible.length &&
     page.before === undefined &&
     page.page.nextBefore === undefined &&
-    !page.error
+    !page.error &&
+    !actions?.error
   ) {
     return undefined;
   }
@@ -215,7 +238,8 @@ export function createChatSavedInputs(props: ChatProps) {
     items: visible,
     inspections: owner.inspections,
     onToggle,
-    error: page.error,
+    ...(actions ? { actions } : {}),
+    error: actions?.error ?? page.error,
     loading: page.loading,
     earlier: page.page.nextBefore !== undefined,
     latest: page.before !== undefined,

@@ -197,6 +197,8 @@ export type UiSettings = {
   chatCollapseTaskProgress?: boolean;
   chatSendShortcut?: ChatSendShortcut;
   chatFollowUpMode?: ChatFollowUpMode; // Default handling for messages sent while a run is active
+  // Browser-local opaque viewer/session/input keys, never payloads or queue state.
+  chatInputRecoveryDismissed?: string[];
   catalogOpenTarget?: CatalogOpenTarget;
   realtimeTalkInputDeviceId?: string;
   realtimeTalkVideoDeviceId?: string;
@@ -534,6 +536,9 @@ export function loadUiPreferences(
       ),
       chatSendShortcut: normalizeChatSendShortcut(parsed.chatSendShortcut),
       chatFollowUpMode: normalizeChatFollowUpModeOverride(parsed.chatFollowUpMode),
+      chatInputRecoveryDismissed: normalizeChatInputRecoveryDismissals(
+        parsed.chatInputRecoveryDismissed,
+      ),
       catalogOpenTarget: normalizeCatalogOpenTarget(parsed.catalogOpenTarget),
       realtimeTalkInputDeviceId: normalizeOptionalString(parsed.realtimeTalkInputDeviceId),
       realtimeTalkVideoDeviceId: normalizeOptionalString(parsed.realtimeTalkVideoDeviceId),
@@ -601,8 +606,8 @@ export function loadUiPreferences(
   }
 }
 
-export function saveSettings(next: UiSettings) {
-  persistSettings(next);
+export function saveSettings(next: UiSettings): boolean {
+  return persistSettings(next);
 }
 
 // Single change seam over the one write channel every settings mutation uses;
@@ -626,6 +631,13 @@ export function patchSettings(
   });
   settingsChangeListener?.(previous, next);
   return next;
+}
+
+export function normalizeChatInputRecoveryDismissals(value: unknown): string[] | undefined {
+  const keys = normalizeUniqueTrimmedStringList(value)
+    .filter((key) => key.length <= 8192)
+    .slice(-512);
+  return keys.length ? keys : undefined;
 }
 
 export function loadLocalUserIdentity(): LocalUserIdentity {
@@ -686,6 +698,9 @@ function persistSettings(next: UiSettings, options: { selectGateway?: boolean } 
     chatCollapseTaskProgress: next.chatCollapseTaskProgress === true ? true : undefined,
     chatSendShortcut: next.chatSendShortcut === "modifier-enter" ? "modifier-enter" : undefined,
     chatFollowUpMode: normalizeChatFollowUpModeOverride(next.chatFollowUpMode),
+    chatInputRecoveryDismissed: normalizeChatInputRecoveryDismissals(
+      next.chatInputRecoveryDismissed,
+    ),
     catalogOpenTarget: next.catalogOpenTarget === "terminal" ? "terminal" : undefined,
     realtimeTalkInputDeviceId: normalizeOptionalString(next.realtimeTalkInputDeviceId),
     realtimeTalkVideoDeviceId: normalizeOptionalString(next.realtimeTalkVideoDeviceId),
@@ -756,4 +771,5 @@ function persistSettings(next: UiSettings, options: { selectGateway?: boolean } 
   if (owner && gatewayOriginScope(owner.gatewayUrl()) === scope) {
     owner.refresh();
   }
+  return unpersistedSettings === null;
 }

@@ -94,6 +94,8 @@ export type ChatSendSubmitOptions = {
   replyTargetOverride?: ChatHost["chatReplyTarget"];
   /** Ordinary message admission transfers retry custody, including volatile sends. */
   onOutboxAdmitted?: () => void;
+  /** Initial delivery only; later drains retain ordinary outbox ownership. */
+  onGatewayAccepted?: () => void;
   followUpMode?: ControlUiFollowUpMode;
   /** Only the inline queued-row submit may resume and replace an edited row. */
   resumeQueuedMessageEditId?: string;
@@ -654,6 +656,7 @@ export async function handleSendChat(
           ...(allowActiveRunSend ? { allowActiveRunSend: true } : {}),
           ...(expectedLeafEntryId !== undefined ? { expectedLeafEntryId } : {}),
           ...(pendingSettings ? { pendingSettings } : {}),
+          onGatewayAccepted: opts?.onGatewayAccepted,
           restoreAttachments: Boolean(messageOverride && opts?.restoreDraft),
           restoreDraft: Boolean(messageOverride && opts?.restoreDraft),
           restoreOnTerminalFailure: Boolean(rawParsedCommand || intent),

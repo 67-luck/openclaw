@@ -108,6 +108,7 @@ export type ChatProps = Omit<
     ) => Promise<boolean>;
     presented?: boolean;
     historyState?: ChatState;
+    savedInputHost?: import("./chat-send-contract.ts").ChatHost;
     startupStatus?: ChatRunStartupStatus | null;
     providerPolicyNotice?: ProviderPolicyNotice | null;
     providerReviewNotice?: TemplateResult | typeof nothing;

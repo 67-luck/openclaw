@@ -138,6 +138,7 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
         isSidebarSlotVisible(sidebarLayout, "conversation"),
       latestBrowserTabs: this.active && this.presented ? latestBrowserTabs : undefined,
       historyState: catalog ? undefined : state,
+      savedInputHost: catalog ? undefined : state,
       header: nothing,
     });
     const primary = html`<div class="chat-pane-primary-column">${chat}</div>`;
