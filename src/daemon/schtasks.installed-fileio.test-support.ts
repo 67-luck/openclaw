@@ -447,6 +447,13 @@ export async function cleanupInstalledFileIo(params: {
   return params.lifetime.verifyCleanup(async () => {
     const firstCommand = commandFacts.length;
     try {
+      // A diagnostic reader shares these existing private inputs across workflow recovery.
+      const readerState = params.admission.fileIoReaderState;
+      if (readerState !== undefined && readerState !== "joined") {
+        throw Object.assign(new Error("FileIO reader settlement remains unverified"), {
+          processTreeState: "indeterminate",
+        });
+      }
       const custody = readCustody(params.admission, params.task, params.toolingSha);
       const command = fileIoCommand(custody, params.task, commandFacts);
       const cleaned = await command("cleanup");

@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { hasUnjoinedWork } from "../../scripts/lib/managed-child-process.mts";
 import { createVitestResourceOwner } from "../../scripts/lib/vitest-resource-ownership.mts";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { createDeferred } from "../../test/helpers/promise.js";
@@ -331,6 +332,33 @@ it("retains private recovery inputs when compiler descendant settlement is uncer
   expect(f.commandFacts[0]).toMatchObject({ outcome: "failed", joined: false });
   expect(() => f.resourceOwner.assertReleased()).toThrow("Unreleased Vitest resource claim");
 });
+
+it.each(["prepared", "recovery", "lifetime", "unknown-state"] as const)(
+  "retains the existing ETL custody for an unjoined diagnostic reader through %s cleanup",
+  async (route) => {
+    const f = await fixture();
+    const resource = await f.prepare();
+    f.admission.fileIoReaderState = route === "unknown-state" ? "unknown" : "pending";
+    const cleanup = () =>
+      route === "prepared"
+        ? resource.cleanup()
+        : route === "lifetime"
+          ? f.lifetime.cleanup()
+          : f.recover();
+    const error = await cleanup().then(
+      () => undefined,
+      (failure: unknown) => failure,
+    );
+    expect(hasUnjoinedWork(error)).toBe(true);
+    expect(f.phases).toEqual(["prepare"]);
+    expect((await fs.stat(f.privateRoot)).isDirectory()).toBe(true);
+    // This fixture launched no reader; its explicit joined transition permits recovery.
+    f.admission.fileIoReaderState = "joined";
+    await f.recover();
+    await expect(fs.stat(f.privateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    await f.lifetime.cleanup().catch(() => {});
+  },
+);
 
 it("rechecks exact native absence when workflow recovery follows completed private cleanup", async () => {
   const f = await fixture();

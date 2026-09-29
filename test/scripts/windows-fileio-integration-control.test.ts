@@ -98,6 +98,9 @@ describe("integrated FileIO control evidence boundary", () => {
 
 it.each([
   "known-completion",
+  "secondary-success-missing-request",
+  "secondary-joined-failure",
+  "secondary-unjoined",
   "native-lifetime",
   "native-lifetime-and-cleanup",
   "native-unjoined",
@@ -141,7 +144,15 @@ it.each([
         : { code: "ETIMEDOUT" },
     );
     const cleanupFailure = new Error("Synthetic exact cleanup failure");
-    const targets = new Map<string, { release: () => void }>();
+    const targets = new Map<string, { release: () => void; joined: () => boolean }>();
+    const secondaryCalls: string[] = [];
+    const secondaryFailure = Object.assign(
+      new Error("Synthetic reader failure"),
+      scenario === "secondary-unjoined"
+        ? { processTreeState: "indeterminate" }
+        : { code: "ETIMEDOUT" },
+    );
+    let originalRequestFailure: unknown;
     const processState = { execPath: "synthetic-node", exitCode: 0 };
     const identity = { pid: 1234, nativeStartFileTime: "133000000000000000" };
     const addonSha256 = "939156f310bd7a7d9d1db1b5249a5d135739b049c24c79fd3c201701333ddbf3";
@@ -163,7 +174,33 @@ it.each([
       AbortController,
       hasUnjoinedWork,
       hasErrnoCode,
-      recordRequestOnlyControl,
+      recordRequestOnlyControl(input: Parameters<typeof recordRequestOnlyControl>[0]) {
+        if (scenario.startsWith("secondary-")) {
+          expect(secondaryCalls).toEqual(["unloaded"]);
+          input.observer.records[0].events = [];
+        }
+        try {
+          return recordRequestOnlyControl(input);
+        } catch (error) {
+          originalRequestFailure = error;
+          throw error;
+        }
+      },
+      async compareSameEtl(
+        _descriptor: unknown,
+        _identity: unknown,
+        _admission: unknown,
+        primary: { cleanupVerified: boolean },
+        receipt: { joined: boolean },
+      ) {
+        expect(receipt.joined && primary.cleanupVerified).toBe(true);
+        expect(targets.get("unloaded")?.joined()).toBe(true);
+        secondaryCalls.push("unloaded");
+        if (scenario === "secondary-joined-failure" || scenario === "secondary-unjoined") {
+          throw secondaryFailure;
+        }
+        return { diagnosticOnly: true };
+      },
       cells,
       admissions: [],
       commands: [],
@@ -264,7 +301,7 @@ it.each([
             finish(0);
           }
         };
-        targets.set(name, { release });
+        targets.set(name, { release, joined: () => receipt.joined });
         options.signal.addEventListener(
           "abort",
           () => {
@@ -408,6 +445,21 @@ it.each([
     if (scenario === "native-pending") {
       expect(pendingFixtureCount).toBe(0);
     }
+    if (scenario.startsWith("secondary-")) {
+      assert.ok(originalRequestFailure instanceof assert.AssertionError);
+      expect(originalRequestFailure.message).toBe(
+        "No admitted explicit-path deletion request event was observed",
+      );
+      const combined = failures.find((error) => error instanceof AggregateError);
+      if (scenario === "secondary-unjoined") {
+        assert.ok(combined instanceof AggregateError);
+        expect(combined.errors).toEqual([secondaryFailure, originalRequestFailure]);
+        expect(hasUnjoinedWork(combined)).toBe(true);
+      } else {
+        expect(failures).toContain(originalRequestFailure);
+        expect(combined).toBeUndefined();
+      }
+    }
     expect(lifetimeJoins).toBe(1);
     expect(processState.exitCode).toBe(1);
     if (["native-lifetime", "native-lifetime-and-cleanup", "native-unjoined"].includes(scenario)) {
@@ -442,7 +494,11 @@ it.each([
     } else {
       expect(started).toEqual(["unloaded"]);
       expect(cleaned).toEqual(
-        scenario === "unjoined" || scenario === "native-unjoined" ? [] : ["unloaded"],
+        scenario === "unjoined" ||
+          scenario === "native-unjoined" ||
+          scenario === "secondary-unjoined"
+          ? []
+          : ["unloaded"],
       );
       expect(cells[0]?.qualified).toBe(false);
       if (

@@ -25,7 +25,10 @@ import {
 } from "../../src/daemon/schtasks.integration-observation.test-support.ts";
 import { hasErrnoCode } from "../../src/infra/errno.ts";
 import { resolveDiagnosticProcessEnv } from "../../src/infra/process-env.ts";
-import { getWindowsPowerShellExePath } from "../../src/infra/windows-install-roots.ts";
+import {
+  getWindowsInstallRoots,
+  getWindowsPowerShellExePath,
+} from "../../src/infra/windows-install-roots.ts";
 import { redactSupportString } from "../../src/logging/diagnostic-support-redaction.ts";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.ts";
 import {
@@ -551,6 +554,132 @@ async function main() {
     const capture = projectCensusResult(context, observer.result(), [binding.globalRoot], binding);
     return { observer, capture };
   }
+  async function compareSameEtl(descriptor, identity, admission, primary, primaryReceipt) {
+    assert.ok(primaryReceipt.joined && primaryReceipt.jobObserved);
+    assert.equal(primary.cleanupVerified, true);
+    assert.equal(primary.pid, identity.pid);
+    assert.equal(primary.nativeStartFileTime, identity.startTicks);
+    assert.ok(primary.captureInterval?.endedAt);
+    const script = path.join(helper, "Read-OwnedFileTrace.ps1");
+    const scriptSha256 = hash(script);
+    // The copied diagnostic environment uses the existing pure root resolver.
+    const core = path.win32.join(
+      getWindowsInstallRoots(env).programFiles,
+      "PowerShell",
+      "7",
+      "pwsh.exe",
+    );
+    const coreStat = fs.lstatSync(core);
+    assert.ok(coreStat.isFile() && !coreStat.isSymbolicLink());
+    assert.equal(
+      path.win32.toNamespacedPath(fs.realpathSync.native(core)).toLowerCase(),
+      path.win32.toNamespacedPath(core).toLowerCase(),
+    );
+    const coreSha256 = hash(core);
+    let reader;
+    let projection;
+    const errors = [];
+    assert.equal(admission.fileIoReaderState, undefined);
+    admission.fileIoReaderState = "pending";
+    try {
+      await persistAdmission();
+      reader = launchManaged({
+        lifetime,
+        commands,
+        env,
+        label: `${admission.rootDir === path.join(privateRoot, "unloaded") ? "unloaded" : "loaded"}:same-etl-reader`,
+        bin: core,
+        args: [
+          "-NoProfile",
+          "-NonInteractive",
+          "-File",
+          script,
+          "-ReceiptPath",
+          descriptor.receiptPath,
+          "-ExpectedGuid",
+          descriptor.expectedGuid,
+          "-TargetProcessId",
+          String(identity.pid),
+        ],
+        timeoutMs: 5000,
+        stdoutLimit: 4096,
+      });
+      assert.equal(await reader.completion, 0);
+      assert.ok(reader.receipt.joined && reader.receipt.jobObserved);
+      const output = reader.result().stdout;
+      assert.ok(Buffer.byteLength(output) <= 4096);
+      const record = JSON.parse(output);
+      assert.equal(record.phase, "same-etl-reader");
+      assert.equal(record.diagnosticOnly, true);
+      const runtime = record.runtime;
+      assert.equal(runtime.edition, "Core");
+      assert.equal(runtime.is64BitProcess, true);
+      for (const version of [runtime.psVersion, runtime.clrVersion]) {
+        assert.equal(typeof version, "string");
+        assert.ok(version.length <= 64);
+        assert.match(version, /^\d+\.\d+\.\d+(?:\.\d+)?$/u);
+      }
+      const ids = [10, 11, 12, 13, 14, 15, 17, 18, 24, 26];
+      const counts = (value) => {
+        assert.ok(value && typeof value === "object" && !Array.isArray(value));
+        assert.equal(Object.keys(value).length, ids.length);
+        return Object.fromEntries(
+          ids.map((id) => {
+            assert.ok(Number.isInteger(value[id]) && value[id] >= 0 && value[id] <= 20000);
+            return [id, value[id]];
+          }),
+        );
+      };
+      const relevantEventCounts = counts(record.relevantEventCounts);
+      const headerPidMatchCounts = counts(record.headerPidMatchCounts);
+      assert.ok(ids.every((id) => headerPidMatchCounts[id] <= relevantEventCounts[id]));
+      projection = {
+        phase: "same-etl-reader",
+        diagnosticOnly: true,
+        runtime: {
+          psVersion: runtime.psVersion,
+          edition: runtime.edition,
+          clrVersion: runtime.clrVersion,
+          is64BitProcess: runtime.is64BitProcess,
+        },
+        relevantEventCounts,
+        headerPidMatchCounts,
+      };
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      // Only this command owner's actual receipt can release shared ETL custody.
+      if (reader?.receipt.joined === true && !errors.some(hasUnjoinedWork)) {
+        try {
+          assert.equal(hash(script), scriptSha256);
+          assert.equal(hash(core), coreSha256);
+        } catch (error) {
+          errors.push(error);
+        }
+        admission.fileIoReaderState = "joined";
+        try {
+          await persistAdmission();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+    }
+    if (admission.fileIoReaderState !== "joined") {
+      throw Object.assign(
+        new AggregateError(errors, "Diagnostic ETL reader settlement unverified"),
+        {
+          processTreeState: "indeterminate",
+        },
+      );
+    }
+    if (errors.length === 1) {
+      throw errors[0];
+    }
+    if (errors.length) {
+      throw new AggregateError(errors, "Diagnostic ETL reader or custody write failed");
+    }
+    return projection;
+  }
   async function nativeLifetimeControl(descriptor, cell) {
     const script = path.join(helper, "Inspect-LifetimeControl.ps1");
     const scriptSha256 = hash(script);
@@ -896,6 +1025,20 @@ async function main() {
           await target.waitFor("result");
           await joinTarget();
           assert.equal(cell.completedTerminalJson.fact, binding.fileIo.trigger.terminalJson);
+          try {
+            cell.sameEtlReader = await compareSameEtl(
+              prepared.descriptor,
+              binding.pinnedProcess,
+              admission,
+              cell.observation,
+              observed.observer.receipt,
+            );
+          } catch (error) {
+            cell.sameEtlReader = { diagnosticOnly: true, failure: safeError(error) };
+            if (hasUnjoinedWork(error)) {
+              failures.push(error);
+            }
+          }
           recordRequestOnlyControl({
             cell,
             observer: {
