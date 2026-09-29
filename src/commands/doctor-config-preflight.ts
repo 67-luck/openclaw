@@ -292,7 +292,7 @@ async function runDoctorConfigPreflightOperation(
           await assertDoctorPreflightMigrationsComplete({
             cfg: migrationConfig,
             stepReceipts: stateMigrationStepReceipts,
-            report: noteDoctorStateMigrationResult,
+            report: (result) => noteDoctorStateMigrationResult("legacy-state", result),
           });
         }
       } else if (stateMigrationInput.pluginDoctorConfig) {
