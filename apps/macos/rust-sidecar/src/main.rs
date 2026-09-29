@@ -160,34 +160,37 @@ async fn run() -> Result<(), Failure> {
         key,
         FRAME_LIMIT,
     )?;
-    let mut handshake = SidecarHandshake::with_required_features(
-        SidecarProtocolOffer {
-            protocol_major: 1,
-            protocol_minor: 0,
-            peer: SidecarPeerIdentity {
-                role: SidecarPeerRole::Runtime,
-                name: "openclaw-mac-node-sidecar".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                artifact_identity: "bundled-macos-sidecar".into(),
+    // Bootstrap frames and peer metadata are needed only until acceptance commits.
+    // Release them before the active session can suspend indefinitely.
+    let (frame_limit, max_in_flight) = {
+        let mut handshake = SidecarHandshake::with_required_features(
+            SidecarProtocolOffer {
+                protocol_major: 1,
+                protocol_minor: 0,
+                peer: SidecarPeerIdentity {
+                    role: SidecarPeerRole::Runtime,
+                    name: "openclaw-mac-node-sidecar".into(),
+                    version: env!("CARGO_PKG_VERSION").into(),
+                    artifact_identity: "bundled-macos-sidecar".into(),
+                },
+                feature_bits: NATIVE_TRANSPORT_FEATURE,
+                limits: SidecarLimits {
+                    max_frame_bytes: FRAME_LIMIT,
+                    max_in_flight: MAX_IN_FLIGHT,
+                    bootstrap_timeout_ms: 10_000,
+                },
             },
-            feature_bits: NATIVE_TRANSPORT_FEATURE,
-            limits: SidecarLimits {
-                max_frame_bytes: FRAME_LIMIT,
-                max_in_flight: MAX_IN_FLIGHT,
-                bootstrap_timeout_ms: 10_000,
-            },
-        },
-        NATIVE_TRANSPORT_FEATURE,
-    )?;
-    let offer = read_sidecar_frame(&mut input, FRAME_LIMIT, BOOTSTRAP_TIMEOUT).await?;
-    let accept = handshake
-        .receive(&mut channel, &offer)?
-        .ok_or("missing acceptance")?;
-    write_sidecar_frame(&mut output, &accept, FRAME_LIMIT, WRITE_TIMEOUT).await?;
-    handshake.complete_acceptance(&mut channel)?;
-    let frame_limit = channel.max_frame_bytes();
-    let negotiated = handshake.negotiated().ok_or("missing negotiated limits")?;
-    let max_in_flight = negotiated.limits.max_in_flight;
+            NATIVE_TRANSPORT_FEATURE,
+        )?;
+        let offer = read_sidecar_frame(&mut input, FRAME_LIMIT, BOOTSTRAP_TIMEOUT).await?;
+        let accept = handshake
+            .receive(&mut channel, &offer)?
+            .ok_or("missing acceptance")?;
+        write_sidecar_frame(&mut output, &accept, FRAME_LIMIT, WRITE_TIMEOUT).await?;
+        handshake.complete_acceptance(&mut channel)?;
+        let negotiated = handshake.negotiated().ok_or("missing negotiated limits")?;
+        (channel.max_frame_bytes(), negotiated.limits.max_in_flight)
+    };
     let channel = Arc::new(Mutex::new(channel));
     // Application and progress tasks each own max_in_flight slots; their bursts
     // must fit without blocking transport receipts on the reader task.
@@ -426,6 +429,7 @@ async fn run_gateway(
             },
         );
     }
+    drop(registered_private);
     let runtime = builder.build()?;
     let runtime_session = session.clone();
     let mut runtime_task = tokio::spawn(async move { runtime.run(runtime_session).await });
