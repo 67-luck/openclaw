@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createCronTool } from "./cron-tool.js";
-import type { GatewayToolCaller } from "./cron-tool.types.js";
+import { createCronTool, replaceWithEffectiveCronCreatorToolAllowlist } from "./cron-tool.js";
+import type { CronCreatorToolAllowlistEntry, GatewayToolCaller } from "./cron-tool.types.js";
 
 const diagnosticNotice = "unrelated: requires OAuth; run openclaw mcp login unrelated";
 
-function createHarness() {
+function createHarness(interactiveMcp = false) {
   const callGateway = vi.fn((...[method]: Parameters<GatewayToolCaller>) => {
     const result =
       method === "cron.get"
@@ -22,10 +22,21 @@ function createHarness() {
     diagnosticNotice,
     grant: { runId: "run-exclusions", token: "synthetic-unit-grant" },
   }));
+  const creatorToolAllowlist: CronCreatorToolAllowlistEntry[] = ["read", "exec"];
+  if (interactiveMcp) {
+    replaceWithEffectiveCronCreatorToolAllowlist(
+      creatorToolAllowlist,
+      ["read", "exec", "unrelated__lookup"].map((name) => ({ name })),
+      (tool) =>
+        tool.name === "unrelated__lookup"
+          ? { pluginId: "bundle-mcp", mcp: { serverName: "unrelated" } }
+          : undefined,
+    );
+  }
   const tool = createCronTool(
     {
       agentSessionKey: "agent:main:main",
-      creatorToolAllowlist: ["read", "exec"],
+      creatorToolAllowlist,
       resolveCreatorToolAuthority,
     },
     {
@@ -66,15 +77,28 @@ describe("automation creator authority exclusions", () => {
     },
   );
 
-  it.each(["add", "update"])(
-    "rejects specifically required unavailable MCP on %s",
-    async (action) => {
-      const { tool, callGateway, job } = createHarness();
+  it.each([
+    ["add", false, false],
+    ["update", false, false],
+    ["add", true, false],
+    ["update", true, false],
+    ["add", false, true],
+    ["update", false, true],
+  ] as const)(
+    "rejects required unavailable MCP on %s (interactive=%s, wildcard=%s)",
+    async (action, interactiveMcp, wildcard) => {
+      const { tool, callGateway, job } = createHarness(interactiveMcp);
       await expect(
         tool.execute("required-mcp", {
           action,
           jobId: "existing-job",
-          job: { ...job, payload: { ...job.payload, toolsAllow: ["unrelated__lookup"] } },
+          job: {
+            ...job,
+            payload: {
+              ...job.payload,
+              toolsAllow: [...(wildcard ? ["*"] : []), "unrelated__lookup"],
+            },
+          },
         }),
       ).rejects.toThrow(
         /not currently executable: unrelated__lookup.*openclaw mcp login unrelated/,
