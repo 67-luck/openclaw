@@ -6,9 +6,9 @@ import {
   beforeEach,
   describe,
   expect,
+  onTestFinished,
   test,
   vi,
-  type MockInstance,
 } from "vitest";
 import type { WebSocket, RawData } from "ws";
 import { mergeChatStreamMessage } from "../../packages/gateway-client/src/chat-stream-message.js";
@@ -50,25 +50,38 @@ function waitForFast<T>(
 
 describe("queued WebChat follow-up delivery", () => {
   let requestExecution: Awaited<ReturnType<typeof observeGatewayRunExecution>>;
-  let lifecyclePersistence: MockInstance<typeof lifecycleState.persistGatewaySessionLifecycleEvent>;
+  let lifecycleWrites: Promise<void>[];
+  let observedFollowupRunId: string | undefined;
   beforeEach(async () => {
     dispatchInboundMessageMock.mockReset();
     requestExecution = await observeGatewayRunExecution();
-    lifecyclePersistence = vi.spyOn(lifecycleState, "persistGatewaySessionLifecycleEvent");
+    lifecycleWrites = [];
+    observedFollowupRunId = undefined;
+    const persistLifecycle = lifecycleState.persistGatewaySessionLifecycleEvent;
+    const persistenceSpy = vi
+      .spyOn(lifecycleState, "persistGatewaySessionLifecycleEvent")
+      .mockImplementation((params) => {
+        const write = persistLifecycle(params);
+        if (params.event.runId === observedFollowupRunId) {
+          lifecycleWrites.push(write);
+        }
+        return write;
+      });
+    onTestFinished(() => {
+      persistenceSpy.mockRestore();
+    });
   });
   afterEach(async () => {
     try {
       await settleGatewayFixture();
     } finally {
-      lifecyclePersistence.mockRestore();
       await requestExecution.restore();
     }
   });
   const settleGatewayFixture = async () => {
     await requestExecution.waitForCompletion();
-    // Synthetic follow-up events run outside the observed request. Join their full
-    // terminal writes, including the failure receipt appended after the row patch.
-    await Promise.all(lifecyclePersistence.mock.results.map(({ value }) => value));
+    // Synthetic events lack a request scope; join the producer before draining its writers.
+    await Promise.all(lifecycleWrites);
     await drainOpenClawAgentWriteQueuesForTest();
     await flushPendingSessionsChangedEvents();
     expect(getActiveGatewayRootWorkCount(), getActiveGatewayRootWorkHolders().join(", ")).toBe(0);
@@ -154,6 +167,7 @@ describe("queued WebChat follow-up delivery", () => {
         await sourceFinal;
 
         const followupRunId = `idem-live-webchat-late-followup-${name}`;
+        observedFollowupRunId = followupRunId;
         const terminalFrames: unknown[] = [];
         const deltaFrames: Extract<ChatEvent, { state: "delta" }>[] = [];
         const recordFollowup = (raw: RawData) => {
