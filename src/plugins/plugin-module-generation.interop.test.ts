@@ -4,6 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createJiti } from "jiti";
 import { describe, expect, it } from "vitest";
+import { createPluginCache, retirePluginCache } from "./plugin-cache.js";
 import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
 import { createPluginModuleGenerationTestHarness } from "./plugin-module-generation.test-support.js";
 
@@ -69,6 +70,36 @@ describe("native plugin generation interop", () => {
       expect(second.read()).toEqual(after);
     },
   );
+
+  it("keeps lazily admitted native bytes while another inventory holds the shared capture", async () => {
+    const root = fixture({
+      "package.json": JSON.stringify({ dependencies: { "asset-reader": "1.0.0" } }),
+      "entry.cjs": "exports.read = () => require('asset-reader').read();",
+      "node_modules/asset-reader/package.json": JSON.stringify({
+        name: "asset-reader",
+        version: "1.0.0",
+        main: "index.cjs",
+        optionalDependencies: { platform: "1.0.0" },
+      }),
+      "node_modules/asset-reader/index.cjs": `
+        const fs = require('node:fs');
+        const path = require('node:path');
+        exports.read = () => fs.readFileSync(path.join(__dirname, '../platform/vec0.so'), 'utf8');`,
+      "node_modules/platform/package.json": '{"name":"platform","version":"1.0.0"}',
+      "node_modules/platform/vec0.so": "native",
+    });
+    type Plugin = { read(): string };
+    const capturingCache = createPluginCache();
+    const capturing = host(root, false, capturingCache);
+    capturing.load("entry.cjs");
+    const holding = host(root).load("entry.cjs") as Plugin;
+    expect(holding.read()).toBe("native");
+
+    await capturing.dispose();
+    await retirePluginCache(capturingCache);
+    fs.rmSync(root, { recursive: true, force: true });
+    expect(holding.read()).toBe("native");
+  });
 
   it("resolves an ancestor dependency alias matching a noninstalled plugin directory", () => {
     const root = fixture({
@@ -168,6 +199,8 @@ describe("native plugin generation interop", () => {
         expect(owned.some(([id]) => !id.startsWith("file:") && id.endsWith(".js"))).toBe(true);
         expect(owned.some(([id]) => id.startsWith("file:"))).toBe(true);
       }
+      // Unchanged source shares one capture; an edit makes the sibling a distinct generation.
+      fs.appendFileSync(path.join(root, `entry.${extension}`), "\n// sibling generation\n");
       const sibling = host(root).load(`entry.${extension}`) as Plugin;
       const preserved = records(sibling);
       await first.dispose();

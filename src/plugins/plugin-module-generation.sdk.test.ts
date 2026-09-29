@@ -217,6 +217,8 @@ describe("plugin module generation SDK identity", () => {
            const sdkUrl = first.api.resolveSdk();
            const lazy = first.instance.loadModule(${JSON.stringify(path.join(plugin, "lazy.ts"))});
            adoptProcessPluginCache(createPluginCache());
+           // Unchanged source shares its capture; an edit starts a distinct plugin generation.
+           fs.appendFileSync(${JSON.stringify(path.join(plugin, "eager.ts"))}, '\\n// next generation\\n');
            const second = load();
            assert.equal(second.api.identity, host.identity);
            assert.notEqual(second.api.generation, first.api.generation);

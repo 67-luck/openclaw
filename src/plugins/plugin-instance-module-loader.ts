@@ -12,12 +12,7 @@ import {
   supportsBunRuntimeOnResolveTargets,
 } from "./native-module-require.js";
 import type { PluginModuleLoader } from "./plugin-cache-artifacts.js";
-import {
-  bindPluginCacheRoot,
-  getPluginCache,
-  withPluginCache,
-  type PluginCache,
-} from "./plugin-cache.js";
+import { bindPluginCacheRoot, getPluginCache, withPluginCache } from "./plugin-cache.js";
 import {
   capturePluginGenerationArtifact,
   type PluginGenerationArtifact,
@@ -28,6 +23,7 @@ import {
   preparePluginModuleLoaderRecovery,
   type PluginInstanceModuleLoaderParams,
 } from "./plugin-module-loader-recovery.js";
+import { borrowPluginNativeAdmissions } from "./plugin-native-admission-state.js";
 import { bindNativePluginInstanceModuleLoader } from "./plugin-native-module-loader.js";
 import { installOpenClawPluginSdkNativeResolver } from "./plugin-sdk-native-resolver.js";
 import { bindSharedPluginModuleLoader } from "./plugin-shared-module-loader.js";
@@ -42,7 +38,6 @@ import { preparePluginLoaderAliases, isPluginSdkAliasSpecifier } from "./sdk-ali
 
 type SharedCapturedCode = {
   identity: string | undefined;
-  cache: PluginCache;
   artifact: PluginGenerationArtifact;
   holders: Set<PluginModuleLoaderOwner>;
   cleanups: Array<() => void | Promise<void>>;
@@ -50,9 +45,10 @@ type SharedCapturedCode = {
   hasSource?: (source: string) => boolean;
 };
 
-// Unchanged installed code keeps one capture per inventory, like bundled code keeps process
-// identity. Each holder retains it; the last holder's module disposal releases the snapshot.
-const sharedCapturedCode = new WeakMap<PluginCache, Map<string, SharedCapturedCode>>();
+// Unchanged installed code keeps one capture, like bundled code keeps process identity. Republished
+// registries load through fresh inventories, so the capture is shared process-wide; each holder's
+// inventory borrows its native custody. The last holder's module disposal releases the snapshot.
+const sharedCapturedCode = new Map<string, SharedCapturedCode>();
 
 function attachCapturedCode(
   code: SharedCapturedCode,
@@ -64,9 +60,8 @@ function attachCapturedCode(
     if (code.holders.size > 0) {
       return;
     }
-    const published = code.identity ? sharedCapturedCode.get(code.cache) : undefined;
-    if (code.identity && published?.get(code.identity) === code) {
-      published.delete(code.identity);
+    if (code.identity && sharedCapturedCode.get(code.identity) === code) {
+      sharedCapturedCode.delete(code.identity);
     }
     const failures: unknown[] = [];
     for (const cleanup of code.cleanups.splice(0).toReversed()) {
@@ -144,7 +139,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
           params.devSourceRoot ?? null,
           params.pluginSdkResolution ?? null,
         ]);
-  const published = identity ? sharedCapturedCode.get(cache)?.get(identity) : undefined;
+  const published = identity ? sharedCapturedCode.get(identity) : undefined;
   if (
     published &&
     (params.expectedSourceDigest === undefined ||
@@ -152,6 +147,15 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
     published.artifact.isSourceUnchanged()
   ) {
     bindPluginCacheRoot(params.rootDir, published.artifact.sourceRoot);
+    borrowPluginNativeAdmissions(published.artifact.nativeAdmissionState, cache);
+    // SDK aliases for the capture boundary are registered per inventory.
+    installOpenClawPluginSdkNativeResolver({
+      moduleUrl: import.meta.url,
+      pluginModulePath: params.source,
+      devSourceRoot: params.devSourceRoot,
+      allowedParentRoots: [published.artifact.boundaryRoot],
+      pluginSdkResolution: params.pluginSdkResolution,
+    });
     attachCapturedCode(published, params);
     return;
   }
@@ -206,7 +210,6 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
   }
   const code: SharedCapturedCode = {
     identity,
-    cache,
     artifact,
     holders,
     cleanups,
@@ -220,12 +223,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
     code.load = load;
     code.hasSource = hasSource;
     if (identity) {
-      let published = sharedCapturedCode.get(cache);
-      if (!published) {
-        published = new Map();
-        sharedCapturedCode.set(cache, published);
-      }
-      published.set(identity, code);
+      sharedCapturedCode.set(identity, code);
     }
   };
   bindPluginCacheRoot(params.rootDir, artifact.sourceRoot);

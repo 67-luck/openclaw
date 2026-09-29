@@ -209,11 +209,17 @@ source/build preference, including explicit bundled source overrides. Loading an
 unchanged plugin preserves that proof; changing its selected runtime files
 invalidates it.
 
-A managed runtime instance owns its module results, registered callables, and
-runtime-store slots. With Node's synchronous module hooks, it also owns a captured
-source artifact. Package plugins capture their package inputs when the instance
-is created. Standalone files capture their entry and statically known inputs
-without copying the surrounding workspace. Compiled bundled runtime and setup
+A managed runtime instance owns its registered callables and runtime-store slots.
+With Node's synchronous module hooks, its module results come from a captured
+source artifact. Package plugins capture their package inputs when the first
+instance binds them. Standalone files capture their entry and statically known inputs
+without copying the surrounding workspace. Instances that bind an unchanged
+installed plugin share one capture and its module results, including across the
+fresh inventories used by Gateway and prepared-runtime republishes; each instance
+still owns its registered callbacks and cleanup, and each holding inventory keeps the
+capture's native namespaces alive. Changed source, a changed native namespace, or a
+module that was missing at capture time starts a fresh capture with fresh module
+evaluation. Compiled bundled runtime and setup
 modules share the host's code identity; each inventory still owns its registered
 callbacks and cleanup. Replacing that compiled code requires a build and Gateway
 restart. Conditional package aliases retain their package metadata, and native
@@ -292,8 +298,8 @@ A first-demand `import()` or `require()` can observe later source edits; capture
 metadata and entry bytes remain unchanged. The initial source digest covers the
 creation-time capture; later inputs extend explicit source-current checks without
 changing that digest. Invalid optional package metadata fails only when selected.
-Module acquisition uses the instance's current admission, and disposal closes
-further capture.
+Module acquisition uses the admission of a live instance holding the capture, and
+the last holder's disposal closes further capture.
 Runtime and setup retirement use the existing five-second instance shutdown budget.
 If calls, retained consumers, or cleanup exceed that budget, logical retirement
 returns a forced-retirement diagnostic with the still-running call and consumer

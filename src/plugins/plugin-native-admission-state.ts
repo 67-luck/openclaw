@@ -85,7 +85,8 @@ export function startNativeAdmissionPublication(state: AdmissionState, key: stri
   state.pending.add(pending);
 }
 
-function bindAdmissionState(cache: PluginCache, state: AdmissionState): AdmissionState {
+/** Every inventory holding code captured under this state keeps its native custody alive. */
+export function borrowPluginNativeAdmissions(state: AdmissionState, cache: PluginCache): void {
   let scope = admissionScopes.get(cache);
   if (!scope) {
     scope = new Set();
@@ -124,6 +125,10 @@ function bindAdmissionState(cache: PluginCache, state: AdmissionState): Admissio
   }
   scope.add(state);
   state.borrowers.add(scope);
+}
+
+function bindAdmissionState(cache: PluginCache, state: AdmissionState): AdmissionState {
+  borrowPluginNativeAdmissions(state, cache);
   let views = admissions.get(cache);
   if (!views) {
     views = new Map();

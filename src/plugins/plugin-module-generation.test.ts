@@ -913,6 +913,8 @@ describe("plugin module generations", () => {
     const first = load(root, "index.ts").value as { read(): Promise<unknown[]> };
     expect(await first.read()).toEqual([true, 1]);
     expect(await first.read()).toEqual([true, 2]);
+    // Unchanged source shares its capture; an edit starts a fresh emitted graph.
+    fs.appendFileSync(path.join(root, "index.ts"), "\n// next generation\n");
     expect(await (load(root, "index.ts").value as typeof first).read()).toEqual([true, 1]);
   });
 
@@ -1010,10 +1012,10 @@ describe("plugin module generations", () => {
     );
     fs.writeFileSync(path.join(root, "value.cjs"), 'module.exports = "before";');
     type Captured = { filename: string; read(): string };
-    const cache = createPluginCache();
+    // Republished registries load through fresh inventories, like the Gateway and agent runtime.
     const bind = () => {
       const instance = new PluginInstance("shared-capture-fixture");
-      withPluginCache(cache, () =>
+      withPluginCache(createPluginCache(), () =>
         bindPluginInstanceModuleLoader({ instance, origin: "config", source, rootDir: root }),
       );
       return { instance, value: instance.loadModule(source) as Captured };
@@ -1039,5 +1041,39 @@ describe("plugin module generations", () => {
     await agent.instance.dispose();
     expect(fs.existsSync(agent.value.filename)).toBe(false);
     expect(fs.existsSync(edited.value.filename)).toBe(true);
+  });
+
+  it("recaptures unchanged source after a missing dependency is installed", () => {
+    const root = temp.make("plugin-late-dependency-");
+    fs.writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({
+        name: "late-fixture",
+        optionalDependencies: { "late-dependency": "1.0.0" },
+      }),
+    );
+    const source = path.join(root, "index.cjs");
+    fs.writeFileSync(
+      source,
+      'exports.read = () => { try { return require("late-dependency"); } catch { return "missing"; } };',
+    );
+    const bind = () => {
+      const instance = new PluginInstance("late-dependency-fixture");
+      instances.push(instance);
+      withPluginCache(createPluginCache(), () =>
+        bindPluginInstanceModuleLoader({ instance, origin: "config", source, rootDir: root }),
+      );
+      return instance.loadModule(source) as { read(): string };
+    };
+    expect(bind().read()).toBe("missing");
+
+    const dependency = path.join(root, "node_modules/late-dependency");
+    fs.mkdirSync(dependency, { recursive: true });
+    fs.writeFileSync(
+      path.join(dependency, "package.json"),
+      JSON.stringify({ name: "late-dependency", version: "1.0.0", main: "index.js" }),
+    );
+    fs.writeFileSync(path.join(dependency, "index.js"), 'module.exports = "installed";');
+    expect(bind().read()).toBe("installed");
   });
 });

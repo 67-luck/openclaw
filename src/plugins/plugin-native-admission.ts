@@ -666,5 +666,7 @@ export function createPluginNativeAdmission(
         }
       });
     },
+    /** Native custody for this capture; every inventory holding the capture borrows it. */
+    state,
   };
 }
