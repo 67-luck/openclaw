@@ -9,7 +9,9 @@ license = "MIT"
 
 [features]
 default = ["builtin-transport"]
-builtin-transport = ["openclaw-gateway-client/builtin-transport"]
+# The standalone openclaw-node requires this feature and owns its multi-thread
+# executor and OS signals; embedders provide those policies themselves.
+builtin-transport = ["openclaw-gateway-client/builtin-transport", "tokio/rt-multi-thread", "tokio/signal"]
 
 [dependencies]
 futures-util = "0.3.34"
@@ -26,8 +28,7 @@ tokio = { version = "1.53.1", features = [
   "io-util",
   "macros",
   "net",
-  "rt-multi-thread",
-  "signal",
+  "rt",
   "sync",
   "time",
 ] }
