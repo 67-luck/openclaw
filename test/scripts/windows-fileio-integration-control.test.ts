@@ -591,6 +591,11 @@ it.each([
   "query-threw",
   "early-exit",
   "complete",
+  "thread-worker-false",
+  "thread-belongs-threw",
+  "thread-rejected",
+  "thread-oracle-failed",
+  "thread-oracle-threw",
   "input-bom-prefix",
   "input-eof",
   "input-mismatch",
@@ -637,6 +642,41 @@ it.each([
       "eventNotAfterExit",
       "containsTime",
     ];
+    const threadObservationKeys = [
+      "workerAlive",
+      "belongsAtCallCompleted",
+      "belongsAt",
+      "oracleCallCompleted",
+      "oracleQuerySucceeded",
+      "oracleCreationNotAfterSample",
+    ];
+    const emptyThreadObservation = Object.fromEntries(
+      threadObservationKeys.map((key) => [key, null]),
+    );
+    const threadCase = scenario.startsWith("thread-");
+    const expectedThreadObservation =
+      scenario === "complete"
+        ? {
+            ...emptyThreadObservation,
+            workerAlive: true,
+            belongsAtCallCompleted: true,
+            belongsAt: true,
+          }
+        : scenario === "thread-worker-false"
+          ? { ...emptyThreadObservation, workerAlive: false }
+          : scenario === "thread-belongs-threw"
+            ? { ...emptyThreadObservation, workerAlive: true, belongsAtCallCompleted: false }
+            : threadCase
+              ? {
+                  workerAlive: true,
+                  belongsAtCallCompleted: true,
+                  belongsAt: false,
+                  oracleCallCompleted: scenario !== "thread-oracle-threw",
+                  oracleQuerySucceeded:
+                    scenario === "thread-oracle-threw" ? null : scenario !== "thread-oracle-failed",
+                  oracleCreationNotAfterSample: scenario === "thread-rejected" ? false : null,
+                }
+              : emptyThreadObservation;
     const inputCase = scenario.startsWith("input-");
     const inputCategory = inputCase ? scenario.slice(6) : undefined;
     const claimsComplete = scenario === "complete" || inputCase;
@@ -654,10 +694,14 @@ it.each([
     const expectedObservation =
       scenario === "query-threw"
         ? { ...emptyObservation, callCompleted: false }
-        : scenario === "early-exit" || claimsComplete
+        : scenario === "early-exit" || claimsComplete || threadCase
           ? observed
           : emptyObservation;
-    const boundaryStage = scenario.startsWith("process-") ? scenario : undefined;
+    const boundaryStage = threadCase
+      ? "thread-live"
+      : scenario.startsWith("process-")
+        ? scenario
+        : undefined;
     const record: Record<string, unknown> = {
       phase: "native-lifetime-control",
       passed: !boundaryStage,
@@ -676,14 +720,28 @@ it.each([
     } else if (scenario === "invalid") {
       record.passed = "true";
     }
-    if (scenario !== "missing" && !boundaryStage) {
-      for (const key of outcomeKeys) {
-        record[key] = scenario === "invalid" ? "true" : claimsComplete;
+    if (scenario !== "missing") {
+      if (!boundaryStage) {
+        for (const key of outcomeKeys) {
+          record[key] = scenario === "invalid" ? "true" : claimsComplete;
+        }
       }
-      record.processLiveObservation =
+      if (!boundaryStage || threadCase) {
+        record.processLiveObservation =
+          scenario === "invalid"
+            ? Object.fromEntries(observationKeys.map((key) => [key, "PRIVATE_EXCEPTION_CANARY"]))
+            : { ...expectedObservation, unknown: "PRIVATE_EXCEPTION_CANARY" };
+      }
+      record.threadLiveObservation =
         scenario === "invalid"
-          ? Object.fromEntries(observationKeys.map((key) => [key, "PRIVATE_EXCEPTION_CANARY"]))
-          : { ...expectedObservation, unknown: "PRIVATE_EXCEPTION_CANARY" };
+          ? Object.fromEntries(
+              threadObservationKeys.map((key) => [key, "PRIVATE_EXCEPTION_CANARY"]),
+            )
+          : {
+              ...expectedThreadObservation,
+              rawThreadId: "PRIVATE_EXCEPTION_CANARY",
+              rawCreationTime: "PRIVATE_EXCEPTION_CANARY",
+            };
     }
     const dependencies = {
       assert,
@@ -727,6 +785,7 @@ it.each([
     );
     expect(cell.nativeLifetimeControl?.stage).toBe(boundaryStage ?? "complete");
     expect(cell.nativeLifetimeControl?.processLiveObservation).toEqual(expectedObservation);
+    expect(cell.nativeLifetimeControl?.threadLiveObservation).toEqual(expectedThreadObservation);
     for (const key of outcomeKeys) {
       expect(cell.nativeLifetimeControl?.[key]).toBe(
         scenario === "missing" || scenario === "invalid" || boundaryStage ? null : claimsComplete,

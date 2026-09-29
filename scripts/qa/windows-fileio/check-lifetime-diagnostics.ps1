@@ -9,7 +9,8 @@ if($errors.Count){throw 'Control source parse failed'}
 $outer=$ast.EndBlock.Statements | Where-Object {$_ -is [Management.Automation.Language.TryStatementAst]} | Select-Object -First 1
 $literal=$outer.Find({param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.Value.StartsWith('using System;')},$true)
 if(-not $literal){throw 'Compiled control boundary missing'}
-$control=$literal.Value
+$fullControl=$literal.Value
+$control=$fullControl
 $threadBoundary=$control.IndexOf('    using(ManualResetEvent ready=')
 if($threadBoundary -lt 0){throw 'Thread-control boundary missing'}
 $control=$control.Substring(0,$threadBoundary)+"    Stage=`"complete`";`n  }`n}"
@@ -20,6 +21,108 @@ $realControl=$realControl.Replace('FileTraceLifetimeControl','FileTraceLifetimeC
 # Test-copy observation after the owner's real wait, without changing its decision.
 $realControl=$realControl.Replace('child.WaitForExit();','child.WaitForExit();LifetimeDiagnosticFixture.State.JoinedExitZero=child.ExitCode==0;')
 $control=$control.Replace('using System.Diagnostics;',"using System.Diagnostics;`nusing Process=LifetimeDiagnosticFixture.Child;`nusing Console=LifetimeDiagnosticFixture.ConsoleState;")
+# Retain the exact thread block in a separately named class. Substitutions
+# supply only native/self-process/property boundaries and observe event disposal.
+$processBoundary=$fullControl.IndexOf('    using(Process child=new Process())')
+if($processBoundary -lt 0){throw 'Process prefix boundary missing'}
+$threadControl=$fullControl.Substring(0,$processBoundary)+$fullControl.Substring($threadBoundary)
+$threadControl=[regex]::Replace($threadControl,'(?m)^using [^\r\n]+;\r?\n','')
+$threadControl=$threadControl.Replace('FileTraceLifetimeControl','FileTraceLifetimeThreadControl')
+$threadControl=$threadControl.Replace('OwnedFileTrace.','LifetimeThreadFixture.Native.')
+function Replace-ThreadBoundary([string]$Source,[string]$Before,[string]$After) {
+  if([regex]::Matches($Source,[regex]::Escape($Before)).Count -ne 1){throw 'Native thread test boundary was not unique'}
+  return $Source.Replace($Before,$After)
+}
+$threadControl=Replace-ThreadBoundary $threadControl 'throw new InvalidOperationException("Lifetime control assertion failed")' 'throw LifetimeThreadFixture.State.ObserveAssertion(new InvalidOperationException("Lifetime control assertion failed"))'
+$threadControl=Replace-ThreadBoundary $threadControl '[DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();' 'static uint GetCurrentThreadId(){LifetimeThreadFixture.State.Worker=Thread.CurrentThread;return 77;}'
+$threadControl=Replace-ThreadBoundary $threadControl '[DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenThread(uint access,bool inherit,uint tid);' 'static IntPtr OpenThread(uint access,bool inherit,uint tid){LifetimeThreadFixture.State.OracleOpens++;return new IntPtr(2);}'
+$threadControl=Replace-ThreadBoundary $threadControl '[DllImport("kernel32.dll",SetLastError=true)] static extern bool GetThreadTimes(IntPtr handle,out FileTime create,out FileTime exit,out FileTime kernel,out FileTime user);' @'
+static bool GetThreadTimes(IntPtr handle,out FileTime create,out FileTime exit,out FileTime kernel,out FileTime user){
+  create=exit=kernel=user=new FileTime();
+  long created,exited;
+  bool success=LifetimeThreadFixture.State.Query(handle,out created,out exited);
+  create.Low=(uint)created;create.High=(uint)((ulong)created>>32);
+  exit.Low=(uint)exited;exit.High=(uint)((ulong)exited>>32);
+  return success;
+}
+'@
+$threadControl=Replace-ThreadBoundary $threadControl 'using(Process self=Process.GetCurrentProcess())' 'using(LifetimeThreadFixture.SelfProcess self=LifetimeThreadFixture.SelfProcess.GetCurrentProcess())'
+$threadControl=Replace-ThreadBoundary $threadControl 'Thread worker=new Thread(' @'
+LifetimeThreadFixture.State.ReadyHandle=ready.SafeWaitHandle;
+      LifetimeThreadFixture.State.ReleaseHandle=release.SafeWaitHandle;
+      Thread worker=new Thread(
+'@
+$threadControl=$threadControl.Replace('worker.IsAlive','LifetimeThreadFixture.State.SampleWorkerAlive(worker)')
+$threadFixtures=@'
+namespace LifetimeThreadFixture {
+  public static class State {
+    public static string Scenario;
+    public static System.Threading.Thread Worker;
+    public static Microsoft.Win32.SafeHandles.SafeWaitHandle ReadyHandle,ReleaseHandle;
+    public static int AliveReads,BelongsCalls,LiveQueries,PostJoinQueries,OracleOpens,
+      SelfAcquires,SelfDisposals,Holds,LeaseCreates,LeaseDisposals,ProcessCloses,OracleCloses,ProcessObservations;
+    public static long LiveTime;
+    public static bool ActualAliveAtSample,OracleHandleMatched,OracleAfterAssertion;
+    public static System.Exception PrimaryFailure,ObservedAssertion;
+    public static void Reset(string scenario) {
+      Scenario=scenario;Worker=null;ReadyHandle=ReleaseHandle=null;
+      AliveReads=BelongsCalls=LiveQueries=PostJoinQueries=OracleOpens=SelfAcquires=SelfDisposals=
+        Holds=LeaseCreates=LeaseDisposals=ProcessCloses=OracleCloses=ProcessObservations=0;
+      LiveTime=0;ActualAliveAtSample=false;OracleHandleMatched=OracleAfterAssertion=true;ObservedAssertion=null;
+      PrimaryFailure=new System.InvalidOperationException("PRIVATE_BELONGS_FAILURE");
+    }
+    public static System.Exception ObserveAssertion(System.Exception error){ObservedAssertion=error;return error;}
+    public static bool SampleWorkerAlive(System.Threading.Thread worker) {
+      bool alive=worker.IsAlive;
+      if(++AliveReads==1)ActualAliveAtSample=alive;
+      return alive && Scenario!="worker-not-alive";
+    }
+    public static bool Query(System.IntPtr handle,out long created,out long exited) {
+      created=exited=0;OracleHandleMatched &= handle==new System.IntPtr(2);
+      if(Worker.IsAlive) {
+        LiveQueries++;
+        OracleAfterAssertion &= ObservedAssertion != null;
+        if(Scenario=="oracle-throws")throw new System.IO.IOException("PRIVATE_ORACLE_FAILURE");
+        if(Scenario=="oracle-false")return false;
+        created=LiveTime+(Scenario=="creation-after" ? 1 : Scenario=="creation-equal" ? 0 : -1);
+        return true;
+      }
+      PostJoinQueries++;created=LiveTime-1;exited=LiveTime+1;return true;
+    }
+  }
+  public sealed class SelfProcess : System.IDisposable {
+    public static SelfProcess GetCurrentProcess(){State.SelfAcquires++;return new SelfProcess();}
+    public System.DateTime StartTime {get{return System.DateTime.FromFileTimeUtc(100);}}
+    public int Id {get{return 1234;}}
+    public void Dispose(){State.SelfDisposals++;}
+  }
+  public static class Native {
+    public static System.IntPtr HoldProcess(uint pid,long created){State.Holds++;return new System.IntPtr(1);}
+    public static bool CloseHandle(System.IntPtr handle){
+      if(handle==new System.IntPtr(1))State.ProcessCloses++;
+      else if(handle==new System.IntPtr(2))State.OracleCloses++;
+      else throw new System.Exception("PRIVATE_WRONG_HANDLE");
+      return true;
+    }
+    public sealed class ThreadLease : System.IDisposable {
+      public ThreadLease(uint pid,long created,System.IntPtr handle){State.LeaseCreates++;}
+      public bool BelongsAt(uint tid,long time){
+        if(++State.BelongsCalls==1){
+          State.LiveTime=time;
+          if(State.Scenario=="belongs-throws")throw State.PrimaryFailure;
+          return State.Scenario=="pass";
+        }
+        return time==State.LiveTime;
+      }
+      public OwnedFileTrace.ProcessTimeObservation ObserveProcessTime(long time){
+        State.ProcessObservations++;
+        return new OwnedFileTrace.ProcessTimeObservation {ExitTimePresent=false};
+      }
+      public void Dispose(){State.LeaseDisposals++;}
+    }
+  }
+}
+'@
 $native=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'OwnedFileTrace.cs'))
 $structStart=$native.IndexOf('  public struct ProcessTimeObservation {')
 $structEnd=$native.IndexOf('  public sealed class ThreadLease', $structStart)
@@ -130,7 +233,7 @@ public static class OwnedFileTrace {
     public void Dispose(){LifetimeDiagnosticFixture.State.LeaseDisposals++;}
   }
 '@ + $native.Substring($structStart,$structEnd-$structStart) + "`n}"
-Add-Type -TypeDefinition ($control+"`n"+$realControl+"`n"+$fixtures)
+Add-Type -TypeDefinition ($control+"`n"+$realControl+"`n"+$threadControl+"`n"+$fixtures+"`n"+$threadFixtures)
 foreach($function in $ast.EndBlock.Statements | Where-Object {$_ -is [Management.Automation.Language.FunctionDefinitionAst]}) {
   $definition=$function.Extent.Text
   if($function.Name -eq 'Assert-LifetimeBindings'){$definition=$definition.Replace('Assert-LifetimeBindings','Assert-ActualLifetimeBindings')}
@@ -265,12 +368,12 @@ if($BindingProbePath) {
 if($RealNodeExe -or $RealFixturePath) {
   if(-not $RealNodeExe -or -not $RealFixturePath){throw 'Both real transport inputs are required'}
   $functions=$ast.EndBlock.Statements | Where-Object {
-    $_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -in @('Get-ProcessLiveObservation','Get-TerminalInputFailure')
+    $_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -in @('Get-ProcessLiveObservation','Get-TerminalInputFailure','Get-ThreadLiveObservation')
   }
   foreach($function in $functions) {
-    Invoke-Expression ($function.Extent.Text.Replace('Get-ProcessLiveObservation','Get-RealProcessLiveObservation').Replace('Get-TerminalInputFailure','Get-RealTerminalInputFailure').Replace('FileTraceLifetimeControl','FileTraceLifetimeControlReal'))
+    Invoke-Expression ($function.Extent.Text.Replace('Get-ProcessLiveObservation','Get-RealProcessLiveObservation').Replace('Get-TerminalInputFailure','Get-RealTerminalInputFailure').Replace('Get-ThreadLiveObservation','Get-RealThreadLiveObservation').Replace('FileTraceLifetimeControl','FileTraceLifetimeControlReal'))
   }
-  $realEntry=[scriptblock]::Create($entry.ToString().Replace('Get-ProcessLiveObservation','Get-RealProcessLiveObservation').Replace('Get-TerminalInputFailure','Get-RealTerminalInputFailure').Replace('FileTraceLifetimeControl','FileTraceLifetimeControlReal'))
+  $realEntry=[scriptblock]::Create($entry.ToString().Replace('Get-ProcessLiveObservation','Get-RealProcessLiveObservation').Replace('Get-TerminalInputFailure','Get-RealTerminalInputFailure').Replace('Get-ThreadLiveObservation','Get-RealThreadLiveObservation').Replace('FileTraceLifetimeControl','FileTraceLifetimeControlReal'))
   $NodeExe=$RealNodeExe;$fixturePath=$RealFixturePath
   $fixtureInputPath=Join-Path ([IO.Path]::GetDirectoryName($fixturePath)) 'fixture-input.cjs'
   $ExpectedNodeSha256=(Get-FileHash $NodeExe -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -290,3 +393,78 @@ if($RealNodeExe -or $RealFixturePath) {
     if(-not $passed){throw 'Real process transport contract failed'}
   }
 }
+
+# The actual thread emitter is absent in the old source. Keep that source
+# executable so the causal failure is missing facts, not a compile-time seam.
+foreach($function in $ast.EndBlock.Statements | Where-Object {
+  $_ -is [Management.Automation.Language.FunctionDefinitionAst] -and
+  $_.Name -in @('Get-ProcessLiveObservation','Get-TerminalInputFailure','Get-ThreadLiveObservation')
+}) {
+  Invoke-Expression ($function.Extent.Text.Replace('Get-ProcessLiveObservation','Get-ThreadControlProcessObservation').Replace('Get-TerminalInputFailure','Get-ThreadControlTerminalFailure').Replace('Get-ThreadLiveObservation','Get-ThreadControlObservation').Replace('FileTraceLifetimeControl','FileTraceLifetimeThreadControl'))
+}
+$threadEntry=[scriptblock]::Create($entry.ToString().Replace('Get-ProcessLiveObservation','Get-ThreadControlProcessObservation').Replace('Get-TerminalInputFailure','Get-ThreadControlTerminalFailure').Replace('Get-ThreadLiveObservation','Get-ThreadControlObservation').Replace('FileTraceLifetimeControl','FileTraceLifetimeThreadControl'))
+$threadFailed=0
+foreach($scenario in @('worker-not-alive','belongs-throws','creation-before','creation-equal','creation-after','oracle-false','oracle-throws','pass')) {
+  [LifetimeThreadFixture.State]::Reset($scenario)
+  foreach($field in [FileTraceLifetimeThreadControl].GetFields() | Where-Object {$_.FieldType -eq [Nullable[bool]]}){$field.SetValue($null,$null)}
+  [FileTraceLifetimeThreadControl]::ChildStartAttempted=$false;[FileTraceLifetimeThreadControl]::ChildJoined=$false
+  [FileTraceLifetimeThreadControl]::Stage='thread-start'
+  $stage='compile-control';$script:capturedExit=0;$script:capturedFailure=$null;$script:bindingChecks=0
+  $output=(& $threadEntry | Out-String).Trim()
+  $record=$output | ConvertFrom-Json
+  $expected=@{workerAlive=$scenario -ne 'worker-not-alive';belongsAtCallCompleted=$null;belongsAt=$null;
+    oracleCallCompleted=$null;oracleQuerySucceeded=$null;oracleCreationNotAfterSample=$null}
+  if($scenario -ne 'worker-not-alive'){$expected.belongsAtCallCompleted=$scenario -ne 'belongs-throws'}
+  if($scenario -notin @('worker-not-alive','belongs-throws')){$expected.belongsAt=$scenario -eq 'pass'}
+  $extraOracle=$scenario -notin @('worker-not-alive','belongs-throws','pass')
+  if($extraOracle){$expected.oracleCallCompleted=$scenario -ne 'oracle-throws'}
+  if($extraOracle -and $scenario -ne 'oracle-throws'){$expected.oracleQuerySucceeded=$scenario -ne 'oracle-false'}
+  if($scenario -in @('creation-before','creation-equal','creation-after')){$expected.oracleCreationNotAfterSample=$scenario -ne 'creation-after'}
+  $factsCorrect=$null -ne $record.threadLiveObservation
+  foreach($key in $expected.Keys){
+    $property=if($null -ne $record.threadLiveObservation){$record.threadLiveObservation.PSObject.Properties[$key]}else{$null}
+    if(-not $property -or $property.Value -cne $expected[$key]){$factsCorrect=$false}
+  }
+  $liveOracleCorrect=[LifetimeThreadFixture.State]::LiveQueries -eq $(if($extraOracle){1}else{0})
+  $postJoinOracleCorrect=[LifetimeThreadFixture.State]::PostJoinQueries -eq $(if($scenario -eq 'pass'){1}else{0})
+  $predicateCorrect=[LifetimeThreadFixture.State]::ActualAliveAtSample -and
+    [LifetimeThreadFixture.State]::BelongsCalls -eq $(if($scenario -eq 'worker-not-alive'){0}elseif($scenario -eq 'pass'){3}else{1})
+  $cleanup=[LifetimeThreadFixture.State]::Worker -and -not [LifetimeThreadFixture.State]::Worker.IsAlive -and
+    [LifetimeThreadFixture.State]::ReadyHandle.IsClosed -and [LifetimeThreadFixture.State]::ReleaseHandle.IsClosed -and
+    [LifetimeThreadFixture.State]::SelfAcquires -eq 1 -and [LifetimeThreadFixture.State]::SelfDisposals -eq 1 -and
+    [LifetimeThreadFixture.State]::Holds -eq 1 -and [LifetimeThreadFixture.State]::LeaseCreates -eq 1 -and
+    [LifetimeThreadFixture.State]::LeaseDisposals -eq 1 -and [LifetimeThreadFixture.State]::ProcessCloses -eq 1 -and
+    [LifetimeThreadFixture.State]::OracleOpens -eq 1 -and [LifetimeThreadFixture.State]::OracleCloses -eq 1 -and
+    [LifetimeThreadFixture.State]::ProcessObservations -eq $(if($scenario -eq 'pass'){1}else{0})
+  $failurePreserved=$null -eq $script:capturedFailure
+  if($scenario -ne 'pass'){
+    $cause=$script:capturedFailure
+    $unexpectedAggregate=$false
+    while($cause -and $cause.InnerException){
+      if($cause -is [AggregateException]){$unexpectedAggregate=$true}
+      $cause=$cause.InnerException
+    }
+    $failurePreserved=if($scenario -eq 'belongs-throws'){
+      [object]::ReferenceEquals($cause,[LifetimeThreadFixture.State]::PrimaryFailure)
+    }else{[object]::ReferenceEquals($cause,[LifetimeThreadFixture.State]::ObservedAssertion) -and
+      $cause -is [InvalidOperationException] -and $cause.Message -ceq 'Lifetime control assertion failed'}
+    $failurePreserved=$failurePreserved -and -not $unexpectedAggregate -and
+      -not $script:capturedFailure.ToString().Contains('PRIVATE_ORACLE_FAILURE')
+  }
+  $publicProperties=if($null -ne $record.threadLiveObservation){@($record.threadLiveObservation.PSObject.Properties.Name)}else{@()}
+  $privacy=-not $output.Contains('PRIVATE_') -and
+    @($publicProperties | Where-Object {$_ -notin $expected.Keys}).Count -eq 0
+  $passed=$factsCorrect -and $liveOracleCorrect -and $postJoinOracleCorrect -and $predicateCorrect -and
+    $cleanup -and $failurePreserved -and $privacy -and [LifetimeThreadFixture.State]::OracleHandleMatched -and
+    [LifetimeThreadFixture.State]::OracleAfterAssertion -and
+    $script:bindingChecks -eq 2 -and $script:capturedExit -eq $(if($scenario -eq 'pass'){0}else{2}) -and
+    $record.passed -eq ($scenario -eq 'pass') -and $record.stage -ceq $(if($scenario -eq 'pass'){'complete'}else{'thread-live'})
+  if(-not $passed){$threadFailed++}
+  @{scenario=('thread-'+$scenario);passed=$passed;factsCorrect=$factsCorrect;predicateCorrect=$predicateCorrect;
+    liveOracleCountCorrect=$liveOracleCorrect;postJoinOracleCountCorrect=$postJoinOracleCorrect;
+    oracleAfterAssertion=[LifetimeThreadFixture.State]::OracleAfterAssertion;
+    cleanupCorrect=$cleanup;primaryFailurePreserved=$failurePreserved;privacyCorrect=$privacy;
+    threadTransport='actual-Thread-ManualResetEvent';nativeProof=$false;
+    controlSha256=(Get-FileHash $SourcePath -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json -Compress
+}
+if($threadFailed){throw "Thread diagnostic contract failures: $threadFailed"}

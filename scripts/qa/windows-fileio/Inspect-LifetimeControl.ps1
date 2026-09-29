@@ -22,6 +22,17 @@ function Get-ProcessLiveObservation {
   }
   return $facts
 }
+function Get-ThreadLiveObservation {
+  $fields=@{workerAlive='ThreadWorkerAlive';belongsAtCallCompleted='ThreadBelongsAtCallCompleted';
+    belongsAt='ThreadBelongsAt';oracleCallCompleted='ThreadOracleCallCompleted';
+    oracleQuerySucceeded='ThreadOracleQuerySucceeded';oracleCreationNotAfterSample='ThreadOracleCreationNotAfterSample'}
+  $type='FileTraceLifetimeControl' -as [type]
+  $facts=@{}
+  foreach($key in $fields.Keys) {
+    $facts[$key]=if($type){$type.GetField($fields[$key]).GetValue($null)}else{$null}
+  }
+  return $facts
+}
 function Get-TerminalInputFailure {
   $type='FileTraceLifetimeControl' -as [type]
   if($type){return $type.GetField('TerminalInputFailure').GetValue($null)}
@@ -62,6 +73,8 @@ public static class FileTraceLifetimeControl {
   public static bool ChildStartAttempted,ChildJoined;
   public static bool? ChildHasExited,ObservationCallCompleted,QuerySucceeded,CreationMatches,
     EventNotBeforeCreation,ExitTimePresent,EventNotAfterExit,ContainsTime;
+  public static bool? ThreadWorkerAlive,ThreadBelongsAtCallCompleted,ThreadBelongsAt,
+    ThreadOracleCallCompleted,ThreadOracleQuerySucceeded,ThreadOracleCreationNotAfterSample;
   static void Require(bool value) { if(!value) throw new InvalidOperationException("Lifetime control assertion failed"); }
   static Exception Combine(Exception first,Exception next) {
     return first == null ? next : new AggregateException(first,next);
@@ -174,7 +187,30 @@ public static class FileTraceLifetimeControl {
         handle=OwnedFileTrace.HoldProcess((uint)self.Id,created);
         lease=new OwnedFileTrace.ThreadLease((uint)self.Id,created,handle);
         long liveTime=DateTime.UtcNow.ToFileTimeUtc();
-        Stage="thread-live";Require(worker.IsAlive && lease.BelongsAt(tid,liveTime));
+        Stage="thread-live";
+        bool workerAlive=false,belongsAt=false,predicateCompleted=false;
+        try {
+          workerAlive=worker.IsAlive;ThreadWorkerAlive=workerAlive;
+          if(workerAlive) {
+            ThreadBelongsAtCallCompleted=false;
+            belongsAt=lease.BelongsAt(tid,liveTime);
+            ThreadBelongsAt=belongsAt;ThreadBelongsAtCallCompleted=true;
+          }
+          predicateCompleted=true;
+          Require(workerAlive && belongsAt);
+        } finally {
+          if(predicateCompleted && workerAlive && !belongsAt) {
+            try {
+              ThreadOracleCallCompleted=false;
+              FileTime oracleCreated,ignoredExit,ignoredKernel,ignoredUser;
+              bool queried=GetThreadTimes(threadOracle,out oracleCreated,out ignoredExit,out ignoredKernel,out ignoredUser);
+              ThreadOracleQuerySucceeded=queried;ThreadOracleCallCompleted=true;
+              if(queried)ThreadOracleCreationNotAfterSample=Stamp(oracleCreated)<=liveTime;
+            } catch {
+              // Diagnostic failure must not replace the original assertion.
+            }
+          }
+        }
         release.Set();worker.Join();Require(!worker.IsAlive);
         Stage="thread-exited";
         Require(lease.ObserveProcessTime(DateTime.UtcNow.ToFileTimeUtc()).ExitTimePresent == false);
@@ -213,11 +249,11 @@ public static class FileTraceLifetimeControl {
     dllSha256=$ExpectedDllSha256;nodeSha256=$ExpectedNodeSha256;fixtureSha256=$ExpectedFixtureSha256;
     fixtureInputSha256=$ExpectedFixtureInputSha256;processLive=$true;processInsideExit=$true;processAfterExit=$true;
     threadLive=$true;threadInsideExit=$true;threadAfterExit=$true;naturalRelease=$true;
-    processLiveObservation=(Get-ProcessLiveObservation);terminalInputFailure=(Get-TerminalInputFailure)} | ConvertTo-Json -Depth 3 -Compress
+    processLiveObservation=(Get-ProcessLiveObservation);threadLiveObservation=(Get-ThreadLiveObservation);terminalInputFailure=(Get-TerminalInputFailure)} | ConvertTo-Json -Depth 3 -Compress
 } catch {
   $controlType='FileTraceLifetimeControl' -as [type]
   if($controlType){$stage=$controlType.GetField('Stage').GetValue($null)}
   @{phase='native-lifetime-control';passed=$false;stage=$stage;
-    processLiveObservation=(Get-ProcessLiveObservation);terminalInputFailure=(Get-TerminalInputFailure)} | ConvertTo-Json -Depth 3 -Compress
+    processLiveObservation=(Get-ProcessLiveObservation);threadLiveObservation=(Get-ThreadLiveObservation);terminalInputFailure=(Get-TerminalInputFailure)} | ConvertTo-Json -Depth 3 -Compress
   exit 2
 }

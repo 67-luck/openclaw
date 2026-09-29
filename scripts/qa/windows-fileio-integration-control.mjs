@@ -635,6 +635,20 @@ async function main() {
         return [field, typeof value === "boolean" ? value : null];
       }),
     );
+    const threadObservationFields = [
+      "workerAlive",
+      "belongsAtCallCompleted",
+      "belongsAt",
+      "oracleCallCompleted",
+      "oracleQuerySucceeded",
+      "oracleCreationNotAfterSample",
+    ];
+    const threadLiveObservation = Object.fromEntries(
+      threadObservationFields.map((field) => {
+        const value = record.threadLiveObservation?.[field];
+        return [field, typeof value === "boolean" ? value : null];
+      }),
+    );
     const terminalFailureCategories = ["bom-prefix", "eof", "mismatch", "other"];
     cell.nativeLifetimeControl = {
       passed: typeof record.passed === "boolean" ? record.passed : null,
@@ -647,6 +661,7 @@ async function main() {
       fixtureInputSha256,
       ...facts,
       processLiveObservation,
+      threadLiveObservation,
       terminalInputFailure: terminalFailureCategories.includes(record.terminalInputFailure)
         ? record.terminalInputFailure
         : null,
