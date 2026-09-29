@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { resolveApiKeyForProfile } from "../agents/auth-profiles/oauth.js";
+import * as authRows from "../agents/auth-profiles/sqlite-read.js";
 import { loadAuthProfileStoreWithoutExternalProfiles } from "../agents/auth-profiles/store-runtime.js";
 import type { AuthProfileCredential } from "../agents/auth-profiles/types.js";
 import {
@@ -117,6 +118,27 @@ describe("setup activation reload ownership", () => {
         );
       }
       let promotionObserved = false;
+      let preparingRecovery = false;
+      const recoveryReadEntered = createDeferred();
+      const credentialRestored = createDeferred();
+      const prepareAuthRows = authRows.prepareAgentAuthProfileRowsRead;
+      const authReader = vi
+        .spyOn(authRows, "prepareAgentAuthProfileRowsRead")
+        .mockImplementation((options) => {
+          const reader = prepareAuthRows(options);
+          return {
+            ...reader,
+            read: async () => {
+              const rows = reader.read();
+              if (preparingRecovery) {
+                // Expose a captured auth read spanning rollback without changing its rows or guards.
+                recoveryReadEntered.resolve();
+                await credentialRestored.promise;
+              }
+              return await rows;
+            },
+          };
+        });
       await state.writeConfig(previous);
       await refreshPreparedModelRuntimeSnapshots(previous);
       const initial = await readConfigFileSnapshot();
@@ -194,6 +216,10 @@ describe("setup activation reload ownership", () => {
             }),
           }),
         prepareConfigCandidate: async ({ runtimeConfig, sourceConfig }) => {
+          preparingRecovery =
+            promotionObserved &&
+            resolveAgentModelPrimaryValue(sourceConfig.agents?.defaults?.model) ===
+              "openai/fixture-working";
           if (
             outcome === "runtime-failed" &&
             resolveAgentModelPrimaryValue(sourceConfig.agents?.defaults?.model) ===
@@ -261,9 +287,21 @@ describe("setup activation reload ownership", () => {
               writeOptions,
               transform: (_current, context) => {
                 const undo = captureSetupInferenceFileUndo(context.snapshot, candidate);
-                captureUndo((options) => {
+                captureUndo(async (options) => {
                   recoveryApplication = getRuntimeConfigWriteApplication(options);
-                  return undo(options);
+                  const restored = await undo(options);
+                  if (outcome === "runtime-failed") {
+                    if (!recoveryApplication) {
+                      throw new Error("missing recovery application");
+                    }
+                    await Promise.race([
+                      recoveryReadEntered.promise,
+                      recoveryApplication.result.then((status) => {
+                        throw new Error(`Recovery settled before auth read: ${status}`);
+                      }),
+                    ]);
+                  }
+                  return restored;
                 });
                 return { nextConfig: candidate };
               },
@@ -274,14 +312,26 @@ describe("setup activation reload ownership", () => {
         await commitSetupInferenceActivation({
           preserveWorkingConnection: true,
           assertCurrent: () => {},
-          activate: async () =>
-            outcome === "runtime-failed"
-              ? await activateSavedSetupCredential({
-                  agentDir: state.agentDir("default"),
-                  profileId,
-                  credential: pendingCredential,
-                })
-              : undefined,
+          activate: async () => {
+            if (outcome !== "runtime-failed") {
+              return undefined;
+            }
+            const receipt = await activateSavedSetupCredential({
+              agentDir: state.agentDir("default"),
+              profileId,
+              credential: pendingCredential,
+            });
+            if (!receipt) {
+              throw new Error("missing credential activation receipt");
+            }
+            return {
+              ...receipt,
+              rollback: () => {
+                receipt.rollback();
+                credentialRestored.resolve();
+              },
+            };
+          },
           deferCompletion: completion.resolve,
           configTarget,
           config: candidate,
@@ -416,10 +466,12 @@ describe("setup activation reload ownership", () => {
         ).toBe("openai/fixture-newer");
       } finally {
         releaseCapture.resolve();
+        credentialRestored.resolve();
         try {
           await reloader.stop();
         } finally {
           configFileAdapter.mockRestore();
+          authReader.mockRestore();
         }
       }
     },

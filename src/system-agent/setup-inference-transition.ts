@@ -134,10 +134,19 @@ export async function commitSetupInferenceActivation(params: {
       })
     : undefined;
   const restore = async () => {
+    let credentialRollback: Promise<void> | undefined;
+    const restoreCredential = () =>
+      (credentialRollback ??= (async () => {
+        credential?.rollback();
+      })());
     const restoredApplication = application
       ? createRuntimeConfigWriteApplication(continuation, {
           prepare: async (assertCurrent) => {
             assertApplicationCurrent = assertCurrent;
+            assertCurrent();
+            // Recovery must restore auth before the Gateway captures replacement readers.
+            // Share settlement with post-write recovery so a refused rollback is never retried.
+            await restoreCredential();
           },
         })
       : undefined;
@@ -145,7 +154,7 @@ export async function commitSetupInferenceActivation(params: {
       configCommitted && undoConfig
         ? await undoConfig(attachRuntimeConfigWriteApplication({}, restoredApplication))
         : { config: (await params.configTarget.read()).config, written: false };
-    credential?.rollback();
+    await restoreCredential();
     if (restoredApplication && restored.written) {
       if (!restoredApplication.claimed || (await restoredApplication.result) !== "applied") {
         throw new Error(
