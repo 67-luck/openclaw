@@ -30,6 +30,7 @@ import {
 import {
   createPackageIntegrityReader,
   type PackageIntegrityFingerprint,
+  type PackageIntegrityReceipt,
 } from "./package-update-integrity.js";
 import { assertManagedUpdateLeaseDatabaseIdentity } from "./update-managed-service-handoff-database.js";
 
@@ -44,6 +45,7 @@ export function createPublicationOwner(
 ) {
   let record = initial;
   const descriptor = record.descriptor;
+  const receipts = new Map<string, PackageIntegrityReceipt>();
   let retirementSelected: "previous" | "candidate" | undefined;
   const live = descriptor.authority.installKey;
   const root = (name: string) => path.join(anchor, name);
@@ -154,17 +156,30 @@ export function createPublicationOwner(
     assertCurrent();
     record = journal.transition(record, phase, intent, assertion, publications);
   };
-  const matches = async (file: string, expected: PackageIntegrityFingerprint, logical: string) => {
+  const matches = async (
+    file: string,
+    expected: PackageIntegrityFingerprint,
+    logical: string,
+    allowReceipt = false,
+  ) => {
     if (!(await packagePathEntryExists(file))) {
       return false;
     }
-    const observed = await createPackageIntegrityReader().tree(file, logical);
-    if (!isDeepStrictEqual(observed, expected)) {
+    const reader = createPackageIntegrityReader();
+    const key = JSON.stringify([expected, packageActivationIdentity(file, true)]);
+    const cached = receipts.get(key);
+    // Shared mmap writes can precede timestamp updates; authority boundaries must hash content.
+    if (allowReceipt && cached && (await reader.treeUnchanged(file, cached))) {
+      return true;
+    }
+    const observed = await reader.treeWithReceipt(file, logical);
+    if (!isDeepStrictEqual(observed.fingerprint, expected)) {
       throw new Error(`Package publication object changed: ${file}`);
     }
+    receipts.set(key, observed);
     return true;
   };
-  const inspect = async () => {
+  const inspect = async (verification: "full" | "intermediate" | "final" = "full") => {
     const reader = createPackageIntegrityReader();
     const livePresent = await reader.exists(live);
     let selected: "previous" | "candidate" | null = null;
@@ -183,13 +198,20 @@ export function createPublicationOwner(
         live,
         descriptor[selected],
         selected === "previous" ? live : descriptor.originalStageRoot,
+        verification === "intermediate",
       );
     }
-    const previous = await matches(root("previous"), descriptor.previous, live);
+    const previous = await matches(
+      root("previous"),
+      descriptor.previous,
+      live,
+      verification !== "full",
+    );
     const candidate = await matches(
       root("candidate"),
       descriptor.candidate,
       descriptor.originalStageRoot,
+      verification !== "full",
     );
     if ((selected === "previous") === previous || (selected === "candidate") === candidate) {
       throw new Error("Package publication generation roles are ambiguous.");
@@ -308,6 +330,7 @@ export function createPublicationOwner(
     }
   };
   const publish = async (resume: boolean, onDisplaced?: () => void | Promise<void>) => {
+    receipts.clear();
     await verifyClosure();
     if (!["preparing", "prepared", "publishing", "publication-complete"].includes(record.phase)) {
       throw new Error(`Forward publication is disarmed (${record.phase}).`);
@@ -341,7 +364,7 @@ export function createPublicationOwner(
     } else if (observed.selected === null) {
       await persistPackageSelection("displaced");
     }
-    observed = await inspect();
+    observed = await inspect("intermediate");
     assertCurrent();
     if (observed.selected === null) {
       transition("publishing", { kind: "publish" });
@@ -358,7 +381,7 @@ export function createPublicationOwner(
     }
     await persistPackageSelection("candidate");
     for (const entry of descriptor.launchers) {
-      observed = await inspect();
+      observed = await inspect("intermediate");
       assertCurrent();
       if (observed.launcherStates.get(entry.name) === "candidate") {
         const destination = path.join(descriptor.binDir, entry.name);
@@ -410,7 +433,7 @@ export function createPublicationOwner(
       const id = packageActivationIdentity(path.join(descriptor.binDir, entry.name), "launcher");
       transition("publishing", null, [...record.publications, { name: entry.name, identity: id }]);
     }
-    observed = await inspect();
+    observed = await inspect("final");
     assertCurrent();
     if (observed.selected !== "candidate") {
       throw new Error("Candidate publication is incomplete.");
@@ -468,6 +491,7 @@ export function createPublicationOwner(
           root(name),
           name === "previous" ? descriptor.previous : descriptor.candidate,
           name === "previous" ? live : descriptor.originalStageRoot,
+          name === "previous" ? selected !== "previous" : selected !== "candidate",
         );
       }
       assertCurrent();

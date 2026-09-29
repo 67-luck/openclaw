@@ -17,6 +17,10 @@ let readerSequence = 0;
 
 export type PackageIntegrityFingerprint = { digest: string; identity: string; version: string };
 export type PackageDirectoryIdentity = Pick<PackageIntegrityFingerprint, "identity" | "version">;
+export type PackageIntegrityReceipt = {
+  fingerprint: PackageIntegrityFingerprint;
+  entries: ReadonlyMap<string, { stat: BigIntStats; target?: string }>;
+};
 
 export type PackageLauncherFingerprint = {
   type: "symlink" | "file";
@@ -232,9 +236,12 @@ export function createPackageIntegrityReader(timeoutMs = UPDATE_RUNNER_TIMEOUT_M
     }
   }
 
-  async function tree(root: string, originalRoot = root): Promise<PackageIntegrityFingerprint> {
+  async function treeWithReceipt(
+    root: string,
+    originalRoot = root,
+  ): Promise<PackageIntegrityReceipt> {
     const digest = createHash("sha256");
-    const observed: Array<{ file: string; stat: BigIntStats }> = [];
+    const observed = new Map<string, { stat: BigIntStats; target?: string }>();
     const hardlinks = new Map<string, string>();
     let bytes = 0;
     let remainingEntries = MAX_TREE_ENTRIES - 1;
@@ -253,7 +260,8 @@ export function createPackageIntegrityReader(timeoutMs = UPDATE_RUNNER_TIMEOUT_M
         device = stat.dev;
         rootIdentity = identity(stat);
       }
-      observed.push({ file, stat });
+      const entry: { stat: BigIntStats; target?: string } = { stat };
+      observed.set(relative, entry);
       // Renaming changes the root ctime. All descendant identities and clocks
       // must survive; root identity is compared separately from this digest.
       const fields = metadata(stat);
@@ -263,6 +271,7 @@ export function createPackageIntegrityReader(timeoutMs = UPDATE_RUNNER_TIMEOUT_M
       digest.update(JSON.stringify([relative, fields]));
       if (stat.isSymbolicLink()) {
         const target = await read(() => fs.readlink(file));
+        entry.target = target;
         const resolved = path.relative(
           originalRoot,
           path.resolve(path.dirname(path.join(originalRoot, relative)), target),
@@ -316,12 +325,73 @@ export function createPackageIntegrityReader(timeoutMs = UPDATE_RUNNER_TIMEOUT_M
     if (!version) {
       throw new Error("Package rollback version is unavailable");
     }
-    for (const entry of observed) {
-      if (!unchanged(entry.stat, await read(() => fs.lstat(entry.file, { bigint: true })))) {
+    for (const [relative, entry] of observed) {
+      if (
+        !unchanged(
+          entry.stat,
+          await read(() => fs.lstat(path.join(root, relative), { bigint: true })),
+        )
+      ) {
         throw new Error("Package rollback tree changed during verification");
       }
     }
-    return { digest: digest.digest("hex"), identity: rootIdentity, version };
+    return {
+      fingerprint: { digest: digest.digest("hex"), identity: rootIdentity, version },
+      entries: observed,
+    };
+  }
+
+  async function tree(root: string, originalRoot = root): Promise<PackageIntegrityFingerprint> {
+    return (await treeWithReceipt(root, originalRoot)).fingerprint;
+  }
+
+  async function treeUnchanged(root: string, receipt: PackageIntegrityReceipt): Promise<boolean> {
+    const observed = new Map<string, BigIntStats>();
+    async function visit(relative: string): Promise<boolean> {
+      const expected = receipt.entries.get(relative);
+      if (!expected) {
+        return false;
+      }
+      const file = path.join(root, relative);
+      const stat = await read(() => fs.lstat(file, { bigint: true }));
+      // Only the root's ctime changes on rename; retain every other fingerprint field.
+      const fields = (value: BigIntStats) =>
+        (relative ? metadata(value) : metadata(value).slice(0, -1)).join("/");
+      if (fields(stat) !== fields(expected.stat)) {
+        return false;
+      }
+      observed.set(relative, stat);
+      if (stat.isSymbolicLink() && (await read(() => fs.readlink(file))) !== expected.target) {
+        return false;
+      }
+      if (stat.isDirectory()) {
+        for (const child of await entries(file)) {
+          if (!(await visit(relative ? `${relative}/${child}` : child))) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+    try {
+      if (!(await visit("")) || observed.size !== receipt.entries.size) {
+        return false;
+      }
+      // As with hashing, recheck every entry after traversal, including the root clocks.
+      for (const [relative, stat] of observed) {
+        if (
+          !unchanged(stat, await read(() => fs.lstat(path.join(root, relative), { bigint: true })))
+        ) {
+          return false;
+        }
+      }
+      return true;
+    } catch (error) {
+      if (hasErrnoCode(error, "ENOENT")) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   async function rootEntry(
@@ -389,5 +459,15 @@ export function createPackageIntegrityReader(timeoutMs = UPDATE_RUNNER_TIMEOUT_M
     }
   }
 
-  return { tree, rootEntry, directoryIdentity, launcher, exists, entries, observe };
+  return {
+    tree,
+    treeWithReceipt,
+    treeUnchanged,
+    rootEntry,
+    directoryIdentity,
+    launcher,
+    exists,
+    entries,
+    observe,
+  };
 }
