@@ -63,6 +63,15 @@ const nativeFailureSchema = z.object({
   nativeErrorCode: z.number().int().min(-2_147_483_648).max(2_147_483_647).optional(),
   truncated: z.boolean(),
 });
+const prepareStageRecordSchema = z.object({
+  phase: z.literal("prepare-stage"),
+  diagnosticOnly: z.literal(true),
+  stage: prepareStageSchema,
+});
+const nativeFailureRecordSchema = nativeFailureSchema.extend({
+  phase: z.literal("prepare-failure"),
+  diagnosticOnly: z.literal(true),
+});
 const commandErrorCodeSchema = z.enum([
   "ETIMEDOUT",
   "ABORT_ERR",
@@ -152,6 +161,11 @@ export type InstalledFileIoCommandFact = {
     elapsedMs: number;
     commandStage: "requested" | "on-ready" | "spawned";
     lastPrepareStage: z.infer<typeof prepareStageSchema> | null;
+    stageArrivalTiming: "first-complete-line-on-stdout-pipe";
+    stageArrivals: Array<{
+      stage: z.infer<typeof prepareStageSchema>;
+      pipeArrivalElapsedMs: number;
+    }>;
     nativeFailure: z.infer<typeof nativeFailureSchema> | null;
     incompleteOutputLine: boolean;
     outputTruncated: boolean;
@@ -301,6 +315,8 @@ function fileIoCommand(
         elapsedMs: 0,
         commandStage: "requested",
         lastPrepareStage: null,
+        stageArrivalTiming: "first-complete-line-on-stdout-pipe",
+        stageArrivals: [],
         nativeFailure: null,
         incompleteOutputLine: false,
         outputTruncated: false,
@@ -313,6 +329,40 @@ function fileIoCommand(
     let output = "";
     let failure: unknown;
     const started = performance.now();
+    let nextLine = 0;
+    // Arrival means the handler received a complete line, not that the native
+    // operation ran at that instant. Reuse the command clock and retained prefix.
+    const capturePreparationFacts = (pipeArrivalElapsedMs: number) => {
+      for (
+        let end = output.indexOf("\n", nextLine);
+        end !== -1;
+        end = output.indexOf("\n", nextLine)
+      ) {
+        const line = output.slice(nextLine, end);
+        nextLine = end + 1;
+        let value: unknown;
+        try {
+          value = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const stage = prepareStageRecordSchema.safeParse(value);
+        if (stage.success) {
+          fact.diagnostics.lastPrepareStage = stage.data.stage;
+          const arrivals = fact.diagnostics.stageArrivals;
+          if (
+            arrivals.length < 10 &&
+            !arrivals.some((arrival) => arrival.stage === stage.data.stage)
+          ) {
+            arrivals.push({ stage: stage.data.stage, pipeArrivalElapsedMs });
+          }
+        }
+        const nativeFailure = nativeFailureRecordSchema.safeParse(value);
+        if (nativeFailure.success) {
+          fact.diagnostics.nativeFailure = nativeFailureSchema.parse(nativeFailure.data);
+        }
+      }
+    };
     try {
       fact.exitCode = await runManagedCommand({
         bin: powerShellExe,
@@ -349,9 +399,13 @@ function fileIoCommand(
             }
           });
           launched.stdout?.on("data", (chunk: Buffer) => {
+            const pipeArrivalElapsedMs = Math.round(performance.now() - started);
             fact.stdoutBytes += chunk.length;
             if (fact.stdoutBytes <= 65_536) {
               output += chunk.toString("utf8");
+              if (phase === "prepare") {
+                capturePreparationFacts(pipeArrivalElapsedMs);
+              }
             }
           });
           launched.stderr?.on("data", (chunk: Buffer) => {
@@ -366,34 +420,6 @@ function fileIoCommand(
     fact.diagnostics.elapsedMs = Math.round(performance.now() - started);
     fact.diagnostics.outputTruncated = fact.stdoutBytes > 65_536;
     fact.diagnostics.incompleteOutputLine = output.length > 0 && !output.endsWith("\n");
-    // Only complete captured lines can acknowledge preparation progress. These
-    // facts never participate in readiness, custody, or cleanup decisions.
-    if (phase === "prepare") {
-      for (const line of output.split(/\r?\n/u).slice(0, -1)) {
-        let value: unknown;
-        try {
-          value = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        const stage = z
-          .object({
-            phase: z.literal("prepare-stage"),
-            diagnosticOnly: z.literal(true),
-            stage: prepareStageSchema,
-          })
-          .safeParse(value);
-        if (stage.success) {
-          fact.diagnostics.lastPrepareStage = stage.data.stage;
-        }
-        const nativeFailure = nativeFailureSchema
-          .extend({ phase: z.literal("prepare-failure"), diagnosticOnly: z.literal(true) })
-          .safeParse(value);
-        if (nativeFailure.success) {
-          fact.diagnostics.nativeFailure = nativeFailureSchema.parse(nativeFailure.data);
-        }
-      }
-    }
     fact.joined =
       (!child || inspectManagedProcessGroup(child, { errorPolicy: "indeterminate" }) === "dead") &&
       !hasUnjoinedWork(failure);

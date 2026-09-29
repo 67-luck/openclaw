@@ -481,6 +481,7 @@ it("caps failure traversal and output without claiming an unseen stage", async (
     lastPrepareStage: null,
     outputTruncated: true,
     errorsTruncated: true,
+    stageArrivals: [],
   });
   expect(f.commandFacts[0]!.diagnostics.errors).toHaveLength(8);
   expect(JSON.stringify(f.commandFacts)).not.toContain("synthetic-private");
@@ -524,4 +525,92 @@ it("retains native refusal facts on nonzero exit without inventing a managed err
     },
   });
   expect(f.commandFacts[0]!.diagnostics.nativeFailure).not.toHaveProperty("nativeErrorCode");
+});
+
+it("records first complete stage pipe arrivals on the command clock without changing refusal", async () => {
+  const f = await fixture();
+  const stages = [
+    "entered",
+    "custody-written",
+    "dll-compiled",
+    "dll-loaded",
+    "schema-discovered",
+    "schema-written",
+    "inputs-bound",
+    "trace-absent",
+    "trace-started",
+    "acquisition-written",
+  ];
+  let ticks = 1000;
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => ticks);
+  const liveSnapshots: unknown[] = [];
+  managed.run.mockImplementationOnce(async (options) => {
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+    options.onReady(child);
+    child.emit("message", { type: "spawned", pid: 124 });
+    const line = (stage: string) =>
+      JSON.stringify({
+        phase: "prepare-stage",
+        diagnosticOnly: true,
+        stage,
+        privatePath: "synthetic-private-path",
+      }) + "\r\n";
+    const entered = line("entered");
+    ticks = 1011;
+    child.stdout.write(entered.slice(0, 20));
+    liveSnapshots.push(structuredClone(f.commandFacts[0]!.diagnostics.stageArrivals));
+    ticks = 1017;
+    child.stdout.write(entered.slice(20) + line("custody-written"));
+    liveSnapshots.push(structuredClone(f.commandFacts[0]!.diagnostics.stageArrivals));
+    ticks = 1018;
+    child.stdout.write(line("entered").repeat(100));
+    for (const [index, stage] of stages.slice(2).entries()) {
+      ticks = 1022 + 5 * index;
+      child.stdout.write(line(stage));
+    }
+    ticks = 1090;
+    child.stdout.write(line("entered").repeat(100));
+    child.stdout.write(line("synthetic-private-unknown"));
+    child.stdout.write(line("dll-loaded").trimEnd());
+    liveSnapshots.push(structuredClone(f.commandFacts[0]!.diagnostics.stageArrivals));
+    ticks = 5000;
+    throw Object.assign(new Error("synthetic-private-timeout"), { code: "ETIMEDOUT" });
+  });
+  try {
+    await expect(f.prepare()).rejects.toThrow("FileIO preparation or custody validation failed");
+    await f.lifetime.cleanup();
+  } finally {
+    clock.mockRestore();
+  }
+  expect(liveSnapshots[0]).toEqual([]);
+  expect(liveSnapshots[1]).toEqual([
+    { stage: "entered", pipeArrivalElapsedMs: 17 },
+    { stage: "custody-written", pipeArrivalElapsedMs: 17 },
+  ]);
+  const expected = stages.map((stage, index) => ({
+    stage,
+    pipeArrivalElapsedMs: index < 2 ? 17 : 17 + 5 * (index - 1),
+  }));
+  expect(liveSnapshots[2]).toEqual(expected);
+  expect(f.commandFacts[0]).toMatchObject({
+    outcome: "failed",
+    joined: true,
+    exitCode: null,
+    diagnostics: {
+      elapsedMs: 4000,
+      stageArrivalTiming: "first-complete-line-on-stdout-pipe",
+      stageArrivals: expected,
+      lastPrepareStage: "entered",
+      incompleteOutputLine: true,
+      outputTruncated: false,
+      errors: [{ code: "ETIMEDOUT" }],
+    },
+  });
+  expect(f.commandFacts[0]!.diagnostics.stageArrivals).toHaveLength(10);
+  expect(f.commandFacts[1]!.diagnostics.stageArrivals).toEqual([]);
+  expect(JSON.stringify(f.commandFacts)).not.toContain("synthetic-private");
+  await expect(fs.stat(f.privateRoot)).rejects.toMatchObject({ code: "ENOENT" });
 });
