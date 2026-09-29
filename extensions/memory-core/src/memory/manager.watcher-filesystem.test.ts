@@ -16,9 +16,9 @@ import {
   configureMemoryCoreDreamingStateForTests,
   resetMemoryCoreDreamingStateForTests,
 } from "../test-helpers.js";
+import { MemoryFileWatcher } from "./file-watcher.js";
 import { MemoryIndexManager } from "./manager.js";
 
-// Drive real guarded scans explicitly so native hints cannot race the frozen settling clock.
 vi.mock("openclaw/plugin-sdk/file-access-runtime", async (original) => ({
   ...(await original<typeof import("openclaw/plugin-sdk/file-access-runtime")>()),
 }));
@@ -35,6 +35,7 @@ it("indexes real edits, deletion and root replacement, then joins every subscrip
   const subscriptions: WatchSubscription[] = [];
   const bootstrap = createDeferred<void>();
   const originalWatch = observation.watch;
+  // Drive guarded scans explicitly so native hints cannot race the frozen settling clock.
   const observed = vi.spyOn(observation, "watch").mockImplementation((authority, options) => {
     contexts.push(turn.getStore());
     const subscription = originalWatch(authority, {
@@ -167,6 +168,86 @@ it("indexes real edits, deletion and root replacement, then joins every subscrip
     vi.restoreAllMocks();
     vi.useRealTimers();
     resetMemoryCoreDreamingStateForTests();
+    await state.cleanup();
+  }
+});
+
+it("observes later edits beyond the default directory scan budget", async () => {
+  const state = await createOpenClawTestState({ label: "memory-watch-large-tree" });
+  const memory = path.join(state.workspaceDir, "memory");
+  const note = path.join(memory, "4096", "note.md");
+  const initial = createDeferred<void>();
+  const edited = createDeferred<void>();
+  const failures: unknown[] = [];
+  const subscriptions: WatchSubscription[] = [];
+  const originalWatch = observation.watch;
+  const observed = vi.spyOn(observation, "watch").mockImplementation((authority, options) => {
+    const subscription = originalWatch(authority, {
+      ...options,
+      onHealth(health) {
+        if (health.state === "unavailable") {
+          failures.push(health.failure?.error);
+        }
+        options.onHealth?.(health);
+      },
+    });
+    subscriptions.push(subscription);
+    return subscription;
+  });
+  const onUnavailable = vi.fn();
+  let watcher: MemoryFileWatcher | undefined;
+  try {
+    vi.stubEnv("CHOKIDAR_USEPOLLING", "true");
+    vi.stubEnv("CHOKIDAR_INTERVAL", "30000");
+    await fs.mkdir(memory);
+    for (let offset = 0; offset < 4097; offset += 64) {
+      await Promise.all(
+        Array.from({ length: Math.min(64, 4097 - offset) }, (_, index) =>
+          fs.mkdir(path.join(memory, String(offset + index))),
+        ),
+      );
+    }
+    await fs.writeFile(note, "Initial memory.");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    watcher = new MemoryFileWatcher({
+      workspaceDir: state.workspaceDir,
+      agentId: "main",
+      settings: {
+        extraPaths: [],
+        multimodal: { enabled: false, modalities: [], maxFileBytes: 10485760 },
+        sync: { watchDebounceMs: 0 },
+      },
+      onUnavailable,
+      onChange: async () => {
+        const text = await fs.readFile(note, "utf8");
+        if (text === "Initial memory.") {
+          initial.resolve();
+        } else if (text === "Memory after the edit.") {
+          edited.resolve();
+        }
+      },
+    });
+    await watcher.start();
+    expect(failures).toEqual([]);
+    expect(subscriptions.some((subscription) => subscription.health().directories > 4096)).toBe(
+      true,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await initial.promise;
+    await fs.writeFile(note, "Memory after the edit.");
+    await Promise.all(subscriptions.map((subscription) => subscription.reconcile()));
+    await vi.advanceTimersByTimeAsync(0);
+    await edited.promise;
+    expect(onUnavailable).not.toHaveBeenCalled();
+    await watcher.close();
+    expect(subscriptions.every((subscription) => subscription.health().state === "closed")).toBe(
+      true,
+    );
+  } finally {
+    await watcher?.close();
+    observed.mockRestore();
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
     await state.cleanup();
   }
 });

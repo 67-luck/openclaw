@@ -148,6 +148,8 @@ export class MemoryFileWatcher {
                 scopes,
                 mode,
                 pollIntervalMs: resolveFsObservationIntervalMs(),
+                maxDirectories: 1_000_000,
+                maxEntries: 1_000_000,
                 maxPendingPaths: MEMORY_WATCH_MAX_PATHS,
                 signal: this.lifetime.signal,
                 exclude: (file) => this.policy.exclude(owner.group, file),

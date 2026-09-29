@@ -160,6 +160,9 @@ subscription with its existing backoff. With `CHOKIDAR_USEPOLLING` unset, native
 watch failures can additionally trigger a fresh polling subscription after those
 retries. Explicit overrides keep the existing retry limit. Memory indexing switches to
 refresh-on-search when native watch capacity is exhausted (`watch-limit`).
+Each Memory subscription admits up to 1,000,000 directories and 1,000,000
+examined entries per scan, including excluded entries. Larger trees also fall
+back to refresh-on-search after observation retries are exhausted.
 Skills refreshes during agent preparation after capacity exhaustion, and the
 development supervisor stops its child if observation fails.
 

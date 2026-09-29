@@ -28,7 +28,10 @@ export async function admitConfigObservationRoots(
   includeRoots: readonly string[],
   cache: ConfigObservationRootCache = { roots: new Map(), canonicalBoundaries: new Map() },
   primaryTarget?: string,
+  paths: ReadonlySet<string> = new Set(),
 ): Promise<ConfigObservationRoot[]> {
+  const primarySource = path.resolve(configPath);
+  const selectedPaths = new Set([primarySource, ...paths]);
   const lexicalBoundaries = Array.from(
     new Set([
       path.dirname(path.resolve(configPath)),
@@ -37,6 +40,7 @@ export async function admitConfigObservationRoots(
   );
   const boundaries = new Set(lexicalBoundaries);
   const aliases = new Map<string, string>();
+  let unresolvedRootFailure: { error: unknown } | undefined;
   // Configured directory aliases admit targets; arbitrary include symlinks do not.
   for (const boundary of lexicalBoundaries) {
     let canonical = cache.canonicalBoundaries.get(boundary);
@@ -50,16 +54,37 @@ export async function admitConfigObservationRoots(
         }
       });
     }
-    // Retargeting an alias cannot admit a new boundary on retry.
-    const target = await canonical;
-    boundaries.add(target);
-    if (target !== boundary) {
-      aliases.set(boundary, target);
+    try {
+      // Retargeting an alias cannot admit a new boundary on retry.
+      const target = await canonical;
+      boundaries.add(target);
+      if (target !== boundary) {
+        aliases.set(boundary, target);
+      }
+    } catch (error) {
+      if ([...selectedPaths].some((candidate) => isPathInside(boundary, candidate))) {
+        throw error;
+      }
+      unresolvedRootFailure ??= { error };
+      boundaries.delete(boundary);
     }
   }
-  const primarySource = path.resolve(configPath);
   const target = primaryTarget ?? (await canonicalPathFromExistingAncestor(primarySource));
   const primaryBoundary = path.dirname(target);
+  const candidates = configObservationCandidates(selectedPaths, aliases);
+  candidates.add(target);
+  // A failed alias can hide an accepted canonical target. Preserve its error
+  // unless each selected path still has a known boundary or is the primary file.
+  if (
+    unresolvedRootFailure &&
+    [...candidates].some(
+      (candidate) =>
+        candidate !== target &&
+        ![...boundaries].some((boundary) => isPathInside(boundary, candidate)),
+    )
+  ) {
+    throw unresolvedRootFailure.error;
+  }
   const admitted = new Map<string, ConfigObservationRoot>();
   for (const boundary of new Set([...boundaries, primaryBoundary])) {
     const parent = path.dirname(boundary);
@@ -76,7 +101,15 @@ export async function admitConfigObservationRoots(
         }
       });
     }
-    const authority = await pinned;
+    let authority: Root;
+    try {
+      authority = await pinned;
+    } catch (error) {
+      if ([...candidates].some((candidate) => isPathInside(boundary, candidate))) {
+        throw error;
+      }
+      continue;
+    }
     let selected = admitted.get(authority.rootDir);
     if (!selected) {
       selected = { authority, boundaries: [], aliases };
@@ -92,20 +125,28 @@ export async function admitConfigObservationRoots(
   return [...admitted.values()];
 }
 
-export function configObservationEntries(
-  admitted: ConfigObservationRoot,
+function configObservationCandidates(
   paths: ReadonlySet<string>,
-): Map<string, string> {
-  const entries = new Map<string, string>();
+  aliases: ReadonlyMap<string, string> = new Map(),
+): Set<string> {
   const candidates = new Set(paths);
   for (const candidate of paths) {
-    for (const [source, target] of admitted.aliases ?? []) {
+    for (const [source, target] of aliases) {
       if (isPathInside(source, candidate)) {
         // Missing includes use the configured alias, never descendant link targets.
         candidates.add(path.resolve(target, path.relative(source, candidate)));
       }
     }
   }
+  return candidates;
+}
+
+export function configObservationEntries(
+  admitted: ConfigObservationRoot,
+  paths: ReadonlySet<string>,
+): Map<string, string> {
+  const entries = new Map<string, string>();
+  const candidates = configObservationCandidates(paths, admitted.aliases);
   if (admitted.primary && paths.has(admitted.primary.source)) {
     candidates.add(admitted.primary.target);
   }

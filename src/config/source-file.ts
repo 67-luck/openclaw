@@ -93,6 +93,7 @@ export function createConfigFileAdapter(opts: {
         opts.includeRoots ?? resolveIncludeRoots(),
         admittedRoots,
         primaryTarget,
+        desiredPaths,
       );
       const admission = roots;
       void admission.catch(() => {
@@ -352,9 +353,7 @@ export function createConfigFileAdapter(opts: {
     }
     watchedPaths = nextPaths;
     primaryTarget = nextPrimary;
-    if (changedPrimary) {
-      roots = undefined;
-    }
+    roots = undefined;
     if (watcher) {
       await enqueueRefresh(watcher);
     }

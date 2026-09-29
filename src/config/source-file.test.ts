@@ -1,3 +1,4 @@
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import * as observation from "@openclaw/fs-safe/watch";
@@ -23,7 +24,13 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-async function fixture({ realMode = false } = {}) {
+async function fixture({
+  realMode = false,
+  includeRoots = [],
+}: {
+  realMode?: boolean;
+  includeRoots?: readonly string[];
+} = {}) {
   const directory = await fs.realpath(dirs.make("config-observation-"));
   const p = (name: string) => path.join(directory, name);
   await fs.writeFile(p("openclaw.json"), "{}");
@@ -53,11 +60,12 @@ async function fixture({ realMode = false } = {}) {
     return subscription;
   });
   const onChange = vi.fn();
-  const log = { warn: vi.fn(), error: vi.fn() };
+  const failReady = (message: string) => ready.reject(new Error(message));
+  const log = { warn: vi.fn(failReady), error: vi.fn(failReady) };
   const adapter = createConfigFileAdapter({
     path: p("openclaw.json"),
     includedPaths: [p("accepted.json")],
-    includeRoots: [],
+    includeRoots,
     onChange,
     onReady: () => ready.resolve(),
     log,
@@ -87,6 +95,41 @@ async function fixture({ realMode = false } = {}) {
 }
 
 describe("config file observation", () => {
+  it("keeps primary edits observable when an unused include root is inaccessible and admits it on selection", async () => {
+    const allowed = await fs.realpath(dirs.make("config-unused-include-root-"));
+    const inaccessible = Object.assign(new Error("EACCES: unused config include root"), {
+      code: "EACCES",
+    });
+    const lstatSync = fsSync.lstatSync;
+    const denied = vi.spyOn(fsSync, "lstatSync").mockImplementation((...args) => {
+      if (args[0] === allowed || args[0] === path.toNamespacedPath(allowed)) {
+        throw inaccessible;
+      }
+      return Reflect.apply(lstatSync, fsSync, args);
+    });
+    const h = await fixture({ includeRoots: [allowed] });
+    await fs.writeFile(h.p("openclaw.json"), '{"primary":true}');
+    await h.reconcile();
+    await h.settle();
+    expect(h.onChange).toHaveBeenCalledOnce();
+    expect(h.adapter.status()).toBe("active");
+    expect(h.log.warn).not.toHaveBeenCalled();
+    expect(h.log.error).not.toHaveBeenCalled();
+
+    denied.mockRestore();
+    const included = path.join(allowed, "selected.json");
+    await fs.writeFile(included, "{}");
+    await h.adapter.observePaths([included]);
+    h.onChange.mockClear();
+    await fs.writeFile(included, '{"included":true}');
+    await h.reconcile();
+    await h.settle();
+    expect(h.onChange).toHaveBeenCalledOnce();
+    expect(h.adapter.status()).toBe("active");
+    expect(h.log.warn).not.toHaveBeenCalled();
+    expect(h.log.error).not.toHaveBeenCalled();
+  });
+
   it("settles primary/includes, atomic replacements, deletion and restore, and updates accepted scopes in place", async () => {
     const h = await fixture();
     expect(h.onChange).not.toHaveBeenCalled();
