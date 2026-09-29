@@ -400,6 +400,14 @@ export async function noteSessionTranscriptHealth(options?: {
     });
     return postSessionPluginReceipt;
   }
+  const repairWarnings = [
+    ...(legacyMainSessionResult?.warnings ?? []),
+    ...acpKeyReport.warnings,
+    ...titleReport.warnings,
+  ];
+  if (repairWarnings.length > 0) {
+    params.onWarnings?.(repairWarnings);
+  }
   if (worktreeWorkspaceReport.found > 0) {
     note(
       params.shouldRepair

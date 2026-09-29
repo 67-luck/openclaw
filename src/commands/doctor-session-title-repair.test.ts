@@ -67,11 +67,12 @@ async function withSession(
   );
 }
 
-function repair() {
+function repair(onWarnings?: (warnings: readonly string[]) => void) {
   return noteSessionTranscriptHealth({
     cfg: { agents: { list: [{ id: "main", default: true }] } },
     shouldRepair: true,
     postSessionPluginMigrationPlanBound: true,
+    onWarnings,
   });
 }
 
@@ -191,6 +192,22 @@ describe("Doctor session title repair", () => {
           expect(sessionAccessor.loadSessionEntry(params)?.displayName).toBeUndefined();
         },
       });
+    });
+  });
+
+  it("reports a failed title repair to structured Doctor callers", async () => {
+    await withSession(async (params) => {
+      vi.spyOn(sessionAccessor, "patchSessionEntryCore").mockRejectedValueOnce(
+        new Error("read-only session row"),
+      );
+      const onWarnings = vi.fn();
+
+      await repair(onWarnings);
+
+      expect(onWarnings).toHaveBeenCalledWith([
+        expect.stringContaining("Could not repair the title for agent:main:dashboard:legacy"),
+      ]);
+      expect(sessionAccessor.loadSessionEntry(params)?.displayName).toBeUndefined();
     });
   });
 
