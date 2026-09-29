@@ -378,7 +378,7 @@ describe("Gateway automatic Workshop learning", () => {
             );
             const notice = JSON.stringify(finalTranscript.slice(continuedTranscript.length));
             expect(notice).toContain(`updated \`map-publication\` (${reason})`);
-            expect(notice).toContain('Say \\"undo\\" to revert.');
+            expect(notice).toContain('Say \\"undo\\" to revert this skill change.');
           },
         );
       } finally {

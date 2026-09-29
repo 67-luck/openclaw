@@ -44,16 +44,19 @@ const ACTION_VERB: Record<WorkshopChange["action"], string> = {
 
 /** One short line naming what a background review changed and how to revert it. */
 export function formatWorkshopChangeNotice(changes: readonly WorkshopChange[]): string {
-  // Several edits to one skill read as one learned change; the latest summary wins.
+  // Several edits to one skill read as one learned change: a skill created in this run reads
+  // as "created" with its creation summary; otherwise the latest change wins.
   const bySkill = new Map<string, WorkshopChange>();
   for (const change of changes.toSorted((a, b) => a.createdAtMs - b.createdAtMs)) {
-    bySkill.set(change.skillName, change);
+    if (bySkill.get(change.skillName)?.action !== "create") {
+      bySkill.set(change.skillName, change);
+    }
   }
   const parts = [...bySkill.values()].map((change) => {
     const summary = change.summary.trim();
     return `${ACTION_VERB[change.action]} \`${change.skillName}\`${summary ? ` (${summary})` : ""}`;
   });
-  return `💾 Learned: ${parts.join("; ")}. Say "undo" to revert.`;
+  return `💾 Learned: ${parts.join("; ")}. Say "undo" to revert this skill change.`;
 }
 
 /**

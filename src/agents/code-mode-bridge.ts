@@ -9,8 +9,13 @@ import { parseNodeList } from "../shared/node-list-parse.js";
 import type { NodeListNode } from "../shared/node-list-types.js";
 import { resolveEligibleNodeFromList } from "../shared/node-resolve.js";
 import { resolveSafeTimeoutDelayMs } from "../utils/timer-delay.js";
+import {
+  recordSkillUsed,
+  resolvedSkillUsageMatch,
+} from "./agent-tools.before-tool-call.diagnostics.js";
 import { getBeforeToolCallFailureDisposition } from "./agent-tools.before-tool-call.js";
 import { redactCodeModeCatalogIds, type CodeModeCatalogProjection } from "./code-mode-catalog.js";
+import { CODE_MODE_EXEC_TOOL_NAME } from "./code-mode-control-tools.js";
 import type { CodeModeNamespaceRuntime } from "./code-mode-namespaces.js";
 import type { CodeModeReplyLease } from "./code-mode-program-data.js";
 import type { CodeModeResultsAccess } from "./code-mode-results.js";
@@ -426,6 +431,15 @@ export async function runBridgeRequest(params: {
           );
         }
         value = await readCodeModeSkill(skill, params.signal);
+        recordSkillUsed({
+          ctx: params.ctx,
+          match: resolvedSkillUsageMatch({
+            activation: "read",
+            skill: { name: skill.name, ...skill.source },
+          }),
+          toolName: CODE_MODE_EXEC_TOOL_NAME,
+          toolCallId: params.parentToolCallId,
+        });
         break;
       }
       case "sleep": {

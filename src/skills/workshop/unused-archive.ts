@@ -35,9 +35,10 @@ export async function archiveUnusedWorkshopSkills(
 ): Promise<WorkshopChange[]> {
   // Fail closed where reads go unrecorded: only the Gateway persists skill.used, and only the
   // embedded openclaw harness reports SKILL.md reads (its read tool runs the before-tool-call
-  // wrapper). Codex app-server reads skills through its native shell; the native hook relay
-  // never matches those reads to a skill, so only foreground skill_workshop views would
-  // count there, and every skill read with `cat` would look unused.
+  // wrapper; Code Mode `skills.read` reports through the same owner). Codex app-server reads
+  // skills through its native shell; the native hook relay never matches those reads to a
+  // skill, so only foreground skill_workshop views would count there, and every skill read
+  // with `cat` would look unused.
   if (!isSkillUsageTracked()) {
     return [];
   }

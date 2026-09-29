@@ -1,9 +1,7 @@
 import path from "node:path";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { emitTrustedSkillUsedDiagnosticEvent } from "../../infra/diagnostic-events.js";
 import { pathExists } from "../../infra/fs-safe.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
-import { recordRunSkillUsage } from "../../skills/runtime/run-usage.js";
 import {
   archiveWorkshopSkill,
   createWorkshopSkill,
@@ -20,6 +18,7 @@ import {
 } from "../../skills/workshop/library.js";
 import { SKILL_AUTHORING_STANDARDS_PROMPT } from "../../skills/workshop/skill-authoring-standards.js";
 import { resolveWorkshopSkillsDir } from "../../skills/workshop/skills-root.js";
+import { recordSkillUsed } from "../agent-tools.before-tool-call.diagnostics.js";
 import { SKILL_WORKSHOP_TOOL_DISPLAY_SUMMARY } from "../tool-description-presets.js";
 import { canonicalizePath } from "../utils/paths.js";
 import {
@@ -117,27 +116,16 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
       if (!version && !options.reviewGuard) {
         // A foreground view is skill use: it feeds this turn's review trigger and the
         // unused-skill archive clock through the same skill_usage owner as file reads.
-        const skillFile = canonicalizePath(path.join(skillsRoot, name, "SKILL.md"));
-        recordRunSkillUsage({
-          runId: options.runId,
-          name,
-          source: "workspace",
-          activation: "read",
-          skillFile,
-        });
-        emitTrustedSkillUsedDiagnosticEvent(
-          {
-            type: "skill.used",
-            ...(options.runId ? { runId: options.runId } : {}),
-            ...(options.sessionKey ? { sessionKey: options.sessionKey } : {}),
-            agentId: options.agentId,
+        recordSkillUsed({
+          ctx: options,
+          match: {
             skillName: name,
             skillSource: "workspace",
             activation: "read",
-            toolName: "skill_workshop",
+            skillFile: canonicalizePath(path.join(skillsRoot, name, "SKILL.md")),
           },
-          { skillUsage: { skillFile } },
-        );
+          toolName: "skill_workshop",
+        });
       }
       const others = view.files.filter((file) => file !== view.filePath);
       return textResult(

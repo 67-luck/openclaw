@@ -104,8 +104,14 @@ describe("postWorkshopChangeNotice", () => {
         id: "c3",
         skillName: "release-notes",
         action: "create",
-        summary: "",
+        summary: "drafting release notes",
         createdAtMs: 3,
+      }),
+      change({
+        id: "c4",
+        skillName: "release-notes",
+        summary: "fixed a typo",
+        createdAtMs: 4,
       }),
     ]);
     expect(mocks.sendDurableMessageBatchCore).toHaveBeenCalledTimes(1);
@@ -115,7 +121,7 @@ describe("postWorkshopChangeNotice", () => {
         to: "42",
         payloads: [
           {
-            text: '💾 Learned: updated `actual-budget-operations` (tightened reconciliation step); created `release-notes`. Say "undo" to revert.',
+            text: '💾 Learned: updated `actual-budget-operations` (tightened reconciliation step); created `release-notes` (drafting release notes). Say "undo" to revert this skill change.',
           },
         ],
         mirror: expect.objectContaining({ sessionKey: "agent:main:telegram:direct:42" }),

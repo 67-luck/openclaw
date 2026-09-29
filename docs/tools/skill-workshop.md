@@ -49,7 +49,7 @@ When a background run changes a skill, OpenClaw posts one line to the
 conversation that triggered it:
 
 ```text
-💾 Learned: updated `deploy-staging` (tightened the rollback step). Say "undo" to revert.
+💾 Learned: updated `deploy-staging` (tightened the rollback step). Say "undo" to revert this skill change.
 ```
 
 Reply "undo" and the agent restores the previous version with `skill_workshop`.

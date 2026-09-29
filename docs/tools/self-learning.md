@@ -92,7 +92,7 @@ If the review changed a skill, one line is posted to the conversation that
 triggered it and mirrored into the session transcript:
 
 ```text
-💾 Learned: updated `deploy-staging` (tightened the rollback step). Say "undo" to revert.
+💾 Learned: updated `deploy-staging` (tightened the rollback step). Say "undo" to revert this skill change.
 ```
 
 Channel-less Control UI sessions get the line as a transcript entry. Nothing is
