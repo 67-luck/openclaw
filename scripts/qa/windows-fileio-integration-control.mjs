@@ -575,6 +575,7 @@ async function main() {
         return [field, typeof value === "boolean" ? value : null];
       }),
     );
+    const terminalFailureCategories = ["bom-prefix", "eof", "mismatch", "other"];
     cell.nativeLifetimeControl = {
       passed: typeof record.passed === "boolean" ? record.passed : null,
       stage: stages.includes(record.stage) ? record.stage : "unknown",
@@ -586,6 +587,9 @@ async function main() {
       fixtureInputSha256,
       ...facts,
       processLiveObservation,
+      terminalInputFailure: terminalFailureCategories.includes(record.terminalInputFailure)
+        ? record.terminalInputFailure
+        : null,
     };
     assert.equal(code, 0);
     assert.ok(control.receipt.joined && control.receipt.jobObserved);
@@ -601,6 +605,7 @@ async function main() {
     assert.equal(record.fixtureInputSha256, fixtureInputSha256);
     assert.equal(cell.nativeLifetimeControl.stage, "complete");
     assert.equal(cell.nativeLifetimeControl.passed, true);
+    assert.equal(cell.nativeLifetimeControl.terminalInputFailure, null);
     assert.ok(Object.values(facts).every((value) => value === true));
   }
   async function runCell(name, fixtureMode) {

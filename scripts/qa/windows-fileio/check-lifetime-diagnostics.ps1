@@ -49,6 +49,8 @@ namespace LifetimeDiagnosticFixture {
     public Output():base(""){}
     public override string ReadLine() {
       if(++reads==1)return State.Scenario=="ready-read-failed" ? "PRIVATE_WRONG_READY" : "lifetime-ready";
+      if(State.Scenario.StartsWith("marker-"))return "lifetime-terminal-failure:"+State.Scenario.Substring(7);
+      if(State.Scenario=="terminal-null")return null;
       return State.Scenario=="terminal-ack-failed" ? "PRIVATE_WRONG_ACK" : "lifetime-terminal";
     }
   }
@@ -121,12 +123,17 @@ $beforeLiveStages=@{
   'start-throws'='process-start';'ready-read-failed'='process-ready';'creation-failed'='process-creation'
   'before-observation'='process-hold';'lease-failed'='process-lease'
   'terminal-write-failed'='process-terminal-write';'terminal-ack-failed'='process-terminal-ack'
+  'marker-bom-prefix'='process-terminal-ack';'marker-eof'='process-terminal-ack';'marker-mismatch'='process-terminal-ack'
+  'marker-other'='process-terminal-ack';'marker-PRIVATE_UNKNOWN'='process-terminal-ack';'terminal-null'='process-terminal-ack'
 }
 foreach($scenario in @('start-throws','ready-read-failed','creation-failed','before-observation','lease-failed',
-  'terminal-write-failed','terminal-ack-failed','query-threw','query-failed','query-release-failed','query-join-failed','creation-mismatch','early-exit','live')) {
+  'terminal-write-failed','terminal-ack-failed','marker-bom-prefix','marker-eof','marker-mismatch','marker-other',
+  'marker-PRIVATE_UNKNOWN','terminal-null','query-threw','query-failed','query-release-failed','query-join-failed','creation-mismatch','early-exit','live')) {
   [LifetimeDiagnosticFixture.State]::Reset($scenario)
   foreach($field in [FileTraceLifetimeControl].GetFields() | Where-Object {$_.FieldType -eq [Nullable[bool]]}){$field.SetValue($null,$null)}
   [FileTraceLifetimeControl]::ChildStartAttempted=$false;[FileTraceLifetimeControl]::ChildJoined=$false
+  $categoryField=[FileTraceLifetimeControl].GetField('TerminalInputFailure')
+  if($categoryField){$categoryField.SetValue($null,$null)}
   [FileTraceLifetimeControl]::Stage='process-start'
   $stage='compile-control';$script:capturedExit=0;$script:capturedFailure=$null;$script:bindingChecks=0;$ExpectedSourceSha256='source';$ExpectedDllSha256='dll'
   $NodeExe=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
@@ -167,10 +174,12 @@ foreach($scenario in @('start-throws','ready-read-failed','creation-failed','bef
   $joinAdmission=$script:bindingChecks -eq $(if($scenario -in @('query-join-failed','start-throws')){1}else{2})
   $expectedStage=if($beforeLiveStages.ContainsKey($scenario)){$beforeLiveStages[$scenario]}elseif($scenario -eq 'live'){'complete'}else{'process-live'}
   $stageCorrect=$record.stage -ceq $expectedStage
-  $passed=$stageCorrect -and $failurePreserved -and $joinAdmission -and $factsCorrect -and $released -and $cleanup -and $record.passed -eq ($scenario -eq 'live') -and
+  $expectedCategory=if($scenario -in @('marker-bom-prefix','marker-eof','marker-mismatch','marker-other')){$scenario.Substring(7)}else{$null}
+  $categoryCorrect=$record.terminalInputFailure -ceq $expectedCategory
+  $passed=$categoryCorrect -and $stageCorrect -and $failurePreserved -and $joinAdmission -and $factsCorrect -and $released -and $cleanup -and $record.passed -eq ($scenario -eq 'live') -and
     $script:capturedExit -eq $(if($scenario -eq 'live'){0}else{2}) -and -not $output.Contains('PRIVATE_')
   if(-not $passed){$failed++}
-  @{scenario=$scenario;passed=$passed;stageCorrect=$stageCorrect;stage=$record.stage;factsCorrect=$factsCorrect;naturalReleaseCorrect=$released;
+  @{scenario=$scenario;passed=$passed;categoryCorrect=$categoryCorrect;stageCorrect=$stageCorrect;stage=$record.stage;factsCorrect=$factsCorrect;naturalReleaseCorrect=$released;
     cleanupCorrect=$cleanup;failurePreserved=$failurePreserved;postBindingJoinAdmission=$joinAdmission;
     nativeProof=$false;controlSha256=(Get-FileHash $SourcePath -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json -Compress
 }
@@ -183,7 +192,9 @@ if($BindingProbePath) {
     $probeBindings=@($bindings)+,@($BindingProbePath,$probeHash)
     [LifetimeDiagnosticFixture.State]::Reset($(if($moment -eq 'after-failed-control'){'query-release-failed'}else{'live'}))
     [FileTraceLifetimeControl]::ChildStartAttempted=$false;[FileTraceLifetimeControl]::ChildJoined=$false
-    [FileTraceLifetimeControl]::Stage='process-start';$stage='compile-control';$script:capturedExit=0
+    $categoryField=[FileTraceLifetimeControl].GetField('TerminalInputFailure')
+  if($categoryField){$categoryField.SetValue($null,$null)}
+  [FileTraceLifetimeControl]::Stage='process-start';$stage='compile-control';$script:capturedExit=0
     if($moment -eq 'before'){[IO.File]::WriteAllText($BindingProbePath,'changed')}
     else {[LifetimeDiagnosticFixture.State]::AfterWait=[Action]{[IO.File]::WriteAllText($BindingProbePath,'changed')}}
     $savedBindings=$bindings;$bindings=$probeBindings
@@ -201,11 +212,13 @@ if($BindingProbePath) {
 }
 if($RealNodeExe -or $RealFixturePath) {
   if(-not $RealNodeExe -or -not $RealFixturePath){throw 'Both real transport inputs are required'}
-  $function=$ast.EndBlock.Statements | Where-Object {
-    $_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -eq 'Get-ProcessLiveObservation'
+  $functions=$ast.EndBlock.Statements | Where-Object {
+    $_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -in @('Get-ProcessLiveObservation','Get-TerminalInputFailure')
   }
-  Invoke-Expression ($function.Extent.Text.Replace('Get-ProcessLiveObservation','Get-RealProcessLiveObservation').Replace('FileTraceLifetimeControl','FileTraceLifetimeControlReal'))
-  $realEntry=[scriptblock]::Create($entry.ToString().Replace('Get-ProcessLiveObservation','Get-RealProcessLiveObservation').Replace('FileTraceLifetimeControl','FileTraceLifetimeControlReal'))
+  foreach($function in $functions) {
+    Invoke-Expression ($function.Extent.Text.Replace('Get-ProcessLiveObservation','Get-RealProcessLiveObservation').Replace('Get-TerminalInputFailure','Get-RealTerminalInputFailure').Replace('FileTraceLifetimeControl','FileTraceLifetimeControlReal'))
+  }
+  $realEntry=[scriptblock]::Create($entry.ToString().Replace('Get-ProcessLiveObservation','Get-RealProcessLiveObservation').Replace('Get-TerminalInputFailure','Get-RealTerminalInputFailure').Replace('FileTraceLifetimeControl','FileTraceLifetimeControlReal'))
   $NodeExe=$RealNodeExe;$fixturePath=$RealFixturePath
   $fixtureInputPath=Join-Path ([IO.Path]::GetDirectoryName($fixturePath)) 'fixture-input.cjs'
   $ExpectedNodeSha256=(Get-FileHash $NodeExe -Algorithm SHA256).Hash.ToLowerInvariant()

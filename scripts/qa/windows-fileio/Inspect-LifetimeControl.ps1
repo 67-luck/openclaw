@@ -22,6 +22,11 @@ function Get-ProcessLiveObservation {
   }
   return $facts
 }
+function Get-TerminalInputFailure {
+  $type='FileTraceLifetimeControl' -as [type]
+  if($type){return $type.GetField('TerminalInputFailure').GetValue($null)}
+  return $null
+}
 function Assert-LifetimeBindings($Bindings) {
   foreach($pair in $Bindings) {
     $file=Get-Item -LiteralPath $pair[0]
@@ -53,6 +58,7 @@ public static class FileTraceLifetimeControl {
   [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetThreadTimes(IntPtr handle,out FileTime create,out FileTime exit,out FileTime kernel,out FileTime user);
   static long Stamp(FileTime value) { return unchecked((long)(((ulong)value.High << 32) | value.Low)); }
   public static string Stage="process-start";
+  public static string TerminalInputFailure;
   public static bool ChildStartAttempted,ChildJoined;
   public static bool? ChildHasExited,ObservationCallCompleted,QuerySucceeded,CreationMatches,
     EventNotBeforeCreation,ExitTimePresent,EventNotAfterExit,ContainsTime;
@@ -93,7 +99,14 @@ public static class FileTraceLifetimeControl {
         Stage="process-terminal-write";
         terminalAttempted=true;child.StandardInput.Write("terminal\n");child.StandardInput.Flush();
         Stage="process-terminal-ack";
-        Require(child.StandardOutput.ReadLine() == "lifetime-terminal");
+        string terminalReply=child.StandardOutput.ReadLine();
+        switch(terminalReply) {
+          case "lifetime-terminal-failure:bom-prefix": TerminalInputFailure="bom-prefix";break;
+          case "lifetime-terminal-failure:eof": TerminalInputFailure="eof";break;
+          case "lifetime-terminal-failure:mismatch": TerminalInputFailure="mismatch";break;
+          case "lifetime-terminal-failure:other": TerminalInputFailure="other";break;
+        }
+        Require(terminalReply == "lifetime-terminal");
         long liveTime=DateTime.UtcNow.ToFileTimeUtc();
         Stage="process-live";
         ObservationCallCompleted=false;
@@ -185,11 +198,11 @@ public static class FileTraceLifetimeControl {
     dllSha256=$ExpectedDllSha256;nodeSha256=$ExpectedNodeSha256;fixtureSha256=$ExpectedFixtureSha256;
     fixtureInputSha256=$ExpectedFixtureInputSha256;processLive=$true;processInsideExit=$true;processAfterExit=$true;
     threadLive=$true;threadInsideExit=$true;threadAfterExit=$true;naturalRelease=$true;
-    processLiveObservation=(Get-ProcessLiveObservation)} | ConvertTo-Json -Depth 3 -Compress
+    processLiveObservation=(Get-ProcessLiveObservation);terminalInputFailure=(Get-TerminalInputFailure)} | ConvertTo-Json -Depth 3 -Compress
 } catch {
   $controlType='FileTraceLifetimeControl' -as [type]
   if($controlType){$stage=$controlType.GetField('Stage').GetValue($null)}
   @{phase='native-lifetime-control';passed=$false;stage=$stage;
-    processLiveObservation=(Get-ProcessLiveObservation)} | ConvertTo-Json -Depth 3 -Compress
+    processLiveObservation=(Get-ProcessLiveObservation);terminalInputFailure=(Get-TerminalInputFailure)} | ConvertTo-Json -Depth 3 -Compress
   exit 2
 }

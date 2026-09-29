@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import { compileFunction } from "node:vm";
@@ -16,6 +17,7 @@ import {
   instrumentCensus,
   projectCensusResult,
 } from "../../scripts/qa/windows-fileio-integration-control.mjs";
+import { createFixtureInput } from "../../scripts/qa/windows-fileio/fixture-input.cjs";
 import { recordRequestOnlyControl } from "../../scripts/qa/windows-fileio/record-request-only-control.mjs";
 import { createInstalledTerminalJsonCapture } from "../../src/daemon/schtasks.installed-command.test-support.js";
 import {
@@ -537,6 +539,11 @@ it.each([
   "query-threw",
   "early-exit",
   "complete",
+  "input-bom-prefix",
+  "input-eof",
+  "input-mismatch",
+  "input-other",
+  "input-unknown",
   "process-ready",
   "process-creation",
   "process-hold",
@@ -578,6 +585,9 @@ it.each([
       "eventNotAfterExit",
       "containsTime",
     ];
+    const inputCase = scenario.startsWith("input-");
+    const inputCategory = inputCase ? scenario.slice(6) : undefined;
+    const claimsComplete = scenario === "complete" || inputCase;
     const emptyObservation = Object.fromEntries(observationKeys.map((key) => [key, null]));
     const observed = {
       childHasExited: scenario === "early-exit",
@@ -592,7 +602,7 @@ it.each([
     const expectedObservation =
       scenario === "query-threw"
         ? { ...emptyObservation, callCompleted: false }
-        : scenario === "early-exit" || scenario === "complete"
+        : scenario === "early-exit" || claimsComplete
           ? observed
           : emptyObservation;
     const boundaryStage = scenario.startsWith("process-") ? scenario : undefined;
@@ -605,6 +615,8 @@ it.each([
       nodeSha256: "node",
       fixtureSha256: "fixture",
       fixtureInputSha256: "input",
+      terminalInputFailure:
+        inputCategory === "unknown" ? "PRIVATE_EXCEPTION_CANARY" : inputCategory,
       foreign: "PRIVATE_EXCEPTION_CANARY",
     };
     if (scenario === "missing") {
@@ -614,7 +626,7 @@ it.each([
     }
     if (scenario !== "missing" && !boundaryStage) {
       for (const key of outcomeKeys) {
-        record[key] = scenario === "invalid" ? "true" : scenario === "complete";
+        record[key] = scenario === "invalid" ? "true" : claimsComplete;
       }
       record.processLiveObservation =
         scenario === "invalid"
@@ -650,7 +662,7 @@ it.each([
     )(...Object.values(dependencies));
     const cell: { nativeLifetimeControl?: Record<string, unknown> } = {};
     const call = invoke({ sourceSha256: "source", dllSha256: "dll" }, cell);
-    if (scenario === "complete") {
+    if (scenario === "complete" || scenario === "input-unknown") {
       await call;
     } else {
       await expect(call).rejects.toThrow(assert.AssertionError);
@@ -658,13 +670,14 @@ it.each([
     expect(cell.nativeLifetimeControl?.passed).toBe(
       scenario === "missing" || scenario === "invalid" ? null : !boundaryStage,
     );
+    expect(cell.nativeLifetimeControl?.terminalInputFailure).toBe(
+      inputCase && inputCategory !== "unknown" ? inputCategory : null,
+    );
     expect(cell.nativeLifetimeControl?.stage).toBe(boundaryStage ?? "complete");
     expect(cell.nativeLifetimeControl?.processLiveObservation).toEqual(expectedObservation);
     for (const key of outcomeKeys) {
       expect(cell.nativeLifetimeControl?.[key]).toBe(
-        scenario === "missing" || scenario === "invalid" || boundaryStage
-          ? null
-          : scenario === "complete",
+        scenario === "missing" || scenario === "invalid" || boundaryStage ? null : claimsComplete,
       );
     }
     expect(JSON.stringify(cell)).not.toContain("PRIVATE_EXCEPTION_CANARY");
@@ -678,6 +691,11 @@ it.each([
   "eof-after-terminal",
   "release-first",
   "crlf-rejected",
+  "bom-prefix",
+  "double-bom",
+  "private-mismatch",
+  "byte-bound",
+  "unknown-error",
 ] as const)("Node lifetime fixture uses the actual pipe: %s", async (scenario) => {
   const lifetime = createFixtureLifetime();
   let completion: Promise<number> | undefined;
@@ -700,6 +718,23 @@ it.each([
       new URL("../../scripts/qa/windows-fileio/fixture-input.cjs", import.meta.url),
       path.join(root, "fixture-input.cjs"),
     );
+    if (scenario === "unknown-error") {
+      fs.appendFileSync(
+        path.join(root, "fixture-input.cjs"),
+        `
+const original = module.exports.createFixtureInput;
+module.exports.createFixtureInput = (stream) => {
+ const input = original(stream);
+ return {...input, async read(expected) {
+  await input.read(expected);
+  if(expected === 'terminal\\n') throw Object.assign(new Error('PRIVATE_EXCEPTION_CANARY'), {
+   code:'ERR_ASSERTION',operator:'strictEqual',actual:'\\uFEFFterminal\\n',expected:'terminal\\n'
+  });
+ }};
+};
+`,
+      );
+    }
     completion = lifetime.track(
       runManagedCommand({
         bin: process.execPath,
@@ -729,7 +764,14 @@ it.each([
                 } else if (scenario === "cleanup-before-terminal") {
                   stdin.end("terminal\nrelease\n");
                 } else {
-                  stdin.write(scenario === "crlf-rejected" ? "terminal\r\n" : "terminal\n");
+                  const commands: Record<string, string> = {
+                    "crlf-rejected": "terminal\r\n",
+                    "bom-prefix": "\uFEFFterminal\n",
+                    "double-bom": "\uFEFF\uFEFFterminal\n",
+                    "private-mismatch": "PRIVATE_INPUT_CANARY\n",
+                    "byte-bound": "x".repeat(33) + "\n",
+                  };
+                  stdin.write(commands[scenario] ?? "terminal\n");
                 }
               } else if (line === "lifetime-terminal" && scenario !== "cleanup-before-terminal") {
                 heldAfterTerminal =
@@ -745,12 +787,24 @@ it.each([
     const accepted = scenario === "held-until-release" || scenario === "cleanup-before-terminal";
     expect(await completion).toBe(accepted ? 0 : 1);
     expect(inputErrors).toEqual([]);
+    const categories: Record<string, string> = {
+      "eof-before-terminal": "eof",
+      "release-first": "mismatch",
+      "crlf-rejected": "mismatch",
+      "bom-prefix": "bom-prefix",
+      "double-bom": "mismatch",
+      "private-mismatch": "mismatch",
+      "byte-bound": "other",
+      "unknown-error": "other",
+    };
     expect(records).toEqual([
       "lifetime-ready",
+      ...(categories[scenario] ? [`lifetime-terminal-failure:${categories[scenario]}`] : []),
       ...(["held-until-release", "cleanup-before-terminal", "eof-after-terminal"].includes(scenario)
         ? ["lifetime-terminal"]
         : []),
     ]);
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_");
     if (scenario === "held-until-release" || scenario === "eof-after-terminal") {
       expect(heldAfterTerminal).toBe(true);
     }
@@ -764,3 +818,82 @@ it.each([
     await lifetime.cleanup();
   }
 });
+
+it.each(["marker", "close", "marker-and-close"] as const)(
+  "retains the terminal assertion when %s also fails",
+  async (failureMode) => {
+    const source = fs.readFileSync(
+      new URL("../../scripts/qa/windows-fileio/lifetime-fixture.cjs", import.meta.url),
+      "utf8",
+    );
+    const ast = parse(source, { ecmaVersion: "latest", sourceType: "script" });
+    const declaration = ast.body.find(
+      (node) => node.type === "FunctionDeclaration" && node.id?.name === "main",
+    );
+    assert.ok(declaration);
+    const input = createFixtureInput(Readable.from([Buffer.from("\uFEFFterminal\n")]));
+    const markerError = new Error("PRIVATE_MARKER_FAILURE");
+    const closeError = new Error("PRIVATE_CLOSE_FAILURE");
+    let originalFailure: unknown;
+    let closeCalls = 0;
+    const writes: string[] = [];
+    const dependencies = {
+      assert,
+      process: {
+        argv: ["node", "fixture"],
+        platform: "win32",
+        arch: "x64",
+        version: "v26.8.2",
+        stdin: {},
+        stdout: {
+          write(value: string) {
+            writes.push(value);
+            if (value.startsWith("lifetime-terminal-failure:") && failureMode !== "close") {
+              throw markerError;
+            }
+          },
+        },
+      },
+      createFixtureInput: () => ({
+        async read(expected: string) {
+          try {
+            await input.read(expected);
+          } catch (error) {
+            originalFailure = error;
+            throw error;
+          }
+        },
+        async close() {
+          closeCalls++;
+          await input.close();
+          if (failureMode !== "marker") {
+            throw closeError;
+          }
+        },
+      }),
+    };
+    const main = compileFunction(
+      `return ${source.slice(declaration.start, declaration.end)}`,
+      Object.keys(dependencies),
+    )(...Object.values(dependencies));
+    const failures: unknown[] = [];
+    const flatten = (error: unknown) => {
+      if (error instanceof AggregateError) {
+        error.errors.forEach(flatten);
+      } else {
+        failures.push(error);
+      }
+    };
+    await main().then(() => {
+      throw new Error("Expected fixture failure");
+    }, flatten);
+    expect(originalFailure).toBeInstanceOf(assert.AssertionError);
+    expect(failures).toEqual([
+      originalFailure,
+      ...(failureMode !== "close" ? [markerError] : []),
+      ...(failureMode !== "marker" ? [closeError] : []),
+    ]);
+    expect(closeCalls).toBe(1);
+    expect(writes).toEqual(["lifetime-ready\n", "lifetime-terminal-failure:bom-prefix\n"]);
+  },
+);
