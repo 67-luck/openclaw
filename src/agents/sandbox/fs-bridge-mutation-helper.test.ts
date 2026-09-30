@@ -78,10 +78,18 @@ const FORCED_COPY_FAILURE_MUTATION_PYTHON = GUEST_FILESYSTEM_PYTHON.replace(
   "        raise OSError(errno.ENOSPC, 'forced copy failure')\n        copy_completed = True",
 );
 
-const FIFO_READ_WATCHDOG_MUTATION_PYTHON = GUEST_FILESYSTEM_PYTHON.replace(
-  "def read_file_impl(parent_fd, basename, max_bytes):",
-  "def read_file_impl(parent_fd, basename, max_bytes):\n    import signal\n    signal.alarm(1)",
-);
+// Guard the FIFO open without depending on the guest helper's private function names.
+const FIFO_READ_WATCHDOG_PYTHON = [
+  "import os",
+  "import signal",
+  "open_without_watchdog = os.open",
+  "def open_with_read_watchdog(path, *args, **kwargs):",
+  "    if path == 'live.pipe':",
+  "        signal.alarm(1)",
+  "    return open_without_watchdog(path, *args, **kwargs)",
+  "os.open = open_with_read_watchdog",
+  GUEST_FILESYSTEM_PYTHON,
+].join("\n");
 
 const FORCED_CREATE_FAILURE_MUTATION_PYTHON = GUEST_FILESYSTEM_PYTHON.replace(
   "        # exclusive create payload is durable before publication",
@@ -550,10 +558,9 @@ describe("sandbox pinned mutation helper", () => {
       await fs.mkdir(workspace, { recursive: true });
       expect(spawnSync("mkfifo", [fifoPath]).status).toBe(0);
 
-      expect(FIFO_READ_WATCHDOG_MUTATION_PYTHON).not.toBe(GUEST_FILESYSTEM_PYTHON);
       const result = spawnSync(
         "python3",
-        ["-c", FIFO_READ_WATCHDOG_MUTATION_PYTHON, "read", workspace, "", "live.pipe"],
+        ["-c", FIFO_READ_WATCHDOG_PYTHON, "read", workspace, "", "live.pipe"],
         {
           encoding: "utf8",
           stdio: ["pipe", "pipe", "pipe"],
