@@ -82,3 +82,45 @@ it("keeps main content actions and focus in the task toolbar across plugin panel
   container.querySelector<HTMLButtonElement>(".chat-side-panel-toggle")!.click();
   expect(state.sidebarLayout.open).toBe(false);
 });
+
+it("focuses and restores progress without opening saved tabs or marking their toggle active", () => {
+  const { pane, state } = createTestChatPane({
+    client: { request: vi.fn() } as unknown as GatewayBrowserClient,
+    sessions: createSessionCapabilityFixture(),
+  });
+  state.sidebarLayout = {
+    ...setSidebarOpen(openSlot({ columns: [] }, "browser"), false),
+    resourceAutoOpenDismissed: true,
+  };
+  const saved = structuredClone(state.sidebarLayout);
+  const container = document.createElement("div");
+  const paint = (sideFallbackVisible: boolean) =>
+    render(
+      pane.renderPaneHeader(
+        createPaneHeaderWorkspaceFixture(state),
+        { key: state.sessionKey, kind: "direct", updatedAt: 0 },
+        false,
+        undefined,
+        false,
+        null,
+        state.sidebarLayout,
+        sidebarPanelDefinitions(),
+        sideFallbackVisible,
+      ),
+      container,
+    );
+  paint(true);
+  const toggle = () => container.querySelector<HTMLButtonElement>(".chat-side-panel-toggle")!;
+  expect(toggle().getAttribute("aria-expanded")).toBe("false");
+  expect(container.querySelector(".chat-panel-swap")).toBeNull();
+  container.querySelector<HTMLButtonElement>(".chat-panel-focus")!.click();
+  expect(state.sidebarLayout).toEqual({ ...saved, expanded: true });
+  paint(false);
+  expect(container.querySelector(".chat-panel-focus")?.getAttribute("aria-pressed")).toBe("true");
+  container.querySelector<HTMLButtonElement>(".chat-panel-focus")!.click();
+  expect(state.sidebarLayout).toEqual({ ...saved, expanded: false });
+  paint(true);
+  toggle().click();
+  expect(state.sidebarLayout.open).toBe(true);
+  expect(state.sidebarLayout.columns[0]?.activePanelId).toBe(saved.columns[0]?.activePanelId);
+});

@@ -15,23 +15,13 @@
   animation: fade-in 0.2s var(--ease-out);
 }
 
-/* Docked in the conversation's right gutter, below any suggestion tray sharing
-   .chat-gutter-stack. The width is fixed rather than derived from the gutter:
-   the pane only renders this placement once it has measured a gutter wide
-   enough for this card plus the stack's insets, so the clearance is already
-   guaranteed and a stable card beats one that grows with the window.
-   Top-anchored by the stack, so appended steps extend downward instead of
-   shifting the rows already being read. */
-.session-progress-card--dock {
-  width: var(--chat-progress-dock-width);
-  max-height: min(50vh, 420px);
-  overflow-y: auto;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--accent-subtle) 42%, var(--panel-strong));
-  box-shadow: var(--shadow-sm);
-  animation: fade-in 0.2s var(--ease-out);
+.session-progress-card--side {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
 }
 
 .session-progress-card--board {
@@ -309,9 +299,43 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .session-progress-card--composer,
-  .session-progress-card--dock {
+  .session-progress-card--composer {
     animation: none;
     transition: none;
   }
+}
+
+.session-progress-card--side .session-progress-card__heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.session-progress-card--side .session-progress-card__heading-actions {
+  display: contents;
+}
+
+.session-progress-card--side .session-progress-card__activity {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.session-progress-card--side .session-progress-card__body {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-3);
+}
+
+.session-progress-card--side .session-progress-card__refresh-status {
+  margin: var(--space-2) var(--space-3) 0;
 }

@@ -125,7 +125,11 @@ Channels with progress drafts show the latest checklist in active `partial`, `bl
 
 By default, the current chat keeps exactly one live card, in the collapsible surface inside the composer, at every width. Opening a side panel does not move it out of the conversation. The dashboard widget and the session hovercard are separate read-only placements: hover a session row in the sidebar or a session-reference link in chat to see the same card for that session. All card placements read the same Gateway-backed state and refresh after `progressCard.changed` notifications. A notification is a refresh hint, including a null revision; clients confirm a removal with a read or clear response for that session and agent.
 
-In the Control UI, **Settings → Appearance → Chat → Show task progress cards** hides or shows the composer card. It is enabled by default and stored in this browser only. Turning it off also removes the loading placeholder, without stopping agent work, clearing saved progress, or changing dashboard widgets and session previews. Turn it back on to see the current card. The separate **Collapse task progress by default on desktop** preference is preserved while cards are hidden.
+In the Control UI, **Settings → Appearance → Chat → Show task progress cards** hides or shows the chat card. It is enabled by default and stored in this browser only. Turning it off also removes the loading placeholder, without stopping agent work, clearing saved progress, or changing dashboard widgets and session previews. Turn it back on to see the current card. The separate **Collapse task progress by default on desktop** preference is preserved while cards are hidden.
+
+Enable **Show task progress in the side panel** in the same settings section to use the free right side of a wide chat pane instead of the composer. This optional mode is off by default. Opening another panel hides progress rather than showing a second panel or moving the card back above the composer. Closing the other panel restores progress. Focused layouts and non-chat main views also take priority. The preference does not change saved panel tabs, their selection, or their layout.
+
+The progress panel’s **Hide task progress** (×) turns off **Show task progress cards** locally; it never clears the shared card. Re-enable that setting to restore the preferred placement, including after a reload. This differs from **Dismiss progress card** in the default composer layout, which clears saved progress. In a narrow or compact chat pane with no competing panel, side mode falls back to the composer card.
 
 On mobile, the composer card starts collapsed and sending new messages does not open it. On desktop, a newly created card starts expanded unless **Collapse task progress by default on desktop** is enabled. Mounting the card or switching sessions displays its initial state without a fold animation. While reading earlier messages, automatic collapse requires at least two upward scroll gestures totaling at least 320 pixels, followed by 300 milliseconds without scrolling. Wheel bursts separated by more than 200 milliseconds count separately; each touch drag counts as one gesture, including its inertia. Only upward movement consumed by the transcript counts; scrolling inside tool output, canceled input, and programmatic position adjustments do not. Returning to the bottom resets the counts.
 
@@ -145,13 +149,13 @@ Taking over the header clears pending transcript-collapse gestures. Revealing a 
 
 Transient refresh failures retain the last loaded card. The dashboard widget shows a retry notice until a refresh succeeds. If the Gateway reports that the connection no longer participates in the session, clients hide the card until access is restored and a refresh succeeds.
 
-The composer and dashboard placements show the local time of the last progress update. The hovercard instead shows the current-or-next plan step and its completed/total count, followed by Markdown in a separate Agent Notepad when a note is present.
+The composer, side panel, and dashboard placements show the local time of the last progress update. The hovercard instead shows the current-or-next plan step and its completed/total count, followed by Markdown in a separate Agent Notepad when a note is present.
 
 Without a matching terminal outcome, unfinished steps appear paused when the Gateway reports no active run or the card predates a later run. The last-update time shows when the agent last revised the card; elapsed time alone does not expire a card belonging to an active run.
 
 ## Refresh current work status
 
-In the Control UI composer, select **Refresh task progress** beside the card’s timestamp to ask the agent to reconcile the card with its current work. The action remains available when the card is collapsed. It does not send a visible chat message.
+In the Control UI composer or progress side panel, select **Refresh task progress** beside the card’s timestamp to ask the agent to reconcile the card with its current work. The action remains available when the card is collapsed. It does not send a visible chat message.
 
 While the request is pending, the previous card and its last-update time remain visible. The refresh is confirmed only after the Gateway returns a newer saved card. If the request fails or takes too long, use the retry action; a timeout does not cancel running work.
 

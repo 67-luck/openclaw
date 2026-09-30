@@ -71,7 +71,7 @@ describe("renderSessionProgressCard", () => {
     vi.unstubAllGlobals();
   });
 
-  it.each(["board", "composer"] as const)(
+  it.each(["board", "composer", "side"] as const)(
     "shows relative activity for %s cards with and without checklist steps",
     (placement) => {
       const container = createContainer();
@@ -109,6 +109,52 @@ describe("renderSessionProgressCard", () => {
     render(renderSessionProgressCard(progressCard, "composer", undefined, status), container);
 
     expect(container.querySelector("time")?.textContent).toBe(expected);
+  });
+
+  it("keeps side refresh and local hide separate from shared dismissal", () => {
+    const container = createContainer();
+    const onDismiss = vi.fn();
+    const onHide = vi.fn();
+    const onRefresh = vi.fn();
+    const draw = (state?: "pending" | "failed") =>
+      render(
+        renderSessionProgressCard(
+          progressCard,
+          "side",
+          onDismiss,
+          "done",
+          RUN_STARTED_MS,
+          RUN_ENDED_MS,
+          false,
+          false,
+          undefined,
+          { state, onRefresh },
+          onHide,
+        ),
+        container,
+      );
+    draw();
+    expect(container.querySelector("details")).toBeNull();
+    expect(container.querySelector("time")?.textContent).toBe("Completed just now");
+    container
+      .querySelector<HTMLButtonElement>('button[aria-label="Refresh task progress"]')!
+      .click();
+    expect(onRefresh).toHaveBeenCalledWith(progressCard);
+    draw("pending");
+    expect(
+      container.querySelector<HTMLButtonElement>(".session-progress-card__refresh")?.disabled,
+    ).toBe(true);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(
+      "Refreshing task progress",
+    );
+    draw("failed");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(
+      "Previous update kept",
+    );
+    expect(container.querySelector('button[aria-label="Retry progress refresh"]')).not.toBeNull();
+    container.querySelector<HTMLButtonElement>('button[aria-label="Hide task progress"]')!.click();
+    expect(onHide).toHaveBeenCalledOnce();
+    expect(onDismiss).not.toHaveBeenCalled();
   });
 
   it("uses endedAt for terminal wording and falls back to Updated without it", () => {

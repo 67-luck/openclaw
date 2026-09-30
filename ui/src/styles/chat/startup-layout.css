@@ -32,14 +32,9 @@
   --chat-thread-max-width: 48rem;
   /* Keep overlays clear of the edge-hugging scrollbar and add room on wide screens. */
   --chat-thread-gutter: 18px;
-  /* Composer box insets. The docked progress card derives its own edge from
-     both, so the two never overlap and their bottoms stay on one line. */
+  /* Composer box insets keep its controls clear of the pane edges. */
   --chat-composer-side-inset: 36px;
   --chat-composer-bottom-gap: 14px;
-  /* Docked progress-card width. Kept in step with PROGRESS_CARD_DOCK_MIN_GUTTER_PX
-     in chat-pane-rails.ts, which gates the placement on a gutter wide enough for
-     this card plus the gutter stack's insets. */
-  --chat-progress-dock-width: 250px;
   --chat-thread-side-inset: clamp(6px, 1vw, 12px);
 
   position: relative;
@@ -636,6 +631,20 @@ openclaw-chat-sidebar-region,
   grid-template-areas: "main-header divider side-header" "main divider side";
 }
 
+/* The fallback shares this grid, but never opens saved tabs or their headers. */
+.sidebar-region--fallback {
+  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-areas: "main-header side" "main side";
+}
+
+.sidebar-region__fallback {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-inline-start: 1px solid var(--border);
+}
+
 .sidebar-region--left.sidebar-region--open:not(.sidebar-region--expanded) {
   grid-template-columns: minmax(0, var(--side-panel-width)) auto minmax(0, 1fr);
   grid-template-areas: "side-header divider main-header" "side divider main";
@@ -806,7 +815,7 @@ html.openclaw-native-desktop
       .sidebar-region--open:not(.sidebar-region--expanded):not(.sidebar-region--left):not(
           .sidebar-region--bottom
         ):not(.sidebar-region--narrow)
-    )
+    ):not(.sidebar-region--fallback)
     > .sidebar-region__header
     > .chat-pane__header,
   &:is(
@@ -815,7 +824,8 @@ html.openclaw-native-desktop
           .sidebar-region--bottom
         ):not(.sidebar-region--narrow)
     )
-    [data-region-header="side"] {
+    [data-region-header="side"],
+  &.sidebar-region--fallback .session-progress-card__heading {
     padding-right: calc(var(--openclaw-native-window-controls-width, 0px) + 6px);
     min-height: var(--openclaw-native-titlebar-height, 52px);
   }

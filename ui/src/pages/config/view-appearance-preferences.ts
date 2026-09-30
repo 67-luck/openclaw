@@ -10,6 +10,7 @@ import {
   normalizeChatFollowUpMode,
   normalizeChatSendShortcut,
   UI_APPEARANCE_DEFAULTS,
+  type UiSettings,
 } from "../../app/settings.ts";
 import { getLobsterdexEntries } from "../../components/lobster-dex.ts";
 import { previewLobsterChirp } from "../../components/lobster-pet-audio.ts";
@@ -176,6 +177,29 @@ function renderSettingsCameraField(props: ConfigProps) {
   });
 }
 
+export function taskProgressPreferenceProps(
+  settings: UiSettings,
+  apply: (patch: Partial<UiSettings>) => void,
+): Pick<
+  ConfigProps,
+  | "chatShowTaskProgress"
+  | "setChatShowTaskProgress"
+  | "chatTaskProgressSidePanel"
+  | "setChatTaskProgressSidePanel"
+  | "chatCollapseTaskProgress"
+  | "setChatCollapseTaskProgress"
+> {
+  return {
+    chatShowTaskProgress:
+      settings.chatShowTaskProgress ?? UI_APPEARANCE_DEFAULTS.chatShowTaskProgress,
+    setChatShowTaskProgress: (enabled) => apply({ chatShowTaskProgress: enabled }),
+    chatTaskProgressSidePanel: settings.chatTaskProgressSidePanel === true,
+    setChatTaskProgressSidePanel: (enabled) => apply({ chatTaskProgressSidePanel: enabled }),
+    chatCollapseTaskProgress: settings.chatCollapseTaskProgress === true,
+    setChatCollapseTaskProgress: (enabled) => apply({ chatCollapseTaskProgress: enabled }),
+  };
+}
+
 export function renderChatPreferencesSection(props: ConfigProps) {
   const followUpSelection = props.chatFollowUpMode ?? "server";
   const serverQueueMode = props.serverQueueMode ?? t("chat.followUpModeLoading");
@@ -206,6 +230,10 @@ export function renderChatPreferencesSection(props: ConfigProps) {
   const showTaskProgressDefaultDescription = renderSettingsDefaultDescription(
     t("common.enabled"),
     props.chatShowTaskProgress !== UI_APPEARANCE_DEFAULTS.chatShowTaskProgress,
+  );
+  const taskProgressSidePanelDefaultDescription = renderSettingsDefaultDescription(
+    t("common.disabled"),
+    props.chatTaskProgressSidePanel !== UI_APPEARANCE_DEFAULTS.chatTaskProgressSidePanel,
   );
   const collapseTaskProgressDefaultDescription = renderSettingsDefaultDescription(
     t("common.disabled"),
@@ -252,6 +280,14 @@ export function renderChatPreferencesSection(props: ConfigProps) {
             ${showTaskProgressDefaultDescription} ${t("quickSettings.personal.browserOnly")}`,
           checked: props.chatShowTaskProgress,
           onChange: props.setChatShowTaskProgress,
+        })}
+        ${renderSettingsToggleRow({
+          title: t("configView.chatPrefs.taskProgressSidePanel"),
+          description: html`${t("configView.chatPrefs.taskProgressSidePanelHint")}<br />
+            ${taskProgressSidePanelDefaultDescription} ${t("quickSettings.personal.browserOnly")}`,
+          checked: props.chatTaskProgressSidePanel,
+          onChange: props.setChatTaskProgressSidePanel,
+          disabled: !props.chatShowTaskProgress,
         })}
         ${renderSettingsToggleRow({
           title: t("configView.chatPrefs.collapseTaskProgress"),

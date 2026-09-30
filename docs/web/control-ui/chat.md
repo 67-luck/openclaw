@@ -608,6 +608,15 @@ Task progress cards are enabled by default. Toggle **Show task progress cards** 
 **Settings → Appearance → Chat** to hide or show the composer card in this browser.
 Hiding it does not stop agent work or clear saved progress.
 
+Enable **Show task progress in the side panel** in the same section to move progress
+to the free right side of a wide chat pane. Other open panels, focused layouts, and
+non-chat main views take priority: progress stays hidden until that space is free
+again, without returning to the composer while another panel is open. **Hide task
+progress** (×) on this panel turns off the local show preference without clearing
+the shared card; turn **Show task progress cards** back on to restore it. Narrow
+or compact chat panes fall back to the composer when no other panel is open. The
+side-panel mode is off by default and leaves saved panel arrangements unchanged.
+
 On mobile, the task progress card above the composer starts collapsed and stays
 collapsed when you send a new message or the run completes. You can still open it
 manually. The card also collapses after deliberate upward scrolling settles.

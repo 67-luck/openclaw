@@ -168,14 +168,17 @@ export function renderSidebarRegion(params: {
   panelActions: SidebarPanelTemplates;
   panelTemplates: SidebarPanelTemplates;
   header?: TemplateResult | typeof nothing;
+  sideFallback?: TemplateResult | typeof nothing;
   primary: TemplateResult;
   requestUpdate: () => void;
 }): TemplateResult {
   const panelIdPrefix = `chat-panel-${encodeURIComponent(params.presentationId)}`;
   const panelDefinitions = params.panelDefinitions ?? sidebarPanelDefinitions();
   const panelOpen = params.layout.open === true;
+  const hasSideFallback = params.sideFallback !== undefined && params.sideFallback !== nothing;
   const hasPanels = params.layout.columns.length > 0;
-  const regionError = hasPanels ? ensureLazyElement("region", params.requestUpdate) : undefined;
+  const regionError =
+    hasPanels || hasSideFallback ? ensureLazyElement("region", params.requestUpdate) : undefined;
   let panelTemplates: SidebarPanelTemplates | null = null;
   for (const panel of params.layout.columns[0]?.panels ?? []) {
     const lazyState = ensureLazyElement(panel.slot, params.requestUpdate);
@@ -201,7 +204,7 @@ export function renderSidebarRegion(params: {
   return html`<div
     class="sidebar-region ${collapsed ? "sidebar-region--narrow" : ""} ${
       params.layout.expanded ? "sidebar-region--expanded" : ""
-    } ${params.layout.expanded && params.layout.expandedSide ? "sidebar-region--expanded-side" : ""} sidebar-region--${sidebarDock(params.layout)} ${panelOpen ? "sidebar-region--open" : ""}"
+    } ${params.layout.expanded && params.layout.expandedSide ? "sidebar-region--expanded-side" : ""} sidebar-region--${hasSideFallback ? "right" : sidebarDock(params.layout)} ${panelOpen ? "sidebar-region--open" : ""} ${hasSideFallback ? "sidebar-region--fallback" : ""}"
     style=${styleMap({
       "--side-panel-width": `${column?.width ?? 480}px`,
       "--side-panel-height": `${column?.height ?? 360}px`,
@@ -210,13 +213,12 @@ export function renderSidebarRegion(params: {
     <div class="sidebar-region__header">${params.header ?? nothing}</div>
     ${
       regionError !== undefined
-        ? regionError === null
-          ? (regionLoading ?? null)
-          : null
+        ? (regionError ?? regionLoading ?? nothing)
         : html`<openclaw-chat-sidebar-region
             .panelIdPrefix=${panelIdPrefix}
             .conversationTab=${params.conversationTab}
             .layout=${params.layout}
+            .sideFallback=${hasSideFallback ? params.sideFallback : null}
             .fetchFavicon=${params.fetchFavicon}
             .panelDefinitions=${panelDefinitions}
             .panelTemplates=${panelTemplates ?? params.panelTemplates}
@@ -237,7 +239,7 @@ export function renderSidebarRegion(params: {
     >
       ${params.primary}
     </div>
-    <div class="sidebar-region__right-runtime">${regionError ?? null}</div>
+    <div class="sidebar-region__right-runtime"></div>
   </div>`;
 }
 

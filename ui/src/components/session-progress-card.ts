@@ -16,7 +16,7 @@ import {
   type ComposerProgressDisclosureContext,
 } from "./session-progress-disclosure-controller.ts";
 
-type SessionProgressCardPlacement = "board" | "composer";
+type SessionProgressCardPlacement = "board" | "composer" | "side";
 
 const REFRESH_STATUS_LABEL_KEYS: Record<SessionProgressCardRefreshState, Parameters<typeof t>[0]> =
   {
@@ -321,6 +321,7 @@ export function renderSessionProgressCard(
   collapseComposerByDefault = false,
   composerDisclosureContext?: ComposerProgressDisclosureContext,
   refreshAction?: SessionProgressCardRefreshAction,
+  onHide?: () => void,
 ) {
   if (!card) {
     return nothing;
@@ -365,16 +366,20 @@ export function renderSessionProgressCard(
     ? (`sessionProgressCard.activity.${TERMINAL_RUN_OUTCOMES[sessionStatus!]!}` as const)
     : "sessionProgressCard.activity.updated";
   const lastActivity = progressActivityTime(activityTimestamp, activityKey);
-  const dismiss = onDismiss
+  const close = placement === "side" ? onHide : onDismiss ? () => onDismiss(card) : undefined;
+  const closeLabel = t(
+    placement === "side" ? "sessionProgressCard.hide" : "sessionProgressCard.dismiss",
+  );
+  const dismiss = close
     ? html`<button
         class="rail-header__action session-progress-card__dismiss"
         type="button"
-        aria-label=${t("sessionProgressCard.dismiss")}
-        title=${t("sessionProgressCard.dismiss")}
+        aria-label=${closeLabel}
+        title=${closeLabel}
         @click=${(event: MouseEvent) => {
           event.preventDefault();
           event.stopPropagation();
-          onDismiss?.(card);
+          close();
         }}
       >
         ${icons.x}
@@ -491,13 +496,31 @@ export function renderSessionProgressCard(
     aria-label=${countLabel}
   >
     <div class="session-progress-card__heading">
-      <span>${t("sessionProgressCard.title")}</span>
+      <span
+        >${t(placement === "side" ? "sessionProgressCard.composerTitle" : "sessionProgressCard.title")}</span
+      >
       <span class="session-progress-card__heading-actions">
-        <span
+        <span class="session-progress-card__activity"
           >${lastActivity}${counts ? html` · ${counts.completed}/${counts.total}` : nothing}</span
-        >${dismiss}
+        >${
+          placement === "side"
+            ? html`<span class="session-progress-card__summary-controls"
+                >${renderRefresh(card, refreshAction)}${dismiss}</span
+              >`
+            : dismiss
+        }
       </span>
     </div>
+    ${
+      refreshAction?.state
+        ? html`<span
+            class="session-progress-card__refresh-status"
+            data-state=${refreshAction.state}
+            role="status"
+            >${t(REFRESH_STATUS_LABEL_KEYS[refreshAction.state])}</span
+          >`
+        : nothing
+    }
     <div class="session-progress-card__body">
       ${renderProgressCardMarkdown(card.markdown)}
       ${renderSteps(card, hasCurrentRunActivity, effectiveSessionStatus)}
