@@ -1,3 +1,4 @@
+// State database path helpers resolve shared OpenClaw state DB paths.
 import { statSync } from "node:fs";
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";

@@ -1,3 +1,4 @@
+// Official plugin setup helpers install and configure bundled onboarding plugins.
 import {
   ensureOnboardingPluginInstalled,
   type OnboardingPluginInstallEntry,

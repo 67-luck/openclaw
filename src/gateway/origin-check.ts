@@ -1,3 +1,4 @@
+// Browser Origin validator for gateway HTTP and websocket requests.
 import type { IncomingMessage } from "node:http";
 import net from "node:net";
 import {

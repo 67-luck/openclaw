@@ -1,3 +1,4 @@
+// Gateway RPC handlers for voice wake routing configuration.
 import { loadVoiceWakeRoutingConfig } from "../../infra/voicewake-routing.js";
 import type { GatewayRequestHandlers } from "./types.js";
 

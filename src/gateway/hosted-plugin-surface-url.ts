@@ -1,3 +1,4 @@
+// Hosted plugin surface URL resolver for gateway-advertised plugin node endpoints.
 import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
 import { isLoopbackHost } from "./net.js";
 

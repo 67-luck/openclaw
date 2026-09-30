@@ -1,3 +1,4 @@
+// Defines reply directive parsing constants and text-matching helpers.
 import { escapeRegExp } from "../../shared/regexp.js";
 import {
   type ReasoningLevel,

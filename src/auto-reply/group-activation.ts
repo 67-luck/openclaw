@@ -1,3 +1,4 @@
+// Group activation command parser for mention/always auto-reply modes.
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 
 /** Supported group activation modes. */

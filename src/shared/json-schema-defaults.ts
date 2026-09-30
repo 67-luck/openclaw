@@ -1,3 +1,4 @@
+// JSON schema default helpers fill object values from TypeBox schema defaults.
 import {
   normalizeJsonSchemaForTypeBox,
   type JsonSchemaValue,

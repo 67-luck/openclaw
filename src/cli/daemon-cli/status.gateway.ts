@@ -1,3 +1,4 @@
+// Gateway target projection and port diagnostics for daemon status.
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { resolveGatewayPort } from "../../config/paths.js";
 import type { GatewayBindMode, OpenClawConfig } from "../../config/types.js";

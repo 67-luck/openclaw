@@ -1,3 +1,4 @@
+// Structured heartbeat response tool payload helpers.
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString as readString } from "@openclaw/normalization-core/string-coerce";
 import { assertCronJobScratchContent } from "../cron/scratch-contract.js";

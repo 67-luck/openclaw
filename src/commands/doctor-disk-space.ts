@@ -1,3 +1,4 @@
+// Doctor contribution for low disk space around the OpenClaw state directory.
 import os from "node:os";
 import { expectDefined, formatByteSize } from "@openclaw/normalization-core";
 import { note } from "../../packages/terminal-core/src/note.js";

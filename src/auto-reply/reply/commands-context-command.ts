@@ -1,3 +1,4 @@
+// Implements context inspection commands for the active reply session.
 import { defineAuthorizedTextCommand, matchCommandPrefix } from "./command-gates.js";
 import { buildContextReply } from "./commands-context-report.js";
 import type { CommandHandler } from "./commands-types.js";

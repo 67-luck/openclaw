@@ -1,3 +1,4 @@
+// Commander registration for sandbox container list, recreate, and explain commands.
 import type { Command } from "commander";
 import { theme } from "../../packages/terminal-core/src/theme.js";
 import type { sandboxExplainCommand } from "../commands/sandbox-explain.js";

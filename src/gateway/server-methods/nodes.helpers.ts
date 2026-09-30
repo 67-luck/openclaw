@@ -1,3 +1,4 @@
+// Node method helpers centralize JSON parsing and node-invoke error mapping.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   ErrorCodes,

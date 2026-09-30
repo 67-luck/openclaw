@@ -1,3 +1,4 @@
+// Commander registration for live OpenClaw docs search.
 import type { Command } from "commander";
 import { docsSearchCommand } from "../commands/docs.js";
 import { defaultRuntime } from "../runtime.js";

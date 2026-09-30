@@ -1,3 +1,4 @@
+// Shared doctor allowlist predicates for normalized sender lists.
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import type { DoctorAllowFromList } from "../types.js";
 

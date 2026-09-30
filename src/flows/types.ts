@@ -1,3 +1,4 @@
+// Shared option/contribution contracts for setup, onboarding, and doctor flow UIs.
 type FlowDocsLink = {
   path: string;
   label?: string;

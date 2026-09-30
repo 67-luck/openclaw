@@ -1,3 +1,4 @@
+// Resolves and probes the Gateway port for the official Docker image healthcheck.
 import { fileURLToPath } from "node:url";
 import { getRuntimeConfig } from "./config/config.js";
 import { resolveGatewayPort } from "./config/paths.js";

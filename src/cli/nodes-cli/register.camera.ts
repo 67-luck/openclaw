@@ -1,3 +1,4 @@
+// Node camera commands: list devices, capture photos, and capture short clips through node.invoke.
 import { asRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   normalizeLowercaseStringOrEmpty,

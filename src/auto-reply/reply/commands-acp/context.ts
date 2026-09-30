@@ -1,3 +1,4 @@
+// Implements ACP context commands for session metadata and prompt state.
 import { normalizeConversationTargetRef } from "../../../infra/outbound/session-binding-normalization.js";
 import type { HandleCommandsParams } from "../commands-types.js";
 import {

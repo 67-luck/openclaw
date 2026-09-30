@@ -1,3 +1,4 @@
+// Commander registration for ACP bridge and interactive ACP client commands.
 import type { Command } from "commander";
 import { normalizeAcpProvenanceMode } from "../acp/types.js";
 import { formatErrorMessage } from "../infra/errors.js";

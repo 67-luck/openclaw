@@ -1,3 +1,4 @@
+// Dispatches subagent inspection commands.
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { commandReply, defineAuthorizedTextCommand, matchCommandPrefix } from "./command-gates.js";
 import { buildSubagentsHelp, resolveRequesterSessionKey } from "./commands-subagents/shared.js";

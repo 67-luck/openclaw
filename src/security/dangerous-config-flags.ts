@@ -1,3 +1,4 @@
+// Collects dangerous config flag findings across agents and runtime config.
 import {
   listAgentEntries,
   resolveAgentConfig,

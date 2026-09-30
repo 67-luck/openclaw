@@ -1,3 +1,4 @@
+// Resolves media paths from reply payloads into runtime attachment metadata.
 import path from "node:path";
 import { sanitizeUntrustedFileName } from "@openclaw/fs-safe/advanced";
 import { mediaKindFromMime } from "@openclaw/media-core/constants";

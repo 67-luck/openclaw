@@ -1,3 +1,4 @@
+// Inspects gateway port listeners and connection state.
 import net from "node:net";
 import os from "node:os";
 import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";

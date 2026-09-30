@@ -1,3 +1,4 @@
+// Doctor runtime checks inspect provider catalogs, local audio, and Gateway services.
 import { formatUnsupportedNodeVersionMessage } from "../../node-version.mjs";
 import { tryResolveSoleAgentId } from "../agents/agent-scope.js";
 import { shouldManageGatewayService } from "../commands/doctor-service-repair-policy.js";

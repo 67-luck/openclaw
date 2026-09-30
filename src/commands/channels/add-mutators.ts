@@ -1,3 +1,4 @@
+// Small channel config mutators used by guided and non-interactive channel add flows.
 import { getChannelPlugin } from "../../channels/plugins/index.js";
 import { resolveChannelSetupExecutionAdapter } from "../../channels/plugins/setup-contract.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";

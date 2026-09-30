@@ -1,3 +1,4 @@
+// Doctor helpers for installing plugins required by configured agent runtimes.
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   collectConfiguredAgentHarnessRuntimes,

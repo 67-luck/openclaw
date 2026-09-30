@@ -1,3 +1,4 @@
+// Sends APNs notifications through the configured relay endpoint.
 import { URL } from "node:url";
 import {
   parseStrictPositiveInteger,

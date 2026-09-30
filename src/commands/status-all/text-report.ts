@@ -1,3 +1,4 @@
+// Shared rendering context for the standard and full status reports.
 import { renderTable, type TableColumn } from "../../../packages/terminal-core/src/table.js";
 
 type StatusReportContext = {

@@ -1,3 +1,4 @@
+// Memory host dreaming helpers record and load memory dreaming artifacts.
 import { parseBoolean } from "@openclaw/normalization-core/boolean-coercion";
 import {
   parseStrictNonNegativeInteger,

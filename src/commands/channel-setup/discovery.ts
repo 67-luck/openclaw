@@ -1,3 +1,4 @@
+// Builds the channel setup list from bundled channels, installed plugins, and trusted catalog entries.
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { listChatChannels } from "../../channels/chat-meta.js";
 import type { ChannelPluginCatalogEntry } from "../../channels/plugins/catalog.js";

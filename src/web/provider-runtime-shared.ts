@@ -1,3 +1,4 @@
+// Shared web provider config and credential resolution.
 import {
   coerceSecretRef,
   isLegacySecretRefEnvMarker,

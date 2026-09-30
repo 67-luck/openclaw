@@ -1,3 +1,4 @@
+// Shared JSON state helpers for pairing namespaces.
 import fs from "node:fs/promises";
 import path from "node:path";
 import { asNonArrayRecord } from "@openclaw/normalization-core/record-coerce";

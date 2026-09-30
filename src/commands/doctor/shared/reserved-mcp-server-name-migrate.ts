@@ -1,3 +1,4 @@
+// Removes MCP server entries whose names are reserved by config validation.
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { isRecord, type JsonRecord } from "./legacy-config-record-shared.js";
 

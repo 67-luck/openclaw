@@ -1,3 +1,4 @@
+// Duration parser shared by CLI flags, command directives, and config-backed timing values.
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { durationUnitMs } from "../infra/format-time/duration-units.js";
 

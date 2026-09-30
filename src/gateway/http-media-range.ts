@@ -1,3 +1,4 @@
+// Pure helpers for HTTP Accept media-range parsing.
 import { splitHttpHeaderValue } from "./http-header-value.js";
 
 const HTTP_TOKEN_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;

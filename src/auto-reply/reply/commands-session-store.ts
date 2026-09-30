@@ -1,3 +1,4 @@
+// Shared session-store helpers for command handlers that mutate sessions.
 import { resolveSessionStoreEntryCore, type SessionEntry } from "../../config/sessions.js";
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { sessionSnapshotChangesApplied } from "../../config/sessions/session-snapshot-merge.js";

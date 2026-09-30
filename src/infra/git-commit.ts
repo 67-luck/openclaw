@@ -1,3 +1,4 @@
+// Resolves git commit metadata for build/runtime diagnostics.
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

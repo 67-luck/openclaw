@@ -1,3 +1,4 @@
+// OpenClaw dialogue parses direct commands and optionally asks the assistant planner.
 import type { RuntimeEnv } from "../runtime.js";
 import type { SystemAgentAssistantPlan, SystemAgentAssistantPlanner } from "./assistant.js";
 import { SystemAgentInferenceUnavailableError } from "./inference-error.js";

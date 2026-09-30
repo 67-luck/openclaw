@@ -1,3 +1,4 @@
+// System-agent prompts drive the OpenClaw conversation with typed-command output.
 import { extractBalancedJsonPrefix, safeParseJsonRecord } from "@openclaw/normalization-core";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { SystemAgentGreetingFacts } from "./greeting.js";

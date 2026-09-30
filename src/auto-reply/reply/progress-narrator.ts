@@ -1,3 +1,4 @@
+// Utility-model narration for channel progress drafts.
 import {
   createSessionActivityNoteState,
   flushSessionActivityAssistantNote,

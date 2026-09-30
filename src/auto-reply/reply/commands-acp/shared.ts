@@ -1,3 +1,4 @@
+// Shared ACP command helpers for session identity and reply formatting.
 import { randomUUID } from "node:crypto";
 import type { AcpRuntimeSessionMode } from "@openclaw/acp-core/runtime/types";
 import type { Result } from "@openclaw/normalization-core/result";

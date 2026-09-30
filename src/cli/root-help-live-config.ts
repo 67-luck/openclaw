@@ -1,3 +1,4 @@
+// Root-help config probe for plugin-sensitive help rendering.
 import type { RootHelpRenderOptions } from "./program/root-help.js";
 
 function hasEntries(value: object | undefined): boolean {

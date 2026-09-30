@@ -1,3 +1,4 @@
+// Discovers gateways over Bonjour and normalizes service records.
 import { expectDefined } from "@openclaw/normalization-core";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import {

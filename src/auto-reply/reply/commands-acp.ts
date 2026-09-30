@@ -1,3 +1,4 @@
+// Implements ACP session commands and runtime status formatting.
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { logVerbose } from "../../globals.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";

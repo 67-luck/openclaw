@@ -1,3 +1,4 @@
+// Gateway daemon runtime option definitions used by install/configure flows.
 import { isBunRuntime } from "../daemon/runtime-binary.js";
 
 export type GatewayDaemonRuntime = "bun" | "node";

@@ -1,3 +1,4 @@
+// Runtime send adapter used by CLI send commands for channel plugins.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { loadChannelOutboundAdapter } from "../../channels/plugins/outbound/load.js";
 import type { ChannelId } from "../../channels/plugins/types.public.js";

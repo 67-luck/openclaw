@@ -1,3 +1,4 @@
+// Gateway service installer: writes config defaults, resolves credentials, and installs service definitions.
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";

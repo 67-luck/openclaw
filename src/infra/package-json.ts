@@ -1,3 +1,4 @@
+// Reads package.json metadata needed by install and update flows.
 import path from "node:path";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeNullableString as normalizeString } from "@openclaw/normalization-core/string-coerce";

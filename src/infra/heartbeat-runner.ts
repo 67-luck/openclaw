@@ -1,3 +1,4 @@
+// Runs heartbeat checks and emits status updates for configured agents.
 export type { HeartbeatDeps } from "./heartbeat-runner-execution.js";
 export { resolveHeartbeatAgents } from "./heartbeat-config.js";
 export { resolveConfiguredHeartbeatPrompt } from "./heartbeat-runner-config.js";

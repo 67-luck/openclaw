@@ -1,3 +1,4 @@
+// Shared summary types returned by gateway health and rendered by the CLI.
 import type { Snapshot } from "../../../packages/gateway-protocol/src/schema/snapshot.js";
 import type { ChannelAccountSnapshot } from "../../channels/plugins/types.public.js";
 

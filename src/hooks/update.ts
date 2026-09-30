@@ -1,3 +1,4 @@
+// Hook update helpers refresh installed hook records and config references.
 import { expectDefined } from "@openclaw/normalization-core";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {

@@ -1,3 +1,4 @@
+// Doctor warnings for plugin allowlists that make configured tool policies ineffective.
 import { isRecord as hasRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   normalizeArrayBackedTrimmedStringList,

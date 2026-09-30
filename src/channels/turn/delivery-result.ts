@@ -1,3 +1,4 @@
+// Delivery-result adapters for channel turn receipts.
 import {
   createMessageReceiptFromOutboundResults,
   listMessageReceiptPlatformIds,

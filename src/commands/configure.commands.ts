@@ -1,3 +1,4 @@
+// Entry points for the full configure wizard and section-limited runs.
 import { formatCliCommand } from "../cli/command-format.js";
 import { isTerminalInteractive } from "../cli/terminal-interactivity.js";
 import type { RuntimeEnv } from "../runtime.js";

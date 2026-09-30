@@ -1,3 +1,4 @@
+// Gateway RPC handler for native hook relay invocation.
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import {
   invokeNativeHookRelay,

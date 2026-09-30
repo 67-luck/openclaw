@@ -1,3 +1,4 @@
+// Prompt navigation wrapper for interactive setup history.
 import type {
   WizardMultiSelectParams,
   WizardProgress,

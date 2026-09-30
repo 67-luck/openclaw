@@ -1,3 +1,4 @@
+// Validates and normalizes provider asset attachments for music generation.
 import { canonicalizeBase64 } from "@openclaw/media-core/base64";
 import { maxBytesForKind } from "@openclaw/media-core/constants";
 import { extensionForMime } from "@openclaw/media-core/mime";

@@ -1,3 +1,4 @@
+// Routing account id helpers normalize account identifiers for route matching.
 import { normalizeAgentIdStrict } from "@openclaw/normalization-core/agent-id";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";

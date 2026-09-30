@@ -1,3 +1,4 @@
+// Gateway methods for ephemeral model-proposed follow-up tasks.
 import path from "node:path";
 import {
   ErrorCodes,

@@ -1,3 +1,4 @@
+// Public node-method registry and wake helpers.
 import { nodeEventHandlers } from "./nodes.event.js";
 import { nodeInvokeHandlers } from "./nodes.invoke.js";
 import { nodePairingHandlers } from "./nodes.pairing.js";

@@ -1,3 +1,4 @@
+// Read, edit, and delete message command registration.
 import { Option, type Command } from "commander";
 import type { MessageCliHelpers } from "./helpers.js";
 

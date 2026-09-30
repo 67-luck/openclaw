@@ -1,3 +1,4 @@
+// Loads global dotenv files with runtime logging for diagnostics.
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
   loadGlobalRuntimeDotEnvFilesCore,

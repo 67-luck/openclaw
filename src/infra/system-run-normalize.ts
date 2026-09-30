@@ -1,3 +1,4 @@
+// Normalizes system-run metadata and string-array inputs.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 
 /** Normalizes unknown system-run metadata to a trimmed non-empty string. */

@@ -1,3 +1,4 @@
+// Proxy capture CA helpers create and inspect local capture CA certificates.
 import { createHash, createPrivateKey, randomBytes, X509Certificate } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";

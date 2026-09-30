@@ -1,3 +1,4 @@
+// Proxy capture path helpers resolve certificate artifacts.
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
 

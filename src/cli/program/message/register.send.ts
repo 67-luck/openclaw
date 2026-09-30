@@ -1,3 +1,4 @@
+// Message send command registration, including media and presentation/delivery options.
 import type { Command } from "commander";
 import { CHANNEL_TARGET_DESCRIPTION } from "../../../infra/outbound/channel-target.js";
 import { collectOption } from "../helpers.js";

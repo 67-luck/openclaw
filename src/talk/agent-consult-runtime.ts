@@ -1,3 +1,4 @@
+// Agent consult runtime starts agent consultation flows from talk sessions.
 import { randomUUID } from "node:crypto";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {

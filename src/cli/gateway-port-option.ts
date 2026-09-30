@@ -1,3 +1,4 @@
+// Shared parser for CLI flags that select a local Gateway TCP port.
 import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
 import type { GatewayRpcOpts } from "./gateway-rpc.types.js";
 

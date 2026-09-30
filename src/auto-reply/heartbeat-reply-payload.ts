@@ -1,3 +1,4 @@
+// Heartbeat reply payload selector for multi-payload auto-reply results.
 import {
   hasOutboundReplyContent,
   isReasoningReplyPayload,

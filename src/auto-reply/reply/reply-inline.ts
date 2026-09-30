@@ -1,3 +1,4 @@
+// Resolves inline reply directives that alter a single reply turn.
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,

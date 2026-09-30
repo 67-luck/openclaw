@@ -1,3 +1,4 @@
+// Prompt adapter from OpenAI Responses input items to OpenClaw agent messages.
 import {
   buildAgentMessageFromConversationEntries,
   type ConversationEntry,

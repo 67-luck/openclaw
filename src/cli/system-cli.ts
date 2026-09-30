@@ -1,3 +1,4 @@
+// System CLI commands that call Gateway RPC methods for events, heartbeats, and presence.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { Command } from "commander";
 import { danger } from "../globals.js";

@@ -1,3 +1,4 @@
+// Parses directive level values for reasoning, verbosity, and elevated mode.
 import {
   normalizeFastMode,
   type ElevatedLevel,

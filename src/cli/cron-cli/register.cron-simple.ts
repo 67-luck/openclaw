@@ -1,3 +1,4 @@
+// Cron simple command registration: remove, toggle, show, runs, and run-now.
 import {
   resolvePositiveTimerTimeoutMs,
   resolveTimerTimeoutMs,

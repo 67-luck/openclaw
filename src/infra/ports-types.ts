@@ -1,3 +1,4 @@
+// Port probe types are shared by lsof/netstat readers and CLI status formatters.
 /** Process metadata for one listener on a port. */
 export type PortListener = {
   pid?: number;

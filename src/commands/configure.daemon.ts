@@ -1,3 +1,4 @@
+// Configure wizard service install/restart helper for the Gateway daemon.
 import { note } from "../../packages/terminal-core/src/note.js";
 import { withProgress } from "../cli/progress.js";
 import { getRuntimeConfig } from "../config/config.js";

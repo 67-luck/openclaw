@@ -1,3 +1,4 @@
+// Hook metadata discovery shared by runtime loading and plugin inspection.
 import fs from "node:fs";
 import path from "node:path";
 import { safeParseJson } from "@openclaw/normalization-core/json-coercion";

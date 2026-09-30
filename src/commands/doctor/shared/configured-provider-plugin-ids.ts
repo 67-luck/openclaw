@@ -1,3 +1,4 @@
+// Resolves official external provider plugins implied by config and environment state.
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import {
   resolveOfficialExternalProviderContractPluginIds,

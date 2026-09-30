@@ -1,3 +1,4 @@
+// Account lookup helpers resolve route accounts from normalized account ids.
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   normalizeLowercaseStringOrEmpty,

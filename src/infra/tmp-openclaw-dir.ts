@@ -1,3 +1,4 @@
+// Creates temporary OpenClaw directories for runtime scratch work.
 import { getSealedRuntimeSecureTempRoot } from "./sealed-runtime-registry.js";
 
 /** Preferred shared OpenClaw temp root on POSIX systems when ownership and permissions are safe. */
