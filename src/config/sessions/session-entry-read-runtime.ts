@@ -55,8 +55,10 @@ import {
 } from "./session-transcript-worker-resources.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 import type {
-  SessionExactEntriesWorkerResult,
   SessionExactEntriesWorkerSelection,
+  SessionEntryWorkerRead,
+  PreparedSessionEntryWorkerRead,
+  SessionStoreWorkerReadScope,
   SessionHistoryWorkerDatabase,
 } from "./session-transcript-worker.types.js";
 import type { SessionEntry } from "./types.js";
@@ -406,27 +408,6 @@ export async function readSessionEntryInWorker(
   loadedRead.assertCurrent();
   return loadedRead.entry;
 }
-
-type SessionStoreWorkerReadScope = {
-  agentId: string;
-  storePath: string;
-  env?: NodeJS.ProcessEnv;
-};
-
-export type SessionEntryWorkerRead = SessionStoreWorkerReadScope &
-  SessionExactEntriesWorkerSelection & {
-    lifecycleSessionKey?: string;
-    projection?: "full" | "sharing" | "list";
-    includeMembers?: boolean;
-    includeParticipantRecords?: boolean;
-    includeAuthorization?: boolean;
-  };
-
-export type PreparedSessionEntryWorkerRead = {
-  result: SessionExactEntriesWorkerResult;
-  database: { agentId: string; path: string; env: NodeJS.ProcessEnv };
-  assertCurrent: () => void;
-};
 
 /** Keep every discovered database and original admission alive through one synchronous consumer. */
 export async function withSessionEntriesFromStoresInWorker<T>(

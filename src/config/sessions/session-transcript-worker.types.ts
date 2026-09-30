@@ -334,6 +334,27 @@ type SessionEntryListWorkerInput = {
   scope: SessionEntryListScope;
 };
 
+export type SessionStoreWorkerReadScope = {
+  agentId: string;
+  storePath: string;
+  env?: NodeJS.ProcessEnv;
+};
+
+export type SessionEntryWorkerRead = SessionStoreWorkerReadScope &
+  SessionExactEntriesWorkerSelection & {
+    lifecycleSessionKey?: string;
+    projection?: "full" | "sharing" | "list";
+    includeMembers?: boolean;
+    includeParticipantRecords?: boolean;
+    includeAuthorization?: boolean;
+  };
+
+export type PreparedSessionEntryWorkerRead = {
+  result: SessionExactEntriesWorkerResult;
+  database: { agentId: string; path: string; env: NodeJS.ProcessEnv };
+  assertCurrent: () => void;
+};
+
 export type SessionExactEntriesWorkerInput = {
   kind: "session-exact-entries";
   database: { agentId: string; path: string };
