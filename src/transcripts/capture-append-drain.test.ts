@@ -97,7 +97,7 @@ describe("transcript capture accepted append drainage", () => {
         titleFailed.resolve();
         throw new Error("Title write unavailable");
       }
-      return writeSession(...args);
+      await writeSession(...args);
     });
     let first: Promise<void> | undefined;
     let late: Promise<void> | undefined;
@@ -202,13 +202,16 @@ describe("transcript capture accepted append drainage", () => {
     });
     const writeSession = f.store.writeSession.bind(f.store);
     vi.spyOn(f.store, "writeSession").mockImplementation(async (...args) => {
-      const receipt = await writeSession(...args);
       if (args[0].stoppedAt) {
-        events.push("restored stop state and revision");
+        events.push("restored stop state");
       }
-      return receipt;
+      return writeSession(...args);
     });
     const readRevision = f.store.readSummaryInputRevision.bind(f.store);
+    vi.spyOn(f.store, "readSummaryInputRevision").mockImplementation(async (...args) => {
+      events.push("retry revision");
+      return readRevision(...args);
+    });
     let accepted: Promise<void> | undefined;
     f.provider.start = async (request) => {
       started.resolve(request);
@@ -254,7 +257,7 @@ describe("transcript capture accepted append drainage", () => {
     }
     expect
       .soft(events)
-      .toEqual(["accepted speech", "restored stop state and revision", "start rejected"]);
+      .toEqual(["accepted speech", "restored stop state", "retry revision", "start rejected"]);
     expect(failure.retry?.revision).toBe(await readRevision(request.session));
     expect(failure.retry?.session.stoppedAt).toEqual(expect.any(String));
     expect(isTranscriptSessionStarting(request.session.sessionId)).toBe(false);
@@ -409,7 +412,6 @@ describe("transcript capture accepted append drainage", () => {
     expect(failure.retry).toEqual({
       session: original,
       revision: await f.store.readSummaryInputRevision(original),
-      discardOnAbandon: false,
     });
     expect(failure.cause).toBeInstanceOf(AggregateError);
     expect(failure.cause).toMatchObject({ errors: [providerFailure, appendFailure] });

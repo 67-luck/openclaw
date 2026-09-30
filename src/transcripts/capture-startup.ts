@@ -6,12 +6,7 @@ export class TranscriptStartError extends Error {
     readonly code: "id-conflict" | "admitted-start-failed",
     cause: unknown,
     // Only failed provider startup retains an admission that its owning service may retry.
-    readonly retry?: {
-      session: TranscriptSessionDescriptor;
-      revision: string;
-      // Only an inserted, never accepted candidate can be discarded on abandonment.
-      discardOnAbandon: boolean;
-    },
+    readonly retry?: { session: TranscriptSessionDescriptor; revision: string },
   ) {
     super(cause instanceof Error ? cause.message : String(cause), { cause });
     this.name = "TranscriptStartError";
@@ -32,7 +27,6 @@ export function retainTranscriptStartRetry(
   return {
     session: retry.session,
     revision: retry.revision,
-    discardOnAbandon: retry.discardOnAbandon,
     assertCurrent: () => {
       if (!pendingStartRetries.has(owner)) {
         throw new TranscriptStartError(
@@ -44,8 +38,6 @@ export function retainTranscriptStartRetry(
     release: () => pendingStartRetries.delete(owner),
   };
 }
-
-export type TranscriptStartRetry = ReturnType<typeof retainTranscriptStartRetry>;
 
 export function revokeTranscriptStartRetries(
   stateDir: string,

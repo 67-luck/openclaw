@@ -412,7 +412,7 @@ describe("continuous transcript startup ownership", () => {
             rejectedTitle = true;
             throw new Error("fixture title write unavailable");
           }
-          return originalWrite(session);
+          await originalWrite(session);
         });
       const affected = new Set([provider.id]);
       let pendingStop: Promise<void> | undefined;
