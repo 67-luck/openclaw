@@ -76,7 +76,10 @@ import {
 import { isNodeWorkerHostClientId } from "./node-runner-inventory-runtime.js";
 import type { NodeSession } from "./node-session.types.js";
 import { normalizeNodeSkillDescriptors } from "./node-skill-descriptors.js";
-import { NodeSystemRunEventAuthority } from "./node-system-run-event-authority.js";
+import {
+  NodeSystemRunEventAuthority,
+  type SystemRunEventAuthorization,
+} from "./node-system-run-event-authority.js";
 import { WEBSOCKET_OPEN_READY_STATE } from "./server-constants.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 
@@ -1140,7 +1143,7 @@ export class NodeRegistry {
     runId?: string;
     sessionKey: string;
     terminal: boolean;
-  }): { invokeResultReceived: boolean } | null {
+  }): SystemRunEventAuthorization | null {
     return this.systemRunEventAuthority.authorize({
       ...params,
       allowLegacyRunIdFallback:

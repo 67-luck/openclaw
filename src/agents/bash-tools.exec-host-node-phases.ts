@@ -8,7 +8,7 @@ import {
   describeInterpreterInlineEval,
   type InterpreterInlineEvalHit,
 } from "../infra/command-analysis/inline-eval.js";
-import { detectPolicyInlineEval } from "../infra/command-analysis/policy.js";
+import { detectInlineEvalInSegments } from "../infra/command-analysis/risks.js";
 import { hasExactCommandDurableExecApproval } from "../infra/exec-approvals-allow-always.js";
 import {
   type ExecApprovalsFile,
@@ -18,7 +18,6 @@ import {
   type ExecCommandSegment,
   type ExecSecurity,
   type SystemRunApprovalPlan,
-  commandRequiresSecurityAuditSuppressionApproval,
   countObsoleteGeneratedExecApprovals,
   evaluateShellAllowlistWithAuthorization,
   hasDurableExecApproval,
@@ -85,7 +84,6 @@ type NodeApprovalAnalysis = {
   nodeSecurity?: ExecSecurity;
   nodeAsk?: ExecAsk;
   inlineEvalHit: InterpreterInlineEvalHit | null;
-  requiresSecurityAuditSuppressionApproval: boolean;
   autoReviewBlockedByShellStartup: boolean;
   autoReviewEligibility: ReturnType<typeof resolveNodeAutoApprovalEligibility>;
   autoReviewArgv?: string[];
@@ -343,7 +341,7 @@ export function buildNodeSystemRunInvoke(params: {
       runId,
       suppressNotifyOnExit:
         params.suppressNotifyOnExit === true || params.notifyOnExit === false ? true : undefined,
-      notifyOnExit: params.notifyOnExit,
+      notifyOnExit: params.notifyOnExit !== false,
     },
     idempotencyKey: crypto.randomUUID(),
   };
@@ -506,7 +504,7 @@ export async function analyzeNodeApprovalRequirement(params: {
   const inlineEvalHit =
     params.request.strictInlineEval === true
       ? (policyCommandEvals
-          .map((entry) => detectPolicyInlineEval(entry.allowlistEval.segments))
+          .map((entry) => detectInlineEvalInSegments(entry.allowlistEval.segments))
           .find((hit) => hit !== null) ?? null)
       : null;
   if (inlineEvalHit) {
@@ -516,21 +514,6 @@ export async function analyzeNodeApprovalRequirement(params: {
       )}.`,
     );
   }
-  const suppressionCommandEvals =
-    preparedShellPayload && preparedShellPayload.trim().length > 0
-      ? policyCommandEvals.filter(
-          (entry) => entry.command.trim() !== approvalCommand.trim() || entry.cwd !== approvalCwd,
-        )
-      : policyCommandEvals;
-  const requiresSecurityAuditSuppressionApproval =
-    suppressionCommandEvals.some((entry) =>
-      commandRequiresSecurityAuditSuppressionApproval({
-        command: entry.command,
-        cwd: entry.cwd,
-        env: analysisEnv,
-        segments: entry.allowlistEval.segments,
-      }),
-    ) && !(params.hostSecurity === "full" && params.hostAsk === "off");
   if (
     (params.hostAsk === "always" ||
       params.hostSecurity === "allowlist" ||
@@ -652,7 +635,6 @@ export async function analyzeNodeApprovalRequirement(params: {
     nodeSecurity: params.prepared.execPolicy?.security,
     nodeAsk: params.prepared.execPolicy?.ask,
     inlineEvalHit,
-    requiresSecurityAuditSuppressionApproval,
     autoReviewBlockedByShellStartup,
     autoReviewEligibility,
     allowAlwaysPersistence:

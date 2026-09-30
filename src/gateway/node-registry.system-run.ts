@@ -18,9 +18,11 @@ export function resolvePendingSystemRunEvent(params: {
   }
   const timeoutMs = normalizeSystemRunTimeoutMs(obj.timeoutMs);
   const sessionKey = normalizeOptionalString(obj.sessionKey) ?? "";
+  const turnSourceAccountId = normalizeOptionalString(obj.turnSourceAccountId) ?? "";
   return {
     runId,
     ...(sessionKey ? { sessionKey } : {}),
+    ...(turnSourceAccountId ? { turnSourceAccountId } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   };
 }

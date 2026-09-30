@@ -110,6 +110,7 @@ import {
 } from "../state/agent-database-admission.js";
 import {
   createCronExitWatchers,
+  reconcileCronExitWatchers,
   type CronExitResult,
   type CronExitWatcherHandlers,
   type CronExitWatchers,
@@ -129,6 +130,7 @@ import {
   dispatchGatewayCronFinishedNotifications,
   sendGatewayCronWebhook,
   sendGatewayCronFailureAlert,
+  runGatewayCronFailureRepair,
 } from "./server-cron-notifications.js";
 import { toPluginCronJob } from "./server-cron-plugin-job.js";
 import { reconcileSkillCollectionReviewJobs } from "./server-cron-skill-review-jobs.js";
@@ -228,18 +230,6 @@ export async function fireStreamJob(
     return "disabled";
   }
   return disposition ?? (result.ok && result.ran === true ? "fired" : "not-run");
-}
-
-function reconcileCronExitWatchers(params: {
-  cronEnabled: boolean;
-  exitWatchers: ReturnType<typeof createCronExitWatchers>;
-  jobs: CronJob[];
-}) {
-  if (!params.cronEnabled) {
-    void params.exitWatchers.cancelAll();
-    return;
-  }
-  params.exitWatchers.reconcile(params.jobs);
 }
 
 function pickDefined<T extends Record<string, unknown>>(obj: T, keys: (keyof T)[]): Partial<T> {
@@ -995,6 +985,8 @@ export function buildGatewayCronService(params: {
         webhookToken: params.cfg.cron?.webhookToken,
         ssrfPolicy: webhookSsrfPolicy,
       }),
+    runCronFailureRepair: (request) =>
+      runGatewayCronFailureRepair(request, scheduledGatewayContextResolver),
     log: toPinoLikeLogger(
       getChildLogger({ module: "cron", storeKey: storePath }),
       getResolvedLoggerSettings().level,
@@ -1247,8 +1239,8 @@ export function buildGatewayCronService(params: {
     ) {
       return undefined;
     }
-    // Do not await under the cron store lock: stop synchronously closes owner
-    // admission, then drains through its queue while the update commits.
+    // Close admission synchronously, but drain outside the cron store lock.
+    // The caller observes rejection now and joins it after mutation settlement.
     return streamWatchersRef.current?.stop(
       current.id,
       patch.schedule !== undefined ? "schedule-update" : "disabled",
@@ -1274,16 +1266,15 @@ export function buildGatewayCronService(params: {
   };
   const settleStopAfterCommittedUpdate = async (
     jobId: string,
-    lifecycleStop: Promise<void> | undefined,
+    lifecycleStop: Promise<PromiseSettledResult<void>[]> | undefined,
   ) => {
-    try {
-      await lifecycleStop;
-    } catch (error) {
+    const [settled] = (await lifecycleStop) ?? [];
+    if (settled?.status === "rejected") {
       // The durable update already committed and the owner persisted its own
       // terminal stream diagnostic. Failing the caller here would claim a
       // rollback that never happened; routeLiveStreamJobLogged below retries teardown.
       cronLogger.warn(
-        { jobId, err: String(error) },
+        { jobId, err: String(settled.reason) },
         "cron-stream: source teardown failed after committed update",
       );
     }
@@ -1309,9 +1300,10 @@ export function buildGatewayCronService(params: {
     opts?: Parameters<CronService["update"]>[2],
     precondition?: Parameters<CronService["updateWithPrecondition"]>[2],
   ) => {
-    let lifecycleStop: Promise<void> | undefined;
+    let lifecycleStop: Promise<PromiseSettledResult<void>[]> | undefined;
     const routeAfterValidation = (current: CronJob, nowMs: number) => {
-      lifecycleStop = queueStreamStopAfterValidation(current, patch, nowMs);
+      const stop = queueStreamStopAfterValidation(current, patch, nowMs);
+      lifecycleStop = stop ? Promise.allSettled([stop]) : undefined;
     };
     const beforeUpdate = precondition
       ? async (current: CronJob, nowMs: number) => {
@@ -1331,7 +1323,7 @@ export function buildGatewayCronService(params: {
       await routeLiveStreamJobLogged(jobId);
       return result;
     } catch (error) {
-      await lifecycleStop?.catch(() => undefined);
+      await lifecycleStop;
       if (lifecycleStop) {
         await routeLiveStreamJobLogged(jobId);
       }

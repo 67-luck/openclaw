@@ -61,11 +61,12 @@ describe("result-first node exec completion", () => {
       buildSessionLookup(sessionKey, {
         lastChannel: "telegram",
         lastTo: "-100155462274",
+        lastAccountId: "work",
         lastThreadId: 42,
       }),
     );
     await handleNodeEvent(
-      buildCtx(() => ({ invokeResultReceived: false })),
+      buildCtx(() => ({ invokeResultReceived: false, turnSourceAccountId: "work" })),
       "node-1",
       nodeEvent("exec.finished", {
         sessionKey,
@@ -83,7 +84,12 @@ describe("result-first node exec completion", () => {
       {
         sessionKey,
         contextKey: `exec:${runId}`,
-        deliveryContext: { channel: "telegram", to: "-100155462274", threadId: 42 },
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100155462274",
+          accountId: "work",
+          threadId: 42,
+        },
       },
     );
     expect(requestHeartbeatMock).toHaveBeenCalledExactlyOnceWith(
@@ -157,15 +163,85 @@ describe("result-first node exec completion", () => {
   });
 
   it.each([
-    ["ordinary matching", false, "work", true],
-    ["ordinary different", false, "personal", false],
-    ["ordinary missing", false, undefined, false],
-    ["recovery matching", true, "work", true],
-    ["recovery different", true, "personal", false],
-    ["recovery missing", true, undefined, false],
+    ["matching recovery", true, "work", "work", true],
+    ["route replaced by another account", true, "work", "personal", false],
+    ["missing invocation account", true, undefined, "work", false],
+    ["default-account recovery", true, "default", undefined, true],
+    ["ordinary account mismatch", false, "work", "personal", false],
+    ["ordinary legacy accountless authority", false, undefined, "personal", true],
+  ])(
+    "binds an accountless forum session for %s",
+    async (_label, recovery, turnSourceAccountId, lastAccountId, allowed) => {
+      const sessionKey = "agent:main:telegram:group:-100155462274:topic:42";
+      loadSessionEntryMock.mockReturnValue(
+        buildSessionLookup(sessionKey, {
+          lastChannel: "telegram",
+          lastTo: "-100155462274",
+          lastThreadId: 42,
+          lastAccountId,
+        }),
+      );
+      await handleNodeEvent(
+        buildCtx(() => ({ invokeResultReceived: false, turnSourceAccountId })),
+        "node-1",
+        nodeEvent("exec.finished", {
+          sessionKey,
+          runId: `run-forum-account-${_label}`,
+          exitCode: 0,
+          output: "forum account output",
+          ...(recovery ? { suppressNotifyOnExit: true, invokeResultSentFirst: true } : {}),
+        }),
+        { connId: "conn-1" },
+      );
+
+      if (allowed) {
+        expect(enqueueSystemEventMock).toHaveBeenCalledOnce();
+        expect(requestHeartbeatMock).toHaveBeenCalledOnce();
+      } else {
+        expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+        expect(requestHeartbeatMock).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("keeps a legacy no-marker forum completion suppressed", async () => {
+    const sessionKey = "agent:main:telegram:group:-100155462274:topic:42";
+    loadSessionEntryMock.mockReturnValue(
+      buildSessionLookup(sessionKey, {
+        lastChannel: "telegram",
+        lastTo: "-100155462274",
+        lastThreadId: 42,
+        lastAccountId: "work",
+      }),
+    );
+    await handleNodeEvent(
+      buildCtx(() => ({ invokeResultReceived: false, turnSourceAccountId: "work" })),
+      "node-1",
+      nodeEvent("exec.finished", {
+        sessionKey,
+        runId: "run-forum-account-legacy",
+        exitCode: 0,
+        output: "legacy output",
+        suppressNotifyOnExit: true,
+      }),
+      { connId: "conn-1" },
+    );
+
+    expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+    expect(requestHeartbeatMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["ordinary matching", false, undefined, "work", true],
+    ["ordinary different", false, undefined, "personal", false],
+    ["ordinary missing", false, undefined, undefined, false],
+    ["recovery matching", true, "work", "work", true],
+    ["recovery different", true, "work", "personal", false],
+    ["recovery missing route account", true, "work", undefined, false],
+    ["recovery missing invocation account", true, undefined, "work", false],
   ])(
     "handles an account-qualified Telegram route for %s",
-    async (_label, recovery, lastAccountId, allowed) => {
+    async (_label, recovery, turnSourceAccountId, lastAccountId, allowed) => {
       const sessionKey = "agent:main:telegram:work:direct:123456789";
       loadSessionEntryMock.mockReturnValue(
         buildSessionLookup(sessionKey, {
@@ -175,7 +251,7 @@ describe("result-first node exec completion", () => {
         }),
       );
       await handleNodeEvent(
-        buildCtx(() => ({ invokeResultReceived: false })),
+        buildCtx(() => ({ invokeResultReceived: false, turnSourceAccountId })),
         "node-1",
         nodeEvent("exec.finished", {
           sessionKey,
@@ -333,7 +409,7 @@ describe("result-first node exec completion", () => {
         }),
       );
       await handleNodeEvent(
-        buildCtx(() => ({ invokeResultReceived: false })),
+        buildCtx(() => ({ invokeResultReceived: false, turnSourceAccountId: "default" })),
         "node-1",
         nodeEvent("exec.finished", {
           sessionKey,

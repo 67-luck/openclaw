@@ -1,6 +1,6 @@
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import path from "node:path";
+import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { formatByteSize } from "@openclaw/normalization-core";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
@@ -13,6 +13,7 @@ import {
   SQLITE_READONLY_CHILD_ARG,
 } from "./runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
+import { tryProcessCwd } from "./safe-cwd.js";
 import { retainSnapshotWork } from "./sqlite-readonly-location-cleanup.js";
 import {
   readOnlyWorkerScope,
@@ -21,6 +22,7 @@ import {
 import {
   SQLITE_READONLY_WORKER_MAX_BUFFER,
   readSqliteReadOnlyWorkerValue,
+  sqliteReadOnlyWorkerRequestArgs,
   type SqliteReadOnlyWorkerOptions,
   type SqliteReadOnlyWorkerOutput,
   type SqliteReadOnlyWorkerValue,
@@ -196,14 +198,6 @@ export function resolveSqliteInspectionSignal(signal?: AbortSignal): AbortSignal
     : signal;
 }
 
-function sqliteReadOnlyWorkerRequestArgs(pathname: string, options: SqliteReadOnlyWorkerOptions) {
-  return [
-    options.mode,
-    path.resolve(pathname),
-    ...(options.stagingRoot ? [options.stagingRoot] : []),
-  ];
-}
-
 function sqliteReadOnlyWorkerArgv(pathname: string, options: SqliteReadOnlyWorkerOptions) {
   const workerUrl = resolveRuntimeWorkerUrl(
     options.mode === "content-version"
@@ -226,7 +220,7 @@ export function captureSqliteReadOnlyWorkerLaunch(
   const broker = source === "canonical" ? getSpawnBroker() : undefined;
   return {
     env: { ...resolveNodeCompileCacheEnv(env) },
-    cwd: process.cwd(),
+    cwd: tryProcessCwd() ?? tmpdir(),
     transport: broker ? { kind: "broker", owner: broker } : { kind: "native" },
   };
 }
@@ -404,9 +398,12 @@ async function runSqliteAuthProfileWorker(
   }
 }
 
-function runSqliteReadOnlyWorkerOnce(
+export function runSqliteReadOnlyWorkerOnce(
   pathname: string,
   options: SqliteReadOnlyWorkerOptions,
+  launch?: Pick<SqliteReadOnlyWorkerLaunch, "env" | "cwd"> & {
+    deadlineOwnedByCaller?: boolean;
+  },
 ): Promise<SqliteReadOnlyWorkerValue> {
   if (options.mode === "auth-profile-rows") {
     // CLI and bounded readers without a lifecycle owner must join their child before returning.
@@ -427,9 +424,13 @@ function runSqliteReadOnlyWorkerOnce(
       sqliteReadOnlyWorkerArgv(pathname, options),
       {
         encoding: "utf8",
-        env: resolveNodeCompileCacheEnv(),
+        env: launch?.env ?? resolveNodeCompileCacheEnv(),
+        cwd: launch?.cwd,
         maxBuffer: SQLITE_READONLY_WORKER_MAX_BUFFER,
-        timeout: reclaim || isSqliteInspectionDeadlineOwnedByCaller() ? undefined : timeoutMs,
+        timeout:
+          reclaim || (launch?.deadlineOwnedByCaller ?? isSqliteInspectionDeadlineOwnedByCaller())
+            ? undefined
+            : timeoutMs,
         killSignal: "SIGKILL",
       },
       (error, stdout, stderr) => {

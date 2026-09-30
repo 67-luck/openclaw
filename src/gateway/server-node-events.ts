@@ -5,7 +5,6 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
-import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { Value } from "typebox/value";
 import {
   validateNodeHostStatsPayload,
@@ -52,6 +51,7 @@ import {
   NODE_PRESENCE_ACTIVITY_EVENT,
   normalizeNodePresenceAliveReason,
 } from "../shared/node-presence.js";
+import { truncateUtf16WithEllipsis } from "../shared/text-truncate.js";
 import { deliveryContextFromSession } from "../utils/delivery-context.read.js";
 import { resolveChatAttachmentMaxBytes } from "./chat-attachment-policy.js";
 import {
@@ -59,7 +59,7 @@ import {
   parseMessageWithAttachments,
   persistInboundImagesForTranscript,
 } from "./chat-attachments.js";
-import { shouldSuppressRun } from "./node-system-run-event-authority.js";
+import { shouldSuppressRun as suppressRun } from "./node-system-run-event-authority.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./server-methods/attachment-normalize.js";
 import { registerNodeApnsEvent } from "./server-node-events-apns.js";
 import type { NodeEvent, NodeEventContext } from "./server-node-events-types.js";
@@ -353,12 +353,7 @@ function pruneBoundedTimestampMap(
 }
 
 function compactNodeEventText(raw: string, maxChars: number) {
-  const normalized = raw.replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxChars) {
-    return normalized;
-  }
-  const safe = Math.max(1, maxChars - 1);
-  return `${sliceUtf16Safe(normalized, 0, safe)}…`;
+  return truncateUtf16WithEllipsis(raw.replace(/\s+/g, " ").trim(), maxChars);
 }
 
 type LoadedSessionEntry = ReturnType<typeof loadSessionEntry>;
@@ -393,28 +388,19 @@ async function touchSessionStore(params: {
   );
 }
 
-function queueSessionStoreTouch(params: {
-  ctx: NodeEventContext;
-  storePath: LoadedSessionEntry["storePath"];
-  canonicalKey: LoadedSessionEntry["canonicalKey"];
-  entry: LoadedSessionEntry["entry"];
-  sessionId: string;
-  now: number;
-  isConnectionCurrent?: () => boolean | Promise<boolean>;
-}) {
+function queueSessionStoreTouch(
+  params: Parameters<typeof touchSessionStore>[0] & {
+    ctx: NodeEventContext;
+    isConnectionCurrent?: () => boolean | Promise<boolean>;
+  },
+) {
   // Voice dispatch intentionally does not wait for persistence, but a host
   // snapshot must not race the accepted write after its node RPC returns.
   void runWithGatewayIndependentRootWorkContinuation(async () => {
     if (params.isConnectionCurrent && !(await params.isConnectionCurrent())) {
       return;
     }
-    await touchSessionStore({
-      storePath: params.storePath,
-      canonicalKey: params.canonicalKey,
-      entry: params.entry,
-      sessionId: params.sessionId,
-      now: params.now,
-    });
+    await touchSessionStore(params);
   }, "node-events:voice-persist").catch((err: unknown) => {
     params.ctx.logGateway.warn("voice session-store update failed: " + formatForLog(err));
   });
@@ -864,17 +850,14 @@ export const handleNodeEvent = async (
       if (!obj) {
         return undefined;
       }
-      const change = normalizeOptionalString(obj.change)
-        ? normalizeLowercaseStringOrEmpty(obj.change)
-        : undefined;
+      const change = normalizeLowercaseStringOrEmpty(obj.change);
       if (change !== "posted" && change !== "removed") {
         return undefined;
       }
-      const keyRaw = normalizeOptionalString(obj.key);
-      if (!keyRaw) {
+      const key = normalizeOptionalString(obj.key);
+      if (!key) {
         return undefined;
       }
-      const key = keyRaw;
       const requestedSessionKey = normalizeOptionalString(obj.sessionKey);
       let target: { sessionKey: string; agentId?: string };
       try {
@@ -897,8 +880,7 @@ export const handleNodeEvent = async (
       if (resolveAgentHarnessSessionContextError(sessionKey, entry)) {
         return undefined;
       }
-      const packageNameRaw = normalizeOptionalString(obj.packageName);
-      const packageName = packageNameRaw ?? null;
+      const packageName = normalizeOptionalString(obj.packageName);
       const title = compactNodeEventText(
         normalizeOptionalString(obj.title) ?? "",
         MAX_NOTIFICATION_EVENT_TEXT_CHARS,
@@ -922,7 +904,7 @@ export const handleNodeEvent = async (
 
       const queued = enqueueSystemEvent(
         summary,
-        withSystemEventOwner({ sessionKey, contextKey: `notification:${keyRaw}` }, agentId),
+        withSystemEventOwner({ sessionKey, contextKey: `notification:${key}` }, agentId),
       );
       if (queued) {
         requestHeartbeat({
@@ -959,15 +941,12 @@ export const handleNodeEvent = async (
       }
       const sessionKeyRaw = normalizeOptionalString(obj.sessionKey) ?? `node-${nodeId}`;
       const { canonicalKey: sessionKey, agentId, entry } = loadSessionEntry(sessionKeyRaw);
-
-      const cfg = getRuntimeConfig(),
-        route = deliveryContextFromSession(entry);
+      const [cfg, route] = [getRuntimeConfig(), deliveryContextFromSession(entry)];
       const runId = normalizeOptionalString(obj.runId) ?? "";
       const eventAuthorization = ctx.authorizeNodeSystemRunEvent({
         nodeId,
         connId: opts?.connId,
         ...(runId ? { runId } : {}),
-        // Match the key sent in system.run params; canonicalization below is for routing.
         sessionKey: sessionKeyRaw,
         terminal: evt.event === "exec.finished" || evt.event === "exec.denied",
       });
@@ -979,9 +958,7 @@ export const handleNodeEvent = async (
           reason: "unmatched_exec_event",
         };
       }
-      // Respect tools.exec.notifyOnExit (default true); false skips node exec system events.
-      const notifyEnabled = cfg.tools?.exec?.notifyOnExit !== false;
-      if (shouldSuppressRun(obj, eventAuthorization, route, notifyEnabled, sessionKey)) {
+      if (suppressRun(obj, eventAuthorization, route, cfg.tools?.exec?.notifyOnExit, sessionKey)) {
         return undefined;
       }
       if (evt.event === "exec.denied") {
@@ -1037,7 +1014,6 @@ export const handleNodeEvent = async (
         ),
       );
       if (queued) {
-        // Global keys retain the loaded owner; synthetic node-* keys keep unscoped wakes.
         requestHeartbeat(
           scopedHeartbeatWakeOptionsForPolicy(
             sessionKey,

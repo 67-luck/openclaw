@@ -1,7 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { publishSystemRunCompletion } from "./invoke-system-run-completion.js";
+import {
+  publishSystemRunCompletion,
+  resolveSystemRunNotifyOnExit,
+} from "./invoke-system-run-completion.js";
 
 describe("publishSystemRunCompletion", () => {
+  it.each([
+    { name: "legacy suppression-only opt-out", notifyOnExit: undefined, expected: false },
+    { name: "explicit result-first recovery", notifyOnExit: true, expected: true },
+  ])("preserves $name", ({ notifyOnExit, expected }) => {
+    expect(resolveSystemRunNotifyOnExit({ suppressNotifyOnExit: true, notifyOnExit })).toBe(
+      expected,
+    );
+  });
+
   it("publishes the terminal event when invoke-result delivery rejects", async () => {
     const sendInvokeResult = vi.fn(async () => {
       throw new Error("result transport failed");

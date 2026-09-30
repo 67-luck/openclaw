@@ -3,7 +3,7 @@ import {
   isFutureDateTimestampMs,
   resolveExpiresAtMsFromDurationMs,
 } from "@openclaw/normalization-core/number-coercion";
-import { normalizeAccountId } from "../routing/account-id.js";
+import { DEFAULT_ACCOUNT_ID, normalizeOptionalAccountId } from "../routing/account-id.js";
 import { parseSessionDeliveryRoute } from "../routing/session-key.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import type { PendingSystemRunEvent } from "./node-registry.invoke-stream.js";
@@ -22,7 +22,10 @@ type SystemRunEventIdentity = Omit<
   "expiresAtMs" | "invokeResultReceived"
 >;
 
-export type SystemRunEventAuthorization = { invokeResultReceived: boolean };
+export type SystemRunEventAuthorization = {
+  invokeResultReceived: boolean;
+  turnSourceAccountId?: string;
+};
 
 export class NodeSystemRunEventAuthority {
   private events = new Map<string, AuthorizedSystemRunEvent>();
@@ -55,6 +58,7 @@ export class NodeSystemRunEventAuthority {
     }
   }
 
+  // Match the exact session key dispatched in system.run; canonical keys are routing-only.
   authorize(params: {
     nodeId: string;
     connId?: string;
@@ -92,7 +96,12 @@ export class NodeSystemRunEventAuthority {
     if (params.terminal) {
       this.events.delete(match);
     }
-    return { invokeResultReceived: authorized.invokeResultReceived };
+    return {
+      invokeResultReceived: authorized.invokeResultReceived,
+      ...(authorized.turnSourceAccountId
+        ? { turnSourceAccountId: authorized.turnSourceAccountId }
+        : {}),
+    };
   }
 
   private expiresAt(timeoutMs: number | null | undefined): number | null {
@@ -159,7 +168,7 @@ export function shouldSuppressRun(
   },
   authorization: unknown,
   deliveryContext: DeliveryContext | undefined,
-  globallyEnabled: boolean,
+  globallyEnabled: boolean | undefined,
   sessionKey: string,
 ): boolean {
   const invokeResultReceived =
@@ -167,9 +176,19 @@ export function shouldSuppressRun(
     authorization !== null &&
     "invokeResultReceived" in authorization &&
     authorization.invokeResultReceived === true;
-  const telegramRouteMismatch = resolveTelegramRouteMismatch(sessionKey, deliveryContext);
+  const turnSourceAccountId =
+    typeof authorization === "object" &&
+    authorization !== null &&
+    "turnSourceAccountId" in authorization &&
+    typeof authorization.turnSourceAccountId === "string"
+      ? authorization.turnSourceAccountId
+      : undefined;
+  const telegramRouteMismatch = resolveTelegramRouteMismatch(sessionKey, deliveryContext, {
+    turnSourceAccountId,
+    requireAccount: payload.suppressNotifyOnExit === true && payload.invokeResultSentFirst === true,
+  });
   return (
-    !globallyEnabled ||
+    globallyEnabled === false ||
     payload.notifyOnExit === false ||
     telegramRouteMismatch === true ||
     (payload.suppressNotifyOnExit === true &&
@@ -186,6 +205,7 @@ const TELEGRAM_TARGET_THREAD_SUFFIX = /^(.*):(direct-topic|topic|thread):(\d+)$/
 function resolveTelegramRouteMismatch(
   sessionKey: string,
   deliveryContext: DeliveryContext | undefined,
+  options: { turnSourceAccountId?: string; requireAccount: boolean },
 ): boolean | null {
   const origin = parseSessionDeliveryRoute(sessionKey);
   if (origin?.channel !== "telegram") {
@@ -205,11 +225,33 @@ function resolveTelegramRouteMismatch(
   if (deliveryContext.channel?.trim().toLowerCase() !== "telegram") {
     return true;
   }
-  if (
-    origin.accountId &&
-    normalizeAccountId(deliveryContext.accountId) !== normalizeAccountId(origin.accountId)
-  ) {
+  const invocationAccountId = options.turnSourceAccountId
+    ? normalizeOptionalAccountId(options.turnSourceAccountId)
+    : undefined;
+  if (options.turnSourceAccountId && !invocationAccountId) {
     return true;
+  }
+  const sessionAccountId = origin.accountId
+    ? normalizeOptionalAccountId(origin.accountId)
+    : undefined;
+  if (origin.accountId && !sessionAccountId) {
+    return true;
+  }
+  if (invocationAccountId && sessionAccountId && invocationAccountId !== sessionAccountId) {
+    return true;
+  }
+  if (options.requireAccount && !invocationAccountId) {
+    return null;
+  }
+  const expectedAccountId = invocationAccountId ?? sessionAccountId;
+  if (expectedAccountId) {
+    const rawTargetAccountId = deliveryContext.accountId?.trim();
+    const targetAccountId = rawTargetAccountId
+      ? normalizeOptionalAccountId(rawTargetAccountId)
+      : DEFAULT_ACCOUNT_ID;
+    if (!targetAccountId || targetAccountId !== expectedAccountId) {
+      return true;
+    }
   }
   const rawTarget = deliveryContext.to?.trim().replace(/^telegram:/i, "");
   if (!rawTarget) {

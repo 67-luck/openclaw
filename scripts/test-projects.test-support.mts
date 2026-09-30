@@ -1501,6 +1501,29 @@ function resolveExplicitSourceTestTargets(
   ].toSorted((left, right) => left.localeCompare(right));
 }
 
+function listDirectoryTestTargets(directory: string, cwd: string): string[] {
+  if (isSharedVitestExcludedPath(directory) || isSharedVitestExcludedPath(`${directory}/`)) {
+    return [];
+  }
+  return fs.readdirSync(path.join(cwd, directory), { withFileTypes: true }).flatMap((entry) => {
+    const relative = path.posix.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      return listDirectoryTestTargets(relative, cwd);
+    }
+    return entry.isFile() && relative.endsWith(".test.ts") && !isSharedVitestExcludedPath(relative)
+      ? [relative]
+      : [];
+  });
+}
+
+function isOrdinaryAgentGlobTarget(relative: string): boolean {
+  return (
+    isPathAtOrUnder(relative, agentVitestProjectOwners.all.root) &&
+    isGlobTarget(relative) &&
+    !/\.(?:live|e2e)\.test\.ts$/u.test(relative)
+  );
+}
+
 function expandExplicitSourceTestTargets(targetArgs: string[], cwd: string, watchMode: boolean) {
   const sourceTargetCount = targetArgs.filter((targetArg) => {
     const relative = toRepoRelativeTarget(targetArg, cwd);
@@ -1515,6 +1538,29 @@ function expandExplicitSourceTestTargets(targetArgs: string[], cwd: string, watc
     }
     const glob = isGlobTarget(relative);
     const directory = isExistingDirectoryTarget(targetArg, cwd);
+    if (
+      !watchMode &&
+      !glob &&
+      directory &&
+      (isPathAtOrUnder(relative, "packages") ||
+        isPathAtOrUnder(relative, agentVitestProjectOwners.all.root))
+    ) {
+      const targets = listDirectoryTestTargets(relative, cwd).toSorted((left, right) =>
+        left.localeCompare(right),
+      );
+      return targets.length > 0 ? targets : [targetArg];
+    }
+    if (!watchMode && isOrdinaryAgentGlobTarget(relative)) {
+      // Assign every leaf before choosing configs: agent shards exclude light,
+      // isolated, and database-worker tests owned by other projects.
+      const targets = expandVitestIncludePatterns([relative], cwd).filter(
+        (file) =>
+          file.endsWith(".test.ts") &&
+          !isSharedVitestExcludedPath(file) &&
+          isExistingFileTarget(file, cwd),
+      );
+      return targets.length > 0 ? targets : [targetArg];
+    }
     // Target shape is invariant across the worker inventory; literal files need no expansion.
     const databaseWorkerTargets =
       glob || directory
@@ -2118,25 +2164,14 @@ function listImportGraphGrepMatches(
   if (result?.status !== 1) {
     const trackedFiles = new Set(listImportGraphFilesForCwd(cwd, { tooling }));
     // Source archives use the same filesystem inventory and native reader as the full graph.
-    let candidates = (
+    const candidates = (
       result?.status === 0
         ? result.stdout.split("\0").filter((file) => trackedFiles.has(file))
         : [...trackedFiles].filter((file) => !testFilesOnly || isTestFileTarget(file))
     ).toSorted((left, right) => left.localeCompare(right));
-    if (result?.status !== 0) {
-      // Wide frontiers bypass Git's prefilter. Match before parsing imports, and
-      // leave nonmatches uncached so later full-graph queries can still read them.
-      candidates = readTestSelectorSourceFacts(
-        cwd,
-        candidates.map((file) => ({ file, parseImports: false })),
-        missing,
-        GIT_LS_FILES_MAX_BUFFER_BYTES,
-      )
-        .filter(({ matches: fileTerms }) => fileTerms.length > 0)
-        .map(({ file }) => file);
-    }
-    // Per-term membership preserves the helper first-success rule.
-    // Cached edges need only term facts; full-graph acquisition reuses their parsing.
+    // Per-term membership preserves the helper first-success rule. One native pass
+    // matches every candidate, parses only uncached matches, and leaves nonmatches
+    // uncached so later full-graph queries still read them.
     for (const { edges, matches: fileTerms } of readImportGraphEdges(
       cwd,
       candidates,
@@ -3981,7 +4016,8 @@ function resolveToolingTestTargets(
   const semanticTargets = resolveSemanticToolingTargets(implementationPath).filter(boundedOwner);
   const facts = getChangedPathFacts(changedPath);
   const toolingTestSource =
-    changedPath.startsWith("test/scripts/") &&
+    (changedPath.startsWith("test/scripts/") ||
+      (!options.boundedOwners && /^test\/vitest\/vitest\.[^/]+-paths\.mjs$/u.test(changedPath))) &&
     TOOLING_IMPORTABLE_FILE_EXTENSIONS.some((ext) => implementationPath.endsWith(ext));
   const hasToolingOwner =
     exactTargets.length > 0 ||
@@ -4886,6 +4922,17 @@ export function buildVitestRunPlans(
     ...activeTargetArgs,
   ]).flatMap((targetArg) => {
     const relative = toRepoRelativeTarget(targetArg, cwd);
+    if (
+      !watchMode &&
+      (isOrdinaryAgentGlobTarget(relative) ||
+        (!isGlobTarget(relative) &&
+          isExistingDirectoryTarget(targetArg, cwd) &&
+          (isPathAtOrUnder(relative, "packages") ||
+            isPathAtOrUnder(relative, agentVitestProjectOwners.all.root))))
+    ) {
+      // Expanded selections already contribute their existing leaves through activeTargetArgs.
+      return [];
+    }
     return isTestFileTarget(relative) ||
       isGlobTarget(relative) ||
       isExistingDirectoryTarget(targetArg, cwd)

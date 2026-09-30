@@ -13,6 +13,13 @@ type CompletionSenders = {
   sendExecFinishedEvent: (params: ExecFinishedEventParams) => Promise<unknown>;
 };
 
+export function resolveSystemRunNotifyOnExit(params: {
+  suppressNotifyOnExit: boolean;
+  notifyOnExit?: boolean | null;
+}): boolean {
+  return params.notifyOnExit ?? !params.suppressNotifyOnExit;
+}
+
 export async function publishSystemRunCompletion(
   senders: CompletionSenders,
   execution: SystemRunExecutionContext,
