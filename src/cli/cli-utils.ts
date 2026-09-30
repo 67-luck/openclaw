@@ -1,5 +1,4 @@
 import type { Command } from "commander";
-import "../infra/errors.js";
 import { formatCliOperatorError, isExpectedCliError } from "./failure-output.js";
 import { isJsonOutputModeActive } from "./json-output-mode.js";
 export { formatErrorMessage } from "../infra/errors.js";
