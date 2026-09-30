@@ -133,14 +133,6 @@ export async function waitForInitialWorkerPlacement(params: {
   };
 }
 
-function required(value: string | undefined, field: string): string {
-  const normalized = value?.trim();
-  if (!normalized) {
-    throw new Error(`Worker turn ${field} is required`);
-  }
-  return normalized;
-}
-
 export function latestDurableWorkspaceConflict(
   entries: ReturnType<SessionManager["getBranch"]>,
 ): WorkerWorkspaceResultConflict | undefined {
@@ -213,7 +205,10 @@ function resolvePlacementIdentityField(
   persisted: string | undefined,
   field: string,
 ): string {
-  const resolved = supplied === undefined && persisted ? persisted : required(supplied, field);
+  const resolved = supplied === undefined && persisted ? persisted : supplied?.trim();
+  if (!resolved) {
+    throw new Error(`Worker turn ${field} is required`);
+  }
   if (persisted && resolved !== persisted) {
     throw new Error(`Worker turn ${field} does not match its placement`);
   }
