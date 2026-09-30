@@ -40,7 +40,10 @@ describe("chat pane reply-source history navigation", () => {
         sessions: {} as SessionCapability,
       });
       state.chatHistoryPagination = { hasMore: true, nextOffset: 2 };
+      const revision = pane.replyMessageRevision;
       await pane.loadReplyMessage("source-message");
+      expect(pane.replyMessageStatus("source-message")).toBe("missing");
+      expect(pane.replyMessageRevision).toBe(revision + 1);
       await pane.navigateToReplyMessage("source-message");
       expect(state.lastError).toBe("The original message is unavailable.");
       expect(request).toHaveBeenCalledOnce();
@@ -156,7 +159,7 @@ describe("chat pane reply-source history navigation", () => {
     },
   );
 
-  it.each(["success", "failure"] as const)(
+  it.each(["success", "failure", "denied"] as const)(
     "ignores an obsolete reply lookup %s while a reconnected lookup is pending",
     async (outcome) => {
       const stale = createDeferred<{ ok: true; message: unknown }>();
@@ -171,12 +174,18 @@ describe("chat pane reply-source history navigation", () => {
       state.connectionEpoch = pane.connectionGeneration;
       pane.requestReplyMessage("source-message");
       expect(request).toHaveBeenCalledTimes(2);
+      const revision = pane.replyMessageRevision;
       if (outcome === "success") {
         stale.resolve({ ok: true, message: { role: "assistant", content: "Obsolete answer" } });
       } else {
-        stale.reject(new Error("Previous connection unavailable"));
+        stale.reject(
+          outcome === "denied"
+            ? new GatewayRequestError({ code: "FORBIDDEN", message: "Previous source denied" })
+            : new Error("Previous connection unavailable"),
+        );
       }
       await stale.promise.catch(() => {});
+      expect(pane.replyMessageRevision).toBe(revision);
       expect(pane.readReplyMessage("source-message")).toBeUndefined();
       fresh.resolve({ ok: true, message: currentMessage });
       await vi.waitFor(() => expect(pane.readReplyMessage("source-message")).toBe(currentMessage));

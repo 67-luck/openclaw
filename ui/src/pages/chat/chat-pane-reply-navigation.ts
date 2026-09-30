@@ -115,13 +115,13 @@ export abstract class ChatPaneReplyNavigation extends ChatPaneSession {
         const code = asNullableRecord(error)?.gatewayCode;
         if (code === ErrorCodes.INVALID_REQUEST || code === ErrorCodes.FORBIDDEN) {
           // Sharing denials intentionally use the same response as absent sources.
-          attempt.unavailableReason = "not_visible";
+          result = { ok: false, unavailableReason: "not_visible" };
         } else {
           // Rendering cannot retry in a loop. Only an explicit click or a new
           // connection retries a transport failure; it is not a missing message.
           attempt.failed = true;
+          return;
         }
-        return;
       }
       if (!this.isConnectionScopeCurrent(scope) || this.replyMessages.get(cacheKey) !== attempt) {
         return;

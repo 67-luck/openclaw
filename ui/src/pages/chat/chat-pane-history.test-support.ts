@@ -54,6 +54,7 @@ export type TestChatPane = HTMLElement & {
   navigateToReplyMessage: (messageId: string) => Promise<void>;
   readReplyMessage: (messageId: string) => unknown;
   replyMessageStatus: (messageId: string) => string | undefined;
+  replyMessageRevision: number;
   openReplyMessage: (messageId: string) => void;
   currentReplyNavigationId: (sessionKey: string) => string | null;
   hasOlderMessages: () => boolean;
