@@ -20,7 +20,6 @@ type DeviceAppsPayload = {
   count: number;
   totalMatched: number;
   truncated: boolean;
-  inventoryComplete: boolean;
   apps: InstalledApp[];
 };
 
@@ -53,7 +52,7 @@ export async function invokeDeviceApps(params: {
     return {
       ok: false,
       code: "UNAVAILABLE",
-      message: "UNAVAILABLE: installed application inventory is only available on macOS and Linux",
+      message: "UNAVAILABLE: installed application inventory is only available on macOS",
     };
   }
   const query = request.query?.toLocaleLowerCase("en-US");
@@ -70,8 +69,7 @@ export async function invokeDeviceApps(params: {
     payload: {
       count: apps.length,
       totalMatched: matching.length,
-      truncated: inventory.complete === false || matching.length > apps.length,
-      inventoryComplete: inventory.complete !== false,
+      truncated: matching.length > apps.length,
       apps,
     },
   };

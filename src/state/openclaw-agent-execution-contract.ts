@@ -16,7 +16,8 @@ import type {
   PublishedSessionTranscriptArchive,
   SessionLegacyArchiveRemovalResult,
 } from "../config/sessions/session-history-archive-pruning.types.js";
-import type { SessionEntry } from "../config/sessions/types.js";
+import type { SessionPendingInputWithdrawal } from "../config/sessions/session-pending-input-withdrawal.worker.js";
+import type { InternalSessionEntry, SessionEntry } from "../config/sessions/types.js";
 import type { SqliteWalReclamationResult } from "../infra/sqlite-wal-reclamation.js";
 import type {
   SqliteWalPeriodicRequest,
@@ -28,7 +29,6 @@ import type {
   SqliteWorkerAdmissionRequest,
 } from "../infra/sqlite-worker-operation-admission.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
-import type { ClientVoiceAppLaunchPolicyUse } from "../talk/client-voice-session-store.js";
 import type { SqliteTrajectoryRuntimeAppend } from "../trajectory/runtime-store.sqlite.js";
 import type { AgentDatabaseRegistryChange } from "./openclaw-agent-db-registry-listing.js";
 import type { AgentDatabaseDomainOperations } from "./openclaw-agent-execution-domain.js";
@@ -47,6 +47,13 @@ export type AgentDatabaseExecutionFileIdentity = Pick<
   "kind" | "physicalIdentity" | "birthtime" | "nativeLocation"
 >;
 
+/** A borrowed native generation, never a file locator that can adopt a later open. */
+export type AgentDatabaseGenerationClaim = {
+  readonly identity: string;
+  readonly incarnation: string;
+  assertCurrent(): void;
+};
+
 export type AgentDatabaseExecutionOpen = {
   leaseId: string;
   agentId: string;
@@ -60,7 +67,6 @@ export type AgentDatabaseExecutionOpen = {
 
 export type AgentDatabaseOperations = AgentDatabaseDomainOperations & {
   "database.walMaintenance": { input: SqliteWalPeriodicRequest; output: SqliteWalPeriodicResult };
-  "talk.appLaunch.recordPolicy": { input: ClientVoiceAppLaunchPolicyUse; output: void };
   "trajectory.events.append": { input: SqliteTrajectoryRuntimeAppend; output: void };
   "session.archives.preparePublication": {
     input: {
@@ -78,7 +84,7 @@ export type AgentDatabaseOperations = AgentDatabaseDomainOperations & {
     output: SessionTranscriptInitializationPublication;
   };
   "database.prepareWrite": { input: undefined; output: void };
-  "session.entry.read": { input: { sessionKey: string }; output: SessionEntry | undefined };
+  "session.entry.read": { input: { sessionKey: string }; output: InternalSessionEntry | undefined };
   "session.entry.acp": {
     input: AcpSessionEntryMutationInput;
     output: AcpSessionEntryMutationResult;
@@ -92,6 +98,10 @@ export type AgentDatabaseOperations = AgentDatabaseDomainOperations & {
   "session.providerReview.compare": {
     input: SessionProviderReviewComparison;
     output: SessionEntry;
+  };
+  "session.pendingInputs.withdraw": {
+    input: SessionPendingInputWithdrawal;
+    output: boolean;
   };
   "session.archivePruning.deletePublished": {
     input: PublishedSessionTranscriptArchive;

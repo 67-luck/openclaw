@@ -90,7 +90,6 @@ type RetainedBeforeToolCallRunner = Readonly<{
   assertActive: () => void;
   release: () => void;
   runBeforeToolCall: AgentHarnessHostCapabilities["runBeforeToolCall"];
-  bindToolExecution?: AgentHarnessHostCapabilities["bindToolExecution"];
 }>;
 
 const retainedBeforeToolCallRunners = new WeakMap<

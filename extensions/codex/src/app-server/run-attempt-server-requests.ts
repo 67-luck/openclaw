@@ -19,7 +19,6 @@ import {
   isDynamicToolTerminalDiagnosticEvent,
   isMatchingDynamicToolTerminalDiagnostic,
   resolveDynamicToolCallTimeoutMs,
-  shouldBlockTerminalReleaseForNonTerminalDynamicToolResult,
   toCodexDynamicToolProgressResponse,
   toCodexDynamicToolProtocolResponse,
 } from "./dynamic-tool-execution.js";
@@ -49,31 +48,8 @@ const DYNAMIC_TOOL_TERMINAL_DIAGNOSTIC_TYPES = [
 
 export function createCodexAttemptServerRequestController(
   resources: CodexAttemptResources,
-  turnRuntime: Pick<
-    CodexAttemptTurnState,
-    | "turnIdRef"
-    | "userInputBridgeRef"
-    | "openClawDynamicToolExecutions"
-    | "pendingOpenClawDynamicToolCompletionIds"
-    | "noteProgress"
-    | "steeringQueueRef"
-    | "interruptTurn"
-    | "completeTurn"
-  > & {
-    state: Pick<
-      CodexAttemptTurnState["state"],
-      | "activeAppServerTurnRequests"
-      | "pluginRuntimeRefreshStop"
-      | "pendingTerminalDynamicToolRelease"
-      | "currentTurnHadNonTerminalDynamicToolResult"
-    >;
-  },
-  lifecycle: Pick<
-    CodexAttemptLifecycleController,
-    | "emitExecutionPhaseOnce"
-    | "scheduleTurnReleaseAfterTerminalDynamicTool"
-    | "scheduleTerminalDynamicToolReleaseCheck"
-  >,
+  turnRuntime: CodexAttemptTurnState,
+  lifecycle: CodexAttemptLifecycleController,
   waitForNativeItems: CodexAttemptNotificationController["waitForNativeTerminalItems"],
 ) {
   const { prompt, state: resourceState, projectorRef, trajectoryRecorder } = resources;
@@ -400,7 +376,7 @@ export function createCodexAttemptServerRequestController(
             response,
             durationMs: toolDurationMs,
           });
-        } else if (!shouldBlockTerminalReleaseForNonTerminalDynamicToolResult(response)) {
+        } else if (response.asyncStarted === true) {
           scheduleTerminalDynamicToolReleaseCheck();
         } else {
           state.currentTurnHadNonTerminalDynamicToolResult = true;

@@ -6,7 +6,10 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import type { SessionEntry } from "../config/sessions/types.js";
-import { emitAgentEvent } from "../infra/agent-events.js";
+import {
+  emitTrustedDiagnosticEvent,
+  waitForDiagnosticEventsDrained,
+} from "../infra/diagnostic-events.js";
 import { MODEL_SELECTION_LOCKED_MESSAGE } from "../sessions/model-overrides.js";
 import { runExclusiveSessionLifecycleMutation } from "../sessions/session-lifecycle-admission.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
@@ -16,10 +19,8 @@ import {
   consultRealtimeVoiceAgent,
   REALTIME_VOICE_AGENT_CONSULT_SENDER_AUTH_VERSION,
 } from "./agent-consult-runtime.js";
-import { checkClientVoiceToolConfirmationPolicy } from "./client-voice-confirmation.js";
 import {
   createOrResumeClientVoiceSession,
-  isClientVoiceSessionConfirmable,
   registerClientVoiceConsultRun,
   resolveClientVoiceRunBinding,
 } from "./client-voice-session.js";
@@ -214,7 +215,7 @@ describe("realtime voice agent consult runtime", () => {
     expect(runEmbeddedAgent).not.toHaveBeenCalled();
   });
 
-  it("binds GPT-Live delegated runs to spoken confirmation until completion", async () => {
+  it("retains the voice binding until delegated run completion", async () => {
     const { runtime, runEmbeddedAgent } = createAgentRuntime();
     const started = createDeferred();
     const release = createDeferred();
@@ -236,22 +237,13 @@ describe("realtime voice agent consult runtime", () => {
         sessionKey: "agent:main:main",
         voiceSessionId,
       });
-      expect(
-        checkClientVoiceToolConfirmationPolicy({
-          agentId: binding?.agentId,
-          voiceSessionId: binding?.voiceSessionId,
-          runId: params.runId,
-          toolName: "message",
-          toolParams: { action: "send", message: "Ship it" },
-          isConfirmable: () => Boolean(binding && isClientVoiceSessionConfirmable(binding)),
-        }),
-      ).toMatchObject({ allowed: false });
       started.resolve();
       await release.promise;
-      emitAgentEvent({
+      emitTrustedDiagnosticEvent({
+        type: "run.completed",
         runId: params.runId,
-        stream: "lifecycle",
-        data: { phase: "end" },
+        durationMs: 5,
+        outcome: "completed",
       });
       return { payloads: [{ text: "Done." }], meta: {} };
     });
@@ -281,6 +273,7 @@ describe("realtime voice agent consult runtime", () => {
     expect(runId).toEqual(expect.any(String));
     release.resolve();
     await expect(consult).resolves.toEqual({ text: "Done." });
+    await waitForDiagnosticEventsDrained();
     expect(resolveClientVoiceRunBinding(runId)).toBeUndefined();
   });
 

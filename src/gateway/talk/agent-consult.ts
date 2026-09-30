@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   ErrorCodes,
@@ -14,8 +14,9 @@ import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
   buildRealtimeVoiceAgentConsultChatMessage,
 } from "../../talk/agent-consult-tool.js";
-import type { ClientVoiceAppLaunchOrigin } from "../../talk/client-voice-app-launch-policy.js";
 import { abortChatRunById } from "../chat-abort.js";
+import { transferGatewayLocalUserIngress } from "../local-user-ingress.js";
+import { transferGatewayOperatorSourceIdentity } from "../operator-run-authority.js";
 import { handleTrustedInternalChatSend } from "../server-methods/chat-send-handler.js";
 import type { GatewayRequestHandlerOptions } from "../server-methods/shared-types.js";
 import { formatForLog } from "../ws-log.js";
@@ -41,13 +42,13 @@ function terminalTalkChatSendAckError(result: unknown): ErrorShape | undefined {
 export async function startTalkRealtimeAgentConsult(
   request: GatewayRequestHandlerOptions,
   params: {
-    originAuthority?: ClientVoiceAppLaunchOrigin;
     sessionTarget: PreparedTalkSessionTarget;
     callId: string;
+    voiceSessionId: string;
     args: unknown;
     relaySessionId?: string;
     connId?: string;
-    onRunStarted?: (runId: string) => (() => void) | void;
+    onRunStarted?: (runId: string) => void;
   },
 ): Promise<{ ok: true; runId: string; idempotencyKey: string } | { ok: false; error: ErrorShape }> {
   let message: string;
@@ -56,19 +57,24 @@ export async function startTalkRealtimeAgentConsult(
   } catch (err) {
     return { ok: false, error: errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(err)) };
   }
-  const idempotencyKey = `talk-${params.callId}-${randomUUID()}`;
+  // A provider retransmission is the same request. Let chat admission own
+  // reservation and replay; a fresh voice call or provider call ID is new work.
+  const idempotencyKey = `talk-${createHash("sha256")
+    .update(
+      JSON.stringify([
+        params.sessionTarget.agentId,
+        params.sessionTarget.canonicalKey,
+        params.voiceSessionId,
+        params.callId,
+      ]),
+    )
+    .digest("hex")}`;
   const normalizedTalk = normalizeTalkSection(request.context.getRuntimeConfig().talk);
   const authority = resolveTalkAgentConsultAuthority(
     request.client?.connect?.scopes,
     request.client,
   );
   let acknowledgedRunId: string | undefined;
-  const registrationDisposers: Array<() => void> = [];
-  const disposeRegistrations = () => {
-    for (const dispose of registrationDisposers.splice(0)) {
-      dispose();
-    }
-  };
   const chatResponse = await new Promise<
     { ok: true; result: unknown } | { ok: false; error: ErrorShape } | undefined
   >((resolve) => {
@@ -117,40 +123,17 @@ export async function startTalkRealtimeAgentConsult(
           const runId = typeof candidateRunId === "string" ? candidateRunId : idempotencyKey;
           try {
             if (params.relaySessionId && params.connId) {
-              registrationDisposers.push(
-                registerTalkRealtimeRelayAgentRun({
-                  originAuthority: params.originAuthority,
-                  relaySessionId: params.relaySessionId,
-                  connId: params.connId,
-                  sessionKey: params.sessionTarget.canonicalKey,
-                  runId,
-                  callId: params.callId,
-                }),
-              );
+              registerTalkRealtimeRelayAgentRun({
+                relaySessionId: params.relaySessionId,
+                connId: params.connId,
+                sessionKey: params.sessionTarget.canonicalKey,
+                runId,
+                callId: params.callId,
+              });
             }
-            const dispose = params.onRunStarted?.(runId);
-            if (dispose) {
-              registrationDisposers.push(dispose);
-            }
-            const registration = request.context.chatAbortControllers.get(runId);
-            if (registration) {
-              const onRemoved = registration.onRemoved;
-              registration.onRemoved = () => {
-                try {
-                  onRemoved?.();
-                } finally {
-                  // An ACK precedes backend startup. Its exact registration owns
-                  // cleanup when dispatch fails without an agent lifecycle event.
-                  // Started/yielded work has already handed off to that lifecycle.
-                  if (registration.executionStarted !== true) {
-                    disposeRegistrations();
-                  }
-                }
-              };
-            }
+            params.onRunStarted?.(runId);
             acknowledgedRunId = runId;
           } catch (registrationError) {
-            disposeRegistrations();
             abortChatRunById(request.context, {
               runId,
               sessionKey: params.sessionTarget.canonicalKey,
@@ -174,6 +157,11 @@ export async function startTalkRealtimeAgentConsult(
         );
       },
     } satisfies GatewayRequestHandlerOptions;
+    if (request.client && chatSendOptions.client) {
+      // Capability projection does not create a new authenticated principal.
+      transferGatewayLocalUserIngress(request.client, chatSendOptions.client);
+      transferGatewayOperatorSourceIdentity(request.client, chatSendOptions.client);
+    }
     // Speech owns reusable history; keep consult scaffolding only in the lossless archive.
     const chatSendResult = handleTrustedInternalChatSend(chatSendOptions, undefined, {
       toolsAllow: authority.toolsAllow,
@@ -187,7 +175,6 @@ export async function startTalkRealtimeAgentConsult(
         }
       },
       (error: unknown) => {
-        disposeRegistrations();
         if (acknowledged) {
           request.context.logGateway.warn(
             `realtime Talk agent consult failed after acknowledgement: ${formatForLog(error)}`,

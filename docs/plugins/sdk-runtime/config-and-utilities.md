@@ -72,6 +72,15 @@ retain restart behavior under a broader no-op prefix.
 
 ## Reusable runtime utilities
 
+For libraries that accept a Node HTTP agent, use `createNodeProxyAgent` from
+`openclaw/plugin-sdk/fetch-runtime`. With `mode: "env"`, supply `targetUrl` for
+a fixed destination, or omit it when the library selects destinations itself
+(for example, media upload hosts). The reusable form snapshots the proxy
+environment and evaluates `NO_PROXY` for every request, including redirects.
+Managed proxy CA trust applies only to the matching proxy connection. Call
+`agent?.destroy()` when the owning connection closes. Undici dispatchers from
+the same SDK entrypoint belong in fetch's `dispatcher` option, not Node's `agent`.
+
 Import `execPolicy` from `openclaw/plugin-sdk/agent-harness-runtime` for the
 host's exec mode algebra. `execPolicy.resolveExecModePolicy({ mode, security, ask })`
 returns the mode, security, ask, and auto-review settings. An explicit mode
@@ -101,7 +110,13 @@ binary when the host runs under Bun, skipping Bun's `node` shim. An unavailable
 Node runtime returns `undefined`; the caller reports the missing requirement.
 
 Interactive process adapters can use `spawnTerminalPty` from the same subpath.
-It owns platform-specific terminal creation, including the Node helper on Bun.
+It owns platform-specific terminal creation. On macOS and Linux, Bun uses its
+native PTY without Node only on builds providing `Bun.Terminal.pause()` and
+`resume()`, such as the OpenClaw Bun fork builds that also carry the macOS
+child-exit fix. Other Bun releases use the Node helper and require an installed
+Node runtime; OpenClaw skips Bun's `node` shim when selecting it. Node and
+Windows keep `node-pty`. See
+[Bun compatibility](/install/bun-compatibility#known-limitations).
 Pass the caller's construction signal and current-authority check through its
 second argument. The caller owns output subscriptions, termination, and waiting
 for the terminal's exit before releasing its backend resources.
@@ -304,22 +319,3 @@ accepts only untrusted events that pass `include`/`exclude`. Event payload field
 cannot override the dispatcher's trust metadata. Accepted events retain their
 individual frozen copies; this filter does not change diagnostic collection or
 queue behavior.
-
-### Tool execution facts
-
-Native execution-owning adapters use the admitted harness host
-`bindToolExecution({ toolName, toolCallId })` capability for raw source starts,
-outcomes, and pre-execution denials. The action handle fixes run, agent, session,
-and plugin identity. See [host execution reporting](/plugins/sdk-agent-harness/user-input-and-execution).
-These metadata-only facts remain available when optional diagnostics are disabled.
-A start describes source execution, not proof of an OS side effect.
-
-The core emitter is internal. Private diagnostic content stays on the diagnostic
-channel and is never accepted by the operational reporter. Existing diagnostic
-and audit collection settings still apply. Neither channel grants execution authority.
-
-Use `emitTrustedDiagnosticEvent` or `emitTrustedDiagnosticEventWithPrivateData`
-for presentation observations, including results rewritten by middleware.
-Diagnostic emission alone never publishes an operational execution fact.
-An adapter executing an OpenClaw-wrapped tool must leave those facts to the
-core wrapper instead of publishing a second terminal from its presentation.

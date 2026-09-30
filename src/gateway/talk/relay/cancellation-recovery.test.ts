@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../../config/types.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
-import { resetClientVoiceConfirmationStateForTest } from "../../../talk/client-voice-confirmation.test-support.js";
 import { ensureClientVoiceAgentSessionEntry } from "../../../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
 import { resolveRealtimeVoiceProviderCapabilities } from "../../../talk/provider-resolver.js";
@@ -166,7 +165,6 @@ describe("talk realtime relay cancellation recovery", () => {
       activeRelaySessions.clear();
       vi.useRealTimers();
       clientVoiceSessionTesting.reset();
-      resetClientVoiceConfirmationStateForTest();
       await testState?.cleanup();
       testState = undefined;
     }

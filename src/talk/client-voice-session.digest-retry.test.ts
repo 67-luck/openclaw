@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { emitTrustedToolExecutionEvent } from "../infra/diagnostic-events.js";
+import { emitTrustedDiagnosticEvent } from "../infra/diagnostic-events.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import {
@@ -73,14 +73,14 @@ describe("client voice session digest retry", () => {
     expect(sendDurableMessageBatch).not.toHaveBeenCalled();
 
     for (const runId of ["run-1", "run-2"]) {
-      emitTrustedToolExecutionEvent({
+      emitTrustedDiagnosticEvent({
         type: "tool.execution.started",
         runId,
         toolCallId: `call-${runId}`,
         toolName: "message",
         mutatingAction: true,
       });
-      emitTrustedToolExecutionEvent({
+      emitTrustedDiagnosticEvent({
         type: "tool.execution.completed",
         runId,
         toolCallId: `call-${runId}`,
@@ -131,14 +131,14 @@ describe("client voice session digest retry", () => {
       voiceSessionId,
       runId: "run-live",
     });
-    emitTrustedToolExecutionEvent({
+    emitTrustedDiagnosticEvent({
       type: "tool.execution.started",
       runId: "run-live",
       toolCallId: "call-run-live",
       toolName: "message",
       mutatingAction: true,
     });
-    emitTrustedToolExecutionEvent({
+    emitTrustedDiagnosticEvent({
       type: "tool.execution.completed",
       runId: "run-live",
       toolCallId: "call-run-live",
@@ -324,7 +324,7 @@ describe("client voice session digest retry", () => {
         voiceSessionId,
         runId: `run-${voiceSessionId}`,
       });
-      emitTrustedToolExecutionEvent({
+      emitTrustedDiagnosticEvent({
         type: "tool.execution.started",
         runId: `run-${voiceSessionId}`,
         toolCallId: `call-${voiceSessionId}`,

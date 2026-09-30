@@ -3,10 +3,6 @@ import { resolveAgentConfig } from "../agents/agent-scope-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   requiresExecApproval,
-  resolveExecApprovalsLocked,
-  minSecurity,
-  maxAsk,
-  type ExecApprovalsResolved,
   resolveExecModePolicy,
   type ExecAsk,
   type ExecSecurity,
@@ -155,40 +151,5 @@ export function evaluateSystemRunPolicy(params: {
   return {
     allowed: true,
     ...context,
-  };
-}
-
-type ExecToolConfig = NonNullable<NonNullable<OpenClawConfig["tools"]>["exec"]>;
-type EffectiveSystemRunExecPolicy = {
-  agentExec: ExecToolConfig | undefined;
-  globalExec: ExecToolConfig | undefined;
-  approvals: ExecApprovalsResolved;
-  security: ExecSecurity;
-  ask: ExecAsk;
-  autoReview: boolean;
-};
-
-/** Resolves the effective exec security/ask policy for one system.run request. */
-export async function resolveEffectiveSystemRunExecPolicy(params: {
-  cfg: OpenClawConfig;
-  agentId: string | undefined;
-  defaultSecurity: ExecSecurity;
-  defaultAsk: ExecAsk;
-  requireSocket: boolean;
-}): Promise<EffectiveSystemRunExecPolicy> {
-  const modePolicy = resolveNodeExecConfigPolicy(params);
-  const { agentExec, globalExec } = modePolicy;
-  const approvals = await resolveExecApprovalsLocked(params.agentId, {
-    security: modePolicy.security,
-    ask: modePolicy.ask,
-    requireSocket: params.requireSocket,
-  });
-  return {
-    agentExec,
-    globalExec,
-    approvals,
-    security: minSecurity(modePolicy.security, approvals.agent.security),
-    ask: maxAsk(modePolicy.ask, approvals.agent.ask),
-    autoReview: modePolicy.autoReview,
   };
 }

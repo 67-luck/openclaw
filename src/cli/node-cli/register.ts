@@ -1,4 +1,3 @@
-// Commander registration for foreground node host and node service lifecycle commands.
 import { Option, type Command } from "commander";
 import { formatDocsLink } from "../../../packages/terminal-core/src/links.js";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
@@ -67,10 +66,7 @@ export function registerNodeCli(program: Command) {
     .addOption(new Option("--no-desktop-sharing").hideHelp())
     .addOption(new Option("--auth-from-env").hideHelp())
     .addOption(new Option("--parent-stdin").hideHelp())
-    .option(
-      "--share-installed-apps",
-      "Share installed apps (macOS/Linux; enables Linux app-launch capability)",
-    )
+    .option("--share-installed-apps", "Share installed macOS applications with the Gateway")
     .option("--no-share-installed-apps", "Disable installed application sharing")
     .action(async (opts, command: Command) => {
       let pair;
@@ -139,9 +135,7 @@ export function registerNodeCli(program: Command) {
     .command("identity")
     .description("Print the node host device identity (device id + public key)")
     .option("--json", "Output JSON", false)
-    .action(async (opts) => {
-      await runNodeIdentityShow(opts);
-    });
+    .action(runNodeIdentityShow);
 
   addNodeGatewayOptions(
     addNodeCommandOptions(
@@ -150,10 +144,7 @@ export function registerNodeCli(program: Command) {
         .description("Install the node host service (launchd/systemd/schtasks)"),
     ),
   )
-    .option(
-      "--share-installed-apps",
-      "Share installed apps (macOS/Linux; enables Linux app-launch capability)",
-    )
+    .option("--share-installed-apps", "Share installed macOS applications with the Gateway")
     .option("--no-share-installed-apps", "Disable installed application sharing")
     .option("--runtime <runtime>", "Service runtime (node|bun). Default: node")
     .option("--runtime-path <path>", "Pin an absolute Node/Bun executable path")

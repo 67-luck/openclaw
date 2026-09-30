@@ -24,11 +24,6 @@ import {
 } from "../../../process/gateway-work-admission.js";
 import { getActiveSessionWorkAdmissionCount } from "../../../sessions/session-lifecycle-admission.js";
 import {
-  authorizeClientVoiceConfirmation,
-  checkClientVoiceToolConfirmationPolicy,
-} from "../../../talk/client-voice-confirmation.js";
-import { resetClientVoiceConfirmationStateForTest } from "../../../talk/client-voice-confirmation.test-support.js";
-import {
   closeClientVoiceSession,
   createOrResumeClientVoiceSession,
   ensureClientVoiceAgentSessionEntry,
@@ -259,7 +254,6 @@ describe("talk.client.transcript", () => {
     }
     cleanupTalkConnection("conn-close", { warn: vi.fn() });
     clientVoiceSessionTesting.reset();
-    resetClientVoiceConfirmationStateForTest();
     vi.useRealTimers();
     await cleanupSessionStateForTest({ stateDir: tempDir });
     envSnapshot.restore();
@@ -479,18 +473,15 @@ describe("talk.client.transcript", () => {
     expect(getActiveGatewayRootWorkCount()).toBe(0);
     expect(isGatewayWorkAdmissionClosed()).toBe(false);
 
-    const enqueue = voiceMocks.runEmbeddedAgent.getMockImplementation()!;
-    voiceMocks.runEmbeddedAgent.mockImplementationOnce(async (run) => {
-      expect(resolveClientVoiceRunBinding(run.runId)).toMatchObject({
-        agentId: "main",
-        sessionKey,
-        voiceSessionId: ownedVoiceSessionId,
-      });
-      return await enqueue(run);
-    });
     await expect(
       resource.runInAsyncScope(() => consult({ prompt: "Return the fixture status" })),
     ).resolves.toEqual({ text: "fixture status" });
+    const [run] = voiceMocks.runEmbeddedAgent.mock.calls[0]!;
+    expect(resolveClientVoiceRunBinding(run.runId)).toMatchObject({
+      agentId: "main",
+      sessionKey,
+      voiceSessionId: ownedVoiceSessionId,
+    });
     expect(getActiveSessionWorkAdmissionCount()).toBe(0);
   });
 
@@ -637,47 +628,6 @@ describe("talk.client.transcript", () => {
         sessionId: talkFirstEntry?.sessionId ?? "missing",
       }),
     ).toHaveLength(1);
-  });
-
-  it("uses server observation time for spoken-confirmation freshness", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(100);
-    const voiceSessionId = createOrResumeClientVoiceSession({
-      agentId: "main",
-      sessionKey,
-      origin: "client",
-    });
-    await invokeTranscript({
-      sessionKey,
-      voiceSessionId,
-      entryId: "early-yes",
-      role: "user",
-      text: "yes",
-      timestamp: 10_000,
-    });
-    const policy = checkClientVoiceToolConfirmationPolicy({
-      agentId: "main",
-      voiceSessionId,
-      runId: "run-later",
-      toolName: "message",
-      toolParams: { action: "send", message: "later" },
-      now: 200,
-    });
-    expect(policy.allowed).toBe(false);
-    if (policy.allowed) {
-      throw new Error("expected confirmation request");
-    }
-    const confirmationId = policy.reason.match(/VOICE_CONFIRMATION_REQUIRED:([^\s]+)/)?.[1];
-    expect(confirmationId).toBeTruthy();
-
-    expect(() =>
-      authorizeClientVoiceConfirmation({
-        agentId: "main",
-        voiceSessionId,
-        confirmationId: confirmationId ?? "missing",
-        now: 201,
-      }),
-    ).toThrow("explicit spoken confirmation");
   });
 
   it("accepts an idempotent close retry after the first response is lost", async () => {

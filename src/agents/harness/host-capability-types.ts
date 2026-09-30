@@ -36,6 +36,8 @@ export type AgentHarnessHostCapabilities = Readonly<{
   version: 1;
   /** Fails closed unless this exact admitted run capability remains active. */
   assertActive: () => void;
+  /** Native delegation without person selection must remain unambiguous at admission. */
+  assertNativeSubagentSpawnAllowed?: () => void;
   /** Binds the actual native model; returns undefined only for runs without an operator source. */
   bindModelExecution?: AgentHarnessModelExecutionBinder;
   /** Retains the original source for already-admitted work beyond foreground completion. */
@@ -52,28 +54,6 @@ export type AgentHarnessHostCapabilities = Readonly<{
         release: () => void;
       }>
     | undefined;
-  /**
-   * Optional additive reporting contract v1. Bind while admitted, before native work;
-   * a handle reports only that action, never grants execution permission. Start
-   * requires a live host; one accepted terminal may settle after cancellation.
-   * Older hosts must explicitly refuse adapters that require execution reporting.
-   */
-  bindToolExecution?: (action: Readonly<{ toolName: string; toolCallId?: string }>) => Readonly<{
-    started: (sourceTimestampMs?: number) => void;
-    finished: (
-      outcome: (
-        | { type: "tool.execution.completed"; durationMs: number }
-        | {
-            type: "tool.execution.error";
-            durationMs: number;
-            errorCategory: string;
-            errorCode?: string;
-            terminalReason?: "failed" | "cancelled" | "timed_out";
-          }
-        | { type: "tool.execution.blocked"; deniedReason: string; reason: string }
-      ) & { sourceTimestampMs?: number },
-    ) => void;
-  }>;
   /** Reports one completed model call's output tokens to this admitted run's live total. */
   reportOutputTokens?: (outputTokens: number) => void;
   /** Adds native provenance only to this host's exact current admitted prompt. */

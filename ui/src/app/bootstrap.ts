@@ -35,6 +35,7 @@ import { ControlUiPluginRuntime } from "../plugins/control-ui-runtime.ts";
 import { createAgentSelectionCapability } from "./agent-selection.ts";
 import type { ShellRouteState } from "./app-host-route-state.ts";
 import { resolveControlUiDocumentMode, type ControlUiDocumentMode } from "./approval-deep-link.ts";
+import { AssistantDock } from "./assistant-dock.ts";
 import { readBootRecord } from "./boot-record.ts";
 import {
   createInitialApplicationLocationResolver,
@@ -63,6 +64,7 @@ import { startGatewayPresenceActivity } from "./gateway-presence-activity.ts";
 import { createApplicationGateway } from "./gateway-store.ts";
 import { startLinkReaderRouting } from "./link-reader-routing.ts";
 import { createNativeChatDrafts } from "./native-bridge.ts";
+import type { NativeConversationBridge } from "./native-conversation-types.ts";
 import { startNativeLinkRouting } from "./native-link-routing.ts";
 import { createApplicationOverlays } from "./overlays.ts";
 import { isBrowserPanelAvailable } from "./panel-availability.ts";
@@ -102,7 +104,6 @@ export type ApplicationRuntime = {
 };
 
 type PendingRouterStartNavigation = {
-  routeId: RouteId;
   location: RouteLocation;
   mode: "push" | "replace";
 };
@@ -313,8 +314,12 @@ export function bootstrapApplication(): ApplicationRuntime {
   const stopConfigWriteSuspension = bindUpdateConfigWriteInterlock(overlays, runtimeConfig);
   const navigation = createApplicationNavigationPreferences(theme);
   const nativeChatDrafts = createNativeChatDrafts();
-  const linkReaderRouting = startLinkReaderRouting(() => gateway.snapshot);
+  const shouldOpenExternally = () => theme.settings.openLinksExternally === true;
+  const linkReaderRouting = startLinkReaderRouting(() => gateway.snapshot, {
+    shouldOpenExternally,
+  });
   const nativeLinkRouting = startNativeLinkRouting({
+    shouldOpenExternally,
     signal: startupLifecycle.signal,
     canPresentBrowserPanel: () => {
       const shell = document.querySelector<HTMLElement & { routeState: ShellRouteState }>(
@@ -462,7 +467,7 @@ export function bootstrapApplication(): ApplicationRuntime {
     const location = routeLocation(routeId, options);
     // Preserve pre-start navigation exactly as the fire-and-forget entry point does.
     if (!routerStarted) {
-      pendingRouterStartNavigation = { routeId, location, mode: requested };
+      pendingRouterStartNavigation = { location, mode: requested };
     }
     // Re-clicking the active nav item must not stack identical history
     // entries: Back would appear dead until every duplicate is popped.
@@ -477,6 +482,7 @@ export function bootstrapApplication(): ApplicationRuntime {
   const navigateAndWait = (routeId: RouteId, options?: ApplicationNavigationOptions) =>
     navigateWithMode(routeId, options, "push");
   const plugins = new ControlUiPluginRuntime(() => context);
+  let nativeConversation: NativeConversationBridge | null = null;
   const context: ApplicationContext = {
     basePath,
     resourceBasePath,
@@ -496,10 +502,14 @@ export function bootstrapApplication(): ApplicationRuntime {
     sessions,
     placementStartup,
     plugins,
+    assistantDock: new AssistantDock(),
     overlays,
     navigation,
     theme,
     nativeChatDrafts,
+    get nativeConversation() {
+      return nativeConversation;
+    },
     get nativeDeviceSettings() {
       return nativeDeviceSettings;
     },
@@ -558,7 +568,8 @@ export function bootstrapApplication(): ApplicationRuntime {
       if (nativeWindow.webkit?.messageHandlers) {
         steps.unshift(async () => {
           const { startNativeCapabilities } = await import("./native-startup.runtime.ts");
-          return startNativeCapabilities(gateway, startupLifecycle, (capabilities) => {
+          return startNativeCapabilities(context, startupLifecycle, (capabilities) => {
+            nativeConversation = capabilities.conversation;
             nativeDeviceSettings = capabilities.deviceSettings;
             nativeNotifications = capabilities.notifications;
           });

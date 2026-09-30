@@ -128,114 +128,20 @@ Google Live saves complete utterances during the call, including Gemini 3.1
 transcriptions that omit an explicit transcription-finished flag. Partial text
 stays provisional until the provider's completion boundary.
 
-Voice-originated consult runs require a new, exact spoken confirmation before high-impact actions such as sending messages, controlling nodes, browser/computer actions, service changes, destructive shell commands, or publication. The gate applies to runs started through `talk.client.toolCall`, the Gateway relay, and GPT-Live sideband delegations. The confirmation applies only to the canonical final execution arguments and is consumed once; if a policy or hook rewrites the approved action, OpenClaw blocks it until the rewritten action is confirmed. Unrelated concurrent runs remain unaffected. When a call closes, OpenClaw can send a compact **Voice call changes** digest for mutating tools to the session's last non-WebChat delivery target.
+Talk uses the same effective tool permissions as text for the same authenticated
+caller, agent, session, target, operation, and final arguments. An action already
+permitted without approval does not gain an extra spoken-confirmation prompt.
+Actions requiring ordinary approval still require that approval through the
+host-authenticated approval flow; saying “yes” or supplying confirmation text to
+the model does not grant permission. Denied actions remain denied.
 
-### Preauthorize one exact installed-app launch
-
-An operator may configure `talk.realtime.appLaunchPolicies` to avoid repeated
-**Talk confirmation** for an exact Linux installed-app launch. It is optional and
-empty by default. A policy never replaces tool permission, node-command policy,
-node pairing, executable approval, or operating-system permission.
-
-Use `nodes` with `action: "app_list"` and the exact target node to obtain the
-installed app's `appId` and `appRevision`. Configure all of these fields:
-
-```json5
-{
-  talk: {
-    realtime: {
-      appLaunchPolicies: [
-        {
-          id: "calculator",
-          agentId: "main",
-          originatingDeviceId: "paired-voice-client-id",
-          nodeId: "paired-linux-node-id",
-          appId: "linux-desktop:org.example.Calculator.desktop",
-          appRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          expiresAtMs: 1893456000000,
-        },
-      ],
-    },
-  },
-}
-```
-
-Replace the example identities, revision, and expiry with the intended values.
-Expiry is an absolute Unix timestamp in milliseconds. Wildcards, shell commands,
-arguments, environment overrides, and per-call Gateway overrides are not accepted.
-The initial operation launches an eligible native executable with **no arguments**;
-changing an app or its revision requires a newly reviewed exact policy.
-
-The originating client must authenticate with its paired-device token. A signed
-device identity using a shared Gateway token does not qualify. The originating
-device and target node are independent fields, even when both represent the same
-physical computer. A different agent, device, node, app, revision, expired policy,
-or missing current origin retains ordinary Talk confirmation.
-
-Use an authenticated operator config editor or `config.patch`/`config.apply`
-with the current base hash. Read the list with `config.get`. To revoke an entry,
-replace the list explicitly using
-`replacePaths: ["talk.realtime.appLaunchPolicies"]`, or replace the full config.
-A successful policy-write acknowledgment means the active Gateway applied it.
-Mixed edits that require restart, or disabled reload, can prevent immediate
-application; separate those changes. An offline file or CLI edit is not proof of
-active revocation until the Gateway applies it.
-
-Model-originated config RPCs cannot create reusable voice authority, including
-with Full Access. A delegated system-agent proposal that changes the policy list,
-an entry, or an ancestor such as `talk.realtime` requires explicit approval of
-that exact proposal. Unrelated settings keep their normal permission behavior.
-Existing privileged filesystem access remains part of the installation's trust
-boundary; this is not an isolation boundary against a trusted config-file writer.
-
-The Gateway checks current policy and origin authority again after awaited work
-and at the node's final invocation-bound readiness request. The node independently
-checks execution policy and app revision before spawning. Revocation prevents
-future permits; it cannot undo a launch already admitted by a final permit.
-A process-started acknowledgment does not prove that a GUI window appeared.
-If a spoken one-shot grant and a policy both match, the final permit spends that
-one-shot grant too; revoking the policy cannot revive it for another launch.
-
-The existing voice-call effect record may retain the selected policy ID as
-`appLaunchAuthorization` with stage `permit-authorized`. The Gateway selects it
-at final readiness, not from model arguments or an earlier policy check. This
-records authorization, not a successful native spawn: the ordinary source outcome
-remains separate, including native launch failures. The existing agent database
-worker persists this bounded field without changing the database schema, record
-version, or retention.
-As with other effect evidence, unavailable persistence is reported without
-relabeling or retrying an already admitted action.
-
-Policies do not restore authority from transcripts, stored voice-session IDs, or
-old effect records. Each new consult uses its own authenticated ingress. Startup
-failure releases its retained origin; accepted work keeps its existing lifecycle
-owner rather than borrowing a replacement audio connection. Eligible voice runs
-can use Nodes directly under Code Mode while keeping it searchable. Policies do
-not remove Nodes discovery from unrelated sessions or authorize arbitrary code.
-
-**Rollback:** The policy feature does not change the database schema or voice
-record version. An older build whose strict Talk schema lacks `appLaunchPolicies`
-rejects the key even when it is `[]`. Revoke policies on the compatible build,
-verify active application, drain in-flight launches, and remove the key entirely
-to restore **configuration** compatibility. Preserve unrelated settings.
-
-Key removal does not reverse other release migrations. In particular, the
-2026.9.6 published host supports shared-state schema 18, while this release line
-uses schema 19 for channel-owner revocation continuity. To return to that older
-host, restore a verified, complete pre-upgrade backup with its matching package,
-configuration, shared state, and every agent database into a separate state
-directory. Never lower schema markers or remove authority columns. Restoring the
-backup loses later revocations and receipts and does not undo external effects;
-reconcile those with a compatible build first. See
-[Database downgrade recovery](/reference/database-schemas/integrity-and-recovery#downgrade-recovery).
-
-After a confirmation prompt, say **yes** to confirm the pending action or **no**
-to cancel it. Each confirmation permits one matching action; another action may
-need another confirmation. Native GPT-Live calls use the finalized user speech
-recorded for that call, so generated delegation text cannot supply confirmation.
-When a native consult is blocked by this gate, Talk returns a specific retry
-prompt. If the pending confirmation expires or is cleared before the result,
-Talk reports that the action did not run and asks for a fresh request.
+Direct provider delegations and chat-backed Talk retain their real voice identity.
+Operator and source revocation, cancellation, sandbox restrictions, node routing,
+and final executable checks still apply. Previous external delivery history can
+supply a reply destination, not the caller's authorization channel. Audio and
+transcript capabilities remain transport-specific. Closing a call can still send
+a compact **Voice call changes** digest for mutating tools to its last non-WebChat
+delivery target.
 
 Transcription-only Talk emits the same Talk event envelope as realtime and STT/TTS sessions, but uses `mode: "transcription"` and `brain: "none"`. All Talk sessions broadcast events on the `talk.event` channel; clients subscribe to it for partial/final transcript updates (`transcript.delta`/`transcript.done`) and other session telemetry.
 

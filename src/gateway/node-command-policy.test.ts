@@ -450,7 +450,6 @@ describe("gateway/node-command-policy", () => {
     expect([...allowlist]).toEqual([
       "system.notify",
       "computer.act",
-      "device.apps",
       "remote.policy",
       "remote.shared",
       "remote.echo",
@@ -484,18 +483,13 @@ describe("gateway/node-command-policy", () => {
     ]).toEqual([
       "system.notify",
       "computer.act",
-      "device.apps",
       "remote.policy",
       "remote.echo",
       "remote.dangerous",
     ]);
     setActivePluginRegistry(createEmptyPluginRegistry());
     expect(listDangerousPluginNodeCommands()).toEqual([]);
-    expect([...resolveNodeCommandAllowlist({}, node)]).toEqual([
-      "system.notify",
-      "computer.act",
-      "device.apps",
-    ]);
+    expect([...resolveNodeCommandAllowlist({}, node)]).toEqual(["system.notify", "computer.act"]);
   });
 
   it("does not allow connected node plugin tools without a registry default or config allowlist", () => {
@@ -936,13 +930,18 @@ describe("gateway/node-command-policy", () => {
   it("keeps policy-withheld declared commands unauthorized", () => {
     expect(
       resolveRequiredNodeCommandAuthority({
+        nodeId: "node-1",
         requiredCommands: ["screen.snapshot", "computer.act"],
         declaredCommands: ["screen.snapshot", "computer.act"],
         effectiveCommands: [],
         withheldCommands: ["computer.act"],
         allowlist: new Set(["screen.snapshot", "computer.act"]),
       }),
-    ).toEqual({ command: "computer.act", state: "unauthorized" });
+    ).toEqual({
+      command: "computer.act",
+      state: "unauthorized",
+      message: expect.stringContaining("gateway.nodes.commands.deny"),
+    });
   });
 
   it("allows node-enabled and paired mobile UI without a persistent allow", () => {

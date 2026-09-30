@@ -126,23 +126,22 @@ binds the host-resolved run, sandbox, requester, route, and approval identity;
 plugins must not reconstruct those fields or retain the capability after the
 attempt returns. Calls made after attempt settlement fail closed.
 
-For native execution facts, use optional `hostCapabilities.bindToolExecution({
-toolName, toolCallId })`. Bind while the admitted host is active and keep the
-returned action handle with that native operation. Its `started(timestamp?)`
-requires live authority; `finished(outcome)` accepts one source terminal,
-including a failure before start or settlement after cancellation. It cannot
-start new work after closure. Neither method grants execution permission.
-The host fixes run, session, agent, and plugin identity; callers cannot replace
-identity or attach private diagnostic content. Report raw execution outcomes,
-not result middleware or model-facing presentation. A start is not proof of OS
-dispatch. Core-wrapped tools already report at their source boundary; do not
-report their dynamic-tool responses again.
+When supplied, `assertNativeSubagentSpawnAllowed()` must run at native spawn
+admission. It rejects ambiguous participant identity; direct the model to
+`sessions_spawn` with the requester's verified `requester_profile.id` as `user`. Bundled native hook admission may return a synchronous
+guard, which the relay rechecks after awaited preparation immediately before allow;
+a returned reason becomes a model-visible refusal.
+The participant check uses existing native model admission, including its default
+optional mode. When native admission is disabled or unavailable, solo Codex turns
+keep native delegation, and another person's input queues as a follow-up when native
+spawn remains available. Threads whose effective policy already disables native
+delegation still permit cross-profile steering.
+If a fallback attempt already includes several people and native spawn remains available without hook admission, Codex refuses the attempt and asks the sender to send the request again as a new message so it runs as its own turn.
 
-This is an additive SDK contract, not a new free-function export. The capability
-remains optional on host version `1` to preserve existing source compatibility
-and deprecation windows. Native adapters requiring it must explicitly refuse
-an older host with an update instruction, never fall back to diagnostic events.
-Existing accepted handles retain settlement only, not execution authority.
+Backend handles can declare `supportsCrossProfileSteering: false` when steering
+must stay with the turn owner's operator profile; omitting the field permits
+cross-profile steering. The reply admission owner applies this restriction before
+message injection, including question answers delivered through that path.
 
 For independently retained native work, call the optional
 `retainSourceAuthority()` while the host capability is active. When an operator

@@ -6,19 +6,20 @@ import {
   describeInterpreterInlineEval,
   type InterpreterInlineEvalHit,
 } from "../infra/command-analysis/inline-eval.js";
-import { detectPolicyInlineEval } from "../infra/command-analysis/policy.js";
+import { detectInlineEvalInSegments } from "../infra/command-analysis/risks.js";
 import { createDedupeCache } from "../infra/dedupe.js";
 import {
   analyzeArgvCommand,
   commitExecAuthorizationLocked,
-  commandRequiresSecurityAuditSuppressionApproval,
   createExecApprovalPolicySnapshot,
   hasDurableExecApproval,
   isExecApprovalPolicySnapshotCurrent,
+  maxAsk,
   minSecurity,
   resolveApprovalAuditTrustPath,
   resolveAllowAlwaysPersistenceDecision,
   resolveDurableExecApprovalRequirement,
+  resolveExecApprovalsLocked,
   type ExecAllowlistEntry,
   type ExecApprovalUsageAuthorization,
   type ExecApprovalPolicySnapshot,
@@ -74,7 +75,7 @@ import type { NodeHostClient } from "./client.js";
 import {
   evaluateSystemRunPolicy,
   resolveExecApprovalDecision,
-  resolveEffectiveSystemRunExecPolicy,
+  resolveNodeExecConfigPolicy,
 } from "./exec-policy.js";
 import {
   applyOutputTruncation,
@@ -172,6 +173,15 @@ const APPROVAL_STATE_WRITE_FAILED_MESSAGE =
   "SYSTEM_RUN_DENIED: approval state could not be persisted";
 type ExecToolConfig = NonNullable<NonNullable<OpenClawConfig["tools"]>["exec"]>;
 
+type EffectiveSystemRunExecPolicy = {
+  agentExec: ExecToolConfig | undefined;
+  globalExec: ExecToolConfig | undefined;
+  approvals: ExecApprovalsResolved;
+  security: ExecSecurity;
+  ask: ExecAsk;
+  autoReview: boolean;
+};
+
 function warnWritableTrustedDirOnce(message: string): void {
   if (safeBinTrustedDirWarningCache.check(message)) {
     return;
@@ -192,6 +202,31 @@ function normalizeDeniedReason(reason: string | null | undefined): SystemRunDeni
     default:
       return "approval-required";
   }
+}
+
+/** Resolves the effective exec security/ask policy for one system.run request. */
+export async function resolveEffectiveSystemRunExecPolicy(params: {
+  cfg: OpenClawConfig;
+  agentId: string | undefined;
+  defaultSecurity: ExecSecurity;
+  defaultAsk: ExecAsk;
+  requireSocket: boolean;
+}): Promise<EffectiveSystemRunExecPolicy> {
+  const modePolicy = resolveNodeExecConfigPolicy(params);
+  const { agentExec, globalExec } = modePolicy;
+  const approvals = await resolveExecApprovalsLocked(params.agentId, {
+    security: modePolicy.security,
+    ask: modePolicy.ask,
+    requireSocket: params.requireSocket,
+  });
+  return {
+    agentExec,
+    globalExec,
+    approvals,
+    security: minSecurity(modePolicy.security, approvals.agent.security),
+    ask: maxAsk(modePolicy.ask, approvals.agent.ask),
+    autoReview: modePolicy.autoReview,
+  };
 }
 
 async function resolveSystemRunAutoReviewer(params: {
@@ -319,23 +354,19 @@ export { buildSystemRunApprovalPlan } from "./invoke-system-run-plan.js";
 async function parseSystemRunPhase(
   opts: HandleSystemRunInvokeOptions,
 ): Promise<SystemRunParsePhase | null> {
+  const invalid = async (message: string) => {
+    await opts.sendInvokeResult({ ok: false, error: { code: "INVALID_REQUEST", message } });
+    return null;
+  };
   const command = resolveSystemRunCommandRequest({
     command: opts.params.command,
     rawCommand: opts.params.rawCommand,
   });
   if (!command.ok) {
-    await opts.sendInvokeResult({
-      ok: false,
-      error: { code: "INVALID_REQUEST", message: command.message },
-    });
-    return null;
+    return invalid(command.message);
   }
   if (command.argv.length === 0) {
-    await opts.sendInvokeResult({
-      ok: false,
-      error: { code: "INVALID_REQUEST", message: "command required" },
-    });
-    return null;
+    return invalid("command required");
   }
 
   const shellPayload = command.shellPayload;
@@ -346,11 +377,7 @@ async function parseSystemRunPhase(
       ? null
       : normalizeSystemRunApprovalPlan(opts.params.systemRunPlan);
   if (opts.params.systemRunPlan !== undefined && !approvalPlan) {
-    await opts.sendInvokeResult({
-      ok: false,
-      error: { code: "INVALID_REQUEST", message: "systemRunPlan invalid" },
-    });
-    return null;
+    return invalid("systemRunPlan invalid");
   }
   const agentId = normalizeOptionalString(opts.params.agentId);
   const requestedSessionKey = normalizeOptionalString(opts.params.sessionKey);
@@ -364,11 +391,7 @@ async function parseSystemRunPhase(
     approvalSource !== "ask-fallback" &&
     approvalSource !== "auto-review"
   ) {
-    await opts.sendInvokeResult({
-      ok: false,
-      error: { code: "INVALID_REQUEST", message: "approvalSource invalid" },
-    });
-    return null;
+    return invalid("approvalSource invalid");
   }
   const approvalDecision = resolveExecApprovalDecision(opts.params.approvalDecision);
   const approved = opts.params.approved === true;
@@ -376,14 +399,7 @@ async function parseSystemRunPhase(
     approvalSource != null &&
     (opts.params.approved !== undefined || opts.params.approvalDecision !== undefined)
   ) {
-    await opts.sendInvokeResult({
-      ok: false,
-      error: {
-        code: "INVALID_REQUEST",
-        message: "approvalSource cannot be combined with explicit approval",
-      },
-    });
-    return null;
+    return invalid("approvalSource cannot be combined with explicit approval");
   }
   const explicitApproval = approved || approvalDecision !== null;
   const forwardedDelayedApproval = approvalSource === "auto-review" || explicitApproval;
@@ -396,31 +412,18 @@ async function parseSystemRunPhase(
       normalizeOptionalString(approvalPlan.agentId) === agentId &&
       normalizeOptionalString(approvalPlan.sessionKey) === requestedSessionKey;
     if (!planMatchesRequest) {
-      await opts.sendInvokeResult({
-        ok: false,
-        error: {
-          code: "INVALID_REQUEST",
-          message:
-            approvalSource != null
-              ? "approvalSource requires matching systemRunPlan"
-              : "explicit approval requires matching systemRunPlan",
-        },
-      });
-      return null;
+      return invalid(
+        approvalSource != null
+          ? "approvalSource requires matching systemRunPlan"
+          : "explicit approval requires matching systemRunPlan",
+      );
     }
   }
   const delayedApprovalPolicySnapshot = forwardedDelayedApproval
     ? (approvalPlan?.policySnapshot ?? null)
     : null;
   if (forwardedDelayedApproval && !delayedApprovalPolicySnapshot) {
-    await opts.sendInvokeResult({
-      ok: false,
-      error: {
-        code: "INVALID_REQUEST",
-        message: "delayed approval requires a prepared policy snapshot",
-      },
-    });
-    return null;
+    return invalid("delayed approval requires a prepared policy snapshot");
   }
   const envAssignmentKeys = extractEnvAssignmentKeysFromDispatchWrappers(command.argv);
   const envAssignmentOverrides =
@@ -434,14 +437,9 @@ async function parseSystemRunPhase(
   // `extractEnvAssignmentKeysFromDispatchWrappers` only emits keys that satisfy
   // `isEnvAssignment` and therefore portable env-key syntax by construction.
   if (envAssignmentDiagnostics.rejectedOverrideBlockedKeys.length > 0) {
-    await opts.sendInvokeResult({
-      ok: false,
-      error: {
-        code: "INVALID_REQUEST",
-        message: `SYSTEM_RUN_DENIED: command env assignment rejected (blocked env assignment keys: ${envAssignmentDiagnostics.rejectedOverrideBlockedKeys.join(", ")})`,
-      },
-    });
-    return null;
+    return invalid(
+      `SYSTEM_RUN_DENIED: command env assignment rejected (blocked env assignment keys: ${envAssignmentDiagnostics.rejectedOverrideBlockedKeys.join(", ")})`,
+    );
   }
   const envOverrideDiagnostics = inspectHostExecEnvOverrides({
     overrides: opts.params.env ?? undefined,
@@ -451,14 +449,7 @@ async function parseSystemRunPhase(
     envOverrideDiagnostics.rejectedOverrideBlockedKeys.length > 0 ||
     envOverrideDiagnostics.rejectedOverrideInvalidKeys.length > 0
   ) {
-    await opts.sendInvokeResult({
-      ok: false,
-      error: {
-        code: "INVALID_REQUEST",
-        message: buildEnvOverrideRejectionMessage(envOverrideDiagnostics),
-      },
-    });
-    return null;
+    return invalid(buildEnvOverrideRejectionMessage(envOverrideDiagnostics));
   }
   const envOverrides = sanitizeSystemRunEnvOverrides({
     overrides: opts.params.env ?? undefined,
@@ -554,7 +545,7 @@ async function evaluateSystemRunPolicyPhase(
   let { analysisOk, allowlistSatisfied } = allowlistEvaluation;
   const strictInlineEval =
     agentExec?.strictInlineEval === true || cfg.tools?.exec?.strictInlineEval === true;
-  const inlineEvalHit = strictInlineEval ? detectPolicyInlineEval(segments) : null;
+  const inlineEvalHit = strictInlineEval ? detectInlineEvalInSegments(segments) : null;
   const isWindows = process.platform === "win32";
   // Detect Windows wrapper transport from the same shell-wrapper view used to
   // derive the inner payload. That keeps `cmd.exe /c` approval-gated even when
@@ -591,34 +582,6 @@ async function evaluateSystemRunPolicyPhase(
     // Env sanitization uses broader shell-wrapper detection in parse phase.
     shellWrapperInvocation: parsed.shellPayload !== null,
   });
-  const requiresSecurityAuditSuppressionApproval =
-    commandRequiresSecurityAuditSuppressionApproval({
-      command: parsed.commandText,
-      cwd: parsed.cwd,
-      env: parsed.env,
-      segments,
-    }) && !(baseSecurity === "full" && baseAsk === "off" && !fallbackRequest);
-  if (forwardedAutoReview && requiresSecurityAuditSuppressionApproval) {
-    await sendSystemRunDenied(opts, parsed.execution, {
-      reason: "approval-required",
-      message: "SYSTEM_RUN_DENIED: explicit approval required",
-    });
-    return null;
-  }
-  if (requiresSecurityAuditSuppressionApproval && !policy.approvedByAsk) {
-    policy = {
-      allowed: false,
-      eventReason: "approval-required",
-      errorMessage: "SYSTEM_RUN_DENIED: approval required",
-      analysisOk: policy.analysisOk,
-      allowlistSatisfied: policy.allowlistSatisfied,
-      shellWrapperBlocked: policy.shellWrapperBlocked,
-      windowsShellWrapperBlocked: policy.windowsShellWrapperBlocked,
-      requiresAsk: true,
-      approvalDecision: policy.approvalDecision,
-      approvedByAsk: policy.approvedByAsk,
-    };
-  }
   let autoReviewDeferredMessage: string | undefined;
   analysisOk = policy.analysisOk;
   allowlistSatisfied = policy.allowlistSatisfied;
@@ -705,7 +668,6 @@ async function evaluateSystemRunPolicyPhase(
       inlineEvalHit === null &&
       !autoReviewBlockedByShellStartup &&
       autoReviewEligibility.eligible &&
-      !requiresSecurityAuditSuppressionApproval &&
       policy.eventReason !== "security=deny";
     if (canAutoReviewApprovalMiss) {
       const reviewer = await resolveSystemRunAutoReviewer({
@@ -1106,10 +1068,6 @@ async function executeSystemRunPhase(
   const assertCurrent = () => {
     try {
       assertCommittedAuthorization();
-      // A launch adapter can await final remote confirmation after initial preparation.
-      if (phase.approvedCwdSnapshot && !revalidateApprovedCwdSnapshot(phase.approvedCwdSnapshot)) {
-        throw new Error(APPROVAL_CWD_DRIFT_DENIED_MESSAGE);
-      }
     } catch (error) {
       authorizationDenied = true;
       throw error;

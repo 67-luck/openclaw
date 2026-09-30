@@ -1,6 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 /** Tests for talk gateway methods that coordinate speech and audio providers. */
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ErrorCodes } from "../../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import {
@@ -17,11 +17,6 @@ import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
 import { setActiveDegradedSecretOwners } from "../../../secrets/runtime-degraded-state.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { resolveRealtimeVoiceAgentConsultToolsAllow } from "../../../talk/agent-consult-tool.js";
-import { checkClientVoiceToolConfirmationPolicy } from "../../../talk/client-voice-confirmation.js";
-import {
-  noteClientVoiceConfirmationUtteranceForTest as noteClientVoiceConfirmationUtterance,
-  resetClientVoiceConfirmationStateForTest,
-} from "../../../talk/client-voice-confirmation.test-support.js";
 import { REALTIME_VOICE_DESCRIBE_VIEW_TOOL_NAME } from "../../../talk/describe-view-tool.js";
 import type { RealtimeVoiceProviderResolveConfigContext } from "../../../talk/provider-types.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
@@ -381,8 +376,6 @@ beforeEach(() => {
     );
   });
 });
-
-afterEach(() => resetClientVoiceConfirmationStateForTest());
 
 function markTalkOwnerCold(ownerId: string): void {
   setActiveDegradedSecretOwners([
@@ -3073,66 +3066,6 @@ describe("talk.client.toolCall handler", () => {
 
     expectRespondOk(respond, { runId: "run-active" });
     finishRun?.();
-  });
-
-  it("keeps the started run registered when refusal invalidates a detached confirmation", async () => {
-    const now = Date.now();
-    const challenge = checkClientVoiceToolConfirmationPolicy({
-      agentId: "main",
-      voiceSessionId: "voice-test",
-      runId: "run-original",
-      toolName: "message",
-      toolParams: { action: "send", message: "cancelled action" },
-      now,
-    });
-    if (challenge.allowed) {
-      throw new Error("expected voice confirmation challenge");
-    }
-    const confirmationId = challenge.reason.match(/VOICE_CONFIRMATION_REQUIRED:([^\s]+)/)?.[1];
-    if (!confirmationId) {
-      throw new Error("missing voice confirmation id");
-    }
-    noteClientVoiceConfirmationUtterance({
-      agentId: "main",
-      voiceSessionId: "voice-test",
-      text: "yes",
-      timestamp: now + 1,
-    });
-    mocks.chatSend.mockImplementationOnce(
-      async ({
-        respond,
-      }: {
-        respond: (ok: boolean, result?: unknown, error?: unknown) => void;
-      }) => {
-        noteClientVoiceConfirmationUtterance({
-          agentId: "main",
-          voiceSessionId: "voice-test",
-          text: "no",
-          timestamp: now + 3,
-        });
-        respond(true, { runId: "run-stale-confirmation" }, undefined);
-      },
-    );
-    const respond = vi.fn();
-
-    await callTalkHandler("talk.client.toolCall", {
-      params: {
-        sessionKey: "main",
-        voiceSessionId: "voice-test",
-        callId: "call-stale-confirmation",
-        name: "openclaw_agent_consult",
-        args: { question: "Do it", confirmationId },
-      },
-      respond,
-    });
-
-    expect(mocks.registerClientVoiceConsultRun).toHaveBeenCalledWith(
-      expect.objectContaining({
-        voiceSessionId: "voice-test",
-        runId: "run-stale-confirmation",
-      }),
-    );
-    expectRespondOk(respond, { runId: "run-stale-confirmation" });
   });
 
   it("passes configured consult thinking and fast-mode overrides to chat.send", async () => {

@@ -120,13 +120,13 @@ Notes:
 
 ## Device and personal data commands
 
-iOS and Android nodes advertise several read-only data commands by default (see the [Command policy](/nodes/command-policy#command-policy) table); Android additionally exposes a larger family gated by its own in-app settings. A macOS or Linux TypeScript node host advertises `device.apps` only after the operator enables installed-app sharing with `--share-installed-apps`.
+iOS and Android nodes advertise several read-only data commands by default (see the [Command policy](/nodes/command-policy#command-policy) table); Android additionally exposes a larger family gated by its own in-app settings. A macOS or headless-mac TypeScript node host advertises `device.apps` only after the operator enables installed-app sharing with `--share-installed-apps`.
 
 Available families:
 
 - `device.status`, `device.info` — iOS, Android, Windows.
 - `device.permissions`, `device.health` — Android only.
-- `device.apps` — Android, macOS, and Linux nodes. Android requires Installed Apps sharing in Settings and returns launcher-visible apps by default. TypeScript node hosts keep sharing off by default and accept `query`, `limit`, and `includeSystem`; macOS results contain `label`, `bundleId`, `path`, and `system`.
+- `device.apps` — Android, macOS, and headless-mac nodes. Android requires Installed Apps sharing in Settings and returns launcher-visible apps by default. TypeScript node hosts keep sharing off by default and accept `query`, `limit`, and `includeSystem`; macOS results contain `label`, `bundleId`, `path`, and `system`.
 - `notifications.list`, `notifications.actions` — Android only.
 - `photos.latest` — iOS, Android.
 - `contacts.search` — iOS, Android (read-only default); `contacts.add` is dangerous and needs `gateway.nodes.commands.allow`.
@@ -147,64 +147,3 @@ openclaw nodes invoke --node <idOrNameOrIp> --command device.apps --params '{"li
 openclaw nodes invoke --node <idOrNameOrIp> --command notifications.list --params '{}'
 openclaw nodes invoke --node <idOrNameOrIp> --command photos.latest --params '{"limit":1}'
 ```
-
-## Constrained Linux installed-app launch
-
-On a Linux node with installed-app sharing enabled, use the `nodes` tool's
-`app_list` action with the **full node ID** and optional `query` and `limit`
-(up to 20). Inventory reads desktop entries directly; it does not run a shell
-or execute discovery commands. Only eligible apps carry an `appId` and
-`appRevision`. Use those exact values with `app_launch` on the same node.
-The action accepts no arguments, environment, alternate Gateway, or implicit target.
-
-This is a deliberately limited launcher, not a replacement for a desktop menu:
-
-- It scans top-level `.desktop` files in the node's XDG application roots, with
-  user entries masking system entries, including hidden or invalid overrides.
-  The selected root determines the system flag; app_list includes both roots,
-  while raw device.apps callers can filter with includeSystem.
-- Eligible entries describe a single native ELF executable with zero arguments.
-  Scripts, field codes, extra arguments, symlinked desktop entries, terminal apps,
-  hidden entries, D-Bus activation, and entries with `Path`, `TryExec`,
-  `OnlyShowIn`, or `NotShowIn` are excluded.
-- Scans visit at most 2,048 directory entries and read at most 64 KiB per desktop
-  file. `inventoryComplete: false` and `truncated: true` identify a bounded or
-  unreadable inventory; `totalMatched` then counts only the observed matches.
-  A complete scan means the supported top-level inventory, not every installed app.
-- The revision binds desktop-entry contents and resolved executable filesystem
-  identity. If either changes, refresh inventory and confirm the new revision.
-
-The node advertises `device.apps.launch` only on its duplex transport. Node
-pairing/surface approval, explicit `gateway.nodes.commands.allow` opt-in,
-`commands.deny`, and the node's independent executable policy remain mandatory.
-A Talk session that supports spoken confirmation still needs an ordinary,
-one-shot “yes”; “no” cancels it. Spoken confirmation never overrides a node or
-executable-policy denial. This capability does not create reusable voice permission.
-
-Immediately before spawning, the node rechecks the revision, executable, empty
-argument list, eligibility, cancellation, and its execution authority. The Gateway
-sends an invocation-bound, short-lived permit only after checking current caller
-and confirmation authority. Native launch errors remain actionable results.
-
-The allow permit is the Gateway's final admission point for this exact launch,
-not a promise of instantaneous distributed revocation. The node accepts it only
-within its bounded validity (at most five seconds measured from the node's
-readiness request, including the round trip). Closing the caller or revoking its
-device token after the permit was issued does not guarantee stopping that admitted
-launch; cancellation must reach the node before its final spawn check.
-A caller cancellation is forwarded to the node; if the node observes it before
-its final spawn check, no process starts. If cancellation is still in transit,
-a process may start even though the Gateway has already returned a cancellation
-error. Cancellation cannot undo an already-started app. Local executable-policy
-revocation and expired permits are still rejected at the native boundary.
-
-Do not interpret a cancelled request alone as proof that no application started.
-A second confirmation RPC would merely move, not eliminate, the cross-process
-race. A stronger revocation-commit guarantee would require a different admission
-contract, not an extra retry or a longer timeout.
-
-A successful result is `{status: "process-started", appId, appRevision, pid}`.
-It acknowledges OS process creation promptly, even when the app keeps running;
-it does **not** mean the process exited successfully or a window became visible.
-Generic `system.run` still waits for command completion. Launch requires a usable
-GUI environment on the node if the selected application needs one.

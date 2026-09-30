@@ -92,10 +92,10 @@ describe("scanInstalledApps", () => {
     }
   });
 
-  it("returns a typed unsupported result off macOS and Linux", async () => {
-    await expect(scanInstalledApps({ platform: "win32" })).resolves.toEqual({
+  it("returns a typed unsupported result off macOS", async () => {
+    await expect(scanInstalledApps({ platform: "linux" })).resolves.toEqual({
       status: "unsupported",
-      platform: "win32",
+      platform: "linux",
       apps: [],
     });
   });

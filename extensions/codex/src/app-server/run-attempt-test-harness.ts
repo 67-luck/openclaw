@@ -80,32 +80,29 @@ const execApprovalsRuntimeMocks = vi.hoisted(() => ({
 function createHarnessHostCapabilities(
   params: EmbeddedRunAttemptParams,
 ): EmbeddedRunAttemptParams["hostCapabilities"] {
-  return createCodexTestHostCapabilities(
-    {
-      runBeforeToolCall: async ({ nativeOperation: _nativeOperation, approvalMode, ...request }) =>
-        await runBeforeToolCallHook({
-          ...request,
-          approvalMode: approvalMode === "defer" ? "defer" : "request",
-          ctx: Object.freeze({
-            ...(params.agentId ? { agentId: params.agentId } : {}),
-            ...(params.config ? { config: params.config } : {}),
-            ...(params.workspaceDir
-              ? { cwd: params.workspaceDir, workspaceDir: params.workspaceDir }
-              : {}),
-            ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
-            ...(params.sessionId ? { sessionId: params.sessionId } : {}),
-            runId: params.runId,
-            trigger: params.trigger,
-            approvalReviewerDeviceId: params.approvalReviewerDeviceId,
-            turnSourceChannel: params.messageChannel ?? params.messageProvider,
-            turnSourceTo: params.currentMessagingTarget ?? params.currentChannelId,
-            turnSourceAccountId: params.agentAccountId,
-            turnSourceThreadId: params.currentThreadTs,
-          }),
+  return createCodexTestHostCapabilities({
+    runBeforeToolCall: async ({ nativeOperation: _nativeOperation, approvalMode, ...request }) =>
+      await runBeforeToolCallHook({
+        ...request,
+        approvalMode: approvalMode === "defer" ? "defer" : "request",
+        ctx: Object.freeze({
+          ...(params.agentId ? { agentId: params.agentId } : {}),
+          ...(params.config ? { config: params.config } : {}),
+          ...(params.workspaceDir
+            ? { cwd: params.workspaceDir, workspaceDir: params.workspaceDir }
+            : {}),
+          ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+          ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+          runId: params.runId,
+          trigger: params.trigger,
+          approvalReviewerDeviceId: params.approvalReviewerDeviceId,
+          turnSourceChannel: params.messageChannel ?? params.messageProvider,
+          turnSourceTo: params.currentMessagingTarget ?? params.currentChannelId,
+          turnSourceAccountId: params.agentAccountId,
+          turnSourceThreadId: params.currentThreadTs,
         }),
-    },
-    { ...params, agentId: params.agentId ?? "main" },
-  );
+      }),
+  });
 }
 
 vi.mock("openclaw/plugin-sdk/exec-approvals-runtime", async (importOriginal) => {
@@ -448,20 +445,6 @@ export function threadStartResult(threadId = "thread-1", options: { cwd?: string
   return createThreadStartResult(threadId, cwd);
 }
 
-export function createThreadStartRequest(threadId = "thread-1") {
-  const responses: Record<string, unknown> = {
-    "configRequirements/read": { requirements: null },
-    "config/read": { config: {}, origins: {}, layers: [] },
-    "thread/start": threadStartResult(threadId),
-  };
-  return vi.fn(async (method: string, _params?: unknown) => {
-    if (!Object.hasOwn(responses, method)) {
-      throw new Error(`unexpected method: ${method}`);
-    }
-    return responses[method];
-  });
-}
-
 export function rateLimitsUpdated(resetsAt: number): CodexServerNotification {
   return {
     method: "account/rateLimits/updated",
@@ -666,7 +649,7 @@ export function createRuntimeDynamicTool(name: string): RuntimeDynamicToolForTes
   };
 }
 
-export function setupRunAttemptTestHooks(): void {
+export function setupRunAttemptTestHooks(options: { sessionOwner?: null } = {}): void {
   // Keep unique test roots alive while the suite reuses native database workers.
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
     afterAll(async () => {
@@ -677,7 +660,10 @@ export function setupRunAttemptTestHooks(): void {
     }),
   );
 
-  beforeEach(async () => {
+  beforeEach(async (context) => {
+    if (!context.codexAttemptRuntime) {
+      throw new Error("Codex run-attempt tests require the shared extension runtime fixture");
+    }
     // Direct runtime tests supply the plugin root normally owned by loader registration.
     setManagedCodexPluginRoot(fileURLToPath(new URL("../../", import.meta.url)));
     // Machine-managed sandbox requirements must not leak into policy fixtures.
@@ -698,12 +684,18 @@ export function setupRunAttemptTestHooks(): void {
     vi.stubEnv("CODEX_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
     tempDir = tempDirs.make("openclaw-codex-run-", resolvePreferredOpenClawTmpDir());
+    await context.codexAttemptRuntime.start();
     // createParams models an ordinary durable session; seeded native bindings
     // must have the same authoritative core owner as a real resumed conversation.
-    await seedRunSessionOwnerForTest("session-1", "agent:main:session-1");
+    if (options.sessionOwner !== null) {
+      await seedRunSessionOwnerForTest("session-1", "agent:main:session-1");
+    }
   });
 
-  afterEach(async () => {
+  afterEach(async (context) => {
+    if (!context.codexAttemptRuntime) {
+      throw new Error("Codex run-attempt tests require the shared extension runtime fixture");
+    }
     const drained = await drainActiveAppServerAttemptsForTest();
     for (const close of activeHarnessHostClosuresForTest) {
       close();
@@ -717,6 +709,7 @@ export function setupRunAttemptTestHooks(): void {
     const registry = getActivePluginRegistry();
     setActivePluginRegistry(createEmptyPluginRegistry());
     const pluginCleanup = registry ? await disposePluginRegistryInstances(registry) : undefined;
+    await context.codexAttemptRuntime.stop();
     // A run beyond the drain deadline still needs the original database revocation fence.
     await cleanupRunSessionOwnersForTest({ closeDatabases: !drained });
     resetCodexAppServerClientFactoryForTest();

@@ -6,26 +6,11 @@ import {
   openOpenClawAgentDatabase,
   type OpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
-import type { ClientVoiceAppLaunchOrigin } from "./client-voice-app-launch-policy.js";
 import { VOICE_TRANSCRIPT_MAX_UNRESOLVED } from "./voice-transcript.js";
 
 const VOICE_SESSION_CACHE_SCOPE = "talk-client-voice-sessions";
 export const VOICE_SESSION_RECORD_VERSION = 1;
 export const VOICE_SESSION_STALE_AFTER_MS = 6 * 60 * 60_000;
-
-const appLaunchAuthorizationSchema = z.strictObject({
-  policyId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
-  stage: z.literal("permit-authorized"),
-});
-
-export type ClientVoiceAppLaunchPolicyUse = {
-  agentId: string;
-  voiceSessionId: string;
-  sessionKey: string;
-  runId: string;
-  toolCallId: string;
-  policyId: string;
-};
 
 export type ClientVoiceToolEffect = {
   runId: string;
@@ -33,8 +18,6 @@ export type ClientVoiceToolEffect = {
   toolName: string;
   startedAt: number;
   finishedAt?: number;
-  /** Final Gateway permit decision, not a claim that the native process started. */
-  appLaunchAuthorization?: z.infer<typeof appLaunchAuthorizationSchema>;
   status: "started" | "succeeded" | "failed" | "cancelled" | "blocked";
 };
 
@@ -56,12 +39,11 @@ export type ClientVoiceSessionRecord = {
   transcriptFailureKeys: string[];
   /** Declared at create when the client speaks the transcript protocol (sent sessionKey). */
   transcriptCapable?: boolean;
-  /** Set once a finalized user utterance persisted; gates spoken confirmation capability. */
+  /** Set once a finalized user utterance persisted; records observed transcript capability. */
   hasUserTranscript?: boolean;
 };
 
 export type ClientVoiceRunBinding = Readonly<{
-  originAuthority?: ClientVoiceAppLaunchOrigin;
   agentId: string;
   voiceSessionId: string;
   sessionKey: string;
@@ -74,8 +56,6 @@ const clientVoiceToolEffectSchema = z.looseObject({
   toolName: z.string(),
   startedAt: z.number(),
   status: z.enum(["started", "succeeded", "failed", "cancelled", "blocked"]),
-  // Unreadable attribution must not erase the ordinary source outcome.
-  appLaunchAuthorization: appLaunchAuthorizationSchema.optional().catch(undefined),
 });
 
 const clientVoiceSessionRecordSchema = z.looseObject({
@@ -217,33 +197,6 @@ export function assertVoiceSessionOwnership(
   if (record.agentId !== params.agentId || record.sessionKey !== params.sessionKey) {
     throw new Error("voice session does not belong to this agent session");
   }
-}
-
-/** Called only inside the existing agent worker transaction; never creates an effect. */
-export function recordVoiceSessionAppLaunchPolicyUseInTransaction(
-  database: OpenClawAgentDatabase,
-  params: ClientVoiceAppLaunchPolicyUse,
-): void {
-  const authorization = appLaunchAuthorizationSchema.parse({
-    policyId: params.policyId,
-    stage: "permit-authorized",
-  });
-  const record = readVoiceSessionRecordInTransaction(database, params.voiceSessionId);
-  if (!record) {
-    throw new Error("Voice app launch call no longer exists");
-  }
-  assertVoiceSessionOwnership(record, params);
-  const effect = record.effects.find(
-    (entry) =>
-      entry.runId === params.runId &&
-      entry.toolCallId === params.toolCallId &&
-      entry.toolName === "nodes",
-  );
-  if (!effect) {
-    throw new Error("Voice app launch has no source tool execution record");
-  }
-  effect.appLaunchAuthorization = authorization;
-  writeVoiceSessionRecordInTransaction(database, record);
 }
 
 export function operationKey(agentId: string, voiceSessionId: string): string {

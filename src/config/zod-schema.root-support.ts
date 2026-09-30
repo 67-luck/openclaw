@@ -1,6 +1,5 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { z } from "zod";
-import { InstalledAppIdSchema, InstalledAppRevisionSchema } from "../infra/installed-app-launch.js";
 import { findEdgeAuthIssue } from "../shared/gateway-edge-auth-headers.js";
 import { McpServerSchema } from "./zod-schema.mcp-server.js";
 import { MemorySearchSchema } from "./zod-schema.memory-search.js";
@@ -22,24 +21,20 @@ const EdgeAuthHeadersSchema = z
     });
   });
 
-const GatewayRemoteSchemaShape = {
-  url: z.string().optional(),
-
-  transport: z.union([z.literal("ssh"), z.literal("direct")]).optional(),
-
-  remotePort: z.number().int().min(1).max(65_535).optional(),
-
-  token: SecretInputSchema.optional().register(sensitive),
-
-  password: SecretInputSchema.optional().register(sensitive),
-  edgeAuth: EdgeAuthHeadersSchema.optional(),
-  tlsFingerprint: z.string().optional(),
-  sshTarget: z.string().optional(),
-  sshIdentity: z.string().optional(),
-  sshHostKeyPolicy: z.union([z.literal("strict"), z.literal("openssh")]).optional(),
-};
-
-export const GatewayRemoteConfigSchema = z.strictObject(GatewayRemoteSchemaShape).optional();
+export const GatewayRemoteConfigSchema = z
+  .strictObject({
+    url: z.string().optional(),
+    transport: z.union([z.literal("ssh"), z.literal("direct")]).optional(),
+    remotePort: z.number().int().min(1).max(65_535).optional(),
+    token: SecretInputSchema.optional().register(sensitive),
+    password: SecretInputSchema.optional().register(sensitive),
+    edgeAuth: EdgeAuthHeadersSchema.optional(),
+    tlsFingerprint: z.string().optional(),
+    sshTarget: z.string().optional(),
+    sshIdentity: z.string().optional(),
+    sshHostKeyPolicy: z.union([z.literal("strict"), z.literal("openssh")]).optional(),
+  })
+  .optional();
 
 export const SecuritySchema = z
   .strictObject({
@@ -219,37 +214,8 @@ function validateTalkProviderSelection(
   }
 }
 
-const TalkAppPolicyIdentitySchema = z
-  .string()
-  .min(1)
-  .max(256)
-  .refine(
-    // Exact policy identifiers exclude controls and wildcard syntax, not Unicode text.
-    // eslint-disable-next-line no-control-regex
-    (value) => value.trim() === value && !/[\u0000-\u001f\u007f*?]/u.test(value),
-    "An exact identity without wildcards or control characters is required",
-  );
-
 const TalkRealtimeSchema = z
   .strictObject({
-    appLaunchPolicies: z
-      .array(
-        z.strictObject({
-          id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
-          agentId: TalkAppPolicyIdentitySchema,
-          originatingDeviceId: TalkAppPolicyIdentitySchema,
-          nodeId: TalkAppPolicyIdentitySchema,
-          appId: InstalledAppIdSchema,
-          appRevision: InstalledAppRevisionSchema,
-          expiresAtMs: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-        }),
-      )
-      .max(100)
-      .refine(
-        (policies) => new Set(policies.map((policy) => policy.id)).size === policies.length,
-        "Talk app-launch policy IDs must be unique for inventory and revocation",
-      )
-      .optional(),
     provider: z.string().optional(),
     providers: z.record(z.string(), TalkProviderEntrySchema).optional(),
     model: z.string().optional(),
@@ -320,19 +286,16 @@ function createMcpServersSchema(serverNameSchema: z.ZodType<string>) {
 }
 
 export function validateHttpOrigin(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return (
-      (url.protocol === "http:" || url.protocol === "https:") &&
-      url.pathname === "/" &&
-      !url.search &&
-      !url.hash &&
-      !url.username &&
-      !url.password
-    );
-  } catch {
-    return false;
-  }
+  const url = URL.parse(value);
+  return (
+    url !== null &&
+    (url.protocol === "http:" || url.protocol === "https:") &&
+    url.pathname === "/" &&
+    !url.search &&
+    !url.hash &&
+    !url.username &&
+    !url.password
+  );
 }
 
 export const McpConfigSchema = z

@@ -136,14 +136,14 @@ export function closeRelaySession(
   }
   const closing: NonNullable<RelaySession["closing"]> = { reason };
   session.closing = closing;
-  session.originAuthority?.release();
+  session.runAuthority?.release();
   const disposition =
     options?.disposition ??
     (isTalkVoiceSessionReplacing(session.id, session.connId, session.sessionTarget.agentId)
       ? "detach"
       : "abort");
   unregisterTalkVoiceSession(session.id, session.connId, session.sessionTarget.agentId);
-  session.confirmationReadiness.close();
+  session.transcriptReadiness.close();
   session.harness.close();
   session.outputOwnership.drain?.resolve();
   relaySessions.delete(session.id);
@@ -277,7 +277,6 @@ export function submitTalkRealtimeRelayToolResult(params: {
 
   if (forcedConsult) {
     return submitForcedTalkRealtimeRelayToolResult(session, forcedConsult, {
-      callId: params.callId,
       result: params.result,
       options: params.options,
     });
@@ -378,18 +377,13 @@ export function submitTalkRealtimeRelayToolResult(params: {
 }
 
 export function registerTalkRealtimeRelayAgentRun(params: {
-  originAuthority?: RelaySession["originAuthority"];
-  isSessionCurrent?: (session: RelaySession) => boolean;
   relaySessionId: string;
   connId: string;
   sessionKey: string;
   runId: string;
   callId?: string;
-}): () => void {
+}): void {
   const session = getRelaySession(params.relaySessionId, params.connId);
-  if (params.isSessionCurrent?.(session) === false) {
-    throw new Error("Realtime gateway-relay session is closed");
-  }
   const callId = params.callId?.trim();
   if (
     callId &&
@@ -415,8 +409,7 @@ export function registerTalkRealtimeRelayAgentRun(params: {
     throw new Error("Realtime relay voice session could not be created for agent consult");
   }
   const { agentId, sessionKey } = session.sessionTarget;
-  return registerClientVoiceConsultRun({
-    originAuthority: params.originAuthority,
+  registerClientVoiceConsultRun({
     agentId,
     sessionKey,
     voiceSessionId: session.id,

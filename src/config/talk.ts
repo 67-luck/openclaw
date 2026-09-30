@@ -60,17 +60,12 @@ function normalizeTalkProviders(value: unknown): Record<string, TalkProviderConf
   return Object.keys(providers).length > 0 ? providers : undefined;
 }
 
-function normalizeTalkRealtimeConfig(
-  value: TalkRealtimeConfig | undefined,
-): TalkRealtimeConfig | undefined {
+function normalizeTalkRealtimeConfig(value: unknown): TalkRealtimeConfig | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
   const source = value;
   const normalized: TalkRealtimeConfig = {};
-  if (source.appLaunchPolicies !== undefined) {
-    normalized.appLaunchPolicies = source.appLaunchPolicies;
-  }
 
   const provider = normalizeOptionalString(source.provider);
   if (provider) {
@@ -190,7 +185,7 @@ export function normalizeTalkSection(value: TalkConfig | undefined): TalkConfig 
   }
 
   const providers = normalizeTalkProviders(source.providers);
-  const realtime = normalizeTalkRealtimeConfig(value.realtime);
+  const realtime = normalizeTalkRealtimeConfig(source.realtime);
   const provider = normalizeOptionalString(source.provider);
   if (providers) {
     normalized.providers = providers;

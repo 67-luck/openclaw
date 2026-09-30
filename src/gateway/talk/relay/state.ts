@@ -3,8 +3,7 @@ import type { OpenClawConfig } from "../../../config/types.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
 import type { BoundedSerialQueue } from "../../../shared/bounded-serial-queue.js";
 import type { RealtimeVoiceAgentControlResult } from "../../../talk/agent-run-control.js";
-import type { ClientVoiceAppLaunchOrigin } from "../../../talk/client-voice-app-launch-policy.js";
-import type { createClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation-readiness.js";
+import type { createClientVoiceTranscriptReadiness } from "../../../talk/client-voice-transcript-readiness.js";
 import type { InternalRealtimeVoiceProviderCapabilities } from "../../../talk/provider-internal.js";
 import type {
   RealtimeVoiceBrowserAudioContract,
@@ -19,6 +18,7 @@ import type { RealtimeVoiceBridgeSession } from "../../../talk/session-runtime.j
 import type { TalkEvent } from "../../../talk/talk-session-controller.js";
 import type { GatewayRequestContext } from "../../server-methods/shared-types.js";
 import type { TalkAgentConsultAuthority } from "../client-gateway-control.js";
+import type { TalkClientRunAuthority } from "../client-run-authority.js";
 import type { PreparedTalkSessionTarget } from "../session-target.types.js";
 import type { RelayToolCallLedger } from "./tool-call-ledger.js";
 
@@ -253,7 +253,6 @@ export class TalkRealtimeRelayOutputOwnership {
 }
 
 export type RelaySession = {
-  originAuthority?: ClientVoiceAppLaunchOrigin;
   getToolAuthorityOverlay?: (
     authority?: TalkAgentConsultAuthority,
     source?: "reply" | "attempt",
@@ -288,18 +287,19 @@ export type RelaySession = {
   voiceSessionCreated: boolean;
   voiceTranscriptSeq: number;
   voiceTranscriptQueue: BoundedSerialQueue;
-  confirmationReadiness: ReturnType<typeof createClientVoiceConfirmationReadiness>;
+  runAuthority?: TalkClientRunAuthority;
+  transcriptReadiness: ReturnType<typeof createClientVoiceTranscriptReadiness>;
   voiceSessionClose?: Promise<void>;
   closing?: { reason: "completed" | "error"; completion?: Promise<void> };
   failSession: (message: string) => void;
 };
 
 export type CreateTalkRealtimeRelaySessionParams = {
-  captureOriginAuthority?: () => ClientVoiceAppLaunchOrigin | undefined;
   context: GatewayRequestContext;
   connId: string;
   cfg?: OpenClawConfig;
   consultAuthority?: TalkAgentConsultAuthority;
+  runAuthority?: TalkClientRunAuthority;
   provider: RealtimeVoiceProviderPlugin;
   providerConfig: RealtimeVoiceProviderConfig;
   controlSource: "delegation" | "transcript";

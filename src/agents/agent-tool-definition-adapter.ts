@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { logDebug, logError } from "../logger.js";
 import { redactToolDetail } from "../logging/redact.js";
+import { getPluginToolMeta } from "../plugins/tool-metadata.js";
 import { isPlainObject } from "../utils.js";
 import type { HookContext } from "./agent-tools.before-tool-call.js";
 import {
@@ -15,7 +16,6 @@ import {
   recordStructuredReplayTrustForToolCall,
   runBeforeToolCallHook,
 } from "./agent-tools.before-tool-call.js";
-import { consumeFinalClientVoiceToolConfirmation } from "./agent-tools.before-tool-call.policy.js";
 import {
   finalizeBeforeToolCallExecutionParams,
   prepareBeforeToolCallExecutionParams,
@@ -31,6 +31,7 @@ import {
 } from "./code-mode-control-tools.js";
 import { sanitizeForConsole } from "./console-sanitize.js";
 import type { ClientToolDefinition } from "./embedded-agent-runner/run/params.js";
+import { projectAgentToolDefinition } from "./prepared-tool-surface.js";
 import type { AgentTool as AnyAgentTool, AgentToolResult } from "./runtime/index.js";
 import {
   attachInternalToolExecutionPreparer,
@@ -341,18 +342,13 @@ export function toToolDefinitions(
     signal && abortSignal ? AbortSignal.any([signal, abortSignal]) : (signal ?? abortSignal);
   return tools.map((tool) => {
     const name = tool.name || "tool";
+    const toolOwnerPluginId = getPluginToolMeta(tool)?.pluginId;
     const normalizedName = normalizeToolPolicyName(name);
     const beforeHookWrapped = isToolWrappedWithBeforeToolCallHook(tool);
     const sourcePreparer = getInternalToolExecutionPreparer(tool);
     const definition = {
-      name,
-      label: tool.label ?? name,
-      ...(tool.hideFromChannelProgress === true ? { hideFromChannelProgress: true } : {}),
-      ...(tool.resultContentSource ? { resultContentSource: tool.resultContentSource } : {}),
-      description: tool.description ?? "",
-      parameters: tool.parameters,
+      ...projectAgentToolDefinition(tool),
       prepareArguments: tool.prepareArguments,
-      executionMode: tool.executionMode,
       execute: async (...args: ToolExecuteArgs): Promise<AgentToolResult<unknown>> => {
         const [toolCallId, params, callSignal, onUpdate] = args;
         const signal = resolveAbortSignal(callSignal);
@@ -387,7 +383,11 @@ export function toToolDefinitions(
                 params: hookParams,
                 ...hookMetadata,
                 toolCallId,
-                ctx: hookContext,
+                ctx: hookContext
+                  ? { ...hookContext, toolOwnerPluginId }
+                  : toolOwnerPluginId
+                    ? { toolOwnerPluginId }
+                    : undefined,
                 signal,
               });
               if (hookOutcome.blocked) {
@@ -411,23 +411,6 @@ export function toToolDefinitions(
               const decision = control ? await control.pause(executeParams) : undefined;
               if (decision && !decision.launch) {
                 return { content: [], details: { status: "skipped" } };
-              }
-              // A voice grant binds the post-finalizer execution shape. Consuming it
-              // earlier would let later alias or tool-owned rewrites escape the grant.
-              const voiceConfirmation = consumeFinalClientVoiceToolConfirmation({
-                toolCallId,
-                toolName: name,
-                toolKind: hookMetadata?.toolKind,
-                params: executeParams,
-                ctx: hookContext,
-              });
-              if (!voiceConfirmation.allowed) {
-                return buildBlockedToolResult({
-                  reason: voiceConfirmation.reason,
-                  deniedReason: "client-voice-confirmation",
-                  toolCallId,
-                  runId: hookContext?.runId,
-                });
               }
               decision?.start?.();
               recordAdjustedParamsForToolCall(toolCallId, executeParams, hookContext?.runId);
@@ -586,21 +569,6 @@ export function toClientToolDefinitions(
           if (decision && !decision.launch) {
             recorder?.discard?.(toolCallId, func.name);
             return { content: [], details: { status: "skipped" } };
-          }
-          const voiceConfirmation = consumeFinalClientVoiceToolConfirmation({
-            toolCallId,
-            toolName: func.name,
-            params: paramsRecord,
-            ctx: hookContext,
-          });
-          if (!voiceConfirmation.allowed) {
-            recorder?.discard?.(toolCallId, func.name);
-            return buildBlockedToolResult({
-              reason: voiceConfirmation.reason,
-              deniedReason: "client-voice-confirmation",
-              toolCallId,
-              runId: hookContext?.runId,
-            });
           }
           signal?.throwIfAborted();
           decision?.start?.();

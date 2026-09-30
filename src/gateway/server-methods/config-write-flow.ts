@@ -1,7 +1,4 @@
-// Config write flow helpers commit control-plane config edits, detect auth
-// changes, write restart sentinels, and schedule gateway restarts when required.
 import { isDeepStrictEqual } from "node:util";
-import { getGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import {
   createConfigIO,
   readConfigFileSnapshotForWrite,
@@ -23,7 +20,6 @@ import {
 import { scheduleGatewayRestart } from "../../infra/restart.js";
 import { captureGatewayRootWorkAdmissionContinuationScope } from "../../process/gateway-work-admission.js";
 import { getActiveSecretsRuntimeSnapshotState } from "../../secrets/runtime-state.js";
-import type { PreparedSecretsRuntimeSnapshot } from "../../secrets/runtime.js";
 import { isRecord } from "../../utils.js";
 import { resolveGatewayAuth } from "../auth.js";
 import { buildGatewayReloadPlan, isNoopGatewayReloadPlan } from "../config-reload-plan.js";
@@ -32,14 +28,13 @@ import { formatControlPlaneActor, type ControlPlaneActor } from "../control-plan
 import { holdGatewayPolicyResponse } from "../server/ws-policy-close.js";
 import { resolveSharedGatewaySessionGeneration } from "../server/ws-shared-generation.js";
 import { parseRestartRequestParams } from "./restart-request.js";
-import type { GatewayClient, GatewayRequestContext, RespondFn } from "./types.js";
+import type { GatewayRequestContext, RespondFn } from "./types.js";
 
 type ConfigWriteSnapshot = Awaited<ReturnType<typeof readConfigFileSnapshotForWrite>>["snapshot"];
 type ConfigWriteOptions = Awaited<
   ReturnType<typeof readConfigFileSnapshotForWrite>
 >["writeOptions"];
 
-/** Resolves the on-disk config path used in config method responses. */
 export function resolveGatewayConfigPath(snapshot?: Pick<ConfigWriteSnapshot, "path">): string {
   return snapshot?.path ?? createConfigIO().configPath;
 }
@@ -58,8 +53,10 @@ export function didSharedGatewayAuthChange(prev: OpenClawConfig, next: OpenClawC
   });
   return (
     prevResolvedAuth.mode !== nextResolvedAuth.mode ||
-    resolveSharedGatewaySessionGeneration(prevResolvedAuth, prev.gateway?.trustedProxies) !==
-      resolveSharedGatewaySessionGeneration(nextResolvedAuth, next.gateway?.trustedProxies)
+    // Proxy policy writes reconcile each principal instead of rotating a shared credential.
+    (prevResolvedAuth.mode !== "trusted-proxy" &&
+      resolveSharedGatewaySessionGeneration(prevResolvedAuth, prev.gateway?.trustedProxies) !==
+        resolveSharedGatewaySessionGeneration(nextResolvedAuth, next.gateway?.trustedProxies))
   );
 }
 
@@ -135,23 +132,6 @@ export function didActiveSharedGatewayAuthChange(params: {
   return didSharedGatewayAuthChange(activeSharedAuthConfig, params.next);
 }
 
-/** Compare source and prepared runtime auth at the config write owner. */
-export function shouldDisconnectSharedAuthClientsForConfigWrite(params: {
-  prevConfig: OpenClawConfig;
-  prevSourceConfig: OpenClawConfig;
-  nextConfig: OpenClawConfig;
-  preparedSecretsSnapshot: PreparedSecretsRuntimeSnapshot;
-}): boolean {
-  return (
-    didSharedGatewayAuthChange(params.prevConfig, params.nextConfig) ||
-    didActiveSharedGatewayAuthChange({
-      fallbackPrev: params.prevConfig,
-      fallbackSource: params.prevSourceConfig,
-      next: params.preparedSecretsSnapshot.config,
-    })
-  );
-}
-
 function resolveConfigRestartRequirement(params: {
   changedPaths: string[];
   previousConfig: OpenClawConfig;
@@ -223,8 +203,6 @@ async function tryWriteRestartSentinelPayload(payload: RestartSentinelPayload): 
 
 /** Persists a gateway config write and returns follow-up work that must run after response. */
 export async function commitGatewayConfigWrite(params: {
-  client?: GatewayClient | null;
-  hasCurrentClientAuthority?: () => boolean;
   snapshot: ConfigWriteSnapshot;
   writeOptions: ConfigWriteOptions;
   nextConfig: OpenClawConfig;
@@ -239,33 +217,11 @@ export async function commitGatewayConfigWrite(params: {
   application?: Promise<RuntimeConfigWriteApplicationStatus>;
   queueFollowUp: () => void;
 }> {
-  const changesVoiceAuthority = !isDeepStrictEqual(
-    params.snapshot.sourceConfig.talk?.realtime?.appLaunchPolicies ?? [],
-    params.nextConfig.talk?.realtime?.appLaunchPolicies ?? [],
-  );
-  const assertVoicePolicyWriter = () => {
-    if (!changesVoiceAuthority) {
-      return;
-    }
-    if (
-      !params.client?.connect.scopes?.includes("operator.admin") ||
-      params.client.internal?.agentRuntimeIdentity ||
-      getGatewayToolCallerIdentity() ||
-      !params.hasCurrentClientAuthority?.()
-    ) {
-      throw new Error(
-        "Talk app-launch policies require an explicit authenticated operator config change",
-      );
-    }
-  };
-  assertVoicePolicyWriter();
-  const application =
-    params.awaitRuntimeApplication || changesVoiceAuthority
-      ? createRuntimeConfigWriteApplication(
-          captureGatewayRootWorkAdmissionContinuationScope()?.run,
-          changesVoiceAuthority ? { requireImmediateApplication: true } : undefined,
-        )
-      : undefined;
+  const previousRuntimeConfig =
+    params.context?.getCommittedRuntimeConfig?.() ?? params.snapshot.config;
+  const application = params.awaitRuntimeApplication
+    ? createRuntimeConfigWriteApplication(captureGatewayRootWorkAdmissionContinuationScope()?.run)
+    : undefined;
   holdGatewayPolicyResponse(params.respond);
   const result = await replaceConfigFile({
     sourceConfig: params.nextConfig,
@@ -276,36 +232,15 @@ export async function commitGatewayConfigWrite(params: {
       {
         ...params.writeOptions,
         auditOrigin: "config-rpc",
-        ...(changesVoiceAuthority
-          ? {
-              assertCurrent: () => {
-                params.writeOptions.assertCurrent?.();
-                assertVoicePolicyWriter();
-              },
-              assertConfigPathForWrite: () => {
-                params.writeOptions.assertConfigPathForWrite?.();
-                assertVoicePolicyWriter();
-              },
-            }
-          : {}),
         runtimeRefresh: {
           ...params.writeOptions.runtimeRefresh,
           includeAuthStoreRefs: false,
-          ...(changesVoiceAuthority ? { requireImmediateApplication: true } : {}),
         },
       },
       application,
     ),
     afterWrite: { mode: "auto" },
   });
-  if (
-    changesVoiceAuthority &&
-    (!application?.claimed || (await application.result) !== "applied")
-  ) {
-    throw new Error(
-      "Talk policy was not applied to the active Gateway; read config and reconcile before retrying",
-    );
-  }
   return {
     path: resolveGatewayConfigPath(params.snapshot),
     config: result.nextConfig,
@@ -323,7 +258,10 @@ export async function commitGatewayConfigWrite(params: {
       // reconcile after responding, including receipts no runtime owner claimed.
       if (!application?.claimed) {
         queueMicrotask(() => {
-          params.context?.enforceSharedGatewayAuthGenerationForConfigWrite?.(result.nextConfig);
+          params.context?.enforceSharedGatewayAuthGenerationForConfigWrite?.(
+            result.nextConfig,
+            previousRuntimeConfig,
+          );
           if (params.disconnectSharedAuthClients) {
             params.context?.disconnectClientsUsingSharedGatewayAuth?.();
           }
@@ -333,7 +271,6 @@ export async function commitGatewayConfigWrite(params: {
   };
 }
 
-/** Builds restart sentinel/queue state for config.patch and config.apply writes. */
 export async function resolveGatewayConfigRestartWriteResult(params: {
   requestParams: unknown;
   kind: RestartSentinelPayload["kind"];

@@ -9,7 +9,7 @@ import {
   diagnosticHttpStatusCode,
 } from "../infra/diagnostic-error-metadata.js";
 import {
-  emitTrustedToolExecutionEvent,
+  emitTrustedDiagnosticEvent,
   emitTrustedSkillUsedDiagnosticEvent,
   emitTrustedSecurityEvent,
   type DiagnosticEventInput,
@@ -71,13 +71,14 @@ export function startToolExecutionLiveness(
   signal?: AbortSignal,
 ) {
   const liveness = createDiagnosticToolExecutionLiveness(signal);
-  emitTrustedToolExecutionEvent(
-    markToolExecutionLivenessDiagnosticEvent(
-      { type: "tool.execution.started", ...event },
-      liveness.view,
-    ),
-    { emitDiagnostics },
-  );
+  if (emitDiagnostics) {
+    emitTrustedDiagnosticEvent(
+      markToolExecutionLivenessDiagnosticEvent(
+        { type: "tool.execution.started", ...event },
+        liveness.view,
+      ),
+    );
+  }
   return liveness;
 }
 
@@ -468,29 +469,23 @@ export function emitToolBlockedSecurityEvent(params: {
   paramsSummary?: DiagnosticToolParamsSummary;
 }): void {
   const control =
-    params.deniedReason === "client-voice-confirmation"
+    params.deniedReason === "tool-loop"
       ? ({
-          policyId: "talk-client-voice-confirmation",
-          controlId: "talk-client-voice-confirmation",
-          family: "approval",
+          policyId: "tool-loop-detection",
+          controlId: "tool-loop-detection",
+          family: "authorization",
         } as const)
-      : params.deniedReason === "tool-loop"
+      : params.deniedReason === "plugin-approval"
         ? ({
-            policyId: "tool-loop-detection",
-            controlId: "tool-loop-detection",
-            family: "authorization",
+            policyId: "plugin-tool-approval",
+            controlId: "plugin-tool-approval",
+            family: "approval",
           } as const)
-        : params.deniedReason === "plugin-approval"
-          ? ({
-              policyId: "plugin-tool-approval",
-              controlId: "plugin-tool-approval",
-              family: "approval",
-            } as const)
-          : ({
-              policyId: "plugin-before-tool-call",
-              controlId: "before-tool-call",
-              family: "approval",
-            } as const);
+        : ({
+            policyId: "plugin-before-tool-call",
+            controlId: "before-tool-call",
+            family: "approval",
+          } as const);
   emitTrustedSecurityEvent({
     category: "tool",
     action: "tool.execution.blocked",

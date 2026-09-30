@@ -41,7 +41,10 @@ import {
   createTalkClientGatewayControlOwner,
   resolveTalkAgentConsultAuthority,
 } from "../client-gateway-control.js";
-import { captureTalkVoiceOrigin } from "../client-voice-origin.js";
+import {
+  retainTalkClientRunAuthority,
+  type TalkClientRunAuthority,
+} from "../client-run-authority.js";
 import {
   buildRealtimeInstructions,
   buildRealtimeVoiceLaunchOptions,
@@ -77,6 +80,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
   }
   const rejectRequest = (code: Parameters<typeof errorShape>[0], message: string): void =>
     respond(false, undefined, errorShape(code, message));
+  let runAuthority: TalkClientRunAuthority | undefined;
   try {
     sessionMutationAuthorization?.assertCurrent();
     if (params.voiceChangeId && params.voiceSessionId) {
@@ -215,7 +219,6 @@ export const createTalkClient: GatewayRequestHandler = async ({
         ? (requestedVoiceSessionId ?? randomUUID())
         : undefined;
       let logicalSessionCreated = false;
-      let originAuthority: ReturnType<typeof captureTalkVoiceOrigin>;
       let unregisterVoiceSession: (() => void) | undefined;
       let providerReady = !ownsProvider;
       const ownerConnId = normalizeOptionalString(client?.connId);
@@ -225,10 +228,12 @@ export const createTalkClient: GatewayRequestHandler = async ({
           "Gateway-owned realtime sessions require a connected client",
         );
       }
+      runAuthority = ownsProvider
+        ? await retainTalkClientRunAuthority({ client, context, hasCurrentClientAuthority })
+        : undefined;
       const closeLogicalSession = async () => {
+        runAuthority?.release();
         unregisterVoiceSession?.();
-        originAuthority?.release();
-        originAuthority = undefined;
         if (!logicalSessionCreated) {
           return;
         }
@@ -252,8 +257,8 @@ export const createTalkClient: GatewayRequestHandler = async ({
         sessionTarget: target,
         ...(ownerConnId ? { ownerConnId } : {}),
         authority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
+        runAuthority,
         getVoiceSessionId: () => activeVoiceSessionId,
-        getOriginAuthority: () => originAuthority,
         initialItems,
       });
       const gatewayControlOwner = ownsProvider
@@ -277,7 +282,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
             runAgentConsult: consultRunner.runOwnedArgs,
             getToolAuthorityOverlay: (source) =>
               consultRunner.getToolAuthorityOverlay(undefined, source),
-            appendTranscript: ({ entryId, role, text, confirmation }) =>
+            appendTranscript: ({ entryId, role, text }) =>
               appendClientVoiceTranscript({
                 agentId,
                 sessionKey,
@@ -286,7 +291,6 @@ export const createTalkClient: GatewayRequestHandler = async ({
                 entryId,
                 role,
                 text,
-                confirmation,
                 config: runtimeConfig,
               }),
             flushTranscript: () =>
@@ -297,14 +301,6 @@ export const createTalkClient: GatewayRequestHandler = async ({
             closeLogicalSession,
           })
         : undefined;
-      gatewayControlOwner?.signal.addEventListener(
-        "abort",
-        () => {
-          originAuthority?.release();
-          originAuthority = undefined;
-        },
-        { once: true },
-      );
       const gatewayControl = gatewayControlOwner
         ? {
             ...gatewayControlOwner.control,
@@ -403,16 +399,13 @@ export const createTalkClient: GatewayRequestHandler = async ({
           }).catch((error: unknown) =>
             context.logGateway.warn(`talk voice session recovery failed: ${formatForLog(error)}`),
           );
-          originAuthority = ownsProvider
-            ? captureTalkVoiceOrigin({ client, hasCurrentClientAuthority })
-            : undefined;
           const voiceSessionId = createOrResumeClientVoiceSession({
             agentId,
             sessionKey,
             provider: resolution.provider.id,
             origin: "client",
             // Deployed clients sent sessionKey before transcripts existed, so capability
-            // must be negotiated explicitly; declaring it turns the confirmation gate on.
+            // must be negotiated explicitly to describe transcript support truthfully.
             transcriptCapable:
               wantsGatewayControl || params.capabilities?.includes("voice-transcript") === true,
             voiceSessionId: activeVoiceSessionId ?? requestedVoiceSessionId,
@@ -427,6 +420,8 @@ export const createTalkClient: GatewayRequestHandler = async ({
               voiceSessionId,
             });
           }
+          assertCommitAllowed();
+          runAuthority?.accept();
           gatewayControlOwner?.activate();
           const model =
             normalizeOptionalString(session.model) ??
@@ -492,8 +487,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         }
       } finally {
         if (!delivered) {
-          originAuthority?.release();
-          originAuthority = undefined;
+          runAuthority?.release();
           unregisterVoiceSession?.();
           try {
             if (gatewayControlOwner) {
@@ -520,6 +514,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
       `Realtime provider "${resolution.provider.id}" does not support client-owned realtime sessions`,
     );
   } catch (err) {
+    runAuthority?.release();
     if (err instanceof SessionMutationAuthorizationChangedError) {
       respond(false, undefined, err.error);
       return;

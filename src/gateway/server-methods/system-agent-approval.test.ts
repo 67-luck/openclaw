@@ -90,7 +90,6 @@ describe("Full Access delegated chat", () => {
     scheduler: GatewayScheduler,
     source: "typed" | "model tool" | "repair" = "typed",
     previousRun = "live",
-    proposal?: Record<string, unknown>,
   ) {
     const stateDir = systemAgentTempDirs.make("openclaw-full-access-change-");
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
@@ -135,14 +134,11 @@ describe("Full Access delegated chat", () => {
           operatorApprovalOnly: params.operatorApprovalOnly,
           proposalRef: params.session.proposalRef,
         });
-        await tool.execute(
-          "propose-config",
-          proposal ?? {
-            action: "config_set",
-            path: source === "repair" ? "gateway.port" : "logging.level",
-            value: source === "repair" ? "18789" : "debug",
-          },
-        );
+        await tool.execute("propose-config", {
+          action: "config_set",
+          path: source === "repair" ? "gateway.port" : "logging.level",
+          value: source === "repair" ? "18789" : "debug",
+        });
         return { text: "Change proposed." };
       },
     });
@@ -232,98 +228,6 @@ describe("Full Access delegated chat", () => {
       approvalDatabasePath,
     };
   }
-
-  it.each(
-    (["config_set", "config_set_ref"] as const).flatMap((action) =>
-      [
-        "talk",
-        "talk.realtime",
-        "talk.realtime.appLaunchPolicies",
-        "talk.realtime.appLaunchPolicies[0].expiresAtMs",
-        '["talk"]["realtime"]["appLaunchPolicies"][0]["nodeId"]',
-      ].map((configPath) => ({ action, path: configPath })),
-    ),
-  )(
-    "requires exact operator approval for Full Access $action $path",
-    async ({ action, path: configPath }) => {
-      const { engine, manager, operationalRunInstance, runConfigSet, callChat, requested } =
-        await createDelegatedChatFixture("model tool", "live", {
-          action,
-          path: configPath,
-          value: "[]",
-          envVar: "TEST_VOICE_POLICY",
-        });
-      const pending = withGatewayToolCallerIdentity(
-        {
-          agentId: "main",
-          sessionKey: "agent:main:main",
-          operationalRunInstance,
-          fullPermission: true,
-        },
-        () =>
-          callChat({
-            sessionId: "delegate-full",
-            message: "Configure the exact voice policy",
-            delegation: { agentId: "main", sessionKey: "agent:main:main" },
-          }),
-      );
-      try {
-        expect(
-          await Promise.race([
-            requested.promise.then(() => "approval"),
-            pending.then(() => "completed"),
-          ]),
-        ).toBe("approval");
-        expect(runConfigSet).not.toHaveBeenCalled();
-        const proposal = engine.getPendingOperatorProposal();
-        expect(proposal?.operation).toMatchObject({
-          kind: action === "config_set" ? "config-set" : "config-set-ref",
-          path: configPath,
-        });
-        const record = expectDefined(
-          (await manager.listPendingRecords())[0],
-          "voice policy approval",
-        );
-        expect(record.request.proposalHash).toBe(proposal?.hash);
-        expect(await manager.resolve(record.id, "deny", "operator")).toBe(true);
-        await pending;
-        expect(runConfigSet).not.toHaveBeenCalled();
-        expect(engine.getPendingOperatorProposal()).toBeNull();
-      } finally {
-        for (const record of await manager.listPendingRecords()) {
-          await manager.resolve(record.id, "deny", "cleanup");
-        }
-        await pending;
-      }
-    },
-  );
-
-  it("keeps Full Access automatic for an unrelated Talk leaf", async () => {
-    const { manager, operationalRunInstance, runConfigSet, callChat, broadcast } =
-      await createDelegatedChatFixture("model tool", "live", {
-        action: "config_set",
-        path: "talk.realtime.model",
-        value: "fixture-model",
-      });
-    const reply = await withGatewayToolCallerIdentity(
-      {
-        agentId: "main",
-        sessionKey: "agent:main:main",
-        operationalRunInstance,
-        fullPermission: true,
-      },
-      () =>
-        callChat({
-          sessionId: "delegate-full",
-          message: "Change the voice model",
-          delegation: { agentId: "main", sessionKey: "agent:main:main" },
-        }),
-    );
-    expect(reply.ok).toBe(true);
-    expect(runConfigSet).toHaveBeenCalledOnce();
-    expect(await manager.listPendingRecords()).toEqual([]);
-    expect(broadcast).not.toHaveBeenCalled();
-  });
 
   it.each([
     "apply",
