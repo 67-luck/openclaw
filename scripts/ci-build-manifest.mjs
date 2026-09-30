@@ -728,11 +728,12 @@ if (runCheckPlan && narrowCheckScope.types) {
   const { resolveChangedCiTsgoInputs } = await import(
     fromTarget("./scripts/lib/tsgo-core-test-shards.mts")
   );
+  const compilerPaths = resolveChangedCiTsgoInputs(changedPaths, existsSync);
   typeGraphBoundaryOwner =
     runNodeFull &&
     !releaseFastLane &&
     narrowCheckScope.additionalGroups.includes("boundaries") &&
-    !resolveChangedCiTsgoInputs(changedPaths, existsSync)
+    (!compilerPaths || compilerPaths.every((file) => file.startsWith("extensions/")))
       ? "additional-checks"
       : "check-plan";
 }
