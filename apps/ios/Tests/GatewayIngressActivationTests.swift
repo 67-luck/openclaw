@@ -335,9 +335,9 @@ extension GatewayIngressControllerTests {
         fixture.persisted = try String(data: JSONEncoder().encode(fixture.nextSession), encoding: .utf8)
         let model = NodeAppModel()
         defer { model.disconnectGateway() }
-        let ingress = fixture.controller(useSavedProfiles: true) { origin in
+        let ingress = fixture.controller(useSavedProfiles: true, retirement: { origin in
             await model.retireGatewayIngress(for: origin)
-        }
+        })
         var resetEntered = 0
         var resetCompleted = 0
         let controller = GatewayConnectionController(
@@ -632,10 +632,10 @@ extension GatewayIngressControllerTests {
         defer { model.disconnectGateway()
             fleet.stopAll()
         }
-        let ingress = fixture.controller { origin in
+        let ingress = fixture.controller(retirement: { origin in
             await fleet.retire(origin: origin)
             await model.retireGatewayIngress(for: origin)
-        }
+        })
         let admitted = try await ingress.prepare(
             route: fixture.route,
             userInitiated: false,
@@ -741,9 +741,9 @@ extension GatewayIngressControllerTests {
             lastConnectedAtMs: nil)))
         let model = NodeAppModel()
         defer { model.disconnectGateway() }
-        let ingress = fixture.controller(useSavedProfiles: true) { origin in
+        let ingress = fixture.controller(useSavedProfiles: true, retirement: { origin in
             await model.retireGatewayIngress(for: origin)
-        }
+        })
         let ordinary = try await ingress.prepare(
             route: fixture.route,
             userInitiated: false,
