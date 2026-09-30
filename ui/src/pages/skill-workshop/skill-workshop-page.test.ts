@@ -197,5 +197,7 @@ describe("Skill Workshop page", () => {
     await vi.waitFor(() => expect(runtimeConfig.refresh).toHaveBeenCalled());
     await page.updateComplete;
     expect(patch).toHaveBeenCalledTimes(1);
+    // The retired write releases the controls for the new Gateway.
+    expect(button(page, "Off")?.disabled).toBe(false);
   });
 });

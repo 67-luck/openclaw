@@ -213,34 +213,6 @@ describe("workshop library", () => {
     expect(view.content).toContain("step 2");
   });
 
-  it("keeps a review's pre-review version within the ten-version limit", async () => {
-    await createWorkshopSkill(ctx, { name: "deploy", content: skill("deploy", "step 0") });
-    const review = { ...ctx, actor: "review" as const, runId: "review-run" };
-    let firstReviewVersion = "";
-    for (let step = 1; step <= 12; step += 1) {
-      const change = await patchWorkshopSkill(review, {
-        name: "deploy",
-        oldText: `step ${step - 1}`,
-        newText: `step ${step}`,
-      });
-      firstReviewVersion ||= change.versionId ?? "";
-    }
-    expect((await listWorkshopArchive({}, "main"))[0]?.versions).toHaveLength(10);
-    await restoreWorkshopSkill(ctx, { name: "deploy", versionId: firstReviewVersion });
-    expect(await readLive("deploy")).toContain("step 0");
-  });
-
-  it("applies the version limit across separate reviews", async () => {
-    await createWorkshopSkill(ctx, { name: "deploy", content: skill("deploy", "step 0") });
-    for (let step = 1; step <= 12; step += 1) {
-      await patchWorkshopSkill(
-        { ...ctx, actor: "review", runId: `review-${step}` },
-        { name: "deploy", oldText: `step ${step - 1}`, newText: `step ${step}` },
-      );
-    }
-    expect((await listWorkshopArchive({}, "main"))[0]?.versions).toHaveLength(10);
-  });
-
   it.each(["patch", "archive"] as const)(
     "does not %s once authority is revoked during the snapshot",
     async (action) => {

@@ -395,6 +395,13 @@ async function undoUnfinishedApply(apply: UnfinishedApply): Promise<boolean> {
     mode: "update",
   });
   await restoreWorkspaceSkillMutation(restoration);
+  // An undone create leaves only empty directories; remove them so the name is usable again.
+  if (apply.previousContent === null) {
+    const entries = await fs.readdir(skillDir, { recursive: true, withFileTypes: true });
+    if (entries.every((entry) => entry.isDirectory())) {
+      await fs.rm(skillDir, { recursive: true });
+    }
+  }
   return true;
 }
 

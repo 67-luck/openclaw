@@ -299,8 +299,12 @@ async function writeSkillFile(paths: MutationPaths, filePath: string, content: s
   assertInsideSkillsRoot(paths.root, paths.skillDir, "skill directory");
   await fs.mkdir(paths.skillDir, { recursive: true });
   const skillRoot = await root(paths.skillDir);
-  paths.assertLive();
-  await skillRoot.write(filePath, content, { encoding: "utf8", mkdir: true, overwrite: true });
+  await skillRoot.write(filePath, content, {
+    encoding: "utf8",
+    mkdir: true,
+    overwrite: true,
+    assertBeforeMutation: paths.assertLive,
+  });
 }
 
 async function requireLiveSkill(paths: SkillPaths, name: string): Promise<void> {
@@ -341,14 +345,7 @@ async function mutateSkill(
     // Checked at lock time to skip needless work, and again right before each file effect.
     const { summary, versionId } = await apply({ ...paths, assertLive: () => ctx.assertLive?.() });
     const after = await snapshotArtifact();
-    // A review's undo restores the version before its first edit of this skill; keep it.
-    const reviewAnchor =
-      ctx.actor === "review" && ctx.runId
-        ? ((await listWorkshopChanges(ctx.agentId, { runId: ctx.runId })).findLast(
-            (change) => change.skillName === name && change.versionId,
-          )?.versionId ?? versionId)
-        : undefined;
-    await pruneVersions(paths.versionsDir, reviewAnchor);
+    await pruneVersions(paths.versionsDir);
     bumpSkillsSnapshotVersion({
       reason: "workshop",
       changedPath: path.join(paths.skillDir, SKILL_FILE),
@@ -576,8 +573,12 @@ export async function removeWorkshopSkillFile(
       );
     }
     const versionId = await snapshotSkill(paths, "remove_file");
-    paths.assertLive();
-    await removePathWithinRoot({ rootDir: paths.skillDir, relativePath: file, force: false });
+    await removePathWithinRoot({
+      rootDir: paths.skillDir,
+      relativePath: file,
+      force: false,
+      assertBeforeMutation: paths.assertLive,
+    });
     return { summary: params.summary ?? `removed ${file}`, versionId };
   });
 }

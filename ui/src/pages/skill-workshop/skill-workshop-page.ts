@@ -93,6 +93,8 @@ class SkillWorkshopPage extends OpenClawLightDomElement {
     this.actionError = null;
     this.learningBusy = false;
     this.learningError = null;
+    this.modeBusy = false;
+    this.modeError = null;
     this.loading = false;
     if (this.scope) {
       void this.load();

@@ -96,14 +96,9 @@ export async function snapshotSkill(
   return versionId;
 }
 
-/**
- * Keeps the newest versions within the per-skill limit. `pinned` (a review's pre-review undo
- * target) survives and counts toward the limit.
- */
-export async function pruneVersions(versionsDir: string, pinned?: string): Promise<void> {
-  const stale = (await listVersions(versionsDir))
-    .filter((version) => version.id !== pinned)
-    .slice(pinned ? MAX_VERSIONS_PER_SKILL - 1 : MAX_VERSIONS_PER_SKILL);
+/** Keeps the newest versions within the per-skill limit. */
+export async function pruneVersions(versionsDir: string): Promise<void> {
+  const stale = (await listVersions(versionsDir)).slice(MAX_VERSIONS_PER_SKILL);
   for (const version of stale) {
     await fs.rm(path.join(versionsDir, version.id), { recursive: true, force: true });
   }
