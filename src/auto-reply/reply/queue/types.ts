@@ -105,10 +105,6 @@ export class FollowupRunDeferredError extends Error {
   }
 }
 
-export function isFollowupRunDeferredError(error: unknown): error is FollowupRunDeferredError {
-  return error instanceof FollowupRunDeferredError;
-}
-
 export type FollowupRun = {
   /** External-turn eligibility; queued execution refreshes the session-selected profile. */
   personalBootstrapEligible?: boolean;

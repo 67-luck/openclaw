@@ -1,4 +1,4 @@
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { normalizeTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import {
   ErrorCodes,
   errorShape,
@@ -35,12 +35,6 @@ import { skillsWorkshopHandlers } from "./skills-workshop.js";
 import { resolveSkillsAgentWorkspace } from "./skills-workspace-handler.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
-
-function collectClawHubTrustWarnings(results: Array<{ warning?: string }>): string[] {
-  return results
-    .map((result) => normalizeOptionalString(result.warning))
-    .filter((warning): warning is string => Boolean(warning));
-}
 
 export const skillsHandlers: GatewayRequestHandlers = {
   ...skillsLibraryHandlers,
@@ -235,7 +229,7 @@ export const skillsHandlers: GatewayRequestHandlers = {
         config: resolved.cfg,
       });
       const errors = results.filter((result) => !result.ok);
-      const warnings = collectClawHubTrustWarnings(results);
+      const warnings = normalizeTrimmedStringList(results.map((result) => result.warning));
       respond(
         errors.length === 0,
         {

@@ -59,22 +59,10 @@ class SkillWorkshopPage extends OpenClawLightDomElement {
   private learningError: string | null = null;
 
   private readonly subscriptions = new SubscriptionsController(this)
-    .watch(
-      () => this.context?.gateway,
-      (gateway, notify) => gateway.subscribe(notify),
-    )
-    .watch(
-      () => this.context?.agentSelection,
-      (agentSelection, notify) => agentSelection.subscribe(notify),
-    )
-    .watch(
-      () => this.context?.agents,
-      (agents, notify) => agents.subscribe(notify),
-    )
-    .watch(
-      () => this.context?.runtimeConfig,
-      (runtimeConfig, notify) => runtimeConfig.subscribe(notify),
-    );
+    .watchStore(() => this.context?.gateway)
+    .watchStore(() => this.context?.agentSelection)
+    .watchStore(() => this.context?.agents)
+    .watchStore(() => this.context?.runtimeConfig);
 
   override willUpdate() {
     const context = this.context;

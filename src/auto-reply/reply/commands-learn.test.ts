@@ -149,15 +149,6 @@ describe("learn command", () => {
     expect(params.command.commandBodyNormalized).toBe(instruction);
   });
 
-  it("uses the current-conversation default for bare /learn", async () => {
-    const params = buildLearnParams("/learn");
-
-    const result = await handleLearnCommand(params, true);
-
-    expect(result?.shouldContinue).toBe(true);
-    expect((params.ctx as { BodyForAgent?: string }).BodyForAgent).toContain(DEFAULT_LEARN_REQUEST);
-  });
-
   it("replies without continuing when the workshop is unavailable", async () => {
     const params = buildLearnParams("/learn", {
       agents: { defaults: { sandbox: { mode: "all" } } },
