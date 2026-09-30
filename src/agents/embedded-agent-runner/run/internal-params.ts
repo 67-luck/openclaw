@@ -68,6 +68,7 @@ export type RunEmbeddedAgentInternalParams = RunEmbeddedAgentParams & {
   /** An internal prompt continues the admitted task instead of submitting another user input. */
   turnContinuation?: true;
   continuationMessages?: EmbeddedRunAttemptParams["continuationMessages"];
+  continuationHistoryPrefix?: EmbeddedRunAttemptParams["continuationHistoryPrefix"];
   pluginRuntimeRefreshMessages?: EmbeddedRunAttemptParams["pluginRuntimeRefreshMessages"];
   reviewSettledDraft?: EmbeddedSettledDraftReviewer;
   /** Host-only transfer of attempt terminal resources to the logical turn. */

@@ -13,7 +13,7 @@ import { resolveDelegationCapability } from "../../delegation-capability.js";
 import { agentHarnessBuildsOpenClawTools } from "../../harness/tool-surface.js";
 import { applyAuthHeaderOverride, applyLocalNoAuthHeaderOverride } from "../../model-auth.js";
 import { recordAdmittedModelRoutingDecision } from "../../model-routing-decision.js";
-import { captureAgentPluginRuntimeRefresh } from "../../plugin-runtime-refresh.js";
+import { createAgentPluginRuntimeRefreshConsumer } from "../../plugin-runtime-refresh.js";
 import { resolveReplyExpectation } from "../../reply-completion.js";
 import { buildAgentRuntimePlan } from "../../runtime-plan/build.js";
 import { resolveSessionPermissionExecMode } from "../../session-permission-exec-mode.js";
@@ -42,6 +42,7 @@ import { prepareEmbeddedAttemptPromptExecution } from "./prompt-image-preparatio
 import type { prepareEmbeddedRunRuntime } from "./runtime-preparation.js";
 import { CODEX_HARNESS_ID, resolveAttemptTrajectoryAttribution } from "./runtime-resolution.js";
 import type { createEmbeddedRunSessionPromptState } from "./session-prompt-state.js";
+import { createSettledDraftTranscriptCapture } from "./settled-draft-transcript.js";
 import type { createEmbeddedRunTerminalRetryState } from "./terminal-retry-state.js";
 import { MAX_BEFORE_AGENT_FINALIZE_REVISIONS } from "./terminal-retry-state.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
@@ -80,6 +81,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     modelId,
   } = input;
   const params = runInput.runParams;
+  const draftTranscript = createSettledDraftTranscriptCapture(params);
   const {
     workspaceResolution,
     workspaceDir,
@@ -381,20 +383,15 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
       params.replyOperation?.abortByUser();
     },
   });
-  const pluginRefresh = captureAgentPluginRuntimeRefresh();
   const attemptParams: EmbeddedRunAttemptInternalParams & {
     agentId: string;
     sessionKey: string;
     agentHarnessId: string;
   } = {
     providerReviewAcknowledgment: params.providerReviewAcknowledgment,
-    pluginRuntimeRefreshPending: pluginRefresh.isPending,
-    registerPluginRuntimeRefreshConsumer: (isCurrent) => {
-      if (attemptControls.isCurrent()) {
-        pluginRefresh.bindConsumer(() => attemptControls.isCurrent() && isCurrent());
-      }
-    },
+    ...createAgentPluginRuntimeRefreshConsumer(attemptControls.isCurrent),
     continuationMessages: params.continuationMessages ?? params.pluginRuntimeRefreshMessages,
+    continuationHistoryPrefix: params.continuationHistoryPrefix,
     // Plugin refresh can interrupt any turn after its tools have completed.
     captureContinuationMessages: true,
     pluginRuntimeRefreshMessages:
@@ -686,7 +683,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     onUserMessagePersistenceInvalidated: () => {
       sessionPromptState.activePrompt.persisted = false;
     },
-    prepareAssistantTranscriptMessage: params.prepareAssistantTranscriptMessage,
+    prepareAssistantTranscriptMessage: draftTranscript.prepare,
   };
   const rawAttempt = await withPreparedEmbeddedGatewayTools(
     attemptParams,
@@ -706,7 +703,11 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     throw postCompactionAbortError;
   }
   return {
-    dispatchedAttempt: { rawAttempt, preparedAttempt: attemptParams },
+    dispatchedAttempt: {
+      rawAttempt,
+      preparedAttempt: attemptParams,
+      ...(draftTranscript.read() ? { settledDraftTranscript: draftTranscript.read() } : {}),
+    },
     runtimePlan,
     startupStagesEmitted,
   };

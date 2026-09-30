@@ -3,8 +3,13 @@ import { FailoverError } from "../../agents/failover-error.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createTestRegistry } from "../../test-utils/channel-plugins.js";
+import {
+  readGroupParticipationInputs,
+  recordGroupParticipationInput,
+} from "./group-participation-inputs.js";
 import { judgment } from "./group-participation.decision.test-support.js";
 import { createGroupReplyFixture } from "./group-participation.reply.test-support.js";
+import { replyRunRegistry } from "./reply-run-registry.js";
 
 const models = vi.hoisted(() => ({
   embedded: vi.fn<typeof import("../../agents/embedded-agent.js").runEmbeddedAgent>(),
@@ -70,7 +75,8 @@ it.each(["opt-out", "model-removal"])(
   async (change) => {
     fixture.config.agents!.defaults!.model = { primary: "test-provider/test-model" };
     setRuntimeConfigSnapshot(fixture.config);
-    models.decision.mockImplementation(async (batch) => {
+    models.decision.mockImplementation(async (batch, options) => {
+      expect(options.admit?.()).toBe(true);
       const next = structuredClone(fixture.config);
       if (change === "opt-out") {
         next.agents!.defaults!.experimental = { decisionAssistance: false };
@@ -78,6 +84,7 @@ it.each(["opt-out", "model-removal"])(
         next.agents!.defaults!.decisionModel = "";
       }
       setRuntimeConfigSnapshot(next, fixture.config);
+      expect(options.admit?.()).toBe(false);
       return judgment(batch, { attention: "none" });
     });
     models.embedded.mockResolvedValue({
@@ -144,6 +151,68 @@ it.each(["opt-out", "model-removal"])(
     }
   },
 );
+
+it("restores a required reply when consent is withdrawn after observation assessment", async () => {
+  fixture.config.agents!.defaults!.model = { primary: "test-provider/test-model" };
+  setRuntimeConfigSnapshot(fixture.config);
+  models.decision.mockImplementation(async (batch) => judgment(batch, { attention: "none" }));
+  models.embedded.mockResolvedValue({
+    payloads: [{ text: "Ordinary reply after late opt-out." }],
+    meta: { durationMs: 1 },
+  });
+  try {
+    const reply = await fixture.reply("Bob, which port?", "late-opt-out", "-10112", {
+      onRunVerbosityResolved: () => {
+        const next = structuredClone(fixture.config);
+        next.agents!.defaults!.experimental = { decisionAssistance: false };
+        setRuntimeConfigSnapshot(next, fixture.config);
+      },
+    });
+    expect(Array.isArray(reply) ? reply : [reply]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ text: "Ordinary reply after late opt-out." }),
+      ]),
+    );
+    expect(models.decision).toHaveBeenCalledTimes(1);
+    expect(models.embedded).toHaveBeenCalledTimes(1);
+    expect(models.embedded.mock.calls[0]?.[0].terminalReplyExpectation).toBe("required");
+  } finally {
+    setRuntimeConfigSnapshot(fixture.config);
+  }
+});
+
+it("reassesses an observed turn when accepted group input changes before source persistence", async () => {
+  fixture.config.agents!.defaults!.model = { primary: "test-provider/test-model" };
+  models.decision.mockImplementation(async (batch) => judgment(batch, { attention: "none" }));
+  models.embedded.mockResolvedValue({
+    payloads: [{ text: "Must not bypass assessment." }],
+    meta: { durationMs: 1 },
+  });
+  const groupId = "-10113";
+  const reply = await fixture.reply("Chatter", "observed-source", groupId, {
+    onRunVerbosityResolved: () => {
+      const operation = replyRunRegistry.get("agent:main:telegram:group:" + groupId);
+      if (!operation) {
+        throw new Error("The admitted reply owner is missing");
+      }
+      const source = readGroupParticipationInputs(operation).sources[0];
+      if (!source) {
+        throw new Error("The admitted group source is missing");
+      }
+      // Use the accepted-input owner seam before persistence, without another concurrent reply writer.
+      recordGroupParticipationInput(operation, {
+        userTurnTranscriptRecorder: source.recorder,
+        messageId: "accepted-later-source",
+        run: { messageProvider: "telegram" },
+      });
+    },
+  });
+  expect((Array.isArray(reply) ? reply : [reply]).map((payload) => payload?.text)).toEqual([
+    "NO_REPLY",
+  ]);
+  expect(models.decision).toHaveBeenCalledTimes(2);
+  expect(models.embedded).not.toHaveBeenCalled();
+});
 
 it("keeps ambient room events on their message-tool path without participation evaluation", async () => {
   fixture.config.agents!.defaults!.model = { primary: "test-provider/test-model" };

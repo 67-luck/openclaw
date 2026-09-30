@@ -18,6 +18,31 @@ import {
 
 setupRunAttemptTestHooks();
 describe("Codex continuation admission", () => {
+  it("returns only new native work when continuing an existing logical turn", async () => {
+    const harness = createStartedThreadHarness();
+    const params = createParams(
+      path.join(tempDir, "continuation-delta.jsonl"),
+      path.join(tempDir, "continuation-delta-workspace"),
+    );
+    params.prompt = "Revise the current draft without repeating completed work.";
+    params.continuationMessages = [
+      userMessage("ORIGINAL_SOURCE", 10),
+      assistantMessage("COMPLETED_PREFIX", 20),
+    ];
+    params.suppressNextUserMessagePersistence = true;
+    params.captureContinuationMessages = true;
+    const pending = runCodexAppServerAttempt(params);
+    await harness.waitForMethod("turn/start");
+    expect(getRequestInputText(harness)).toContain("COMPLETED_PREFIX");
+    await harness.completeTurn();
+    const result = await pending;
+    // Input history is projected to Codex, but the outgoing continuation is this attempt only.
+    expect(result.continuationMessages).toBeDefined();
+    expect(JSON.stringify(result.continuationMessages)).not.toContain("ORIGINAL_SOURCE");
+    expect(JSON.stringify(result.continuationMessages)).not.toContain("COMPLETED_PREFIX");
+    expect(result.continuationMessages?.some((message) => message.role === "assistant")).toBe(true);
+  });
+
   it.each([
     ["normal", "eager"],
     ["normal", "lazy"],

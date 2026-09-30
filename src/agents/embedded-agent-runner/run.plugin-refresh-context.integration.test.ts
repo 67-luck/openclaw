@@ -98,6 +98,7 @@ it("keeps the request and completed tool evidence through ordinary plugin refres
       assistantTexts: ["Plugin reload verified."],
       messagesSnapshot: session.messages,
       continuationMessages: capture.read(),
+      continuationHistoryPrefix: capture.historyPrefix,
     });
   });
   mockedBuildEmbeddedRunPayloads.mockImplementation(({ assistantTexts }) =>

@@ -114,10 +114,6 @@ const recoveryCoordinator = createDeliveryRecoveryCoordinator<QueuedDelivery>();
 const queuedDeliveryPayloads = (entry: QueuedDelivery) =>
   acceptedPreparedOutboundEntries(entry.preparedBatch).map((prepared) => prepared.payload);
 
-function queuedPayloadCount(entry: QueuedDelivery): number {
-  return entry.preparedBatch.sourcePayloadCount;
-}
-
 function emitQueuedAuditTerminals(
   entry: QueuedDelivery,
   terminals: Parameters<typeof emitOutboundAuditTerminals>[0]["terminals"],

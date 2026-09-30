@@ -16,6 +16,7 @@ export type EmbeddedTurnContinuationPolicy = Pick<
   | "silentExpected"
   | "silentReplyPromptMode"
   | "sourceReplyDeliveryMode"
+  | "suppressTranscriptOnlyAssistantPersistence"
   | "onPartialReply"
   | "onBlockReply"
   | "onBlockReplyFlush"

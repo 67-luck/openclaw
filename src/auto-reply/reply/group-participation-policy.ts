@@ -37,6 +37,7 @@ export function createGroupParticipationPolicy(
     silentExpected: params.silentExpected,
     silentReplyPromptMode: params.silentReplyPromptMode,
     sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
+    suppressTranscriptOnlyAssistantPersistence: params.suppressTranscriptOnlyAssistantPersistence,
     onPartialReply: params.onPartialReply,
     onBlockReply: params.onBlockReply,
     onBlockReplyFlush: params.onBlockReplyFlush,
@@ -71,6 +72,9 @@ export function createGroupParticipationPolicy(
       forceMessageTool: false,
       terminalReplyExpectation: "optional",
       sourceReplyDeliveryMode: "automatic",
+      // Unreviewed drafts are not prior public answers. Completed tool evidence
+      // remains durable, and successful publication records its delivery mirror.
+      suppressTranscriptOnlyAssistantPersistence: true,
       onPartialReply: undefined,
       onBlockReply: undefined,
       onBlockReplyFlush: undefined,

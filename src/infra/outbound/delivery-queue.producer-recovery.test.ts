@@ -11,6 +11,7 @@ import {
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { updateDeliveryQueueEntryInDatabase } from "../delivery-queue-sqlite.kernel.js";
+import { seedDeliveryQueueEntry } from "../delivery-queue-sqlite.test-support.js";
 import { PlatformMessageNotDispatchedError } from "./deliver-types.js";
 import { failDurableDelivery, type DurableDeliveryCompletion } from "./delivery-completion.js";
 import * as mediaSpool from "./delivery-queue-media-spool.js";
@@ -18,6 +19,7 @@ import { OUTBOUND_DELIVERY_QUEUE_NAME } from "./delivery-queue-media-staging.js"
 import { renewDeliveryPlatformSendLease } from "./delivery-queue-platform-lease.js";
 import { drainPendingDeliveriesCore, recoverPendingDeliveries } from "./delivery-queue-recovery.js";
 import * as queueStorage from "./delivery-queue-storage.js";
+import type { QueuedDelivery } from "./delivery-queue-types.js";
 import {
   claimDeliveryQueueEntryForTest,
   createRecoveryLog,
@@ -83,7 +85,34 @@ describe("exhausted delivery producer recovery", () => {
       "volunteer-draft",
       tmpDir(),
     );
-    await enqueue("ordinary-reply");
+    // Seed the pre-participation prepared-row shape, not the candidate producer.
+    const ordinaryReply = {
+      id: "ordinary-reply",
+      enqueuedAt: Date.now(),
+      retryCount: 0,
+      attemptCount: 0,
+      channel: "directchat",
+      to: "recipient",
+      preparedBatch: {
+        schemaVersion: 1,
+        sourcePayloadCount: 1,
+        entries: [
+          {
+            sourceIndex: 0,
+            status: "accepted",
+            payload: { text: "ordinary-reply" },
+            replyHookChanged: false,
+            messageHookChanged: false,
+            preparedMediaCount: 0,
+          },
+        ],
+      },
+    } satisfies QueuedDelivery;
+    seedDeliveryQueueEntry({
+      queueName: "outbound-prepared-v1",
+      stateDir: tmpDir(),
+      entry: ordinaryReply,
+    });
     closeOpenClawStateDatabaseForTest();
     const deliver = vi.fn().mockResolvedValue([]);
     await recoverPendingDeliveries({

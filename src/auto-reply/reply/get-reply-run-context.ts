@@ -27,6 +27,7 @@ import {
   isTextSlashCommandTurn,
   resolveCommandTurnContext,
 } from "../command-turn-context.js";
+import { isExplicitCommandTurnContext } from "../command-turn-detection.js";
 import { resolveEnvelopeFormatOptions } from "../envelope.js";
 import { normalizeThinkLevel } from "../thinking.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -57,10 +58,7 @@ import {
   resolveBareSessionResetPromptState,
 } from "./session-reset-prompt.js";
 import { resolveSessionStableReplyMode } from "./session-stable-reply-mode.js";
-import {
-  isExplicitSourceReplyCommand,
-  resolveSourceReplyExpectation,
-} from "./source-reply-delivery-mode.js";
+import { resolveSourceReplyExpectation } from "./source-reply-delivery-mode.js";
 import { shouldApplyStartupContext, buildSessionStartupContextPrelude } from "./startup-context.js";
 import { resolveTypingMode } from "./typing-mode.js";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
@@ -185,7 +183,7 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     !isHeartbeat &&
     inboundEventKind !== "room_event" &&
     promptSessionCtx.WasMentioned !== true &&
-    !isExplicitSourceReplyCommand(promptSessionCtx, cfg) &&
+    !isExplicitCommandTurnContext(promptSessionCtx, cfg) &&
     (conversation.activation ?? defaultActivation) === "always" &&
     isDecisionAssistanceEligible(cfg, agentId)
       ? {

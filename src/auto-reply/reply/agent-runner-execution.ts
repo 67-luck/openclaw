@@ -73,6 +73,7 @@ import { resolveQueuedReplyRuntimeConfig } from "./agent-runner-utils.js";
 import { prepareChannelRunAdmission } from "./channel-run-admission.js";
 import { shouldNotifyUserAboutCompaction } from "./compaction-notice.js";
 import { type CurrentTurnImages, resolveCurrentTurnImages } from "./current-turn-images.js";
+import { prepareGroupParticipationObservation } from "./group-participation-observe.js";
 import { readGroupParticipationRun } from "./group-participation-run.js";
 import type { FollowupRun } from "./queue.js";
 import { resolveFollowupAbortSignal } from "./queue/types.js";
@@ -677,31 +678,13 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<AgentTu
   const executionParams =
     params.opts?.runId === runId ? params : { ...params, opts: { ...params.opts, runId } };
   try {
-    if (readGroupParticipationRun(params.replyOperation)?.mode === "observe") {
-      const recorder = params.followupRun.userTurnTranscriptRecorder;
-      if (recorder && !recorder.hasPersisted()) {
-        const persisted = await recorder.persistApproved({
-          expectedSessionId: params.followupRun.run.sessionId,
-          ...(params.sessionKey
-            ? {
-                target: {
-                  agentId: params.followupRun.run.agentId,
-                  sessionId: params.followupRun.run.sessionId,
-                  sessionKey: params.sessionKey,
-                  storePath: params.storePath,
-                  sessionEntry: params.getActiveSessionEntry(),
-                  sessionStore: params.activeSessionStore,
-                  config: params.followupRun.run.config,
-                  cwd: params.followupRun.run.workspaceDir,
-                },
-              }
-            : {}),
-        });
-        if (!persisted) {
-          throw new Error("The group source could not be committed to its session");
-        }
-      }
-      params.replyOperation?.abortSignal.throwIfAborted();
+    const participation = await prepareGroupParticipationObservation(params);
+    const revision = participation?.snapshot?.revision;
+    if (
+      participation?.mode === "observe" &&
+      revision !== undefined &&
+      participation.isCurrent(revision)
+    ) {
       const result: AgentTurnExecutionResult = { runId, outcome: { kind: "observed" } };
       recordAgentTurnExecutionOutcome(executionParams, result);
       return result;

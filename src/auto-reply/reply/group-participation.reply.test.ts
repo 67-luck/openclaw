@@ -160,6 +160,26 @@ it("withholds clarification-only unsolicited replies", async () => {
   ).toEqual([]);
   expect(fixture.typing()).toBe(previousTyping);
   expect(fixture.partials).toHaveLength(previousPartials);
+
+  // A later explicit invitation must not replay the withheld draft as an answer.
+  const sessionKey = "agent:main:telegram:group:-10003";
+  const entry = loadSessionEntry({ storePath: fixture.storePath, sessionKey });
+  if (!entry) {
+    throw new Error("The private turn did not create its session");
+  }
+  const events = await loadTranscriptEvents({
+    agentId: "main",
+    sessionId: entry.sessionId,
+    sessionKey,
+    storePath: fixture.storePath,
+  });
+  expect(JSON.stringify(events)).not.toContain("Can you send the report?");
+  const nextRequest = fixture.requests.length;
+  fixture.respond(answer("I can check the new report."));
+  expect(
+    texts(await fixture.reply("Please check now.", "later-invitation", "-10003", undefined, true)),
+  ).toContain("I can check the new report.");
+  expect(JSON.stringify(fixture.requests[nextRequest])).not.toContain("Can you send the report?");
 });
 
 it("revises a partly useful contribution and reviews the complete replacement", async () => {
@@ -182,6 +202,13 @@ it("revises a partly useful contribution and reviews the complete replacement", 
     contribution: { draft: [{ text: "Use TLS port 443. Disable certificate checks." }] },
   });
   expect(drafts[1]).toMatchObject({ contribution: { draft: [{ text: "Use TLS port 443." }] } });
+
+  const nextRequest = fixture.requests.length;
+  fixture.respond(answer("Yes, TLS port 443."));
+  await fixture.reply("Is that still correct?", "after-revision", "-10007", undefined, true);
+  const replay = JSON.stringify(fixture.requests[nextRequest]);
+  expect(replay).toContain("Use TLS port 443.");
+  expect(replay).not.toContain("Disable certificate checks.");
 });
 
 it("restores ordinary streaming and tools when the publication decision is unavailable", async () => {

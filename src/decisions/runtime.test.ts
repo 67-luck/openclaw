@@ -222,7 +222,9 @@ describe("registered decision capability", () => {
   ])("fails closed on invalid admission callbacks", async (admit) => {
     const evaluate = vi.fn<DecisionProviderV1["evaluate"]>(async () => answer);
     const host = registered(evaluate);
-    await expect(host.run({ ...options(), admit: admit as () => boolean })).rejects.toThrow(
+    // Deliberately cross the typed boundary to exercise invalid JavaScript callers.
+    const invalidAdmission = admit as unknown as () => boolean;
+    await expect(host.run({ ...options(), admit: invalidAdmission })).rejects.toThrow(
       "Invalid decision contract",
     );
     expect(evaluate).not.toHaveBeenCalled();

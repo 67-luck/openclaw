@@ -8,7 +8,10 @@ import type { EmbeddedRunAttemptParams } from "./types.js";
 /** Read the accepted prefix separately from this logical turn's retained evidence. */
 type ContinuationInput = Pick<
   EmbeddedRunAttemptParams,
-  "continuationMessages" | "pluginRuntimeRefreshMessages" | "userTurnTranscriptRecorder"
+  | "continuationMessages"
+  | "continuationHistoryPrefix"
+  | "pluginRuntimeRefreshMessages"
+  | "userTurnTranscriptRecorder"
 >;
 
 export async function readEmbeddedContinuationPrefix(
@@ -20,7 +23,7 @@ export async function readEmbeddedContinuationPrefix(
     return undefined;
   }
   if (!admission) {
-    return { prefix: undefined, currentTurnMessages: messages };
+    return { prefix: params.continuationHistoryPrefix, currentTurnMessages: messages };
   }
   const context = await readSessionTranscriptModelContextAsync(
     {
@@ -46,6 +49,11 @@ export function captureEmbeddedAttemptContinuation(
   params: ContinuationInput & Pick<EmbeddedRunAttemptParams, "captureContinuationMessages">,
   session: AgentSession,
 ) {
+  // Capture before the prompt persists this turn; subsequent attempts keep that same boundary.
+  const historyPrefix =
+    params.captureContinuationMessages && !params.userTurnTranscriptRecorder?.getAdmissionReceipt()
+      ? (params.continuationHistoryPrefix ?? structuredClone(session.messages))
+      : undefined;
   const messages: AgentMessage[] = [];
   const unsubscribe = params.captureContinuationMessages
     ? session.subscribe((event) => {
@@ -61,6 +69,7 @@ export function captureEmbeddedAttemptContinuation(
     : undefined;
   return {
     close: () => unsubscribe?.(),
+    historyPrefix,
     read: () => {
       if (!params.captureContinuationMessages) {
         return undefined;

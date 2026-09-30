@@ -76,7 +76,16 @@ function createGroupParticipationRun(params: {
       if (!selection || selection !== currentSelection()) {
         return { status: "unavailable", reason: "disabled" };
       }
-      return evaluateDecision(batch, options);
+      const admittedSelection = selection;
+      return evaluateDecision(batch, {
+        ...options,
+        // The shared runtime carries this live owner check through provider
+        // preparation to guarded HTTP dispatch and answer acceptance.
+        admit: () => {
+          assertCurrent();
+          return admittedSelection === currentSelection();
+        },
+      });
     },
   };
   void operation.ownerSettlement?.then(() => {

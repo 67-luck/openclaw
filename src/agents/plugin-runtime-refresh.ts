@@ -59,6 +59,19 @@ export function captureAgentPluginRuntimeRefresh() {
   };
 }
 
+/** Bind a harness consumer only while the dispatch attempt retains its authority. */
+export function createAgentPluginRuntimeRefreshConsumer(isAttemptCurrent: () => boolean) {
+  const refresh = captureAgentPluginRuntimeRefresh();
+  return {
+    pluginRuntimeRefreshPending: refresh.isPending,
+    registerPluginRuntimeRefreshConsumer: (isCurrent: () => boolean) => {
+      if (isAttemptCurrent()) {
+        refresh.bindConsumer(() => isAttemptCurrent() && isCurrent());
+      }
+    },
+  };
+}
+
 /** One visible run owns refresh requests across all of its prepared runtime generations. */
 export function createAgentPluginRuntimeRefresh() {
   let owner: Refresh | undefined;

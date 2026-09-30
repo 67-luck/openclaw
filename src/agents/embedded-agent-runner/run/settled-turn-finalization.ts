@@ -489,6 +489,7 @@ function buildSettledTurnFinalizationAttemptResult(input: {
     finalPromptText: input.prompt,
     ...copyAttemptDeliveryState(settledAttempt),
     messagesSnapshot: [...settledAttempt.messagesSnapshot, result.assistant],
+    continuationHistoryPrefix: settledAttempt.continuationHistoryPrefix,
     ...(continuationMessages
       ? { continuationMessages, pluginRuntimeRefreshMessages: continuationMessages }
       : {}),

@@ -1,17 +1,22 @@
 import fs from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
+import {
+  getSessionMcpRuntimeManagerForTesting,
+  setSessionMcpRuntimeScheduler,
+} from "../../agents/agent-bundle-mcp-manager-api.js";
 import { waitForSessionMaintenance } from "../../agents/session-maintenance/coordinator.js";
 import { sendDurableMessageBatchCore } from "../../channels/message/send.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import type { GetReplyOptions } from "../types.js";
 import { dispatchLowLevelChannelReplyFromConfig } from "./dispatch-from-config.js";
 import { withFullRuntimeReplyConfig } from "./get-reply-fast-path.js";
 import { getReplyFromConfig } from "./get-reply.js";
+import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import { finalizeInboundContext } from "./inbound-context.js";
 import { createReplyDispatcher } from "./reply-dispatcher.js";
 
@@ -20,6 +25,9 @@ export async function createGroupReplyFixture() {
     label: "group-participation-reply",
     env: { OPENCLAW_ALLOW_SLOW_REPLY_TESTS: "1" },
   });
+  // The real reply runtime requires a lifecycle-owned MCP scheduler, even without servers.
+  const scheduler = createTestGatewayScheduler();
+  await setSessionMcpRuntimeScheduler(scheduler);
   const requests: unknown[] = [];
   const responses: Array<{ delta: unknown; stop?: string; beforeResponse?: () => Promise<void> }> =
     [];
@@ -148,7 +156,7 @@ export async function createGroupReplyFixture() {
       body: string,
       messageId: string,
       groupId = "-10001",
-      options?: GetReplyOptions,
+      options?: InternalGetReplyOptions,
       mentioned = false,
       commandSource?: "native" | "text",
       inboundEventKind?: "room_event",
@@ -212,6 +220,13 @@ export async function createGroupReplyFixture() {
     },
     close: async () => {
       await waitForSessionMaintenance();
+      const mcpManager = getSessionMcpRuntimeManagerForTesting();
+      for (const sessionId of mcpManager.listSessionIds()) {
+        if (mcpManager.peekSession({ sessionId })?.workspaceDir === state.workspaceDir) {
+          await mcpManager.disposeSession(sessionId);
+        }
+      }
+      await scheduler.stop();
       clearRuntimeConfigSnapshot();
       resetPluginRuntimeStateForTest();
       await new Promise<void>((resolve, reject) => {

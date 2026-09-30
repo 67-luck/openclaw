@@ -15,6 +15,7 @@ import {
   normalizeEmbeddedRunAttemptResult,
   resolveSuccessfulToolNames,
 } from "./run/run-attempt-result.js";
+import { persistAcceptedSettledDraft } from "./run/settled-draft-transcript.js";
 import { createPendingToolMediaCarry } from "./run/tool-media-payloads.js";
 import type { EmbeddedTurnContinuationRequest } from "./run/turn-continuation.js";
 import type { EmbeddedAgentRunResult } from "./types.js";
@@ -84,6 +85,8 @@ export function createEmbeddedLogicalTurnContinuation(
       pluginGeneration: undefined,
       turnContinuation: true,
       continuationMessages: messages ? [...previousMessages, ...messages] : previousMessages,
+      continuationHistoryPrefix:
+        params.continuationHistoryPrefix ?? attempt.continuationHistoryPrefix,
       contextEngineLogicalTurnLease: undefined,
       modelHasVision: undefined,
       modelThinkingCapability: undefined,
@@ -124,6 +127,15 @@ export function createEmbeddedLogicalTurnContinuation(
         return {};
       }
       const attempt = input.dispatchedAttempt.rawAttempt;
+      // Review only a fully settled draft; live tools and yielded attempts retain ownership.
+      if (
+        attempt.terminal.kind !== "ok" ||
+        attempt.yieldDetected ||
+        attempt.clientToolCalls?.length ||
+        attempt.itemLifecycle.activeCount !== 0
+      ) {
+        return {};
+      }
       const assertCurrent = () => {
         signal.throwIfAborted();
         assertActive();
@@ -151,6 +163,20 @@ export function createEmbeddedLogicalTurnContinuation(
           throw new Error("A settled draft continuation requires a successful attempt");
         }
         return { continued };
+      }
+      if (disposition.action === "publish") {
+        await persistAcceptedSettledDraft({
+          run: {
+            ...params,
+            sessionTarget: {
+              ...input.sessionPromptState.sessionTarget,
+              ...input.sessionPromptState.sessionWriterFence,
+              sessionId: input.sessionPromptState.sessionId,
+            },
+          },
+          message: input.dispatchedAttempt.settledDraftTranscript,
+          assertCurrent,
+        });
       }
       return {
         terminalReplyDisposition: disposition.action === "withhold" ? "withhold" : undefined,

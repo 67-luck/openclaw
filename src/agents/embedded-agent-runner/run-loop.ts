@@ -608,14 +608,7 @@ export async function runPreparedEmbeddedLoop(
       }
 
       let terminalReplyDisposition: "withhold" | undefined;
-      if (
-        params.reviewSettledDraft &&
-        terminalAttempt.terminal.kind === "ok" &&
-        resolvedTerminalState.outcome.status === "ok" &&
-        !terminalAttempt.yieldDetected &&
-        !terminalAttempt.clientToolCalls?.length &&
-        terminalAttempt.itemLifecycle.activeCount === 0
-      ) {
+      if (params.reviewSettledDraft && resolvedTerminalState.outcome.status === "ok") {
         const review = await refresh.reviewSettledDraft(
           {
             ...normalization,

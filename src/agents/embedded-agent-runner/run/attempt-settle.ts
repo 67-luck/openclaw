@@ -415,6 +415,7 @@ export async function runEmbeddedAttemptSettledPhase(
     const messages = continuation.read();
     if (messages) {
       result.continuationMessages = messages;
+      result.continuationHistoryPrefix = continuation.historyPrefix;
       result.pluginRuntimeRefreshMessages = messages;
     }
   }
