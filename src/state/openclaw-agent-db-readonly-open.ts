@@ -32,16 +32,20 @@ export type OpenClawAgentReadOnlyDatabase = {
   path: string;
 };
 
-type OpenClawAgentFreshReadOnlyDatabase = OpenClawAgentReadOnlyDatabase & {
-  identity: OpenClawAgentDatabaseIdentity;
+export type OpenClawAgentReadOnlyDatabaseHandle = OpenClawAgentReadOnlyDatabase & {
+  close: () => void;
 };
 
-export type OpenClawAgentReadOnlyDatabaseHandle = OpenClawAgentFreshReadOnlyDatabase & {
-  close: () => void;
+type OpenClawAgentFreshReadOnlyDatabaseHandle = OpenClawAgentReadOnlyDatabaseHandle & {
+  identity: OpenClawAgentDatabaseIdentity;
 };
 
 export type OpenClawAgentDatabaseReadOnlyOpenResult =
   | { found: true; database: OpenClawAgentReadOnlyDatabaseHandle }
+  | { found: false; reason: "database-missing" | "schema-missing" };
+
+type OpenClawAgentDatabaseFreshReadOnlyOpenResult =
+  | { found: true; database: OpenClawAgentFreshReadOnlyDatabaseHandle }
   | { found: false; reason: "database-missing" | "schema-missing" };
 
 export type OpenClawAgentDatabaseReadOnlyResult<T> =
@@ -75,11 +79,11 @@ export function hasOpenClawAgentReadOnlySchema(database: OpenClawAgentReadOnlyDa
 
 /** Fresh-only callers do not need the writable runtime's process-held connection cache. */
 export function withFreshOpenClawAgentDatabaseReadOnly<T>(
-  operation: (database: OpenClawAgentFreshReadOnlyDatabase) => T,
+  operation: (database: OpenClawAgentFreshReadOnlyDatabaseHandle) => T,
   options: OpenClawAgentDatabaseOptions,
   behavior: { allowExtension?: boolean } = {},
 ): OpenClawAgentDatabaseReadOnlyResult<T> {
-  const opened = openOpenClawAgentDatabaseReadOnly(options, behavior);
+  const opened = openFreshOpenClawAgentDatabaseReadOnly(options, behavior);
   if (!opened.found) {
     return opened;
   }
@@ -95,6 +99,13 @@ export function openOpenClawAgentDatabaseReadOnly(
   options: OpenClawAgentDatabaseOptions,
   behavior: { allowExtension?: boolean } = {},
 ): OpenClawAgentDatabaseReadOnlyOpenResult {
+  return openFreshOpenClawAgentDatabaseReadOnly(options, behavior);
+}
+
+function openFreshOpenClawAgentDatabaseReadOnly(
+  options: OpenClawAgentDatabaseOptions,
+  behavior: { allowExtension?: boolean } = {},
+): OpenClawAgentDatabaseFreshReadOnlyOpenResult {
   const agentId = normalizeAgentId(options.agentId);
   const pathname = resolveOpenClawAgentSqlitePath({ ...options, agentId });
   if (isIncognitoOpenClawAgentSqlitePath(pathname, { agentId, env: options.env })) {
