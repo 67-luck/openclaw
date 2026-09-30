@@ -1,8 +1,8 @@
 import { readStringValue } from "@openclaw/normalization-core/string-coerce";
+import { normalizeCsvOrLooseStringList } from "@openclaw/normalization-core/string-normalization";
 import {
   applyOpenClawManifestInstallCommonFields,
   getFrontmatterString,
-  normalizeStringList,
   parseOpenClawManifestInstallBase,
   parseFrontmatterBool,
   resolveOpenClawManifestBlock,
@@ -60,7 +60,7 @@ export function resolveHookManifestMetadata(
     hookKey: readStringValue(metadataObj.hookKey),
     export: readStringValue(metadataObj.export),
     os: osRaw.length > 0 ? osRaw : undefined,
-    events: normalizeStringList(metadataObj.events),
+    events: normalizeCsvOrLooseStringList(metadataObj.events),
     requires,
     install: install.length > 0 ? install : undefined,
   };
