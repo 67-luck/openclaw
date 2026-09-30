@@ -100,6 +100,7 @@ export function sqliteReadOnlyWorkerRequestArgs(
     args.push(JSON.stringify({ identity: options.identity, preparationId: options.preparationId }));
     return args;
   }
+  const stagingRoot = options.stagingRoot && path.resolve(options.stagingRoot);
   const expected =
     options.mode === "auth-profile-rows" ? undefined : options.expectedSourceIdentity;
   if (expected !== undefined) {
@@ -108,9 +109,9 @@ export function sqliteReadOnlyWorkerRequestArgs(
         "SQLite source identity is supported only for artifact-preserving sync copies",
       );
     }
-    args.push(options.stagingRoot ?? "", JSON.stringify(readDatabaseFileIdentity(expected)));
-  } else if (options.stagingRoot) {
-    args.push(options.stagingRoot);
+    args.push(stagingRoot ?? "", JSON.stringify(readDatabaseFileIdentity(expected)));
+  } else if (stagingRoot) {
+    args.push(stagingRoot);
   }
   return args;
 }
