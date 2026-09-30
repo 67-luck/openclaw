@@ -750,5 +750,3 @@ function preservedSessionGeneration(
   }
   return storedSessionGeneration(identity, current);
 }
-
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

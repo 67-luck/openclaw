@@ -29,7 +29,6 @@ import {
   threadStartResult,
   turnStartResult,
 } from "./run-attempt-test-harness.js";
-import { readCodexAppServerBinding } from "./session-binding.test-helpers.js";
 import * as sharedClient from "./shared-client.js";
 import { resetSharedCodexAppServerClientForTests } from "./shared-client.js";
 import { attachSqliteSessionTarget } from "./sqlite-session.test-helpers.js";

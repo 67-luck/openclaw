@@ -1,6 +1,6 @@
-import type { AgentHarnessCompactParams } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   embeddedAgentLog,
+  type AgentHarnessCompactParams,
   type CompactEmbeddedAgentSessionParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { createDedupeCache } from "openclaw/plugin-sdk/dedupe-runtime";

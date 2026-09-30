@@ -326,7 +326,7 @@ async function fixture(options: { failSettlement?: boolean } = {}) {
     }
     const terminal: Terminal = {
       actor,
-      itemId: itemId,
+      itemId,
       processId,
       command: "qualification-task-owned-process",
       cwd: "/workspace",
