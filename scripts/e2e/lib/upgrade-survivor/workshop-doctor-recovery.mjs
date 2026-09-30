@@ -99,12 +99,15 @@ function hasMalformedWorkshopIndex(filename) {
     database.prepare("SELECT review_id FROM skill_workshop_collection_reviews LIMIT 1").get();
     return false;
   } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message.includes("malformed database schema") &&
-      error.message.includes(INDEX)
-    ) {
+    if (!(error instanceof Error)) {
+      throw error;
+    }
+    if (error.message.includes("malformed database schema") && error.message.includes(INDEX)) {
       return true;
+    }
+    // Candidate Doctor retires the table that carries the malformed index.
+    if (error.message.includes("no such table: skill_workshop_collection_reviews")) {
+      return false;
     }
     throw error;
   } finally {
