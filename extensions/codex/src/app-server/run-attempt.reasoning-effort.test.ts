@@ -151,9 +151,20 @@ describe("Codex reasoning effort across completed turns", () => {
     });
   });
 
-  it("persists a native reasoning setting emitted before turn/start returns", async () => {
+  it("patches a legacy binding when native reasoning changes before turn/start returns", async () => {
     const params = createTestParams();
-    await writeExistingReasoningBinding(params.sessionFile, params.workspaceDir, "low");
+    await writeCodexAppServerBinding(params.sessionFile, {
+      threadId: "thread-existing",
+      cwd: params.workspaceDir,
+      model: "gpt-5.4-codex",
+      modelProvider: "openai",
+      historyCoveredThrough: new Date().toISOString(),
+      webSearchThreadConfigFingerprint: DISABLED_WEB_SEARCH_FINGERPRINT,
+      dynamicToolsFingerprint: "[]",
+    });
+    expect(await readCodexAppServerBinding(params.sessionFile)).not.toHaveProperty(
+      "reasoningEffort",
+    );
     const harness: ReturnType<typeof createAppServerHarness> = createAppServerHarness(
       async (method) => {
         if (method === "configRequirements/read") {
@@ -187,6 +198,9 @@ describe("Codex reasoning effort across completed turns", () => {
 
     await expect(readCodexAppServerBinding(params.sessionFile)).resolves.toMatchObject({
       threadId: "thread-existing",
+      model: "gpt-5.4-codex",
+      modelProvider: "openai",
+      webSearchThreadConfigFingerprint: DISABLED_WEB_SEARCH_FINGERPRINT,
       reasoningEffort: "high",
     });
     expect(onAgentEvent).toHaveBeenCalledWith({
