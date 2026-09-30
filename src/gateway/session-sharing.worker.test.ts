@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import { prepareQualifiedSessionEntryTarget } from "../config/sessions/session-accessor.entry.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
 import { removeSessionMember as removeSessionMemberSync } from "../config/sessions/session-sharing-store.native.js";
@@ -14,45 +15,97 @@ import type {
 import { resolveSessionMutationAuthorizationAsync } from "./session-sharing-authorization-async.js";
 import { roleClient, rolePolicyConfig } from "./session-sharing.test-utils.js";
 import { resolveGatewaySessionStoreTarget } from "./session-utils-store-lookup.js";
+import { withQualifiedGatewaySessionEntry } from "./session-utils-store.js";
 
-it("admits prepared facts for an authorized session that does not exist yet", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    let cfg = rolePolicyConfig();
-    const client = roleClient("write", "new-session-owner");
-    const scope = { agentId: "main", sessionKey: "agent:main:new-worker-session" };
-    const result = await resolveSessionMutationAuthorizationAsync({
-      client,
-      method: "chat.send",
-      requestParams: scope,
-      context: { getRuntimeConfig: () => cfg } as GatewayRequestContext,
+it.each([
+  { kind: "qualified", agentId: "main" },
+  { kind: "global", agentId: "main" },
+  { kind: "global", agentId: "work" },
+])(
+  "admits qualified worker facts for an authorized missing $agentId $kind session",
+  async ({ kind, agentId }) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      let cfg = rolePolicyConfig();
+      if (kind === "global") {
+        cfg = {
+          ...cfg,
+          agents: { ownership: "explicit", entries: { main: {}, work: {} } },
+          session: { ...cfg.session, scope: "global" },
+        };
+      }
+      const client = roleClient("write", "new-session-owner");
+      const scope = {
+        agentId,
+        sessionKey: kind === "global" ? "global" : "agent:main:new-worker-session",
+      };
+      const result = await resolveSessionMutationAuthorizationAsync({
+        client,
+        method: "chat.send",
+        requestParams: scope,
+        context: { getRuntimeConfig: () => cfg } as GatewayRequestContext,
+      });
+      expect(result.error).toBeNull();
+      const route = resolveGatewaySessionStoreTarget({
+        cfg,
+        key: scope.sessionKey,
+        agentId: scope.agentId,
+      });
+      const qualified = prepareQualifiedSessionEntryTarget({
+        ...route,
+        requestedKey: scope.sessionKey,
+        storeKey: route.canonicalKey,
+      });
+      const effect = vi.fn();
+      try {
+        await withQualifiedGatewaySessionEntry({
+          cfg,
+          target: qualified.target,
+          logicalStorePath: route.storePath,
+          includeMembership: true,
+          assertConfigCurrent: () => {},
+          consume: (latest, membership, assertSourceCurrent) =>
+            result.authorization!.withPreparedCurrent!(
+              {
+                agentId: latest.agentId,
+                storePath: latest.storePath,
+                sessionKey: latest.canonicalKey,
+                entry: latest.entry,
+                readSource: latest.capturedReadSource,
+                members: membership.get(latest.legacyKey ?? latest.canonicalKey) ?? [],
+              },
+              () => {
+                if (kind === "global") {
+                  const wrongOwnerEffect = vi.fn();
+                  expect(() =>
+                    result.authorization!.withPreparedCurrent!(
+                      {
+                        agentId: latest.agentId,
+                        storePath: latest.storePath,
+                        sessionKey: "agent:other:global",
+                        entry: latest.entry,
+                        readSource: latest.capturedReadSource,
+                        members: [],
+                      },
+                      wrongOwnerEffect,
+                      assertSourceCurrent,
+                    ),
+                  ).toThrow("session changed");
+                  expect(wrongOwnerEffect).not.toHaveBeenCalled();
+                }
+                cfg = { ...cfg, logging: { level: "debug" } };
+                result.authorization!.assertCurrent();
+                effect();
+              },
+              assertSourceCurrent,
+            ),
+        });
+        expect(effect).toHaveBeenCalledOnce();
+      } finally {
+        qualified.release();
+      }
     });
-    expect(result.error).toBeNull();
-    const route = resolveGatewaySessionStoreTarget({
-      cfg,
-      key: scope.sessionKey,
-      agentId: scope.agentId,
-    });
-    const effect = vi.fn();
-    expect(() =>
-      result.authorization!.withPreparedCurrent!(
-        {
-          agentId: route.agentId,
-          storePath: route.storePath,
-          sessionKey: route.canonicalKey,
-          entry: undefined,
-          members: [],
-        },
-        () => {
-          cfg = { ...cfg, logging: { level: "debug" } };
-          result.authorization!.assertCurrent();
-          effect();
-        },
-        () => {},
-      ),
-    ).not.toThrow();
-    expect(effect).toHaveBeenCalledOnce();
-  });
-});
+  },
+);
 
 it("allows unrelated config reloads while worker authorization reads are pending", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {

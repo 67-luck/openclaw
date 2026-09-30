@@ -4,6 +4,7 @@ import {
   type ErrorShape,
 } from "../../packages/gateway-protocol/src/index.js";
 import type { SessionEntry } from "../config/sessions/types.js";
+import { toAgentStoreSessionKey } from "../routing/session-key.js";
 import type { SessionOperatorScope } from "../shared/session-method-scopes-base.js";
 import { resolveGatewayOperatorRoleActor } from "./operator-role-policy.js";
 import { authenticatedProfileUnavailableError } from "./server-methods/gateway-client-identity.js";
@@ -145,7 +146,11 @@ export function prepareAuthorizedSessionMutationFacts(params: {
   if (
     !expectedRoute ||
     facts.agentId !== expectedRoute.agentId ||
-    facts.sessionKey !== expectedRoute.sessionKey ||
+    facts.sessionKey !==
+      toAgentStoreSessionKey({
+        agentId: expectedRoute.agentId,
+        requestKey: expectedRoute.storeKey,
+      }) ||
     (expectedReadSource
       ? facts.readSource?.databaseIdentity !== expectedReadSource.databaseIdentity ||
         facts.readSource.databaseBirthtime !== expectedReadSource.databaseBirthtime ||
