@@ -25,6 +25,7 @@ import { WORKER_TOOL_NAMES } from "../../worker/tool-authority.js";
 import { projectWorkerSessionTurnClaim } from "./placement-record.js";
 import { createWorkerSessionPlacementGate } from "./placement-worker-gate.js";
 import { WorkerRunnerCapacityError, type WorkerTunnelHandle } from "./tunnel-contract.js";
+import * as workerGitHub from "./worker-github-binding.js";
 import {
   ENVIRONMENT_ID,
   MANIFEST_REF,
@@ -305,6 +306,11 @@ describe("worker turn execution", () => {
   it("settles the committed terminal result when execution is cancelled during hydration", async () => {
     await seedActivePlacement();
     const abort = new AbortController();
+    const revoke = vi.fn(async () => {});
+    const github = vi.spyOn(workerGitHub, "prepareWorkerGitHubBindingGrant").mockResolvedValue({
+      binding: { token: "synthetic-token", login: "fixture", branch: "fixture" },
+      revoke,
+    });
     const input = turn("terminal-hydration");
     const entered = createDeferred();
     const release = createDeferred();
@@ -355,6 +361,7 @@ describe("worker turn execution", () => {
       stop: vi.fn(),
       quiesceWorkspace: async () => ({ assertActive: async () => {}, resume: async () => {} }),
       reconcileWorkspace: async (request) => {
+        expect(revoke).toHaveBeenCalled();
         assert(request.source.kind === "local", "expected local workspace");
         await request.source.journal.commit(MANIFEST_REF);
         return {
@@ -368,6 +375,7 @@ describe("worker turn execution", () => {
       },
     };
     const provider = createWorkerSessionTurnPlacementProvider({
+      reconcileActivePlacement: async () => {},
       placements,
       environments: {
         ...unusedEnvironments(),
@@ -407,6 +415,7 @@ describe("worker turn execution", () => {
       release.resolve();
       await settled;
       hydration.mockRestore();
+      github.mockRestore();
       input.preparedRunAdmission.close();
     }
   });
