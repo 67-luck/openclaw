@@ -35,6 +35,52 @@ cost.
 
 Route boot JavaScript is limited to 35 requests per route, with three requests of headroom above the measured maximum, to catch facade regressions caused by top-level await disabling chunk optimization.
 
+Regenerate the measured boot manifest after changing startup imports:
+
+```bash
+pnpm ui:boot-manifest:gen
+pnpm ui:build
+pnpm ui:check-performance
+```
+
+The generator builds with boot grouping disabled and route preload templates
+inactive, so the previous manifest cannot feed its own entries back into the
+capture. Membership is **authenticated foreground boot before browser idle**.
+The generator and bundled drift guard share the same capture helper and ordering:
+
+- Queue browser idle callbacks throughout capture. Sidebar catalog and menu
+  renderers scheduled for idle are outside the foreground phase, regardless of
+  machine speed; explicit eager imports still run normally.
+- Release the deferred Gateway handshake, then finish eager shell and profile
+  work while message-subscription admission is held. The default `/chat` landing
+  also finishes its initial roster read; session deep links keep their normal
+  foreground priority. Join JavaScript fetch completions and the renders they
+  schedule without a timed settle window.
+- Release subscription admission and capture requests through the actual
+  `chat.startup` send, including outstanding fetches. Hold its reply so transcript
+  completion cannot release background work into this boundary, then release it
+  and require the seeded transcript to render before allowing idle callbacks.
+- For `/new`, use authenticated profile preferences, authoritative roster
+  readiness, and the visible composer, then drain eager JavaScript and rendering
+  in the same way. No three-second settle window remains.
+
+Capture-only instrumentation records evaluated dynamic imports even when the
+bundler merges their targets into chunks without entry facades. Unused imports in
+those chunks do not become preload entries. Reachability filtering retains only
+fetched modules in the static dependency closure of the HTML entry and those
+evaluated imports, preserving each route's boundary when chunks co-locate code.
+The committed manifest contains the
+sorted union of both chat entry paths; regenerate three times on unchanged inputs
+and compare the JSON bytes when changing capture ordering.
+
+The bundled `chat-boot-preloads.e2e.test.ts` test activates the chat template with
+the Gateway's selector and checks every same-origin JavaScript request in that
+foreground phase against the original document hints. It reports missing assets
+without a filename allowlist. Login chunks observed during authenticated capture
+are reported but excluded from generation: fix their loading at the login owner
+instead of adding them to chat preloads. Keep the existing performance limits
+when refreshing the manifest.
+
 For bundled builds, the Gateway retains manifest-verified assets so already-open tabs can fetch older asset URLs after an update. The cache serves at most three generations and 96 MiB total, preferring the current generation; older generations can be pruned sooner to meet the byte budget. Background startup preparation reuses verified inventories through publication and pruning instead of rereading unchanged retained assets at each step. Newly published assets are verified before reuse, including a concurrent publisher's winning copy. Each pruner claims an old directory before removing it so concurrent publishers do not delete the same tree. Cleanup failures log a warning and may temporarily leave extra files on disk, without discarding a successfully published generation. Later preparation can reclaim abandoned staging directories after one hour. Configured `gateway.controlUi.root` builds do not use this cache.
 
 Bundled public assets (themes, fonts, icons, and artwork) use `?v=<build-id>` URLs with a one-year immutable HTTP cache. The ID includes a digest of the public files, so rebuilding changed files at the same commit also changes their URLs. The Gateway snapshots this identity at startup; restart it after rebuilding an in-place installation. Unversioned requests, stale IDs, documents, `sw.js`, and custom `gateway.controlUi.root` installs keep `Cache-Control: no-cache`. The service worker keeps its network-first policy for public assets, allowing the browser's HTTP cache to satisfy matching versioned requests.

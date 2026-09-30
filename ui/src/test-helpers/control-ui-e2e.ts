@@ -2560,6 +2560,10 @@ function installControlUiMockGateway(
         return;
       }
       requests.push({ id, method, params: frame.params });
+      if (method === "chat.startup") {
+        // JSDOM has no User Timing API; the browser capture requires this mark.
+        performance.mark?.("mock-gateway:chat.startup");
+      }
       if (shouldDefer(method, frame.params)) {
         deferredResponses.push({ id, method, params: frame.params, socket: this });
         return;

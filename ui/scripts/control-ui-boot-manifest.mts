@@ -1,10 +1,17 @@
 #!/usr/bin/env -S node --import tsx
-// Regenerates ui/config/control-ui-boot-modules.json: the modules shared shell and
-// route-specific boot flows need, plus requested dynamic entry points. Builds
-// without the previous boot groups, captures ready routes against the mocked
-// Gateway, and keeps fetched modules reachable from what each route requested.
+// Regenerates ui/config/control-ui-boot-modules.json: the measured module set
+// shared shell and route-specific boot flows load lazily, plus evaluated dynamic
+// entry points. Membership is authenticated foreground boot, before browser idle:
+// hold idle callbacks and message-subscription admission while eager shell/profile
+// work completes, then capture through the chat.startup send with its reply held.
+// The default /chat landing also admits its initial roster before selection;
+// explicit deep links retain foreground priority. /new ends at authenticated
+// composer + roster readiness. The shared capture helper also owns the drift
+// guard's ordering. No wall-clock settle window or previous boot grouping feeds
+// membership; deferred idle chrome and post-transcript work stay outside it.
+// Keep main's route reachability filter: fetched co-located modules belong only
+// to routes that reach them through entry modules or evaluated dynamic imports.
 import fs from "node:fs";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,57 +22,17 @@ import {
   createControlUiCodeSplitting,
 } from "../config/control-ui-chunking.ts";
 import {
-  installMockGateway,
+  bootDynamicImportMarkPrefix,
+  captureControlUiBoot,
+} from "../src/test-helpers/control-ui-boot-capture.ts";
+import {
+  startBuiltControlUiE2eServer,
   resolvePlaywrightChromiumExecutablePath,
 } from "../src/test-helpers/control-ui-e2e.ts";
 import controlUiViteConfig from "../vite.config.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const manifestPath = path.join(repoRoot, "ui", "config", "control-ui-boot-modules.json");
-const SETTLE_MS = 3_000;
-const READY_TIMEOUT_MS = 60_000;
-
-const mime: Record<string, string> = {
-  ".html": "text/html",
-  ".js": "text/javascript",
-  ".css": "text/css",
-  ".json": "application/json",
-  ".svg": "image/svg+xml",
-  ".map": "application/json",
-  ".webmanifest": "application/manifest+json",
-};
-
-function serveDist(distDir: string): Promise<{ baseUrl: string; close: () => Promise<void> }> {
-  const server = http.createServer((req, res) => {
-    const urlPath = new URL(req.url ?? "/", "http://localhost").pathname;
-    if (urlPath === "/control-ui-config.json") {
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ basePath: "/", assistantName: "", assistantAvatar: "" }));
-      return;
-    }
-    let filePath = path.join(distDir, urlPath === "/" ? "index.html" : urlPath.slice(1));
-    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-      filePath = path.join(distDir, "index.html");
-    }
-    res.setHeader("Content-Type", mime[path.extname(filePath)] ?? "application/octet-stream");
-    res.end(fs.readFileSync(filePath));
-  });
-  return new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (address === null || typeof address !== "object") {
-        throw new Error("Control UI boot manifest server has no port");
-      }
-      resolve({
-        baseUrl: `http://127.0.0.1:${address.port}`,
-        close: () =>
-          new Promise((resolveClose, rejectClose) => {
-            server.close((error) => (error ? rejectClose(error) : resolveClose()));
-          }),
-      });
-    });
-  });
-}
 
 function readDistBuildId(distDir: string): string {
   const swSource = fs.readFileSync(path.join(distDir, "sw.js"), "utf8");
@@ -80,29 +47,56 @@ async function collectBootChunkPaths(
   baseUrl: string,
   distDir: string,
   route: "new" | "chat",
-): Promise<Set<string>> {
+): Promise<{ chunks: Set<string>; entries: Set<string> }> {
   const browser = await chromium.launch({
     executablePath: resolvePlaywrightChromiumExecutablePath(chromium.executablePath()),
   });
   try {
     const page = await browser.newPage();
     const chunkPaths = new Set<string>();
-    page.on("request", (request) => {
-      const { pathname } = new URL(request.url());
-      if (pathname.startsWith("/assets/") && pathname.endsWith(".js")) {
-        chunkPaths.add(pathname);
+    const entries = new Set<string>();
+    if (route === "chat") {
+      // Both default-chat selection and a cold session deep link are shipped entry points.
+      // Their independent bootstrap work can run before the selected transcript request.
+      for (const mainSession of [false, true]) {
+        const capturePage = mainSession ? await browser.newPage() : page;
+        const capture = await captureControlUiBoot(capturePage, baseUrl, {
+          serverBuildId: readDistBuildId(distDir),
+          mainSession,
+        });
+        const login = [...capture.beforeStartup].filter((chunk) =>
+          /\/login-(?:gate|runtime)-/.test(chunk),
+        );
+        console.log(
+          `control-ui-boot-manifest: chat (${mainSession ? "main" : "deep link"}): ${capture.beforeStartup.size} before chat.startup; ${capture.afterStartup.size} later; login chunks excluded: ${login.length}`,
+        );
+        for (const chunk of capture.beforeStartup) {
+          // Login loading has its own owner; an authenticated capture reports it,
+          // but must never turn that regression into a chat preload requirement.
+          if (!login.includes(chunk)) {
+            chunkPaths.add(chunk);
+          }
+        }
+        for (const entry of capture.entriesBeforeStartup) {
+          if (entry !== "ui/src/components/login-gate.ts") {
+            entries.add(entry);
+          }
+        }
+        await capturePage.close();
       }
+      return { chunks: chunkPaths, entries };
+    }
+    const capture = await captureControlUiBoot(page, baseUrl, {
+      serverBuildId: readDistBuildId(distDir),
+      route: "new",
     });
-    await installMockGateway(page, { serverBuildId: readDistBuildId(distDir) });
-    await page.goto(`${baseUrl}/${route}`, { waitUntil: "commit" });
-    // Route readiness proves the capture did not stall on an error surface.
-    await page
-      .locator(
-        route === "chat" ? ".agent-chat__composer-combobox textarea" : ".new-session-page__message",
-      )
-      .waitFor({ timeout: READY_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
-    return chunkPaths;
+    for (const chunk of capture.beforeStartup) {
+      chunkPaths.add(chunk);
+    }
+    for (const entry of capture.entriesBeforeStartup) {
+      entries.add(entry);
+    }
+    return { chunks: chunkPaths, entries };
   } finally {
     await browser.close();
   }
@@ -127,18 +121,10 @@ function manifestKeysForChunks(chunkPaths: Iterable<string>, distDir: string): s
 
 type BootCaptureGraph = {
   entryModules: string[];
-  // Dynamic-entry facade chunk path -> facade module id.
-  dynamicEntries: Map<string, string>;
-  moduleChunks: Map<string, string>;
-  imports: Map<string, { static: readonly string[]; dynamic: readonly string[] }>;
+  imports: Map<string, readonly string[]>;
 };
 
-function routeModuleKeys(
-  graph: BootCaptureGraph,
-  chunks: ReadonlySet<string>,
-  roots: readonly string[],
-): Set<string> {
-  const facades = new Set(graph.dynamicEntries.values());
+function routeModuleKeys(graph: BootCaptureGraph, roots: readonly string[]): Set<string> {
   const seen = new Set<string>();
   const pending = [...roots];
   for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
@@ -146,17 +132,7 @@ function routeModuleKeys(
       continue;
     }
     seen.add(id);
-    const imports = graph.imports.get(id);
-    pending.push(...(imports?.static ?? []));
-    // A dynamic import without its own facade chunk resolves to the chunk that
-    // holds its target. Once that chunk is loaded the import sends no request,
-    // so the capture cannot tell whether it ran; keep its dependencies.
-    for (const target of imports?.dynamic ?? []) {
-      const chunk = graph.moduleChunks.get(target);
-      if (!facades.has(target) && chunk !== undefined && chunks.has(chunk)) {
-        pending.push(target);
-      }
-    }
+    pending.push(...(graph.imports.get(id) ?? []));
   }
   return new Set([...seen].map(controlUiBootManifestKey));
 }
@@ -176,12 +152,7 @@ async function main(): Promise<void> {
   const distDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-control-ui-boot-"));
   try {
     const config = controlUiViteConfig({ outDir: distDir });
-    const graph: BootCaptureGraph = {
-      entryModules: [],
-      dynamicEntries: new Map(),
-      moduleChunks: new Map(),
-      imports: new Map(),
-    };
+    const graph: BootCaptureGraph = { entryModules: [], imports: new Map() };
     await build({
       ...config,
       configFile: false,
@@ -200,43 +171,78 @@ async function main(): Promise<void> {
           },
           generateBundle(_options, bundle) {
             for (const id of this.getModuleIds()) {
-              const info = this.getModuleInfo(id);
-              graph.imports.set(id, {
-                static: info?.importedIds ?? [],
-                dynamic: info?.dynamicallyImportedIds ?? [],
-              });
+              graph.imports.set(id, this.getModuleInfo(id)?.importedIds ?? []);
             }
             for (const chunk of Object.values(bundle)) {
-              if (chunk.type !== "chunk") {
-                continue;
-              }
-              for (const id of chunk.moduleIds) {
-                graph.moduleChunks.set(id, `/${chunk.fileName}`);
-              }
-              if (chunk.isEntry && chunk.facadeModuleId) {
+              if (chunk.type === "chunk" && chunk.isEntry && chunk.facadeModuleId) {
                 graph.entryModules.push(chunk.facadeModuleId);
               }
-              if (chunk.isDynamicEntry && chunk.facadeModuleId) {
-                graph.dynamicEntries.set(`/${chunk.fileName}`, chunk.facadeModuleId);
-              }
             }
+          },
+          enforce: "post",
+          async transform(code, id) {
+            if (!/\bimport\s*\(/.test(code)) {
+              return;
+            }
+            const imports: Array<{ start: number; end: number; source: string }> = [];
+            const visit = (node: unknown): void => {
+              if (!node || typeof node !== "object") {
+                return;
+              }
+              if (
+                "type" in node &&
+                node.type === "ImportExpression" &&
+                "start" in node &&
+                typeof node.start === "number" &&
+                "end" in node &&
+                typeof node.end === "number" &&
+                "source" in node &&
+                node.source &&
+                typeof node.source === "object" &&
+                "value" in node.source &&
+                typeof node.source.value === "string"
+              ) {
+                imports.push({ start: node.start, end: node.end, source: node.source.value });
+              }
+              for (const child of Object.values(node)) {
+                if (Array.isArray(child)) {
+                  child.forEach(visit);
+                } else {
+                  visit(child);
+                }
+              }
+            };
+            visit(this.parse(code));
+            // Measure evaluated import expressions, including targets Rolldown
+            // merges into chunks without a dynamic-entry facade. Chunk membership
+            // alone would also preload unused lazy entry points.
+            let measured = code;
+            for (const entry of imports.toSorted((a, b) => b.start - a.start)) {
+              const target = await this.resolve(entry.source, id);
+              if (!target || target.external) {
+                continue;
+              }
+              const mark = JSON.stringify(
+                bootDynamicImportMarkPrefix + controlUiBootManifestKey(target.id),
+              );
+              measured = `${measured.slice(0, entry.start)}(performance.mark(${mark}), ${measured.slice(entry.start, entry.end)})${measured.slice(entry.end)}`;
+            }
+            return imports.length ? { code: measured, map: null } : undefined;
           },
         },
       ],
     });
-    const server = await serveDist(distDir);
+    const server = await startBuiltControlUiE2eServer(distDir);
     try {
       const routes = { new: new Set<string>(), chat: new Set<string>() };
       const routeEntries = { new: new Set<string>(), chat: new Set<string>() };
       for (const route of ["new", "chat"] as const) {
-        const chunks = await collectBootChunkPaths(server.baseUrl, distDir, route);
-        const requestedEntries = [...chunks].flatMap(
-          (chunk) => graph.dynamicEntries.get(chunk) ?? [],
+        const { chunks, entries } = await collectBootChunkPaths(server.baseUrl, distDir, route);
+        routeEntries[route] = entries;
+        const requestedEntries = [...graph.imports.keys()].filter((id) =>
+          entries.has(controlUiBootManifestKey(id)),
         );
-        routeEntries[route] = new Set(requestedEntries.map(controlUiBootManifestKey));
-        // Fetched shared chunks can co-locate modules only the other route
-        // imports; keep the modules reachable from what this route requested.
-        const needed = routeModuleKeys(graph, chunks, [...graph.entryModules, ...requestedEntries]);
+        const needed = routeModuleKeys(graph, [...graph.entryModules, ...requestedEntries]);
         const fetched = manifestKeysForChunks(chunks, distDir);
         routes[route] = new Set(fetched.filter((key) => needed.has(key)));
         if (routes[route].size < 100) {
