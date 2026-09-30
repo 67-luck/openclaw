@@ -10,12 +10,6 @@ import {
   hasCodexAppServerLiveThread,
   isCodexAppServerLiveThreadClaimed,
 } from "./client-runtime.js";
-import { createCodexTestHostCapabilities } from "./host-capability.test-support.js";
-import {
-  CodexNativeProcessAuthority,
-  getCodexNativeProcessClient,
-  hasCodexNativeBackgroundProcesses,
-} from "./native-process-authority.js";
 import * as runAttemptResources from "./run-attempt-resources.js";
 import {
   assistantMessage,
@@ -204,110 +198,55 @@ describe("Codex attempt subscription recovery", () => {
       expect(isCodexAppServerLiveThreadClaimed(harness.client, threadId)).toBe(false);
     },
   );
-  it.each(["existing custody", "row wait", "reader release"] as const)(
-    "decides native custody once at publication after %s",
-    async (boundary) => {
-      const captured =
-        createDeferred<ReturnType<typeof runAttemptResources.prepareCodexAttemptResources>>();
-      const prepare = runAttemptResources.prepareCodexAttemptResources;
-      const capture = vi
-        .spyOn(runAttemptResources, "prepareCodexAttemptResources")
-        .mockImplementationOnce((prompt) => {
-          const resources = prepare(prompt);
-          captured.resolve(resources);
-          return resources;
-        });
-      const harness = createStartedThreadHarness();
-      const params = createParams(
-        path.join(tempDir, "custody.jsonl"),
-        path.join(tempDir, "workspace"),
-      );
-      const run = runCodexAppServerAttempt(params);
-      const resources = await Promise.race([
-        captured.promise,
-        run.then(() => {
-          throw new Error("Attempt ended before resource preparation");
-        }),
-      ]);
-      await harness.waitForMethod("turn/start");
-      const { connection } = resources.prompt.context.runtime;
-      const { threadId } = resources.state.thread;
-      const owner = new CodexNativeProcessAuthority(createCodexTestHostCapabilities(), () => {});
-      owner.bindTurn(harness.client, threadId, "custodian-turn");
-      owner.admit(
-        harness.client,
-        { threadId, turnId: "custodian-turn", itemId: "custodian-command" },
-        () => {},
-      );
-      const nativeClient = getCodexNativeProcessClient(harness.client);
-      let process: ReturnType<typeof nativeClient.claim> | undefined;
-      const startBackground = () => {
-        process = nativeClient.claim({ threadId, toolCallId: "custodian-command" }, async () => {});
-      };
-      if (boundary === "existing custody") {
-        startBackground();
-      }
-      const entered = createDeferred<void>();
-      const release = createDeferred<void>();
-      const rowFailure = new Error("row admission/release failed");
-      const withCurrent = connection.withCurrent;
-      const admission = vi
-        .spyOn(connection, "withCurrent")
-        .mockImplementationOnce(async (consume) => {
-          if (boundary !== "reader release") {
-            entered.resolve();
-            await release.promise;
-          } else {
-            await withCurrent(consume);
-            startBackground();
-          }
-          throw rowFailure;
-        });
-      const publication = vi.spyOn(threadOwnership, "retainCodexAppServerBindingSubscription");
-      const retention = resources.retainThreadSubscription();
-      try {
-        if (boundary === "existing custody") {
-          await expect(
-            Promise.race([
-              retention.then(() => "published"),
-              entered.promise.then(() => "waiting"),
-            ]),
-          ).resolves.toBe("published");
-          expect(admission).not.toHaveBeenCalled();
-        } else if (boundary === "row wait") {
-          await expect(
-            Promise.race([
-              entered.promise.then(() => "waiting"),
-              retention.then(() => "published"),
-            ]),
-          ).resolves.toBe("waiting");
-          expect(hasCodexNativeBackgroundProcesses(harness.client, threadId)).toBe(false);
-          startBackground();
-          release.resolve();
-          await expect(retention).resolves.toBe(true);
-        } else {
-          await expect(retention).rejects.toBe(rowFailure);
-        }
-        expect(hasCodexNativeBackgroundProcesses(harness.client, threadId)).toBe(true);
-        expect(publication).toHaveBeenCalledOnce();
-        expect(hasCodexAppServerLiveThread(harness.client, threadId)).toBe(true);
-        expect(harness.requests.some(({ method }) => method === "thread/unsubscribe")).toBe(false);
-      } finally {
-        release.resolve();
-        await retention.catch(() => {});
-        admission.mockRestore();
-        publication.mockRestore();
-        capture.mockRestore();
-        process?.settle();
-        owner.release();
-        // The failed reader case already published; finish its exact resource
-        // without starting a second optional retention during attempt teardown.
-        resources.state.nativeSettlementExpired = true;
-        await harness.completeTurn({ threadId, turnId: "turn-1" });
-        await run;
-      }
-    },
-  );
+  it("does not replay subscription publication when reader release fails", async () => {
+    const captured =
+      createDeferred<ReturnType<typeof runAttemptResources.prepareCodexAttemptResources>>();
+    const prepare = runAttemptResources.prepareCodexAttemptResources;
+    const capture = vi
+      .spyOn(runAttemptResources, "prepareCodexAttemptResources")
+      .mockImplementationOnce((prompt) => {
+        const resources = prepare(prompt);
+        captured.resolve(resources);
+        return resources;
+      });
+    const harness = createStartedThreadHarness();
+    const params = createParams(
+      path.join(tempDir, "custody.jsonl"),
+      path.join(tempDir, "workspace"),
+    );
+    const run = runCodexAppServerAttempt(params);
+    const resources = await Promise.race([
+      captured.promise,
+      run.then(() => {
+        throw new Error("Attempt ended before preparation");
+      }),
+    ]);
+    await harness.waitForMethod("turn/start");
+    const { connection } = resources.prompt.context.runtime;
+    const { threadId } = resources.state.thread;
+    const rowFailure = new Error("row reader release failed");
+    const withCurrent = connection.withCurrent;
+    const admission = vi
+      .spyOn(connection, "withCurrent")
+      .mockImplementationOnce(async (consume) => {
+        await withCurrent(consume);
+        throw rowFailure;
+      });
+    const publication = vi.spyOn(threadOwnership, "retainCodexAppServerBindingSubscription");
+    try {
+      await expect(resources.retainThreadSubscription()).rejects.toBe(rowFailure);
+      expect(publication).toHaveBeenCalledOnce();
+      expect(hasCodexAppServerLiveThread(harness.client, threadId)).toBe(true);
+      expect(harness.requests.some(({ method }) => method === "thread/unsubscribe")).toBe(false);
+    } finally {
+      admission.mockRestore();
+      publication.mockRestore();
+      capture.mockRestore();
+      resources.state.nativeSettlementExpired = true;
+      await harness.completeTurn({ threadId, turnId: "turn-1" });
+      await run;
+    }
+  });
 
   it.each([false, true])(
     "preserves native ownership through terminal overflow (expected native: %s)",

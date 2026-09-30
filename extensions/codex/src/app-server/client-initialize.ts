@@ -43,7 +43,7 @@ export function buildCodexAppServerRuntimeIdentity(
   };
 }
 
-export class CodexAppServerVersionError extends Error {
+class CodexAppServerVersionError extends Error {
   readonly detectedVersion?: string;
 
   constructor(detectedVersion: string | undefined) {

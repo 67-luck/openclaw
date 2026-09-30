@@ -41,13 +41,6 @@ export function getCodexNativeProcessClient(
   return owner;
 }
 
-export function hasCodexNativeBackgroundProcesses(
-  client: CodexAppServerClient,
-  threadId: string,
-): boolean {
-  return clients.get(client)?.hasProcesses(threadId) ?? false;
-}
-
 /** Read the native process owner's live inventory, never infer custody from a start event. */
 export async function readCodexRetainedBackgroundCommands(params: {
   client: CodexAppServerClient;
@@ -189,12 +182,6 @@ export class CodexNativeProcessClient {
     commands.set(receipt.itemId, command);
     owner.commands.add(command);
     return command;
-  }
-
-  hasProcesses(threadId: string): boolean {
-    return [...(this.threads.get(threadId)?.values() ?? [])].some(
-      (command) => command.processes.size > 0 || command.background !== undefined,
-    );
   }
 
   claim(metadata: unknown, terminate: () => Promise<void>) {

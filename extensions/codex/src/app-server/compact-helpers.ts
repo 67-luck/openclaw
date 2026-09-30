@@ -104,9 +104,7 @@ export function warnIfIgnoringOpenClawCompactionOverrides(
   );
 }
 
-export function readIgnoredCompactionOverridePaths(
-  params: CompactEmbeddedAgentSessionParams,
-): string[] {
+function readIgnoredCompactionOverridePaths(params: CompactEmbeddedAgentSessionParams): string[] {
   const compaction = asOptionalRecord(params.config?.agents?.defaults?.compaction);
   return ["model", "thinkingLevel", "provider"].flatMap((field) => {
     const value = compaction?.[field];
