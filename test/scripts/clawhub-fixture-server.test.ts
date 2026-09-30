@@ -412,6 +412,9 @@ phase() {
 }
 ${runner.slice(boundary)}
 `;
+    // Linux limits each command-line argument, so keep the full harness in a fixture file.
+    const automaticScript = path.join(isolatedCwd, "automatic-upgrade-phases.sh");
+    writeFileSync(automaticScript, automaticPhases);
     const runAutomaticChecks = (
       record: PluginInstallRecord | null = npmRecord,
       deniedPluginId?: string,
@@ -455,35 +458,28 @@ ${runner.slice(boundary)}
           },
         }),
       );
-      return spawnSync(
-        process.platform === "darwin" ? "/bin/bash" : "bash",
-        ["-c", automaticPhases],
-        {
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            ...fixtureEnv,
-            HOME: isolatedCwd,
-            FIXTURE_VERSION: version,
-            FIXTURE_PENDING: deniedPluginId ? "1" : "0",
-            OPENCLAW_STATE_DIR: stateDir,
-            OPENCLAW_CLAWHUB_URL: baseUrl,
-            OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR: registryDir,
-            OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_MANIFEST_SHA256: createHash("sha256")
-              .update(registryManifest)
-              .digest("hex"),
-            OPENCLAW_DOCKER_E2E_SELECTED_SHA: "a".repeat(40),
-            OPENCLAW_UPGRADE_SURVIVOR_BASELINE: "openclaw@2026.7.1-2",
-            OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: "base",
-            OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE: "manual",
-            OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT: path.join(isolatedCwd, "runtime"),
-            OPENCLAW_UPGRADE_SURVIVOR_SUMMARY_JSON: path.join(
-              isolatedCwd,
-              "artifacts/summary.json",
-            ),
-          },
+      return spawnSync(process.platform === "darwin" ? "/bin/bash" : "bash", [automaticScript], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          ...fixtureEnv,
+          HOME: isolatedCwd,
+          FIXTURE_VERSION: version,
+          FIXTURE_PENDING: deniedPluginId ? "1" : "0",
+          OPENCLAW_STATE_DIR: stateDir,
+          OPENCLAW_CLAWHUB_URL: baseUrl,
+          OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR: registryDir,
+          OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_MANIFEST_SHA256: createHash("sha256")
+            .update(registryManifest)
+            .digest("hex"),
+          OPENCLAW_DOCKER_E2E_SELECTED_SHA: "a".repeat(40),
+          OPENCLAW_UPGRADE_SURVIVOR_BASELINE: "openclaw@2026.7.1-2",
+          OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: "base",
+          OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE: "manual",
+          OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT: path.join(isolatedCwd, "runtime"),
+          OPENCLAW_UPGRADE_SURVIVOR_SUMMARY_JSON: path.join(isolatedCwd, "artifacts/summary.json"),
         },
-      );
+      });
     };
     const automatic = runAutomaticChecks();
     expect(automatic.status, automatic.stdout + automatic.stderr).toBe(0);

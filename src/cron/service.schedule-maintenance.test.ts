@@ -4,7 +4,7 @@ import { recomputeNextRunsForMaintenance } from "./service/jobs-scheduling.js";
 import type { CronJob } from "./types.js";
 
 describe("cron schedule maintenance", () => {
-  it("backfills missing every anchorMs for loaded jobs", () => {
+  it("schedules loaded jobs without backfilling their missing every anchorMs", () => {
     const now = Date.parse("2026-03-01T12:00:00.000Z");
     const createdAtMs = now - 120_000;
     const job: CronJob = {
@@ -24,10 +24,7 @@ describe("cron schedule maintenance", () => {
     expect(
       recomputeNextRunsForMaintenance(state, { recomputeExpired: true, deferredNotifications: [] }),
     ).toBe(true);
-    expect(job.schedule.kind).toBe("every");
-    if (job.schedule.kind === "every") {
-      expect(job.schedule.anchorMs).toBe(createdAtMs);
-    }
+    expect(job.schedule).toEqual({ kind: "every", everyMs: 60_000 });
     expect(job.state.nextRunAtMs).toBe(now + 60_000);
   });
 

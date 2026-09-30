@@ -255,6 +255,16 @@ export async function collectLegacyCronStoreHealthFindings(params: {
       }),
     );
   }
+  for (const job of normalized.unsupportedDeliveryModeJobs) {
+    findings.push(
+      legacyCronStoreFinding({
+        message: `Cron job ${job} has an unsupported delivery mode; Doctor left it unchanged.`,
+        path: sqliteStorePath,
+        requirement: "cron-delivery-mode-valid",
+        fixHint: 'Review its intended delivery and set mode to "none", "announce", or "webhook".',
+      }),
+    );
+  }
   for (const job of normalized.legacyTriggerScriptJobs) {
     findings.push(
       legacyCronStoreFinding({
@@ -502,6 +512,12 @@ export async function maybeRepairLegacyCronStore(params: {
   }
 
   const normalized = normalizeStoredCronJobs(rawJobs);
+  if (normalized.unsupportedDeliveryModeJobs.length > 0) {
+    note(
+      `Unsupported cron delivery modes were left unchanged: ${normalized.unsupportedDeliveryModeJobs.join(", ")}. Review their intended delivery and set mode to "none", "announce", or "webhook".`,
+      "Cron",
+    );
+  }
   if (normalized.unsupportedLegacyTriggerScriptJobs.length > 0) {
     note(
       [

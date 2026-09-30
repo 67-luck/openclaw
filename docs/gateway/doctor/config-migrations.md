@@ -9,6 +9,59 @@ read_when:
 Checks 0-2 cover config normalization and the legacy config key migrations,
 plus how doctor publishes shared-state schema during an update.
 
+## Retention policy
+
+Doctor uses a six-month migration retention window. The current retirement cutoff
+is `v2026.3.1`: retain a transform whenever any release from that version onward
+can still write its input format. A format last written before the cutoff may be
+retired only with a clear refusal naming an intermediate release to upgrade
+through before retrying. Retirement must never silently discard persisted data.
+
+Legacy normalization belongs to Doctor and migration owners, with the existing
+backup and verification flow. Runtime readers consume canonical state.
+OpenClaw `v2026.9.7` can still write ownerless and mode-less cron jobs, and its
+migration/import writers can preserve null, `deliver`, or mixed-case delivery
+modes. Those cron repairs remain supported; this change retires no cron format.
+
+## Cron ownership before roster migration
+
+Before retiring a legacy agent roster's default marker, Doctor pins ownerless
+cron jobs to that historical agent. This also applies when a different system
+agent is selected. Explicit job owners and agent-qualified session keys remain
+unchanged. Doctor saves a verified SQLite backup and rechecks the stored owner
+and definition before committing. If ownership cannot be repaired, it preserves
+the roster marker and reports the condition to resolve.
+
+An owner recorded only in the SQLite owner column is copied into the job's
+canonical definition by Doctor. Its agent identity and runtime state stay the
+same; a different system-agent selection does not override it.
+
+Ordinary config writes do not repair cron ownership. A roster change that would
+lose the historical owner is refused with `openclaw doctor --fix` guidance.
+Run Doctor before updating or removing an unresolved historical job. Agent-scoped
+management does not inherit these jobs from the currently selected system agent;
+operators with unrestricted session access can still inspect them. Restricted
+profile and agent views wait for `openclaw doctor --fix` when ownership is
+unresolved; runtime does not infer sharing permission from a legacy SQL owner or
+default marker. Explicit creator and agent-qualified session ownership keep their
+existing sharing checks. Deleting another agent leaves unresolved rows intact.
+The normal `openclaw update` Doctor phase performs this repair before saving
+the migrated config, including its early preflight and include-recovery writes.
+
+## Legacy cron delivery settings
+
+A stored delivery object must name its mode: `none`, `announce`, or `webhook`.
+Doctor repairs a missing or null mode and the retired `deliver` value to
+`announce`. It also trims and lowercases recognized modes. Unknown modes stay
+unchanged with guidance to review the intended route.
+
+The scheduler keeps unrepaired jobs visible and reports `openclaw doctor --fix`;
+it withholds their execution while healthy jobs continue. Doctor repairs known
+legacy values. For an unknown value, explicitly edit the delivery mode after
+reviewing the intended route. Unrelated edits cannot silently discard it.
+Wholly omitted delivery still uses the job's normal defaults; optional failure
+notification fields still inherit their configured defaults.
+
 ## Channel ownership during an update
 
 When Doctor migrates a legacy `agents.list` roster without a `default: true` marker
@@ -314,15 +367,10 @@ model value into a different embedding model. See [llama.cpp](/plugins/llama-cpp
     For legacy rosters with multiple agents and no resolvable ambient owner, Doctor seeds `agents.defaults.systemAgent.agentId` from a uniquely marked `default: true` agent, or `main` when present. Sole-agent rosters and legacy default markers already honored by the runtime need no owner repair and produce no missing-owner advice. Explicit fleet ownership disables the legacy default-marker fallback, so those rosters may still need repair. Doctor also pins `agents.defaults.heartbeat.agentId` only when heartbeat enrollment would otherwise be unresolved; existing heartbeat owners, shared defaults, and per-agent enrollment are preserved. These changes are reported and saved by `doctor --fix`, including the update-time doctor pass. If no default can be identified, configure the system-agent owner explicitly.
 
     <Note>
-      Doctor only carries automatic migrations for roughly two months after a
-      key is retired. Older legacy keys (for example the original
-      `routing.queue`, `routing.bindings`, `routing.agents`/`defaultAgentId`,
-      `routing.transcribeAudio`, top-level `agent.*`, or top-level `identity`
-      from the pre-multi-agent config shape) no longer have a migration path;
-      config using them now fails validation instead of being rewritten. Fix
-      those keys by hand against the current
-      [configuration reference](/gateway/configuration-reference) before doctor
-      can proceed.
+      Migration retention follows the six-month
+      [retention policy](/gateway/doctor/config-migrations#retention-policy), based
+      on which supported releases can still write the format. For a retired
+      format, follow Doctor's intermediate-upgrade instructions before retrying.
     </Note>
 
     Doctor no longer repairs these pre-June keys:
