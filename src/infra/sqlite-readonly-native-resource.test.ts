@@ -448,6 +448,30 @@ if (process.argv[2] === "--openclaw-sqlite-readonly-child" && process.argv[3] ==
   },
 );
 
+it.each(["copy-source", "copy-staging", "session"] as const)(
+  "refuses relative %s paths without a captured cwd before native work",
+  async (kind) => {
+    const { client, launch, native } = fixture();
+    launch.cwd = undefined;
+    const read =
+      kind === "session"
+        ? client
+            .createSession(launch)
+            .run("relative-token", { mode: "staging-create", preparationId: 1 })
+        : client.runOnce(
+            kind === "copy-source" ? "relative.sqlite" : "/fixture/source.sqlite",
+            {
+              mode: "sync",
+              stagingRoot: kind === "copy-staging" ? "relative-staging" : "/fixture/staging",
+            },
+            { ...launch, deadlineOwnedByCaller: false },
+          );
+    await expect(read).rejects.toThrow("absolute paths without a captured cwd");
+    expect(native.run).not.toHaveBeenCalled();
+    expect(operations.copy).not.toHaveBeenCalled();
+  },
+);
+
 it("creates native sessions only through RPC and preserves captured launch and staging commands", async () => {
   const { client, launch, native, closed, inventory, resource } = fixture();
   expect(operations.session).not.toHaveBeenCalled();

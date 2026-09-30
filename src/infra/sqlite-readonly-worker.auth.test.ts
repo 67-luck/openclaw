@@ -75,6 +75,20 @@ function read(
   });
 }
 
+it("refuses canonical auth without a captured cwd even without a broker", async () => {
+  const { source } = createAuthDatabase();
+  const failure = new Error("ENOENT: current working directory is gone");
+  const cwd = vi.spyOn(process, "cwd").mockImplementation(() => {
+    throw failure;
+  });
+  try {
+    await expect(Promise.resolve().then(() => read(source, "canonical"))).rejects.toBe(failure);
+    expect(spawn).not.toHaveBeenCalled();
+  } finally {
+    cwd.mockRestore();
+  }
+});
+
 it("keeps prepared auth source reads and cleanup off the host SQLite thread", async () => {
   const { source, store, state } = createAuthDatabase();
   const before = fs.readFileSync(source);

@@ -190,19 +190,33 @@ describe("scoped SQLite read-only children", () => {
     }
   });
 
-  it("keeps concurrent source inspections in separate processes", async () => {
-    const source = createDatabase(0);
-    await withSqliteReadOnlyWorkerScope(async () => {
-      expect(await Promise.all([readSnapshotVersion(source), readSnapshotVersion(source)])).toEqual(
-        [0, 0],
+  it.each([false, true])(
+    "keeps concurrent source inspections separate (cwd unavailable=%s)",
+    async (unavailable) => {
+      const source = createDatabase(0);
+      const cwd = unavailable
+        ? vi.spyOn(process, "cwd").mockImplementation(() => {
+            throw new Error("ENOENT: current working directory is gone");
+          })
+        : undefined;
+      try {
+        await withSqliteReadOnlyWorkerScope(async () => {
+          expect(
+            await Promise.all([readSnapshotVersion(source), readSnapshotVersion(source)]),
+          ).toEqual([0, 0]);
+        });
+      } finally {
+        cwd?.mockRestore();
+      }
+      expect(spawn).toHaveBeenCalledTimes(unavailable ? 0 : 1);
+      expect(execFile).toHaveBeenCalledTimes(unavailable ? 2 : 1);
+      const children = [...vi.mocked(spawn).mock.results, ...vi.mocked(execFile).mock.results].map(
+        (result) => result.value,
       );
-    });
-    expect(spawn).toHaveBeenCalledTimes(1);
-    expect(execFile).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(spawn).mock.results[0]?.value.pid).not.toBe(
-      vi.mocked(execFile).mock.results[0]?.value.pid,
-    );
-  });
+      expect(children[0].pid).not.toBe(children[1].pid);
+      expect(children.every((child) => child.exitCode === 0)).toBe(true);
+    },
+  );
 
   it("replaces the child when its launch environment changes", async () => {
     const source = createDatabase(0);

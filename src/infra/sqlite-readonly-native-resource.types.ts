@@ -13,7 +13,7 @@ export type SqliteNativeOwnerReply =
 
 export type SqliteNativeSessionLaunch = {
   env: NodeJS.ProcessEnv;
-  cwd: string;
+  cwd: string | undefined;
   transport: { kind: "native" };
   retainLifetime?: boolean;
   retainOnOperationError?: boolean;

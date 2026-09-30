@@ -34,11 +34,24 @@ export function createSqliteSnapshotStagingRuntime(
     }
     closing = undefined;
   }
-  async function session(launch: SqliteSnapshotStagingLaunch) {
+  function startSession(launch: SqliteSnapshotStagingLaunch) {
+    worker = createSession({
+      ...launch,
+      retainLifetime: false,
+      retainOnOperationError: true,
+    });
+    return worker;
+  }
+  async function session(launch: SqliteSnapshotStagingLaunch, retiringToken = false) {
     if (closing) {
       await closeSession(closing);
     }
-    if (activeLaunch && !isSameSqliteReadOnlyWorkerLaunch(activeLaunch, launch)) {
+    const inheritedRetirement = retiringToken && launch.cwd === undefined;
+    if (
+      activeLaunch &&
+      !inheritedRetirement &&
+      !isSameSqliteReadOnlyWorkerLaunch(activeLaunch, launch)
+    ) {
       throw new Error(
         "SQLite snapshot staging owner launch context changed; retire its snapshots before retrying",
       );
@@ -46,12 +59,10 @@ export function createSqliteSnapshotStagingRuntime(
     if (worker?.isRetired()) {
       await closeSession(worker);
     }
-    worker ??= createSession({
-      ...launch,
-      retainLifetime: false,
-      retainOnOperationError: true,
-    });
-    if (!worker.compatible(launch)) {
+    if (!worker) {
+      return startSession(launch);
+    }
+    if (!inheritedRetirement && !worker.compatible(launch)) {
       throw new Error(
         "SQLite snapshot staging owner launch context changed; retire its snapshots before retrying",
       );
@@ -77,7 +88,9 @@ export function createSqliteSnapshotStagingRuntime(
     }
     try {
       await closeSession(current);
-      const replacement = await session(launch);
+      // Recovery retains this exact token, including a failed reconciliation's
+      // child. It never admits another allocation with an unknown cwd.
+      const replacement = await session(launch, true);
       await replacement.run(directory, { mode: "staging-reconcile" });
       return replacement;
     } catch (error) {

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
@@ -38,6 +39,13 @@ function readPath(value: unknown): string {
   }
   return value;
 }
+function readLaunchPath(value: unknown, cwd: string | undefined): string {
+  const pathname = readPath(value);
+  if (cwd === undefined && !path.isAbsolute(pathname)) {
+    throw new Error("SQLite native resource requires absolute paths without a captured cwd");
+  }
+  return pathname;
+}
 function readLaunch(value: unknown): Pick<SqliteNativeSessionLaunch, "env" | "cwd"> {
   if (!isRecord(value) || !isRecord(value.env)) {
     throw new Error("SQLite native resource requires captured launch facts");
@@ -54,7 +62,10 @@ function readLaunch(value: unknown): Pick<SqliteNativeSessionLaunch, "env" | "cw
     }
     entries.push([key, item]);
   }
-  return { env: Object.fromEntries(entries), cwd: readPath(value.cwd) };
+  return {
+    env: Object.fromEntries(entries),
+    cwd: value.cwd === undefined ? undefined : readPath(value.cwd),
+  };
 }
 function readRequest(value: unknown): SqliteNativeRequest {
   if (!isRecord(value)) {
@@ -122,15 +133,17 @@ function readRequest(value: unknown): SqliteNativeRequest {
     if (expectedSourceIdentity && value.mode !== "sync") {
       throw new Error("SQLite source identity requires artifact-preserving preparation");
     }
+    const launch = readLaunch(value.launch);
     return {
       type: value.type,
       id,
-      pathname: readPath(value.pathname),
+      pathname: readLaunchPath(value.pathname, launch.cwd),
       mode: value.mode,
-      stagingRoot: value.stagingRoot === undefined ? undefined : readPath(value.stagingRoot),
+      stagingRoot:
+        value.stagingRoot === undefined ? undefined : readLaunchPath(value.stagingRoot, launch.cwd),
       expectedSourceIdentity,
       launch: {
-        ...readLaunch(value.launch),
+        ...launch,
         deadlineOwnedByCaller: value.launch.deadlineOwnedByCaller,
       },
     };
@@ -334,6 +347,7 @@ export function createNativeWorkerResource(
     if (session.native.isRetired()) {
       throw new Error("SQLite native session is closed");
     }
+    readLaunchPath(request.pathname, session.launch.cwd);
     session.running = true;
     try {
       const allocating =

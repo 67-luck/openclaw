@@ -27,13 +27,28 @@ if (!(resourcePort instanceof MessagePort)) {
 }
 const native = createSqliteReadOnlyNativeResourceClient(resourcePort);
 const runtime = createSqliteSnapshotStagingRuntime((launch) => native.createSession(launch));
-const directories = new Map<string, { retire: () => Promise<void>; removed: boolean }>();
+const runtimes = new Set([runtime]);
+const directories = new Map<
+  string,
+  { retire: () => Promise<void>; removed: boolean; runtime: typeof runtime }
+>();
 
 function readPath(value: unknown): string {
   if (typeof value !== "string" || value.length === 0 || value.includes("\0")) {
     throw new Error("SQLite snapshot staging requires a nonempty filesystem path");
   }
   return value;
+}
+
+function resolveLaunchPath(value: unknown, cwd: string | undefined): string {
+  const pathname = readPath(value);
+  if (cwd !== undefined) {
+    return path.resolve(cwd, pathname);
+  }
+  if (!path.isAbsolute(pathname)) {
+    throw new Error("SQLite snapshot staging requires absolute paths without a captured cwd");
+  }
+  return path.normalize(pathname);
 }
 
 function readLaunch(value: unknown): SqliteSnapshotStagingLaunch {
@@ -59,7 +74,7 @@ function readLaunch(value: unknown): SqliteSnapshotStagingLaunch {
   }
   return {
     env: Object.fromEntries(entries),
-    cwd: readPath(value.cwd),
+    cwd: value.cwd === undefined ? undefined : readPath(value.cwd),
     transport: { kind: "native" },
   };
 }
@@ -77,7 +92,7 @@ function readCommand(value: unknown): SqliteSnapshotStagingCommand {
   const launch = readLaunch(value.launch);
   const allocation = {
     preparationId: value.preparationId,
-    root: path.resolve(launch.cwd, readPath(value.root)),
+    root: resolveLaunchPath(value.root, launch.cwd),
     allowLegacyWorker: value.allowLegacyWorker,
     launch,
   };
@@ -102,7 +117,7 @@ function readCommand(value: unknown): SqliteSnapshotStagingCommand {
   return {
     type: "prepare",
     ...allocation,
-    pathname: path.resolve(launch.cwd, readPath(value.pathname)),
+    pathname: resolveLaunchPath(value.pathname, launch.cwd),
     preserveSourceArtifacts: value.preserveSourceArtifacts,
     expectedSourceIdentity,
     deadlineOwnedByCaller: value.deadlineOwnedByCaller,
@@ -122,6 +137,9 @@ async function closeDirectory(directory: string): Promise<void> {
   }
   await native.removed(directory);
   directories.delete(directory);
+  if (owned.runtime !== runtime) {
+    runtimes.delete(owned.runtime);
+  }
 }
 
 async function closeResource(directory?: string): Promise<void> {
@@ -138,11 +156,16 @@ async function closeResource(directory?: string): Promise<void> {
     }
   }
   if (directories.size === 0) {
-    try {
-      // Failed allocation may retain a child even without publishing a directory.
-      await runtime.close();
-    } catch (error) {
-      errors.push(error);
+    for (const retained of runtimes) {
+      try {
+        // Failed allocation may retain a child even without publishing a directory.
+        await retained.close();
+        if (retained !== runtime) {
+          runtimes.delete(retained);
+        }
+      } catch (error) {
+        errors.push(error);
+      }
     }
   }
   throwSqliteLifecycleErrors(errors, "SQLite snapshot staging cleanup failed");
@@ -165,15 +188,26 @@ serveOwnedWorkerTasks<SqliteSnapshotStagingReply>(
         port.on("message", abort);
       }
       let directory: string | undefined;
+      // Unknown cwd is inherited only by this preparation's native children;
+      // another preparation must never borrow its staging session.
+      const allocationRuntime =
+        command.launch.cwd === undefined
+          ? createSqliteSnapshotStagingRuntime((launch) => native.createSession(launch))
+          : runtime;
+      runtimes.add(allocationRuntime);
       try {
-        const owned = await runtime.allocate(
+        const owned = await allocationRuntime.allocate(
           command.root,
           command.allowLegacyWorker,
           command.launch,
           command.preparationId,
         );
         directory = owned.directory;
-        directories.set(directory, { retire: owned.retire, removed: false });
+        directories.set(directory, {
+          retire: owned.retire,
+          removed: false,
+          runtime: allocationRuntime,
+        });
         if (command.type === "allocate") {
           return { type: "allocated", directory };
         }
@@ -204,6 +238,18 @@ serveOwnedWorkerTasks<SqliteSnapshotStagingReply>(
             failure = createSqliteLifecycleAggregateError(
               [error, cleanupError],
               "SQLite snapshot preparation and cleanup failed",
+              error,
+            );
+          }
+        } else if (allocationRuntime !== runtime) {
+          try {
+            await allocationRuntime.close();
+            runtimes.delete(allocationRuntime);
+          } catch (cleanupError) {
+            cleanupFailure = true;
+            failure = createSqliteLifecycleAggregateError(
+              [error, cleanupError],
+              "SQLite snapshot allocation and owner cleanup failed",
               error,
             );
           }

@@ -12,6 +12,7 @@ import {
   SQLITE_READONLY_CHILD_ARG,
 } from "./runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
+import { tryProcessCwd } from "./safe-cwd.js";
 import { retainSnapshotWork } from "./sqlite-readonly-location-cleanup.js";
 import {
   readOnlyWorkerScope,
@@ -215,11 +216,19 @@ export function captureSqliteReadOnlyWorkerLaunch(
   source?: SqliteAuthProfileReadOptions["source"],
 ): SqliteReadOnlyWorkerLaunch {
   // Snapshots require native process close before byte cleanup; only canonical Auth uses a broker.
-  const broker = source === "canonical" ? getSpawnBroker() : undefined;
+  const capturedEnv = { ...resolveNodeCompileCacheEnv(env) };
+  if (source === "canonical") {
+    const broker = getSpawnBroker();
+    // Canonical auth retains exact launch facts even without a broker.
+    const cwd = process.cwd();
+    return broker
+      ? { env: capturedEnv, cwd, transport: { kind: "broker", owner: broker } }
+      : { env: capturedEnv, cwd, transport: { kind: "native" } };
+  }
   return {
-    env: { ...resolveNodeCompileCacheEnv(env) },
-    cwd: process.cwd(),
-    transport: broker ? { kind: "broker", owner: broker } : { kind: "native" },
+    env: capturedEnv,
+    cwd: tryProcessCwd(),
+    transport: { kind: "native" },
   };
 }
 
@@ -305,6 +314,9 @@ export function runSqliteReadOnlyWorker(
         }
         try {
           const launch = captureSqliteReadOnlyWorkerLaunch();
+          if (launch.cwd === undefined) {
+            return await runSqliteReadOnlyWorkerOnce(pathname, scopedOptions, launch);
+          }
           if (!scope.worker?.compatible(launch)) {
             await scope.worker?.close();
             scopedOptions.signal.throwIfAborted();
@@ -334,9 +346,10 @@ async function runSqliteAuthProfileWorker(
   pathname: string,
   options: SqliteAuthProfileReadOptions,
   launch: SqliteReadOnlyWorkerLaunch,
-  scope?: SqliteReadOnlyWorkerScope,
+  capturedScope?: SqliteReadOnlyWorkerScope,
 ): Promise<SqliteReadOnlyWorkerValue> {
   options.signal?.throwIfAborted();
+  const scope = launch.cwd === undefined ? undefined : capturedScope;
   if (
     scope?.authWorker &&
     (scope.authWorker.source !== options.source ||

@@ -20,9 +20,10 @@ import {
 
 export type SqliteReadOnlyWorkerLaunch = {
   env: NodeJS.ProcessEnv;
-  cwd: string;
-  transport: { kind: "native" } | { kind: "broker"; owner: SpawnBrokerHost };
-};
+} & (
+  | { cwd: string | undefined; transport: { kind: "native" } }
+  | { cwd: string; transport: { kind: "broker"; owner: SpawnBrokerHost } }
+);
 
 export function isSameSqliteReadOnlyWorkerLaunch(
   captured: SqliteReadOnlyWorkerLaunch,
@@ -30,6 +31,8 @@ export function isSameSqliteReadOnlyWorkerLaunch(
 ): boolean {
   const keys = Object.keys(requested.env);
   return (
+    captured.cwd !== undefined &&
+    requested.cwd !== undefined &&
     captured.transport.kind === requested.transport.kind &&
     (captured.transport.kind === "native" ||
       (requested.transport.kind === "broker" &&
@@ -71,7 +74,15 @@ export function createSqliteReadOnlyWorkerSession(
     host.transport.kind === "broker"
       ? { kind: "broker", owner: host.transport.owner }
       : { kind: "native" };
-  const capturedLaunch = { env, cwd, transport };
+  let capturedLaunch: SqliteReadOnlyWorkerLaunch;
+  if (transport.kind === "broker") {
+    if (cwd === undefined) {
+      throw new Error("SQLite broker session requires a captured working directory");
+    }
+    capturedLaunch = { env, cwd, transport };
+  } else {
+    capturedLaunch = { env, cwd, transport };
+  }
   const argv = [...host.argv];
   const spawnOptions: SpawnOptions = {
     env,

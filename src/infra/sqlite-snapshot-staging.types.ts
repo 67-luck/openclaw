@@ -10,7 +10,7 @@ export type SqliteSnapshotStagingDirectory = {
 
 export type SqliteSnapshotStagingLaunch = {
   env: NodeJS.ProcessEnv;
-  cwd: string;
+  cwd: string | undefined;
   transport: { kind: "native" };
 };
 

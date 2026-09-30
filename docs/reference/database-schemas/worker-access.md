@@ -33,6 +33,12 @@ or `withOpenClawAgentDatabaseReadOnly` alone, does not move execution off thread
 `readWithCanonicalSessionAdmission` validates session reads on the executing
 thread; invoke it inside the worker's admitted reader.
 
+Native snapshot reads can inherit the process working directory when an update
+makes its pathname unavailable. Their database and staging paths must already be
+absolute. Each such preparation owns its staging child through token retirement
+and cleanup; an unknown working directory never qualifies session reuse.
+Canonical auth reads still require an explicitly captured working directory.
+
 Reply initialization and audited admission validators can reserve their exact
 session keys in the shared store queue. Unrelated sessions proceed while a holder
 awaits another queue; overlapping keys retain FIFO order. Creation hooks, parent
