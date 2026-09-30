@@ -1,6 +1,5 @@
 import { nativeHookRelayTesting } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { setHostToolFactoryForTest } from "openclaw/plugin-sdk/agent-runtime-test-contracts";
-import type { DiagnosticEventPayload } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { resetDiagnosticEventsForTest } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { resetGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import { afterEach, beforeEach, expect, vi } from "vitest";
@@ -492,48 +491,23 @@ export async function runSideQuestionWithManagedWebSearchCall(
   return { forkConfig, result, toolResponse };
 }
 
-export function flushDiagnosticEvents() {
-  return new Promise<void>((resolve) => {
-    setImmediate(resolve);
-  });
-}
-
-export function activeDiagnosticToolKeys(events: DiagnosticEventPayload[]): Set<string> {
-  const active = new Set<string>();
-  for (const event of events) {
-    if (event.type === "tool.execution.started") {
-      active.add(
-        `${event.runId ?? event.sessionId ?? event.sessionKey ?? "unknown"}:${event.toolCallId ?? event.toolName}`,
-      );
-    } else if (
-      event.type === "tool.execution.completed" ||
-      event.type === "tool.execution.error" ||
-      event.type === "tool.execution.blocked"
-    ) {
-      active.delete(
-        `${event.runId ?? event.sessionId ?? event.sessionKey ?? "unknown"}:${event.toolCallId ?? event.toolName}`,
-      );
+export function createPendingClient({ interrupt = true } = {}) {
+  const client = createFakeClient({ completeTurn: false });
+  client.request.mockImplementation(async (method: string) => {
+    if (method === "thread/fork") {
+      return threadResult("side-thread");
     }
-  }
-  return active;
-}
-
-export function nativeCommandItem(
-  id: string,
-  status: "inProgress" | "completed",
-  durationMs: number | null,
-) {
-  return {
-    type: "commandExecution",
-    id,
-    command: "git status --short",
-    cwd: "/tmp/workspace",
-    processId: null,
-    source: "agent",
-    status,
-    commandActions: [],
-    aggregatedOutput: status === "completed" ? "" : null,
-    exitCode: status === "completed" ? 0 : null,
-    durationMs,
-  };
+    if (method === "turn/start") {
+      return turnStartResult("turn-1");
+    }
+    if (
+      method === "thread/inject_items" ||
+      method === "thread/unsubscribe" ||
+      (interrupt && method === "turn/interrupt")
+    ) {
+      return {};
+    }
+    throw new Error(`unexpected request: ${method}`);
+  });
+  return client;
 }

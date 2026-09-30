@@ -50,6 +50,7 @@ const {
   runSideQuestionWithManagedWebSearchCall,
   runCodexAppServerSideQuestionImpl,
   createFakeClient,
+  createPendingClient,
   threadResult,
   turnStartResult,
   agentDelta,
@@ -70,27 +71,6 @@ function supervisionConnectionFingerprint(): string {
       pluginConfig: { supervision: { enabled: true } },
     }),
   );
-}
-
-function createPendingClient({ interrupt = true } = {}) {
-  const client = createFakeClient({ completeTurn: false });
-  client.request.mockImplementation(async (method: string) => {
-    if (method === "thread/fork") {
-      return threadResult("side-thread");
-    }
-    if (method === "turn/start") {
-      return turnStartResult("turn-1");
-    }
-    if (
-      method === "thread/inject_items" ||
-      method === "thread/unsubscribe" ||
-      (interrupt && method === "turn/interrupt")
-    ) {
-      return {};
-    }
-    throw new Error(`unexpected request: ${method}`);
-  });
-  return client;
 }
 
 function mockCall(mock: ReturnType<typeof vi.fn>, index = 0): unknown[] {
@@ -2121,8 +2101,9 @@ describe("runCodexAppServerSideQuestion", () => {
   });
 
   it("classifies an active side tool as timed out when side completion expires", async () => {
-    vi.useFakeTimers();
     const client = createPendingClient();
+    const turnStarted = createDeferred<void>();
+    const toolStarted = createDeferred<void>();
     const diagnosticEvents: DiagnosticEventPayload[] = [];
     const unsubscribeDiagnostics = onInternalDiagnosticEvent((event) =>
       diagnosticEvents.push(event),
@@ -2130,6 +2111,7 @@ describe("runCodexAppServerSideQuestion", () => {
     toolExecuteMock.mockImplementation(
       (_callId: string, _args: unknown, signal?: AbortSignal) =>
         new Promise((_resolve, reject) => {
+          toolStarted.resolve();
           signal?.addEventListener(
             "abort",
             () => reject(signal.reason instanceof Error ? signal.reason : new Error("aborted")),
@@ -2140,6 +2122,8 @@ describe("runCodexAppServerSideQuestion", () => {
     const baseRequest = client.request.getMockImplementation()!;
     client.request.mockImplementation(async (method: string, requestParams?: unknown) => {
       if (method === "turn/start") {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        turnStarted.resolve();
         setTimeout(() => {
           void client.handleRequest({
             id: 42,
@@ -2176,7 +2160,9 @@ describe("runCodexAppServerSideQuestion", () => {
         }),
       );
       const runResult = runPromise.catch((error: unknown) => error);
+      await turnStarted.promise;
       await vi.advanceTimersByTimeAsync(0);
+      await toolStarted.promise;
       await vi.advanceTimersByTimeAsync(600_000);
 
       await expect(runResult).resolves.toMatchObject({ name: "TimeoutError" });
