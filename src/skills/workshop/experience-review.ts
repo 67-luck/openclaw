@@ -119,7 +119,7 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
     signal: abortSignal,
   });
   abortSignal.throwIfAborted();
-  // Deleting or replacing the source session must not revive its captured evidence.
+  // Deleting, replacing, or resetting the source session must not revive its captured evidence.
   const sourceEntry = loadSessionEntryReadOnly({
     ...candidate.source,
     hydrateSkillPromptRefs: false,
@@ -129,6 +129,14 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
     throw new Error("Skill experience review source session was deleted or replaced.");
   }
   validateSessionTranscriptContextAnchor(candidate.source, candidate.source);
+  // A Gateway reset keeps the sessionId and rotates the lifecycle revision.
+  const generation = {
+    agentId: candidate.source.agentId,
+    storePath: candidate.source.storePath,
+    sessionKey,
+    sessionId: sourceEntry.sessionId,
+    lifecycleRevision: sourceEntry.lifecycleRevision ?? null,
+  };
   const assertSourceCurrent = () => {
     abortSignal.throwIfAborted();
     if (resolveSkillWorkshopConfig(getRuntimeConfig()).autonomous.mode !== "auto") {
@@ -140,11 +148,12 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
       readConsistency: "latest",
     });
     if (
-      current?.sessionId !== candidate.source.sessionId ||
-      current?.permissionMode !== sourceEntry.permissionMode
+      current?.sessionId !== generation.sessionId ||
+      (current.lifecycleRevision ?? null) !== generation.lifecycleRevision ||
+      current.permissionMode !== sourceEntry.permissionMode
     ) {
       throw new Error(
-        "Skill experience review source session was deleted, replaced, or changed permissions.",
+        "Skill experience review source session was deleted, reset, or changed permissions.",
       );
     }
     validateSessionTranscriptContextAnchor(candidate.source, candidate.source);
@@ -191,14 +200,6 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
     // Each skill_workshop call commits on its own, so a failed or aborted run may have changed skills.
     const changes = await listWorkshopChanges(agentId, { runId });
     log.debug(`experience review finished: session=${sessionKey} changes=${changes.length}`);
-    await postWorkshopChangeNotice({
-      config,
-      agentId,
-      sessionKey,
-      sessionId: candidate.source.sessionId,
-      storePath: candidate.source.storePath,
-      runId,
-      changes,
-    });
+    await postWorkshopChangeNotice({ config, generation, runId, changes });
   }
 }

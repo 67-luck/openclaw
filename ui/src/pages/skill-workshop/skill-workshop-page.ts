@@ -232,8 +232,9 @@ class SkillWorkshopPage extends OpenClawLightDomElement {
     ) {
       return;
     }
-    // Mode is Gateway-wide config, so only a replaced application context retires the write.
-    const isCurrent = () => this.context === context;
+    // A replaced application context or Gateway connection retires the write and its retry.
+    const generation = this.generation;
+    const isCurrent = () => this.context === context && generation === this.generation;
     this.modeBusy = true;
     this.modeError = null;
     this.requestUpdate();

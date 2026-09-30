@@ -6,6 +6,7 @@ import { listAgentIds, resolveAgentWorkspaceDir } from "../agents/agent-scope-co
 import { resolveCanonicalWorkspacePath } from "../agents/workspace-state-identity.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { sha256Hex } from "../infra/crypto-digest.js";
 import { isMissingPathError } from "../infra/errors.js";
 import { pathExists, root } from "../infra/fs-safe.js";
 import { acquireGatewayLock } from "../infra/gateway-lock.js";
@@ -14,9 +15,9 @@ import type { MigrationMessages } from "../infra/state-migrations.types.js";
 import { isUpdateRehearsalReadOnlyPath } from "../infra/update-rehearsal-paths.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import {
-  isWorkspaceSkillMutationRestored,
   prepareWorkspaceSkillRestoration,
   readWorkspaceSkillFile,
+  readWorkspaceSupportFile,
   restoreWorkspaceSkillMutation,
 } from "../skills/lifecycle/workspace-skill-write.js";
 import { resolveWorkshopSkillsDir } from "../skills/workshop/skills-root.js";
@@ -355,16 +356,32 @@ async function readLegacyJsonProposals(params: {
 }
 
 /**
- * Apply wrote support files first and SKILL.md last. While SKILL.md still holds its pre-apply
- * content the apply never finished, so every support file it provably wrote is put back. Past
- * that point the apply completed or the skill changed since; neither is Doctor's to undo.
+ * Apply wrote support files first and SKILL.md last; its compensation restored support files
+ * first and SKILL.md last. SKILL.md at its pre-apply content means the apply never activated,
+ * so every support file it provably wrote is put back. SKILL.md past it with every support file
+ * at its proposed bytes means only the status commit was lost. Anything else stopped mid-way
+ * and keeps its rollback for the operator.
  */
 async function undoUnfinishedApply(apply: UnfinishedApply): Promise<boolean> {
   const skillDir = path.dirname(apply.skillFile);
-  if (
-    !(await pathExists(skillDir)) ||
-    (await readWorkspaceSkillFile(apply.skillFile)) !== apply.previousContent
-  ) {
+  const support = await Promise.all(
+    apply.supportFiles.map(async (file) => ({
+      ...file,
+      current: await readWorkspaceSupportFile({ skillDir, relativePath: file.path }),
+    })),
+  );
+  if ((await readWorkspaceSkillFile(apply.skillFile)) !== apply.previousContent) {
+    if (
+      support.every(
+        ({ current, proposedContentHash }) =>
+          current !== null && sha256Hex(current) === proposedContentHash,
+      )
+    ) {
+      return false;
+    }
+    throw new Error("SKILL.md is past its pre-apply content but its support files are not");
+  }
+  if (support.every(({ current, previousContent }) => current === previousContent)) {
     return false;
   }
   const restoration = await prepareWorkspaceSkillRestoration({
@@ -377,9 +394,6 @@ async function undoUnfinishedApply(apply: UnfinishedApply): Promise<boolean> {
     supportFiles: apply.supportFiles,
     mode: "update",
   });
-  if (await isWorkspaceSkillMutationRestored(restoration)) {
-    return false;
-  }
   await restoreWorkspaceSkillMutation(restoration);
   return true;
 }

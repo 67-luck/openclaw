@@ -6,7 +6,8 @@ import type { OpenClawStateDatabase } from "../../state/openclaw-state-db-contra
 import { tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
 import type { DB } from "../../state/openclaw-state-db.generated.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../../state/openclaw-state-schema.js";
-import { isWorkshopActor, isWorkshopChangeAction, type WorkshopChange } from "./library.js";
+import { isWorkshopActor, type WorkshopChange } from "./library.js";
+import { isWorkshopChangeAction } from "./skill-versions.js";
 
 type ChangesDatabase = Pick<DB, "skill_workshop_changes">;
 

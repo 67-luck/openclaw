@@ -76,20 +76,27 @@ describe("postWorkshopChangeNotice", () => {
     createdAtMs: 1,
     ...overrides,
   });
+  const generation = (sessionKey: string) => ({
+    agentId: "main",
+    storePath: "/tmp/sessions.json",
+    sessionKey,
+    sessionId: "reviewed-session",
+    lifecycleRevision: "reviewed-revision",
+  });
   const post = (changes: WorkshopChange[], sessionKey = "agent:main:telegram:direct:42") =>
     postWorkshopChangeNotice({
       config: {},
-      agentId: "main",
-      sessionKey,
-      sessionId: "reviewed-session",
-      storePath: "/tmp/sessions.json",
+      generation: generation(sessionKey),
       runId: "skill-workshop-review:1",
       changes,
     });
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.loadSessionEntryReadOnly.mockReturnValue({ sessionId: "reviewed-session" });
+    mocks.loadSessionEntryReadOnly.mockReturnValue({
+      sessionId: "reviewed-session",
+      lifecycleRevision: "reviewed-revision",
+    });
   });
 
   it("stays quiet when the review changed nothing", async () => {
@@ -139,6 +146,9 @@ describe("postWorkshopChangeNotice", () => {
         ],
         mirror: expect.objectContaining({ sessionKey: "agent:main:telegram:direct:42" }),
       }),
+      undefined,
+      undefined,
+      generation("agent:main:telegram:direct:42"),
     );
     expect(mocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
     // The next turn learns the exact revert: archive what was created; restore what was edited
@@ -173,18 +183,26 @@ describe("postWorkshopChangeNotice", () => {
       deliveryContext: { channel: "slack", to: "slack:C0123ABC", accountId: "workspace-1" },
       threadId: "1234567890.123456",
     });
-    await post([change({})], "agent:main:slack:channel:C0123ABC:thread:1234567890.123456");
+    const sessionKey = "agent:main:slack:channel:C0123ABC:thread:1234567890.123456";
+    await post([change({})], sessionKey);
     expect(mocks.sendDurableMessageBatchCore).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: "slack",
         to: "slack:C0123ABC",
         threadId: "1234567890.123456",
       }),
+      undefined,
+      undefined,
+      generation(sessionKey),
     );
   });
 
   it("leaves a conversation reset since the review started untouched", async () => {
-    mocks.loadSessionEntryReadOnly.mockReturnValue({ sessionId: "fresh-session" });
+    // A Gateway reset keeps the sessionId and rotates the lifecycle revision.
+    mocks.loadSessionEntryReadOnly.mockReturnValue({
+      sessionId: "reviewed-session",
+      lifecycleRevision: "reset-revision",
+    });
     mocks.extractDeliveryInfo.mockReturnValue({
       deliveryContext: { channel: "telegram", to: "42" },
       threadId: undefined,

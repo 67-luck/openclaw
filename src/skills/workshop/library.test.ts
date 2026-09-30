@@ -213,7 +213,7 @@ describe("workshop library", () => {
     expect(view.content).toContain("step 2");
   });
 
-  it("keeps a review's pre-review version until the review is over", async () => {
+  it("keeps a review's pre-review version within the ten-version limit", async () => {
     await createWorkshopSkill(ctx, { name: "deploy", content: skill("deploy", "step 0") });
     const review = { ...ctx, actor: "review" as const, runId: "review-run" };
     let firstReviewVersion = "";
@@ -225,22 +225,44 @@ describe("workshop library", () => {
       });
       firstReviewVersion ||= change.versionId ?? "";
     }
+    expect((await listWorkshopArchive({}, "main"))[0]?.versions).toHaveLength(10);
     await restoreWorkshopSkill(ctx, { name: "deploy", versionId: firstReviewVersion });
     expect(await readLive("deploy")).toContain("step 0");
   });
 
-  it("checks the caller's live authority before touching files", async () => {
+  it("applies the version limit across separate reviews", async () => {
     await createWorkshopSkill(ctx, { name: "deploy", content: skill("deploy", "step 0") });
-    const revoked = {
-      ...ctx,
-      assertLive: () => {
-        throw new Error("Learning is off.");
-      },
-    };
-    await expect(
-      patchWorkshopSkill(revoked, { name: "deploy", oldText: "step 0", newText: "step 1" }),
-    ).rejects.toThrow("Learning is off.");
-    expect(await readLive("deploy")).toContain("step 0");
-    expect(await listWorkshopArchive({}, "main")).toEqual([]);
+    for (let step = 1; step <= 12; step += 1) {
+      await patchWorkshopSkill(
+        { ...ctx, actor: "review", runId: `review-${step}` },
+        { name: "deploy", oldText: `step ${step - 1}`, newText: `step ${step}` },
+      );
+    }
+    expect((await listWorkshopArchive({}, "main"))[0]?.versions).toHaveLength(10);
   });
+
+  it.each(["patch", "archive"] as const)(
+    "does not %s once authority is revoked during the snapshot",
+    async (action) => {
+      await createWorkshopSkill(ctx, { name: "deploy", content: skill("deploy", "step 0") });
+      // Live at lock time; revoked by the time the snapshot copy finishes.
+      let checks = 0;
+      const revoking = {
+        ...ctx,
+        assertLive: () => {
+          checks += 1;
+          if (checks > 1) {
+            throw new Error("Learning is off.");
+          }
+        },
+      };
+      await expect(
+        action === "patch"
+          ? patchWorkshopSkill(revoking, { name: "deploy", oldText: "step 0", newText: "step 1" })
+          : archiveWorkshopSkill(revoking, { name: "deploy", reason: "unused" }),
+      ).rejects.toThrow("Learning is off.");
+      expect(await readLive("deploy")).toContain("step 0");
+      expect(await listWorkshopArchive({}, "main")).toEqual([]);
+    },
+  );
 });

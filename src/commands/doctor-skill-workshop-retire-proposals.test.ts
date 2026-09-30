@@ -291,8 +291,8 @@ it("undoes an apply that stopped before SKILL.md, then retires its rollback", as
   expect(retiredTableNames(env)).toEqual([]);
 });
 
-it("keeps the rollback when a half-applied support file changed since the apply", async () => {
-  const root = tempDirs.make("openclaw-retire-changed-apply-");
+async function retireUnfinishedApply(live: { skill: string; support: string }) {
+  const root = tempDirs.make("openclaw-retire-unfinished-apply-");
   const stateDir = path.join(root, "state");
   const env = { HOME: root, OPENCLAW_STATE_DIR: stateDir };
   const config: OpenClawConfig = {
@@ -321,18 +321,48 @@ it("keeps the rollback when a half-applied support file changed since the apply"
       skillFile,
       JSON.stringify([{ path: "references/notes.md", existed: true, previousContent: "before\n" }]),
     );
-  write(skillFile, "# Before\n");
-  write(supportFile, "edited by hand\n");
-
+  write(skillFile, live.skill);
+  write(supportFile, live.support);
   const result = await retireSkillWorkshopProposals({ config, env });
+  return { result, env, skillDir, skillFile, supportFile };
+}
+
+it.each([
+  {
+    state: "a half-applied support file changed since the apply",
+    live: { skill: "# Before\n", support: "edited by hand\n" },
+    cause: (supportFile: string) =>
+      `Workspace skill target changed before restoration: ${supportFile}`,
+  },
+  {
+    state: "compensation stopped after restoring support files but before SKILL.md",
+    live: { skill: "# Proposed\n", support: "before\n" },
+    cause: () => "SKILL.md is past its pre-apply content but its support files are not",
+  },
+])("keeps the rollback when $state", async ({ live, cause }) => {
+  const { result, env, skillDir, skillFile, supportFile } = await retireUnfinishedApply(live);
 
   expect(result.changes).toEqual([]);
   expect(result.warningDisposition).toBe("recoverable");
   expect(result.warnings).toContainEqual(
     expect.stringContaining(
-      `Could not undo the unfinished apply of Skill Workshop proposal deploy-procedure-1 in ${skillDir}: Error: Workspace skill target changed before restoration: ${supportFile}.`,
+      `Could not undo the unfinished apply of Skill Workshop proposal deploy-procedure-1 in ${skillDir}: Error: ${cause(supportFile)}.`,
     ),
   );
-  expect(fs.readFileSync(supportFile, "utf8")).toBe("edited by hand\n");
+  expect(fs.readFileSync(skillFile, "utf8")).toBe(live.skill);
+  expect(fs.readFileSync(supportFile, "utf8")).toBe(live.support);
   expect(retiredTableNames(env)).not.toEqual([]);
+});
+
+it("retires the rollback of an apply that finished before its status commit", async () => {
+  const live = { skill: "# Proposed\n", support: "proposed\n" };
+  const { result, env, skillFile, supportFile } = await retireUnfinishedApply(live);
+
+  expect(result.warnings).toEqual([
+    "Skill Workshop proposal deploy-procedure-1 has no draft left to export; retired its record.",
+  ]);
+  expect(result.changes).toContain("Retired the Skill Workshop proposal tables.");
+  expect(fs.readFileSync(skillFile, "utf8")).toBe(live.skill);
+  expect(fs.readFileSync(supportFile, "utf8")).toBe(live.support);
+  expect(retiredTableNames(env)).toEqual([]);
 });

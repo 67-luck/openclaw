@@ -6,6 +6,7 @@ import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 export type SkillWorkshopPageTestElement = HTMLElement & {
   context: ApplicationContext;
   updateComplete: Promise<boolean>;
+  requestUpdate(): void;
 };
 
 export function createRuntimeConfigStub(options?: {
@@ -66,4 +67,14 @@ export function createContext(
     chatSubmissions: { retain: vi.fn() },
     navigate: vi.fn(),
   } as unknown as ApplicationContext;
+}
+
+/** Simulates the operator connecting the same application context to another Gateway. */
+export function reconnectGateway(context: ApplicationContext, request: ReturnType<typeof vi.fn>) {
+  Object.assign(context.gateway, {
+    snapshot: {
+      ...context.gateway.snapshot,
+      client: createContext(request).gateway.snapshot.client,
+    },
+  });
 }

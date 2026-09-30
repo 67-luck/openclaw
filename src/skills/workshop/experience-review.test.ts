@@ -54,8 +54,10 @@ describe("runSkillExperienceReview", () => {
     await expect(runSkillExperienceReview(candidate)).rejects.toThrow("model request timed out");
     expect(mocks.postWorkshopChangeNotice).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionKey: candidate.source.sessionKey,
-        sessionId: candidate.source.sessionId,
+        generation: expect.objectContaining({
+          sessionKey: candidate.source.sessionKey,
+          sessionId: candidate.source.sessionId,
+        }),
         changes: [committed],
       }),
     );

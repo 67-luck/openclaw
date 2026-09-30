@@ -26,26 +26,22 @@ import { bumpSkillsSnapshotVersion } from "../runtime/refresh-state.js";
 import { scanSkillFile, scanSupportFilePath } from "../security/skill-bundle-scan.js";
 import { resolveSkillWorkshopConfig } from "./config.js";
 import { withSkillLocks } from "./skill-locks.js";
+import {
+  listVersions,
+  pruneVersions,
+  snapshotSkill,
+  type MutationPaths,
+  type SkillPaths,
+  type SkillVersion,
+  type WorkshopChangeAction,
+} from "./skill-versions.js";
 import { resolveWorkshopSkillsDir } from "./skills-root.js";
 
 const WORKSHOP_ACTORS = ["agent", "review", "curator", "user"] as const;
-const WORKSHOP_CHANGE_ACTIONS = [
-  "create",
-  "patch",
-  "write_file",
-  "remove_file",
-  "archive",
-  "restore",
-] as const;
 export type WorkshopActor = (typeof WORKSHOP_ACTORS)[number];
-export type WorkshopChangeAction = (typeof WORKSHOP_CHANGE_ACTIONS)[number];
 
 export function isWorkshopActor(value: string): value is WorkshopActor {
   return WORKSHOP_ACTORS.some((actor) => actor === value);
-}
-
-export function isWorkshopChangeAction(value: string): value is WorkshopChangeAction {
-  return WORKSHOP_CHANGE_ACTIONS.some((action) => action === value);
 }
 
 export type WorkshopMutationContext = {
@@ -81,7 +77,7 @@ export type WorkshopSkillSummary = {
 export type WorkshopArchivedSkill = {
   name: string;
   live: boolean;
-  versions: { id: string; action: WorkshopChangeAction; createdAtMs: number }[];
+  versions: SkillVersion[];
 };
 
 /** Refusal the model (or operator) can act on; the message says what to change. */
@@ -91,18 +87,11 @@ export class WorkshopWriteError extends Error {
 
 const SKILL_FILE = "SKILL.md";
 const ARCHIVE_DIR = ".archive";
-const MAX_VERSIONS_PER_SKILL = 10;
 // The Agent Skills limit. Authoring guidance asks for ~160 bytes, but a hard 160 cap forced
 // lossy description rewrites whenever a review patched an older skill, and blocked restores.
 const MAX_DESCRIPTION_BYTES = 1024;
 const MAX_CHANGES_LIMIT = 500;
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
-const VERSION_ID_PATTERN = new RegExp(
-  `^(\\d{4})(\\d{2})(\\d{2})T(\\d{2})(\\d{2})(\\d{2})(\\d{3})Z-(${WORKSHOP_CHANGE_ACTIONS.join("|")})$`,
-);
-
-type SkillPaths = { root: string; skillDir: string; versionsDir: string };
-type SkillVersion = WorkshopArchivedSkill["versions"][number];
 
 function resolveSkillPaths(config: OpenClawConfig, agentId: string, name: string): SkillPaths {
   if (!SKILL_NAME_PATTERN.test(name)) {
@@ -162,68 +151,6 @@ async function listSkillFiles(
   }
   files.sort((a, b) => (a === SKILL_FILE ? -1 : b === SKILL_FILE ? 1 : a.localeCompare(b)));
   return { files, sizeBytes, updatedAtMs: Math.trunc(updatedAtMs) };
-}
-
-async function listVersions(versionsDir: string): Promise<SkillVersion[]> {
-  let names: string[];
-  try {
-    names = await fs.readdir(versionsDir);
-  } catch (error) {
-    if (hasErrnoCode(error, "ENOENT")) {
-      return [];
-    }
-    throw error;
-  }
-  const versions: SkillVersion[] = [];
-  for (const id of names) {
-    const match = VERSION_ID_PATTERN.exec(id);
-    const action = match?.[8];
-    if (!match || !action || !isWorkshopChangeAction(action)) {
-      continue;
-    }
-    const [, year, month, day, hour, minute, second, ms] = match;
-    versions.push({
-      id,
-      action,
-      createdAtMs: Date.UTC(
-        Number(year),
-        Number(month) - 1,
-        Number(day),
-        Number(hour),
-        Number(minute),
-        Number(second),
-        Number(ms),
-      ),
-    });
-  }
-  return versions.toSorted((a, b) => b.id.localeCompare(a.id));
-}
-
-/** Copies the live skill into `.archive/<name>/<versionId>` before it changes. */
-async function snapshotSkill(
-  paths: SkillPaths,
-  action: WorkshopChangeAction,
-): Promise<string | undefined> {
-  if (!(await pathExists(path.join(paths.skillDir, SKILL_FILE)))) {
-    return undefined;
-  }
-  // Ids sort by time; stay strictly after the newest so restore picks the right default.
-  const newest = (await listVersions(paths.versionsDir))[0];
-  const createdAtMs = Math.max(Date.now(), (newest?.createdAtMs ?? 0) + 1);
-  const versionId = `${new Date(createdAtMs).toISOString().replace(/[-:.]/g, "")}-${action}`;
-  await fs.mkdir(paths.versionsDir, { recursive: true });
-  // Copy under a name listVersions ignores; only a complete copy becomes a restorable version.
-  const staging = path.join(paths.versionsDir, `.snapshot-${randomUUID()}`);
-  try {
-    await fs.cp(paths.skillDir, staging, {
-      recursive: true,
-      filter: async (source) => !(await fs.lstat(source)).isSymbolicLink(),
-    });
-    await fs.rename(staging, path.join(paths.versionsDir, versionId));
-  } finally {
-    await fs.rm(staging, { recursive: true, force: true });
-  }
-  return versionId;
 }
 
 function validateSkillMarkdown(name: string, content: string, maxSkillBytes: number): string {
@@ -367,11 +294,12 @@ async function readRestorableVersion(
   return files;
 }
 
-async function writeSkillFile(paths: SkillPaths, filePath: string, content: string) {
+async function writeSkillFile(paths: MutationPaths, filePath: string, content: string) {
   await fs.mkdir(paths.root, { recursive: true });
   assertInsideSkillsRoot(paths.root, paths.skillDir, "skill directory");
   await fs.mkdir(paths.skillDir, { recursive: true });
   const skillRoot = await root(paths.skillDir);
+  paths.assertLive();
   await skillRoot.write(filePath, content, { encoding: "utf8", mkdir: true, overwrite: true });
 }
 
@@ -392,7 +320,7 @@ async function mutateSkill(
   ctx: WorkshopMutationContext,
   name: string,
   action: WorkshopChangeAction,
-  apply: (paths: SkillPaths) => Promise<{ summary: string; versionId?: string }>,
+  apply: (paths: MutationPaths) => Promise<{ summary: string; versionId?: string }>,
   alsoLock: readonly SkillPaths[] = [],
 ): Promise<WorkshopChange> {
   const paths = resolveSkillPaths(ctx.config, ctx.agentId, name);
@@ -410,13 +338,17 @@ async function mutateSkill(
           })
         : undefined;
     const before = await snapshotArtifact();
-    const { summary, versionId } = await apply(paths);
+    // Checked at lock time to skip needless work, and again right before each file effect.
+    const { summary, versionId } = await apply({ ...paths, assertLive: () => ctx.assertLive?.() });
     const after = await snapshotArtifact();
-    // Keep a review's pre-review undo target; reviews are bounded and the next change prunes.
-    const keep = ctx.actor === "review" ? Number.POSITIVE_INFINITY : MAX_VERSIONS_PER_SKILL;
-    for (const version of (await listVersions(paths.versionsDir)).slice(keep)) {
-      await fs.rm(path.join(paths.versionsDir, version.id), { recursive: true, force: true });
-    }
+    // A review's undo restores the version before its first edit of this skill; keep it.
+    const reviewAnchor =
+      ctx.actor === "review" && ctx.runId
+        ? ((await listWorkshopChanges(ctx.agentId, { runId: ctx.runId })).findLast(
+            (change) => change.skillName === name && change.versionId,
+          )?.versionId ?? versionId)
+        : undefined;
+    await pruneVersions(paths.versionsDir, reviewAnchor);
     bumpSkillsSnapshotVersion({
       reason: "workshop",
       changedPath: path.join(paths.skillDir, SKILL_FILE),
@@ -644,6 +576,7 @@ export async function removeWorkshopSkillFile(
       );
     }
     const versionId = await snapshotSkill(paths, "remove_file");
+    paths.assertLive();
     await removePathWithinRoot({ rootDir: paths.skillDir, relativePath: file, force: false });
     return { summary: params.summary ?? `removed ${file}`, versionId };
   });
@@ -674,6 +607,7 @@ export async function archiveWorkshopSkill(
         );
       }
       const versionId = await snapshotSkill(paths, "archive");
+      paths.assertLive();
       await fs.rm(paths.skillDir, { recursive: true, force: true });
       const detail = [
         params.absorbedInto ? `merged into ${params.absorbedInto}` : undefined,
@@ -719,6 +653,7 @@ export async function restoreWorkshopSkill(
         await fs.writeFile(destination, content, { flag: "wx" });
       }
       const versionId = await snapshotSkill(paths, "restore");
+      paths.assertLive();
       await fs.rm(paths.skillDir, { recursive: true, force: true });
       await fs.rename(staging, paths.skillDir);
       const summary =

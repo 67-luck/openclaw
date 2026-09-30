@@ -2,6 +2,7 @@ import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/
 import { getReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import { extractDeliveryInfo } from "../../config/sessions/delivery-info.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
+import type { SessionDeliveryGeneration } from "../../config/sessions/session-delivery-generation.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { buildOutboundSessionContext } from "../../infra/outbound/session-context.js";
 import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
@@ -85,66 +86,72 @@ function formatWorkshopUndoContext(changes: readonly WorkshopChange[]): string {
  * mirrored into the session transcript; channel-less sessions (Control UI) get a transcript
  * entry. The next foreground turn also gets a system event naming the exact revert call,
  * because an assistant line the model did not write is weak evidence that "undo" means it.
- * A conversation reset since the review started gets neither.
+ * A conversation reset or replaced since the review started gets none of it.
  */
 export async function postWorkshopChangeNotice(params: {
   config: OpenClawConfig;
-  agentId: string;
-  sessionKey: string;
   /** The reviewed session generation; the notice belongs to it, not to a later reset. */
-  sessionId: string;
-  storePath: string;
+  generation: SessionDeliveryGeneration;
   runId: string;
   changes: readonly WorkshopChange[];
 }): Promise<void> {
   if (params.changes.length === 0) {
     return;
   }
-  const current = loadSessionEntryReadOnly({
-    agentId: params.agentId,
-    sessionKey: params.sessionKey,
-    storePath: params.storePath,
-    hydrateSkillPromptRefs: false,
-    readConsistency: "latest",
-  });
-  if (current?.sessionId !== params.sessionId) {
-    log.debug(`skill workshop notice skipped: session ${params.sessionKey} was reset`);
+  const { generation } = params;
+  const { agentId, sessionKey } = generation;
+  const isReviewedGeneration = () => {
+    const current = loadSessionEntryReadOnly({
+      agentId,
+      sessionKey,
+      storePath: generation.storePath,
+      hydrateSkillPromptRefs: false,
+      readConsistency: "latest",
+    });
+    return (
+      current?.sessionId === generation.sessionId &&
+      (current.lifecycleRevision ?? null) === generation.lifecycleRevision
+    );
+  };
+  if (!isReviewedGeneration()) {
+    log.debug(`skill workshop notice skipped: session ${sessionKey} was reset`);
     return;
   }
   enqueueSystemEvent(formatWorkshopUndoContext(params.changes), {
-    sessionKey: resolveSystemEventQueueKey(params.sessionKey, params.agentId),
+    sessionKey: resolveSystemEventQueueKey(sessionKey, agentId),
   });
   const text = formatWorkshopChangeNotice(params.changes);
   const idempotencyKey = `skill-workshop-notice:${params.runId}`;
   try {
-    const { deliveryContext: target, threadId } = extractDeliveryInfo(params.sessionKey, {
+    const { deliveryContext: target, threadId } = extractDeliveryInfo(sessionKey, {
       cfg: params.config,
     });
     const channel = target?.channel ? normalizeMessageChannel(target.channel) : undefined;
     if (channel && isDeliverableMessageChannel(channel) && target?.to) {
       // Delivery and transcript runtimes stay lazy: most reviews change nothing.
       const { sendDurableMessageBatchCore } = await import("../../channels/message/runtime.js");
-      const send = await sendDurableMessageBatchCore({
-        cfg: params.config,
-        channel,
-        to: target.to,
-        accountId: target.accountId,
-        // The session key's thread is canonical; stored context may name a stale thread.
-        threadId: threadId ?? target.threadId,
-        payloads: [{ text }],
-        session: buildOutboundSessionContext({
+      const send = await sendDurableMessageBatchCore(
+        {
           cfg: params.config,
-          sessionKey: params.sessionKey,
-          agentId: params.agentId,
-        }),
-        mirror: {
-          sessionKey: params.sessionKey,
-          agentId: params.agentId,
-          idempotencyKey,
-          expectedSessionId: params.sessionId,
+          channel,
+          to: target.to,
+          accountId: target.accountId,
+          // The session key's thread is canonical; stored context may name a stale thread.
+          threadId: threadId ?? target.threadId,
+          payloads: [{ text }],
+          session: buildOutboundSessionContext({ cfg: params.config, sessionKey, agentId }),
+          mirror: {
+            sessionKey,
+            agentId,
+            idempotencyKey,
+            expectedSessionId: generation.sessionId,
+          },
+          bestEffort: true,
         },
-        bestEffort: true,
-      });
+        undefined,
+        undefined,
+        generation,
+      );
       if (send.status === "failed" || send.status === "partial_failed") {
         throw send.error;
       }
@@ -153,22 +160,23 @@ export async function postWorkshopChangeNotice(params: {
     const { appendAssistantMessageToSessionTranscript } =
       await import("../../config/sessions/transcript.runtime.js");
     const appended = await appendAssistantMessageToSessionTranscript({
-      agentId: params.agentId,
-      sessionKey: params.sessionKey,
-      expectedSessionId: params.sessionId,
-      storePath: params.storePath,
+      agentId,
+      sessionKey,
+      storePath: generation.storePath,
+      expectedSessionId: generation.sessionId,
+      expectedLifecycleRevision: generation.lifecycleRevision,
       text,
       idempotencyKey,
       config: params.config,
     });
     if (!appended.ok) {
-      if (appended.code === "session-rebound") {
-        log.debug(`skill workshop notice skipped: session ${params.sessionKey} was reset`);
-        return;
-      }
       throw new Error(appended.reason);
     }
   } catch (error) {
+    if (!isReviewedGeneration()) {
+      log.debug(`skill workshop notice skipped: session ${sessionKey} was reset`);
+      return;
+    }
     // The system event above still carries the change to the next turn.
     log.warn(`skill workshop notice delivery failed: ${String(error)}`);
   }
