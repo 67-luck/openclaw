@@ -179,8 +179,11 @@ export function extractActiveMemorySummary(text: string) {
   return match?.[1] ? decodeXmlEntities(match[1]).trim() : null;
 }
 
+/** Reads the target named by the QA marker; tool descriptions in the prompt also use `target=`. */
 export function extractToolSearchTarget(text: string): string | null {
-  const match = /\btarget=([A-Za-z0-9_.:-]+)\b/.exec(text);
+  const match = /tool search qa (?:check|failure)\b[^\n]*?\btarget=([A-Za-z0-9_.:-]+)\b/i.exec(
+    text,
+  );
   return match?.[1]?.trim() || null;
 }
 
