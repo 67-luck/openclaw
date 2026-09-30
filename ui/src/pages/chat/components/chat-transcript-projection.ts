@@ -298,15 +298,15 @@ export function projectChatTranscript(
     githubRepo: props.githubRepo,
     githubRepositories: props.githubRepositories,
     showAssistantAvatar: avatarPlacement === "gutter",
+    resolveReplyPreview,
+    onResolveReply: props.replyMessageAccess?.request,
+    onOpenReply: (replyToId: string) => state.transcriptRenderContext.onOpenReply?.(replyToId),
+    replyNavigationId: props.replyMessageAccess?.navigationId,
   } satisfies StreamGroupOptions;
   const streamGroupOptions = {
     ...sharedMessageRenderOptions,
     branding: props.branding,
     assistant: assistantIdentity,
-    resolveReplyPreview,
-    onResolveReply: props.replyMessageAccess?.request,
-    onOpenReply: (replyToId: string) => state.transcriptRenderContext.onOpenReply?.(replyToId),
-    replyNavigationId: props.replyMessageAccess?.navigationId,
     startupLabel: props.startupLabel,
     waitingApproval: props.waitingApproval,
     runOutputTokens,
@@ -363,10 +363,6 @@ export function projectChatTranscript(
       personActivity: props.personActivity,
       avatarPlacement,
       contextWindow: threadContextWindow,
-      resolveReplyPreview,
-      onResolveReply: props.replyMessageAccess?.request,
-      onOpenReply: (replyToId: string) => state.transcriptRenderContext.onOpenReply?.(replyToId),
-      replyNavigationId: props.replyMessageAccess?.navigationId,
       onRewind:
         rewindEntryId && props.onRewindMessage
           ? () => {
