@@ -39,6 +39,7 @@ export function requireOptionArgument(
 ): string;
 export function stripLeadingPackageManagerSeparator(argv: string[]): string[];
 export function parseStrictBooleanArg(value: unknown, label: string): boolean;
+export function parseBooleanFlag(value: string | undefined, fallback?: boolean): boolean;
 export function classifyBoundedUnsignedDecimal(
   value: unknown,
   min: number,

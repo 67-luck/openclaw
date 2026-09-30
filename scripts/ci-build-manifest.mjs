@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import path, { matchesGlob } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveTestGitCommits } from "../.github/actions/git-owner/test-prerequisites.mjs";
+import { parseBooleanFlag } from "./lib/arg-utils.runtime.mjs";
 import { resolveReleaseContextIdentity } from "./lib/release-context.mjs";
 import { classifyReleaseTrain, parseReleaseVersion } from "./lib/release-version.mjs";
 
@@ -98,20 +99,6 @@ const createChannelContractTestShards =
     ? channelContractPlan.createChannelContractTestShards
     : () => [];
 
-const parseBoolean = (value, fallback = false) => {
-  if (value === undefined) {
-    return fallback;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "true" || normalized === "1") {
-    return true;
-  }
-  if (normalized === "false" || normalized === "0" || normalized === "") {
-    return false;
-  }
-  return fallback;
-};
-
 const pluginContractPlan = await importTargetPlan(
   existsSync("./scripts/lib/plugin-contract-test-plan.mts")
     ? "./scripts/lib/plugin-contract-test-plan.mts"
@@ -157,9 +144,9 @@ const changedPaths = (() => {
     return null;
   }
 })();
-const docsOnly = parseBoolean(process.env.OPENCLAW_CI_DOCS_ONLY);
-const docsChanged = parseBoolean(process.env.OPENCLAW_CI_DOCS_CHANGED);
-const releaseGate = parseBoolean(process.env.OPENCLAW_CI_RELEASE_GATE) && !ciQualification;
+const docsOnly = parseBooleanFlag(process.env.OPENCLAW_CI_DOCS_ONLY);
+const docsChanged = parseBooleanFlag(process.env.OPENCLAW_CI_DOCS_CHANGED);
+const releaseGate = parseBooleanFlag(process.env.OPENCLAW_CI_RELEASE_GATE) && !ciQualification;
 const compactPullRequest = isCanonicalRepository && eventName === "pull_request";
 const runtimePullRequest = isCanonicalRepository && (compactPullRequest || releaseGate);
 // Exact-head release gates substitute for PR CI. Ordinary manual CI
@@ -245,11 +232,11 @@ const toolingOwnerChange =
   typeof nodeTestPlan.isToolingTestOwnerPath === "function" &&
   changedPaths.some(nodeTestPlan.isToolingTestOwnerPath);
 const nodeDataOnly =
-  eventName === "pull_request" && parseBoolean(process.env.OPENCLAW_CI_NODE_TEST_DATA_ONLY);
+  eventName === "pull_request" && parseBooleanFlag(process.env.OPENCLAW_CI_NODE_TEST_DATA_ONLY);
 const nativeGeneratedOnly =
   workflowEventName === "pull_request" &&
   isCanonicalRepository &&
-  !parseBoolean(process.env.OPENCLAW_CI_FULL) &&
+  !parseBooleanFlag(process.env.OPENCLAW_CI_FULL) &&
   process.env.OPENCLAW_CI_HEAD_REPOSITORY === process.env.OPENCLAW_CI_REPOSITORY &&
   process.env.OPENCLAW_CI_PR_AUTHOR_TYPE === "Bot" &&
   (
@@ -258,16 +245,16 @@ const nativeGeneratedOnly =
 const runNode =
   !nodeDataOnly &&
   !nativeGeneratedOnly &&
-  ((parseBoolean(process.env.OPENCLAW_CI_RUN_NODE) && !docsOnly) || toolingOwnerChange);
+  ((parseBooleanFlag(process.env.OPENCLAW_CI_RUN_NODE) && !docsOnly) || toolingOwnerChange);
 const runNodeFastOnly =
   runNode &&
   !runtimePullRequest &&
   !toolingOwnerChange &&
-  parseBoolean(process.env.OPENCLAW_CI_RUN_NODE_FAST_ONLY);
+  parseBooleanFlag(process.env.OPENCLAW_CI_RUN_NODE_FAST_ONLY);
 const runNodeFull = runNode && !runNodeFastOnly;
 // release-fast-lane: label-admitted narrow gate for release tooling PRs.
 // Canonical PR CI only; declined runs keep every ordinary decision.
-const releaseFastLaneLabel = parseBoolean(process.env.OPENCLAW_CI_RELEASE_FAST_LANE_LABEL);
+const releaseFastLaneLabel = parseBooleanFlag(process.env.OPENCLAW_CI_RELEASE_FAST_LANE_LABEL);
 const releaseFastLaneScope = !releaseFastLaneLabel
   ? null
   : !(
@@ -321,9 +308,9 @@ if (
 }
 
 const runNodeFastPluginContracts =
-  runNode && parseBoolean(process.env.OPENCLAW_CI_RUN_NODE_FAST_PLUGIN_CONTRACTS);
+  runNode && parseBooleanFlag(process.env.OPENCLAW_CI_RUN_NODE_FAST_PLUGIN_CONTRACTS);
 const runNodeFastCiRouting =
-  runNode && parseBoolean(process.env.OPENCLAW_CI_RUN_NODE_FAST_CI_ROUTING);
+  runNode && parseBooleanFlag(process.env.OPENCLAW_CI_RUN_NODE_FAST_CI_ROUTING);
 const proposedCheckScope =
   runtimePullRequest &&
   (!frozenTarget || releaseGate) &&
@@ -342,7 +329,7 @@ const channelContractShards =
   !runtimePullRequest && runNodeFull && !releaseFastLane ? createChannelContractTestShards() : [];
 const runMacos =
   !nativeGeneratedOnly &&
-  parseBoolean(process.env.OPENCLAW_CI_RUN_MACOS) &&
+  parseBooleanFlag(process.env.OPENCLAW_CI_RUN_MACOS) &&
   !docsOnly &&
   isCanonicalRepository &&
   !releaseFastLane;
@@ -350,7 +337,7 @@ const runMacos =
 const runMacosNode =
   runMacos ||
   (!nativeGeneratedOnly &&
-    parseBoolean(process.env.OPENCLAW_CI_RUN_MACOS_NODE) &&
+    parseBooleanFlag(process.env.OPENCLAW_CI_RUN_MACOS_NODE) &&
     !docsOnly &&
     isCanonicalRepository &&
     !releaseFastLane);
@@ -362,7 +349,7 @@ const supportsIosBuild = hasPackageScript("ios:build");
 const supportsCurrentIosCi = supportsIosBuild && supportsCurrentMacosSwiftCi;
 const runIosBuild =
   !nativeGeneratedOnly &&
-  parseBoolean(process.env.OPENCLAW_CI_RUN_IOS_BUILD) &&
+  parseBooleanFlag(process.env.OPENCLAW_CI_RUN_IOS_BUILD) &&
   !releaseFastLane &&
   !npmQualification &&
   !docsOnly &&
@@ -370,7 +357,7 @@ const runIosBuild =
   (!frozenTarget || supportsCurrentIosCi || (releaseCandidateTarget && supportsIosBuild));
 const runAndroid =
   !nativeGeneratedOnly &&
-  parseBoolean(process.env.OPENCLAW_CI_RUN_ANDROID) &&
+  parseBooleanFlag(process.env.OPENCLAW_CI_RUN_ANDROID) &&
   !npmQualification &&
   !docsOnly &&
   isCanonicalRepository &&
@@ -385,17 +372,17 @@ const runAndroidAccessNative =
       "apps/android/app/src/androidTest/java/ai/openclaw/app/gateway/CloudflareAccessNativeTest.kt",
     ));
 let runWindows =
-  parseBoolean(process.env.OPENCLAW_CI_RUN_WINDOWS) &&
+  parseBooleanFlag(process.env.OPENCLAW_CI_RUN_WINDOWS) &&
   !releaseFastLane &&
   !docsOnly &&
   !runNodeFastOnly &&
   isCanonicalRepository;
 const runSkillsPython =
-  parseBoolean(process.env.OPENCLAW_CI_RUN_SKILLS_PYTHON) && !docsOnly && !releaseFastLane;
+  parseBooleanFlag(process.env.OPENCLAW_CI_RUN_SKILLS_PYTHON) && !docsOnly && !releaseFastLane;
 const runControlUiI18n =
-  parseBoolean(process.env.OPENCLAW_CI_RUN_CONTROL_UI_I18N) && !docsOnly && !releaseFastLane;
+  parseBooleanFlag(process.env.OPENCLAW_CI_RUN_CONTROL_UI_I18N) && !docsOnly && !releaseFastLane;
 let runUiTests =
-  parseBoolean(process.env.OPENCLAW_CI_RUN_UI_TESTS) &&
+  parseBooleanFlag(process.env.OPENCLAW_CI_RUN_UI_TESTS) &&
   !docsOnly &&
   !nodeDataOnly &&
   !releaseFastLane;
@@ -452,7 +439,7 @@ const supportsNativeI18n =
   hasPackageScript("android:i18n:check") &&
   hasPackageScript("apple:i18n:check");
 const runNativeI18n =
-  parseBoolean(process.env.OPENCLAW_CI_RUN_NATIVE_I18N) &&
+  parseBooleanFlag(process.env.OPENCLAW_CI_RUN_NATIVE_I18N) &&
   !releaseFastLane &&
   !npmQualification &&
   !docsOnly &&
@@ -1515,8 +1502,8 @@ if (hybridHostedEligible) {
     "macos-node": count(manifest.run_macos_node, manifest.macos_node_matrix.include.length),
     "macos-swift": count(manifest.run_macos_swift, 2),
     "ios-build": count(manifest.run_ios_build),
-    "ios-screenshot-shard": count(parseBoolean(process.env.OPENCLAW_CI_RUN_IOS_SCREENSHOTS), 2),
-    "ios-screenshot-evidence": count(parseBoolean(process.env.OPENCLAW_CI_RUN_IOS_SCREENSHOTS)),
+    "ios-screenshot-shard": count(parseBooleanFlag(process.env.OPENCLAW_CI_RUN_IOS_SCREENSHOTS), 2),
+    "ios-screenshot-evidence": count(parseBooleanFlag(process.env.OPENCLAW_CI_RUN_IOS_SCREENSHOTS)),
     "android-access-native": count(manifest.run_android_access_native, 2),
     "docker-seed-e2e": count(
       manifest.run_docker_seed_e2e &&
@@ -1661,7 +1648,7 @@ manifest.pr_job_count =
       countPrJobs(manifest.run_ios_build) +
       (manifest.run_ui_real_gateway ? uiRealGatewayShards.length : 0) +
       countPrJobs(manifest.run_android_access_native, 2) +
-      countPrJobs(parseBoolean(process.env.OPENCLAW_CI_RUN_IOS_SCREENSHOTS), 3);
+      countPrJobs(parseBooleanFlag(process.env.OPENCLAW_CI_RUN_IOS_SCREENSHOTS), 3);
 
 for (const [key, value] of Object.entries(manifest)) {
   appendFileSync(

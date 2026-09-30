@@ -870,6 +870,32 @@ describe("changed-path transport", () => {
   });
 });
 
+describe("manifest boolean flags", () => {
+  it.each([
+    { value: " 1 ", enabled: true },
+    { value: " TrUe ", enabled: true },
+    { value: "0", enabled: false },
+    { value: "", enabled: false },
+    { value: "yes", enabled: false },
+    { value: "on", enabled: false },
+    { value: "enabled", enabled: false },
+  ])("routes manifest-owned jobs for '$value'", ({ value, enabled }) => {
+    const result = runCiManifestFixture({
+      bundledPlanner: true,
+      runNode: false,
+      scopeEnv: {
+        OPENCLAW_CI_RUN_SKILLS_PYTHON: value,
+        OPENCLAW_CI_RUN_CONTROL_UI_I18N: value,
+        OPENCLAW_CI_RUN_ANDROID: value,
+      },
+    });
+    expect(result.status, result.output).toBe(0);
+    for (const output of ["run_skills_python", "run_control_ui_i18n", "run_android_job"]) {
+      expect(result.outputs[output], output).toBe(String(enabled));
+    }
+  });
+});
+
 describe("release fast lane", () => {
   const scopeEnv = {
     OPENCLAW_CI_RELEASE_FAST_LANE_LABEL: "true",

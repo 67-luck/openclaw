@@ -202,6 +202,26 @@ export function parseStrictBooleanArg(value, label) {
   throw new Error(`${label} must be true or false.`);
 }
 /**
+ * Parse normalized true/false and 1/0 script flags without accepting yes/no or on/off.
+ * Empty flags are false; absent or unrecognized values use the caller's fallback.
+ * @param {string | undefined} value
+ * @param {boolean} [fallback]
+ * @returns {boolean}
+ */
+export function parseBooleanFlag(value, fallback = false) {
+  if (value === undefined) {
+    return fallback;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0" || normalized === "") {
+    return false;
+  }
+  return fallback;
+}
+/**
  * Classify an ASCII unsigned-decimal token against inclusive bounds.
  * @param {unknown} value
  * @param {number} min

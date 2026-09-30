@@ -6,6 +6,7 @@ import {
   intFlag,
   isOpenEndedTruthyValue,
   isStrictAffirmativeValue,
+  parseBooleanFlag,
   parseFlagArgs,
   parsePermissiveBooleanToken,
   parseStrictBooleanArg,
@@ -65,6 +66,32 @@ describe("scripts/lib/arg-utils required option arguments", () => {
       new Error("--output requires a value"),
     );
   });
+});
+
+describe("scripts/lib/arg-utils Boolean flags", () => {
+  it.each([
+    { input: "true", expected: true },
+    { input: "1", expected: true },
+    { input: " TRUE ", expected: true },
+    { input: " 1 ", expected: true },
+    { input: "false", expected: false },
+    { input: "0", expected: false },
+    { input: " FaLsE ", expected: false },
+    { input: " 0 ", expected: false },
+    { input: "", expected: false },
+    { input: " ", expected: false },
+  ])("parses explicit $input independently of the fallback", ({ input, expected }) => {
+    expect(parseBooleanFlag(input)).toBe(expected);
+    expect(parseBooleanFlag(input, true)).toBe(expected);
+  });
+
+  it.each([undefined, "yes", "no", "on", "off", "2", "enabled"])(
+    "uses the fallback for %s without widening the flag language",
+    (input) => {
+      expect(parseBooleanFlag(input)).toBe(false);
+      expect(parseBooleanFlag(input, true)).toBe(true);
+    },
+  );
 });
 
 describe("scripts/lib/arg-utils permissive Boolean tokens", () => {
