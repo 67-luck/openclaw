@@ -17,6 +17,7 @@ import {
   type Report,
   type StackRecord,
   type Target,
+  type ToolFailure,
   type Window,
 } from "./ios-release-setup-host-records.js";
 import { hasUnjoinedWork, runManagedCommand } from "./managed-child-process.mjs";
@@ -59,7 +60,13 @@ export async function startIOSReleaseSetupHostProbe(options: {
   markPhase(phase: "boot" | "setup-code"): void;
   stop(): Promise<void>;
 }> {
-  const report: Report = { status: "starting", cleanupConfirmed: true, host: [], stacks: [] };
+  const report: Report = {
+    status: "starting",
+    cleanupConfirmed: true,
+    host: [],
+    stacks: [],
+    failures: [],
+  };
   const evidence: Record<string, unknown> = report;
   if (
     process.platform !== "darwin" ||
@@ -287,7 +294,13 @@ async function runTool(
 }
 
 async function runChild(directory: string, harnessPid: number, gatewayPid: number): Promise<void> {
-  const report: Report = { status: "starting", cleanupConfirmed: false, host: [], stacks: [] };
+  const report: Report = {
+    status: "starting",
+    cleanupConfirmed: false,
+    host: [],
+    stacks: [],
+    failures: [],
+  };
   const abort = new AbortController();
   const identities = new Map<Target, Identity>();
   const targets: { target: Target; pid: number }[] = [
@@ -314,6 +327,40 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
     }
     abort.abort();
   };
+  const observeTool = async (
+    context: Pick<ToolFailure, "tool" | "stage" | "target" | "window">,
+    action: () => Promise<ToolResult>,
+  ): Promise<ToolResult> => {
+    const started = performance.now();
+    const epochMs = Date.now();
+    const startedPhase = phase;
+    const record = (outcome: ToolFailure["outcome"]) => {
+      if (report.failures.length === 16) {
+        report.failures.shift();
+      }
+      report.failures.push({
+        ...context,
+        phase: startedPhase,
+        outcome,
+        epochMs,
+        elapsedMs: elapsed(started),
+      });
+    };
+    let result: ToolResult;
+    try {
+      result = await action();
+    } catch (error) {
+      record(hasUnjoinedWork(error) ? "unjoined" : "failed");
+      fail(error);
+      await save();
+      throw error;
+    }
+    if (result.outcome !== "passed" && result.outcome !== "cancelled") {
+      record(result.outcome === "timeout" ? "timeout" : "failed");
+      await save();
+    }
+    return result;
+  };
   const enqueue = (action: () => Promise<void>) => {
     queue = queue
       .then(async () => {
@@ -323,11 +370,20 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
       })
       .catch(fail);
   };
-  const processes = async (): Promise<ProcessRecord[]> => {
-    const result = await runTool(
-      "/bin/ps",
-      ["-p", `${harnessPid},${gatewayPid}`, "-o", "pid=,ppid=,pgid=,rss=,vsz=,%cpu=,time=,lstart="],
-      abort.signal,
+  const processes = async (
+    context: Pick<ToolFailure, "stage" | "target" | "window"> = { stage: "host" },
+  ): Promise<ProcessRecord[]> => {
+    const result = await observeTool({ ...context, tool: "processes" }, () =>
+      runTool(
+        "/bin/ps",
+        [
+          "-p",
+          `${harnessPid},${gatewayPid}`,
+          "-o",
+          "pid=,ppid=,pgid=,rss=,vsz=,%cpu=,time=,lstart=",
+        ],
+        abort.signal,
+      ),
     );
     const parsed = parseProcesses(result.stdout);
     const records = targets.map(({ target, pid }): ProcessRecord => {
@@ -376,51 +432,61 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
     }
     const started = performance.now();
     const epochMs = Date.now();
+    const startedPhase = phase;
     const settled = await Promise.allSettled([
-      runTool("/usr/bin/vm_stat", [], abort.signal),
-      runTool(
-        "/usr/sbin/sysctl",
-        ["vm.swapusage", "vm.loadavg", "hw.memsize", "hw.logicalcpu"],
-        abort.signal,
+      observeTool({ tool: "vm-stat", stage: "host" }, () =>
+        runTool("/usr/bin/vm_stat", [], abort.signal),
+      ),
+      observeTool({ tool: "sysctl", stage: "host" }, () =>
+        runTool(
+          "/usr/sbin/sysctl",
+          ["vm.swapusage", "vm.loadavg", "hw.memsize", "hw.logicalcpu"],
+          abort.signal,
+        ),
       ),
       processes(),
     ]);
-    for (const item of settled) {
-      if (item.status === "rejected") {
-        throw item.reason;
-      }
-    }
     const [vmResult, sysctlResult, processResult] = settled;
-    if (
-      vmResult.status !== "fulfilled" ||
-      sysctlResult.status !== "fulfilled" ||
-      processResult.status !== "fulfilled"
-    ) {
-      return;
-    }
-    const vm = parseVm(vmResult.value.stdout);
-    const sysctl = parseSysctl(sysctlResult.value.stdout);
+    const vm = parseVm(vmResult.status === "fulfilled" ? vmResult.value.stdout : "");
+    const sysctl = parseSysctl(
+      sysctlResult.status === "fulfilled" ? sysctlResult.value.stdout : "",
+    );
     report.host.push({
       ...vm,
       ...sysctl,
       epochMs,
       elapsedMs: elapsed(started),
-      phase,
-      vmMs: vmResult.value.elapsedMs,
-      sysctlMs: sysctlResult.value.elapsedMs,
+      phase: startedPhase,
+      ...(vmResult.status === "fulfilled" ? { vmMs: vmResult.value.elapsedMs } : {}),
+      ...(sysctlResult.status === "fulfilled" ? { sysctlMs: sysctlResult.value.elapsedMs } : {}),
       vm:
-        vmResult.value.outcome === "passed" &&
-        (vm.pageSizeBytes === undefined || vm.freePages === undefined)
-          ? "parse-failed"
-          : vmResult.value.outcome,
+        vmResult.status === "rejected"
+          ? hasUnjoinedWork(vmResult.reason)
+            ? "unjoined"
+            : "failed"
+          : vmResult.value.outcome === "passed" &&
+              (vm.pageSizeBytes === undefined || vm.freePages === undefined)
+            ? "parse-failed"
+            : vmResult.value.outcome,
       sysctl:
-        sysctlResult.value.outcome === "passed" &&
-        (sysctl.swapUsedBytes === undefined || sysctl.load1 === undefined)
-          ? "parse-failed"
-          : sysctlResult.value.outcome,
-      processes: processResult.value,
+        sysctlResult.status === "rejected"
+          ? hasUnjoinedWork(sysctlResult.reason)
+            ? "unjoined"
+            : "failed"
+          : sysctlResult.value.outcome === "passed" &&
+              (sysctl.swapUsedBytes === undefined || sysctl.load1 === undefined)
+            ? "parse-failed"
+            : sysctlResult.value.outcome,
+      processes: processResult.status === "fulfilled" ? processResult.value : [],
     });
     await save();
+    for (const item of settled) {
+      if (item.status === "rejected") {
+        throw item.reason instanceof Error
+          ? item.reason
+          : new Error("Host snapshot collection failed");
+      }
+    }
   };
   const capture = async (window: Window) => {
     const generation = phaseGeneration;
@@ -430,7 +496,7 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
       }
       const epochMs = Date.now();
       const started = performance.now();
-      const checks = await processes();
+      const checks = await processes({ stage: "sample-identity", target, window });
       const check = checks.find((entry) => entry.target === target);
       const harness = checks.find((entry) => entry.target === "harness");
       const row: StackRecord = {
@@ -451,17 +517,21 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
         if (check?.outcome === "passed" && harness?.outcome === "passed" && !abort.signal.aborted) {
           // Fixed shell text sets a file-size limit before exec; target and output are positional.
           row.sampleEpochMs = Date.now();
-          const result = await runTool(
-            "/bin/sh",
-            [
-              "-c",
-              'ulimit -f 1024 || exit 70; exec /usr/bin/sample "$1" 1 10 -file "$2"',
-              "ios-setup-sample",
-              String(pid),
-              rawPath,
-            ],
-            abort.signal,
-            5_000,
+          const result = await observeTool(
+            { tool: "sample", stage: "sample-stack", target, window },
+            () =>
+              runTool(
+                "/bin/sh",
+                [
+                  "-c",
+                  'ulimit -f 1024 || exit 70; exec /usr/bin/sample "$1" 1 10 -file "$2"',
+                  "ios-setup-sample",
+                  String(pid),
+                  rawPath,
+                ],
+                abort.signal,
+                5_000,
+              ),
           );
           row.sampleMs = result.elapsedMs;
           row.outcome = result.outcome;
@@ -486,6 +556,7 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
       } catch (error) {
         row.outcome = "failed";
         if (hasUnjoinedWork(error)) {
+          row.outcome = "unjoined";
           unjoined = true;
           throw error;
         }

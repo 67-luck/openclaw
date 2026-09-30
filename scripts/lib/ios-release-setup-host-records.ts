@@ -11,6 +11,7 @@ const OUTCOMES = [
   "parse-failed",
   "output-limit",
   "cancelled",
+  "unjoined",
 ] as const;
 export type Outcome = (typeof OUTCOMES)[number];
 export type Target = "harness" | "gateway";
@@ -87,11 +88,22 @@ export type StackRecord = {
   truncated: boolean;
   threads: ThreadRecord[];
 };
+export type ToolFailure = {
+  tool: "vm-stat" | "sysctl" | "processes" | "sample";
+  stage: "host" | "sample-identity" | "sample-stack";
+  phase: Phase;
+  outcome: "unjoined" | "timeout" | "failed";
+  epochMs: number;
+  elapsedMs: number;
+  target?: Target;
+  window?: Window;
+};
 export type Report = {
   status: "starting" | "running" | "stopped" | "unavailable" | "failed";
   cleanupConfirmed: boolean;
   host: HostRecord[];
   stacks: StackRecord[];
+  failures: ToolFailure[];
 };
 export type Identity = { pid: number; ppid: number; pgid: number; started: string };
 
@@ -130,6 +142,32 @@ export function projectReport(value: unknown, report: Report): void {
     report.status = value.status;
   }
   report.cleanupConfirmed = value.cleanupConfirmed === true;
+  report.failures = [];
+  for (const row of Array.isArray(value.failures) ? value.failures.slice(-16) : []) {
+    if (
+      !isRecord(row) ||
+      !choice(row.tool, ["vm-stat", "sysctl", "processes", "sample"]) ||
+      !choice(row.stage, ["host", "sample-identity", "sample-stack"]) ||
+      !choice(row.phase, ["baseline", "boot", "setup-code"]) ||
+      !choice(row.outcome, ["unjoined", "timeout", "failed"]) ||
+      !finite(row.epochMs) ||
+      !finite(row.elapsedMs)
+    ) {
+      continue;
+    }
+    report.failures.push({
+      tool: row.tool,
+      stage: row.stage,
+      phase: row.phase,
+      outcome: row.outcome,
+      epochMs: row.epochMs,
+      elapsedMs: row.elapsedMs,
+      ...(choice(row.target, ["harness", "gateway"]) ? { target: row.target } : {}),
+      ...(choice(row.window, ["baseline", "boot-20s", "setup-code-8s", "setup-code-20s"])
+        ? { window: row.window }
+        : {}),
+    });
+  }
   report.host = [];
   for (const row of Array.isArray(value.host) ? value.host.slice(0, 144) : []) {
     if (
