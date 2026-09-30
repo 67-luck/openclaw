@@ -7,7 +7,7 @@ import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admissi
 const reviews = createBackgroundWorkOwner({ owner: "core:skill-workshop", maxConcurrent: 1 });
 
 /** Only skill_workshop executes in a background Workshop run; other calls get a redirect. */
-export const SKILL_WORKSHOP_REVIEW_TOOLS = ["skill_workshop"] as const;
+const SKILL_WORKSHOP_REVIEW_TOOLS = ["skill_workshop"] as const;
 
 /**
  * The background Workshop review run: the openclaw harness on a locked model, executing

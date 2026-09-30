@@ -12,7 +12,7 @@ import {
   isDeliverableMessageChannel,
   normalizeMessageChannel,
 } from "../../utils/message-channel.js";
-import type { WorkshopChange } from "./library.js";
+import type { WorkshopChange } from "./changes.kernel.js";
 
 const log = createSubsystemLogger("skills/workshop");
 
@@ -45,7 +45,7 @@ const ACTION_VERB: Record<WorkshopChange["action"], string> = {
 };
 
 /** One short line naming what a background review changed and how to revert it. */
-export function formatWorkshopChangeNotice(changes: readonly WorkshopChange[]): string {
+function formatWorkshopChangeNotice(changes: readonly WorkshopChange[]): string {
   // Several edits to one skill read as one learned change: a skill created in this run reads
   // as "created" with its creation summary; otherwise the latest change wins.
   const bySkill = new Map<string, WorkshopChange>();

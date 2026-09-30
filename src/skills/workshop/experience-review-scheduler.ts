@@ -17,7 +17,7 @@ import { resolveSkillWorkshopConfig } from "./config.js";
 import { resolveWorkshopSkillsDir } from "./skills-root.js";
 
 /** Model iterations a session accumulates across turns before a review is due. */
-export const EXPERIENCE_REVIEW_ITERATION_THRESHOLD = 10;
+const EXPERIENCE_REVIEW_ITERATION_THRESHOLD = 10;
 const EXPERIENCE_REVIEW_IDLE_MS = 30_000;
 const EXPERIENCE_REVIEW_RETRY_IDLE_MS = 30_000;
 const EXPERIENCE_REVIEW_MAX_PENDING = 32;

@@ -113,25 +113,6 @@ export type CronRunDeliveryResult = {
   delivery?: CronDeliveryTrace;
 };
 
-export type CronIsolatedAgentJobRequest = {
-  job: CronJob;
-  admissionSource?: AdmittedRunContext["admissionSource"];
-  message: string;
-  abortSignal?: AbortSignal;
-  onExecutionStarted?: (info?: CronAgentExecutionStarted) => void;
-  onExecutionPhase?: (info: CronAgentExecutionPhaseUpdate) => void;
-  onLaneWait?: (info?: { waiting?: boolean }) => void;
-  executionIdentity?: CronExecutionIdentityAdmission;
-};
-
-export type CronIsolatedAgentJobResult = CronRunOutcome &
-  CronRunTelemetry &
-  CronRunDeliveryResult & {
-    /** Last non-empty agent text output (not truncated). */
-    outputText?: string;
-    nextCheck?: CronNextCheckProposal;
-  };
-
 export type CronServiceDeps = {
   nowMs?: () => number;
   scheduler: GatewayScheduler;
@@ -211,7 +192,24 @@ export type CronServiceDeps = {
   resolveHeartbeatTimeoutMs?: (
     opts: HeartbeatWakeRequest & { agentId: string },
   ) => number | undefined;
-  runIsolatedAgentJob: (params: CronIsolatedAgentJobRequest) => Promise<CronIsolatedAgentJobResult>;
+  runIsolatedAgentJob: (params: {
+    job: CronJob;
+    admissionSource?: AdmittedRunContext["admissionSource"];
+    message: string;
+    abortSignal?: AbortSignal;
+    onExecutionStarted?: (info?: CronAgentExecutionStarted) => void;
+    onExecutionPhase?: (info: CronAgentExecutionPhaseUpdate) => void;
+    onLaneWait?: (info?: { waiting?: boolean }) => void;
+    executionIdentity?: CronExecutionIdentityAdmission;
+  }) => Promise<
+    CronRunOutcome &
+      CronRunTelemetry &
+      CronRunDeliveryResult & {
+        /** Last non-empty agent text output (not truncated). */
+        outputText?: string;
+        nextCheck?: CronNextCheckProposal;
+      }
+  >;
   runCommandJob?: (params: {
     job: CronJob;
     abortSignal?: AbortSignal;

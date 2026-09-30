@@ -2,9 +2,12 @@ import type { SqliteWorkerCommand } from "../../infra/sqlite-worker-contract.js"
 import { getSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
 import type { OpenClawStateDatabase } from "../../state/openclaw-state-db-contract.js";
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
-import { listWorkshopChangesInDatabase, recordWorkshopChangeInDatabase } from "./changes.kernel.js";
+import {
+  listWorkshopChangesInDatabase,
+  recordWorkshopChangeInDatabase,
+  type WorkshopChange,
+} from "./changes.kernel.js";
 import type { WorkshopChangesWorkerOperations } from "./changes.worker-contract.js";
-import type { WorkshopChange } from "./library.js";
 
 export function isWorkshopChangesCommand(command: {
   type: string;

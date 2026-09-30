@@ -2,9 +2,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { WorkshopChange } from "./changes.kernel.js";
 import { runSkillExperienceReview } from "./experience-review.js";
 import { createExperienceReviewCandidate } from "./experience-review.test-support.js";
-import type { WorkshopChange } from "./library.js";
 
 const mocks = vi.hoisted(() => ({
   runSkillWorkshopReview: vi.fn(),

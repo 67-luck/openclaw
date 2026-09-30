@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
-import type { WorkshopChange } from "./library.js";
+import type { WorkshopChange } from "./changes.kernel.js";
 import { assertSkillReviewRunSucceeded, postWorkshopChangeNotice } from "./review-outcome.js";
 
 const mocks = vi.hoisted(() => ({

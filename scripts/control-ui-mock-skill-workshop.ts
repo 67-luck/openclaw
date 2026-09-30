@@ -198,7 +198,7 @@ function installSkillWorkshopMock(seed: SkillWorkshopMockSeed): void {
     },
     "skills.workshop.read": (params, agentId, respond) => {
       const scope = scopeFor(agentId);
-      const name = String(params.name ?? "");
+      const name = typeof params.name === "string" ? params.name : "";
       const skill =
         typeof params.versionId === "string"
           ? scope.versions.get(name)?.find((version) => version.id === params.versionId)?.skill

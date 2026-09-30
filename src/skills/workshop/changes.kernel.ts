@@ -6,8 +6,29 @@ import type { OpenClawStateDatabase } from "../../state/openclaw-state-db-contra
 import { tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
 import type { DB } from "../../state/openclaw-state-db.generated.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../../state/openclaw-state-schema.js";
-import { isWorkshopActor, type WorkshopChange } from "./library.js";
-import { isWorkshopChangeAction } from "./skill-versions.js";
+import { isWorkshopChangeAction, type WorkshopChangeAction } from "./skill-versions.js";
+
+const WORKSHOP_ACTORS = ["agent", "review", "curator", "user"] as const;
+export type WorkshopActor = (typeof WORKSHOP_ACTORS)[number];
+
+function isWorkshopActor(value: string): value is WorkshopActor {
+  return WORKSHOP_ACTORS.some((actor) => actor === value);
+}
+
+export type WorkshopChange = {
+  id: string;
+  agentId: string;
+  skillName: string;
+  action: WorkshopChangeAction;
+  actor: WorkshopActor;
+  /** One short human line, e.g. "patched step 3" or "created: <description>". */
+  summary: string;
+  /** Snapshot taken before the change; absent when nothing existed to snapshot. */
+  versionId?: string;
+  sessionKey?: string;
+  runId?: string;
+  createdAtMs: number;
+};
 
 type ChangesDatabase = Pick<DB, "skill_workshop_changes">;
 
@@ -26,12 +47,13 @@ export function recordWorkshopChangeInDatabase(
   change: WorkshopChange,
 ): void {
   const { db } = database;
+  // sqlite-allow-raw -- Canonical feature-owned additive DDL; rows use Kysely.
   // Canonical table + index are adjacent in the schema; the index line ends the slice.
   db.exec(
     extractSqliteTableSchema(OPENCLAW_STATE_SCHEMA_SQL, "skill_workshop_changes", {
       endMarker: "ON skill_workshop_changes(agent_id, created_at_ms);",
     }),
-  ); // sqlite-allow-raw -- Canonical feature-owned additive DDL; rows use Kysely.
+  );
   const kysely = getNodeSqliteKysely<ChangesDatabase>(db);
   executeSqliteQuerySync(
     db,

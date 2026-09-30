@@ -8,13 +8,13 @@ import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import type { WorkshopChange } from "./changes.kernel.js";
 import { resolveSkillWorkshopConfig } from "./config.js";
 import {
   archiveWorkshopSkill,
   listWorkshopChanges,
   listWorkshopSkills,
   WorkshopWriteError,
-  type WorkshopChange,
 } from "./library.js";
 import { isSkillUsageTracked, readSkillUsage } from "./skill-usage.js";
 import { resolveWorkshopSkillsDir } from "./skills-root.js";

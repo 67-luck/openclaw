@@ -3,6 +3,7 @@ import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { pathExists } from "../../infra/fs-safe.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
+import type { WorkshopChange } from "../../skills/workshop/changes.kernel.js";
 import { resolveSkillWorkshopConfig } from "../../skills/workshop/config.js";
 import {
   archiveWorkshopSkill,
@@ -15,7 +16,6 @@ import {
   viewWorkshopSkill,
   WorkshopWriteError,
   writeWorkshopSkillFile,
-  type WorkshopChange,
   type WorkshopMutationContext,
 } from "../../skills/workshop/library.js";
 import { SKILL_AUTHORING_STANDARDS_PROMPT } from "../../skills/workshop/skill-authoring-standards.js";

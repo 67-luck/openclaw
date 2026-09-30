@@ -24,6 +24,7 @@ import {
 import { parseSkillFrontmatter } from "../loading/frontmatter.js";
 import { bumpSkillsSnapshotVersion } from "../runtime/refresh-state.js";
 import { scanSkillFile, scanSupportFilePath } from "../security/skill-bundle-scan.js";
+import type { WorkshopActor, WorkshopChange } from "./changes.kernel.js";
 import { resolveSkillWorkshopConfig } from "./config.js";
 import { withSkillLocks } from "./skill-locks.js";
 import {
@@ -37,13 +38,6 @@ import {
 } from "./skill-versions.js";
 import { resolveWorkshopSkillsDir } from "./skills-root.js";
 
-const WORKSHOP_ACTORS = ["agent", "review", "curator", "user"] as const;
-export type WorkshopActor = (typeof WORKSHOP_ACTORS)[number];
-
-export function isWorkshopActor(value: string): value is WorkshopActor {
-  return WORKSHOP_ACTORS.some((actor) => actor === value);
-}
-
 export type WorkshopMutationContext = {
   config: OpenClawConfig;
   agentId: string;
@@ -52,20 +46,6 @@ export type WorkshopMutationContext = {
   runId?: string;
   /** Throws once the caller lost write authority; checked under the skill locks before any write. */
   assertLive?: () => void;
-};
-export type WorkshopChange = {
-  id: string;
-  agentId: string;
-  skillName: string;
-  action: WorkshopChangeAction;
-  actor: WorkshopActor;
-  /** One short human line, e.g. "patched step 3" or "created: <description>". */
-  summary: string;
-  /** Snapshot taken before the change; absent when nothing existed to snapshot. */
-  versionId?: string;
-  sessionKey?: string;
-  runId?: string;
-  createdAtMs: number;
 };
 export type WorkshopSkillSummary = {
   name: string;

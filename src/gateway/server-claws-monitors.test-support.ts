@@ -23,7 +23,7 @@ import { applyHeartbeatMonitorJobs } from "../cron/heartbeat-monitor.js";
 import { cronJobReadView } from "../cron/job-read-view.js";
 import { normalizeCronJobCreate } from "../cron/normalize.js";
 import { CronService } from "../cron/service.js";
-import type { CronIsolatedAgentJobResult, CronServiceDeps } from "../cron/service/state.js";
+import type { CronServiceDeps } from "../cron/service/state.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import * as sleep from "../utils/sleep.js";
@@ -72,7 +72,7 @@ export function useClawMonitorFixture() {
   return async function fixture(
     enabled: boolean,
     /** Runs forced isolated jobs and the heartbeat monitor. */
-    runner?: (params: { abortSignal?: AbortSignal }) => Promise<CronIsolatedAgentJobResult>,
+    runner?: (params: { abortSignal?: AbortSignal }) => Promise<{ status: "ok" }>,
     withCron = false,
   ) {
     const state = await createOpenClawTestState({ label: "claw-monitor-removal" });
