@@ -6,9 +6,54 @@ import OpenClawKit
 /// A product-owned process transport. Gateway credentials still come from the native auth owner.
 package final class RustGatewayWebSocketSession: WebSocketSessioning, GatewayTLSRouteMetadataProviding,
 GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Sendable {
+    private let startupLock = NSLock()
+    private var startup: Startup?
     private let executableURL: URL
     private let privateCommands: Set<String>
     private let trustOwner: GatewayTLSPinningSession
+
+    /// Owns one authenticated child before its final Gateway route is available.
+    /// Consuming transfers retirement to the WebSocket task; this token then becomes inert.
+    package final class Startup: @unchecked Sendable {
+        private let lock = NSLock()
+        private let executableURL: URL
+        private var task: RustGatewayWebSocketTask?
+
+        package init(executableURL: URL) {
+            self.executableURL = executableURL
+            self.task = RustGatewayWebSocketTask(executableURL: executableURL)
+        }
+
+        deinit { self.cancel() }
+
+        package func prepare() async throws {
+            guard let task = self.lock.withLock({ self.task }) else { throw URLError(.cancelled) }
+            try await task.prepare()
+        }
+
+        @discardableResult
+        package func cancel() -> Bool {
+            self.lock.withLock {
+                guard let task = self.task else { return false }
+                task.finish(URLError(.cancelled))
+                return true
+            }
+        }
+
+        fileprivate func consume(
+            executableURL: URL,
+            configuration: RustGatewayWebSocketTask.Configuration) throws -> RustGatewayWebSocketTask
+        {
+            try self.lock.withLock {
+                guard let task = self.task, self.executableURL == executableURL else {
+                    throw URLError(.cancelled)
+                }
+                try task.configure(configuration)
+                self.task = nil
+                return task
+            }
+        }
+    }
 
     package static var bundledExecutableURL: URL {
         Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/openclaw-mac-node-sidecar")
@@ -45,9 +90,11 @@ GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Se
         executableURL: URL,
         fingerprint: String? = nil,
         tlsParams: GatewayTLSParams? = nil,
-        privateCommands: [String] = [])
+        privateCommands: [String] = [],
+        startup: Startup? = nil)
     {
         self.executableURL = executableURL
+        self.startup = startup
         self.privateCommands = Set(privateCommands)
         self.trustOwner = GatewayTLSPinningSession(params: tlsParams ?? GatewayTLSParams(
             required: true, expectedFingerprint: fingerprint, allowTOFU: false, storeKey: nil))
@@ -70,11 +117,25 @@ GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Se
     }
 
     package func makeWebSocketTask(request: URLRequest) -> WebSocketTaskBox {
-        WebSocketTaskBox(task: RustGatewayWebSocketTask(
-            executableURL: self.executableURL,
-            request: request,
-            privateCommands: self.privateCommands,
-            trustOwner: self.trustOwner))
+        let configuration = RustGatewayWebSocketTask.Configuration(
+            request: request, privateCommands: self.privateCommands, trustOwner: self.trustOwner)
+        do {
+            let prepared = try self.startupLock.withLock { () -> RustGatewayWebSocketTask? in
+                guard let startup = self.startup else { return nil }
+                // A retired, unclaimed startup remains a failure. Only successful
+                // consumption allows later reconnects to launch a fresh child.
+                let task = try startup.consume(executableURL: self.executableURL, configuration: configuration)
+                self.startup = nil
+                return task
+            }
+            if let prepared { return WebSocketTaskBox(task: prepared) }
+        } catch {
+            let failed = RustGatewayWebSocketTask(executableURL: self.executableURL)
+            failed.finish(error)
+            return WebSocketTaskBox(task: failed)
+        }
+        return WebSocketTaskBox(task: RustGatewayWebSocketTask(
+            executableURL: self.executableURL, configuration: configuration))
     }
 
     fileprivate static func retainsBufferedFrameAfterFinish(_ data: Data, connectID: String?) -> Bool {
@@ -101,19 +162,34 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         static let required = nativeRelay | pongReceipt | binaryMessage | nativeResult | opaqueTransport
     }
 
+    struct Configuration: Sendable {
+        let request: URLRequest
+        let privateCommands: Set<String>
+        let trustOwner: GatewayTLSPinningSession
+    }
+
+    private enum Phase { case suspended, preparing, prepared, running, completed }
+
     private let lock = NSLock()
     private let writes = SidecarWriteQueue()
     private let reader = DispatchQueue(label: "ai.openclaw.sidecar.read")
     private let executableURL: URL
-    private let request: URLRequest
-    private let privateCommands: Set<String>
-    private let trustOwner: GatewayTLSPinningSession
+    private var configuration: Configuration?
+    private var preparation: CheckedContinuation<Void, Error>?
     private var network: NativeGatewayTransport?
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
     private var channel: AuthenticatedSidecarChannel?
-    private var taskState: URLSessionTask.State = .suspended
+    private var phase = Phase.suspended
+    private var taskState: URLSessionTask.State {
+        switch self.phase {
+        case .suspended, .prepared: .suspended
+        case .preparing, .running: .running
+        case .completed: .completed
+        }
+    }
+
     private var failure: Error?
     private var buffered: [Data] = []
     private var bufferedBytes = 0
@@ -123,26 +199,85 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
     private var connectID: String?
     private var admitted = false
 
-    init(executableURL: URL, request: URLRequest, privateCommands: Set<String>, trustOwner: GatewayTLSPinningSession) {
+    init(executableURL: URL, configuration: Configuration? = nil) {
         self.executableURL = executableURL
-        self.request = request
-        self.privateCommands = privateCommands
-        self.trustOwner = trustOwner
+        self.configuration = configuration
     }
+
+    /// A claimed task can be discarded before resume; its parked child still
+    /// belongs to this task and must not survive the last reference.
+    deinit { self.finish(URLError(.cancelled)) }
 
     var state: URLSessionTask.State {
         self.lock.withLock { self.taskState }
     }
 
-    func resume() {
-        let start = self.lock.withLock {
-            guard self.taskState == .suspended else { return false }
-            self.taskState = .running
-            return true
+    func configure(_ configuration: Configuration) throws {
+        try self.lock.withLock {
+            guard self.phase == .prepared, self.process?.isRunning == true else {
+                throw self.failure ?? URLError(.networkConnectionLost)
+            }
+            self.configuration = configuration
         }
-        guard start else { return }
+    }
+
+    func prepare() async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let accepted = self.lock.withLock {
+                    guard self.phase == .suspended else { return false }
+                    self.phase = .preparing
+                    self.preparation = continuation
+                    return true
+                }
+                guard accepted else {
+                    continuation.resume(throwing: self.lock.withLock { self.failure } ?? URLError(.cancelled))
+                    return
+                }
+                self.reader.async { [self] in
+                    do {
+                        try self.prepareProcess()
+                        let prepared = try self.lock.withLock {
+                            guard self.phase == .preparing, self.process?.isRunning == true else {
+                                throw self.failure ?? URLError(.networkConnectionLost)
+                            }
+                            self.phase = .prepared
+                            defer { self.preparation = nil }
+                            return self.preparation
+                        }
+                        prepared?.resume()
+                    } catch { self.finish(error) }
+                }
+            }
+        } onCancel: {
+            self.finish(URLError(.cancelled))
+        }
+    }
+
+    func resume() {
+        let needsPreparation: Bool? = self.lock.withLock {
+            switch self.phase {
+            case .suspended:
+                self.phase = .preparing
+                return true
+            case .prepared:
+                self.phase = .running
+                return false
+            default: return nil
+            }
+        }
+        guard let needsPreparation else { return }
         self.reader.async { [self] in
-            do { try self.run() } catch { self.finish(error) }
+            do {
+                if needsPreparation {
+                    try self.prepareProcess()
+                    try self.lock.withLock {
+                        guard self.phase == .preparing else { throw self.failure ?? URLError(.cancelled) }
+                        self.phase = .running
+                    }
+                }
+                try self.runActive()
+            } catch { self.finish(error) }
         }
     }
 
@@ -272,7 +407,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         }
     }
 
-    private func run() throws {
+    private func prepareProcess() throws {
         guard FileManager.default.isExecutableFile(atPath: self.executableURL.path) else {
             throw Self.startupError(3, "The macOS node runtime helper is missing or not executable.")
         }
@@ -289,7 +424,6 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         // No inherited Gateway/provider credentials, shell, working directory, or operator HOME.
         child.environment = ["LANG": "en_US.UTF-8"]
         child.currentDirectoryURL = FileManager.default.temporaryDirectory
-        defer { try? stdoutPipe.fileHandleForReading.close() }
         for descriptor in [
             stdinPipe.fileHandleForWriting.fileDescriptor,
             stdoutPipe.fileHandleForReading.fileDescriptor,
@@ -301,6 +435,12 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         guard fcntl(stdinPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
             throw POSIXError(.EIO)
         }
+        child.terminationHandler = { [weak self] _ in
+            // Active reads already deliver authenticated terminal failures. A parked
+            // child has no reader, so its death must retire preparation here instead.
+            guard let self, self.lock.withLock({ self.phase == .prepared }) else { return }
+            self.finish(URLError(.networkConnectionLost))
+        }
         try self.launch(child, input: stdinPipe.fileHandleForWriting, output: stdoutPipe.fileHandleForReading)
         try stdinPipe.fileHandleForReading.close()
         try stdoutPipe.fileHandleForWriting.close()
@@ -309,7 +449,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         let sessionID = sessionBytes.map { String(format: "%02x", $0) }.joined()
         let channel = try AuthenticatedSidecarChannel(key: key, sessionID: sessionID, generation: 1)
         try self.lock.withLock {
-            guard self.taskState == .running else { throw URLError(.cancelled) }
+            guard self.phase == .preparing else { throw self.failure ?? URLError(.cancelled) }
             self.channel = channel
         }
         var bootstrap = key + sessionBytes
@@ -362,10 +502,23 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
             try channel.lowerFrameLimit(frameLimit)
             channel.lockFrameLimit(opaqueTransport: true)
         }
-        guard let url = self.request.url else { throw URLError(.badURL) }
-        try self.writeNow(["type": "open", "url": url.absoluteString, "privateCommands": self.privateCommands.sorted()])
+    }
+
+    private func runActive() throws {
+        let (configuration, output) = try self.lock.withLock {
+            guard self.phase == .running, self.process?.isRunning == true,
+                  let configuration = self.configuration, let output = self.output
+            else { throw self.failure ?? URLError(.networkConnectionLost) }
+            return (configuration, output)
+        }
+        guard let url = configuration.request.url else { throw URLError(.badURL) }
+        try self.writeNow([
+            "type": "open",
+            "url": url.absoluteString,
+            "privateCommands": configuration.privateCommands.sorted(),
+        ])
         let network = NativeGatewayTransport(
-            socket: self.trustOwner.makeWebSocketTask(request: self.request),
+            socket: configuration.trustOwner.makeWebSocketTask(request: configuration.request),
             write: { [weak self] data, lane in
                 guard let self else { throw URLError(.cancelled) }
                 try await self.write(data, lane: lane)
@@ -383,7 +536,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         while self.state == .running {
             try autoreleasepool {
                 // Release parsed control objects after dispatch; each read owns its frame.
-                let message = try self.readMessage(stdoutPipe.fileHandleForReading)
+                let message = try self.readMessage(output)
                 try self.handle(message)
             }
         }
@@ -422,7 +575,8 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
             let allowed = self.lock.withLock {
                 self.admitted && self
                     .taskState == .running &&
-                    (self.declaredCommands.contains(command) || self.privateCommands.contains(command))
+                    (self.declaredCommands.contains(command) || self.configuration?.privateCommands
+                        .contains(command) == true)
             }
             // The reader must keep draining transport receipts while the pipe writer is busy.
             try self.enqueueWrite(SidecarPayload(JSONSerialization.data(withJSONObject: [
@@ -472,7 +626,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         try self.lock.withLock {
             // Publish the child in the same critical section as launch: cancellation
             // must either prevent execution or own its cleanup before any keys exist.
-            guard self.taskState == .running, self.process == nil else {
+            guard self.phase == .preparing, self.process == nil else {
                 throw self.failure ?? URLError(.cancelled)
             }
             try child.run()
@@ -511,7 +665,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
             ])
         }
         try self.lock.withLock {
-            guard self.taskState == .running, self.process === verifier else {
+            guard self.phase == .preparing, self.process === verifier else {
                 throw self.failure ?? URLError(.cancelled)
             }
             self.process = nil
@@ -614,7 +768,9 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
 
     private func writePayload(_ data: SidecarPayload) throws {
         let (input, frame) = try self.lock.withLock {
-            guard self.taskState == .running, let input = self.input, let channel = self.channel else {
+            guard self.phase == .preparing || self.phase == .running,
+                  let input = self.input, let channel = self.channel
+            else {
                 throw self.failure ?? URLError(.cancelled)
             }
             return try (input, channel.seal(data))
@@ -646,11 +802,7 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
 
     fileprivate static func _testRejectsDeliveryAfterFinish(_ data: Data) -> Bool {
         let task = RustGatewayWebSocketTask(
-            executableURL: URL(fileURLWithPath: "/tmp/openclaw-rust-sidecar-test"),
-            request: URLRequest(url: URL(string: "ws://127.0.0.1:1")!),
-            privateCommands: [],
-            trustOwner: GatewayTLSPinningSession(params: GatewayTLSParams(
-                required: false, expectedFingerprint: nil, allowTOFU: false, storeKey: nil)))
+            executableURL: URL(fileURLWithPath: "/tmp/openclaw-rust-sidecar-test"))
         task.finish(URLError(.networkConnectionLost))
         do {
             try task.deliver(data)
@@ -660,13 +812,13 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         }
     }
 
-    private func finish(_ error: Error) {
+    fileprivate func finish(_ error: Error) {
         self.lock.lock()
         guard self.failure == nil else { self.lock.unlock()
             return
         }
         self.failure = error
-        self.taskState = .completed
+        self.phase = .completed
         self.admitted = false
         self.declaredCommands.removeAll()
         self.channel?.retire()
@@ -674,6 +826,9 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         self.network = nil
         let child = self.process
         let input = self.input
+        let output = self.output
+        let preparation = self.preparation
+        self.preparation = nil
         self.process = nil
         self.input = nil
         self.output = nil
@@ -692,6 +847,8 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         // Closing the owned pipe retires the Rust connection before any replacement process starts.
         // Closing on the writer queue prevents a reused descriptor from reaching a late write.
         self.writes.queue.async { try? input?.close() }
+        self.reader.async { try? output?.close() }
+        preparation?.resume(throwing: error)
         if let child, child.isRunning {
             child.terminate()
             DispatchQueue.global().asyncAfter(deadline: .now() + 1) {

@@ -1,6 +1,7 @@
 import Foundation
 import OpenClawIPC
 import OpenClawKit
+import OpenClawRustSidecar
 import Testing
 @testable import OpenClaw
 
@@ -1288,6 +1289,41 @@ struct MacNodeModeCoordinatorTests {
         let second = cache.sessionBox(url: url, params: route?.params)
 
         #expect(ObjectIdentifier(first.session) == ObjectIdentifier(second.session))
+    }
+
+    @Test func `retired startup cannot reopen through its old session factory`() async throws {
+        let url = try #require(URL(string: "ws://127.0.0.1:1"))
+        let startup = RustGatewayWebSocketSession
+            .Startup(executableURL: RustGatewayWebSocketSession.bundledExecutableURL)
+        var cache = MacNodeGatewaySessionCache()
+        let stale = cache.sessionBox(url: url, params: nil, startup: startup)
+        cache.retireStartup(startup)
+        let replacement = cache.sessionBox(url: url, params: nil)
+        #expect(ObjectIdentifier(stale.session) != ObjectIdentifier(replacement.session))
+        for _ in 0..<2 {
+            let task = stale.session.makeWebSocketTask(url: url)
+            #expect(task.state == .completed)
+            do {
+                _ = try await task.receive()
+                Issue.record("Retired startup unexpectedly produced a Gateway frame")
+            } catch {
+                #expect((error as? URLError)?.code == .cancelled)
+            }
+        }
+    }
+
+    @Test func `stale startup cleanup cannot discard its replacement factory`() throws {
+        let url = try #require(URL(string: "ws://127.0.0.1:1"))
+        var cache = MacNodeGatewaySessionCache()
+        let old = RustGatewayWebSocketSession.Startup(executableURL: RustGatewayWebSocketSession.bundledExecutableURL)
+        _ = cache.sessionBox(url: url, params: nil, startup: old)
+        cache.retireStartup(old)
+        let replacement = RustGatewayWebSocketSession.Startup(
+            executableURL: RustGatewayWebSocketSession.bundledExecutableURL)
+        defer { cache.retireStartup(replacement) }
+        let current = cache.sessionBox(url: url, params: nil, startup: replacement)
+        cache.retireStartup(old)
+        #expect(ObjectIdentifier(cache.sessionBox(url: url, params: nil).session) == ObjectIdentifier(current.session))
     }
 
     @Test func `node session cache retires transport when trust changes`() throws {

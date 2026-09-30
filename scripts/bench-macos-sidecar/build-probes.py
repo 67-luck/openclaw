@@ -84,6 +84,7 @@ def build_variant(repo, root, scripts, base, variant):
             ("TLSProbe", "TLS.swift", "tls-probe"),
             ("BackpressureProbe", "Backpressure.swift", "backpressure-probe"),
             ("FramingProbe", "Framing.swift", "framing-probe"),
+            ("StartupProbe", "Startup.swift", "startup-probe"),
             ("FramingHelper", "FramingHelper.swift", "framing-helper"),
         ]
         shutil.copytree(
@@ -115,7 +116,10 @@ def build_variant(repo, root, scripts, base, variant):
         )
         shutil.copy2(package / ".build/release" / target, root / "bin" / binary)
         if target == "FramingHelper":
-            for scenario in ["idle-after-control", "within-budget", "partial-prefix", "combined-budget"]:
+            for scenario in [
+                "idle-after-control", "within-budget", "partial-prefix", "combined-budget",
+                "startup-delayed", "startup-claimed", "startup-cancelled", "startup-exit", "startup-stalled", "startup-discarded", "startup-reconnect",
+            ]:
                 (root / "bin" / (binary + "-" + scenario)).symlink_to(binary)
     return {
         str(path.relative_to(sources)): digest(path)

@@ -69,7 +69,7 @@ async function run(pinMode) {
   }
   const port = (httpServer || server).address().port;
   server.on("connection", (ws) => {
-    if (kind === "framing") {
+    if (kind === "framing" || kind === "startup") {
       connectCount++;
       ws.on("message", (raw, binary) => {
         framingBytes.push({ binary, hex: raw.toString("hex") });
@@ -176,15 +176,17 @@ async function run(pinMode) {
     });
   });
   const name =
-    kind === "framing"
-      ? "framing-probe"
-      : kind === "tls"
-        ? "tls-probe"
-        : kind === "backpressure"
-          ? "backpressure-probe"
-          : mode === "baseline"
-            ? "auxiliary-baseline"
-            : "auxiliary-probe";
+    kind === "startup"
+      ? "startup-probe"
+      : kind === "framing"
+        ? "framing-probe"
+        : kind === "tls"
+          ? "tls-probe"
+          : kind === "backpressure"
+            ? "backpressure-probe"
+            : mode === "baseline"
+              ? "auxiliary-baseline"
+              : "auxiliary-probe";
   const url = `${kind === "tls" ? "wss" : "ws"}://127.0.0.1:${port}`;
   const started = performance.now();
   const child = spawn(
@@ -198,7 +200,7 @@ async function run(pinMode) {
       root + "/sandbox.sb",
       root + "/bin/" + name,
       url,
-      kind === "framing" ? root + "/bin/framing-helper-" + pinMode : mode,
+      kind === "framing" || kind === "startup" ? root + "/bin/framing-helper-" + pinMode : mode,
       ...(pin ? [pin, ...(process.env.RFC54_EMPTY_MANIFEST === "1" ? ["empty"] : [])] : []),
       ...(process.env.RFC54_CAPACITY_ONLY === "1"
         ? ["capacity", process.env.RFC54_CAPACITY_BATCHES || "10"]
@@ -218,9 +220,34 @@ async function run(pinMode) {
   const owned = new Set([child.pid]);
   let stdout = "",
     stderr = "";
-  child.stdout.on("data", (d) => (stdout += d));
+  let startupChildPIDs = [];
+  let connectionsBeforeActivation = 0;
+  const observeStartup = () => {
+    if (
+      kind !== "startup" ||
+      startupChildPIDs.length !== 0 ||
+      (!stdout.includes('"prepared":true') && !stdout.includes('"preparing":true'))
+    ) {
+      return;
+    }
+    const descendants = descendantPIDs(child.pid).filter((pid) => pid !== child.pid);
+    if (descendants.length === 0) {
+      return;
+    }
+    startupChildPIDs = descendants;
+    connectionsBeforeActivation = connectCount;
+    for (const pid of startupChildPIDs) {
+      owned.add(pid);
+    }
+    child.stdin.write(Buffer.from([1]));
+  };
+  child.stdout.on("data", (d) => {
+    stdout += d;
+    observeStartup();
+  });
   child.stderr.on("data", (d) => (stderr += d));
   const monitor = setInterval(() => {
+    observeStartup();
     for (const pid of descendantPIDs(child.pid)) {
       owned.add(pid);
     }
@@ -232,7 +259,9 @@ async function run(pinMode) {
   try {
     const ended = await Promise.race([
       exit,
-      delay(kind === "aux" ? 75000 : kind === "framing" ? 18000 : 15000).then(() => null),
+      delay(kind === "aux" ? 75000 : kind === "framing" || kind === "startup" ? 18000 : 15000).then(
+        () => null,
+      ),
     ]);
     if (!ended) {
       throw new Error("probe deadline expired");
@@ -245,6 +274,37 @@ async function run(pinMode) {
     result = rows.at(-1);
     if (!result) {
       throw new Error("no result: " + stderr);
+    }
+    if (kind === "startup") {
+      const expectedConnections =
+        pinMode === "startup-reconnect"
+          ? 2
+          : ["startup-delayed", "startup-claimed"].includes(pinMode)
+            ? 1
+            : 0;
+      const expectedBytes = Array.from({ length: expectedConnections }, () => ({
+        binary: true,
+        hex: Buffer.from("trigger").toString("hex"),
+      }));
+      if (
+        ended[0] !== 0 ||
+        ended[1] !== null ||
+        !result.passed ||
+        connectionsBeforeActivation !== 0 ||
+        connectCount !== expectedConnections ||
+        JSON.stringify(framingBytes) !== JSON.stringify(expectedBytes) ||
+        startupChildPIDs.length !== 1 ||
+        (expectedConnections > 0 &&
+          (result.helperPIDs?.length !== expectedConnections ||
+            result.helperPIDs[0] !== startupChildPIDs[0])) ||
+        (expectedConnections === 2 && new Set(result.helperPIDs).size !== 2) ||
+        (pinMode === "startup-delayed" && !result.waitedOverBootstrapBudget)
+      ) {
+        throw new Error(
+          "startup ownership failed: " +
+            JSON.stringify({ result, startupChildPIDs, connectCount, framingBytes }),
+        );
+      }
     }
     if (kind === "framing") {
       const shouldDeliver = ["idle-after-control", "within-budget"].includes(pinMode);
@@ -391,7 +451,8 @@ async function run(pinMode) {
       admittedNeverRequestsByBatch: Object.fromEntries(batchCounts),
       echoedBatches,
       nativeCapacity,
-      ...(kind === "framing" ? { framingBytes } : {}),
+      ...(kind === "framing" || kind === "startup" ? { framingBytes } : {}),
+      ...(kind === "startup" ? { startupChildPIDs, connectionsBeforeActivation } : {}),
       cleanup: { observedPIDs: [...owned], forcedPIDs: forced, remainingPIDs: remaining },
       stderr,
     };
@@ -406,9 +467,19 @@ async function run(pinMode) {
   const scenarios =
     kind === "tls"
       ? ["match", "mismatch"]
-      : kind === "framing"
-        ? ["idle-after-control", "within-budget", "partial-prefix", "combined-budget"]
-        : [kind];
+      : kind === "startup"
+        ? [
+            "startup-delayed",
+            "startup-claimed",
+            "startup-cancelled",
+            "startup-exit",
+            "startup-stalled",
+            "startup-discarded",
+            "startup-reconnect",
+          ]
+        : kind === "framing"
+          ? ["idle-after-control", "within-budget", "partial-prefix", "combined-budget"]
+          : [kind];
   for (const scenario of scenarios) {
     await run(scenario);
   }

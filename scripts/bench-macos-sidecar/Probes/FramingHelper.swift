@@ -37,14 +37,25 @@ import Foundation
             "role": "runtime", "name": "openclaw-mac-node-sidecar", "version": "fixture",
             "artifactIdentity": "framing-fixture",
         ]
+        if scenario == "startup-stalled" { Thread.sleep(forTimeInterval: 30) }
         try self.emit([
             "type": "accept", "offer": offer,
             "selection": ["protocolMajor": 1, "protocolMinor": 0, "featureBits": Feature.required, "limits": limits],
         ])
+        if scenario == "startup-exit" {
+            Thread.sleep(forTimeInterval: 1)
+            return
+        }
         let open = try self.incoming()
         guard open.0 == "OCSC",
-              try (JSONSerialization.jsonObject(with: open.1) as? [String: Any])?["type"] as? String == "open"
+              let openValue = try JSONSerialization.jsonObject(with: open.1) as? [String: Any],
+              openValue["type"] as? String == "open"
         else { throw URLError(.cannotParseResponse) }
+        if scenario.hasPrefix("startup-") {
+            guard let url = openValue["url"] as? String, URL(string: url)?.path == "/startup-final",
+                  openValue["privateCommands"] as? [String] == ["fixture.private"]
+            else { throw URLError(.cannotParseResponse) }
+        }
         if scenario == "idle-after-control" {
             try self.emit(["type": "pong", "id": "fixture-absent", "ok": true])
             Thread.sleep(forTimeInterval: 11.5)
@@ -59,7 +70,9 @@ import Foundation
             try FileHandle.standardOutput.write(contentsOf: packet.dropFirst().prefix(39))
             Thread.sleep(forTimeInterval: interval)
             try FileHandle.standardOutput.write(contentsOf: packet.dropFirst(40))
-        } else if scenario == "idle-after-control" {
+        } else if scenario == "idle-after-control" || scenario == "startup-delayed" || scenario == "startup-claimed" ||
+            scenario == "startup-reconnect"
+        {
             try FileHandle.standardOutput.write(contentsOf: packet)
         } else { throw URLError(.unsupportedURL) }
         var writeReceipt = false
@@ -84,7 +97,10 @@ import Foundation
                 writeReceipt = true
             }
             if writeReceipt, serverReceipt {
-                try self.emit(["type": "frame", "frame": ["fixtureAck": 1, "receiptCount": 1, "ok": true]])
+                try self.emit(["type": "frame", "frame": [
+                    "fixtureAck": 1, "receiptCount": 1, "ok": true,
+                    "helperPID": ProcessInfo.processInfo.processIdentifier,
+                ]])
             }
         }
     }
