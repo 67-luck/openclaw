@@ -8,6 +8,7 @@ import { afterEach, expect, it } from "vitest";
 import { createCodexDynamicToolBridge } from "./dynamic-tools.js";
 import { CodexNativeToolLifecycleProjector } from "./event-projector-native-tool-lifecycle.js";
 import { emitCodexNativePreToolUseFailureDiagnostic } from "./native-hook-relay.js";
+import { createCodexNativePreToolUseFailureBuffer } from "./native-pre-tool-use-failures.js";
 import type { JsonObject } from "./protocol.js";
 
 const closers: (() => void)[] = [];
@@ -63,36 +64,51 @@ it("settles a native item through its admitted handle after host closure", async
     stop();
   }
 });
-it("retains an item-less pre-tool failure handle accepted before cancellation", async () => {
-  const h = await host();
-  const report = h.capabilities.bindToolExecution!({ toolName: "exec", toolCallId: "pre-tool" });
-  h.close();
-  const events: DiagnosticEventPayload[] = [];
-  const stop = onInternalDiagnosticEvent((event) => events.push(event));
-  try {
-    emitCodexNativePreToolUseFailureDiagnostic({
-      failure: {
+it.each(["direct", "buffered", "late"] as const)(
+  "retains an item-less pre-tool failure handle accepted before cancellation: %s",
+  async (delivery) => {
+    const h = await host();
+    const report = h.capabilities.bindToolExecution!({ toolName: "exec", toolCallId: "pre-tool" });
+    h.close();
+    const events: DiagnosticEventPayload[] = [];
+    const stop = onInternalDiagnosticEvent((event) => events.push(event));
+    try {
+      const failure = {
         toolName: "forged",
         toolCallId: "forged",
-        disposition: "cancelled",
+        disposition: "cancelled" as const,
         durationMs: 1,
         report,
-      },
-    });
-    await waitForDiagnosticEventsDrained();
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "tool.execution.error",
-        toolName: "exec",
-        toolCallId: "pre-tool",
-        runId: "native-report",
-        toolOwner: "codex",
-      }),
-    );
-  } finally {
-    stop();
-  }
-});
+      };
+      if (delivery === "direct") {
+        emitCodexNativePreToolUseFailureDiagnostic({ failure });
+      } else {
+        const buffer = createCodexNativePreToolUseFailureBuffer({
+          signal: new AbortController().signal,
+        });
+        if (delivery === "late") {
+          buffer.activateFallback(false);
+        }
+        buffer.record(failure);
+        buffer.activateFallback(false);
+        buffer.flush();
+        expect(buffer.pending).toEqual([]);
+      }
+      await waitForDiagnosticEventsDrained();
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "tool.execution.error",
+          toolName: "exec",
+          toolCallId: "pre-tool",
+          runId: "native-report",
+          toolOwner: "codex",
+        }),
+      );
+    } finally {
+      stop();
+    }
+  },
+);
 it("reports quarantine through the host identity and rejects a missing capability", async () => {
   const h = await host();
   const params = {

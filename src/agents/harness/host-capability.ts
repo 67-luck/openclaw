@@ -58,7 +58,11 @@ import {
   resolveAgentQuestionAnswerAuthority,
   withAgentQuestionAnswerAuthority,
 } from "./host-private-capabilities.js";
-import { bindHarnessModelExecution, retainHarnessSource } from "./host-source-authority.js";
+import {
+  bindHarnessModelExecution,
+  bindHarnessNativeSpawnAuthority,
+  retainHarnessSource,
+} from "./host-source-authority.js";
 import { bindHarnessToolExecution } from "./host-tool-execution.js";
 import { gateBoundTool } from "./host-tool-surface.js";
 import { bindHarnessTrajectory } from "./host-trajectory.js";
@@ -136,6 +140,7 @@ export function createAgentHarnessHostCapabilities(params: {
     inheritedCaller?.operationalRunInstance === operationalRunInstance
       ? inheritedCaller
       : undefined;
+  let personalToolParticipants = sourceCaller?.personalToolParticipants;
   const callerIdentity = createAdmittedGatewayToolCallerIdentity({
     admittedRunContext: attempt.admittedRunContext,
     receiptAuthority: assertActive,
@@ -414,6 +419,9 @@ export function createAgentHarnessHostCapabilities(params: {
         },
         action,
       ),
+    get assertNativeSubagentSpawnAllowed() {
+      return bindHarnessNativeSpawnAuthority(personalToolParticipants, assertActive);
+    },
     ...(bindModelExecution ? { bindModelExecution } : {}),
     retainSourceAuthority: () =>
       retainHarnessSource(attempt.admittedRunContext, assertActive, nativeModelPolicySupported),
@@ -629,6 +637,13 @@ export function createAgentHarnessHostCapabilities(params: {
     capabilities,
     setInputAttachmentReadAllowed: media.setInputAttachmentReadAllowed,
     runWithScope: (run) => {
+      const preparedCaller = getGatewayToolCallerIdentity();
+      if (preparedCaller?.operationalRunInstance === operationalRunInstance) {
+        personalToolParticipants ??= preparedCaller.personalToolParticipants;
+        if (callerIdentity && personalToolParticipants) {
+          callerIdentity.personalToolParticipants = personalToolParticipants;
+        }
+      }
       const nodeAuthorities = createSessionNodeAuthorities(
         attempt,
         params.pluginId,

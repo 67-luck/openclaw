@@ -149,6 +149,7 @@ function recordClientVoiceToolEffect(event: TrustedToolExecutionEvent): void {
       writeRecordInTransaction(database, record);
     },
     { agentId: binding.agentId },
+    { operationLabel: "voice.session.tool-effect" },
   );
 }
 
@@ -227,6 +228,7 @@ export function createOrResumeClientVoiceSession(params: {
       });
     },
     { agentId: params.agentId },
+    { operationLabel: "voice.session.create-or-resume" },
   );
   return voiceSessionId;
 }
@@ -308,6 +310,7 @@ export function registerClientVoiceConsultRun(params: {
       }
     },
     { agentId: params.agentId },
+    { operationLabel: "voice.session.register-consult" },
   );
   const previousBinding = voiceSessionByRunId.get(params.runId);
   if (
@@ -501,6 +504,7 @@ function appendVoiceTranscript(params: {
           writeRecordInTransaction(database, current);
         },
         { agentId: normalized.agentId },
+        { operationLabel: "voice.transcript.reserve" },
       );
       const appended = await appendTranscriptMessage(
         { ...sessionTarget, sessionId: sessionEntry.sessionId },
@@ -551,6 +555,7 @@ function appendVoiceTranscript(params: {
           writeRecordInTransaction(database, current);
         },
         { agentId: normalized.agentId },
+        { operationLabel: "voice.transcript.confirm" },
       );
       if (normalized.role === "user" && confirmation) {
         noteClientVoiceConfirmationUtterance({
@@ -640,6 +645,7 @@ async function closeClientVoiceSessionInternal(params: {
       }
     },
     { agentId: params.agentId },
+    { operationLabel: "voice.session.close" },
   );
   const closed = readRecord(params.agentId, params.voiceSessionId);
   if (!closed) {
