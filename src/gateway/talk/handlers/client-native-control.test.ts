@@ -24,8 +24,8 @@ import {
   upstream,
   withNativePlugin,
   withParkedNativeTask,
-  withRegisteredNativeEmbeddedRun,
 } from "./client-native-control.test-support.js";
+import { withRegisteredNativeEmbeddedRun } from "./client-native-run.test-support.js";
 
 describe("native Talk through the public OpenAI plugin registration", () => {
   installNativePluginTestHooks();

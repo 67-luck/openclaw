@@ -957,3 +957,27 @@ it("preserves the original operator source through chat-backed capability adapta
   expect(originalSource).toBeDefined();
   expect(admittedSource).toBe(originalSource);
 });
+
+// The isolated native cell uses Linux executables; protocol/policy siblings remain portable.
+it.runIf(process.platform === "linux")(
+  "keeps host-authenticated node approvals and native effects equal across text and Talk",
+  async () => {
+    const { runTalkNodePermissionParity } =
+      await import("./server.talk-permission-parity.test-support.js");
+    await runTalkNodePermissionParity({
+      harness,
+      client,
+      context,
+      agentId,
+      sessionKey,
+      canonicalKey,
+      sessionId,
+      storePath,
+      voiceSessionId,
+      connectionId,
+      runEmbeddedAgent,
+      rpc,
+      waitForDispatchEnd,
+    });
+  },
+);
