@@ -428,6 +428,9 @@ test("rolls back delayed metadata when its connection closes before worker commi
       ),
     ).rejects.toThrow("Synthetic connection retired");
     expect(commitRequested).toBe(true);
+    expect(() => getPublishedPairedDeviceBinding("paired-rich", baseDir)).toThrow(
+      "requires a current worker publication",
+    );
     expect(await getPairedDevice("paired-rich", baseDir)).toEqual(before);
   } finally {
     closing.mockRestore();
@@ -612,11 +615,16 @@ test.each(["metadata", "presence", "removal", "committed metadata"] as const)(
       expect(await reader).toEqual({ ...before, ...patch });
       releaseReply.resolve();
     } else {
-      expect(getPublishedPairedDeviceBinding("paired-rich", baseDir)).toEqual(previousBinding);
+      expect(() => getPublishedPairedDeviceBinding("paired-rich", baseDir)).toThrow(
+        "requires a current worker publication",
+      );
       expect(await reader).toEqual(before);
       releaseWriter.resolve();
     }
     await mutation;
+    expect(getPublishedPairedDeviceBinding("paired-rich", baseDir)).toEqual(
+      kind === "removal" ? null : previousBinding,
+    );
   },
 );
 

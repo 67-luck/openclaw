@@ -143,11 +143,12 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
       return true;
     },
     beginMutation(changesAuthority: boolean) {
+      const startingRevision = captured.revision;
       const mutation = {
         blocksReads: changesAuthority || captured.blocked || Boolean(captured.mutation),
       };
-      // Observation writes retain committed authority while queued. An unknown
-      // predecessor or an authorizing mutation must still fence all readers.
+      // Observation writes permit independent reads, but not final node effects.
+      // Unknown predecessors and authorizing mutations must also fence readers.
       if (mutation.blocksReads) {
         captured.epoch++;
         captured.authorityEpoch++;
@@ -159,14 +160,25 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
           if (publications.get(path) !== captured || captured.mutation !== mutation) {
             return;
           }
-          if (receipt.beforeRevision !== captured.revision) {
+          const unorderedRead =
+            captured.revision !== startingRevision &&
+            captured.revision !== receipt.beforeRevision &&
+            captured.revision !== receipt.revision;
+          if (
+            receipt.beforeRevision !== captured.revision &&
+            receipt.revision !== captured.revision
+          ) {
             captured.authorityEpoch++;
             captured.complete = false;
             captured.rows.clear();
           }
-          install(receipt.changed);
-          captured.revision = receipt.revision;
-          captured.blocked = false;
+          // A read can observe COMMIT before its receipt arrives. Other read-ahead
+          // revisions are unordered content hashes; reread instead of rewinding authority.
+          if (!unorderedRead) {
+            install(receipt.changed);
+            captured.revision = receipt.revision;
+          }
+          captured.blocked = unorderedRead;
           captured.mutation = undefined;
           // A reader admitted during this transaction cannot republish its older snapshot.
           captured.epoch++;
@@ -177,9 +189,10 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
               captured.mutation = undefined;
             } else {
               mutation.blocksReads = true;
-              captured.blocked = true;
-              captured.authorityEpoch++;
             }
+            // Without a receipt, even a completed rollback cannot refresh cached authority.
+            captured.blocked = true;
+            captured.authorityEpoch++;
             captured.epoch++;
           }
         },
@@ -207,6 +220,7 @@ export function getPublishedPairedDeviceBinding(
   if (
     !publication ||
     publication.blocked ||
+    publication.mutation ||
     (!publication.complete && !publication.rows.has(deviceId))
   ) {
     throw new Error("Device pairing authority requires a current worker publication");
