@@ -92,7 +92,8 @@ const log = createSubsystemLogger("state/agent-db");
 // References are derived; the canonical agent and shared resource owners govern retirement.
 const executionState = resolveGlobalSingleton<{
   owners: Map<string, ExecutionOwner>;
-  // The slot stays occupied during eviction and after failed cleanup.
+  // The slot stays occupied during eviction. Failed owners retain cleanup custody
+  // through `owners` without preventing a healthy owner from becoming reusable.
   idle?: ExecutionOwner;
 }>(Symbol.for("openclaw.agentDatabaseExecutionOwners"), () => ({ owners: new Map() }));
 const executions = executionState.owners;
@@ -297,6 +298,9 @@ function createAgentDatabaseExecution(
         const firstFailure = !cleanupFailure;
         const reason = describeCleanupFailure(error);
         cleanupFailure = { error, reason };
+        if (executionState.idle === owner) {
+          executionState.idle = undefined;
+        }
         if (firstFailure) {
           reportCleanupFailure(reason);
         }
@@ -350,8 +354,12 @@ function createAgentDatabaseExecution(
     if (!generation) {
       for (let idle = executionState.idle; idle && idle !== owner; idle = executionState.idle) {
         // A failed owner keeps its exact generation and lease custody. Only that owner
-        // retries cleanup; unrelated turns must not inherit the failure.
+        // retries cleanup; unrelated turns must not inherit the failure or lose the
+        // reusable-idle slot.
         if (idle.getCleanupFailure()) {
+          if (executionState.idle === idle) {
+            executionState.idle = undefined;
+          }
           break;
         }
         try {

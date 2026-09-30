@@ -125,13 +125,22 @@ it.each(["eviction", "timer"] as const)(
       expect(await run(second)).toBe("committed");
       await second.release();
       expect(close).toHaveBeenCalledTimes(1);
-      expect(closes.get("second")).toHaveBeenCalledTimes(1);
+      expect(closes.get("second")).not.toHaveBeenCalled();
+      const secondAgain = borrow("second");
+      expect(await run(secondAgain)).toBe("committed");
+      await secondAgain.release();
+      // The failed owner retains cleanup custody without forcing healthy turns to
+      // create and close a native worker for every request.
+      expect(createNative).toHaveBeenCalledTimes(2);
+      expect(closes.get("second")).not.toHaveBeenCalled();
       const third = borrow("third");
       expect(await run(third)).toBe("committed");
       await third.release();
-      // Unrelated turns neither retry the failed close nor retain extra idle natives.
+      // Unrelated turns neither retry the failed close nor retain extra idle natives;
+      // the normal single reusable slot moves between healthy owners.
       expect(close).toHaveBeenCalledTimes(1);
-      expect(closes.get("third")).toHaveBeenCalledTimes(1);
+      expect(closes.get("second")).toHaveBeenCalledTimes(1);
+      expect(closes.get("third")).not.toHaveBeenCalled();
 
       const original = borrow("first");
       await expect(run(original)).rejects.toBe(failure);
@@ -141,6 +150,7 @@ it.each(["eviction", "timer"] as const)(
       expect(await run(original)).toBe("committed");
       expect(close).toHaveBeenCalledTimes(3);
       expect(createNative).toHaveBeenCalledTimes(4);
+      expect(closes.get("third")).toHaveBeenCalledTimes(1);
       expect(fixture.warn).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
