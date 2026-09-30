@@ -12,7 +12,10 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createSpawnBrokerHost, type SpawnBrokerHost } from "../process/spawn-broker/host.js";
 import { runInDetachedAsyncContext } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import {
+  registerGlobalSingletonFinalResourceReset,
+  resolveGlobalSingleton,
+} from "../shared/global-singleton.js";
 import { resolveRuntimeProcessEntrypointUrl } from "./runtime-process-url.js";
 import {
   captureRuntimeWorkerSource,
@@ -63,8 +66,9 @@ type NativeSource = RetainedNativeWorkerSource & {
   close(): Promise<void>;
 };
 
+const lifetimeKey = Symbol.for("openclaw.nativeWorkerLifetimes");
 const lifetime = resolveGlobalSingleton(
-  Symbol.for("openclaw.nativeWorkerLifetimes"),
+  lifetimeKey,
   (): {
     nextId: number;
     sources: WeakMap<RuntimeWorkerGeneration, NativeSource>;
@@ -73,10 +77,10 @@ const lifetime = resolveGlobalSingleton(
     nextId: 0,
     sources: new WeakMap(),
   }),
-  async (state) => {
-    await state.defaultSource?.close();
-  },
 );
+registerGlobalSingletonFinalResourceReset(lifetimeKey, async () => {
+  await lifetime.defaultSource?.close();
+});
 
 function nativeRuntime(source: NativeSource): NativeRuntime {
   if (source.closing) {
