@@ -1091,7 +1091,7 @@ describe("release fast lane", () => {
     expect(ordinary.output).not.toContain("Release fast lane");
   });
 
-  it("reports bounded owner selection without admitting the broad Node plan", () => {
+  it("keeps bounded owner selection without admitting the broad Node plan", () => {
     const result = runCiManifestFixture({
       ...fixture,
       changedPaths: ["scripts/lib/ci-node-test-plan.mts"],
@@ -1104,9 +1104,8 @@ describe("release fast lane", () => {
     ).toEqual([expect.objectContaining({ check_name: "changed-owner-plan" })]);
     expectNonNodeLanesSkipped(result.outputs);
     expect(result.outputs.run_build_artifacts).toBe("false");
-    expect(result.output).toContain("Node test plan owner selection: stub owner selection");
     expect(result.output).not.toContain("node-test-plan-options:");
-    expect(result.summary).toContain("Node plan: bounded owner selection (stub owner selection).");
+    expect(result.summary).not.toContain("Node plan: bounded owner selection");
   });
 
   it("retains Docker and QA owners for labeled release tooling changes", () => {

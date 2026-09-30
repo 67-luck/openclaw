@@ -404,9 +404,6 @@ export function runCiManifestFixture(options: {
           export { hasQaSmokeAffectingChange } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/ci-changed-node-test-plan.mts")).href)};
           export const createChangedNodeTestShards = (changedPaths, options = {}) => {
             console.log("changed-node-plan-options:" + JSON.stringify(options));
-            if (options.releaseFastLane && changedPaths.includes("scripts/lib/ci-node-test-plan.mts")) {
-              options.onFallback("stub owner selection");
-            }
             const selectedRows = ${JSON.stringify(options.nodeTestShards ?? null)};
             if (selectedRows) return selectedRows;
             if (options.runnerBackend === "runson") return [{
