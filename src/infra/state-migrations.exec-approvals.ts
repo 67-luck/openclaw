@@ -527,7 +527,6 @@ function comparableExecApprovalsPolicy(file: ExecApprovalsFile) {
             server: entry.server,
             tool: entry.tool,
             source: entry.source,
-            addedAt: entry.addedAt,
           })),
         },
       ]),

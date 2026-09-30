@@ -526,7 +526,7 @@ describe("legacy exec approvals migration", () => {
                 server: "synthetic-tools",
                 tool: "synthetic-run",
                 source: "allow-always",
-                addedAt: 100,
+                addedAt: 300,
                 lastUsedAt: 400,
               },
             ],
