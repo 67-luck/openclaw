@@ -769,7 +769,11 @@ jobs:
                   if kind in ("platform", "linux-node"):
                       pathspecs += evidence_scripts
                   elif kind == "preflight":
-                      pathspecs += ["scripts/lib/release-context.mjs", "scripts/lib/release-version.mjs"]
+                      pathspecs += [
+                          "scripts/ci-build-manifest.mjs",
+                          "scripts/lib/release-context.mjs",
+                          "scripts/lib/release-version.mjs",
+                      ]
                   if kind == "platform":
                       pathspecs += platform_scripts
                   if kind == "linux-node":
