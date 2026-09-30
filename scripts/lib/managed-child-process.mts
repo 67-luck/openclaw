@@ -75,6 +75,35 @@ type ManagedCommandOptions = {
   comSpec?: string;
 };
 
+/** Monotonic milliseconds since the inner command invocation; absent events remain absent. */
+export type ManagedCommandLifecycle = {
+  elapsedMs: number;
+  spawnStartedMs?: number;
+  spawnReturnedMs?: number;
+  exitMs?: number;
+  exitCode?: number;
+  exitSignal?: number;
+  stdoutCloseMs?: number;
+  stderrCloseMs?: number;
+  stopMs?: number;
+  stopSignal?: number;
+  stopReason?: "timeout" | "aborted" | "signal" | "failed";
+  cleanup?: {
+    startedMs: number;
+    elapsedMs: number;
+    groupState: "dead" | "indeterminate" | "live";
+    childExited: boolean;
+    stdoutClosed: boolean;
+    stderrClosed: boolean;
+    joined: boolean;
+  };
+};
+
+type ManagedChildCleanupObservation = Pick<
+  NonNullable<ManagedCommandLifecycle["cleanup"]>,
+  "elapsedMs" | "groupState" | "childExited" | "joined"
+>;
+
 export type RunManagedCommandOptions = ManagedCommandOptions & {
   memoryLimitBytes?: number;
   onMemoryScope?: (unit: string) => void;
@@ -89,6 +118,7 @@ export type RunManagedCommandOptions = ManagedCommandOptions & {
   abortKillGraceMs?: number;
   cleanupDrainTimeoutMs?: number;
   onSignal?: (signal: NodeJS.Signals) => void;
+  onLifecycle?: (facts: ManagedCommandLifecycle) => void | Promise<void>;
 };
 
 type ManagedCommandOutcome =
@@ -551,10 +581,25 @@ async function runManagedCommandInner(
     abortKillGraceMs,
     cleanupDrainTimeoutMs,
     onSignal,
+    onLifecycle,
     ...commandOptions
   }: RunManagedCommandOptions,
   claimResources = true,
 ) {
+  const lifecycleStartedAt = onLifecycle ? performance.now() : 0;
+  const lifecycle: ManagedCommandLifecycle | undefined = onLifecycle ? { elapsedMs: 0 } : undefined;
+  const elapsed = () => performance.now() - lifecycleStartedAt;
+  const reportLifecycle = () => {
+    if (!lifecycle || !onLifecycle) {
+      return;
+    }
+    lifecycle.elapsedMs = elapsed();
+    try {
+      void Promise.resolve(onLifecycle(lifecycle)).catch(() => {});
+    } catch {
+      // Diagnostics cannot alter command settlement or resource ownership.
+    }
+  };
   if (platform === "win32" && requireProcessTreeExit) {
     throw Object.assign(
       new Error("Strict managed process-tree verification is not supported on Windows"),
@@ -608,10 +653,17 @@ async function runManagedCommandInner(
   installSignalHandlers();
   let child: ChildProcess;
   try {
+    if (lifecycle) {
+      lifecycle.spawnStartedMs = elapsed();
+    }
     child = spawnManagedChild(spawnSpec.command, spawnSpec.args, spawnSpec.options);
+    if (lifecycle) {
+      lifecycle.spawnReturnedMs = elapsed();
+    }
   } catch (error) {
     removeSignalHandlersIfIdle();
     releaseOwnership();
+    reportLifecycle();
     throw error;
   }
   const ownsProcessTree = requireProcessTreeExit || windowsJobs.has(child);
@@ -621,6 +673,15 @@ async function runManagedCommandInner(
   const removeOutputCloseListeners = [...pendingOutputCloses].map((pipe) => {
     const onClose = () => {
       pendingOutputCloses.delete(pipe);
+      if (lifecycle) {
+        const closedMs = elapsed();
+        if (pipe === child.stdout) {
+          lifecycle.stdoutCloseMs = closedMs;
+        }
+        if (pipe === child.stderr) {
+          lifecycle.stderrCloseMs = closedMs;
+        }
+      }
     };
     pipe.once("close", onClose);
     return () => pipe.off("close", onClose);
@@ -637,9 +698,13 @@ async function runManagedCommandInner(
     forceKillDelayMs?: number,
     forceKillOnLeaderExit = false,
   ) => {
+    if (finalization) {
+      return finalization;
+    }
+    const cleanupStartedMs = lifecycle ? elapsed() : 0;
     // Observe eager rejection even when cancellation starts inside onReady.
     // Physical release stays in onTerminated: strict cleanup can release, then fail.
-    return (finalization ??= finalizeManagedChild(child, stopSignal, {
+    return (finalization = finalizeManagedChild(child, stopSignal, {
       platform,
       runTaskkill,
       forceKillDelayMs,
@@ -647,12 +712,29 @@ async function runManagedCommandInner(
       drainTimeoutMs: cleanupDrainTimeoutMs,
       areOutputPipesClosed: () => pendingOutputCloses.size === 0,
       onTerminated: releaseOwnership,
+      onCleanup: lifecycle
+        ? (facts) => {
+            lifecycle.cleanup = {
+              startedMs: cleanupStartedMs,
+              ...facts,
+              stdoutClosed: !child.stdout || !pendingOutputCloses.has(child.stdout),
+              stderrClosed: !child.stderr || !pendingOutputCloses.has(child.stderr),
+            };
+          }
+        : undefined,
     }).then(
       () => undefined,
       (error: unknown) => ({ type: "failed" as const, error }),
     ));
   };
   const stop = (outcome: ManagedCommandOutcome, ...termination: Parameters<typeof finalize>) => {
+    if (!cancellation && lifecycle && outcome.type !== "completed") {
+      lifecycle.stopMs = elapsed();
+      lifecycle.stopReason = outcome.type;
+      if (termination[0]) {
+        lifecycle.stopSignal = signalNumberFor(termination[0]);
+      }
+    }
     cancellation ??= outcome;
     clearTimeout(timeoutTimer);
     const joined = finalize(...termination);
@@ -667,6 +749,20 @@ async function runManagedCommandInner(
     void stop({ type: "aborted" }, "SIGTERM", abortKillGraceMs);
   };
   managedChildren.add(forwardSignal);
+  const recordExit = (status: number | null, received: NodeJS.Signals | null) => {
+    if (lifecycle) {
+      lifecycle.exitMs = elapsed();
+      if (status !== null) {
+        lifecycle.exitCode = status;
+      }
+      if (received !== null) {
+        lifecycle.exitSignal = signalNumberFor(received);
+      }
+    }
+  };
+  if (lifecycle) {
+    child.once("exit", recordExit);
+  }
   try {
     child.once("error", (error) => {
       clearTimeout(timeoutTimer);
@@ -748,6 +844,9 @@ async function runManagedCommandInner(
     }
     return typeof outcome.exit === "string" ? signalExitCode(outcome.exit) : outcome.exit;
   } finally {
+    if (lifecycle) {
+      child.off("exit", recordExit);
+    }
     for (const removeListener of removeOutputCloseListeners) {
       removeListener();
     }
@@ -758,6 +857,7 @@ async function runManagedCommandInner(
     if (!child.pid) {
       releaseOwnership();
     }
+    reportLifecycle();
   }
 }
 
@@ -773,6 +873,7 @@ export async function finalizeManagedChild(
     retainOutputOnFailure = false,
     areOutputPipesClosed,
     onTerminated = () => {},
+    onCleanup,
   }: {
     platform: NodeJS.Platform;
     runTaskkill: TaskkillRunner;
@@ -782,12 +883,14 @@ export async function finalizeManagedChild(
     retainOutputOnFailure?: boolean;
     areOutputPipesClosed?: () => boolean;
     onTerminated?: () => void;
+    onCleanup?: (facts: ManagedChildCleanupObservation) => void | Promise<void>;
   },
 ) {
   // Nested wrappers own detached groups. Let them forward the signal before
   // killing their leader, then join inherited pipes as well as our own group.
   // POSIX normal exit has no grace period: surviving group members are a failure.
   const startedAt = Date.now();
+  const observationStartedAt = onCleanup ? performance.now() : 0;
   const forceDelay = signal ? forceKillDelayMs : 0;
   const signalErrors: unknown[] = [];
   const recordSignalError = (error: unknown) => {
@@ -807,6 +910,26 @@ export async function finalizeManagedChild(
     areOutputPipesClosed ??
     (() => [child.stdout, child.stderr].every((pipe) => !pipe || pipe.closed));
   let joined = false;
+  let groupState: "dead" | "indeterminate" | "live" = "indeterminate";
+  let cleanupReported = false;
+  const reportCleanup = () => {
+    if (!onCleanup || cleanupReported) {
+      return;
+    }
+    cleanupReported = true;
+    try {
+      void Promise.resolve(
+        onCleanup({
+          elapsedMs: performance.now() - observationStartedAt,
+          groupState,
+          childExited: child.exitCode !== null || child.signalCode !== null,
+          joined,
+        }),
+      ).catch(() => {});
+    } catch {
+      // Observation is separate from the finalizer's termination decision.
+    }
+  };
   const failures: unknown[] = [];
   try {
     if (normalJobExit && !outputClosed()) {
@@ -845,7 +968,6 @@ export async function finalizeManagedChild(
     const forceAt = (platform === "win32" && !normalJobExit ? Date.now() : startedAt) + forceDelay;
     const deadline = forceAt + drainTimeoutMs;
     let forced = !signal || platform === "win32";
-    let groupState: "dead" | "indeterminate" | "live" = "indeterminate";
     let survivingPids: number[] | undefined;
     let observationError: Error | undefined;
     let warned = false;
@@ -923,6 +1045,7 @@ export async function finalizeManagedChild(
     if (!joined) {
       // Stop owning pipe handles only after recording failure; never disguise an
       // escaped descendant holding stdio as successful completion or cancellation.
+      reportCleanup();
       if (!retainOutputOnFailure) {
         child.stdout?.destroy();
         child.stderr?.destroy();
@@ -994,6 +1117,7 @@ export async function finalizeManagedChild(
   if (joined) {
     onTerminated();
   }
+  reportCleanup();
   if (failures.length === 1) {
     throw failures[0];
   }

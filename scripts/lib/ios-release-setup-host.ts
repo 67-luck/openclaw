@@ -2,6 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import { chmod, lstat, mkdtemp, open, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
 import path from "node:path";
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
@@ -20,7 +21,11 @@ import {
   type ToolFailure,
   type Window,
 } from "./ios-release-setup-host-records.js";
-import { hasUnjoinedWork, runManagedCommand } from "./managed-child-process.mjs";
+import {
+  hasUnjoinedWork,
+  runManagedCommand,
+  type ManagedCommandLifecycle,
+} from "./managed-child-process.mjs";
 
 const MAX_REPORT_BYTES = 1_048_576;
 const MAX_TOOL_BYTES = 65_536;
@@ -226,6 +231,7 @@ async function runTool(
   bin: string,
   args: string[],
   signal: AbortSignal,
+  onLifecycle: (facts: ManagedCommandLifecycle) => void,
   timeoutMs = 2_000,
 ): Promise<ToolResult> {
   const started = performance.now();
@@ -247,6 +253,7 @@ async function runTool(
       signalKillGraceMs: 1_000,
       cleanupDrainTimeoutMs: 3_000,
       requireProcessTreeExit: true,
+      onLifecycle,
       onReady(child) {
         for (const [stream, capture] of [
           [child.stdout, true],
@@ -329,12 +336,18 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
   };
   const observeTool = async (
     context: Pick<ToolFailure, "tool" | "stage" | "target" | "window">,
-    action: () => Promise<ToolResult>,
+    action: (onLifecycle: (facts: ManagedCommandLifecycle) => void) => Promise<ToolResult>,
   ): Promise<ToolResult> => {
     const started = performance.now();
     const epochMs = Date.now();
     const startedPhase = phase;
+    const cpuStart = process.cpuUsage();
+    const loopStart = performance.eventLoopUtilization();
+    const delay = monitorEventLoopDelay({ resolution: 20 });
+    delay.enable();
+    let lifecycle: ManagedCommandLifecycle | undefined;
     const record = (outcome: ToolFailure["outcome"]) => {
+      const cpu = process.cpuUsage(cpuStart);
       if (report.failures.length === 16) {
         report.failures.shift();
       }
@@ -344,11 +357,26 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
         outcome,
         epochMs,
         elapsedMs: elapsed(started),
+        ...(lifecycle ? { lifecycle } : {}),
+        // These are sampler-process observations; concurrent tools share their CPU intervals.
+        observer: {
+          cpuUserMs: cpu.user / 1_000,
+          cpuSystemMs: cpu.system / 1_000,
+          eventLoopUtilization: performance.eventLoopUtilization(loopStart).utilization,
+          eventLoopDelayMaxMs: delay.max / 1_000_000,
+          eventLoopDelaySamples: delay.count,
+        },
       });
     };
     let result: ToolResult;
     try {
-      result = await action();
+      try {
+        result = await action((facts) => {
+          lifecycle = facts;
+        });
+      } finally {
+        delay.disable();
+      }
     } catch (error) {
       record(hasUnjoinedWork(error) ? "unjoined" : "failed");
       fail(error);
@@ -373,7 +401,7 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
   const processes = async (
     context: Pick<ToolFailure, "stage" | "target" | "window"> = { stage: "host" },
   ): Promise<ProcessRecord[]> => {
-    const result = await observeTool({ ...context, tool: "processes" }, () =>
+    const result = await observeTool({ ...context, tool: "processes" }, (onLifecycle) =>
       runTool(
         "/bin/ps",
         [
@@ -383,6 +411,7 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
           "pid=,ppid=,pgid=,rss=,vsz=,%cpu=,time=,lstart=",
         ],
         abort.signal,
+        onLifecycle,
       ),
     );
     const parsed = parseProcesses(result.stdout);
@@ -434,14 +463,15 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
     const epochMs = Date.now();
     const startedPhase = phase;
     const settled = await Promise.allSettled([
-      observeTool({ tool: "vm-stat", stage: "host" }, () =>
-        runTool("/usr/bin/vm_stat", [], abort.signal),
+      observeTool({ tool: "vm-stat", stage: "host" }, (onLifecycle) =>
+        runTool("/usr/bin/vm_stat", [], abort.signal, onLifecycle),
       ),
-      observeTool({ tool: "sysctl", stage: "host" }, () =>
+      observeTool({ tool: "sysctl", stage: "host" }, (onLifecycle) =>
         runTool(
           "/usr/sbin/sysctl",
           ["vm.swapusage", "vm.loadavg", "hw.memsize", "hw.logicalcpu"],
           abort.signal,
+          onLifecycle,
         ),
       ),
       processes(),
@@ -519,7 +549,7 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
           row.sampleEpochMs = Date.now();
           const result = await observeTool(
             { tool: "sample", stage: "sample-stack", target, window },
-            () =>
+            (onLifecycle) =>
               runTool(
                 "/bin/sh",
                 [
@@ -530,6 +560,7 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
                   rawPath,
                 ],
                 abort.signal,
+                onLifecycle,
                 5_000,
               ),
           );

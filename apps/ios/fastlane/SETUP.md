@@ -223,6 +223,11 @@ sampler also records bounded host memory/swap measurements and short stack sampl
 of the owned harness and Gateway. Only numeric facts and fixed stack categories
 enter the proof; raw stack reports are deleted. Sampling can briefly pause its
 target, so these measurements are diagnostic evidence, not release qualification.
+Failed diagnostic commands also retain spawn, exit, cancellation, and output-close
+timings, plus the cleanup owner's final process-group and pipe observations before
+any remaining output handles are destroyed. Sampler CPU and event-loop measurements
+cover each failed command's interval; concurrent commands share those process-wide
+measurements. A zero event-loop sample count means no delay observations were available.
 Manual dispatch of
 **iOS Release E2E** can select `setup_only=true` with `mode=stock` for this probe;
 release callers always run full qualification. Gateway runtime preparation continues

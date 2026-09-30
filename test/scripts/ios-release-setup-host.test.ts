@@ -88,6 +88,27 @@ it.each(["complete", "unjoined-vm"])(
       options.onReady?.(Object.assign(new ChildProcess(), { stdout: output, stderr: errorOutput }));
       if (options.bin === "/usr/bin/vm_stat") {
         if (postBaseline && scenario === "unjoined-vm") {
+          await options.onLifecycle?.({
+            elapsedMs: 6100,
+            spawnStartedMs: 0.2,
+            spawnReturnedMs: 3,
+            exitMs: 2050,
+            exitSignal: 15,
+            stdoutCloseMs: 2051,
+            stderrCloseMs: 2052,
+            stopMs: 2001,
+            stopSignal: 15,
+            stopReason: "timeout",
+            cleanup: {
+              startedMs: 2001,
+              elapsedMs: 4099,
+              groupState: "indeterminate",
+              childExited: true,
+              stdoutClosed: true,
+              stderrClosed: true,
+              joined: false,
+            },
+          });
           throw Object.assign(new Error("PRIVATE_CREDENTIAL /Users/private/tool-failure"), {
             code: "ETIMEDOUT",
             processTreeState: "indeterminate",
@@ -199,6 +220,34 @@ it.each(["complete", "unjoined-vm"])(
               outcome: "unjoined",
               epochMs: expect.any(Number),
               elapsedMs: expect.any(Number),
+              lifecycle: {
+                elapsedMs: 6100,
+                spawnStartedMs: 0.2,
+                spawnReturnedMs: 3,
+                exitMs: 2050,
+                exitSignal: 15,
+                stdoutCloseMs: 2051,
+                stderrCloseMs: 2052,
+                stopMs: 2001,
+                stopSignal: 15,
+                stopReason: "timeout",
+                cleanup: {
+                  startedMs: 2001,
+                  elapsedMs: 4099,
+                  groupState: "indeterminate",
+                  childExited: true,
+                  stdoutClosed: true,
+                  stderrClosed: true,
+                  joined: false,
+                },
+              },
+              observer: {
+                cpuUserMs: expect.any(Number),
+                cpuSystemMs: expect.any(Number),
+                eventLoopUtilization: expect.any(Number),
+                eventLoopDelayMaxMs: expect.any(Number),
+                eventLoopDelaySamples: expect.any(Number),
+              },
             },
           ]
         : [],
@@ -243,6 +292,11 @@ it.each(["complete", "unjoined-vm"])(
     expect(signals.eventNames()).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
     if (scenario === "unjoined-vm") {
+      for (const metric of Object.values(report.failures[0].observer)) {
+        expect(Number.isFinite(metric)).toBe(true);
+        expect(metric).toBeGreaterThanOrEqual(0);
+      }
+      expect(report.failures[0].observer.eventLoopUtilization).toBeLessThanOrEqual(1);
       expect(report.host[1]).toMatchObject({
         vm: "unjoined",
         sysctl: "passed",
@@ -330,6 +384,38 @@ it.each([true, false])(
             epochMs: 105,
             elapsedMs: 6,
             error: "PRIVATE_ERROR /Users/private/failure",
+            lifecycle: {
+              elapsedMs: 6,
+              spawnStartedMs: -1,
+              spawnReturnedMs: 1,
+              exitMs: 2,
+              exitCode: 0,
+              exitSignal: "PRIVATE_SIGNAL",
+              stdoutCloseMs: 3,
+              stderrCloseMs: 4,
+              stopMs: 2,
+              stopSignal: 15,
+              stopReason: "timeout",
+              args: "PRIVATE_COMMAND",
+              cleanup: {
+                startedMs: 2,
+                elapsedMs: 4,
+                groupState: "indeterminate",
+                childExited: true,
+                stdoutClosed: true,
+                stderrClosed: false,
+                joined: false,
+                error: "PRIVATE_CLEANUP /Users/private/cleanup",
+              },
+            },
+            observer: {
+              cpuUserMs: 1,
+              cpuSystemMs: 0.5,
+              eventLoopUtilization: 0.25,
+              eventLoopDelayMaxMs: 3,
+              eventLoopDelaySamples: cleanupConfirmed ? 2 : "PRIVATE_COUNT",
+              raw: "PRIVATE_OBSERVER /Users/private/observer",
+            },
           },
           {
             tool: "PRIVATE_TOOL",
@@ -403,6 +489,33 @@ it.each([true, false])(
           outcome: "timeout",
           epochMs: 105,
           elapsedMs: 6,
+          lifecycle: {
+            elapsedMs: 6,
+            spawnReturnedMs: 1,
+            exitMs: 2,
+            exitCode: 0,
+            stdoutCloseMs: 3,
+            stderrCloseMs: 4,
+            stopMs: 2,
+            stopSignal: 15,
+            stopReason: "timeout",
+            cleanup: {
+              startedMs: 2,
+              elapsedMs: 4,
+              groupState: "indeterminate",
+              childExited: true,
+              stdoutClosed: true,
+              stderrClosed: false,
+              joined: false,
+            },
+          },
+          observer: {
+            cpuUserMs: 1,
+            cpuSystemMs: 0.5,
+            eventLoopUtilization: 0.25,
+            eventLoopDelayMaxMs: 3,
+            ...(cleanupConfirmed ? { eventLoopDelaySamples: 2 } : {}),
+          },
         },
       ],
       host: [

@@ -1,4 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type { ManagedCommandLifecycle } from "./managed-child-process.mjs";
 
 const OUTCOMES = [
   "passed",
@@ -97,6 +98,14 @@ export type ToolFailure = {
   elapsedMs: number;
   target?: Target;
   window?: Window;
+  lifecycle?: ManagedCommandLifecycle;
+  observer?: {
+    cpuUserMs: number;
+    cpuSystemMs: number;
+    eventLoopUtilization: number;
+    eventLoopDelayMaxMs: number;
+    eventLoopDelaySamples?: number;
+  };
 };
 export type Report = {
   status: "starting" | "running" | "stopped" | "unavailable" | "failed";
@@ -133,6 +142,51 @@ function copyNumbers<T extends string>(
   return result;
 }
 
+function projectLifecycle(value: unknown): ManagedCommandLifecycle | undefined {
+  if (!isRecord(value) || !finite(value.elapsedMs)) {
+    return undefined;
+  }
+  const result: ManagedCommandLifecycle = {
+    elapsedMs: value.elapsedMs,
+    ...copyNumbers(value, [
+      "spawnStartedMs",
+      "spawnReturnedMs",
+      "exitMs",
+      "exitCode",
+      "exitSignal",
+      "stdoutCloseMs",
+      "stderrCloseMs",
+      "stopMs",
+      "stopSignal",
+    ]),
+    ...(choice(value.stopReason, ["timeout", "aborted", "signal", "failed"])
+      ? { stopReason: value.stopReason }
+      : {}),
+  };
+  const cleanup = value.cleanup;
+  if (
+    isRecord(cleanup) &&
+    finite(cleanup.startedMs) &&
+    finite(cleanup.elapsedMs) &&
+    choice(cleanup.groupState, ["dead", "indeterminate", "live"]) &&
+    typeof cleanup.childExited === "boolean" &&
+    typeof cleanup.stdoutClosed === "boolean" &&
+    typeof cleanup.stderrClosed === "boolean" &&
+    typeof cleanup.joined === "boolean"
+  ) {
+    result.cleanup = {
+      startedMs: cleanup.startedMs,
+      elapsedMs: cleanup.elapsedMs,
+      groupState: cleanup.groupState,
+      childExited: cleanup.childExited,
+      stdoutClosed: cleanup.stdoutClosed,
+      stderrClosed: cleanup.stderrClosed,
+      joined: cleanup.joined,
+    };
+  }
+  return result;
+}
+
 // The parent projects again: neither a malformed report nor a partial native tool line is publishable.
 export function projectReport(value: unknown, report: Report): void {
   if (!isRecord(value)) {
@@ -155,6 +209,8 @@ export function projectReport(value: unknown, report: Report): void {
     ) {
       continue;
     }
+    const lifecycle = projectLifecycle(row.lifecycle);
+    const observer = row.observer;
     report.failures.push({
       tool: row.tool,
       stage: row.stage,
@@ -165,6 +221,23 @@ export function projectReport(value: unknown, report: Report): void {
       ...(choice(row.target, ["harness", "gateway"]) ? { target: row.target } : {}),
       ...(choice(row.window, ["baseline", "boot-20s", "setup-code-8s", "setup-code-20s"])
         ? { window: row.window }
+        : {}),
+      ...(lifecycle ? { lifecycle } : {}),
+      ...(isRecord(observer) &&
+      finite(observer.cpuUserMs) &&
+      finite(observer.cpuSystemMs) &&
+      finite(observer.eventLoopUtilization) &&
+      observer.eventLoopUtilization <= 1 &&
+      finite(observer.eventLoopDelayMaxMs)
+        ? {
+            observer: {
+              cpuUserMs: observer.cpuUserMs,
+              cpuSystemMs: observer.cpuSystemMs,
+              eventLoopUtilization: observer.eventLoopUtilization,
+              eventLoopDelayMaxMs: observer.eventLoopDelayMaxMs,
+              ...copyNumbers(observer, ["eventLoopDelaySamples"]),
+            },
+          }
         : {}),
     });
   }
