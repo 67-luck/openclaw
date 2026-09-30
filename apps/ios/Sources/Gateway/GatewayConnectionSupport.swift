@@ -10,7 +10,8 @@ struct GatewaySetupAttempt: Equatable {
     let admissionCheckpoint: UInt64
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.id == rhs.id && lhs.admissionCheckpoint == rhs.admissionCheckpoint
+        // The UUID identifies the attempt; its admission checkpoint is immutable payload.
+        lhs.id == rhs.id
     }
 }
 

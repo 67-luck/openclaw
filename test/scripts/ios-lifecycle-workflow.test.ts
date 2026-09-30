@@ -453,7 +453,12 @@ describe.skipIf(process.platform === "win32")("iOS Access simulator workflow", (
     expect(tests).toHaveLength(phase === "smoke" ? 1 : 2);
     expect(tests[0]?.args).toContain("platform=iOS Simulator,id=watch-fixture");
     const restart = commands.findIndex((command) => command.tool === "python3");
-    expect(commands[restart]?.args).toEqual(["scripts/ios-access-restart-proof.py", "watch-fixture"]);
+    expect(commands[restart]).toEqual({
+      tool: "python3",
+      args: ["scripts/ios-access-restart-proof.py", "watch-fixture"],
+      destination: "",
+      settings: "ARCHS = arm64\nCOMPILER_INDEX_STORE_ENABLE = NO\n",
+    });
     expect(restart).toBeGreaterThan(commands.indexOf(tests[0]!));
     if (phase === "tests") {
       expect(restart).toBeLessThan(commands.indexOf(tests[1]!));
