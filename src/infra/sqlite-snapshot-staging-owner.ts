@@ -51,10 +51,7 @@ import {
 } from "./worker-task-capacity.js";
 import { createOwnedWorkerTaskPool } from "./worker-task-pool.js";
 import type { RetainedWorkerTask } from "./worker-task-pool.types.js";
-export type {
-  WorkerOwnedSqliteStagingToken,
-  WorkerOwnedSqliteStagingTokenAdmission,
-} from "./sqlite-snapshot-staging.types.js";
+export type { WorkerOwnedSqliteStagingTokenAdmission } from "./sqlite-snapshot-staging.types.js";
 
 type SuccessfulReply = Exclude<SqliteSnapshotStagingReply, { type: "failed" }>;
 function decodeSnapshotError(payload: unknown): Error {

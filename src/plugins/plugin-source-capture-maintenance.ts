@@ -10,8 +10,9 @@ import {
   createSqliteLifecycleAggregateError,
   throwSqliteLifecycleErrors,
 } from "../infra/sqlite-lifecycle-errors.js";
-import { startWorkerOwnedSqliteStagingToken } from "../infra/sqlite-snapshot-staging-owner.js";
+import type { startWorkerOwnedSqliteStagingToken } from "../infra/sqlite-snapshot-staging-owner.js";
 import { SQLITE_STAGING_TOKEN_FILES } from "../infra/sqlite-staging-token.js";
+import { runInPluginSourceCaptureContext } from "./plugin-source-capture-context.js";
 import {
   isLegacyPluginSourceCaptureName,
   PLUGIN_SOURCE_CAPTURE_PREFIX,
@@ -58,6 +59,7 @@ export function createPluginSourceCaptureMaintenance(state: {
     directory: string,
     originalDirectory: fs.Stats,
     scanKey: string,
+    startToken: typeof startWorkerOwnedSqliteStagingToken,
     nativeMaintenance?: NativeCaptureMaintenance,
   ): Promise<void> {
     const ownerPath = path.join(directory, SQLITE_STAGING_TOKEN_FILES[0]);
@@ -93,7 +95,7 @@ export function createPluginSourceCaptureMaintenance(state: {
       );
     };
     // Reclaim refuses a missing token and never creates a replacement ownership database.
-    const admission = startWorkerOwnedSqliteStagingToken(directory, "reclaim");
+    const admission = startToken(directory, "reclaim");
     const admissionCleanup = { scanKey, close: () => admission.startClose().result };
     const release = await admission.result.catch(async (error: unknown) => {
       try {
@@ -253,6 +255,9 @@ export function createPluginSourceCaptureMaintenance(state: {
       }
       const directory = path.join(root, entry.name);
       try {
+        const { startWorkerOwnedSqliteStagingToken } = await runInPluginSourceCaptureContext(
+          () => import("../infra/sqlite-snapshot-staging-owner.js"),
+        );
         const stat = await fsPromises.lstat(directory);
         const changed = legacy
           ? Math.max(stat.mtimeMs, stat.ctimeMs, stat.birthtimeMs)
@@ -306,7 +311,13 @@ export function createPluginSourceCaptureMaintenance(state: {
           await fsPromises.rm(retired, { recursive: true, force: true });
           continue;
         }
-        await reclaimInstance(canonical, stat, scanKey, nativeMaintenance);
+        await reclaimInstance(
+          canonical,
+          stat,
+          scanKey,
+          startWorkerOwnedSqliteStagingToken,
+          nativeMaintenance,
+        );
       } catch (error) {
         if (!hasErrnoCode(error, "ENOENT") && !isSqliteLockError(error)) {
           recordFailure(error);

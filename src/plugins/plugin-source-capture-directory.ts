@@ -6,7 +6,10 @@ import path from "node:path";
 import { hasErrnoCode } from "../infra/errno.js";
 import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-lifecycle-errors.js";
-import { startWorkerOwnedSqliteStagingToken } from "../infra/sqlite-snapshot-staging-owner.js";
+import type {
+  WorkerOwnedSqliteStagingToken,
+  WorkerOwnedSqliteStagingTokenAdmission,
+} from "../infra/sqlite-snapshot-staging.types.js";
 import {
   acquireSqliteStagingToken,
   SQLITE_STAGING_TOKEN_FILES,
@@ -51,8 +54,8 @@ type Instance = {
   managedRoot?: string;
   token?: SqliteStagingToken;
   workerBacked?: true;
-  workerAdmission?: ReturnType<typeof startWorkerOwnedSqliteStagingToken>;
-  workerToken?: Awaited<ReturnType<typeof startWorkerOwnedSqliteStagingToken>["result"]>;
+  workerAdmission?: WorkerOwnedSqliteStagingTokenAdmission;
+  workerToken?: WorkerOwnedSqliteStagingToken;
   preparation?: Promise<void>;
   failedPreparationCleanup?: Promise<void>;
   unadmittedCleanup?: () => Promise<void>;
@@ -539,6 +542,9 @@ function retainCaptureInstance(storage: PluginSourceCaptureStorage, workerBacked
 
 async function prepareCaptureInstance(instance: Instance, prefix: string): Promise<void> {
   const { stateDir, placement } = instance.storage;
+  const { startWorkerOwnedSqliteStagingToken } = await runInPluginSourceCaptureContext(
+    () => import("../infra/sqlite-snapshot-staging-owner.js"),
+  );
   const prepare = async (fallback: boolean) => {
     let directory: string | undefined;
     let original: fs.BigIntStats | undefined;
