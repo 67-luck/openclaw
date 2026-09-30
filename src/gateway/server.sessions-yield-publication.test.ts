@@ -2,6 +2,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import type { StreamFn } from "../agents/runtime/index.js";
 import { SessionFollowupCompletion } from "../agents/subagents/completion/session-followup-completion.js";
+import { getSubagentRunByRunId } from "../agents/subagents/registry/subagent-registry.js";
 import { onAgentEvent } from "../infra/agent-events.js";
 import { getAgentRunContext } from "../infra/agent-run-registry.js";
 import type { AssistantMessage } from "../llm/types.js";
@@ -27,7 +28,12 @@ const fixture = vi.hoisted(() => ({
     | undefined,
 }));
 vi.mock("../agents/provider-stream.js", () => ({
-  registerProviderStreamForModel: () => fixture.stream,
+  registerProviderStreamForModel: () => {
+    if (!fixture.stream) {
+      throw new Error("Synthetic inference used outside its scenario lifetime");
+    }
+    return fixture.stream;
+  },
 }));
 vi.mock("../agents/assistant-error-transcript.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../agents/assistant-error-transcript.js")>();
@@ -194,6 +200,14 @@ it.for([
       if (event.stream !== "lifecycle") {
         return;
       }
+      const requester = getSubagentRunByRunId(event.runId)?.requesterSessionKey;
+      if (
+        key !== root &&
+        requester !== root &&
+        !(parentKey && (key === parentKey || requester === parentKey))
+      ) {
+        return;
+      }
       if (event.data.phase === "start") {
         runIds.add(event.runId);
       }
@@ -319,7 +333,14 @@ it.for([
           { type: "text", text: value },
         ];
         let content: AssistantMessage["content"];
-        if (text.includes("[Subagent Task]") && text.includes("PROOF_LEAF")) {
+        if (
+          text.includes("A child is paused awaiting a continuation; this is not a completion.") ||
+          text.includes("Follow the heartbeat monitor scratch context when provided.")
+        ) {
+          // This suite owns one provider, not background scheduling. Neither a
+          // paused notice nor an unrelated heartbeat is the requested child result.
+          content = reply("NO_REPLY");
+        } else if (text.includes("[Subagent Task]") && text.includes("PROOF_LEAF")) {
           if (scenario.childActive) {
             await parentYielded.promise;
           }
@@ -364,11 +385,12 @@ it.for([
           });
         } else if (text.includes("PROOF_ROOT")) {
           content = reply("ROOT_WAITING");
-        } else if (parentStage === 3 && !text.includes("WORKER_DONE")) {
+        } else if (parentStage === 3 && text.includes("LEAF_DONE")) {
           successorCount++;
           parentStage = 4;
           content = reply("WORKER_DONE");
         } else {
+          expect(text).toContain("WORKER_DONE");
           expect(parentStage).toBe(4);
           expect(rootStage).toBe(2);
           finalCount++;
@@ -400,42 +422,12 @@ it.for([
       });
       return stream;
     };
-    try {
-      const accepted = await gateway.client.request(
-        "agent",
-        { sessionKey: root, idempotencyKey: root, message: "PROOF_ROOT", deliver: false },
-        { expectFinal: false },
-      );
-      expect(accepted).toMatchObject({ status: "accepted" });
-      if (scenario.delayTerminal) {
-        await Promise.race([terminalEntered.promise, completed.promise]);
-        expect(delayedTerminals).toBe(1);
-        expect(successorCount).toBe(0);
-        terminalRelease.resolve();
-      }
-      await completed.promise;
-      await pendingPatch;
-      expect(gated).toBe(true);
-      expect(failures).toEqual([]);
-      expect(successorCount).toBe(1);
-      expect(finalCount).toBe(1);
-      expect(parentRuns.size).toBe(2); // followup and its successor; initial park preceded key capture.
-      const history = await gateway.client.request<{
-        messages: Array<{ role: string; content: unknown }>;
-        sessionInfo: { label: string };
-      }>("chat.history", { sessionKey: root });
-      expect(
-        history.messages.filter(
-          (message) =>
-            message.role === "assistant" && JSON.stringify(message.content).includes("ROOT_DONE"),
-        ),
-      ).toHaveLength(1);
-      expect(history.sessionInfo.label).toBe(metadataLabel);
-      expect(JSON.stringify(history)).not.toContain("Session access facts are unavailable");
-    } finally {
+    onTestFinished(async () => {
       publicationRelease.resolve();
       terminalRelease.resolve();
       parentYielded.resolve();
+      parked.resolve();
+      leafEnded.resolve();
       await pendingPatch?.catch(() => {});
       await Promise.all(
         [...runIds].map((runId) => gateway.client.request("sessions.abort", { runId })),
@@ -446,6 +438,37 @@ it.for([
       fixture.beforeSettle = undefined;
       fixture.afterResult = undefined;
       fixture.beforeLifecycle = undefined;
+    });
+    const accepted = await gateway.client.request(
+      "agent",
+      { sessionKey: root, idempotencyKey: root, message: "PROOF_ROOT", deliver: false },
+      { expectFinal: false },
+    );
+    expect(accepted).toMatchObject({ status: "accepted" });
+    if (scenario.delayTerminal) {
+      await Promise.race([terminalEntered.promise, completed.promise]);
+      expect(delayedTerminals).toBe(1);
+      expect(successorCount).toBe(0);
+      terminalRelease.resolve();
     }
+    await completed.promise;
+    await pendingPatch;
+    expect(gated).toBe(true);
+    expect(failures).toEqual([]);
+    expect(successorCount).toBe(1);
+    expect(finalCount).toBe(1);
+    expect(parentRuns.size).toBe(2); // followup and its successor; initial park preceded key capture.
+    const history = await gateway.client.request<{
+      messages: Array<{ role: string; content: unknown }>;
+      sessionInfo: { label: string };
+    }>("chat.history", { sessionKey: root });
+    expect(
+      history.messages.filter(
+        (message) =>
+          message.role === "assistant" && JSON.stringify(message.content).includes("ROOT_DONE"),
+      ),
+    ).toHaveLength(1);
+    expect(history.sessionInfo.label).toBe(metadataLabel);
+    expect(JSON.stringify(history)).not.toContain("Session access facts are unavailable");
   },
 );
