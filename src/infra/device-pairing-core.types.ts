@@ -43,7 +43,10 @@ export type PairedDeviceMetadataPatch = Pick<
 export type PairedDeviceMetadataBinding = Pick<
   PairedDevice,
   "publicKey" | "createdAtMs" | "approvedAtMs"
->;
+> & {
+  /** Present only when the pairing record authorized the connection. */
+  grant?: Pick<DeviceAuthToken, "role" | "token">;
+};
 
 /** Deny reasons returned when rotating an existing paired-device token. */
 export type RotateDeviceTokenDenyReason =

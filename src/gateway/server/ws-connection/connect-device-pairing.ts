@@ -530,10 +530,13 @@ export async function authorizeGatewayConnectDevice(
         return undefined;
       }
       handoffBootstrapProfile = existingDevice.handoffBootstrapProfile;
-      if (existingDevice.metadata) {
+      // Role upgrades already record access metadata in their approval transaction.
+      const pairedGrant = paired.tokens?.[role];
+      if (existingDevice.metadata && pairedGrant) {
         pairedDeviceMetadata = {
           createdAtMs: paired.createdAtMs,
           approvedAtMs: paired.approvedAtMs,
+          grant: { role, token: pairedGrant.token },
           patch: existingDevice.metadata,
         };
       }
@@ -564,6 +567,10 @@ export async function authorizeGatewayConnectDevice(
           hasApprovedDeviceBaseline: hasServerApprovedDeviceTokenBaseline,
           isIssuanceCurrent: isConnectAuthorizationCurrent,
         });
+
+  if (pairedDeviceMetadata?.grant && deviceToken) {
+    pairedDeviceMetadata.grant = { role, token: deviceToken.token };
+  }
 
   return {
     ...state,

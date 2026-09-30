@@ -686,13 +686,13 @@ export async function attachAuthenticatedGatewayConnect(
   await sendGatewayHello(context, state, pluginSurfaceUrls, authenticatedUserProfile?.profileId);
 
   if (state.pairedDeviceMetadata && device && devicePublicKey) {
-    const { createdAtMs, approvedAtMs, patch } = state.pairedDeviceMetadata;
+    const { patch, ...binding } = state.pairedDeviceMetadata;
     // Observation writes retain normal FIFO/commit ownership, but cannot hold
     // an authenticated connection behind the shared-state writer queue.
     runDetachedConnectWork(
       async () => {
         await updatePairedDeviceMetadata(device.id, patch, undefined, {
-          expectedPairing: { publicKey: devicePublicKey, createdAtMs, approvedAtMs },
+          expectedPairing: { publicKey: devicePublicKey, ...binding },
           assertCurrent: profileLifecycle.assertCurrent,
         });
       },

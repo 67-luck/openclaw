@@ -14,13 +14,19 @@ import {
   readDevicePairingStoreStateFromDatabase,
   type DevicePairingStoreState,
 } from "./device-pairing-store.js";
-import { ensureDeviceToken, verifyDeviceToken } from "./device-pairing-tokens.js";
+import {
+  ensureDeviceToken,
+  revokeDeviceToken,
+  rotateDeviceToken,
+  verifyDeviceToken,
+} from "./device-pairing-tokens.js";
 import {
   getPairedDevice,
   getPendingDevicePairing,
   listDevicePairing,
   listDevicePairingReadOnly,
   removePairedDevice,
+  removePairedDeviceRole,
   requestDevicePairing,
   resolveNodePairingGeneration,
   updatePairedDeviceMetadata,
@@ -426,6 +432,46 @@ test("rolls back delayed metadata when its connection closes before worker commi
   } finally {
     closing.mockRestore();
   }
+});
+
+test.each(
+  ["node", "operator"].flatMap((role) =>
+    ["current", "role removed", "token revoked", "token rotated"].map((change) => ({
+      role,
+      change,
+    })),
+  ),
+)("binds delayed metadata to the current $role grant ($change)", async ({ role, change }) => {
+  const before = await getPairedDevice("paired-rich", baseDir);
+  const grant = before?.tokens?.[role];
+  if (!before || !grant) {
+    throw new Error("Expected the fixture's approved role token");
+  }
+  const expectedPairing = { ...before, grant: { role, token: grant.token } };
+  const authority = { deviceId: before.deviceId, role, baseDir, callerScopes: ["operator.read"] };
+  if (change === "role removed") {
+    await removePairedDeviceRole(authority);
+  } else if (change === "token revoked") {
+    await revokeDeviceToken(authority);
+  } else if (change === "token rotated") {
+    await rotateDeviceToken(authority);
+  }
+  const current = await getPairedDevice(before.deviceId, baseDir);
+  expect(current).toMatchObject({
+    publicKey: before.publicKey,
+    createdAtMs: before.createdAtMs,
+    approvedAtMs: before.approvedAtMs,
+  });
+  const patch = { displayName: "Delayed observation", lastSeenAtMs: 10, lastSeenReason: "connect" };
+  await expect(
+    updatePairedDeviceMetadata(before.deviceId, patch, baseDir, {
+      expectedPairing,
+      assertCurrent: () => {},
+    }),
+  ).resolves.toBe(change === "current");
+  expect(await getPairedDevice(before.deviceId, baseDir)).toEqual(
+    change === "current" ? { ...current, ...patch } : current,
+  );
 });
 
 test("does not overwrite a same-key platform reapproval with delayed metadata", async () => {

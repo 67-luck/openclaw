@@ -13,8 +13,7 @@ async function readPairing(command: DevicePairingReadCommand, baseDir?: string, 
   const context = captureOpenClawStateWorkerContext(options);
   const selected = { path: context.admission.databasePath, env: context.environment };
   const snapshot = current ? undefined : getActiveOpenClawStateDatabaseReadSnapshot(selected);
-  const read = async () => {
-    const publication = captureDevicePairingPublication(context.admission);
+  const read = async (publication = captureDevicePairingPublication(context.admission)) => {
     let reply;
     try {
       reply = await executeExistingOpenClawStateRead(
@@ -42,7 +41,8 @@ async function readPairing(command: DevicePairingReadCommand, baseDir?: string, 
           : publication.isCurrent();
     return published ? { reply } : undefined;
   };
-  const observed = await read();
+  const publication = captureDevicePairingPublication(context.admission);
+  const observed = await read(publication);
   if (observed) {
     return observed.reply;
   }
@@ -55,9 +55,7 @@ async function readPairing(command: DevicePairingReadCommand, baseDir?: string, 
   };
   // A committed observation only invalidates the old snapshot; its delayed
   // worker reply must not hold the fresh read behind the writer queue.
-  return captureDevicePairingPublication(context.admission).requiresWriterAdmission()
-    ? withDevicePairingLock(refresh)
-    : refresh();
+  return publication.requiresWriterAdmission() ? withDevicePairingLock(refresh) : refresh();
 }
 
 /** Readers never create, migrate, or synchronously open the shared database. */

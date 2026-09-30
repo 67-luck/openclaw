@@ -11,6 +11,7 @@ import type {
 } from "./device-pairing-core.types.js";
 // Manages device pairing requests, records, metadata, and node pairing state.
 import {
+  hasEffectivePairedDeviceRole,
   listApprovedPairedDeviceRoles,
   resolveNodePairingGeneration,
   type NodePairingGeneration,
@@ -442,6 +443,14 @@ export function updatePairedDeviceMetadataInWorker(
         device.createdAtMs !== expectedPairing.createdAtMs ||
         device.approvedAtMs !== expectedPairing.approvedAtMs ||
         (patch.lastSeenAtMs !== undefined && (device.lastSeenAtMs ?? 0) > patch.lastSeenAtMs))
+    ) {
+      return { value: false };
+    }
+    const grant = expectedPairing?.grant;
+    if (
+      grant &&
+      (!hasEffectivePairedDeviceRole(device, grant.role) ||
+        device.tokens?.[grant.role]?.token !== grant.token)
     ) {
       return { value: false };
     }

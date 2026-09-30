@@ -15,6 +15,7 @@ type Publication = {
   identity: string;
   canonicalPath: string;
   epoch: number;
+  authorityEpoch: number;
   revision?: string;
   blocked: boolean;
   mutation?: { blocksReads: boolean };
@@ -72,6 +73,7 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
       identity: identity.key,
       canonicalPath: identity.canonicalPath,
       epoch: 0,
+      authorityEpoch: 0,
       blocked: false,
       complete: false,
       rows: new Map(),
@@ -83,22 +85,27 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
   publications.set(identity.key, publication);
   const captured = publication;
   const epoch = captured.epoch;
+  // The single refresh must retain FIFO after authority changes, even when
+  // their live fence has settled; only observation-only supersession may bypass it.
+  const authorityEpoch = captured.authorityEpoch;
+  const admittedBehindFence = captured.blocked || Boolean(captured.mutation?.blocksReads);
   const install = (rows: readonly DevicePairingBindingFact[]) => {
     for (const row of rows) {
       captured.rows.set(row.deviceId, row.binding ? { ...row.binding } : null);
     }
   };
-  const requiresWriterAdmission = () => {
+  const blocksReads = () => {
     for (const service of captured.pending) {
       service();
     }
     return Boolean(captured.mutation?.blocksReads);
   };
   const isCurrent = () =>
-    !requiresWriterAdmission() && publications.get(path) === captured && captured.epoch === epoch;
+    !blocksReads() && publications.get(path) === captured && captured.epoch === epoch;
   return {
     isCurrent,
-    requiresWriterAdmission,
+    requiresWriterAdmission: () =>
+      blocksReads() || admittedBehindFence || captured.authorityEpoch !== authorityEpoch,
     completeRevision: () =>
       !captured.blocked && captured.complete ? captured.revision : undefined,
     fail() {
@@ -123,6 +130,7 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
       }
       if (captured.revision !== revision) {
         captured.epoch++;
+        captured.authorityEpoch++;
       }
       if (complete || captured.revision !== revision) {
         captured.rows.clear();
@@ -142,6 +150,7 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
       // predecessor or an authorizing mutation must still fence all readers.
       if (mutation.blocksReads) {
         captured.epoch++;
+        captured.authorityEpoch++;
         captured.blocked = true;
       }
       captured.mutation = mutation;
@@ -151,6 +160,7 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
             return;
           }
           if (receipt.beforeRevision !== captured.revision) {
+            captured.authorityEpoch++;
             captured.complete = false;
             captured.rows.clear();
           }
@@ -168,6 +178,7 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
             } else {
               mutation.blocksReads = true;
               captured.blocked = true;
+              captured.authorityEpoch++;
             }
             captured.epoch++;
           }
