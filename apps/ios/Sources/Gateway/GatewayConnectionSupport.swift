@@ -8,6 +8,10 @@ enum GatewaySetupRouteProbeBudget {
 struct GatewaySetupAttempt: Equatable {
     private let id = UUID()
     let admissionCheckpoint: UInt64
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.admissionCheckpoint == rhs.admissionCheckpoint
+    }
 }
 
 struct GatewayPendingTrustConnect {

@@ -10,7 +10,7 @@ import Testing
 extension GatewayIngressControllerTests {
     @Test(arguments: [false, true]) @MainActor
     func `pre-TLS reservation and trust acceptance retain Access sign-out authority`(ordinary: Bool) async throws {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let state = try TemporaryOpenClawState(instanceID: "access-reservation-\(UUID().uuidString)")
         defer { state.restore() }
@@ -72,7 +72,7 @@ extension GatewayIngressControllerTests {
 
     @Test @MainActor
     func `sign out revokes queued handoff before its blocked reset drain completes`() async throws {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let state = try TemporaryOpenClawState(instanceID: "access-reset-reservation-\(UUID().uuidString)")
         defer { state.restore() }
@@ -122,7 +122,7 @@ extension GatewayIngressControllerTests {
     func `fleet reservation survives endpoint resolution without borrowing a signed-out grant`(
         ordinary: Bool) async throws
     {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let state = try TemporaryOpenClawState(instanceID: "access-fleet-reservation-\(UUID().uuidString)")
         defer { state.restore() }
@@ -185,7 +185,7 @@ extension GatewayIngressControllerTests {
 
     @Test @MainActor
     func `QR setup reservation survives route choice and bootstrap reset without renewed Access authority`() async throws {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let state = try TemporaryOpenClawState(instanceID: "access-qr-reservation-\(UUID().uuidString)")
         defer { state.restore() }
@@ -240,7 +240,7 @@ extension GatewayIngressControllerTests {
     func `background gateway attention retries its target without switching the active gateway`(
         probeFails: Bool) async throws
     {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let state = try TemporaryOpenClawState(instanceID: "access-target-\(UUID().uuidString)")
         defer { state.restore() }
@@ -296,7 +296,7 @@ extension GatewayIngressControllerTests {
     func `common recovery restores the desired active profile sharing background attention`(
         action: String) async throws
     {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let instanceID = "access-shared-recovery-\(UUID().uuidString)"
         let state = try TemporaryOpenClawState(instanceID: instanceID)
@@ -440,7 +440,7 @@ extension GatewayIngressControllerTests {
 
     @Test @MainActor
     func `automatic discovered admission never presents a browser despite suppression ownership`() async throws {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let state = try TemporaryOpenClawState(instanceID: "access-discovery-\(UUID().uuidString)")
         defer { state.restore() }
@@ -489,7 +489,7 @@ extension GatewayIngressControllerTests {
 
     @Test @MainActor
     func `QR expiry during browser sign-in preserves Access and rejects the first Gateway handoff`() async throws {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let instanceID = "access-qr-\(UUID().uuidString)"
         let state = try TemporaryOpenClawState(instanceID: instanceID)
@@ -565,7 +565,7 @@ extension GatewayIngressControllerTests {
 
     @Test @MainActor
     func `capability refresh retains ingress and certificate rotation reacquires TLS`() async throws {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let state = try TemporaryOpenClawState(instanceID: "access-refresh-\(UUID().uuidString)")
         defer { state.restore() }
@@ -617,7 +617,7 @@ extension GatewayIngressControllerTests {
 
     @Test @MainActor
     func `retirement drains real node operator and fleet admission without losing Gateway credentials`() async throws {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let instanceID = "access-drain-\(UUID().uuidString)"
         let state = try TemporaryOpenClawState(instanceID: instanceID)
@@ -719,7 +719,7 @@ extension GatewayIngressControllerTests {
 
     @Test(arguments: [false, true]) @MainActor
     func `background sign-in and sign-out preserve an ordinary active profile`(savedAssociation: Bool) async throws {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let state = try TemporaryOpenClawState(instanceID: "access-ordinary-owner-\(UUID().uuidString)")
         defer { state.restore() }
@@ -780,7 +780,7 @@ extension GatewayIngressControllerTests {
     func `pending Forget excludes fresh and suspended fleet admissions`(scenario: String) async throws {
         let capturedBeforeForget = scenario == "suspended"
         let cleanupSucceeds = scenario != "failed cleanup"
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let state = try TemporaryOpenClawState(instanceID: "access-forget-fleet-\(UUID().uuidString)")
         defer { state.restore() }

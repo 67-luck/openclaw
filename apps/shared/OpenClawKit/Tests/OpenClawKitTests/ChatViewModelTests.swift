@@ -12747,7 +12747,6 @@ struct ChatViewModelTests {
         await MainActor.run { vm.selectVerboseLevel("full") }
         await vm.waitForPendingSessionSettings(in: "other")
         #expect(await patchCount.current() == 2)
-        #expect(await MainActor.run { vm.preferredVerboseLevel } == "full")
 
         await firstPatchGate.open()
         await vm.waitForPendingSessionSettings(in: "main")

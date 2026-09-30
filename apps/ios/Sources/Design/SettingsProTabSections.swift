@@ -946,7 +946,7 @@ extension SettingsProTab {
                     } label: {
                         Text("Cancel sign-in").font(OpenClawType.body)
                     }
-                } else {
+                } else if attention.canSignIn {
                     Button {
                         Task { await self.reconnectGateway(ingressAttention: attention) }
                     } label: {

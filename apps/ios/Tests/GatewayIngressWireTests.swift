@@ -227,7 +227,7 @@ private func expectRetiredIngress(_ result: Result<some Any, Error>) {
 extension GatewayIngressControllerTests {
     @Test @MainActor
     func `managed to ordinary native reconnect restores Share metadata without sharing Access auth`() async throws {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let state = try TemporaryOpenClawState(instanceID: "share-ingress-\(UUID().uuidString)")
         defer { state.restore() }
@@ -315,7 +315,7 @@ extension GatewayIngressControllerTests {
 
     @Test @MainActor
     func `pinned native sockets and media use the live grant and sign out joins a held response`() async throws {
-        let isolation = GatewayRegistryTestIsolation()
+        let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let state = try TemporaryOpenClawState(instanceID: "wire-ingress-\(UUID().uuidString)")
         defer { state.restore() }

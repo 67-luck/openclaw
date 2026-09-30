@@ -1132,7 +1132,7 @@ extension GatewayConnectionController {
         return true
     }
 
-    private func manualGatewayRoute(
+    func manualGatewayRoute(
         host: String,
         port: Int,
         useTLS: Bool,
