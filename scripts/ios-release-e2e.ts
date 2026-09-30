@@ -6,6 +6,7 @@ import {
   collectNestedErrorCandidates,
   extractErrorCodeOrErrno,
 } from "@openclaw/normalization-core/error-coercion";
+import { isGatewayTransportError } from "../src/gateway/transport-error.js";
 
 export const IOS_RELEASE_TESTS = [
   "OpenClawUITests/OpenClawSnapshotUITests/testLiveGatewayPairChatAndRelaunch",
@@ -128,16 +129,31 @@ export class OperationError extends Error {
 }
 
 export function operationError(operation: Operation, error: unknown, output = ""): OperationError {
-  const code = collectNestedErrorCandidates(error)
+  const candidates = collectNestedErrorCandidates(error);
+  const transport = candidates.find(isGatewayTransportError);
+  const code = candidates
     .map(extractErrorCodeOrErrno)
     .find(
       (candidate) =>
         candidate &&
-        ["ETIMEDOUT", "ABORT_ERR", "ENOENT", "EACCES", "EPERM", "ENOSPC"].includes(candidate),
+        [
+          "ETIMEDOUT",
+          "ABORT_ERR",
+          "ENOENT",
+          "EACCES",
+          "EPERM",
+          "ENOSPC",
+          "ECONNREFUSED",
+          "ECONNRESET",
+          "EHOSTUNREACH",
+          "ENETUNREACH",
+          "EPIPE",
+          "ENOTFOUND",
+        ].includes(candidate),
     );
   const failure = new OperationError(
     operation,
-    code === "ETIMEDOUT"
+    code === "ETIMEDOUT" || transport?.kind === "timeout"
       ? "timeout"
       : code === "ABORT_ERR"
         ? "cancelled"
@@ -151,6 +167,22 @@ export function operationError(operation: Operation, error: unknown, output = ""
   );
   if (code) {
     failure.diagnostic.errorCode = code;
+  }
+  if (transport?.kind === "closed" || transport?.kind === "timeout") {
+    // Connection details and close reasons can contain credentials; export only fixed categories.
+    failure.diagnostic.context.push(`gateway-transport:${transport.kind}`);
+    if (
+      transport.kind === "closed" &&
+      typeof transport.code === "number" &&
+      Number.isInteger(transport.code) &&
+      transport.code >= 1000 &&
+      transport.code <= 4999
+    ) {
+      failure.diagnostic.context.push(`gateway-close-code:${transport.code}`);
+    }
+    if (typeof transport.requestDispatched === "boolean") {
+      failure.diagnostic.context.push(`rpc-request-dispatched:${transport.requestDispatched}`);
+    }
   }
   return failure;
 }

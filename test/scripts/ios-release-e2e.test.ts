@@ -587,11 +587,14 @@ describe("native command adapter", () => {
     "unsupported-runtime-architecture",
     "non-ios-runtime",
     "cleanup-failure",
+    "mock-cleanup-failure",
     "build-unjoined",
     "build-exit",
     "boot-timeout",
     "gateway-start-failure",
     "setup-status-timeout",
+    "setup-status-closed",
+    "setup-status-reset",
     "setup-status-failure",
     "status-unjoined-gateway-exit",
     "gateway-exit-during-create",
@@ -661,8 +664,10 @@ describe("native command adapter", () => {
           ],
         };
       }
-      options.onHelloOk?.();
-      options.assertDispatchCurrent?.();
+      if (scenario !== "setup-status-closed" && scenario !== "setup-status-reset") {
+        options.onHelloOk?.();
+        options.assertDispatchCurrent?.();
+      }
       if (options.method === "device.pair.setupStatus") {
         expect(simulatorReady).toBe(false);
         lifecycle.push("setup-status");
@@ -683,8 +688,33 @@ describe("native command adapter", () => {
             requestDispatched: true,
           });
         }
+        if (scenario === "setup-status-closed") {
+          throw new GatewayTransportError({
+            kind: "closed",
+            code: 1006,
+            reason: "private credential in close reason",
+            message: "private connection failure",
+            connectionDetails: {
+              url: "ws://synthetic-token@private.invalid/private?token=synthetic-secret",
+              urlSource: "private source",
+              message: "private connection details",
+            },
+            requestDispatched: false,
+          });
+        }
+        if (scenario === "setup-status-reset") {
+          throw new Error("private connection failure", {
+            cause: Object.assign(new Error("private credential in socket failure"), {
+              code: "ECONNRESET",
+            }),
+          });
+        }
         if (scenario === "setup-status-failure") {
-          throw new Error("private status preparation failure");
+          throw Object.assign(new Error("private status preparation failure"), {
+            code: "private-credential",
+            reason: "private close reason",
+            details: { token: "synthetic-token", message: "private failure details" },
+          });
         }
         lifecycle.push("setup-status-ready");
         return {};
@@ -756,6 +786,15 @@ describe("native command adapter", () => {
           const onAbort = () => {
             joinedMocks++;
             lifecycle.push("mock-cleanup");
+            if (scenario === "mock-cleanup-failure") {
+              reject(
+                Object.assign(new Error("private mock cleanup failure"), {
+                  code: "ETIMEDOUT",
+                  processTreeState: "unknown",
+                }),
+              );
+              return;
+            }
             reject(Object.assign(new Error("stopped"), { code: "ABORT_ERR" }));
           };
           exitMock = () => {
@@ -1178,6 +1217,7 @@ describe("native command adapter", () => {
         return;
       }
       const report = await runTrials("stock", native.dependencies);
+      expect(JSON.stringify(report)).not.toMatch(/private|synthetic|OPENCLAW_E2E_|metadata/);
       expect(JSON.stringify(proof)).not.toMatch(/private|synthetic|OPENCLAW_E2E_|metadata/);
       expect(progressSnapshots.length).toBeGreaterThan(0);
       expect(progressSnapshots.join("\n")).not.toMatch(/private|synthetic|OPENCLAW_E2E_|metadata/);
@@ -1286,6 +1326,27 @@ describe("native command adapter", () => {
         return;
       }
       if (scenario.startsWith("setup-status-")) {
+        const preHello = scenario === "setup-status-closed" || scenario === "setup-status-reset";
+        const failure = {
+          operation: "setup-status",
+          code: scenario === "setup-status-timeout" ? "timeout" : "failed",
+          ...(scenario === "setup-status-reset" ? { errorCode: "ECONNRESET" } : {}),
+          context: expect.arrayContaining([
+            `rpc-authenticated:${!preHello}`,
+            `rpc-dispatch-entered:${!preHello}`,
+            "rpc-response-received:false",
+            ...(scenario === "setup-status-timeout"
+              ? ["gateway-transport:timeout", "rpc-request-dispatched:true"]
+              : scenario === "setup-status-closed"
+                ? [
+                    "gateway-transport:closed",
+                    "gateway-close-code:1006",
+                    "rpc-request-dispatched:false",
+                  ]
+                : []),
+          ]),
+        };
+        expect(report.complete).toBe(true);
         expect(report.trials).toMatchObject([
           {
             status: "failed",
@@ -1293,20 +1354,7 @@ describe("native command adapter", () => {
             errors: [
               scenario === "setup-status-timeout" ? "preparation-timeout" : "preparation-failed",
             ],
-            diagnostics: [
-              {
-                operation: "setup-status",
-                code: scenario === "setup-status-timeout" ? "timeout" : "failed",
-                context:
-                  scenario === "setup-status-timeout"
-                    ? [
-                        "rpc-authenticated:true",
-                        "rpc-dispatch-entered:true",
-                        "rpc-request-dispatched:true",
-                      ]
-                    : [],
-              },
-            ],
+            diagnostics: [failure],
           },
         ]);
         expect(nativeMocks.rpc).toHaveBeenCalledOnce();
@@ -1318,13 +1366,39 @@ describe("native command adapter", () => {
         expect(proof.fixtures).toEqual([
           expect.objectContaining({
             cleanupConfirmed: true,
-            setupStatusRpc: { authenticated: true, dispatchEntered: true, responseReceived: false },
+            setupStatusRpc: {
+              authenticated: !preHello,
+              dispatchEntered: !preHello,
+              responseReceived: false,
+              timings: {
+                ...(!preHello
+                  ? { helloMs: expect.any(Number), dispatchMs: expect.any(Number) }
+                  : {}),
+                settledMs: expect.any(Number),
+              },
+              fixtureBefore: { gatewayExitObserved: false, mockExitObserved: false },
+              fixtureAfter: { gatewayExitObserved: false, mockExitObserved: false },
+              failure,
+            },
+            cleanup: [
+              { component: "gateway", status: "passed" },
+              { component: "mock", status: "passed" },
+            ],
           }),
         ]);
         return;
       }
       if (scenario === "status-unjoined-gateway-exit") {
         expect(report.complete).toBe(false);
+        expect(proof.fixtures).toMatchObject([
+          {
+            setupStatusRpc: {
+              fixtureBefore: { gatewayExitObserved: false, mockExitObserved: false },
+              fixtureAfter: { gatewayExitObserved: true, mockExitObserved: false },
+              failure: { operation: "setup-status", code: "timeout", errorCode: "ETIMEDOUT" },
+            },
+          },
+        ]);
         expect(report.trials).toMatchObject([
           {
             status: "failed",
@@ -1431,10 +1505,12 @@ describe("native command adapter", () => {
                 operation: "setup-code",
                 code: "timeout",
                 ...(scenario === "setup-code-timeout" ? { errorCode: "ETIMEDOUT" } : {}),
-                context:
-                  scenario === "setup-code-rpc-timeout"
-                    ? ["rpc-authenticated:true", "rpc-dispatch-entered:true"]
-                    : [],
+                context: expect.arrayContaining([
+                  "rpc-authenticated:true",
+                  "rpc-dispatch-entered:true",
+                  "rpc-response-received:false",
+                  ...(scenario === "setup-code-rpc-timeout" ? ["gateway-transport:timeout"] : []),
+                ]),
               },
             ],
           });
@@ -1443,7 +1519,22 @@ describe("native command adapter", () => {
         expect(proof.fixtures).toEqual([
           expect.objectContaining({
             trial: 1,
-            setupRpc: { authenticated: true, dispatchEntered: true, responseReceived: false },
+            setupRpc: expect.objectContaining({
+              authenticated: true,
+              dispatchEntered: true,
+              responseReceived: false,
+              timings: {
+                helloMs: expect.any(Number),
+                dispatchMs: expect.any(Number),
+                settledMs: expect.any(Number),
+              },
+              fixtureBefore: { gatewayExitObserved: false, mockExitObserved: false },
+              fixtureAfter: { gatewayExitObserved: false, mockExitObserved: false },
+              failure: expect.objectContaining({
+                operation: "setup-code",
+                code: "timeout",
+              }),
+            }),
           }),
         ]);
         expect(
@@ -1455,11 +1546,55 @@ describe("native command adapter", () => {
         expect(JSON.stringify(report)).not.toContain("private");
         return;
       }
-      if (scenario === "cleanup-failure" || scenario === "test-unjoined") {
+      if (
+        scenario === "cleanup-failure" ||
+        scenario === "mock-cleanup-failure" ||
+        scenario === "test-unjoined"
+      ) {
         expect(report.complete).toBe(false);
         expect(report.trials).toHaveLength(1);
         expect(report.trials[0]?.errors).toContain("cleanup-failed");
         expect(proof.resourcesPreserved).toBe(true);
+        if (scenario !== "test-unjoined") {
+          const failedComponent = scenario === "cleanup-failure" ? "gateway" : "mock";
+          expect(report.trials[0]?.diagnostics).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                operation: "cleanup",
+                code: "cleanup-unconfirmed",
+                context: [`cleanup-${failedComponent}:failed`],
+              }),
+            ]),
+          );
+          expect(proof.fixtures).toEqual([
+            expect.objectContaining({
+              cleanupConfirmed: false,
+              cleanup: [
+                scenario === "cleanup-failure"
+                  ? {
+                      component: "gateway",
+                      status: "failed",
+                      diagnostic: expect.objectContaining({ code: "failed", context: [] }),
+                    }
+                  : { component: "gateway", status: "passed" },
+                scenario === "mock-cleanup-failure"
+                  ? {
+                      component: "mock",
+                      status: "failed",
+                      diagnostic: expect.objectContaining({
+                        code: "timeout",
+                        errorCode: "ETIMEDOUT",
+                        context: [],
+                      }),
+                    }
+                  : { component: "mock", status: "passed" },
+              ],
+            }),
+          ]);
+          expect(instances[0]?.cleanup).toHaveBeenCalledOnce();
+          expect(joinedMocks).toBe(1);
+          expect(lifecycle).not.toContain("reader-test");
+        }
         return;
       }
       if (scenario === "test-exit") {
@@ -1545,8 +1680,36 @@ describe("native command adapter", () => {
         expect.objectContaining({
           trial: 1,
           cleanupConfirmed: true,
-          setupStatusRpc: { authenticated: true, dispatchEntered: true, responseReceived: true },
-          setupRpc: { authenticated: true, dispatchEntered: true, responseReceived: true },
+          setupStatusRpc: expect.objectContaining({
+            authenticated: true,
+            dispatchEntered: true,
+            responseReceived: true,
+            timings: {
+              helloMs: expect.any(Number),
+              dispatchMs: expect.any(Number),
+              responseMs: expect.any(Number),
+              settledMs: expect.any(Number),
+            },
+            fixtureBefore: { gatewayExitObserved: false, mockExitObserved: false },
+            fixtureAfter: { gatewayExitObserved: false, mockExitObserved: false },
+          }),
+          setupRpc: expect.objectContaining({
+            authenticated: true,
+            dispatchEntered: true,
+            responseReceived: true,
+            timings: {
+              helloMs: expect.any(Number),
+              dispatchMs: expect.any(Number),
+              responseMs: expect.any(Number),
+              settledMs: expect.any(Number),
+            },
+            fixtureBefore: { gatewayExitObserved: false, mockExitObserved: false },
+            fixtureAfter: { gatewayExitObserved: false, mockExitObserved: false },
+          }),
+          cleanup: [
+            { component: "gateway", status: "passed" },
+            { component: "mock", status: "passed" },
+          ],
           providerMessages: [
             { stage: "first", received: true },
             { stage: "second", received: true },
@@ -1637,6 +1800,7 @@ describe("native command adapter", () => {
     } finally {
       if (
         scenario === "cleanup-failure" ||
+        scenario === "mock-cleanup-failure" ||
         scenario === "test-unjoined" ||
         scenario === "status-unjoined-gateway-exit"
       ) {

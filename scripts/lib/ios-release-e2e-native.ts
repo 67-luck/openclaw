@@ -6,7 +6,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { DevicePairSetupCodeResult } from "../../packages/gateway-protocol/src/schema/devices.js";
 import { stripInboundMetadata } from "../../src/auto-reply/reply/strip-inbound-meta.js";
-import { isGatewayTransportError } from "../../src/gateway/transport-error.js";
 import type { OpenClawTestInstance } from "../../test/helpers/openclaw-test-instance.js";
 import { applyMockOpenAiModelConfig } from "../e2e/lib/fixtures/mock-openai-config.mjs";
 import { readMockUserText } from "../e2e/lib/mock-inference-facts.js";
@@ -31,6 +30,16 @@ const CHAT_MARKERS = [
   ["second", "OPENCLAW_E2E_SECOND"],
   ["relaunch", "OPENCLAW_E2E_RELAUNCH"],
 ] as const;
+type FixtureExitEvidence = { gatewayExitObserved: boolean; mockExitObserved: boolean };
+type SetupRpcEvidence = {
+  authenticated: boolean;
+  dispatchEntered: boolean;
+  responseReceived: boolean;
+  timings: { helloMs?: number; dispatchMs?: number; responseMs?: number; settledMs: number };
+  fixtureBefore: FixtureExitEvidence;
+  fixtureAfter?: FixtureExitEvidence;
+  failure?: OperationError["diagnostic"];
+};
 
 export async function createNativeDependencies(options: {
   mode: Mode;
@@ -358,6 +367,15 @@ export async function createNativeDependencies(options: {
               fixtureAbort.abort();
             }
           };
+          const fixtureExitEvidence = (): FixtureExitEvidence => ({
+            gatewayExitObserved:
+              gatewayExited ||
+              Boolean(
+                instance?.child &&
+                (instance.child.exitCode !== null || instance.child.signalCode !== null),
+              ),
+            mockExitObserved: mockFailed,
+          });
           const requireLiveFixture = () => {
             if (
               gatewayExited ||
@@ -387,11 +405,29 @@ export async function createNativeDependencies(options: {
                   await mockDone;
                 })(),
               ]);
-              const failure = results.find((entry) => entry.status === "rejected");
-              if (failure?.status === "rejected") {
+              const components = ["gateway", "mock"] as const;
+              fixtureEvidence.cleanup = results.map((result, componentIndex) => ({
+                component: components[componentIndex],
+                status: result.status === "fulfilled" ? "passed" : "failed",
+                ...(result.status === "rejected"
+                  ? {
+                      diagnostic:
+                        result.reason instanceof OperationError
+                          ? result.reason.diagnostic
+                          : operationError("cleanup", result.reason).diagnostic,
+                    }
+                  : {}),
+              }));
+              if (results.some((entry) => entry.status === "rejected")) {
                 preserveResources();
                 fixtureEvidence.cleanupConfirmed = false;
-                throw new OperationError("cleanup", "cleanup-unconfirmed");
+                const failure = new OperationError("cleanup", "cleanup-unconfirmed");
+                results.forEach((result, componentIndex) => {
+                  if (result.status === "rejected") {
+                    failure.diagnostic.context.push(`cleanup-${components[componentIndex]}:failed`);
+                  }
+                });
+                throw failure;
               }
               fixtureEvidence.cleanupConfirmed = true;
             })());
@@ -526,10 +562,14 @@ export async function createNativeDependencies(options: {
                 operation: "setup-status" | "setup-code",
                 params: Record<string, unknown>,
               ): Promise<T> => {
-                const rpcEvidence = {
+                const started = performance.now();
+                const elapsed = () => Math.round(performance.now() - started);
+                const rpcEvidence: SetupRpcEvidence = {
                   authenticated: false,
                   dispatchEntered: false,
                   responseReceived: false,
+                  timings: { settledMs: 0 },
+                  fixtureBefore: fixtureExitEvidence(),
                 };
                 fixtureEvidence[operation === "setup-status" ? "setupStatusRpc" : "setupRpc"] =
                   rpcEvidence;
@@ -553,37 +593,37 @@ export async function createNativeDependencies(options: {
                       signal: fixtureSignal,
                       onHelloOk: () => {
                         rpcEvidence.authenticated = true;
+                        rpcEvidence.timings.helloMs = elapsed();
                       },
                       assertDispatchCurrent: () => {
                         requireLiveFixture();
                         rpcEvidence.dispatchEntered = true;
+                        rpcEvidence.timings.dispatchMs = elapsed();
                       },
                     }),
                   );
                   rpcEvidence.responseReceived = true;
+                  rpcEvidence.timings.responseMs = elapsed();
                   requireLiveFixture();
                   return result;
                 } catch (error) {
+                  const failure = operationError(operation, error);
+                  failure.diagnostic.context.push(
+                    `rpc-authenticated:${rpcEvidence.authenticated}`,
+                    `rpc-dispatch-entered:${rpcEvidence.dispatchEntered}`,
+                    `rpc-response-received:${rpcEvidence.responseReceived}`,
+                  );
+                  rpcEvidence.failure = failure.diagnostic;
                   if (hasUnjoinedWork(error)) {
                     preserveResources();
                   }
                   if (!options.signal.aborted) {
                     requireLiveFixture();
                   }
-                  if (isGatewayTransportError(error) && error.kind === "timeout") {
-                    const failure = new OperationError(operation, "timeout");
-                    failure.diagnostic.context.push(
-                      `rpc-authenticated:${rpcEvidence.authenticated}`,
-                      `rpc-dispatch-entered:${rpcEvidence.dispatchEntered}`,
-                    );
-                    if (typeof error.requestDispatched === "boolean") {
-                      failure.diagnostic.context.push(
-                        `rpc-request-dispatched:${error.requestDispatched}`,
-                      );
-                    }
-                    throw failure;
-                  }
-                  throw operationError(operation, error);
+                  throw failure;
+                } finally {
+                  rpcEvidence.timings.settledMs = elapsed();
+                  rpcEvidence.fixtureAfter = fixtureExitEvidence();
                 }
               };
               // Prepare the real setup handler and worker before cold Simulator boot.
