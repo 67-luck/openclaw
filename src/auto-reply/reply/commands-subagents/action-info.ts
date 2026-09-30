@@ -1,4 +1,3 @@
-// Formats detailed subagent run information for the info action.
 import { timestampMsToIsoString } from "@openclaw/normalization-core/number-coercion";
 import { sanitizeRunStatusText } from "../../../agents/run-status-text.js";
 import { resolveSubagentDisplayStatus } from "../../../agents/subagents/registry/subagent-session-metrics.js";

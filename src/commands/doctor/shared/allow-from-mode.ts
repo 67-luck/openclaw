@@ -1,4 +1,3 @@
-// Doctor helper for resolving channel-specific direct-message allowlist semantics.
 import type { ChannelDmAllowFromMode } from "../../../channels/plugins/dm-access.js";
 import { getDoctorChannelCapabilities } from "../channel-capabilities.js";
 

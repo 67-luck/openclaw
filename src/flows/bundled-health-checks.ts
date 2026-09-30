@@ -1,4 +1,3 @@
-// Bundled health checks define built-in doctor checks for runtime readiness.
 import { asOptionalObjectRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
 import { collectConfiguredAgentHarnessRuntimes } from "../agents/harness-runtimes.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";

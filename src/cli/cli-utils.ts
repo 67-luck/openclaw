@@ -1,4 +1,3 @@
-// Shared CLI execution wrappers and inherited Commander option lookup.
 import type { Command } from "commander";
 import "../infra/errors.js";
 import { formatCliOperatorError, isExpectedCliError } from "./failure-output.js";

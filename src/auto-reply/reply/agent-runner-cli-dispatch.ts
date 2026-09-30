@@ -1,4 +1,3 @@
-// Builds CLI runtime dispatch inputs for agent runner executions.
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { Value } from "typebox/value";

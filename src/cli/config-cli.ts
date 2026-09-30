@@ -1,4 +1,3 @@
-// Config CLI command implementation for get/set/unset/patch/validate and secret refs.
 import type { Command } from "commander";
 import { formatConfigIssueLines, normalizeConfigIssues } from "../config/issue-format.js";
 import { renderConfigValidationIssueLines } from "../config/issue-location.js";
