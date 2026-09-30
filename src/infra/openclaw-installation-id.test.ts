@@ -31,4 +31,18 @@ describe("OpenClaw installation revision", () => {
     fs.writeFileSync(path.join(root, "dist", "build-info.json"), '{"buildId":"build-2"}');
     expect(resolveOpenClawInstallationRevision(root)).not.toBe(nextCommit);
   });
+
+  it("uses the runtime entry when optional build metadata is unavailable", () => {
+    const root = tempDirs.make("openclaw-installation-entry-revision-");
+    fs.writeFileSync(path.join(root, "openclaw.mjs"), "");
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: "1.0.0" }));
+    fs.mkdirSync(path.join(root, "dist"));
+    fs.writeFileSync(path.join(root, "dist", "entry.js"), "export const build = 1;");
+
+    const initial = resolveOpenClawInstallationRevision(root);
+    expect(initial).toBeDefined();
+
+    fs.writeFileSync(path.join(root, "dist", "entry.js"), "export const build = 2;");
+    expect(resolveOpenClawInstallationRevision(root)).not.toBe(initial);
+  });
 });

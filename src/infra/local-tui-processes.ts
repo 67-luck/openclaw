@@ -24,6 +24,7 @@ export {
 
 export type LocalTuiProcess = {
   pid: number;
+  startIdentity: string;
   command: string;
   ownership: "target" | "ambiguous" | "foreign-user" | "companion";
 };
@@ -227,8 +228,30 @@ function classifyLocalOpenClawCommand(
   }
 }
 
-function parseLocalOpenClawProcessLine(
-  line: string,
+type PosixProcessRow = {
+  uid: number;
+  pid: number;
+  startIdentity: string;
+  command: string;
+};
+
+function parsePosixProcessRow(line: string): PosixProcessRow | null {
+  const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.{24})\s+(.+)$/u);
+  if (!match) {
+    return null;
+  }
+  const uid = Number(match[1]);
+  const pid = Number(match[2]);
+  const startIdentity = match[3]?.trim() ?? "";
+  const command = match[4]?.trim() ?? "";
+  return Number.isFinite(uid) && Number.isFinite(pid) && startIdentity && command
+    ? { uid, pid, startIdentity, command }
+    : null;
+}
+
+function parseLocalOpenClawProcessRow(
+  row: PosixProcessRow,
+  startIdentityByPid: ReadonlyMap<number, string>,
   currentUid: number,
   currentPid: number,
   platform: NodeJS.Platform,
@@ -236,29 +259,29 @@ function parseLocalOpenClawProcessLine(
   realpath: (value: string) => string,
   kind: LocalOpenClawProcessKind,
 ): LocalTuiProcess | null {
-  const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/);
-  if (!match) {
-    return null;
-  }
-  const command = match[3]?.trim() ?? "";
+  const command = row.command;
   const announcement =
     platform === "win32"
       ? undefined
       : parseOpenClawProcessAnnouncementTitle(tokenizeCommandLine(command)[0] ?? "");
-  const pid = announcement?.pid ?? Number(match[2]);
+  const pid = announcement?.pid ?? row.pid;
   if (!Number.isFinite(pid) || pid <= 0 || pid === currentPid) {
+    return null;
+  }
+  const startIdentity = startIdentityByPid.get(pid);
+  if (!startIdentity) {
     return null;
   }
   const ownership = classifyLocalOpenClawCommand(command, platform, targetRoot, realpath, kind);
   if (!ownership || ownership === "other") {
     return null;
   }
-  if (Number(match[1]) !== currentUid) {
+  if (row.uid !== currentUid) {
     return ownership === "target"
-      ? { pid, command, ownership: "foreign-user" }
-      : { pid, command, ownership: "ambiguous" };
+      ? { pid, startIdentity, command, ownership: "foreign-user" }
+      : { pid, startIdentity, command, ownership: "ambiguous" };
   }
-  return { pid, command, ownership };
+  return { pid, startIdentity, command, ownership };
 }
 
 function discoverLocalOpenClawProcesses(
@@ -273,7 +296,7 @@ function discoverLocalOpenClawProcesses(
       [
         "-NoProfile",
         "-Command",
-        "$currentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -match '(?i)openclaw' } | ForEach-Object { $ownerSid=(Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid -ErrorAction SilentlyContinue).Sid; [pscustomobject]@{ProcessId=$_.ProcessId;CommandLine=$_.CommandLine;OwnerSid=$ownerSid;CurrentSid=$currentSid} } | ConvertTo-Json -Compress",
+        "$currentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -match '(?i)openclaw' } | ForEach-Object { $ownerSid=(Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid -ErrorAction SilentlyContinue).Sid; [pscustomobject]@{ProcessId=$_.ProcessId;CreationDate=$_.CreationDate;CommandLine=$_.CommandLine;OwnerSid=$ownerSid;CurrentSid=$currentSid} } | ConvertTo-Json -Compress",
       ],
       {
         encoding: "utf8",
@@ -291,16 +314,22 @@ function discoverLocalOpenClawProcesses(
           return [];
         }
         const pidValue = Reflect.get(entry, "ProcessId");
+        const startIdentityValue = Reflect.get(entry, "CreationDate");
         const commandValue = Reflect.get(entry, "CommandLine");
         const ownerSidValue = Reflect.get(entry, "OwnerSid");
         const currentSidValue = Reflect.get(entry, "CurrentSid");
         const pid = typeof pidValue === "number" ? pidValue : undefined;
+        const startIdentity =
+          typeof startIdentityValue === "string" && startIdentityValue.trim()
+            ? startIdentityValue.trim()
+            : undefined;
         const command = typeof commandValue === "string" ? commandValue.trim() : undefined;
         const ownership = command
           ? classifyLocalOpenClawCommand(command, platform, params.targetRoot, realpath, kind)
           : undefined;
         if (
           !pid ||
+          !startIdentity ||
           pid === (params.currentPid ?? process.pid) ||
           !command ||
           !ownership ||
@@ -316,12 +345,13 @@ function discoverLocalOpenClawProcesses(
           return [
             {
               pid,
+              startIdentity,
               command,
               ownership: ownership === "target" ? ("foreign-user" as const) : ownership,
             },
           ];
         }
-        return [{ pid, command, ownership }];
+        return [{ pid, startIdentity, command, ownership }];
       });
       return { ok: true, processes };
     } catch {
@@ -332,8 +362,9 @@ function discoverLocalOpenClawProcesses(
   if (currentUid === undefined) {
     return { ok: false, error: "The current user id is unavailable for process discovery." };
   }
-  const ps = (params.spawnSync ?? spawnSync)("ps", ["-axo", "uid=,pid=,command="], {
+  const ps = (params.spawnSync ?? spawnSync)("ps", ["-axo", "uid=,pid=,lstart=,command="], {
     encoding: "utf8",
+    env: { ...process.env, LC_ALL: "C" },
     killSignal: "SIGKILL",
     timeout: LOCAL_TUI_PROCESS_PROBE_TIMEOUT_MS,
   });
@@ -342,9 +373,15 @@ function discoverLocalOpenClawProcesses(
   }
   const seen = new Set<number>();
   const processes: LocalTuiProcess[] = [];
-  for (const line of ps.stdout.split(/\r?\n/)) {
-    const proc = parseLocalOpenClawProcessLine(
-      line,
+  const rows = ps.stdout.split(/\r?\n/).flatMap((line) => {
+    const row = parsePosixProcessRow(line);
+    return row ? [row] : [];
+  });
+  const startIdentityByPid = new Map(rows.map((row) => [row.pid, row.startIdentity]));
+  for (const row of rows) {
+    const proc = parseLocalOpenClawProcessRow(
+      row,
+      startIdentityByPid,
       currentUid,
       params.currentPid ?? process.pid,
       platform,
@@ -378,7 +415,7 @@ function isProcessAlive(controller: ProcessController, pid: number): boolean {
 }
 
 function readCurrentLocalTuiTarget(
-  pid: number,
+  expected: LocalTuiProcess,
   targetRoot: string,
   discover: typeof discoverLocalTuiProcesses = discoverLocalTuiProcesses,
 ): CurrentTarget {
@@ -386,8 +423,13 @@ function readCurrentLocalTuiTarget(
   if (!discovery.ok) {
     return "unknown";
   }
-  const current = discovery.processes.find((process) => process.pid === pid);
-  return current ? (current.ownership === "target" ? "target" : "unknown") : "gone";
+  const current = discovery.processes.find((process) => process.pid === expected.pid);
+  if (!current) {
+    return "gone";
+  }
+  return current.ownership === "target" && current.startIdentity === expected.startIdentity
+    ? "target"
+    : "unknown";
 }
 
 /** Terminates verified local TUI processes, rechecking ownership before each signal. */
@@ -397,7 +439,7 @@ export async function terminateLocalTuiProcesses(params: {
   controller?: ProcessController;
   graceMs?: number;
   killGraceMs?: number;
-  readCurrentTarget?: (pid: number, targetRoot: string) => CurrentTarget;
+  readCurrentTarget?: (process: LocalTuiProcess, targetRoot: string) => CurrentTarget;
   discover?: typeof discoverLocalTuiProcesses;
   assertCurrent?: () => void;
 }): Promise<{ stopped: number[]; failed: number[] }> {
@@ -406,8 +448,8 @@ export async function terminateLocalTuiProcesses(params: {
   const killGraceMs = Math.max(0, params.killGraceMs ?? 250);
   const inspect =
     params.readCurrentTarget ??
-    ((pid: number, targetRoot: string) =>
-      readCurrentLocalTuiTarget(pid, targetRoot, params.discover));
+    ((process: LocalTuiProcess, targetRoot: string) =>
+      readCurrentLocalTuiTarget(process, targetRoot, params.discover));
   const stopped: number[] = [];
   const failed: number[] = [];
 
@@ -415,7 +457,7 @@ export async function terminateLocalTuiProcesses(params: {
     if (proc.ownership !== "target") {
       continue;
     }
-    const current = inspect(proc.pid, params.targetRoot);
+    const current = inspect(proc, params.targetRoot);
     if (current === "gone" || !isProcessAlive(controller, proc.pid)) {
       stopped.push(proc.pid);
       continue;
@@ -462,7 +504,7 @@ export async function terminateLocalTuiProcesses(params: {
       stopped.push(proc.pid);
       continue;
     }
-    const current = inspect(proc.pid, params.targetRoot);
+    const current = inspect(proc, params.targetRoot);
     if (current === "gone") {
       stopped.push(proc.pid);
       continue;

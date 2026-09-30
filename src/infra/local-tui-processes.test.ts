@@ -23,6 +23,20 @@ function listLocalTuiProcesses(
 }
 
 const noUpdateProcesses: typeof discoverLocalTuiProcesses = () => ({ ok: true, processes: [] });
+const POSIX_START_IDENTITY = "Tue Sep 30 09:30:00 2026";
+
+function posixProcessLine(uid: number, pid: number, command: string): string {
+  return `${uid} ${pid} ${POSIX_START_IDENTITY} ${command}`;
+}
+
+function fixtureProcess(
+  pid: number,
+  command: string,
+  ownership: LocalTuiProcess["ownership"],
+  startIdentity = `start-${pid}`,
+): LocalTuiProcess {
+  return { pid, startIdentity, command, ownership };
+}
 
 describe("local TUI processes", () => {
   beforeEach(() => secureTempRoot.mockReturnValue("/tmp/openclaw-local-tui-update-501"));
@@ -36,20 +50,20 @@ describe("local TUI processes", () => {
     const spawnSync = vi.fn().mockReturnValue({
       status: 0,
       stdout: [
-        `501 100 openclaw-tui@${targetId}`,
-        "501 101 openclaw-tui@trun",
-        "501 102 /usr/bin/node /target/openclaw.mjs resume session",
-        "502 103 /target/bin/openclaw chat",
-        `501 104 openclaw-tui@${targetId}#101`,
-        "501 112 openclaw tui",
-        "501 105 /other/bin/openclaw tui",
-        "501 106 openclaw-resume",
-        "501 107 openclaw-chat",
-        "501 108 openclaw-terminal",
-        "502 109 openclaw-resume",
-        "501 110 openclaw",
-        "501 111 /target/bin/openclaw",
-        "501 999 /target/bin/openclaw tui",
+        posixProcessLine(501, 100, `openclaw-tui@${targetId}`),
+        posixProcessLine(501, 101, "openclaw-tui@trun"),
+        posixProcessLine(501, 102, "/usr/bin/node /target/openclaw.mjs resume session"),
+        posixProcessLine(502, 103, "/target/bin/openclaw chat"),
+        posixProcessLine(501, 104, `openclaw-tui@${targetId}#101`),
+        posixProcessLine(501, 112, "openclaw tui"),
+        posixProcessLine(501, 105, "/other/bin/openclaw tui"),
+        posixProcessLine(501, 106, "openclaw-resume"),
+        posixProcessLine(501, 107, "openclaw-chat"),
+        posixProcessLine(501, 108, "openclaw-terminal"),
+        posixProcessLine(502, 109, "openclaw-resume"),
+        posixProcessLine(501, 110, "openclaw"),
+        posixProcessLine(501, 111, "/target/bin/openclaw"),
+        posixProcessLine(501, 999, "/target/bin/openclaw tui"),
       ].join("\n"),
     });
     vi.spyOn(fs.realpathSync, "native").mockImplementation((value) => String(value));
@@ -63,34 +77,32 @@ describe("local TUI processes", () => {
         spawnSync,
       }),
     ).toEqual([
-      {
-        pid: 100,
-        command: `openclaw-tui@${targetId}`,
-        ownership: "target",
-      },
-      {
-        pid: 102,
-        command: "/usr/bin/node /target/openclaw.mjs resume session",
-        ownership: "target",
-      },
-      { pid: 103, command: "/target/bin/openclaw chat", ownership: "foreign-user" },
-      {
-        pid: 101,
-        command: `openclaw-tui@${targetId}#101`,
-        ownership: "target",
-      },
-      { pid: 112, command: "openclaw tui", ownership: "ambiguous" },
-      { pid: 106, command: "openclaw-resume", ownership: "ambiguous" },
-      { pid: 107, command: "openclaw-chat", ownership: "ambiguous" },
-      { pid: 108, command: "openclaw-terminal", ownership: "ambiguous" },
-      { pid: 109, command: "openclaw-resume", ownership: "ambiguous" },
-      { pid: 111, command: "/target/bin/openclaw", ownership: "target" },
+      fixtureProcess(100, `openclaw-tui@${targetId}`, "target", POSIX_START_IDENTITY),
+      fixtureProcess(
+        102,
+        "/usr/bin/node /target/openclaw.mjs resume session",
+        "target",
+        POSIX_START_IDENTITY,
+      ),
+      fixtureProcess(103, "/target/bin/openclaw chat", "foreign-user", POSIX_START_IDENTITY),
+      fixtureProcess(101, `openclaw-tui@${targetId}#101`, "target", POSIX_START_IDENTITY),
+      fixtureProcess(112, "openclaw tui", "ambiguous", POSIX_START_IDENTITY),
+      fixtureProcess(106, "openclaw-resume", "ambiguous", POSIX_START_IDENTITY),
+      fixtureProcess(107, "openclaw-chat", "ambiguous", POSIX_START_IDENTITY),
+      fixtureProcess(108, "openclaw-terminal", "ambiguous", POSIX_START_IDENTITY),
+      fixtureProcess(109, "openclaw-resume", "ambiguous", POSIX_START_IDENTITY),
+      fixtureProcess(111, "/target/bin/openclaw", "target", POSIX_START_IDENTITY),
     ]);
-    expect(spawnSync).toHaveBeenCalledWith("ps", ["-axo", "uid=,pid=,command="], {
-      encoding: "utf8",
-      killSignal: "SIGKILL",
-      timeout: 1_000,
-    });
+    expect(spawnSync).toHaveBeenCalledWith(
+      "ps",
+      ["-axo", "uid=,pid=,lstart=,command="],
+      expect.objectContaining({
+        encoding: "utf8",
+        env: expect.objectContaining({ LC_ALL: "C" }),
+        killSignal: "SIGKILL",
+        timeout: 1_000,
+      }),
+    );
   });
 
   it("prefilters and discovers target and foreign-user Windows clients", () => {
@@ -100,6 +112,7 @@ describe("local TUI processes", () => {
       stdout: JSON.stringify([
         {
           ProcessId: 101,
+          CreationDate: "20260930093000.000000-000",
           CommandLine:
             '"C:\\Program Files\\nodejs\\Node.EXE" --stack-size=8192 "C:\\OpenClaw\\OpenClaw.MJS" resume session',
           OwnerSid: "S-1",
@@ -107,18 +120,21 @@ describe("local TUI processes", () => {
         },
         {
           ProcessId: 102,
+          CreationDate: "20260930093001.000000-000",
           CommandLine: '"C:\\OpenClaw\\OpenClaw.EXE" tui',
           OwnerSid: "S-2",
           CurrentSid: "S-1",
         },
         {
           ProcessId: 103,
+          CreationDate: "20260930093002.000000-000",
           CommandLine: '"C:\\Other\\openclaw.exe" tui',
           OwnerSid: "S-1",
           CurrentSid: "S-1",
         },
         {
           ProcessId: 104,
+          CreationDate: "20260930093003.000000-000",
           CommandLine: `"C:\\Program Files\\nodejs\\Node.EXE" -e fixture openclaw-process-announcement 999 openclaw-tui@${targetId}`,
           OwnerSid: "S-1",
           CurrentSid: "S-1",
@@ -135,22 +151,24 @@ describe("local TUI processes", () => {
         spawnSync,
       }),
     ).toEqual([
-      {
-        pid: 101,
-        command:
-          '"C:\\Program Files\\nodejs\\Node.EXE" --stack-size=8192 "C:\\OpenClaw\\OpenClaw.MJS" resume session',
-        ownership: "target",
-      },
-      {
-        pid: 102,
-        command: '"C:\\OpenClaw\\OpenClaw.EXE" tui',
-        ownership: "foreign-user",
-      },
-      {
-        pid: 104,
-        command: `"C:\\Program Files\\nodejs\\Node.EXE" -e fixture openclaw-process-announcement 999 openclaw-tui@${targetId}`,
-        ownership: "companion",
-      },
+      fixtureProcess(
+        101,
+        '"C:\\Program Files\\nodejs\\Node.EXE" --stack-size=8192 "C:\\OpenClaw\\OpenClaw.MJS" resume session',
+        "target",
+        "20260930093000.000000-000",
+      ),
+      fixtureProcess(
+        102,
+        '"C:\\OpenClaw\\OpenClaw.EXE" tui',
+        "foreign-user",
+        "20260930093001.000000-000",
+      ),
+      fixtureProcess(
+        104,
+        `"C:\\Program Files\\nodejs\\Node.EXE" -e fixture openclaw-process-announcement 999 openclaw-tui@${targetId}`,
+        "companion",
+        "20260930093003.000000-000",
+      ),
     ]);
     expect(spawnSync.mock.calls[0]?.[1]).toContain("-Command");
     expect(String(spawnSync.mock.calls[0]?.[1]?.at(-1))).toContain("Where-Object");
@@ -162,12 +180,12 @@ describe("local TUI processes", () => {
     const spawnSync = vi.fn().mockReturnValue({
       status: 0,
       stdout: [
-        `501 201 openclaw-update@${targetId}`,
-        `502 202 openclaw-update@${targetId}`,
-        `501 203 openclaw-update@${otherId}`,
-        "501 204 /target/bin/openclaw update wizard",
-        "501 205 /usr/bin/node /target/openclaw.mjs update wizard",
-        `501 206 /usr/bin/node -e fixture 123 openclaw-update@${targetId}`,
+        posixProcessLine(501, 201, `openclaw-update@${targetId}`),
+        posixProcessLine(502, 202, `openclaw-update@${targetId}`),
+        posixProcessLine(501, 203, `openclaw-update@${otherId}`),
+        posixProcessLine(501, 204, "/target/bin/openclaw update wizard"),
+        posixProcessLine(501, 205, "/usr/bin/node /target/openclaw.mjs update wizard"),
+        posixProcessLine(501, 206, `/usr/bin/node -e fixture 123 openclaw-update@${targetId}`),
       ].join("\n"),
     });
     vi.spyOn(fs.realpathSync, "native").mockImplementation((value) => String(value));
@@ -184,12 +202,8 @@ describe("local TUI processes", () => {
     ).toEqual({
       ok: true,
       processes: [
-        { pid: 201, command: `openclaw-update@${targetId}`, ownership: "target" },
-        {
-          pid: 202,
-          command: `openclaw-update@${targetId}`,
-          ownership: "foreign-user",
-        },
+        fixtureProcess(201, `openclaw-update@${targetId}`, "target", POSIX_START_IDENTITY),
+        fixtureProcess(202, `openclaw-update@${targetId}`, "foreign-user", POSIX_START_IDENTITY),
       ],
     });
   });
@@ -235,7 +249,7 @@ describe("local TUI processes", () => {
 
     await expect(
       terminateLocalTuiProcesses({
-        processes: [{ pid: 101, command: "/target/openclaw tui", ownership: "target" }],
+        processes: [fixtureProcess(101, "/target/openclaw tui", "target")],
         targetRoot: "/target",
         controller,
         graceMs: 0,
@@ -249,13 +263,47 @@ describe("local TUI processes", () => {
     expect(assertCurrent).toHaveBeenCalledTimes(2);
   });
 
+  it("does not signal a replacement process that reuses the discovered PID", async () => {
+    const signals: Array<string | number> = [];
+    const controller = {
+      kill: vi.fn((_pid: number, signal: string | number) => {
+        signals.push(signal);
+        return true;
+      }),
+    };
+    const discover = vi
+      .fn()
+      .mockReturnValueOnce({
+        ok: true,
+        processes: [fixtureProcess(101, "/target/openclaw tui", "target", "start-original")],
+      })
+      .mockReturnValueOnce({
+        ok: true,
+        processes: [fixtureProcess(101, "/target/openclaw tui", "target", "start-reused")],
+      });
+
+    await expect(
+      terminateLocalTuiProcesses({
+        processes: [fixtureProcess(101, "/target/openclaw tui", "target", "start-original")],
+        targetRoot: "/target",
+        controller,
+        discover,
+        graceMs: 0,
+        killGraceMs: 0,
+      }),
+    ).resolves.toEqual({ stopped: [], failed: [101] });
+
+    expect(signals).toEqual([0, "SIGTERM", 0]);
+    expect(controller.kill).not.toHaveBeenCalledWith(101, "SIGKILL");
+  });
+
   it("honors the configured terminal deadline before escalating to SIGKILL", async () => {
     vi.useFakeTimers();
     try {
       vi.stubEnv("OPENCLAW_TUI_LOCAL_RUN_SHUTDOWN_GRACE_MS", "300000");
       const controller = { kill: vi.fn(() => true) };
       const termination = terminateLocalTuiProcesses({
-        processes: [{ pid: 101, command: "/target/openclaw tui", ownership: "target" }],
+        processes: [fixtureProcess(101, "/target/openclaw tui", "target")],
         targetRoot: "/target",
         controller,
         killGraceMs: 0,
@@ -288,7 +336,7 @@ describe("local TUI processes", () => {
 
     await expect(
       terminateLocalTuiProcesses({
-        processes: [{ pid: 101, command: "/target/openclaw tui", ownership: "target" }],
+        processes: [fixtureProcess(101, "/target/openclaw tui", "target")],
         targetRoot: "/target",
         controller,
         readCurrentTarget: () => "target",
@@ -303,7 +351,7 @@ describe("local TUI processes", () => {
       const controller = { kill: vi.fn(() => true) };
       await expect(
         terminateLocalTuiProcesses({
-          processes: [{ pid: 101, command: "/target/openclaw tui", ownership: "target" }],
+          processes: [fixtureProcess(101, "/target/openclaw tui", "target")],
           targetRoot: "/target",
           controller,
           graceMs: 0,
@@ -321,14 +369,14 @@ describe("local TUI processes", () => {
     const controller = { kill: vi.fn(() => true) };
     await expect(
       terminateLocalTuiProcesses({
-        processes: [{ pid: 101, command: "/target/openclaw tui", ownership: "target" }],
+        processes: [fixtureProcess(101, "/target/openclaw tui", "target")],
         targetRoot: "/target",
         controller,
         graceMs: 0,
         killGraceMs: 0,
         discover: () => ({
           ok: true,
-          processes: [{ pid: 101, command: "openclaw tui", ownership: "foreign-user" }],
+          processes: [fixtureProcess(101, "openclaw tui", "foreign-user")],
         }),
       }),
     ).resolves.toEqual({ stopped: [], failed: [101] });
@@ -343,7 +391,7 @@ describe("local TUI processes", () => {
         discoverUpdates: noUpdateProcesses,
         discover: () => ({
           ok: true,
-          processes: [{ pid: 102, command: "openclaw tui", ownership: "ambiguous" }],
+          processes: [fixtureProcess(102, "openclaw tui", "ambiguous")],
         }),
       }),
     ).rejects.toThrow("could not be bound to an installation");
@@ -358,7 +406,7 @@ describe("local TUI processes", () => {
         discoverUpdates: noUpdateProcesses,
         discover: () => ({
           ok: true,
-          processes: [{ pid: 101, command: "/target/openclaw tui", ownership: "target" }],
+          processes: [fixtureProcess(101, "/target/openclaw tui", "target")],
         }),
         terminate: async () => ({ stopped: [], failed: [101] }),
       }),
@@ -387,7 +435,7 @@ describe("local TUI processes", () => {
         discoverUpdates: noUpdateProcesses,
         discover: () => ({
           ok: true,
-          processes: [{ pid: 101, command: "/target/openclaw tui", ownership: "foreign-user" }],
+          processes: [fixtureProcess(101, "/target/openclaw tui", "foreign-user")],
         }),
       }),
     ).rejects.toThrow("not owned by the current user are using this installation");
@@ -402,7 +450,7 @@ describe("local TUI processes", () => {
         discoverUpdates: noUpdateProcesses,
         discover: () => ({
           ok: true,
-          processes: [{ pid: 104, command: "openclaw-tui@fixture", ownership: "companion" }],
+          processes: [fixtureProcess(104, "openclaw-tui@fixture", "companion")],
         }),
       }),
     ).rejects.toThrow("cannot be stopped safely from their launch command. Close them, then retry");
@@ -413,7 +461,7 @@ describe("local TUI processes", () => {
     expect(() =>
       preflightLocalTuiProcessesBeforeUpdate("/target", () => ({
         ok: true,
-        processes: [{ pid: 104, command: "openclaw-tui@fixture", ownership: "companion" }],
+        processes: [fixtureProcess(104, "openclaw-tui@fixture", "companion")],
       })),
     ).toThrow("Windows TUI clients (104)");
   });
@@ -452,13 +500,7 @@ describe("local TUI processes", () => {
         acquireLock: vi.fn(async () => ({ lockPath: "test", release })),
         discoverUpdates: () => ({
           ok: true,
-          processes: [
-            {
-              pid: 1,
-              command: "openclaw-update@0123456789abcdef",
-              ownership: "foreign-user",
-            },
-          ],
+          processes: [fixtureProcess(1, "openclaw-update@0123456789abcdef", "foreign-user")],
         }),
         discover,
       }),
@@ -474,7 +516,7 @@ describe("local TUI processes", () => {
     const secondId = resolveOpenClawInstallationId("/second");
     const spawnSync = vi.fn().mockReturnValue({
       status: 0,
-      stdout: `502 202 openclaw-update@${firstId}+${secondId}`,
+      stdout: posixProcessLine(502, 202, `openclaw-update@${firstId}+${secondId}`),
     });
 
     for (const targetRoot of ["/first", "/second"]) {
@@ -488,11 +530,12 @@ describe("local TUI processes", () => {
           spawnSync,
         }),
       ).toEqual([
-        {
-          pid: 202,
-          command: `openclaw-update@${firstId}+${secondId}`,
-          ownership: "foreign-user",
-        },
+        fixtureProcess(
+          202,
+          `openclaw-update@${firstId}+${secondId}`,
+          "foreign-user",
+          POSIX_START_IDENTITY,
+        ),
       ]);
     }
   });
@@ -503,13 +546,7 @@ describe("local TUI processes", () => {
       acquireLock: vi.fn(async () => ({ lockPath: "test", release })),
       discoverUpdates: () => ({
         ok: true,
-        processes: [
-          {
-            pid: 1,
-            command: "openclaw-update@0123456789abcdef",
-            ownership: "target",
-          },
-        ],
+        processes: [fixtureProcess(1, "openclaw-update@0123456789abcdef", "target")],
       }),
       discover: noUpdateProcesses,
     });
@@ -526,11 +563,7 @@ describe("local TUI processes", () => {
         discoverUpdates: () => ({
           ok: true,
           processes: [
-            {
-              pid: process.pid + 1,
-              command: "openclaw-update@0123456789abcdef",
-              ownership: "foreign-user",
-            },
+            fixtureProcess(process.pid + 1, "openclaw-update@0123456789abcdef", "foreign-user"),
           ],
         }),
         discover: noUpdateProcesses,
@@ -667,7 +700,7 @@ describe("local TUI processes", () => {
       .fn()
       .mockReturnValueOnce({
         ok: true,
-        processes: [{ pid: 202, command: "openclaw-update", ownership: "target" }],
+        processes: [fixtureProcess(202, "openclaw-update", "target")],
       })
       .mockReturnValueOnce({ ok: true, processes: [] })
       .mockReturnValueOnce({ ok: true, processes: [] });
@@ -702,9 +735,7 @@ describe("local TUI processes", () => {
       .mockReturnValueOnce({ ok: true, processes: [] })
       .mockReturnValueOnce({
         ok: true,
-        processes: [
-          { pid: 202, command: "openclaw-update@0123456789abcdef", ownership: "foreign-user" },
-        ],
+        processes: [fixtureProcess(202, "openclaw-update@0123456789abcdef", "foreign-user")],
       })
       .mockReturnValueOnce({ ok: true, processes: [] })
       .mockReturnValueOnce({ ok: true, processes: [] });
@@ -729,9 +760,7 @@ describe("local TUI processes", () => {
       .fn()
       .mockReturnValueOnce({
         ok: true,
-        processes: [
-          { pid: 202, command: "openclaw-update@0123456789abcdef", ownership: "foreign-user" },
-        ],
+        processes: [fixtureProcess(202, "openclaw-update@0123456789abcdef", "foreign-user")],
       })
       .mockReturnValueOnce({ ok: true, processes: [] })
       .mockReturnValueOnce({ ok: true, processes: [] });

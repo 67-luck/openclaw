@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   announce: vi.fn(),
   load: vi.fn(),
   resolveRoot: vi.fn(() => "/opt/openclaw"),
-  resolveRevision: vi.fn(() => "revision-1"),
+  resolveRevision: vi.fn<() => string | undefined>(() => "revision-1"),
   respawn: vi.fn(),
   runTui: vi.fn(),
   wait: vi.fn(),
@@ -141,6 +141,29 @@ describe("TUI update startup gate", () => {
     const result = await runNestedTuiAfterUpdateGate({} as never);
 
     expect(result).toEqual({ status: "updated" });
+    expect(mocks.runTui).not.toHaveBeenCalled();
+  });
+
+  it("runs when revision metadata is unavailable and no update was observed", async () => {
+    const result = { exitReason: "quit" };
+    mocks.resolveRevision.mockReturnValue(undefined);
+    mocks.runTui.mockResolvedValue(result);
+
+    await expect(runNestedTuiAfterUpdateGate({} as never)).resolves.toEqual({
+      status: "ran",
+      value: result,
+    });
+
+    expect(mocks.runTui).toHaveBeenCalledOnce();
+  });
+
+  it("detects a revision that becomes available before gate admission", async () => {
+    mocks.resolveRevision.mockReturnValueOnce(undefined).mockReturnValueOnce("revision-2");
+
+    await expect(runNestedTuiAfterUpdateGate({} as never)).resolves.toEqual({
+      status: "updated",
+    });
+
     expect(mocks.runTui).not.toHaveBeenCalled();
   });
 

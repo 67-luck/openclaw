@@ -12,6 +12,9 @@ const RUNTIME_REVISION_FILES = [
   "dist/.runtime-postbuildstamp",
   "dist/.buildstamp",
   "dist/build-info.json",
+  // Every runnable installation loads this owner entry. It keeps revision
+  // identity available for older or development builds without metadata.
+  "dist/entry.js",
 ] as const;
 
 function createOpenClawInstallationId(canonicalRoot: string): string {
@@ -54,20 +57,15 @@ export function resolveOpenClawInstallationRevision(root: string): string | unde
         : "";
     const gitHead = readGitHead(root)?.value ?? "";
     const runtimeRevision = createHash("sha256");
-    let runtimeRevisionFiles = 0;
     for (const relativePath of RUNTIME_REVISION_FILES) {
       try {
         runtimeRevision.update(relativePath).update("\0");
         runtimeRevision.update(
           fs.readFileSync(path.join(path.dirname(canonicalEntry), relativePath)),
         );
-        runtimeRevisionFiles += 1;
       } catch {
         // Packaged and source installations expose different build metadata.
       }
-    }
-    if (runtimeRevisionFiles === 0) {
-      return undefined;
     }
     return `${canonicalEntry}\0${version}\0${gitHead}\0${runtimeRevision.digest("hex")}`;
   } catch {

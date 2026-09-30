@@ -54,15 +54,25 @@ async function loadTuiAfterUpdateGate(): Promise<{
       process.title = previousProcessTitle;
     }
   };
-  await waitForLocalTuiUpdate(targetRoot, undefined, undefined, async () => {
-    process.title = formatOpenClawProcessTitle("openclaw-tui", targetRoot);
-    announcement = await announceLocalTuiClient(targetRoot);
-    return cleanup;
-  }).catch(async (error: unknown) => {
+  const { waitedForUpdate } = await waitForLocalTuiUpdate(
+    targetRoot,
+    undefined,
+    undefined,
+    async () => {
+      process.title = formatOpenClawProcessTitle("openclaw-tui", targetRoot);
+      announcement = await announceLocalTuiClient(targetRoot);
+      return cleanup;
+    },
+  ).catch(async (error: unknown) => {
     await cleanup();
     throw error;
   });
-  if (!initialRevision || resolveOpenClawInstallationRevision(targetRoot) !== initialRevision) {
+  const currentRevision = resolveOpenClawInstallationRevision(targetRoot);
+  if (
+    initialRevision
+      ? currentRevision !== initialRevision
+      : currentRevision !== undefined || waitedForUpdate
+  ) {
     await cleanup();
     return { waitedForUpdate: true };
   }
