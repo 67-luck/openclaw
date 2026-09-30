@@ -239,13 +239,8 @@ describe("subagent registry lifecycle error grace", () => {
     }
   });
 
-  const {
-    flushAsync,
-    waitForCleanupHandledFalse,
-    waitForDeliveredCleanup,
-    waitForFrozenResult,
-    waitForFrozenResultText,
-  } = createLifecycleWaits(MAIN_REQUESTER_SESSION_KEY);
+  const { flushAsync, waitForDeliveredCleanup, waitForFrozenResult, waitForFrozenResultText } =
+    createLifecycleWaits(MAIN_REQUESTER_SESSION_KEY);
 
   const waitForAgentCallCount = (count: number) => agentCallWaits.waitForAgentCallCount(count);
 
@@ -737,7 +732,7 @@ describe("subagent registry lifecycle error grace", () => {
       "Final answer X",
     ]);
 
-    await waitForCleanupHandledFalse("run-freeze");
+    await agentCallWaits.waitForCleanupHandledFalse("run-freeze");
     const firstCapturedAt = mod
       .listSubagentRunsForRequester(MAIN_REQUESTER_SESSION_KEY)
       .find((candidate) => candidate.runId === "run-freeze")?.completion?.capturedAt;
@@ -793,7 +788,7 @@ describe("subagent registry lifecycle error grace", () => {
       "Both spawned. Waiting for completion events...",
     ]);
 
-    await waitForCleanupHandledFalse("run-refresh");
+    await agentCallWaits.waitForCleanupHandledFalse("run-refresh");
 
     const runBeforeRefresh = expectDefined(
       mod
@@ -870,7 +865,7 @@ describe("subagent registry lifecycle error grace", () => {
     });
     await flushAsync();
     await waitForAgentCallCount(1);
-    await waitForCleanupHandledFalse("run-refresh-silent");
+    await agentCallWaits.waitForCleanupHandledFalse("run-refresh-silent");
     await waitForFrozenResultText("run-refresh-silent", "All work complete, final summary");
 
     setAssistantOutput(
@@ -1073,8 +1068,8 @@ describe("subagent registry lifecycle error grace", () => {
     await flushAsync();
 
     await waitForAgentCallCount(2);
-    await waitForCleanupHandledFalse("run-parallel-a");
-    await waitForCleanupHandledFalse("run-parallel-b");
+    await agentCallWaits.waitForCleanupHandledFalse("run-parallel-a");
+    await agentCallWaits.waitForCleanupHandledFalse("run-parallel-b");
 
     setAssistantOutput(
       "agent:main:subagent:parallel-a",
