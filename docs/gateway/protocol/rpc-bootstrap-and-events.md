@@ -363,9 +363,11 @@ updated nodes may use a result-first terminal event to recover only when the
 Gateway did not receive the matching invoke result; other channels retain legacy
 foreground suppression. After receipt, the terminal event stays suppressed.
 Telegram recovery also requires a saved external route that matches the
-originating session chat and topic/thread. That exec-owned route remains
+invocation-captured account and the originating session chat and topic/thread.
+Accountless sessions without an invocation account fail closed for recovery;
+ordinary notices retain legacy routing behavior. The exec-owned route remains
 authoritative through heartbeat delivery, so later queued events cannot retarget
-the completion to another conversation.
+the completion to another conversation or account.
 Denied events never enqueue a system event or wake agent work. Finished events
 notify only for timeout, nonzero or unknown exit code, or nonempty compacted
 output; successful exit 0 with no output stays quiet. Finished notifications

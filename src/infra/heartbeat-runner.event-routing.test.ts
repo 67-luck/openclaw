@@ -81,15 +81,18 @@ const expectTelegramSend = (
     to: string;
     text: string;
     messageThreadId?: number;
+    accountId?: string;
   },
 ) => {
   expect(sendTelegram).toHaveBeenCalledTimes(1);
   const [to, text, options] = mockCallAt(sendTelegram, 0, "Telegram send");
+  const telegramOptions = options as { messageThreadId?: number; accountId?: string } | undefined;
   expect(to).toBe(params.to);
   expect(text).toBe(params.text);
-  expect((options as { messageThreadId?: number } | undefined)?.messageThreadId).toBe(
-    params.messageThreadId,
-  );
+  expect(telegramOptions?.messageThreadId).toBe(params.messageThreadId);
+  if (params.accountId !== undefined) {
+    expect(telegramOptions?.accountId).toBe(params.accountId);
+  }
 };
 
 function withRouting(
@@ -544,6 +547,7 @@ describe("Heartbeat event routing", () => {
       const sessionKey = "agent:main:telegram:group:-1003774691294:topic:47";
       await writeTelegramSessionStore(storePath, sessionKey, {
         lastTo: "telegram:-1003774691294:topic:2175",
+        lastAccountId: "personal",
         lastThreadId: 2175,
       });
 
@@ -553,12 +557,13 @@ describe("Heartbeat event routing", () => {
         deliveryContext: {
           channel: "telegram",
           to: "telegram:-1003774691294:topic:47",
+          accountId: "work",
           threadId: 47,
         },
       });
       enqueueSystemEvent("Node connected", {
         sessionKey,
-        deliveryContext: { channel: "telegram", to: "123456789" },
+        deliveryContext: { channel: "telegram", to: "123456789", accountId: "personal" },
       });
 
       const result = await run({ sessionKey, reason: "exec-event" });
@@ -569,12 +574,109 @@ describe("Heartbeat event routing", () => {
           to: "telegram:-1003774691294:topic:47",
           text: reply,
           messageThreadId: 47,
+          accountId: "work",
         });
       } else {
         expect(getFirstReplyContext(replySpy).Body).toContain("no command output was found");
         expect(sendTelegram).not.toHaveBeenCalled();
       }
       expect(peekSystemEvents(sessionKey)).toEqual(["Node connected"]);
+    }, false);
+  });
+
+  it("keeps queued exec completions on their own account and topic routes", async () => {
+    await withRouting(async ({ storePath, replySpy, sendTelegram, run }) => {
+      const sessionKey = "agent:main:telegram:group:-1003774691294";
+      await writeTelegramSessionStore(storePath, sessionKey, {
+        lastTo: "telegram:-1003774691294:topic:2175",
+        lastAccountId: "personal",
+        lastThreadId: 2175,
+      });
+      const enqueueCompletion = (name: string, accountId: string, threadId: number) =>
+        enqueueSystemEvent(`Exec completed (${name}, code 0) :: ${name} is ready`, {
+          sessionKey,
+          deliveryContext: {
+            channel: "telegram",
+            to: `telegram:-1003774691294:topic:${threadId}`,
+            accountId,
+            threadId,
+          },
+        });
+      enqueueCompletion("work-report", "work", 47);
+      enqueueCompletion("personal-report", "personal", 99);
+      replySpy
+        .mockResolvedValueOnce({ text: "The work report is ready." })
+        .mockResolvedValueOnce({ text: "The personal report is ready." });
+
+      expect((await run({ sessionKey, reason: "exec-event" })).status).toBe("ran");
+      expectTelegramSend(sendTelegram, {
+        to: "telegram:-1003774691294:topic:47",
+        text: "The work report is ready.",
+        messageThreadId: 47,
+        accountId: "work",
+      });
+      expect(getFirstReplyContext(replySpy).Body).toContain("work-report is ready");
+      expect(getFirstReplyContext(replySpy).Body).not.toContain("personal-report is ready");
+      expect(peekSystemEvents(sessionKey)).toEqual([
+        "Exec completed (personal-report, code 0) :: personal-report is ready",
+      ]);
+
+      sendTelegram.mockClear();
+      expect((await run({ sessionKey, reason: "exec-event" })).status).toBe("ran");
+      expectTelegramSend(sendTelegram, {
+        to: "telegram:-1003774691294:topic:99",
+        text: "The personal report is ready.",
+        messageThreadId: 99,
+        accountId: "personal",
+      });
+      expect(peekSystemEvents(sessionKey)).toEqual([]);
+    }, false);
+  });
+
+  it("does not let a deferred exec route retarget scheduled work", async () => {
+    await withRouting(async ({ storePath, replySpy, sendTelegram, run }) => {
+      const sessionKey = "agent:main:telegram:group:-1003774691294";
+      await writeTelegramSessionStore(storePath, sessionKey, {
+        lastTo: "telegram:-1003774691294:topic:2175",
+        lastAccountId: "personal",
+        lastThreadId: 2175,
+      });
+      enqueueSystemEvent("Exec completed (work-report, code 0) :: report is ready", {
+        sessionKey,
+        deliveryContext: {
+          channel: "telegram",
+          to: "telegram:-1003774691294:topic:47",
+          accountId: "work",
+          threadId: 47,
+        },
+      });
+      replySpy.mockResolvedValue({ text: "Scheduled maintenance completed." });
+
+      expect(
+        (
+          await run({
+            sessionKey,
+            source: "cron",
+            intent: "task",
+            reason: "cron:scheduled-maintenance",
+            tasks: [
+              {
+                jobId: "scheduled-maintenance",
+                name: "Scheduled maintenance",
+                prompt: "Run the scheduled maintenance check.",
+              },
+            ],
+          })
+        ).status,
+      ).toBe("ran");
+      expectTelegramSend(sendTelegram, {
+        to: "telegram:-1003774691294:topic:2175",
+        text: "Scheduled maintenance completed.",
+        accountId: "personal",
+      });
+      expect(peekSystemEvents(sessionKey)).toEqual([
+        "Exec completed (work-report, code 0) :: report is ready",
+      ]);
     }, false);
   });
 });

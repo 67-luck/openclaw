@@ -59,7 +59,7 @@ import {
   parseMessageWithAttachments,
   persistInboundImagesForTranscript,
 } from "./chat-attachments.js";
-import { shouldSuppressRun } from "./node-system-run-event-authority.js";
+import { shouldSuppressRun as suppressRun } from "./node-system-run-event-authority.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./server-methods/attachment-normalize.js";
 import { registerNodeApnsEvent } from "./server-node-events-apns.js";
 import type { NodeEvent, NodeEventContext } from "./server-node-events-types.js";
@@ -941,15 +941,12 @@ export const handleNodeEvent = async (
       }
       const sessionKeyRaw = normalizeOptionalString(obj.sessionKey) ?? `node-${nodeId}`;
       const { canonicalKey: sessionKey, agentId, entry } = loadSessionEntry(sessionKeyRaw);
-
-      const cfg = getRuntimeConfig(),
-        route = deliveryContextFromSession(entry);
+      const [cfg, route] = [getRuntimeConfig(), deliveryContextFromSession(entry)];
       const runId = normalizeOptionalString(obj.runId) ?? "";
       const eventAuthorization = ctx.authorizeNodeSystemRunEvent({
         nodeId,
         connId: opts?.connId,
         ...(runId ? { runId } : {}),
-        // Match the key sent in system.run params; canonicalization below is for routing.
         sessionKey: sessionKeyRaw,
         terminal: evt.event === "exec.finished" || evt.event === "exec.denied",
       });
@@ -961,9 +958,7 @@ export const handleNodeEvent = async (
           reason: "unmatched_exec_event",
         };
       }
-      // Respect tools.exec.notifyOnExit (default true); false skips node exec system events.
-      const notifyEnabled = cfg.tools?.exec?.notifyOnExit !== false;
-      if (shouldSuppressRun(obj, eventAuthorization, route, notifyEnabled, sessionKey)) {
+      if (suppressRun(obj, eventAuthorization, route, cfg.tools?.exec?.notifyOnExit, sessionKey)) {
         return undefined;
       }
       if (evt.event === "exec.denied") {
@@ -1019,7 +1014,6 @@ export const handleNodeEvent = async (
         ),
       );
       if (queued) {
-        // Global keys retain the loaded owner; synthetic node-* keys keep unscoped wakes.
         requestHeartbeat(
           scopedHeartbeatWakeOptionsForPolicy(
             sessionKey,

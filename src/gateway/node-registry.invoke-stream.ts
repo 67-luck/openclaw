@@ -17,6 +17,7 @@ export const NODE_INVOKE_NOT_READY = "NODE_NOT_READY";
 export type PendingSystemRunEvent = {
   runId: string;
   sessionKey?: string;
+  turnSourceAccountId?: string;
   timeoutMs?: number | null;
 };
 

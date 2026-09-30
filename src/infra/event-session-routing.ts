@@ -239,6 +239,7 @@ export function resolveEventSessionKeyForPolicy(
 }
 
 /** Apply event routing policy while preserving wake option typing. */
+/** Global keys retain their loaded owner; synthetic node keys keep unscoped wakes. */
 export function scopedHeartbeatWakeOptionsForPolicy<T extends object>(
   sessionKey: string,
   wakeOptions: T,

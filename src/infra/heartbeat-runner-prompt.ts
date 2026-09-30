@@ -7,6 +7,7 @@ import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readCronScratchSnapshot } from "../cron/scratch-read.js";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
+import { channelRouteDedupeKey } from "../plugin-sdk/channel-route.js";
 import { SESSION_CREATED_NOTICE_CONTEXT_PREFIX } from "../sessions/session-state-event-kinds.js";
 import { formatErrorMessage } from "./errors.js";
 import type { HeartbeatConfig } from "./heartbeat-config.js";
@@ -58,6 +59,14 @@ type HeartbeatPreflight = HeartbeatWakePayloadFlags & {
   scratchRevision?: number;
   heartbeatScratchContent?: string;
 };
+
+function selectExecCompletionRouteGroup(events: readonly SystemEvent[]): SystemEvent[] {
+  const execEvents = events.filter((event) => isExecCompletionEvent(event.text));
+  const firstRouteKey = channelRouteDedupeKey(execEvents[0]?.deliveryContext);
+  return execEvents.filter(
+    (event) => channelRouteDedupeKey(event.deliveryContext) === firstRouteKey,
+  );
+}
 
 /**
  * Terminal no-op preflight (empty scratch, consumed exec events) must resolve
@@ -122,15 +131,15 @@ export async function resolveHeartbeatPreflight(params: {
     wakeFlags.isCronWake ||
     shouldInspectWakePendingEvents ||
     hasTaggedCronEvents;
-  const execCompletionEntries = pendingEventEntries.filter((event) =>
-    isExecCompletionEvent(event.text),
-  );
+  const execCompletionEntries = selectExecCompletionRouteGroup(pendingEventEntries);
   // A queued exec completion owns its final route. Later generic events stay
   // pending and must not replace the route before outbound delivery.
   const turnSourceDeliveryContext = resolveSystemEventDeliveryContext(
-    shouldInspectPendingEvents && !params.scheduledTasks?.length && execCompletionEntries.length > 0
-      ? execCompletionEntries
-      : pendingEventEntries,
+    params.scheduledTasks?.length
+      ? []
+      : shouldInspectPendingEvents && execCompletionEntries.length > 0
+        ? execCompletionEntries
+        : pendingEventEntries,
   );
   const shouldBypassScratchGates =
     wakeFlags.isExecEventWake ||
@@ -231,6 +240,7 @@ export function resolveHeartbeatRunPrompt(params: {
   useHeartbeatResponseTool: boolean;
 }): HeartbeatPromptResolution {
   const pendingEventEntries = params.preflight.pendingEventEntries;
+  const selectedExecEntries = new Set(selectExecCompletionRouteGroup(pendingEventEntries));
   const genericEvents: SystemEvent[] = [];
   const cronEvents: SystemEvent[] = [];
   const execEvents: SystemEvent[] = [];
@@ -241,7 +251,7 @@ export function resolveHeartbeatRunPrompt(params: {
     if (event.contextKey?.startsWith(SESSION_CREATED_NOTICE_CONTEXT_PREFIX)) {
       genericEvents.push(event);
     } else if (isExecCompletionEvent(event.text)) {
-      if (params.preflight.shouldInspectPendingEvents) {
+      if (params.preflight.shouldInspectPendingEvents && selectedExecEntries.has(event)) {
         execEvents.push(event);
       }
     } else if (params.preflight.isCronWake || event.contextKey?.startsWith("cron:")) {

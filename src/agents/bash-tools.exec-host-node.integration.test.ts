@@ -165,6 +165,25 @@ it("suppresses foreground completion wakes while preserving the notification opt
   });
 });
 
+it("marks ordinary foreground completion for result-first recovery", async () => {
+  const sessionKey = "agent:main:telegram:group:-100155462274:topic:42";
+  await executeNodeHostCommand({
+    ...request,
+    sessionKey,
+    turnSourceChannel: "telegram",
+    turnSourceTo: "telegram:-100155462274:topic:42",
+    turnSourceThreadId: 42,
+  });
+
+  const finished = nodeEvents.find((event) => event.event === "exec.finished");
+  expect(JSON.parse(finished?.payloadJSON ?? "{}")).toMatchObject({
+    sessionKey,
+    suppressNotifyOnExit: true,
+    notifyOnExit: true,
+    invokeResultSentFirst: true,
+  });
+});
+
 it.each([
   { host: "gateway", surface: "subagent" },
   { host: "node", surface: "dashboard" },

@@ -3,6 +3,7 @@
 import type { DesktopAvailability } from "../../packages/gateway-protocol/src/schema/environments.js";
 import type { NodeHostStatsPayload } from "../../packages/gateway-protocol/src/schema/nodes.js";
 import type { NodeHostStats } from "../shared/node-host-stats.js";
+import type { SystemRunEventAuthorization } from "./node-system-run-event-authority.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 
 /** Runtime context available to node event handlers. */
@@ -30,7 +31,7 @@ export type NodeEventContext = Pick<
     runId?: string;
     sessionKey: string;
     terminal: boolean;
-  }) => boolean | { invokeResultReceived: boolean };
+  }) => boolean | SystemRunEventAuthorization;
   updateNodePresenceActivity?: (params: {
     nodeId: string;
     connId?: string;

@@ -85,6 +85,7 @@ import {
 } from "./invoke-system-run-allowlist.js";
 import {
   publishSystemRunCompletion,
+  resolveSystemRunNotifyOnExit,
   type SystemRunExecutionContext,
 } from "./invoke-system-run-completion.js";
 import {
@@ -362,7 +363,10 @@ async function parseSystemRunPhase(
   const runId = normalizeOptionalString(opts.params.runId) ?? crypto.randomUUID();
   const cwd = normalizeOptionalString(opts.params.cwd);
   const suppressNotifyOnExit = opts.params.suppressNotifyOnExit === true;
-  const notifyOnExit = opts.params.notifyOnExit !== false;
+  const notifyOnExit = resolveSystemRunNotifyOnExit({
+    suppressNotifyOnExit,
+    notifyOnExit: opts.params.notifyOnExit,
+  });
   const approvalSource = opts.params.approvalSource;
   if (
     approvalSource != null &&

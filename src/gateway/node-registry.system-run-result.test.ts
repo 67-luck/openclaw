@@ -12,7 +12,7 @@ describe("system.run result reconciliation", () => {
     const invoke = registry.invoke({
       nodeId: "node-1",
       command: "system.run",
-      params: { runId, sessionKey },
+      params: { runId, sessionKey, turnSourceAccountId: "work" },
       timeoutMs: 0,
     });
     const request = JSON.parse(frames[0] ?? "{}") as { payload?: { id?: string } };
@@ -35,7 +35,7 @@ describe("system.run result reconciliation", () => {
         sessionKey,
         terminal: true,
       }),
-    ).toEqual({ invokeResultReceived: true });
+    ).toEqual({ invokeResultReceived: true, turnSourceAccountId: "work" });
     registry.unregister("conn-1");
   });
 });
