@@ -243,11 +243,12 @@
 }
 
 .chat-group-messages {
+  --chat-message-gap: 2px;
   --chat-message-type-boundary-gap: var(--space-1);
   position: relative; /* anchors message-local popovers */
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--chat-message-gap);
   flex: 1 1 auto;
   align-items: flex-start;
   width: 100%;
@@ -842,9 +843,7 @@ html:is(.openclaw-native-macos, .openclaw-native-desktop)
     --chat-thread-gutter: var(--chat-mobile-edge-inset);
     --chat-thread-side-inset: 0px;
   }
-}
 
-@media (max-width: 768px), (max-width: 932px) and (max-height: 500px) and (orientation: landscape) {
   .chat-thread {
     scrollbar-gutter: auto;
     scrollbar-width: none;
