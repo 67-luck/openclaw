@@ -68,12 +68,12 @@ if (!sourceChannelTestEnv) {
   };
 }
 
-const importTargetPlan = async (path) => {
-  if (existsSync(path)) {
-    return import(fromTarget(path));
+const importTargetPlan = async (targetPath) => {
+  if (existsSync(targetPath)) {
+    return import(fromTarget(targetPath));
   }
   if (!compatibilityTarget) {
-    throw new Error(`Current CI target does not provide ${path}`);
+    throw new Error(`Current CI target does not provide ${targetPath}`);
   }
   return {};
 };
@@ -99,10 +99,16 @@ const createChannelContractTestShards =
     : () => [];
 
 const parseBoolean = (value, fallback = false) => {
-  if (value === undefined) return fallback;
+  if (value === undefined) {
+    return fallback;
+  }
   const normalized = value.trim().toLowerCase();
-  if (normalized === "true" || normalized === "1") return true;
-  if (normalized === "false" || normalized === "0" || normalized === "") return false;
+  if (normalized === "true" || normalized === "1") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0" || normalized === "") {
+    return false;
+  }
   return fallback;
 };
 
@@ -146,7 +152,7 @@ const changedPaths = (() => {
         ? readFileSync(manifestPath, "utf8")
         : (process.env.OPENCLAW_CI_CHANGED_PATHS_JSON ?? "null"),
     );
-    return Array.isArray(value) && value.every((path) => typeof path === "string") ? value : null;
+    return Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value : null;
   } catch {
     return null;
   }
@@ -215,7 +221,7 @@ if (npmQualification) {
   try {
     identity = resolveReleaseContextIdentity(contextRef ?? "", packageVersion);
   } catch (error) {
-    throw new Error(`release_scope ${releaseScope}: ${error.message}`);
+    throw new Error(`release_scope ${releaseScope}: ${error.message}`, { cause: error });
   }
   if (!identity || identity.kind === "extended-stable branch") {
     throw new Error(
@@ -286,7 +292,7 @@ const runCheck =
   runNodeFull ||
   (!docsOnly &&
     nodeDataOnly &&
-    (changedPaths === null || changedPaths.some((path) => /\.[cm]?tsx?$/u.test(path))));
+    (changedPaths === null || changedPaths.some((entry) => /\.[cm]?tsx?$/u.test(entry))));
 const runnerProfile = process.env.OPENCLAW_CI_RUNNER_PROFILE ?? "blacksmith";
 // Eligible paths share the consumer selector; hosted rows intersect
 // those consumers with their canonical stripes.
@@ -308,7 +314,7 @@ if (
   if (typeof lanes.getChangedCoreTestPaths === "function") {
     const coreTestPaths = lanes.getChangedCoreTestPaths(lanes.detectChangedLanes(changedPaths));
     // Deleted leaves need the full plan.
-    if (coreTestPaths?.length && coreTestPaths.every((path) => existsSync(path))) {
+    if (coreTestPaths?.length && coreTestPaths.every((entry) => existsSync(entry))) {
       changedCoreTestPaths = coreTestPaths;
     }
   }
@@ -464,12 +470,12 @@ const androidTestTier = !fullNativeValidation && !useCompatibleAndroidCi;
 const androidBenchmarkChanged =
   !changedPaths?.length ||
   changedPaths.some(
-    (path) =>
-      !path.trim() ||
-      matchesGlob(path, "apps/android/{benchmark,buildSrc,build-logic,gradle,Config}/**") ||
-      matchesGlob(path, "apps/android/**/*.gradle{,.kts}") ||
-      matchesGlob(path, "apps/android/**/gradle.properties") ||
-      matchesGlob(path, "apps/android/gradlew{,.bat}"),
+    (entry) =>
+      !entry.trim() ||
+      matchesGlob(entry, "apps/android/{benchmark,buildSrc,build-logic,gradle,Config}/**") ||
+      matchesGlob(entry, "apps/android/**/*.gradle{,.kts}") ||
+      matchesGlob(entry, "apps/android/**/gradle.properties") ||
+      matchesGlob(entry, "apps/android/gradlew{,.bat}"),
   );
 const supportsFormatCheck = targetWorkflow.split("pnpm format:check").length - 1 >= 2;
 const runFormatCheck = !frozenTarget || supportsFormatCheck;
@@ -493,14 +499,12 @@ if (runNodeFull && !releaseFastLane) {
     { check_name: "checks-fast-bundled-protocol", runtime: "node", task: "bundled-protocol" },
     { check_name: "checks-fast-bun-launcher", runtime: "bun", task: "bun-launcher" },
   );
-} else {
-  if (runNodeFastCiRouting && !releaseFastLane) {
-    checksFastCoreTasks.push({
-      check_name: "checks-fast-ci-routing",
-      runtime: "node",
-      task: "ci-routing",
-    });
-  }
+} else if (runNodeFastCiRouting && !releaseFastLane) {
+  checksFastCoreTasks.push({
+    check_name: "checks-fast-ci-routing",
+    runtime: "node",
+    task: "ci-routing",
+  });
 }
 if (releaseGate) {
   checksFastCoreTasks.push(
@@ -559,7 +563,9 @@ let uiTestGroups =
     : null;
 let uiTestShardCount = compatibilityTarget ? 1 : 3;
 if (selectedTestTargets) {
-  if (!uiTestGroups) throw new Error("Current PR CI requires UI target groups");
+  if (!uiTestGroups) {
+    throw new Error("Current PR CI requires UI target groups");
+  }
   const selected = new Set(selectedTestTargets);
   const { controlUiE2eTestGlobs, isUiTestTarget, uiE2eRealGatewayTestFiles } = await import(
     fromTarget("./test/vitest/vitest.ui-paths.mjs")
@@ -612,11 +618,7 @@ const plannedWindowsShards =
     : null;
 const windowsShards =
   plannedWindowsShards
-    ?.map((shard) => ({
-      ...shard,
-      runtime: "node",
-      task: "test",
-    }))
+    ?.map((shard) => Object.assign({}, shard, { runtime: "node", task: "test" }))
     .filter((shard) => shard.targets.length > 0) ??
   (runWindows
     ? [1, 2].map((part) => ({
@@ -625,7 +627,9 @@ const windowsShards =
         task: `test-${part}`,
       }))
     : []);
-if (selectedTestTargets) runWindows = windowsShards.length > 0;
+if (selectedTestTargets) {
+  runWindows = windowsShards.length > 0;
+}
 const startupCorpusTestFiles =
   typeof nodeTestPlan.resolveStartupCorpusTestFiles === "function"
     ? nodeTestPlan
@@ -672,6 +676,7 @@ const compactPlanMode = !isCanonicalRepository
       : undefined;
 const nodeMatrixLimit = mainValidation ? 77 : compactPlanMode === "pull-request" ? 130 : 70;
 let changedNodeTestShards = null;
+/** @type {string | undefined} */
 let changedNodeTestFallbackReason;
 if (runtimePullRequest && runNodeFull) {
   // PRs admit only concrete owner plans; missing selection is a planner failure.
@@ -871,7 +876,9 @@ if (
   process.env.OPENCLAW_CI_NODE_RUNNER_BACKEND === "runson"
 ) {
   const cron = rawNodeTestShards.find((shard) => shard.runner === "runson-c8i-8xlarge");
-  if (!cron) throw new Error("RunsOn qualification requires selected cron tests");
+  if (!cron) {
+    throw new Error("RunsOn qualification requires selected cron tests");
+  }
   // One dispatch compares the same child contracts and worker ceiling.
   for (const [provider, runner] of [
     ["blacksmith", "blacksmith-32vcpu-ubuntu-2404"],
@@ -897,7 +904,9 @@ const projectFrozenNodeTestPlan = (plan) => {
 const targetNodeTestShards = compatibilityTarget
   ? rawNodeTestShards.flatMap((shard) => {
       const groups = shard.groups?.map(projectFrozenNodeTestPlan).filter((group) => group !== null);
-      if (shard.groups?.length && !groups?.length) return [];
+      if (shard.groups?.length && !groups?.length) {
+        return [];
+      }
       const projected = projectFrozenNodeTestPlan({ ...shard, groups });
       return projected ? [projected] : [];
     })
@@ -1107,7 +1116,9 @@ const startupCorpusNodeRevision =
 if (startupCorpusNodeRevision) {
   // The exact-tree Node receipt makes this row's only test step a no-op.
   const startupTask = checksFastCoreTasks.findIndex(({ task }) => task === "startup-corpus");
-  if (startupTask >= 0) checksFastCoreTasks.splice(startupTask, 1);
+  if (startupTask >= 0) {
+    checksFastCoreTasks.splice(startupTask, 1);
+  }
 }
 // Targeted PRs keep source boundary guards in their Node plan. Only
 // an actual dist descriptor transfers that owner to build-artifacts.
@@ -1202,8 +1213,12 @@ const checkTasks = [
   },
   { check_name: "check-test-types", task: "test-types", runner: "blacksmith-16vcpu-ubuntu-2404" },
 ].filter((row) => {
-  if (!narrowCheckScope) return true;
-  if (row.task === "prod-types" || row.task === "test-types") return narrowCheckScope.types;
+  if (!narrowCheckScope) {
+    return true;
+  }
+  if (row.task === "prod-types" || row.task === "test-types") {
+    return narrowCheckScope.types;
+  }
   return row.task === "lint"
     ? narrowCheckScope.lint
     : narrowCheckScope.checkTasks.includes(row.task);
@@ -1217,7 +1232,9 @@ if (
   checkTasks.some(({ task }) => task === "guards")
 ) {
   const coercionTask = checksFastCoreTasks.findIndex(({ task }) => task === "coercion-helpers");
-  if (coercionTask >= 0) checksFastCoreTasks.splice(coercionTask, 1);
+  if (coercionTask >= 0) {
+    checksFastCoreTasks.splice(coercionTask, 1);
+  }
 }
 
 const manifest = {
