@@ -1,14 +1,18 @@
+import type { AgentHarnessCompactParams } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   embeddedAgentLog,
   type CompactEmbeddedAgentSessionParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { createDedupeCache } from "openclaw/plugin-sdk/dedupe-runtime";
 import { coerceErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import type { SandboxContext } from "openclaw/plugin-sdk/sandbox";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { resolveCodexNativeExecutionBlock } from "./sandbox-guard.js";
 import type {
   CodexAppServerBindingIdentity,
   CodexAppServerBindingStore,
   CodexAppServerThreadBinding,
+  CodexBindingAuthority,
 } from "./session-binding.js";
 import { isSameCodexAppServerThreadOwner } from "./thread-ownership.js";
 
@@ -18,6 +22,7 @@ export async function clearContextEngineProjectionBeforeNativeCompaction(params:
   identity: CodexAppServerBindingIdentity;
   binding: CodexAppServerThreadBinding;
   assertCurrent: () => void;
+  authority: CodexBindingAuthority;
 }): Promise<void> {
   const contextEngineBinding = params.binding.contextEngine;
   if (!contextEngineBinding?.projection) {
@@ -38,6 +43,7 @@ export async function clearContextEngineProjectionBeforeNativeCompaction(params:
       },
     },
     params.assertCurrent,
+    params.authority,
   );
   embeddedAgentLog.info("cleared codex context-engine projection before native compaction", {
     sessionId: params.sessionId,
@@ -98,10 +104,25 @@ export function warnIfIgnoringOpenClawCompactionOverrides(
   );
 }
 
-function readIgnoredCompactionOverridePaths(params: CompactEmbeddedAgentSessionParams): string[] {
+export function readIgnoredCompactionOverridePaths(
+  params: CompactEmbeddedAgentSessionParams,
+): string[] {
   const compaction = asOptionalRecord(params.config?.agents?.defaults?.compaction);
   return ["model", "thinkingLevel", "provider"].flatMap((field) => {
     const value = compaction?.[field];
     return typeof value === "string" && value.trim() ? [`agents.defaults.compaction.${field}`] : [];
+  });
+}
+
+export function resolveCodexCompactionExecutionBlock(
+  params: AgentHarnessCompactParams<2> & { sandbox?: SandboxContext | null },
+) {
+  return resolveCodexNativeExecutionBlock({
+    config: params.config,
+    sessionKey: params.sandboxSessionKey ?? params.sessionKey,
+    sessionId: params.sessionId,
+    agentId: params.sandboxAgentId ?? params.agentId,
+    sandbox: params.sandbox,
+    surface: "native compaction",
   });
 }

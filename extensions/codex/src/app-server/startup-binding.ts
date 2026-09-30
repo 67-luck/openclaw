@@ -19,6 +19,7 @@ import { resolveProjectionPromptBudgetTokens } from "./context-engine-projection
 import { isJsonObject, type JsonValue } from "./protocol.js";
 import {
   assertCodexBindingMayBeReplaced,
+  type CodexBindingAuthority,
   type CodexAppServerBindingIdentity,
   type CodexAppServerBindingStore,
   type CodexAppServerThreadBinding,
@@ -310,6 +311,7 @@ function maxFiniteNumber(values: Array<number | undefined>): number | undefined 
 /** Clears and drops a binding when the native Codex thread is too large to resume safely. */
 export async function rotateOversizedCodexAppServerStartupBinding(params: {
   assertCurrent?: () => void;
+  authority?: CodexBindingAuthority;
   binding: CodexAppServerThreadBinding | undefined;
   bindingStore: CodexAppServerBindingStore;
   identity: CodexAppServerBindingIdentity;
@@ -382,6 +384,7 @@ export async function rotateOversizedCodexAppServerStartupBinding(params: {
           threadId: binding.threadId,
         },
         params.assertCurrent,
+        params.authority,
       );
       return { binding: undefined };
     }
@@ -427,6 +430,7 @@ export async function rotateOversizedCodexAppServerStartupBinding(params: {
         threadId: binding.threadId,
       },
       params.assertCurrent,
+      params.authority,
     );
     return { binding: undefined };
   }

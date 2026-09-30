@@ -1,6 +1,5 @@
 import {
   embeddedAgentLog,
-  formatErrorMessage,
   runAgentCleanupStep,
   type AgentHarnessRuntimeArtifactBinding,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
@@ -26,16 +25,13 @@ import {
   type CodexNativeHookRelay,
 } from "./native-hook-relay.js";
 import { createCodexNativePreToolUseFailureBuffer } from "./native-pre-tool-use-failures.js";
-import {
-  CodexNativeProcessAuthority,
-  hasCodexNativeBackgroundProcesses,
-} from "./native-process-authority.js";
+import { CodexNativeProcessAuthority } from "./native-process-authority.js";
 import { createNativeSubagentAssignmentStore } from "./native-subagent-assignment-store.js";
 import { createCodexNativeSubagentHistoryOwner } from "./native-subagent-history-owner.js";
 import { codexNativeSubagentMonitorRuntime } from "./native-subagent-monitor.js";
 import type { CodexNativeSubagentSubmissionStore } from "./native-subagent-submission.js";
 import type { CodexSandboxPolicy, CodexTurnEnvironmentParams } from "./protocol.js";
-import { emitCodexAppServerEvent } from "./run-attempt-lifecycle.js";
+import { reportCodexBackgroundCleanupFailure } from "./run-attempt-lifecycle.js";
 import type { CodexAttemptPrompt } from "./run-attempt-prompt.js";
 import {
   releaseCodexSandboxExecServerEnvironment,
@@ -125,6 +121,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     releaseSharedClientLease: undefined as (() => void) | undefined,
     startupClientUnsafe: false,
     turnStartAttempted: false,
+    nativeSettlementExpired: false,
     sharedCodexClientRetiredForOneShotCleanup: false,
     ...initialResourceState,
     codexEnvironmentSelection: undefined as CodexTurnEnvironmentParams[] | undefined,
@@ -394,32 +391,63 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       return false;
     }
     const { bindingStore, bindingIdentity } = connection;
+    // Expired settlement cannot start optional retention or queue a row read.
+    if (state.nativeSettlementExpired) {
+      return false;
+    }
     const retained = await bindingStore.withLease(bindingIdentity, async () => {
-      if (!isSameCodexAppServerThreadOwner(bindingStore.read(bindingIdentity), thread)) {
+      if (state.nativeSettlementExpired) {
         return false;
       }
-      try {
-        if (!state.turnStartAttempted) {
-          runAbortController.signal.throwIfAborted();
+      let publicationStarted = false;
+      let pending: Promise<boolean> | undefined;
+      const publish = (rowFailure?: { error: unknown }) => {
+        publicationStarted = true;
+        if (
+          state.nativeSettlementExpired ||
+          thread.clientId !== resolveCodexAppServerClientInstanceId(client) ||
+          !isSameCodexAppServerThreadOwner(bindingStore.read(bindingIdentity), thread)
+        ) {
+          return;
         }
-        // Retaining the existing subscription is cleanup custody for concrete
-        // background work; revoking this foreground source cannot evict a peer.
-        if (!hasCodexNativeBackgroundProcesses(client, thread.threadId)) {
+        // Decide at publication, after lease and any row-admission wait.
+        // Concrete native work may outlive the foreground row that created it.
+        if (!nativeProcessAuthority?.hasCurrentProcesses(client, thread.threadId)) {
+          if (rowFailure) {
+            throw rowFailure.error;
+          }
           params.hostCapabilities.assertActive();
           connection.assertCurrent();
         }
+        if (!state.turnStartAttempted) {
+          runAbortController.signal.throwIfAborted();
+        }
         thread.liveThreadOwnership?.assertCurrent();
-      } catch {
-        return false;
+        pending = retainCodexAppServerBindingSubscription(client, thread.threadId, {
+          release: thread.liveThreadOwnership?.release,
+          configFingerprint: thread.liveThreadConfigFingerprint,
+          serviceTier: state.turnStartAttempted
+            ? connection.mutable.pluginAppServer.serviceTier
+            : thread.liveThreadOwnership?.serviceTier,
+          ephemeralPolicy: thread.liveThreadEphemeralPolicy,
+        });
+      };
+      if (nativeProcessAuthority?.hasCurrentProcesses(client, thread.threadId)) {
+        publish();
+      } else {
+        try {
+          await connection.withCurrent(() => publish());
+        } catch (error) {
+          // A process admitted during the row wait can still own cleanup.
+          // Never replay an effect if reader release failed after publication.
+          if (publicationStarted) {
+            await pending;
+            throw error;
+          }
+          publish({ error });
+        }
       }
-      return await retainCodexAppServerBindingSubscription(client, thread.threadId, {
-        release: thread.liveThreadOwnership?.release,
-        configFingerprint: thread.liveThreadConfigFingerprint,
-        serviceTier: state.turnStartAttempted
-          ? connection.mutable.pluginAppServer.serviceTier
-          : thread.liveThreadOwnership?.serviceTier,
-        ephemeralPolicy: thread.liveThreadEphemeralPolicy,
-      });
+      return pending ? await pending : false;
     });
     if (retained) {
       subscriptionSettlement = { thread, retained: true };
@@ -436,17 +464,25 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     subscriptionSettlement = { thread, retained: false };
     if (thread.liveThreadOwnership) {
       try {
-        await thread.liveThreadOwnership.release(thread.threadId, assertCurrent);
+        // This branded handle fences the exact physical client/thread/claim.
+        // Releasing it is required cleanup, not a new foreground-row operation.
+        await thread.liveThreadOwnership.release(thread.threadId);
         return true;
       } catch (error) {
         await closeCodexStartupClientBestEffort(client);
         throw error;
       }
     }
+    if (state.nativeSettlementExpired) {
+      // Untracked cleanup has no exact claim to prove release authority.
+      await closeCodexStartupClientBestEffort(client);
+      return false;
+    }
     const released = await unsubscribeCodexThreadBestEffort(client, {
       threadId: thread.threadId,
       timeoutMs: CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
       assertCurrent,
+      withCurrent: connection.withCurrent,
     });
     if (!released) {
       await closeCodexStartupClientBestEffort(client);
@@ -578,7 +614,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
               getCodexInferenceThreadQualification(state.client, threadId),
           }
         : undefined,
-      assertCurrent: connection.assertCurrent,
+      assertCurrent: connection.assertLegacyCurrent,
       onPreToolUseFailure: (failure) => {
         const projector = projectorRef.current;
         if (projector) {
@@ -630,18 +666,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
   const nativeProcessAuthority = params.hostCapabilities.retainSourceAuthority
     ? new CodexNativeProcessAuthority(
         params.hostCapabilities,
-        (error) => {
-          const message = formatErrorMessage(error);
-          embeddedAgentLog.warn("codex native background work remains unsettled", {
-            runId: params.runId,
-            sessionId: params.sessionId,
-            error: message,
-          });
-          void emitCodexAppServerEvent(params, {
-            stream: "codex_app_server.lifecycle",
-            data: { phase: "background_cleanup_failed", error: message },
-          });
-        },
+        (error) => reportCodexBackgroundCleanupFailure(params, error),
         Boolean(sandbox?.enabled && sandbox.backend),
       )
     : undefined;

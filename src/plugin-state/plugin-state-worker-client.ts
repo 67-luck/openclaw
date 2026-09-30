@@ -1,5 +1,8 @@
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
-import { assertSessionEntryCurrentAdmission } from "../config/sessions/session-entry-current-admission.js";
+import {
+  assertSessionEntryCurrentAdmission,
+  flattenSessionEntryCurrentChecks,
+} from "../config/sessions/session-entry-current-admission.js";
 import type { SessionEntryCurrentCheck } from "../config/sessions/session-entry-current.types.js";
 import type { SqliteWorkerStore } from "../infra/sqlite-worker-contract.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -66,7 +69,11 @@ async function execute<Key extends keyof PluginStateWorkerOperations>(
               type: command.type,
               input: {
                 ...command.input,
-                sessionEntryCurrentSource: sessionEntryCurrent?.source,
+                sessionEntryCurrentSource: sessionEntryCurrent
+                  ? flattenSessionEntryCurrentChecks(sessionEntryCurrent).map(
+                      ({ source }) => source,
+                    )
+                  : undefined,
               },
             },
       );

@@ -88,3 +88,7 @@ function readCodexVersionFromUserAgent(userAgent: string | undefined): string | 
   );
   return match?.[1];
 }
+
+export function isUnsupportedCodexAppServerVersionError(error: unknown): boolean {
+  return error instanceof CodexAppServerVersionError;
+}

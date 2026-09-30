@@ -310,6 +310,16 @@ export class CodexNativeProcessAuthority {
     }
   }
 
+  hasCurrentProcesses(client: CodexAppServerClient, threadId: string): boolean {
+    this.assertCurrent();
+    return [...this.commands].some(
+      (command) =>
+        command.client === clients.get(client) &&
+        command.threadId === threadId &&
+        (command.processes.size > 0 || command.background?.confirmed === true),
+    );
+  }
+
   ownsCurrentCommand(client: CodexAppServerClient, receipt: NativeCommand): boolean {
     this.assertCurrent();
     return [...this.commands].some(

@@ -60,6 +60,7 @@ function createCurrentEntryRead(
       entry = current
         ? {
             sessionId: current.sessionId,
+            previousSessionId: current.previousSessionId,
             ...(current.archivedAt === undefined ? {} : { archivedAt: current.archivedAt }),
             ...(current.repositoryWorkspaceId === undefined
               ? {}
@@ -125,11 +126,25 @@ export function assertSessionEntryCurrentNativeSource(
 
 /** Native facts constrain the existing synchronous grant; no read snapshot outlives the request. */
 export function requestSessionEntryCurrentAdmission(
-  source: SessionEntryCurrentSource | undefined,
+  source: SessionEntryCurrentSource | readonly SessionEntryCurrentSource[] | undefined,
   request: SqliteWorkerAdmissionRequest,
   options: { database?: OpenClawAgentReadOnlyDatabase; lookup?: "exact" | "logical" } = {},
   requestAdmission = requestSqliteWorkerOperationAdmission,
 ): void {
+  if (isSessionEntryCurrentSources(source)) {
+    const enter = (index: number, current: SqliteWorkerAdmissionRequest): void => {
+      const next = source[index];
+      if (next) {
+        requestSessionEntryCurrentAdmission(next, current, options, (qualified) =>
+          enter(index + 1, qualified),
+        );
+      } else {
+        requestAdmission(current);
+      }
+    };
+    enter(0, request);
+    return;
+  }
   if (!source) {
     requestAdmission(request);
     return;
@@ -172,4 +187,10 @@ export function requestSessionEntryCurrentAdmission(
   if (!read.found) {
     throw new Error("Session currency native source is unavailable");
   }
+}
+
+function isSessionEntryCurrentSources(
+  source: SessionEntryCurrentSource | readonly SessionEntryCurrentSource[] | undefined,
+): source is readonly SessionEntryCurrentSource[] {
+  return Array.isArray(source);
 }

@@ -98,14 +98,20 @@ describe("native session binding generation", () => {
         await preparationReleased;
         return { kind: "verify", expectedPreviousSessionId: bindingSessionId };
       },
-      adopt: async (_expectedPreviousSessionId, assertCurrent) => {
-        assertCurrent();
-        bindingSessionId = target.sessionId;
-        return "adopted";
+      adopt: async (_expectedPreviousSessionId, assertCurrent, authority) => {
+        const adopt = () => {
+          assertCurrent();
+          bindingSessionId = target.sessionId;
+          return "adopted" as const;
+        };
+        return authority ? authority.withCurrent(adopt) : adopt();
       },
-      reclaim: async (_expectedPreviousSessionId, assertCurrent) => {
-        assertCurrent();
-        throw new Error("Stale reclaim is disabled");
+      reclaim: async (_expectedPreviousSessionId, assertCurrent, authority) => {
+        const reclaim = () => {
+          assertCurrent();
+          throw new Error("Stale reclaim is disabled");
+        };
+        return authority ? authority.withCurrent(reclaim) : reclaim();
       },
     };
     await upsertSessionEntryCore(scope(), { sessionId: previous.sessionId, updatedAt: 1 });

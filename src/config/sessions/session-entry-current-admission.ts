@@ -18,6 +18,7 @@ function decodeSessionEntryCurrentFacts(value: unknown): SessionEntryCurrentFact
   }
   return {
     sessionId: value.sessionId,
+    previousSessionId: value.previousSessionId,
     ...(value.archivedAt === undefined ? {} : { archivedAt: value.archivedAt }),
     ...(value.repositoryWorkspaceId === undefined
       ? {}
@@ -47,6 +48,16 @@ export function assertSessionEntryCurrentAdmission(
     }
     return request;
   }
+  if (check.additional?.length) {
+    let current = request;
+    for (const item of flattenSessionEntryCurrentChecks(check).toReversed()) {
+      current = assertSessionEntryCurrentAdmission(current, {
+        source: item.source,
+        assertCurrent: item.assertCurrent.bind(item),
+      });
+    }
+    return current;
+  }
   const facts = request.facts;
   if (
     !isRecord(facts) ||
@@ -62,4 +73,11 @@ export function assertSessionEntryCurrentAdmission(
   }
   check.assertCurrent(decodeSessionEntryCurrentFacts(facts.entry));
   return { ...request, facts: facts.domainFacts };
+}
+
+/** Flatten one compound restriction in the same order as its native fact envelopes. */
+export function flattenSessionEntryCurrentChecks(
+  check: SessionEntryCurrentCheck,
+): readonly SessionEntryCurrentCheck[] {
+  return [check, ...(check.additional ?? []).flatMap(flattenSessionEntryCurrentChecks)];
 }

@@ -13,3 +13,10 @@ export {
   type NativeSessionGenerationAdoptionResult,
 } from "../agents/harness/native-session/binding-generation.js";
 export { createNativeSessionInitializationOwner } from "../agents/harness/native-session/initialization.js";
+
+export {
+  createNativeSessionBindingAuthority,
+  combineNativeSessionBindingAuthority,
+  type NativeSessionBindingAuthority,
+  type NativeSessionBindingWithCurrent,
+} from "../agents/harness/native-session/binding-authority.js";
