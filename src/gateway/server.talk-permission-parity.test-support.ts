@@ -167,16 +167,21 @@ export async function runTalkNodePermissionParity({
         throw error;
       });
   const observed: unknown[] = [];
+  const outcomes: unknown[] = [];
   try {
     for (const ingress of ["text", "direct", "chat-backed"] as const) {
       for (const decision of [
         "permitted",
+        "policy-deny",
         "allow-once",
         "deny",
         "cancel",
         "source-revoke",
       ] as const) {
         const key = ingress + "-" + decision;
+        const requiresApproval = decision !== "permitted" && decision !== "policy-deny";
+        const invocationCount = node.invokes.length;
+        const nativeCount = native.length;
         await fs.rm(marker, { force: true });
         await replaceSessionEntry(scope(), {
           sessionId,
@@ -184,7 +189,12 @@ export async function runTalkNodePermissionParity({
           execHost: "node",
           execNode: node.nodeId,
           execCwd: workspace,
-          permissionMode: decision === "permitted" ? "full" : "guarded",
+          permissionMode:
+            decision === "permitted"
+              ? "full"
+              : decision === "policy-deny"
+                ? "read-only"
+                : "guarded",
         });
         const source = captureGatewayDeviceRevocation(
           context,
@@ -332,7 +342,7 @@ export async function runTalkNodePermissionParity({
           }
           void task.catch((error: unknown) => finished.resolve({ error: String(error) }));
           const runId = await started.promise;
-          if (decision !== "permitted") {
+          if (requiresApproval) {
             const pending = await Promise.race([
               requested.promise,
               finished.promise.then((outcome) => {
@@ -369,7 +379,36 @@ export async function runTalkNodePermissionParity({
           } else {
             expect(await effectText()).toBe(before);
           }
-          expect(approvalEvents - eventCount).toBe(decision === "permitted" ? 0 : 1);
+          expect(approvalEvents - eventCount).toBe(requiresApproval ? 1 : 0);
+          const cellInvocations = node.invokes.slice(invocationCount);
+          const cellNative = native.slice(nativeCount);
+          expect(cellInvocations.filter((frame) => frame.command === "system.which")).toHaveLength(
+            1,
+          );
+          if (decision === "policy-deny") {
+            // A policy refusal is not an operator rejection (or a failed lookup).
+            // The real exec owner refuses before any node execution preparation.
+            expect(result).toEqual({ error: "Error: exec denied: host=node security=deny" });
+            expect(
+              cellInvocations.filter((frame) => frame.command.startsWith("system.run")),
+            ).toEqual([]);
+            expect(cellNative).toEqual([]);
+          }
+          outcomes.push({
+            scenario: key,
+            approvals: approvalEvents - eventCount,
+            execDispatches: cellInvocations.filter((frame) => frame.command === "system.run")
+              .length,
+            nodesWhich: cellInvocations.filter((frame) => frame.command === "system.which").length,
+            markerPresent: (await effectText()) !== "",
+            canonicalExecDenial:
+              asOptionalRecord(result)?.error === "Error: exec denied: host=node security=deny",
+            native: cellNative.map(({ result: completion }) => ({
+              pid: completion.pid,
+              code: completion.code,
+              termination: completion.termination,
+            })),
+          });
         } finally {
           invalidateGatewayDeviceRevocation(context, identity.identity.deviceId, "operator");
           await task?.catch(() => {});
@@ -403,7 +442,10 @@ export async function runTalkNodePermissionParity({
       });
     }
     expect(node.invokes.filter((frame) => frame.command === "system.run")).toHaveLength(6);
-    expect(node.invokes.filter((frame) => frame.command === "system.which")).toHaveLength(15);
+    expect(node.invokes.filter((frame) => frame.command === "system.which")).toHaveLength(18);
+    expect(outcomes).toHaveLength(18);
+    // Observed, public-safe values only: no identities, transcripts, paths or credentials.
+    console.info("Talk permission parity observed:", JSON.stringify(outcomes));
   } finally {
     context.getClientConnIds = originalConnections;
     provider.restore();
