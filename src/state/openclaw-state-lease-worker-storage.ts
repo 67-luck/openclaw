@@ -1,3 +1,4 @@
+import { throwSqliteLifecycleErrors } from "../infra/sqlite-lifecycle-errors.js";
 import type { SqliteWorkerStore } from "../infra/sqlite-worker-store.js";
 import type { OpenClawStateWorkerLeaseContext } from "./openclaw-state-lease-context.js";
 import { OpenClawStateLeaseError } from "./openclaw-state-lease-error.js";
@@ -22,6 +23,15 @@ type LeaseWorkerOperation<T> = (
   scope: Pick<SqliteWorkerStore<OpenClawStateWorkerOperations>, "execute">,
   identity: OpenClawStateLeaseIdentity,
 ) => Promise<T>;
+
+/** Keep this importer's admission and release code available across package replacement. */
+export async function prepareOpenClawStateLeaseWorkerRuntime(): Promise<void> {
+  await Promise.all([
+    import("./openclaw-state-worker-store.js"),
+    import("../infra/sqlite-worker-identity.js"),
+    import("../infra/sqlite-worker-store.js"),
+  ]);
+}
 
 function admittedWorkerOperation<T>(
   context: OpenClawStateWorkerContext,
@@ -169,7 +179,6 @@ export function createOpenClawStateLeaseWorkerStorage(
         admission.assertCurrent();
         const cleanupContext = {
           environment: context.environment,
-          coordinatorRuntime: { ...context.coordinatorRuntime, keepAlive: false },
           existingSchemaPath: context.existingSchemaPath,
         };
         // Canonical close seals reads first; this owner retains only release authority.
@@ -197,7 +206,6 @@ export function createOpenClawStateLeaseWorkerStorage(
             cleanupContext,
             admission.assertCurrent,
             admission.createAdmission,
-            true,
           );
         } catch (error) {
           errors.push(error);
@@ -207,14 +215,7 @@ export function createOpenClawStateLeaseWorkerStorage(
         } catch (error) {
           errors.push(error);
         }
-        if (errors.length === 1) {
-          throw errors[0];
-        }
-        if (errors.length > 1) {
-          throw new AggregateError(errors, "State lease release and worker close failed", {
-            cause: errors[0],
-          });
-        }
+        throwSqliteLifecycleErrors(errors, "State lease release and worker close failed");
       });
     },
   };

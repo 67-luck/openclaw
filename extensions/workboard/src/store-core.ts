@@ -12,6 +12,7 @@ import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runti
 import type {
   PersistedWorkboardAttachment,
   PersistedWorkboardBoard,
+  PersistedWorkboardCard,
   WorkboardCardStore,
   WorkboardKeyedStore,
   WorkboardSubscriptionStore,
@@ -123,20 +124,16 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
     } catch (operationError) {
       const compensationErrors = await this.rollbackCardMutations(journal);
       if (compensationErrors.length > 0) {
-        throw this.compensationError(operationError, compensationErrors);
+        const message =
+          operationError instanceof Error ? operationError.message : String(operationError);
+        throw new AggregateError([operationError, ...compensationErrors], message, {
+          cause: operationError,
+        });
       }
       throw operationError;
     } finally {
       this.compensationJournal = undefined;
     }
-  }
-
-  private compensationError(operationError: unknown, cleanupErrors: unknown[]): AggregateError {
-    const message =
-      operationError instanceof Error ? operationError.message : String(operationError);
-    return new AggregateError([operationError, ...cleanupErrors], message, {
-      cause: operationError,
-    });
   }
 
   private recordCardMutation(before: WorkboardCard | undefined, after: WorkboardCard): void {
@@ -519,7 +516,6 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
     const agentId = normalizeOptionalString(input.agentId);
     const sessionKey = normalizeOptionalString(input.sessionKey);
     const runId = normalizeOptionalString(input.runId);
-    const taskId = normalizeOptionalString(input.taskId);
     const sourceUrl = normalizeOptionalString(input.sourceUrl);
     const normalizedExecution = normalizeExecution(input.execution);
     const execution =
@@ -581,7 +577,6 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
       ...(agentId ? { agentId } : {}),
       ...(sessionKey ? { sessionKey } : {}),
       ...(runId ? { runId } : {}),
-      ...(taskId ? { taskId } : {}),
       ...(sourceUrl ? { sourceUrl } : {}),
       ...(execution ? { execution } : {}),
       ...(startedAt ? { startedAt } : {}),
@@ -796,10 +791,6 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
         effectivePatch.runId === undefined
           ? existing.runId
           : normalizeOptionalString(effectivePatch.runId),
-      taskId:
-        effectivePatch.taskId === undefined
-          ? existing.taskId
-          : normalizeOptionalString(effectivePatch.taskId),
       sourceUrl:
         effectivePatch.sourceUrl === undefined
           ? existing.sourceUrl
@@ -842,10 +833,12 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
       delete next.metadata;
     }
     const expectedUpdatedAt = options.expectedUpdatedAt ?? existing.updatedAt;
+    const nextEntry: PersistedWorkboardCard = { version: 1, card: next };
+    let updated: boolean;
     if (options.ownerSlot) {
       const result = await this.store.claimIfOwnerAvailable(
         next.id,
-        { version: 1, card: next },
+        nextEntry,
         expectedUpdatedAt,
         options.ownerSlot.ownerId,
         options.ownerSlot.now,
@@ -853,14 +846,11 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
       if (result === "owner_busy") {
         throw new Error(`Owner ${options.ownerSlot.ownerId} already has active Workboard work.`);
       }
-      if (result === "updated") {
-        this.recordCardMutation(existing, next);
-        await this.deleteDetachedAttachments(existing, next);
-        return next;
-      }
-    } else if (
-      await this.store.registerIfUpdatedAt(next.id, { version: 1, card: next }, expectedUpdatedAt)
-    ) {
+      updated = result === "updated";
+    } else {
+      updated = await this.store.registerIfUpdatedAt(next.id, nextEntry, expectedUpdatedAt);
+    }
+    if (updated) {
       this.recordCardMutation(existing, next);
       await this.deleteDetachedAttachments(existing, next);
       return next;
