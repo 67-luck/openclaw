@@ -448,7 +448,7 @@ test("keeps Telegram model-picker callbacks on the prepared Gateway catalog", as
         writeJson(res, 503, { ok: false, error: "provider discovery frozen after warmup" });
         return;
       }
-      succeed(res, {
+      writeJson(res, 200, {
         models: [
           {
             name: PREPARED_MODEL,
@@ -468,7 +468,7 @@ test("keeps Telegram model-picker callbacks on the prepared Gateway catalog", as
         writeJson(res, 503, { ok: false, error: "provider discovery frozen after warmup" });
         return;
       }
-      succeed(res, {
+      writeJson(res, 200, {
         model_info: { "general.context_length": 8192 },
         capabilities: ["completion", "tools"],
       });
@@ -556,7 +556,7 @@ test("keeps Telegram model-picker callbacks on the prepared Gateway catalog", as
         const gatewayOwner = createQaGatewayChild();
         try {
           const repoRoot = path.resolve(import.meta.dirname, "../../../..");
-          await gatewayOwner.start({
+          const gateway = await gatewayOwner.start({
             repoRoot,
             useRepoCli: true,
             transportBaseUrl: apiRoot,
@@ -632,11 +632,18 @@ test("keeps Telegram model-picker callbacks on the prepared Gateway catalog", as
           pendingUpdates.push(initialModelsUpdate());
 
           await expect
-            .poll(() => ({ stage: pickerStage, discoveryRequests }), {
+            .poll(() => pickerStage, {
               interval: 50,
               timeout: 30_000,
             })
-            .toEqual({ stage: "providers", discoveryRequests: 2 });
+            .toBe("providers");
+          const warmedModels = await gateway.call("models.list", { view: "all" });
+          expect(warmedModels).toMatchObject({
+            models: expect.arrayContaining([
+              expect.objectContaining({ provider: "ollama", id: PREPARED_MODEL }),
+            ]),
+          });
+          expect(discoveryRequests).toBeGreaterThan(0);
           const warmDiscoveryRequests = discoveryRequests;
           discoveryFrozen = true;
           queueCallback("mdl_prov");
@@ -671,8 +678,26 @@ test("keeps Telegram model-picker callbacks on the prepared Gateway catalog", as
           expect(
             telegramCalls.filter((call) => call.method === "answerCallbackQuery"),
           ).toHaveLength(4);
+          const preparedModels = await gateway.call("models.list", { view: "default" });
+          expect(preparedModels).toMatchObject({
+            models: expect.arrayContaining([
+              expect.objectContaining({ provider: "ollama", id: PREPARED_MODEL }),
+            ]),
+          });
           expect(discoveryRequests).toBe(warmDiscoveryRequests);
           expect(postWarmDiscoveryAttempts).toBe(0);
+
+          discoveryFrozen = false;
+          const refreshedModels = await gateway.call("models.list", {
+            view: "default",
+            refresh: true,
+          });
+          expect(refreshedModels).toMatchObject({
+            models: expect.arrayContaining([
+              expect.objectContaining({ provider: "ollama", id: PREPARED_MODEL }),
+            ]),
+          });
+          expect(discoveryRequests).toBeGreaterThan(warmDiscoveryRequests);
         } finally {
           await settleCleanup(async () => await stopQaGatewayFixture(gatewayOwner));
         }
