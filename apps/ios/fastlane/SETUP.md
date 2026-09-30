@@ -218,7 +218,12 @@ node --import ./scripts/tsx.mjs scripts/ios-release-e2e.ts \
 These diagnostics produce `native-build`/`built`, `gateway-probe`/`probe-passed`,
 or `setup-probe`/`probe-passed` proofs, respectively. None is release qualification.
 The setup probe adds temporary, sanitized connection, RPC, shutdown, and resource
-timings to distinguish delays before and after simulator boot. Manual dispatch of
+timings to distinguish delays before and after simulator boot. An independent
+sampler also records bounded host memory/swap measurements and short stack samples
+of the owned harness and Gateway. Only numeric facts and fixed stack categories
+enter the proof; raw stack reports are deleted. Sampling can briefly pause its
+target, so these measurements are diagnostic evidence, not release qualification.
+Manual dispatch of
 **iOS Release E2E** can select `setup_only=true` with `mode=stock` for this probe;
 release callers always run full qualification. Gateway runtime preparation continues
 to use the existing build owner's cache in every mode.

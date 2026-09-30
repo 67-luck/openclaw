@@ -29,6 +29,7 @@ const nativeMocks = vi.hoisted(() => ({
   build: vi.fn(),
   gateway: vi.fn(),
   rpc: vi.fn(),
+  hostProbe: vi.fn(),
 }));
 vi.mock("../../scripts/lib/managed-child-process.mjs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../scripts/lib/managed-child-process.mjs")>()),
@@ -36,6 +37,9 @@ vi.mock("../../scripts/lib/managed-child-process.mjs", async (importOriginal) =>
 }));
 vi.mock("../../scripts/lib/ios-release-e2e-build.js", () => ({
   prepareIOSReleaseNativeBuild: nativeMocks.build,
+}));
+vi.mock("../../scripts/lib/ios-release-setup-host.js", () => ({
+  startIOSReleaseSetupHostProbe: nativeMocks.hostProbe,
 }));
 vi.mock("../helpers/openclaw-test-instance.js", () => ({
   createOpenClawTestInstance: nativeMocks.gateway,
@@ -65,6 +69,7 @@ afterEach(() => {
   nativeMocks.build.mockReset();
   nativeMocks.gateway.mockReset();
   nativeMocks.rpc.mockReset();
+  nativeMocks.hostProbe.mockReset();
 });
 
 function result(
@@ -621,6 +626,7 @@ describe("native command adapter", () => {
     "cancel-during-boot",
     "gateway-only",
     "setup-only",
+    "setup-only-stop-failure",
     "setup-code-timeout",
     "setup-code-rpc-timeout",
     "test-unjoined",
@@ -641,6 +647,7 @@ describe("native command adapter", () => {
     "reply-failure-source-only",
     "reply-failure-app-log-error",
   ])("owns admission, build, test and cleanup for %s", async (scenario) => {
+    const setupOnly = scenario.startsWith("setup-only");
     const temp = tempDirs.make("ios-release-e2e-adapter-");
     const developerDir = tempDirs.make("ios-release-e2e-developer-");
     vi.spyOn(os, "tmpdir").mockReturnValue(temp);
@@ -654,6 +661,26 @@ describe("native command adapter", () => {
     vi.stubEnv("OPENCLAW_CI_SIMSLIM_BINARY", "");
     const instances: { cleanup: ReturnType<typeof vi.fn> }[] = [];
     const lifecycle: string[] = [];
+    const hostEvidence = { status: "stopped", cleanupConfirmed: true, host: [], stacks: [] };
+    const stopHostProbe = vi.fn(async () => {
+      lifecycle.push("sampler-stop");
+      await Promise.resolve();
+      lifecycle.push("sampler-stop-settled");
+      if (scenario === "setup-only-stop-failure") {
+        throw Object.assign(new Error("private diagnostic cleanup failure"), {
+          code: "ETIMEDOUT",
+          processTreeState: "unknown",
+        });
+      }
+    });
+    nativeMocks.hostProbe.mockImplementation(async () => {
+      lifecycle.push("sampler-start");
+      return {
+        evidence: hostEvidence,
+        markPhase: (phase: "boot" | "setup-code") => lifecycle.push(`sampler-${phase}`),
+        stop: stopHostProbe,
+      };
+    });
     let simulatorReady = false;
     let sourceChanged = false;
     let exitMock: (() => void) | undefined;
@@ -666,9 +693,10 @@ describe("native command adapter", () => {
       return { derivedDataPath, xctestrunPath, reused: false };
     });
     const gatewayChild: EventEmitter & {
+      pid: number;
       exitCode: number | null;
       signalCode: NodeJS.Signals | null;
-    } = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null });
+    } = Object.assign(new EventEmitter(), { pid: 12345, exitCode: null, signalCode: null });
     let nativeCommandActive = false;
     let historyReadBeforeCommandExit = false;
     nativeMocks.rpc.mockImplementation(async (options) => {
@@ -773,7 +801,7 @@ describe("native command adapter", () => {
           }
         }),
         logs: () =>
-          scenario === "setup-only"
+          setupOnly
             ? JSON.stringify({
                 subsystem: "gateway/ws",
                 message: "⇄ res ✓ device.pair.setupCode 97ms private response details",
@@ -1148,7 +1176,7 @@ describe("native command adapter", () => {
       targetSha: "1".repeat(40),
       signal: abort.signal,
       gatewayOnly: scenario === "gateway-only",
-      setupOnly: scenario === "setup-only",
+      setupOnly,
       proof,
       onProgress: async () => {
         progressSnapshots.push(JSON.stringify(proof));
@@ -1217,28 +1245,60 @@ describe("native command adapter", () => {
             : "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
     });
     try {
-      if (scenario === "gateway-only" || scenario === "setup-only") {
+      if (scenario === "gateway-only" || setupOnly) {
         const gatewayProbe = await native.dependencies.create("stock", 1);
         try {
           await gatewayProbe.prepare();
         } finally {
-          await gatewayProbe.cleanup();
+          if (scenario === "setup-only-stop-failure") {
+            await expect(gatewayProbe.cleanup()).rejects.toMatchObject({
+              diagnostic: {
+                operation: "cleanup",
+                code: "cleanup-unconfirmed",
+                context: ["cleanup-diagnostics:failed"],
+              },
+            });
+          } else {
+            await gatewayProbe.cleanup();
+          }
         }
-        expect(lifecycle).toEqual([
-          ...(scenario === "setup-only" ? ["native-build-complete"] : []),
+        expect(lifecycle.filter((event) => event !== "simulator-delete")).toEqual([
+          ...(setupOnly ? ["native-build-complete"] : []),
           "mock-start",
           "gateway-create",
           "gateway-start",
           "setup-status",
           "setup-status-ready",
-          ...(scenario === "setup-only" ? ["simulator-create", "boot-wait", "boot-ready"] : []),
+          ...(setupOnly
+            ? [
+                "sampler-start",
+                "sampler-boot",
+                "simulator-create",
+                "boot-wait",
+                "boot-ready",
+                "sampler-setup-code",
+              ]
+            : []),
           "setup-code",
+          ...(setupOnly ? ["sampler-stop", "sampler-stop-settled"] : []),
           "gateway-cleanup",
           "mock-cleanup",
-          ...(scenario === "setup-only" ? ["simulator-delete"] : []),
         ]);
-        expect(nativeMocks.build).toHaveBeenCalledTimes(scenario === "setup-only" ? 1 : 0);
-        expect(created).toBe(scenario === "setup-only" ? 1 : 0);
+        expect(nativeMocks.build).toHaveBeenCalledTimes(setupOnly ? 1 : 0);
+        expect(created).toBe(setupOnly ? 1 : 0);
+        expect(lifecycle.filter((event) => event === "simulator-delete")).toHaveLength(
+          setupOnly ? 1 : 0,
+        );
+        expect(nativeMocks.hostProbe).toHaveBeenCalledTimes(setupOnly ? 1 : 0);
+        expect(stopHostProbe).toHaveBeenCalledTimes(setupOnly ? 1 : 0);
+        if (setupOnly) {
+          expect(nativeMocks.hostProbe).toHaveBeenCalledWith(
+            expect.objectContaining({
+              gatewayPid: gatewayChild.pid,
+              signal: expect.any(AbortSignal),
+            }),
+          );
+        }
         expect(joinedMocks).toBe(1);
         expect(
           nativeMocks.command.mock.calls.some(([{ args }]) =>
@@ -1251,9 +1311,10 @@ describe("native command adapter", () => {
         ]);
         expect(proof.fixtures).toEqual([
           expect.objectContaining({
-            cleanupConfirmed: true,
-            ...(scenario === "setup-only"
+            cleanupConfirmed: scenario !== "setup-only-stop-failure",
+            ...(setupOnly
               ? {
+                  setupHost: hostEvidence,
                   setupDiagnostics: {
                     rpcs: ["setup-status", "setup-code"].map((operation) =>
                       expect.objectContaining({
@@ -1269,6 +1330,26 @@ describe("native command adapter", () => {
               : {}),
           }),
         ]);
+        if (scenario === "setup-only-stop-failure") {
+          expect(proof.resourcesPreserved).toBe(true);
+          expect(proof.fixtures).toEqual([
+            expect.objectContaining({
+              cleanup: [
+                { component: "gateway", status: "passed" },
+                { component: "mock", status: "passed" },
+                {
+                  component: "diagnostics",
+                  status: "failed",
+                  diagnostic: expect.objectContaining({
+                    code: "timeout",
+                    errorCode: "ETIMEDOUT",
+                    context: [],
+                  }),
+                },
+              ],
+            }),
+          ]);
+        }
         expect(JSON.stringify(proof)).not.toMatch(/private|synthetic|OPENCLAW_E2E_|metadata/);
         return;
       }
@@ -1857,6 +1938,7 @@ describe("native command adapter", () => {
       if (
         scenario === "cleanup-failure" ||
         scenario === "mock-cleanup-failure" ||
+        scenario === "setup-only-stop-failure" ||
         scenario === "test-unjoined" ||
         scenario === "status-unjoined-gateway-exit"
       ) {

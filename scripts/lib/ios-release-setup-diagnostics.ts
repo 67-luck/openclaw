@@ -5,12 +5,14 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   GatewayProtocolClient,
   type GatewayProtocolRequestOptions,
+  type GatewayProtocolTiming,
 } from "../../packages/gateway-client/src/protocol-client.js";
 import { GatewayClient, type GatewayClientRequestOptions } from "../../src/gateway/client.js";
 
 type SetupOperation = "setup-status" | "setup-code";
 type SetupMethod = "device.pair.setupStatus" | "device.pair.setupCode";
 type EventLabel =
+  | `protocol-${GatewayProtocolTiming<unknown>["phase"]}`
   | "client-start"
   | "connect-request-start"
   | "connect-request-resolved"
@@ -65,6 +67,16 @@ type IOSReleaseSetupEvidence = {
 
 const RESOURCE_PREFIX = "IOS_SETUP_PROBE_RESOURCE ";
 const MAX_LINE_LENGTH = 4_096;
+const PROTOCOL_EVENT_LABELS = {
+  "socket-open": "protocol-socket-open",
+  challenge: "protocol-challenge",
+  fallback: "protocol-fallback",
+  "device-identity-ready": "protocol-device-identity-ready",
+  "connect-plan-ready": "protocol-connect-plan-ready",
+  "request-sent": "protocol-request-sent",
+  hello: "protocol-hello",
+  failed: "protocol-failed",
+} as const satisfies Record<GatewayProtocolTiming<unknown>["phase"], EventLabel>;
 const scope = new AsyncLocalStorage<object>();
 let observing = false;
 
@@ -111,7 +123,14 @@ export function createIOSReleaseSetupDiagnostics() {
       const originalRequest = clientDescriptors.request.value;
       const originalStop = clientDescriptors.stopAndWait.value;
       const originalProtocolRequest = protocolDescriptors.request.value;
-      if (!originalStart || !originalRequest || !originalStop || !originalProtocolRequest) {
+      const originalProtocolTiming = protocolDescriptors.recordTiming.value;
+      if (
+        !originalStart ||
+        !originalRequest ||
+        !originalStop ||
+        !originalProtocolRequest ||
+        !originalProtocolTiming
+      ) {
         throw new Error("iOS setup diagnostic methods unavailable");
       }
       const identity = {};
@@ -129,6 +148,7 @@ export function createIOSReleaseSetupDiagnostics() {
       evidence.rpcs.push(rpc);
       let active = true;
       let selectedClient: WeakRef<GatewayClient> | undefined;
+      let selectedProtocol: WeakRef<GatewayProtocolClient<unknown>> | undefined;
       const current = () => active && scope.getStore() === identity;
       const record = (label: EventLabel) => {
         if (active && rpc.events.length < 24) {
@@ -197,14 +217,30 @@ export function createIOSReleaseSetupDiagnostics() {
             throw error;
           }
         };
+        GatewayProtocolClient.prototype.recordTiming = function (phase, generation, plan, detail) {
+          if (
+            current() &&
+            selectedClient &&
+            (!selectedProtocol || selectedProtocol.deref() === this) &&
+            Object.hasOwn(PROTOCOL_EVENT_LABELS, phase)
+          ) {
+            selectedProtocol ??= new WeakRef(this);
+            record(PROTOCOL_EVENT_LABELS[phase]);
+          }
+          return originalProtocolTiming.call(this, phase, generation, plan, detail);
+        };
         GatewayProtocolClient.prototype.request = function <Value = unknown>(
           requestedMethod: string,
           params?: unknown,
           options?: GatewayProtocolRequestOptions,
         ): Promise<Value> {
           const observed =
-            current() && selectedClient !== undefined && requestedMethod === "connect";
+            current() &&
+            selectedClient !== undefined &&
+            (!selectedProtocol || selectedProtocol.deref() === this) &&
+            requestedMethod === "connect";
           if (observed) {
+            selectedProtocol ??= new WeakRef(this);
             record("connect-request-start");
           }
           try {
@@ -244,6 +280,11 @@ export function createIOSReleaseSetupDiagnostics() {
           GatewayProtocolClient.prototype,
           "request",
           protocolDescriptors.request,
+        );
+        Object.defineProperty(
+          GatewayProtocolClient.prototype,
+          "recordTiming",
+          protocolDescriptors.recordTiming,
         );
         observing = false;
         delay.disable();

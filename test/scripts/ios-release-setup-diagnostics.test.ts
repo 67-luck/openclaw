@@ -87,31 +87,46 @@ it("preserves RPC promises and results, limits observations to its client, and r
   const request = vi.spyOn(GatewayClient.prototype, "request").mockReturnValue(requestPromise);
   vi.spyOn(GatewayClient.prototype, "stopAndWait").mockReturnValue(stopPromise);
   vi.spyOn(GatewayProtocolClient.prototype, "request").mockReturnValue(connectPromise);
+  const timing = vi
+    .spyOn(GatewayProtocolClient.prototype, "recordTiming")
+    .mockImplementation(() => {});
   const clientDescriptors = Object.getOwnPropertyDescriptors(GatewayClient.prototype);
   const protocolDescriptors = Object.getOwnPropertyDescriptors(GatewayProtocolClient.prototype);
-  const protocol = new GatewayProtocolClient({
-    createSocket: () => {
-      throw new Error("observer test must not open a socket");
-    },
-    createRequestId: () => "synthetic-request",
-    buildConnectPlan: () => ({}),
-    buildConnectParams: () => ({}),
-    resolveClose: () => ({ retry: false, notify: false }),
-    handshake: { mode: "require-challenge", timeoutMs: 10_000 },
-    reconnect: { initialMs: 1, multiplier: 1, maxMs: 1 },
-  });
+  const makeProtocol = () =>
+    new GatewayProtocolClient({
+      createSocket: () => {
+        throw new Error("observer test must not open a socket");
+      },
+      createRequestId: () => "synthetic-request",
+      buildConnectPlan: () => ({}),
+      buildConnectParams: () => ({}),
+      resolveClose: () => ({ retry: false, notify: false }),
+      handshake: { mode: "require-challenge", timeoutMs: 10_000 },
+      reconnect: { initialMs: 1, multiplier: 1, maxMs: 1 },
+    });
+  const protocol = makeProtocol();
+  const otherProtocol = makeProtocol();
   const diagnostics = createIOSReleaseSetupDiagnostics();
   const client = new GatewayClient({ deviceIdentity: null, sharedStateMode: "read-only" });
   const otherClient = new GatewayClient({ deviceIdentity: null, sharedStateMode: "read-only" });
   const params = { setupId: "synthetic-private-id" };
   const options = { timeoutMs: 30_000 };
+  const plan = { token: "synthetic-private-token" };
+  const detail = { url: "ws://private.invalid", message: "private timing details" };
 
   await expect(
     diagnostics.observeRpc("setup-status", async () => {
       client.start();
+      protocol.recordTiming("socket-open", 7, plan, detail);
+      expect(timing).toHaveBeenLastCalledWith("socket-open", 7, plan, detail);
+      expect(timing.mock.contexts.at(-1)).toBe(protocol);
+      otherProtocol.recordTiming("challenge", 8, plan, detail);
+      await otherProtocol.request("connect", { token: "synthetic-private-other" });
+      protocol.recordTiming("challenge", 7);
       const connecting = protocol.request("connect", { token: "synthetic-secret" });
       expect(connecting).toBe(connectPromise);
       await connecting;
+      protocol.recordTiming("hello", 7, plan, detail);
       otherClient.start();
       await otherClient.request("device.pair.setupStatus", params, options);
       const pending = client.request("device.pair.setupStatus", params, options);
@@ -126,14 +141,20 @@ it("preserves RPC promises and results, limits observations to its client, and r
   expect(request).toHaveBeenLastCalledWith("device.pair.setupStatus", params, options);
   expect(diagnostics.evidence.rpcs[0]?.events.map(({ label }) => label)).toEqual([
     "client-start",
+    "protocol-socket-open",
+    "protocol-challenge",
     "connect-request-start",
     "connect-request-resolved",
+    "protocol-hello",
     "request-start",
     "request-resolved",
     "client-stop-start",
     "client-stop-resolved",
     "call-resolved",
   ]);
+  expect(Object.getOwnPropertyDescriptors(GatewayProtocolClient.prototype)).toEqual(
+    protocolDescriptors,
+  );
 
   const failure = new Error("private credential-bearing rejection");
   request.mockRejectedValueOnce(failure);
@@ -142,6 +163,9 @@ it("preserves RPC promises and results, limits observations to its client, and r
       client.start();
       try {
         return await client.request("device.pair.setupCode", params, options);
+      } catch (error) {
+        protocol.recordTiming("failed", 9, plan, detail);
+        throw error;
       } finally {
         await client.stopAndWait({ timeoutMs: 1_000 });
       }
@@ -152,6 +176,7 @@ it("preserves RPC promises and results, limits observations to its client, and r
     "client-start",
     "request-start",
     "request-rejected",
+    "protocol-failed",
     "client-stop-start",
     "client-stop-resolved",
     "call-rejected",

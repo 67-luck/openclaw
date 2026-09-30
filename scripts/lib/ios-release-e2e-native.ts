@@ -361,6 +361,13 @@ export async function createNativeDependencies(options: {
           fixtures.push(fixtureEvidence);
           let udid: string | undefined;
           let instance: OpenClawTestInstance | undefined;
+          let setupHost:
+            | Awaited<
+                ReturnType<
+                  typeof import("./ios-release-setup-host.js").startIOSReleaseSetupHostProbe
+                >
+              >
+            | undefined;
           let setupCode = "";
           const mockAbort = new AbortController();
           let mockDone: Promise<void> | undefined;
@@ -407,7 +414,11 @@ export async function createNativeDependencies(options: {
             (fixtureCleanup ??= (async () => {
               closingFixture = true;
               instance?.child?.off("exit", gatewayExit);
-              const results = await Promise.allSettled([
+              // Stop observing while both owned target identities still belong to this fixture.
+              const diagnosticCleanup = setupHost
+                ? await Promise.allSettled([setupHost.stop()])
+                : [];
+              const fixtureResults = await Promise.allSettled([
                 instance?.cleanup(),
                 (async () => {
                   mockAbort.abort();
@@ -415,7 +426,8 @@ export async function createNativeDependencies(options: {
                 })(),
               ]);
               setupDiagnostics?.captureGatewayLogs(instance?.logs() ?? "");
-              const components = ["gateway", "mock"] as const;
+              const results = [...fixtureResults, ...diagnosticCleanup];
+              const components = ["gateway", "mock", "diagnostics"] as const;
               fixtureEvidence.cleanup = results.map((result, componentIndex) => ({
                 component: components[componentIndex],
                 status: result.status === "fulfilled" ? "passed" : "failed",
@@ -657,8 +669,24 @@ export async function createNativeDependencies(options: {
               // Prepare the real setup handler and worker before cold Simulator boot.
               // Status prunes expired completion records but issues no credential.
               await callSetupRpc("setup-status", { setupId: randomUUID() });
+              if (setupDiagnostics) {
+                if (readyInstance.child?.pid) {
+                  const { startIOSReleaseSetupHostProbe } =
+                    await import("./ios-release-setup-host.js");
+                  setupHost = await startIOSReleaseSetupHostProbe({
+                    cwd,
+                    root,
+                    gatewayPid: readyInstance.child.pid,
+                    signal: options.signal,
+                  });
+                  fixtureEvidence.setupHost = setupHost.evidence;
+                } else {
+                  fixtureEvidence.setupHost = { status: "gateway-pid-unavailable" };
+                }
+              }
               try {
                 if (!options.gatewayOnly) {
+                  setupHost?.markPhase("boot");
                   // Capture the created device before reacting to Gateway death; cleanup needs its identity.
                   udid = await command("simulator-create", "xcrun", [
                     "simctl",
@@ -706,6 +734,7 @@ export async function createNativeDependencies(options: {
                 throw error;
               }
               // Issue the consumed credential after boot so preparation cannot spend its TTL.
+              setupHost?.markPhase("setup-code");
               const setup = await callSetupRpc<DevicePairSetupCodeResult>("setup-code", {
                 publicUrl: readyInstance.url,
                 includeQr: false,
