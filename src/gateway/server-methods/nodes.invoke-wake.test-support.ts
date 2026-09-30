@@ -32,7 +32,7 @@ export const DIRECT_APNS_AUTH = {
   value: {
     teamId: "TEAM123",
     keyId: "KEY123",
-    privateKey: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----", // pragma: allowlist secret
+    privateKey: "synthetic-apns-auth-placeholder",
   },
 } as const;
 export const DIRECT_APNS_RESULT = {

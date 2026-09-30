@@ -17,6 +17,7 @@ import type {
 } from "../../packages/gateway-protocol/src/schema/nodes.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { setActiveNodeContexts } from "../infra/active-node-context.js";
+import { withDevicePairingLock } from "../infra/device-pairing-lock.js";
 import type { PairedDeviceNodeBinding } from "../infra/device-pairing-node-state.js";
 import { isPrivateNodeInvokeCommand, NODE_MCP_TOOLS_CALL_COMMAND } from "../infra/node-commands.js";
 import {
@@ -1286,6 +1287,26 @@ export class NodeRegistry {
     return this.observeEventSend(node, event, this.sendEventRawInternal(node, event, payloadJSON));
   }
 
+  private withCurrentEventSession(
+    node: PairingBoundNodeSession,
+    send: (current: PairingBoundNodeSession) => boolean,
+  ): Promise<boolean> {
+    const lease = this.capturePairingLease(node);
+    // Keep the acquired publication through transport admission; releasing it
+    // between the read and send lets queued observations suppress valid events.
+    return withDevicePairingLock(async () => {
+      const resolution = await this.resolvePairingLease(lease, { invalidateStale: true });
+      const current = this.currentSessionForLease(lease);
+      if (resolution.status === "current" && current) {
+        return send(current);
+      }
+      if (resolution.status === "stale" && resolution.presenceInvalidated) {
+        this.publishActiveNodeContext();
+      }
+      return false;
+    });
+  }
+
   /** Sends command-free events only to the exact authenticated pairing connection. */
   async sendEventForPairingIdentity(params: {
     nodeId: string;
@@ -1304,16 +1325,9 @@ export class NodeRegistry {
     ) {
       return false;
     }
-    const resolution = await this.resolvePairingLease(this.capturePairingLease(initial), {
-      invalidateStale: true,
-    });
-    if (resolution.status !== "current") {
-      if (resolution.status === "stale" && resolution.presenceInvalidated) {
-        this.publishActiveNodeContext();
-      }
-      return false;
-    }
-    return this.sendEventToSession(resolution.session, params.event, params.payload);
+    return this.withCurrentEventSession(initial, (current) =>
+      this.sendEventToSession(current, params.event, params.payload),
+    );
   }
 
   /** Sends only to a session that still owns the requested persistent pairing generation. */
@@ -1325,15 +1339,31 @@ export class NodeRegistry {
     preparePayload?: NodeEventPayloadPreparation,
   ): Promise<boolean> {
     const previous = this.pairingGenerationEventChains.get(nodeId) ?? Promise.resolve();
-    const send = previous.then(() =>
-      this.sendEventRawForPairingGenerationNow(
-        nodeId,
-        pairingGeneration,
-        event,
-        payloadJSON,
-        preparePayload,
-      ),
-    );
+    const send = previous.then(() => {
+      const node = this.getRegisteredSessionForPairingGeneration(nodeId, pairingGeneration);
+      return node
+        ? this.withCurrentEventSession(node, (current) => {
+            // Select stream baselines after queued sends and pairing verification settle.
+            const prepared = preparePayload?.(current.connId);
+            if (preparePayload && !prepared) {
+              return false;
+            }
+            const sent = this.observeEventSend(
+              current,
+              event,
+              this.sendEventRawInternal(
+                current,
+                event,
+                prepared ? prepared.payloadJSON : payloadJSON,
+              ),
+            );
+            if (sent && this.nodesById.get(nodeId) === current) {
+              prepared?.onSent?.();
+            }
+            return sent;
+          })
+        : false;
+    });
     const tail = send.then(
       () => undefined,
       () => undefined,
@@ -1346,45 +1376,6 @@ export class NodeRegistry {
         this.pairingGenerationEventChains.delete(nodeId);
       }
     }
-  }
-
-  private async sendEventRawForPairingGenerationNow(
-    nodeId: string,
-    pairingGeneration: string,
-    event: string,
-    payloadJSON?: SerializedEventPayload | null,
-    preparePayload?: NodeEventPayloadPreparation,
-  ): Promise<boolean> {
-    let node = this.getRegisteredSessionForPairingGeneration(nodeId, pairingGeneration);
-    if (!node) {
-      return false;
-    }
-    if (this.options.resolveCurrentPairingState) {
-      const resolution = await this.resolvePairingLease(this.capturePairingLease(node), {
-        invalidateStale: true,
-      });
-      if (resolution.status !== "current") {
-        if (resolution.status === "stale" && resolution.presenceInvalidated) {
-          this.publishActiveNodeContext();
-        }
-        return false;
-      }
-      node = resolution.session;
-    }
-    // Select stream baselines after queued sends and pairing verification settle.
-    const prepared = preparePayload?.(node.connId);
-    if (preparePayload && !prepared) {
-      return false;
-    }
-    const sent = this.observeEventSend(
-      node,
-      event,
-      this.sendEventRawInternal(node, event, prepared ? prepared.payloadJSON : payloadJSON),
-    );
-    if (sent && this.nodesById.get(nodeId) === node) {
-      prepared?.onSent?.();
-    }
-    return sent;
   }
 
   private sendEventInternal(node: NodeSession, event: string, payload: unknown): boolean {
