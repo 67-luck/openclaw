@@ -946,7 +946,7 @@ export async function finalizeSetupWizard(
     if (shouldLaunchTui) {
       const sessionGatewayHandle = { current: sessionGateway };
       try {
-        await runSetupTui({
+        const tuiResult = await runSetupTui({
           config: nextConfig,
           gatewayReachable: gatewayProbe.ok,
           gatewayUrl: usesLocalPassword
@@ -970,11 +970,18 @@ export async function finalizeSetupWizard(
               runtime,
               reason: "onboarding tui exited",
             }),
+          onUpdated: async () =>
+            await prompter.note(
+              t("wizard.finalize.tuiUpdatedBeforeLaunch", {
+                command: formatCliCommand("openclaw tui"),
+              }),
+              t("wizard.finalize.tuiUpdatedBeforeLaunchTitle"),
+            ),
         });
+        launchedTui = tuiResult === "ran";
       } finally {
         sessionGateway = sessionGatewayHandle.current;
       }
-      launchedTui = true;
     }
 
     return { launchedTui };

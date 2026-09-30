@@ -16,7 +16,8 @@ export async function runSetupTui(params: {
   message?: string;
   sessionGateway: SessionGatewayHandle;
   closeSessionGateway: (gateway: GatewayServer) => Promise<void>;
-}): Promise<void> {
+  onUpdated: () => Promise<void>;
+}): Promise<"ran" | "updated"> {
   restoreTerminalState("pre-setup tui", { resumeStdinIfPaused: false });
   let loadedTuiLifecycle: typeof import("../tui/tui.js") | undefined;
   try {
@@ -59,8 +60,10 @@ export async function runSetupTui(params: {
   if (!loadedTuiLifecycle) {
     // An update crossed the startup gate. The stale owner has completed its
     // Gateway cleanup; the operator can now enter through the updated CLI.
-    return;
+    await params.onUpdated();
+    return "updated";
   }
   // Setup cleanup must finish before the in-process TUI fallback may exit.
   loadedTuiLifecycle.scheduleProcessExitAfterTuiReturn();
+  return "ran";
 }

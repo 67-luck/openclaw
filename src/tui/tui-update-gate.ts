@@ -54,23 +54,15 @@ async function loadTuiAfterUpdateGate(): Promise<{
       process.title = previousProcessTitle;
     }
   };
-  const { waitedForUpdate } = await waitForLocalTuiUpdate(
-    targetRoot,
-    undefined,
-    undefined,
-    async () => {
-      process.title = formatOpenClawProcessTitle("openclaw-tui", targetRoot);
-      announcement = await announceLocalTuiClient(targetRoot);
-      return cleanup;
-    },
-  ).catch(async (error: unknown) => {
+  await waitForLocalTuiUpdate(targetRoot, undefined, undefined, async () => {
+    process.title = formatOpenClawProcessTitle("openclaw-tui", targetRoot);
+    announcement = await announceLocalTuiClient(targetRoot);
+    return cleanup;
+  }).catch(async (error: unknown) => {
     await cleanup();
     throw error;
   });
-  if (
-    waitedForUpdate &&
-    (!initialRevision || resolveOpenClawInstallationRevision(targetRoot) !== initialRevision)
-  ) {
+  if (!initialRevision || resolveOpenClawInstallationRevision(targetRoot) !== initialRevision) {
     await cleanup();
     return { waitedForUpdate: true };
   }
@@ -108,7 +100,12 @@ export async function runTuiAfterUpdateGate(
 /** Runs a nested TUI without replaying its owning command after a crossed update. */
 export async function runNestedTuiAfterUpdateGate(
   options: Parameters<typeof import("./tui.js").runTui>[0],
-): Promise<Awaited<ReturnType<typeof import("./tui.js").runTui>> | undefined> {
-  const result = await withTuiAfterUpdateGate(async ({ runTui }) => await runTui(options));
-  return result.status === "ran" ? result.value : undefined;
+): Promise<
+  | {
+      status: "ran";
+      value: Awaited<ReturnType<typeof import("./tui.js").runTui>>;
+    }
+  | { status: "updated" }
+> {
+  return await withTuiAfterUpdateGate(async ({ runTui }) => await runTui(options));
 }

@@ -20,6 +20,7 @@ describe("runSetupTui", () => {
     const gateway = {} as never;
     const sessionGateway = { current: gateway };
     const closeSessionGateway = vi.fn(async () => {});
+    const onUpdated = vi.fn(async () => {});
 
     await expect(
       runSetupTui({
@@ -28,6 +29,7 @@ describe("runSetupTui", () => {
         gatewayUrl: "ws://127.0.0.1:18789",
         sessionGateway,
         closeSessionGateway,
+        onUpdated,
       }),
     ).rejects.toBe(gateError);
 
@@ -39,6 +41,7 @@ describe("runSetupTui", () => {
     });
     expect(closeSessionGateway).toHaveBeenCalledWith(gateway);
     expect(sessionGateway.current).toBeUndefined();
+    expect(onUpdated).not.toHaveBeenCalled();
   });
 
   it("cleans up and returns when an update crosses the nested TUI gate", async () => {
@@ -46,6 +49,7 @@ describe("runSetupTui", () => {
     const gateway = {} as never;
     const sessionGateway = { current: gateway };
     const closeSessionGateway = vi.fn(async () => {});
+    const onUpdated = vi.fn(async () => {});
 
     await expect(
       runSetupTui({
@@ -54,10 +58,12 @@ describe("runSetupTui", () => {
         gatewayUrl: "ws://127.0.0.1:18789",
         sessionGateway,
         closeSessionGateway,
+        onUpdated,
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("updated");
 
     expect(closeSessionGateway).toHaveBeenCalledWith(gateway);
     expect(sessionGateway.current).toBeUndefined();
+    expect(onUpdated).toHaveBeenCalledOnce();
   });
 });

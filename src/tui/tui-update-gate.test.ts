@@ -135,11 +135,22 @@ describe("TUI update startup gate", () => {
     );
   });
 
+  it("detects a replacement that finishes before the startup lock is acquired", async () => {
+    mocks.resolveRevision.mockReturnValueOnce("revision-1").mockReturnValueOnce("revision-2");
+
+    const result = await runNestedTuiAfterUpdateGate({} as never);
+
+    expect(result).toEqual({ status: "updated" });
+    expect(mocks.runTui).not.toHaveBeenCalled();
+  });
+
   it("returns nested callers through cleanup after a crossed update", async () => {
     mocks.wait.mockResolvedValue({ waitedForUpdate: true });
     mocks.resolveRevision.mockReturnValueOnce("revision-1").mockReturnValueOnce("revision-2");
 
-    await expect(runNestedTuiAfterUpdateGate({} as never)).resolves.toBeUndefined();
+    await expect(runNestedTuiAfterUpdateGate({} as never)).resolves.toEqual({
+      status: "updated",
+    });
 
     expect(mocks.load).not.toHaveBeenCalled();
     expect(mocks.runTui).not.toHaveBeenCalled();
@@ -151,7 +162,10 @@ describe("TUI update startup gate", () => {
     mocks.wait.mockResolvedValue({ waitedForUpdate: true });
     mocks.runTui.mockResolvedValue(result);
 
-    await expect(runNestedTuiAfterUpdateGate({} as never)).resolves.toBe(result);
+    await expect(runNestedTuiAfterUpdateGate({} as never)).resolves.toEqual({
+      status: "ran",
+      value: result,
+    });
 
     expect(mocks.runTui).toHaveBeenCalledOnce();
     expect(mocks.respawn).not.toHaveBeenCalled();
@@ -176,7 +190,9 @@ describe("TUI update startup gate", () => {
     process.title = "openclaw";
     mocks.resolveRevision.mockReturnValueOnce("revision-1").mockReturnValueOnce("revision-2");
 
-    await expect(runNestedTuiAfterUpdateGate({} as never)).resolves.toBeUndefined();
+    await expect(runNestedTuiAfterUpdateGate({} as never)).resolves.toEqual({
+      status: "updated",
+    });
 
     expect(release).toHaveBeenCalledOnce();
     expect(process.title).toBe("openclaw");
