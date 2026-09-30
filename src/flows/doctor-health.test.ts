@@ -170,15 +170,18 @@ vi.mock("../config/config.js", async (importOriginal) => ({
   CONFIG_PATH: "/tmp/openclaw.json",
 }));
 
-vi.mock("../infra/update-doctor-result.js", () => ({
-  UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE: 86,
-  UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV: "OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH",
+vi.mock("../infra/update-doctor-result.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/update-doctor-result.js")>()),
   writeUpdatePostInstallDoctorResult: mocks.writeUpdatePostInstallDoctorResult,
 }));
 
 vi.mock("./doctor-health-contributions.js", () => ({
   runDoctorHealthContributions: mocks.runContributions,
 }));
+
+function expectUpdateDoctorResult(resultPath: string, result: unknown) {
+  expect(mocks.writeUpdatePostInstallDoctorResult).toHaveBeenCalledWith({ resultPath, result });
+}
 
 describe("runDoctorHealthFlow", () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -701,9 +704,7 @@ describe("runDoctorHealthFlow", () => {
 
     expect(mocks.outro).toHaveBeenCalledWith("Doctor finished, but config fixes were not applied.");
     expect(mocks.outro).not.toHaveBeenCalledWith("Doctor complete.");
-    expect(runtime.exit).toHaveBeenCalledWith(1);
-    expect(runtime.exit).not.toHaveBeenCalledWith(86);
-    expect(mocks.writeUpdatePostInstallDoctorResult).not.toHaveBeenCalled();
+    expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(1);
   });
 
   it.each([{ repair: true }, { yes: true }])(
@@ -745,7 +746,10 @@ describe("runDoctorHealthFlow", () => {
           expect(runtime.error).toHaveBeenCalledWith(
             expect.stringMatching(/Doctor.*database readiness.*schema version 17/),
           );
-          expect(mocks.writeUpdatePostInstallDoctorResult).not.toHaveBeenCalled();
+          expectUpdateDoctorResult(
+            state.path("advisory.json"),
+            expect.objectContaining({ status: "error", reason: "required-migration" }),
+          );
           expect(mocks.outro).not.toHaveBeenCalledWith("Doctor complete.");
           expect(runtime.log).toHaveBeenCalledWith(
             expect.stringContaining("still open in another process"),

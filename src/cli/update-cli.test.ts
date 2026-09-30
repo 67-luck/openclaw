@@ -23,6 +23,7 @@ import { isBetaTag } from "../infra/update-channels.js";
 import { applyDevUpdateTargetEnv } from "../infra/update-dev-target.js";
 import {
   createDeferredConfiguredPluginRepairDoctorResult,
+  mergeUpdatePostInstallDoctorPluginWarnings,
   UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
   writeUpdatePostInstallDoctorResult,
@@ -1460,6 +1461,19 @@ describe("update-cli", () => {
       ...overrides,
     });
 
+  const writeSuccessfulDoctorReceipt = async (options: Parameters<typeof runExec>[2]) => {
+    const resultPath =
+      typeof options === "object"
+        ? options.env?.[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]
+        : undefined;
+    if (resultPath) {
+      await writeUpdatePostInstallDoctorResult({
+        resultPath,
+        result: { status: "ok" },
+      });
+    }
+  };
+
   const setupNpmUpdatedRootRefresh = () => {
     const updatedRoot = createCaseDir("openclaw-updated-root");
     const updatedEntrypoint = path.join(updatedRoot, "dist", "entry.js");
@@ -1558,6 +1572,13 @@ describe("update-cli", () => {
     }
     restartHealthTestControl.snapshot = undefined;
     vi.resetAllMocks();
+    vi.mocked(runExec).mockImplementation(async (_command, _args, options) => {
+      await writeSuccessfulDoctorReceipt(options);
+      return {
+        stdout: new Date(Date.now() - 1000).toString(),
+        stderr: "",
+      };
+    });
     serviceEnabled.mockResolvedValue(true);
     serviceDefinitionMutationCapability.mockResolvedValue(undefined);
     readPersistedInstalledPluginIndex.mockResolvedValue(null);
@@ -3136,7 +3157,7 @@ describe("update-cli", () => {
       }
       return baseSnapshot;
     });
-    vi.mocked(runExec).mockImplementationOnce(async (_file, args) => {
+    vi.mocked(runExec).mockImplementationOnce(async (_file, args, options) => {
       expect(args).toEqual([
         "/tmp/openclaw-updated-entry.mjs",
         "doctor",
@@ -3145,6 +3166,7 @@ describe("update-cli", () => {
         "--no-workspace-suggestions",
         "--yes",
       ]);
+      await writeSuccessfulDoctorReceipt(options);
       return { stdout: "", stderr: "" };
     });
 
@@ -3201,18 +3223,260 @@ describe("update-cli", () => {
     expect(resolveGatewayInstallEntrypoint).toHaveBeenCalledTimes(1);
   });
 
-  it("returns a structured error when the fresh plugin doctor cannot run", async () => {
+  it("records a settled plugin Doctor hook failure when config is valid", async () => {
     vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(
       "/tmp/openclaw-updated-entry.mjs",
     );
-    vi.mocked(runExec).mockRejectedValueOnce(new Error("doctor process failed"));
+    vi.mocked(runExec).mockImplementationOnce(async (_command, _args, options) => {
+      const resultPath =
+        typeof options === "object"
+          ? options.env?.[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]
+          : undefined;
+      expect(resultPath).toBeTruthy();
+      await writeUpdatePostInstallDoctorResult({
+        resultPath: String(resultPath),
+        result: {
+          status: "ok",
+          pluginWarnings: ["Plugin example: optional repair needs a running Gateway."],
+        },
+      });
+      return { stdout: "", stderr: "" };
+    });
+    const result = await completeChangedPostCorePluginUpdate();
+
+    expect(result.pluginUpdate).toMatchObject({
+      status: "warning",
+      reason: "post-plugin-doctor-execution-failed",
+    });
+    expect(result.pluginUpdate.warnings?.at(-1)).toMatchObject({
+      reason: "doctor-advisory",
+      message: expect.stringContaining("optional repair needs a running Gateway"),
+    });
+  });
+
+  it("retains pre-plugin Doctor warnings when plugin convergence does not need a fresh Doctor", async () => {
+    const result = await completeChangedPostCorePluginUpdate({
+      freshDoctorRequired: false,
+      prePluginDoctorWarnings: ["Pre-plugin repair warning."],
+    });
+
+    expect(result.pluginUpdate).toMatchObject({
+      status: "warning",
+      reason: "post-plugin-doctor-execution-failed",
+    });
+    expect(result.pluginUpdate.warnings).toContainEqual(
+      expect.objectContaining({
+        reason: "doctor-advisory",
+        message: "Pre-plugin repair warning.",
+      }),
+    );
+  });
+
+  it("retains a plugin convergence error when attaching pre-plugin Doctor warnings", async () => {
+    const result = await completeChangedPostCorePluginUpdate({
+      pluginUpdate: {
+        status: "error",
+        changed: true,
+        reason: "plugin-convergence-failed",
+        warnings: [],
+        sync: {
+          changed: false,
+          switchedToBundled: [],
+          switchedToNpm: [],
+          warnings: [],
+          errors: [],
+        },
+        npm: { changed: true, outcomes: [] },
+        integrityDrifts: [],
+      },
+      prePluginDoctorWarnings: ["Pre-plugin repair warning."],
+    });
+
+    expect(result.pluginUpdate).toMatchObject({
+      status: "error",
+      reason: "plugin-convergence-failed",
+    });
+    expect(result.pluginUpdate.warnings).toContainEqual(
+      expect.objectContaining({
+        reason: "doctor-advisory",
+        message: "Pre-plugin repair warning.",
+      }),
+    );
+    expect(runExec).not.toHaveBeenCalled();
+  });
+
+  it("records an authenticated plugin Doctor advisory exit as a warning", async () => {
+    vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(
+      "/tmp/openclaw-updated-entry.mjs",
+    );
+    vi.mocked(runExec).mockImplementationOnce(async (_command, _args, options) => {
+      const resultPath =
+        typeof options === "object"
+          ? options.env?.[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]
+          : undefined;
+      await writeUpdatePostInstallDoctorResult({
+        resultPath: String(resultPath),
+        result: mergeUpdatePostInstallDoctorPluginWarnings(
+          createDeferredConfiguredPluginRepairDoctorResult(["deferred plugin repair"]),
+          ["Plugin hook repair failed."],
+        ),
+      });
+      throw Object.assign(new Error("Doctor advisory"), {
+        failed: true,
+        exitCode: UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
+      });
+    });
+
+    const result = await completeChangedPostCorePluginUpdate();
+
+    expect(result.pluginUpdate).toMatchObject({
+      status: "warning",
+      reason: "post-plugin-doctor-execution-failed",
+    });
+    expect(result.pluginUpdate.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ message: "Plugin hook repair failed." }),
+        expect.objectContaining({
+          reason: "doctor-advisory",
+          message: expect.stringContaining("recoverable update-time repair warning"),
+        }),
+      ]),
+    );
+    expect(result.pluginUpdate.warnings).toHaveLength(2);
+  });
+
+  it("does not let a successful Doctor receipt override a nonzero process exit", async () => {
+    vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(
+      "/tmp/openclaw-updated-entry.mjs",
+    );
+    vi.mocked(runExec).mockImplementationOnce(async (_command, _args, options) => {
+      const resultPath =
+        typeof options === "object"
+          ? options.env?.[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]
+          : undefined;
+      await writeUpdatePostInstallDoctorResult({
+        resultPath: String(resultPath),
+        result: { status: "ok", pluginWarnings: ["untrusted after exit"] },
+      });
+      throw Object.assign(new Error("Doctor failed after receipt"), {
+        failed: true,
+        exitCode: 1,
+      });
+    });
+
     const result = await completeChangedPostCorePluginUpdate();
 
     expect(result.pluginUpdate).toMatchObject({
       status: "error",
       reason: "post-plugin-doctor-execution-failed",
     });
-    expect(result.pluginUpdate.warnings?.at(-1)?.reason).toContain("doctor process failed");
+  });
+
+  it("does not accept an advisory receipt without the advisory process exit", async () => {
+    vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(
+      "/tmp/openclaw-updated-entry.mjs",
+    );
+    vi.mocked(runExec).mockImplementationOnce(async (_command, _args, options) => {
+      const resultPath =
+        typeof options === "object"
+          ? options.env?.[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]
+          : undefined;
+      await writeUpdatePostInstallDoctorResult({
+        resultPath: String(resultPath),
+        result: createDeferredConfiguredPluginRepairDoctorResult(["mismatched advisory"]),
+      });
+      return { stdout: "", stderr: "" };
+    });
+
+    const result = await completeChangedPostCorePluginUpdate();
+
+    expect(result.pluginUpdate).toMatchObject({
+      status: "error",
+      reason: "post-plugin-doctor-execution-failed",
+    });
+  });
+
+  it("does not accept a successful Doctor process without a completion receipt", async () => {
+    vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(
+      "/tmp/openclaw-updated-entry.mjs",
+    );
+    vi.mocked(runExec).mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    const result = await completeChangedPostCorePluginUpdate();
+
+    expect(result.pluginUpdate).toMatchObject({
+      status: "error",
+      reason: "post-plugin-doctor-execution-failed",
+    });
+  });
+
+  it.each([
+    {
+      kind: "cleanup is uncertain",
+      error: Object.assign(new Error("doctor cleanup uncertain"), {
+        failed: true,
+        exitCode: 1,
+        cleanup: "uncertain",
+      }),
+      receipt: undefined,
+    },
+    {
+      kind: "the child was canceled",
+      error: Object.assign(new Error("doctor canceled"), {
+        failed: true,
+        exitCode: 1,
+        isCanceled: true,
+      }),
+      receipt: undefined,
+    },
+    {
+      kind: "config writes were refused",
+      error: Object.assign(new Error("doctor config write refused"), {
+        failed: true,
+        exitCode: 1,
+      }),
+      receipt: {
+        status: "error" as const,
+        reason: "config-write-refusal" as const,
+        message: "Doctor config fixes were not applied: authority-check-failed",
+      },
+    },
+    {
+      kind: "a required migration was refused",
+      error: Object.assign(new Error("doctor migration refused"), {
+        failed: true,
+        exitCode: 1,
+      }),
+      receipt: {
+        status: "error" as const,
+        reason: "required-migration" as const,
+        message: "Required migration did not complete",
+      },
+    },
+  ])("keeps the plugin Doctor failure fatal when $kind", async ({ error, receipt }) => {
+    vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(
+      "/tmp/openclaw-updated-entry.mjs",
+    );
+    vi.mocked(runExec).mockImplementationOnce(async (_command, _args, options) => {
+      if (receipt) {
+        const resultPath =
+          typeof options === "object"
+            ? options.env?.[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]
+            : undefined;
+        await writeUpdatePostInstallDoctorResult({
+          resultPath: String(resultPath),
+          result: receipt,
+        });
+      }
+      throw error;
+    });
+
+    const result = await completeChangedPostCorePluginUpdate();
+
+    expect(result.pluginUpdate).toMatchObject({
+      status: "error",
+      reason: "post-plugin-doctor-execution-failed",
+    });
   });
 
   it("keeps an invalid config authoritative after a fresh plugin doctor failure", async () => {
@@ -3371,10 +3635,13 @@ describe("update-cli", () => {
   });
 
   it("keeps fresh doctor output off stdout during json post-core resume", async () => {
-    vi.mocked(runExec).mockImplementation(async (_file, args) => ({
-      stdout: args.includes("doctor") ? "doctor ui output" : "",
-      stderr: args.includes("doctor") ? "doctor diagnostic output" : "",
-    }));
+    vi.mocked(runExec).mockImplementation(async (_file, args, options) => {
+      await writeSuccessfulDoctorReceipt(options);
+      return {
+        stdout: args.includes("doctor") ? "doctor ui output" : "",
+        stderr: args.includes("doctor") ? "doctor diagnostic output" : "",
+      };
+    });
 
     await runPostCoreCommand({ json: true, restart: false });
 
@@ -8621,6 +8888,7 @@ describe("update-cli", () => {
           if (typeof options === "object") {
             doctorEnv = { ...options.baseEnv, ...options.env };
           }
+          await writeSuccessfulDoctorReceipt(options);
           return { stdout: "", stderr: "" };
         });
         vi.mocked(defaultRuntime.writeJson).mockClear();
@@ -8827,8 +9095,9 @@ describe("update-cli", () => {
     } satisfies Record<string, PluginInstallRecord>;
     let currentSnapshot = preDoctorSnapshot;
     vi.mocked(readConfigFileSnapshot).mockImplementation(async () => currentSnapshot);
-    vi.mocked(runExec).mockImplementationOnce(async () => {
+    vi.mocked(runExec).mockImplementationOnce(async (_file, _args, options) => {
       currentSnapshot = postDoctorSnapshot;
+      await writeSuccessfulDoctorReceipt(options);
       return { stdout: "", stderr: "" };
     });
     loadInstalledPluginIndexInstallRecords.mockResolvedValueOnce(postDoctorRecords);
@@ -8933,8 +9202,9 @@ describe("update-cli", () => {
     });
     let currentSnapshot = preDoctorSnapshot;
     vi.mocked(readConfigFileSnapshot).mockImplementation(async () => currentSnapshot);
-    vi.mocked(runExec).mockImplementationOnce(async () => {
+    vi.mocked(runExec).mockImplementationOnce(async (_file, _args, options) => {
       currentSnapshot = postDoctorSnapshot;
+      await writeSuccessfulDoctorReceipt(options);
       return { stdout: "", stderr: "" };
     });
 
