@@ -487,14 +487,52 @@ describe("legacy exec approvals migration", () => {
     expect(receipt()).toBeUndefined();
   });
 
-  it("compares matching ID-less allowlists deterministically without changing their source", async () => {
-    const { env, stateDir, sourcePath } = useStateDir();
-    const policy = { version: 1, agents: { main: { allowlist: ["/usr/bin/true"] } } };
+  it("compares matching authorization rules without generated or usage metadata", async () => {
+    const policy = {
+      version: 1,
+      agents: {
+        main: {
+          allowlist: ["/usr/bin/true"],
+          mcpTools: [
+            {
+              server: "synthetic-tools",
+              tool: "synthetic-run",
+              source: "allow-always" as const,
+              addedAt: 100,
+              lastUsedAt: 200,
+            },
+          ],
+        },
+      },
+    };
     await writeLegacy(sourcePath, policy);
-    const db = database(env);
+    const db = database();
     writeExecApprovalsConfigRow({
       db,
-      file: { version: 1, agents: { main: { allowlist: [{ pattern: "/usr/bin/true" }] } } },
+      file: {
+        version: 1,
+        agents: {
+          main: {
+            allowlist: [
+              {
+                pattern: "/usr/bin/true",
+                lastUsedAt: 300,
+                lastUsedCommand: "/usr/bin/true",
+                lastResolvedPath: "/usr/bin/true",
+              },
+            ],
+            mcpTools: [
+              {
+                server: "synthetic-tools",
+                tool: "synthetic-run",
+                source: "allow-always",
+                addedAt: 100,
+                lastUsedAt: 400,
+              },
+            ],
+          },
+        },
+      },
     });
     const original = readExecApprovalsConfigRow(db);
     expect(await inspectLegacyExecApprovals({ env, stateDir })).toMatchObject({

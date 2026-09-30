@@ -516,8 +516,19 @@ function comparableExecApprovalsPolicy(file: ExecApprovalsFile) {
         name,
         {
           ...agent,
-          // Parsing creates IDs for older allowlists. IDs identify records, not authorization.
-          allowlist: agent.allowlist?.map((entry) => ({ ...entry, id: undefined })),
+          // Generated identity and observed use explain a rule; they do not change its authority.
+          allowlist: agent.allowlist?.map((entry) => ({
+            pattern: entry.pattern,
+            source: entry.source,
+            commandText: entry.commandText,
+            argPattern: entry.argPattern,
+          })),
+          mcpTools: agent.mcpTools?.map((entry) => ({
+            server: entry.server,
+            tool: entry.tool,
+            source: entry.source,
+            addedAt: entry.addedAt,
+          })),
         },
       ]),
     ),
