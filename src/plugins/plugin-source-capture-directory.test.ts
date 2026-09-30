@@ -10,6 +10,7 @@ import * as nodeSqlite from "../infra/node-sqlite.js";
 import * as census from "../infra/openclaw-process-census.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { nativeWorkerLifecycleEntrypoint } from "../infra/worker-native-lifecycle.runtime.test-support.js";
+import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
 import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
@@ -24,7 +25,13 @@ import {
 import { sweepPluginSourceCapturesForTest } from "./plugin-source-capture-directory.test-support.js";
 import { pluginProcessRuntimeEntrypoints } from "./process-runtime.test-support.js";
 
-const temp = useAutoCleanupTempDirTracker(afterEach);
+const temp = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    // The shared native broker can retain a socket beneath this test's temporary root.
+    await drainGlobalSingletonLifecycleState();
+    cleanup();
+  }),
+);
 const artifactUrl = resolveRuntimeWorkerUrl(pluginProcessRuntimeEntrypoints.artifact);
 const artifactModule = artifactUrl.href;
 const runtimeArgs = resolveRuntimeWorkerArgv(artifactUrl).slice(0, -1);

@@ -12,6 +12,7 @@ import * as census from "../infra/openclaw-process-census.js";
 import * as sqliteDiagnostics from "../infra/sqlite-error-diagnostics.js";
 import * as stagingOwner from "../infra/sqlite-snapshot-staging-owner.js";
 import * as stagingToken from "../infra/sqlite-staging-token.js";
+import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
 import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -36,6 +37,8 @@ const temp = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
     clearPluginMetadataLifecycleCaches();
     await closeOpenClawStateDatabaseAsync();
+    // Join the shared native broker before removing its temporary socket directory.
+    await drainGlobalSingletonLifecycleState();
     cleanup();
   }),
 );
