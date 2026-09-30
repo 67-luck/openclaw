@@ -660,25 +660,20 @@ suite.define(() => {
       const stop = currentPage.getByRole("button", { name: "Stop generating" });
       const composer = currentPage.locator(".agent-chat__input textarea");
       await stop.waitFor({ state: "visible" });
-      // Advance the fixture owner, not only one history response. Otherwise a fresh
-      // list/describe still certifies running activity after this no-active-run Stop.
-      await gateway.setSessionsListResponse({
-        sessions: [
-          {
-            key: sessionKey,
-            sessionId: `session:${sessionKey}`,
-            kind: "direct",
-            updatedAt: activeUpdatedAt + 1,
-            hasActiveRun: false,
-            hasActiveSubagentRun: false,
-            activeRunIds: [],
-            status: "done",
-          },
-        ],
+      await gateway.setMethodResponse("chat.history", {
+        messages: [{ role: "assistant", content: "Cached activity has finished." }],
+        sessionId: `session:${sessionKey}`,
+        sessionInfo: {
+          key: sessionKey,
+          sessionId: `session:${sessionKey}`,
+          kind: "direct",
+          updatedAt: activeUpdatedAt + 1,
+          hasActiveRun: false,
+          hasActiveSubagentRun: false,
+          activeRunIds: [],
+          status: "done",
+        },
       });
-      await gateway.setHistoryMessages([
-        { role: "assistant", content: "Cached activity has finished." },
-      ]);
       const historyCount = (await gateway.getRequests("chat.history")).length;
       await gateway.deferNext("sessions.abort");
       await stop.click();

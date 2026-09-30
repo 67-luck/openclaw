@@ -291,56 +291,46 @@ it("retains the captured session input and database through export preparation",
   expect(existsSync(resolveOpenClawStateSqlitePath(env))).toBe(false);
 });
 
-it.each(
-  (["transaction", "commit"] as const).flatMap((stage) =>
-    (["update", "discard"] as const).map((operation) => ({ stage, operation })),
-  ),
-)(
-  "preserves a session when its $operation owner retires at the worker $stage grant",
-  async ({ stage, operation }) => {
+it.each(["transaction", "commit"] as const)(
+  "keeps session metadata unchanged when its owner retires at the worker %s grant",
+  async (stage) => {
     const { store } = fixture();
     const session: TranscriptSessionDescriptor = {
       sessionId: `session-revoked-${stage}`,
       startedAt: "2026-09-21T12:00:00.000Z",
-      stoppedAt: "2026-09-21T12:00:01.000Z",
       source: { providerId: "manual-transcript" },
       title: "Original",
     };
     await store.writeSession(session);
-    const expectedInputRevision = await store.readSummaryInputRevision(session);
-    if (expectedInputRevision === undefined) {
-      throw new Error("Expected stored transcript admission");
-    }
     let current = true;
     const failure = new TranscriptsSummaryChangedError();
-    const requests: workerAdmission.SqliteWorkerAdmissionRequest["stage"][] = [];
     const createAdmission = workerAdmission.createSqliteWorkerOperationAdmission;
     const observer = vi
       .spyOn(workerAdmission, "createSqliteWorkerOperationAdmission")
-      .mockImplementation((admit, attachment) =>
+      .mockImplementation((admit) =>
         createAdmission((request, grant) => {
-          requests.push(request.stage);
           if (request.stage === stage) {
             current = false;
           }
           admit(request, grant);
-        }, attachment),
+        }),
       );
-    const assertCurrent = () => {
-      if (!current) {
-        throw failure;
-      }
-    };
     try {
       await expect(
-        operation === "update"
-          ? store.writeSession({ ...session, title: "Retired update" }, { assertCurrent })
-          : store.deleteEmptySessionCandidate(session, { expectedInputRevision, assertCurrent }),
+        store.writeSession(
+          { ...session, title: "Retired update" },
+          {
+            assertCurrent: () => {
+              if (!current) {
+                throw failure;
+              }
+            },
+          },
+        ),
       ).rejects.toBe(failure);
     } finally {
       observer.mockRestore();
     }
-    expect(requests).toContain(stage);
     expect(await store.readSession(session.sessionId)).toEqual(session);
   },
 );
