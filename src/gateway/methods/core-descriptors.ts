@@ -407,7 +407,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["terminal.attach", "terminal", "operator.admin", "2026.7"],
   ["terminal.list", "terminal", "operator.admin", "2026.7"],
   ["controlUi.githubPreview", "control-ui", "operator.read", "<=2026.7"],
-  // Additive discovery methods append here so older clients keep stable indices.
   ["system.info", "system", "operator.read", "<=2026.7"],
   // Workspace contents stay in the documented trusted operator domain, like session and log
   // reads. Strong user/tenant isolation requires separate Gateways; see operator-scopes.md.
@@ -440,7 +439,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   // Session checkout diff reads the session's own git worktree, matching the
   // sessions.files.* trusted-operator read domain.
   ["sessions.diff", "sessions-diff", "operator.read", "<=2026.7"],
-  // Additive protocol methods append here to preserve existing advertised indices.
   ["openclaw.setup.verify", "system-agent", "operator.admin", "<=2026.7"],
   // Cloud-worker mutations depend on the loaded provider registry and owned
   // reconciler, so advertise them early but gate dispatch until sidecars are ready.
@@ -494,7 +492,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["board.data.read", "board", "operator.read", "2026.7"],
   ["board.action", "board", "operator.write", "2026.7"],
   ["sessions.observer.visibility", "session-observer-rpc", "operator.read", "2026.7"],
-  // Additive phase-2 collaboration methods append so older advertised indices stay stable.
   ["session.visibility.set", "sessions-sharing", "operator.write", "2026.7"],
   ["session.members.list", "sessions-sharing", "operator.read", "2026.7"],
   ["session.members.add", "sessions-sharing", "operator.write", "2026.7"],
@@ -517,17 +514,13 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["memory.search", "memory-search", "operator.read", "2026.7"],
   ["skills.proposals.events.list", "skills", "operator.read", "2026.7"],
   ["skills.proposals.evaluate", "skills", "operator.admin", "2026.7", CONTROL_PLANE_WRITE],
-  // Additive hook status RPC appends so older advertised method indices stay stable.
   ["hooks.status", "hooks-status", "operator.read", "2026.7"],
-  // Additive audit inspection appends so older advertised method indices stay stable.
   ["audit.run.inspect", "audit", "operator.read", "2026.7"],
   ["sessions.patchMany", "sessions-mutations", "dynamic", "2026.8"],
   // Update campaign mutations share update.run's admin and control-plane write policy.
   ["update.hold", "update", "operator.admin", "2026.8", CONTROL_PLANE_WRITE],
-  // Additive catalog terminal start appends so older advertised indices stay stable.
   ["sessions.catalog.startTerminal", "session-catalog", "operator.admin", "2026.8"],
   ["worker.desktop.observe", "environments", "operator.admin", "2026.8", { startup: true }],
-  // First-class project RPCs append so every older advertised index remains stable.
   ["projects.list", "projects", "operator.read", "2026.8"],
   ["projects.register", "projects", "operator.admin", "2026.8"],
   ["projects.remove", "projects", "operator.admin", "2026.8"],
@@ -536,7 +529,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["secrets.store.list", null, "operator.admin", "2026.8"],
   ["secrets.store.set", null, "operator.admin", "2026.8", CONTROL_PLANE_WRITE],
   ["secrets.store.delete", null, "operator.admin", "2026.8", CONTROL_PLANE_WRITE],
-  // Self-scoped preferences append so every older advertised index remains stable.
   ["users.prefs.get", "users", "operator.read", "2026.8"],
   ["users.prefs.set", "users", "operator.write", "2026.8"],
   ["projects.add", "projects", "operator.write", "2026.8", CONTROL_PLANE_WRITE],
@@ -549,7 +541,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ],
   ["desktop.observe", "environments", "operator.admin", "2026.8", { startup: true }],
   ["desktop.launch", "environments", "operator.admin", "2026.8", { startup: true }],
-  // Live device scope upgrades are additive so every older advertised index stays stable.
   ["device.scopes.requestUpgrade", "devices", "operator.read", "2026.8"],
   ["device.scopes.waitUpgrade", "devices", "operator.read", "2026.8", { lifetime: "observation" }],
   ["portal.list", "portals", "operator.read", "2026.8"],
@@ -654,7 +645,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["transcripts.status", "transcripts", "operator.read", "2026.9"],
   ["update.report", "update", "operator.admin", "2026.9", { controlPlaneWrite: true }],
   ["skills.workshop.read", "skills", "operator.read", "2026.9"],
-  // Public sharing appends so every previously advertised method index remains stable.
   ["session.publicShare.set", "sessions-sharing", "operator.write", "2026.9"],
   ["claws.monitors", "claws-monitors", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
   ["plugins.catalog.browse", "plugins", "operator.read", "2026.9"],
@@ -684,7 +674,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["talk.voice.set", "talk", "operator.talk", "2026.9"],
   ["talk.voice.complete", "talk", "operator.talk", "2026.9"],
   ["plugins.credentials.inspect", "plugins", "operator.admin", "2026.9"],
-  // Plugin skill reads append without shifting previously advertised method indices.
   ["plugins.skills.read", "plugins", "operator.read", "2026.9"],
   ["diagnostics.heapProfile", "diagnostics", "operator.admin", "2026.9"],
   ["desktop.release", "environments", "operator.admin", "2026.9", { startup: true }],

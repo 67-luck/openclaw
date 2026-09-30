@@ -4,6 +4,7 @@ import { RETIRED_SKILL_COLLECTION_REVIEW_DECLARATION_PREFIX } from "../system-ow
 import {
   deleteCronJobRowInDatabase,
   fingerprintCronJobRows,
+  fingerprintCronRuntimeRows,
   loadedCronStoreFromRows,
   loadCronRows,
 } from "./row-codec.js";
@@ -71,7 +72,13 @@ export function loadCronStoreFromDatabase(
       });
     }
   }
-  return !writer ? loaded : { ...loaded, jobsFingerprint: fingerprintCronJobRows(rows) };
+  return !writer
+    ? loaded
+    : {
+        ...loaded,
+        jobsFingerprint: fingerprintCronJobRows(rows),
+        runtimeFingerprint: fingerprintCronRuntimeRows(rows),
+      };
 }
 
 function repairLoadedCronRuntimeAuthority(

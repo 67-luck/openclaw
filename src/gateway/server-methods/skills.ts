@@ -1,9 +1,7 @@
-// Gateway RPC handlers for skill discovery, install/update, and Skill Workshop.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   ErrorCodes,
   errorShape,
-  type SkillsUpdateParams,
   validateSkillsBinsParams,
   validateSkillsDetailParams,
   validateSkillsSearchParams,
@@ -44,7 +42,6 @@ function collectClawHubTrustWarnings(results: Array<{ warning?: string }>): stri
     .filter((warning): warning is string => Boolean(warning));
 }
 
-/** Gateway request handlers for skill status, catalogs, installs, updates, and Skill Workshop. */
 export const skillsHandlers: GatewayRequestHandlers = {
   ...skillsLibraryHandlers,
   ...skillsUploadHandlers,
@@ -198,12 +195,13 @@ export const skillsHandlers: GatewayRequestHandlers = {
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(err)));
     }
   },
+
   "skills.install": handleSkillsInstall,
   "skills.update": async ({ params, respond, context }) => {
     if (!assertValidParams(params, validateSkillsUpdateParams, "skills.update", respond)) {
       return;
     }
-    const p: SkillsUpdateParams = params;
+    const p = params;
     if ("source" in p) {
       if (!p.slug && !p.all) {
         respond(
@@ -224,7 +222,7 @@ export const skillsHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      const resolved = resolveSkillsAgentWorkspace(params, context);
+      const resolved = resolveSkillsAgentWorkspace(p, context);
       if (!resolved.ok) {
         respond(false, undefined, resolved.error);
         return;
