@@ -48,7 +48,13 @@ it.each<{
   replaceDuringPersistence?: boolean;
   pendingReplacement?: boolean;
   switchStoreAfterAck?: boolean;
-  configDuringAdmission?: "unrelated" | "model" | "security" | "routing";
+  configDuringAdmission?:
+    | "unrelated"
+    | "unrelated provider"
+    | "unrelated channel"
+    | "model"
+    | "security"
+    | "routing";
 }>([
   {
     name: "raw global only",
@@ -89,6 +95,15 @@ it.each<{
     shared: true,
     key: "agent:research:global",
     allowed: true,
+  },
+  {
+    name: "empty counterpart store preserves raw source",
+    raw: true,
+    literal: false,
+    shared: false,
+    key: "global",
+    allowed: true,
+    separateStore: true,
   },
   {
     name: "collision across discovered stores",
@@ -153,13 +168,22 @@ it.each<{
     allowed: true,
     writeDuringAdmission: "unrelated",
   },
-  ...(["unrelated", "model", "security", "routing"] as const).map((configDuringAdmission) => ({
+  ...(
+    [
+      "unrelated",
+      "unrelated provider",
+      "unrelated channel",
+      "model",
+      "security",
+      "routing",
+    ] as const
+  ).map((configDuringAdmission) => ({
     name: `${configDuringAdmission} config changes during admission read`,
     raw: true,
     literal: false,
     shared: false,
     key: "global",
-    allowed: configDuringAdmission === "unrelated",
+    allowed: configDuringAdmission.startsWith("unrelated"),
     configDuringAdmission,
   })),
   {
@@ -244,6 +268,12 @@ it.each<{
     };
     for (const row of rows) {
       await seedRow(row);
+    }
+    if (scenario.separateStore && !scenario.literal) {
+      await replaceSessionEntry(
+        { ...literalScope, sessionKey: "agent:research:other" },
+        { sessionId: "other-session", updatedAt: 1 },
+      );
     }
     const originalPath = state.path("original.sqlite");
     const replacementPath = state.path("replacement.sqlite");
@@ -355,20 +385,37 @@ it.each<{
                 const changedConfig: OpenClawConfig =
                   scenario.configDuringAdmission === "unrelated"
                     ? { ...cfg, logging: { level: "debug" }, ui: { seamColor: "#123456" } }
-                    : scenario.configDuringAdmission === "model"
+                    : scenario.configDuringAdmission === "unrelated provider"
                       ? {
                           ...cfg,
-                          agents: {
-                            ...cfg.agents,
-                            defaults: {
-                              ...cfg.agents?.defaults,
-                              model: "anthropic/claude-sonnet-4-6",
+                          models: {
+                            ...cfg.models,
+                            providers: {
+                              ...cfg.models?.providers,
+                              other: {
+                                baseUrl: "https://provider.example.test/v1",
+                                api: "openai-responses",
+                                models: [],
+                              },
                             },
                           },
                         }
-                      : scenario.configDuringAdmission === "security"
-                        ? { ...cfg, tools: { ...cfg.tools, fs: { workspaceOnly: true } } }
-                        : { ...cfg, session: { ...cfg.session, mainKey: "changed-main" } };
+                      : scenario.configDuringAdmission === "unrelated channel"
+                        ? { ...cfg, channels: { ...cfg.channels, telegram: { enabled: false } } }
+                        : scenario.configDuringAdmission === "model"
+                          ? {
+                              ...cfg,
+                              agents: {
+                                ...cfg.agents,
+                                defaults: {
+                                  ...cfg.agents?.defaults,
+                                  model: "anthropic/claude-sonnet-4-6",
+                                },
+                              },
+                            }
+                          : scenario.configDuringAdmission === "security"
+                            ? { ...cfg, tools: { ...cfg.tools, fs: { workspaceOnly: true } } }
+                            : { ...cfg, session: { ...cfg.session, mainKey: "changed-main" } };
                 setRuntimeConfigSnapshot(changedConfig, changedConfig);
                 configReloaded = true;
               }

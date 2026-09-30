@@ -48,8 +48,8 @@ import {
   resolveChatSendRequestConflict,
   respondChatSendAdmissionError,
   respondChatSessionRoutingChanged,
-  type ChatSendPreAdmissionParams,
 } from "./chat-send-pre-admission.js";
+import type { ChatSendPreAdmissionParams } from "./chat-send-pre-admission.types.js";
 import * as chatSendReservation from "./chat-send-reservation.js";
 import { bindChatSendPreparedSession } from "./chat-send-session-binding.js";
 import { captureAdmittedChatSendSessionSettings } from "./chat-send-session-settings.js";

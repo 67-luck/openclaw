@@ -7,7 +7,7 @@ import {
 import { resolveChatRunExpiresAtMs } from "../chat-abort.js";
 import { PENDING_CHAT_SEND_DEDUPE_PREFIX } from "../server-shared.js";
 import { readPreRegisteredRun } from "./chat-abort-authorization.js";
-import type { ChatSendPreAdmissionParams } from "./chat-send-pre-admission.js";
+import type { ChatSendPreAdmissionParams } from "./chat-send-pre-admission.types.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import type { LoadedChatSendSession, PreparedChatSendSession } from "./chat-send-session.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";

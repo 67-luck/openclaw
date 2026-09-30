@@ -39,6 +39,7 @@ import {
   ACTIVE_LEAF_CHANGED_ERROR_REASON,
   assertExpectedLeafActive,
 } from "./chat-send-active-leaf.js";
+import type { ChatSendPreAdmissionParams } from "./chat-send-pre-admission.types.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import { inspectGoalChatSendRetry } from "./chat-send-reservation.js";
 import {
@@ -112,17 +113,6 @@ export function respondChatSendAdmissionError(
   }
   respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(error)));
 }
-
-export type ChatSendPreAdmissionParams = {
-  assertCurrentAsync?: () => Promise<void>;
-  withCurrent?: <T>(consume: () => T) => Promise<T>;
-  request: NormalizedChatSendRequest;
-  session: LoadedChatSendSession;
-  respond: GatewayRequestHandlerOptions["respond"];
-  context: GatewayRequestHandlerOptions["context"];
-  client: GatewayRequestHandlerOptions["client"];
-  assertCurrent?: () => void;
-};
 
 type ChatSendRetryParams = {
   assertCurrent?: () => void;
