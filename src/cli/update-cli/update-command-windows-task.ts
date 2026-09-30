@@ -55,8 +55,6 @@ export function createWindowsTaskAutoStartRecovery(params: {
     await guard?.();
     params.assertCurrent?.(phase);
   };
-  // Signals revoke forward work while the original executor still owns compensation.
-  const assertRestoreCurrent = () => params.assertCurrent?.("restore");
   const updateFinished = new Promise<void>((resolve) => {
     finishUpdate = resolve;
   });
@@ -96,7 +94,7 @@ export function createWindowsTaskAutoStartRecovery(params: {
           return;
         }
         await resumeScheduledTaskAutoStartAfterUpdate(params.serviceEnv, {
-          assertCurrent: assertRestoreCurrent,
+          assertCurrent: () => params.assertCurrent?.("restore"),
           beforeMutation: async () => {
             await assertCurrentService("restore");
             // Repair cancellation fences activation, while compensation retains its service guard.
@@ -141,7 +139,7 @@ export function createWindowsTaskAutoStartRecovery(params: {
           (await suspensionPromise.catch(() => false))
         ) {
           await suspendScheduledTaskAutoStartForUpdate(params.serviceEnv, {
-            assertCurrent: assertRestoreCurrent,
+            assertCurrent: () => params.assertCurrent?.("restore"),
             beforeMutation: () => assertCurrentService("restore"),
             // Failed verification removed the original safety proof. A timed-out
             // /DISABLE must never be compensated by enabling that installation.
@@ -154,7 +152,7 @@ export function createWindowsTaskAutoStartRecovery(params: {
       }
       try {
         if (finishUpdate && recordInterruption && params.updateRun) {
-          assertRestoreCurrent();
+          params.assertCurrent?.("restore");
           const failed = restorationFailed || !restartSafe;
           finishUpdateRun(
             params.updateRun.runId,
@@ -208,7 +206,7 @@ export function createWindowsTaskAutoStartRecovery(params: {
   return {
     suspended: suspensionPromise,
     assertRecoveryCurrent: () => {
-      assertRestoreCurrent();
+      params.assertCurrent?.("restore");
       // Interruption can still recover the original runtime; transferred or settled owners cannot.
       if (closed || delegated) {
         throw new Error("Windows task recovery authority has closed or transferred.");
