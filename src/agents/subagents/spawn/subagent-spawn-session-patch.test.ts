@@ -232,3 +232,165 @@ it.each(["creation", "fork"] as const)(
     });
   },
 );
+it("rejects replaced parent incarnations and never retains a reused child grant", async () => {
+  await withOpenClawTestState({ label: "spawn-parent-identity" }, async () => {
+    const sessionKey = "agent:main:parent";
+    const childSessionKey = "agent:main:subagent:child";
+    const storePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+    const scope = { storePath, sessionKey };
+    const params = {
+      cfg: {},
+      requesterAgentId: "main",
+      targetAgentId: "main",
+      childSessionKey,
+      incognito: false,
+      requesterInternalKey: sessionKey,
+      creationPolicy: { actor: { type: "agent" as const, id: "main" } },
+      completionOwnerSessionKey: sessionKey,
+      modelPatch: {},
+      collect: false,
+    };
+    await upsertSessionEntryCore(scope, {
+      sessionId: "parent-first",
+      lifecycleRevision: "first",
+      updatedAt: 1,
+    });
+    expect(
+      await createInitialSubagentSession({
+        ...params,
+        expectedParentSessionId: "parent-old",
+        senderIsOwner: true,
+      }),
+    ).toMatchObject({ status: "error", error: expect.stringContaining("Parent session changed") });
+    expect(loadSessionEntry({ storePath, sessionKey: childSessionKey })).toBeUndefined();
+    expect(
+      await createInitialSubagentSession({
+        ...params,
+        expectedParentSessionId: "parent-first",
+        senderIsOwner: true,
+      }),
+    ).toMatchObject({ status: "ok" });
+    expect(loadSessionEntry({ storePath, sessionKey: childSessionKey })).toMatchObject({
+      spawnedBySessionId: "parent-first",
+      parentSessionLifecycleRevision: "first",
+      spawnedBySenderIsOwner: true,
+    });
+    expect(await createInitialSubagentSession({ ...params, senderIsOwner: false })).toMatchObject({
+      status: "ok",
+    });
+    expect(loadSessionEntry({ storePath, sessionKey: childSessionKey })).toMatchObject({
+      spawnedBySessionId: "parent-first",
+      parentSessionLifecycleRevision: "first",
+      spawnedBySenderIsOwner: false,
+    });
+
+    // The parent resets in place while the child's store is still being prepared.
+    const resolveTarget = spawnRuntime.resolveGatewaySessionStoreTargetInWorker;
+    const commit = vi
+      .spyOn(spawnRuntime, "resolveGatewaySessionStoreTargetInWorker")
+      .mockImplementation(async (target) => {
+        if (target.key === childSessionKey) {
+          await upsertSessionEntryCore(scope, {
+            sessionId: "parent-first",
+            lifecycleRevision: "second",
+          });
+        }
+        return resolveTarget(target);
+      });
+    try {
+      expect(await createInitialSubagentSession({ ...params, senderIsOwner: true })).toMatchObject({
+        status: "error",
+        error: expect.stringContaining("Parent session changed"),
+      });
+      expect(loadSessionEntry({ storePath, sessionKey: childSessionKey })).toMatchObject({
+        spawnedBySenderIsOwner: false,
+      });
+    } finally {
+      commit.mockRestore();
+    }
+  });
+});
+it("rechecks the parent on the session read worker, never the Gateway thread", async () => {
+  await withOpenClawTestState({ label: "spawn-parent-recheck" }, async () => {
+    const sessionKey = "agent:main:parent";
+    const childSessionKey = "agent:main:subagent:child";
+    const storePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+    const scope = { storePath, sessionKey };
+    await upsertSessionEntryCore(scope, {
+      sessionId: "parent-first",
+      lifecycleRevision: "first",
+      updatedAt: 1,
+    });
+    const syncRead = vi.spyOn(spawnRuntime, "loadSessionEntry");
+    const workerRead = vi.spyOn(spawnRuntime, "withSessionEntryReadOnlyInWorker");
+    // The parent's own turn keeps writing its row while the child is prepared.
+    const resolveTarget = spawnRuntime.resolveGatewaySessionStoreTargetInWorker;
+    const prepare = vi
+      .spyOn(spawnRuntime, "resolveGatewaySessionStoreTargetInWorker")
+      .mockImplementation(async (target) => {
+        if (target.key === childSessionKey) {
+          await upsertSessionEntryCore(scope, { updatedAt: 2, totalTokens: 10 });
+        }
+        return resolveTarget(target);
+      });
+    try {
+      expect(
+        await createInitialSubagentSession({
+          cfg: {},
+          requesterAgentId: "main",
+          targetAgentId: "main",
+          childSessionKey,
+          incognito: false,
+          requesterInternalKey: sessionKey,
+          creationPolicy: { actor: { type: "agent" as const, id: "main" } },
+          completionOwnerSessionKey: sessionKey,
+          modelPatch: {},
+          collect: false,
+          expectedParentSessionId: "parent-first",
+          senderIsOwner: true,
+        }),
+      ).toMatchObject({ status: "ok" });
+      expect(syncRead).not.toHaveBeenCalled();
+      // One capture and one recheck after the awaited child-store preparation.
+      expect(workerRead.mock.calls.filter(([read]) => read.sessionKey === sessionKey)).toHaveLength(
+        2,
+      );
+      expect(loadSessionEntry({ storePath, sessionKey: childSessionKey })).toMatchObject({
+        spawnedBySessionId: "parent-first",
+        parentSessionLifecycleRevision: "first",
+        spawnedBySenderIsOwner: true,
+      });
+    } finally {
+      prepare.mockRestore();
+      workerRead.mockRestore();
+      syncRead.mockRestore();
+    }
+  });
+});
+it("spawns from a parent without a stored row, as before lineage receipts", async () => {
+  await withOpenClawTestState({ label: "spawn-rowless-parent" }, async () => {
+    const sessionKey = "agent:main:rowless-parent";
+    const childSessionKey = "agent:main:subagent:rowless-child";
+    const storePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+    expect(
+      await createInitialSubagentSession({
+        cfg: {},
+        requesterAgentId: "main",
+        targetAgentId: "main",
+        childSessionKey,
+        incognito: false,
+        requesterInternalKey: sessionKey,
+        creationPolicy: { actor: { type: "agent" as const, id: "main" } },
+        completionOwnerSessionKey: sessionKey,
+        modelPatch: {},
+        collect: false,
+        expectedParentSessionId: "turn-session",
+        senderIsOwner: true,
+      }),
+    ).toMatchObject({ status: "ok" });
+    expect(loadSessionEntry({ storePath, sessionKey: childSessionKey })).toMatchObject({
+      spawnedBy: sessionKey,
+      spawnedBySenderIsOwner: false,
+    });
+  });
+});
