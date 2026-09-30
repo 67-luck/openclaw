@@ -30,7 +30,7 @@ export type NodeEventContext = Pick<
     connId?: string;
     runId?: string;
     sessionKey: string;
-    terminal: boolean;
+    event: "exec.started" | "exec.finished" | "exec.denied";
   }) => boolean | SystemRunEventAuthorization;
   updateNodePresenceActivity?: (params: {
     nodeId: string;

@@ -943,14 +943,14 @@ export const handleNodeEvent = async (
       const { canonicalKey: sessionKey, agentId, entry } = loadSessionEntry(sessionKeyRaw);
       const [cfg, route] = [getRuntimeConfig(), deliveryContextFromSession(entry)];
       const runId = normalizeOptionalString(obj.runId) ?? "";
-      const eventAuthorization = ctx.authorizeNodeSystemRunEvent({
+      const auth = ctx.authorizeNodeSystemRunEvent({
         nodeId,
         connId: opts?.connId,
         ...(runId ? { runId } : {}),
         sessionKey: sessionKeyRaw,
-        terminal: evt.event === "exec.finished" || evt.event === "exec.denied",
+        event: evt.event,
       });
-      if (!eventAuthorization) {
+      if (!auth) {
         return {
           ok: true,
           event: evt.event,
@@ -958,7 +958,7 @@ export const handleNodeEvent = async (
           reason: "unmatched_exec_event",
         };
       }
-      if (suppressRun(obj, eventAuthorization, route, cfg.tools?.exec?.notifyOnExit, sessionKey)) {
+      if (suppressRun(obj, auth, route, cfg.tools?.exec?.notifyOnExit, sessionKey)) {
         return undefined;
       }
       if (evt.event === "exec.denied") {

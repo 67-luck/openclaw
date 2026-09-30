@@ -1,5 +1,5 @@
 import "./server-node-events.test-support.js";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CliDeps } from "../cli/deps.js";
 import type { HealthSummary } from "./health/types.js";
 import type { NodeEvent, NodeEventContext } from "./server-node-events-types.js";
@@ -16,6 +16,7 @@ function nodeEvent(event: string, payload: unknown): NodeEvent {
 
 function buildCtx(
   authorizeNodeSystemRunEvent: NodeEventContext["authorizeNodeSystemRunEvent"],
+  logWarn: (message: string) => void = () => {},
 ): NodeEventContext {
   return {
     deps: {} as CliDeps,
@@ -32,8 +33,13 @@ function buildCtx(
     getHealthCache: () => null,
     refreshHealthSnapshot: async () => ({}) as HealthSummary,
     loadGatewayModelCatalog: async () => [],
-    authorizeNodeSystemRunEvent,
-    logGateway: { warn: () => {} },
+    authorizeNodeSystemRunEvent: (params) => {
+      const authorization = authorizeNodeSystemRunEvent(params);
+      return authorization && typeof authorization === "object"
+        ? { ...authorization, event: params.event, onTelegramRouteMismatch: logWarn }
+        : authorization;
+    },
+    logGateway: { warn: logWarn },
   };
 }
 
@@ -98,8 +104,9 @@ describe("result-first node exec completion", () => {
   });
 
   it("preserves the per-agent notification opt-out when the invoke reply is missing", async () => {
+    const logWarn = vi.fn();
     await handleNodeEvent(
-      buildCtx(() => ({ invokeResultReceived: false })),
+      buildCtx(() => ({ invokeResultReceived: false }), logWarn),
       "node-1",
       nodeEvent("exec.finished", {
         sessionKey: "agent:main:telegram:group:-100155462274:topic:42",
@@ -114,6 +121,7 @@ describe("result-first node exec completion", () => {
 
     expect(enqueueSystemEventMock).not.toHaveBeenCalled();
     expect(requestHeartbeatMock).not.toHaveBeenCalled();
+    expect(logWarn).not.toHaveBeenCalled();
   });
 
   it("suppresses recovery when the originating delivery context is unavailable", async () => {
@@ -227,6 +235,61 @@ describe("result-first node exec completion", () => {
       { connId: "conn-1" },
     );
 
+    expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+    expect(requestHeartbeatMock).not.toHaveBeenCalled();
+  });
+
+  it("diagnoses a legacy completion withheld after its Telegram account route changes", async () => {
+    const sessionKey = "agent:main:telegram:work:direct:123456789";
+    const logWarn = vi.fn();
+    loadSessionEntryMock.mockReturnValue(
+      buildSessionLookup(sessionKey, {
+        lastChannel: "telegram",
+        lastTo: "123456789",
+        lastAccountId: "personal",
+      }),
+    );
+
+    await handleNodeEvent(
+      buildCtx(() => ({ invokeResultReceived: false }), logWarn),
+      "node-1",
+      nodeEvent("exec.finished", {
+        sessionKey,
+        runId: "run-legacy-upgrade-route-mismatch",
+        exitCode: 0,
+      }),
+      { connId: "conn-1" },
+    );
+
+    expect(logWarn).toHaveBeenCalledExactlyOnceWith(
+      "node exec completion withheld: saved Telegram route does not match the invoking session",
+    );
+    expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+    expect(requestHeartbeatMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps a reasonless denial with a changed Telegram route quiet", async () => {
+    const sessionKey = "agent:main:telegram:work:direct:123456789";
+    const logWarn = vi.fn();
+    loadSessionEntryMock.mockReturnValue(
+      buildSessionLookup(sessionKey, {
+        lastChannel: "telegram",
+        lastTo: "123456789",
+        lastAccountId: "personal",
+      }),
+    );
+
+    await handleNodeEvent(
+      buildCtx(() => ({ invokeResultReceived: false }), logWarn),
+      "node-1",
+      nodeEvent("exec.denied", {
+        sessionKey,
+        runId: "run-reasonless-denial-route-mismatch",
+      }),
+      { connId: "conn-1" },
+    );
+
+    expect(logWarn).not.toHaveBeenCalled();
     expect(enqueueSystemEventMock).not.toHaveBeenCalled();
     expect(requestHeartbeatMock).not.toHaveBeenCalled();
   });
@@ -549,11 +612,21 @@ describe("result-first node exec completion", () => {
   });
 
   it("suppresses a completion after the invoke reply arrives", async () => {
+    const sessionKey = "agent:main:telegram:group:-100155462274:topic:42";
+    const logWarn = vi.fn();
+    loadSessionEntryMock.mockReturnValue(
+      buildSessionLookup(sessionKey, {
+        lastChannel: "telegram",
+        lastTo: "-100999999999",
+        lastAccountId: "work",
+        lastThreadId: 42,
+      }),
+    );
     await handleNodeEvent(
-      buildCtx(() => ({ invokeResultReceived: true })),
+      buildCtx(() => ({ invokeResultReceived: true, turnSourceAccountId: "work" }), logWarn),
       "node-1",
       nodeEvent("exec.finished", {
-        sessionKey: "agent:main:telegram:group:-100155462274:topic:42",
+        sessionKey,
         runId: "run-result-first-delivered",
         exitCode: 0,
         output: "already delivered",
@@ -565,5 +638,6 @@ describe("result-first node exec completion", () => {
 
     expect(enqueueSystemEventMock).not.toHaveBeenCalled();
     expect(requestHeartbeatMock).not.toHaveBeenCalled();
+    expect(logWarn).not.toHaveBeenCalled();
   });
 });

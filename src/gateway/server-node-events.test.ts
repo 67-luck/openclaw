@@ -230,9 +230,9 @@ describe("node exec events", () => {
     "preserves exec authorization and terminal consumption with suppressNotifyOnExit=%s",
     async (suppressNotifyOnExit) => {
       const registry = new NodeRegistry();
-      const connection = { connId: "conn-1" };
-      const runId = `run-seq-suppress-${suppressNotifyOnExit}`;
-      const sessionKey = "agent:main:main";
+      const connection = { connId: "conn-1" },
+        auth = registry.authorizeSystemRunEvent.bind(registry);
+      const [runId, sessionKey] = [`run-seq-suppress-${suppressNotifyOnExit}`, "agent:main:main"];
       const eventRouting = { sessionKey, contextKey: `exec:${runId}` };
       const startedPayload = { runId, sessionKey, command: "printf ok" };
       const finishedPayload = {
@@ -250,7 +250,7 @@ describe("node exec events", () => {
         reason: "unmatched_exec_event",
       };
       const ctx = buildCtx({
-        authorizeNodeSystemRunEvent: (params) => registry.authorizeSystemRunEvent(params),
+        authorizeNodeSystemRunEvent: (p) => auth({ ...p, terminal: p.event !== "exec.started" }),
       });
       registry.register(makeNodeClient(connection.connId, "node-1"), {
         pairingIdentity: "identity-a",

@@ -3,12 +3,15 @@ import {
   isFutureDateTimestampMs,
   resolveExpiresAtMsFromDurationMs,
 } from "@openclaw/normalization-core/number-coercion";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { DEFAULT_ACCOUNT_ID, normalizeOptionalAccountId } from "../routing/account-id.js";
 import { parseSessionDeliveryRoute } from "../routing/session-key.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import type { PendingSystemRunEvent } from "./node-registry.invoke-stream.js";
 
 const AUTHORIZED_SYSTEM_RUN_EVENT_GRACE_MS = 5 * 60 * 1000;
+const TELEGRAM_ROUTE_MISMATCH_WARNING =
+  "node exec completion withheld: saved Telegram route does not match the invoking session";
 
 type AuthorizedSystemRunEvent = PendingSystemRunEvent & {
   nodeId: string;
@@ -24,7 +27,9 @@ type SystemRunEventIdentity = Omit<
 
 export type SystemRunEventAuthorization = {
   invokeResultReceived: boolean;
+  event?: "exec.started" | "exec.finished" | "exec.denied";
   turnSourceAccountId?: string;
+  onTelegramRouteMismatch?: (message: string) => void;
 };
 
 export class NodeSystemRunEventAuthority {
@@ -171,31 +176,35 @@ export function shouldSuppressRun(
   globallyEnabled: boolean | undefined,
   sessionKey: string,
 ): boolean {
-  const invokeResultReceived =
-    typeof authorization === "object" &&
-    authorization !== null &&
-    "invokeResultReceived" in authorization &&
-    authorization.invokeResultReceived === true;
+  const eventAuthorization = asOptionalRecord(authorization);
+  const invokeResultReceived = eventAuthorization?.invokeResultReceived === true;
   const turnSourceAccountId =
-    typeof authorization === "object" &&
-    authorization !== null &&
-    "turnSourceAccountId" in authorization &&
-    typeof authorization.turnSourceAccountId === "string"
-      ? authorization.turnSourceAccountId
+    typeof eventAuthorization?.turnSourceAccountId === "string"
+      ? eventAuthorization.turnSourceAccountId
       : undefined;
   const telegramRouteMismatch = resolveTelegramRouteMismatch(sessionKey, deliveryContext, {
     turnSourceAccountId,
     requireAccount: payload.suppressNotifyOnExit === true && payload.invokeResultSentFirst === true,
   });
+  if (globallyEnabled === false || payload.notifyOnExit === false) {
+    return true;
+  }
+  if (telegramRouteMismatch === true) {
+    if (
+      !invokeResultReceived &&
+      eventAuthorization?.event === "exec.finished" &&
+      typeof eventAuthorization.onTelegramRouteMismatch === "function"
+    ) {
+      eventAuthorization.onTelegramRouteMismatch(TELEGRAM_ROUTE_MISMATCH_WARNING);
+    }
+    return true;
+  }
   return (
-    globallyEnabled === false ||
-    payload.notifyOnExit === false ||
-    telegramRouteMismatch === true ||
-    (payload.suppressNotifyOnExit === true &&
-      (payload.invokeResultSentFirst !== true ||
-        invokeResultReceived ||
-        !deliveryContext ||
-        telegramRouteMismatch === null))
+    payload.suppressNotifyOnExit === true &&
+    (payload.invokeResultSentFirst !== true ||
+      invokeResultReceived ||
+      !deliveryContext ||
+      telegramRouteMismatch === null)
   );
 }
 

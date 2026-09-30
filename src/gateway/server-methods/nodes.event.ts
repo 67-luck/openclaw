@@ -83,14 +83,22 @@ export const nodeEventHandlers: GatewayRequestHandlers = {
         refreshHealthSnapshot: context.refreshHealthSnapshot,
         loadGatewayModelCatalog: context.loadGatewayModelCatalog,
         loadGatewayModelCatalogSnapshot: context.loadGatewayModelCatalogSnapshot,
-        authorizeNodeSystemRunEvent: (eventParams) =>
-          context.nodeRegistry.authorizeSystemRunEventWithState({
+        authorizeNodeSystemRunEvent: (eventParams) => {
+          const authorization = context.nodeRegistry.authorizeSystemRunEventWithState({
             nodeId: eventParams.nodeId,
             connId: eventParams.connId,
             runId: eventParams.runId,
             sessionKey: eventParams.sessionKey,
-            terminal: eventParams.terminal,
-          }) ?? false,
+            terminal: eventParams.event !== "exec.started",
+          });
+          return authorization
+            ? {
+                ...authorization,
+                event: eventParams.event,
+                onTelegramRouteMismatch: context.logGateway.warn,
+              }
+            : false;
+        },
         updateNodePresenceActivity: (activity) => {
           const updated = context.nodeRegistry.updatePresenceActivity(activity);
           return updated?.lastActiveAtMs !== undefined && updated.presenceUpdatedAtMs !== undefined
