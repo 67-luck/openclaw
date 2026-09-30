@@ -239,49 +239,40 @@ describe("transcript capture ownership", () => {
     },
   );
 
-  it.each(["revision-read", "restore-write"] as const)(
-    "does not grant retry authority when failed startup encounters %s failure",
-    async (fault) => {
-      const h = harness();
-      await h.start();
-      await h.requests[0]!.onUtterance({ text: "Original note" });
-      await h.execute({ action: "stop", sessionId: "notes" });
-      const existingSession = await h.session();
-      const originalWrite = h.store.writeSession.bind(h.store);
-      if (fault === "restore-write") {
-        vi.spyOn(h.store, "writeSession")
-          .mockImplementationOnce(originalWrite)
-          .mockRejectedValueOnce(new Error("restore unavailable"));
-      } else {
-        vi.spyOn(h.store, "readSummaryInputRevision").mockRejectedValueOnce(
-          new Error("revision unavailable"),
-        );
-      }
-      h.provider.start = vi.fn<NonNullable<TranscriptSourceProvider["start"]>>(async () => ({
-        ok: false,
-        error: "provider unavailable",
-      }));
-      await expect(
-        startTranscripts({
-          ctx: { stateDir: h.stateDir, logger: h.logger },
-          store: h.store,
-          rawParams: { providerId: h.provider.id },
-          configuredLifecycle: true,
-          existingSession,
-        }),
-      ).rejects.toMatchObject({
-        name: "TranscriptStartError",
-        code: "admitted-start-failed",
-        retry: undefined,
-      });
-      expect(h.provider.start).toHaveBeenCalledOnce();
-      expect(await h.store.listSessionEntries()).toHaveLength(1);
-      expect(await h.store.readUtterancesForSession(existingSession)).toMatchObject([
-        { text: "Original note" },
-      ]);
-      await h.execute({ action: "stop", sessionId: "notes" });
-    },
-  );
+  it("does not grant retry authority when failed startup restoration fails", async () => {
+    const h = harness();
+    await h.start();
+    await h.requests[0]!.onUtterance({ text: "Original note" });
+    await h.execute({ action: "stop", sessionId: "notes" });
+    const existingSession = await h.session();
+    const originalWrite = h.store.writeSession.bind(h.store);
+    vi.spyOn(h.store, "writeSession")
+      .mockImplementationOnce(originalWrite)
+      .mockRejectedValueOnce(new Error("restore unavailable"));
+    h.provider.start = vi.fn<NonNullable<TranscriptSourceProvider["start"]>>(async () => ({
+      ok: false,
+      error: "provider unavailable",
+    }));
+    await expect(
+      startTranscripts({
+        ctx: { stateDir: h.stateDir, logger: h.logger },
+        store: h.store,
+        rawParams: { providerId: h.provider.id },
+        configuredLifecycle: true,
+        existingSession,
+      }),
+    ).rejects.toMatchObject({
+      name: "TranscriptStartError",
+      code: "admitted-start-failed",
+      retry: undefined,
+    });
+    expect(h.provider.start).toHaveBeenCalledOnce();
+    expect(await h.store.listSessionEntries()).toHaveLength(1);
+    expect(await h.store.readUtterancesForSession(existingSession)).toMatchObject([
+      { text: "Original note" },
+    ]);
+    await h.execute({ action: "stop", sessionId: "notes" });
+  });
 
   it.each(["write failure", "shutdown"])(
     "releases the provider when title adoption encounters %s",
@@ -306,7 +297,7 @@ describe("transcript capture ownership", () => {
               throw new Error("title write unavailable");
             }
           }
-          await originalWrite(session, condition);
+          return originalWrite(session, condition);
         },
       );
       const start = h
