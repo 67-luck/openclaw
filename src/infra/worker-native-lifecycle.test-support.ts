@@ -7,16 +7,19 @@ import { mock } from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { isMainThread, Worker } from "node:worker_threads";
 import { createDeferredCore } from "../shared/deferred.js";
+import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
 import {
   captureRuntimeWorkerSource,
   withRuntimeWorkerGeneration,
 } from "./runtime-worker-generation.js";
 import { getTrackedWorkerLifecycleSnapshot } from "./worker-cpu.js";
 import { runNativeColdRecovery } from "./worker-native-lifecycle.cold-recovery.test-support.js";
+import { runNativeGenerationRefusal } from "./worker-native-lifecycle.generation.test-support.js";
 import {
   captureRetainedNativeWorkerSource,
   createRetainedNativeWorker,
 } from "./worker-native-lifecycle.js";
+import { runNativeReferenceLifecycle } from "./worker-native-lifecycle.reference.test-support.js";
 import {
   assertNativeWorkerDiagnosticMatches,
   runNativeResourceLifecycle,
@@ -573,8 +576,42 @@ async function runExplicitUnboundLifecycle() {
     await worker.terminate();
   }
   assert.equal(worker.threadId, -1);
+  assert.equal(getTrackedWorkerLifecycleSnapshot().workerCount, initialWorkers + 1);
+  const idleSource = captureRetainedNativeWorkerSource({ runtimeGeneration: undefined });
+  assert.equal(idleSource, source);
+  let ownerClosed = false;
+  source.retain({}, async () => {
+    // Already admitted owners may finish queued work while shutdown drains them.
+    const queued = createRetainedNativeWorker(
+      echoWorkerSource,
+      { eval: true, execArgv: [] },
+      idleSource,
+    );
+    const queuedReply = createDeferredCore<unknown>();
+    queued.on("message", queuedReply.resolve);
+    queued.on("error", queuedReply.reject);
+    queued.postMessage(41, []);
+    assert.equal(await queuedReply.promise, 42);
+    await queued.terminate();
+    assert.equal(getTrackedWorkerLifecycleSnapshot().workerCount, initialWorkers + 1);
+    ownerClosed = true;
+  });
+  await drainGlobalSingletonLifecycleState();
+  assert.equal(ownerClosed, true);
+  assert.equal(getTrackedWorkerLifecycleSnapshot().workerCount, initialWorkers);
+  assert.throws(() => source.create(echoWorkerSource, { eval: true }), /closing/);
+  const renewed = captureRetainedNativeWorkerSource({ runtimeGeneration: undefined });
+  assert.notEqual(renewed, source);
+  await drainGlobalSingletonLifecycleState();
   console.log(
-    JSON.stringify({ ending: "explicit-unbound", ambientReleased, value: 42, nativeJoined: true }),
+    JSON.stringify({
+      ending: "explicit-unbound",
+      ambientReleased,
+      value: 42,
+      nativeJoined: true,
+      idleReused: true,
+      shutdownJoined: true,
+    }),
   );
 }
 
@@ -584,6 +621,7 @@ assert.ok(
   ending === "terminate" ||
     ending === "natural-exit" ||
     ending === "generation" ||
+    ending === "generation-refusal" ||
     ending === "explicit-unbound" ||
     ending === "supervisor-loss" ||
     ending === "native-resource" ||
@@ -592,12 +630,30 @@ assert.ok(
     ending === "resource-close-supervisor-loss" ||
     ending === "resource-late-attachment" ||
     ending === "resource-owner-reply-loss" ||
-    ending === "callback-context",
+    ending === "callback-context" ||
+    ending === "capture-unadmitted-cleanup" ||
+    ending === "resource-passive-exit" ||
+    ending === "resource-reference-retry" ||
+    ending === "resource-idle-supervisor-loss" ||
+    ending === "resource-diagnostic-references",
 );
 const directory = process.argv[3];
 assert.ok(directory);
 const databasePath = path.join(directory, "nested.sqlite");
-if (ending === "generation") {
+if (
+  ending === "resource-passive-exit" ||
+  ending === "resource-reference-retry" ||
+  ending === "resource-idle-supervisor-loss" ||
+  ending === "resource-diagnostic-references"
+) {
+  await runNativeReferenceLifecycle(directory, ending);
+} else if (ending === "capture-unadmitted-cleanup") {
+  const { runUnadmittedCaptureCleanupRetry } =
+    await import("../plugins/plugin-source-capture-preparation.test-support.js");
+  await runUnadmittedCaptureCleanupRetry(directory, process.argv[4]);
+} else if (ending === "generation-refusal") {
+  await runNativeGenerationRefusal(directory);
+} else if (ending === "generation") {
   await runGenerationLifecycle(directory, databasePath);
 } else if (ending === "explicit-unbound") {
   await runExplicitUnboundLifecycle();
