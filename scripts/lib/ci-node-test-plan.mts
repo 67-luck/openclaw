@@ -838,7 +838,7 @@ const COMPACT_BLACKSMITH_SPLIT_OWNERS = new Set([
 // concurrent sibling Vitest run competes for the 4 vCPU runner. Pack them
 // into bins the shard runner executes at concurrency 1.
 const EXCLUSIVE_COMPACT_GROUP_RE =
-  /^core-tooling(?:-\d+(?:-hosted-\d+)?|-isolated)$|^core-runtime-tui-pty$|^agentic-gateway-core-(?:runtime|inventory)$|^agentic-cli(?:-hosted-\d+|-process(?:-hosted-\d+)?)?$/u;
+  /^core-tooling(?:-\d+(?:-hosted-\d+)?|-isolated)$|^core-runtime-tui-pty$|^core-runtime-infra-system-runtime(?:-hosted-\d+)?$|^agentic-gateway-core-(?:runtime|inventory)$|^agentic-cli(?:-hosted-\d+|-process(?:-hosted-\d+)?)?$/u;
 // Exclusive bins run serially, so their packed estimate is their wall clock.
 // An indivisible file above this budget must not acquire additional work.
 const COMPACT_EXCLUSIVE_JOB_SECONDS = 150;
@@ -864,10 +864,10 @@ function isParallelCompactGroup(group: NodeTestShardGroup): boolean {
 
 // Spawn/signal/PTY-timing suites also flake under high in-process worker
 // counts; pin them to the proven 2-worker budget while the job-level default
-// scales with the runner class. infra-process spawns child processes per test
-// and hit worker-startup timeouts under contention before serialization.
+// scales with the runner class. infra-process and infra-system-runtime spawn
+// child processes per test and hit timeouts under sibling-plan contention.
 const PINNED_WORKER_COMPACT_GROUP_RE =
-  /^core-tooling(?:-\d+(?:-hosted-\d+)?|-isolated)$|^core-runtime-tui-pty$|^core-runtime-infra-process$|^core-runtime-config$|^core-runtime-media-ui-(?:\d+|support)$|^agentic-cli(?:-process)?$|^agentic-gateway-(?:core-\d+|methods)$/u;
+  /^core-tooling(?:-\d+(?:-hosted-\d+)?|-isolated)$|^core-runtime-tui-pty$|^core-runtime-infra-(?:process|system-runtime)(?:-hosted-\d+)?$|^core-runtime-config$|^core-runtime-media-ui-(?:\d+|support)$|^agentic-cli(?:-process)?$|^agentic-gateway-(?:core-\d+|methods)$/u;
 const PINNED_COMPACT_GROUP_ENV = { OPENCLAW_VITEST_MAX_WORKERS: "2" };
 const MEASURED_GATEWAY_ISOLATED_GROUP_RE = /^agentic-gateway-server-isolated(?:-hosted-\d+)?$/u;
 const MEASURED_GATEWAY_METHODS_GROUP_RE = /^agentic-gateway-methods(?:-hosted-\d+)?$/u;
