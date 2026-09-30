@@ -530,80 +530,11 @@ describe("buildMemoryFlushPlan", () => {
     expect((plan?.prompt.match(/Current time:/g) ?? []).length).toBe(1);
   });
 
-  it("defaults to safe prompts and gating values", () => {
+  it("defaults to safe prompts", () => {
     const plan = buildMemoryFlushPlan();
-    expect(plan?.softThresholdTokens).toBe(4000);
-    expect(plan?.forceFlushTranscriptBytes).toBe(2 * 1024 * 1024);
     expect(plan?.prompt).toContain("memory/");
     expect(plan?.prompt).toContain("MEMORY.md");
     expect(plan?.systemPrompt).toContain("MEMORY.md");
-  });
-
-  it("respects disable flag", () => {
-    expect(
-      buildMemoryFlushPlan({
-        cfg: {
-          agents: {
-            defaults: { compaction: { memoryFlush: { enabled: false } } },
-          },
-        },
-      }),
-    ).toBeNull();
-  });
-
-  it("carries configured memory flush model override", () => {
-    const plan = buildMemoryFlushPlan({
-      cfg: {
-        agents: {
-          defaults: {
-            compaction: {
-              memoryFlush: {
-                model: "ollama/qwen3:8b",
-              },
-            },
-          },
-        },
-      },
-    });
-
-    expect(plan?.model).toBe("ollama/qwen3:8b");
-  });
-
-  it("falls back to defaults when numeric values are invalid", () => {
-    const plan = buildMemoryFlushPlan({
-      cfg: {
-        agents: {
-          defaults: {
-            compaction: {
-              memoryFlush: {
-                softThresholdTokens: -100,
-              },
-            },
-          },
-        },
-      },
-    });
-
-    expect(plan?.softThresholdTokens).toBe(4000);
-    expect(plan?.forceFlushTranscriptBytes).toBe(2 * 1024 * 1024);
-  });
-
-  it("parses forceFlushTranscriptBytes from byte-size strings", () => {
-    const plan = buildMemoryFlushPlan({
-      cfg: {
-        agents: {
-          defaults: {
-            compaction: {
-              memoryFlush: {
-                forceFlushTranscriptBytes: "3mb",
-              },
-            },
-          },
-        },
-      },
-    });
-
-    expect(plan?.forceFlushTranscriptBytes).toBe(3 * 1024 * 1024);
   });
 
   it("keeps overwrite guards in the default prompt", () => {

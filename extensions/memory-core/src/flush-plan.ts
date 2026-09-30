@@ -1,16 +1,10 @@
 import {
-  DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR,
-  parseNonNegativeByteSize,
   resolveCronStyleNow,
-  resolveEffectiveCompactionReserveTokens,
   SILENT_REPLY_TOKEN,
-  type MemoryFlushPlan,
+  type MemoryFlushFilePlanDraft,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { resolveMemoryCoreNowMs } from "./time.js";
-
-const DEFAULT_MEMORY_FLUSH_SOFT_TOKENS = 4000;
-const DEFAULT_MEMORY_FLUSH_FORCE_TRANSCRIPT_BYTES = 2 * 1024 * 1024;
 
 const MEMORY_FLUSH_TARGET_HINT =
   "Store durable memories only in memory/YYYY-MM-DD.md (create memory/ if needed).";
@@ -52,55 +46,23 @@ function formatDateStampInTimezone(nowMs: number, timezone: string): string {
   return new Date(resolveMemoryCoreNowMs(nowMs)).toISOString().slice(0, 10);
 }
 
-function normalizeNonNegativeInt(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return null;
-  }
-  const int = Math.floor(value);
-  return int >= 0 ? int : null;
-}
-
 export function buildMemoryFlushPlan(
   params: {
     cfg?: OpenClawConfig;
     nowMs?: number;
     contextWindowTokens?: number;
   } = {},
-): MemoryFlushPlan | null {
+): MemoryFlushFilePlanDraft {
   const nowMs = resolveMemoryCoreNowMs(params.nowMs);
   const cfg = params.cfg;
-  const defaults = cfg?.agents?.defaults?.compaction?.memoryFlush;
-  if (defaults?.enabled === false) {
-    return null;
-  }
-
-  let softThresholdTokens =
-    normalizeNonNegativeInt(defaults?.softThresholdTokens) ?? DEFAULT_MEMORY_FLUSH_SOFT_TOKENS;
-  const forceFlushTranscriptBytes =
-    parseNonNegativeByteSize(defaults?.forceFlushTranscriptBytes) ??
-    DEFAULT_MEMORY_FLUSH_FORCE_TRANSCRIPT_BYTES;
-  let reserveTokensFloor = DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR;
-  const contextWindowTokens = normalizeNonNegativeInt(params.contextWindowTokens);
-  if (contextWindowTokens !== null && contextWindowTokens > 0) {
-    reserveTokensFloor = resolveEffectiveCompactionReserveTokens({
-      contextTokenBudget: contextWindowTokens,
-      reserveTokens: reserveTokensFloor,
-    });
-    softThresholdTokens = Math.min(
-      softThresholdTokens,
-      Math.floor((contextWindowTokens - reserveTokensFloor) / 2),
-    );
-  }
 
   const { timeLine, userTimezone } = resolveCronStyleNow(cfg ?? {}, nowMs);
   const dateStamp = formatDateStampInTimezone(nowMs, userTimezone);
   const relativePath = `memory/${dateStamp}.md`;
 
   return {
-    softThresholdTokens,
-    forceFlushTranscriptBytes,
-    reserveTokensFloor,
-    model: defaults?.model?.trim() || undefined,
+    // A file plan names its maintenance model itself; omission keeps the session's model.
+    model: cfg?.agents?.defaults?.compaction?.memoryFlush?.model?.trim() || undefined,
     prompt: `${DEFAULT_MEMORY_FLUSH_PROMPT.replaceAll("YYYY-MM-DD", dateStamp)}\n${timeLine}`,
     systemPrompt: DEFAULT_MEMORY_FLUSH_SYSTEM_PROMPT.replaceAll("YYYY-MM-DD", dateStamp),
     relativePath,

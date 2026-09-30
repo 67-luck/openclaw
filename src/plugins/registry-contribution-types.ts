@@ -197,6 +197,10 @@ export type MemoryPromptPreparationRegistration = {
   prepare: MemoryPromptSectionPreparer;
 };
 
+/**
+ * A file-persistence flush plan with its resolved timing. Its shape is unchanged from earlier
+ * releases, so existing producers and readers keep compiling and behaving the same.
+ */
 export type MemoryFlushPlan = {
   softThresholdTokens: number;
   forceFlushTranscriptBytes: number;
@@ -207,11 +211,39 @@ export type MemoryFlushPlan = {
   relativePath: string;
 };
 
+/** Flush timing the host resolves from memory-flush config and the model context window. */
+type MemoryFlushPlanTiming = Pick<
+  MemoryFlushPlan,
+  "softThresholdTokens" | "forceFlushTranscriptBytes" | "reserveTokensFloor"
+>;
+
+/**
+ * A file plan as a resolver may return it: omitted timing fields are filled by the host, and
+ * defined ones deliberately override it. A file plan without a model keeps the session's model.
+ */
+export type MemoryFlushFilePlanDraft = Omit<MemoryFlushPlan, keyof MemoryFlushPlanTiming> &
+  Partial<MemoryFlushPlanTiming> & { persistenceToolNames?: never; lookupToolNames?: never };
+
+/**
+ * Tool persistence for the selected memory slot owner. The host fills omitted timing and the
+ * configured flush model; defined values deliberately override them.
+ */
+export type MemoryFlushToolsPlan = Partial<MemoryFlushPlanTiming> & {
+  model?: string;
+  prompt: string;
+  systemPrompt: string;
+  /** Absent on every tools plan, so resolver readers may still read `relativePath`. */
+  relativePath?: never;
+  persistenceToolNames: readonly string[];
+  /** Read-only helper tools the flush may use to inspect existing provider memory. */
+  lookupToolNames?: readonly string[];
+};
+
 export type MemoryFlushPlanResolver = (params: {
   cfg?: OpenClawConfig;
   nowMs?: number;
   contextWindowTokens?: number;
-}) => MemoryFlushPlan | null;
+}) => MemoryFlushFilePlanDraft | MemoryFlushToolsPlan | null;
 
 export type RegisteredMemorySearchManager = Omit<MemorySearchManager, "readFile"> & {
   readFile(

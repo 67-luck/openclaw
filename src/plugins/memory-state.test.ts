@@ -23,6 +23,7 @@ import { createEmptyPluginRegistry } from "./registry-empty.js";
 import {
   clearActivePluginRegistry,
   getActivePluginRegistry,
+  setActivePluginRegistry,
   withPluginRegistrationContext,
 } from "./runtime.js";
 import { createPluginRecord } from "./status.test-helpers.js";
@@ -203,7 +204,7 @@ describe("memory plugin state", () => {
     });
     registerArtifacts("memory-lancedb", [memoryArtifact()]);
 
-    expect(resolveMemoryFlushPlan({})?.relativePath).toBe("memory/sidecar.md");
+    expect(resolveMemoryFlushPlan({})?.plan).toMatchObject({ relativePath: "memory/sidecar.md" });
     expect(getMemoryProviderRuntime()).toBe(providerRuntime);
     expect(getMemoryRuntime()).toBe(runtime);
     expect(getMemoryCapabilityRegistration()?.pluginId).toBe("memory-lancedb");
@@ -222,7 +223,51 @@ describe("memory plugin state", () => {
     });
 
     expect(getMemoryRuntime()).toBe(runtime);
-    expect(resolveMemoryFlushPlan({})?.relativePath).toBe("memory/same-owner.md");
+    expect(resolveMemoryFlushPlan({})?.plan).toMatchObject({
+      relativePath: "memory/same-owner.md",
+    });
+  });
+
+  it.each([
+    { ownerFirst: true, ownerSuppliesResolver: true },
+    { ownerFirst: false, ownerSuppliesResolver: true },
+    { ownerFirst: true, ownerSuppliesResolver: false },
+    { ownerFirst: false, ownerSuppliesResolver: false },
+  ])("retains effective flush resolver provenance through sidecars: %j", (testCase) => {
+    const registry = createEmptyPluginRegistry();
+    const sidecarPlan = createMemoryFlushPlan("memory/sidecar.md");
+    const ownerPlan = {
+      softThresholdTokens: 1,
+      forceFlushTranscriptBytes: 2,
+      reserveTokensFloor: 3,
+      prompt: "Save through provider tools",
+      systemPrompt: "Persist durable memories",
+      persistenceToolNames: ["save_memory"],
+    };
+    const owner = {
+      pluginId: "memory-provider",
+      memorySlotSelected: true,
+      capability: testCase.ownerSuppliesResolver ? { flushPlanResolver: () => ownerPlan } : {},
+    };
+    const sidecar = {
+      pluginId: "memory-sidecar",
+      capability: { flushPlanResolver: () => sidecarPlan },
+    };
+    registry.memoryCapabilities.push(
+      ...(testCase.ownerFirst ? [owner, sidecar] : [sidecar, owner]),
+      // A later merge must not relabel an inherited resolver as slot-owned.
+      {
+        pluginId: "artifacts-sidecar",
+        capability: { publicArtifacts: { listArtifacts: async () => [] } },
+      },
+    );
+    setActivePluginRegistry(registry);
+
+    expect(resolveMemoryFlushPlan({})).toEqual({
+      plan: testCase.ownerSuppliesResolver ? ownerPlan : sidecarPlan,
+      pluginId: testCase.ownerSuppliesResolver ? "memory-provider" : "memory-sidecar",
+      selectedSlotOwner: testCase.ownerSuppliesResolver,
+    });
   });
 
   it("passes agent context through the primary and supplemental prompt builders", () => {
