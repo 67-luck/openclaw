@@ -10,7 +10,7 @@ import UIKit
 @testable import OpenClawKit
 
 @MainActor
-private func makeOrdinaryIngress() -> GatewayIngressController {
+func makeOrdinaryIngress() -> GatewayIngressController {
     // These controller tests isolate Gateway routing and TLS decisions. Access
     // admission and real HTTP behavior have their own focused suites.
     GatewayIngressController(
@@ -2360,7 +2360,9 @@ private func pendingHandoffDiagnostic(
     }
 
     @Test(arguments: [nil, false, true] as [Bool?]) @MainActor
-    func `share relay preserves the foreground sign in flag including legacy absence`(requiresSignIn: Bool?) async throws {
+    func `share relay preserves the foreground sign in flag including legacy absence`(
+        requiresSignIn: Bool?) async throws
+    {
         let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
         let config = ShareGatewayRelayConfig(
