@@ -240,17 +240,17 @@ export async function authorizeGatewayRequestPreDispatch(params: {
       !isGatewayAdmin(params.client)
         ? getSessionRowProjection(params.context)
         : undefined;
+    const sessionAuthorizationParams = {
+      client: params.client ?? null,
+      method: params.method,
+      requestParams: params.requestParams,
+      context: params.context,
+      sessionScope: scopeAuthorization.sessionScope,
+    };
     const authorizeSession = (sessionRowRead?: SessionRowReadView) =>
       sessionPolicy
         ? { error: null }
-        : resolveSessionMutationAuthorization({
-            client: params.client ?? null,
-            method: params.method,
-            requestParams: params.requestParams,
-            context: params.context,
-            sessionRowRead,
-            sessionScope: scopeAuthorization.sessionScope,
-          });
+        : resolveSessionMutationAuthorization({ ...sessionAuthorizationParams, sessionRowRead });
     const subscriptionAccessOnly =
       params.method === "sessions.messages.subscribe" &&
       resolveDirectIncognitoTargets(params.method, params.requestParams).length === 0;
@@ -282,13 +282,7 @@ export async function authorizeGatewayRequestPreDispatch(params: {
         : params.method === "chat.send" && !sessionPolicy
           ? {
               kind: "complete" as const,
-              value: await resolveSessionMutationAuthorizationAsync({
-                client: params.client ?? null,
-                method: params.method,
-                requestParams: params.requestParams,
-                context: params.context,
-                sessionScope: scopeAuthorization.sessionScope,
-              }),
+              value: await resolveSessionMutationAuthorizationAsync(sessionAuthorizationParams),
             }
           : withCanonicalSessionValidationDeferral(() => authorizeSession());
     params.markSessionSubscribePhase?.("accessFacts");

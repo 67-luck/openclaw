@@ -4,10 +4,12 @@ import {
   type ErrorShape,
 } from "../../packages/gateway-protocol/src/index.js";
 import type { SessionEntry } from "../config/sessions/types.js";
+import type { SessionOperatorScope } from "../shared/session-method-scopes-base.js";
 import { resolveGatewayOperatorRoleActor } from "./operator-role-policy.js";
 import { authenticatedProfileUnavailableError } from "./server-methods/gateway-client-identity.js";
 import type { GatewayClient, GatewayRequestContext } from "./server-methods/types.js";
 import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
+import type { SessionRowReadView } from "./session-row-prepared-read.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
 import {
   authorizeOwnSessionMutation,
@@ -19,6 +21,19 @@ import type {
   GatewaySessionStoreDiscoveryCache,
 } from "./session-utils-store-lookup.js";
 import type { GatewaySessionStoreTarget } from "./session-utils-store.types.js";
+
+export type SessionMutationAuthorizationParams = {
+  client: GatewayClient | null;
+  method: string;
+  requestParams: unknown;
+  context: GatewayRequestContext;
+  /** Trusted prepared identity; never adopt a later target while capturing authority. */
+  expectedTarget?: ExpectedSessionMutationTarget;
+  /** The router's actual alternative admission, not other grants on the same client. */
+  sessionScope?: SessionOperatorScope;
+  sessionRowRead?: SessionRowReadView;
+  preparedSharing?: PreparedMutationSharing;
+};
 
 export type AuthorizedSessionMutationTarget = SessionMutationTarget & {
   resolved: Omit<SessionSharingTarget, "entry" | "storeKeys"> | null;

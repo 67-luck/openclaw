@@ -1,5 +1,5 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   ErrorCodes,
@@ -8,10 +8,7 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
-import {
-  resolveSessionMethodScope,
-  type SessionOperatorScope,
-} from "../shared/session-method-scopes-base.js";
+import { resolveSessionMethodScope } from "../shared/session-method-scopes-base.js";
 import {
   authorizeGatewaySessionCreation,
   operatorSessionCap,
@@ -22,11 +19,7 @@ import {
   gatewayClientSessionCreator,
   isGatewayClientProfilePending,
 } from "./server-methods/gateway-client-identity.js";
-import type {
-  GatewayClient,
-  GatewayRequestContext,
-  SessionMutationAuthorization,
-} from "./server-methods/types.js";
+import type { SessionMutationAuthorization } from "./server-methods/types.js";
 import { isSessionCreatorProfile } from "./session-creator.js";
 import {
   isAgentRunStartMethod,
@@ -34,7 +27,6 @@ import {
   isSessionProfileDependentMethod,
 } from "./session-method-policy.js";
 import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
-import type { SessionRowReadView } from "./session-row-prepared-read.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 import {
   expectedSessionMutationTargetError,
@@ -45,8 +37,8 @@ import {
   sessionMutationTargetChanged,
   VISIBILITY_AUTHORIZED_METHODS,
   type AuthorizedSessionMutationTarget,
-  type ExpectedSessionMutationTarget,
   type PreparedMutationSharing,
+  type SessionMutationAuthorizationParams,
   type SessionSharingLookupCaches,
 } from "./session-sharing-authorization.js";
 import * as sessionSharingDescribe from "./session-sharing-describe.js";
@@ -110,18 +102,10 @@ export {
   resolveSessionVisibility,
 } from "./session-sharing-policy.js";
 
-export function resolveSessionMutationAuthorization(params: {
-  client: GatewayClient | null;
-  method: string;
-  requestParams: unknown;
-  context: GatewayRequestContext;
-  /** Trusted prepared identity; never adopt a later target while capturing authority. */
-  expectedTarget?: ExpectedSessionMutationTarget;
-  /** The router's actual alternative admission, not other grants on the same client. */
-  sessionScope?: SessionOperatorScope;
-  sessionRowRead?: SessionRowReadView;
-  preparedSharing?: PreparedMutationSharing;
-}): { authorization?: SessionMutationAuthorization; error: ErrorShape | null } {
+export function resolveSessionMutationAuthorization(params: SessionMutationAuthorizationParams): {
+  authorization?: SessionMutationAuthorization;
+  error: ErrorShape | null;
+} {
   const authorizesAgentRun = isAgentRunStartMethod(params.method, params.requestParams);
   const authorizesRead =
     resolveSessionMethodScope(params.method, params.requestParams) === "operator.sessions.read";
