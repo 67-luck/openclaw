@@ -1,9 +1,4 @@
-import {
-  spawn,
-  spawnSync,
-  type ChildProcess,
-  type SpawnSyncOptionsWithStringEncoding,
-} from "node:child_process";
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveSecureTempRoot } from "@openclaw/fs-safe/temp";
@@ -13,12 +8,19 @@ import { sleep } from "../utils/sleep.js";
 import { getCommandPositionalsWithRootOptions } from "./cli-root-options.js";
 import { extractErrorCode } from "./errors.js";
 import { acquireFileLock, type FileLockHandle } from "./file-lock.js";
+import { LOCAL_PROCESS_ANNOUNCEMENT_MARKER } from "./local-process-announcement.js";
 import {
-  formatOpenClawProcessTitleForRoots,
+  parseOpenClawProcessAnnouncementTitle,
   parseOpenClawProcessTitle,
   resolveOpenClawInstallationId,
 } from "./openclaw-installation-id.js";
 import { getWindowsPowerShellExePath } from "./windows-install-roots.js";
+
+export {
+  announceLocalTuiClient,
+  announceLocalTuiUpdate,
+  type LocalTuiUpdateAnnouncement,
+} from "./local-process-announcement.js";
 
 export type LocalTuiProcess = {
   pid: number;
@@ -67,8 +69,6 @@ const NODE_OPTIONS_WITH_SEPARATE_VALUE = new Set([
 const LOCAL_TUI_PROCESS_PROBE_TIMEOUT_MS = 1_000;
 const LOCAL_TUI_EXIT_POLL_MS = 100;
 const WINDOWS_LOCAL_TUI_PROCESS_PROBE_TIMEOUT_MS = 5_000;
-const LOCAL_TUI_UPDATE_ANNOUNCEMENT_TIMEOUT_MS = 5_000;
-const LOCAL_PROCESS_ANNOUNCEMENT_MARKER = "openclaw-process-announcement";
 const LOCAL_TUI_UPDATE_LOCK_OPTIONS = {
   stale: 30_000,
   retries: { retries: 100, factor: 1, minTimeout: 50, maxTimeout: 250 },
@@ -155,15 +155,18 @@ function classifyLocalOpenClawCommand(
 ): LocalTuiProcess["ownership"] | "other" | undefined {
   const argv =
     platform === "win32" ? parseCmdScriptCommandLine(command) : tokenizeCommandLine(command);
-  const processTitle = parseOpenClawProcessTitle(argv[0] ?? "");
+  const posixAnnouncement =
+    platform === "win32" ? undefined : parseOpenClawProcessAnnouncementTitle(argv[0] ?? "");
+  const processTitle = posixAnnouncement?.processTitle ?? parseOpenClawProcessTitle(argv[0] ?? "");
   // Windows CIM preserves the marker child's launch command rather than its
   // process.title. Match only that node -e argument shape; POSIX exposes the title in argv[0].
-  const announcedTitle =
-    platform === "win32" &&
-    normalizeExecutableName(argv[0], platform) === "node" &&
-    argv[1] === "-e" &&
-    argv.at(-3) === LOCAL_PROCESS_ANNOUNCEMENT_MARKER &&
-    /^\d+$/u.test(argv.at(-2) ?? "")
+  const announcedTitle = posixAnnouncement
+    ? processTitle
+    : platform === "win32" &&
+        normalizeExecutableName(argv[0], platform) === "node" &&
+        argv[1] === "-e" &&
+        argv.at(-3) === LOCAL_PROCESS_ANNOUNCEMENT_MARKER &&
+        /^\d+$/u.test(argv.at(-2) ?? "")
       ? parseOpenClawProcessTitle(argv.at(-1) ?? "")
       : undefined;
   const announcedTui = announcedTitle?.name === "openclaw-tui" ? announcedTitle : undefined;
@@ -198,7 +201,11 @@ function classifyLocalOpenClawCommand(
       const matchesInstallation = installationTitle.installationIds.includes(
         resolveOpenClawInstallationId(targetRoot),
       );
-      return matchesInstallation ? (announcedTui ? "companion" : "target") : "other";
+      return matchesInstallation
+        ? announcedTui && platform === "win32"
+          ? "companion"
+          : "target"
+        : "other";
     } catch {
       return "ambiguous";
     }
@@ -233,11 +240,15 @@ function parseLocalOpenClawProcessLine(
   if (!match) {
     return null;
   }
-  const pid = Number(match[2]);
+  const command = match[3]?.trim() ?? "";
+  const announcement =
+    platform === "win32"
+      ? undefined
+      : parseOpenClawProcessAnnouncementTitle(tokenizeCommandLine(command)[0] ?? "");
+  const pid = announcement?.pid ?? Number(match[2]);
   if (!Number.isFinite(pid) || pid <= 0 || pid === currentPid) {
     return null;
   }
-  const command = match[3]?.trim() ?? "";
   const ownership = classifyLocalOpenClawCommand(command, platform, targetRoot, realpath, kind);
   if (!ownership || ownership === "other") {
     return null;
@@ -507,91 +518,6 @@ export function preflightLocalTuiProcessesBeforeUpdate(
 }
 
 export type LocalTuiUpdateGate = FileLockHandle & { stopped: number[]; warnings: string[] };
-
-export type LocalTuiUpdateAnnouncement = {
-  pid: number;
-  release: () => Promise<void>;
-};
-
-const UPDATE_ANNOUNCEMENT_SCRIPT =
-  "const parent=Number(process.argv[2]);process.title=process.argv[3];process.stdout.write('ready\\n');setInterval(()=>{try{process.kill(parent,0)}catch{process.exit(0)}},250)";
-
-async function announceLocalOpenClawProcess(
-  name: "openclaw-tui" | "openclaw-update",
-  roots: readonly string[],
-): Promise<LocalTuiUpdateAnnouncement> {
-  const title = formatOpenClawProcessTitleForRoots(name, roots);
-  const child = spawn(
-    process.execPath,
-    [
-      "-e",
-      UPDATE_ANNOUNCEMENT_SCRIPT,
-      LOCAL_PROCESS_ANNOUNCEMENT_MARKER,
-      String(process.pid),
-      title,
-    ],
-    {
-      stdio: ["ignore", "pipe", "ignore"],
-      windowsHide: true,
-    },
-  );
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error("Timed out publishing the local TUI update announcement."));
-    }, LOCAL_TUI_UPDATE_ANNOUNCEMENT_TIMEOUT_MS);
-    const settle = (operation: () => void) => {
-      clearTimeout(timeout);
-      child.off("error", onError);
-      child.off("exit", onExit);
-      operation();
-    };
-    const onError = (error: Error) => settle(() => reject(error));
-    const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
-      settle(() =>
-        reject(
-          new Error(
-            `Local TUI update announcement exited before readiness (${signal ?? code ?? "unknown"}).`,
-          ),
-        ),
-      );
-    child.once("error", onError);
-    child.once("exit", onExit);
-    child.stdout?.once("data", () => settle(resolve));
-  }).catch((error: unknown) => {
-    child.kill();
-    throw error;
-  });
-  return {
-    pid: child.pid!,
-    release: async () => await stopUpdateAnnouncement(child),
-  };
-}
-
-/** Publishes activation through a small runtime-independent child process. */
-export async function announceLocalTuiUpdate(
-  roots: readonly string[],
-): Promise<LocalTuiUpdateAnnouncement> {
-  return await announceLocalOpenClawProcess("openclaw-update", roots);
-}
-
-/** Makes an internal Windows TUI visible to updater process discovery. */
-export async function announceLocalTuiClient(root: string): Promise<LocalTuiUpdateAnnouncement> {
-  return await announceLocalOpenClawProcess("openclaw-tui", [root]);
-}
-
-async function stopUpdateAnnouncement(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return;
-  }
-  const exited = new Promise<void>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", () => resolve());
-  });
-  if (!child.kill()) {
-    throw new Error(`Could not stop local TUI update announcement ${child.pid ?? "unknown"}.`);
-  }
-  await exited;
-}
 
 /** Quiesces clients at the shared update mutation boundary. */
 export async function quiesceLocalTuiProcessesBeforeUpdate(

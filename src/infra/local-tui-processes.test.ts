@@ -37,10 +37,11 @@ describe("local TUI processes", () => {
       status: 0,
       stdout: [
         `501 100 openclaw-tui@${targetId}`,
-        "501 101 /usr/bin/node --stack-size=8192 /target/openclaw.mjs tui",
+        "501 101 openclaw-tui@trun",
         "501 102 /usr/bin/node /target/openclaw.mjs resume session",
         "502 103 /target/bin/openclaw chat",
-        "501 104 openclaw tui",
+        `501 104 openclaw-tui@${targetId}#101`,
+        "501 112 openclaw tui",
         "501 105 /other/bin/openclaw tui",
         "501 106 openclaw-resume",
         "501 107 openclaw-chat",
@@ -68,17 +69,17 @@ describe("local TUI processes", () => {
         ownership: "target",
       },
       {
-        pid: 101,
-        command: "/usr/bin/node --stack-size=8192 /target/openclaw.mjs tui",
-        ownership: "target",
-      },
-      {
         pid: 102,
         command: "/usr/bin/node /target/openclaw.mjs resume session",
         ownership: "target",
       },
       { pid: 103, command: "/target/bin/openclaw chat", ownership: "foreign-user" },
-      { pid: 104, command: "openclaw tui", ownership: "ambiguous" },
+      {
+        pid: 101,
+        command: `openclaw-tui@${targetId}#101`,
+        ownership: "target",
+      },
+      { pid: 112, command: "openclaw tui", ownership: "ambiguous" },
       { pid: 106, command: "openclaw-resume", ownership: "ambiguous" },
       { pid: 107, command: "openclaw-chat", ownership: "ambiguous" },
       { pid: 108, command: "openclaw-terminal", ownership: "ambiguous" },
@@ -544,6 +545,21 @@ describe("local TUI processes", () => {
 
     expect(announcement.pid).toBeGreaterThan(0);
     expect(() => process.kill(announcement.pid, 0)).not.toThrow();
+    if (process.platform !== "win32" && process.getuid) {
+      expect(
+        discoverLocalTuiProcesses({
+          targetRoot: "/target",
+          processKind: "update",
+          currentUid: process.getuid(),
+          currentPid: -1,
+        }),
+      ).toMatchObject({
+        ok: true,
+        processes: expect.arrayContaining([
+          expect.objectContaining({ pid: process.pid, ownership: "target" }),
+        ]),
+      });
+    }
 
     await announcement.release();
     expect(() => process.kill(announcement.pid, 0)).toThrow();

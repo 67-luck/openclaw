@@ -7,10 +7,12 @@ import { resolveOpenClawInstallationRevision } from "./openclaw-installation-id.
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("OpenClaw installation revision", () => {
-  it("changes when a package activation or source revision changes", () => {
+  it("changes for package activation, source revision, and same-HEAD rebuilds", () => {
     const root = tempDirs.make("openclaw-installation-revision-");
     fs.writeFileSync(path.join(root, "openclaw.mjs"), "");
     fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: "1.0.0" }));
+    fs.mkdirSync(path.join(root, "dist"));
+    fs.writeFileSync(path.join(root, "dist", "build-info.json"), '{"buildId":"build-1"}');
     fs.mkdirSync(path.join(root, ".git", "refs", "heads"), { recursive: true });
     fs.writeFileSync(path.join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
     fs.writeFileSync(path.join(root, ".git", "refs", "heads", "main"), `${"a".repeat(40)}\n`);
@@ -23,6 +25,10 @@ describe("OpenClaw installation revision", () => {
     expect(activated).not.toBe(initial);
 
     fs.writeFileSync(path.join(root, ".git", "refs", "heads", "main"), `${"b".repeat(40)}\n`);
-    expect(resolveOpenClawInstallationRevision(root)).not.toBe(activated);
+    const nextCommit = resolveOpenClawInstallationRevision(root);
+    expect(nextCommit).not.toBe(activated);
+
+    fs.writeFileSync(path.join(root, "dist", "build-info.json"), '{"buildId":"build-2"}');
+    expect(resolveOpenClawInstallationRevision(root)).not.toBe(nextCommit);
   });
 });

@@ -60,8 +60,7 @@ async function loadTuiAfterUpdateGate(): Promise<{
     undefined,
     async () => {
       process.title = formatOpenClawProcessTitle("openclaw-tui", targetRoot);
-      announcement =
-        process.platform === "win32" ? await announceLocalTuiClient(targetRoot) : undefined;
+      announcement = await announceLocalTuiClient(targetRoot);
       return cleanup;
     },
   ).catch(async (error: unknown) => {

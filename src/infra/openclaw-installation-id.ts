@@ -6,6 +6,13 @@ import { rewritePnpmVersionedOpenClawEntryPath } from "./openclaw-root.js";
 
 const INSTALLATION_ID_LENGTH = 16;
 const PROCESS_TITLE_PATTERN = /^(openclaw(?:-[a-z0-9-]+)?)@([a-f0-9]{16}(?:\+[a-f0-9]{16})*)$/u;
+const PROCESS_ANNOUNCEMENT_TITLE_PATTERN =
+  /^(?<title>openclaw-(?:tui|update)@[a-f0-9]{16}(?:\+[a-f0-9]{16})*)#(?<pid>\d+)$/u;
+const RUNTIME_REVISION_FILES = [
+  "dist/.runtime-postbuildstamp",
+  "dist/.buildstamp",
+  "dist/build-info.json",
+] as const;
 
 function createOpenClawInstallationId(canonicalRoot: string): string {
   return createHash("sha256").update(canonicalRoot).digest("hex").slice(0, INSTALLATION_ID_LENGTH);
@@ -46,7 +53,23 @@ export function resolveOpenClawInstallationRevision(root: string): string | unde
         ? packageJson.version
         : "";
     const gitHead = readGitHead(root)?.value ?? "";
-    return `${canonicalEntry}\0${version}\0${gitHead}`;
+    const runtimeRevision = createHash("sha256");
+    let runtimeRevisionFiles = 0;
+    for (const relativePath of RUNTIME_REVISION_FILES) {
+      try {
+        runtimeRevision.update(relativePath).update("\0");
+        runtimeRevision.update(
+          fs.readFileSync(path.join(path.dirname(canonicalEntry), relativePath)),
+        );
+        runtimeRevisionFiles += 1;
+      } catch {
+        // Packaged and source installations expose different build metadata.
+      }
+    }
+    if (runtimeRevisionFiles === 0) {
+      return undefined;
+    }
+    return `${canonicalEntry}\0${version}\0${gitHead}\0${runtimeRevision.digest("hex")}`;
   } catch {
     return undefined;
   }
@@ -73,4 +96,15 @@ export function parseOpenClawProcessTitle(
   }
   const installationIds = match[2]!.split("+");
   return { name: match[1]!, installationId: installationIds[0]!, installationIds };
+}
+
+export function parseOpenClawProcessAnnouncementTitle(
+  value: string,
+):
+  | { processTitle: NonNullable<ReturnType<typeof parseOpenClawProcessTitle>>; pid: number }
+  | undefined {
+  const match = PROCESS_ANNOUNCEMENT_TITLE_PATTERN.exec(value);
+  const processTitle = parseOpenClawProcessTitle(match?.groups?.title ?? "");
+  const pid = Number(match?.groups?.pid);
+  return processTitle && Number.isFinite(pid) && pid > 0 ? { processTitle, pid } : undefined;
 }
