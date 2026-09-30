@@ -57,7 +57,6 @@ export type GatewayWsMessageHandlerParams = {
   localPort?: number;
   endpoint?: string;
   forwardedFor?: string;
-  realIp?: string;
   requestHost?: string;
   requestOrigin?: string;
   requestUserAgent?: string;
@@ -156,10 +155,8 @@ export type AuthenticatedGatewayConnect = {
   bootstrapTokenCandidate?: string;
   deviceTokenSharedGatewaySessionGeneration?: string;
   authResult: GatewayAuthResult;
-  authOk: boolean;
   authMethod: GatewayAuthResult["method"];
   pairingLocality: PairingLocalityKind;
-  usesSharedGatewayAuth: boolean;
   sessionUsesSharedGatewayAuth: boolean;
   sessionSharedGatewaySessionGeneration?: string;
   issuedBootstrapProfile: DeviceBootstrapProfile | null;

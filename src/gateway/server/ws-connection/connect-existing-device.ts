@@ -1,7 +1,10 @@
-// Gateway WebSocket paired-device connects enforce pinned metadata and approved access.
 import { getBoundDeviceBootstrapProfile } from "../../../infra/device-bootstrap.js";
 import type { PairedDeviceMetadataPatch } from "../../../infra/device-pairing-core.types.js";
-import { getPairedDevice, listEffectivePairedDeviceRoles } from "../../../infra/device-pairing.js";
+import {
+  getPairedDevice,
+  listEffectivePairedDeviceRoles,
+  type PairedDevice,
+} from "../../../infra/device-pairing.js";
 import { resolveBootstrapProfileScopesForRole } from "../../../shared/device-bootstrap-profile.js";
 import type { DeviceBootstrapProfile } from "../../../shared/device-bootstrap-profile.js";
 import { roleScopesAllow } from "../../../shared/operator-scope-compat.js";
@@ -18,7 +21,6 @@ import type {
   GatewayConnectPhaseContext,
 } from "./message-handler-types.js";
 
-type PairedDevice = NonNullable<Awaited<ReturnType<typeof getPairedDevice>>>;
 type PairingReason = "metadata-upgrade" | "role-upgrade" | "scope-upgrade";
 
 export async function authorizeExistingGatewayDevice(params: {
@@ -97,20 +99,16 @@ export async function authorizeExistingGatewayDevice(params: {
   }
   const pairedRoles = listEffectivePairedDeviceRoles(paired);
   const pairedScopes = resolvePairedAccessScopes(paired);
-  if (!pairedRoles.includes(role)) {
-    if (!(await requirePairing("role-upgrade", paired))) {
-      return { ok: false, handoffBootstrapProfile };
-    }
+  if (!pairedRoles.includes(role) && !(await requirePairing("role-upgrade", paired))) {
+    return { ok: false, handoffBootstrapProfile };
   }
 
   if (scopes.length > 0) {
     const scopesAllowed =
       pairedScopes.length > 0 &&
       roleScopesAllow({ role, requestedScopes: scopes, allowedScopes: pairedScopes });
-    if (!scopesAllowed) {
-      if (!(await requirePairing("scope-upgrade", paired))) {
-        return { ok: false, handoffBootstrapProfile };
-      }
+    if (!scopesAllowed && !(await requirePairing("scope-upgrade", paired))) {
+      return { ok: false, handoffBootstrapProfile };
     }
   }
 

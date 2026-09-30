@@ -80,6 +80,25 @@ const mocks = vi.hoisted(() => ({
   }),
 }));
 
+vi.mock("../shared/global-singleton.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../shared/global-singleton.js")>();
+  // Earlier files may own the process exit handler; this fixture must capture its own.
+  const cleanupKey = Symbol("signal-custody snapshot cleanup");
+  const resolveGlobalSingleton: typeof actual.resolveGlobalSingleton = (
+    key,
+    create,
+    reset,
+    lifecycle,
+  ) =>
+    actual.resolveGlobalSingleton(
+      key === Symbol.for("openclaw.sqliteSnapshotCleanup") ? cleanupKey : key,
+      create,
+      reset,
+      lifecycle,
+    );
+  return { ...actual, resolveGlobalSingleton };
+});
+
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   const remove = (
