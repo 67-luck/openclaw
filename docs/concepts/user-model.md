@@ -249,9 +249,17 @@ me." The agent can call `sessions` with `action: "assign_owner"`,
 `ownerType: "human"`, and `ownerId` set to that trusted profile ID. Names, emails,
 and IDs pasted into messages do not establish the requester.
 
-A linked nonadmin sender also receives requester metadata, but the `sessions`
-tool remains owner-only. Unlinked or asserted senders receive no requester
-profile. Unlinking takes effect on subsequent turns without a restart.
+A linked nonadmin sender also receives requester metadata. During a live admitted
+agent turn, the `sessions` tool exposes `assign_owner` for these senders;
+settings, reset/delete, and global group controls still require owner authority.
+Operators with `operator.write` also retain the separate archive, restore, and
+stop controls for sessions they created or are assigned to, subject to session access checks.
+When a newly spawned visible session starts agent-owned, the agent can assign it
+to the trusted requester profile and verify the stored owner with `sessions_list`.
+This changes responsibility, not creator attribution or access. Unlinked or
+asserted senders receive no requester profile: link the verified sender first
+rather than guessing from a name or pasted ID. Unlinking takes effect on
+subsequent turns without a restart.
 
 ## GitHub connections
 
@@ -265,9 +273,9 @@ My GitHub requires an authenticated, durable Gateway profile, including the loca
 
 ### Publish with your account
 
-Open the compact account arrow beside **Publish PR** to inspect the publisher and account help. This is available for an idle session with a reconciled worktree or accepted repository checkpoint. The effective shared account remains the default. When only a shared account is available, the popover is informational, with no redundant selector. When multiple accounts are available, choose the publisher in the popover. **My GitHub** always requires explicit selection, even when it is the only available account. If the agent has its own override, the shared account is labeled as an override rather than System.
+The account arrow beside **Publish PR** appears only when both shared and personal accounts are available. Its compact menu shows account names and the selected account; the effective shared account remains the default. With only a shared account, use **Publish PR** directly. With only **My GitHub**, the **Publish as @account** button explicitly selects that account and requests publication in one click; discovery alone never selects personal credentials. If the same account is connected through both routes, the menu labels them separately. Personal publication requires an idle session with a reconciled worktree or accepted repository checkpoint. Setup help appears only when no account is available, and workspace guidance appears only for personal publication.
 
-The composer shows either unpublished branch changes or PR rows. New changes replace earlier PR history, including changes made after merging on the same branch. The account arrow appears only while publication is idle and the account selection is unlocked. Pending status, retry actions, confirmation details, and errors stay inside the current row. Successful publication shows a compact PR link until GitHub metadata supplies the normal PR row; it does not add a separate publication card.
+The composer shows either unpublished branch changes or PR rows. New changes replace earlier PR history, including changes made after merging on the same branch. The account arrow appears only while publication is idle and the account selection is unlocked. Publication recovery stays inside an unpublished branch row. When PR rows are visible, recovery appears separately because a session publication attempt does not necessarily belong to any listed PR. Failed attempts use a collapsed **Publication attempt failed** disclosure; expand it to inspect the original account, error, and recovery actions. A merged PR does not erase a failed attempt, and refreshing its receipt does not retry publication. Pending status and confirmation details remain expanded. Successful publication shows a compact PR link until GitHub metadata supplies the normal PR row; it does not add a separate publication card.
 
 If the Gateway rejects the selected account before accepting the first publication request, choose **Refresh publication**, review the current account, then explicitly publish again. An unknown outcome keeps the original account and request locked. For shared publication, **Refresh publication** looks up the receipt using the original invocation key; finding no receipt does not prove that the request never ran. **Retry publication** is an explicit replay of that same idempotent request, not a switch of account or a new publication.
 

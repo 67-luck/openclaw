@@ -17,10 +17,7 @@ import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
 import { createAgentRunDirectAbortError } from "../../run-termination.js";
 import { isCurrentSubagentRun } from "./subagent-control-scope.js";
-import {
-  persistSubagentAbortedLastRun,
-  type SubagentKillSession,
-} from "./subagent-control-session.js";
+import type { SubagentKillSession } from "./subagent-control-session.js";
 import {
   SUBAGENT_KILL_TASK_ERROR,
   type SubagentCancellationControl,
@@ -196,6 +193,13 @@ export async function killSubagentRun(params: {
     });
   let stopAccepted = false;
   let preparationResult: Awaited<ReturnType<typeof killSubagentRun>> | undefined;
+  const releaseKillClaim = (claim: NonNullable<typeof killClaim>) =>
+    releaseSubagentRunKillClaim({
+      runId: params.entry.runId,
+      expected: params.entry,
+      claim,
+      context: stateContext,
+    });
   const cancellationFailure = async (
     error: unknown,
     declined?: true,
@@ -203,12 +207,7 @@ export async function killSubagentRun(params: {
     let reason = formatErrorMessage(error);
     if (killClaim && !stopAccepted) {
       try {
-        await releaseSubagentRunKillClaim({
-          runId: params.entry.runId,
-          expected: params.entry,
-          claim: killClaim,
-          context: stateContext,
-        });
+        await releaseKillClaim(killClaim);
       } catch (releaseError) {
         if (hasSqliteWorkerOutcomeUnknown(releaseError)) {
           throw releaseError;
@@ -253,12 +252,7 @@ export async function killSubagentRun(params: {
   };
   const releaseChangedSessionKill = async (claim: NonNullable<typeof killClaim>) => {
     try {
-      await releaseSubagentRunKillClaim({
-        runId: params.entry.runId,
-        expected: params.entry,
-        claim,
-        context: stateContext,
-      });
+      await releaseKillClaim(claim);
     } catch (error) {
       if (hasSqliteWorkerOutcomeUnknown(error)) {
         throw error;
@@ -399,12 +393,7 @@ export async function killSubagentRun(params: {
       if (admission === "busy") {
         try {
           if (killClaim && !stopAccepted) {
-            await releaseSubagentRunKillClaim({
-              runId: params.entry.runId,
-              expected: params.entry,
-              claim: killClaim,
-              context: stateContext,
-            });
+            await releaseKillClaim(killClaim);
           }
         } catch (error) {
           if (hasSqliteWorkerOutcomeUnknown(error)) {
@@ -473,23 +462,6 @@ export async function killSubagentRun(params: {
       if (declined && !stopAccepted) {
         return declined;
       }
-      const persistAbortedLastRun = (abortedLastRun: boolean, strict = false) =>
-        persistSubagentAbortedLastRun({
-          childSessionKey,
-          storePath: resolved.storePath,
-          hasSessionEntry: resolved.entry !== undefined,
-          expectedSessionId: sessionId,
-          expectedLifecycleRevision: sessionLifecycleRevision,
-          abortedLastRun,
-          isCurrent: () => killOwnerCurrent(),
-          assertCommitAllowed: () => {
-            assertState();
-            if (!killOwnerCurrent()) {
-              throw new Error("subagent kill lifecycle retired before abort-marker commit");
-            }
-          },
-          strict,
-        });
       if (!killClaim) {
         try {
           killClaim = await claimSelectedRunKill();
@@ -519,7 +491,7 @@ export async function killSubagentRun(params: {
         if (!killOwnerCurrent()) {
           return { killed: false, sessionId, superseded: true };
         }
-        let marked: number;
+        let marked = 0;
         try {
           marked = await markSubagentRunTerminated({
             runId: params.entry.runId,
@@ -543,15 +515,20 @@ export async function killSubagentRun(params: {
                 throw new Error("Subagent kill publication lost its original claim");
               }
             },
+            onPublished: (count) => {
+              marked = count;
+            },
           });
         } catch (error) {
           if (hasSqliteWorkerOutcomeUnknown(error)) {
             throw error;
           }
+          const action =
+            marked > 0 ? "finish subagent kill cleanup" : "persist subagent kill tombstone";
           return {
-            killed: false,
+            killed: marked > 0,
             sessionId,
-            error: `Failed to persist subagent kill tombstone: ${formatErrorMessage(error)}`,
+            error: `Failed to ${action}: ${formatErrorMessage(error)}`,
           };
         }
         if (marked === 0) {
@@ -565,7 +542,6 @@ export async function killSubagentRun(params: {
             targetState: resolveSubagentKillTargetState(params.entry),
           };
         }
-        await persistAbortedLastRun(true);
         return { killed: marked > 0, sessionId };
       };
       try {
@@ -614,12 +590,7 @@ export async function killSubagentRun(params: {
         }
         if (active && !stopAccepted) {
           try {
-            await releaseSubagentRunKillClaim({
-              runId: params.entry.runId,
-              expected: params.entry,
-              claim: killClaim,
-              context: stateContext,
-            });
+            await releaseKillClaim(killClaim);
           } catch (error) {
             if (hasSqliteWorkerOutcomeUnknown(error)) {
               throw error;
@@ -646,12 +617,7 @@ export async function killSubagentRun(params: {
             await markKilledBestEffort();
           } else {
             try {
-              await releaseSubagentRunKillClaim({
-                runId: params.entry.runId,
-                expected: params.entry,
-                claim: killClaim,
-                context: stateContext,
-              });
+              await releaseKillClaim(killClaim);
             } catch (error) {
               if (hasSqliteWorkerOutcomeUnknown(error)) {
                 throw error;

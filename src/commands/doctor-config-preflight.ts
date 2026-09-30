@@ -199,6 +199,7 @@ async function runDoctorConfigPreflightOperation(
     const refreshed = await prepareDoctorMigrationPlugins({
       cfg: automaticConfigRepair?.config ?? baseConfig,
       env: process.env,
+      retainedPluginIds: pluginMigrations.retainedPluginIds(),
       measure: options.measure,
       snapshotRead: { ...configSnapshotRead, snapshot },
       readRefreshedSnapshot: () => readConfigSnapshotForPreflight(false),

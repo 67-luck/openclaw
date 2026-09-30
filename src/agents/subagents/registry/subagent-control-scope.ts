@@ -17,10 +17,7 @@ import type { SessionCapabilityStore } from "../spawn/subagent-session-store.js"
 import { observeSubagentExecution } from "./subagent-execution-observation.js";
 import { captureSubagentListReadContext, type SubagentListReadContext } from "./subagent-list.js";
 import { getSubagentRunsForRequesterSession, subagentRuns } from "./subagent-registry-memory.js";
-import {
-  buildSubagentRunReadIndexFromRuns,
-  type SubagentRunReadIndex,
-} from "./subagent-registry-queries.js";
+import { buildSubagentRunReadIndexFromRuns } from "./subagent-registry-queries.js";
 import {
   getLatestLiveSubagentRunByChildSessionKey,
   listSubagentRunsForController,
@@ -193,7 +190,7 @@ export async function buildControlledSubagentRunsReadContext(
   const select = (snapshot: Map<string, SubagentRunReadRecord>) => {
     const index = buildSubagentRunReadIndexFromRuns({
       runs: snapshot,
-      inMemoryRuns: subagentRuns.values(),
+      inMemoryRuns: [...snapshot.keys()].flatMap((id) => subagentRuns.get(id) ?? []),
     });
     const visible = [...index.latestRunsByChildSessionKey.values()].filter((entry) =>
       isSubagentRunVisibleToSession(entry, key, agentId, cfg),
@@ -206,25 +203,25 @@ export async function buildControlledSubagentRunsReadContext(
         .map((entry) => entry.childSessionKey),
     };
   };
-  return withSubagentRunReadSnapshot(subagentRuns, select, (selection, snapshot) =>
-    buildControlledReadContext(snapshot, selection.index, new Set(selection.runIds), recentMinutes),
+  return withSubagentRunReadSnapshot(
+    subagentRuns,
+    select,
+    (selection, snapshot) => {
+      const visibleIds = new Set(selection.runIds);
+      const runs = [...snapshot.values()].filter((entry) => visibleIds.has(entry.runId));
+      const list = captureSubagentListReadContext(runs, selection.index, snapshot, recentMinutes);
+      return {
+        runs: list.view.latest,
+        list,
+        getExecutionObservation: (entry: SubagentRunRecord) =>
+          observeSubagentExecution(
+            entry,
+            getSubagentRunsForRequesterSession(entry.childSessionKey),
+          ),
+      };
+    },
+    { sessionKeys: [key], descendants: true },
   );
-}
-
-function buildControlledReadContext(
-  snapshot: ReadonlyMap<string, SubagentRunRecord>,
-  readIndex: SubagentRunReadIndex<SubagentRunReadRecord>,
-  visibleIds: ReadonlySet<string>,
-  recentMinutes = DEFAULT_RECENT_MINUTES,
-): ControlledSubagentRunsReadContext {
-  const runs = [...snapshot.values()].filter((entry) => visibleIds.has(entry.runId));
-  const list = captureSubagentListReadContext(runs, readIndex, snapshot, recentMinutes);
-  return {
-    runs: list.view.latest,
-    list,
-    getExecutionObservation: (entry) =>
-      observeSubagentExecution(entry, getSubagentRunsForRequesterSession(entry.childSessionKey)),
-  };
 }
 
 /** Cancellation consumes current ownership facts without hydrating retained result payloads. */

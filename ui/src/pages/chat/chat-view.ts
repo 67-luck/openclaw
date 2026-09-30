@@ -61,8 +61,9 @@ import {
   renderComposerQuestionDock,
   resolveComposerQuestionPanel,
 } from "./components/chat-composer-question.ts";
-import { getChatComposerState } from "./components/chat-composer-state.ts";
+import { getChatComposerState, hasTerminalRunStatus } from "./components/chat-composer-state.ts";
 import type { ChatComposerProps } from "./components/chat-composer-types.ts";
+import { renderChatComposerQueue } from "./components/chat-composer-view.ts";
 import { isChatRunWorking, renderChatComposer } from "./components/chat-composer.ts";
 import { isImageLightboxEvent, openInlineChatImage } from "./components/chat-image-lightbox.ts";
 import { renderChatPullRequests } from "./components/chat-pull-requests.ts";
@@ -138,12 +139,10 @@ export type ChatProps = Omit<
     workspaceConflict?: WorkspaceResultConflict;
     onDismissWorkspaceConflict?: () => void;
     swarm?: Parameters<typeof renderChatSwarmProgress>[0];
-    focusMode?: boolean;
     chatMessageMaxWidth?: string | null;
     showNewMessages?: boolean;
     onScrollToBottom?: (options?: { smooth?: boolean }) => void;
     onRefresh: () => void;
-    onToggleFocusMode?: () => void;
     onDismissError?: () => void;
     agentsList: {
       agents: Array<{
@@ -154,8 +153,6 @@ export type ChatProps = Omit<
       defaultId?: string;
     } | null;
     onSessionSelect?: (sessionKey: string) => void;
-    onRevealWorkspaceFile?: (path: string) => void;
-    header?: TemplateResult | typeof nothing;
     sessionSuggestions?: readonly SessionSuggestion[];
     sessionSuggestionRole?: SessionSharingRole;
     sessionSuggestionBusyIds?: ReadonlySet<string>;
@@ -167,6 +164,7 @@ export type ChatProps = Omit<
     ) => void;
     pullRequests?: ControlUiSessionPullRequest[];
     pullRequestsGateway?: ApplicationGateway;
+    pullRequestsSessionId?: string;
     pullRequestsBranch?: ControlUiSessionBranch;
     pullRequestsStatus?: ControlUiSessionPullRequestSnapshot["status"];
     onOpenSessionDiff?: () => void;
@@ -413,6 +411,8 @@ export function renderChat(props: ChatProps) {
     ${renderChatPullRequests({
       pullRequests: props.pullRequests ?? [],
       gateway: props.pullRequestsGateway,
+      sessionId: props.pullRequestsSessionId,
+      basePath: props.basePath,
       sessionKey: scopedSessionArtifactKey(props.sessionKey, props.currentAgentId ?? undefined),
       presented: props.presented ?? true,
       branch: props.pullRequestsBranch,
@@ -448,13 +448,15 @@ export function renderChat(props: ChatProps) {
     props.queue,
     displayedPendingInputs ?? [],
   );
+  const displayQueue = [
+    ...buildPendingInputQueueItems(inputDisplay.queuedInputs),
+    ...inputDisplay.queue,
+  ];
+  const composerProps = { ...props, displayQueue };
   const defaultComposer = renderChatComposer({
     ...props,
     asyncQuestions,
-    displayQueue: [
-      ...buildPendingInputQueueItems(inputDisplay.queuedInputs),
-      ...inputDisplay.queue,
-    ],
+    displayQueue,
     footerContent,
     notices,
     onRequestUpdate: requestUpdate,
@@ -485,6 +487,10 @@ export function renderChat(props: ChatProps) {
           getChatComposerState(props.paneId),
           requestUpdate,
         ),
+      )}
+      ${renderChatComposerQueue(
+        composerProps,
+        Boolean(props.canAbort && props.onAbort) && !hasTerminalRunStatus(props.runStatus),
       )}
       ${
         props.suggestionComposer
@@ -615,7 +621,7 @@ export function renderChat(props: ChatProps) {
           <div class="chat-split-container">
             <div class="chat-main">
               <div class="chat-main__conversation-column">
-                ${props.header ?? nothing} ${renderChatTopbarNotices(props)}
+                ${renderChatTopbarNotices(props)}
                 <openclaw-plugin-contributions
                   .kind=${"header"}
                   .sessionKey=${props.sessionKey}
