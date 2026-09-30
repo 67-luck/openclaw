@@ -231,27 +231,33 @@ function classifyLocalOpenClawCommand(
 type PosixProcessRow = {
   uid: number;
   pid: number;
+  ppid: number;
   startIdentity: string;
   command: string;
 };
 
 function parsePosixProcessRow(line: string): PosixProcessRow | null {
-  const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.{24})\s+(.+)$/u);
+  const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.{24})\s+(.+)$/u);
   if (!match) {
     return null;
   }
   const uid = Number(match[1]);
   const pid = Number(match[2]);
-  const startIdentity = match[3]?.trim() ?? "";
-  const command = match[4]?.trim() ?? "";
-  return Number.isFinite(uid) && Number.isFinite(pid) && startIdentity && command
-    ? { uid, pid, startIdentity, command }
+  const ppid = Number(match[3]);
+  const startIdentity = match[4]?.trim() ?? "";
+  const command = match[5]?.trim() ?? "";
+  return Number.isFinite(uid) &&
+    Number.isFinite(pid) &&
+    Number.isFinite(ppid) &&
+    startIdentity &&
+    command
+    ? { uid, pid, ppid, startIdentity, command }
     : null;
 }
 
 function parseLocalOpenClawProcessRow(
   row: PosixProcessRow,
-  startIdentityByPid: ReadonlyMap<number, string>,
+  rowByPid: ReadonlyMap<number, PosixProcessRow>,
   currentUid: number,
   currentPid: number,
   platform: NodeJS.Platform,
@@ -268,15 +274,16 @@ function parseLocalOpenClawProcessRow(
   if (!Number.isFinite(pid) || pid <= 0 || pid === currentPid) {
     return null;
   }
-  const startIdentity = startIdentityByPid.get(pid);
-  if (!startIdentity) {
+  const targetRow = rowByPid.get(pid);
+  if (!targetRow || (announcement && (row.ppid !== pid || row.uid !== targetRow.uid))) {
     return null;
   }
+  const startIdentity = targetRow.startIdentity;
   const ownership = classifyLocalOpenClawCommand(command, platform, targetRoot, realpath, kind);
   if (!ownership || ownership === "other") {
     return null;
   }
-  if (row.uid !== currentUid) {
+  if (targetRow.uid !== currentUid) {
     return ownership === "target"
       ? { pid, startIdentity, command, ownership: "foreign-user" }
       : { pid, startIdentity, command, ownership: "ambiguous" };
@@ -362,7 +369,7 @@ function discoverLocalOpenClawProcesses(
   if (currentUid === undefined) {
     return { ok: false, error: "The current user id is unavailable for process discovery." };
   }
-  const ps = (params.spawnSync ?? spawnSync)("ps", ["-axo", "uid=,pid=,lstart=,command="], {
+  const ps = (params.spawnSync ?? spawnSync)("ps", ["-axo", "uid=,pid=,ppid=,lstart=,command="], {
     encoding: "utf8",
     env: { ...process.env, LC_ALL: "C" },
     killSignal: "SIGKILL",
@@ -377,11 +384,11 @@ function discoverLocalOpenClawProcesses(
     const row = parsePosixProcessRow(line);
     return row ? [row] : [];
   });
-  const startIdentityByPid = new Map(rows.map((row) => [row.pid, row.startIdentity]));
+  const rowByPid = new Map(rows.map((row) => [row.pid, row]));
   for (const row of rows) {
     const proc = parseLocalOpenClawProcessRow(
       row,
-      startIdentityByPid,
+      rowByPid,
       currentUid,
       params.currentPid ?? process.pid,
       platform,

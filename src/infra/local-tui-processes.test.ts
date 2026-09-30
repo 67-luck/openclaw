@@ -25,8 +25,8 @@ function listLocalTuiProcesses(
 const noUpdateProcesses: typeof discoverLocalTuiProcesses = () => ({ ok: true, processes: [] });
 const POSIX_START_IDENTITY = "Tue Sep 30 09:30:00 2026";
 
-function posixProcessLine(uid: number, pid: number, command: string): string {
-  return `${uid} ${pid} ${POSIX_START_IDENTITY} ${command}`;
+function posixProcessLine(uid: number, pid: number, command: string, ppid = 1): string {
+  return `${uid} ${pid} ${ppid} ${POSIX_START_IDENTITY} ${command}`;
 }
 
 function fixtureProcess(
@@ -54,7 +54,7 @@ describe("local TUI processes", () => {
         posixProcessLine(501, 101, "openclaw-tui@trun"),
         posixProcessLine(501, 102, "/usr/bin/node /target/openclaw.mjs resume session"),
         posixProcessLine(502, 103, "/target/bin/openclaw chat"),
-        posixProcessLine(501, 104, `openclaw-tui@${targetId}#101`),
+        posixProcessLine(501, 104, `openclaw-tui@${targetId}#101`, 101),
         posixProcessLine(501, 112, "openclaw tui"),
         posixProcessLine(501, 105, "/other/bin/openclaw tui"),
         posixProcessLine(501, 106, "openclaw-resume"),
@@ -95,7 +95,7 @@ describe("local TUI processes", () => {
     ]);
     expect(spawnSync).toHaveBeenCalledWith(
       "ps",
-      ["-axo", "uid=,pid=,lstart=,command="],
+      ["-axo", "uid=,pid=,ppid=,lstart=,command="],
       expect.objectContaining({
         encoding: "utf8",
         env: expect.objectContaining({ LC_ALL: "C" }),
@@ -103,6 +103,28 @@ describe("local TUI processes", () => {
         timeout: 1_000,
       }),
     );
+  });
+
+  it("rejects a POSIX announcement that no longer belongs to its advertised parent", () => {
+    const targetId = resolveOpenClawInstallationId("/target");
+    const spawnSync = vi.fn().mockReturnValue({
+      status: 0,
+      stdout: [
+        posixProcessLine(501, 101, "/usr/bin/unrelated-runtime"),
+        posixProcessLine(501, 104, `openclaw-tui@${targetId}#101`, 1),
+      ].join("\n"),
+    });
+    vi.spyOn(fs.realpathSync, "native").mockImplementation((value) => String(value));
+
+    expect(
+      listLocalTuiProcesses({
+        targetRoot: "/target",
+        platform: "darwin",
+        currentUid: 501,
+        currentPid: 999,
+        spawnSync,
+      }),
+    ).toEqual([]);
   });
 
   it("prefilters and discovers target and foreign-user Windows clients", () => {
