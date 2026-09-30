@@ -321,7 +321,7 @@ describe("native binding lease settlement", () => {
         active = false;
         return "native-outcome";
       });
-      const bind = state.withCurrent;
+      const bind = state.withCurrent.bind(state);
       state.withCurrent = (authority) => {
         const store = bind(authority);
         return {
