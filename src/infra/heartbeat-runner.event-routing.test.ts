@@ -584,8 +584,8 @@ describe("Heartbeat event routing", () => {
     }, false);
   });
 
-  it("keeps queued exec completions on their own account and topic routes", async () => {
-    await withRouting(async ({ storePath, replySpy, sendTelegram, run }) => {
+  it("automatically drains queued exec completions on their own routes", async ({ signal }) => {
+    await withRouting(async ({ cfg, storePath, replySpy, sendTelegram, run }) => {
       const sessionKey = "agent:main:telegram:group:-1003774691294";
       await writeTelegramSessionStore(storePath, sessionKey, {
         lastTo: "telegram:-1003774691294:topic:2175",
@@ -608,28 +608,51 @@ describe("Heartbeat event routing", () => {
         .mockResolvedValueOnce({ text: "The work report is ready." })
         .mockResolvedValueOnce({ text: "The personal report is ready." });
 
-      expect((await run({ sessionKey, reason: "exec-event" })).status).toBe("ran");
-      expectTelegramSend(sendTelegram, {
-        to: "telegram:-1003774691294:topic:47",
-        text: "The work report is ready.",
-        messageThreadId: 47,
-        accountId: "work",
+      const followup = createDeferred<Awaited<ReturnType<typeof runHeartbeatOnce>>>();
+      let runCount = 0;
+      const runner = startHeartbeatRunner({
+        cfg,
+        runOnce: (opts) => {
+          const result = run(opts);
+          runCount += 1;
+          if (runCount === 2) {
+            followup.resolve(result);
+          }
+          return result;
+        },
       });
-      expect(getFirstReplyContext(replySpy).Body).toContain("work-report is ready");
-      expect(getFirstReplyContext(replySpy).Body).not.toContain("personal-report is ready");
-      expect(peekSystemEvents(sessionKey)).toEqual([
-        "Exec completed (personal-report, code 0) :: personal-report is ready",
-      ]);
-
-      sendTelegram.mockClear();
-      expect((await run({ sessionKey, reason: "exec-event" })).status).toBe("ran");
-      expectTelegramSend(sendTelegram, {
-        to: "telegram:-1003774691294:topic:99",
-        text: "The personal report is ready.",
-        messageThreadId: 99,
-        accountId: "personal",
-      });
-      expect(peekSystemEvents(sessionKey)).toEqual([]);
+      onTestFinished(() => runner.stop());
+      try {
+        await requestHeartbeatAndWait({
+          source: "exec-event",
+          intent: "event",
+          reason: "exec-event",
+          agentId: "main",
+          sessionKey,
+          coalesceMs: 0,
+        });
+        await expect(racePromiseWithAbortSignal(followup.promise, signal)).resolves.toMatchObject({
+          status: "ran",
+        });
+        expect(replySpy).toHaveBeenCalledTimes(2);
+        expect(replySpy.mock.calls[0]?.[0].Body).toContain("work-report is ready");
+        expect(replySpy.mock.calls[0]?.[0].Body).not.toContain("personal-report is ready");
+        expect(replySpy.mock.calls[1]?.[0].Body).toContain("personal-report is ready");
+        expect(sendTelegram).toHaveBeenCalledTimes(2);
+        expect(mockCallAt(sendTelegram, 0, "work Telegram send")).toMatchObject([
+          "telegram:-1003774691294:topic:47",
+          "The work report is ready.",
+          { messageThreadId: 47, accountId: "work" },
+        ]);
+        expect(mockCallAt(sendTelegram, 1, "personal Telegram send")).toMatchObject([
+          "telegram:-1003774691294:topic:99",
+          "The personal report is ready.",
+          { messageThreadId: 99, accountId: "personal" },
+        ]);
+        expect(peekSystemEvents(sessionKey)).toEqual([]);
+      } finally {
+        runner.stop();
+      }
     }, false);
   });
 

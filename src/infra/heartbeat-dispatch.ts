@@ -38,7 +38,10 @@ import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { formatErrorMessage } from "./errors.js";
 import { classifyHeartbeatAgentOutcome } from "./heartbeat-delivery-normalization.js";
-import { HEARTBEAT_DELIVERY_CONTEXT_KEY_PREFIX } from "./heartbeat-events-filter.js";
+import {
+  HEARTBEAT_DELIVERY_CONTEXT_KEY_PREFIX,
+  isExecCompletionEvent,
+} from "./heartbeat-events-filter.js";
 import { emitHeartbeatEvent, resolveIndicatorType } from "./heartbeat-events.js";
 import { heartbeatLog as log } from "./heartbeat-log.js";
 import { persistHeartbeatOutcome } from "./heartbeat-outcome-store.js";
@@ -65,7 +68,11 @@ import {
 } from "./outbound/payloads.js";
 import { buildOutboundSessionContext } from "./outbound/session-context.js";
 import { resolveSystemEventQueueKey, withSystemEventOwner } from "./system-event-ownership.js";
-import { consumeSelectedSystemEventEntries, enqueueSystemEvent } from "./system-events.js";
+import {
+  consumeSelectedSystemEventEntries,
+  enqueueSystemEvent,
+  peekSystemEventEntries,
+} from "./system-events.js";
 
 type HeartbeatDispatch = {
   opts: HeartbeatRunOptions;
@@ -274,10 +281,18 @@ async function prepareHeartbeatDispatchReply(
       accountId: delivery.accountId,
     });
     if (consume && preflight.shouldInspectPendingEvents) {
-      consumeSelectedSystemEventEntries(
-        resolveSystemEventQueueKey(sessionKey, agentId),
-        prepared.inspectedSystemEventsToConsume,
-      );
+      const queueKey = resolveSystemEventQueueKey(sessionKey, agentId);
+      consumeSelectedSystemEventEntries(queueKey, prepared.inspectedSystemEventsToConsume);
+      if (peekSystemEventEntries(queueKey).some((entry) => isExecCompletionEvent(entry.text))) {
+        requestHeartbeat({
+          source: "exec-event",
+          intent: "immediate",
+          reason: "exec-event:pending-route",
+          agentId,
+          sessionKey,
+          coalesceMs: 0,
+        });
+      }
       if (prepared.hasExecCompletion && prepared.hasCronEvents) {
         // Coalesced waiters share this turn, but exec and cron retain separate prompt/delivery policy.
         requestHeartbeat({
