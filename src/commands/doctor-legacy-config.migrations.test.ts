@@ -12,6 +12,7 @@ import { validateConfigObject } from "../config/validation.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
 import { maybeRepairCodexRoutes } from "./doctor/shared/codex-route-warnings.js";
+import { applyLegacyDoctorMigrations } from "./doctor/shared/legacy-config-compat.js";
 import { normalizeCompatibilityConfigValues } from "./doctor/shared/legacy-config-core-migrate.js";
 import { LEGACY_CONFIG_MIGRATIONS } from "./doctor/shared/legacy-config-migrations.js";
 import { collectBlockedLegacyOpenAICodexProviderPlan } from "./doctor/shared/legacy-config-migrations.runtime.models.js";
@@ -69,6 +70,16 @@ vi.mock("../plugins/manifest-registry.js", () => {
 
 function legacyConfig(value: unknown): OpenClawConfig {
   return value as OpenClawConfig;
+}
+
+function migrateContextBudgetThenNormalize(config: OpenClawConfig) {
+  const early = applyLegacyDoctorMigrations(config, { sourceConfigBeforeMigrations: config });
+  const normalized = normalizeCompatibilityConfigValues(legacyConfig(early.next ?? config));
+  return {
+    ...normalized,
+    changes: [...early.changes, ...normalized.changes],
+    warnings: [...(early.warnings ?? []), ...(normalized.warnings ?? [])],
+  };
 }
 
 vi.mock("./doctor/shared/channel-legacy-config-migrate.js", () => ({
@@ -2246,7 +2257,7 @@ describe("normalizeCompatibilityConfigValues", () => {
   );
 
   it("keeps retired provider contextTokens usable without adding an Ollama num_ctx pin", () => {
-    const result = normalizeCompatibilityConfigValues(
+    const result = migrateContextBudgetThenNormalize(
       legacyConfig({
         models: {
           providers: {
@@ -2268,7 +2279,7 @@ describe("normalizeCompatibilityConfigValues", () => {
     expect(provider?.params).toBeUndefined();
     expect(provider?.models?.[0]).toMatchObject({ contextTokens: 32_768, contextWindow: 262_144 });
     expect(provider?.models?.[0]?.params).toBeUndefined();
-    const repeated = normalizeCompatibilityConfigValues(result.config);
+    const repeated = migrateContextBudgetThenNormalize(result.config);
     expect(repeated.config).toEqual(result.config);
     expect(repeated.changes).toEqual([]);
   });
@@ -2340,7 +2351,7 @@ describe("normalizeCompatibilityConfigValues", () => {
       contextWindow: undefined,
       maxTokens: 4096,
     });
-    const res = normalizeCompatibilityConfigValues(
+    const res = migrateContextBudgetThenNormalize(
       legacyConfig({
         models: {
           providers: {
@@ -2367,7 +2378,7 @@ describe("normalizeCompatibilityConfigValues", () => {
   });
 
   it("removes provider contextWindow when no explicit Ollama model can receive it", () => {
-    const res = normalizeCompatibilityConfigValues(
+    const res = migrateContextBudgetThenNormalize(
       legacyConfig({
         models: {
           providers: {
@@ -2391,7 +2402,7 @@ describe("normalizeCompatibilityConfigValues", () => {
   });
 
   it("keeps explicit model windows ahead of retired provider defaults", () => {
-    const res = normalizeCompatibilityConfigValues(
+    const res = migrateContextBudgetThenNormalize(
       legacyConfig({
         models: {
           providers: {
@@ -2432,7 +2443,7 @@ describe("normalizeCompatibilityConfigValues", () => {
       value: { keep_alive: "forever" },
     });
 
-    const res = normalizeCompatibilityConfigValues(
+    const res = migrateContextBudgetThenNormalize(
       legacyConfig({
         models: {
           providers: {
@@ -2476,7 +2487,7 @@ describe("normalizeCompatibilityConfigValues", () => {
   });
 
   it("keeps existing provider num_ctx while materializing the model budget", () => {
-    const res = normalizeCompatibilityConfigValues(
+    const res = migrateContextBudgetThenNormalize(
       legacyConfig({
         models: {
           providers: {
@@ -2544,7 +2555,7 @@ describe("normalizeCompatibilityConfigValues", () => {
       },
     };
 
-    const res = normalizeCompatibilityConfigValues(input);
+    const res = migrateContextBudgetThenNormalize(input);
 
     expect(res.config.models?.providers?.ollama).not.toHaveProperty("contextWindow");
     expect(res.config.models?.providers?.ollama?.models).toEqual(
