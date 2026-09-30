@@ -48,6 +48,7 @@ export async function createNativeDependencies(options: {
   proof: Record<string, unknown>;
   buildDir?: string;
   gatewayOnly?: boolean;
+  setupOnly?: boolean;
   onProgress?: () => Promise<void>;
 }): Promise<{
   dependencies: TrialDependencies;
@@ -348,6 +349,14 @@ export async function createNativeDependencies(options: {
         async create(arm, index) {
           currentTrial = index;
           const fixtureEvidence: Record<string, unknown> = { trial: index };
+          const setupDiagnostics = options.setupOnly
+            ? (
+                await import("./ios-release-setup-diagnostics.js")
+              ).createIOSReleaseSetupDiagnostics()
+            : undefined;
+          if (setupDiagnostics) {
+            fixtureEvidence.setupDiagnostics = setupDiagnostics.evidence;
+          }
           const fixtures = (options.proof.fixtures ??= []) as Record<string, unknown>[];
           fixtures.push(fixtureEvidence);
           let udid: string | undefined;
@@ -405,6 +414,7 @@ export async function createNativeDependencies(options: {
                   await mockDone;
                 })(),
               ]);
+              setupDiagnostics?.captureGatewayLogs(instance?.logs() ?? "");
               const components = ["gateway", "mock"] as const;
               fixtureEvidence.cleanup = results.map((result, componentIndex) => ({
                 component: components[componentIndex],
@@ -523,14 +533,30 @@ export async function createNativeDependencies(options: {
               } finally {
                 readinessAbort.abort();
               }
-              const config = { gateway: { controlUi: { enabled: false } } };
+              const config = {
+                gateway: { controlUi: { enabled: false } },
+                ...(setupDiagnostics ? { logging: { consoleStyle: "json" } } : {}),
+              };
               applyMockOpenAiModelConfig(config, { mockPort: port, modelRef: MODEL_REF });
               try {
                 instance = await createOpenClawTestInstance({
                   name: `ios-release-e2e-${index}`,
                   cwd,
                   config,
-                  env: gatewayEnv,
+                  env: {
+                    ...gatewayEnv,
+                    ...(setupDiagnostics ? { OPENCLAW_LOG_LEVEL: "debug" } : {}),
+                  },
+                  ...(setupDiagnostics
+                    ? {
+                        gatewayArgs: ["--verbose", "--ws-log", "full"],
+                        gatewayCommandPrefix: [
+                          process.execPath,
+                          "--import",
+                          path.join(cwd, "scripts/lib/ios-release-setup-resources.mjs"),
+                        ],
+                      }
+                    : {}),
                 });
                 await phase("gateway-start", () => instance!.startGateway());
                 instance.child?.once("exit", gatewayExit);
@@ -575,7 +601,7 @@ export async function createNativeDependencies(options: {
                   rpcEvidence;
                 try {
                   requireLiveFixture();
-                  const result = await phase(operation, () =>
+                  const invoke = () =>
                     callGateway<T>({
                       config: {},
                       configPath: readyInstance.configPath,
@@ -600,7 +626,9 @@ export async function createNativeDependencies(options: {
                         rpcEvidence.dispatchEntered = true;
                         rpcEvidence.timings.dispatchMs = elapsed();
                       },
-                    }),
+                    });
+                  const result = await phase(operation, () =>
+                    setupDiagnostics ? setupDiagnostics.observeRpc(operation, invoke) : invoke(),
                   );
                   rpcEvidence.responseReceived = true;
                   rpcEvidence.timings.responseMs = elapsed();

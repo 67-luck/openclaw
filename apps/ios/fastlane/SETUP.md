@@ -196,7 +196,7 @@ before reuse. Each qualification still creates fresh simulator and Gateway resou
 The explicit build directory retains native products and their receipt; it does not
 retain raw XCTest results.
 
-For a narrower local diagnostic, use either:
+For a narrower local diagnostic:
 
 ```bash
 # Prepare native products without starting a simulator or Gateway.
@@ -208,11 +208,20 @@ node --import ./scripts/tsx.mjs scripts/ios-release-e2e.ts \
 node --import ./scripts/tsx.mjs scripts/ios-release-e2e.ts \
   --mode stock --target-sha "$(git rev-parse HEAD)" \
   --gateway-only --output /tmp/ios-e2e-gateway.json
+
+# Preserve the native build and cold simulator boot, then stop before XCTest.
+node --import ./scripts/tsx.mjs scripts/ios-release-e2e.ts \
+  --mode stock --target-sha "$(git rev-parse HEAD)" \
+  --setup-only --output /tmp/ios-e2e-setup.json
 ```
 
-These diagnostics produce `native-build`/`built` or `gateway-probe`/`probe-passed`
-proofs, respectively. Neither is release qualification. Gateway runtime preparation
-continues to use the existing build owner's cache in every mode.
+These diagnostics produce `native-build`/`built`, `gateway-probe`/`probe-passed`,
+or `setup-probe`/`probe-passed` proofs, respectively. None is release qualification.
+The setup probe adds temporary, sanitized connection, RPC, shutdown, and resource
+timings to distinguish delays before and after simulator boot. Manual dispatch of
+**iOS Release E2E** can select `setup_only=true` with `mode=stock` for this probe;
+release callers always run full qualification. Gateway runtime preparation continues
+to use the existing build owner's cache in every mode.
 
 The stock gate runs for both upload destinations in **iOS Store Release** after
 native tool setup and before signing assets are accessed. It qualifies the checked-out `main` commit used for release

@@ -41,6 +41,20 @@ vi.mock("../helpers/openclaw-test-instance.js", () => ({
   createOpenClawTestInstance: nativeMocks.gateway,
 }));
 vi.mock("../../src/gateway/call.js", () => ({ callGateway: nativeMocks.rpc }));
+vi.mock("../../src/gateway/client.js", () => {
+  class GatewayClientBoundary {
+    start() {
+      throw new Error("adapter test must use the controlled RPC boundary");
+    }
+    request() {
+      throw new Error("adapter test must use the controlled RPC boundary");
+    }
+    stopAndWait() {
+      throw new Error("adapter test must use the controlled RPC boundary");
+    }
+  }
+  return { GatewayClient: GatewayClientBoundary };
+});
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => {
@@ -428,6 +442,9 @@ describe("release qualification workflow authority", () => {
   it.each([
     ["manual current revision", {}, true],
     ["CI current revision", { caller: "ci" }, true],
+    ["setup-only current revision", { setupOnly: true }, true],
+    ["setup-only comparison", { setupOnly: true, mode: "compare" }, false],
+    ["setup-only arbitrary target", { setupOnly: true, target: "b".repeat(40) }, false],
     ["manual arbitrary target", { target: "b".repeat(40) }, false],
     ["CI arbitrary target", { caller: "ci", target: "b".repeat(40) }, false],
     ["invalid SHA", { target: "main" }, false],
@@ -456,11 +473,13 @@ describe("release qualification workflow authority", () => {
         GITHUB_EVENT_NAME: "workflow_dispatch",
         TARGET_SHA: target,
         E2E_MODE: "mode" in options ? options.mode : "stock",
+        SETUP_ONLY: "setupOnly" in options && options.setupOnly ? "true" : "false",
       },
     });
     expect(execution.status === 0).toBe(admitted);
     const proof = JSON.parse(readFileSync(path.join(root, "ios-release-e2e-proof.json"), "utf8"));
     expect(proof).toMatchObject({
+      kind: "setupOnly" in options && options.setupOnly ? "setup-probe" : "qualification",
       status: "failed",
       trials: [],
     });
@@ -601,6 +620,7 @@ describe("native command adapter", () => {
     "gateway-exit-during-boot",
     "cancel-during-boot",
     "gateway-only",
+    "setup-only",
     "setup-code-timeout",
     "setup-code-rpc-timeout",
     "test-unjoined",
@@ -752,7 +772,14 @@ describe("native command adapter", () => {
             throw new Error("private Gateway startup failure");
           }
         }),
-        logs: () => "private log\n[responses] start private\n[responses] completed private\n",
+        logs: () =>
+          scenario === "setup-only"
+            ? JSON.stringify({
+                subsystem: "gateway/ws",
+                message: "⇄ res ✓ device.pair.setupCode 97ms private response details",
+                token: "synthetic-token",
+              })
+            : "private log\n[responses] start private\n[responses] completed private\n",
         cleanup: vi.fn(async () => {
           lifecycle.push("gateway-cleanup");
           gatewayChild.exitCode = 0;
@@ -1121,6 +1148,7 @@ describe("native command adapter", () => {
       targetSha: "1".repeat(40),
       signal: abort.signal,
       gatewayOnly: scenario === "gateway-only",
+      setupOnly: scenario === "setup-only",
       proof,
       onProgress: async () => {
         progressSnapshots.push(JSON.stringify(proof));
@@ -1189,7 +1217,7 @@ describe("native command adapter", () => {
             : "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
     });
     try {
-      if (scenario === "gateway-only") {
+      if (scenario === "gateway-only" || scenario === "setup-only") {
         const gatewayProbe = await native.dependencies.create("stock", 1);
         try {
           await gatewayProbe.prepare();
@@ -1197,23 +1225,51 @@ describe("native command adapter", () => {
           await gatewayProbe.cleanup();
         }
         expect(lifecycle).toEqual([
+          ...(scenario === "setup-only" ? ["native-build-complete"] : []),
           "mock-start",
           "gateway-create",
           "gateway-start",
           "setup-status",
           "setup-status-ready",
+          ...(scenario === "setup-only" ? ["simulator-create", "boot-wait", "boot-ready"] : []),
           "setup-code",
           "gateway-cleanup",
           "mock-cleanup",
+          ...(scenario === "setup-only" ? ["simulator-delete"] : []),
         ]);
-        expect(nativeMocks.build).not.toHaveBeenCalled();
-        expect(created).toBe(0);
+        expect(nativeMocks.build).toHaveBeenCalledTimes(scenario === "setup-only" ? 1 : 0);
+        expect(created).toBe(scenario === "setup-only" ? 1 : 0);
         expect(joinedMocks).toBe(1);
+        expect(
+          nativeMocks.command.mock.calls.some(([{ args }]) =>
+            args.includes("test-without-building"),
+          ),
+        ).toBe(false);
         expect(nativeMocks.rpc.mock.calls.map(([options]) => options.method)).toEqual([
           "device.pair.setupStatus",
           "device.pair.setupCode",
         ]);
-        expect(proof.fixtures).toEqual([expect.objectContaining({ cleanupConfirmed: true })]);
+        expect(proof.fixtures).toEqual([
+          expect.objectContaining({
+            cleanupConfirmed: true,
+            ...(scenario === "setup-only"
+              ? {
+                  setupDiagnostics: {
+                    rpcs: ["setup-status", "setup-code"].map((operation) =>
+                      expect.objectContaining({
+                        operation,
+                        status: "passed",
+                        totalMs: expect.any(Number),
+                      }),
+                    ),
+                    serverRpcs: [{ method: "device.pair.setupCode", ok: true, durationMs: 97 }],
+                    resources: [],
+                  },
+                }
+              : {}),
+          }),
+        ]);
+        expect(JSON.stringify(proof)).not.toMatch(/private|synthetic|OPENCLAW_E2E_|metadata/);
         return;
       }
       const report = await runTrials("stock", native.dependencies);

@@ -500,6 +500,7 @@ async function main() {
       "build-dir": { type: "string" },
       "build-only": { type: "boolean", default: false },
       "gateway-only": { type: "boolean", default: false },
+      "setup-only": { type: "boolean", default: false },
     },
   });
   if (
@@ -507,7 +508,9 @@ async function main() {
     !/^[a-f0-9]{40}$/u.test(values["target-sha"] ?? "") ||
     !values.output ||
     (values["build-only"] && !values["build-dir"]) ||
-    (values["gateway-only"] && (values["build-only"] || values.mode !== "stock"))
+    (values["gateway-only"] && (values["build-only"] || values.mode !== "stock")) ||
+    (values["setup-only"] &&
+      (values["build-only"] || values["gateway-only"] || values.mode !== "stock"))
   ) {
     throw new Error("usage: --mode stock|compare --target-sha <full-sha> --output <proof.json>");
   }
@@ -521,11 +524,13 @@ async function main() {
     targetSha: values["target-sha"],
     harnessSha: null,
     mode: values.mode,
-    kind: values["gateway-only"]
-      ? "gateway-probe"
-      : values["build-only"]
-        ? "native-build"
-        : "qualification",
+    kind: values["setup-only"]
+      ? "setup-probe"
+      : values["gateway-only"]
+        ? "gateway-probe"
+        : values["build-only"]
+          ? "native-build"
+          : "qualification",
     model: MODEL_REF,
     status: "failed",
     trials: [],
@@ -553,13 +558,14 @@ async function main() {
       proof,
       buildDir: values["build-dir"],
       gatewayOnly: values["gateway-only"],
+      setupOnly: values["setup-only"],
       onProgress: writeProof,
     });
     cleanup = native.cleanup;
     let status: string;
     if (values["build-only"]) {
       status = "built";
-    } else if (values["gateway-only"]) {
+    } else if (values["gateway-only"] || values["setup-only"]) {
       const fixture = await native.dependencies.create("stock", 1);
       try {
         await fixture.prepare();

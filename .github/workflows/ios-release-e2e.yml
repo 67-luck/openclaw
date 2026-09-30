@@ -16,6 +16,10 @@ on:
         type: choice
         options: [stock, compare]
         default: stock
+      setup_only:
+        description: Diagnose setup after the native build without running XCTest
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,6 +31,7 @@ jobs:
     env:
       TARGET_SHA: ${{ inputs.target_sha || github.sha }}
       E2E_MODE: ${{ inputs.mode }}
+      SETUP_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.setup_only || false }}
     steps:
       - name: Initialize failure proof and validate inputs
         id: start
@@ -40,8 +45,9 @@ jobs:
           import json, os, re
           sha = os.environ["TARGET_SHA"]
           mode = os.environ["E2E_MODE"]
+          setup_only = os.environ["SETUP_ONLY"] == "true"
           with open(os.environ["PROOF_PATH"], "w") as out:
-              json.dump({"schema": 2, "kind": "qualification", "status": "failed", "trials": [],
+              json.dump({"schema": 2, "kind": "setup-probe" if setup_only else "qualification", "status": "failed", "trials": [],
                          "targetSha": sha if re.fullmatch(r"[a-f0-9]{40}", sha) else None,
                          "harnessSha": None,
                          "mode": mode if mode in ("stock", "compare") else None,
@@ -49,6 +55,7 @@ jobs:
           PY
           [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
           [[ "$E2E_MODE" == stock || "$E2E_MODE" == compare ]] || exit 1
+          [[ "$SETUP_ONLY" == false || "$E2E_MODE" == stock ]] || exit 1
           [[ "$TARGET_SHA" == "$GITHUB_SHA" ]] || exit 1
 
       - name: Checkout exact qualification target
@@ -111,8 +118,12 @@ jobs:
         env:
           OPENCLAW_CI_SIMSLIM_BINARY: ${{ steps.simslim.outputs.binary }}
         run: |
+          args=()
+          if [[ "$SETUP_ONLY" == true ]]; then
+            args+=(--setup-only)
+          fi
           node --import ./scripts/tsx.mjs scripts/ios-release-e2e.ts \
-            --mode "$E2E_MODE" --target-sha "$TARGET_SHA" --output "$PROOF_PATH"
+            --mode "$E2E_MODE" --target-sha "$TARGET_SHA" --output "$PROOF_PATH" "${args[@]}"
 
       - name: Complete sanitized timing proof
         if: always()
