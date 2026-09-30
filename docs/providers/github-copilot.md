@@ -219,6 +219,10 @@ openclaw models auth login-github-copilot --yes
 openclaw models auth login --provider github-copilot --method device --set-default
 ```
 
+Add `--profile-id <id>` to the generic login command to offer reuse only for that
+saved profile. Setup retries offer the sign-in just saved by setup. When no
+reusable profile is available, the provider starts a fresh device login.
+
 ## Non-interactive onboarding
 
 The device-login flow requires an interactive TTY. For headless setup, import
