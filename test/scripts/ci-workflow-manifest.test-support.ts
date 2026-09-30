@@ -597,27 +597,37 @@ export function runCiManifestFixture(options: {
     );
     const outputPath = path.join(root, "manifest.out");
     const summaryPath = path.join(root, "summary.md");
+    const checkoutRevision = options.scopeEnv?.OPENCLAW_CI_CHECKOUT_REVISION ?? "a".repeat(40);
+    const workflowRevision = options.scopeEnv?.OPENCLAW_CI_WORKFLOW_REVISION ?? "b".repeat(40);
+    const manifestRoot =
+      checkoutRevision === workflowRevision ? root : path.join(root, ".ci-harness");
     const gitOwner = ".github/actions/git-owner";
-    const trustedGitOwner = path.join(root, ".ci-harness", gitOwner);
-    mkdirSync(trustedGitOwner, { recursive: true });
+    const manifestGitOwner = path.join(manifestRoot, gitOwner);
+    mkdirSync(manifestGitOwner, { recursive: true });
     for (const name of ["test-prerequisites.mjs", "test-prerequisites.json"]) {
-      writeFileSync(path.join(trustedGitOwner, name), readFileSync(path.join(gitOwner, name)));
+      writeFileSync(path.join(manifestGitOwner, name), readFileSync(path.join(gitOwner, name)));
     }
     const trustedScripts = path.join(root, ".ci-harness/scripts");
     mkdirSync(trustedScripts, { recursive: true });
+    const manifestScripts = path.join(manifestRoot, "scripts");
     copyFileSync(
       new URL("../../scripts/ci-build-manifest.mjs", import.meta.url),
-      path.join(trustedScripts, "ci-build-manifest.mjs"),
+      path.join(manifestScripts, "ci-build-manifest.mjs"),
     );
     const trustedReleasePolicy = path.join(root, ".ci-harness/scripts/lib");
     mkdirSync(trustedReleasePolicy, { recursive: true });
     for (const name of ["release-context.mjs", "release-version.mjs"]) {
       writeFileSync(path.join(trustedReleasePolicy, name), readFileSync(`scripts/lib/${name}`));
+      if (manifestScripts !== trustedScripts) {
+        writeFileSync(path.join(scriptsDir, name), readFileSync(`scripts/lib/${name}`));
+      }
     }
-    copyFileSync(
-      path.join(scriptsDir, "ci-node-test-plan.mts"),
-      path.join(trustedReleasePolicy, "ci-node-test-plan.mts"),
-    );
+    if (manifestScripts === trustedScripts) {
+      copyFileSync(
+        path.join(scriptsDir, "ci-node-test-plan.mts"),
+        path.join(trustedReleasePolicy, "ci-node-test-plan.mts"),
+      );
+    }
     const fixtureBin = path.join(root, "bin");
     let correctionBaseSha = "";
     if (options.remoteTagRefs) {
@@ -705,7 +715,7 @@ export function runCiManifestFixture(options: {
           : process.env.PATH,
         OPENCLAW_CI_CHANGED_PATHS_JSON:
           options.changedPaths === undefined ? undefined : JSON.stringify(options.changedPaths),
-        OPENCLAW_CI_CHECKOUT_REVISION: "a".repeat(40),
+        OPENCLAW_CI_CHECKOUT_REVISION: checkoutRevision,
         OPENCLAW_CI_CORRECTION_BASE_SHA: correctionBaseSha,
         OPENCLAW_CI_DOCS_CHANGED: "true",
         OPENCLAW_CI_DOCS_ONLY: "false",
@@ -742,7 +752,7 @@ export function runCiManifestFixture(options: {
         OPENCLAW_CI_NODE_RUNNER_BACKEND: options.nodeRunnerBackend ?? "",
         OPENCLAW_CI_RUN_SKILLS_PYTHON: "true",
         OPENCLAW_CI_RUN_WINDOWS: "true",
-        OPENCLAW_CI_WORKFLOW_REVISION: "b".repeat(40),
+        OPENCLAW_CI_WORKFLOW_REVISION: workflowRevision,
         ...options.scopeEnv,
       },
     });

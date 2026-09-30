@@ -5958,11 +5958,12 @@ describe("ci workflow guards", () => {
           invocationOptions(buildManifest),
         ),
         label,
-      ).toEqual(
-        usesCompatibilityTooling
-          ? ["--import", "tsx", ".ci-harness/scripts/ci-build-manifest.mjs"]
-          : [".ci-harness/scripts/ci-build-manifest.mjs"],
-      );
+      ).toEqual([
+        ...(usesCompatibilityTooling ? ["--import", "tsx"] : []),
+        checkoutRevision === workflowSha
+          ? "scripts/ci-build-manifest.mjs"
+          : ".ci-harness/scripts/ci-build-manifest.mjs",
+      ]);
       expect(
         runPreflightNodeInvocation(
           expectDefined(checkProtocolCoverage.run, "protocol coverage script"),

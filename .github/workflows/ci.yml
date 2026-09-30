@@ -1443,12 +1443,16 @@ jobs:
           OPENCLAW_CI_PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           OPENCLAW_CI_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
         run: |
+          manifest_script=scripts/ci-build-manifest.mjs
+          if [ "$OPENCLAW_CI_CHECKOUT_REVISION" != "$OPENCLAW_CI_WORKFLOW_REVISION" ]; then
+            manifest_script=.ci-harness/scripts/ci-build-manifest.mjs
+          fi
           manifest_node_args=()
           if [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ] &&
             [ "$OPENCLAW_CI_CHECKOUT_REVISION" != "$OPENCLAW_CI_WORKFLOW_REVISION" ]; then
             manifest_node_args+=(--import tsx)
           fi
-          node "${manifest_node_args[@]}" .ci-harness/scripts/ci-build-manifest.mjs
+          node "${manifest_node_args[@]}" "$manifest_script"
 
       - name: Check mobile protocol event coverage
         if: steps.manifest.outputs.run_protocol_event_coverage == 'true'

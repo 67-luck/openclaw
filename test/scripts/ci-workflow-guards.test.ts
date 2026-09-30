@@ -4424,6 +4424,59 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(workflow).not.toContain('"testbox_id": "${testbox_id}"');
   });
 
+  it.each(
+    ["push", "pull_request", "schedule", "workflow_dispatch"].flatMap((eventName) =>
+      ["same revision", "different revision", "missing trusted manifest"].map((layout) => ({
+        eventName,
+        layout,
+      })),
+    ),
+  )(
+    "executes the workflow-owned manifest entrypoint: $eventName, $layout",
+    ({ eventName, layout }) => {
+      const step = expectDefined(
+        readCiWorkflow().jobs.preflight.steps.find(
+          (entry: WorkflowStep) => entry.name === "Build CI manifest",
+        ),
+        "manifest entrypoint",
+      );
+      const root = tempDirs.make("ci-manifest-entrypoint-");
+      const candidateScript = path.join(root, "scripts/ci-build-manifest.mjs");
+      const trustedScript = path.join(root, ".ci-harness/scripts/ci-build-manifest.mjs");
+      const script = `import { readFileSync } from "node:fs";
+      console.log(JSON.stringify({ entrypoint: import.meta.url, input: readFileSync("candidate.txt", "utf8") }));`;
+      mkdirSync(path.dirname(candidateScript), { recursive: true });
+      writeFileSync(candidateScript, script);
+      writeFileSync(path.join(root, "candidate.txt"), "candidate-source");
+      // Same-revision preflight exports actions and release helpers, not this script.
+      mkdirSync(path.join(root, ".ci-harness/scripts/lib"), { recursive: true });
+      if (layout === "different revision") {
+        writeFileSync(trustedScript, script);
+      }
+      const result = runWorkflowShellScript(step.run, {
+        cwd: root,
+        env: {
+          ...process.env,
+          GITHUB_EVENT_NAME: eventName,
+          OPENCLAW_CI_CHECKOUT_REVISION: "a".repeat(40),
+          OPENCLAW_CI_WORKFLOW_REVISION: (layout === "same revision" ? "a" : "b").repeat(40),
+        },
+      });
+      if (layout === "missing trusted manifest") {
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("Cannot find module");
+        expect(result.stdout).toBe("");
+      } else {
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({
+          entrypoint: pathToFileURL(layout === "same revision" ? candidateScript : trustedScript)
+            .href,
+          input: "candidate-source",
+        });
+      }
+    },
+  );
+
   it.each([false, true])("loads the Node shard planner from its owner (frozen=%s)", (frozen) => {
     const workflow = readCiWorkflow();
     const targetResolver = expectDefined(

@@ -289,8 +289,8 @@ export function runWorkflowShellScript(
         },
       )
       .replace(
-        'node "${manifest_node_args[@]}" .ci-harness/scripts/ci-build-manifest.mjs',
-        `${quoteShell(testNodeExecPath)} "\${manifest_node_args[@]}" .ci-harness/scripts/ci-build-manifest.mjs`,
+        'node "${manifest_node_args[@]}" "$manifest_script"',
+        `${quoteShell(testNodeExecPath)} "\${manifest_node_args[@]}" "$manifest_script"`,
       )
       .replaceAll(
         "manifest_node_args+=(--import tsx)",
