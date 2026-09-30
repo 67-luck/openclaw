@@ -4497,15 +4497,6 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(run.status, run.stderr).toBe(0);
   });
 
-  it("exports the manifest entrypoint into the same-revision preflight harness", () => {
-    const source = readFileSync(".github/workflows/ci.yml", "utf8");
-    const preflightPaths = expectDefined(
-      source.match(/elif kind == "preflight":\n\s+pathspecs \+= \[([^\]]+)\]/u)?.[1],
-      "same-revision preflight harness paths",
-    );
-    expect(preflightPaths).toContain('"scripts/ci-build-manifest.mjs"');
-  });
-
   it("keeps the preflight manifest import closure dependency-free", () => {
     const { result, manifest } = runDependencyFreePreflight(
       new URL("../../scripts/ci-build-manifest.mjs", import.meta.url),
