@@ -475,21 +475,27 @@ export async function authorizeGatewayConnectDevice(
       await rejectGatewayStartupConnect(context);
       return undefined;
     }
-    const pairingRecordDoesNotAuthorizeSession =
+    const hasPairingPolicyExemption =
       skipLocalBackendSelfPairing || controlUiPairingKind === "auth-none";
-    if (pairingRecordDoesNotAuthorizeSession) {
+    if (hasPairingPolicyExemption) {
       if (isPaired) {
-        // Locality plus auth mode authorizes this session; the pairing row only
-        // bounds durable grants and owns last-seen diagnostics. Reapplying its
-        // scope cap here would make an unrelated narrow row deny local access.
+        // Local scope policy stays independent of the row's scope cap, but
+        // device-token observations still depend on their live paired grant.
         pairedClientId = paired.clientId;
         pairedBrowserOrigin = paired.browserOrigin;
         hasServerApprovedDeviceTokenBaseline = true;
-        pairedDeviceMetadata = {
-          createdAtMs: paired.createdAtMs,
-          approvedAtMs: paired.approvedAtMs,
-          patch: clientAccessMetadata,
-        };
+        const grant =
+          authMethod === "device-token" && hasEffectivePairedDeviceRole(paired, role)
+            ? paired.tokens?.[role]
+            : undefined;
+        if (authMethod !== "device-token" || grant) {
+          pairedDeviceMetadata = {
+            createdAtMs: paired.createdAtMs,
+            approvedAtMs: paired.approvedAtMs,
+            ...(grant ? { grant: { role, token: grant.token } } : {}),
+            patch: clientAccessMetadata,
+          };
+        }
       } else if (
         controlUiPairingKind === "auth-none" ||
         (skipLocalBackendSelfPairing && authMethod !== "device-token")

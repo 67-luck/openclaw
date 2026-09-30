@@ -9,7 +9,6 @@ import { ConnectErrorDetailCodes } from "../../../../packages/gateway-protocol/s
 import { ErrorCodes, PROTOCOL_VERSION } from "../../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
-import * as devicePairing from "../../../infra/device-pairing.js";
 import { resetDiagnosticEventsForTest } from "../../../infra/diagnostic-events.js";
 import { tryBeginGatewaySuspendAdmission } from "../../../process/gateway-work-admission.js";
 import {
@@ -55,7 +54,6 @@ import {
   createBackendClient,
   createConnectedTestClient,
   createHealthSummary,
-  createPairedGatewayConnectDevice,
   createTrustedProxyUserConnector,
   createSetCloseCauseMock,
   createTestAgentRuntimeIdentityLease,
@@ -246,48 +244,6 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
       prewarm.resolve();
     }
   });
-
-  it.each([false, true])(
-    "sends hello before paired metadata settles (closed=%s)",
-    async (closed) => {
-      await withGatewayTestState({ label: "gateway-paired-metadata" }, async () => {
-        const connId = "paired-metadata";
-        const { device, pairing } = createPairedGatewayConnectDevice(connId);
-        const metadataStarted = createGatewayHarnessGate();
-        const metadata = createGatewayHarnessGate<boolean>();
-        const paired = vi.spyOn(devicePairing, "getPairedDevice").mockResolvedValue(pairing);
-        let refreshed = false;
-        const update = vi
-          .spyOn(devicePairing, "updatePairedDeviceMetadata")
-          .mockImplementation(async (_id, _patch, _baseDir, options) => {
-            metadataStarted.resolve();
-            await metadata.promise;
-            options?.assertCurrent();
-            refreshed = true;
-            return true;
-          });
-        const harness = connectTrustedProxyUser(connId, {}, [], undefined, device);
-        try {
-          await metadataStarted.promise;
-          expect(harness.socketSend).toHaveBeenCalledOnce();
-          expect(JSON.parse(harness.socketSend.mock.calls[0]![0])).toMatchObject({
-            ok: true,
-            payload: { type: "hello-ok", auth: { role: "operator" } },
-          });
-          expect(harness.clearHandshakeTimer).toHaveBeenCalledOnce();
-          if (closed) {
-            (harness.client as GatewayWsClient).invalidated = true;
-          }
-        } finally {
-          metadata.resolve(true);
-          await harness.runWhenIdle();
-          update.mockRestore();
-          paired.mockRestore();
-        }
-        expect(refreshed).toBe(!closed);
-      });
-    },
-  );
 
   it("skips history prewarm for an admitted backend operator", async () => {
     const harness = attachGatewayHarness({

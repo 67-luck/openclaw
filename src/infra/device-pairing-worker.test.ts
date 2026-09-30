@@ -6,8 +6,13 @@ import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-d
 import * as stateReads from "../state/openclaw-state-db-readonly.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import * as stateWorker from "../state/openclaw-state-worker-store.js";
+import { withEnvAsync } from "../test-utils/env.js";
 import { approveBootstrapDevicePairing, approveDevicePairing } from "./device-pairing-approval.js";
 import * as pairingLock from "./device-pairing-lock.js";
+import {
+  isNodePairingGenerationCurrent,
+  resolveCurrentPairedDeviceNodeBinding,
+} from "./device-pairing-node-state.js";
 import { getPublishedPairedDeviceBinding } from "./device-pairing-publication.js";
 import {
   persistDevicePairingStoreState,
@@ -589,11 +594,19 @@ test.each(["metadata", "presence", "removal", "committed metadata"] as const)(
           ? updatePairedDevicePresence("paired-rich", patch, generation, baseDir)
           : removePairedDevice("paired-rich", baseDir);
     const reader = writerStarted.promise.then(() => getPairedDevice("paired-rich", baseDir));
+    const authority = writerStarted.promise.then(() =>
+      withEnvAsync({ OPENCLAW_STATE_DIR: baseDir }, () =>
+        Promise.allSettled([
+          resolveCurrentPairedDeviceNodeBinding("paired-rich"),
+          isNodePairingGenerationCurrent(generation),
+        ]),
+      ),
+    );
     onTestFinished(async () => {
       releaseWriter.resolve();
       releaseReply.resolve();
       releaseRead.resolve();
-      await Promise.allSettled([mutation, reader]);
+      await Promise.allSettled([mutation, reader, authority]);
       observedLock.mockRestore();
       observedRead.mockRestore();
       heldWriter.mockRestore();
@@ -625,6 +638,10 @@ test.each(["metadata", "presence", "removal", "committed metadata"] as const)(
     expect(getPublishedPairedDeviceBinding("paired-rich", baseDir)).toEqual(
       kind === "removal" ? null : previousBinding,
     );
+    expect(await authority).toEqual([
+      { status: "fulfilled", value: kind === "removal" ? undefined : previousBinding },
+      { status: "fulfilled", value: kind !== "removal" },
+    ]);
   },
 );
 

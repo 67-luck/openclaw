@@ -1,4 +1,3 @@
-// Gateway WebSocket connect finalization attaches node/session state and sends hello-ok.
 import os from "node:os";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
@@ -683,23 +682,34 @@ export async function attachAuthenticatedGatewayConnect(
     );
   }
 
-  await sendGatewayHello(context, state, pluginSurfaceUrls, authenticatedUserProfile?.profileId);
-
-  if (state.pairedDeviceMetadata && device && devicePublicKey) {
-    const { patch, ...binding } = state.pairedDeviceMetadata;
-    // Observation writes retain normal FIFO/commit ownership, but cannot hold
-    // an authenticated connection behind the shared-state writer queue.
-    runDetachedConnectWork(
-      async () => {
-        await updatePairedDeviceMetadata(device.id, patch, undefined, {
-          expectedPairing: { publicKey: devicePublicKey, ...binding },
-          assertCurrent: profileLifecycle.assertCurrent,
-        });
+  await sendGatewayHello(
+    {
+      ...context,
+      onHelloDelivered: () => {
+        if (state.pairedDeviceMetadata && device && devicePublicKey) {
+          const { patch, ...binding } = state.pairedDeviceMetadata;
+          // Queue the observation before admitting node requests, without waiting
+          // for its writer or delaying the authenticated hello.
+          runDetachedConnectWork(
+            async () => {
+              await updatePairedDeviceMetadata(device.id, patch, undefined, {
+                expectedPairing: { publicKey: devicePublicKey, ...binding },
+                assertCurrent: profileLifecycle.assertCurrent,
+              });
+            },
+            (error) =>
+              logGateway.warn(
+                `device metadata refresh failed conn=${connId}: ${formatForLog(error)}`,
+              ),
+          );
+        }
+        context.onHelloDelivered();
       },
-      (error) =>
-        logGateway.warn(`device metadata refresh failed conn=${connId}: ${formatForLog(error)}`),
-    );
-  }
+    },
+    state,
+    pluginSurfaceUrls,
+    authenticatedUserProfile?.profileId,
+  );
 
   refreshGatewayConnectProfile({
     context,

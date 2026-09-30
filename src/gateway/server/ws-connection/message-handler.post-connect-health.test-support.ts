@@ -189,7 +189,10 @@ export function createTrustedProxyUserConnector(
   };
 }
 
-export function createPairedGatewayConnectDevice(connId: string) {
+export function createPairedGatewayConnectDevice(
+  connId: string,
+  client: Pick<ConnectParams["client"], "id" | "mode">,
+) {
   const identity = generateStoredDeviceIdentity();
   const publicKey = publicKeyRawBase64UrlFromPem(identity.publicKeyPem);
   const signedAt = Date.now();
@@ -203,8 +206,8 @@ export function createPairedGatewayConnectDevice(connId: string) {
       identity.privateKeyPem,
       buildDeviceAuthPayload({
         deviceId: identity.deviceId,
-        clientId: "openclaw-control-ui",
-        clientMode: "ui",
+        clientId: client.id,
+        clientMode: client.mode,
         role: "operator",
         scopes: [],
         signedAtMs: signedAt,

@@ -5,6 +5,7 @@ import type {
   errorShape,
 } from "../../../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import type { CloudWorkerSetupMutationAdmission } from "../../../infra/device-bootstrap.worker-types.js";
 import type {
   PairedDeviceMetadataBinding,
   PairedDeviceMetadataPatch,
@@ -72,6 +73,7 @@ export type GatewayWsMessageHandlerParams = {
   nodeReapprovalCoordinator?: NodeReapprovalCoordinator;
   isStartupPending?: () => boolean;
   isPendingWorkerNodeSetup?: (setupId: string, deviceId: string) => boolean;
+  admitsNodeSetupCompletion?: (setup: CloudWorkerSetupMutationAdmission) => boolean;
   gatewayMethods: string[];
   events: string[];
   extraHandlers: GatewayRequestHandlers;
