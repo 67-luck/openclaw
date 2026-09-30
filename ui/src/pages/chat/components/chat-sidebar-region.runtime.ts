@@ -85,8 +85,6 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
   @property({ attribute: false }) layout: SidebarLayout = { columns: [] };
   @property({ attribute: false }) panelDefinitions = sidebarPanelDefinitions();
   @property({ attribute: false }) panelTemplates: SidebarPanelTemplates = {};
-  // Render-only content for unused side space; never a tab or saved layout mutation.
-  @property({ attribute: false }) sideFallback: TemplateResult | null = null;
   // Header actions owned by the active panel. The tabbed model gives a panel no
   // header of its own, so an action on its content (open externally, clear the
   // thread) is only reachable if the panel contributes it to the shared header.
@@ -99,13 +97,11 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
   private previousGeometry = "";
   private geometryFrame: number | null = null;
   private contentMounted = false;
-  private contentPart: ReturnType<typeof renderTemplate> | undefined;
   private focusedSurface: Element | null = null;
   private nativeCloseListeners: AbortController | undefined;
 
   override connectedCallback(): void {
     super.connectedCallback();
-    this.contentPart?.setConnected(true);
     this.nativeCloseListeners = new AbortController();
     const options = { capture: true, signal: this.nativeCloseListeners.signal };
     this.parentElement?.addEventListener(PANEL_HOSTED_TABS_CHANGE_EVENT, this.refreshHostedTabs, {
@@ -120,7 +116,6 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
   }
 
   override disconnectedCallback(): void {
-    this.contentPart?.setConnected(false);
     this.nativeCloseListeners?.abort();
     this.nativeCloseListeners = undefined;
     this.focusedSurface = null;
@@ -606,19 +601,7 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
   protected override updated() {
     const root = this.parentElement?.querySelector<HTMLElement>(".sidebar-region__right-runtime");
     if (root) {
-      // The retained panel subtree and fallback have separate, stable Lit parts.
-      // Switching progress on/off must not reconnect hidden iframe or terminal roots.
-      this.contentPart = renderTemplate(
-        html`${this.renderPanel()}${
-          this.sideFallback !== null
-            ? html`<div class="sidebar-region__fallback" data-region="side">
-                ${this.sideFallback}
-              </div>`
-            : nothing
-        }`,
-        root,
-        { isConnected: this.isConnected },
-      );
+      renderTemplate(this.renderPanel(), root);
       this.scheduleGeometryCommit();
     }
   }

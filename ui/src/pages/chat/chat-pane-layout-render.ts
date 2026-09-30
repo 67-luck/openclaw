@@ -1,5 +1,5 @@
 import { buildControlUiFocusPath } from "@openclaw/session-url-contract";
-import { html, nothing, type TemplateResult } from "lit";
+import { html, nothing } from "lit";
 import "./chat-outbox-recovery.ts";
 import type { SessionObserverDigest } from "../../../../packages/gateway-protocol/src/index.js";
 import type { GatewaySessionRow } from "../../api/types.ts";
@@ -44,7 +44,6 @@ type ChatPaneLayoutRenderParams = {
   currentAgentId: string;
   board: ResolvedBoardView;
   sidebarLayout: SidebarLayout;
-  sideFallback: TemplateResult | typeof nothing;
   sessionWorkspace: ReturnType<typeof createChatPaneRails>["sessionWorkspace"];
   chatProps: ChatProps;
   observerDigest: SessionObserverDigest | null;
@@ -75,7 +74,6 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       currentAgentId,
       board,
       sidebarLayout,
-      sideFallback,
       sessionWorkspace,
       chatProps,
       observerDigest,
@@ -272,7 +270,6 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
             chatProps.placementStartup,
             sidebarLayout,
             panelDefinitions,
-            sideFallback !== nothing,
           )}<openclaw-plugin-contributions
             .kind=${"session-header"}
             .sessionKey=${state.sessionKey}
@@ -299,7 +296,6 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
         setPanelOpen: (open) => this.setChatSidePanelOpen(open, sidebarLayout),
       }),
       layout: sidebarLayout,
-      sideFallback,
       panelDefinitions,
       panelActions,
       narrow: this.paneWidth < SIDEBAR_NARROW_BREAKPOINT_PX,

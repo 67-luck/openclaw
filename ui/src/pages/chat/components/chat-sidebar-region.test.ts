@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { html, nothing, render, type TemplateResult } from "lit";
+import { html, nothing } from "lit";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { GatewayBrowserClient } from "../../../api/gateway.ts";
 import "../../../components/resizable-divider.ts";
@@ -14,7 +14,6 @@ import {
   sidebarPanelDefinitions,
   sidebarPanelTemplates,
 } from "../chat-pane-embedded-panels.ts";
-import { renderSidebarRegion } from "../chat-pane-sidebar-layout.ts";
 import { createInitializationContext } from "../chat-pane.test-support.ts";
 import { createPageState } from "../chat-state-page.ts";
 import {
@@ -91,73 +90,6 @@ afterEach(() => {
 });
 
 describe("chat sidebar region", () => {
-  it("renders a fallback through the region without replacing retained panel roots or moving focus", async () => {
-    const mount = document.body.appendChild(document.createElement("div"));
-    const input = document.body.appendChild(document.createElement("input"));
-    onTestFinished(() => {
-      render(nothing, mount);
-      mount.remove();
-      input.remove();
-    });
-    input.focus();
-    const callbacks = {
-      activatePanel: vi.fn(),
-      togglePanelExpanded: vi.fn(),
-      closeSlot: vi.fn(),
-      openSlot: vi.fn(),
-      reorderPanel: vi.fn(),
-      resizePanel: vi.fn(),
-      setOpen: vi.fn(),
-    };
-    const draw = async (layout: SidebarLayout, sideFallback: TemplateResult | typeof nothing) => {
-      render(
-        renderSidebarRegion({
-          presentationId: "fallback-retention",
-          availableWidth: 1200,
-          availableSlots: ["detail"],
-          callbacks,
-          layout,
-          narrow: false,
-          panelActions: {},
-          panelTemplates: { detail: html`<div data-panel-root>Retained content</div>` },
-          primary: html`<main>Conversation</main>`,
-          sideFallback,
-          requestUpdate: vi.fn(),
-        }),
-        mount,
-      );
-      await mount.querySelector("openclaw-chat-sidebar-region")?.updateComplete;
-    };
-    const fallback = html`<section data-progress>Progress</section>`;
-    await draw({ columns: [] }, fallback);
-    expect(mount.querySelector(".sidebar-region--fallback [data-progress]")).not.toBeNull();
-    expect(mount.querySelector(".side-panel__header")).toBeNull();
-    const runtime = mount.querySelector("openclaw-chat-sidebar-region");
-    const opened = openSlot({ columns: [] }, "detail");
-    await draw(opened, nothing);
-    expect(mount.querySelector(".sidebar-region__fallback")).toBeNull();
-    const panel = mount.querySelector("[data-panel-root]");
-    expect(panel).not.toBeNull();
-    const closed = setSidebarOpen(opened, false);
-    const saved = structuredClone(closed);
-    await draw(closed, fallback);
-    expect(mount.querySelector("[data-panel-root]")).toBe(panel);
-    expect(panel?.closest("[data-panel-slot]")?.hasAttribute("hidden")).toBe(true);
-    expect(mount.querySelector(".sidebar-region--fallback [data-progress]")).not.toBeNull();
-    await draw(closed, nothing);
-    await draw(closed, fallback);
-    await draw(opened, nothing);
-    expect(mount.querySelector("[data-panel-root]")).toBe(panel);
-    expect(mount.querySelector("openclaw-chat-sidebar-region")).toBe(runtime);
-    expect(mount.querySelector("[data-progress]")).toBeNull();
-    expect(mount.querySelector(".sidebar-region__fallback")).toBeNull();
-    expect(document.activeElement).toBe(input);
-    expect(closed).toEqual(saved);
-    for (const callback of Object.values(callbacks)) {
-      expect(callback).not.toHaveBeenCalled();
-    }
-  });
-
   it("updates the conversation tab identity without relabeling other panels or their controls", async () => {
     const layout = openSlot(openSlot({ columns: [] }, "dashboard"), "workspace");
     const dashboard = layout.columns[0]!.panels.find((panel) => panel.slot === "dashboard")!;

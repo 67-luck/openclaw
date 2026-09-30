@@ -1,18 +1,14 @@
 /* @vitest-environment jsdom */
-
 import type { ProgressCard } from "@openclaw/gateway-protocol";
 import { nothing, render } from "lit";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { loadSettings, patchSettings, saveSettings } from "../../app/settings.ts";
-import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 import { createRefreshChatPane } from "./chat-pane-history.test-support.ts";
 import { createGatewayBrowserClientFixture } from "./chat-pane.test-support.ts";
 import {
   openSlot,
   promoteSidebarPanel,
   setSidebarOpen,
-  SIDEBAR_NARROW_BREAKPOINT_PX,
-  type SidebarLayout,
   type SidebarSlotId,
 } from "./sidebar-layout.ts";
 
@@ -22,31 +18,33 @@ const card: ProgressCard = {
   updatedAt: 1_800_000_000_000,
   markdown: "Verifying the implementation",
 };
-
 function fixture() {
   const request = vi.fn().mockResolvedValue({});
   const { pane, state, context } = createRefreshChatPane(
     createGatewayBrowserClientFixture({ request }),
   );
   pane.sessionKey = state.sessionKey = card.sessionKey;
-  state.settings = {
-    ...state.settings,
-    chatShowTaskProgress: true,
-    chatTaskProgressSidePanel: true,
-  };
-  // The retained controller is covered by progress-history tests. Exercise its
-  // presentation at the actual pane render entry, including composer loading.
+  state.settings = { ...state.settings, chatShowTaskProgress: true, chatFloatTaskProgress: true };
+  const presentation = { card, identity: card.sessionKey, lifetime: {} };
   Object.defineProperties(pane, {
-    progressCardPresentation: {
-      configurable: true,
-      get: () => ({ card, identity: card.sessionKey }),
-    },
+    progressCardPresentation: { configurable: true, get: () => presentation },
     progressCardInitialLoading: { configurable: true, get: () => true },
   });
-  Object.assign(pane, { paneWidth: 1200 });
-  return { pane, state, request, context };
+  Object.assign(pane, { paneWidth: 1200, presented: true });
+  const mount = document.body.appendChild(document.createElement("div"));
+  onTestFinished(() => {
+    render(nothing, mount);
+    mount.remove();
+  });
+  const paint = () => {
+    pane.render();
+    render(pane.chatProps?.floatingTaskProgress, mount);
+  };
+  const expanded = () =>
+    mount.querySelector("button[aria-expanded]")?.getAttribute("aria-expanded");
+  const toggle = () => mount.querySelector<HTMLButtonElement>("button[aria-expanded]")!.click();
+  return { pane, state, context, request, presentation, mount, paint, expanded, toggle };
 }
-
 const slots: SidebarSlotId[] = [
   "browser",
   "terminal",
@@ -59,134 +57,117 @@ const slots: SidebarSlotId[] = [
   "link-reader",
   "plugin:fixture/inspector",
 ];
-
-const promoted = openSlot({ columns: [] }, "workspace");
-const workspaceId = promoted.columns[0]!.panels.find((panel) => panel.slot === "workspace")!.id;
-const cases: Array<{ name: string; layout: SidebarLayout }> = [
-  ...slots.map((slot) => ({ name: slot, layout: openSlot({ columns: [] }, slot) })),
-  { name: "empty selector", layout: setSidebarOpen({ columns: [] }, true) },
-  { name: "focused conversation", layout: { columns: [], expanded: true } },
-  {
-    name: "non-conversation main",
-    layout: setSidebarOpen(promoteSidebarPanel(promoted, workspaceId), false),
-  },
-];
-
-describe("chat pane task progress placement", () => {
-  it.each(cases)("gives $name priority over progress at both widths", ({ layout }) => {
-    const { pane, state } = fixture();
-    state.sidebarLayout = layout;
-    for (const paneWidth of [1200, SIDEBAR_NARROW_BREAKPOINT_PX - 1]) {
-      Object.assign(pane, { paneWidth });
-      pane.render();
-      expect(pane.chatProps?.progressCard).toBeNull();
-      expect(pane.chatProps?.progressCardInitialLoading).toBe(false);
-      expect(pane.sideFallback).toBe(nothing);
-      expect(state.sidebarLayout).toBe(layout);
-    }
+describe("floating task progress in the real pane", () => {
+  it.each(slots)("starts collapsed beside %s and preserves a deliberate reopening", (slot) => {
+    const f = fixture();
+    f.state.sidebarLayout = openSlot({ columns: [] }, slot);
+    const saved = structuredClone(f.state.sidebarLayout);
+    f.paint();
+    expect(f.expanded()).toBe("false");
+    expect(f.pane.chatProps?.progressCard).toBeNull();
+    expect(f.pane.chatProps?.progressCardInitialLoading).toBe(false);
+    f.toggle();
+    f.paint();
+    expect(f.expanded()).toBe("true");
+    f.presentation.card = { ...card, revision: 2, markdown: "Updated progress" };
+    f.paint();
+    expect(f.expanded()).toBe("true");
+    expect(f.mount.textContent).toContain("Updated progress");
+    expect(f.state.sidebarLayout).toEqual(saved);
   });
-
-  it("shows initial read feedback without opening an empty side panel or covering another panel", () => {
-    const { pane, state } = fixture();
-    let loaded = false;
-    Object.defineProperty(pane, "progressCardPresentation", {
-      get: () => (loaded ? { card, identity: card.sessionKey } : null),
-    });
-    pane.render();
-    expect(pane.chatProps?.progressCardInitialLoading).toBe(true);
-    expect(pane.sideFallback).toBe(nothing);
-    state.sidebarLayout = openSlot({ columns: [] }, "browser");
-    pane.render();
-    expect(pane.chatProps?.progressCardInitialLoading).toBe(false);
-    state.sidebarLayout = setSidebarOpen(state.sidebarLayout, false);
-    loaded = true;
-    pane.render();
-    expect(pane.chatProps?.progressCardInitialLoading).toBe(false);
-    expect(pane.sideFallback).not.toBe(nothing);
+  it("collapses on a new panel, preserves manual choice across width changes, and never reopens on close", () => {
+    const f = fixture();
+    f.paint();
+    expect(f.expanded()).toBe("true");
+    f.state.sidebarLayout = openSlot({ columns: [] }, "browser");
+    f.paint();
+    expect(f.expanded()).toBe("false");
+    f.toggle();
+    f.paint();
+    expect(f.expanded()).toBe("true");
+    f.state.sidebarLayout = openSlot(f.state.sidebarLayout, "workspace");
+    f.paint();
+    expect(f.expanded()).toBe("false");
+    f.state.sidebarLayout = setSidebarOpen(f.state.sidebarLayout, false);
+    f.paint();
+    expect(f.expanded()).toBe("false");
+    Object.assign(f.pane, { paneWidth: 560 });
+    f.paint();
+    expect(f.pane.chatProps?.progressCard).toBe(card);
+    expect(f.pane.chatProps?.floatingTaskProgress).toBe(nothing);
+    Object.assign(f.pane, { paneWidth: 1200 });
+    f.paint();
+    expect(f.expanded()).toBe("false");
+    Object.assign(f.pane, { presented: false });
+    f.paint();
+    expect(f.pane.chatProps?.floatingTaskProgress).toBe(nothing);
+    Object.assign(f.pane, { presented: true });
+    f.paint();
+    expect(f.expanded()).toBe("false");
   });
-
-  it("uses the board-resolved presentation without changing the saved layout", () => {
-    const { pane, state, context } = fixture();
-    context.gateway.snapshot.hello = gatewayHelloForMethods(["board.get"]);
-    Object.assign(pane, { routeFace: "dashboard" });
-    const saved = state.sidebarLayout;
-    expect(saved.columns).toEqual([]);
-    pane.render();
-    expect(pane.renderedSidebarLayout?.open).toBe(true);
-    expect(pane.chatProps?.progressCard).toBeNull();
-    expect(pane.chatProps?.progressCardInitialLoading).toBe(false);
-    expect(pane.sideFallback).toBe(nothing);
-    expect(state.sidebarLayout).toBe(saved);
-    expect(saved.columns).toEqual([]);
+  it("resets the choice for a new lifetime without sharing it with another pane", () => {
+    const f = fixture();
+    f.paint();
+    f.toggle();
+    f.paint();
+    expect(f.expanded()).toBe("false");
+    const other = fixture();
+    other.paint();
+    expect(other.expanded()).toBe("true");
+    f.presentation.lifetime = {};
+    f.paint();
+    expect(f.expanded()).toBe("true");
   });
-
-  it("uses one side surface, returns to the composer when narrow, and leaves closed tabs intact", () => {
-    const { pane, state } = fixture();
-    const layout = setSidebarOpen(openSlot({ columns: [] }, "browser"), false);
-    state.sidebarLayout = layout;
-    const saved = structuredClone(layout);
-    pane.render();
-    expect(pane.chatProps?.progressCard).toBeNull();
-    expect(pane.chatProps?.progressCardInitialLoading).toBe(false);
-    expect(pane.sideFallback).not.toBe(nothing);
-    expect(state.sidebarLayout).toEqual(saved);
-
-    Object.assign(pane, { paneWidth: SIDEBAR_NARROW_BREAKPOINT_PX - 1 });
-    pane.render();
-    expect(pane.chatProps?.progressCard).toBe(card);
-    expect(pane.sideFallback).toBe(nothing);
-
-    Object.assign(pane, { paneWidth: 1200, compact: true });
-    pane.render();
-    expect(pane.chatProps?.progressCard).toBe(card);
-    expect(pane.sideFallback).toBe(nothing);
+  it("keeps default composer placement and initial loading feedback, including compact views", () => {
+    const f = fixture();
+    f.state.settings.chatFloatTaskProgress = false;
+    f.paint();
+    expect(f.pane.chatProps?.progressCard).toBe(card);
+    expect(f.pane.chatProps?.floatingTaskProgress).toBe(nothing);
+    f.state.settings.chatFloatTaskProgress = true;
+    Object.assign(f.pane, { compact: true });
+    f.paint();
+    expect(f.pane.chatProps?.progressCard).toBe(card);
+    Object.assign(f.pane, { compact: false });
+    Object.defineProperty(f.pane, "progressCardPresentation", { get: () => null });
+    f.paint();
+    expect(f.pane.chatProps?.progressCardInitialLoading).toBe(true);
+    expect(f.pane.chatProps?.floatingTaskProgress).toBe(nothing);
+    f.state.settings.chatShowTaskProgress = false;
+    f.paint();
+    expect(f.pane.chatProps?.progressCardInitialLoading).toBe(false);
   });
-
-  it("keeps the default composer behavior with an open panel and suppresses disabled loading", () => {
-    const { pane, state } = fixture();
-    state.settings.chatTaskProgressSidePanel = false;
-    state.sidebarLayout = openSlot({ columns: [] }, "browser");
-    pane.render();
-    expect(pane.chatProps?.progressCard).toBe(card);
-    expect(pane.sideFallback).toBe(nothing);
-    state.settings.chatShowTaskProgress = false;
-    pane.render();
-    expect(pane.chatProps?.progressCard).toBeNull();
-    expect(pane.chatProps?.progressCardInitialLoading).toBe(false);
+  it("does not render progress when another main view hides the conversation", () => {
+    const f = fixture();
+    const layout = openSlot({ columns: [] }, "workspace");
+    const id = layout.columns[0]!.panels.find((panel) => panel.slot === "workspace")!.id;
+    f.state.sidebarLayout = setSidebarOpen(promoteSidebarPanel(layout, id), false);
+    f.paint();
+    expect(f.pane.chatProps?.progressCard).toBeNull();
+    expect(f.pane.chatProps?.floatingTaskProgress).toBe(nothing);
   });
-
-  it("closes locally without clearing progress or changing the saved panel layout", () => {
-    const { pane, state, request } = fixture();
+  it("restores focus before collapsing body content and hides locally without writing the card", () => {
+    const f = fixture();
     const previous = loadSettings();
-    const mount = document.body.appendChild(document.createElement("div"));
-    onTestFinished(() => {
-      render(nothing, mount);
-      mount.remove();
-      saveSettings(previous);
-    });
-    state.settings = patchSettings({
-      chatShowTaskProgress: true,
-      chatTaskProgressSidePanel: true,
-      chatCollapseTaskProgress: true,
-    });
-    const layout = state.sidebarLayout;
-    const requestUpdate = vi.spyOn(state, "requestUpdate");
-    pane.render();
-    render(pane.sideFallback, mount);
-    const close = mount.querySelector<HTMLButtonElement>('button[aria-label="Hide task progress"]');
-    expect(mount.querySelector('[data-progress-card-placement="side"]')).not.toBeNull();
-    expect(close).not.toBeNull();
-    close!.click();
+    onTestFinished(() => saveSettings(previous));
+    f.state.settings = patchSettings({ chatShowTaskProgress: true, chatFloatTaskProgress: true });
+    f.paint();
+    const body = f.mount.querySelector<HTMLElement>(".session-progress-card__body")!;
+    body.focus();
+    body.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    f.paint();
+    expect(f.expanded()).toBe("false");
+    expect(document.activeElement).toBe(f.mount.querySelector("button[aria-expanded]"));
+    expect(f.mount.querySelector(".session-progress-card__reveal")?.hasAttribute("inert")).toBe(
+      true,
+    );
+    f.mount.querySelector<HTMLButtonElement>('button[aria-label="Hide task progress"]')!.click();
     expect(loadSettings()).toMatchObject({
       chatShowTaskProgress: false,
-      chatTaskProgressSidePanel: true,
-      chatCollapseTaskProgress: true,
+      chatFloatTaskProgress: true,
     });
-    expect(state.sidebarLayout).toBe(layout);
-    expect(requestUpdate).toHaveBeenCalled();
-    expect(request.mock.calls.filter(([method]) => method === "progressCard.put")).toEqual([]);
-    pane.render();
-    expect(pane.sideFallback).toBe(nothing);
-    expect(pane.chatProps?.progressCardInitialLoading).toBe(false);
+    expect(f.request.mock.calls.filter(([method]) => method === "progressCard.put")).toEqual([]);
   });
 });

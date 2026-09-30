@@ -1,31 +1,37 @@
 import {
   SIDEBAR_NARROW_BREAKPOINT_PX,
+  isSidebarSlotVisible,
   sidebarMainPanel,
+  sidebarActivePanel,
   type SidebarLayout,
 } from "./sidebar-layout.ts";
 
-/** Presentation only: resource panels retain exclusive ownership of the saved layout. */
+/** Geometry is presentation-only; resource tabs keep ownership of the saved layout. */
 export function resolveChatProgressPlacement(params: {
   showProgress: boolean;
-  preferSidePanel: boolean;
+  preferFloating: boolean;
   layout: SidebarLayout;
   paneWidth: number;
   compact: boolean;
-}): "composer" | "side" | "hidden" {
-  if (!params.showProgress) {
+}): "composer" | "floating" | "hidden" {
+  if (!params.showProgress || !isSidebarSlotVisible(params.layout, "conversation")) {
     return "hidden";
   }
-  if (!params.preferSidePanel) {
-    return "composer";
-  }
-  // Explicit panels (even an empty selector), main-panel promotion and focus
-  // take priority before responsive fallback to the composer.
-  if (
-    params.layout.open ||
-    params.layout.expanded ||
-    (sidebarMainPanel(params.layout)?.slot ?? "conversation") !== "conversation"
-  ) {
-    return "hidden";
-  }
-  return params.compact || params.paneWidth < SIDEBAR_NARROW_BREAKPOINT_PX ? "composer" : "side";
+  return !params.preferFloating || params.compact || params.paneWidth < SIDEBAR_NARROW_BREAKPOINT_PX
+    ? "composer"
+    : "floating";
+}
+
+/** Only visible panel transitions collapse a manually reopened card, not data updates. */
+export function progressNeighborPanelKey(layout: SidebarLayout): string {
+  const main = sidebarMainPanel(layout);
+  const active = sidebarActivePanel(layout);
+  const mainKey = main && main.slot !== "conversation" ? main.id : "";
+  const sideKey =
+    layout.open && !layout.expanded
+      ? active?.slot === "conversation"
+        ? ""
+        : (active?.id ?? "selector")
+      : "";
+  return mainKey || sideKey ? JSON.stringify([mainKey, sideKey]) : "";
 }

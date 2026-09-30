@@ -11,11 +11,12 @@ import {
   installMockGateway,
 } from "./chat-flow.test-support.ts";
 import { openChatSidePanelType } from "./chat-side-panel.test-support.ts";
+import { holdModuleResponse } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
 
 suite.define(() => {
-  it("shows task progress beside the conversation without replacing another panel", async () => {
+  it("floats task progress over the transcript and collapses when another panel opens", async () => {
     const sessionKey = "agent:main:progress-panel";
     await suite.withPage(
       { colorScheme: "dark", locale: "en-US", viewport: { width: 1440, height: 1000 } },
@@ -89,6 +90,10 @@ suite.define(() => {
             ]),
           },
         });
+        const regionModule = await holdModuleResponse(
+          page,
+          /\/assets\/chat-sidebar-region\.runtime-[^/]+\.js$/u,
+        );
         await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
         const card = page.locator('[data-progress-card-placement="composer"]');
         await expect.poll(() => card.isVisible()).toBe(true);
@@ -114,27 +119,121 @@ suite.define(() => {
             .locator(".settings-row")
             .filter({ has: settingsPage.locator(".settings-row__title", { hasText: title }) })
             .first();
-        const sidePreference = row("Show task progress in the side panel");
+        const floatPreference = row("Float task progress above the conversation");
         await expect
           .poll(() =>
-            sidePreference
+            floatPreference
               .locator("wa-switch")
-              .evaluate((element) => Boolean((element as { checked?: boolean }).checked)),
+              .evaluate((element) => Reflect.get(element, "checked")),
           )
           .toBe(false);
-        await sidePreference.click();
-        const side = page.locator('[data-progress-card-placement="side"]');
-        await expect.poll(() => side.isVisible()).toBe(true);
+        await floatPreference.click();
+        await page.bringToFront();
+        const floating = page.locator('[data-progress-card-placement="floating"]');
+        const toggle = floating.locator("button[aria-expanded]");
+        const settled = async () => {
+          await floating.evaluate(async (element) => {
+            await new Promise<void>((resolve) => {
+              requestAnimationFrame(() => resolve());
+            });
+            await Promise.all(
+              element
+                .getAnimations({ subtree: true })
+                .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+                .map((animation) => animation.finished.catch(() => {})),
+            );
+          });
+        };
+        await expect.poll(() => floating.isVisible()).toBe(true);
+        await expect.poll(() => toggle.getAttribute("aria-expanded")).toBe("true");
+        await settled();
         expect(await card.count()).toBe(0);
         expect(await page.locator(".agent-chat__progress-float--loading").count()).toBe(0);
         expect(await savedLayouts()).toEqual(originalLayouts);
-        await captureUiProof(suite, page, "progress-panel", "after.png");
-        await settingsPage
-          .locator("#settings-appearance-chat")
-          .evaluate((element) => element.scrollIntoView({ block: "start", behavior: "instant" }));
-        await captureUiProof(suite, settingsPage, "progress-panel", "setting.png");
+        expect(regionModule.requests()).toBe(0);
+        const radii = await floating.evaluate((element) => ({
+          progress: getComputedStyle(element).borderTopRightRadius,
+          composer: getComputedStyle(element.closest(".chat")!.querySelector(".agent-chat__input")!)
+            .borderTopRightRadius,
+        }));
+        expect(radii.progress).toBe(radii.composer);
+        await captureUiProof(suite, page, "floating-progress", "after-expanded.png");
+        const draft = page.getByRole("textbox", { name: "Chat composer", exact: true });
+        await draft.fill("Keep this draft while panels change.");
+        const threadGeometry = () =>
+          page.locator(".chat-thread").evaluate((element) => {
+            const bounds = element.getBoundingClientRect();
+            return { width: bounds.width, height: bounds.height };
+          });
+        const originalThread = await threadGeometry();
+        await toggle.click();
+        await expect.poll(() => toggle.getAttribute("aria-expanded")).toBe("false");
+        await settled();
+        const collapsedHeight = await floating.evaluate(
+          (element) => element.getBoundingClientRect().height,
+        );
+        expect(await threadGeometry()).toEqual(originalThread);
+        await toggle.click();
+        await expect.poll(() => toggle.getAttribute("aria-expanded")).toBe("true");
+        const motion = await floating.evaluate(async (element) => {
+          const heights: number[] = [];
+          await new Promise<void>((resolve) => {
+            const sample = () => {
+              heights.push(element.getBoundingClientRect().height);
+              const animations = element
+                .getAnimations({ subtree: true })
+                .filter((animation) => animation.effect?.getTiming().iterations !== Infinity);
+              if (
+                animations.some(
+                  (animation) => animation.playState === "running" || animation.pending,
+                )
+              ) {
+                requestAnimationFrame(sample);
+              } else {
+                resolve();
+              }
+            };
+            requestAnimationFrame(sample);
+          });
+          return heights;
+        });
+        const expandedHeight = await floating.evaluate(
+          (element) => element.getBoundingClientRect().height,
+        );
+        expect(expandedHeight).toBeGreaterThan(collapsedHeight + 40);
+        expect(
+          motion.some((height) => height > collapsedHeight + 1 && height < expandedHeight - 1),
+        ).toBe(true);
+        expect(await threadGeometry()).toEqual(originalThread);
+        expect(await draft.inputValue()).toBe("Keep this draft while panels change.");
 
-        await side.getByRole("button", { name: "Refresh task progress", exact: true }).click();
+        // An intentionally delayed sidebar import must not hide floating progress.
+        await page.locator(".chat-side-panel-toggle").click();
+        await regionModule.request;
+        await expect.poll(() => toggle.getAttribute("aria-expanded")).toBe("false");
+        expect(await floating.isVisible()).toBe(true);
+        expect(await card.count()).toBe(0);
+        regionModule.release();
+        await page.locator(".side-panel-empty__types").waitFor({ state: "visible" });
+        await openChatSidePanelType(page, "Browser");
+        const browser = page.locator("openclaw-browser-panel");
+        await expect.poll(() => browser.isVisible()).toBe(true);
+        await expect.poll(() => toggle.getAttribute("aria-expanded")).toBe("false");
+        await settled();
+        await captureUiProof(suite, page, "floating-progress", "with-browser-collapsed.png");
+        await toggle.click();
+        await expect.poll(() => toggle.getAttribute("aria-expanded")).toBe("true");
+        await settled();
+        const bounds = await floating.boundingBox();
+        const browserBounds = await browser.boundingBox();
+        const composerBounds = await page.locator(".agent-chat__input").boundingBox();
+        expect(bounds).not.toBeNull();
+        expect(browserBounds).not.toBeNull();
+        expect(composerBounds).not.toBeNull();
+        expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(browserBounds!.x);
+        expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(composerBounds!.y);
+        await captureUiProof(suite, page, "floating-progress", "with-browser-expanded.png");
+        await floating.getByRole("button", { name: "Refresh task progress", exact: true }).click();
         await expect.poll(() => gateway.getRequests("progressCard.refresh")).toHaveLength(1);
         await gateway.setMethodResponse("progressCard.get", {
           card: {
@@ -147,43 +246,83 @@ suite.define(() => {
         });
         await gateway.emitGatewayEvent("progressCard.changed", { sessionKey, revision: 2 });
         await expect
-          .poll(() => side.textContent())
+          .poll(() => floating.textContent())
           .toContain("The latest shutdown check is in progress.");
-
-        await openChatSidePanelType(page, "Browser");
-        const browser = page.locator("openclaw-browser-panel");
-        await expect.poll(() => browser.isVisible()).toBe(true);
-        await expect.poll(() => side.count()).toBe(0);
-        expect(await card.count()).toBe(0);
-        await captureUiProof(suite, page, "progress-panel", "browser-takes-priority.png");
-        const browserIdentity = await browser.elementHandle();
-        await page.setViewportSize({ width: 560, height: 900 });
-        await expect.poll(() => browser.isVisible()).toBe(true);
-        expect(await side.count()).toBe(0);
-        expect(await card.count()).toBe(0);
+        expect(await toggle.getAttribute("aria-expanded")).toBe("true");
+        await gateway.setMethodResponse("progressCard.get", {
+          card: {
+            sessionKey,
+            revision: 3,
+            updatedAt: Date.now(),
+            markdown: "Long progress remains scrollable without covering the composer.",
+            steps: Array.from({ length: 30 }, (_, index) => ({
+              step: `Verification step ${index + 1}`,
+              status: "pending",
+            })),
+          },
+        });
+        await gateway.emitGatewayEvent("progressCard.changed", { sessionKey, revision: 3 });
+        await expect.poll(() => floating.textContent()).toContain("Verification step 30");
+        await page.setViewportSize({ width: 1440, height: 620 });
+        await settled();
+        const progressBody = floating.locator(".session-progress-card__body");
+        const bodySize = await progressBody.evaluate((element) => ({
+          height: element.clientHeight,
+          content: element.scrollHeight,
+        }));
+        expect(bodySize.content).toBeGreaterThan(bodySize.height);
+        const lastStep = floating.locator(".session-progress-card__step").last();
+        await lastStep.scrollIntoViewIfNeeded();
+        const lastBounds = await lastStep.boundingBox();
+        const bodyBounds = await progressBody.boundingBox();
+        expect(lastBounds!.y + lastBounds!.height).toBeLessThanOrEqual(
+          bodyBounds!.y + bodyBounds!.height + 1,
+        );
+        const longBounds = await floating.boundingBox();
+        const shortComposer = await page.locator(".agent-chat__input").boundingBox();
+        expect(longBounds!.y + longBounds!.height).toBeLessThanOrEqual(shortComposer!.y);
+        await captureUiProof(suite, page, "floating-progress", "long-progress-scrolled.png");
+        await toggle.focus();
+        await page.keyboard.press("Escape");
+        await expect.poll(() => toggle.getAttribute("aria-expanded")).toBe("false");
+        await settled();
         await page
           .locator('[data-region-header="side"]')
           .getByRole("button", { name: "Close", exact: true })
           .click();
-        await expect.poll(() => card.isVisible()).toBe(true);
-        expect(await side.count()).toBe(0);
-        await captureUiProof(suite, page, "progress-panel", "narrow-fallback.png");
-        await page.setViewportSize({ width: 1440, height: 1000 });
-        await expect.poll(() => side.isVisible()).toBe(true);
-        expect(await card.count()).toBe(0);
-        expect(await browserIdentity?.evaluate((element) => element.isConnected)).toBe(true);
-        expect(await browser.isVisible()).toBe(false);
+        await expect.poll(() => browser.isVisible()).toBe(false);
+        expect(await toggle.getAttribute("aria-expanded")).toBe("false");
+        expect(await draft.inputValue()).toBe("Keep this draft while panels change.");
         const closedBrowserLayout = await savedLayouts();
-        await captureUiProof(suite, page, "progress-panel", "progress-restored.png");
-
+        await page.setViewportSize({ width: 560, height: 900 });
+        await expect.poll(() => card.isVisible()).toBe(true);
+        expect(await floating.count()).toBe(0);
+        await captureUiProof(suite, page, "floating-progress", "narrow-fallback.png");
+        await page.setViewportSize({ width: 1440, height: 1000 });
+        await expect.poll(() => floating.isVisible()).toBe(true);
+        expect(await card.count()).toBe(0);
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await toggle.click();
+        await expect.poll(() => toggle.getAttribute("aria-expanded")).toBe("true");
+        const runningAnimations = await floating.evaluate(
+          (element) =>
+            element
+              .getAnimations({ subtree: true })
+              .filter(
+                (animation) =>
+                  animation.playState === "running" &&
+                  animation.effect?.getTiming().iterations !== Infinity,
+              ).length,
+        );
+        expect(runningAnimations).toBe(0);
         await page.getByRole("button", { name: "Hide task progress", exact: true }).click();
-        await expect.poll(() => side.count()).toBe(0);
+        await expect.poll(() => floating.count()).toBe(0);
         expect(await card.count()).toBe(0);
         expect(await savedLayouts()).toEqual(closedBrowserLayout);
         expect(await gateway.getRequests("progressCard.put")).toHaveLength(0);
         await page.reload();
-        await page.getByRole("textbox", { name: "Chat composer", exact: true }).waitFor();
-        expect(await side.count()).toBe(0);
+        await draft.waitFor();
+        expect(await floating.count()).toBe(0);
         expect(await card.count()).toBe(0);
         expect(await gateway.getRequests("progressCard.get")).toHaveLength(0);
         const preferences = await page.evaluate(
@@ -191,12 +330,12 @@ suite.define(() => {
           settingsKey,
         );
         expect(preferences.chatShowTaskProgress).toBe(false);
-        expect(preferences.chatTaskProgressSidePanel).toBe(true);
+        expect(preferences.chatFloatTaskProgress).toBe(true);
         await row("Show task progress cards").click();
-        await expect.poll(() => side.isVisible()).toBe(true);
+        await expect.poll(() => floating.isVisible()).toBe(true);
         expect(await gateway.getRequests("progressCard.put")).toHaveLength(0);
+        expect(await gateway.getRequests("chat.send")).toHaveLength(0);
         expect(await settingsGateway.getRequests("config.patch")).toHaveLength(0);
-        await browserIdentity?.dispose();
         await settingsPage.close();
       },
     );

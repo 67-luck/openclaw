@@ -184,8 +184,8 @@ export function taskProgressPreferenceProps(
   ConfigProps,
   | "chatShowTaskProgress"
   | "setChatShowTaskProgress"
-  | "chatTaskProgressSidePanel"
-  | "setChatTaskProgressSidePanel"
+  | "chatFloatTaskProgress"
+  | "setChatFloatTaskProgress"
   | "chatCollapseTaskProgress"
   | "setChatCollapseTaskProgress"
 > {
@@ -193,8 +193,8 @@ export function taskProgressPreferenceProps(
     chatShowTaskProgress:
       settings.chatShowTaskProgress ?? UI_APPEARANCE_DEFAULTS.chatShowTaskProgress,
     setChatShowTaskProgress: (enabled) => apply({ chatShowTaskProgress: enabled }),
-    chatTaskProgressSidePanel: settings.chatTaskProgressSidePanel === true,
-    setChatTaskProgressSidePanel: (enabled) => apply({ chatTaskProgressSidePanel: enabled }),
+    chatFloatTaskProgress: settings.chatFloatTaskProgress === true,
+    setChatFloatTaskProgress: (enabled) => apply({ chatFloatTaskProgress: enabled }),
     chatCollapseTaskProgress: settings.chatCollapseTaskProgress === true,
     setChatCollapseTaskProgress: (enabled) => apply({ chatCollapseTaskProgress: enabled }),
   };
@@ -231,9 +231,9 @@ export function renderChatPreferencesSection(props: ConfigProps) {
     t("common.enabled"),
     props.chatShowTaskProgress !== UI_APPEARANCE_DEFAULTS.chatShowTaskProgress,
   );
-  const taskProgressSidePanelDefaultDescription = renderSettingsDefaultDescription(
+  const floatTaskProgressDefaultDescription = renderSettingsDefaultDescription(
     t("common.disabled"),
-    props.chatTaskProgressSidePanel !== UI_APPEARANCE_DEFAULTS.chatTaskProgressSidePanel,
+    props.chatFloatTaskProgress !== UI_APPEARANCE_DEFAULTS.chatFloatTaskProgress,
   );
   const collapseTaskProgressDefaultDescription = renderSettingsDefaultDescription(
     t("common.disabled"),
@@ -282,11 +282,11 @@ export function renderChatPreferencesSection(props: ConfigProps) {
           onChange: props.setChatShowTaskProgress,
         })}
         ${renderSettingsToggleRow({
-          title: t("configView.chatPrefs.taskProgressSidePanel"),
-          description: html`${t("configView.chatPrefs.taskProgressSidePanelHint")}<br />
-            ${taskProgressSidePanelDefaultDescription} ${t("quickSettings.personal.browserOnly")}`,
-          checked: props.chatTaskProgressSidePanel,
-          onChange: props.setChatTaskProgressSidePanel,
+          title: t("configView.chatPrefs.floatTaskProgress"),
+          description: html`${t("configView.chatPrefs.floatTaskProgressHint")}<br />
+            ${floatTaskProgressDefaultDescription} ${t("quickSettings.personal.browserOnly")}`,
+          checked: props.chatFloatTaskProgress,
+          onChange: props.setChatFloatTaskProgress,
           disabled: !props.chatShowTaskProgress,
         })}
         ${renderSettingsToggleRow({

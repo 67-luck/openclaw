@@ -28,7 +28,7 @@ describe("chat progress preferences", () => {
     for (const title of [
       "Message width",
       "Show task progress cards",
-      "Show task progress in the side panel",
+      "Float task progress above the conversation",
       "Collapse task progress by default on desktop",
       "Open external sessions in",
       "Hold microphone button to start dictation",
@@ -39,18 +39,18 @@ describe("chat progress preferences", () => {
   });
 
   it("keeps the side-panel preference while progress is hidden", () => {
-    const setChatTaskProgressSidePanel = vi.fn();
+    const setChatFloatTaskProgress = vi.fn();
     const { container } = renderConfigView({
       activeSection: "__appearance__",
       includeSections: ["__appearance__"],
       chatShowTaskProgress: false,
-      chatTaskProgressSidePanel: true,
-      setChatTaskProgressSidePanel,
+      chatFloatTaskProgress: true,
+      setChatFloatTaskProgress,
     });
     const row = Array.from(container.querySelectorAll<HTMLElement>(".settings-row")).find(
       (candidate) =>
         candidate.querySelector(".settings-row__title")?.textContent?.trim() ===
-        "Show task progress in the side panel",
+        "Float task progress above the conversation",
     );
     const toggle = row?.querySelector<HTMLElement & { checked: boolean; disabled: boolean }>(
       "wa-switch",
@@ -58,7 +58,7 @@ describe("chat progress preferences", () => {
     expect(toggle?.checked).toBe(true);
     expect(toggle?.disabled).toBe(true);
     row?.click();
-    expect(setChatTaskProgressSidePanel).not.toHaveBeenCalled();
+    expect(setChatFloatTaskProgress).not.toHaveBeenCalled();
   });
 
   it("renders task progress auto-collapse off by default and enables it from Chat settings", () => {

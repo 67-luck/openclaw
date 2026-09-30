@@ -21,6 +21,7 @@ import {
 } from "../../lib/sessions/session-key.ts";
 import { showToast } from "../../lib/toast.ts";
 import { storeChatComposerMemoryFallback } from "./chat-composer-memory-fallback.ts";
+import { ChatFloatingProgress } from "./chat-floating-progress.ts";
 import { loadChatBranches, retireChatBranchRequests } from "./chat-history-branches.ts";
 import {
   chatHistoryRequests,
@@ -33,7 +34,10 @@ import { loadChatHistory } from "./chat-history.ts";
 import { QUEUED_EDIT_RETENTION_CHANGE_EVENT } from "./chat-page-retained-sessions.ts";
 import { ChatPaneBoard } from "./chat-pane-board.ts";
 import type { PaneSessionHandoff } from "./chat-pane-handoff-lifecycle.ts";
-import { resolveChatProgressPlacement } from "./chat-pane-progress-placement.ts";
+import {
+  resolveChatProgressPlacement,
+  progressNeighborPanelKey,
+} from "./chat-pane-progress-placement.ts";
 import { consumePaneSessionHandoff } from "./chat-pane-shared.ts";
 import { retirePullRequestRefreshes } from "./chat-pull-request-refresh.ts";
 import { stopChatRealtimeTalk } from "./chat-realtime.ts";
@@ -87,6 +91,8 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
     };
   }
 
+  private readonly floatingProgress = new ChatFloatingProgress(() => this.requestUpdate());
+
   protected createProgressCardView(params: {
     state: ChatPageHost;
     layout: SidebarLayout;
@@ -108,17 +114,32 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
       | "onProgressManipulate"
       | "onDismissProgressCard"
     >;
-    sideFallback: TemplateResult | typeof nothing;
+    floating: TemplateResult | typeof nothing;
   } {
     const { state, selectedSession, runActive } = params;
     const presentation = this.progressCardPresentation;
     const placement = resolveChatProgressPlacement({
-      showProgress: state.settings.chatShowTaskProgress !== false,
-      preferSidePanel: state.settings.chatTaskProgressSidePanel === true,
+      showProgress: this.presented && state.settings.chatShowTaskProgress !== false,
+      preferFloating: state.settings.chatFloatTaskProgress === true,
       layout: params.layout,
       paneWidth: this.paneWidth,
       compact: this.compact,
     });
+    const gatewayScope = gatewayPresentationScope(this.context.gateway);
+    if (this.presented) {
+      this.floatingProgress.sync(
+        presentation
+          ? {
+              gateway: gatewayScope,
+              identity: presentation.identity,
+              sessionId: state.currentSessionId,
+              lifetime: presentation.lifetime,
+            }
+          : undefined,
+        progressNeighborPanelKey(params.layout),
+        state.settings.chatCollapseTaskProgress === true,
+      );
+    }
     const refresh =
       params.canDismiss && params.canRefresh && presentation
         ? this.captureProgressCardRefreshAction()
@@ -128,10 +149,10 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
         progressCard: placement === "composer" ? (presentation?.card ?? null) : null,
         progressCardIdentity: presentation?.identity,
         progressCardLifetime: presentation?.lifetime,
-        gatewayScope: gatewayPresentationScope(this.context.gateway),
-        // Keep initial read feedback without opening an empty side panel.
+        gatewayScope,
+        // Keep the existing initial-read feedback until there is a card to float.
         progressCardInitialLoading:
-          (placement === "composer" || (placement === "side" && !presentation)) &&
+          (placement === "composer" || (placement === "floating" && !presentation)) &&
           this.progressCardInitialLoading,
         progressCardRefresh: refresh,
         collapseTaskProgress: state.settings.chatCollapseTaskProgress === true,
@@ -147,11 +168,11 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
                 .catch(() => showToast({ message: t("sessionProgressCard.dismissFailed") }))
           : undefined,
       },
-      sideFallback:
-        placement === "side" && presentation
+      floating:
+        placement === "floating" && presentation
           ? renderSessionProgressCard(
               presentation.card,
-              "side",
+              "floating",
               undefined,
               selectedSession?.status,
               selectedSession?.startedAt,
@@ -160,10 +181,13 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
               false,
               undefined,
               state.connected ? refresh : undefined,
-              () => {
-                state.settings = patchSettings({ chatShowTaskProgress: false });
-                state.requestUpdate?.();
-              },
+              this.floatingProgress.disclosure(
+                `floating-progress-${encodeURIComponent(this.presentationId)}`,
+                () => {
+                  state.settings = patchSettings({ chatShowTaskProgress: false });
+                  state.requestUpdate?.();
+                },
+              ),
             )
           : nothing,
     };

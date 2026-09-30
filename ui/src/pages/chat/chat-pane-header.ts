@@ -94,7 +94,6 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
   private renderPanelLayoutActions(
     layout: SidebarLayout | undefined,
     definitions: SidebarPanelDefinition[],
-    sideFallbackVisible: boolean,
   ) {
     if (!layout) {
       return nothing;
@@ -117,7 +116,7 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
         : nothing
     }
     ${
-      split || layout.expanded || sideFallbackVisible
+      split || layout.expanded
         ? html`<openclaw-tooltip .content=${focusLabel}>
             <button
               class="btn btn--ghost btn--icon chat-icon-btn chat-panel-focus"
@@ -126,14 +125,7 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
               aria-label=${focusLabel}
               @click=${() =>
                 this.state?.updateSidebarLayout(
-                  // Focusing a render-only fallback must not open dormant tabs or
-                  // create a selector when the conversation is restored.
-                  sideFallbackVisible || (layout.expanded && layout.open !== true)
-                    ? { ...layout, expanded: layout.expanded !== true }
-                    : setSidebarExpanded(
-                        ensureSidebarConversation(layout),
-                        layout.expanded !== true,
-                      ),
+                  setSidebarExpanded(ensureSidebarConversation(layout), layout.expanded !== true),
                   { dashboardPresentation: "personal" },
                 )}
             >
@@ -207,7 +199,6 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
     placementStartupStatus: ApplicationPlacementStartupStatus | null | undefined,
     sidebarLayout?: SidebarLayout,
     panelDefinitions = sidebarPanelDefinitions(),
-    sideFallbackVisible = false,
   ) {
     this.syncSelectedSessionSharing(row);
     const workspace = resolveSessionWorkspace({
@@ -547,7 +538,6 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
       panelLayoutActions: html`${this.renderPanelLayoutActions(
         currentLayout,
         panelDefinitions,
-        sideFallbackVisible,
       )}${sidePanelAction}`,
       presence: viewers?.length
         ? html`<openclaw-viewer-facepile

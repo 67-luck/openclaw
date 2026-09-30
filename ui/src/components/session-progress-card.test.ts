@@ -3,6 +3,7 @@
 import type { ProgressCard } from "@openclaw/gateway-protocol";
 import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
 import { html, nothing, render } from "lit";
+import { createRef } from "lit/directives/ref.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./markdown.ts", async () => {
   const actual = await vi.importActual<typeof import("./markdown.ts")>("./markdown.ts");
@@ -71,7 +72,7 @@ describe("renderSessionProgressCard", () => {
     vi.unstubAllGlobals();
   });
 
-  it.each(["board", "composer", "side"] as const)(
+  it.each(["board", "composer"] as const)(
     "shows relative activity for %s cards with and without checklist steps",
     (placement) => {
       const container = createContainer();
@@ -111,17 +112,16 @@ describe("renderSessionProgressCard", () => {
     expect(container.querySelector("time")?.textContent).toBe(expected);
   });
 
-  it("keeps side refresh and local hide separate from shared dismissal", () => {
+  it("keeps floating refresh and local hide available while collapsed", () => {
     const container = createContainer();
-    const onDismiss = vi.fn();
     const onHide = vi.fn();
     const onRefresh = vi.fn();
     const draw = (state?: "pending" | "failed") =>
       render(
         renderSessionProgressCard(
           progressCard,
-          "side",
-          onDismiss,
+          "floating",
+          undefined,
           "done",
           RUN_STARTED_MS,
           RUN_ENDED_MS,
@@ -129,7 +129,14 @@ describe("renderSessionProgressCard", () => {
           false,
           undefined,
           { state, onRefresh },
-          onHide,
+          {
+            expanded: false,
+            bodyId: "floating-proof",
+            element: createRef<HTMLElement>(),
+            onHide,
+            onToggle: vi.fn(),
+            onKeydown: vi.fn(),
+          },
         ),
         container,
       );
@@ -154,7 +161,12 @@ describe("renderSessionProgressCard", () => {
     expect(container.querySelector('button[aria-label="Retry progress refresh"]')).not.toBeNull();
     container.querySelector<HTMLButtonElement>('button[aria-label="Hide task progress"]')!.click();
     expect(onHide).toHaveBeenCalledOnce();
-    expect(onDismiss).not.toHaveBeenCalled();
+    expect(container.querySelector("button[aria-expanded]")?.getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+    expect(container.querySelector(".session-progress-card__reveal")?.hasAttribute("inert")).toBe(
+      true,
+    );
   });
 
   it("uses endedAt for terminal wording and falls back to Updated without it", () => {

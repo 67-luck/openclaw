@@ -1412,9 +1412,9 @@ const enSettings = {
       showTaskProgress: "Show task progress cards",
       showTaskProgressHint:
         "Show task progress in chat. Hiding it does not stop the agent or clear saved progress. Dashboard widgets and session previews are unchanged.",
-      taskProgressSidePanel: "Show task progress in the side panel",
-      taskProgressSidePanelHint:
-        "Use the empty right side for task progress on wide layouts. Other panels and focused views take priority. Narrow layouts keep progress in the composer when no other panel is open.",
+      floatTaskProgress: "Float task progress above the conversation",
+      floatTaskProgressHint:
+        "Float a collapsible card over the top-right of wide conversations without reserving space. Opening another panel collapses it; click to expand it again. Narrow layouts keep progress in the composer.",
       openLinksExternally: "Open links outside OpenClaw",
       openLinksExternallyHint: "Use your browser instead of the OpenClaw built-in browser.",
       openLinksExternallyStorage: "Saved in this browser only.",

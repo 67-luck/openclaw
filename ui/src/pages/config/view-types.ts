@@ -156,8 +156,8 @@ export type ConfigProps = {
   setChatMessageMaxWidth: (value: string | undefined) => void;
   chatShowTaskProgress: boolean;
   setChatShowTaskProgress: (enabled: boolean) => void;
-  chatTaskProgressSidePanel: boolean;
-  setChatTaskProgressSidePanel: (enabled: boolean) => void;
+  chatFloatTaskProgress: boolean;
+  setChatFloatTaskProgress: (enabled: boolean) => void;
   chatCollapseTaskProgress: boolean;
   setChatCollapseTaskProgress: (enabled: boolean) => void;
   showAdvancedSettings: boolean;

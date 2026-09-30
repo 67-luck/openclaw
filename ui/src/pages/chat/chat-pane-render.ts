@@ -408,6 +408,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       providerPolicyNotice: catalogKey ? null : state.providerPolicyNotice,
       providerReviewNotice: this.providerReview.notice(),
       ...progress.composer,
+      floatingTaskProgress: progress.floating,
       gatewayQuestionPrompts,
       asyncQuestionStorage:
         !catalogKey && !suggestionViewer ? this.chatState.composerPersistence.durableScope : null,
@@ -678,7 +679,6 @@ export class ChatPane extends ChatPaneLayoutRender {
       currentAgentId,
       board,
       sidebarLayout,
-      sideFallback: progress.sideFallback,
       sessionWorkspace,
       chatProps: props,
       observerDigest,

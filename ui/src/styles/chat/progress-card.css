@@ -15,15 +15,6 @@
   animation: fade-in 0.2s var(--ease-out);
 }
 
-.session-progress-card--side {
-  display: flex;
-  flex: 1 1 0;
-  min-height: 0;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--bg);
-}
-
 .session-progress-card--board {
   padding: var(--space-3);
 }
@@ -303,39 +294,4 @@
     animation: none;
     transition: none;
   }
-}
-
-.session-progress-card--side .session-progress-card__heading {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-1) var(--space-2);
-  margin: 0;
-  padding: var(--space-3);
-  border-bottom: 1px solid var(--border);
-  color: var(--text);
-  letter-spacing: normal;
-  text-transform: none;
-}
-
-.session-progress-card--side .session-progress-card__heading-actions {
-  display: contents;
-}
-
-.session-progress-card--side .session-progress-card__activity {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  color: var(--muted);
-  font-weight: 400;
-}
-
-.session-progress-card--side .session-progress-card__body {
-  flex: 1 1 0;
-  min-height: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
-  padding: var(--space-3);
-}
-
-.session-progress-card--side .session-progress-card__refresh-status {
-  margin: var(--space-2) var(--space-3) 0;
 }

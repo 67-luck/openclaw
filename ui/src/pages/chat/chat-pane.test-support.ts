@@ -1,4 +1,4 @@
-import { html, nothing, type TemplateResult } from "lit";
+import { html, type TemplateResult } from "lit";
 import { onTestFinished, vi } from "vitest";
 import type {
   SessionSuggestion,
@@ -226,7 +226,6 @@ export type TestChatPane = HTMLElement & {
     placementStartupStatus: ApplicationPlacementStartupStatus | null | undefined,
     sidebarLayout?: SidebarLayout,
     panelDefinitions?: SidebarPanelDefinition[],
-    sideFallbackVisible?: boolean,
   ) => TemplateResult;
 };
 
@@ -622,8 +621,6 @@ export function offlineDeviceSession(): GatewaySessionRow & { placement: ActiveP
 
 class RenderTestChatPane extends ChatPane {
   chatProps: ChatProps | undefined;
-  sideFallback: TemplateResult | typeof nothing = nothing;
-  renderedSidebarLayout: SidebarLayout | undefined;
 
   constructor() {
     super();
@@ -644,14 +641,8 @@ class RenderTestChatPane extends ChatPane {
     return this.state;
   }
 
-  protected override renderChatPaneLayout(params: {
-    chatProps: ChatProps;
-    sideFallback: TemplateResult | typeof nothing;
-    sidebarLayout: SidebarLayout;
-  }) {
+  protected override renderChatPaneLayout(params: { chatProps: ChatProps }) {
     this.chatProps = params.chatProps;
-    this.sideFallback = params.sideFallback;
-    this.renderedSidebarLayout = params.sidebarLayout;
     return html``;
   }
 
