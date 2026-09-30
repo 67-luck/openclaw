@@ -1,6 +1,7 @@
 import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
 import {
   afterAll,
+  assert,
   afterEach,
   beforeAll,
   beforeEach,
@@ -14,7 +15,10 @@ import type { WebSocket, RawData } from "ws";
 import { mergeChatStreamMessage } from "../../packages/gateway-client/src/chat-stream-message.js";
 import type { ChatEvent } from "../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { createSessionsYieldTool } from "../agents/tools/sessions-yield-tool.js";
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
+import type { ReplyDispatcher } from "../auto-reply/reply/reply-dispatcher.types.js";
+import { buildWaitingStatusPayload } from "../auto-reply/reply/waiting-status.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { registerAgentRunContext } from "../infra/agent-run-registry.js";
 import {
@@ -324,6 +328,158 @@ describe("queued WebChat follow-up delivery", () => {
               { type: "text", text: "late answer arrived over the live WebSocket tail" },
             ]),
           });
+        }
+      });
+    },
+  );
+
+  test.each([
+    { lane: "direct", acknowledgment: "Research started; results will follow.", media: false },
+    { lane: "direct", acknowledgment: undefined, media: false },
+    { lane: "queued", acknowledgment: "Research started; results will follow.", media: false },
+    { lane: "queued", acknowledgment: undefined, media: false },
+    { lane: "direct", acknowledgment: "Work started; here is the preview.", media: true },
+    { lane: "queued", acknowledgment: "Work started; here is the preview.", media: true },
+  ])(
+    "persists one public waiting reply for $lane (ack=$acknowledgment, media=$media)",
+    async ({ lane, acknowledgment, media }) => {
+      await withMainSessionStore(async () => {
+        const caseId = `${lane}-${acknowledgment ? "explicit" : "default"}-${media}`;
+        const sourceRunId = `waiting-source-${caseId}`;
+        const followupRunId = `waiting-followup-${caseId}`;
+        const runId = lane === "direct" ? sourceRunId : followupRunId;
+        observedFollowupRunId = runId;
+        const expectedText =
+          acknowledgment ?? "I’m continuing this work and will send the result when it is ready.";
+        const content = [
+          { type: "text", text: expectedText },
+          ...(media ? [expect.objectContaining({ type: "image", mimeType: "image/png" })] : []),
+        ];
+        const frames: Record<string, unknown>[] = [];
+        const record = (raw: RawData) => {
+          const frame = JSON.parse(rawDataToString(raw));
+          if (frame.event === "chat" && frame.payload?.runId === runId) {
+            frames.push(frame.payload);
+          }
+        };
+        ws.on("message", record);
+        let options: InternalGetReplyOptions | undefined;
+        const dispatched = createDeferred();
+        let publicAcknowledgment: string | undefined;
+        const tool = createSessionsYieldTool({
+          sessionId: "sess-main",
+          claimYield: () => true,
+          onYield: (_privateContext, publicText) => {
+            publicAcknowledgment = publicText;
+          },
+        });
+        const result = await tool.execute("yield-call", {
+          message: "Private resume context must not be published.",
+          acknowledgment,
+        });
+        expect(result).not.toHaveProperty("details.message");
+        const payload = buildWaitingStatusPayload({
+          completion: { expectation: "required", outcome: "pending" },
+          yielded: acknowledgment !== undefined,
+          continuationPending: acknowledgment === undefined,
+          yieldAcknowledgment: publicAcknowledgment,
+          hasVisibleMessageDelivery: false,
+        });
+        assert(payload);
+        if (media) {
+          payload.mediaUrl =
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=";
+        }
+        dispatchInboundMessageMock.mockImplementationOnce(async (args: unknown) => {
+          const params = args as {
+            replyOptions: InternalGetReplyOptions;
+            dispatcher: ReplyDispatcher;
+          };
+          options = params.replyOptions;
+          if (lane === "queued") {
+            options.turnAdoptionLifecycle?.onDeferred?.();
+          } else {
+            options.onAgentRunStart?.(sourceRunId);
+            params.dispatcher.sendFinalReply(payload);
+            params.dispatcher.markComplete();
+            await params.dispatcher.waitForIdle();
+            emitAgentEvent({
+              runId: sourceRunId,
+              stream: "lifecycle",
+              data: { phase: "end", yielded: true },
+            });
+          }
+          dispatched.resolve();
+          return {};
+        });
+        try {
+          const response = await rpcReq(ws, "chat.send", {
+            sessionKey: "main",
+            message: "Research this and report when ready.",
+            idempotencyKey: sourceRunId,
+          });
+          expect(response.ok).toBe(true);
+          await dispatched.promise;
+          await requestExecution.waitForCompletion();
+          if (lane === "queued") {
+            registerAgentRunContext(followupRunId, {
+              sessionKey: "main",
+              completionSource: "reply-dispatch",
+            });
+            const batch = {
+              kind: "queued-followup" as const,
+              runId: followupRunId,
+              originatingChannel: "webchat",
+              payloads: [payload],
+              completion: { kind: "completed" as const },
+            };
+            await options?.onQueuedFollowupReplyBatch?.(batch);
+            // A replay of the same queued terminal must not publish another assistant row.
+            await options?.onQueuedFollowupReplyBatch?.(batch);
+            options?.turnAdoptionLifecycle?.onSettled?.();
+          } else {
+            expect(
+              (
+                await rpcReq(ws, "chat.send", {
+                  sessionKey: "main",
+                  message: "Research this and report when ready.",
+                  idempotencyKey: sourceRunId,
+                })
+              ).ok,
+            ).toBe(true);
+          }
+          // Reading over the same socket orders all earlier publication frames before the assertion.
+          const history = await rpcReq<{ messages: Array<{ role: string; content: unknown[] }> }>(
+            ws,
+            "chat.history",
+            { sessionKey: "main" },
+          );
+          expect(history.ok).toBe(true);
+          const assistant = history.payload?.messages.filter(
+            (message) => message.role === "assistant",
+          );
+          expect(assistant).toEqual([expect.objectContaining({ content })]);
+          const visible = frames.filter((frame) => frame.state === "final" && frame.message);
+          expect(visible).toEqual([
+            expect.objectContaining({
+              message: expect.objectContaining({ content }),
+            }),
+          ]);
+          expect(JSON.stringify([frames, history.payload])).not.toContain("Private resume context");
+          const reloaded = await rpcReq<{ messages: Array<{ role: string; content: unknown[] }> }>(
+            ws,
+            "chat.history",
+            {
+              sessionKey: "main",
+            },
+          );
+          expect(reloaded.ok).toBe(true);
+          expect(
+            reloaded.payload?.messages.filter((message) => message.role === "assistant"),
+          ).toEqual([expect.objectContaining({ content })]);
+        } finally {
+          ws.off("message", record);
+          options?.turnAdoptionLifecycle?.onSettled?.();
         }
       });
     },

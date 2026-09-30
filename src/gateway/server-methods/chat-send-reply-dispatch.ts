@@ -341,9 +341,11 @@ export function createChatSendReplyDispatch(params: {
     }
     return "missing";
   };
+  // Host waiting replies, including their media, belong to source finalization on both lanes.
   const needsAgentMediaTranscriptFinalization = (payload: ReplyPayload): boolean =>
-    isMediaBearingPayload(payload) ||
-    Boolean(getReplyPayloadMetadata(payload)?.assistantMediaFailures?.length);
+    !getReplyPayloadMetadata(payload)?.continuationStatus &&
+    (isMediaBearingPayload(payload) ||
+      Boolean(getReplyPayloadMetadata(payload)?.assistantMediaFailures?.length));
   const agentMediaTranscriptKey = (payload: ReplyPayload): string => {
     const metadata = getReplyPayloadMetadata(payload);
     const ownedIdempotencyKey =

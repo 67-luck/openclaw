@@ -591,6 +591,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
             });
           } else if (!progressRefresh && !context.chatRunState.hasAbortMarker(clientRunId)) {
             finalizedSourceReply = await finalizeChatSendSourceReplies({
+              isCurrent: isRunCurrent,
               requesterContext: ctx,
               abortSignal: activeRunAbort.controller.signal,
               accountId,

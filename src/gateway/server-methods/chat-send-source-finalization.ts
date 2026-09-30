@@ -4,6 +4,7 @@ import {
 } from "../../auto-reply/reply-payload.js";
 import type { QueuedFollowupReplyBatch } from "../../auto-reply/reply/queue/types.js";
 import type { ReplyDispatchOperation } from "../../auto-reply/reply/reply-dispatcher.types.js";
+import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { appendChatCanvasBlocksToMessage } from "../chat-display-projection.canvas.js";
 import { attachManagedOutgoingMediaToMessage } from "../managed-image-attachments.js";
@@ -36,6 +37,7 @@ import { isChatSendReplyDeliveryAuthorized } from "./chat-send-delivery-authorit
 import { buildTranscriptReplyTextFromInputs } from "./chat-send-reply-dispatch.js";
 import type { PreparedChatSendSession } from "./chat-send-session.js";
 import {
+  appendAssistantTranscriptMessage,
   assistantTranscriptScope,
   publishAssistantTranscriptRewrite,
   rewriteSourceReplyTranscriptMirrors,
@@ -53,6 +55,7 @@ function selectChatSendAgentReplyInputs(params: {
     .filter((entry) => {
       const payload = readChatSendReplyPayload(entry.input);
       return getReplyPayloadMetadata(payload)?.sessionWriterDeliveryAuthority ||
+        getReplyPayloadMetadata(payload)?.continuationStatus ||
         isSourceReplyTranscriptMirrorPayload(payload)
         ? entry.kind === "final" && payload.isError !== true
         : !params.hasReturnedAgentErrorPayloads && isReplyPayloadStatusNotice(payload);
@@ -63,6 +66,7 @@ function selectChatSendAgentReplyInputs(params: {
 type FinalizeChatSendAgentRepliesBase = {
   requesterContext?: WebchatReplyMediaRequesterContext;
   abortSignal?: AbortSignal;
+  isCurrent?: () => boolean;
   accountId: string | undefined;
   context: GatewayRequestContext;
   emitFirstAssistantServerTiming: () => void;
@@ -205,7 +209,6 @@ async function finalizeChatSendAgentReplyPayloads(
     inputs: readonly ReplyDispatchOperation[];
     suppressFinal?: boolean;
     publishMessage?: (message: Record<string, unknown>, deliveryAuthorized: () => boolean) => void;
-    isCurrent?: () => boolean;
   },
 ): Promise<ChatSendAgentReplyFinalization> {
   const { accountId, context, emitFirstAssistantServerTiming, session } = params;
@@ -253,6 +256,7 @@ async function finalizeChatSendAgentReplyPayloads(
     sessionLoadOptions,
   );
   const sessionId = latestEntry?.sessionId ?? backingSessionId ?? clientRunId;
+  const expectedLifecycleRevision = latestEntry?.lifecycleRevision;
   const { finalInputsByIndex, sourceReplyContentStates, sourceReplyBroadcastContent } =
     await withPreparedWebchatReplyMedia(
       {
@@ -373,6 +377,63 @@ async function finalizeChatSendAgentReplyPayloads(
       });
     }
   }
+  // Waiting replies are authored after the model turn, so no runtime transcript row owns
+  // them. Persist only that public payload, not tool results or neighboring progress notices.
+  let continuationMessage: Record<string, unknown> | undefined;
+  if (!params.suppressFinal && sourceReplyScope) {
+    for (const [replyIndex, payload] of agentRunReplyPayloads.entries()) {
+      const metadata = getReplyPayloadMetadata(payload);
+      const state = sourceReplyContentStates[replyIndex];
+      if (
+        !metadata?.continuationStatus ||
+        metadata.assistantTranscriptOwned ||
+        metadata.sourceReplyTranscriptMirror ||
+        !state?.persistedContent.length
+      ) {
+        continue;
+      }
+      const appended = await withSessionTranscriptWriteAssertion(
+        sourceReplyScope,
+        () => {
+          params.abortSignal?.throwIfAborted();
+          if (!deliveryAuthorized()) {
+            throw new Error("Waiting reply delivery is no longer authorized.");
+          }
+        },
+        () =>
+          appendAssistantTranscriptMessage({
+            sessionKey,
+            sessionId,
+            agentId,
+            storePath: latestStorePath,
+            expectedSessionId: backingSessionId ?? sessionId,
+            expectedLifecycleRevision,
+            message: buildTranscriptReplyTextFromInputs(finalInputsByIndex[replyIndex] ?? []),
+            content: state.persistedContent,
+            createIfMissing: true,
+            idempotencyKey: `${clientRunId}:continuation-status`,
+            cfg,
+            onMessageCommitted: (receipt, acceptCompletion) => {
+              if (state.hasManagedOutgoingContent) {
+                acceptCompletion(async () => {
+                  await attachManagedOutgoingMediaToMessage({
+                    messageId: receipt.messageId,
+                    blocks: state.persistedContent,
+                  });
+                });
+              }
+            },
+          }),
+      );
+      if (!appended.ok) {
+        throw new Error(
+          `Waiting reply transcript append failed: ${appended.error ?? "unknown error"}`,
+        );
+      }
+      state.backedManagedOutgoingContent = true;
+      continuationMessage = appended.message;
+    }
+  }
   const sourceReplyContent = sourceReplyContentStates.flatMap((state) => {
     if (state.hasManagedOutgoingContent && !state.backedManagedOutgoingContent) {
       return (
@@ -386,18 +447,21 @@ async function finalizeChatSendAgentReplyPayloads(
   const sourceReplyTextFromContent = extractAssistantDisplayText(sourceReplyContent);
   const sourceReplyText =
     sourceReplyTextFromContent ?? (sourceReplyContent.length === 0 ? displayReply : undefined);
-  const message = {
-    role: "assistant",
-    ...(sourceReplyContent.length
-      ? { content: sourceReplyContent }
-      : sourceReplyText
-        ? { content: [{ type: "text", text: sourceReplyText }] }
-        : {}),
-    ...(sourceReplyText ? { text: sourceReplyText } : {}),
-    timestamp: Date.now(),
-    stopReason: "stop",
-    usage: { input: 0, output: 0, totalTokens: 0 },
-  };
+  const message =
+    continuationMessage && agentRunReplyPayloads.length === 1
+      ? continuationMessage
+      : {
+          role: "assistant",
+          ...(sourceReplyContent.length
+            ? { content: sourceReplyContent }
+            : sourceReplyText
+              ? { content: [{ type: "text", text: sourceReplyText }] }
+              : {}),
+          ...(sourceReplyText ? { text: sourceReplyText } : {}),
+          timestamp: Date.now(),
+          stopReason: "stop",
+          usage: { input: 0, output: 0, totalTokens: 0 },
+        };
   // Failed turns retain source media/transcript finalization; chat.error carries no message.
   if (!params.suppressFinal) {
     if (!authorizeDelivery("broadcast")) {
@@ -430,14 +494,8 @@ export async function finalizeChatSendSourceReplies(
   },
 ): Promise<boolean> {
   const result = await finalizeChatSendAgentReplyPayloads({
-    requesterContext: params.requesterContext,
-    abortSignal: params.abortSignal,
-    accountId: params.accountId,
-    context: params.context,
-    emitFirstAssistantServerTiming: params.emitFirstAssistantServerTiming,
+    ...params,
     inputs: selectChatSendAgentReplyInputs(params),
-    session: params.session,
-    suppressFinal: params.suppressFinal,
   });
   return result.kind === "delivered" && result.hasSourceReplyTranscriptMirror;
 }
