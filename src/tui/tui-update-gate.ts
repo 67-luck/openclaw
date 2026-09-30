@@ -4,7 +4,10 @@ import {
   waitForLocalTuiUpdate,
   type LocalTuiUpdateAnnouncement,
 } from "../infra/local-tui-processes.js";
-import { formatOpenClawProcessTitle } from "../infra/openclaw-installation-id.js";
+import {
+  formatOpenClawProcessTitle,
+  resolveOpenClawInstallationRevision,
+} from "../infra/openclaw-installation-id.js";
 import {
   resolveOpenClawPackageRootSync,
   rewritePnpmVersionedOpenClawEntryPath,
@@ -30,7 +33,7 @@ async function respawnTuiFromCurrentInstallation(): Promise<never> {
 /** Loads the TUI graph only after this installation is no longer being replaced. */
 async function loadTuiAfterUpdateGate(): Promise<{
   tui?: typeof import("./tui.js");
-  announcement?: LocalTuiUpdateAnnouncement;
+  cleanup?: () => Promise<void>;
   waitedForUpdate: boolean;
 }> {
   const targetRoot = resolveOpenClawPackageRootSync({
@@ -40,8 +43,17 @@ async function loadTuiAfterUpdateGate(): Promise<{
   if (!targetRoot) {
     throw new Error("Unable to identify this OpenClaw installation before TUI startup.");
   }
+  const initialRevision = resolveOpenClawInstallationRevision(targetRoot);
   const previousProcessTitle = process.title;
   let announcement: LocalTuiUpdateAnnouncement | undefined;
+  const cleanup = async () => {
+    try {
+      await announcement?.release();
+    } finally {
+      announcement = undefined;
+      process.title = previousProcessTitle;
+    }
+  };
   const { waitedForUpdate } = await waitForLocalTuiUpdate(
     targetRoot,
     undefined,
@@ -50,26 +62,23 @@ async function loadTuiAfterUpdateGate(): Promise<{
       process.title = formatOpenClawProcessTitle("openclaw-tui", targetRoot);
       announcement =
         process.platform === "win32" ? await announceLocalTuiClient(targetRoot) : undefined;
-      return async () => {
-        await announcement?.release();
-        announcement = undefined;
-        process.title = previousProcessTitle;
-      };
+      return cleanup;
     },
   ).catch(async (error: unknown) => {
-    await announcement?.release();
-    process.title = previousProcessTitle;
+    await cleanup();
     throw error;
   });
-  if (waitedForUpdate) {
-    await announcement?.release();
-    process.title = previousProcessTitle;
+  if (
+    waitedForUpdate &&
+    (!initialRevision || resolveOpenClawInstallationRevision(targetRoot) !== initialRevision)
+  ) {
+    await cleanup();
     return { waitedForUpdate: true };
   }
   try {
-    return { tui: await import("./tui.js"), announcement, waitedForUpdate: false };
+    return { tui: await import("./tui.js"), cleanup, waitedForUpdate: false };
   } catch (error) {
-    await announcement?.release();
+    await cleanup();
     throw error;
   }
 }
@@ -77,7 +86,7 @@ async function loadTuiAfterUpdateGate(): Promise<{
 export async function withTuiAfterUpdateGate<T>(
   run: (tui: typeof import("./tui.js")) => Promise<T>,
 ): Promise<{ status: "ran"; value: T } | { status: "updated" }> {
-  const { tui, announcement, waitedForUpdate } = await loadTuiAfterUpdateGate();
+  const { tui, cleanup, waitedForUpdate } = await loadTuiAfterUpdateGate();
   // Nested owners must unwind their resources after an update. Replaying their
   // original argv here would restart onboarding or setup before cleanup finishes.
   if (waitedForUpdate || !tui) {
@@ -86,7 +95,7 @@ export async function withTuiAfterUpdateGate<T>(
   try {
     return { status: "ran", value: await run(tui) };
   } finally {
-    await announcement?.release();
+    await cleanup?.();
   }
 }
 

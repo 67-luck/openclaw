@@ -1,0 +1,28 @@
+import fs from "node:fs";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { resolveOpenClawInstallationRevision } from "./openclaw-installation-id.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+describe("OpenClaw installation revision", () => {
+  it("changes when a package activation or source revision changes", () => {
+    const root = tempDirs.make("openclaw-installation-revision-");
+    fs.writeFileSync(path.join(root, "openclaw.mjs"), "");
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: "1.0.0" }));
+    fs.mkdirSync(path.join(root, ".git", "refs", "heads"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+    fs.writeFileSync(path.join(root, ".git", "refs", "heads", "main"), `${"a".repeat(40)}\n`);
+
+    const initial = resolveOpenClawInstallationRevision(root);
+    expect(resolveOpenClawInstallationRevision(root)).toBe(initial);
+
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: "2.0.0" }));
+    const activated = resolveOpenClawInstallationRevision(root);
+    expect(activated).not.toBe(initial);
+
+    fs.writeFileSync(path.join(root, ".git", "refs", "heads", "main"), `${"b".repeat(40)}\n`);
+    expect(resolveOpenClawInstallationRevision(root)).not.toBe(activated);
+  });
+});

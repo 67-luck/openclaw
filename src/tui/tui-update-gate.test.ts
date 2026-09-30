@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { formatOpenClawProcessTitle } from "../infra/openclaw-installation-id.js";
 
 const mocks = vi.hoisted(() => ({
   announce: vi.fn(),
   load: vi.fn(),
   resolveRoot: vi.fn(() => "/opt/openclaw"),
+  resolveRevision: vi.fn(() => "revision-1"),
   respawn: vi.fn(),
   runTui: vi.fn(),
   wait: vi.fn(),
@@ -18,6 +18,10 @@ vi.mock("../infra/local-tui-processes.js", () => ({
 vi.mock("../infra/openclaw-root.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/openclaw-root.js")>()),
   resolveOpenClawPackageRootSync: mocks.resolveRoot,
+}));
+vi.mock("../infra/openclaw-installation-id.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/openclaw-installation-id.js")>()),
+  resolveOpenClawInstallationRevision: mocks.resolveRevision,
 }));
 vi.mock("../entry.respawn.js", () => ({
   runCliRespawnPlan: mocks.respawn,
@@ -43,6 +47,7 @@ describe("TUI update startup gate", () => {
 
   beforeEach(() => {
     mocks.announce.mockReset();
+    mocks.resolveRevision.mockReturnValue("revision-1");
     mocks.wait.mockImplementation(
       async (
         _targetRoot: string,
@@ -92,10 +97,9 @@ describe("TUI update startup gate", () => {
       expect.any(Function),
     );
     expect(mocks.announce).toHaveBeenCalledWith("/opt/openclaw");
-    expect(mocks.load).toHaveBeenCalledOnce();
     expect(mocks.runTui).toHaveBeenCalledOnce();
     expect(release).toHaveBeenCalledOnce();
-    expect(process.title).toBe(formatOpenClawProcessTitle("openclaw-tui", "/opt/openclaw"));
+    expect(process.title).toBe("openclaw");
   });
 
   it("does not invoke lifecycle cleanup when the startup gate rejects", async () => {
@@ -116,6 +120,7 @@ describe("TUI update startup gate", () => {
       "tui",
     ];
     mocks.wait.mockResolvedValue({ waitedForUpdate: true });
+    mocks.resolveRevision.mockReturnValueOnce("revision-1").mockReturnValueOnce("revision-2");
 
     void runTuiAfterUpdateGate({} as never);
     await vi.waitFor(() => expect(mocks.respawn).toHaveBeenCalledOnce());
@@ -132,11 +137,23 @@ describe("TUI update startup gate", () => {
 
   it("returns nested callers through cleanup after a crossed update", async () => {
     mocks.wait.mockResolvedValue({ waitedForUpdate: true });
+    mocks.resolveRevision.mockReturnValueOnce("revision-1").mockReturnValueOnce("revision-2");
 
     await expect(runNestedTuiAfterUpdateGate({} as never)).resolves.toBeUndefined();
 
     expect(mocks.load).not.toHaveBeenCalled();
     expect(mocks.runTui).not.toHaveBeenCalled();
+    expect(mocks.respawn).not.toHaveBeenCalled();
+  });
+
+  it("runs a nested TUI after an updater aborts without replacing the installation", async () => {
+    const result = { exitReason: "quit" };
+    mocks.wait.mockResolvedValue({ waitedForUpdate: true });
+    mocks.runTui.mockResolvedValue(result);
+
+    await expect(runNestedTuiAfterUpdateGate({} as never)).resolves.toBe(result);
+
+    expect(mocks.runTui).toHaveBeenCalledOnce();
     expect(mocks.respawn).not.toHaveBeenCalled();
   });
 
@@ -157,6 +174,7 @@ describe("TUI update startup gate", () => {
       },
     );
     process.title = "openclaw";
+    mocks.resolveRevision.mockReturnValueOnce("revision-1").mockReturnValueOnce("revision-2");
 
     await expect(runNestedTuiAfterUpdateGate({} as never)).resolves.toBeUndefined();
 
@@ -165,15 +183,17 @@ describe("TUI update startup gate", () => {
     expect(mocks.load).not.toHaveBeenCalled();
   });
 
-  it("keeps an internal Windows TUI discoverable until its lifecycle ends", async () => {
+  it("withdraws an internal Windows TUI when its nested lifecycle ends", async () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     const release = vi.fn(async () => {});
     mocks.announce.mockResolvedValue({ pid: 104, release });
     mocks.runTui.mockResolvedValue({ exitReason: "quit" });
+    process.title = "openclaw";
 
     await runTuiAfterUpdateGate({} as never);
 
     expect(mocks.announce).toHaveBeenCalledWith("/opt/openclaw");
     expect(release).toHaveBeenCalledOnce();
+    expect(process.title).toBe("openclaw");
   });
 });

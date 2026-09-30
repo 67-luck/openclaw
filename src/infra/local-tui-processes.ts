@@ -485,6 +485,27 @@ function formatLocalTuiPidList(processes: readonly LocalTuiProcess[]): string {
   return processes.map((proc) => String(proc.pid)).join(", ");
 }
 
+function windowsTuiCompanionRefusal(processes: readonly LocalTuiProcess[]): Error {
+  return new Error(
+    `Update refused: Windows TUI clients (${formatLocalTuiPidList(processes)}) are using this installation and cannot be stopped safely from their launch command. Close them, then retry.`,
+  );
+}
+
+/** Refuses known Windows companions before expensive candidate validation. */
+export function preflightLocalTuiProcessesBeforeUpdate(
+  targetRoot: string,
+  discover: typeof discoverLocalTuiProcesses = discoverLocalTuiProcesses,
+): void {
+  const discovery = discover({ targetRoot });
+  // The retained activation gate owns authoritative discovery and fail-closed behavior.
+  const companionClients = discovery.ok
+    ? discovery.processes.filter((candidate) => candidate.ownership === "companion")
+    : [];
+  if (companionClients.length > 0) {
+    throw windowsTuiCompanionRefusal(companionClients);
+  }
+}
+
 export type LocalTuiUpdateGate = FileLockHandle & { stopped: number[]; warnings: string[] };
 
 export type LocalTuiUpdateAnnouncement = {
@@ -620,9 +641,7 @@ export async function quiesceLocalTuiProcessesBeforeUpdate(
       (candidate) => candidate.ownership === "companion",
     );
     if (companionClients.length > 0) {
-      throw new Error(
-        `Update refused: Windows TUI clients (${formatLocalTuiPidList(companionClients)}) are using this installation and cannot be stopped safely from their launch command. Close them, then retry.`,
-      );
+      throw windowsTuiCompanionRefusal(companionClients);
     }
     const foreignUsers = discovery.processes.filter((proc) => proc.ownership === "foreign-user");
     if (foreignUsers.length > 0) {
@@ -694,7 +713,7 @@ export async function waitForLocalTuiUpdate(
         if (updates.processes.length === 0) {
           // Publish the client before releasing the installation gate so an
           // updater cannot scan between startup admission and discoverability.
-          const withdrawReady = !waitedForUpdate ? await onReady() : undefined;
+          const withdrawReady = await onReady();
           const updatesAfterPublication = discoverUpdates(targetRoot);
           if (!updatesAfterPublication.ok) {
             throw new Error(

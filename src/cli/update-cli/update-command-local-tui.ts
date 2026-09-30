@@ -1,5 +1,6 @@
 import {
   announceLocalTuiUpdate,
+  preflightLocalTuiProcessesBeforeUpdate,
   quiesceLocalTuiProcessesBeforeUpdate,
 } from "../../infra/local-tui-processes.js";
 import { resolveOpenClawInstallationId } from "../../infra/openclaw-installation-id.js";
@@ -7,6 +8,11 @@ import { defaultRuntime } from "../../runtime.js";
 import type { MutableUpdateExecutionParams } from "./update-command-execution.types.js";
 
 type LocalTuiGateExecution = Pick<MutableUpdateExecutionParams, "onLocalTuiGateAcquired" | "opts">;
+
+/** Rejects an already-running Windows companion before candidate validation. */
+export function preflightUpdateLocalTui(root: string): void {
+  preflightLocalTuiProcessesBeforeUpdate(root);
+}
 
 /** Announces activation, acquires every installation gate, and returns transaction cleanup. */
 async function acquireUpdateLocalTuiGate(

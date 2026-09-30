@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { readGitHead } from "./git-root.js";
 import { rewritePnpmVersionedOpenClawEntryPath } from "./openclaw-root.js";
 
 const INSTALLATION_ID_LENGTH = 16;
@@ -26,6 +27,28 @@ export function resolveOpenClawInstallationId(root: string): string {
     );
   } catch {
     return createOpenClawInstallationId(resolvedRoot);
+  }
+}
+
+/** Captures enough stable state to distinguish an aborted update from replacement. */
+export function resolveOpenClawInstallationRevision(root: string): string | undefined {
+  try {
+    const stableEntry = rewritePnpmVersionedOpenClawEntryPath(path.join(root, "openclaw.mjs"));
+    const canonicalEntry = fs.realpathSync.native(stableEntry);
+    const packageJson: unknown = JSON.parse(
+      fs.readFileSync(path.join(path.dirname(canonicalEntry), "package.json"), "utf8"),
+    );
+    const version =
+      typeof packageJson === "object" &&
+      packageJson !== null &&
+      "version" in packageJson &&
+      typeof packageJson.version === "string"
+        ? packageJson.version
+        : "";
+    const gitHead = readGitHead(root)?.value ?? "";
+    return `${canonicalEntry}\0${version}\0${gitHead}`;
+  } catch {
+    return undefined;
   }
 }
 

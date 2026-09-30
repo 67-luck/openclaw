@@ -304,6 +304,22 @@ describe("mutable update execution", () => {
     await releaseAfterFinalization?.();
     expect(release).toHaveBeenCalledOnce();
   });
+
+  it("checks Windows companions before starting candidate validation", async () => {
+    mocks.preflightLocalTui.mockImplementation(() => {
+      throw new Error("close Windows TUI first");
+    });
+
+    const execution = await executeMutableUpdate(executionParams("package"));
+
+    expect(execution).toMatchObject({
+      mutationStarted: false,
+      result: { status: "error", reason: "update-failed" },
+    });
+    expect(mocks.preflightLocalTui).toHaveBeenCalledWith("/opt/openclaw");
+    expect(mocks.runPackageUpdate).not.toHaveBeenCalled();
+  });
+
   it("retains the live update run when stopped-service context capture fails", async () => {
     await withTestDir({ prefix: "partial-stop-recovery-owner-" }, async (dir) => {
       const control = path.join(dir, "leases");

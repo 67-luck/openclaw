@@ -8,6 +8,7 @@ import {
   announceLocalTuiUpdate,
   discoverLocalTuiProcesses,
   type LocalTuiProcess,
+  preflightLocalTuiProcessesBeforeUpdate,
   quiesceLocalTuiProcessesBeforeUpdate,
   terminateLocalTuiProcesses,
   waitForLocalTuiUpdate,
@@ -407,6 +408,24 @@ describe("local TUI processes", () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
+  it("refuses a known Windows companion before candidate validation", () => {
+    expect(() =>
+      preflightLocalTuiProcessesBeforeUpdate("/target", () => ({
+        ok: true,
+        processes: [{ pid: 104, command: "openclaw-tui@fixture", ownership: "companion" }],
+      })),
+    ).toThrow("Windows TUI clients (104)");
+  });
+
+  it("defers unavailable discovery to the authoritative activation gate", () => {
+    expect(() =>
+      preflightLocalTuiProcessesBeforeUpdate("/target", () => ({
+        ok: false,
+        error: "fixture probe failed.",
+      })),
+    ).not.toThrow();
+  });
+
   it("releases the gate if update authority expires after lock contention", async () => {
     const release = vi.fn(async () => {});
     const discover = vi.fn();
@@ -642,7 +661,7 @@ describe("local TUI processes", () => {
       waitForLocalTuiUpdate("/target", acquireLock, discoverUpdates, onReady),
     ).resolves.toEqual({ waitedForUpdate: true });
     expect(discoverUpdates).toHaveBeenCalledTimes(3);
-    expect(onReady).not.toHaveBeenCalled();
+    expect(onReady).toHaveBeenCalledOnce();
   });
 
   it("reports when startup did not cross an update", async () => {
@@ -680,7 +699,7 @@ describe("local TUI processes", () => {
       waitForLocalTuiUpdate("/target", acquireLock, discoverUpdates, onReady),
     ).resolves.toEqual({ waitedForUpdate: true });
 
-    expect(onReady).toHaveBeenCalledOnce();
+    expect(onReady).toHaveBeenCalledTimes(2);
     expect(withdrawReady).toHaveBeenCalledOnce();
     expect(withdrawReady).toHaveBeenCalledBefore(release);
     expect(acquireLock).toHaveBeenCalledTimes(2);

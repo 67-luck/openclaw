@@ -10,6 +10,7 @@ import { createCommandResult as commandResult } from "../../test-utils/npm-spec-
 import { quoteCliArg } from "../quote-cli-arg.js";
 
 vi.mock("./update-command-local-tui.js", () => ({
+  preflightUpdateLocalTui: () => {},
   stopAfterTuiGate: async (
     execution: { onLocalTuiGateAcquired: (release: () => Promise<void>) => void },
     roots: readonly string[],
