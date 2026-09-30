@@ -330,6 +330,10 @@ A different observed identity still refuses the
 handoff. Scheduled Tasks using `InteractiveToken` remain supported; this does not
 require storing a task password.
 
+An interruption while suspending Scheduled Task autostart stops the update before
+package changes. The original update owner can still restore autostart; a replaced
+or settled owner cannot change the task.
+
 This target-CLI protection does not cover every Doctor or plugin child or the
 in-process service preparation before package mutation.
 
