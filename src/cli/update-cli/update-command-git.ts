@@ -508,7 +508,9 @@ export async function updateGitInstall(params: {
       root: params.root,
       reason: "snapshot-capacity-insufficient",
       steps: [snapshotBeforeClone],
-      recovery: await verifyPackageUpdateRecovery(params.root),
+      recovery: await (params.installKind === "git"
+        ? readCurrentGitUpdateRecovery(params.root, effectiveTimeout)
+        : verifyPackageUpdateRecovery(params.root)),
       durationMs: Date.now() - params.startedAt,
     };
   }
