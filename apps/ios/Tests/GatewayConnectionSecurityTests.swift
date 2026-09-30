@@ -429,14 +429,13 @@ import Testing
             port: link.port,
             useTLS: link.tls,
             authOverride: setupAuth.manualAuthOverride)
-        for _ in 0..<100 where appModel.activeGatewayConnectConfig == nil {
-            await Task.yield()
-        }
+        await self.waitUntil { !controller.hasPendingConnectionHandoff }
 
         #expect(result == .accepted)
         #expect(tlsProbeCalls.withLock { $0 } == 1)
         #expect(controller.pendingTrustPrompt == nil)
-        #expect(appModel.activeGatewayConnectConfig?.tls?.expectedFingerprint == fingerprint)
+        let config = try #require(appModel.activeGatewayConnectConfig)
+        #expect(config.tls?.expectedFingerprint == fingerprint)
         let persisted = try #require(persistedFingerprint.withLock { $0 })
         #expect(persisted.0 == fingerprint)
         #expect(persisted.1 == setupAuth.targetStableID)
