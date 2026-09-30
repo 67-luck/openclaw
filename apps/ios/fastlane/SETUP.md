@@ -219,10 +219,22 @@ These diagnostics produce `native-build`/`built`, `gateway-probe`/`probe-passed`
 or `setup-probe`/`probe-passed` proofs, respectively. None is release qualification.
 The setup probe adds temporary, sanitized connection, RPC, shutdown, and resource
 timings to distinguish delays before and after simulator boot. An independent
-sampler also records bounded host memory/swap measurements and short stack samples
-of the owned harness and Gateway. Only numeric facts and fixed stack categories
-enter the proof; raw stack reports are deleted. Sampling can briefly pause its
-target, so these measurements are diagnostic evidence, not release qualification.
+sampler also records bounded host memory/swap measurements. Before simulator boot,
+it launches exactly two native stack captures, one for the owned harness and one
+for the Gateway. Each capture requests 90 seconds at 20 ms intervals, with a
+120-second command deadline. This fixed window covers the observed roughly
+40-second boot and 31-second setup stall without depending on periodic metrics
+commands to finish. A metrics failure does not cancel these captures.
+
+The probe waits for both commands' expected startup banners before reporting ready.
+A banner acknowledges the command; it does not prove that the first stack sample
+has been collected. Use the numeric launch and acknowledgment timestamps, requested
+duration and interval, and observed sample counts to interpret coverage. Normal
+probe shutdown joins both captures before stopping the Gateway; external
+cancellation aborts them. Each private raw report has a 1 MiB output cap. Only
+numeric facts and fixed stack categories enter the proof, and raw reports are
+deleted. Sampling can briefly pause its target, so these measurements are diagnostic
+evidence, not release qualification.
 Failed diagnostic commands also retain spawn, exit, cancellation, and output-close
 timings, plus the cleanup owner's final process-group and pipe observations before
 any remaining output handles are destroyed. Sampler CPU and event-loop measurements

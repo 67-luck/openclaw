@@ -50,6 +50,16 @@ it.each(["complete", "unjoined-vm"])(
     });
     vi.stubGlobal("process", childProcess);
     const ready = createDeferred();
+    const capturesStarted = createDeferred();
+    const metricsStopped = createDeferred();
+    const captures: {
+      completion: ReturnType<typeof createDeferred<number>>;
+      signal: AbortSignal | undefined;
+      rawPath: string;
+      stderr: PassThrough;
+      targetPid: string;
+    }[] = [];
+    let readyObserved = false;
     let postBaseline = false;
     stdout.on("data", (chunk: Buffer) => {
       expect(chunk.toString()).toBe("ready\n");
@@ -57,10 +67,8 @@ it.each(["complete", "unjoined-vm"])(
         status: "running",
         cleanupConfirmed: false,
       });
+      readyObserved = true;
       postBaseline = true;
-      if (scenario === "complete") {
-        stdin.emit("end");
-      }
       ready.resolve();
     });
     const rawStack = [
@@ -85,8 +93,15 @@ it.each(["complete", "unjoined-vm"])(
     native.command.mockImplementation(async (options: RunManagedCommandOptions) => {
       const output = new PassThrough();
       const errorOutput = new PassThrough();
-      options.onReady?.(Object.assign(new ChildProcess(), { stdout: output, stderr: errorOutput }));
+      options.onReady?.(
+        Object.assign(new ChildProcess(), {
+          pid: 3000 + native.command.mock.calls.length,
+          stdout: output,
+          stderr: errorOutput,
+        }),
+      );
       if (options.bin === "/usr/bin/vm_stat") {
+        options.signal?.addEventListener("abort", () => metricsStopped.resolve(), { once: true });
         if (postBaseline && scenario === "unjoined-vm") {
           await options.onLifecycle?.({
             elapsedMs: 6100,
@@ -147,24 +162,79 @@ it.each(["complete", "unjoined-vm"])(
         );
       } else {
         expect(options.bin).toBe("/bin/sh");
+        expect(options.args?.[1]).toBe(
+          'ulimit -f 1024 || exit 70; exec /usr/bin/sample "$1" 90 20 -file "$2"',
+        );
+        expect(options.timeoutMs).toBe(120_000);
+        const targetPid = options.args?.at(-2);
         const rawPath = options.args?.at(-1);
-        expect(rawPath).toBeDefined();
-        writeFileSync(rawPath!, rawStack);
+        if (!rawPath || !targetPid) {
+          throw new Error("sample must receive its owned target and raw output path");
+        }
+        writeFileSync(rawPath, rawStack);
+        const completion = createDeferred<number>();
+        captures.push({
+          completion,
+          signal: options.signal,
+          rawPath,
+          stderr: errorOutput,
+          targetPid,
+        });
+        if (captures.length === 2) {
+          capturesStarted.resolve();
+        }
+        return completion.promise;
       }
       return 0;
     });
 
-    const running = import("../../scripts/lib/ios-release-setup-host.js");
+    let exited = false;
+    const running = import("../../scripts/lib/ios-release-setup-host.js").then(() => {
+      exited = true;
+    });
+    await Promise.race([
+      capturesStarted.promise,
+      running.then(() => {
+        throw new Error("sampler exited before both captures started");
+      }),
+    ]);
+    expect(readyObserved).toBe(false);
+    expect(captures.map((capture) => capture.targetPid)).toEqual(["1001", "2002"]);
+    for (const capture of captures) {
+      capture.stderr.write(`Sampling process ${capture.targetPid} for 90 seconds with `);
+      await Promise.resolve();
+      expect(readyObserved).toBe(false);
+      capture.stderr.write("20 milliseconds of run time between samples\n");
+      await Promise.resolve();
+    }
+    await Promise.race([
+      ready.promise,
+      running.then(() => {
+        throw new Error("sampler exited before capture readiness");
+      }),
+    ]);
     if (scenario === "unjoined-vm") {
-      await Promise.race([
-        ready.promise,
-        running.then(() => {
-          throw new Error("sampler exited before baseline readiness");
-        }),
-      ]);
       stdin.write("boot\n");
       await vi.advanceTimersByTimeAsync(5_000);
+    } else {
+      stdin.emit("end");
     }
+    await metricsStopped.promise;
+    expect(exited).toBe(false);
+    for (const capture of captures) {
+      expect(capture.signal?.aborted).toBe(false);
+      expect(readFileSync(capture.rawPath, "utf8")).toBe(rawStack);
+    }
+    const firstCapture = captures[0];
+    const secondCapture = captures[1];
+    if (!firstCapture || !secondCapture) {
+      throw new Error("both pre-boot captures must be active");
+    }
+    firstCapture.completion.resolve(0);
+    await Promise.resolve();
+    expect(exited).toBe(false);
+    expect(readFileSync(secondCapture.rawPath, "utf8")).toBe(rawStack);
+    secondCapture.completion.resolve(0);
     await running;
 
     const report = JSON.parse(readFileSync(path.join(directory, "report.json"), "utf8"));
@@ -254,13 +324,16 @@ it.each(["complete", "unjoined-vm"])(
     );
     expect(report.host[0]).not.toHaveProperty("inactivePages");
     expect(report.stacks).toHaveLength(2);
-    expect(report.stacks.map((row: { target: string }) => row.target)).toEqual([
-      "harness",
+    expect(report.stacks.map((row: { target: string }) => row.target).toSorted()).toEqual([
       "gateway",
+      "harness",
     ]);
     for (const stack of report.stacks) {
       expect(stack).toMatchObject({
-        window: "baseline",
+        window: "boot-and-setup",
+        acknowledgedEpochMs: expect.any(Number),
+        durationMs: 90_000,
+        intervalMs: 20,
         outcome: "passed",
         countKind: "inclusive-tree-occurrences",
         truncated: true,
@@ -316,9 +389,38 @@ it.each(["complete", "unjoined-vm"])(
   },
 );
 
-it.each([true, false])(
-  "joins cancelled sampler work and releases owned files only after confirmed cleanup (%s)",
-  async (cleanupConfirmed) => {
+it.each([
+  {
+    mode: "graceful",
+    cancelled: false,
+    reportCleanup: true,
+    cleanupConfirmed: true,
+    killed: false,
+  },
+  {
+    mode: "cancelled-clean",
+    cancelled: true,
+    reportCleanup: true,
+    cleanupConfirmed: true,
+    killed: false,
+  },
+  {
+    mode: "cancelled-unjoined",
+    cancelled: true,
+    reportCleanup: false,
+    cleanupConfirmed: false,
+    killed: false,
+  },
+  {
+    mode: "cancelled-stale-report",
+    cancelled: true,
+    reportCleanup: true,
+    cleanupConfirmed: false,
+    killed: true,
+  },
+])(
+  "joins $mode sampler work and releases owned files only after confirmed cleanup",
+  async ({ cancelled, reportCleanup, cleanupConfirmed, killed }) => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.resetModules();
     vi.stubGlobal(
@@ -328,6 +430,7 @@ it.each([true, false])(
     const root = tempDirs.make("ios-setup-parent-");
     const completion = createDeferred<number>();
     let reportPath = "";
+    const child = new ChildProcess();
     const control = new PassThrough();
     const commands: string[] = [];
     control.on("data", (chunk: Buffer) => commands.push(chunk.toString()));
@@ -341,7 +444,7 @@ it.each([true, false])(
       }
       reportPath = path.join(directory, "report.json");
       const output = new PassThrough();
-      options.onReady?.(Object.assign(new ChildProcess(), { stdin: control, stdout: output }));
+      options.onReady?.(Object.assign(child, { pid: 3003, stdin: control, stdout: output }));
       output.write("ready\n");
       return completion.promise;
     });
@@ -357,23 +460,25 @@ it.each([true, false])(
     probe.markPhase("boot");
     probe.markPhase("setup-code");
     expect(commands).toEqual(["boot\n", "setup-code\n"]);
-    controller.abort();
+    if (cancelled) {
+      controller.abort();
+    }
     let stopped = false;
     const stopping = probe.stop().then(() => {
       stopped = true;
     });
     await Promise.resolve();
-    expect(childSignal?.aborted).toBe(true);
+    expect(childSignal?.aborted).toBe(cancelled);
     expect(control.writableEnded).toBe(true);
     expect(stopped).toBe(false);
     expect(readdirSync(root)).toHaveLength(1);
-    const status = cleanupConfirmed ? "stopped" : "running";
+    const status = reportCleanup ? "stopped" : "running";
     writeFileSync(path.join(path.dirname(reportPath), "sample-0.txt"), "PRIVATE_RAW_STACK");
     writeFileSync(
       reportPath,
       JSON.stringify({
         status,
-        cleanupConfirmed,
+        cleanupConfirmed: reportCleanup,
         token: "PRIVATE_TOKEN",
         failures: [
           {
@@ -413,7 +518,7 @@ it.each([true, false])(
               cpuSystemMs: 0.5,
               eventLoopUtilization: 0.25,
               eventLoopDelayMaxMs: 3,
-              eventLoopDelaySamples: cleanupConfirmed ? 2 : "PRIVATE_COUNT",
+              eventLoopDelaySamples: reportCleanup ? 2 : "PRIVATE_COUNT",
               raw: "PRIVATE_OBSERVER /Users/private/observer",
             },
           },
@@ -453,8 +558,11 @@ it.each([true, false])(
             epochMs: 101,
             elapsedMs: 4,
             target: "gateway",
-            window: "setup-code-8s",
+            window: "boot-and-setup",
             outcome: "passed",
+            acknowledgedEpochMs: reportCleanup ? 102 : "PRIVATE_ACK",
+            durationMs: 90_000,
+            intervalMs: reportCleanup ? 20 : -1,
             raw: "PRIVATE_STACK",
             threads: [
               {
@@ -472,7 +580,15 @@ it.each([true, false])(
         ],
       }),
     );
-    completion.reject(Object.assign(new Error("PRIVATE_CANCELLED"), { code: "ABORT_ERR" }));
+    Object.defineProperties(child, {
+      exitCode: { value: killed ? null : reportCleanup ? 0 : 75 },
+      signalCode: { value: killed ? "SIGKILL" : null },
+    });
+    if (cancelled) {
+      completion.reject(Object.assign(new Error("PRIVATE_CANCELLED"), { code: "ABORT_ERR" }));
+    } else {
+      completion.resolve(0);
+    }
     if (cleanupConfirmed) {
       await stopping;
     } else {
@@ -514,7 +630,7 @@ it.each([true, false])(
             cpuSystemMs: 0.5,
             eventLoopUtilization: 0.25,
             eventLoopDelayMaxMs: 3,
-            ...(cleanupConfirmed ? { eventLoopDelaySamples: 2 } : {}),
+            ...(reportCleanup ? { eventLoopDelaySamples: 2 } : {}),
           },
         },
       ],
@@ -534,8 +650,10 @@ it.each([true, false])(
           epochMs: 101,
           elapsedMs: 4,
           target: "gateway",
-          window: "setup-code-8s",
+          window: "boot-and-setup",
           outcome: "passed",
+          ...(reportCleanup ? { acknowledgedEpochMs: 102, intervalMs: 20 } : {}),
+          durationMs: 90_000,
           countKind: "inclusive-tree-occurrences",
           truncated: false,
           threads: [

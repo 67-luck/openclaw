@@ -673,7 +673,9 @@ describe("native command adapter", () => {
         });
       }
     });
-    nativeMocks.hostProbe.mockImplementation(async () => {
+    let hostSignal: AbortSignal | undefined;
+    nativeMocks.hostProbe.mockImplementation(async (options: { signal: AbortSignal }) => {
+      hostSignal = options.signal;
       lifecycle.push("sampler-start");
       return {
         evidence: hostEvidence,
@@ -1249,6 +1251,12 @@ describe("native command adapter", () => {
         const gatewayProbe = await native.dependencies.create("stock", 1);
         try {
           await gatewayProbe.prepare();
+          if (scenario === "setup-only") {
+            expect(hostSignal?.aborted).toBe(false);
+            gatewayChild.exitCode = 17;
+            gatewayChild.emit("exit", 17, null);
+            expect(hostSignal?.aborted).toBe(true);
+          }
         } finally {
           if (scenario === "setup-only-stop-failure") {
             await expect(gatewayProbe.cleanup()).rejects.toMatchObject({

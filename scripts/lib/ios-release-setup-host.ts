@@ -19,7 +19,6 @@ import {
   type StackRecord,
   type Target,
   type ToolFailure,
-  type Window,
 } from "./ios-release-setup-host-records.js";
 import {
   hasUnjoinedWork,
@@ -168,7 +167,8 @@ export async function startIOSReleaseSetupHostProbe(options: {
   let stopping: Promise<void> | undefined;
   const stop = () =>
     (stopping ??= (async () => {
-      abort.abort();
+      // Normal teardown joins the pre-armed captures while their targets remain owned.
+      // External cancellation and the startup/lifetime deadlines still abort the child.
       child?.stdin?.end();
       await done;
       // A killed sampler's outer group cannot certify its nested detached tool groups.
@@ -185,11 +185,11 @@ export async function startIOSReleaseSetupHostProbe(options: {
       }
       // A killed sampler cannot delete its raw reports; retain recovery state, not those files.
       await Promise.allSettled(
-        Array.from({ length: 8 }, (_, index) =>
+        Array.from({ length: 2 }, (_, index) =>
           rm(path.join(directory, `sample-${index}.txt`), { force: true }),
         ),
       );
-      if (!joined || fatal || !report.cleanupConfirmed) {
+      if (!joined || fatal || (launched && !cleanExit) || !report.cleanupConfirmed) {
         report.cleanupConfirmed = false;
         throw fatal ?? cleanupFailure();
       }
@@ -232,7 +232,7 @@ async function runTool(
   args: string[],
   signal: AbortSignal,
   onLifecycle: (facts: ManagedCommandLifecycle) => void,
-  timeoutMs = 2_000,
+  options: { timeoutMs?: number; onStderr?: (text: string) => void } = {},
 ): Promise<ToolResult> {
   const started = performance.now();
   const overflow = new AbortController();
@@ -247,7 +247,7 @@ async function runTool(
       signal: AbortSignal.any([signal, overflow.signal]),
       env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C", LC_ALL: "C" },
       stdio: ["ignore", "pipe", "pipe"],
-      timeoutMs,
+      timeoutMs: options.timeoutMs ?? 2_000,
       timeoutKillGraceMs: 1_000,
       abortKillGraceMs: 1_000,
       signalKillGraceMs: 1_000,
@@ -267,6 +267,7 @@ async function runTool(
               stdout += chunk.toString("utf8");
             } else {
               stderr += chunk.toString("utf8");
+              options.onStderr?.(stderr);
             }
           });
         }
@@ -309,19 +310,18 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
     failures: [],
   };
   const abort = new AbortController();
+  const captureAbort = new AbortController();
   const identities = new Map<Target, Identity>();
   const targets: { target: Target; pid: number }[] = [
     { target: "harness", pid: harnessPid },
     { target: "gateway", pid: gatewayPid },
   ];
   let phase: Phase = "baseline";
-  let phaseGeneration = 0;
-  let captureCount = 0;
   let queue = Promise.resolve();
   let persistence = Promise.resolve();
   let admittedIdentities = false;
   let unjoined = false;
-  const timers = new Set<ReturnType<typeof setTimeout>>();
+  let captures: { ready: Promise<boolean>; done: Promise<void> }[] = [];
   const save = () =>
     (persistence = persistence.then(async () => {
       await writeFile(path.join(directory, "report.tmp"), JSON.stringify(report), { mode: 0o600 });
@@ -452,6 +452,7 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
     if (records.some((record) => record.outcome === "identity-changed")) {
       report.status = "failed";
       abort.abort();
+      captureAbort.abort();
     }
     return records;
   };
@@ -518,104 +519,94 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
       }
     }
   };
-  const capture = async (window: Window) => {
-    const generation = phaseGeneration;
-    for (const { target, pid } of targets) {
-      if (abort.signal.aborted || captureCount >= 8 || generation !== phaseGeneration) {
-        return;
-      }
-      const epochMs = Date.now();
-      const started = performance.now();
-      const checks = await processes({ stage: "sample-identity", target, window });
-      const check = checks.find((entry) => entry.target === target);
-      const harness = checks.find((entry) => entry.target === "harness");
-      const row: StackRecord = {
-        epochMs,
-        elapsedMs: 0,
-        identityMs: check?.elapsedMs,
-        target,
-        window,
-        outcome: checks.some((entry) => entry.outcome === "identity-changed")
-          ? "identity-changed"
-          : (check?.outcome ?? "failed"),
-        countKind: "inclusive-tree-occurrences",
-        truncated: false,
-        threads: [],
-      };
-      const rawPath = path.join(directory, `sample-${captureCount++}.txt`);
+  const startCapture = (
+    { target, pid }: (typeof targets)[number],
+    index: number,
+    identityMs: number,
+  ) => {
+    const started = performance.now();
+    const row: StackRecord = {
+      epochMs: Date.now(),
+      elapsedMs: 0,
+      identityMs,
+      target,
+      window: "boot-and-setup",
+      durationMs: 90_000,
+      intervalMs: 20,
+      outcome: "failed",
+      countKind: "inclusive-tree-occurrences",
+      truncated: false,
+      threads: [],
+    };
+    const rawPath = path.join(directory, `sample-${index}.txt`);
+    let resolveReady!: (acknowledged: boolean) => void;
+    const ready = new Promise<boolean>((resolve) => {
+      resolveReady = resolve;
+    });
+    const done = (async () => {
       try {
-        if (check?.outcome === "passed" && harness?.outcome === "passed" && !abort.signal.aborted) {
-          // Fixed shell text sets a file-size limit before exec; target and output are positional.
-          row.sampleEpochMs = Date.now();
-          const result = await observeTool(
-            { tool: "sample", stage: "sample-stack", target, window },
-            (onLifecycle) =>
-              runTool(
-                "/bin/sh",
-                [
-                  "-c",
-                  'ulimit -f 1024 || exit 70; exec /usr/bin/sample "$1" 1 10 -file "$2"',
-                  "ios-setup-sample",
-                  String(pid),
-                  rawPath,
-                ],
-                abort.signal,
-                onLifecycle,
-                5_000,
-              ),
-          );
-          row.sampleMs = result.elapsedMs;
-          row.outcome = result.outcome;
-          if (result.outcome === "passed") {
-            const raw = await readBounded(rawPath);
-            if (raw === undefined) {
-              row.outcome = "output-limit";
-            } else {
-              const parsed = parseStacks(raw);
-              row.threads = parsed.threads;
-              row.truncated = parsed.truncated;
-              if (row.threads.length === 0) {
-                row.outcome = "parse-failed";
-              }
+        row.sampleEpochMs = Date.now();
+        const result = await observeTool(
+          { tool: "sample", stage: "sample-stack", target, window: row.window },
+          (onLifecycle) =>
+            runTool(
+              "/bin/sh",
+              [
+                "-c",
+                'ulimit -f 1024 || exit 70; exec /usr/bin/sample "$1" 90 20 -file "$2"',
+                "ios-setup-sample",
+                String(pid),
+                rawPath,
+              ],
+              captureAbort.signal,
+              onLifecycle,
+              {
+                timeoutMs: 120_000,
+                onStderr(text) {
+                  const banner = `Sampling process ${pid} for 90 seconds with 20 milliseconds of run time between samples`;
+                  if (row.acknowledgedEpochMs === undefined && text.split("\n").includes(banner)) {
+                    // sample prints this before its sampling call; it is not a first-sample receipt.
+                    row.acknowledgedEpochMs = Date.now();
+                    resolveReady(true);
+                  }
+                },
+              },
+            ),
+        );
+        row.sampleMs = result.elapsedMs;
+        row.outcome = result.outcome;
+        if (result.outcome === "passed") {
+          const raw = await readBounded(rawPath);
+          if (raw === undefined) {
+            row.outcome = "output-limit";
+          } else {
+            const parsed = parseStacks(raw);
+            row.threads = parsed.threads;
+            row.truncated = parsed.truncated;
+            if (row.threads.length === 0) {
+              row.outcome = "parse-failed";
             }
           }
-        } else if (harness?.outcome !== "passed") {
-          row.outcome = harness?.outcome ?? "failed";
-        } else if (row.outcome === "passed" && abort.signal.aborted) {
-          row.outcome = "cancelled";
         }
       } catch (error) {
-        row.outcome = "failed";
-        if (hasUnjoinedWork(error)) {
-          row.outcome = "unjoined";
-          unjoined = true;
-          throw error;
-        }
+        row.outcome = hasUnjoinedWork(error) ? "unjoined" : "failed";
+        fail(error);
       } finally {
+        resolveReady(false);
         row.elapsedMs = elapsed(started);
         report.stacks.push(row);
         await rm(rawPath, { force: true });
         await save();
       }
-    }
-  };
-  const schedule = (milliseconds: number, window: Window) => {
-    if (abort.signal.aborted) {
-      return;
-    }
-    const generation = phaseGeneration;
-    const timer = setTimeout(() => {
-      timers.delete(timer);
-      enqueue(async () => {
-        if (generation === phaseGeneration) {
-          await capture(window);
-        }
-      });
-    }, milliseconds);
-    timers.add(timer);
+    })().catch(fail);
+    return { ready, done };
   };
   const stop = () => {
     abort.abort();
+  };
+  const cancel = () => {
+    stop();
+    captureAbort.abort();
   };
   let input = "";
   const accept = (chunk: Buffer) => {
@@ -624,7 +615,7 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
     }
     input += chunk.toString("utf8");
     if (input.length > 64) {
-      stop();
+      cancel();
       return;
     }
     let newline = input.indexOf("\n");
@@ -633,32 +624,42 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
       input = input.slice(newline + 1);
       if (next === "boot" && phase === "baseline") {
         phase = next;
-        phaseGeneration++;
-        schedule(20_000, "boot-20s");
       } else if (next === "setup-code" && phase !== "setup-code") {
         phase = next;
-        phaseGeneration++;
-        schedule(8_000, "setup-code-8s");
-        schedule(20_000, "setup-code-20s");
       } else {
-        stop();
+        cancel();
       }
       newline = input.indexOf("\n");
     }
   };
   process.stdin.on("data", accept);
   process.stdin.once("end", stop);
-  process.stdin.once("error", stop);
-  process.on("SIGTERM", stop);
-  process.on("SIGINT", stop);
-  process.on("SIGHUP", stop);
-  const lifetime = setTimeout(stop, LIFETIME_MS);
+  process.stdin.once("error", cancel);
+  process.on("SIGTERM", cancel);
+  process.on("SIGINT", cancel);
+  process.on("SIGHUP", cancel);
+  const lifetime = setTimeout(cancel, LIFETIME_MS);
   let interval: ReturnType<typeof setInterval> | undefined;
   try {
     // Persist incomplete ownership before any nested group can outlive this process.
     await save();
     await host();
-    await capture("baseline");
+    const checks = await processes({ stage: "sample-identity", window: "boot-and-setup" });
+    if (checks.every((entry) => entry.outcome === "passed") && !abort.signal.aborted) {
+      // Pre-arm both native collectors before cold boot. Metrics failures cannot cancel them
+      // or enqueue replacement work; each collector keeps its own bounded command lifetime.
+      captures = targets.map((target, index) =>
+        startCapture(target, index, checks[index]!.elapsedMs),
+      );
+      const acknowledged = await Promise.all(captures.map((capture) => capture.ready));
+      if (!acknowledged.every(Boolean)) {
+        report.status = "failed";
+        cancel();
+      }
+    } else {
+      report.status = "failed";
+      cancel();
+    }
     if (!abort.signal.aborted) {
       report.status = "running";
       await save();
@@ -690,18 +691,16 @@ async function runChild(directory: string, harnessPid: number, gatewayPid: numbe
   } finally {
     clearTimeout(lifetime);
     clearInterval(interval);
-    for (const timer of timers) {
-      clearTimeout(timer);
-    }
     abort.abort();
     await queue;
+    await Promise.all(captures.map((capture) => capture.done));
     process.stdin.off("data", accept);
     process.stdin.off("end", stop);
-    process.stdin.off("error", stop);
+    process.stdin.off("error", cancel);
     process.stdin.pause();
-    process.off("SIGTERM", stop);
-    process.off("SIGINT", stop);
-    process.off("SIGHUP", stop);
+    process.off("SIGTERM", cancel);
+    process.off("SIGINT", cancel);
+    process.off("SIGHUP", cancel);
     if (report.status !== "failed") {
       report.status = "stopped";
     }

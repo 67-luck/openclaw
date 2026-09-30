@@ -677,7 +677,7 @@ export async function createNativeDependencies(options: {
                     cwd,
                     root,
                     gatewayPid: readyInstance.child.pid,
-                    signal: options.signal,
+                    signal: fixtureSignal,
                   });
                   fixtureEvidence.setupHost = setupHost.evidence;
                 } else {

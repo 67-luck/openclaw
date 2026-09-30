@@ -17,7 +17,7 @@ const OUTCOMES = [
 export type Outcome = (typeof OUTCOMES)[number];
 export type Target = "harness" | "gateway";
 export type Phase = "baseline" | "boot" | "setup-code";
-export type Window = "baseline" | "boot-20s" | "setup-code-8s" | "setup-code-20s";
+type Window = "boot-and-setup";
 const CATEGORIES = [
   "gc",
   "v8",
@@ -81,6 +81,9 @@ export type StackRecord = {
   elapsedMs: number;
   identityMs?: number;
   sampleEpochMs?: number;
+  acknowledgedEpochMs?: number;
+  durationMs?: number;
+  intervalMs?: number;
   sampleMs?: number;
   target: Target;
   window: Window;
@@ -219,9 +222,7 @@ export function projectReport(value: unknown, report: Report): void {
       epochMs: row.epochMs,
       elapsedMs: row.elapsedMs,
       ...(choice(row.target, ["harness", "gateway"]) ? { target: row.target } : {}),
-      ...(choice(row.window, ["baseline", "boot-20s", "setup-code-8s", "setup-code-20s"])
-        ? { window: row.window }
-        : {}),
+      ...(choice(row.window, ["boot-and-setup"]) ? { window: row.window } : {}),
       ...(lifecycle ? { lifecycle } : {}),
       ...(isRecord(observer) &&
       finite(observer.cpuUserMs) &&
@@ -280,13 +281,13 @@ export function projectReport(value: unknown, report: Report): void {
     });
   }
   report.stacks = [];
-  for (const row of Array.isArray(value.stacks) ? value.stacks.slice(0, 8) : []) {
+  for (const row of Array.isArray(value.stacks) ? value.stacks.slice(0, 2) : []) {
     if (
       !isRecord(row) ||
       !finite(row.epochMs) ||
       !finite(row.elapsedMs) ||
       !choice(row.target, ["harness", "gateway"]) ||
-      !choice(row.window, ["baseline", "boot-20s", "setup-code-8s", "setup-code-20s"]) ||
+      !choice(row.window, ["boot-and-setup"]) ||
       !choice(row.outcome, OUTCOMES)
     ) {
       continue;
@@ -319,7 +320,14 @@ export function projectReport(value: unknown, report: Report): void {
       threads.push({ index: thread.index, kind: thread.kind, samples: thread.samples, frames });
     }
     report.stacks.push({
-      ...copyNumbers(row, ["identityMs", "sampleEpochMs", "sampleMs"]),
+      ...copyNumbers(row, [
+        "identityMs",
+        "sampleEpochMs",
+        "acknowledgedEpochMs",
+        "durationMs",
+        "intervalMs",
+        "sampleMs",
+      ]),
       epochMs: row.epochMs,
       elapsedMs: row.elapsedMs,
       target: row.target,
