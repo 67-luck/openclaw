@@ -76,7 +76,7 @@ export async function createCatalogPool(
       assertCurrent?.();
       assertLifetime();
       capture.assertCurrent();
-      let sourceLoss: { error: unknown; closing: Promise<void> } | undefined;
+      let sourceLoss: { error: unknown; closing: Promise<void> | undefined } | undefined;
       const pool = new WorkerTaskPool<PreparedModelCatalogWorkerTask, PreparedModelWorkerResult>({
         workerUrl,
         workerOptions: { resourceLimits: { maxOldGenerationSizeMb: CATALOG_WORKER_HEAP_LIMIT_MB } },
@@ -128,10 +128,14 @@ export async function createCatalogPool(
         (closing ??= (async () => {
           const failures: unknown[] = [];
           let joined = false;
+          const sourceClosing = sourceLoss?.closing;
           try {
-            await (sourceLoss?.closing ?? pool.close(error));
+            await (sourceClosing ?? pool.close(error));
             joined = true;
           } catch (closeError) {
+            if (sourceLoss && sourceLoss.closing === sourceClosing) {
+              sourceLoss.closing = undefined;
+            }
             failures.push(closeError);
           }
           if (captureRelease || joined || availableCapture) {

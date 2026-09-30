@@ -621,6 +621,133 @@ describe("catalog request existing directory ownership", () => {
     }
   });
 
+  it("retries catalog worker retirement after an owner refusal and a failed stop", async () => {
+    const fixture = createFixture();
+    const prepared = await prepareWorkspaceBuildGroup(
+      [{ agentId: "main", agentDir: fixture.agentDir, config: fixture.config, env: fixture.env }],
+      "static",
+    );
+    retireAfterTest(retainPreparedPluginGeneration(prepared.pluginGeneration));
+    const task = {
+      value: createPreparedModelCatalogWorkerInput({
+        agentFacts: prepared.agentFacts[0]!,
+        pluginMetadataSnapshot: prepared.pluginGeneration.pluginMetadataSnapshot,
+      }),
+      request: {
+        kind: "catalog" as const,
+        syntheticAuth: [],
+        clawInstallSchemaVersions: captureClawInstallSchemaVersionFacts({ env: fixture.env }),
+      },
+    };
+    const sourceFailure = new Error("Fixture catalog owner refused the next request");
+    const stopFailure = new Error("Fixture catalog worker stop refused once");
+    let sourceRefused = false;
+    let capture: CaptureRoot | undefined;
+    let admission: CaptureAdmission | undefined;
+    const release = vi.fn<(reason?: Error) => Promise<void>>();
+    const acquire = sourceCapture.startPluginSourceCaptureRoot;
+    const observing = vi
+      .spyOn(sourceCapture, "startPluginSourceCaptureRoot")
+      .mockImplementation((...args) => {
+        const acquired = acquire(...args);
+        admission = acquired;
+        release.mockImplementation((reason) => acquired.release(reason));
+        return {
+          result: acquired.result.then((root) => {
+            capture = root;
+            return {
+              directory: root.directory,
+              managedRoot: root.managedRoot,
+              assertCurrent() {
+                root.assertCurrent();
+                // Inject an owner refusal without changing or replacing the captured files.
+                if (sourceRefused) {
+                  throw sourceFailure;
+                }
+              },
+            };
+          }),
+          release,
+        };
+      });
+    const tracking = vi.mocked(workerCpu.createCpuTrackedWorker);
+    const construct = tracking.getMockImplementation();
+    if (!construct) {
+      observing.mockRestore();
+      throw new Error("Expected the catalog fixture's actual worker creation observer");
+    }
+    const workerUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.preparedModelCatalog).href;
+    let computeWorker: ReturnType<typeof workerCpu.createCpuTrackedWorker> | undefined;
+    tracking.mockImplementation((...args) => {
+      const worker = construct(...args);
+      if (String(args[0]) === workerUrl) {
+        computeWorker = worker;
+      }
+      return worker;
+    });
+    const stopEntered = createDeferredCore();
+    const stopAllowed = createDeferredCore();
+    const outcomes: Array<Promise<unknown>> = [];
+    let pool: catalogPools.CatalogPool | undefined;
+    let restoreStop: (() => void) | undefined;
+    try {
+      pool = await createCatalogPool(fixture.env, () => {});
+      const accepted = await pool.run(task, { timeoutMs: 30_000 });
+      expect(accepted).toMatchObject({ status: "ok", kind: "catalog" });
+      if (!capture || !computeWorker) {
+        throw new Error("Expected the real catalog capture and computation worker");
+      }
+      const worker = computeWorker;
+      const root = path.dirname(path.dirname(capture.directory));
+      const identity = fs.statSync(root);
+      const stop = vi.spyOn(worker, "terminate").mockImplementationOnce(async () => {
+        stopEntered.resolve();
+        await stopAllowed.promise;
+        throw stopFailure;
+      });
+      restoreStop = () => stop.mockRestore();
+      sourceRefused = true;
+      const requestFailure = pool.run(task, { timeoutMs: 30_000 }).catch((error: unknown) => error);
+      outcomes.push(requestFailure);
+      await stopEntered.promise;
+      const closeFailure = pool.close().catch((error: unknown) => error);
+      outcomes.push(closeFailure);
+      expect(release).not.toHaveBeenCalled();
+      expect(worker.threadId).toBeGreaterThan(0);
+      stopAllowed.resolve();
+      const failure = await requestFailure;
+      expect(await closeFailure).toBe(stopFailure);
+      if (!(failure instanceof AggregateError)) {
+        throw new Error("Expected the original source refusal and failed worker stop");
+      }
+      expect(failure.cause).toBe(sourceFailure);
+      expect(failure.errors).toHaveLength(2);
+      expect(failure.errors[0]).toBe(sourceFailure);
+      expect(failure.errors[1]).toBe(stopFailure);
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(release).not.toHaveBeenCalled();
+      expect(worker.threadId).toBeGreaterThan(0);
+      expect(fs.statSync(root)).toMatchObject({ dev: identity.dev, ino: identity.ino });
+      await expect(pool.close()).resolves.toBeUndefined();
+      expect(stop).toHaveBeenCalledTimes(2);
+      expect(worker.threadId).toBe(-1);
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(fs.existsSync(root)).toBe(false);
+      await expect(pool.run(task, { timeoutMs: 30_000 })).rejects.toBe(sourceFailure);
+      expect(stop).toHaveBeenCalledTimes(2);
+    } finally {
+      stopAllowed.resolve();
+      await Promise.allSettled(outcomes);
+      restoreStop?.();
+      // Also join the actual Worker on the pre-fix path, whose pool cannot retry its failed stop.
+      await computeWorker?.terminate();
+      await Promise.allSettled([pool?.close()]);
+      await admission?.release();
+      tracking.mockImplementation(construct);
+      observing.mockRestore();
+    }
+  });
+
   it("captures the catalog environment before lazy worker startup", async () => {
     const fixture = createFixture();
     const prepared = await prepareWorkspaceBuildGroup(
