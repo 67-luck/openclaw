@@ -136,7 +136,14 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
         );
       };
       if (!sessionId) {
-        respondNotCompacted({ reason: "no sessionId" });
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            `Session ${key} not found. Run openclaw sessions list --json to choose a valid key.`,
+          ),
+        );
         return;
       }
 
