@@ -483,7 +483,7 @@ struct CloudflareAccessSessionStoreTests {
 
         var forgetReturned = false
         let forget = Task { @MainActor in
-            try await reader.forget(firstOrigin)
+            try await reader.forget(firstOrigin).task.value
             forgetReturned = true
         }
         do {

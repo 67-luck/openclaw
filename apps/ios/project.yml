@@ -426,7 +426,6 @@ targets:
       - path: Tests
         excludes:
           - Logic
-      - path: Tests/Logic/CloudflareAccessTestTokens.swift
       - path: ../macos/Tests/OpenClawIPCTests/DashboardHTTPFixture.swift
         group: Tests
       - path: build/TestTLS/GatewayIngressIdentity.p12
@@ -463,7 +462,6 @@ targets:
         SWIFT_STRICT_CONCURRENCY: complete
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/OpenClaw.app/OpenClaw"
         BUNDLE_LOADER: "$(TEST_HOST)"
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) OPENCLAW_APP_TESTS"
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: "$(OPENCLAW_DEBUG_APP_BUNDLE_ID).tests"
