@@ -46,6 +46,8 @@ export const ConnectParamsSchema = closedObject({
   }),
   caps: Type.Optional(Type.Array(NonEmptyString, { default: [] })),
   commands: Type.Optional(Type.Array(NonEmptyString)),
+  /** Transport behavior supported by this client; unlike caps, this is not an approval surface. */
+  protocolFeatures: Type.Optional(Type.Array(NonEmptyString)),
   /** Additive Computer Use declaration; the owning core contract validates its bounded shape. */
   computerUse: Type.Optional(Type.Unknown()),
   /** @deprecated Accepted for the shipped v1 node-host envelope; current hosts use runner inventory. */

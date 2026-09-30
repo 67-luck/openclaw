@@ -623,7 +623,7 @@ export async function executeNodeHostCommand(
     approvalDecision: inlineApprovalSource ? null : inlineApprovalDecision,
     approvalSource: inlineApprovalSource,
     runId: inlineApprovalId,
-    suppressNotifyOnExit: true,
+    suppressNotifyOnExit: target.supportsResultFirstCompletion,
     notifyOnExit: params.notifyOnExit,
     systemRunPlan: prepared.plan,
   });

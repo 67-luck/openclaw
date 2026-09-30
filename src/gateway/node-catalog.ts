@@ -176,6 +176,7 @@ function buildEffectiveKnownNode(entry: {
       nodePairing?.uiVersion,
       pendingNodePairing?.uiVersion,
     ),
+    protocolFeatures: live?.client.connect.protocolFeatures,
     clientId: firstNormalizedString(
       live?.clientId,
       devicePairing?.clientId,

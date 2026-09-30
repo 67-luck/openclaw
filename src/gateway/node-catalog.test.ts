@@ -152,6 +152,9 @@ describe("gateway/node-catalog", () => {
           caps: ["camera", "screen"],
           declaredCommands: ["screen.snapshot", "system.run"],
           commands: ["screen.snapshot", "system.run"],
+          client: {
+            connect: { protocolFeatures: ["system-run-result-first-v1"] },
+          } as never,
           computerUse: {
             contractVersion: 2,
             provider: { id: "fixture", label: "Fixture", generation: "generation-1" },
@@ -179,6 +182,7 @@ describe("gateway/node-catalog", () => {
       remoteIp: "100.0.0.11",
       caps: ["camera", "screen"],
       commands: ["screen.snapshot", "system.run"],
+      protocolFeatures: ["system-run-result-first-v1"],
       computerUse: {
         contractVersion: 2,
         provider: { id: "fixture", generation: "generation-1" },

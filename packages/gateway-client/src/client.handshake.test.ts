@@ -65,7 +65,14 @@ describe("GatewayClient websocket opening handshakeTimeout", () => {
             payload: {
               nonce: "catalog-handshake",
               ts: Date.now(),
-              ...(advertised ? { capabilities: [GATEWAY_SERVER_CAPS.MODEL_CATALOG_SNAPSHOT] } : {}),
+              ...(advertised
+                ? {
+                    capabilities: [
+                      GATEWAY_SERVER_CAPS.MODEL_CATALOG_SNAPSHOT,
+                      GATEWAY_SERVER_CAPS.NODE_PROTOCOL_FEATURES,
+                    ],
+                  }
+                : {}),
             },
           }),
         );
@@ -91,6 +98,7 @@ describe("GatewayClient websocket opening handshakeTimeout", () => {
         url: `ws://127.0.0.1:${port}`,
         deviceIdentity: null,
         modelCatalog,
+        protocolFeatures: ["system-run-result-first-v1"],
         onHelloOk: () => connected.resolve(),
         onConnectError: connected.reject,
       });
@@ -99,6 +107,13 @@ describe("GatewayClient websocket opening handshakeTimeout", () => {
         client.start();
         await connected.promise;
         const frame = await received.promise;
+        if (advertised) {
+          expect(frame.params).toMatchObject({
+            protocolFeatures: ["system-run-result-first-v1"],
+          });
+        } else {
+          expect(frame.params).not.toHaveProperty("protocolFeatures");
+        }
         if (advertised && modelCatalog) {
           expect(frame.params).toMatchObject({
             modelCatalog,

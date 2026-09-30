@@ -342,7 +342,10 @@ export function attachGatewayConnection(params: AttachGatewayConnectionParams) {
       payload: {
         nonce: connectNonce,
         ts: Date.now(),
-        capabilities: [GATEWAY_SERVER_CAPS.MODEL_CATALOG_SNAPSHOT],
+        capabilities: [
+          GATEWAY_SERVER_CAPS.MODEL_CATALOG_SNAPSHOT,
+          GATEWAY_SERVER_CAPS.NODE_PROTOCOL_FEATURES,
+        ],
       },
     });
   }

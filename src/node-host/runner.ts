@@ -24,6 +24,7 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { getMachineDisplayName } from "../infra/machine-name.js";
 import { logInfo } from "../logger.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { NODE_PROTOCOL_FEATURES } from "../shared/node-protocol-features.js";
 import { VERSION } from "../version.js";
 import { configureNodeHost, loadNodeHostConfig, type NodeHostGatewayConfig } from "./config.js";
 import { startNodeHostConnection } from "./connection.js";
@@ -328,6 +329,7 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
       // restart-scoped availability, not a capability upgrade requiring re-pairing.
       caps: preparedRuntime.manifest.caps,
       commands: preparedRuntime.manifest.commands,
+      protocolFeatures: [NODE_PROTOCOL_FEATURES.SYSTEM_RUN_RESULT_FIRST],
       computerUse: preparedRuntime.manifest.computerUse,
       pathEnv: preparedRuntime.manifest.pathEnv,
       permissions: undefined,

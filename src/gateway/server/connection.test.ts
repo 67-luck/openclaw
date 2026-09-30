@@ -139,7 +139,10 @@ describe("Gateway connection transport", () => {
             expect(frames[0]).toMatchObject({
               event: "connect.challenge",
               payload: {
-                capabilities: [GATEWAY_SERVER_CAPS.MODEL_CATALOG_SNAPSHOT],
+                capabilities: [
+                  GATEWAY_SERVER_CAPS.MODEL_CATALOG_SNAPSHOT,
+                  GATEWAY_SERVER_CAPS.NODE_PROTOCOL_FEATURES,
+                ],
               },
             });
             const connect = (id: string) =>

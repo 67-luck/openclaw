@@ -304,7 +304,11 @@ describe("lazy protocol validators", () => {
     expect(formatValidationErrors(validateConnectParams.errors)).toContain("must have required");
     expectAccepted(validateConnectParams, [connect]);
     expectAccepted(validateConnectParams, [{ ...connect, computerUse: { version: 2 } }]);
-    expect(validateConnectParams.errors).toBeNull();
+    expectAccepted(validateConnectParams, [
+      { ...connect, protocolFeatures: ["system-run-result-first-v1"] },
+    ]);
+    expectRejected(validateConnectParams, [{ ...connect, protocolFeatures: [""] }]);
+    expect(validateConnectParams.errors).not.toBeNull();
   });
 
   it("rejects the removed connect-time node plugin tools surface", () => {

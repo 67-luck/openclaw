@@ -26,6 +26,7 @@ import { resolvePreparedExecEnvironment } from "./bash-tools.exec-request-prepar
 import { createExecTool } from "./bash-tools.exec-run.js";
 
 const rpc = vi.hoisted(() => vi.fn());
+const nodeProtocolFeatures = vi.hoisted(() => ({ value: ["system-run-result-first-v1"] }));
 vi.mock("./tools/gateway.js", () => ({
   callGatewayTool: rpc,
   readGatewayCallOptions: vi.fn(() => ({})),
@@ -37,6 +38,7 @@ vi.mock("./tools/nodes-utils.js", () => ({
       connected: true,
       platform: "darwin",
       commands: ["system.run", "system.run.prepare"],
+      protocolFeatures: nodeProtocolFeatures.value,
     },
   ],
   resolveNodeIdFromList: () => "node-1",
@@ -67,6 +69,7 @@ beforeEach(async ({ onTestFinished }) => {
   await state.writeConfig({});
   saveExecApprovals({ version: 1, defaults: { security: "full", ask: "off" } });
   invokeCount = 0;
+  nodeProtocolFeatures.value = ["system-run-result-first-v1"];
   nodeEvents = [];
   afterPrepare = async () => {};
   request = {
@@ -181,6 +184,25 @@ it("marks ordinary foreground completion for result-first recovery", async () =>
     suppressNotifyOnExit: true,
     notifyOnExit: true,
     invokeResultSentFirst: true,
+  });
+});
+
+it("preserves the terminal fallback for a legacy node without result-first support", async () => {
+  nodeProtocolFeatures.value = [];
+  const sessionKey = "agent:main:telegram:group:-100155462274:topic:42";
+  await executeNodeHostCommand({
+    ...request,
+    sessionKey,
+    turnSourceChannel: "telegram",
+    turnSourceTo: "telegram:-100155462274:topic:42",
+    turnSourceThreadId: 42,
+  });
+
+  const finished = nodeEvents.find((event) => event.event === "exec.finished");
+  expect(JSON.parse(finished?.payloadJSON ?? "{}")).toMatchObject({
+    sessionKey,
+    suppressNotifyOnExit: false,
+    notifyOnExit: true,
   });
 });
 

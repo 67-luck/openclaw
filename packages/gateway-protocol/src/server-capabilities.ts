@@ -5,6 +5,7 @@ export const GATEWAY_SERVER_CAPS = {
   CONTROL_UI_BROWSER_FOCUS: "control-ui-browser-focus",
   GATEWAY_RESTART_TARGET_SAFE: "gateway-restart-target-safe-v1",
   MODEL_CATALOG_SNAPSHOT: "model-catalog-snapshot",
+  NODE_PROTOCOL_FEATURES: "node-protocol-features-v1",
   NODE_WORKER_BUNDLE_RETENTION: "node-worker-bundle-retention-v1",
   NODE_WORKER_BUNDLE_STATUS: "node-worker-bundle-status-v1",
   NODE_WORKER_CAPTURED_EXEC_POLICY: "node-worker-captured-exec-policy",

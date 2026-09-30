@@ -40,6 +40,7 @@ import {
   extractShellCommandFromArgv,
   resolveSystemRunCommandRequest,
 } from "../infra/system-run-command.js";
+import { NODE_PROTOCOL_FEATURES } from "../shared/node-protocol-features.js";
 import { resolveEligibleNodeFromList } from "../shared/node-resolve.js";
 import { resolveNodeAutoApprovalEligibility } from "./bash-tools.exec-host-node-approval-eligibility.js";
 import {
@@ -63,6 +64,7 @@ type NodeExecutionTarget = {
   invokeWaitMs: number;
   runTimeoutMs: number;
   supportsSystemRunPrepare: boolean;
+  supportsResultFirstCompletion: boolean;
 };
 
 type PreparedNodeRun = {
@@ -287,6 +289,8 @@ export async function resolveNodeExecutionTarget(
     env: params.requestedEnv ? { ...params.requestedEnv } : undefined,
     ...resolveNodeExecTimeouts(params.timeoutSec, params.defaultTimeoutSec),
     supportsSystemRunPrepare: nodeInfo.commands?.includes("system.run.prepare") === true,
+    supportsResultFirstCompletion:
+      nodeInfo.protocolFeatures?.includes(NODE_PROTOCOL_FEATURES.SYSTEM_RUN_RESULT_FIRST) === true,
   };
 }
 
