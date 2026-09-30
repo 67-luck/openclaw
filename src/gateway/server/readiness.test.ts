@@ -84,6 +84,9 @@ function createReadinessHarness(params: {
   getGatewayDraining?: Parameters<typeof createReadinessChecker>[0]["getGatewayDraining"];
   getEventLoopHealth?: Parameters<typeof createReadinessChecker>[0]["getEventLoopHealth"];
   getStateDatabaseFailure?: Parameters<typeof createReadinessChecker>[0]["getStateDatabaseFailure"];
+  getAgentDatabaseCleanupFailures?: Parameters<
+    typeof createReadinessChecker
+  >[0]["getAgentDatabaseCleanupFailures"];
   shouldSkipChannelReadiness?: Parameters<
     typeof createReadinessChecker
   >[0]["shouldSkipChannelReadiness"];
@@ -101,6 +104,7 @@ function createReadinessHarness(params: {
       getGatewayDraining: params.getGatewayDraining,
       getEventLoopHealth: params.getEventLoopHealth,
       getStateDatabaseFailure: params.getStateDatabaseFailure,
+      getAgentDatabaseCleanupFailures: params.getAgentDatabaseCleanupFailures,
       shouldSkipChannelReadiness: params.shouldSkipChannelReadiness,
       cacheTtlMs: params.cacheTtlMs,
     }),
@@ -196,20 +200,30 @@ describe("createReadinessChecker", () => {
   it("reports a terminal state database failure immediately and discards cached channel health", () => {
     withReadinessClock(() => {
       const stateDatabase = { failure: undefined as Error | undefined };
+      const cleanup: AgentDatabaseCleanupFailure = {
+        agentId: "optional-agent",
+        reason: "Agent native cleanup failed: database is locked",
+        repairHint: "Restart the Gateway if cleanup remains blocked.",
+      };
+      let cleanupFailures: AgentDatabaseCleanupFailure[] = [];
       const { manager, readiness } = createReadinessHarness({
         getStateDatabaseFailure: () => stateDatabase.failure,
+        getAgentDatabaseCleanupFailures: () => cleanupFailures,
         cacheTtlMs: 1_000,
       });
       expect(readiness()).toEqual(readySnapshot());
 
       stateDatabase.failure = new Error("newer shared-state schema");
+      cleanupFailures = [cleanup];
       expect(readiness()).toEqual({
         ...failingSnapshot(["state-database"]),
         stateDatabase: { reason: "newer shared-state schema" },
+        agentDatabaseCleanup: [cleanup],
       });
       expect(manager.getRuntimeSnapshot).toHaveBeenCalledTimes(1);
 
       stateDatabase.failure = undefined;
+      cleanupFailures = [];
       expect(readiness()).toEqual(readySnapshot());
       expect(manager.getRuntimeSnapshot).toHaveBeenCalledTimes(2);
     });

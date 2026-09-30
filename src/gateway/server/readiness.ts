@@ -118,20 +118,20 @@ export function createReadinessChecker(
     if (startup.status === "draining") {
       return { ready: false, failing: ["gateway-draining"], uptimeMs };
     }
+    const agentDatabaseCleanup = deps.getAgentDatabaseCleanupFailures?.();
+    const withCleanup = (result: ReadinessResult): ReadinessResult =>
+      agentDatabaseCleanup?.length ? { ...result, agentDatabaseCleanup } : result;
     const stateDatabaseFailure = deps.getStateDatabaseFailure?.();
     if (stateDatabaseFailure) {
       cachedState = null;
-      return {
+      return withCleanup({
         ready: false,
         failing: ["state-database"],
         stateDatabase: { reason: stateDatabaseFailure.message },
         uptimeMs,
-      };
+      });
     }
     const agentDatabases = deps.getAgentDatabaseAdmissionRefusals?.();
-    const agentDatabaseCleanup = deps.getAgentDatabaseCleanupFailures?.();
-    const withCleanup = (result: ReadinessResult): ReadinessResult =>
-      agentDatabaseCleanup?.length ? { ...result, agentDatabaseCleanup } : result;
     if (agentDatabases?.length) {
       cachedState = null;
       return withCleanup({
