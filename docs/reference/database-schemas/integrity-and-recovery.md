@@ -135,7 +135,11 @@ including an empty session source with an empty pending-validation queue.
 Successful canonical validation records `session_key_contract.canonical_ready`
 in the final authorized batch transaction. This nullable `TEXT` column is added
 on first certification without changing the schema version. Its receipt binds
-the agent and physical file generation, including device, inode, and birth time.
+the agent and physical file generation, including device and inode. Creation time
+is included on platforms where Node distinguishes it from modification metadata.
+On Linux, Node can report change time as birth time, so database identity uses a
+stable unknown-creation value instead. Existing Linux receipts are recertified
+once through the same validation owner; no schema migration is needed.
 On later boots, unchanged empty and populated stores reuse that first proof and inspect
 the pending queue; ordinary canonical writes still mark changed rows for
 validation. Exact invalidation triggers remain required. Copies and replaced
@@ -317,6 +321,14 @@ IPC error remains the reported failure even if termination also fails.
 
 Agent database maintenance fences other writers with a 60-second lease in the shared state database. A dedicated worker renews that lease during synchronous integrity scans and migration phases. Maintenance still checks the exact persisted owner before mutations and commit, and stops if the heartbeat fails or ownership expires or changes. Finishing or cancelling maintenance stops renewal before releasing the lease; process death leaves at most the remaining lease duration.
 
+SQLite lock contention retries at 25 ms intervals within the lease acquisition
+budget or the heartbeat's durable expiry. Agent execution admission also retries
+contention before entering application work, for up to two seconds after its first
+failed preparation settles. An exhausted retry returns the contention error and
+leaves admission available for the next request. Shutdown still revokes admission;
+completed or entered application work is never replayed. Doctor's plugin session
+repair warning includes the nested lease-loss cause when maintenance cannot settle.
+
 Before draining heartbeats for a file capture, each state-lease owner attempts a final ordinary renewal. Capture remains bounded by the shortest durable expiry read after drainage; it cannot renew while files are excluded or revive an expired owner.
 
 Asynchronous agent-database admission runs the first full-file integrity check in a read-only child process when that check is outside a write transaction. Later ordinary opens reuse remembered verification. Maintenance retains its independent full check. The connection and owning scope remain held until the native reader closes; cancellation and timeout wait for process exit. Schema changes, index repairs, and compaction retain their synchronous phases.
@@ -447,7 +459,7 @@ Missing tools skip repair with a note. Insufficient space, active Gateway
 ownership, or failed pre-publication verification leave the previous store in
 place. An uncertain exchange stops activation and names the retained recovery
 path for inspection. No SQL schema migration is involved. The rewritten database
-has a new physical identity (device/inode/birthtime), so the next boot re-runs
+has a new physical identity (device/inode), so the next boot re-runs
 canonical validation once instead of reusing the original identity receipt.
 
 ## Troubleshooting

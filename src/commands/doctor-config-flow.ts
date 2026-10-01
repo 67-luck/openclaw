@@ -349,7 +349,6 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     normalizeCompatibilityConfigValues(state.candidate, {
       blockedModelIdentities: blockedCodexModelIdentities,
       sourceRaw: snapshot.parsed,
-      sourceConfigBeforeMigrations: snapshot.sourceConfigBeforeMigrations,
     }),
   );
   applyConfigMutation(normalized, {
