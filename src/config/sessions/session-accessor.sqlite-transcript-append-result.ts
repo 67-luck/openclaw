@@ -1,4 +1,4 @@
-import type { TranscriptWriteSnapshot } from "./session-accessor.sqlite-transcript-write-guard.js";
+import type { TranscriptWriteSnapshot } from "./session-accessor.sqlite-transcript-write-snapshot.js";
 import type {
   appendTranscriptEventSnapshotSync,
   TranscriptEventAppendResult,

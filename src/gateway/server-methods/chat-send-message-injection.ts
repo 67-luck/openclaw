@@ -198,7 +198,7 @@ export function createChatSendMessageInjectionStarter(params: {
       cfg,
       commandAuthorized: ctx.CommandAuthorized === true,
     });
-    const attempt = beginReplyMessageInjectionTarget(
+    return beginReplyMessageInjectionTarget(
       params.target,
       p.replyToId
         ? buildChatSendReplyInjectionText({ body: text, cfg, ctx, sessionEntry: entry })
@@ -240,7 +240,6 @@ export function createChatSendMessageInjectionStarter(params: {
         userTurnTranscriptRecorder: params.userTurnTranscriptRecorder,
       },
     );
-    return attempt;
   };
 }
 

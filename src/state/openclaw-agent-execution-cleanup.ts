@@ -1,4 +1,4 @@
-import { throwSqliteLifecycleErrors } from "../infra/sqlite-coordinator.js";
+import { throwSqliteLifecycleErrors } from "../infra/sqlite-lifecycle-errors.js";
 import { readDatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
 import {
   createSqliteWorkerAdmissionFactory,
@@ -26,7 +26,6 @@ export async function cleanupRetiredAgentDatabaseLease(params: {
   }
   const context = {
     environment: params.context.environment,
-    coordinatorRuntime: { ...params.context.coordinatorRuntime, keepAlive: false },
     existingSchemaPath: params.context.existingSchemaPath,
   };
   const store = await openOpenClawStateWorkerCleanupStore(

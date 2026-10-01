@@ -69,7 +69,10 @@ export function createWorkerNodeProvisioning(options: WorkerNodeProvisioningOpti
     provider: WorkerProvider,
     signal?: AbortSignal,
     beforeProvision?: () => void,
-  ) => {
+  ): Promise<
+    | { identity: WorkerNodeRuntimeIdentity; installation: WorkerInstallationArtifact | undefined }
+    | undefined
+  > => {
     const prepareNodeBootstrap = options.prepareNodeBootstrap;
     if (!provider.requiresNodeEnrollment || !prepareNodeBootstrap) {
       return undefined;
@@ -340,6 +343,8 @@ export function createWorkerNodeProvisioning(options: WorkerNodeProvisioningOpti
         !(await options.store.hasSessionAttachment(record.environmentId));
       assertCurrent();
       nodeBuild = await options.ensureNodeWorkerBundle({
+        reason: "provision",
+        environmentId: record.environmentId,
         deviceId: lease.node.deviceId,
         artifact,
         prewarm,

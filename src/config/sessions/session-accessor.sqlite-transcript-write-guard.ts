@@ -1,27 +1,37 @@
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
-import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { sql } from "kysely";
-import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
-import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
+import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type {
-  SessionTranscriptContextVersion,
   SessionTranscriptWriteScope,
   TranscriptAppendRefusal,
+  TranscriptEvent,
 } from "./session-accessor.sqlite-contract.js";
 import { readSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
 import {
-  resolveSqliteTranscriptScope,
+  getSessionKysely,
   transcriptWriteScopeIsCurrent,
   type ResolvedTranscriptScope,
 } from "./session-accessor.sqlite-scope.js";
-import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import {
   assertOwnedTranscriptWriteCommit,
   SessionTranscriptWriterClaimReboundError,
 } from "./transcript-write-context.js";
 import type { InternalSessionEntry } from "./types.js";
+
+export function assertNonMessageTranscriptEvent(event: TranscriptEvent): void {
+  if (!event || typeof event !== "object" || Array.isArray(event)) {
+    return;
+  }
+  // Message records require parent-link, idempotency, and redaction handling
+  // from appendTranscriptMessage; raw event writes would bypass those invariants.
+  if ("type" in event && event.type === "message") {
+    throw new Error(
+      "appendTranscriptEvent cannot write message transcript records; use appendTranscriptMessage instead.",
+    );
+  }
+}
 
 /** Revision guards keep this JSON predicate off stable mutation paths. */
 export function createSessionTranscriptOwnerPredicate(
@@ -30,7 +40,7 @@ export function createSessionTranscriptOwnerPredicate(
     sessionKey: string;
   },
 ): () => boolean {
-  let query = getNodeSqliteKysely<Pick<OpenClawAgentKyselyDatabase, "session_nodes">>(database.db)
+  let query = getSessionKysely(database.db)
     .selectFrom("session_nodes")
     .select((eb) => eb.val(1).as("matches"))
     .where("session_key", "=", expected.sessionKey)
@@ -58,20 +68,6 @@ export function createSessionTranscriptOwnerPredicate(
   }
   return () => executeSqliteQueryTakeFirstSync(database.db, query)?.matches === 1;
 }
-
-export class SqliteTranscriptMutationConflictError extends Error {
-  constructor(sessionId: string) {
-    super(`SQLite transcript changed while preparing rewrite for ${sessionId}`);
-    this.name = "SqliteTranscriptMutationConflictError";
-  }
-}
-
-export type TranscriptWriteSnapshot<T> = {
-  result: T;
-  lifecycleRevision?: string;
-  before: SessionTranscriptContextVersion;
-  after: SessionTranscriptContextVersion;
-};
 
 export function resolveTranscriptAppendRefusal(
   entry: InternalSessionEntry | undefined,
@@ -120,40 +116,4 @@ export function assertLockedTranscriptWriteAllowed(
     throw new SessionTranscriptWriterClaimReboundError(refusal);
   }
   return fresh?.entry;
-}
-
-export function runTranscriptWriteSnapshotInTransaction<T>(
-  database: OpenClawAgentDatabase,
-  scope: SessionTranscriptWriteScope,
-  operation: (
-    database: OpenClawAgentDatabase,
-    resolved: ReturnType<typeof resolveSqliteTranscriptScope>,
-  ) => T,
-  beforeCommitInTransaction?: () => void,
-  expectedMutationAt?: number | null,
-): Result<TranscriptWriteSnapshot<T>, TranscriptAppendRefusal> {
-  if (!database.db.isTransaction) {
-    throw new Error("Transcript append requires its admitted writer transaction");
-  }
-  const resolved = resolveSqliteTranscriptScope(scope);
-  beforeCommitInTransaction?.();
-  assertOwnedTranscriptWriteCommit(scope);
-  const fresh = readSessionEntryRow(database, resolved.sessionKey, "list");
-  const refusal = resolveTranscriptAppendRefusal(fresh?.entry, resolved, scope);
-  if (refusal) {
-    return err(refusal);
-  }
-  const before = readTranscriptContextVersionInTransaction(database, resolved.sessionId);
-  if (expectedMutationAt !== undefined && before.updatedAt !== expectedMutationAt) {
-    throw new SqliteTranscriptMutationConflictError(resolved.sessionId);
-  }
-  const lifecycleRevision = fresh?.entry.lifecycleRevision;
-  const value = operation(database, resolved);
-  assertOwnedTranscriptWriteCommit(scope);
-  return ok({
-    result: value,
-    lifecycleRevision,
-    before,
-    after: readTranscriptContextVersionInTransaction(database, resolved.sessionId),
-  });
 }

@@ -10,6 +10,7 @@ import {
   parsePinnedReleaseVersion,
   parseReleaseVersion,
 } from "../../../lib/release-version.mjs";
+import { usesStructuredToolSearchAtBaseline } from "../../../lib/upgrade-survivor-policy.mjs";
 import { buildCmdExeCommandLine, resolveWindowsCmdExePath } from "../../../windows-cmd-helpers.mjs";
 
 const args = process.argv.slice(2);
@@ -111,6 +112,7 @@ const representativeConfigSteps: ConfigStep[] = [
   configSetJsonFile("channels-discord", "discord-channel", "channels.discord"),
   configSetJsonFile("channels-telegram", "telegram-channel", "channels.telegram"),
   configSetJsonFile("channels-whatsapp", "whatsapp-channel", "channels.whatsapp"),
+  configSetJsonFile("tools-tool-search", "tool-search", "tools.toolSearch"),
 ];
 
 const configuredPluginInstallSteps = [
@@ -227,8 +229,14 @@ export function resolveUpgradeSurvivorConfigSteps(
   if (updateChannel !== "stable" && updateChannel !== "beta") {
     throw new Error(`invalid upgrade survivor update channel: ${updateChannel}`);
   }
+  const toolSearchRecipe =
+    process.env.OPENCLAW_FROZEN_UPGRADE_SURVIVOR_TOOL_SEARCH_RECIPE ?? "current";
+  if (toolSearchRecipe !== "current" && toolSearchRecipe !== "absent") {
+    throw new Error(`invalid selected Tool Search recipe: ${toolSearchRecipe}`);
+  }
   const sharedSteps = sharedRecipe
     .slice(0, -1)
+    .filter((step) => step.intent !== "tool-search" || toolSearchRecipe === "current")
     .filter(
       (step) =>
         !connectionOnlyScenarios.has(scenario) || connectionOnlySharedIntents.has(step.intent),
@@ -265,6 +273,12 @@ export function resolveUpgradeSurvivorConfigSteps(
 }
 
 function adaptStepForBaseline(step: ConfigStep, baselineVersion: string | null): ConfigStep {
+  if (step.id === "tools-tool-search" && usesStructuredToolSearchAtBaseline(baselineVersion)) {
+    return {
+      ...step,
+      argv: [...step.argv.slice(0, 3), JSON.stringify({ mode: "tools" }), ...step.argv.slice(4)],
+    };
+  }
   if (step.id === "agents") {
     const agentsJson = step.argv[3];
     if (agentsJson === undefined) {

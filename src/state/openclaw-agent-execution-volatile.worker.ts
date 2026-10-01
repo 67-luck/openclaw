@@ -5,7 +5,7 @@ import {
   type SessionReconcileEndpointIdentity,
 } from "../config/sessions/session-transcript-reconcile-delegation.js";
 import { attachSessionTranscriptReconcileDelegate } from "../config/sessions/session-transcript-reconcile-pool.js";
-import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
+import { createSqliteLifecycleAggregateError } from "../infra/sqlite-lifecycle-errors.js";
 import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
 import {
   SQLITE_WORKER_PREPARE_NATIVE,
@@ -24,6 +24,7 @@ import { openOpenClawAgentDatabase } from "./openclaw-agent-db.js";
 import { isIncognitoOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
 import { createAgentDatabaseCommandOwner } from "./openclaw-agent-execution-commands.js";
 import type { AgentDatabaseOperations } from "./openclaw-agent-execution-contract.js";
+import { requestRestrictedAgentDatabaseAdmission } from "./openclaw-agent-execution-domain.js";
 
 export type VolatileAgentDatabaseTarget = { id: string; agentId: string; path: string };
 export type VolatileAgentDatabaseOpen = {
@@ -112,11 +113,11 @@ export function createVolatileAgentDatabaseBackend(
         assertCleanupCurrent() {
           assertCurrent();
         },
-        admit(stage, admitted) {
-          requestSqliteWorkerOperationAdmission({
-            stage,
-            facts: { ...facts(target, database), ...admitted },
-          });
+        admit(stage, admitted, requestAdmission) {
+          requestRestrictedAgentDatabaseAdmission(
+            { stage, facts: { ...facts(target, database), ...admitted } },
+            requestAdmission,
+          );
         },
       });
       current = { target: structuredClone(target), database, commands };

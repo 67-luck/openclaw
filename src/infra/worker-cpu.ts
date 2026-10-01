@@ -9,7 +9,14 @@ import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { DiagnosticMemoryUsage } from "./diagnostic-process-types.js";
 import { normalizeDiagnosticWorkerScript } from "./worker-diagnostic-script.js";
 
-type WorkerIdentity = { kind: "direct"; worker: Worker } | { kind: "nested" };
+type WorkerCpuHandle = {
+  readonly threadId: number;
+  cpuUsage: Worker["cpuUsage"];
+  getHeapStatistics: Worker["getHeapStatistics"];
+  once(event: "exit", listener: () => void): unknown;
+};
+
+type WorkerIdentity = { kind: "direct"; worker: WorkerCpuHandle } | { kind: "nested" };
 
 type WorkerSource = WorkerIdentity & {
   script: string;
@@ -75,8 +82,18 @@ export function createCpuTrackedWorker(...args: ConstructorParameters<typeof Wor
   return worker;
 }
 
+/** Register a physical child only after its native lifetime owner confirms construction. */
+export function trackNativeWorkerForCpu(
+  worker: WorkerCpuHandle,
+  filename: string | URL,
+  evalSource = false,
+): void {
+  trackWorker(worker);
+  trackedWorkers.workers.get(worker)!.script = workerScriptName(filename, evalSource);
+}
+
 /** Pool identity follows its live Workers without retaining the pool itself. */
-export function attributeWorkerToPool(worker: Worker, pool: object): void {
+export function attributeWorkerToPool(worker: WorkerCpuHandle, pool: object): void {
   const source = trackedWorkers.workers.get(worker);
   if (!source || source.kind !== "direct") {
     return;
@@ -143,7 +160,10 @@ function countWorkerStart(source: WorkerSource) {
 }
 
 /** Record the owner's reason now; only confirmed native exit increments retirement. */
-export function markWorkerRetirement(worker: Worker, reason: WorkerRetirementReason): void {
+export function markWorkerRetirement(
+  worker: WorkerCpuHandle,
+  reason: WorkerRetirementReason,
+): void {
   const source = trackedWorkers.workers.get(worker);
   if (source) {
     source.retirementReason ??= reason;
@@ -169,7 +189,7 @@ function retireNativeWorker(worker: object, fromExitEvent: boolean): void {
   });
 }
 
-function trackWorker(worker: Worker): void {
+function trackWorker(worker: WorkerCpuHandle): void {
   if (trackedWorkers.workers.has(worker)) {
     return;
   }
@@ -250,7 +270,7 @@ export function getTrackedWorkerCpuSources(): {
   return { revision: trackedWorkers.revision, workers: [...trackedWorkers.workers.values()] };
 }
 
-async function refreshWorkerHeap(worker: Worker, source: WorkerSource): Promise<void> {
+async function refreshWorkerHeap(worker: WorkerCpuHandle, source: WorkerSource): Promise<void> {
   source.heapPending = true;
   const previous = source.heap;
   try {
@@ -275,7 +295,7 @@ async function refreshWorkerHeap(worker: Worker, source: WorkerSource): Promise<
 }
 
 /** The existing registry owns this channel until native exit, never the submitting task. */
-export function receiveWorkerMemoryPort(worker: Worker, message: unknown): boolean {
+export function receiveWorkerMemoryPort(worker: WorkerCpuHandle, message: unknown): boolean {
   if (!isRecord(message) || message.status !== "memory" || !(message.port instanceof MessagePort)) {
     return false;
   }

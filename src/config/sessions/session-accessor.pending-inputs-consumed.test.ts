@@ -6,6 +6,7 @@ import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js
 import { runWithSqliteBusyTimeout } from "../../infra/sqlite-busy-timeout.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   deferOpenClawAgentPostCommitPublication,
   openOpenClawAgentDatabase,
@@ -22,13 +23,13 @@ import {
 } from "./session-accessor.js";
 import {
   bindSessionPendingInputSources,
-  listSessionPendingInputReceipts,
   listSessionPendingInputs,
   readSessionPendingInput,
   stageSessionPendingInput,
   withSessionPendingInputPersistence,
   type SessionPendingInputReceipt,
 } from "./session-accessor.pending-inputs.js";
+import { listSessionPendingInputReceipts } from "./session-accessor.sqlite-pending-input-receipts.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import { useTempSessionsFixture } from "./test-helpers.js";
 
@@ -233,6 +234,7 @@ describe("committed pending input release", () => {
     aggregate.finish("cancelled");
     await replaceTranscriptEvents(scope(), []);
     rotateAgentEventLifecycleGeneration();
+    await closeOpenClawAgentDatabasesAsync();
     closeOpenClawAgentDatabasesForTest();
     expect(readSessionSubmittedInput(scope(), "collect-a:user")).toEqual(first.message);
     expect(readSessionSubmittedInput(scope(), "collect-b:user")).toEqual(second.message);

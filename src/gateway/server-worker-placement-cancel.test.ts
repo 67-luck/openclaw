@@ -147,7 +147,6 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
         chatAbortControllers: context.chatAbortControllers,
         restartRecoveryCandidates: new Map(),
-        terminalSessions: { closeTaskSessions: vi.fn() },
         refreshConnectedUserProfiles: vi.fn(),
       });
       active = await admit(runId);
@@ -321,7 +320,6 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         () => subscriptions?.heartbeatUnsub(),
         () => subscriptions?.transcriptUnsub(),
         () => subscriptions?.lifecycleUnsub(),
-        () => subscriptions?.taskUnsub(),
         () => closeSessionSqliteDatabasesForTest(),
         () => {
           persistenceSpy?.mockRestore();

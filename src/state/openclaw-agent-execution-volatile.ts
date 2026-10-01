@@ -290,7 +290,6 @@ export function createVolatileAgentDatabaseGeneration(
           },
         }),
       ),
-      true,
     );
     const joined = createDeferredCore();
     scopes.add(joined.promise);
@@ -336,13 +335,40 @@ export function createVolatileAgentDatabaseGeneration(
   };
   return {
     failed: () => !isSqliteWorkerStoreAvailable(store),
+    captureClaim() {
+      assertCurrent();
+      const captured = incarnation;
+      if (!captured) {
+        throw new Error("Volatile agent generation has not been admitted");
+      }
+      const assertClaimCurrent = () => {
+        assertCurrent();
+        if (
+          retiring ||
+          broker.phase !== "ready" ||
+          !isSqliteWorkerStoreAvailable(store) ||
+          incarnation !== captured
+        ) {
+          throw new Error("Volatile agent generation changed");
+        }
+      };
+      assertClaimCurrent();
+      // Logical storage has no durable file identity; its admitted native incarnation is the key.
+      return { identity: captured, incarnation: captured, assertCurrent: assertClaimCurrent };
+    },
     retainReady,
-    async run(source, operation, assertCallerCurrent, createIfMissing) {
-      const scope = retainReady(source, assertCallerCurrent, createIfMissing);
+    async run(source, operation, assertCallerCurrent, createIfMissing, signal) {
+      const assertOperationCurrent = () => {
+        assertCallerCurrent?.();
+        signal?.throwIfAborted();
+      };
+      assertOperationCurrent();
+      const scope = retainReady(source, assertOperationCurrent, createIfMissing);
       try {
         if (createIfMissing) {
-          await scope.execute({ type: "database.prepareWrite", input: undefined });
+          await scope.execute({ type: "database.prepareWrite", input: undefined }, { signal });
         }
+        assertOperationCurrent();
         return await operation(scope);
       } finally {
         await scope.close();

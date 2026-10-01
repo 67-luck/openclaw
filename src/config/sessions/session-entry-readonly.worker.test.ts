@@ -1,6 +1,16 @@
-import { existsSync, symlinkSync, unlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import nodePath from "node:path";
+import nodePath, { dirname, join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { getEnvironmentData, setEnvironmentData, type Worker } from "node:worker_threads";
 import { expect, it, vi } from "vitest";
 import type { JsonTestResults } from "vitest/node";
@@ -8,6 +18,7 @@ import { createCommandFixture } from "../../../test/helpers/command-fixture.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { bindSqliteWorkerBackend } from "../../agents/sessions/session-manager-metadata.worker.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
+import * as nodeSqlite from "../../infra/node-sqlite.js";
 import { runWithSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db-lifecycle.js";
 import {
@@ -28,11 +39,15 @@ import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import {
   loadSessionEntryReadOnlyInScope,
   loadSessionEntryReadOnlyResultInScope,
+  replaceSessionEntrySync,
 } from "./session-accessor.sqlite-entry.js";
 import { resolveSessionEntry } from "./session-accessor.sqlite-exact-read.js";
 import * as exactReads from "./session-accessor.sqlite-exact-read.js";
 import { resolveSqliteScope } from "./session-accessor.sqlite-scope.js";
 import { captureCanonicalSessionReaderContinuation } from "./session-canonical-key.js";
+import { assertSessionEntryCurrentAdmission } from "./session-entry-current-admission.js";
+import { captureSessionEntryCurrentRead } from "./session-entry-current-runtime.js";
+import type { SessionEntryCurrentCheck } from "./session-entry-current.types.js";
 import * as entryExecution from "./session-entry-execution.js";
 import { withSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
 import { readSessionStoreTargetResult } from "./session-store-target-inventory.js";
@@ -381,6 +396,15 @@ it("retains a rejected reader close for later canonical drainage", async (contex
   const command = createCommandFixture(context, "tree");
   const root = command.createTempDir("readonly-close-failure-");
   const repoRoot = nodePath.resolve(import.meta.dirname, "../../..");
+  const childFixture = nodePath
+    .relative(
+      repoRoot,
+      fileURLToPath(
+        new URL("./session-entry-readonly-close-failure.test-support.ts", import.meta.url),
+      ),
+    )
+    .split(nodePath.sep)
+    .join("/");
   const configPath = nodePath.join(root, "vitest.config.mts");
   const reportPath = nodePath.join(root, "report.json");
   try {
@@ -393,7 +417,7 @@ export default {
   ...sharedVitestConfig,
   test: {
     ...sharedVitestConfig.test,
-    include: ["src/config/sessions/session-entry-readonly-close-failure.test-support.ts"],
+    include: [${JSON.stringify(childFixture)}],
     setupFiles: [],
     runner: undefined,
     isolate: true,
@@ -623,6 +647,63 @@ it.each([
 );
 
 it.each([false, true])(
+  "returns unreadable-store data only after its connection closes (close failure: %s)",
+  async (failClose) => {
+    await withOpenClawTestState({ label: "readonly-entry-open-failure" }, async ({ env, path }) => {
+      const storePath = path("unreadable.sqlite");
+      writeFileSync(storePath, "Not a SQLite database");
+      const closeError = Object.assign(new Error("native read close failed"), {
+        code: "ERR_SQLITE_ERROR",
+        errcode: 26,
+      });
+      const nativeOpen = nodeSqlite.openNodeSqliteDatabase;
+      let reader: DatabaseSync | undefined;
+      let restoreClose: (() => void) | undefined;
+      const open = vi
+        .spyOn(nodeSqlite, "openNodeSqliteDatabase")
+        .mockImplementation((location, options) => {
+          const database = nativeOpen(location, options);
+          if (location === storePath) {
+            reader = database;
+            if (failClose) {
+              const close = vi.spyOn(database, "close").mockImplementation(() => {
+                throw closeError;
+              });
+              restoreClose = () => close.mockRestore();
+            }
+          }
+          return database;
+        });
+      const read = () =>
+        loadSessionEntryReadOnlyResultInScope({
+          agentId: "main",
+          databaseAgentId: "main",
+          storePath,
+          sessionKey: "agent:main:unreadable",
+          env,
+        });
+      try {
+        if (failClose) {
+          expect(read).toThrow(closeError);
+        } else {
+          expect(read()).toMatchObject({
+            ok: false,
+            error: { code: "ERR_SQLITE_ERROR", errcode: 26 },
+          });
+          expect(reader?.isOpen).toBe(false);
+        }
+      } finally {
+        restoreClose?.();
+        open.mockRestore();
+        if (reader?.isOpen) {
+          reader.close();
+        }
+      }
+    });
+  },
+);
+
+it.each([false, true])(
   "keeps schema error classification with a disposable reader: %s",
   async (disposable) => {
     await withOpenClawTestState({ label: "readonly-entry-schema-error" }, async ({ env }) => {
@@ -743,7 +824,10 @@ it("keeps source refusal outside the ordinary row-error result", async () => {
     const database = openOpenClawAgentDatabase({ agentId: "main", env });
     const sessionKey = "agent:main:source-error";
     writeSessionEntry(database, sessionKey, { sessionId: "original", updatedAt: 1 });
-    const refusal = new Error("retained source changed");
+    const refusal = Object.assign(new Error("retained source changed"), {
+      code: "ERR_SQLITE_ERROR",
+      errcode: 26,
+    });
     expect(() =>
       loadSessionEntryReadOnlyResultInScope(
         {
@@ -790,13 +874,15 @@ it("propagates raw worker failure without calling the optional-data consumer", a
 it("rejects registry revocation during the retained asynchronous consumer", async () => {
   await withOpenClawTestState({ label: "readonly-entry-retained" }, async ({ env, path }) => {
     const storePath = path("shared.sqlite");
-    const database = openOpenClawAgentDatabase({ agentId: "main", path: storePath, env });
     const sessionKey = "agent:main:retained";
-    writeSessionEntry(database, sessionKey, {
-      sessionId: "retained-session",
-      updatedAt: 1,
-      skillsSnapshot: { prompt: "Full stored prompt", skills: [] },
-    });
+    replaceSessionEntrySync(
+      { agentId: "main", storePath, env, sessionKey },
+      {
+        sessionId: "retained-session",
+        updatedAt: 1,
+        skillsSnapshot: { prompt: "Full stored prompt", skills: [] },
+      },
+    );
     let consumed = false;
     await expect(
       withSessionEntryReadOnlyInWorker(
@@ -892,13 +978,20 @@ it("returns unavailable registry facts as locator data without catching candidat
   });
 });
 
-it.runIf(process.platform !== "win32").each([false, true])(
-  "retains a custom store alias through its data consumer (retargeted: %s)",
-  async (retarget) => {
+it.runIf(process.platform !== "win32").each([
+  { retarget: false, logicalAgentId: "main" },
+  { retarget: true, logicalAgentId: "main" },
+  { retarget: false, logicalAgentId: "ops" },
+])(
+  "retains logical $logicalAgentId through its alias consumer (retargeted: $retarget)",
+  async ({ retarget, logicalAgentId }) => {
     await withOpenClawTestState({ label: "readonly-store-alias" }, async ({ env, path }) => {
       const original = openOpenClawAgentDatabase({ agentId: "main", env });
-      const sessionKey = "agent:main:alias";
+      const sessionKey = `agent:${logicalAgentId}:alias`;
       writeSessionEntry(original, sessionKey, { sessionId: "original", updatedAt: 1 });
+      if (logicalAgentId !== "main") {
+        writeSessionEntry(original, "agent:main:alias", { sessionId: "other-agent", updatedAt: 1 });
+      }
       const replacement = retarget
         ? openOpenClawAgentDatabase({ agentId: "main", path: path("replacement.sqlite"), env })
         : undefined;
@@ -906,13 +999,23 @@ it.runIf(process.platform !== "win32").each([false, true])(
       symlinkSync(original.path, alias);
       let consumed = false;
       const pending = withSessionEntryReadOnlyInWorker(
-        { agentId: "main", sessionKey, storePath: path("custom.json"), env },
+        {
+          agentId: logicalAgentId,
+          sessionKey,
+          storePath: logicalAgentId === "main" ? path("custom.json") : alias,
+          env,
+        },
         () => {},
-        async (read) => {
+        async (read, owner) => {
           if (!read.ok) {
             throw read.error;
           }
           expect(read.value?.sessionId).toBe("original");
+          expect(owner.scope).toMatchObject({
+            agentId: logicalAgentId,
+            databaseAgentId: "main",
+            storePath: original.path,
+          });
           consumed = true;
           await Promise.resolve();
           if (replacement) {
@@ -928,6 +1031,97 @@ it.runIf(process.platform !== "win32").each([false, true])(
         await expect(pending).resolves.toMatchObject({ sessionId: "original" });
       }
       expect(consumed).toBe(true);
+    });
+  },
+);
+
+it.each(["logical", "omitted", "empty"] as const)(
+  "fences the selected SQLite alias after a %s store read releases its initial owner",
+  async (locator) => {
+    await withOpenClawTestState({ label: "currency-selected-store-alias" }, async (state) => {
+      const original = openOpenClawAgentDatabase({
+        agentId: "main",
+        path: state.statePath("original", "openclaw-agent.sqlite"),
+        env: state.env,
+      });
+      const replacement = openOpenClawAgentDatabase({
+        agentId: "main",
+        path: state.statePath("replacement", "openclaw-agent.sqlite"),
+        env: state.env,
+      });
+      const sessionKey = "agent:main:subagent:currency-selected-alias";
+      const entry = {
+        sessionId: "selected-alias-session",
+        lifecycleRevision: "selected-alias-lifecycle",
+        lifecycleRunId: "selected-alias-run",
+        updatedAt: 1,
+      };
+      writeSessionEntry(original, sessionKey, entry);
+      writeSessionEntry(replacement, sessionKey, entry);
+      const alias = state.agentDir();
+      mkdirSync(dirname(alias), { recursive: true });
+      const linkType = process.platform === "win32" ? "junction" : "dir";
+      symlinkSync(dirname(original.path), alias, linkType);
+      mkdirSync(state.sessionsDir(), { recursive: true });
+      const logicalParent = realpathSync(state.sessionsDir());
+      const selectedSqlite = join(state.agentDir(), "openclaw-agent.sqlite");
+      expect(realpathSync(selectedSqlite)).toBe(realpathSync(original.path));
+      const scope = {
+        agentId: "main",
+        sessionKey,
+        env: state.env,
+        ...(locator === "logical"
+          ? { storePath: join(state.sessionsDir(), "sessions.json") }
+          : locator === "empty"
+            ? { storePath: "" }
+            : {}),
+      };
+      const current = await withSessionEntryReadOnlyInWorker(
+        scope,
+        () => {},
+        async (read, owner) => {
+          if (!read.ok) {
+            throw read.error;
+          }
+          expect(read.value?.sessionId).toBe(entry.sessionId);
+          return captureSessionEntryCurrentRead(scope, owner);
+        },
+      );
+      if (current.kind !== "file") {
+        throw new Error("Expected the selected durable alias source");
+      }
+      const nativeCheck: SessionEntryCurrentCheck = {
+        source: current.source,
+        assertCurrent: () => current.assertSourceCurrent(),
+      };
+      await expect(current.readCurrent()).resolves.toMatchObject({
+        sessionId: entry.sessionId,
+        lifecycleRunId: entry.lifecycleRunId,
+      });
+      rmSync(alias, { recursive: true, force: true });
+      symlinkSync(dirname(replacement.path), alias, linkType);
+      expect(realpathSync(state.sessionsDir())).toBe(logicalParent);
+      expect(realpathSync(selectedSqlite)).toBe(realpathSync(replacement.path));
+      expect(entryReads.readSessionEntryRow(original, sessionKey)?.entry.sessionId).toBe(
+        entry.sessionId,
+      );
+      await expect(current.readCurrent()).rejects.toThrow(
+        "Session currency logical source changed",
+      );
+      expect(() =>
+        assertSessionEntryCurrentAdmission(
+          {
+            stage: "commit",
+            facts: {
+              kind: "session-entry-current",
+              source: current.source,
+              entry,
+              domainFacts: undefined,
+            },
+          },
+          nativeCheck,
+        ),
+      ).toThrow("Session currency logical source changed");
     });
   },
 );

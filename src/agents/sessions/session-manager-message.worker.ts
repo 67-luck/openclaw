@@ -26,7 +26,7 @@ import type {
 } from "../../config/sessions/session-accessor.sqlite-transcript-message-append.js";
 import { canRebasePreparedAssistantInTransaction } from "../../config/sessions/session-accessor.sqlite-transcript-prepared.js";
 import { readBoundedContextFromRawSnapshot } from "../../config/sessions/session-accessor.sqlite-transcript-raw-snapshot.js";
-import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-accessor.sqlite-transcript-write-guard.js";
+import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-accessor.sqlite-transcript-write-snapshot.js";
 import { appendTranscriptMessageSnapshotInTransaction } from "../../config/sessions/session-accessor.sqlite-transcript-write.js";
 import { assertCanonicalSessionKeyWrite } from "../../config/sessions/session-canonical-key.js";
 import type {
@@ -49,6 +49,7 @@ import {
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
 import { isIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
+import type { AgentDatabaseDomainAdmission } from "../../state/openclaw-agent-execution-domain.js";
 import {
   preparePendingToolResultDelta,
   type PendingToolResultFact,
@@ -121,7 +122,7 @@ export function bindSqliteWorkerBackend(
     databasePath: string;
     database: DatabaseSync;
     takePreparation(): unknown;
-    admit(stage: "transaction" | "commit", facts?: unknown): void;
+    admit(stage: "transaction" | "commit", admission?: AgentDatabaseDomainAdmission): void;
     assertTransactionBoundary?(): void;
   },
 ): SqliteWorkerBackend<SessionMessageWorkerOperations> {
@@ -217,7 +218,7 @@ export function bindSqliteWorkerBackend(
               kind: terminal.kind,
               ...(authorization ? { authorization } : {}),
             };
-            context.admit("transaction", domain);
+            context.admit("transaction", { facts: domain });
             let outcome;
             if (terminal.kind === "finish") {
               executeSqliteQuerySync(
@@ -267,7 +268,7 @@ export function bindSqliteWorkerBackend(
               if (!facts) {
                 throw new Error("Input settlement has no prepared commit facts");
               }
-              context.admit("commit", facts);
+              context.admit("commit", { facts });
               if (terminal.kind === "complete") {
                 // Native permissions and the last host grant have both returned.
                 // Re-selection here catches external duplicates without a local publication.
@@ -319,7 +320,7 @@ export function bindSqliteWorkerBackend(
         if (!commitFacts) {
           throw new Error("Session message has no prepared commit facts");
         }
-        context.admit("commit", commitFacts);
+        context.admit("commit", { facts: commitFacts });
         if (manager?.pendingInput && pendingFacts && boundDatabase) {
           for (const admitted of pendingFacts.authorizations) {
             const read = manager.pendingInput.authorizations.find(
@@ -381,8 +382,7 @@ export function bindSqliteWorkerBackend(
             };
           }
           context.admit("transaction", {
-            ...operationOwner,
-            pendingInput: pendingFacts,
+            facts: { ...operationOwner, pendingInput: pendingFacts },
           });
           if (manager?.initialize) {
             const physical = readOpenClawAgentDatabaseIdentity(database);
@@ -496,9 +496,11 @@ export function bindSqliteWorkerBackend(
                       });
                     }
                     context.admit("transaction", {
-                      ...operationOwner,
-                      pendingInput: pendingFacts,
-                      checkpoint: "fresh-input",
+                      facts: {
+                        ...operationOwner,
+                        pendingInput: pendingFacts,
+                        checkpoint: "fresh-input",
+                      },
                     });
                   }
                 : undefined,

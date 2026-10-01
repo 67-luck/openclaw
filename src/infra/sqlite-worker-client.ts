@@ -4,6 +4,7 @@ import { serialize } from "node:v8";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { createDeferredCore } from "../shared/deferred.js";
 import { runWithStoreWriterNativeWait } from "../shared/store-writer-queue.js";
+import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import type {
   Actor,
   OperationScope,
@@ -14,7 +15,6 @@ import {
   SqliteWorkerError,
   type SqliteWorkerOperations,
   type SqliteWorkerStore,
-  type SqliteWorkerStateLifecycle,
 } from "./sqlite-worker-contract.js";
 import { executeSqliteWorkerScopedCommand } from "./sqlite-worker-host-context.js";
 import {
@@ -34,7 +34,6 @@ export function runSqliteWorkerClientOperation<Operations extends SqliteWorkerOp
   track: (pending: Promise<void>) => () => void,
   assertCurrent?: (commandType: PropertyKey) => void,
   createAdmission?: SqliteWorkerAdmissionFactory,
-  requireStateLifecycle: SqliteWorkerStateLifecycle = false,
 ): Promise<T> {
   let retained: ReturnType<typeof retainSqliteWorkerClientOperation<Operations>>;
   try {
@@ -44,7 +43,6 @@ export function runSqliteWorkerClientOperation<Operations extends SqliteWorkerOp
       track,
       assertCurrent,
       createAdmission,
-      requireStateLifecycle,
     );
   } catch (error) {
     // Retention and caller callbacks may reject with any original value.
@@ -68,13 +66,12 @@ export function retainSqliteWorkerClientOperation<Operations extends SqliteWorke
   track: (pending: Promise<void>) => () => void,
   assertCurrent?: (commandType: PropertyKey) => void,
   createAdmission?: SqliteWorkerAdmissionFactory,
-  requireStateLifecycle: SqliteWorkerStateLifecycle = false,
 ) {
   if (!client || client.sealed) {
     throw new SqliteWorkerError("SQLite worker store is closed", "closed");
   }
   const scope: OperationScope = {
-    requireStateLifecycle,
+    maintenanceScope: getOpenClawDatabaseMaintenanceScope(),
     createAdmission,
     assertCurrent,
     active: true,
@@ -210,11 +207,14 @@ export function createSqliteWorkerClient<Operations extends SqliteWorkerOperatio
         if (actor.protocolFailure) {
           throw actor.protocolFailure;
         }
-        scope.assertCurrent?.(command.type);
+        const commandType = command.type;
+        const assertCurrent = () => scope.assertCurrent?.(commandType);
+        assertCurrent();
         const nested = executeSqliteWorkerScopedCommand(
           actor,
-          serialize({ type: command.type, input: command.input }),
+          serialize({ type: commandType, input: command.input }),
           scope,
+          assertCurrent,
         );
         if (nested) {
           return nested.value;
@@ -235,10 +235,8 @@ export function createSqliteWorkerClient<Operations extends SqliteWorkerOperatio
             job?.nativeDispatched ? "outcome-unknown" : "unavailable",
           );
         }
-        // Queue time and lifecycle acquisition are not the ready job's protocol interval.
-        const start = job?.request.workerStateLifecycle
-          ? job.preparedAtNs
-          : job?.transportPostedAtNs;
+        // Queue time is not the ready job's protocol interval.
+        const start = job?.transportPostedAtNs;
         const scoped = job?.operationAdmission?.admission.scope;
         const deadline =
           scoped?.requestDeadlineNs ??
@@ -265,20 +263,6 @@ export function createSqliteWorkerClient<Operations extends SqliteWorkerOperatio
             while (!job?.terminal && !complete()) {
               checkWait();
               const current = actor.slot.current;
-              current?.dispatchPrepared?.();
-              if (job?.terminal) {
-                break;
-              }
-              if (current?.terminal) {
-                continue;
-              }
-              current?.lifecyclePreparation?.service(checkWait);
-              if (job?.terminal) {
-                break;
-              }
-              if (current?.terminal) {
-                continue;
-              }
               current?.operationAdmission?.admission.service(checkWait);
               if (job?.terminal) {
                 break;

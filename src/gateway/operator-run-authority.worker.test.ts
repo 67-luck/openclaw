@@ -11,7 +11,8 @@ import {
 import { createDeferredCore } from "../shared/deferred.js";
 import * as profileReader from "../state/user-profile-list.js";
 import { setCanonicalUserProfileRole } from "../state/user-profile-writes.js";
-import { ensureProfileForEmail, linkEmail, setUserProfileRole } from "../state/user-profiles.js";
+import { linkEmail, setUserProfileRole } from "../state/user-profile-writes.worker.js";
+import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { captureAgentTurnPrincipal } from "./agent-turn/principal.js";
 import { createGatewayMethodRegistry } from "./methods/registry.js";
@@ -78,7 +79,7 @@ it("preserves the live operator source through principal capture without trustin
 it.each(["capture", "operator tool"])(
   "prepares %s profile authority without parent data SQL",
   async (entry) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const profile = ensureProfileForEmail("operator-sql@example.test");
       setUserProfileRole(profile.id, "reader");
       const sourceScopes: GatewayOperatorRoleDefinition["scopes"] =
@@ -118,7 +119,7 @@ it.each(["capture", "operator tool"])(
             },
           },
         ]);
-      const sql = observeHostDataSql(state.env);
+      const sql = observeHostDataSql();
       try {
         const calibration = new DatabaseSync(":memory:");
         try {

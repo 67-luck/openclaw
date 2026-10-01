@@ -1,13 +1,16 @@
 import { availableParallelism } from "node:os";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { createDeferredCore } from "../shared/deferred.js";
+import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
+import { captureSqliteWorkerClosePolicy } from "./bun-sqlite-library.js";
+import { assertStateDatabaseAccessAllowed } from "./gateway-state-owner.js";
+import { runtimeNeedsTypeScriptLoader } from "./runtime-worker-url.js";
 import {
   assertSqliteWorkerActorReusable,
   captureSqliteWorkerOpen,
   captureSqliteWorkerAdmissionPaths,
   findUnclaimedSharedStateActors,
   closeUnclaimedSharedStateActors,
-  releaseSqliteWorkerActorCoordinators,
   prepareSqliteWorkerDatabaseAdmission,
   resolveOpenedSqliteWorkerIdentity,
   resolveSqliteWorkerModuleUrl,
@@ -46,7 +49,6 @@ import {
   SqliteWorkerError,
   type SqliteWorkerOperations,
   type SqliteWorkerStore,
-  type SqliteWorkerStateLifecycle,
 } from "./sqlite-worker-contract.js";
 import { SqliteWorkerInputAdmission } from "./sqlite-worker-input-admission.js";
 import type { SqliteWorkerAdmissionFactory } from "./sqlite-worker-operation-admission.js";
@@ -61,6 +63,7 @@ export const SQLITE_WORKER_MAX_REQUESTS_PER_WORKER = 128;
 const SQLITE_WORKER_MAX_QUEUED_BYTES = 256 * 1024 * 1024;
 
 export class SqliteWorkerBroker {
+  private readonly explicitSqliteCloseReleasesNativeResources = captureSqliteWorkerClosePolicy();
   // WAL readers on independent actors can progress on separate threads without blocking writers.
   private readonly maxWorkers = Math.min(8, Math.max(2, Math.floor(availableParallelism() / 8)));
   private readonly waiters = new Map<Slot, Set<(error?: unknown) => void>>();
@@ -71,6 +74,7 @@ export class SqliteWorkerBroker {
   private readonly stores = new Map<object, StoreClient>();
   private readonly operations = new Set<Promise<void>>();
   private readonly lifecycle = createSqliteWorkerLifecycle({
+    explicitSqliteCloseReleasesNativeResources: this.explicitSqliteCloseReleasesNativeResources,
     actors: this.actors,
     slots: this.slots,
     stores: this.stores,
@@ -130,7 +134,7 @@ export class SqliteWorkerBroker {
       const generation = options.runtimeGeneration;
       generation?.retain(this, async () => {
         await this.inputAdmission.joinOpens();
-        await this.lifecycle.closeGeneration(generation);
+        return await this.lifecycle.settleGeneration(generation);
       });
     } catch (error) {
       this.clients.delete(client);
@@ -155,6 +159,9 @@ export class SqliteWorkerBroker {
     const { databasePath, inputHash, identity } =
       await prepareSqliteWorkerDatabaseAdmission(options);
     options.assertCurrent?.();
+    assertStateDatabaseAccessAllowed(options.stateDatabasePath ?? databasePath, {
+      maintenanceScope: options.maintenanceScope,
+    });
     const input = options.input;
     const { key } = identity;
     const admittedPaths = captureSqliteWorkerAdmissionPaths(
@@ -191,8 +198,8 @@ export class SqliteWorkerBroker {
       actor.references += 1;
     } else {
       const slot = await this.lifecycle.acquireSlot(options, (selectedSlot) => ({
-        fail: (reason, currentError, completed, openOutcome) =>
-          this.fail(selectedSlot, reason, currentError, completed, openOutcome),
+        fail: (reason, currentError, openOutcome, completed) =>
+          this.fail(selectedSlot, reason, currentError, openOutcome, completed),
         finish: (job, error, value, settlement, closeReceipt) => {
           if (job.request.type === "close" && closeReceipt) {
             const currentActor = [...selectedSlot.actors].find(
@@ -217,7 +224,6 @@ export class SqliteWorkerBroker {
         runtimeGeneration: options.runtimeGeneration,
         nativeStopped: nativeStopped.promise,
         markNativeStopped: nativeStopped.resolve,
-        pendingStateLifecycles: new Set(),
         id: ++this.nextActor,
         key,
         // Native ownership pins its opening paths even after the first client closes.
@@ -255,13 +261,14 @@ export class SqliteWorkerBroker {
           ...(options.existingOnly ? { existingIdentity: key } : {}),
           input,
           ...(options.preparation ? { preparation: options.preparation } : {}),
-          ...(/\.[cm]?ts$/.test(modulePath)
+          ...(runtimeNeedsTypeScriptLoader(modulePath)
             ? { sourceLoaderUrl: import.meta.resolve("tsx/esm/api") }
             : {}),
         },
         sqliteWorkerRequestBytes(input, options.stateContext, options.preparation),
         {
           dispatchState: opening.openDispatch,
+          signal: options.signal,
           assertCurrent: options.assertCurrent,
           maintenanceScope: options.maintenanceScope,
           createAdmission: options.createAdmission ?? options.createOpenAdmission,
@@ -310,7 +317,6 @@ export class SqliteWorkerBroker {
               actor.backendClosed = true;
               actor.markNativeStopped();
               actor.cleanupState = "pending";
-              releaseSqliteWorkerActorCoordinators(actor);
             }
             if (actor.openDispatch.dispatched && !actor.openDispatch.openNotEntered) {
               // A throwing factory cannot prove that all partially opened native handles closed.
@@ -360,7 +366,9 @@ export class SqliteWorkerBroker {
             assertCurrent,
             createAdmission,
             ready,
-            maintenanceScope: options.maintenanceScope,
+            maintenanceScope: scope
+              ? scope.maintenanceScope
+              : getOpenClawDatabaseMaintenanceScope(),
           },
         ),
       retireFailed: async () => {
@@ -399,7 +407,6 @@ export class SqliteWorkerBroker {
     stateContext?: SqliteWorkerStateContext,
     assertCurrent?: (commandType: PropertyKey) => void,
     createAdmission?: SqliteWorkerAdmissionFactory,
-    requireStateLifecycle: SqliteWorkerStateLifecycle = false,
   ): Promise<T> {
     return runSqliteWorkerClientOperation(
       this.draining ? undefined : this.stores.get(store),
@@ -411,7 +418,6 @@ export class SqliteWorkerBroker {
       },
       assertCurrent,
       createAdmission,
-      requireStateLifecycle,
     );
   }
 
@@ -424,7 +430,6 @@ export class SqliteWorkerBroker {
     stateContext?: SqliteWorkerStateContext,
     assertCurrent?: (commandType: PropertyKey) => void,
     createAdmission?: SqliteWorkerAdmissionFactory,
-    requireStateLifecycle: SqliteWorkerStateLifecycle = false,
   ) {
     return retainSqliteWorkerClientOperation<Operations>(
       this.draining ? undefined : this.stores.get(store),
@@ -435,7 +440,6 @@ export class SqliteWorkerBroker {
       },
       assertCurrent,
       createAdmission,
-      requireStateLifecycle,
     );
   }
 
@@ -455,9 +459,10 @@ export class SqliteWorkerBroker {
     return this.lifecycle.retireActor(identity);
   }
 
-  getActorIdentity(store: object): object {
+  getActorIdentity(store: object): Readonly<Pick<Actor, "key" | "databasePath">> {
     const client = this.stores.get(store);
-    if (!client || client.sealed || !client.actor.stateContext || !client.isAvailable()) {
+    // Retained facts remain readable after worker failure; dispatch owns liveness.
+    if (!client || client.sealed || !client.actor.stateContext) {
       throw new SqliteWorkerError("SQLite shared actor binding is unavailable", "closed");
     }
     return client.actor;
@@ -548,7 +553,7 @@ export class SqliteWorkerBroker {
     const job: Job = {
       ...(slot.transport ? { readyReply: true as const } : {}),
       ready: options.ready,
-      requireStateLifecycle: scope?.requireStateLifecycle,
+      signal,
       maintenanceScope,
       createAdmission,
       assertCurrent,
@@ -567,9 +572,6 @@ export class SqliteWorkerBroker {
       if (index >= 0) {
         slot.queue.splice(index, 1);
         this.finish(slot, job, signal?.reason ?? new Error("SQLite worker operation canceled"));
-      }
-      if (slot.current === job && !job.nativeDispatched) {
-        job.cancelPreparation?.abort(signal?.reason);
       }
       // Once dispatched, retain the Promise until the database outcome is known.
     };
@@ -658,8 +660,8 @@ export class SqliteWorkerBroker {
     slot: Slot,
     reason: unknown,
     currentError?: Error,
-    completed?: CompletedSqliteWorkerOutcome,
     openOutcome?: "refused-before-agent-open",
+    completed?: CompletedSqliteWorkerOutcome,
   ): void {
     if (slot.failed) {
       return;

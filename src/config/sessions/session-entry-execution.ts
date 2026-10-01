@@ -40,7 +40,7 @@ import {
 } from "./session-accessor.sqlite-entry-cache.js";
 import type { SessionEntryPatchSelection } from "./session-accessor.sqlite-entry-mutation.js";
 import { toDatabaseOptions, type ResolvedSqliteScope } from "./session-accessor.sqlite-scope.js";
-import type { CapturedSessionEntryReadSource } from "./session-accessor.types.js";
+import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import { retainSessionDatabaseRead } from "./session-transcript-execution.js";
 import type { InternalSessionEntry } from "./types.js";
 

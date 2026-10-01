@@ -13,7 +13,10 @@ import type {
 } from "./openclaw-agent-db-contract.js";
 import { runOpenClawAgentWriteTransaction } from "./openclaw-agent-db.js";
 import type { AgentDatabaseOperations } from "./openclaw-agent-execution-contract.js";
-import { createAgentDatabaseDomainOwner } from "./openclaw-agent-execution-domain.js";
+import {
+  createAgentDatabaseDomainOwner,
+  type AgentDatabaseAdmissionRestriction,
+} from "./openclaw-agent-execution-domain.js";
 
 /** Commands borrow one canonical connection; native and volatile owners retain open/close authority. */
 export function createAgentDatabaseCommandOwner(context: {
@@ -25,6 +28,7 @@ export function createAgentDatabaseCommandOwner(context: {
     this: void,
     stage: "transaction" | "commit",
     facts?: { domain?: unknown; publication?: unknown },
+    requestAdmission?: AgentDatabaseAdmissionRestriction,
   ): void;
 }) {
   const { options, admit } = context;
@@ -47,6 +51,11 @@ export function createAgentDatabaseCommandOwner(context: {
   };
   let providerReview:
     | typeof import("../config/sessions/provider-review-store.worker.js")
+    | undefined;
+  let reactions: typeof import("../config/sessions/session-reaction-store.kernel.js") | undefined;
+  let acpEntry: typeof import("../acp/runtime/session-meta-entry.worker.js") | undefined;
+  let pendingInputWithdrawal:
+    | typeof import("../config/sessions/session-pending-input-withdrawal.worker.js")
     | undefined;
   let entryReader:
     | typeof import("../config/sessions/session-accessor.sqlite-entry-read.js")
@@ -81,7 +90,8 @@ export function createAgentDatabaseCommandOwner(context: {
       request.domain = undefined;
       return domain;
     },
-    admit: (stage, facts) => admit(stage, { domain: facts }),
+    admit: (stage, admission) =>
+      admit(stage, { domain: admission?.facts }, admission?.requestAdmission),
   });
   return {
     beginRequest() {
@@ -120,6 +130,23 @@ export function createAgentDatabaseCommandOwner(context: {
       }
     },
     prepare(this: void, command: SqliteWorkerCommand<AgentDatabaseOperations>) {
+      if (command.type === "session.entry.acp") {
+        return import("../acp/runtime/session-meta-entry.worker.js").then((module) => {
+          acpEntry = module;
+        });
+      }
+      if (command.type === "session.reaction.set") {
+        return import("../config/sessions/session-reaction-store.kernel.js").then((module) => {
+          reactions = module;
+        });
+      }
+      if (command.type === "session.pendingInputs.withdraw") {
+        return import("../config/sessions/session-pending-input-withdrawal.worker.js").then(
+          (module) => {
+            pendingInputWithdrawal = module;
+          },
+        );
+      }
       if (command.type === "session.entry.read") {
         return import("../config/sessions/session-accessor.sqlite-entry-read.js").then((module) => {
           entryReader = module;
@@ -216,6 +243,39 @@ export function createAgentDatabaseCommandOwner(context: {
       if (command.type === "session.entry.read" && entryReader) {
         return entryReader.readSessionEntryRow(context.assertCurrent(), command.input.sessionKey)
           ?.entry;
+      }
+      if (command.type === "session.entry.acp" && acpEntry) {
+        return acpEntry.mutateAcpSessionEntryInWorker(
+          context.assertCurrent(),
+          options,
+          command.input,
+          (stage, publication) => admit(stage, { publication }),
+        );
+      }
+      if (command.type === "session.pendingInputs.withdraw" && pendingInputWithdrawal) {
+        return pendingInputWithdrawal.discardSessionPendingInputInWorker(
+          context.assertCurrent(),
+          options,
+          command.input,
+          (stage, publication) => admit(stage, { publication }),
+        );
+      }
+      if (command.type === "session.reaction.set" && reactions) {
+        const opened = context.assertCurrent();
+        const setReaction = reactions.setSessionReactionInDatabase;
+        return runOpenClawAgentWriteTransaction(
+          (current) => {
+            if (current.db !== opened.db) {
+              throw new Error("Reaction write lost its canonical database owner");
+            }
+            admit("transaction");
+            const result = setReaction(current, command.input.sessionKey, command.input.params);
+            admit("commit");
+            return result;
+          },
+          options,
+          { operationLabel: "session.reaction.set" },
+        );
       }
       if (command.type === "trajectory.events.append" && trajectory) {
         const opened = context.assertCurrent();

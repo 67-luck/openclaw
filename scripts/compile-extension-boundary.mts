@@ -81,7 +81,7 @@ await runWithFailedTrailer("extension-boundary-compiler", async () => {
     fs.writeFileSync(target, text);
   }
   fs.mkdirSync(path.dirname(inputReceipt), { recursive: true });
-  fs.writeFileSync(inputReceipt, `${JSON.stringify({ inputs })}\n`);
+  fs.writeFileSync(inputReceipt, `${JSON.stringify({ inputs, lookups: result.lookups })}\n`);
   for (const file of [...outputs.map(({ target }) => target), inputReceipt]) {
     process.stdout.write(`TSFILE: ${file}\n`);
   }

@@ -5,16 +5,17 @@ import type {
   SessionTranscriptWriteScope,
   TranscriptAppendRefusal,
 } from "../../config/sessions/session-accessor.sqlite-contract.js";
-import type { readCommittedIncognitoSessionSharing } from "../../config/sessions/session-accessor.sqlite-entry-cache.js";
 import type { SqliteLifecycleTargetSnapshot } from "../../config/sessions/session-accessor.sqlite-entry-equality.js";
 import type { listSessionEntriesReadOnly } from "../../config/sessions/session-accessor.sqlite-entry-list.read.js";
 import type { SessionEntryPatchSelection } from "../../config/sessions/session-accessor.sqlite-entry-mutation.js";
 import type { listSessionChildEntriesReadOnly } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import type {
   loadExactSessionEntryCandidates,
+  ExactSessionEntryBatchScope,
   loadSessionEntryByIdReadOnly,
   resolveSessionEntry,
 } from "../../config/sessions/session-accessor.sqlite-exact-read.js";
+import type { readCommittedIncognitoSessionSharing } from "../../config/sessions/session-accessor.sqlite-incognito-sharing.js";
 import type { InitialSessionEntryCommit } from "../../config/sessions/session-accessor.sqlite-initial-entry.js";
 import type {
   readSessionTranscriptModelContext,
@@ -70,7 +71,8 @@ export type SessionEntryReadQuery =
   | {
       kind: "batch";
       sessionKeys: readonly (readonly string[])[];
-      projection?: Parameters<typeof loadExactSessionEntryCandidates>[0]["projection"];
+      projection?: ExactSessionEntryBatchScope["projection"];
+      clone?: boolean;
     }
   | {
       kind: "by-id";

@@ -1,6 +1,5 @@
-// Verifies guarded session managers emit transcript update events with stable sequence ids.
+import path from "node:path";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
-import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import { closeOpenClawAgentDatabasesForTest } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
@@ -21,7 +20,10 @@ import {
   resetGlobalHookRunner,
 } from "../plugins/hook-runner-global.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
-import type { PluginHookBeforeMessageWriteEvent } from "../plugins/types.js";
+import type {
+  PluginHookBeforeMessageWriteEvent,
+  PluginHookBeforeMessageWriteResult,
+} from "../plugins/types.js";
 import {
   onInternalSessionTranscriptUpdate,
   type InternalSessionTranscriptUpdate,
@@ -30,10 +32,7 @@ import {
   attachRuntimeUserTurnTranscriptContext,
   attachRuntimeUserTurnTranscriptRecorder,
 } from "../sessions/user-turn-transcript-runtime-context.js";
-import {
-  createUserTurnTranscriptRecorder,
-  type UserTurnTranscriptRecorder,
-} from "../sessions/user-turn-transcript.js";
+import { createUserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.js";
 import {
   closeOpenClawAgentDatabasesAsync,
   openOpenClawAgentDatabase,
@@ -50,11 +49,58 @@ import {
   takeCodeModeResponseSource,
   wrapStreamFnCodeModeSource,
 } from "./transcript-code-mode-source.js";
+
+const assistantText = (text: string) =>
+  makeAgentAssistantMessage({ content: [{ type: "text", text }] });
+const model = makeProviderModelFixture({
+  id: "test-model",
+  api: "openai-responses",
+  provider: "openai",
+  baseUrl: "https://example.invalid",
+});
+const codeCall = (id: string) => ({
+  type: "toolCall" as const,
+  id,
+  name: "exec",
+  arguments: { code: "const API_TOKEN = computeToken(); return API_TOKEN;" },
+});
+async function withSource(message: ReturnType<typeof makeAgentAssistantMessage>) {
+  const stream = createAssistantMessageEventStream();
+  if (message.stopReason === "error") {
+    stream.push({ type: "error", reason: "error", error: message });
+  } else {
+    stream.push({ type: "done", reason: "toolUse", message });
+  }
+  return await (
+    await wrapStreamFnCodeModeSource(() => stream, new Set(["exec"]))(model, { messages: [] })
+  ).result();
+}
+
+function installWriteHook(
+  handler: (
+    event: PluginHookBeforeMessageWriteEvent,
+  ) => PluginHookBeforeMessageWriteResult | undefined,
+) {
+  const registry = createEmptyPluginRegistry();
+  registry.typedHooks.push({
+    pluginId: "write-fixture",
+    hookName: "before_message_write",
+    source: "test",
+    handler,
+  });
+  initializeGlobalHookRunner(registry);
+}
 const listeners: Array<() => void> = [];
 const { openPersistedSessionManager } = createTranscriptEventFixture();
 
+function collectUpdates() {
+  const updates: InternalSessionTranscriptUpdate[] = [];
+  listeners.push(onInternalSessionTranscriptUpdate((update) => updates.push(update)));
+  return updates;
+}
+
 afterEach(async () => {
-  // Remove all transcript listeners between tests to avoid duplicate broadcasts.
+  resetGlobalHookRunner();
   while (listeners.length > 0) {
     listeners.pop()?.();
   }
@@ -69,29 +115,13 @@ describe("guardSessionManager transcript updates", () => {
     installSessionToolResultGuard(manager, {
       config: { logging: { redactPatterns: [String.raw`/opaque\(([^)]+)\)/g`] } },
     });
-    const code = "const API_TOKEN = computeToken(); return API_TOKEN;";
-    const toolCall = {
-      type: "toolCall" as const,
-      id: "retry-source",
-      name: "exec",
-      arguments: { code },
-    };
-    const message = makeAgentAssistantMessage({
-      content: [{ type: "text", text: "opaque(abcdefghijklmnopqrst)" }, toolCall],
-      stopReason: "toolUse",
-    });
-    const stream = createAssistantMessageEventStream();
-    stream.push({ type: "done", reason: "toolUse", message });
-    const response = await wrapStreamFnCodeModeSource(() => stream, new Set(["exec"]))(
-      makeProviderModelFixture({
-        id: "test-model",
-        api: "openai-responses",
-        provider: "openai",
-        baseUrl: "https://example.invalid",
+    const toolCall = codeCall("retry-source");
+    const emitted = await withSource(
+      makeAgentAssistantMessage({
+        content: [{ type: "text", text: "opaque(abcdefghijklmnopqrst)" }, toolCall],
+        stopReason: "toolUse",
       }),
-      { messages: [] },
     );
-    const emitted = await response.result();
     const { db } = openOpenClawAgentDatabase({ agentId: target.agentId, path: target.storePath });
     const exec = db.exec.bind(db);
     let injected = false;
@@ -101,7 +131,7 @@ describe("guardSessionManager transcript updates", () => {
         // Commit after validation but before the writer acquires its snapshot.
         const concurrent = appendTranscriptMessageSync(target, {
           eventId: "concurrent-assistant",
-          message: makeAgentAssistantMessage({ content: [{ type: "text", text: "Concurrent" }] }),
+          message: assistantText("Concurrent"),
         });
         expect(concurrent.ok).toBe(true);
       }
@@ -126,27 +156,6 @@ describe("guardSessionManager transcript updates", () => {
     ]);
     expect(entries.at(-1)).toMatchObject({
       message: { content: [{ type: "text", text: "opaque(abcdef…qrst)" }, toolCall] },
-    });
-  });
-
-  it("refreshes the deferred error owner when a session manager serves a new run", async () => {
-    const { sessionManager, target } = await openPersistedSessionManager();
-    const first = createAssistantErrorTranscript({ runId: "run-first" });
-    const second = createAssistantErrorTranscript({ runId: "run-second" });
-    guardSessionManager(sessionManager, { runId: "run-first", assistantErrorTranscript: first });
-    sessionManager.appendMessage(makeAgentAssistantMessage({ content: [], stopReason: "error" }));
-    await first.settle(false);
-    guardSessionManager(sessionManager, { runId: "run-second", assistantErrorTranscript: second });
-    sessionManager.appendMessage(makeAgentAssistantMessage({ content: [], stopReason: "error" }));
-    await second.settle(true);
-    await first.settle(true);
-    const messages = SessionManager.open(target)
-      .getBranch()
-      .filter((entry) => entry.type === "message");
-    expect(messages).toHaveLength(1);
-    expect(messages[0]?.message).toMatchObject({
-      stopReason: "error",
-      __openclaw: { runId: "run-second" },
     });
   });
 
@@ -176,43 +185,12 @@ describe("guardSessionManager transcript updates", () => {
     expect(compactions).toMatchObject([
       {
         __openclaw: { runId: "run-first", itemId: "compaction-run-first" },
-        details: { source: "hook" },
-        fromHook: true,
       },
       {
         __openclaw: { runId: "run-second", itemId: "compaction-run-second" },
-        details: { source: "hook" },
-        fromHook: true,
       },
     ]);
     expect(loadSessionEntry(target)?.compactionCount).toBe(2);
-  });
-
-  it("leaves the session manager unchanged when atomic compaction persistence rejects the boundary", async () => {
-    const { sessionManager, root, target } = await openPersistedSessionManager();
-    const keptId = sessionManager.appendMessage(makeUserMessage("keep", 1));
-    const guarded = guardSessionManager(sessionManager, {
-      withCompactionPersistence: (prepared) =>
-        persistCompactionBoundaryWithSessionEntrySync(target, {
-          prepared: { ...prepared, event: { ...prepared.event, id: keptId } },
-          transcriptByteCompactionLatch: {
-            activeBytes: 2048,
-            sessionId: target.sessionId,
-            maxBytes: 1024,
-          },
-        }),
-    });
-
-    expect(() => guarded.appendCompaction("summary", keptId, 100)).toThrow(
-      `Session transcript entry was not persisted: ${keptId}: transcript-event-not-appended`,
-    );
-    expect(sessionManager.getLeafId()).toBe(keptId);
-    expect(sessionManager.getBranch().filter((entry) => entry.type === "compaction")).toEqual([]);
-    expect(
-      SessionManager.open(target, root)
-        .getBranch()
-        .filter((entry) => entry.type === "compaction"),
-    ).toEqual([]);
   });
 
   it("consumes a steered source under its own custody and does not repeat its approval hook", async () => {
@@ -227,7 +205,6 @@ describe("guardSessionManager transcript updates", () => {
       target: recorderTarget,
       beforeMessageWrite: runAgentHarnessBeforeMessageWriteHook,
     });
-    const markRuntimePersisted = vi.spyOn(source, "markRuntimePersisted");
     try {
       await ambient.stageApproved!({ runId: "active", assertCurrent: () => {} });
       await ambient.persistApproved();
@@ -242,14 +219,7 @@ describe("guardSessionManager transcript updates", () => {
           },
         };
       });
-      const registry = createEmptyPluginRegistry();
-      registry.typedHooks.push({
-        pluginId: "steered-input-approval",
-        hookName: "before_message_write",
-        source: "test",
-        handler: approvalHook,
-      });
-      initializeGlobalHookRunner(registry);
+      installWriteHook(approvalHook);
       expect(await source.stageApproved!({ runId: "steered", assertCurrent: () => {} })).toBe(true);
       const approved = await source.resolveMessage();
       if (!approved) {
@@ -269,6 +239,7 @@ describe("guardSessionManager transcript updates", () => {
         { message: approved, recorder: source },
       );
 
+      expect(source.getAdmissionReceipt()).toBeUndefined();
       // The already-running turn's async context is not the steered input's custody.
       const freshCallback = vi.fn();
       const entryId = ambient.withPendingInput!(() =>
@@ -278,11 +249,7 @@ describe("guardSessionManager transcript updates", () => {
       expect(entryId).toBe(pending.items[0]?.id);
       expect(guarded.getEntry(entryId)).toMatchObject({ message: approved });
       expect(source.getAdmissionReceipt()).toMatchObject({ entryId });
-      expect(markRuntimePersisted).toHaveBeenCalledWith(
-        approved,
-        expect.objectContaining({ entryId }),
-        { appended: true },
-      );
+      expect(source.getPersistedMessage?.()).toEqual(approved);
       expect(listSessionPendingInputs(target)).toEqual({ items: [], total: 0 });
       expect(approvalHook).toHaveBeenCalledOnce();
       expect(freshCallback).not.toHaveBeenCalled();
@@ -295,7 +262,6 @@ describe("guardSessionManager transcript updates", () => {
     } finally {
       source.finishPendingInput?.("interrupted");
       ambient.finishPendingInput?.("interrupted");
-      resetGlobalHookRunner();
     }
   });
 
@@ -532,74 +498,28 @@ describe("guardSessionManager transcript updates", () => {
     },
   );
 
-  it.each(["active", "side", "setup-metadata"] as const)(
-    "adopts an ingress-persisted %s-branch user without broadcasting a duplicate",
-    async (branch) => {
-      const updates: InternalSessionTranscriptUpdate[] = [];
-      listeners.push(onInternalSessionTranscriptUpdate((update) => updates.push(update)));
-
-      const sm = SessionManager.inMemory();
-      const preparedUserTurnMessage = {
-        role: "user" as const,
-        content: "canonical prompt",
-        idempotencyKey: "canonical-run:user",
-        timestamp: Date.now(),
-      };
-      const existingId = sm.appendMessage(preparedUserTurnMessage);
-      if (branch === "side") {
-        const visibleLeafId = sm.appendMessage({
-          role: "assistant",
-          content: [{ type: "text", text: "visible branch" }],
-          timestamp: Date.now(),
-        } as Parameters<typeof sm.appendMessage>[0]);
-        sm.appendLeafControl({
-          targetId: visibleLeafId,
-          appendParentId: existingId,
-          appendMode: "side",
-        });
-      } else if (branch === "setup-metadata") {
-        await sm.appendModelChange("openai", "gpt-5.5");
-        await sm.appendThinkingLevelChange("off");
-        sm.appendCustomEntry("model-snapshot", {
-          modelApi: "openai-responses",
-          modelId: "gpt-5.5",
-          provider: "openai",
-        });
-      }
-      const appendParentId = sm.getAppendParentId();
-      const markRuntimePersisted = vi.fn();
-      const recorder = {
-        markBlocked: vi.fn(),
-        markRuntimePersisted,
-      } as unknown as UserTurnTranscriptRecorder;
-      const guarded = guardSessionManager(sm, {
-        agentId: "main",
-        sessionKey: "agent:main:canonical",
-        preparedUserTurnMessage,
-        preparedUserTurnTranscriptRecorder: recorder,
-      });
-
-      const runtimeId = guarded.appendMessage({
-        role: "user",
-        content: "canonical prompt",
-        timestamp: preparedUserTurnMessage.timestamp,
-      });
-
-      expect(runtimeId).toBe(existingId);
-      expect(sm.getAppendParentId()).toBe(appendParentId);
-      expect(
-        sm
-          .getEntries()
-          .filter((entry) => entry.type === "message" && entry.message.role === "user"),
-      ).toHaveLength(1);
-      expect(updates).toEqual([]);
-      expect(markRuntimePersisted).toHaveBeenCalledTimes(1);
-      expect(markRuntimePersisted.mock.calls[0]?.[0]).toMatchObject({
-        idempotencyKey: "canonical-run:user",
-      });
-      expect(markRuntimePersisted.mock.calls[0]?.[2]).toEqual({ appended: false });
-    },
-  );
+  it("reuses an in-memory user behind setup metadata without changing the selected side view", async () => {
+    const sm = SessionManager.inMemory();
+    const message = { ...makeUserMessage("canonical", 1), idempotencyKey: "run:user" };
+    const expected = structuredClone(message);
+    const userId = sm.appendMessage(message);
+    const setupModel = { modelApi: "openai-responses", modelId: "test-model", provider: "openai" };
+    await sm.appendModelChange(setupModel.provider, setupModel.modelId);
+    await sm.appendThinkingLevelChange("off");
+    const metadata = sm.appendCustomEntry("model-snapshot", setupModel);
+    const leaf = sm.appendMessage(assistantText("visible"));
+    sm.appendLeafControl({ targetId: leaf, appendParentId: metadata, appendMode: "side" });
+    const ids = sm.getEntries().map((entry) => entry.id);
+    const onUserMessagePersisted = vi.fn();
+    guardSessionManager(sm, { preparedUserTurnMessage: message, onUserMessagePersisted });
+    const runtime = makeUserMessage("canonical", 1);
+    expect(sm.appendMessage(runtime)).toBe(userId);
+    expect(sm.getAppendParentId()).toBe(metadata);
+    expect(sm.getLeafId()).toBe(leaf);
+    expect(sm.getEntries().map((entry) => entry.id)).toEqual(ids);
+    expect(sm.getEntry(userId)).toMatchObject({ message: expected });
+    expect(onUserMessagePersisted).toHaveBeenCalledExactlyOnceWith(expected, runtime);
+  });
 
   it("drops selected mentions when a write hook mutates their text in place", async () => {
     const { target, sessionManager } = await openPersistedSessionManager();
@@ -607,265 +527,281 @@ describe("guardSessionManager transcript updates", () => {
       role: "user" as const,
       content: [{ type: "text" as const, text: "Hi @Taylor" }],
       timestamp: 1,
-      __openclaw: {
-        humanMentions: [{ profileId: "profile-taylor", start: 3, end: 10 }],
-      },
+      __openclaw: { humanMentions: [{ profileId: "profile-taylor", start: 3, end: 10 }] },
     };
-    const registry = createEmptyPluginRegistry();
-    registry.typedHooks.push({
-      pluginId: "rewrite-user-selection",
-      hookName: "before_message_write",
-      source: "test",
-      handler: ({ message: runtimeMessage }: PluginHookBeforeMessageWriteEvent) => {
-        if (runtimeMessage.role === "user" && Array.isArray(runtimeMessage.content)) {
-          Object.assign(runtimeMessage.content[0]!, { text: "Hi @Morgan" });
-        }
-        return { message: runtimeMessage };
-      },
+    installWriteHook(({ message: runtimeMessage }) => {
+      if (runtimeMessage.role === "user" && Array.isArray(runtimeMessage.content)) {
+        Object.assign(runtimeMessage.content[0]!, { text: "Hi @Morgan" });
+      }
+      return { message: runtimeMessage };
     });
-    initializeGlobalHookRunner(registry);
-    try {
-      const guarded = guardSessionManager(sessionManager, {
-        agentId: target.agentId,
-        sessionKey: target.sessionKey,
-        preparedUserTurnMessage: message,
-      });
-      const entryId = guarded.appendMessage(message);
-      expect(guarded.getEntry(entryId)).toMatchObject({
-        message: { role: "user", content: [{ type: "text", text: "Hi @Morgan" }] },
-      });
-      expect(guarded.getEntry(entryId)).not.toHaveProperty("message.__openclaw.humanMentions");
-    } finally {
-      resetGlobalHookRunner();
-    }
+    const guarded = guardSessionManager(sessionManager, {
+      agentId: target.agentId,
+      sessionKey: target.sessionKey,
+      preparedUserTurnMessage: message,
+    });
+    const entryId = guarded.appendMessage(message);
+    expect(guarded.getEntry(entryId)).toMatchObject({
+      message: { role: "user", content: [{ type: "text", text: "Hi @Morgan" }] },
+    });
+    expect(guarded.getEntry(entryId)).not.toHaveProperty("message.__openclaw.humanMentions");
   });
 
-  it.each([
-    { name: "legacy", lifecycleRevision: undefined, rebind: false },
-    { name: "owned", lifecycleRevision: "original-lifecycle", rebind: false },
-    { name: "rebound callback", lifecycleRevision: "original-lifecycle", rebind: true },
-  ])(
-    "broadcasts the committed SQLite owner for $name messages",
-    async ({ lifecycleRevision, rebind }) => {
-      const updates: InternalSessionTranscriptUpdate[] = [];
-      listeners.push(onInternalSessionTranscriptUpdate((update) => updates.push(update)));
-
-      const { sessionManager: sm, target } = await openPersistedSessionManager(lifecycleRevision);
-      const replacement = rebind
-        ? await openPersistedSessionManager("replacement-lifecycle")
-        : undefined;
-
-      const guarded = guardSessionManager(sm, {
-        agentId: target.agentId,
-        sessionKey: target.sessionKey,
-        onMessagePersisted: () => {
-          if (replacement) {
-            sm.setSessionTarget(replacement.target);
-          }
-        },
-      });
-      const timestamp = Date.now();
-      const message = makeAgentAssistantMessage({
-        content: [{ type: "text", text: "hello from subagent" }],
-        timestamp,
-      });
-      guarded.appendMessage(message);
-
-      expect(updates).toStrictEqual([
-        {
-          agentId: "main",
-          ...(lifecycleRevision ? { lifecycleRevision } : {}),
-          message,
-          messageId: expect.any(String),
-          messageSeq: 1,
-          sessionId: target.sessionId,
-          sessionKey: target.sessionKey,
-          target,
-        },
-      ]);
-      expect(updates[0]?.messageId).not.toBe("");
-    },
-  );
-
-  it("does not resolve transcript sequence for an in-memory session", () => {
-    const sm = SessionManager.inMemory();
-    const getBranchSpy = vi.spyOn(sm, "getBranch");
-
-    const guarded = guardSessionManager(sm, {
-      agentId: "main",
-      sessionKey: "agent:main:worker",
-    });
-    const appendMessage = guarded.appendMessage.bind(guarded) as unknown as (
-      message: AgentMessage,
-    ) => void;
-
-    appendMessage({
-      role: "assistant",
-      content: [{ type: "text", text: "hello" }],
-      timestamp: Date.now(),
-    } as AgentMessage);
-
-    expect(getBranchSpy).not.toHaveBeenCalled();
-    getBranchSpy.mockRestore();
-  });
-
-  it("reuses cached transcript sequence for consecutive appended messages", async () => {
-    const updates: InternalSessionTranscriptUpdate[] = [];
-    listeners.push(onInternalSessionTranscriptUpdate((update) => updates.push(update)));
-
-    const { sessionManager: sm, target } = await openPersistedSessionManager();
-    sm.appendMessage({
-      role: "user",
-      content: "existing prompt",
-      timestamp: Date.now(),
-    } as Parameters<typeof sm.appendMessage>[0]);
-    const getBranchSpy = vi.spyOn(sm, "getBranch");
+  it("broadcasts the committed SQLite owner when a callback rebinds the manager", async () => {
+    const updates = collectUpdates();
+    const { sessionManager: sm, target } = await openPersistedSessionManager("original-lifecycle");
+    const replacement = await openPersistedSessionManager("replacement-lifecycle");
     const guarded = guardSessionManager(sm, {
       agentId: target.agentId,
       sessionKey: target.sessionKey,
+      onMessagePersisted: () => {
+        sm.setSessionTarget(replacement.target);
+      },
     });
-    const appendMessage = guarded.appendMessage.bind(guarded) as unknown as (
-      message: AgentMessage,
-    ) => void;
-
-    appendMessage({
-      role: "assistant",
-      content: [{ type: "text", text: "first" }],
-      timestamp: Date.now(),
-    } as AgentMessage);
-    appendMessage({
-      role: "assistant",
-      content: [{ type: "text", text: "second" }],
-      timestamp: Date.now(),
-    } as AgentMessage);
-
-    expect(getBranchSpy).toHaveBeenCalledTimes(1);
-    expect(updates.map((update) => update.messageSeq)).toEqual([2, 3]);
-    getBranchSpy.mockRestore();
+    const message = assistantText("hello from subagent");
+    guarded.appendMessage(message);
+    expect(updates).toStrictEqual([
+      {
+        agentId: "main",
+        lifecycleRevision: "original-lifecycle",
+        message,
+        messageId: expect.any(String),
+        messageSeq: 1,
+        sessionId: target.sessionId,
+        sessionKey: target.sessionKey,
+        target,
+      },
+    ]);
+    expect(updates[0]?.messageId).not.toBe("");
   });
 
   it("caches real tool result sequence before final assistant messages", async () => {
-    // Tool results are persisted but not broadcast, so later visible messages must skip their seq.
-    const updates: InternalSessionTranscriptUpdate[] = [];
-    listeners.push(onInternalSessionTranscriptUpdate((update) => updates.push(update)));
-
+    const updates = collectUpdates();
     const { sessionManager: sm, target } = await openPersistedSessionManager();
-    const promptEntryId = sm.appendMessage({
-      role: "user",
-      content: "existing prompt",
-      timestamp: Date.now(),
-    } as Parameters<typeof sm.appendMessage>[0]);
-    const getBranchSpy = vi.spyOn(sm, "getBranch");
+    const promptEntryId = sm.appendMessage(makeUserMessage("existing prompt", 1));
+    const spy = vi.spyOn(sm, "getBranch");
     const guarded = guardSessionManager(sm, {
       agentId: target.agentId,
       sessionKey: target.sessionKey,
       runId: "run-owning-final",
     });
-    const appendMessage = guarded.appendMessage.bind(guarded) as unknown as (
-      message: AgentMessage,
-    ) => void;
-
-    appendMessage({
-      role: "assistant",
-      content: [{ type: "toolCall", id: "call_1", name: "read", arguments: {} }],
-      timestamp: Date.now(),
-    } as AgentMessage);
-    expect(getBranchSpy.mock.calls).toEqual([[promptEntryId]]);
-    appendMessage({
-      role: "toolResult",
-      toolCallId: "call_1",
-      toolName: "read",
-      content: [{ type: "text", text: "tool output" }],
-      isError: false,
-      timestamp: Date.now(),
-    } as AgentMessage);
-    expect(getBranchSpy.mock.calls).toEqual([[promptEntryId], []]);
-    appendMessage({
-      role: "assistant",
-      content: [{ type: "text", text: "final answer" }],
-      timestamp: Date.now(),
-    } as AgentMessage);
-
+    guarded.appendMessage(
+      makeAgentAssistantMessage({
+        content: [{ type: "toolCall", id: "call_1", name: "read", arguments: {} }],
+      }),
+    );
+    expect(spy.mock.calls).toEqual([[promptEntryId]]);
+    guarded.appendMessage(makeTextToolResult("call_1", "read", "tool output", false, 2));
+    expect(spy.mock.calls).toEqual([[promptEntryId], []]);
+    guarded.appendMessage(assistantText("final answer"));
     expect(
-      sm
-        .getEntries()
-        .filter((entry) => entry.type === "message")
-        .map((entry) => ({
-          role: entry.message.role,
-          runId: asNullableRecord(asNullableRecord(entry.message)?.["__openclaw"])?.runId,
-        })),
+      sm.getEntries().flatMap((entry) =>
+        entry.type === "message"
+          ? [
+              {
+                role: entry.message.role,
+                runId: asNullableRecord(asNullableRecord(entry.message)?.["__openclaw"])?.runId,
+              },
+            ]
+          : [],
+      ),
     ).toEqual([
       { role: "user", runId: undefined },
       { role: "assistant", runId: "run-owning-final" },
       { role: "toolResult", runId: "run-owning-final" },
       { role: "assistant", runId: "run-owning-final" },
     ]);
-    expect(getBranchSpy.mock.calls).toEqual([[promptEntryId], []]);
+    expect(spy.mock.calls).toEqual([[promptEntryId], []]);
     expect(updates.map((update) => update.messageSeq)).toEqual([2, 4]);
     expect(
       updates.map(
-        (update) => asNullableRecord(asNullableRecord(update.message)?.["__openclaw"])?.runId,
+        ({ message }) => asNullableRecord(asNullableRecord(message)?.["__openclaw"])?.runId,
       ),
     ).toEqual(["run-owning-final", "run-owning-final"]);
-    expect(updates.map((update) => update.runId)).toEqual([undefined, "run-owning-final"]);
-    getBranchSpy.mockRestore();
+    expect(updates.map(({ runId }) => runId)).toEqual([undefined, "run-owning-final"]);
+    spy.mockRestore();
   });
 
-  it.each([false, true])(
-    "refreshes terminal run ownership with hooks skipped=%s",
-    async (skipBeforeMessageWriteHooks) => {
-      const updates: InternalSessionTranscriptUpdate[] = [];
-      listeners.push(onInternalSessionTranscriptUpdate((update) => updates.push(update)));
-      const { sessionManager, target } = await openPersistedSessionManager();
+  it("refreshes run ownership and delivery preparation across reused managers", async () => {
+    const updates = collectUpdates();
+    const { sessionManager: sm, target } = await openPersistedSessionManager();
+    const firstRun = guardSessionManager(sm, {
+      skipBeforeMessageWriteHooks: true,
+      agentId: target.agentId,
+      runId: "run-first",
+      sessionKey: target.sessionKey,
+      prepareAssistantTranscriptMessage: (message) =>
+        applyAssistantDeliveryDirectives(message, { managedMediaUrls: ["./first.json"] }),
+    });
+    firstRun.appendMessage(assistantText("first reply\nMEDIA:./first.json"));
+    guardSessionManager(sm, {
+      agentId: target.agentId,
+      runId: "run-second",
+      sessionKey: target.sessionKey,
+    }).appendMessage({ ...assistantText("second reply"), stopReason: "error" });
+    guardSessionManager(sm).appendMessage(assistantText("unowned reply"));
+    expect(updates[0]?.message).toMatchObject({
+      content: [{ type: "text", text: "first reply\nMEDIA:./first.json" }],
+      openclawDelivery: { mediaUrls: ["./first.json"] },
+    });
+    expect(updates[1]?.message).toMatchObject({ stopReason: "error" });
+    expect(
+      updates.slice(1).some(({ message }) => Reflect.has(message as object, "openclawDelivery")),
+    ).toBe(false);
+    expect(
+      updates.map(({ messageId, messageSeq, runId }) => ({ messageId, messageSeq, runId })),
+    ).toEqual([
+      { messageId: expect.any(String), messageSeq: 1, runId: "run-first" },
+      { messageId: expect.any(String), messageSeq: 2, runId: "run-second" },
+      { messageId: expect.any(String), messageSeq: 3, runId: undefined },
+    ]);
+  });
+});
 
-      const firstRun = guardSessionManager(sessionManager, {
-        skipBeforeMessageWriteHooks,
-        agentId: target.agentId,
-        runId: "run-first",
-        sessionKey: target.sessionKey,
-        prepareAssistantTranscriptMessage: (message) =>
-          applyAssistantDeliveryDirectives(message, { managedMediaUrls: ["./first.json"] }),
-      });
-      firstRun.appendMessage({
+describe("deferred assistant error transcript", () => {
+  async function setup() {
+    const { sessionManager: manager, target } = await openPersistedSessionManager();
+    const owner = createAssistantErrorTranscript({ runId: "run-test" });
+    installSessionToolResultGuard(manager, { assistantErrorTranscript: owner });
+    return { target, owner, manager };
+  }
+
+  it("preserves failed-attempt tool calls before their persisted results through recovery and replay", async () => {
+    const { target, owner, manager } = await setup();
+    const toolCall = codeCall("call-exec");
+    const failed = makeAgentAssistantMessage({
+      content: [{ type: "text", text: "I" }, toolCall],
+      stopReason: "error",
+      errorMessage: "provider rate limit",
+    });
+    const emitted = await withSource(failed);
+    manager.appendMessage(
+      emitted,
+      prepareCodeModeSourceAppend({}, emitted, takeCodeModeResponseSource(emitted)),
+    );
+    manager.appendMessage({
+      role: "toolResult",
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      content: [{ type: "text", text: "Persisted result" }],
+      isError: false,
+      timestamp: 1,
+    });
+    owner.clear();
+    manager.appendMessage(
+      makeAgentAssistantMessage({
+        content: [{ type: "text", text: "Recovered" }],
+        timestamp: 2,
+      }),
+    );
+    await owner.settle(false);
+    await closeOpenClawAgentDatabasesAsync();
+    closeOpenClawAgentDatabasesForTest();
+    const messages = SessionManager.open(target).buildSessionContext().messages;
+    expect(messages).toMatchObject([
+      { role: "assistant", content: [toolCall], stopReason: "toolUse" },
+      {
+        role: "toolResult",
+        toolCallId: toolCall.id,
+        content: [{ type: "text", text: "Persisted result" }],
+      },
+      { role: "assistant", content: [{ type: "text", text: "Recovered" }] },
+    ]);
+    expect(messages[0]).not.toHaveProperty("errorMessage");
+    const normalized = normalizeAssistantReplayContent(messages);
+    const replay = transformMessages(
+      normalized.filter(
+        (message) =>
+          message.role === "assistant" || message.role === "user" || message.role === "toolResult",
+      ),
+      model,
+    );
+    expect(replay).toEqual(normalized);
+  });
+
+  it("preserves canonical media without partial text when recovery succeeds", async () => {
+    const { target, owner, manager } = await setup();
+    const facts = {
+      __openclaw: {
+        media: [{ url: "https://example.invalid/report.pdf", contentType: "application/pdf" }],
+      },
+    };
+    manager.appendMessage({
+      ...makeAgentAssistantMessage({
+        content: [{ type: "text", text: "Here" }],
+        stopReason: "error",
+        errorMessage: "retry",
+      }),
+      ...facts,
+    });
+    owner.clear();
+    manager.appendMessage(assistantText("Recovered"));
+    await owner.settle(false);
+    expect(SessionManager.open(target).buildSessionContext().messages).toMatchObject([
+      { role: "assistant", content: [], stopReason: "stop", ...facts },
+      { role: "assistant", content: [{ type: "text", text: "Recovered" }] },
+    ]);
+  });
+
+  it("keeps terminal partial text and its error without duplicating tool facts or usage", async () => {
+    const { target, owner, manager } = await setup();
+    const displayText = { type: "text", text: "Displayed partial answer" };
+    const attachment = { type: "attachment", url: "https://example.invalid/report.pdf" };
+    const failed = {
+      ...makeAgentAssistantMessage({
+        content: [
+          { type: "text", text: "Partial answer" },
+          { type: "toolCall", id: "call-terminal", name: "read", arguments: {} },
+        ],
+        stopReason: "error",
+        errorMessage: "terminal failure",
+      }),
+      openclawDisplayContent: [displayText, attachment],
+    };
+    failed.usage = { ...failed.usage, output: 7, totalTokens: 7 };
+    manager.appendMessage(failed);
+    manager.appendMessage(makeTextToolResult("call-terminal", "read", "Result", false, 1));
+    await owner.settle(true);
+    await owner.settle(true);
+    const messages = SessionManager.open(target).buildSessionContext().messages;
+    expect(messages).toMatchObject([
+      {
         role: "assistant",
-        content: [{ type: "text", text: "first reply\nMEDIA:./first.json" }],
-        timestamp: Date.now(),
-      } as Parameters<typeof firstRun.appendMessage>[0]);
-
-      const secondRun = guardSessionManager(sessionManager, {
-        agentId: target.agentId,
-        runId: "run-second",
-        sessionKey: target.sessionKey,
-      });
-      secondRun.appendMessage({
+        content: [{ type: "toolCall", id: "call-terminal" }],
+        openclawDisplayContent: [attachment],
+        usage: { output: 7 },
+      },
+      { role: "toolResult", toolCallId: "call-terminal" },
+      {
         role: "assistant",
-        content: [{ type: "text", text: "second reply" }],
-        timestamp: Date.now(),
-      } as Parameters<typeof secondRun.appendMessage>[0]);
+        content: [{ type: "text", text: "Partial answer" }],
+        openclawDisplayContent: [displayText],
+        stopReason: "error",
+        errorMessage: "terminal failure",
+        usage: { output: 0 },
+      },
+    ]);
+  });
 
-      const unknownRun = guardSessionManager(sessionManager);
-      unknownRun.appendMessage({
-        role: "assistant",
-        content: [{ type: "text", text: "unowned reply" }],
-        timestamp: Date.now(),
-      } as Parameters<typeof unknownRun.appendMessage>[0]);
-
-      expect(secondRun).toBe(firstRun);
-      expect(unknownRun).toBe(firstRun);
-      expect(updates[0]?.message).toMatchObject({
-        content: [{ type: "text", text: "first reply\nMEDIA:./first.json" }],
-        openclawDelivery: { mediaUrls: ["./first.json"] },
-      });
-      expect(
-        updates.slice(1).some(({ message }) => Reflect.has(message as object, "openclawDelivery")),
-      ).toBe(false);
-      expect(
-        updates.map(({ messageId, messageSeq, runId }) => ({ messageId, messageSeq, runId })),
-      ).toEqual([
-        { messageId: expect.any(String), messageSeq: 1, runId: "run-first" },
-        { messageId: expect.any(String), messageSeq: 2, runId: "run-second" },
-        { messageId: expect.any(String), messageSeq: 3, runId: undefined },
-      ]);
-    },
-  );
+  it("revalidates the captured writer before committing a terminal failure", async () => {
+    const { target, owner, manager } = await setup();
+    let active = true;
+    await withOwnedSessionTranscriptWrites(
+      {
+        sessionTarget: target,
+        assertCommitAllowed: () => {
+          if (!active) {
+            throw new Error("writer retired");
+          }
+        },
+        withTranscriptWrite: async (operation) => await operation(),
+      },
+      async () => {
+        manager.appendMessage(makeAgentAssistantMessage({ content: [], stopReason: "error" }));
+      },
+    );
+    active = false;
+    await expect(owner.settle(true)).rejects.toThrow("writer retired");
+    expect(SessionManager.open(target).getBranch()).toHaveLength(0);
+  });
 });

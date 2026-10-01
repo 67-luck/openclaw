@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import { createSqliteLifecycleAggregateError } from "./sqlite-lifecycle-errors.js";
 
 type PendingTransactionState = {
   commit: () => void;
@@ -20,22 +21,6 @@ export type CapturedSqliteTransactionState = {
   transaction: object;
   stage: (state: StagedTransactionState) => boolean;
 };
-
-function rollbackTransactionState(states: PendingTransactionState[], error: unknown): void {
-  const failures: unknown[] = [];
-  for (const state of states.toReversed()) {
-    try {
-      state.rollback(error);
-    } catch (failure) {
-      failures.push(failure);
-    }
-  }
-  if (failures.length) {
-    throw new AggregateError([error, ...failures], "SQLite transaction rollback state failed", {
-      cause: error,
-    });
-  }
-}
 
 // One connection can cross native and transformed SDK module graphs mid-transaction.
 const transactionJournals = resolveGlobalSingleton(
@@ -109,6 +94,24 @@ export function captureSqliteTransactionState(
       return true;
     },
   };
+}
+
+function rollbackTransactionState(states: PendingTransactionState[], error: unknown): void {
+  const failures: unknown[] = [];
+  for (const state of states.toReversed()) {
+    try {
+      state.rollback(error);
+    } catch (failure) {
+      failures.push(failure);
+    }
+  }
+  if (failures.length > 0) {
+    throw createSqliteLifecycleAggregateError(
+      [error, ...failures],
+      "SQLite transaction and rollback observers failed",
+      error,
+    );
+  }
 }
 
 /** A lost transaction invalidates every savepoint's staged state and observers. */
@@ -185,9 +188,11 @@ export function withSqlitePostCommitPublications<T>(
         throw failures[0];
       }
       if (failures.length) {
-        throw new AggregateError(failures, "SQLite committed state settlement failed", {
-          cause: failures[0],
-        });
+        throw createSqliteLifecycleAggregateError(
+          failures,
+          "SQLite committed state settlement failed",
+          failures[0],
+        );
       }
       const publish = () => {
         // Detach before invoking observers so a retained/reentrant continuation

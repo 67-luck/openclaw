@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { isMainThread } from "node:worker_threads";
 import { ok } from "@openclaw/normalization-core/result";
 import {
@@ -16,7 +17,10 @@ import {
   readSessionStoreTargetResult,
   type SessionStoreTargetInventoryRequest,
 } from "../config/sessions/session-store-target-inventory.js";
-import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
+import {
+  readDatabasePathIdentitySync,
+  type DatabasePathIdentity,
+} from "../infra/sqlite-worker-identity.js";
 import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
 import type { OpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { SessionMutationFactsUnavailableError } from "./session-mutation-authorization-error.js";
@@ -48,7 +52,7 @@ export type SessionMutationWorkerRead = {
       inventory: SessionStoreTargetInventoryRequest;
       sessionKey: string;
       agentId: string;
-      candidates: Array<{ candidate: SessionStoreReadCandidate; identity: string }>;
+      candidates: Array<{ candidate: SessionStoreReadCandidate; identity: DatabasePathIdentity }>;
       sources: Array<{ path: string; identity: string }>;
     }
   | {
@@ -105,7 +109,7 @@ export function readSessionMutationFactsInWorker(
   const assertSources = () => {
     for (const { candidate, identity } of input.candidates) {
       assertSessionStoreReadCandidate(candidate.path, [candidate]);
-      if (readDatabasePathIdentitySync(candidate.path).key !== identity) {
+      if (!isDeepStrictEqual(readDatabasePathIdentitySync(candidate.path), identity)) {
         throw new SessionMutationFactsUnavailableError();
       }
     }

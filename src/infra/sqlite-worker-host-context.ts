@@ -16,6 +16,7 @@ export type SqliteWorkerHostDriver = {
     actor: Actor,
     payload: Uint8Array,
     scope: OperationScope,
+    assertCurrent: () => void,
   ): { value: unknown; pending: Promise<unknown> };
 };
 const hostDrivers = resolveGlobalSingleton(
@@ -28,6 +29,7 @@ export function executeSqliteWorkerScopedCommand(
   actor: Actor,
   payload: Uint8Array,
   scope: OperationScope,
+  assertCurrent: () => void,
 ) {
   const driver = hostDrivers.getStore();
   if (!driver || !driver.active || driver.actor.slot !== actor.slot) {
@@ -50,7 +52,7 @@ export function executeSqliteWorkerScopedCommand(
   ) {
     throw new SqliteWorkerError("SQLite descendant lost its retained native owner", "unavailable");
   }
-  return driver.execute(actor, payload, scope);
+  return driver.execute(actor, payload, scope, assertCurrent);
 }
 
 /** View attribution is not admission: capture this exact live journal before updating a manager. */

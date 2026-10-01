@@ -6,7 +6,11 @@ import { withTestTimeout } from "../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import { setRuntimeConfigSnapshot } from "../config/config.js";
-import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
+import {
+  replaceSessionEntry,
+  replaceSessionEntrySync,
+} from "../config/sessions/session-accessor.js";
+import { publishSessionEntryCacheInvalidation } from "../config/sessions/session-accessor.sqlite-entry-cache.js";
 import {
   writeSessionEntry,
   deleteSessionEntryRows,
@@ -17,6 +21,7 @@ import {
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { withSqliteMutationWorkerCoordination } from "../config/sessions/session-accessor.sqlite-worker-coordination.js";
+import * as entryReads from "../config/sessions/session-entry-read-runtime.js";
 import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
 import * as sharingKernel from "../config/sessions/session-sharing-store.kernel.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -49,7 +54,7 @@ const unavailableMessage =
 it.each([false, true])(
   "retains missing incognito identity across first birth and rollback (warm: %s)",
   async (warm) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const cfg = { agents: { entries: { main: {} } } };
       const sessionKey = "agent:main:dashboard:incognito-negative";
       const storePath = resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main" });
@@ -57,7 +62,7 @@ it.each([false, true])(
       if (warm) {
         openOpenClawAgentDatabase(options);
       }
-      const sql = observeHostDataSql(state.env);
+      const sql = observeHostDataSql();
       const read = await prepareSessionMutationFacts({
         cfg,
         sessionKey,
@@ -65,7 +70,7 @@ it.each([false, true])(
         allowMissing: true,
       }).finally(sql.restore);
       const assertWithoutSql = (action: () => void) => {
-        const observation = observeHostDataSql(state.env);
+        const observation = observeHostDataSql();
         try {
           action();
           for (const call of observation.calls) {
@@ -575,7 +580,7 @@ it.each(["durable", "incognito"] as const)(
         }
       });
       try {
-        const preparationSql = observeHostDataSql(state.env);
+        const preparationSql = observeHostDataSql();
         try {
           prepared = await prepareSessionMutationFacts({ cfg, sessionKey, agentId: "main" });
           for (const call of preparationSql.calls) {
@@ -586,7 +591,7 @@ it.each(["durable", "incognito"] as const)(
         }
         const read = prepared;
         const assertWithoutSql = (allowed: boolean) => {
-          const sql = observeHostDataSql(state.env);
+          const sql = observeHostDataSql();
           try {
             expect(authorize(read) === null).toBe(allowed);
             for (const call of sql.calls) {
@@ -678,6 +683,141 @@ it.each(["durable", "incognito"] as const)(
     });
   },
 );
+
+it.each([
+  "metadata",
+  "worker-metadata",
+  "visibility",
+  "membership",
+  "lifecycle",
+  "replacement",
+  "retirement",
+  "unknown",
+  "rollback",
+] as const)("reconciles a stale sharing worker return across %s publication", async (change) => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const cfg = { ...rolePolicyConfig(), agents: { entries: { main: {} } } };
+    await state.writeConfig(cfg);
+    setRuntimeConfigSnapshot(cfg);
+    const sessionKey = "agent:main:acquiring-sharing";
+    const storePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+    const scope = { agentId: "main", sessionKey, storePath };
+    const entry: SessionEntry = {
+      sessionId: "acquiring-session",
+      lifecycleRevision: "original",
+      updatedAt: 1,
+      visibility: "read-only",
+      sandbox: "required",
+      createdActor: { type: "human", source: "profile", id: "creator" },
+    };
+    replaceSessionEntrySync(scope, entry);
+    await addSessionMember(scope, { identityId: "requester", addedBy: "creator" });
+    const originalRead = entryReads.readSessionEntriesFromStoreInWorker;
+    let publications = 0;
+    vi.spyOn(entryReads, "readSessionEntriesFromStoreInWorker").mockImplementation(
+      async (...args) => {
+        const snapshot = await originalRead(...args);
+        if (!publications && snapshot.entries.some((row) => row.sessionKey === sessionKey)) {
+          publications++;
+          if (change === "unknown") {
+            runOpenClawAgentWriteTransaction(
+              (database) => {
+                publishSessionEntryCacheInvalidation(database, { sessionKey });
+              },
+              { agentId: "main", path: storePath },
+            );
+          } else if (change === "rollback") {
+            const rollback = new Error("Synthetic sharing rollback");
+            expect(() =>
+              runOpenClawAgentWriteTransaction(
+                (database) => {
+                  writeSessionEntry(database, sessionKey, {
+                    ...entry,
+                    visibility: "draft",
+                    updatedAt: 2,
+                  });
+                  throw rollback;
+                },
+                { agentId: "main", path: storePath },
+              ),
+            ).toThrow(rollback);
+          } else if (change === "membership") {
+            await removeSessionMember(scope, "requester");
+          } else if (change === "retirement") {
+            await closeOpenClawAgentDatabaseByPathAsync(storePath, "main");
+          } else if (change === "lifecycle" || change === "replacement") {
+            // Exercise the entry publisher itself, without a separate lifecycle event.
+            runOpenClawAgentWriteTransaction(
+              (database) => {
+                writeSessionEntry(database, sessionKey, {
+                  ...entry,
+                  ...(change === "lifecycle"
+                    ? { lifecycleRevision: "replacement" }
+                    : { sessionId: "replacement-session" }),
+                  updatedAt: 2,
+                });
+                writeSessionEntry(database, sessionKey, entry);
+              },
+              { agentId: "main", path: storePath },
+            );
+          } else if (change === "worker-metadata") {
+            await replaceSessionEntry(scope, { ...entry, updatedAt: 2, label: "worker metadata" });
+          } else {
+            replaceSessionEntrySync(scope, {
+              ...entry,
+              updatedAt: 2,
+              ...(change === "visibility" ? { visibility: "draft" } : { label: "metadata only" }),
+            });
+          }
+        }
+        return snapshot;
+      },
+    );
+    const pending = prepareSessionMutationFacts({ cfg, sessionKey, agentId: "main" });
+    if (
+      change === "lifecycle" ||
+      change === "replacement" ||
+      change === "retirement" ||
+      change === "unknown"
+    ) {
+      await expect(pending).rejects.toThrow(unavailableMessage);
+    } else {
+      const read = await pending;
+      try {
+        const sql = observeHostDataSql();
+        try {
+          const facts = read.readCurrent(cfg);
+          expect(facts.target.entry.updatedAt).toBe(
+            change === "membership" || change === "rollback" ? 1 : 2,
+          );
+          expect(facts.membership.has("requester")).toBe(change !== "membership");
+          const policy = { ...cfg.gateway!.roles!.definitions.view!, sandbox: "required" as const };
+          expect(
+            authorizePreparedSessionMutation(
+              {
+                cfg,
+                client: sharingPolicyClient({ user: "requester" }),
+                sessionKey,
+                agentId: "main",
+              },
+              facts,
+              { policy, aliases: new Set(["requester"]) },
+            ) === null,
+          ).toBe(change === "metadata" || change === "worker-metadata" || change === "rollback");
+          for (const call of sql.calls) {
+            expect(call).not.toHaveBeenCalled();
+          }
+        } finally {
+          sql.restore();
+        }
+      } finally {
+        read.release();
+      }
+      expect(() => read.readCurrent(cfg)).toThrow(unavailableMessage);
+    }
+    expect(publications).toBe(1);
+  });
+});
 
 it("rejects unavailable durable metadata", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {

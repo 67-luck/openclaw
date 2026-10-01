@@ -387,6 +387,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     configuredAgentIds = new Set(listAgentIds(cfg)),
     readRow = readResidentSessionRow,
     databaseFacts?: records.PreparedSessionRowDatabaseFacts,
+    repositoryWorkspace?: Parameters<typeof readResidentSessionRow>[0]["repositoryWorkspace"],
   ) {
     if (!row.entry) {
       return false;
@@ -407,6 +408,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
       links,
       readSourceEntry: (key) => readSourceEntry(row, key, databaseFacts !== undefined),
       databaseFacts,
+      repositoryWorkspace,
     });
     if (!isIncognitoSessionKey(row.key) && rows.get(records.identity(row)) !== row) {
       return false;
@@ -532,7 +534,8 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     refresh,
     describeArchived: (row) => archive.describe(row),
     isCurrent,
-    materializePrivate: (row) => materialize(row),
+    materializePrivate: (row, repository) =>
+      materialize(row, undefined, undefined, undefined, repository),
     preparePresentation(row) {
       row.materialized.source.cfg = cfg;
       metadata.preparePresentation(row, readChildLinks);
@@ -625,7 +628,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
         : row;
     },
     findBySessionId(query: Parameters<typeof findSessionRowById>[0]) {
-      return findSessionRowById(query, { disposed, lookup, matching });
+      return findSessionRowById(query, { disposed, lookup, matching, scope });
     },
     describe,
     ...createSessionRowAncestorReads({
@@ -644,7 +647,10 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
         needsPreparation: needsExactMembershipPreparation,
       },
       isActive: () => !disposed,
-      projection: (): SessionRowReadView & { isCurrent(row: records.Row): boolean } => projection,
+      projection: (): SessionRowReadView & {
+        isCurrent(row: records.Row): boolean;
+        getPolicyConfig: typeof getPolicyConfig;
+      } => projection,
     }),
     setArchivePageSize: archive.setPageSize,
     modelFacts(query: records.Lookup) {

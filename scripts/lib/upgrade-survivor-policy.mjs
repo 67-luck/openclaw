@@ -17,6 +17,12 @@ export const OLDEST_SUPPORTED_UPGRADE_SURVIVOR_BASELINE = "2026.6.34";
 export const MINIMUM_UPGRADE_SURVIVOR_BASELINE = "2026.6.1";
 export const CUSTOM_PLUGIN_SIBLINGS_BASELINE = "openclaw@2026.9.4";
 
+// 2026.9.7 retired code mode; older baselines must still seed the migration specimen.
+export function usesStructuredToolSearchAtBaseline(baselineVersion) {
+  const comparison = compareReleaseVersions(baselineVersion ?? "", "2026.9.7");
+  return comparison !== null && comparison >= 0;
+}
+
 const scenarioMinimumBaselines = new Map([
   ["custom-plugin-siblings", CUSTOM_PLUGIN_SIBLINGS_BASELINE],
   ["legacy-operator-state", `openclaw@${OLDEST_SUPPORTED_UPGRADE_SURVIVOR_BASELINE}`],
@@ -32,7 +38,6 @@ const TRUSTED_HARNESS_OWNED_SCENARIOS = new Set([
   "projects-doctor",
   "channel-owner-policy",
   "projects-startup-migration",
-  "taskflow-restoration",
   "workshop-doctor-recovery",
   "update-report-recovery",
   "dreaming-cron-doctor",
@@ -49,12 +54,12 @@ export function isTrustedHarnessOwnedUpgradeSurvivorScenario(scenario) {
 const aggregateScenarios = UPGRADE_SURVIVOR_SCENARIOS.filter(
   (scenario) =>
     scenario !== "abandoned-update" &&
+    scenario !== "backup-schedule" &&
     scenario !== "missing-configured-plugin-migration" &&
     scenario !== "missing-load-path" &&
     scenario !== "projects-doctor" &&
     scenario !== "channel-owner-policy" &&
     scenario !== "projects-startup-migration" &&
-    scenario !== "taskflow-restoration" &&
     scenario !== "workshop-doctor-recovery" &&
     scenario !== "update-report-recovery" &&
     scenario !== "dreaming-cron-doctor" &&
@@ -168,6 +173,9 @@ function comparePublishedReleaseVersion(a, b) {
 }
 
 export function supportsUpgradeSurvivorScenarioAtBaseline(scenario, baselineSpec) {
+  if (scenario === "backup-schedule") {
+    return baselineSpec === "openclaw@2026.9.7";
+  }
   if (scenario === "missing-load-path") {
     const release = parseReleaseVersion((baselineSpec ?? "").replace(/^openclaw@/u, ""));
     // Floating tags are checked again against the installed baseline before seeding.
@@ -190,8 +198,7 @@ export function supportsUpgradeSurvivorScenarioAtBaseline(scenario, baselineSpec
   if (
     scenario === "projects-doctor" ||
     scenario === "channel-owner-policy" ||
-    scenario === "projects-startup-migration" ||
-    scenario === "taskflow-restoration"
+    scenario === "projects-startup-migration"
   ) {
     return baselineSpec === "openclaw@2026.9.4";
   }

@@ -11,6 +11,7 @@ import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
 import * as logging from "../logging/logger.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
+import { initializeSqliteRuntimeCapabilities } from "./bun-sqlite-library.js";
 import { resolveRuntimeProcessEntrypointUrl } from "./runtime-process-url.js";
 import { SqliteWorkerBroker } from "./sqlite-worker-broker.js";
 import { SQLITE_WORKER_MAX_RESULT_BYTES } from "./sqlite-worker-contract.js";
@@ -49,9 +50,10 @@ const {
   vi.restoreAllMocks();
 });
 
-const nodeIt = process.versions.bun ? it.skip : it;
+const { explicitSqliteCloseReleasesNativeResources } = await initializeSqliteRuntimeCapabilities();
+const poolIt = explicitSqliteCloseReleasesNativeResources ? it : it.skip;
 
-nodeIt("keeps an independent database responsive while another worker is at capacity", async () => {
+poolIt("keeps an independent database responsive while another worker is at capacity", async () => {
   const held = createDeferredCore();
   let release: (() => void) | undefined;
   let busyThread: number | undefined;
@@ -973,7 +975,7 @@ it("charges admission waiters to the byte budget and releases canceled reservati
   expect(await read(store)).toEqual([]);
 });
 
-nodeIt.each([
+poolIt.each([
   { cores: 1, workers: 2 },
   { cores: 24, workers: 3 },
   { cores: 128, workers: 8 },

@@ -42,12 +42,14 @@ import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoin
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import * as operationAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { runInDetachedAsyncContext } from "../../shared/async-work-scope.js";
 import * as agentDatabase from "../../state/openclaw-agent-db.js";
 import type { AgentDatabaseRequestExecutionSource } from "../../state/openclaw-agent-execution-contract.js";
 import {
   captureOpenClawAgentDatabaseExecution,
   retainGatewaySessionBroker,
 } from "../../state/openclaw-agent-execution.js";
+import { createOpenClawDatabaseMaintenanceScope } from "../../state/openclaw-state-db-async-lifecycle.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { installSessionToolResultGuard } from "../session-tool-result-guard.js";
 import * as messageRuntime from "./session-manager-message-runtime.js";
@@ -56,6 +58,10 @@ import {
   createScopedWorkerFixture,
   runReadyPredecessorChild,
 } from "./session-manager-scoped-worker.test-support.js";
+import {
+  captureSessionManagerHostExecution,
+  withSessionManagerReadyWrite,
+} from "./session-manager-write-admission.js";
 import { SessionManager } from "./session-manager.js";
 import type { SessionMessageAppendOutcome } from "./session-message-append-operation.js";
 const nativeFault = vi.hoisted(() => ({
@@ -114,6 +120,112 @@ vi.mock("../../infra/worker-cpu.js", async (importOriginal) => {
 
 afterEach(() => vi.restoreAllMocks());
 const { withReadyManager } = createScopedWorkerFixture(nativeFault, nativeFaultKey);
+
+it("commits once through the retained manager host and refuses closed or foreign capture", async () => {
+  await withReadyManager(async ({ manager, target, read }) => {
+    const foreignTarget = {
+      ...target,
+      agentId: "other",
+      sessionId: "foreign-host-owner",
+      sessionKey: "agent:other:dashboard:incognito-foreign-host-owner",
+      storePath: agentDatabase.resolveIncognitoOpenClawAgentSqlitePath({
+        agentId: "other",
+        env: target.env,
+      }),
+    };
+    const foreign = SessionManager.open(foreignTarget);
+    foreign.appendMessage({ role: "user", content: "foreign original", timestamp: 1 });
+    const beforeForeign = SessionManager.open(foreignTarget).getPersistedEntries();
+    let retained: ReturnType<typeof captureSessionManagerHostExecution> | undefined;
+    const message = {
+      role: "user" as const,
+      content: "retained host commit",
+      timestamp: 2,
+      idempotencyKey: "retained-host-once",
+    };
+    let committedId: string | undefined;
+    withSessionManagerReadyWrite(manager, () => {
+      retained = captureSessionManagerHostExecution(manager);
+      expect(() => captureSessionManagerHostExecution(foreign)).toThrow(
+        "no original host execution owner",
+      );
+      const host = retained;
+      // A captured capability restores its owner; ambient async context is not authority.
+      committedId = runInDetachedAsyncContext(() => host.run(() => manager.appendMessage(message)));
+      expect(host.run(() => manager.appendMessage(message))).toBe(committedId);
+    });
+    assert(retained);
+    expect(committedId).toEqual(expect.any(String));
+    expect(read().map((entry) => entry.content)).toEqual(["opening turn", "retained host commit"]);
+    const committed = SessionManager.open(target).getPersistedEntries();
+    expect(manager.getEntries().filter((entry) => entry.id === committedId)).toHaveLength(1);
+    const closedHost = retained;
+    expect(() =>
+      closedHost.run(() =>
+        manager.appendMessage({
+          role: "user",
+          content: "closed host must not commit",
+          timestamp: 3,
+        }),
+      ),
+    ).toThrow("already settled");
+    expect(SessionManager.open(target).getPersistedEntries()).toEqual(committed);
+    expect(SessionManager.open(foreignTarget).getPersistedEntries()).toEqual(beforeForeign);
+  });
+});
+
+it.each(["allowed", "revoked"] as const)(
+  "retains maintenance authority through the nested SQLite commit grant (%s)",
+  async (mode) => {
+    await withReadyManager(async ({ manager, target, read }) => {
+      const before = SessionManager.open(target).getPersistedEntries();
+      const failure = new Error("Nested maintenance owner was revoked");
+      let current = true;
+      const maintenance = createOpenClawDatabaseMaintenanceScope({
+        assertOwnerCurrent() {
+          if (!current) {
+            throw failure;
+          }
+        },
+      });
+      const beforeFresh = vi.fn(() => {
+        current = mode === "allowed";
+      });
+      let caught: unknown;
+      try {
+        try {
+          maintenance.run(() =>
+            SessionManager.readSessionContext(target, () => {
+              manager.appendMessage(
+                { role: "user", content: "nested maintenance commit", timestamp: 2 },
+                { beforeFreshMessageCommit: beforeFresh },
+              );
+            }),
+          );
+        } catch (error) {
+          caught = error;
+        }
+        // Restore only the injected fault, then inspect the original owner's final rows.
+        current = true;
+        expect(beforeFresh).toHaveBeenCalledOnce();
+        if (mode === "allowed") {
+          expect(caught).toBeUndefined();
+          expect(read().map((message) => message.content)).toEqual([
+            "opening turn",
+            "nested maintenance commit",
+          ]);
+        } else {
+          expect(caught).toBeDefined();
+          expect(SessionManager.open(target).getPersistedEntries()).toEqual(before);
+          expect(read()).toMatchObject([{ content: "opening turn" }]);
+        }
+      } finally {
+        current = true;
+        await maintenance.close();
+      }
+    });
+  },
+);
 
 it.skipIf(Boolean(process.versions.bun)).for(["scope-free", "scoped", "queued-scoped"] as const)(
   "preserves original ready predecessor ownership (%s)",

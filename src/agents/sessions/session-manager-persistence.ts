@@ -1,3 +1,4 @@
+import type { DatabaseSync } from "node:sqlite";
 import {
   ensureSessionEntrySync,
   readTranscriptMutationAtSync,
@@ -25,6 +26,7 @@ import {
   SessionTranscriptWriterClaimReboundError,
   type InitialSessionTranscriptWriter,
 } from "../../config/sessions/transcript-write-context.js";
+import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
 import {
   captureSqliteWorkerCallerTransaction,
   stageSqliteWorkerCallerRollback,
@@ -78,7 +80,9 @@ type NativeMessageAppendContinuation = {
   enter: (
     ...args: [
       ...Parameters<
-        NonNullable<Parameters<typeof appendTranscriptMessageSnapshotSync>[4]>["enter"]
+        NonNullable<
+          NonNullable<Parameters<typeof appendTranscriptMessageSnapshotSync>[4]>["continuation"]
+        >["enter"]
       >,
       initialized: boolean,
     ]
@@ -352,10 +356,17 @@ export class SessionManagerPersistence extends SessionManagerCore {
     const scope = this.persistenceTarget;
     const { env: _env, [sessionTranscriptExecution]: _execution, ...workerScope } = scope;
     let preparedReload: PreparedSessionTranscriptReload | undefined;
-    const appendEvent: typeof appendTranscriptEventSnapshotSync = (target, event, eventOptions) => {
+    const appendEvent: typeof appendTranscriptEventSnapshotSync = (
+      target,
+      event,
+      eventOptions,
+      projection,
+      view,
+    ) => {
       if (!worker) {
-        return appendTranscriptEventSnapshotSync(target, event, eventOptions);
+        return appendTranscriptEventSnapshotSync(target, event, eventOptions, projection, view);
       }
+      view?.assertCurrent();
       const result = worker.execute({
         type: "session.metadata.append",
         input: {
@@ -372,6 +383,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
           },
         },
       });
+      view?.assertCurrent();
       if (result.reload?.ok === false) {
         const error = new Error("Committed session transcript view could not be reconstructed");
         if (result.reload.error) {
@@ -392,6 +404,34 @@ export class SessionManagerPersistence extends SessionManagerCore {
     };
     const initialWriter = this.#initialWriter;
     const persistCompaction = getSessionCompactionPersistence(this);
+    const sessionId = this.sessionId;
+    const isCurrentView = () =>
+      this.sessionId === sessionId &&
+      sameSessionTranscriptTargetBinding(scope, this.persistenceTarget);
+    const onPendingTransaction = (database: DatabaseSync) => {
+      if (!isCurrentView()) {
+        return;
+      }
+      const previous = this.captureTranscriptView(true);
+      stageSqliteTransactionState(database, {
+        stage: () => {},
+        commit: () => {},
+        rollback: () => {
+          if (isCurrentView()) {
+            Object.assign(this, previous);
+          }
+        },
+      });
+    };
+    const viewGuard = {
+      assertCurrent: () => {
+        this.assertTranscriptViewAvailable();
+        if (!isCurrentView()) {
+          throw new SessionTranscriptWriterClaimReboundError();
+        }
+      },
+      onPendingTransaction,
+    };
     if (persistCompaction && isIndexedSessionEntry(entry) && entry.type === "compaction") {
       // Atomic accounting accepts exactly one boundary, never lazy transcript initialization.
       if (this.persistenceHeaderPending) {
@@ -501,6 +541,8 @@ export class SessionManagerPersistence extends SessionManagerCore {
             : this.transcriptMutationAt !== undefined
               ? { expectedMutationAt: this.transcriptMutationAt }
               : {},
+          undefined,
+          viewGuard,
         ),
         "Session transcript header was not persisted",
       ).after;
@@ -515,7 +557,13 @@ export class SessionManagerPersistence extends SessionManagerCore {
     const leafEntry = parseOpaqueLeafEntry(entry);
     if (leafEntry) {
       this.transcriptVersion = requireTranscriptEventAppendSnapshot(
-        appendEvent(scope, entry, expectedMutationAt !== undefined ? { expectedMutationAt } : {}),
+        appendEvent(
+          scope,
+          entry,
+          expectedMutationAt !== undefined ? { expectedMutationAt } : {},
+          undefined,
+          viewGuard,
+        ),
         `Session transcript leaf control was not persisted: ${leafEntry.id}`,
       ).after;
       this.transcriptMutationAt = this.transcriptVersion.updatedAt;
@@ -526,12 +574,18 @@ export class SessionManagerPersistence extends SessionManagerCore {
     }
     if (entry.type !== "message") {
       const loadedVersion = this.transcriptVersion;
-      const outcome = appendEvent(scope, entry, {
-        ...(options?.appendIntent === "active-branch"
-          ? { appendIntent: options.appendIntent }
-          : {}),
-        ...(expectedMutationAt !== undefined ? { expectedMutationAt } : {}),
-      });
+      const outcome = appendEvent(
+        scope,
+        entry,
+        {
+          ...(options?.appendIntent === "active-branch"
+            ? { appendIntent: options.appendIntent }
+            : {}),
+          ...(expectedMutationAt !== undefined ? { expectedMutationAt } : {}),
+        },
+        undefined,
+        viewGuard,
+      );
       const committed = requireTranscriptEventAppendSnapshot(
         outcome,
         `Session transcript entry was not persisted: ${entry.id}`,
@@ -700,16 +754,20 @@ export class SessionManagerPersistence extends SessionManagerCore {
           );
         },
       },
-      native && {
-        enter: (database, nested) => native.enter(database, nested, initialized || persistedHeader),
-        complete: (snapshot) => {
-          native.assertCurrent();
-          persisted = finish(snapshot);
-          native.complete(persisted);
-        },
-        retainPublication: (publish) => {
-          completed = true;
-          native.retainPublication(publish);
+      {
+        view: viewGuard,
+        continuation: native && {
+          enter: (database, nested) =>
+            native.enter(database, nested, initialized || persistedHeader),
+          complete: (snapshot) => {
+            native.assertCurrent();
+            persisted = finish(snapshot);
+            native.complete(persisted);
+          },
+          retainPublication: (publish) => {
+            completed = true;
+            native.retainPublication(publish);
+          },
         },
       },
     );

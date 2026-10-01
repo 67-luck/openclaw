@@ -26,14 +26,9 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { prepareGatewayPendingInputWorkerAuthority } from "../../gateway/server-methods/session-mutation-guards.js";
 import { createOperatorWsClient } from "../../gateway/server/ws-connection/authenticated-request-dispatch.test-support.js";
 import { prepareSessionInputAuthorization } from "../../gateway/session-sharing-input-capability.js";
-import {
-  acquireStateDatabaseCoordinator,
-  withStateDatabaseCoordinatorRuntimeDirectory,
-} from "../../infra/state-database-coordinator.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
-import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { getUserProfileDisplay, readUserProfileAliases } from "../../state/user-profile-list.js";
 import { ensureProfileForEmail, linkEmail, setUserProfileRole } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -452,16 +447,8 @@ it.each(["permission", "profile"] as const)(
         const input = await queuedInput(fixture, cfg, "final-authority", "accepted", false, client);
         const before = fixture.rows();
         let operation: Promise<SessionMessageAppendOutcome> | undefined;
-        let parent: ReturnType<typeof acquireStateDatabaseCoordinator> | undefined;
         const failures: unknown[] = [];
         try {
-          const captured = captureOpenClawStateWorkerContext({ env: state.env });
-          parent = withStateDatabaseCoordinatorRuntimeDirectory(captured.coordinatorRuntime, () =>
-            acquireStateDatabaseCoordinator({
-              databasePath: captured.admission.databasePath,
-              busyTimeoutMs: 0,
-            }),
-          );
           const control = arm(fixture.owner.databasePath, reason === "permission" ? 7 : 2);
           operation = input.receipt.run(() =>
             fixture.runtime.append({ message: castAgentMessage(input.receipt.message) }),
@@ -508,11 +495,6 @@ it.each(["permission", "profile"] as const)(
             } catch (error) {
               failures.push(error);
             }
-          }
-          try {
-            parent?.release();
-          } catch (error) {
-            failures.push(error);
           }
         }
         if (failures.length) {

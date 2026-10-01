@@ -147,7 +147,7 @@ export async function runReadyPredecessorChild(
           worker: this,
           actor: request.actor,
           command: operation.type,
-          delayed: Boolean(request.lifecyclePreparation) && !request.operationAdmission,
+          admitted: Boolean(request.operationAdmission),
         });
       }
       return Reflect.apply(post, this, [message, ...rest]);
@@ -246,7 +246,7 @@ export async function runReadyPredecessorChild(
           const appends = sent.filter(row => row.command === "session.message.append");
           assert.equal(appends.length, 1, "original append was replayed");
           assert.equal(appends[0].worker, managerWorker);
-          assert.equal(appends[0].delayed, true, "admission materialized before the lifecycle grant");
+          assert.equal(appends[0].admitted, true, "native request lost its captured admission");
           SessionManager.readSessionContext(target, (messages) => {
             assert.deepEqual([...messages].map(message => message.content), [
               "opening turn", "pending fresh input",

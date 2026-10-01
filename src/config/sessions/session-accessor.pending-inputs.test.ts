@@ -26,7 +26,6 @@ import {
 } from "./session-accessor.js";
 import {
   bindSessionPendingInputSources,
-  listSessionPendingInputReceipts,
   listSessionPendingInputs,
   readSessionPendingInput,
   stageSessionPendingInput,
@@ -36,6 +35,8 @@ import {
 import { usePendingInputsFixture } from "./session-accessor.pending-inputs.test-support.js";
 import { readSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
 import { copySessionNodeArtifactsForRepair } from "./session-accessor.sqlite-node-artifacts.js";
+import { listSessionPendingInputReceipts } from "./session-accessor.sqlite-pending-input-receipts.js";
+import { withSessionPendingInputRelocation } from "./session-accessor.sqlite-pending-inputs.js";
 import {
   resolveSqliteScope,
   runExclusiveSqliteSessionWrite,

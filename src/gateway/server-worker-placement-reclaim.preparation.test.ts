@@ -573,6 +573,8 @@ it.each([false, true])(
     });
     const barrier = createGatewayWorkerPlacementMoveBarrier({
       placements: f.placements,
+      awaitTurnClaimRelease: (sessionId, wait) =>
+        f.coordinated.awaitTurnClaimRelease(sessionId, wait),
       loadSessionRuntime: async () => {
         entering.resolve();
         await begin.promise;
@@ -912,6 +914,8 @@ it.each([
     });
     const barrier = createGatewayWorkerPlacementMoveBarrier({
       placements: f.placements,
+      awaitTurnClaimRelease: (sessionId, wait) =>
+        f.coordinated.awaitTurnClaimRelease(sessionId, wait),
       loadSessionRuntime: async () => f.runtime,
       revokeSessionAuthority: vi.fn(),
     });

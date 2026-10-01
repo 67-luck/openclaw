@@ -8,6 +8,7 @@ import {
   retainOpenClawStateWorkerErrorPayload,
 } from "../state/openclaw-state-worker-error.js";
 import { assertSyncTransactionResult } from "./sqlite-transaction.js";
+import { bindSqliteWorkerDatabaseAuthority } from "./sqlite-worker-broker-admission.js";
 import type { Actor, SqliteWorkerJobTerminal } from "./sqlite-worker-broker.types.js";
 import {
   isSqliteWorkerError,
@@ -166,6 +167,7 @@ export function createSqliteWorkerHostScope(
     }
     child.closed = true;
     const admission = child.retained.admission;
+    let completedSettlement = settlement;
     try {
       const failures: unknown[] = [];
       try {
@@ -178,9 +180,25 @@ export function createSqliteWorkerHostScope(
       } catch (error) {
         failures.push(error);
       }
+      failures.push(...admission.cleanupFailures);
+      if (failures.length) {
+        const error = new AggregateError(failures, "Nested SQLite cleanup failed");
+        completedSettlement = { kind: "unknown", error };
+        child.result = {
+          ok: false,
+          error:
+            child.result?.ok === false
+              ? new AggregateError(
+                  [child.result.error, error],
+                  "Nested SQLite failure and cleanup failed",
+                  { cause: child.result.error },
+                )
+              : error,
+        };
+      }
       try {
         child.retained.settle?.({
-          settlement,
+          settlement: completedSettlement,
           result: child.result ?? {
             ok: false,
             error: new SqliteWorkerError(
@@ -199,7 +217,7 @@ export function createSqliteWorkerHostScope(
         throw new AggregateError(failures, "Nested SQLite cleanup failed");
       }
     } finally {
-      child.settled.resolve(settlement);
+      child.settled.resolve(completedSettlement);
     }
   };
   const owner = {
@@ -479,7 +497,7 @@ export function createSqliteWorkerHostScope(
         stageRollback(rollback) {
           transaction.rollbacks.push({ scope: rollbackScope, rollback });
         },
-        execute(actor, payload, operation) {
+        execute(actor, payload, operation, assertRequest) {
           assertLive();
           if (privateAdoptionFailure) {
             throw privateAdoptionFailure.error;
@@ -505,6 +523,32 @@ export function createSqliteWorkerHostScope(
             if (retained.nativeLocations.some((path) => !binding!.nativeLocations.includes(path))) {
               throw new Error("Nested SQLite execution cannot borrow another lifecycle owner");
             }
+            const assertCurrent = () => {
+              assertLive();
+              if (
+                !operation.active ||
+                !actor.slot.actors.has(actor) ||
+                actor.slot.failed ||
+                actor.slot.retiring ||
+                actor.slot.retirementReason ||
+                actor.protocolFailure
+              ) {
+                throw new SqliteWorkerError(
+                  "Nested SQLite admission lost its original owner",
+                  "closed",
+                );
+              }
+            };
+            bindSqliteWorkerDatabaseAuthority(
+              retained.admission,
+              actor.stateDatabasePath ?? actor.databasePath,
+              operation.maintenanceScope,
+              () => {
+                assertCurrent();
+                assertRequest();
+              },
+              assertCurrent,
+            );
             retained.admission.scope?.bind(actor, retained.nativeLocations, {
               transaction: selectedTransaction,
               ...(!independent ? { rollbackScope } : {}),
@@ -540,6 +584,18 @@ export function createSqliteWorkerHostScope(
           }
           try {
             retained.admission.service();
+            // A domain may handle its refusal; lost request/database authority cannot
+            // be converted into success by a native domain result.
+            if (
+              retained.admission.failureSource !== "domain" &&
+              retained.admission.failure !== undefined
+            ) {
+              const error = retained.admission.failure;
+              if (child.result.ok || child.result.error !== error) {
+                failures.push(error);
+              }
+              child.result = { ok: false, error };
+            }
             if (child.result.ok && retained.admission.tentative) {
               try {
                 retained.stage?.(child.result.value);

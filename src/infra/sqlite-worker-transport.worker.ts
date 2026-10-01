@@ -95,11 +95,7 @@ parentPort.on("message", (message: SqliteWorkerTransportRequest) => {
   worker.postMessage(
     request,
     [
-      request.gatewaySchemaFence,
-      request.maintenanceSchemaFence,
-      request.stateLifecycle,
       request.operationAdmission,
-      request.lifecyclePreparation,
       ...(request.type === "open" ? [request.backendService] : []),
     ].filter((entry) => entry !== undefined),
   );

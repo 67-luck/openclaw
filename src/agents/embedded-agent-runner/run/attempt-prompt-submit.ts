@@ -1,11 +1,8 @@
-/**
- * Submits or skips the prompt after build/preflight and before stream execution.
- * It may assume prompt context is assembled and admission state is published.
- */
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import type { ImageContent } from "../../../llm/types.js";
 import type { createTrajectoryRuntimeRecorder } from "../../../trajectory/runtime.js";
 import type { AgentMessage } from "../../runtime/index.js";
+import { buildSessionsYieldContextMessage } from "../../sessions-yield-context.js";
 import { agentSessionQueuePromptContext } from "../../sessions/agent-session-prompting.js";
 import {
   attachPromptCompactionRequestBudget,
@@ -30,18 +27,14 @@ import {
 } from "./attempt-llm-boundary.js";
 import {
   isSessionsYieldAbortError,
-  persistSessionsYieldContextMessage,
   stripSessionsYieldArtifacts,
-  waitForSessionsYieldAbortSettle,
 } from "./attempt-sessions-yield.js";
+import { waitForEmbeddedAbortSettle } from "./attempt-subscription-cleanup.js";
 import { wrapStreamFnWithMessageTransform } from "./message-transform-stream-wrapper.js";
 import { isMidTurnPrecheckSignal, type MidTurnPrecheckRequest } from "./midturn-precheck.js";
 import type { RuntimeContextCustomMessage } from "./runtime-context-prompt.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
-/**
- * Submits one prepared prompt while owning provider transforms and cleanup.
- */
 type PromptSubmissionSession = {
   messages: AgentMessage[];
   [agentSessionQueuePromptContext]: AgentSession[typeof agentSessionQueuePromptContext];
@@ -294,10 +287,11 @@ export async function handleEmbeddedAttemptPromptError(input: {
   if (yieldAborted) {
     // Publish terminal state before fallible recovery so outer cleanup still recognizes the yield.
     input.markYieldAborted();
-    await waitForSessionsYieldAbortSettle({
-      settlePromise: input.yieldAbortSettled,
+    await waitForEmbeddedAbortSettle({
+      promise: input.yieldAbortSettled,
       runId: input.attempt.runId,
       sessionId: input.attempt.sessionId,
+      reason: "sessions_yield",
     });
     await input.withOwnedTranscriptWrite(async () => {
       const transcriptRewritten = await withSessionManagerWrite(
@@ -305,7 +299,12 @@ export async function handleEmbeddedAttemptPromptError(input: {
         () => stripSessionsYieldArtifacts(input.activeSession),
       );
       if (input.yieldMessage) {
-        await persistSessionsYieldContextMessage(input.activeSession, input.yieldMessage);
+        await input.activeSession.sendCustomMessage(
+          buildSessionsYieldContextMessage(input.yieldMessage),
+          {
+            triggerTurn: false,
+          },
+        );
       }
       const target = transcriptRewritten && input.activeSession.sessionManager.getSessionTarget();
       if (target) {

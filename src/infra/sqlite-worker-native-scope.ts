@@ -243,8 +243,6 @@ export function createSqliteWorkerNativeExecutor({
               !target.volatile ||
               !sourceContext ||
               !targetContext ||
-              sourceContext.coordinatorRuntime.directory !==
-                targetContext.coordinatorRuntime.directory ||
               sourceContext.environment.OPENCLAW_STATE_DIR !==
                 targetContext.environment.OPENCLAW_STATE_DIR ||
               sourceContext.existingSchemaPath !== targetContext.existingSchemaPath))
@@ -260,8 +258,8 @@ export function createSqliteWorkerNativeExecutor({
         ) {
           throw new Error("SQLite backend has no prepared scoped command owner");
         }
-        // A cross-actor descendant owns B's schema/context and admission. The
-        // already-live matching lifecycle remains with the suspended A frame.
+        // A cross-actor descendant owns B's schema/context and admission while
+        // the suspended A frame retains its original transaction and settlement.
         const run = independent ? runInActorContext : runWithActorFacts;
         const result = run(targetActor, () =>
           withSqliteWorkerOperationAdmission(child, () => {

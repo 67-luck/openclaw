@@ -5,8 +5,6 @@ import {
   hydrateOpenClawStateWorkerError,
   type OpenClawStateWorkerErrorPayload,
 } from "../state/openclaw-state-worker-error.js";
-import { SqliteCoordinatorError } from "./sqlite-coordinator.js";
-import { releaseSqliteWorkerLifecycle } from "./sqlite-worker-broker-admission.js";
 import type { Job, Slot } from "./sqlite-worker-broker.types.js";
 import {
   SQLITE_WORKER_MAX_MESSAGE_BYTES,
@@ -129,22 +127,20 @@ function decodeSqliteWorkerReplyError(
   return failure;
 }
 
-function decodeSqliteWorkerCleanupError(job: Job, payload: OpenClawStateWorkerErrorPayload): Error {
-  return hydrateOpenClawStateWorkerError(
-    decodeSqliteWorkerReplyError(job, {
-      name: "SqliteCoordinatorError",
-      message: "SQLite coordinator cleanup failed",
-      sharedState: payload,
-    }),
-  );
+function decodeSqliteWorkerCleanupError(payload: OpenClawStateWorkerErrorPayload): Error {
+  const failure = new Error("SQLite worker native cleanup failed");
+  retainOpenClawStateWorkerErrorPayload(failure, payload);
+  return hydrateOpenClawStateWorkerError(failure, { includeOrdinary: true });
 }
+
+export type CompletedSqliteWorkerOutcome = { value: unknown } | { error: unknown };
 
 export type SqliteWorkerReplyOwner = {
   fail(
     reason: unknown,
     currentError?: Error,
-    completed?: CompletedSqliteWorkerOutcome,
     openOutcome?: "refused-before-agent-open",
+    completed?: CompletedSqliteWorkerOutcome,
   ): void;
   finish(
     job: Job,
@@ -182,9 +178,13 @@ export function receiveSqliteWorkerReply(
   };
   if (!reply.ok) {
     if (reply.cleanupFailure && job.nativeDispatched && !reply.retire) {
-      const original =
-        job.operationAdmission?.admission.failure ?? decodeSqliteWorkerReplyError(job, reply.error);
-      owner.fail(decodeSqliteWorkerCleanupError(job, reply.cleanupFailure), undefined, {
+      const admission = job.operationAdmission?.admission;
+      const failure =
+        admission?.failureSource === "domain" && !reply.admissionRefused
+          ? undefined
+          : admission?.failure;
+      const original = failure ?? decodeSqliteWorkerReplyError(job, reply.error);
+      owner.fail(decodeSqliteWorkerCleanupError(reply.cleanupFailure), undefined, undefined, {
         error: original,
       });
       return;
@@ -212,24 +212,13 @@ export function receiveSqliteWorkerReply(
       owner.fail(
         failure,
         job.request.type !== "execute" ? failure : undefined,
-        undefined,
         refusedOpen ? "refused-before-agent-open" : undefined,
       );
       return;
     }
-    if (job.lifecyclePreparation && !job.nativeDispatched) {
-      settle(() => {
-        job.lifecyclePreparation?.finish();
-        job.rejectPreparation?.(job.lifecyclePreparation?.failure ?? error);
-      });
-      return;
-    }
     settle(() => {
       slot.current = undefined;
-      owner.finish(
-        job,
-        job.lifecyclePreparation?.failure ?? job.operationAdmission?.admission.failure ?? error,
-      );
+      owner.finish(job, job.operationAdmission?.admission.failure ?? error);
       owner.dispatch();
     });
     return;
@@ -248,9 +237,14 @@ export function receiveSqliteWorkerReply(
     return;
   }
   if (reply.cleanupFailure) {
-    owner.fail(decodeSqliteWorkerCleanupError(job, reply.cleanupFailure), undefined, {
-      value,
-    });
+    const admission = job.operationAdmission?.admission;
+    const failure = admission?.failureSource === "domain" ? undefined : admission?.failure;
+    owner.fail(
+      decodeSqliteWorkerCleanupError(reply.cleanupFailure),
+      undefined,
+      undefined,
+      failure === undefined ? { value } : { error: failure },
+    );
     return;
   }
   settle(() => {
@@ -258,13 +252,17 @@ export function receiveSqliteWorkerReply(
     if (job.request.type === "close") {
       owner.finish(job, undefined, value, undefined, reply.closeReceipt);
     } else {
-      owner.finish(job, undefined, value);
+      // Domains own handled refusal results; physical and request authority still fence delivery.
+      const admission = job.operationAdmission?.admission;
+      owner.finish(
+        job,
+        admission?.failureSource === "domain" ? undefined : admission?.failure,
+        value,
+      );
     }
     owner.dispatch();
   });
 }
-
-export type CompletedSqliteWorkerOutcome = { value: unknown } | { error: unknown };
 
 export function settleFailedSqliteWorkerJobs({
   queuedError,
@@ -287,27 +285,20 @@ export function settleFailedSqliteWorkerJobs({
   retire: () => Promise<void>;
   finish: typeof settleSqliteWorkerJob;
 }): void {
-  current?.cancelPreparation?.abort(error);
-  // Failed preparation must settle before retirement can release any actor custody.
-  const retirement = current?.lifecyclePreparation
-    ? retire().finally(() => current.lifecyclePreparation?.finish())
-    : current?.preparation
-      ? current.preparation.catch(() => undefined).then(retire)
-      : retire();
+  const retirement = retire();
   // Join native exit before releasing any operation that might have touched SQLite.
   const finishFailed = (retired: boolean, cleanupError?: unknown) => {
     if (current && completed) {
       process.emitWarning(
-        new SqliteCoordinatorError(
-          "SQLite worker operation completed before coordinator cleanup failed",
-          withSqliteWorkerCleanupFailure(error, cleanupError),
-        ),
+        new Error("SQLite worker operation completed before native cleanup failed", {
+          cause: withSqliteWorkerCleanupFailure(error, cleanupError),
+        }),
       );
       finish(
         current,
         "error" in completed ? completed.error : undefined,
         "value" in completed ? completed.value : undefined,
-        { kind: "completed" },
+        retired ? { kind: "completed" } : { kind: "unknown", error: cleanupError ?? error },
       );
     } else if (current) {
       const failure =
@@ -337,20 +328,7 @@ export function settleFailedSqliteWorkerJobs({
     }
   };
   void retirement.then(
-    () => {
-      let cleanupComplete = true;
-      try {
-        if (current && openOutcome === "refused-before-agent-open") {
-          // The job's lifecycle is not among its actor's retained cleanup until release fails.
-          releaseSqliteWorkerLifecycle(current);
-          cleanupComplete = !current.operationAdmission?.admission.cleanupFailures.length;
-        }
-      } catch (cleanupError) {
-        finishFailed(false, cleanupError);
-        return;
-      }
-      finishFailed(cleanupComplete);
-    },
+    () => finishFailed(!current?.operationAdmission?.admission.cleanupFailures.length),
     (cleanupError: unknown) => finishFailed(false, cleanupError),
   );
 }
@@ -404,11 +382,6 @@ export function settleSqliteWorkerJob(
   } catch (cleanupError) {
     retainCleanupFailure(cleanupError);
   }
-  try {
-    job.lifecyclePreparation?.finish();
-  } catch (cleanupError) {
-    retainCleanupFailure(cleanupError);
-  }
   const admissionCleanupFailures = job.operationAdmission?.admission.cleanupFailures ?? [];
   if (admissionCleanupFailures.length > 0) {
     const cleanupError = new AggregateError(
@@ -417,20 +390,6 @@ export function settleSqliteWorkerJob(
     );
     if (!failed && job.request.type === "execute") {
       process.emitWarning(cleanupError);
-    } else {
-      retainCleanupFailure(cleanupError);
-    }
-  }
-  try {
-    releaseSqliteWorkerLifecycle(job);
-  } catch (cleanupError) {
-    if (!failed && job.request.type === "execute") {
-      process.emitWarning(
-        new SqliteCoordinatorError(
-          "SQLite worker result received before coordinator cleanup failed",
-          cleanupError,
-        ),
-      );
     } else {
       retainCleanupFailure(cleanupError);
     }

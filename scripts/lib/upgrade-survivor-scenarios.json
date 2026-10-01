@@ -1,6 +1,7 @@
 {
   "scenarios": [
     "base",
+    "backup-schedule",
     "abandoned-update",
     "legacy-operator-state",
     "workshop-doctor-recovery",
@@ -19,7 +20,6 @@
     "projects-doctor",
     "channel-owner-policy",
     "projects-startup-migration",
-    "taskflow-restoration",
     "stale-source-plugin-shadow",
     "prerelease-plugin-registry",
     "tilde-log-path",

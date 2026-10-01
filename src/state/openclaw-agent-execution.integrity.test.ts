@@ -341,7 +341,7 @@ it.each([
       closeCachedOpenClawAgentDatabase(database, { eviction: true });
       expect(database.walMaintenance.health?.state).toBe("blocked");
       expect(database.db.isOpen).toBe(false);
-      expect(readOpenClawAgentIntegrityVerification(database.path, env)).toBeUndefined();
+      expect(readOpenClawAgentIntegrityVerification(database.path, env)?.clean_close).toBe(0);
     } finally {
       reader.close();
     }
@@ -444,5 +444,8 @@ it.each([
         releaseOpenClawAgentDatabaseLease(siblingLease, { env }, "read-only");
       }
     }
+  }
+  if (proof === "closed-host-blocked-last") {
+    expect(readOpenClawAgentIntegrityVerification(database.path, env)?.clean_close).toBe(1);
   }
 });

@@ -18,6 +18,18 @@ import {
 import type { SqliteIntegrityCheckTiming, SqliteIntegrityTableCheck } from "./sqlite-integrity.js";
 import * as inspectionBudget from "./sqlite-readonly-worker.js";
 
+const progress = vi.hoisted(() => vi.fn());
+vi.mock("../logging/subsystem.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../logging/subsystem.js")>();
+  return {
+    ...actual,
+    createSubsystemLogger: (subsystem: string) => ({
+      ...actual.createSubsystemLogger(subsystem),
+      ...(subsystem === "state/sqlite" ? { info: progress } : {}),
+    }),
+  };
+});
+
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return { ...actual, fork: vi.fn(actual.fork) };
@@ -27,6 +39,39 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("SQLite integrity child", () => {
   afterEach(() => vi.restoreAllMocks());
+  it("reports bounded progress while native integrity is blocked and stops after cancellation", async () => {
+    const source = path.join(tempDirs.make("openclaw-integrity-progress-"), "source.sqlite");
+    fs.writeFileSync(source, "retained source");
+    progress.mockClear();
+    const worker = new ChildProcess();
+    worker.send = vi.fn(() => true);
+    worker.kill = vi.fn(() => {
+      queueMicrotask(() => worker.emit("close", null, "SIGKILL"));
+      return true;
+    });
+    vi.mocked(fork).mockReturnValueOnce(worker);
+    const controller = new AbortController();
+    vi.useFakeTimers();
+    try {
+      const check = withSqliteIntegrityWorkerScope(
+        () => {},
+        () => assertSqliteIntegrityInWorker(source, 250, controller.signal),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      worker.emit("message", { type: "phase", phase: "checking" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(progress).toHaveBeenCalledTimes(3);
+      expect(progress).toHaveBeenCalledWith(expect.stringContaining("phase=checking"));
+      const outcome = expect(check).rejects.toThrow("interrupted inspection");
+      controller.abort(new Error("interrupted inspection"));
+      await vi.advanceTimersByTimeAsync(0);
+      await outcome;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(progress).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it.each(["healthy", "quick_check", "integrity_check"] as const)(
     "settles bounded table readers and detects non-ok rows: %s",
     async (damage) => {
@@ -36,8 +81,7 @@ describe("SQLite integrity child", () => {
         table: `records_${index}`,
         check: index === 0 ? "quick_check" : "integrity_check",
       }));
-      let damagedCellOffset: number | undefined;
-      let pageSize = 0;
+      let fragmentCountOffset: number | undefined;
       try {
         for (const { table } of tables) {
           database.exec(`CREATE TABLE ${table}(value INTEGER); INSERT INTO ${table} VALUES(1)`);
@@ -48,16 +92,16 @@ describe("SQLite integrity child", () => {
             database.prepare("SELECT rootpage FROM sqlite_schema WHERE name = ?").get(table)
               ?.rootpage,
           );
-          pageSize = Number(database.prepare("PRAGMA page_size").get()?.page_size);
-          damagedCellOffset = (root - 1) * pageSize + 8;
+          const pageSize = Number(database.prepare("PRAGMA page_size").get()?.page_size);
+          fragmentCountOffset = (root - 1) * pageSize + 7;
         }
       } finally {
         database.close();
       }
-      if (damagedCellOffset !== undefined) {
-        // Point the first leaf cell outside its valid content range: both pragmas report non-ok rows.
+      if (fragmentCountOffset !== undefined) {
+        // Misreport free-byte fragmentation without making the records themselves unreadable.
         const bytes = fs.readFileSync(source);
-        bytes.writeUInt16BE(pageSize - 1, damagedCellOffset);
+        bytes.writeUInt8(1, fragmentCountOffset);
         fs.writeFileSync(source, bytes);
       }
       const timing: SqliteIntegrityCheckTiming = {};
@@ -89,7 +133,9 @@ describe("SQLite integrity child", () => {
       } else {
         await expect(check).rejects.toMatchObject({
           name: "SqliteIntegrityError",
-          message: expect.stringMatching(new RegExp(`${damage} failed[\\s\\S]*out of range`)),
+          message: expect.stringMatching(
+            new RegExp(`${damage} failed[\\s\\S]*Fragmentation of 0 bytes reported as 1`),
+          ),
         });
       }
       expect(fork).toHaveBeenCalledTimes(4);

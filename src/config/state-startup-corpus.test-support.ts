@@ -422,7 +422,6 @@ export function createStateStartupCorpusFixture() {
             });
             const normalized = normalizeCompatibilityConfigValues(migrated.state.candidate, {
               sourceRaw: snapshot.parsed,
-              sourceConfigBeforeMigrations: snapshot.sourceConfigBeforeMigrations,
             });
             fs.writeFileSync(configPath, JSON.stringify(normalized.config));
             // Repeat the real repair path: a second run must preserve the same records.

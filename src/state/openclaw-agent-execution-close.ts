@@ -1,4 +1,4 @@
-import { throwSqliteLifecycleErrors } from "../infra/sqlite-coordinator.js";
+import { throwSqliteLifecycleErrors } from "../infra/sqlite-lifecycle-errors.js";
 import { sqliteReaderDatabasePathKey } from "../infra/sqlite-reader-lifecycle.js";
 import {
   onSqliteWalCheckpoint,
@@ -36,6 +36,7 @@ export function closeAgentDatabaseExecution({
           checkpoint = {
             health: observation.health,
             observedAtNs: observation.observedAtNs,
+            lastCompletedAtNs: observation.lastCompletedAtNs,
           };
         }
       });

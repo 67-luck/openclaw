@@ -1,8 +1,5 @@
 import { sql } from "kysely";
-import {
-  executeSqliteQueryTakeFirstSync,
-  iterateSqliteQuerySync,
-} from "../../infra/kysely-sync.js";
+import { iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import {
@@ -47,15 +44,7 @@ export function canRebasePreparedAssistantInTransaction(
   const preparedParent =
     preparedParentId === null
       ? undefined
-      : executeSqliteQueryTakeFirstSync(
-          database.db,
-          db
-            .selectFrom("transcript_event_identities")
-            .select("seq")
-            .where("session_id", "=", sessionId)
-            .where("event_id", "=", preparedParentId)
-            .limit(1),
-        );
+      : readTranscriptIdentityInTransaction(database, sessionId, preparedParentId);
   if (preparedParentId !== null && !preparedParent) {
     return false;
   }

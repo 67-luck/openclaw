@@ -14,12 +14,13 @@ import type { createPluginRegistryOwner } from "../plugins/runtime.js";
 import { isGatewayDraining } from "../process/command-queue.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import {
   canIsolateAgentDatabase,
   listAgentDatabaseAdmissionRefusals,
 } from "../state/agent-database-admission.js";
 import { openClawStateDatabaseCache } from "../state/openclaw-state-db-cache.js";
-import { resolveDatabasePath } from "../state/openclaw-state-db-maintenance.js";
+import { resolveDatabasePath } from "../state/openclaw-state-db.paths.js";
 import { createGatewayAuthRateLimiter } from "./auth-rate-limit.js";
 import { resolveGatewayAuth } from "./auth.js";
 import { createDesktopSessionRegistry } from "./desktop/session-registry.js";
@@ -150,6 +151,7 @@ export async function prepareGatewayKernelState(params: {
     workerLiveEvents,
     nodeWorkerGatewayNamespace,
     nodeWorkerBundleRetention,
+    runtimeInstall,
     bindDeviceNodeControl,
     bindWorkerNodeDesktopControl,
     bindNodeWorkspaceBindingResolver,
@@ -184,7 +186,7 @@ export async function prepareGatewayKernelState(params: {
           warn: (message) => log.warn(message),
         })
       : undefined;
-  const workerPlacementRuntime =
+  const workerPlacement =
     workerEnvironmentService &&
     workerEnvironmentStartup &&
     nodeWorkerGatewayNamespace &&
@@ -236,6 +238,9 @@ export async function prepareGatewayKernelState(params: {
           }),
         )
       : undefined;
+  const workerPlacementRuntime = workerPlacement
+    ? { ...workerPlacement, runtimeInstall }
+    : undefined;
   if (workerPlacementRuntime && workerEnvironmentService) {
     const { createDevicePlacementDemandReader } =
       await import("./worker-environments/device-placement-demand.js");
@@ -258,7 +263,6 @@ export async function prepareGatewayKernelState(params: {
       }
     : undefined;
   const workerPlacementControlAvailable = workerPlacementRuntime?.dispatchService;
-  const workerPlacementDispatchAvailable = workerPlacementControlAvailable;
   const channelLogs = Object.fromEntries(
     listGatewayStartupChannelPlugins().map((plugin) => [plugin.id, logChannels.child(plugin.id)]),
   ) as Record<ChannelId, ReturnType<typeof createSubsystemLogger>>;
@@ -278,7 +282,7 @@ export async function prepareGatewayKernelState(params: {
   const listActiveGatewayMethods = (nextBaseGatewayMethods: string[]) =>
     uniqueStrings([...nextBaseGatewayMethods, ...listStartupChannelGatewayMethods()]).filter(
       (method) =>
-        (workerPlacementDispatchAvailable || method !== "sessions.dispatch") &&
+        (workerPlacementControlAvailable || method !== "sessions.dispatch") &&
         (workerPlacementControlAvailable ||
           (method !== "sessions.reclaim" && method !== "sessions.move")) &&
         (workerEnvironmentService ||
@@ -353,7 +357,6 @@ export async function prepareGatewayKernelState(params: {
     current: resolveCurrentSharedGatewaySessionGeneration(),
     required: null,
   });
-  const preauthHandshakeTimeoutMs = undefined;
   const initialHooksConfig = runtimeConfig.hooksConfig;
   const initialHookClientIpConfig = resolveHookClientIpConfig(cfgAtStart);
 
@@ -409,10 +412,7 @@ export async function prepareGatewayKernelState(params: {
     dispatchReady: false,
   };
   const lifecycle = { closePreludeStarted: false };
-  let releaseStartupAccountStarts = () => {};
-  const startupAccountStartsReady = new Promise<void>((resolve) => {
-    releaseStartupAccountStarts = resolve;
-  });
+  const startupAccountStarts = createDeferredCore();
   const gatewayInstanceRuntimeRef: { current: GatewayInstanceRuntime | undefined } = {
     current: undefined,
   };
@@ -424,13 +424,14 @@ export async function prepareGatewayKernelState(params: {
     () => import("./server-channels.js"),
   );
   const channelManager = createChannelManager({
+    scheduler,
     getRuntimeConfig,
     channelLogs,
     channelRuntimeEnvs,
     resolveChannelRuntime: getChannelRuntime,
     getPluginRegistry: () => pluginRuntime.registry,
     startupTrace,
-    deferStartupAccountStartsUntil: startupAccountStartsReady,
+    deferStartupAccountStartsUntil: startupAccountStarts.promise,
     getNativeApprovalRuntime: () => gatewayInstanceRuntimeRef.current?.nativeApprovals,
     ambientAutostartSuppressedChannelIds,
     ...(opts.tryRecoverChannelAutostartSuppression
@@ -481,6 +482,7 @@ export async function prepareGatewayKernelState(params: {
   );
   const transportBridge = createGatewayTransportBridge();
   const presencePublisher = createPresencePublisher({
+    scheduler,
     broadcast: connectionState.broadcast,
     incrementPresenceVersion,
     getHealthVersion,
@@ -546,7 +548,6 @@ export async function prepareGatewayKernelState(params: {
     githubPublicationRuntime,
     githubPublicationService: githubPublicationRuntime?.coordinator,
     workerPlacementControlAvailable,
-    workerPlacementDispatchAvailable,
     desktopSessionRegistry,
     nodeDesktopStreamBroker,
     hostDesktopService,
@@ -565,7 +566,6 @@ export async function prepareGatewayKernelState(params: {
     resolveSharedGatewaySessionGenerationForConfig,
     resolveSharedGatewaySessionGenerationForRuntimeSnapshot,
     sharedGatewaySessionGenerationState,
-    preauthHandshakeTimeoutMs,
     initialHooksConfig,
     initialHookClientIpConfig,
     authRateLimiter,
@@ -585,7 +585,7 @@ export async function prepareGatewayKernelState(params: {
     readinessEventLoopHealth,
     startupState,
     lifecycle,
-    releaseStartupAccountStarts,
+    releaseStartupAccountStarts: startupAccountStarts.resolve,
     gatewayInstanceRuntimeRef,
     channelManager,
     sidecarStartup,

@@ -3,16 +3,14 @@ import { repairMainSessionRecoveryMutation } from "../../agents/main-session-rec
 import { scheduleMainSessionRecoveryPendingTarget } from "../../agents/main-session-recovery/main-session-recovery-owner-release.js";
 import type { MainSessionRecoveryPendingTarget } from "../../agents/main-session-recovery/main-session-recovery-store.js";
 import type { PreparedModelRuntimeLease } from "../../agents/prepared-model-runtime.js";
+import type { FollowupCompletionOwner } from "../../agents/subagents/completion/session-followup-completion.types.js";
 import { isSessionPendingInputSettlementUnknown } from "../../config/sessions/session-accessor.sqlite-pending-inputs.js";
 import { discardPreparedInboundMedia } from "../chat-attachments.js";
 import type { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
 import { emitSessionsChanged } from "../server-methods/session-change-event.js";
 import { formatForLog } from "../ws-log.js";
 import type { PreparedAgentRunDispatch } from "./agent-run-admission-types.js";
-import {
-  settleUnstartedGatewayAgentTask,
-  type RegisteredGatewayAgentTask,
-} from "./agent-run-task-tracking.js";
+import { settleUnstartedGatewayFollowup } from "./agent-run-subagent.js";
 import {
   releasePreparedAgentRunUserTurn,
   type PreparedAgentRunUserTurn,
@@ -61,12 +59,14 @@ export function createAgentRunPreacceptCleanup(params: {
   activeRunAbort: PreparedAgentRunDispatch["activeRunAbort"];
   activeGatewayWorkAdmission: PreparedAgentRunDispatch["activeGatewayWorkAdmission"];
   parentResume: boolean;
+  admittedRunIdentity: Parameters<typeof settleUnstartedGatewayFollowup>[0]["admittedRunIdentity"];
+  isIncognito?: boolean;
 }) {
   const { activeRunAbort, activeGatewayWorkAdmission, parentResume } = params;
   const state: {
     preparedModelRuntimeLease?: PreparedModelRuntimeLease;
     capturedOperator?: Awaited<ReturnType<typeof retainGatewayOperatorRun>>;
-    registeredFollowupTask?: RegisteredGatewayAgentTask;
+    followupCompletion?: FollowupCompletionOwner;
     retainedInput?: PreparedAgentRunUserTurn;
     restoreAdmittedRestartRecoveryInterrupted?: () => Promise<
       MainSessionRecoveryPendingTarget | undefined
@@ -90,13 +90,15 @@ export function createAgentRunPreacceptCleanup(params: {
     }
     const lease = state.preparedModelRuntimeLease;
     state.preparedModelRuntimeLease = undefined;
-    const task = state.registeredFollowupTask;
-    state.registeredFollowupTask = undefined;
+    const completion = state.followupCompletion;
+    state.followupCompletion = undefined;
     let pendingRecovery: MainSessionRecoveryPendingTarget | undefined;
     try {
-      if (task) {
-        await settleUnstartedGatewayAgentTask({
-          tracking: task,
+      if (completion) {
+        await settleUnstartedGatewayFollowup({
+          completion,
+          admittedRunIdentity: params.admittedRunIdentity,
+          isIncognito: params.isIncognito,
           runId: params.runId,
           admittedRunEntry: activeRunAbort.entry,
           context: params.context,
@@ -132,6 +134,7 @@ export function createAgentRunPreacceptCleanup(params: {
               activeGatewayWorkAdmission.release();
             }
           } finally {
+            completion?.finishExecution(params.runId);
             scheduleMainSessionRecoveryPendingTarget(pendingRecovery);
           }
         }

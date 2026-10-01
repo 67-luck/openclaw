@@ -25,6 +25,7 @@ import {
   waitForPidFile,
 } from "../helpers/process-wait.js";
 import { runQaGatewayFixture } from "../helpers/qa-gateway-cleanup.js";
+import { withRuntimePreload } from "../helpers/runtime-preload.js";
 import { quote, setupFixture } from "./docker-all-harness-fixture.test-support.js";
 import { assertFixtureProcessGroupStopped } from "./exited-descendant-reaper.test-support.js";
 import { toolingMtsEntrypoints } from "./tooling-mts-runtime.test-support.mts";
@@ -150,29 +151,30 @@ function startOwnedScheduler(
     {
       cwd: fixture.target,
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        OPENCLAW_DOCKER_ALL_BUILD: "0",
-        OPENCLAW_DOCKER_ALL_PREFLIGHT: "0",
-        OPENCLAW_DOCKER_ALL_TIMINGS: "0",
-        OPENCLAW_DOCKER_ALL_START_STAGGER_MS: "0",
-        OPENCLAW_DOCKER_ALL_STATUS_INTERVAL_MS: "0",
-        OPENCLAW_DOCKER_ALL_LANES: laneNames.join(","),
-        OPENCLAW_DOCKER_ALL_LOG_DIR: path.join(fixture.root, "logs"),
-        OPENCLAW_DOCKER_ALL_PNPM_COMMAND: fixture.pinnedPnpm,
-        OPENCLAW_DOCKER_E2E_REPO_ROOT: fixture.target,
-        OPENCLAW_DOCKER_E2E_TRUSTED_HARNESS_DIR: fixture.selectedHarness,
-        OPENCLAW_DOCKER_E2E_SELECTED_SHA: fixture.selectedSha,
-        OPENCLAW_CURRENT_PACKAGE_TGZ: fixture.tarball,
-        OPENCLAW_CURRENT_PACKAGE_VERSION: "2026.8.1",
-        OPENCLAW_CURRENT_PACKAGE_SHA256: fixture.sha256,
-        OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR: fixture.registry,
-        OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_CANDIDATE_VERSION: "2026.8.1",
-        OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_MANIFEST_SHA256: fixture.registrySha256,
-        ...env,
-        NODE_OPTIONS:
-          `${process.env.NODE_OPTIONS ?? ""} --import ${pathToFileURL(preload).href}`.trim(),
-      },
+      env: withRuntimePreload(
+        {
+          ...process.env,
+          OPENCLAW_DOCKER_ALL_BUILD: "0",
+          OPENCLAW_DOCKER_ALL_PREFLIGHT: "0",
+          OPENCLAW_DOCKER_ALL_TIMINGS: "0",
+          OPENCLAW_DOCKER_ALL_START_STAGGER_MS: "0",
+          OPENCLAW_DOCKER_ALL_STATUS_INTERVAL_MS: "0",
+          OPENCLAW_DOCKER_ALL_LANES: laneNames.join(","),
+          OPENCLAW_DOCKER_ALL_LOG_DIR: path.join(fixture.root, "logs"),
+          OPENCLAW_DOCKER_ALL_PNPM_COMMAND: fixture.pinnedPnpm,
+          OPENCLAW_DOCKER_E2E_REPO_ROOT: fixture.target,
+          OPENCLAW_DOCKER_E2E_TRUSTED_HARNESS_DIR: fixture.selectedHarness,
+          OPENCLAW_DOCKER_E2E_SELECTED_SHA: fixture.selectedSha,
+          OPENCLAW_CURRENT_PACKAGE_TGZ: fixture.tarball,
+          OPENCLAW_CURRENT_PACKAGE_VERSION: "2026.8.1",
+          OPENCLAW_CURRENT_PACKAGE_SHA256: fixture.sha256,
+          OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR: fixture.registry,
+          OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_CANDIDATE_VERSION: "2026.8.1",
+          OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_MANIFEST_SHA256: fixture.registrySha256,
+          ...env,
+        },
+        preload,
+      ),
     },
   );
   let stderr = "";
@@ -1311,6 +1313,74 @@ describe("Docker scheduler trusted harness execution", () => {
     },
   );
 
+  posixIt("retains host-published survivor metadata after cleanup with a one-line tail", () => {
+    const fixture = setupFixture("split");
+    const catalog = path.join(fixture.harness, "scripts/lib/docker-e2e-scenarios.mts");
+    writeFileSync(
+      catalog,
+      readFileSync(catalog, "utf8") +
+        '\nmainLanes.find(lane => lane.name === "gateway-concurrency").stateScenario = "upgrade-survivor";\n',
+    );
+    const artifacts = path.join(fixture.root, "private");
+    mkdirSync(path.join(artifacts, "diagnostics"), { recursive: true });
+    writeFileSync(
+      path.join(artifacts, "diagnostics/raw.json"),
+      JSON.stringify({
+        phase: "recovery-update-restart",
+        exitStatus: 7,
+        signal: null,
+        logs: { "update.err": "PRIVATE_LOG_BYTES" },
+        environment: { TOKEN: "PRIVATE_ENV_BYTES" },
+      }),
+    );
+    const published = path.join(fixture.root, "public");
+    const cleaned = path.join(fixture.root, "cleanup-complete");
+    writeFileSync(
+      path.join(fixture.harness, "scripts/e2e/gateway-concurrency-docker.sh"),
+      [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "cleanup() { printf settled > " +
+          quote(cleaned) +
+          '; printf "[upgrade-survivor] FAILED (exit 7)\\n" >&2; }',
+        "trap cleanup EXIT",
+        [
+          quote(process.execPath),
+          "--import",
+          quote(path.resolve("scripts/tsx.mjs")),
+          quote(path.resolve("scripts/upgrade-survivor-diagnostics.mjs")),
+          "publish",
+          quote(artifacts),
+          quote(published),
+        ].join(" "),
+        "exit 7",
+        "",
+      ].join("\n"),
+    );
+    const { result, logDir } = runFixture(fixture, "split", ["gateway-concurrency"], {
+      env: { GITHUB_ACTIONS: "true", OPENCLAW_DOCKER_ALL_FAILURE_TAIL_LINES: "1" },
+    });
+    expect(result.status, result.stdout + result.stderr).toBe(1);
+    expect(readFileSync(cleaned, "utf8")).toBe("settled");
+    expect(readFileSync(path.join(logDir, "gateway-concurrency.log"), "utf8")).toContain(
+      "[upgrade-survivor] FAILED (exit 7)",
+    );
+    const annotations = result.stderr.split("\n").filter((line) => line.startsWith("::error"));
+    expect(annotations).toEqual([
+      "::error title=Upgrade survivor failure::phase=recovery-update-restart; exitStatus=7; signal=none",
+      "::error title=Docker lane failure::status=7; timedOut=false; noOutputTimedOut=false",
+    ]);
+    expect(annotations.join("")).not.toContain("PRIVATE");
+    expect(annotations.join("")).not.toContain(fixture.root);
+    const summary = JSON.parse(readFileSync(path.join(logDir, "summary.json"), "utf8"));
+    expect(summary).toMatchObject({
+      status: "failed",
+      cleanup: { joined: true },
+      lanes: [{ status: 7 }],
+    });
+    expect(summary.lanes[0]).not.toHaveProperty("failureMetadata");
+  });
+
   posixIt.each(["timeout", "deterministic failure", "rate limited", "ECONNRESET"])(
     "fails on the first lane outcome: %s",
     (failure) => {
@@ -1350,6 +1420,7 @@ if (${JSON.stringify(failure)} === "timeout") {
         ["live-models", "gateway-concurrency"],
         {
           env: {
+            GITHUB_ACTIONS: "true",
             OPENCLAW_DOCKER_ALL_FAIL_FAST: "0",
             OPENCLAW_DOCKER_ALL_PARALLELISM: "1",
           },
@@ -1362,6 +1433,12 @@ if (${JSON.stringify(failure)} === "timeout") {
       expect(live.attempts).toHaveLength(1);
       expect(live.status).not.toBe(0);
       expect(live.timedOut).toBe(failure === "timeout");
+      const annotations = result.stderr.split("\n").filter((line) => line.startsWith("::error"));
+      expect(annotations).toEqual([
+        `::error title=Docker lane failure::status=${live.status}; timedOut=${failure === "timeout"}; noOutputTimedOut=false`,
+      ]);
+      expect(annotations.join("")).not.toContain(command);
+      expect(annotations.join("")).not.toContain(fixture.root);
       expect(
         summary.lanes.find((lane: { name: string }) => lane.name === "gateway-concurrency").status,
       ).toBe(0);

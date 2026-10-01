@@ -27,8 +27,9 @@ export function storeRunContext(
   predecessor?: AgentRunContext,
   executionOwner?: object,
 ) {
-  // Callers supply a fresh record; scheduler leases never transfer with its metadata.
+  // Scheduler leases and observed activity never transfer to a fresh registration.
   context.capacityWaits = undefined;
+  context.executionActivity = undefined;
   context.registeredAt ??= Date.now();
   const state = getAgentRunRegistryState();
   state.contexts.set(runId, context);

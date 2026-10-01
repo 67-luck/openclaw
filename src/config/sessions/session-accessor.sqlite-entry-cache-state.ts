@@ -6,7 +6,6 @@ import { findOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db
 import type {
   SessionEntryCacheDatabase,
   SessionEntryCacheSnapshot,
-  SessionEntryPlaceholder,
   SessionSharingEntry,
 } from "./session-accessor.sqlite-entry-cache.types.js";
 import {
@@ -14,21 +13,15 @@ import {
   readSessionEntryCacheValidityToken,
   type SqliteSessionEntryRevision,
 } from "./session-accessor.sqlite-entry-revision.js";
+import {
+  reconcileSessionSharingAcquisition,
+  type CommittedSessionSharingFacts,
+  type PreparedSessionSharingRead,
+  type SessionSharingRetentionRequest,
+} from "./session-accessor.sqlite-sharing-acquisition.js";
 import type { SessionParticipantProjection } from "./session-membership-facts.types.js";
 import type { SessionEntry } from "./types.js";
 
-export type CommittedSessionSharingFacts = {
-  entry: SessionSharingEntry | undefined;
-  placeholder?: SessionEntryPlaceholder;
-  membership: ReadonlySet<string>;
-};
-type PreparedSessionSharingRead = {
-  pending: Set<object>;
-  facts: CommittedSessionSharingFacts | undefined;
-  generation?: {
-    current: Pick<SessionEntry, "sessionId" | "lifecycleRevision"> | null | undefined;
-  };
-};
 export const preparedSharingReads = resolveGlobalSingleton(
   Symbol.for("openclaw.preparedSessionSharingReads"),
   () => new Map<string, Set<PreparedSessionSharingRead>>(),
@@ -44,11 +37,12 @@ export const pendingSessionEntryPublications = resolveGlobalSingleton(
 );
 
 export function recordCommittedSessionEntryPublication(
-  database: SessionEntryCacheDatabase,
+  database: SessionEntryCacheDatabase | string,
   sessionKey: string,
   entry: SessionSharingEntry | undefined,
 ): void {
-  const identity = findOpenClawAgentDatabaseIdentity(database)?.identity;
+  const identity =
+    typeof database === "string" ? database : findOpenClawAgentDatabaseIdentity(database)?.identity;
   if (typeof identity !== "string") {
     return;
   }
@@ -64,28 +58,23 @@ export function recordCommittedSessionEntryPublication(
 }
 
 /** The existing entry writer advances retained facts before any commit observer can reenter. */
-export function retainPreparedSessionSharingFacts(
-  params: {
-    sessionKey: string;
-    entry: SessionSharingEntry | undefined;
-    placeholder?: SessionEntryPlaceholder;
-    membership: ReadonlySet<string>;
-    generation?: PreparedSessionSharingRead["generation"];
-  } & (
-    | { databaseIdentity: string; workerPath?: string }
-    | { databaseIdentity?: string; workerPath: string }
-  ),
-) {
+export function retainPreparedSessionSharingFacts(params: SessionSharingRetentionRequest) {
   // A cold enrolled reader has an actor but no native incarnation yet. This
   // second key is publication custody only; its retained actor still authorizes reads.
   const keys = [
     ...(params.databaseIdentity ? [`${params.databaseIdentity}\0${params.sessionKey}`] : []),
     ...(params.workerPath ? [`volatile-owner:${params.workerPath}\0${params.sessionKey}`] : []),
   ];
+  const initial = "acquiring" in params ? undefined : params;
   const read: PreparedSessionSharingRead = {
     pending: new Set(),
-    facts: { entry: params.entry, placeholder: params.placeholder, membership: params.membership },
-    generation: params.generation,
+    facts: initial && {
+      entry: initial.entry,
+      placeholder: initial.placeholder,
+      membership: initial.membership,
+    },
+    generation: initial?.generation,
+    acquisition: initial ? undefined : { invalidated: false, membership: new Map() },
   };
   const registrations = keys.map((key) => {
     const reads = preparedSharingReads.get(key) ?? new Set<PreparedSessionSharingRead>();
@@ -97,6 +86,14 @@ export function retainPreparedSessionSharingFacts(
     keys.flatMap((key) => [...(pendingSessionEntryPublications.get(key) ?? [])]);
   let active = true;
   return {
+    initialize: (snapshot: CommittedSessionSharingFacts) => {
+      const acquisition = read.acquisition;
+      if (!active || !acquisition) {
+        throw new Error("Session sharing acquisition is no longer current");
+      }
+      read.facts = reconcileSessionSharingAcquisition(acquisition, snapshot);
+      read.acquisition = undefined;
+    },
     readGeneration: () =>
       read.pending.size > 0 ||
       pendingPublications().some(
@@ -122,6 +119,7 @@ export function retainPreparedSessionSharingFacts(
       }
       active = false;
       read.facts = undefined;
+      read.acquisition = undefined;
       for (const { key, reads } of registrations) {
         reads.delete(read);
         if (reads.size === 0 && preparedSharingReads.get(key) === reads) {
@@ -141,33 +139,17 @@ export function retainPreparedSessionGenerationFacts(params: {
   const retained = retainPreparedSessionSharingFacts({
     ...params,
     membership: new Set(),
-    generation: { current: params.entry ?? null },
+    generation: { current: params.entry ?? null, initiallyAbsent: params.entry ? undefined : true },
   });
   return { readCurrent: retained.readGeneration, release: retained.release };
 }
 
-export function publishRetainedSessionGeneration(
-  read: PreparedSessionSharingRead,
-  entry: SessionSharingEntry | undefined,
-  known: boolean,
+export function retainedSharingReads(
+  database: SessionEntryCacheDatabase | string,
+  sessionKey: string,
 ) {
-  const generation = read.generation;
-  if (!generation?.current) {
-    return;
-  }
-  if (!known) {
-    generation.current = undefined;
-  } else if (
-    !entry ||
-    generation.current.sessionId !== entry.sessionId ||
-    generation.current.lifecycleRevision !== entry.lifecycleRevision
-  ) {
-    generation.current = null;
-  }
-}
-
-export function retainedSharingReads(database: SessionEntryCacheDatabase, sessionKey: string) {
-  const identity = findOpenClawAgentDatabaseIdentity(database)?.identity;
+  const identity =
+    typeof database === "string" ? database : findOpenClawAgentDatabaseIdentity(database)?.identity;
   return typeof identity === "string"
     ? preparedSharingReads.get(`file:${identity}\0${sessionKey}`)
     : undefined;

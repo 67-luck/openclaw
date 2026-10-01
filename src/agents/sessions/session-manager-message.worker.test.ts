@@ -14,12 +14,7 @@ import {
   selectSessionTranscriptTreePathNodes,
 } from "../../config/sessions/transcript-tree.js";
 import { SQLITE_WORKER_MAX_MESSAGE_BYTES } from "../../infra/sqlite-worker-contract.js";
-import {
-  acquireStateDatabaseCoordinator,
-  withStateDatabaseCoordinatorRuntimeDirectory,
-} from "../../infra/state-database-coordinator.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createSessionToolResultPending } from "../session-tool-result-pending.js";
 import { castAgentMessage } from "../test-helpers/agent-message-fixtures.js";
@@ -490,7 +485,6 @@ it.each(["commit", "rollback"] as const)(
       const b = await setup(state, "other", pending);
       let operation: Promise<SessionMessageAppendOutcome> | undefined;
       let independentOperation: Promise<SessionMessageAppendOutcome> | undefined;
-      let parent: ReturnType<typeof acquireStateDatabaseCoordinator> | undefined;
       const failures: unknown[] = [];
       try {
         committed(await a.runtime.append({ message: assistant(), eventId: "a" }), {
@@ -518,15 +512,6 @@ it.each(["commit", "rollback"] as const)(
           { originId: "b-prior", name: "read" },
         ]);
         const before = a.rows();
-        const captured = captureOpenClawStateWorkerContext({ env: state.env });
-        // Both agent stores share lifecycle custody. Keep its real parent lease
-        // while their independently admitted operations share the broker.
-        parent = withStateDatabaseCoordinatorRuntimeDirectory(captured.coordinatorRuntime, () =>
-          acquireStateDatabaseCoordinator({
-            databasePath: captured.admission.databasePath,
-            busyTimeoutMs: 0,
-          }),
-        );
         const control = arm(a.owner.databasePath, mode === "commit" ? 1 : 4);
         const publications: Array<{ phase: string; commits: number }> = [];
         operation = a.runtime.append(
@@ -611,11 +596,6 @@ it.each(["commit", "rollback"] as const)(
           if (outcome.status === "rejected") {
             failures.push(outcome.reason);
           }
-        }
-        try {
-          parent?.release();
-        } catch (error) {
-          failures.push(error);
         }
       }
       if (failures.length === 1) {

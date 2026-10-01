@@ -1,7 +1,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { TranscriptMessageAppendResult } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import type { captureSessionPendingInputWorkerAppend } from "../../config/sessions/session-accessor.sqlite-pending-inputs.js";
-import type { TranscriptWriteSnapshot } from "../../config/sessions/session-accessor.sqlite-transcript-write-guard.js";
+import type { TranscriptWriteSnapshot } from "../../config/sessions/session-accessor.sqlite-transcript-write-snapshot.js";
 import type { SessionPendingInputWorkerFacts } from "../../config/sessions/session-pending-input.types.js";
 import type { SqliteWorkerOperationSettlement } from "../../infra/sqlite-worker-operation-settlement.js";
 import type {

@@ -3,7 +3,7 @@ import { isPromise } from "node:util/types";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
-import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
+import { createSqliteLifecycleAggregateError } from "../infra/sqlite-lifecycle-errors.js";
 import { withSqlitePostCommitPublications } from "../infra/sqlite-post-commit.js";
 import {
   assertSyncTransactionResult,
@@ -16,6 +16,44 @@ import {
   type SqliteWorkerCommand,
   type SqliteWorkerOperations,
 } from "../infra/sqlite-worker-contract.js";
+import {
+  requestSqliteWorkerOperationAdmission,
+  type SqliteWorkerAdmissionRequest,
+} from "../infra/sqlite-worker-operation-admission.js";
+
+export type AgentDatabaseAdmissionRestriction = (
+  request: SqliteWorkerAdmissionRequest,
+  dispatch: (request: SqliteWorkerAdmissionRequest) => void,
+) => void;
+
+export type AgentDatabaseDomainAdmission = {
+  facts?: unknown;
+  requestAdmission?: AgentDatabaseAdmissionRestriction;
+};
+
+/** A domain restriction must obtain exactly one grant for the original native stage. */
+export function requestRestrictedAgentDatabaseAdmission(
+  request: SqliteWorkerAdmissionRequest,
+  restriction?: AgentDatabaseAdmissionRestriction,
+): void {
+  const { stage } = request;
+  let admitted = false;
+  const dispatch = (restricted: SqliteWorkerAdmissionRequest) => {
+    if (admitted || restricted.stage !== stage) {
+      throw new Error("Agent admission restriction changed its native stage");
+    }
+    requestSqliteWorkerOperationAdmission(restricted);
+    admitted = true;
+  };
+  if (restriction) {
+    restriction(request, dispatch);
+  } else {
+    dispatch(request);
+  }
+  if (!admitted) {
+    throw new Error("Agent admission restriction omitted its native grant");
+  }
+}
 
 export type AgentDatabaseDomainOperations = {
   "database.domain.bind": {
@@ -79,7 +117,7 @@ export function createAgentDatabaseDomainOwner(context: {
   assertCurrent(): DatabaseSync;
   assertCleanupCurrent(): void;
   takePreparation(): unknown;
-  admit(stage: "transaction" | "commit", facts?: unknown): void;
+  admit(stage: "transaction" | "commit", admission?: AgentDatabaseDomainAdmission): void;
 }) {
   let binding:
     | {
@@ -119,11 +157,11 @@ export function createAgentDatabaseDomainOwner(context: {
           }
           return context.takePreparation();
         },
-        admit: (stage: "transaction" | "commit", facts?: unknown) => {
+        admit: (stage: "transaction" | "commit", admission?: AgentDatabaseDomainAdmission) => {
           if (!authority.active) {
             throw new Error("Agent publication cleanup cannot admit a transaction");
           }
-          context.admit(stage, facts);
+          context.admit(stage, admission);
         },
         assertTransactionBoundary() {
           assertTransactionUsable(database);

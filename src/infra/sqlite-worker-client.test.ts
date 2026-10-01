@@ -132,7 +132,6 @@ function createActor(): Actor {
     openDispatch: { dispatched: true },
     initialized: true,
     backendClosed: false,
-    pendingStateLifecycles: new Set(),
   };
 }
 
@@ -163,7 +162,6 @@ it.each(["missing", "sealed"] as const)(
         track,
         assertCurrent,
         createSqliteWorkerAdmissionFactory(false, createAdmission),
-        true,
       ),
     ).rejects.toMatchObject(closedError);
     expect(operation).not.toHaveBeenCalled();
@@ -294,6 +292,7 @@ it.each([
             target,
             serialize({ type: "write", input: "separate" }),
             operation,
+            () => {},
           ),
         ).toBeUndefined();
       } else {
@@ -410,6 +409,7 @@ it.each(["same actor", "independent actor"] as const)(
           target,
           serialize({ type: "write", input: "selected transaction" }),
           operation,
+          () => {},
         )?.value,
       ).toBe("completed child");
       expect(captureSqliteWorkerCallerTransaction()).toBe(transaction);
@@ -623,28 +623,25 @@ function terminalFixture(outcome: TerminalCase, nested: boolean) {
         settleSqliteWorkerJob(job, error);
         slot.current = undefined;
       });
-      job.lifecyclePreparation = {
-        failure: undefined,
-        service(check) {
-          if (job.terminal) {
-            return;
+      slot.transport!.pump = () => {
+        if (job.terminal) {
+          return false;
+        }
+        if (command.input !== "follower") {
+          for (const peer of peers) {
+            peer.service();
           }
-          if (command.input !== "follower") {
-            for (const peer of peers) {
-              peer.service(check);
-            }
-          }
-          if (nested && command.input !== "follower" && !receivedChild) {
-            return;
-          }
-          settleSqliteWorkerJob(
-            job,
-            command.input !== "follower" && outcome === "native error" ? nativeError : undefined,
-            command.input === "follower" ? "follower result" : "original native result",
-          );
-          slot.current = undefined;
-        },
-        finish() {},
+        }
+        if (nested && command.input !== "follower" && !receivedChild) {
+          return false;
+        }
+        settleSqliteWorkerJob(
+          job,
+          command.input !== "follower" && outcome === "native error" ? nativeError : undefined,
+          command.input === "follower" ? "follower result" : "original native result",
+        );
+        slot.current = undefined;
+        return true;
       };
       return completion.promise;
     },

@@ -3,6 +3,8 @@ import { fork } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import type { FileIdentityStat } from "@openclaw/fs-safe/advanced";
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
+import { createSubsystemLogger } from "../logging/subsystem.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { resolveRuntimeProcessEntrypointUrl } from "./runtime-process-url.js";
 import { resolveRuntimeWorkerArgv } from "./runtime-worker-url.js";
 import { readSqliteIntegrityFileIdentity } from "./sqlite-file-generation.js";
@@ -60,6 +62,7 @@ type IntegrityScope = {
   pending: Set<Promise<void>>;
 };
 const integrityScope = new AsyncLocalStorage<IntegrityScope>();
+const log = createSubsystemLogger("state/sqlite");
 
 async function closeIntegrityProcess(worker: IntegrityProcess): Promise<void> {
   if (!worker.retired) {
@@ -255,7 +258,7 @@ function assertSqliteIntegrityWithProcess(
     databaseLabel,
     identity.size,
   );
-  const startedAt = timing ? performance.now() : 0;
+  const startedAt = performance.now();
   let active = scope?.queue.process;
   if (!active || active.retired) {
     const entry = resolveRuntimeProcessEntrypointUrl("sqliteIntegrity");
@@ -267,12 +270,10 @@ function assertSqliteIntegrityWithProcess(
       killSignal: "SIGKILL",
       ...(scope ? {} : { signal }),
     });
-    let onClosed!: () => void;
+    const { promise: closed, resolve: onClosed } = createDeferredCore();
     active = {
       child,
-      closed: new Promise<void>((resolve) => {
-        onClosed = resolve;
-      }),
+      closed,
       retired: false,
       closeBudgetMs: timeoutMs,
     };
@@ -298,6 +299,12 @@ function assertSqliteIntegrityWithProcess(
     let failure: Error | undefined;
     let lastObservedPhase: SqliteIntegrityWorkerPhase | "starting" | "result-received" = "starting";
     let timeout: NodeJS.Timeout | undefined;
+    const heartbeat = setInterval(() => {
+      log.info(
+        `SQLite integrity check still running: ${databaseLabel} (${size}, ${Math.floor((performance.now() - startedAt) / 1000)}s elapsed, phase=${lastObservedPhase}).`,
+      );
+    }, 10_000);
+    heartbeat.unref();
     const deadlineError = () => {
       const error = sqliteInspectionTimeoutError("integrity check", databaseLabel, timeoutMs, size);
       error.message += ` (lastObservedPhase=${lastObservedPhase})`;
@@ -313,6 +320,7 @@ function assertSqliteIntegrityWithProcess(
     };
     const finish = (code: number | null, closeSignal: NodeJS.Signals | null) => {
       clearTimeout(timeout);
+      clearInterval(heartbeat);
       signal.removeEventListener("abort", onAbort);
       worker.off("message", onMessage);
       worker.off("close", onClose);

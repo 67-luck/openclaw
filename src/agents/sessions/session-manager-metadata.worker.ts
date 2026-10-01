@@ -5,10 +5,7 @@ import { isSessionHistoryPrelude } from "../../../packages/agent-core/src/harnes
 import { readSessionTranscriptBoundedActiveContextCore } from "../../config/sessions/session-accessor.sqlite-active-context.js";
 import type { TranscriptAppendRefusal } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import { readSessionTranscriptCurrentTurnEntry } from "../../config/sessions/session-accessor.sqlite-current-turn.js";
-import {
-  readCommittedIncognitoSessionSharing,
-  readExactSessionEntryCandidatesInDatabase,
-} from "../../config/sessions/session-accessor.sqlite-entry-cache.js";
+import { readExactSessionEntryCandidatesInDatabase } from "../../config/sessions/session-accessor.sqlite-entry-cache.js";
 import { listSessionEntriesReadOnly } from "../../config/sessions/session-accessor.sqlite-entry-list.read.js";
 import {
   applySessionEntryPatchInDatabase,
@@ -24,6 +21,7 @@ import {
   loadSessionEntryReadOnlyResultInScope,
   resolveSessionEntry,
 } from "../../config/sessions/session-accessor.sqlite-exact-read.js";
+import { readCommittedIncognitoSessionSharing } from "../../config/sessions/session-accessor.sqlite-incognito-sharing.js";
 import { ensureSessionEntryInTransaction } from "../../config/sessions/session-accessor.sqlite-initial-entry.js";
 import { readTranscriptMutationAtSync } from "../../config/sessions/session-accessor.sqlite-metadata-read.js";
 import {
@@ -78,6 +76,7 @@ import {
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
 import { isIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
+import type { AgentDatabaseDomainAdmission } from "../../state/openclaw-agent-execution-domain.js";
 import { encodeOpenClawStateWorkerError } from "../../state/openclaw-state-worker-error.js";
 import type {
   MetadataTarget,
@@ -155,7 +154,7 @@ export function bindSqliteWorkerBackend(
   context: {
     databasePath: string;
     database: DatabaseSync;
-    admit(stage: "transaction" | "commit", facts?: unknown): void;
+    admit(stage: "transaction" | "commit", admission?: AgentDatabaseDomainAdmission): void;
     assertTransactionBoundary?(): void;
   },
 ): SqliteWorkerBackend<SessionMetadataWorkerOperations> {
@@ -257,6 +256,7 @@ export function bindSqliteWorkerBackend(
                   database,
                   query.sessionKeys,
                   query.projection,
+                  { clone: query.clone },
                 ).map((selected) =>
                   selected.ok
                     ? selected
@@ -375,7 +375,7 @@ export function bindSqliteWorkerBackend(
         if (writer.db !== context.database) {
           throw new Error("Session entry patch lost its native transaction");
         }
-        context.admit("transaction", facts);
+        context.admit("transaction", { facts });
         const skipped =
           patch.shouldCommit &&
           requestSqliteWorkerHostStep({
@@ -417,7 +417,7 @@ export function bindSqliteWorkerBackend(
                 membershipInvalidatedKeys: [],
               })
             : undefined;
-        context.admit("commit", { ...facts, publication });
+        context.admit("commit", { facts: { ...facts, publication } });
         deferSqliteWorkerCommitReceipt(context.database, { ...facts, result, publication });
         return result;
       }, options);
@@ -542,65 +542,69 @@ export function bindSqliteWorkerBackend(
       SessionMetadataWorkerOperations[
         | "session.metadata.initialize"
         | "session.metadata.append"]["output"]
-    >((database) => {
-      if (database.db !== context.database) {
-        throw new Error("Session metadata lost its borrowed canonical connection");
-      }
-      context.admit(
-        "transaction",
-        command.type === "session.metadata.initialize"
-          ? { kind: command.type, sessionKey: resolved.sessionKey }
-          : undefined,
-      );
-      if (command.type === "session.metadata.initialize") {
-        const physical = readOpenClawAgentDatabaseIdentity(database);
-        const committed = ensureSessionEntryInTransaction(
-          database,
-          resolved,
-          scope,
-          command.input.entry,
-          command.input.initialWriterRunId,
+    >(
+      (database) => {
+        if (database.db !== context.database) {
+          throw new Error("Session metadata lost its borrowed canonical connection");
+        }
+        context.admit(
+          "transaction",
+          command.type === "session.metadata.initialize"
+            ? { facts: { kind: command.type, sessionKey: resolved.sessionKey } }
+            : undefined,
         );
-        const result = {
-          ...committed,
-          identity: committed.identity && {
-            ...committed.identity,
-            databaseIdentity:
-              typeof physical.identity === "string" ? physical.identity : physical.incarnation,
+        if (command.type === "session.metadata.initialize") {
+          const physical = readOpenClawAgentDatabaseIdentity(database);
+          const committed = ensureSessionEntryInTransaction(
+            database,
+            resolved,
+            scope,
+            command.input.entry,
+            command.input.initialWriterRunId,
+          );
+          const result = {
+            ...committed,
+            identity: committed.identity && {
+              ...committed.identity,
+              databaseIdentity:
+                typeof physical.identity === "string" ? physical.identity : physical.incarnation,
+            },
+          };
+          const receipt = {
+            kind: command.type,
+            sessionKey: resolved.sessionKey,
+            sessionId: scope.sessionId,
+            created: result.identity !== undefined,
+            databaseIdentity: result.identity?.databaseIdentity,
+          };
+          context.admit("commit", { facts: receipt });
+          deferSqliteWorkerCommitReceipt(context.database, receipt);
+          return { ok: true, value: result };
+        }
+        let projectionNeedsReconcile = false;
+        const projection = {
+          scheduleProjectionReconcile: false,
+          onProjectionReconcileNeeded: () => {
+            projectionNeedsReconcile = true;
           },
-        };
-        const receipt = {
+        } as const;
+        const snapshot = appendTranscriptEventSnapshotSync(
+          scope,
+          command.input.event,
+          command.input.options,
+          projection,
+        );
+        context.admit("commit");
+        deferSqliteWorkerCommitReceipt(context.database, {
           kind: command.type,
           sessionKey: resolved.sessionKey,
           sessionId: scope.sessionId,
-          created: result.identity !== undefined,
-          databaseIdentity: result.identity?.databaseIdentity,
-        };
-        context.admit("commit", receipt);
-        deferSqliteWorkerCommitReceipt(context.database, receipt);
-        return { ok: true, value: result };
-      }
-      let projectionNeedsReconcile = false;
-      const projection = {
-        scheduleProjectionReconcile: false,
-        onProjectionReconcileNeeded: () => {
-          projectionNeedsReconcile = true;
-        },
-      } as const;
-      const snapshot = appendTranscriptEventSnapshotSync(
-        scope,
-        command.input.event,
-        command.input.options,
-        projection,
-      );
-      context.admit("commit");
-      deferSqliteWorkerCommitReceipt(context.database, {
-        kind: command.type,
-        sessionKey: resolved.sessionKey,
-        sessionId: scope.sessionId,
-      });
-      return { ok: true, value: { snapshot, projectionNeedsReconcile } };
-    }, options);
+        });
+        return { ok: true, value: { snapshot, projectionNeedsReconcile } };
+      },
+      options,
+      { operationLabel: command.type },
+    );
     if (
       outcome.ok &&
       "projectionNeedsReconcile" in outcome.value &&

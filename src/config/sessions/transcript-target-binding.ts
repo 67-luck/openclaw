@@ -10,6 +10,21 @@ import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js
 type StorageEnvironment = Readonly<SqliteWorkerStateContext["environment"]>;
 export const sessionTranscriptExecution = Symbol("sessionTranscriptExecution");
 
+const storageEnvironmentKeys = new Set([
+  "OPENCLAW_STATE_DIR",
+  "OPENCLAW_SUPERVISOR_MODE",
+  "OPENCLAW_HOME",
+  "HOME",
+  "USERPROFILE",
+  "PREFIX",
+  "ANDROID_DATA",
+  "OPENCLAW_TEST_FAST",
+  "VITEST",
+  "VITEST_POOL_ID",
+  "VITEST_WORKER_ID",
+  "NODE_ENV",
+]);
+
 export type SessionTranscriptTargetBinding = SessionTranscriptRuntimeTarget & {
   env?: StorageEnvironment;
   [sessionTranscriptExecution]?: {
@@ -22,7 +37,13 @@ export type SessionTranscriptTargetBinding = SessionTranscriptRuntimeTarget & {
 export function captureSessionTranscriptStorageEnvironment(
   source: NodeJS.ProcessEnv,
 ): StorageEnvironment {
-  const env = cloneEnvWithPlatformSemantics(source);
+  const env = cloneEnvWithPlatformSemantics(
+    Object.fromEntries(
+      Object.keys(source)
+        .filter((key) => storageEnvironmentKeys.has(key.toUpperCase()))
+        .map((key) => [key, source[key]]),
+    ),
+  );
   return {
     OPENCLAW_STATE_DIR: resolveStateDir(env),
     ...(isGatewayExternallySupervised(env) ? { OPENCLAW_SUPERVISOR_MODE: "external" } : {}),

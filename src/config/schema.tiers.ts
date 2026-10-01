@@ -4,7 +4,7 @@ import { asSchemaObject, type ConfigJsonSchemaObject } from "./schema.shared.js"
 const ROOT_TIER_PATHS = `
 accessGroups acp agents approvals attachments auth bindings broadcast browser channels
 cloudWorkers commands cron desktop diagnostics discovery env gateway hooks logging mcp memory messages
-meta models nodeHost plugins proxy secrets security session skills surfaces talk telemetry tools transcripts
+meta models nodeHost plugins proxy secrets security session skills storage surfaces talk telemetry tools transcripts
 tts ui update wizard worktreeAcceleration worktreeRoot
 `
   .trim()
@@ -119,7 +119,7 @@ channels.telegram.accounts.*.groups.*.topics.*.groupPolicy
 channels.telegram.direct.*.topics.*.groupPolicy
 channels.whatsapp.groups.*.requireMention channels.whatsapp.selfChatMode
 cron.enabled env.vars gateway.auth.mode gateway.auth.password gateway.auth.token
-gateway.cliAgents.enabled
+gateway.cliAgents.enabled gateway.uploads.enabled
 gateway.auth.trustedProxy.allowUsers gateway.auth.trustedProxy.userHeader gateway.bind
 gateway.controlUi.allowedOrigins gateway.http.endpoints.chatCompletions.images.urlAllowlist
 gateway.http.endpoints.responses.files.urlAllowlist
