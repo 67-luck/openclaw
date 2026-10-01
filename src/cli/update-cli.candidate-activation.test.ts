@@ -644,9 +644,7 @@ describe("update-cli", () => {
     const { nodeModules, entryPath } = await setupInstalledPackageAtNodeModules(
       path.join(tempDir, "lib", "node_modules"),
     );
-    // Original-state capture executes the selected service runner before installation fails.
-    const nodeRunner = nodeExecutable;
-    primeServiceCommand([nodeRunner, entryPath, "gateway", "run"], {
+    primeServiceCommand([nodeExecutable, entryPath, "gateway", "run"], {
       OPENCLAW_STATE_DIR: profileStateDir(),
     });
     serviceLoaded.mockResolvedValue(true);
