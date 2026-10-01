@@ -1,8 +1,8 @@
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
 import {
-  listActiveSessionRunIds as listActiveEmbeddedRunSessionIds,
-  listActiveSessionRunKeys as listActiveEmbeddedRunSessionKeys,
+  listActiveSessionRunIds,
+  listActiveSessionRunKeys,
 } from "../../sessions/session-controller.queries.js";
 
 function normalizeStringSet(values: Iterable<string> | undefined): Set<string> {
@@ -21,8 +21,8 @@ export function createCurrentProcessOwnerLookup(params: {
       : normalizeStringSet(params.activeSessionKeys);
   // Re-read live projections at each check so an async scan cannot retain a stale owner view.
   return (entry, sessionKey) => {
-    const ids = providedIds ?? normalizeStringSet(listActiveEmbeddedRunSessionIds());
-    const keys = providedKeys ?? normalizeStringSet(listActiveEmbeddedRunSessionKeys());
+    const ids = providedIds ?? normalizeStringSet(listActiveSessionRunIds());
+    const keys = providedKeys ?? normalizeStringSet(listActiveSessionRunKeys());
     return ids.has(entry.sessionId) || (ids.size === 0 && keys.has(sessionKey));
   };
 }

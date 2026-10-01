@@ -105,13 +105,7 @@ function isExpectedNonErrorLaneFailure(err: unknown): boolean {
 }
 
 function isQuietProbeLane(lane: string): boolean {
-  // setup-inference.ts retains its temp session key, so its derived session lane
-  // needs the same expected-failure treatment as the explicit probe lane.
-  return (
-    lane.startsWith("auth-probe:") ||
-    lane.startsWith("session:probe-") ||
-    lane.startsWith("session:temp:setup-inference:probe-setup-inference-")
-  );
+  return lane.startsWith("auth-probe:") || lane.startsWith("session:probe-");
 }
 
 function getLaneDepth(state: LaneState): number {
@@ -157,7 +151,8 @@ function retireIdleScopedCommandLane(state: LaneState): void {
     state.queue.length > 0 ||
     (!state.lane.startsWith(SUBAGENT_LANE_PREFIX) &&
       (state.maxConcurrent !== 1 ||
-        (!state.lane.startsWith("session:") &&
+        // Setup-probe lanes bound setup concurrency; they do not order session turns.
+        (!state.lane.startsWith("session:probe-") &&
           !state.lane.startsWith("nested:") &&
           !state.lane.startsWith("context-engine-turn-maintenance:"))))
   ) {

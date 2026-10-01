@@ -56,8 +56,8 @@ import type { PluginRuntime } from "../../plugins/runtime/types.js";
 import { setActiveDegradedSecretOwners } from "../../secrets/runtime-degraded-state.js";
 import {
   createReplyOperation,
-  replyRunRegistry,
   type ReplyOperation,
+  getSessionControllerOperation,
 } from "../../sessions/session-controller.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
@@ -4735,7 +4735,7 @@ describe("prepareCliRunContext", () => {
               }),
             );
             answeringPlaceholder.bindToolAuthorityRoute(nextRoute);
-            expect(replyRunRegistry.get(original.sessionKey)).toBe(answeringPlaceholder);
+            expect(getSessionControllerOperation(original.sessionKey)).toBe(answeringPlaceholder);
           }
           const answer = () =>
             claimPendingAgentQuestionAnswerFromCaller({

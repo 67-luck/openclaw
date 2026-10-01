@@ -27,8 +27,9 @@ import {
 import type { CommandQueueEnqueueOptions } from "../../process/command-queue.types.js";
 import type { SessionTurnAdmission } from "../../sessions/session-controller.admission.js";
 import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
-import { replyRunRegistry } from "../../sessions/session-controller.js";
-import { isSessionRunActive as isEmbeddedAgentRunActive } from "../../sessions/session-controller.queries.js";
+import { getSessionControllerOperation } from "../../sessions/session-controller.js";
+import { waitForSessionRunEnd } from "../../sessions/session-controller.native-runtime.js";
+import { isSessionRunActive } from "../../sessions/session-controller.queries.js";
 import {
   createApiKeyCredential,
   createAuthProfileStoreFixture,
@@ -120,7 +121,6 @@ import {
   abortEmbeddedAgentRun,
   isEmbeddedAgentRunHandleActive,
   queueEmbeddedAgentMessageWithOutcomeAsync,
-  waitForEmbeddedAgentRunEnd,
 } from "./runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
@@ -6533,7 +6533,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         reason: expect.stringContaining("abort"),
       });
       expect(isEmbeddedAgentRunHandleActive(TEST_SESSION_ID)).toBe(true);
-      const settled = waitForEmbeddedAgentRunEnd(TEST_SESSION_ID, null);
+      const settled = waitForSessionRunEnd(TEST_SESSION_ID, null);
       pending.release.resolve(undefined);
       await expect(settled).resolves.toBe(true);
       expect(isEmbeddedAgentRunHandleActive(TEST_SESSION_ID)).toBe(false);
@@ -6569,7 +6569,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
 
       try {
         await pending.started.promise;
-        const operation = replyRunRegistry.get(TEST_SESSION_KEY);
+        const operation = getSessionControllerOperation(TEST_SESSION_KEY);
         const aborted =
           abortReason === "restart"
             ? abortEmbeddedAgentRun(undefined, { mode: "compacting", reason: "restart" })
@@ -6594,7 +6594,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     await withSessionTurn(wrappedCompactionArgs(), async (admitted) => {
       const replyOperation = expectDefined(admitted, "admitted preflight turn");
       replyOperation.setPhase("preflight_compacting");
-      expect(isEmbeddedAgentRunActive(TEST_SESSION_ID)).toBe(true);
+      expect(isSessionRunActive(TEST_SESSION_ID)).toBe(true);
       expect(isEmbeddedAgentRunHandleActive(TEST_SESSION_ID)).toBe(false);
       const pending = mockPendingContextEngineCompaction();
       const resultPromise = compactEmbeddedAgentSession(
@@ -6602,8 +6602,8 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       );
       try {
         await pending.started.promise;
-        expect(isEmbeddedAgentRunActive(TEST_SESSION_ID)).toBe(true);
-        expect(replyRunRegistry.get(TEST_SESSION_KEY)).toBe(replyOperation);
+        expect(isSessionRunActive(TEST_SESSION_ID)).toBe(true);
+        expect(getSessionControllerOperation(TEST_SESSION_KEY)).toBe(replyOperation);
         expect(isEmbeddedAgentRunHandleActive(TEST_SESSION_ID)).toBe(true);
         expect(replyOperation.abortByUser()).toBe(true);
         expect(pending.signal?.aborted).toBe(true);
@@ -6611,7 +6611,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         pending.release.resolve(undefined);
         await expect(resultPromise).resolves.toMatchObject({ ok: false, compacted: false });
         expect(isEmbeddedAgentRunHandleActive(TEST_SESSION_ID)).toBe(false);
-        expect(isEmbeddedAgentRunActive(TEST_SESSION_ID)).toBe(true);
+        expect(isSessionRunActive(TEST_SESSION_ID)).toBe(true);
       } finally {
         pending.release.resolve(undefined);
         await resultPromise.catch(() => undefined);

@@ -15,13 +15,13 @@ import { resetDiagnosticStateForTest } from "../../logging/diagnostic.test-suppo
 import {
   createReplyOperation,
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
-  replyRunRegistry,
   type ReplyOperation,
 } from "../../sessions/session-controller.js";
 import {
   assertSessionControllerOperation,
   isReplyRunEvidenceStale,
 } from "../../sessions/session-controller.state.js";
+import * as controllerWait from "../../sessions/session-controller.wait.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import {
   prepareSystemAgentRunAdmission,
@@ -178,7 +178,7 @@ describe("runtime-owned embedded liveness", () => {
   it("waits in bounded slices, then reclaims host-owned work without a millisecond spin", async () => {
     vi.advanceTimersByTime(RUN_STALE_TAKEOVER_MS + 1);
     await Promise.resolve();
-    const waitForIdleImpl = replyRunRegistry.waitForIdle.bind(replyRunRegistry);
+    const waitForIdleImpl = controllerWait.waitForSessionRunIdle;
     let resolveFirstWait!: () => void;
     let resolveSecondWait!: () => void;
     const firstWait = new Promise<void>((resolve) => {
@@ -187,15 +187,17 @@ describe("runtime-owned embedded liveness", () => {
     const secondWait = new Promise<void>((resolve) => {
       resolveSecondWait = resolve;
     });
-    const waitForIdle = vi.spyOn(replyRunRegistry, "waitForIdle").mockImplementation((...args) => {
-      const result = waitForIdleImpl(...args);
-      if (waitForIdle.mock.calls.length === 1) {
-        resolveFirstWait();
-      } else if (waitForIdle.mock.calls.length === 2) {
-        resolveSecondWait();
-      }
-      return result;
-    });
+    const waitForIdle = vi
+      .spyOn(controllerWait, "waitForSessionRunIdle")
+      .mockImplementation((...args) => {
+        const result = waitForIdleImpl(...args);
+        if (waitForIdle.mock.calls.length === 1) {
+          resolveFirstWait();
+        } else if (waitForIdle.mock.calls.length === 2) {
+          resolveSecondWait();
+        }
+        return result;
+      });
     const callerAbort = new AbortController();
     let settled = false;
     const waiting = admitReplyTurn({

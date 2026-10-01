@@ -55,7 +55,7 @@ const childScript = `
     clearActiveEmbeddedRun,
     setActiveEmbeddedRun,
   } from ${JSON.stringify(moduleUrl(gatewayDirectStopEntrypoints.runs))};
-  import { getActiveEmbeddedRunCount } from ${JSON.stringify(moduleUrl(gatewayDirectStopEntrypoints.activeRunProjections))};
+  import { getActiveSessionRunCount } from ${JSON.stringify(moduleUrl(gatewayDirectStopEntrypoints.sessionControllerQueries))};
   import { runGatewayLoop } from ${JSON.stringify(moduleUrl(gatewayDirectStopEntrypoints.runLoop))};
   import { getActiveGatewayRootWorkCount } from ${JSON.stringify(moduleUrl(gatewayDirectStopEntrypoints.workAdmission))};
 
@@ -97,7 +97,7 @@ const childScript = `
         "adopted:roots=" +
           getActiveGatewayRootWorkCount() +
           ":embedded=" +
-          getActiveEmbeddedRunCount(),
+          getActiveSessionRunCount(),
       );
       resolveAdopted();
       await embeddedMaySettle;

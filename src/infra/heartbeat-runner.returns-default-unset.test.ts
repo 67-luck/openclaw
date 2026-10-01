@@ -681,7 +681,7 @@ describe("runHeartbeatOnce", () => {
     options?: {
       nowMs?: number;
       getReplyFromConfig?: HeartbeatDeps["getReplyFromConfig"];
-      listActiveEmbeddedRunSessionKeys?: HeartbeatDeps["listActiveEmbeddedRunSessionKeys"];
+      listActiveSessionRunKeys?: HeartbeatDeps["listActiveSessionRunKeys"];
     },
   ): HeartbeatDeps => ({
     whatsapp: sendWhatsApp,
@@ -690,8 +690,8 @@ describe("runHeartbeatOnce", () => {
     webAuthExists: async () => true,
     hasActiveWebListener: () => true,
     ...(options?.getReplyFromConfig ? { getReplyFromConfig: options.getReplyFromConfig } : null),
-    ...(options?.listActiveEmbeddedRunSessionKeys
-      ? { listActiveEmbeddedRunSessionKeys: options.listActiveEmbeddedRunSessionKeys }
+    ...(options?.listActiveSessionRunKeys
+      ? { listActiveSessionRunKeys: options.listActiveSessionRunKeys }
       : null),
   });
 
@@ -767,7 +767,7 @@ describe("runHeartbeatOnce", () => {
       cfg,
       deps: createHeartbeatDeps(sendWhatsApp, {
         getReplyFromConfig: replySpy,
-        listActiveEmbeddedRunSessionKeys: () => [activeKey(cfg)],
+        listActiveSessionRunKeys: () => [activeKey(cfg)],
       }),
     });
 

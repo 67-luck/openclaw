@@ -10,7 +10,7 @@ afterEach(() => {
 
 describe("reply run registry retained singleton", () => {
   it("retains a live source binding across module reload and clears it with its owner", async () => {
-    const { createReplyOperation, replyRunRegistry } =
+    const { createReplyOperation, bindSessionControllerSourceTurnId } =
       await import("../../sessions/session-controller.js");
     const key = "agent:main:reload";
     const operation = createReplyOperation({
@@ -19,18 +19,18 @@ describe("reply run registry retained singleton", () => {
       resetTriggered: false,
     });
     operation.setPhase("running");
-    replyRunRegistry.bindSourceTurnId(operation, "reload-source");
+    bindSessionControllerSourceTurnId(operation, "reload-source");
     let reloaded: typeof import("../../sessions/session-controller.js");
     try {
       vi.resetModules();
       reloaded = await import("../../sessions/session-controller.js");
-      expect(reloaded.replyRunRegistry.get(key)).toBe(operation);
-      expect(reloaded.replyRunRegistry.getSourceTurnId(key)).toBe("reload-source");
+      expect(reloaded.getSessionControllerOperation(key)).toBe(operation);
+      expect(reloaded.getSessionControllerSourceTurnId(key)).toBe("reload-source");
     } finally {
       operation.complete();
     }
-    expect(reloaded.replyRunRegistry.isActive(key)).toBe(false);
-    expect(reloaded.replyRunRegistry.getSourceTurnId(key)).toBeUndefined();
+    expect(reloaded.isSessionRunActiveForKey(key)).toBe(false);
+    expect(reloaded.getSessionControllerSourceTurnId(key)).toBeUndefined();
   });
 
   it("keeps frozen outcome and retention with the owner across module reload", async () => {
@@ -57,7 +57,7 @@ describe("reply run registry retained singleton", () => {
         vi.resetModules();
         const latest = await import("../../sessions/session-controller.js");
         expect(retained.abortByUser()).toBe(true);
-        expect(latest.replyRunRegistry.get(retained.key)).toBe(retained);
+        expect(latest.getSessionControllerOperation(retained.key)).toBe(retained);
       } finally {
         retained.complete();
       }

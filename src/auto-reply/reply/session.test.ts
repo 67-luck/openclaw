@@ -43,7 +43,11 @@ import {
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
 import { MODEL_SELECTION_LOCKED_RESET_MESSAGE } from "../../sessions/model-overrides.js";
-import { createReplyOperation, replyRunRegistry } from "../../sessions/session-controller.js";
+import {
+  createReplyOperation,
+  getSessionControllerOperation,
+  isSessionRunActiveForKey,
+} from "../../sessions/session-controller.js";
 import {
   beginSessionEffect,
   isSessionMutationActive,
@@ -706,7 +710,7 @@ describe("initSessionState guarded initialization", () => {
       expect(reset.sessionEntry.mainRestartRecovery).toBeUndefined();
       expect(loadSessionEntry({ storePath, sessionKey })?.mainRestartRecovery).toBeUndefined();
       expect(cancel).toHaveBeenCalledWith("restart");
-      expect(replyRunRegistry.isActive(sessionKey)).toBe(false);
+      expect(isSessionRunActiveForKey(sessionKey)).toBe(false);
     } finally {
       activeReply.complete();
     }
@@ -1180,7 +1184,7 @@ describe("initSessionState thread forking", () => {
       expect(promptState.sentUserTurnIds).toContain("retained-turn");
       expect(getFollowupQueueDepth(threadSessionKey)).toBe(1);
       expect(peekSystemEvents(threadSessionKey)).toEqual(["retained event"]);
-      expect(replyRunRegistry.get(threadSessionKey)).toBe(activeReply);
+      expect(getSessionControllerOperation(threadSessionKey)).toBe(activeReply);
       expect(cancel).not.toHaveBeenCalled();
     } finally {
       clearEmbeddedSessionPromptStates([threadSessionKey]);
@@ -4827,7 +4831,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
     vi.useFakeTimers();
     const existingSessionId = `active-${scenario.label.replaceAll(" ", "-")}`;
     const sessionKey = `agent:main:telegram:dm:${existingSessionId}`;
-    let operation: ReturnType<typeof replyRunRegistry.begin> | undefined;
+    let operation: ReturnType<typeof createReplyOperation> | undefined;
     try {
       vi.setSystemTime(new Date(2026, 0, 18, 5, 0, 0));
       const storePath = await makeStorePath("openclaw-active-stale-");
@@ -4838,7 +4842,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
           ...scenario.entry,
         },
       });
-      operation = replyRunRegistry.begin({
+      operation = createReplyOperation({
         sessionKey,
         sessionId: existingSessionId,
         resetTriggered: false,
@@ -4883,7 +4887,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
 
   it("does not defer stale boundary append for the current turn's queued reservation", async () => {
     vi.useFakeTimers();
-    let operation: ReturnType<typeof replyRunRegistry.begin> | undefined;
+    let operation: ReturnType<typeof createReplyOperation> | undefined;
     try {
       vi.setSystemTime(new Date(2026, 0, 18, 5, 0, 0));
       const storePath = await makeStorePath("openclaw-queued-stale-archive-");
@@ -4898,7 +4902,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
         },
       });
       await fs.writeFile(transcriptPath, '{"type":"message"}\n', "utf8");
-      operation = replyRunRegistry.begin({
+      operation = createReplyOperation({
         sessionKey,
         sessionId: existingSessionId,
         resetTriggered: false,
@@ -4945,7 +4949,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
 
   it("does not defer stale boundary append for a different active session id", async () => {
     vi.useFakeTimers();
-    let operation: ReturnType<typeof replyRunRegistry.begin> | undefined;
+    let operation: ReturnType<typeof createReplyOperation> | undefined;
     try {
       vi.setSystemTime(new Date(2026, 0, 18, 5, 0, 0));
       const storePath = await makeStorePath("openclaw-active-other-stale-archive-");
@@ -4960,7 +4964,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
         },
       });
       await fs.writeFile(transcriptPath, '{"type":"message"}\n', "utf8");
-      operation = replyRunRegistry.begin({
+      operation = createReplyOperation({
         sessionKey,
         sessionId: "different-active-session",
         resetTriggered: false,

@@ -48,11 +48,13 @@ import {
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   createReplyOperation,
 } from "../../sessions/session-controller.js";
+import { listActiveReplyRunSessionKeys } from "../../sessions/session-controller.js";
 import {
   beginSessionEffect,
   captureSessionTarget,
 } from "../../sessions/session-controller.lifecycle.js";
-import { listActiveReplyRunSessionKeys } from "../../sessions/session-controller.registry.js";
+import * as sessionNativeRuntime from "../../sessions/session-controller.native-runtime.js";
+import * as sessionQueries from "../../sessions/session-controller.queries.js";
 import { prepareSessionParticipantInput } from "../../sessions/session-participant-input.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { hasControlCommand } from "../command-detection.js";
@@ -109,13 +111,19 @@ vi.mock("../../agents/auth-profiles/session-override.js", () => ({
 
 vi.mock("../../agents/embedded-agent.runtime.js", () => ({
   abortEmbeddedAgentRun: vi.fn().mockReturnValue(false),
-  isEmbeddedAgentRunActive: vi.fn().mockReturnValue(false),
-  isEmbeddedAgentRunStreaming: vi.fn().mockReturnValue(false),
   preemptAndDrainEmbeddedHeartbeatRun: vi.fn().mockResolvedValue("not-heartbeat"),
-  resolveActiveEmbeddedRunSessionId: vi.fn().mockReturnValue(undefined),
   resolveActiveEmbeddedRunSessionIdBySessionFile: vi.fn().mockReturnValue(undefined),
-  resolveEmbeddedSessionLane: vi.fn().mockReturnValue("session:session-key"),
-  waitForEmbeddedAgentRunEnd: vi.fn().mockResolvedValue(true),
+}));
+
+vi.mock("../../sessions/session-controller.native-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../sessions/session-controller.native-runtime.js")>()),
+  waitForSessionRunEnd: vi.fn().mockResolvedValue(true),
+}));
+
+vi.mock("../../sessions/session-controller.queries.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../sessions/session-controller.queries.js")>()),
+  isSessionRunActive: vi.fn().mockReturnValue(false),
+  resolveActiveSessionRunId: vi.fn().mockReturnValue(undefined),
 }));
 
 vi.mock("../../agents/harness/hook-helpers.js", () => ({
@@ -1216,18 +1224,16 @@ describe("runPreparedReply media-only handling", () => {
     "enables default same-turn steering for active %s runs",
     async (channel) => {
       const queueSettings = await import("./queue/settings-runtime.js");
-      const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
       vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({
         mode: "steer",
         debounceMs: 500,
         cap: 20,
         dropPolicy: "summarize",
       });
-      vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId)
+      vi.mocked(sessionQueries.resolveActiveSessionRunId)
         .mockReturnValueOnce("active-session")
         .mockReturnValueOnce("active-session");
-      vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReturnValueOnce(true);
-      vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunStreaming).mockReturnValueOnce(true);
+      vi.mocked(sessionQueries.isSessionRunActive).mockReturnValueOnce(true);
 
       const params = baseParams({
         agentId: "main",
@@ -1274,15 +1280,13 @@ describe("runPreparedReply media-only handling", () => {
 
   it("prefers a one-turn queue override over the stored session mode", async () => {
     const queueSettings = await import("./queue/settings-runtime.js");
-    const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     vi.mocked(queueSettings.resolveQueueSettings).mockImplementationOnce((params) => ({
       mode: params.inlineMode ?? params.sessionEntry?.queueMode ?? "steer",
     }));
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId)
+    vi.mocked(sessionQueries.resolveActiveSessionRunId)
       .mockReturnValueOnce("active-session")
       .mockReturnValueOnce("active-session");
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReturnValueOnce(true);
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunStreaming).mockReturnValueOnce(true);
+    vi.mocked(sessionQueries.isSessionRunActive).mockReturnValueOnce(true);
 
     await runPrepared({
       sessionEntry: {
@@ -2444,12 +2448,10 @@ describe("runPreparedReply media-only handling", () => {
     const storePath = "/tmp/channel-interrupt-sessions.json";
     let embeddedRunActive = true;
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "interrupt" });
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockImplementation(() =>
+    vi.mocked(sessionQueries.resolveActiveSessionRunId).mockImplementation(() =>
       embeddedRunActive ? "session-embedded-only" : undefined,
     );
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockImplementation(
-      () => embeddedRunActive,
-    );
+    vi.mocked(sessionQueries.isSessionRunActive).mockImplementation(() => embeddedRunActive);
     let releaseActiveAdmission = () => {};
     const activeAdmission = await beginSessionEffect({
       scope: storePath,
@@ -2474,12 +2476,12 @@ describe("runPreparedReply media-only handling", () => {
       ).resolves.toEqual({ text: "ok" });
     } finally {
       activeAdmission.release();
-      vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockReturnValue(undefined);
-      vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReturnValue(false);
+      vi.mocked(sessionQueries.resolveActiveSessionRunId).mockReturnValue(undefined);
+      vi.mocked(sessionQueries.isSessionRunActive).mockReturnValue(false);
     }
 
     expect(embeddedAgentRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
-    expect(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd).not.toHaveBeenCalled();
+    expect(sessionNativeRuntime.waitForSessionRunEnd).not.toHaveBeenCalled();
     expect(vi.mocked(runReplyAgent)).toHaveBeenCalledOnce();
   });
   it.each(["interrupt", "steer"] as const)(
@@ -2495,7 +2497,7 @@ describe("runPreparedReply media-only handling", () => {
         assertAllowed: () => {},
       });
       vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode });
-      vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockReturnValue(
+      vi.mocked(sessionQueries.resolveActiveSessionRunId).mockReturnValue(
         "session-embedded-heartbeat",
       );
       vi.mocked(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun).mockResolvedValue(
@@ -2517,9 +2519,7 @@ describe("runPreparedReply media-only handling", () => {
         expect(call.shouldFollowup).toBe(true);
       } finally {
         recoveryAdmission.release();
-        vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockReturnValue(
-          undefined,
-        );
+        vi.mocked(sessionQueries.resolveActiveSessionRunId).mockReturnValue(undefined);
         vi.mocked(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun).mockResolvedValue(
           "not-heartbeat",
         );
@@ -2531,7 +2531,7 @@ describe("runPreparedReply media-only handling", () => {
     const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     let embeddedRunActive = true;
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "steer" });
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockImplementation(() =>
+    vi.mocked(sessionQueries.resolveActiveSessionRunId).mockImplementation(() =>
       embeddedRunActive ? "session-embedded-heartbeat" : undefined,
     );
     vi.mocked(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun).mockImplementation(
@@ -2543,10 +2543,8 @@ describe("runPreparedReply media-only handling", () => {
         return "drained";
       },
     );
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockImplementation(
-      () => embeddedRunActive,
-    );
-    vi.mocked(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd).mockImplementation(async () => {
+    vi.mocked(sessionQueries.isSessionRunActive).mockImplementation(() => embeddedRunActive);
+    vi.mocked(sessionNativeRuntime.waitForSessionRunEnd).mockImplementation(async () => {
       embeddedRunActive = false;
       return true;
     });
@@ -2569,12 +2567,12 @@ describe("runPreparedReply media-only handling", () => {
         }),
       ).resolves.toEqual({ text: "ok" });
     } finally {
-      vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockReturnValue(undefined);
-      vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReturnValue(false);
+      vi.mocked(sessionQueries.resolveActiveSessionRunId).mockReturnValue(undefined);
+      vi.mocked(sessionQueries.isSessionRunActive).mockReturnValue(false);
       vi.mocked(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun).mockResolvedValue(
         "not-heartbeat",
       );
-      vi.mocked(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd).mockResolvedValue(true);
+      vi.mocked(sessionNativeRuntime.waitForSessionRunEnd).mockResolvedValue(true);
     }
 
     expect(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun).toHaveBeenCalledWith(
@@ -2582,7 +2580,7 @@ describe("runPreparedReply media-only handling", () => {
       REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
     );
     expect(embeddedAgentRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
-    expect(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd).not.toHaveBeenCalled();
+    expect(sessionNativeRuntime.waitForSessionRunEnd).not.toHaveBeenCalled();
     expect(vi.mocked(runReplyAgent)).toHaveBeenCalledOnce();
   });
   it("drains an embedded heartbeat hidden by the visible pre-dispatch operation", async () => {
@@ -2600,7 +2598,7 @@ describe("runPreparedReply media-only handling", () => {
       releaseDrain = resolve;
     });
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "steer" });
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockImplementation(() =>
+    vi.mocked(sessionQueries.resolveActiveSessionRunId).mockImplementation(() =>
       embeddedRunActive ? "session-pre-dispatch-heartbeat" : undefined,
     );
     vi.mocked(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun).mockImplementation(
@@ -2610,10 +2608,8 @@ describe("runPreparedReply media-only handling", () => {
         return "drained";
       },
     );
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockImplementation(
-      () => embeddedRunActive,
-    );
-    vi.mocked(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd).mockImplementation(async () => {
+    vi.mocked(sessionQueries.isSessionRunActive).mockImplementation(() => embeddedRunActive);
+    vi.mocked(sessionNativeRuntime.waitForSessionRunEnd).mockImplementation(async () => {
       await drainBarrier;
       embeddedRunActive = false;
       return true;
@@ -2646,23 +2642,19 @@ describe("runPreparedReply media-only handling", () => {
         { timeout: 1_000 },
       );
       expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
-      expect(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd).not.toHaveBeenCalled();
+      expect(sessionNativeRuntime.waitForSessionRunEnd).not.toHaveBeenCalled();
 
       releaseDrain?.();
       await expect(runPromise).resolves.toEqual({ text: "ok" });
     } finally {
       releaseDrain?.();
       operation.complete();
-      vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId)
-        .mockReset()
-        .mockReturnValue(undefined);
+      vi.mocked(sessionQueries.resolveActiveSessionRunId).mockReset().mockReturnValue(undefined);
       vi.mocked(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun)
         .mockReset()
         .mockResolvedValue("not-heartbeat");
-      vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReset().mockReturnValue(false);
-      vi.mocked(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd)
-        .mockReset()
-        .mockResolvedValue(true);
+      vi.mocked(sessionQueries.isSessionRunActive).mockReset().mockReturnValue(false);
+      vi.mocked(sessionNativeRuntime.waitForSessionRunEnd).mockReset().mockResolvedValue(true);
     }
 
     expect(vi.mocked(runReplyAgent)).toHaveBeenCalledOnce();
@@ -2742,9 +2734,7 @@ describe("runPreparedReply media-only handling", () => {
     const commandQueue = await import("../../process/command-queue.js");
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "followup" });
     vi.mocked(commandQueue.getQueueSize).mockReturnValueOnce(0);
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockReturnValue(
-      "session-active",
-    );
+    vi.mocked(sessionQueries.resolveActiveSessionRunId).mockReturnValue("session-active");
     const activeOperation = createReplyOperation({
       sessionId: "session-active",
       sessionKey: "session-key",
@@ -2783,18 +2773,16 @@ describe("runPreparedReply media-only handling", () => {
   it("does not enable steering for active heartbeat runs", async () => {
     activatePreparedRun();
     const queueSettings = await import("./queue/settings-runtime.js");
-    const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({
       mode: "followup",
       debounceMs: 500,
       cap: 20,
       dropPolicy: "summarize",
     });
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId)
+    vi.mocked(sessionQueries.resolveActiveSessionRunId)
       .mockReturnValueOnce("active-session")
       .mockReturnValueOnce("active-session");
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReturnValueOnce(true);
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunStreaming).mockReturnValueOnce(true);
+    vi.mocked(sessionQueries.isSessionRunActive).mockReturnValueOnce(true);
 
     await runPrepared({
       opts: { isHeartbeat: true },
@@ -2814,7 +2802,6 @@ describe("runPreparedReply media-only handling", () => {
     "queues same-session Slack DM turns instead of steering across Slack threads using %s",
     async (_label, threadContext) => {
       const queueSettings = await import("./queue/settings-runtime.js");
-      const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
       vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({
         mode: "steer",
         debounceMs: 500,
@@ -2828,11 +2815,10 @@ describe("runPreparedReply media-only handling", () => {
         routeThreadId: "500.000",
       });
       activeRun.setPhase("running");
-      vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId)
+      vi.mocked(sessionQueries.resolveActiveSessionRunId)
         .mockReturnValueOnce("active-session")
         .mockReturnValueOnce("active-session");
-      vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReturnValueOnce(true);
-      vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunStreaming).mockReturnValueOnce(true);
+      vi.mocked(sessionQueries.isSessionRunActive).mockReturnValueOnce(true);
 
       try {
         await runPrepared({
@@ -2864,7 +2850,6 @@ describe("runPreparedReply media-only handling", () => {
 
   it("keeps non-Slack same-session turns steerable when route threads differ", async () => {
     const queueSettings = await import("./queue/settings-runtime.js");
-    const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({
       mode: "steer",
       debounceMs: 500,
@@ -2878,11 +2863,10 @@ describe("runPreparedReply media-only handling", () => {
       routeThreadId: 42,
     });
     activeRun.setPhase("running");
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId)
+    vi.mocked(sessionQueries.resolveActiveSessionRunId)
       .mockReturnValueOnce("active-session")
       .mockReturnValueOnce("active-session");
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReturnValueOnce(true);
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunStreaming).mockReturnValueOnce(true);
+    vi.mocked(sessionQueries.isSessionRunActive).mockReturnValueOnce(true);
 
     try {
       await runPrepared({
@@ -2955,16 +2939,15 @@ describe("runPreparedReply media-only handling", () => {
   });
 
   it("does not queue a run behind its provided pre-dispatch reply operation", async () => {
-    const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     const operation = createReplyOperation({
       sessionId: "session-pre-dispatch-owner",
       sessionKey: "session-key",
       resetTriggered: false,
     });
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockReturnValue(
+    vi.mocked(sessionQueries.resolveActiveSessionRunId).mockReturnValue(
       "session-pre-dispatch-owner",
     );
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReturnValue(true);
+    vi.mocked(sessionQueries.isSessionRunActive).mockReturnValue(true);
 
     try {
       await expect(
@@ -2977,13 +2960,11 @@ describe("runPreparedReply media-only handling", () => {
 
       const call = requireLastRunReplyAgentCall();
       expect(call.replyOperation).toBe(operation);
-      expect(vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive)).not.toHaveBeenCalled();
+      expect(vi.mocked(sessionQueries.isSessionRunActive)).not.toHaveBeenCalled();
     } finally {
       operation.complete();
-      vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId)
-        .mockReset()
-        .mockReturnValue(undefined);
-      vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReset().mockReturnValue(false);
+      vi.mocked(sessionQueries.resolveActiveSessionRunId).mockReset().mockReturnValue(undefined);
+      vi.mocked(sessionQueries.isSessionRunActive).mockReset().mockReturnValue(false);
     }
   });
 
@@ -3057,9 +3038,7 @@ describe("runPreparedReply media-only handling", () => {
     });
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "followup" });
     vi.mocked(commandQueue.getQueueSize).mockReturnValueOnce(0);
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockReturnValue(
-      "session-reset-owner",
-    );
+    vi.mocked(sessionQueries.resolveActiveSessionRunId).mockReturnValue("session-reset-owner");
 
     try {
       await expect(
@@ -3078,9 +3057,7 @@ describe("runPreparedReply media-only handling", () => {
       expect(embeddedAgentRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
     } finally {
       operation.complete();
-      vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId)
-        .mockReset()
-        .mockReturnValue(undefined);
+      vi.mocked(sessionQueries.resolveActiveSessionRunId).mockReset().mockReturnValue(undefined);
     }
   });
 
@@ -3486,13 +3463,12 @@ describe("runPreparedReply media-only handling", () => {
       cap: 20,
       dropPolicy: "summarize",
     });
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId)
+    vi.mocked(sessionQueries.resolveActiveSessionRunId)
       .mockReturnValueOnce("active-session")
       .mockReturnValueOnce("active-session");
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReturnValueOnce(true);
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunStreaming).mockReturnValueOnce(true);
+    vi.mocked(sessionQueries.isSessionRunActive).mockReturnValueOnce(true);
     vi.mocked(embeddedAgentRuntime.abortEmbeddedAgentRun).mockClear();
-    vi.mocked(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd).mockClear();
+    vi.mocked(sessionNativeRuntime.waitForSessionRunEnd).mockClear();
     vi.mocked(buildInboundUserContextPrefix).mockReturnValueOnce("room context");
 
     await runPrepared({
@@ -3522,7 +3498,6 @@ describe("runPreparedReply media-only handling", () => {
   it("uses queued followup abort ownership instead of borrowed active-lane abort ownership", async () => {
     activatePreparedRun();
     const queueSettings = await import("./queue/settings-runtime.js");
-    const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     const activeLaneAbortController = new AbortController();
     const sourceAbortController = new AbortController();
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({
@@ -3531,11 +3506,10 @@ describe("runPreparedReply media-only handling", () => {
       cap: 20,
       dropPolicy: "summarize",
     });
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId)
+    vi.mocked(sessionQueries.resolveActiveSessionRunId)
       .mockReturnValueOnce("active-session")
       .mockReturnValueOnce("active-session");
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReturnValueOnce(true);
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunStreaming).mockReturnValueOnce(true);
+    vi.mocked(sessionQueries.isSessionRunActive).mockReturnValueOnce(true);
     vi.mocked(buildInboundUserContextPrefix).mockReturnValueOnce("room context");
 
     await runPrepared({
@@ -3566,7 +3540,6 @@ describe("runPreparedReply media-only handling", () => {
   it("detaches queued user requests from superseded source abort signals", async () => {
     activatePreparedRun();
     const queueSettings = await import("./queue/settings-runtime.js");
-    const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     const abortController = new AbortController();
     const operatorController = new AbortController();
     const operatorAuthority = createAdmittedRunOperatorAuthority({
@@ -3581,11 +3554,10 @@ describe("runPreparedReply media-only handling", () => {
       cap: 20,
       dropPolicy: "summarize",
     });
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId)
+    vi.mocked(sessionQueries.resolveActiveSessionRunId)
       .mockReturnValueOnce("active-session")
       .mockReturnValueOnce("active-session");
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReturnValueOnce(true);
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunStreaming).mockReturnValueOnce(true);
+    vi.mocked(sessionQueries.isSessionRunActive).mockReturnValueOnce(true);
     vi.mocked(buildInboundUserContextPrefix).mockReturnValueOnce("user request context");
 
     await runPrepared({
@@ -3623,11 +3595,10 @@ describe("runPreparedReply media-only handling", () => {
       cap: 20,
       dropPolicy: "summarize",
     });
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId)
+    vi.mocked(sessionQueries.resolveActiveSessionRunId)
       .mockReturnValueOnce("active-session")
       .mockReturnValueOnce("active-session");
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReturnValueOnce(true);
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunStreaming).mockReturnValueOnce(true);
+    vi.mocked(sessionQueries.isSessionRunActive).mockReturnValueOnce(true);
     vi.mocked(buildInboundUserContextPrefix).mockReturnValueOnce("room context");
 
     await runPrepared({
@@ -3648,7 +3619,7 @@ describe("runPreparedReply media-only handling", () => {
     expect(call.isActive).toBe(true);
     expect(call.resolvedQueue.mode).toBe("interrupt");
     expect(embeddedAgentRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
-    expect(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd).not.toHaveBeenCalled();
+    expect(sessionNativeRuntime.waitForSessionRunEnd).not.toHaveBeenCalled();
   });
 
   it("keeps room events tool-only when group replies are automatic", async () => {

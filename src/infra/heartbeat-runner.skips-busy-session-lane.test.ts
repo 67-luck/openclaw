@@ -1,4 +1,4 @@
-// Covers heartbeat skipping while session lanes or cron jobs are busy.
+// Covers heartbeat skipping while controller-owned turns or cron jobs are busy.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { preemptAndDrainEmbeddedHeartbeatRun } from "../agents/embedded-agent-runner/runs.js";
 import {
@@ -29,7 +29,7 @@ import {
   createReplyOperation,
   waitForReplyRunSuccessorAdmission,
 } from "../sessions/session-controller.js";
-import { isSessionRunActive as isEmbeddedAgentRunActive } from "../sessions/session-controller.queries.js";
+import { isSessionRunActive } from "../sessions/session-controller.queries.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../test-utils/channel-plugins.js";
 import { getAgentEventLifecycleGeneration } from "./agent-events.js";
 import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "./heartbeat-events.js";
@@ -147,7 +147,7 @@ function markHeartbeatWaitOwners(...jobIds: string[]) {
   };
 }
 
-describe("heartbeat runner skips when target session lane is busy", () => {
+describe("heartbeat runner skips when target session is busy", () => {
   it.each([
     { label: "scheduled", intent: "scheduled" as const },
     { label: "automatic immediate", intent: "immediate" as const },
@@ -442,32 +442,27 @@ describe("heartbeat runner skips when target session lane is busy", () => {
     });
   });
 
-  it.each(["main", "session"])(
-    "records requests-in-flight when the %s lane has queued work",
-    async (busyLane) => {
-      await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
-        const cfg = createHeartbeatTelegramConfig(storePath);
-        const sessionKey = await seedHeartbeatTelegramSession(storePath, cfg);
+  it("records requests-in-flight when the main lane has queued work", async () => {
+    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+      const cfg = createHeartbeatTelegramConfig(storePath);
+      const sessionKey = await seedHeartbeatTelegramSession(storePath, cfg);
 
-        enqueueSystemEvent("Exec completed (test-id, code 0) :: test output", {
-          sessionKey,
-        });
-
-        const getQueueSize = vi.fn((lane?: string) =>
-          Number(busyLane === "main" ? lane === CommandLane.Main : lane?.startsWith("session:")),
-        );
-
-        const result = await runHeartbeat(cfg, replySpy, {}, { getQueueSize });
-
-        expect(result).toEqual({ status: "skipped", reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT });
-        expect(getLastHeartbeatEvent()).toMatchObject({
-          ...result,
-          durationMs: expect.any(Number),
-        });
-        expect(replySpy).not.toHaveBeenCalled();
+      enqueueSystemEvent("Exec completed (test-id, code 0) :: test output", {
+        sessionKey,
       });
-    },
-  );
+
+      const getQueueSize = vi.fn((lane?: string) => Number(lane === CommandLane.Main));
+
+      const result = await runHeartbeat(cfg, replySpy, {}, { getQueueSize });
+
+      expect(result).toEqual({ status: "skipped", reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT });
+      expect(getLastHeartbeatEvent()).toMatchObject({
+        ...result,
+        durationMs: expect.any(Number),
+      });
+      expect(replySpy).not.toHaveBeenCalled();
+    });
+  });
 
   it("returns requests-in-flight when the target session has an active reply run", async () => {
     await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
@@ -507,7 +502,6 @@ describe("heartbeat runner skips when target session lane is busy", () => {
     "active-cron",
     "reply",
     "embedded",
-    "session",
     "session-reply",
     "session-embedded",
   ] as const)(
@@ -529,8 +523,7 @@ describe("heartbeat runner skips when target session lane is busy", () => {
             replySpy,
             { source: "exec-event", intent: "event", reason: "exec-event", sessionKey },
             {
-              getQueueSize: (lane) =>
-                Number(lane === (busy === "session" ? `session:${sessionKey}` : busy)),
+              getQueueSize: (lane) => Number(lane === busy),
               listActiveReplyRunSessionKeys: () =>
                 busy === "reply"
                   ? [siblingSessionKey]
@@ -538,7 +531,7 @@ describe("heartbeat runner skips when target session lane is busy", () => {
                     ? [sessionKey]
                     : [],
               isReplyRunActive: (key) => busy === "session-reply" && key === sessionKey,
-              listActiveEmbeddedRunSessionKeys: () =>
+              listActiveSessionRunKeys: () =>
                 busy === "embedded"
                   ? [siblingSessionKey]
                   : busy === "session-embedded"
@@ -547,7 +540,7 @@ describe("heartbeat runner skips when target session lane is busy", () => {
             },
           );
 
-          if (busy.startsWith("session")) {
+          if (busy === "session-reply" || busy === "session-embedded") {
             expect(result).toEqual({
               status: "skipped",
               reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
@@ -713,7 +706,7 @@ describe("heartbeat runner skips when target session lane is busy", () => {
                 resolvedQueue: createTestQueueSettings(),
                 shouldSteer: false,
                 shouldFollowup: false,
-                isActive: isEmbeddedAgentRunActive(operation.sessionId),
+                isActive: isSessionRunActive(operation.sessionId),
                 opts: options,
                 typing: createMockTypingController(),
                 sessionKey,

@@ -12,9 +12,10 @@ import type { ReplyToolAuthorityOverlay } from "../../sessions/session-controlle
 import {
   beginReplyMessageInjectionTarget,
   createReplyOperation,
-  replyRunRegistry,
+  getSessionControllerOperation,
+  captureCurrentReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
-import { resolveSessionRunProgressState as resolveEmbeddedAgentSessionProgressState } from "../../sessions/session-controller.queries.js";
+import { resolveSessionRunProgressState } from "../../sessions/session-controller.queries.js";
 import { controlRealtimeVoiceAgentRun } from "../../talk/agent-run-control.js";
 import {
   createOperationalRunInstanceRef,
@@ -190,8 +191,8 @@ describe("host-prepared embedded tool authority", () => {
         };
         let pending: ReturnType<typeof beginReplyMessageInjectionTarget> | undefined;
         try {
-          const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(sessionKey);
-          expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+          const target = captureCurrentReplyMessageInjectionTarget(sessionKey);
+          expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
           if (!target) {
             throw new Error("Expected the direct admitted owner to be injectable");
           }
@@ -275,9 +276,9 @@ describe("host-prepared embedded tool authority", () => {
           return queue(text, options);
         },
       };
-      const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(sessionKey);
+      const target = captureCurrentReplyMessageInjectionTarget(sessionKey);
       expect(target).toBeDefined();
-      expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+      expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
       if (!target) {
         throw new Error("Expected the direct admitted owner to be injectable");
       }
@@ -314,7 +315,7 @@ describe("host-prepared embedded tool authority", () => {
             return queue(text, options);
           },
         };
-        const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(sessionKey);
+        const target = captureCurrentReplyMessageInjectionTarget(sessionKey);
         if (!target) {
           throw new Error("Expected the direct admitted owner to be injectable");
         }
@@ -347,7 +348,7 @@ describe("host-prepared embedded tool authority", () => {
     };
     const handle = createEmbeddedRunHandle({ runId: params.runId });
     const state = (agentId: string) =>
-      resolveEmbeddedAgentSessionProgressState(params.sessionId, {
+      resolveSessionRunProgressState(params.sessionId, {
         agentId,
         defaultAgentId: "main",
       });

@@ -9,7 +9,6 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import type { QueuedCompactionHostOptions } from "../agents/embedded-agent-runner/compact.queued-execution.js";
 import type { CompactEmbeddedAgentSessionParams } from "../agents/embedded-agent-runner/compact.types.js";
 import { acceptCompactionSuccessor } from "../agents/embedded-agent-runner/compaction-successor.js";
-import { resolveEmbeddedSessionLane } from "../agents/embedded-agent-runner/lanes.js";
 import { enqueueFollowupRun, type FollowupRun } from "../auto-reply/reply/queue.js";
 import { createQueueTestRun } from "../auto-reply/reply/queue.test-helpers.js";
 import {
@@ -28,18 +27,9 @@ import {
 import { clearAgentRunContext, registerAgentRunContext } from "../infra/agent-run-registry.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import {
-  enqueueCommandInLane,
-  getCommandLaneSnapshot,
-  setCommandLaneConcurrency,
-} from "../process/command-queue.js";
-import {
   beginSessionEffect,
   isSessionControllerWorkActive,
 } from "../sessions/session-controller.lifecycle.js";
-import {
-  claimSessionControllerInput,
-  releaseSessionControllerClaim,
-} from "../sessions/session-controller.mailbox.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
 import {
   seedSessionEntry,
@@ -783,63 +773,6 @@ test("sessions.compact preserves accepted queued follow-up work", async () => {
     clearFollowupQueue(sessionKey);
     ws.close();
   }
-});
-
-test.each([
-  { name: "follow-up-backed", withFollowup: true },
-  { name: "lane-only", withFollowup: false },
-])("sessions.compact preserves accepted $name command-lane work", async ({ withFollowup }) => {
-  const { sessionKey, sessionId, storePath } = await createCompactionSession(
-    "sess-compact-command-queue",
-  );
-  const lane = resolveEmbeddedSessionLane(sessionKey);
-  const queuedRun = createQueueTestRun({ prompt: "please also update the changelog" });
-  queuedRun.run = {
-    ...queuedRun.run,
-    sessionKey,
-    sessionId,
-    agentId: "main",
-    config: { session: { store: storePath } },
-  };
-  let followupClaim: Awaited<ReturnType<typeof claimSessionControllerInput>> | undefined;
-  if (withFollowup) {
-    enqueueFollowupRun(sessionKey, queuedRun, { mode: "collect" }, "none", undefined, false);
-    followupClaim = await claimSessionControllerInput(queuedRun);
-  }
-  setCommandLaneConcurrency(lane, 0);
-  let commandRan = false;
-  const queuedCommand = enqueueCommandInLane(lane, async () => {
-    commandRan = true;
-  });
-
-  const { ws } = await openClient();
-  try {
-    expect(getCommandLaneSnapshot(lane)).toMatchObject({
-      activeCount: 0,
-      queuedCount: 1,
-    });
-
-    const compacted = await rpcReq(ws, "sessions.compact", { key: "main" });
-
-    expect(compacted.ok).toBe(true);
-    expect(Boolean(getExistingFollowupQueue(sessionKey)?.inFlight.has(queuedRun))).toBe(
-      withFollowup,
-    );
-    expect(getCommandLaneSnapshot(lane).queuedCount).toBe(1);
-    expect(commandRan).toBe(false);
-    expect(embeddedRunMock.compactEmbeddedAgentSession).toHaveBeenCalledOnce();
-    expectNoSessionQueueCleanup();
-  } finally {
-    if (followupClaim) {
-      releaseSessionControllerClaim(followupClaim);
-      await followupClaim.settlement.promise;
-    }
-    clearFollowupQueue(sessionKey);
-    setCommandLaneConcurrency(lane, 1);
-    await queuedCommand;
-    ws.close();
-  }
-  expect(commandRan).toBe(true);
 });
 
 test("sessions.compact preserves summary-elided queued follow-up work", async () => {

@@ -942,12 +942,12 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
         list: [{ id: "ops" }, { id: "research" }],
       },
     } as never;
-    const isEmbeddedAgentRunActive = vi.fn(() => true);
+    const isSessionRunActive = vi.fn(() => true);
     const loadSessionEntry = vi.fn(() => ({ sessionId: "ops-session", updatedAt: 1 }));
     const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);
     testing.setDepsForTest({
       getRuntimeConfig: () => cfg,
-      isEmbeddedAgentRunActive,
+      isSessionRunActive,
       loadSessionEntry,
       queueEmbeddedAgentMessageWithOutcome,
       callGateway: vi.fn(async () => {
@@ -966,7 +966,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
     });
 
     expect(result.delivered).toBe(false);
-    expect(isEmbeddedAgentRunActive).not.toHaveBeenCalled();
+    expect(isSessionRunActive).not.toHaveBeenCalled();
     expect(loadSessionEntry).not.toHaveBeenCalled();
     expect(queueEmbeddedAgentMessageWithOutcome).not.toHaveBeenCalled();
   });
@@ -1068,12 +1068,12 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
         list: [{ id: "ops" }, { id: "research" }],
       },
     } as never;
-    const isEmbeddedAgentRunActive = vi.fn(() => true);
+    const isSessionRunActive = vi.fn(() => true);
     const loadSessionEntry = vi.fn(() => ({ sessionId: "ops-session", updatedAt: 1 }));
     const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);
     testing.setDepsForTest({
       getRuntimeConfig: () => cfg,
-      isEmbeddedAgentRunActive,
+      isSessionRunActive,
       loadSessionEntry,
       queueEmbeddedAgentMessageWithOutcome,
       callGateway: vi.fn(async () => {
@@ -1093,7 +1093,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
     });
 
     expect(result.delivered).toBe(false);
-    expect(isEmbeddedAgentRunActive).not.toHaveBeenCalled();
+    expect(isSessionRunActive).not.toHaveBeenCalled();
     expect(loadSessionEntry).not.toHaveBeenCalled();
     expect(queueEmbeddedAgentMessageWithOutcome).not.toHaveBeenCalled();
   });
@@ -1107,12 +1107,12 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
         list: [{ id: "ops" }, { id: "research" }],
       },
     } as never;
-    const isEmbeddedAgentRunActive = vi.fn(() => true);
+    const isSessionRunActive = vi.fn(() => true);
     const loadSessionEntry = vi.fn(() => ({ sessionId: "ops-session", updatedAt: 1 }));
     const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);
     testing.setDepsForTest({
       getRuntimeConfig: () => cfg,
-      isEmbeddedAgentRunActive,
+      isSessionRunActive,
       loadSessionEntry,
       queueEmbeddedAgentMessageWithOutcome,
       callGateway: vi.fn(async () => {
@@ -1131,7 +1131,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
     });
 
     expect(result.delivered).toBe(false);
-    expect(isEmbeddedAgentRunActive).not.toHaveBeenCalled();
+    expect(isSessionRunActive).not.toHaveBeenCalled();
     expect(loadSessionEntry).not.toHaveBeenCalled();
     expect(queueEmbeddedAgentMessageWithOutcome).not.toHaveBeenCalled();
   });

@@ -10,7 +10,6 @@ import { clearFollowupQueue, getExistingFollowupQueue } from "./state.js";
 
 export type ClearSessionQueueResult = {
   followupCleared: number;
-  laneCleared: number;
   keys: string[];
 };
 
@@ -22,7 +21,6 @@ export function clearSessionQueues(
   const seen = new Set<string>();
   const clearedQueues = new Set<NonNullable<ReturnType<typeof getExistingFollowupQueue>>>();
   let followupCleared = 0;
-  const laneCleared = 0;
   const clearedKeys: string[] = [];
 
   for (const key of keys) {
@@ -41,5 +39,5 @@ export function clearSessionQueues(
     }
   }
 
-  return { followupCleared, laneCleared, keys: clearedKeys };
+  return { followupCleared, keys: clearedKeys };
 }

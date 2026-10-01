@@ -7,8 +7,9 @@ import {
   abortActiveReplyRuns,
   clearReplyRunForResetBySessionId,
   isReplyRunAbortableForSignal,
-  isReplyRunActiveForSessionId,
-  replyRunRegistry,
+  isSessionRunActive,
+  isSessionRunActiveForKey,
+  abortSessionRunByKey,
 } from "../../sessions/session-controller.js";
 import { isSessionRunCompactionBlocked as isReplyRunAbortableForCompaction } from "../../sessions/session-controller.queries.js";
 import { createTestReplyOperation } from "./reply-run-registry.test-helpers.js";
@@ -39,7 +40,7 @@ describe("reply run registry cancellation", () => {
       sessionId: "session-compact",
     });
 
-    expect(isReplyRunActiveForSessionId("session-compact")).toBe(true);
+    expect(isSessionRunActive("session-compact")).toBe(true);
     expect(isReplyRunAbortableForCompaction("session-compact")).toBe(false);
 
     operation.markWaitingForDeferredMaintenance();
@@ -61,12 +62,12 @@ describe("reply run registry cancellation", () => {
     operation.abortByUser();
 
     expect(operation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
-    expect(replyRunRegistry.isActive("agent:main:main")).toBe(true);
-    expect(isReplyRunActiveForSessionId("session-waiting-abort")).toBe(true);
+    expect(isSessionRunActiveForKey("agent:main:main")).toBe(true);
+    expect(isSessionRunActive("session-waiting-abort")).toBe(true);
     expect(() => createTestReplyOperation()).toThrow();
     operation.complete();
-    expect(replyRunRegistry.isActive("agent:main:main")).toBe(false);
-    expect(isReplyRunActiveForSessionId("session-waiting-abort")).toBe(false);
+    expect(isSessionRunActiveForKey("agent:main:main")).toBe(false);
+    expect(isSessionRunActive("session-waiting-abort")).toBe(false);
   });
 
   it("does not reset deferred-maintenance operations as backend-owned work", () => {
@@ -78,7 +79,7 @@ describe("reply run registry cancellation", () => {
     clearReplyRunForResetBySessionId("session-waiting-reset");
 
     expect(operation.result).toBeNull();
-    expect(replyRunRegistry.isActive("agent:main:main")).toBe(true);
+    expect(isSessionRunActiveForKey("agent:main:main")).toBe(true);
   });
 
   it("keeps retained terminal failures immutable across late aborts", () => {
@@ -131,10 +132,10 @@ describe("reply run registry cancellation", () => {
     expect(operation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
     expect(operation.phase).toBe("aborted");
     expect(operation.abortSignal.aborted).toBe(true);
-    expect(replyRunRegistry.isActive("agent:main:already-cancelled")).toBe(true);
+    expect(isSessionRunActiveForKey("agent:main:already-cancelled")).toBe(true);
     expect(() => createTestReplyOperation({ sessionKey: operation.key })).toThrow();
     operation.complete();
-    expect(replyRunRegistry.isActive("agent:main:already-cancelled")).toBe(false);
+    expect(isSessionRunActiveForKey("agent:main:already-cancelled")).toBe(false);
   });
 
   it("does not cancel the backend twice when upstream abort follows a user abort", () => {
@@ -157,13 +158,13 @@ describe("reply run registry cancellation", () => {
       isAbortable: () => abortable,
     });
 
-    expect(replyRunRegistry.abort(operation.key)).toBe(false);
+    expect(abortSessionRunByKey(operation.key)).toBe(false);
     expect(abortActiveReplyRuns({ mode: "all" })).toBe(false);
     expect(operation.result).toBeNull();
     expect(cancel).not.toHaveBeenCalled();
 
     abortable = true;
-    expect(replyRunRegistry.abort(operation.key)).toBe(true);
+    expect(abortSessionRunByKey(operation.key)).toBe(true);
     expect(operation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
     expect(cancel).toHaveBeenCalledWith("user_abort");
   });
@@ -180,7 +181,7 @@ describe("reply run registry cancellation", () => {
     expect(operation.phase).toBe("running");
     expect(isReplyRunAbortableForSignal(upstreamAbort.signal)).toBe(false);
     expect(isReplyRunAbortableForSignal(new AbortController().signal)).toBe(true);
-    expect(replyRunRegistry.abort(operation.key)).toBe(false);
+    expect(abortSessionRunByKey(operation.key)).toBe(false);
     expect(operation.result).toBeNull();
     expect(cancel).not.toHaveBeenCalled();
 
@@ -188,7 +189,7 @@ describe("reply run registry cancellation", () => {
     expect(operation.abortSignal.aborted).toBe(false);
 
     operation.complete();
-    expect(replyRunRegistry.isActive(operation.key)).toBe(false);
+    expect(isSessionRunActiveForKey(operation.key)).toBe(false);
     expect(isReplyRunAbortableForSignal(upstreamAbort.signal)).toBe(false);
   });
 

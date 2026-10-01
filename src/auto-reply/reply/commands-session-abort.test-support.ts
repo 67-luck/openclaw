@@ -5,6 +5,6 @@ vi.mock("./queue.js", async () => {
   const actual = await vi.importActual<typeof import("./queue.js")>("./queue.js");
   return {
     ...actual,
-    clearSessionQueues: vi.fn(() => ({ followupCleared: 0, laneCleared: 0, keys: [] })),
+    clearSessionQueues: vi.fn(() => ({ followupCleared: 0, keys: [] })),
   };
 });

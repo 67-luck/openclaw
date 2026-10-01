@@ -1006,8 +1006,6 @@ export async function loadRunOverflowCompactionHarness(): Promise<{
   }));
 
   vi.doMock("./lanes.js", () => ({
-    resolveSessionLane: vi.fn((key: string) => `session:${key}`),
-    resolveEmbeddedSessionLane: vi.fn((key: string) => `session:${key}`),
     resolveGlobalLane: vi.fn(() => "global-lane"),
   }));
 

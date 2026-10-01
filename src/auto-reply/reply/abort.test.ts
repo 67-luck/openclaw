@@ -1,7 +1,9 @@
 // Tests abort request handling, cutoff persistence, and active run cleanup.
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
-import { registryPersistence } from "./abort-subagent-registry.test-support.js";
+import {
+  registryPersistence,
+} from "./abort-subagent-registry.test-support.js";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -22,7 +24,10 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { registerInternalHook, unregisterInternalHook } from "../../hooks/internal-hooks.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
-import { createReplyOperation, replyRunRegistry } from "../../sessions/session-controller.js";
+import {
+  createReplyOperation,
+  isSessionRunActiveForKey,
+} from "../../sessions/session-controller.js";
 import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
 import { stopSubagentsForRequester } from "./abort-operation.js";
 import { getAbortMemory, setAbortMemory } from "./abort-primitives.js";
@@ -45,7 +50,6 @@ type AbortEmbeddedAgentRunOptions = Parameters<
 
 vi.mock("../../agents/embedded-agent.js", () => ({
   abortEmbeddedAgentRun: vi.fn().mockReturnValue(true),
-  resolveEmbeddedSessionLane: (key: string) => `session:${key.trim() || "main"}`,
 }));
 
 const acpManagerMocks = vi.hoisted(() => ({
@@ -65,12 +69,12 @@ const runtimeAbortMocks = vi.hoisted(() => ({
   abortEmbeddedAgentRun: vi.fn<
     (sessionId: string | undefined, opts?: AbortEmbeddedAgentRunOptions) => boolean
   >(() => true),
-  isEmbeddedAgentRunActive: vi.fn(() => false),
+  isSessionRunActive: vi.fn(() => false),
 }));
 
 vi.mock("../../agents/embedded-agent-runner/runs.js", () => ({
   abortEmbeddedAgentRun: runtimeAbortMocks.abortEmbeddedAgentRun,
-  isEmbeddedAgentRunActive: runtimeAbortMocks.isEmbeddedAgentRunActive,
+  isSessionRunActive: runtimeAbortMocks.isSessionRunActive,
 }));
 vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../config/sessions/session-accessor.js")>();
@@ -809,7 +813,7 @@ describe("abort detection", () => {
 
     expect(result.handled).toBe(true);
     expect(sourceOperation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
-    expect(replyRunRegistry.isActive(sourceSessionKey)).toBe(false);
+    expect(isSessionRunActiveForKey(sourceSessionKey)).toBe(false);
     expect(getFollowupQueueDepth(sourceSessionKey)).toBe(0);
     expect(getFollowupQueueDepth(acpSessionKey)).toBe(0);
     expect(acpManagerMocks.cancelSession).toHaveBeenCalledWith(
@@ -865,7 +869,7 @@ describe("abort detection", () => {
       rejectionReason: "finalizing",
     });
     expect(operation.result).toBeNull();
-    expect(replyRunRegistry.isActive(sessionKey)).toBe(true);
+    expect(isSessionRunActiveForKey(sessionKey)).toBe(true);
     expect(cancel).not.toHaveBeenCalled();
     expect(getFollowupQueueDepth(sessionKey)).toBe(0);
     expect(hook).toHaveBeenCalledOnce();
@@ -952,7 +956,7 @@ describe("abort detection", () => {
 
     expect(result.handled).toBe(true);
     expect(sourceOperation.result).toBeNull();
-    expect(replyRunRegistry.isActive(sourceSessionKey)).toBe(true);
+    expect(isSessionRunActiveForKey(sourceSessionKey)).toBe(true);
     expect(acpManagerMocks.cancelSession).toHaveBeenCalledWith(
       expect.objectContaining({
         cfg,
@@ -994,7 +998,7 @@ describe("abort detection", () => {
 
     expect(result.handled).toBe(true);
     expect(sourceOperation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
-    expect(replyRunRegistry.isActive(sourceSessionKey)).toBe(false);
+    expect(isSessionRunActiveForKey(sourceSessionKey)).toBe(false);
   });
 
   it("fast-abort from an ACP-bound source conversation aborts source and bound ACP lanes", async () => {
@@ -1045,8 +1049,8 @@ describe("abort detection", () => {
     expect(result.handled).toBe(true);
     expect(sourceOperation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
     expect(acpOperation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
-    expect(replyRunRegistry.isActive(sourceSessionKey)).toBe(false);
-    expect(replyRunRegistry.isActive(acpSessionKey)).toBe(false);
+    expect(isSessionRunActiveForKey(sourceSessionKey)).toBe(false);
+    expect(isSessionRunActiveForKey(acpSessionKey)).toBe(false);
     expect(getFollowupQueueDepth(sourceSessionKey)).toBe(0);
     expect(getFollowupQueueDepth(acpSessionKey)).toBe(0);
     expect(acpManagerMocks.cancelSession).toHaveBeenCalledWith(

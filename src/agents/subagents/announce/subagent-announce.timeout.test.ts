@@ -89,7 +89,7 @@ vi.mock("./subagent-announce-delivery.runtime.js", () =>
     resolveAgentIdFromSessionKey: () => "main",
     resolveMainSessionKey: () => "agent:main:main",
     resolveSessionStorePathCore: () => "/tmp/sessions-main.json",
-    isEmbeddedAgentRunActive: (sessionId: string) => isEmbeddedAgentRunActiveMock(sessionId),
+    isSessionRunActive: (sessionId: string) => isEmbeddedAgentRunActiveMock(sessionId),
     queueEmbeddedAgentMessageWithOutcome: (sessionId: string) => ({
       queued: false,
       sessionId,
@@ -176,8 +176,8 @@ vi.mock("./subagent-announce.runtime.js", () => ({
   resolveAgentIdFromSessionKey: () => "main",
   resolveSessionStorePathCore: () => "/tmp/sessions-main.json",
   resolveMainSessionKey: () => "agent:main:main",
-  isEmbeddedAgentRunActive: (sessionId: string) => isEmbeddedAgentRunActiveMock(sessionId),
-  waitForEmbeddedAgentRunEnd: (sessionId: string, timeoutMs?: number) =>
+  isSessionRunActive: (sessionId: string) => isEmbeddedAgentRunActiveMock(sessionId),
+  waitForSessionRunEnd: (sessionId: string, timeoutMs?: number) =>
     waitForEmbeddedAgentRunEndMock(sessionId, timeoutMs),
 }));
 vi.mock("../registry/subagent-registry-read.js", () => ({

@@ -19,9 +19,9 @@ import { replyRunInterruptTargetOperation } from "../../sessions/session-control
 import {
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   interruptReplyRunTarget,
-  isReplyRunActiveForSessionId,
-  resolveActiveReplyRunThreadId,
-  resolveActiveReplyRunSessionId,
+  isSessionRunActive,
+  resolveActiveSessionRunThreadId,
+  resolveActiveSessionRunId,
   waitForReplyRunEndBySessionId,
   waitForReplyOperationOwnerSettlement,
 } from "../../sessions/session-controller.js";
@@ -34,6 +34,7 @@ import {
   bindSessionControllerSource,
   retireSessionControllerInput,
 } from "../../sessions/session-controller.mailbox.js";
+import { waitForSessionRunEnd } from "../../sessions/session-controller.native-runtime.js";
 import { readSessionInputProfileId } from "../../sessions/session-participant-input.js";
 import {
   formatThinkingLevels,
@@ -382,7 +383,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       return attachment && "handle" in attachment ? attachment.operation.sessionId : undefined;
     }
     return (
-      embeddedAgentRuntime?.resolveActiveEmbeddedRunSessionId(sessionKey) ??
+      (embeddedAgentRuntime ? resolveActiveSessionRunId(sessionKey) : undefined) ??
       embeddedAgentRuntime?.resolveActiveEmbeddedRunSessionIdBySessionFile?.(sessionFile)
     );
   };
@@ -498,7 +499,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     return routeThreadIdsMatch(
       sourceInput
         ? sourceInput.mailbox.owner.active?.routeThreadId
-        : resolveActiveReplyRunThreadId(sessionKey),
+        : resolveActiveSessionRunThreadId(sessionKey),
       currentRouteThreadId,
     );
   };
@@ -506,7 +507,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     sourceInput
       ? sourceInput.mailbox.owner.active?.sessionId
       : sessionKey
-        ? resolveActiveReplyRunSessionId(sessionKey)
+        ? resolveActiveSessionRunId(sessionKey)
         : undefined;
   const resolveActiveQueueSessionId = () =>
     resolveActiveEmbeddedSessionId() ??
@@ -532,8 +533,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     }
     const replyOperationActive = sourceInput
       ? sourceInput.mailbox.owner.active !== undefined
-      : replyOperationActiveSessionId != null &&
-        isReplyRunActiveForSessionId(replyOperationActiveSessionId);
+      : replyOperationActiveSessionId != null && isSessionRunActive(replyOperationActiveSessionId);
     return {
       activeSessionId,
       isActive: replyOperationActive || recoveryOwnerActive,
@@ -605,10 +605,11 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
           : false;
       },
       waitForActiveRunEnd: (activeRunSessionId) =>
-        isReplyRunActiveForSessionId(activeRunSessionId)
-          ? waitForReplyRunEndBySessionId(activeRunSessionId, REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS)
-          : (embeddedAgentRuntime?.waitForEmbeddedAgentRunEnd(activeRunSessionId) ??
-            Promise.resolve(undefined)),
+        embeddedAgentRuntime
+          ? waitForSessionRunEnd(activeRunSessionId, REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS)
+          : isSessionRunActive(activeRunSessionId)
+            ? waitForReplyRunEndBySessionId(activeRunSessionId, REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS)
+            : Promise.resolve(undefined),
       refreshPreparedState: async () => {
         preparedSessionState = resolvePreparedSessionState();
         ({ authProfileId, authProfileIdSource } = await resolveRuntimeAuthProfile());

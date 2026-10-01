@@ -15,6 +15,8 @@ import {
 import { logWarn } from "../../../logger.js";
 import { withPluginRuntimeGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { defaultRuntime } from "../../../runtime.js";
+import { waitForSessionRunEnd } from "../../../sessions/session-controller.native-runtime.js";
+import { isSessionRunActive } from "../../../sessions/session-controller.queries.js";
 import { isCronSessionKey } from "../../../sessions/session-key-utils.js";
 import { createLazyPromise } from "../../../shared/lazy-promise.js";
 import {
@@ -77,9 +79,7 @@ import {
 import {
   callSubagentLifecycleGateway,
   dispatchGatewayMethodInProcess,
-  isEmbeddedAgentRunActive,
   getRuntimeConfig,
-  waitForEmbeddedAgentRunEnd,
 } from "./subagent-announce.runtime.js";
 
 const loadSubagentRegistryRuntime = createLazyPromise(
@@ -245,9 +245,9 @@ async function runSubagentAnnounceFlowBound(
           ? SILENT_REPLY_TOKEN
           : params.roundOneReply;
     let outcome: SubagentRunOutcome | undefined = params.outcome;
-    if (childSessionId && isEmbeddedAgentRunActive(childSessionId)) {
-      const settled = await waitForEmbeddedAgentRunEnd(childSessionId, settleTimeoutMs);
-      if (!settled && isEmbeddedAgentRunActive(childSessionId)) {
+    if (childSessionId && isSessionRunActive(childSessionId)) {
+      const settled = await waitForSessionRunEnd(childSessionId, settleTimeoutMs);
+      if (!settled && isSessionRunActive(childSessionId)) {
         shouldDeleteChildSession = false;
         // Keep delete cleanup retryable until the active child can be removed.
         if (outcome?.status !== "timeout" || params.cleanup === "delete") {

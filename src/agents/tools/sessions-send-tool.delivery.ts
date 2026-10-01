@@ -6,7 +6,7 @@ import type { GatewaySessionStoreTarget } from "../../gateway/session-utils-stor
 import { formatErrorMessage } from "../../infra/errors.js";
 import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
-import { resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId } from "../../sessions/session-controller.queries.js";
+import { resolveActiveSessionRunId } from "../../sessions/session-controller.queries.js";
 import { isCronRunSessionKey, parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import {
   buildRunUserTurnIdempotencyKey,
@@ -99,7 +99,7 @@ export async function startSessionsSendAgentRun(params: {
       (params.mode !== "followup" &&
         params.allowActiveRunQueueDelivery &&
         isRunScopedAgentSessionKey(params.sessionKey))
-        ? resolveActiveEmbeddedRunSessionId(params.sessionKey)
+        ? resolveActiveSessionRunId(params.sessionKey)
         : undefined;
     if (params.mode === "steer" && !activeRunSessionId) {
       throw new Error(

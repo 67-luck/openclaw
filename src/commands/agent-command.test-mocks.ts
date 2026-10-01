@@ -67,7 +67,6 @@ vi.mock("../acp/control-plane/manager.js", () => ({
 vi.mock("../agents/embedded-agent.js", () => ({
   abortEmbeddedAgentRun: vi.fn().mockReturnValue(false),
   runEmbeddedAgent: vi.fn(),
-  resolveEmbeddedSessionLane: (key: string) => `session:${key.trim() || "main"}`,
 }));
 
 vi.mock("../agents/model-catalog.js", () => ({

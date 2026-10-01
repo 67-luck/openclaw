@@ -1,6 +1,10 @@
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
+import { ReplyRunAlreadyActiveError, type ReplyOperation } from "./session-controller.contracts.js";
 import {
   activeSessionOperations,
+  findSessionControllerEntries,
+  isReplyRunEvidenceStale,
   getSessionControllerOperation,
   hasReplyOperationExecutionStarted,
   isReplyOperationPreBackendPhase,
@@ -77,4 +81,44 @@ export function listActiveSessionRunIds(): string[] {
 }
 export function resolveActiveSessionRunId(sessionKey: string): string | undefined {
   return getSessionControllerOperation(sessionKey.trim())?.sessionId;
+}
+
+/** A logical key is busy even when it selects multiple physical owners. */
+export function isSessionRunActiveForKey(sessionKey: string): boolean {
+  const normalizedSessionKey = normalizeOptionalString(sessionKey);
+  return Boolean(
+    normalizedSessionKey &&
+    findSessionControllerEntries(normalizedSessionKey).some((entry) => entry.active),
+  );
+}
+
+/** Reads the active operation's delivery thread without selecting an ambiguous owner. */
+export function resolveActiveSessionRunThreadId(sessionKey: string): string | number | undefined {
+  return getSessionControllerOperation(sessionKey)?.routeThreadId;
+}
+
+export function isReplyRunEvidenceStaleBySessionId(sessionId: string): boolean {
+  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
+  const operations =
+    resolution.kind === "none"
+      ? []
+      : resolution.kind === "one"
+        ? [resolution.operation]
+        : resolution.operations;
+  return operations.some(isReplyRunEvidenceStale);
+}
+
+export function listActiveReplyRunSessionKeys(): string[] {
+  return [...activeSessionOperations()].map((operation) => operation.key);
+}
+
+/** Resolves a single active physical owner, rejecting ambiguous current identities. */
+export function resolveActiveReplyOperationForSessionId(
+  sessionId: string,
+): ReplyOperation | undefined {
+  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
+  if (resolution.kind === "ambiguous") {
+    throw new ReplyRunAlreadyActiveError(sessionId);
+  }
+  return resolution.kind === "one" ? resolution.operation : undefined;
 }

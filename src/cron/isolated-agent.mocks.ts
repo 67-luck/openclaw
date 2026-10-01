@@ -9,7 +9,6 @@ const readPreparedModelCatalog = vi.hoisted(() => vi.fn());
 vi.mock("../agents/embedded-agent.js", () => ({
   abortEmbeddedAgentRun: vi.fn().mockReturnValue(false),
   runEmbeddedAgent: vi.fn(),
-  resolveEmbeddedSessionLane: (key: string) => `session:${key.trim() || "main"}`,
 }));
 
 vi.mock("../agents/prepared-model-catalog.js", async () => {

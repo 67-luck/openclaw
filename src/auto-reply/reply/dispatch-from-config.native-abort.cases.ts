@@ -10,9 +10,10 @@ import { buildTestCtx } from "./test-ctx.js";
 export function registerNativeDispatchAbortCases(
   getRuntime: () => {
     dispatchReplyFromConfig: typeof import("./dispatch-from-config.js").dispatchReplyFromConfig;
-    replyRunRegistry: typeof import("../../sessions/session-controller.js").replyRunRegistry;
+    getSessionControllerOperation: typeof import("../../sessions/session-controller.js").getSessionControllerOperation;
+    abortSessionRunByKey: typeof import("../../sessions/session-controller.js").abortSessionRunByKey;
     createReplyOperation: typeof import("../../sessions/session-controller.js").createReplyOperation;
-    listActiveReplyRunSessionKeys: typeof import("../../sessions/session-controller.registry.js").listActiveReplyRunSessionKeys;
+    listActiveReplyRunSessionKeys: typeof import("../../sessions/session-controller.js").listActiveReplyRunSessionKeys;
     createDispatchConfig: (diagnostics?: boolean) => OpenClawConfig;
     expectNoReplies: (dispatcher: ReturnType<typeof createDispatcher>) => void;
   },
@@ -20,7 +21,8 @@ export function registerNativeDispatchAbortCases(
   it("keeps native command pre-dispatch cancellation on its unclaimed source", async () => {
     const {
       dispatchReplyFromConfig,
-      replyRunRegistry,
+      getSessionControllerOperation,
+      abortSessionRunByKey,
       listActiveReplyRunSessionKeys,
       createDispatchConfig,
       expectNoReplies,
@@ -73,13 +75,13 @@ export function registerNativeDispatchAbortCases(
     try {
       await beforeDispatchStarted.promise;
       expect(prepared.input.claim).toBeUndefined();
-      expect(replyRunRegistry.get(sourceSessionKey)).toBeUndefined();
-      expect(replyRunRegistry.abort(targetSessionKey)).toBe(false);
+      expect(getSessionControllerOperation(sourceSessionKey)).toBeUndefined();
+      expect(abortSessionRunByKey(targetSessionKey)).toBe(false);
       origin.abort();
 
       await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
-      expect(replyRunRegistry.get(sourceSessionKey)).toBeUndefined();
-      expect(replyRunRegistry.get(targetSessionKey)).toBeUndefined();
+      expect(getSessionControllerOperation(sourceSessionKey)).toBeUndefined();
+      expect(getSessionControllerOperation(targetSessionKey)).toBeUndefined();
       expect(prepared.input.abortSignal.aborted).toBe(true);
       expect(settled).not.toHaveBeenCalled();
 
@@ -97,7 +99,7 @@ export function registerNativeDispatchAbortCases(
   it("admits unauthorized native /stop on the source while the target has an active run", async () => {
     const {
       dispatchReplyFromConfig,
-      replyRunRegistry,
+      getSessionControllerOperation,
       createReplyOperation,
       listActiveReplyRunSessionKeys,
       createDispatchConfig,
@@ -162,8 +164,8 @@ export function registerNativeDispatchAbortCases(
     });
     // Target run must remain active — command admission is source-keyed.
     expect(targetOperation.result).toBeNull();
-    expect(replyRunRegistry.get(targetSessionKey)).toBe(targetOperation);
-    expect(replyRunRegistry.get(sourceSessionKey)).toBeUndefined();
+    expect(getSessionControllerOperation(targetSessionKey)).toBe(targetOperation);
+    expect(getSessionControllerOperation(sourceSessionKey)).toBeUndefined();
     targetOperation.complete();
     expect(listActiveReplyRunSessionKeys()).toEqual([]);
   });
@@ -171,7 +173,7 @@ export function registerNativeDispatchAbortCases(
   it("does not let a current-session fast abort abort its own dispatch operation", async () => {
     const {
       dispatchReplyFromConfig,
-      replyRunRegistry,
+      abortSessionRunByKey,
       listActiveReplyRunSessionKeys,
       createDispatchConfig,
     } = getRuntime();
@@ -192,7 +194,7 @@ export function registerNativeDispatchAbortCases(
         replyOptions: { sourceReplyDeliveryMode: "automatic" },
         replyResolver,
         fastAbortResolver: async () => {
-          expect(replyRunRegistry.abort("agent:main:self-stop")).toBe(false);
+          expect(abortSessionRunByKey("agent:main:self-stop")).toBe(false);
           return { handled: true, aborted: true };
         },
         formatAbortReplyTextResolver: () => "stopped",

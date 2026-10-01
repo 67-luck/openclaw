@@ -20,14 +20,15 @@ import {
 import {
   interruptReplyRunTarget,
   isReplyRunAbortableForSignal,
-  replyRunRegistry,
   type ReplyMessageInjectionTarget,
   type ReplyOperation,
+  captureCurrentSessionRunInterruptTarget,
 } from "../../sessions/session-controller.js";
 import {
   beginSessionEffect,
   captureSessionTarget,
 } from "../../sessions/session-controller.lifecycle.js";
+import { captureCurrentReplyMessageInjectionTarget } from "../../sessions/session-controller.message-injection.js";
 import { resolveActiveReplyRunOwnerForSignal } from "../../sessions/session-controller.state.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { registerChatAbortController, resolveChatRunExpiresAtMs } from "../chat-abort.js";
@@ -235,9 +236,7 @@ export async function admitChatSend(
   });
   const runInterruptTarget =
     admittedRunAbort.entry?.input.policy.mode === "interrupt"
-      ? replyRunRegistry.resolveCurrentInterruptTarget(
-          admittedRunAbort.entry.input.mailbox.owner.id,
-        )
+      ? captureCurrentSessionRunInterruptTarget(admittedRunAbort.entry.input.mailbox.owner.id)
       : undefined;
   const commitChatWorkAdmission = () => {
     params.assertCurrent?.();
@@ -310,7 +309,7 @@ export async function admitChatSend(
     // later, the opaque target rejects instead of resolving a successor.
     messageInjectionTarget =
       p.queueMode === "steer"
-        ? replyRunRegistry.resolveCurrentMessageInjectionTarget(
+        ? captureCurrentReplyMessageInjectionTarget(
             admittedRunAbort?.entry?.input.mailbox.owner.id ?? activeRunScopeKey,
           )
         : undefined;

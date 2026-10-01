@@ -193,11 +193,15 @@ export function getSessionControllerOperation(
   key: string,
   target?: SessionTarget,
 ): ReplyOperation | undefined {
-  const exact = !target ? controllerStorage.sessionControllers.get(key) : undefined;
+  const normalizedKey = normalizeOptionalString(key);
+  if (!normalizedKey) {
+    return undefined;
+  }
+  const exact = !target ? controllerStorage.sessionControllers.get(normalizedKey) : undefined;
   if (exact && exact.id !== exact.key) {
     return exact.active;
   }
-  const operations = findSessionControllerEntries(key, target).flatMap((entry) =>
+  const operations = findSessionControllerEntries(normalizedKey, target).flatMap((entry) =>
     entry.active ? [entry.active] : [],
   );
   if (operations.length > 1) {

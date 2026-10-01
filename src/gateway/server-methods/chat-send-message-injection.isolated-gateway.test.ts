@@ -16,7 +16,7 @@
  *    the production handler path, not the admission starter called directly;
  *  - a real persisted session entry carrying a terminal tombstone for the
  *    active source turn (real session store + real receipt classifier);
- *  - the real `replyRunRegistry` recording the active source-turn identity;
+ *  - the real session controller recording the active source-turn identity;
  *  - the real `beginReplyMessageInjectionTarget` (spied) — the fence must
  *    reject before it queues anything;
  *  - the REAL production dispatcher: `dispatchInboundMessageMock` is reset
@@ -56,9 +56,11 @@ import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RawData, WebSocket } from "ws";
 import { installQueueRuntimeErrorSilencer } from "../../auto-reply/reply/queue.test-helpers.js";
-import * as replyRunRegistryModule from "../../sessions/session-controller.js";
-import { createReplyOperation } from "../../sessions/session-controller.operation.js";
-import { replyRunRegistry } from "../../sessions/session-controller.registry.js";
+import * as sessionControllerModule from "../../sessions/session-controller.js";
+import {
+  createReplyOperation,
+  bindSessionControllerSourceTurnId,
+} from "../../sessions/session-controller.js";
 import {
   dispatchInboundMessageMock,
   installGatewayTestHooks,
@@ -272,9 +274,9 @@ describe("terminal-receipt steer fence isolated-gateway proof (#128971 round-8)"
           queueMessage: async () => {},
         },
       });
-      replyRunRegistry.bindSourceTurnId(operation, SOURCE_TURN_ID);
+      bindSessionControllerSourceTurnId(operation, SOURCE_TURN_ID);
 
-      const registrySpy = vi.spyOn(replyRunRegistryModule, "beginReplyMessageInjectionTarget");
+      const registrySpy = vi.spyOn(sessionControllerModule, "beginReplyMessageInjectionTarget");
 
       // REAL production dispatcher: no seam implementation. The gateway test
       // module mock then passes dispatchInboundMessageWithProjectedDispatcher
@@ -426,9 +428,9 @@ describe("terminal-receipt steer fence isolated-gateway proof (#128971 round-8)"
           queueMessage: async () => {},
         },
       });
-      // NOTE: no replyRunRegistry.bindSourceTurnId — unknown identity.
+      // NOTE: no source-turn binding — unknown identity.
 
-      const registrySpy = vi.spyOn(replyRunRegistryModule, "beginReplyMessageInjectionTarget");
+      const registrySpy = vi.spyOn(sessionControllerModule, "beginReplyMessageInjectionTarget");
 
       // REAL production dispatcher: no seam implementation. The gateway test
       // module mock then passes dispatchInboundMessageWithProjectedDispatcher
@@ -572,14 +574,14 @@ describe("terminal-receipt steer fence isolated-gateway proof (#128971 round-8)"
         },
       });
       // Bind a different active source turn than the tombstoned one.
-      replyRunRegistry.bindSourceTurnId(operation, SOURCE_TURN_ID);
+      bindSessionControllerSourceTurnId(operation, SOURCE_TURN_ID);
 
       // Spy and resolve so the steer path is observable. Return a valid
       // attempt with acceptance=true so the chat-send handler treats the
       // steer as enqueued (skips follow-up dispatch) instead of falling
       // through to the dispatch boundary on an undefined attempt.
       const registrySpy = vi
-        .spyOn(replyRunRegistryModule, "beginReplyMessageInjectionTarget")
+        .spyOn(sessionControllerModule, "beginReplyMessageInjectionTarget")
         .mockImplementation(() => ({
           targetRunId: "live-run-unrelated",
           acceptance: Promise.resolve(true),
@@ -651,7 +653,7 @@ describe("terminal-receipt steer fence isolated-gateway proof (#128971 round-8)"
           queueMessage: async () => {},
         },
       });
-      replyRunRegistry.bindSourceTurnId(operation, SOURCE_TURN_ID);
+      bindSessionControllerSourceTurnId(operation, SOURCE_TURN_ID);
 
       // Simulate the pre-fix classifier: never fail-closed.
       const receiptModule = await import("../../config/sessions/restart-recovery-receipt.js");
@@ -660,7 +662,7 @@ describe("terminal-receipt steer fence isolated-gateway proof (#128971 round-8)"
         .mockReturnValue(undefined);
 
       const registrySpy = vi
-        .spyOn(replyRunRegistryModule, "beginReplyMessageInjectionTarget")
+        .spyOn(sessionControllerModule, "beginReplyMessageInjectionTarget")
         .mockImplementation(() => ({
           targetRunId: "live-run-before-fix",
           acceptance: Promise.resolve(true),

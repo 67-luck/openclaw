@@ -12,7 +12,7 @@ import type {
 import {
   beginReplyMessageInjectionTarget,
   finalizeReplyMessageInjectionAttempt,
-  replyRunRegistry,
+  captureCurrentReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { createTestReplyOperation } from "./reply-run-registry.test-helpers.js";
@@ -32,13 +32,13 @@ it("leaves new human input for a visible followup instead of a hidden coordinati
     messageInjection: { isAvailable: () => true, queueMessage },
   });
   operation.setPhase("running");
-  const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key);
+  const target = captureCurrentReplyMessageInjectionTarget(operation.key);
   if (!target) {
     throw new Error("Expected a visible run to accept steering before its display scope changed");
   }
   registerAgentRunContext(runId, { isControlUiVisible: false, projectSessionMessages: false });
   try {
-    expect(replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key)).toMatchObject({
+    expect(captureCurrentReplyMessageInjectionTarget(operation.key)).toMatchObject({
       runId,
     });
     await expect(
@@ -121,7 +121,7 @@ it.each([
         throwFromSink(undefined, assertCurrent),
     },
     async (operation) => {
-      const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key)!;
+      const target = captureCurrentReplyMessageInjectionTarget(operation.key)!;
       const attempt = beginReplyMessageInjectionTarget(target, "Keep this input", {
         isInboundUserMessage: true,
         toolAuthorityFingerprint: "same-owner",
@@ -172,7 +172,7 @@ it.each([
   await withHiddenQuestionRun(
     { version: 2, isAvailable: () => true, queueMessage, claimPendingUserInputAnswer },
     async (operation) => {
-      const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key);
+      const target = captureCurrentReplyMessageInjectionTarget(operation.key);
       expect(target).toBeDefined();
       const result = await beginReplyMessageInjectionTarget(target!, "Green", {
         isInboundUserMessage: true,
@@ -210,7 +210,7 @@ it.each(["source", "backend"] as const)(
         },
       },
       async (operation) => {
-        const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key);
+        const target = captureCurrentReplyMessageInjectionTarget(operation.key);
         expect(target).toBeDefined();
         const attempt = beginReplyMessageInjectionTarget(target!, "Green", {
           isInboundUserMessage: true,
@@ -268,7 +268,7 @@ it.each(["same-owner", "other-owner"])(
         cancelPendingUserInput,
       },
       async (operation) => {
-        const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key);
+        const target = captureCurrentReplyMessageInjectionTarget(operation.key);
         expect(target).toBeDefined();
         await expect(
           beginReplyMessageInjectionTarget(target!, "Use this image", {
@@ -312,7 +312,7 @@ it.each(["same-owner", "different-owner"])(
       },
     });
     operation.setPhase("running");
-    const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key)!;
+    const target = captureCurrentReplyMessageInjectionTarget(operation.key)!;
     const result = await beginReplyMessageInjectionTarget(target, "Refresh the card", {
       isInboundUserMessage: true,
       toolAuthorityFingerprint: fingerprint,
@@ -343,7 +343,7 @@ it.each([false, true])(
       },
     });
     operation.setPhase("running");
-    const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key)!;
+    const target = captureCurrentReplyMessageInjectionTarget(operation.key)!;
     const attempt = beginReplyMessageInjectionTarget(target, "Queued guidance");
     const result = await finalizeReplyMessageInjectionAttempt({
       attempt,

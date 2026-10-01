@@ -10,8 +10,8 @@ import {
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import {
   createReplyOperation,
-  replyRunRegistry,
   type ReplyOperation,
+  getSessionControllerOperation,
 } from "../../sessions/session-controller.js";
 import { captureSessionControllerSettlement } from "../../sessions/session-controller.lifecycle.js";
 import * as controllerMailbox from "../../sessions/session-controller.mailbox.js";
@@ -89,7 +89,7 @@ export function registerReplyAdmissionCases({
         expect(loadSessionEntry({ agentId: "main", storePath, sessionKey: "main" })).toMatchObject({
           restartRecoveryDeliveryRunId: "msg",
         });
-        operation = replyRunRegistry.get("main");
+        operation = getSessionControllerOperation("main");
         expect(operation).toBeDefined();
         rotateAgentEventLifecycleGeneration();
         expect(operation?.result).toEqual({ kind: "aborted", code: "aborted_for_restart" });

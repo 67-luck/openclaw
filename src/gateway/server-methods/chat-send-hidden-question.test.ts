@@ -5,7 +5,10 @@ import { prepareReplyToolAuthority } from "../../auto-reply/reply/reply-tool-aut
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ReplyBackendMessageInjectionV2 } from "../../sessions/session-controller.contracts.js";
-import { createReplyOperation, replyRunRegistry } from "../../sessions/session-controller.js";
+import {
+  createReplyOperation,
+  captureCurrentReplyMessageInjectionTarget,
+} from "../../sessions/session-controller.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import {
   reserveSessionControllerSource,
@@ -87,7 +90,7 @@ it.each(
       operation.setPhase("running");
       registerAgentRunContext(runId, { isControlUiVisible: false, projectSessionMessages: false });
       try {
-        const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(sessionKey);
+        const target = captureCurrentReplyMessageInjectionTarget(sessionKey);
         expect(target).toBeDefined();
         const adapter = { sessionKey, sessionId, scope: storePath };
         const input = reserveSessionControllerSource(sessionKey, {

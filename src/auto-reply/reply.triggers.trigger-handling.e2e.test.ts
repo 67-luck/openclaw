@@ -118,7 +118,7 @@ vi.mock("./reply/agent-runner.runtime.js", () => ({
 
 vi.mock("./reply/commands-compact.runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./reply/commands-compact.runtime.js")>()),
-  isEmbeddedAgentRunAbortableForCompaction: () => false,
+  isSessionRunCompactionBlocked: () => false,
 }));
 
 let capturedGetReplyFromConfig: GetReplyFromConfig | undefined;

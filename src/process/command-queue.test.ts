@@ -530,10 +530,8 @@ describe("command queue", () => {
     expect(consoleOutput.mock.calls[0]?.[0]).not.toContain("requesterSessionKey=");
   });
 
-  it.each([
-    "session:probe-setup-inference:openai",
-    "session:temp:setup-inference:probe-setup-inference-test-uuid",
-  ])("keeps setup-inference probe lane failures quiet: %s", async (lane) => {
+  it("keeps setup-inference probe lane failures quiet", async () => {
+    const lane = "session:probe-setup-inference:openai";
     const error = new Error("Authentication failed");
 
     await expect(

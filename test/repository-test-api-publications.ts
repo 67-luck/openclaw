@@ -80,7 +80,7 @@ const publications: Record<string, string | symbol> = {
   "src/model-catalog/remote-overlay.ts": Symbol.for("openclaw.remoteModelCatalogOverlayTestApi"),
   "src/node-host/plugin-node-host.ts": Symbol.for("openclaw.nodeHostPluginTestApi"),
   "src/plugins/memory-runtime.ts": Symbol.for("openclaw.memoryRuntimeTestApi"),
-  "src/sessions/session-controller.registry.ts": Symbol.for("openclaw.replyRunRegistryTestApi"),
+  "src/sessions/session-controller.state.ts": Symbol.for("openclaw.replyRunRegistryTestApi"),
   "src/sessions/session-upstream-monitor.ts": Symbol.for("openclaw.sessionUpstreamMonitorTestApi"),
   "src/sessions/user-turn-transcript.ts": Symbol.for("openclaw.userTurnTranscriptTestApi"),
   "src/skills/lifecycle/upload-store.ts": Symbol.for("openclaw.skillUploadStoreTestApi"),

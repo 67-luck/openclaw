@@ -71,7 +71,7 @@ export function registerQueueStopControlTests({
         });
       }
       setSubagentControlDepsForTest({
-        isEmbeddedAgentRunActive: () => true,
+        isTargetSessionRunActive: () => true,
         abortEmbeddedAgentRun: (sessionId) => {
           expect(sessionId).toBe("running-session");
           if (kind !== "channel stop" && kind !== "first cancellation await") {
@@ -79,7 +79,7 @@ export function registerQueueStopControlTests({
           }
           return true;
         },
-        clearSessionQueues: () => ({ followupCleared: 0, laneCleared: 0, keys: [] }),
+        clearSessionQueues: () => ({ followupCleared: 0, keys: [] }),
       });
       const controller = {
         controllerSessionKey,

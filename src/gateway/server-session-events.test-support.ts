@@ -63,7 +63,7 @@ vi.mock("../agents/embedded-agent-runner/runs.js", async () => {
   );
   return {
     ...actual,
-    resolveEmbeddedAgentSessionProgressState: (...args: unknown[]) =>
+    resolveSessionRunProgressState: (...args: unknown[]) =>
       resolveEmbeddedAgentSessionProgressStateMock(...args),
   };
 });

@@ -20,8 +20,8 @@ import {
 } from "../../logging/diagnostic-run-activity.js";
 import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import {
-  listActiveSessionRunIds as listActiveEmbeddedRunSessionIds,
-  listActiveSessionRunKeys as listActiveEmbeddedRunSessionKeys,
+  listActiveSessionRunIds,
+  listActiveSessionRunKeys,
 } from "../../sessions/session-controller.queries.js";
 import { assertSessionControllerOperation } from "../../sessions/session-controller.state.js";
 import { withGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js";
@@ -196,12 +196,12 @@ describe("embedded run registry lifecycle generations", () => {
     try {
       rotateAgentEventLifecycleGeneration();
       expect(abort).toHaveBeenCalledExactlyOnceWith("restart");
-      expect(listActiveEmbeddedRunSessionIds()).toContain("rootless-session");
+      expect(listActiveSessionRunIds()).toContain("rootless-session");
     } finally {
       clearActiveEmbeddedRun("rootless-session", handle);
       operation.complete();
     }
-    expect(listActiveEmbeddedRunSessionIds()).not.toContain("rootless-session");
+    expect(listActiveSessionRunIds()).not.toContain("rootless-session");
   });
 
   it("rejects a delayed prior-lifecycle registration for a current session owner", async () => {
@@ -244,8 +244,8 @@ describe("embedded run registry lifecycle generations", () => {
     expect(staleQueueMessage).not.toHaveBeenCalled();
     expect(staleAbort).toHaveBeenCalledWith("restart");
     expect(currentAbort).not.toHaveBeenCalled();
-    expect(listActiveEmbeddedRunSessionIds()).toContain("shared-session");
-    expect(listActiveEmbeddedRunSessionKeys()).toEqual(["agent:main:current"]);
+    expect(listActiveSessionRunIds()).toContain("shared-session");
+    expect(listActiveSessionRunKeys()).toEqual(["agent:main:current"]);
     expect(resolveActiveEmbeddedRunHandleSessionId("agent:main:stale")).toBeUndefined();
     expect(isEmbeddedAgentRunAbortableForRunId("current-run")).toBe(false);
     expect(isEmbeddedAgentRunAbortableForRunId("stale-run")).toBe(true);
@@ -277,8 +277,8 @@ describe("embedded run registry lifecycle generations", () => {
     ).resolves.toMatchObject({ queued: false, reason: "no_active_run" });
     expect(staleQueueMessage).not.toHaveBeenCalled();
     expect(staleAbort).toHaveBeenCalledWith("restart");
-    expect(listActiveEmbeddedRunSessionIds()).not.toContain("stale-session");
-    expect(listActiveEmbeddedRunSessionKeys()).not.toContain("agent:main:stale");
+    expect(listActiveSessionRunIds()).not.toContain("stale-session");
+    expect(listActiveSessionRunKeys()).not.toContain("agent:main:stale");
     expect(resolveActiveEmbeddedRunHandleSessionId("agent:main:stale")).toBeUndefined();
     expect(
       resolveActiveEmbeddedRunHandleSessionIdBySessionFile("/tmp/stale-session.jsonl"),
@@ -303,7 +303,7 @@ describe("embedded run registry lifecycle generations", () => {
     expect(abort).toHaveBeenCalledTimes(2);
     expect(abort).toHaveBeenNthCalledWith(1, "restart");
     expect(abort).toHaveBeenNthCalledWith(2, "restart");
-    expect(listActiveEmbeddedRunSessionIds()).not.toContain("cleared-stale-session");
+    expect(listActiveSessionRunIds()).not.toContain("cleared-stale-session");
   });
 
   it("rejects a current-lifecycle handle after its diagnostic owner closes", () => {
@@ -322,7 +322,7 @@ describe("embedded run registry lifecycle generations", () => {
     setActiveEmbeddedRun(ref.sessionId, handle, ref.sessionKey);
 
     expect(abort).toHaveBeenCalledWith("restart");
-    expect(listActiveEmbeddedRunSessionIds()).not.toContain(ref.sessionId);
+    expect(listActiveSessionRunIds()).not.toContain(ref.sessionId);
   });
 
   it("propagates failure to abort a delayed prior-lifecycle registration", () => {
@@ -348,7 +348,7 @@ describe("embedded run registry lifecycle generations", () => {
         priorLifecycleGeneration,
       ),
     ).toThrow("stale abort failed");
-    expect(listActiveEmbeddedRunSessionIds()).not.toContain("stale-session");
+    expect(listActiveSessionRunIds()).not.toContain("stale-session");
   });
 
   it("lets a current-lifecycle owner replace a stale session owner", async () => {
@@ -367,7 +367,7 @@ describe("embedded run registry lifecycle generations", () => {
     );
 
     rotateAgentEventLifecycleGeneration();
-    expect(listActiveEmbeddedRunSessionIds()).toContain("shared-session");
+    expect(listActiveSessionRunIds()).toContain("shared-session");
     clearActiveEmbeddedRun("shared-session", staleHandle, "agent:main:stale");
     staleOperation.complete();
     const currentQueueMessage = vi.fn(async () => {});
@@ -392,8 +392,8 @@ describe("embedded run registry lifecycle generations", () => {
     expect(staleAbort).toHaveBeenCalledOnce();
     expect(staleAbort).toHaveBeenCalledWith("restart");
     expect(currentAbort).not.toHaveBeenCalled();
-    expect(listActiveEmbeddedRunSessionIds()).toContain("shared-session");
-    expect(listActiveEmbeddedRunSessionKeys()).toEqual(["agent:main:current"]);
+    expect(listActiveSessionRunIds()).toContain("shared-session");
+    expect(listActiveSessionRunKeys()).toEqual(["agent:main:current"]);
     expect(resolveActiveEmbeddedRunHandleSessionId("agent:main:stale")).toBeUndefined();
     expect(
       resolveActiveEmbeddedRunHandleSessionIdBySessionFile("/tmp/stale-session.jsonl"),
@@ -439,7 +439,7 @@ describe("embedded run registry lifecycle generations", () => {
     expect(staleAbort).toHaveBeenCalledWith("restart");
     expect(currentAbort).not.toHaveBeenCalled();
     expect(currentQueueMessage).toHaveBeenCalledOnce();
-    expect(listActiveEmbeddedRunSessionKeys()).toEqual(["agent:main:current"]);
+    expect(listActiveSessionRunKeys()).toEqual(["agent:main:current"]);
   });
 
   it("closes queued diagnostic authority before rotation eviction and abort failure", async () => {
@@ -563,8 +563,8 @@ describe("embedded run registry lifecycle generations", () => {
     rotateAgentEventLifecycleGeneration();
 
     expect(cancel).toHaveBeenCalledExactlyOnceWith("restart");
-    expect(replyRunsB.isReplyRunActiveForSessionId("hot-loaded-session")).toBe(true);
+    expect(replyRunsB.isSessionRunActive("hot-loaded-session")).toBe(true);
     operation.complete();
-    expect(replyRunsB.isReplyRunActiveForSessionId("hot-loaded-session")).toBe(false);
+    expect(replyRunsB.isSessionRunActive("hot-loaded-session")).toBe(false);
   });
 });

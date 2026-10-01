@@ -591,7 +591,7 @@ export async function killSubagentRun(params: {
         }
         const active =
           capturedStop?.operations.some((operation) => !operation.result) ||
-          (sessionId ? runtime.isEmbeddedAgentRunActive(sessionId, target) : false);
+          (sessionId ? runtime.isTargetSessionRunActive(sessionId, target) : false);
         if (!ownsSessionIncarnation()) {
           return releaseChangedSessionKill(claimedKill);
         }
@@ -643,15 +643,15 @@ export async function killSubagentRun(params: {
           .map(({ input }) => input);
         const cleared = !gatewaySourceSelection
           ? runtime.clearSessionQueues([childSessionKey, sessionId], target, selected)
-          : { followupCleared: 0, laneCleared: 0, keys: [] };
+          : { followupCleared: 0, keys: [] };
         await Promise.all(
           selected
             .filter((input) => input.retirementRequested)
             .map((input) => input.settlement.promise),
         );
-        if (cleared.followupCleared > 0 || cleared.laneCleared > 0) {
+        if (cleared.followupCleared > 0) {
           logVerbose(
-            `subagents control kill: cleared followups=${cleared.followupCleared} lane=${cleared.laneCleared} keys=${cleared.keys.join(",")}`,
+            `subagents control kill: cleared followups=${cleared.followupCleared} keys=${cleared.keys.join(",")}`,
           );
         }
         if (refused || (active && !stopAccepted)) {

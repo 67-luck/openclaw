@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isSessionRunActive as isEmbeddedAgentRunActive } from "../../sessions/session-controller.queries.js";
+import { isSessionRunActive } from "../../sessions/session-controller.queries.js";
 import { testing as deliveryTesting } from "../subagents/announce/subagent-announce-delivery.test-support.js";
 import { sendSubagentAnnounceDirectly } from "../subagents/announce/subagent-announce-direct-delivery.js";
 import {
@@ -42,7 +42,7 @@ describe("timeout recovery completion delivery", () => {
       getRuntimeConfig: () => ({}) as never,
       getRequesterSessionActivity: () => ({
         sessionId,
-        isActive: isEmbeddedAgentRunActive(sessionId),
+        isActive: isSessionRunActive(sessionId),
       }),
       loadRequesterSessionEntry: (requestedKey) => ({
         cfg: {} as never,

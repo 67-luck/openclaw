@@ -45,9 +45,9 @@ import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
 import { RUN_STALE_TAKEOVER_MS } from "../../logging/diagnostic-run-activity.js";
 import {
-  replyRunRegistry,
   type ReplyBackendQueueMessageOptions,
   type ReplyOperation,
+  createReplyOperation,
 } from "../../sessions/session-controller.js";
 import {
   getSessionControllerWorkCount,
@@ -947,7 +947,7 @@ function beginActiveReplyOperation(params: {
   sessionId?: string;
   sessionKey?: string;
 }) {
-  const operation = replyRunRegistry.begin({
+  const operation = createReplyOperation({
     sessionKey: params.sessionKey ?? "agent:main:main",
     sessionId: params.sessionId ?? mockState.sessionId,
     resetTriggered: false,
@@ -1622,7 +1622,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       originatingLeafEntryId: "current-leaf",
       queueMessage: originalQueue,
     });
-    let successor: ReturnType<typeof replyRunRegistry.begin> | undefined;
+    let successor: ReturnType<typeof createReplyOperation> | undefined;
 
     try {
       await handleChatSend(
@@ -2032,7 +2032,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       runId: "run-a",
       queueMessage: originalQueue,
     });
-    let successor: ReturnType<typeof replyRunRegistry.begin> | undefined;
+    let successor: ReturnType<typeof createReplyOperation> | undefined;
 
     try {
       const pendingSend = send({

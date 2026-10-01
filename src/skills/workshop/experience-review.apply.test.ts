@@ -3,7 +3,6 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import { resolveAdmittedRunActiveAssertion } from "../../agents/admitted-run-context.js";
-import { resolveEmbeddedSessionLane as resolveSessionLane } from "../../agents/embedded-agent-runner/lanes.js";
 import type {
   RunEmbeddedAgentParams,
   EmbeddedForegroundPromptContext,
@@ -368,17 +367,20 @@ describe("experience review maintenance", () => {
     },
   );
 
-  it("does not occupy the foreground session lane", async () => {
-    const workspaceDir = await tempDirs.make("openclaw-experience-session-lane-");
+  it("does not occupy foreground turn capacity", async () => {
+    const workspaceDir = await tempDirs.make("openclaw-experience-turn-capacity-");
     const foregroundSessionKey = "agent:main:main";
     const reviewStarted = createDeferred();
     const releaseReview = createDeferred();
     runEmbeddedAgent.mockImplementation(async (params) =>
-      enqueueCommandInLane(resolveSessionLane(params.sessionKey ?? params.sessionId), async () => {
-        reviewStarted.resolve();
-        await releaseReview.promise;
-        return { meta: { durationMs: 1 } };
-      }),
+      enqueueCommandInLane(
+        `test:experience-review:${params.sessionKey ?? params.sessionId}`,
+        async () => {
+          reviewStarted.resolve();
+          await releaseReview.promise;
+          return { meta: { durationMs: 1 } };
+        },
+      ),
     );
 
     const review = runSkillExperienceReview(
@@ -393,9 +395,12 @@ describe("experience review maintenance", () => {
     await reviewStarted.promise;
 
     const foregroundStarted = createDeferred();
-    const foreground = enqueueCommandInLane(resolveSessionLane(foregroundSessionKey), async () => {
-      foregroundStarted.resolve();
-    });
+    const foreground = enqueueCommandInLane(
+      `test:experience-review:${foregroundSessionKey}`,
+      async () => {
+        foregroundStarted.resolve();
+      },
+    );
     try {
       await withTestTimeout(
         foregroundStarted.promise,

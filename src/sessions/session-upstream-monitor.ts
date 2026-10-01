@@ -10,7 +10,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getPluginRegistryState } from "../plugins/runtime-state.js";
 import type { SessionCatalogProvider, SessionUpstreamProbe } from "../plugins/session-catalog.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
-import { isSessionRunActive as isEmbeddedAgentRunActive } from "./session-controller.queries.js";
+import { isSessionRunActive } from "./session-controller.queries.js";
 import {
   recordSessionHumanDirectMessage,
   recordSessionStateEventAsync,
@@ -34,7 +34,7 @@ type SessionUpstreamMonitorOptions = OpenClawStateDatabaseOptions & {
   now?: () => number;
   signal?: AbortSignal;
   loadEntry?: typeof loadSessionEntryReadOnly;
-  isRunActive?: typeof isEmbeddedAgentRunActive;
+  isRunActive?: typeof isSessionRunActive;
   loadOwnRecentUserTexts?: (params: {
     entry: SessionEntry;
     probe: Omit<SessionUpstreamProbe, "ownRecentUserTexts">;
@@ -115,7 +115,7 @@ function loadIdleProbeSession(
   if (
     !entry ||
     (expectedSessionId !== undefined && entry.sessionId !== expectedSessionId) ||
-    (options.isRunActive ?? isEmbeddedAgentRunActive)(entry.sessionId)
+    (options.isRunActive ?? isSessionRunActive)(entry.sessionId)
   ) {
     return undefined;
   }
@@ -294,7 +294,7 @@ async function runSessionUpstreamMonitorTick(
             missingCounts.delete(missingCountKey);
             continue;
           }
-          if ((options.isRunActive ?? isEmbeddedAgentRunActive)(currentSession.sessionId)) {
+          if ((options.isRunActive ?? isSessionRunActive)(currentSession.sessionId)) {
             continue;
           }
           const previous = missingCounts.get(missingCountKey);

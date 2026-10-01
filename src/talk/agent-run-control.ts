@@ -73,7 +73,7 @@ type RealtimeVoiceAgentControlDeps = {
     sessionId?: string;
     sessionKey?: string;
   }) => RealtimeVoiceAgentRunActivity;
-  resolveActiveEmbeddedRunSessionId: (sessionKey: string) => string | undefined;
+  resolveActiveSessionRunId: (sessionKey: string) => string | undefined;
   resolveActiveEmbeddedRunOwnerByRunId?: (
     runId: string,
   ) => Pick<ActiveEmbeddedRunOwner, "sessionId" | "sessionKey" | "abort"> | undefined;
@@ -115,9 +115,7 @@ export async function controlRealtimeVoiceAgentRun(
   }
   const projections =
     commands ??
-    (target === undefined
-      ? await import("../agents/embedded-agent-runner/active-run-projections.js")
-      : undefined);
+    (target === undefined ? await import("../sessions/session-controller.queries.js") : undefined);
   const resolveCurrentRun = () => {
     const candidate =
       target && !target.signal.aborted && target.isCurrent()
@@ -130,7 +128,7 @@ export async function controlRealtimeVoiceAgentRun(
         : undefined;
     const sessionId =
       target === undefined
-        ? projections?.resolveActiveEmbeddedRunSessionId(sessionKey)
+        ? projections?.resolveActiveSessionRunId(sessionKey)
         : exactOwner?.sessionId;
     return { sessionId, exactOwner };
   };

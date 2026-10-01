@@ -32,7 +32,6 @@ import {
   createReplyOperation,
   isReplyRunSuccessorAdmissionBlocked,
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
-  replyRunRegistry,
   ReplyRunAlreadyActiveError,
   ReplyRunFollowupAdmissionBlockedError,
   ReplyRunSuccessorAdmissionBlockedError,
@@ -41,6 +40,7 @@ import {
   type ReplyTurnKind,
   waitForReplyRunFollowupAdmission,
   waitForReplyRunSuccessorAdmission,
+  waitForSessionRunIdle,
 } from "../../sessions/session-controller.js";
 import {
   beginSessionEffect,
@@ -695,7 +695,7 @@ export async function admitReplyTurn(
         const activeDatabaseIdentity = activeOperation
           ? lifecycleAdmissionByOperation.get(activeOperation)?.databaseIdentity
           : undefined;
-        const ended = await replyRunRegistry.waitForIdle(controllerKey, activeWaitTimeoutMs, {
+        const ended = await waitForSessionRunIdle(controllerKey, activeWaitTimeoutMs, {
           signal: params.upstreamAbortSignal,
         });
         if (!ended) {

@@ -12,7 +12,11 @@ import {
   resetSystemEventsForTest,
 } from "../../infra/system-events.js";
 import { resetDiagnosticRunActivityForTest } from "../../logging/diagnostic-run-activity.js";
-import { createReplyOperation, replyRunRegistry } from "../../sessions/session-controller.js";
+import {
+  createReplyOperation,
+  getSessionControllerOperation,
+  isSessionRunActiveForKey,
+} from "../../sessions/session-controller.js";
 import { testing as replyRunTesting } from "./reply-run-registry.test-support.js";
 import { clearSessionResetRuntimeState } from "./session-reset-cleanup.js";
 
@@ -81,7 +85,7 @@ describe("clearSessionResetRuntimeState", () => {
         activeReplySessionId: "old-session",
       });
       expect(cancel).toHaveBeenCalledWith("restart");
-      expect(replyRunRegistry.isActive("agent:main:slack:room:1")).toBe(true);
+      expect(isSessionRunActiveForKey("agent:main:slack:room:1")).toBe(true);
       expect(() =>
         createReplyOperation({
           sessionKey: "agent:main:slack:room:1",
@@ -118,7 +122,7 @@ describe("clearSessionResetRuntimeState", () => {
       activeReplySessionId: "old-session",
     });
 
-    expect(replyRunRegistry.get("agent:main:slack:room:1")).toBe(operation);
+    expect(getSessionControllerOperation("agent:main:slack:room:1")).toBe(operation);
   });
 
   it("does not clear a replacement admitted while the archived run is cancelling", () => {
@@ -149,7 +153,7 @@ describe("clearSessionResetRuntimeState", () => {
     });
 
     expect(replacement).toBeDefined();
-    expect(replyRunRegistry.get("agent:main:slack:room:1")).toBe(replacement);
+    expect(getSessionControllerOperation("agent:main:slack:room:1")).toBe(replacement);
   });
 
   it("leaves queued reservations for the archived id so session init can rebind them", () => {
@@ -165,6 +169,6 @@ describe("clearSessionResetRuntimeState", () => {
     });
 
     expect(operation.phase).toBe("queued");
-    expect(replyRunRegistry.get("agent:main:slack:room:1")).toBe(operation);
+    expect(getSessionControllerOperation("agent:main:slack:room:1")).toBe(operation);
   });
 });

@@ -10,7 +10,7 @@ import { withQuestionGateway } from "../../agents/harness/gateway-question.test-
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import {
   beginReplyMessageInjectionTarget,
-  replyRunRegistry,
+  captureCurrentReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
 import { withQuestionCreator } from "./reply-run-question.test-support.js";
@@ -77,7 +77,7 @@ it("leaves hidden-run image input for visible followup when question registratio
           5_000,
           "question did not begin Gateway registration",
         );
-        const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(key);
+        const target = captureCurrentReplyMessageInjectionTarget(key);
         expect(target).toBeDefined();
         const attempt = beginReplyMessageInjectionTarget(target!, run.prompt, {
           isInboundUserMessage: true,

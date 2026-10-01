@@ -54,7 +54,7 @@ function createDeps(options: {
             },
     ),
     getDiagnosticSessionActivitySnapshot: vi.fn(() => options.activity ?? {}),
-    resolveActiveEmbeddedRunSessionId: vi.fn(() => options.activeSessionId),
+    resolveActiveSessionRunId: vi.fn(() => options.activeSessionId),
   };
 }
 
@@ -152,7 +152,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
         );
         expect(result.active).toBe(false);
       }
-      expect(deps.resolveActiveEmbeddedRunSessionId).not.toHaveBeenCalled();
+      expect(deps.resolveActiveSessionRunId).not.toHaveBeenCalled();
       expect(deps.getDiagnosticSessionActivitySnapshot).not.toHaveBeenCalled();
       expect(deps.abortEmbeddedAgentRun).not.toHaveBeenCalled();
       expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).not.toHaveBeenCalled();
@@ -189,7 +189,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
     expect(deps.getDiagnosticSessionActivitySnapshot).toHaveBeenCalledExactlyOnceWith({
       sessionId: "owned-session",
     });
-    expect(deps.resolveActiveEmbeddedRunSessionId).not.toHaveBeenCalled();
+    expect(deps.resolveActiveSessionRunId).not.toHaveBeenCalled();
     expect(deps.abortEmbeddedAgentRun).not.toHaveBeenCalled();
   });
 
@@ -197,7 +197,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
     "answers read-only status without mutating commands (target=%s)",
     async (runTarget) => {
       if (runTarget === null) {
-        vi.doMock("../agents/embedded-agent-runner/active-run-projections.js", () => {
+        vi.doMock("../sessions/session-controller.queries.js", () => {
           throw new Error("session-key projections unavailable");
         });
       }
@@ -211,7 +211,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
           }),
         ).resolves.toMatchObject({ ok: true, mode: "status", active: false, speak: true });
       } finally {
-        vi.doUnmock("../agents/embedded-agent-runner/active-run-projections.js");
+        vi.doUnmock("../sessions/session-controller.queries.js");
       }
     },
   );

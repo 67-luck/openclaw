@@ -2,7 +2,8 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred, raceWithTimeoutResult } from "../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../config/config.js";
-import { listActiveReplyRunSessionKeys } from "../../sessions/session-controller.registry.js";
+import { listActiveReplyRunSessionKeys } from "../../sessions/session-controller.js";
+import * as controllerWait from "../../sessions/session-controller.wait.js";
 import { markCommandReplyForDelivery } from "../reply-payload.js";
 import type { MsgContext } from "../templating.js";
 import {
@@ -14,8 +15,9 @@ import {
   describe0BeforeEach0,
   dispatchReplyFromConfig,
   globalBeforeAll0,
-  replyRunRegistry,
   setNoAbort,
+  getSessionControllerOperation,
+  isSessionRunActiveForKey,
 } from "./dispatch-from-config.test-harness.js";
 import type { DispatchFromConfigParams } from "./dispatch-from-config.types.js";
 import { readReplySourceInput } from "./reply-source-binding.js";
@@ -78,8 +80,8 @@ describe("dispatch active command admission", () => {
       const activeOperation = startOperation(sessionKey);
       onTestFinished(() => activeOperation.complete());
       const waitingForActive = createDeferred<{ status: "waiting_for_active" }>();
-      const waitForIdle = replyRunRegistry.waitForIdle.bind(replyRunRegistry);
-      vi.spyOn(replyRunRegistry, "waitForIdle").mockImplementation((key, ...args) => {
+      const waitForIdle = controllerWait.waitForSessionRunIdle;
+      vi.spyOn(controllerWait, "waitForSessionRunIdle").mockImplementation((key, ...args) => {
         if (key === sessionKey) {
           waitingForActive.resolve({ status: "waiting_for_active" });
         }
@@ -110,7 +112,7 @@ describe("dispatch active command admission", () => {
         });
         expect(replyResolver).toHaveBeenCalledOnce();
         expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(acknowledgement);
-        expect(replyRunRegistry.get(sessionKey)).toBe(activeOperation);
+        expect(getSessionControllerOperation(sessionKey)).toBe(activeOperation);
       } finally {
         activeOperation.complete();
         await dispatchPromise;
@@ -243,7 +245,7 @@ describe("dispatch active command admission", () => {
 
         await vi.waitFor(() => expect(controlEntered).toHaveBeenCalledOnce());
         expect(shellEntered).not.toHaveBeenCalled();
-        expect(replyRunRegistry.isActive(sessionKey)).toBe(true);
+        expect(isSessionRunActiveForKey(sessionKey)).toBe(true);
         releaseLogin.resolve();
         await Promise.all(pending);
         expect(shellEntered).toHaveBeenCalledOnce();
@@ -280,7 +282,7 @@ describe("dispatch active command admission", () => {
       });
       await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: true });
       expect(dispatcher.sendFinalReply).toHaveBeenCalledExactlyOnceWith(finalReply);
-      expect(replyRunRegistry.get(sessionKey)).toBe(activeOperation);
+      expect(getSessionControllerOperation(sessionKey)).toBe(activeOperation);
       expect(activeOperation.result).toBeNull();
     } finally {
       activeOperation.complete();
@@ -338,7 +340,7 @@ describe("dispatch active command admission", () => {
       text: "🧠 Model: mock | ⚙️ Status: ok",
     });
     expect(targetOperation.result).toBeNull();
-    expect(replyRunRegistry.get(targetSessionKey)).toBe(targetOperation);
+    expect(getSessionControllerOperation(targetSessionKey)).toBe(targetOperation);
     targetOperation.complete();
     expect(listActiveReplyRunSessionKeys()).toEqual([]);
   });

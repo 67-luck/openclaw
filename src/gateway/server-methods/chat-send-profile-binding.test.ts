@@ -20,7 +20,7 @@ import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-write
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import {
   beginReplyMessageInjectionTarget,
-  replyRunRegistry,
+  captureCurrentReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
 import { ensureProfileForEmail, linkEmail } from "../../state/user-profiles.js";
 import { createExpectedProfileBinding } from "../expected-profile.js";
@@ -565,9 +565,7 @@ describe("native profile-bound input admission", () => {
               dispatch(assertCurrent, kind),
           },
         });
-        const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(
-          fixture.scope.sessionKey,
-        )!;
+        const target = captureCurrentReplyMessageInjectionTarget(fixture.scope.sessionKey)!;
         const attempt = beginReplyMessageInjectionTarget(target, "answer", {
           isInboundUserMessage: true,
           toolAuthorityFingerprint: sink === "claim" ? "other-tools" : "active-tools",

@@ -5,7 +5,7 @@ import type { SessionEntry } from "../../config/sessions.js";
 import { withBeforeAgentReplyObserver } from "../../plugins/before-agent-reply.js";
 import { getGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
 import type { ReplyOperation } from "../../sessions/session-controller.js";
-import { replyRunRegistry } from "../../sessions/session-controller.js";
+import { bindSessionControllerSourceTurnId } from "../../sessions/session-controller.js";
 import { setReplyPayloadMetadata } from "../reply-payload.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { ReplyPayload } from "../types.js";
@@ -405,7 +405,7 @@ export function createReplyAgentRestartRecoveryController(
         entry: getActiveSessionEntry(),
       });
       if (sourceTurnId) {
-        replyRunRegistry.bindSourceTurnId(replyOperation, sourceTurnId);
+        bindSessionControllerSourceTurnId(replyOperation, sourceTurnId);
       }
     }
     return result;

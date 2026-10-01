@@ -7,7 +7,10 @@ import {
   onAgentEvent as subscribeAgentEvent,
   type AgentEventPayload,
 } from "../../infra/agent-events.js";
-import { createReplyOperation, replyRunRegistry } from "../../sessions/session-controller.js";
+import {
+  createReplyOperation,
+  getSessionControllerOperation,
+} from "../../sessions/session-controller.js";
 import {
   getReplyPayloadMetadata,
   markReplyPayloadForSourceSuppressionDelivery,
@@ -522,13 +525,13 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
 
     vi.mocked(scheduleFollowupDrain).mockImplementation((key) => {
       expect(key).toBe(sessionKey);
-      expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+      expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
     });
 
     await runPrivateFinalCase({ replyOperation });
 
     expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(1);
-    expect(replyRunRegistry.get(sessionKey)).toBe(replyOperation);
+    expect(getSessionControllerOperation(sessionKey)).toBe(replyOperation);
     expect(scheduleFollowupDrain).not.toHaveBeenCalled();
 
     replyOperation.complete();

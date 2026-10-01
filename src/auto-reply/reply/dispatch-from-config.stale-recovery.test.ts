@@ -15,7 +15,7 @@ import { buildTestCtx } from "./test-ctx.js";
 
 let dispatchReplyFromConfig: typeof import("./dispatch-from-config.js").dispatchReplyFromConfig;
 let createReplyOperation: typeof import("../../sessions/session-controller.js").createReplyOperation;
-let replyRunRegistry: typeof import("../../sessions/session-controller.js").replyRunRegistry;
+let getSessionControllerOperation: typeof import("../../sessions/session-controller.js").getSessionControllerOperation;
 let replyRunTesting: typeof import("./reply-run-registry.test-support.js").testing;
 let resetInboundDedupe: typeof import("./inbound-dedupe.js").resetInboundDedupe;
 
@@ -48,7 +48,7 @@ function createVisibleDispatchParams(
 describe("dispatchReplyFromConfig stale visible admission recovery", () => {
   beforeAll(async () => {
     ({ dispatchReplyFromConfig } = await import("./dispatch-from-config.js"));
-    ({ createReplyOperation, replyRunRegistry } =
+    ({ createReplyOperation, getSessionControllerOperation } =
       await import("../../sessions/session-controller.js"));
     ({ testing: replyRunTesting } = await import("./reply-run-registry.test-support.js"));
     ({ resetInboundDedupe } = await import("./inbound-dedupe.js"));
@@ -149,12 +149,12 @@ describe("dispatchReplyFromConfig stale visible admission recovery", () => {
     });
     await vi.advanceTimersByTimeAsync(1_000);
     expect(activeOperation.result).toEqual({ kind: "failed", code: "run_stalled" });
-    expect(replyRunRegistry.get(sessionKey)).toBe(activeOperation);
+    expect(getSessionControllerOperation(sessionKey)).toBe(activeOperation);
 
     await vi.advanceTimersByTimeAsync(SESSION_WATCHDOG_CLEANUP_MS);
     expect(settled).toBe(false);
     expect(replyResolver).not.toHaveBeenCalled();
-    expect(replyRunRegistry.get(sessionKey)).toBe(activeOperation);
+    expect(getSessionControllerOperation(sessionKey)).toBe(activeOperation);
     expect(activeOperation.watchdog.snapshot().recovery?.status).toBe("blocked");
     activeOperation.complete();
     const result = await resultPromise;
@@ -186,7 +186,7 @@ describe("dispatchReplyFromConfig stale visible admission recovery", () => {
 
     const dispatchPromise = dispatchReplyFromConfig(dispatchParams);
     await resolverStartedPromise;
-    const operation = replyRunRegistry.get(sessionKey);
+    const operation = getSessionControllerOperation(sessionKey);
     expect(operation).toBeDefined();
     if (!operation) {
       throw new Error("Expected the active dispatch owner");

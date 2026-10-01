@@ -7,7 +7,7 @@ import {
 import type { SessionTarget } from "../../../sessions/session-controller.target.js";
 export { clearSessionQueues } from "../../../auto-reply/reply/queue.js";
 
-export function isEmbeddedAgentRunActive(sessionId: string, target: SessionTarget): boolean {
+export function isTargetSessionRunActive(sessionId: string, target: SessionTarget): boolean {
   return [...selectedOperations([target])].some(
     (operation) => operation.hasOwnedSessionId(sessionId) && !operation.result,
   );

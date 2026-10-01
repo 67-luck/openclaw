@@ -32,6 +32,7 @@ import {
   type ReplyOperation,
 } from "./session-controller.contracts.js";
 import {
+  getSessionControllerOperation,
   getAttachedBackend,
   isReplyRunEvidenceStale,
   isCurrentSessionControllerOperation,
@@ -583,4 +584,11 @@ function recordAcceptedReplyMessageInjectionTarget(
   options?: { inboundAudio?: boolean },
 ): void {
   target[replyMessageInjectionTargetOwner].recordAccepted(options);
+}
+
+/** Captures injection authority from the current direct operation owner. */
+export function captureCurrentReplyMessageInjectionTarget(
+  sessionKey: string,
+): ReplyMessageInjectionTarget | undefined {
+  return captureReplyMessageInjectionTarget(getSessionControllerOperation(sessionKey));
 }

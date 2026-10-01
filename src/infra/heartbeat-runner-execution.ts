@@ -1,6 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { clearBootstrapSnapshotOnSessionRollover } from "../agents/bootstrap-cache.js";
-import { resolveEmbeddedSessionLane } from "../agents/embedded-agent-runner/lanes.js";
 import { transitionMainSessionRecovery } from "../agents/main-session-recovery/main-session-recovery-state.js";
 import { isHeartbeatAcknowledgementText } from "../auto-reply/heartbeat.js";
 import type { ChannelHeartbeatDeps } from "../channels/plugins/types.public.js";
@@ -26,8 +25,8 @@ import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.j
 import type { RuntimeEnv } from "../runtime.js";
 import { listActiveReplyRunSessionKeys } from "../sessions/session-controller.js";
 import {
-  listActiveSessionRunKeys as listActiveEmbeddedRunSessionKeys,
-  resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId,
+  listActiveSessionRunKeys,
+  resolveActiveSessionRunId,
 } from "../sessions/session-controller.queries.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
 import { getAgentEventLifecycleGeneration } from "./agent-events.js";
@@ -79,7 +78,7 @@ export type HeartbeatDeps = OutboundSendDeps &
     getQueueSize?: (lane?: string) => number;
     isReplyRunActive?: (sessionKey: string) => boolean;
     listActiveReplyRunSessionKeys?: () => readonly string[];
-    listActiveEmbeddedRunSessionKeys?: () => readonly string[];
+    listActiveSessionRunKeys?: () => readonly string[];
     nowMs?: () => number;
   };
 
@@ -239,8 +238,7 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
     !isSessionExecCompletion && opts.intent !== "immediate" && opts.intent !== "manual";
   const listActiveReplyRuns =
     opts.deps?.listActiveReplyRunSessionKeys ?? listActiveReplyRunSessionKeys;
-  const listActiveEmbeddedRuns =
-    opts.deps?.listActiveEmbeddedRunSessionKeys ?? listActiveEmbeddedRunSessionKeys;
+  const listActiveEmbeddedRuns = opts.deps?.listActiveSessionRunKeys ?? listActiveSessionRunKeys;
   // Scheduled heartbeats are background work, so defer them when any session on
   // the same agent is already replying; immediate/manual wakes keep their
   // existing semantics for explicit user/system actions.
@@ -319,17 +317,10 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
   const { sessionKey } = preflight.session;
   // One controller owns both direct/native and dispatched turns. Injected
   // lists remain authoritative for embedders without creating a second vote.
-  const isSessionActive = opts.deps?.listActiveEmbeddedRunSessionKeys
+  const isSessionActive = opts.deps?.listActiveSessionRunKeys
     ? (key: string) => hasActiveRunForSession(key, listActiveEmbeddedRuns)
-    : (key: string) => resolveActiveEmbeddedRunSessionId(key) !== undefined;
+    : (key: string) => resolveActiveSessionRunId(key) !== undefined;
   if (isSessionActive(sessionKey)) {
-    return skippedBusyStage(HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT);
-  }
-
-  // Do not interrupt an active streaming turn. Payload/admitted work retries;
-  // an event-free, never-started monitor poll waits for its next persisted tick.
-  const sessionLaneKey = resolveEmbeddedSessionLane(sessionKey);
-  if (getSize(sessionLaneKey) > 0) {
     return skippedBusyStage(HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT);
   }
 

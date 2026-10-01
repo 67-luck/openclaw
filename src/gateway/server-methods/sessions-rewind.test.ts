@@ -3,7 +3,6 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { resolveEmbeddedSessionLane } from "../../agents/embedded-agent-runner/lanes.js";
 import {
   clearSessionQueues,
   enqueueFollowupRun,
@@ -11,12 +10,6 @@ import {
   type FollowupRun,
 } from "../../auto-reply/reply/queue.js";
 import { createQueueTestRun } from "../../auto-reply/reply/queue.test-helpers.js";
-import {
-  CommandLaneClearedError,
-  enqueueCommandInLane,
-  getCommandLaneSnapshot,
-  setCommandLaneConcurrency,
-} from "../../process/command-queue.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -63,11 +56,9 @@ import { sessionRewindHandlers } from "./sessions-rewind.js";
 const tempDirs = createTempDirTracker();
 const sessionKey = "agent:main:rewind-handler";
 const sourceSessionId = "rewind-handler-source";
-const sessionLane = resolveEmbeddedSessionLane(sessionKey);
 const storedImageId = "stored-image.png";
 const storedImagePath = `/state/media/inbound/${storedImageId}`;
 const storedImageData = Buffer.from("stored-image");
-const queuedCommandSettlements = new Set<Promise<void>>();
 
 beforeEach(async () => {
   mocks.upstreamFork.mockReset();
@@ -147,9 +138,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   clearSessionQueues([sessionKey, sourceSessionId]);
-  setCommandLaneConcurrency(sessionLane, 1);
-  await Promise.all(queuedCommandSettlements);
-  queuedCommandSettlements.clear();
   try {
     for (const stateDir of tempDirs.dirs) {
       await cleanupSessionStateForTest({ stateDir });
@@ -250,9 +238,7 @@ async function invoke(
 }
 
 type QueuedSessionWork = {
-  command: Promise<string>;
   followup: FollowupRun;
-  hasCommandRun: () => boolean;
 };
 
 function enqueueSessionWork(label: string): QueuedSessionWork {
@@ -270,40 +256,17 @@ function enqueueSessionWork(label: string): QueuedSessionWork {
     enqueueFollowupRun(sessionKey, followup, { mode: "followup" }, "none", undefined, false),
   ).toBe(true);
 
-  setCommandLaneConcurrency(sessionLane, 0);
-  let commandRan = false;
-  const command = enqueueCommandInLane(sessionLane, async () => {
-    commandRan = true;
-    return `${label} command`;
-  });
-  const settlement = command.then(
-    () => undefined,
-    () => undefined,
-  );
-  queuedCommandSettlements.add(settlement);
-
-  return { command, followup, hasCommandRun: () => commandRan };
+  return { followup };
 }
 
 function expectSessionWorkQueued(work: QueuedSessionWork): void {
   expect(getFollowupQueueDepth(sessionKey)).toBe(1);
   expect(work.followup.queueAbortSignal?.aborted).toBe(false);
-  expect(getCommandLaneSnapshot(sessionLane)).toMatchObject({
-    activeCount: 0,
-    queuedCount: 1,
-  });
-  expect(work.hasCommandRun()).toBe(false);
 }
 
-async function expectSessionWorkCleared(work: QueuedSessionWork): Promise<void> {
+function expectSessionWorkCleared(work: QueuedSessionWork): void {
   expect(getFollowupQueueDepth(sessionKey)).toBe(0);
   expect(work.followup.queueAbortSignal?.aborted).toBe(true);
-  expect(getCommandLaneSnapshot(sessionLane)).toMatchObject({
-    activeCount: 0,
-    queuedCount: 0,
-  });
-  await expect(work.command).rejects.toBeInstanceOf(CommandLaneClearedError);
-  expect(work.hasCommandRun()).toBe(false);
 }
 
 function linkToUpstreamConversation(): void {
@@ -529,10 +492,6 @@ describe("session message-cut methods", () => {
       }),
     );
     expectSessionWorkQueued(work);
-
-    setCommandLaneConcurrency(sessionLane, 1);
-    await expect(work.command).resolves.toBe("rejected branch switch command");
-    expect(work.hasCommandRun()).toBe(true);
   });
 
   it.each([

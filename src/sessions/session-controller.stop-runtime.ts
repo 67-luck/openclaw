@@ -1,0 +1,102 @@
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import {
+  REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
+  replyRunInterruptTargetOperation,
+  type ReplyRunInterruptTarget,
+} from "./session-controller.contracts.js";
+import { resolveActiveReplyOperationForSessionId } from "./session-controller.queries.js";
+import { waitForReplyOperationOwnerSettlement } from "./session-controller.settlement.js";
+import {
+  activeSessionOperations,
+  getAttachedBackend,
+  getSessionControllerOperation,
+  isReplyOperationPreBackendPhase,
+  isReplyRunCompacting,
+} from "./session-controller.state.js";
+import { captureSessionControllerStop, stopSession } from "./session-controller.stop.js";
+
+/** Captures the current direct owner for exact-instance interruption. */
+export function captureCurrentSessionRunInterruptTarget(
+  sessionKey: string,
+): ReplyRunInterruptTarget | undefined {
+  const operation = getSessionControllerOperation(sessionKey);
+  return operation ? { [replyRunInterruptTargetOperation]: operation } : undefined;
+}
+
+/** Requests user cancellation of the currently selected operation. */
+export function abortSessionRunByKey(sessionKey: string): boolean {
+  return getSessionControllerOperation(sessionKey)?.abortByUser() ?? false;
+}
+
+/** Abort the captured operation; null skips settlement for source acknowledgements. */
+export async function interruptReplyRunTarget(
+  target: ReplyRunInterruptTarget,
+  timeoutMs: number | null = REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
+): Promise<{ aborted: boolean; settled: boolean }> {
+  const operation = target[replyRunInterruptTargetOperation];
+  const stopped = stopSession({
+    source: "interrupt",
+    capture: captureSessionControllerStop({ operations: [operation] }),
+  });
+  const aborted = stopped.aborted;
+  const settled =
+    timeoutMs === null ? false : await waitForReplyOperationOwnerSettlement(operation, timeoutMs);
+  return { aborted, settled };
+}
+
+/** Cancels the current reply backend only when its native run identity matches exactly. */
+export function supersedeReplyRunByRunId(runId: string, beforeCancel: () => void): boolean {
+  const expectedRunId = normalizeOptionalString(runId);
+  if (!expectedRunId) {
+    return false;
+  }
+  for (const operation of activeSessionOperations()) {
+    const backend = getAttachedBackend(operation);
+    if (normalizeOptionalString(backend?.runId) !== expectedRunId) {
+      continue;
+    }
+    return stopSession({
+      source: "supersede",
+      capture: captureSessionControllerStop({ operations: [operation] }),
+      // Supersession owns heartbeat finalization semantics beyond ordinary abortability.
+      cancelOperation: (selected) => selected.supersede(beforeCancel),
+    }).aborted;
+  }
+  return false;
+}
+
+export function abortReplyRunBySessionId(sessionId: string): boolean {
+  return resolveActiveReplyOperationForSessionId(sessionId)?.abortByUser() ?? false;
+}
+
+export function clearReplyRunForResetBySessionId(sessionId: string): void {
+  const operation = resolveActiveReplyOperationForSessionId(sessionId);
+  if (!operation || isReplyOperationPreBackendPhase(operation.phase)) {
+    return;
+  }
+  // Reset requests cancellation; only the captured producer can certify its return.
+  operation.abortForRestart();
+}
+
+export function abortActiveReplyRuns(opts: {
+  mode: "all" | "compacting";
+  onAbortError?: (sessionId: string, error: unknown) => void;
+}): boolean {
+  const capture = captureSessionControllerStop({
+    operations: [...activeSessionOperations()].filter(
+      (operation) => opts.mode === "all" || isReplyRunCompacting(operation),
+    ),
+  });
+  return (
+    stopSession({
+      capture,
+      source: "restart",
+      onError: (target, error) => {
+        if ("sessionId" in target) {
+          opts.onAbortError?.(target.sessionId, error);
+        }
+        return "continue";
+      },
+    }).activeCancelled > 0
+  );
+}

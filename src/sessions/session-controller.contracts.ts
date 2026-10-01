@@ -409,33 +409,6 @@ export type ReplyOperation = {
   supersede(beforeSupersede?: () => void): boolean;
 };
 
-export type ReplyRunRegistry = {
-  begin(params: {
-    sessionKey: string;
-    sessionId: string;
-    resetTriggered: boolean;
-    routeThreadId?: string | number;
-    originatingLeafEntryId?: string | null;
-    upstreamAbortSignal?: AbortSignal;
-  }): ReplyOperation;
-  get(sessionKey: string): ReplyOperation | undefined;
-  isActive(sessionKey: string): boolean;
-  /** Binds a source only while the exact operation still owns its run slot. */
-  bindSourceTurnId(operation: ReplyOperation, sourceTurnId: string): void;
-  getSourceTurnId(sessionKey: string): string | undefined;
-  /** Captures the current direct owner without requiring client-supplied run identity. */
-  resolveCurrentMessageInjectionTarget(sessionKey: string): ReplyMessageInjectionTarget | undefined;
-  /** Captures the current direct owner for exact-instance interruption. */
-  resolveCurrentInterruptTarget(sessionKey: string): ReplyRunInterruptTarget | undefined;
-  abort(sessionKey: string): boolean;
-  waitForIdle(
-    sessionKey: string,
-    timeoutMs?: number | null,
-    opts?: { signal?: AbortSignal },
-  ): Promise<boolean>;
-  resolveSessionId(sessionKey: string): string | undefined;
-};
-
 export const REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS = 15_000;
 
 type ReplyOperationStaleReason = replyRunSettle.ReplyOperationStaleReason;

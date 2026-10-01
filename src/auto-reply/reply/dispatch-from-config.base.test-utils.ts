@@ -40,12 +40,12 @@ import {
   transcriptMocks,
   ttsMocks,
 } from "./dispatch-from-config.shared.test-harness.js";
+import * as dispatchHarness from "./dispatch-from-config.test-harness.js";
 import {
   automaticGroupReplyConfig,
   automaticDirectReplyConfig,
   dispatchReplyFromConfig,
   createReplyOperation,
-  replyRunRegistry,
   setNoAbort,
   firstMockCall,
   firstMockArg,
@@ -54,8 +54,6 @@ import {
   installThreadingTestPlugin,
   requireBlockReplyHandler,
   messageAuditEvents,
-  globalBeforeAll0,
-  describe0BeforeEach0,
 } from "./dispatch-from-config.test-harness.js";
 import { getPreparedReplyDispatchRuntime } from "./prepared-reply-dispatch-context.js";
 import { createReplyDispatcher } from "./reply-dispatcher.js";
@@ -64,10 +62,10 @@ import { admitReplyTurn } from "./reply-turn-admission.js";
 import { buildChannelSourceTurnId } from "./source-turn-id.js";
 import { buildTestCtx } from "./test-ctx.js";
 
-beforeAll(globalBeforeAll0);
+beforeAll(dispatchHarness.globalBeforeAll0);
 
 describe("dispatchReplyFromConfig", () => {
-  beforeEach(describe0BeforeEach0);
+  beforeEach(dispatchHarness.describe0BeforeEach0);
 
   it.each([false, true])(
     "reports agent refusal before runtime loading (aborted: %s)",
@@ -467,7 +465,7 @@ describe("dispatchReplyFromConfig", () => {
       counts: { tool: 0, block: 0, final: 0 },
     });
     expect(replyResolver).not.toHaveBeenCalled();
-    expect(replyRunRegistry.get(sessionKey)).toBe(activeOperation);
+    expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBe(activeOperation);
     expect(messageAuditMocks.emitTrustedMessageAuditEvent).toHaveBeenCalledOnce();
     expect(messageAuditEvents()[0]).toEqual(
       expect.objectContaining({
@@ -1482,7 +1480,7 @@ describe("dispatchReplyFromConfig", () => {
         noVisibleReplyFallbackDelivered: true,
       });
       expect(replyResolver).toHaveBeenCalledTimes(1);
-      expect(replyRunRegistry.get(sessionKey)).toBe(activeOperation);
+      expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBe(activeOperation);
     } finally {
       activeOperation.complete();
     }
@@ -1502,7 +1500,7 @@ describe("dispatchReplyFromConfig", () => {
     sessionStoreMocks.currentEntry = { sessionId, updatedAt: Date.now() };
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(async () => {
-      expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+      expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBeUndefined();
       return undefined;
     });
 
@@ -1532,7 +1530,7 @@ describe("dispatchReplyFromConfig", () => {
         noVisibleReplyFallbackDelivered: true,
       });
       expect(replyResolver).toHaveBeenCalledTimes(1);
-      expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+      expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBeUndefined();
     } finally {
       clearActiveEmbeddedRun(sessionId, activeHandle, sessionKey);
     }
@@ -1551,7 +1549,7 @@ describe("dispatchReplyFromConfig", () => {
     setActiveEmbeddedRun(sessionId, activeHandle, sessionKey);
     sessionStoreMocks.currentEntry = { sessionId, updatedAt: Date.now() };
     const replyResolver = vi.fn(async () => {
-      expect(replyRunRegistry.get(sessionKey)?.sessionId).toBe(sessionId);
+      expect(dispatchHarness.getSessionControllerOperation(sessionKey)?.sessionId).toBe(sessionId);
       return undefined;
     });
 
@@ -1588,7 +1586,9 @@ describe("dispatchReplyFromConfig", () => {
     setActiveEmbeddedRun(staleSessionId, activeHandle, sessionKey);
     sessionStoreMocks.currentEntry = { sessionId: currentSessionId, updatedAt: Date.now() };
     const replyResolver = vi.fn(async () => {
-      expect(replyRunRegistry.get(sessionKey)?.sessionId).toBe(currentSessionId);
+      expect(dispatchHarness.getSessionControllerOperation(sessionKey)?.sessionId).toBe(
+        currentSessionId,
+      );
       return undefined;
     });
 
@@ -1659,7 +1659,7 @@ describe("dispatchReplyFromConfig", () => {
       queuedFinal: true,
       counts: { tool: 0, block: 0, final: 0 },
     });
-    expect(replyRunRegistry.isActive(sessionKey)).toBe(false);
+    expect(dispatchHarness.isSessionRunActiveForKey(sessionKey)).toBe(false);
   });
 
   it.each([
@@ -1736,7 +1736,7 @@ describe("dispatchReplyFromConfig", () => {
         replyResolver: firstReplyResolver,
       });
       await firstTurnEntered;
-      const recoveryOperation = replyRunRegistry.get(sessionKey);
+      const recoveryOperation = dispatchHarness.getSessionControllerOperation(sessionKey);
       expect(recoveryOperation).toBeDefined();
       if (staleOperation) {
         expect(staleOperation.result).toMatchObject({ kind: "failed", code: "run_failed" });
@@ -1767,7 +1767,7 @@ describe("dispatchReplyFromConfig", () => {
       expect(secondResult).toMatchObject({ queuedFinal: true });
       expect(firstDispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
       expect(secondDispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
-      expect(replyRunRegistry.isActive(sessionKey)).toBe(false);
+      expect(dispatchHarness.isSessionRunActiveForKey(sessionKey)).toBe(false);
     },
   );
 
@@ -1824,7 +1824,7 @@ describe("dispatchReplyFromConfig", () => {
     // skipped itself instead of force-clearing the in-flight visible turn.
     expect(recoveryOperation).toBeDefined();
     expect(recoveryOperation?.result).toBeNull();
-    expect(replyRunRegistry.get(sessionKey)).toBe(recoveryOperation);
+    expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBe(recoveryOperation);
     expect(replyResolver).not.toHaveBeenCalled();
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
     expect(result).toMatchObject({
@@ -1909,7 +1909,7 @@ describe("dispatchReplyFromConfig", () => {
     // refreshes its snapshot instead of crossing the reset boundary with stale state.
     expect(freshOperation).toBeDefined();
     expect(freshOperation?.result).toBeNull();
-    expect(replyRunRegistry.get(sessionKey)).toBe(freshOperation);
+    expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBe(freshOperation);
     expect(replyResolver).not.toHaveBeenCalled();
 
     freshOperation?.complete();
@@ -1920,7 +1920,7 @@ describe("dispatchReplyFromConfig", () => {
     expect(replyResolver).toHaveBeenCalledOnce();
     expect(fastAbortCalls).toBe(2);
     expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({ text: "visible recovery reply" });
-    expect(replyRunRegistry.isActive(sessionKey)).toBe(false);
+    expect(dispatchHarness.isSessionRunActiveForKey(sessionKey)).toBe(false);
     expect(messageAuditEvents()).toEqual([
       expect.objectContaining({ status: "succeeded", outcome: "completed" }),
     ]);
@@ -1983,7 +1983,7 @@ describe("dispatchReplyFromConfig", () => {
     expect(followingDispatcher.sendFinalReply).toHaveBeenCalledWith({
       text: "visible recovery reply",
     });
-    expect(replyRunRegistry.isActive(sessionKey)).toBe(false);
+    expect(dispatchHarness.isSessionRunActiveForKey(sessionKey)).toBe(false);
   });
 
   it("routes when OriginatingChannel differs from Provider", async () => {

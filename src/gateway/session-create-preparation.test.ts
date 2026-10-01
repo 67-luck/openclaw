@@ -14,7 +14,7 @@ import {
   beginSessionEffect,
   runSessionMutation,
 } from "../sessions/session-controller.lifecycle.js";
-import { isSessionRunActive as isEmbeddedAgentRunActive } from "../sessions/session-controller.queries.js";
+import { isSessionRunActive } from "../sessions/session-controller.queries.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
@@ -94,9 +94,7 @@ describe("Gateway creation preparation", () => {
             sessionRoot: originalRoot,
           });
           expect(onInterrupt).not.toHaveBeenCalled();
-          expect(admission?.isActive() ?? isEmbeddedAgentRunActive(first.entry.sessionId)).toBe(
-            true,
-          );
+          expect(admission?.isActive() ?? isSessionRunActive(first.entry.sessionId)).toBe(true);
           expect(
             await createGatewaySession({ ...common, sessionRoot: originalRoot }),
           ).toMatchObject({

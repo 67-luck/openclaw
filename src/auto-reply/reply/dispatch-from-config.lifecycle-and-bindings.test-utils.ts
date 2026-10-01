@@ -36,21 +36,17 @@ import {
   sessionStoreMocks,
   stageSandboxMediaMocks,
 } from "./dispatch-from-config.shared.test-harness.js";
+import * as dispatchHarness from "./dispatch-from-config.test-harness.js";
 import {
   type ResolveInboundConversationParams,
   dispatchReplyFromConfig,
   createReplyOperation,
-  replyRunRegistry,
-  admitReplyTurn,
   runWithReplyOperationLifecycleAdmission,
   setNoAbort,
   firstMockCall,
-  firstMockArg,
   firstFinalReplyPayload,
   installThreadingTestPlugin,
   messageAuditEvents,
-  globalBeforeAll0,
-  describe0BeforeEach0,
 } from "./dispatch-from-config.test-harness.js";
 import { withDispatchProcessedOutcomeSink } from "./dispatch-processed-outcome.js";
 import { finalizeInboundContextForSdk } from "./inbound-context.js";
@@ -87,10 +83,10 @@ function mockPendingPluginClaim(params: {
   return (outcome: PluginTargetedInboundClaimOutcome) => resolveClaim?.(outcome);
 }
 
-beforeAll(globalBeforeAll0);
+beforeAll(dispatchHarness.globalBeforeAll0);
 
 describe("dispatchReplyFromConfig", () => {
-  beforeEach(describe0BeforeEach0);
+  beforeEach(dispatchHarness.describe0BeforeEach0);
 
   it("does not broadcast inbound claims without a core-owned plugin binding", async () => {
     setNoAbort();
@@ -593,7 +589,7 @@ describe("dispatchReplyFromConfig", () => {
       state: "processing",
       reason: "message_start",
     });
-    const processedEvent = firstMockArg(
+    const processedEvent = dispatchHarness.firstMockArg(
       diagnosticMocks.logMessageProcessed,
       "message processed",
     ) as { channel?: unknown; outcome?: unknown; sessionKey?: unknown } | undefined;
@@ -1071,7 +1067,7 @@ describe("dispatchReplyFromConfig", () => {
         await vi.waitFor(() => {
           expect(stageSandboxMediaMocks.stageSandboxMedia).toHaveBeenCalledOnce();
         });
-        const operation = replyRunRegistry.get(sessionKey);
+        const operation = dispatchHarness.getSessionControllerOperation(sessionKey);
         expect(operation).toBeDefined();
         expect(
           isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
@@ -1079,7 +1075,7 @@ describe("dispatchReplyFromConfig", () => {
         if (existingOperation) {
           expect(operation).toBe(existingOperation);
           existingOperation.complete();
-          expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+          expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBeUndefined();
         }
         abort.abort(cancellation);
         mutation = externalLifecycleRequest.runInAsyncScope(async () =>
@@ -1112,7 +1108,9 @@ describe("dispatchReplyFromConfig", () => {
         expect(
           isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
         ).toBe(true);
-        expect(replyRunRegistry.get(sessionKey)).toBe(existingOperation ? undefined : operation);
+        expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBe(
+          existingOperation ? undefined : operation,
+        );
         expect(hookMocks.runner.runInboundClaimForPluginOutcome).not.toHaveBeenCalled();
         expect(replyResolver).not.toHaveBeenCalled();
         expect(mocks.routeReply).not.toHaveBeenCalled();
@@ -1126,7 +1124,7 @@ describe("dispatchReplyFromConfig", () => {
         expect(
           isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
         ).toBe(false);
-        expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+        expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBeUndefined();
         expect(dispatchResult).toHaveBeenCalledOnce();
         expect(dispatchFailure).not.toHaveBeenCalled();
         expect(messageAuditMocks.emitTrustedMessageAuditEvent).toHaveBeenCalledOnce();
@@ -1176,7 +1174,7 @@ describe("dispatchReplyFromConfig", () => {
     await vi.waitFor(() => {
       expect(hookMocks.runner.runInboundClaimForPluginOutcome).toHaveBeenCalledOnce();
     });
-    expect(replyRunRegistry.get(sessionKey)).toBeDefined();
+    expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBeDefined();
     expect(isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
       true,
     );
@@ -1199,7 +1197,9 @@ describe("dispatchReplyFromConfig", () => {
         }),
     );
     await vi.waitFor(() => {
-      expect(replyRunRegistry.get(sessionKey)?.abortSignal.aborted).toBe(true);
+      expect(dispatchHarness.getSessionControllerOperation(sessionKey)?.abortSignal.aborted).toBe(
+        true,
+      );
     });
     expect(mutationRan).toBe(false);
 
@@ -1252,7 +1252,7 @@ describe("dispatchReplyFromConfig", () => {
     );
 
     existingOperation.complete();
-    expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+    expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBeUndefined();
 
     let mutationPrepared = false;
     let mutationRan = false;
@@ -1302,7 +1302,7 @@ describe("dispatchReplyFromConfig", () => {
     const sessionKey = "agent:main:discord:channel:owner-mutation-race";
     const sessionId = "owner-mutation-session";
     sessionStoreMocks.currentEntry = { sessionId, updatedAt: Date.now() };
-    const ownerAdmission = await admitReplyTurn({
+    const ownerAdmission = await dispatchHarness.admitReplyTurn({
       sessionKey,
       sessionId,
       expectedSessionId: sessionId,
@@ -1363,7 +1363,7 @@ describe("dispatchReplyFromConfig", () => {
     expect(result.queuedFinal).toBe(false);
     expect(ownerOperation.abortSignal.aborted).toBe(false);
     expect(ownerOperation.result).toBeNull();
-    expect(replyRunRegistry.get(sessionKey)).toBe(ownerOperation);
+    expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBe(ownerOperation);
     expect(mutationRan).toBe(true);
     expect(replyResolver).not.toHaveBeenCalled();
     ownerOperation.complete();
@@ -1420,7 +1420,7 @@ describe("dispatchReplyFromConfig", () => {
     await vi.waitFor(() => {
       expect(mocks.routeReply).toHaveBeenCalledOnce();
     });
-    const operation = replyRunRegistry.get(sessionKey);
+    const operation = dispatchHarness.getSessionControllerOperation(sessionKey);
     expect(operation).toBeDefined();
 
     let mutationRan = false;
@@ -1455,7 +1455,7 @@ describe("dispatchReplyFromConfig", () => {
       kind: "aborted",
       code: "aborted_for_restart",
     });
-    expect(replyRunRegistry.isActive(sessionKey)).toBe(false);
+    expect(dispatchHarness.isSessionRunActiveForKey(sessionKey)).toBe(false);
     expect(mutationRan).toBe(true);
     expect(replyResolver).not.toHaveBeenCalled();
     expect(messageAuditMocks.emitTrustedMessageAuditEvent).toHaveBeenCalledOnce();

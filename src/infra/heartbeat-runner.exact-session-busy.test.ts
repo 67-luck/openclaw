@@ -255,7 +255,7 @@ describe("heartbeat exact-session busy checks", () => {
       try {
         const wake = await resolveHeartbeatWakeStage({
           ...opts,
-          deps: { ...opts.deps, listActiveEmbeddedRunSessionKeys: list },
+          deps: { ...opts.deps, listActiveSessionRunKeys: list },
         });
         expect(wake.kind).toBe("ready");
         if (wake.kind !== "ready") {
@@ -280,7 +280,7 @@ describe("heartbeat exact-session busy checks", () => {
       const wake = await resolveHeartbeatWakeStage({
         ...opts,
         sessionKey: ` ${sessionKey} `,
-        deps: { ...opts.deps, listActiveEmbeddedRunSessionKeys: list },
+        deps: { ...opts.deps, listActiveSessionRunKeys: list },
       });
       expect(wake.kind).toBe(expected);
       expect(list).toHaveBeenCalledOnce();
@@ -293,7 +293,7 @@ describe("heartbeat exact-session busy checks", () => {
       const list = vi.fn(() => keys);
       const wake = await resolveHeartbeatWakeStage({
         ...opts,
-        deps: { ...opts.deps, listActiveEmbeddedRunSessionKeys: list },
+        deps: { ...opts.deps, listActiveSessionRunKeys: list },
       });
       expect(wake.kind).toBe("ready");
       if (wake.kind !== "ready") {

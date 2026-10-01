@@ -48,7 +48,7 @@ vi.mock("../../../config/sessions/session-accessor.js", () => ({
 vi.mock("./subagent-announce.runtime.js", () => ({
   callSubagentLifecycleGateway: vi.fn(async () => ({})),
   dispatchGatewayMethodInProcess: vi.fn(async () => ({})),
-  isEmbeddedAgentRunActive: vi.fn(() => false),
+  isSessionRunActive: vi.fn(() => false),
   getRuntimeConfig: () => ({ session: { mainKey: "main", scope: "per-sender" } }),
   loadSessionStore: vi.fn(() => ({})),
   readSessionMessagesAsync: vi.fn(async () => []),
@@ -58,7 +58,7 @@ vi.mock("./subagent-announce.runtime.js", () => ({
   resolveAgentIdFromSessionKey: vi.fn(() => "main"),
   resolveMainSessionKey: vi.fn(() => "agent:main:main"),
   resolveSessionStorePathCore: vi.fn(() => "/tmp/sessions.json"),
-  waitForEmbeddedAgentRunEnd: vi.fn(async () => true),
+  waitForSessionRunEnd: vi.fn(async () => true),
 }));
 
 vi.mock("./subagent-announce-delivery.js", () => ({

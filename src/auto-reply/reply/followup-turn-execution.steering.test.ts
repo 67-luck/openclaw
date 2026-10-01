@@ -10,7 +10,8 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   beginReplyMessageInjectionTarget,
   createReplyOperation,
-  replyRunRegistry,
+  getSessionControllerSourceTurnId,
+  captureCurrentReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import type { AgentTurnParams } from "./agent-runner-execution.types.js";
@@ -118,7 +119,7 @@ describe("queued turn steering", () => {
           );
           const attempt = await createChatSendMessageInjectionStarter({
             sourceRef,
-            target: replyRunRegistry.resolveCurrentMessageInjectionTarget(sessionKey),
+            target: captureCurrentReplyMessageInjectionTarget(sessionKey),
             abortSignal: new AbortController().signal,
             request: {
               p: {
@@ -165,7 +166,7 @@ describe("queued turn steering", () => {
           await expect(attempt!.outcome).resolves.toMatchObject({ status: "accepted" });
         }
         expect(queueMessage.mock.calls.map(([text]) => text)).toEqual(steeringMessages);
-        expect(replyRunRegistry.getSourceTurnId(sessionKey)).toBe(sourceTurnId);
+        expect(getSessionControllerSourceTurnId(sessionKey)).toBe(sourceTurnId);
         return {
           runId: "followup-execution",
           outcome: { kind: "rejected", payload: { text: "done" } },
@@ -210,7 +211,7 @@ describe("queued turn steering", () => {
       operation.bindToolAuthorityRoute({ provider: "anthropic", model: "claude" });
       operation.attachBackend({ kind: "embedded", cancel: vi.fn(), queueMessage });
       expect(operation.phase).toBe("running");
-      const target = replyRunRegistry.resolveCurrentMessageInjectionTarget("main");
+      const target = captureCurrentReplyMessageInjectionTarget("main");
       expect(target).toBeDefined();
       const overlay = {
         operatorAuthority: createAdmittedRunOperatorAuthority({

@@ -120,7 +120,7 @@ import {
   normalizeAgentId,
 } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
-import { resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId } from "../sessions/session-controller.queries.js";
+import { resolveActiveSessionRunId } from "../sessions/session-controller.queries.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
 import { applyQueueDropPolicy, waitForQueueDebounce } from "../utils/queue-helpers.js";
@@ -353,7 +353,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
     if (queuedAfter) {
       const loadOptions = opts.agentId ? { agentId: opts.agentId } : undefined;
       const { cfg, canonicalKey, entry } = loadSessionEntry(opts.sessionKey, loadOptions);
-      const activeSessionId = resolveActiveEmbeddedRunSessionId(canonicalKey);
+      const activeSessionId = resolveActiveSessionRunId(canonicalKey);
       if (activeSessionId) {
         const claimed = await claimPendingEmbeddedAgentQuestionAnswer(
           activeSessionId,

@@ -47,8 +47,8 @@ const removeInternalSessionEffectsSession = vi.hoisted(() => vi.fn(async () => {
 type ControlRuntime = typeof import("./subagent-control.runtime.js");
 const killRuntime = vi.hoisted(() => ({
   abortEmbeddedAgentRun: vi.fn<ControlRuntime["abortEmbeddedAgentRun"]>(() => false),
-  isEmbeddedAgentRunActive: vi.fn<ControlRuntime["isEmbeddedAgentRunActive"]>(() => false),
-  clearSessionQueues: vi.fn(() => ({ followupCleared: 0, laneCleared: 0, keys: [] })),
+  isTargetSessionRunActive: vi.fn<ControlRuntime["isTargetSessionRunActive"]>(() => false),
+  clearSessionQueues: vi.fn(() => ({ followupCleared: 0, keys: [] })),
 }));
 const killSessionEntry = vi.hoisted(() => ({
   current: undefined as
@@ -88,10 +88,9 @@ describe("subagent registry recovery scheduling", () => {
       .mockImplementation(() => killSessionEntry.current);
     getAgentRunContext.mockReset().mockReturnValue(undefined);
     killRuntime.abortEmbeddedAgentRun.mockReset().mockReturnValue(false);
-    killRuntime.isEmbeddedAgentRunActive.mockReset().mockReturnValue(false);
+    killRuntime.isTargetSessionRunActive.mockReset().mockReturnValue(false);
     killRuntime.clearSessionQueues.mockReset().mockReturnValue({
       followupCleared: 0,
-      laneCleared: 0,
       keys: [],
     });
     killSessionEntry.current = {
@@ -472,7 +471,7 @@ describe("subagent registry recovery scheduling", () => {
     };
     getAgentRunContext.mockReturnValue({});
     const actualRuntime = await vi.importActual<ControlRuntime>("./subagent-control.runtime.js");
-    killRuntime.isEmbeddedAgentRunActive.mockImplementation(actualRuntime.isEmbeddedAgentRunActive);
+    killRuntime.isTargetSessionRunActive.mockImplementation(actualRuntime.isTargetSessionRunActive);
 
     const target = captureSessionTarget({
       storeScope: resolveSessionStorePathCore(getRuntimeConfig().session?.store, {
@@ -531,7 +530,7 @@ describe("subagent registry recovery scheduling", () => {
 
     await sweeper.sweepOnce();
 
-    expect(killRuntime.isEmbeddedAgentRunActive).not.toHaveBeenCalled();
+    expect(killRuntime.isTargetSessionRunActive).not.toHaveBeenCalled();
     expect(killRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
     expect(killRuntime.clearSessionQueues).not.toHaveBeenCalled();
     expect(completeSubagentRunWithRecovery).toHaveBeenCalledWith(
@@ -636,7 +635,7 @@ describe("subagent registry recovery scheduling", () => {
     }
 
     await expect(pending).resolves.toBe(true);
-    expect(killRuntime.isEmbeddedAgentRunActive).not.toHaveBeenCalled();
+    expect(killRuntime.isTargetSessionRunActive).not.toHaveBeenCalled();
     expect(killRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
     expect(killRuntime.clearSessionQueues).not.toHaveBeenCalled();
     expect(completeSubagentRunWithRecovery).toHaveBeenCalledWith(
@@ -689,7 +688,7 @@ describe("subagent registry recovery scheduling", () => {
       }),
     ).resolves.toBe(true);
 
-    expect(killRuntime.isEmbeddedAgentRunActive).not.toHaveBeenCalled();
+    expect(killRuntime.isTargetSessionRunActive).not.toHaveBeenCalled();
     expect(killRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
     expect(killRuntime.clearSessionQueues).not.toHaveBeenCalled();
     expect(completeSubagentRunWithRecovery).not.toHaveBeenCalled();

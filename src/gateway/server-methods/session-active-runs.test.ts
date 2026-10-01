@@ -1,10 +1,7 @@
 // Tests gateway active-run matching by logical session key and backing id.
 import { afterEach, expect, it } from "vitest";
 import type { EmbeddedAgentQueueHandle } from "../../agents/embedded-agent-runner/run-state.js";
-import {
-  abortEmbeddedAgentRun,
-  waitForEmbeddedAgentRunEnd,
-} from "../../agents/embedded-agent-runner/runs.js";
+import { abortEmbeddedAgentRun } from "../../agents/embedded-agent-runner/runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
   registerTestEmbeddedRun as setActiveEmbeddedRun,
@@ -30,9 +27,10 @@ import {
 } from "../../sessions/session-controller.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { retireSessionControllerInput } from "../../sessions/session-controller.mailbox.js";
+import { waitForSessionRunEnd } from "../../sessions/session-controller.native-runtime.js";
 import {
-  isSessionRunActive as isEmbeddedAgentRunActive,
-  resolveSessionRunProgressState as resolveEmbeddedAgentRunProgressState,
+  isSessionRunActive,
+  resolveSessionRunProgressState,
 } from "../../sessions/session-controller.queries.js";
 import type { RpcSourceAdapter } from "../../sessions/session-controller.rpc-sources.js";
 import { registerChatAbortController } from "../chat-abort.js";
@@ -377,7 +375,7 @@ it("projects reply lifecycle state and admits the next backend after producer co
     expect(visibleState(sessionKey, { sessionId })).toEqual({ active: true });
     operation.markGlobalLaneWaitEnded();
     expect(operation.abortByUser()).toBe(true);
-    expect(isEmbeddedAgentRunActive(sessionId)).toBe(true);
+    expect(isSessionRunActive(sessionId)).toBe(true);
     expect(visibleState(sessionKey, { sessionId })).toEqual({ active: false, runIds: [] });
 
     operation.complete();
@@ -428,7 +426,7 @@ it("does not project an aborted embedded handle retained for cleanup as active",
     expect(visibleState(sessionKey, { sessionId })).toEqual({ active: true });
 
     expect(abortEmbeddedAgentRun(sessionId)).toBe(true);
-    expect(isEmbeddedAgentRunActive(sessionId)).toBe(true);
+    expect(isSessionRunActive(sessionId)).toBe(true);
     expect(visibleState(sessionKey, { sessionId })).toEqual({ active: false, runIds: [] });
 
     const source = createRpcSourceForTest({ sessionId, sessionKey });
@@ -749,7 +747,7 @@ it("preserves the completed foreground row while hidden embedded maintenance rem
       includeSession: true,
     });
   let settled = false;
-  const cleanup = waitForEmbeddedAgentRunEnd(sessionId, null).then((ended) => {
+  const cleanup = waitForSessionRunEnd(sessionId, null).then((ended) => {
     settled = true;
     return ended;
   });
@@ -761,15 +759,15 @@ it("preserves the completed foreground row while hidden embedded maintenance rem
       runtimeMs: 273_418,
       session: { status: "done", hasActiveRun: false },
     });
-    expect(isEmbeddedAgentRunActive(sessionId)).toBe(true);
-    expect(resolveEmbeddedAgentRunProgressState(sessionId)).toBe("running");
+    expect(isSessionRunActive(sessionId)).toBe(true);
+    expect(resolveSessionRunProgressState(sessionId)).toBe("running");
     clearAgentRunContext(runId);
     expect.soft(state()).toEqual({ active: false, runIds: [] });
-    expect(resolveEmbeddedAgentRunProgressState(sessionId)).toBe("running");
+    expect(resolveSessionRunProgressState(sessionId)).toBe("running");
     expect(abortEmbeddedAgentRun(sessionId)).toBe(true);
     expect(aborted).toBe(true);
-    expect(isEmbeddedAgentRunActive(sessionId)).toBe(true);
-    expect(resolveEmbeddedAgentRunProgressState(sessionId)).toBeUndefined();
+    expect(isSessionRunActive(sessionId)).toBe(true);
+    expect(resolveSessionRunProgressState(sessionId)).toBeUndefined();
     await Promise.resolve();
     expect(settled).toBe(false);
   } finally {
@@ -818,7 +816,7 @@ it.each(["reply", "remote"] as const)(
       reply?.complete();
       clearAgentRunContext(visibleRunId);
       expect(state()).toEqual({ active: false, runIds: [] });
-      expect(resolveEmbeddedAgentRunProgressState(sessionId)).toBe(
+      expect(resolveSessionRunProgressState(sessionId)).toBe(
         kind === "reply" ? undefined : "running",
       );
     } finally {

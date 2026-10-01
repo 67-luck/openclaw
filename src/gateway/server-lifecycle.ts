@@ -22,7 +22,7 @@ import {
   withPluginRuntimeRegistryScope,
 } from "../plugins/runtime/gateway-request-scope.js";
 import { clearSecretsRuntimeSnapshotState } from "../secrets/runtime-state.js";
-import { resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId } from "../sessions/session-controller.queries.js";
+import { resolveActiveSessionRunId } from "../sessions/session-controller.queries.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import {
   recordRemoteNodeInfo,
@@ -515,7 +515,7 @@ export async function prepareGatewayLifecycle(params: {
         ) => {
           void nodeSendToSession(sessionKey, event, payload, opts);
         },
-        resolveActiveSessionIdForKey: resolveActiveEmbeddedRunSessionId,
+        resolveActiveSessionIdForKey: resolveActiveSessionRunId,
         markMainSessionsAbortedForRestart: async (restart) => {
           await shutdownRuntime.markRestartAbortedMainSessions({
             cfg: getRuntimeConfig(),

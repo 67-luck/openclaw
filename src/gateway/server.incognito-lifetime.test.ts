@@ -13,7 +13,7 @@ import {
   deleteSessionEntryLifecycle,
   resetSessionEntryLifecycle,
 } from "../config/sessions/session-accessor.sqlite-lifecycle.js";
-import { replyRunRegistry } from "../sessions/session-controller.js";
+import { createReplyOperation, isSessionRunActiveForKey } from "../sessions/session-controller.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabaseByPath } from "../state/openclaw-agent-db-lifecycle.js";
 import {
@@ -132,7 +132,7 @@ it("expires Incognito at creation plus 24 hours, cancels work, and deletes witho
     });
     await time.advanceBy(60 * 60_000 - 1);
     expect(loadSessionEntryReadOnly(scope)).toBeDefined();
-    const active = replyRunRegistry.begin({ ...scope, resetTriggered: false });
+    const active = createReplyOperation({ ...scope, resetTriggered: false });
     try {
       await time.advanceBy(1);
       await expect(deleted.promise).resolves.toMatchObject({
@@ -141,7 +141,7 @@ it("expires Incognito at creation plus 24 hours, cancels work, and deletes witho
       });
       expect(deletes).toHaveBeenCalledOnce();
       expect(active.abortSignal.aborted).toBe(true);
-      expect(replyRunRegistry.isActive(scope.sessionKey)).toBe(false);
+      expect(isSessionRunActiveForKey(scope.sessionKey)).toBe(false);
       await flushPendingSessionsChangedEvents(context);
       expect(logWarning).not.toHaveBeenCalled();
       expect(loadSessionEntryReadOnly(scope)).toBeUndefined();

@@ -12,8 +12,7 @@ import { enqueueFollowupRun } from "./enqueue.js";
 import { getExistingFollowupQueue } from "./state.js";
 
 it("clears each normalized mailbox without clearing independent command lanes", async () => {
-  // The former adapter derived this command lane from the cleared logical key.
-  const lane = "session:alpha";
+  const lane = "test:independent-work";
   setCommandLaneConcurrency(lane, 0);
   const execute = vi.fn(async () => "independent work");
   const pending = enqueueCommandInLane(lane, execute);
@@ -34,7 +33,7 @@ it("clears each normalized mailbox without clearing independent command lanes", 
       " session:beta ",
       "session:beta",
     ]);
-    expect(result).toEqual({ followupCleared: 4, laneCleared: 0, keys: ["alpha", "session:beta"] });
+    expect(result).toEqual({ followupCleared: 4, keys: ["alpha", "session:beta"] });
     await Promise.all(
       sources.map((run) => captureSessionControllerSourceSettlement(run.controllerInput!)),
     );

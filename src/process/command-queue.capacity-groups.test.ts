@@ -405,7 +405,7 @@ describe("command lane capacity groups", () => {
     expect(() => setCommandLaneGroup(GROUP, { budget: 2, members: ["cron", HOOK] })).toThrow(
       /cannot join a capacity group/,
     );
-    for (const lane of ["session:abc", "subagent:agent:main:parent"]) {
+    for (const lane of ["session:probe-setup-inference:openai", "subagent:agent:main:parent"]) {
       expect(() => setCommandLaneGroup(GROUP, { budget: 2, members: [lane, HOOK] })).toThrow(
         /cannot join a capacity group/,
       );

@@ -18,7 +18,7 @@ import {
 import type { GatewayQuestionCall } from "../../agents/tools/gateway-question-lifecycle.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import type { ReplyBackendQueueMessageResult } from "../../sessions/session-controller.contracts.js";
-import { replyRunRegistry } from "../../sessions/session-controller.js";
+import { getSessionControllerOperation } from "../../sessions/session-controller.js";
 import {
   captureSessionControllerSourceSettlement,
   retireSessionControllerInput,
@@ -702,7 +702,7 @@ describe("question response custody through reply adoption", () => {
             }
           };
           const assertCurrent = () => {
-            expect(replyRunRegistry.get(key)).toBe(operation);
+            expect(getSessionControllerOperation(key)).toBe(operation);
             operation.abortSignal.throwIfAborted();
           };
           operation.attachBackend({
@@ -926,7 +926,7 @@ describe("question response custody through reply adoption", () => {
           }
         }),
       );
-      expect(replyRunRegistry.get(key)).toBeUndefined();
+      expect(getSessionControllerOperation(key)).toBeUndefined();
       expect(getExistingFollowupQueue(key)).toBeUndefined();
     },
   );

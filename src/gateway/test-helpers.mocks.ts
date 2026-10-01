@@ -23,17 +23,15 @@ function createEmbeddedRunMockExports() {
   return {
     compactEmbeddedAgentSession: (...args: unknown[]) =>
       embeddedRunMock.compactEmbeddedAgentSession(...args),
-    isEmbeddedAgentRunActive: (sessionId: string) => embeddedRunMock.activeIds.has(sessionId),
+    isSessionRunActive: (sessionId: string) => embeddedRunMock.activeIds.has(sessionId),
     isEmbeddedAgentRunInProgress: (sessionId: string) => embeddedRunMock.activeIds.has(sessionId),
-    resolveEmbeddedAgentRunProgressState: (sessionId: string) =>
-      embeddedRunMock.activeIds.has(sessionId) ? "running" : undefined,
-    resolveEmbeddedAgentSessionProgressState: (sessionId: string) =>
+    resolveSessionRunProgressState: (sessionId: string) =>
       embeddedRunMock.activeIds.has(sessionId) ? "running" : undefined,
     abortEmbeddedAgentRun: (sessionId: string) => {
       embeddedRunMock.abortCalls.push(sessionId);
       return embeddedRunMock.activeIds.has(sessionId);
     },
-    waitForEmbeddedAgentRunEnd: async (sessionId: string, timeoutMs?: number | null) => {
+    waitForSessionRunEnd: async (sessionId: string, timeoutMs?: number | null) => {
       if (timeoutMs === null) {
         embeddedRunMock.endWaitCalls.push(sessionId);
         return await new Promise<boolean>((resolve) => {

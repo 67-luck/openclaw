@@ -10,27 +10,29 @@ import {
   clearActiveEmbeddedRun,
   isEmbeddedAgentRunAbortableForRunId,
   abortEmbeddedAgentRun,
-  isEmbeddedAgentRunStreaming,
   resolveActiveEmbeddedRunOwnerByRunId,
-  waitForEmbeddedAgentRunEnd,
 } from "../agents/embedded-agent-runner/runs.js";
 import { testing as nativeTesting } from "../agents/embedded-agent-runner/runs.test-support.js";
 import { testing as controllerTesting } from "../auto-reply/reply/reply-run-registry.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withSessionTurn } from "./session-controller.admission.js";
 import type { ReplyBackendHandle, ReplyOperation } from "./session-controller.contracts.js";
+import { abortActiveReplyRuns } from "./session-controller.js";
 import { captureSessionTarget } from "./session-controller.lifecycle.js";
 import {
   reserveSessionControllerSource,
   retireSessionControllerInput,
 } from "./session-controller.mailbox.js";
+import {
+  isSessionNativeAttemptStreaming,
+  waitForSessionRunEnd,
+} from "./session-controller.native-runtime.js";
 import { createReplyOperation } from "./session-controller.operation.js";
 import {
   getActiveSessionRunCount,
   isSessionRunActive,
   resolveSessionRunProgressState,
 } from "./session-controller.queries.js";
-import { abortActiveReplyRuns } from "./session-controller.registry.js";
 import {
   getAttachedBackend,
   getSessionControllerEntryForOperation,
@@ -152,7 +154,7 @@ describe("controller/native admission boundary", () => {
       expect(ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get("reused-attempt")).toBe(firstAttachment);
       expect(getAttachedBackend(operation!)).toBe(first);
       expect(isSessionRunActive(sessionId)).toBe(true);
-      expect(isEmbeddedAgentRunStreaming(sessionId)).toBe(true);
+      expect(isSessionNativeAttemptStreaming(sessionId)).toBe(true);
       expect(resolveSessionRunProgressState(sessionId)).toBe("running");
       expect(resolveActiveEmbeddedRunOwnerByRunId("reused-attempt")?.runId).toBe("reused-attempt");
       let firstSettled = false;
@@ -186,14 +188,14 @@ describe("controller/native admission boundary", () => {
       expect(getActiveNativeAttempt(sessionId)).toBe(second);
       expect(getSessionControllerOperation(sessionKey)).toBe(operation);
       expect(getActiveSessionRunCount()).toBe(1);
-      expect(isEmbeddedAgentRunStreaming(sessionId)).toBe(true);
+      expect(isSessionNativeAttemptStreaming(sessionId)).toBe(true);
       expect(resolveSessionRunProgressState(sessionId)).toBe("running");
       clearActiveEmbeddedRun(sessionId, second, undefined, undefined, undefined, secondAttachment);
     });
     expect(getActiveSessionRunCount()).toBe(0);
     expect(isSessionRunActive(sessionId)).toBe(false);
     expect(getActiveNativeAttempt(sessionId)).toBeUndefined();
-    expect(isEmbeddedAgentRunStreaming(sessionId)).toBe(false);
+    expect(isSessionNativeAttemptStreaming(sessionId)).toBe(false);
     expect(resolveSessionRunProgressState(sessionId)).toBeUndefined();
     expect(resolveActiveEmbeddedRunOwnerByRunId("reused-attempt")).toBeUndefined();
   });
@@ -298,7 +300,7 @@ describe("controller/native admission boundary", () => {
     await withSessionTurn({ sessionId, detached: true }, async () => {
       setActiveEmbeddedRun(sessionId, native);
       let settled = false;
-      const ended = waitForEmbeddedAgentRunEnd(sessionId, null).then((value) => {
+      const ended = waitForSessionRunEnd(sessionId, null).then((value) => {
         settled = true;
         return value;
       });

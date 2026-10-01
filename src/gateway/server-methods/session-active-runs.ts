@@ -11,7 +11,7 @@ import {
   type ProjectedAgentRunIndex,
 } from "../../infra/agent-run-registry.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
-import { resolveSessionRunProgressState as resolveEmbeddedAgentSessionProgressState } from "../../sessions/session-controller.queries.js";
+import { resolveSessionRunProgressState } from "../../sessions/session-controller.queries.js";
 import {
   getRpcSourceProjectSessionActive,
   isRpcSourceActive,
@@ -274,7 +274,7 @@ export function resolveVisibleActiveSessionRunState(params: {
   const embeddedRunState =
     sessionId === undefined || representedLocally
       ? undefined
-      : resolveEmbeddedAgentSessionProgressState(sessionId, {
+      : resolveSessionRunProgressState(sessionId, {
           agentId: resolvedAgentId,
           defaultAgentId: params.defaultAgentId,
         });

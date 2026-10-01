@@ -28,9 +28,9 @@ import {
   dispatchReplyFromConfig,
   globalBeforeAll0,
   firstToolResultPayload,
-  replyRunRegistry,
   requireToolResultHandler,
   setNoAbort,
+  getSessionControllerOperation,
 } from "./dispatch-from-config.test-harness.js";
 import { resetInboundDedupe } from "./inbound-dedupe.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
@@ -228,7 +228,7 @@ describe("dispatch input custody after a question response", () => {
       expect(onSettled).toHaveBeenCalledOnce();
       expect(fixture.cancel).not.toHaveBeenCalled();
       expect(fixture.operation.result).toBeNull();
-      expect(replyRunRegistry.get(fixture.operation.key)).toBe(fixture.operation);
+      expect(getSessionControllerOperation(fixture.operation.key)).toBe(fixture.operation);
     } finally {
       fixture.operation.complete();
     }
@@ -531,7 +531,7 @@ describe("dispatch input custody after a question response", () => {
       );
       expect(fixture.cancel).not.toHaveBeenCalled();
       expect(fixture.operation.result).toBeNull();
-      expect(replyRunRegistry.get(fixture.operation.key)).toBe(fixture.operation);
+      expect(getSessionControllerOperation(fixture.operation.key)).toBe(fixture.operation);
     } finally {
       question.dispose();
       fixture.operation.complete();

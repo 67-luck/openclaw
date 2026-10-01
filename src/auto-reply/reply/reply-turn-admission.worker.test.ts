@@ -9,8 +9,8 @@ import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.
 import * as nodeSqlite from "../../infra/node-sqlite.js";
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import {
-  replyRunRegistry,
   waitForReplyRunSuccessorAdmission,
+  getSessionControllerOperation,
 } from "../../sessions/session-controller.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db.js";
 import * as agentWriteAdmission from "../../state/openclaw-agent-write-admission.js";
@@ -104,7 +104,7 @@ it.each(["missing", "corrupt"] as const)(
           expect(fs.existsSync(storePath)).toBe(true);
           await completeAdmission(result, sessionKey);
         }
-        expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+        expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
         sql.expectIdle();
         expect(opened).not.toHaveBeenCalled();
       } finally {
@@ -189,7 +189,7 @@ it("admits cold and reopened persistent replies without main-thread SQLite while
         }
         previousIncarnation = result.databaseClaim.incarnation;
         await completeAdmission(result, sessionKey);
-        expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+        expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
         sql.expectIdle();
         expect(opened).not.toHaveBeenCalled();
       } finally {
@@ -290,18 +290,18 @@ it("cancels a contended persistent admission without claiming the reply or poiso
       controller.abort(new Error("Synthetic cancelled reply"));
       await setImmediate();
       expect(Atomics.load(holder.released, 0)).toBe(0);
-      expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
-      expect(replyRunRegistry.get(followerKey)).toBeUndefined();
+      expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
+      expect(getSessionControllerOperation(followerKey)).toBeUndefined();
       await releaseWriter();
       await expect(pending).resolves.toEqual({ status: "skipped", reason: "aborted" });
-      expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+      expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
       result = await follower;
       expect(result.status).toBe("owned");
       if (result.status === "owned") {
         expect(result.sessionEntry?.sessionId).toBe(followerSessionId);
       }
       await completeAdmission(result, followerKey);
-      expect(replyRunRegistry.get(followerKey)).toBeUndefined();
+      expect(getSessionControllerOperation(followerKey)).toBeUndefined();
     } finally {
       try {
         controller.abort();
@@ -385,7 +385,7 @@ it("keeps successors behind physical claim release when another agent occupies t
         expect(settled).toBe(false);
         await releaseWriter();
         expect(await successor).toMatchObject({ settled: true });
-        expect(replyRunRegistry.get(activeKey)).toBeUndefined();
+        expect(getSessionControllerOperation(activeKey)).toBeUndefined();
         sql.expectIdle();
         expect(opened).not.toHaveBeenCalled();
       } finally {

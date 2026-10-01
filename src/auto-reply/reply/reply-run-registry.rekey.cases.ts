@@ -1,9 +1,10 @@
 import { expect, it } from "vitest";
 import {
   ReplyRunAlreadyActiveError,
-  replyRunRegistry,
-  resolveActiveReplyRunSessionId,
+  resolveActiveSessionRunId,
   waitForReplyRunEndBySessionId,
+  getSessionControllerOperation,
+  waitForSessionRunIdle,
 } from "../../sessions/session-controller.js";
 import { createTestReplyOperation } from "./reply-run-registry.test-helpers.js";
 
@@ -15,20 +16,20 @@ export function registerReplyOperationRekeyCases() {
       sessionKey: sourceSessionKey,
       sessionId: "rekey-session",
     });
-    const sourceIdle = replyRunRegistry.waitForIdle(sourceSessionKey, 1_000);
+    const sourceIdle = waitForSessionRunIdle(sourceSessionKey, 1_000);
 
     operation.updateSessionKey(targetSessionKey);
 
     expect(operation.key).toBe(targetSessionKey);
-    expect(replyRunRegistry.get(sourceSessionKey)).toBeUndefined();
-    expect(replyRunRegistry.get(targetSessionKey)).toBe(operation);
-    expect(resolveActiveReplyRunSessionId(targetSessionKey)).toBe("rekey-session");
+    expect(getSessionControllerOperation(sourceSessionKey)).toBeUndefined();
+    expect(getSessionControllerOperation(targetSessionKey)).toBe(operation);
+    expect(resolveActiveSessionRunId(targetSessionKey)).toBe("rekey-session");
     await expect(sourceIdle).resolves.toBe(true);
 
     const targetWait = waitForReplyRunEndBySessionId("rekey-session", 1_000);
     operation.complete();
     await expect(targetWait).resolves.toBe(true);
-    expect(replyRunRegistry.get(targetSessionKey)).toBeUndefined();
+    expect(getSessionControllerOperation(targetSessionKey)).toBeUndefined();
   });
 
   it("refuses to rekey onto an owned target slot and keeps the source slot", () => {
@@ -45,8 +46,8 @@ export function registerReplyOperationRekeyCases() {
 
     expect(() => operation.updateSessionKey(targetSessionKey)).toThrow(ReplyRunAlreadyActiveError);
     expect(operation.key).toBe(sourceSessionKey);
-    expect(replyRunRegistry.get(sourceSessionKey)).toBe(operation);
-    expect(replyRunRegistry.get(targetSessionKey)).toBe(blocker);
+    expect(getSessionControllerOperation(sourceSessionKey)).toBe(operation);
+    expect(getSessionControllerOperation(targetSessionKey)).toBe(blocker);
 
     blocker.complete();
     operation.complete();

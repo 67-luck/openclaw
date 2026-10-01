@@ -42,8 +42,9 @@ import { readReplySourceInput } from "./reply-source-binding.js";
 let dispatchReplyFromConfig: typeof import("./dispatch-from-config.js").dispatchReplyFromConfig;
 let resetInboundDedupe: typeof import("./inbound-dedupe.js").resetInboundDedupe;
 let createReplyOperation: typeof import("../../sessions/session-controller.js").createReplyOperation;
-let listActiveReplyRunSessionKeys: typeof import("../../sessions/session-controller.registry.js").listActiveReplyRunSessionKeys;
-let replyRunRegistry: typeof import("../../sessions/session-controller.js").replyRunRegistry;
+let listActiveReplyRunSessionKeys: typeof import("../../sessions/session-controller.js").listActiveReplyRunSessionKeys;
+let getSessionControllerOperation: typeof import("../../sessions/session-controller.js").getSessionControllerOperation;
+let abortSessionRunByKey: typeof import("../../sessions/session-controller.js").abortSessionRunByKey;
 let runAfterReplyOperationClear: typeof import("../../sessions/session-controller.js").runAfterReplyOperationClear;
 let resetReplyRunRegistry: typeof import("./reply-run-registry.test-support.js").testing.resetReplyRunRegistry;
 
@@ -116,9 +117,9 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
     ({ resetInboundDedupe } = await import("./inbound-dedupe.js"));
     const replyRunRegistryModule = await import("../../sessions/session-controller.js");
     createReplyOperation = replyRunRegistryModule.createReplyOperation;
-    ({ listActiveReplyRunSessionKeys } =
-      await import("../../sessions/session-controller.registry.js"));
-    replyRunRegistry = replyRunRegistryModule.replyRunRegistry;
+    listActiveReplyRunSessionKeys = replyRunRegistryModule.listActiveReplyRunSessionKeys;
+    getSessionControllerOperation = replyRunRegistryModule.getSessionControllerOperation;
+    abortSessionRunByKey = replyRunRegistryModule.abortSessionRunByKey;
     runAfterReplyOperationClear = replyRunRegistryModule.runAfterReplyOperationClear;
     const { testing } = await import("./reply-run-registry.test-support.js");
     resetReplyRunRegistry = () => testing.resetReplyRunRegistry();
@@ -754,7 +755,7 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
         cfg: emptyConfig,
         dispatcher,
         replyResolver: async () => {
-          const operation = replyRunRegistry.get("agent:test:session");
+          const operation = getSessionControllerOperation("agent:test:session");
           if (!operation) {
             throw new Error("expected dispatch reply operation");
           }
@@ -788,7 +789,7 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
       await queued.promise;
       expect(queuedOperation).toBeDefined();
       expect(deliveryOrder).toEqual(["final", "followup"]);
-      expect(replyRunRegistry.get("agent:test:session")).toBe(queuedOperation);
+      expect(getSessionControllerOperation("agent:test:session")).toBe(queuedOperation);
     } finally {
       dispatcher.markComplete();
       queuedOperation?.complete();
@@ -816,7 +817,7 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
         dispatcher,
         replyResolver: async (_ctx, options) => {
           source = readReplySourceInput(options);
-          const operation = replyRunRegistry.get("agent:test:session");
+          const operation = getSessionControllerOperation("agent:test:session");
           if (!operation) {
             throw new Error("expected dispatch reply operation");
           }
@@ -829,7 +830,7 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
 
       await ownerStarted.promise;
       await vi.advanceTimersByTimeAsync(REPLY_RUN_FINALIZATION_SETTLE_TIMEOUT_MS);
-      const frozen = replyRunRegistry.get("agent:test:session");
+      const frozen = getSessionControllerOperation("agent:test:session");
       expect(frozen?.abortFrozen).toBe(true);
       expect(frozen?.watchdog.snapshot().recovery?.status).toBe("blocked");
       expect(() =>
@@ -854,7 +855,7 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(dispatcher.sendFinalReply).toHaveBeenCalledExactlyOnceWith({ text: "late reply" });
-      expect(replyRunRegistry.get("agent:test:session")).toBe(successor);
+      expect(getSessionControllerOperation("agent:test:session")).toBe(successor);
     } finally {
       releaseOwner.resolve();
       await dispatchPromise;
@@ -885,7 +886,7 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
         cfg: emptyConfig,
         dispatcher,
         replyResolver: async () => {
-          const operation = replyRunRegistry.get("agent:test:session");
+          const operation = getSessionControllerOperation("agent:test:session");
           if (!operation) {
             throw new Error("expected dispatch reply operation");
           }
@@ -897,15 +898,15 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
       await ttsStarted.promise;
       await vi.advanceTimersByTimeAsync(REPLY_RUN_FINALIZATION_SETTLE_TIMEOUT_MS);
 
-      const active = replyRunRegistry.get("agent:test:session");
+      const active = getSessionControllerOperation("agent:test:session");
       expect(active).toBeDefined();
       expect(active?.result).toBeNull();
-      expect(replyRunRegistry.abort("agent:test:session")).toBe(false);
+      expect(abortSessionRunByKey("agent:test:session")).toBe(false);
 
       releaseTts.resolve();
       await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: true });
       expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({ text: "reply with slow TTS" });
-      expect(replyRunRegistry.get("agent:test:session")).toBeUndefined();
+      expect(getSessionControllerOperation("agent:test:session")).toBeUndefined();
     } finally {
       releaseTts.resolve();
       await vi.runOnlyPendingTimersAsync();

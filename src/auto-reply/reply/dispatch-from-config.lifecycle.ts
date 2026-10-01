@@ -16,9 +16,9 @@ import {
 import { logVerbose } from "../../globals.js";
 import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
 import {
-  replyRunRegistry,
   type ReplyOperation,
   waitForReplyBarrierSettlement,
+  getSessionControllerOperation,
 } from "../../sessions/session-controller.js";
 import {
   runSessionMutation,
@@ -358,7 +358,7 @@ export function createDispatchReplyOperationCoordinator(params: {
     const sourceInput = readReplySourceInput(params.replyOptions);
     const activeReplyOperation = sourceInput
       ? sourceInput.mailbox.owner.active
-      : replyRunRegistry.get(dispatchOperationSessionKey);
+      : getSessionControllerOperation(dispatchOperationSessionKey);
     const commandRequiresTurn =
       (isExplicitSourceReplyCommand(params.ctx, params.cfg) ||
         isUnauthorizedTextSlashCommand(params.ctx)) &&

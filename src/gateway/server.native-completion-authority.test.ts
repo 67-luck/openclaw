@@ -278,8 +278,8 @@ describe("native completion final-effect authority", () => {
         "../sessions/session-controller.queries.js",
       );
       // importActual can share this namespace; capture the function before spyOn replaces it.
-      const isEmbeddedAgentRunActive = actualRuns.isSessionRunActive;
-      vi.spyOn(sessionQueries, "isSessionRunActive").mockImplementation(isEmbeddedAgentRunActive);
+      const isSessionRunActive = actualRuns.isSessionRunActive;
+      vi.spyOn(sessionQueries, "isSessionRunActive").mockImplementation(isSessionRunActive);
       const entered = createDeferred();
       const resume = createDeferred();
       const compacting = createDeferred();

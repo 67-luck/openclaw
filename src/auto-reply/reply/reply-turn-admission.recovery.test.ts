@@ -11,7 +11,10 @@ import type { InternalSessionEntry as SessionEntry } from "../../config/sessions
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
-import { createReplyOperation, replyRunRegistry } from "../../sessions/session-controller.js";
+import {
+  createReplyOperation,
+  getSessionControllerOperation,
+} from "../../sessions/session-controller.js";
 import {
   beginSessionEffect,
   consumeSessionEffectHandoff,
@@ -200,7 +203,7 @@ describe("reply turn recovery admission", () => {
       expect(
         loadSessionEntry({ storePath, sessionKey })?.mainRestartRecovery?.foregroundClaims,
       ).toBeUndefined();
-      expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+      expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
     } finally {
       release.resolve();
       predecessor.complete();
@@ -294,7 +297,7 @@ describe("reply turn recovery admission", () => {
           expectedRecoverySourceRunId: "old-channel-source",
           gatewayRuntime: context.recoveryRuntime,
         });
-        expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+        expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
         expect(root.isActive()).toBe(true);
         const owner = await beginSessionEffect({
           scope: storePath,
@@ -476,7 +479,7 @@ describe("reply turn recovery admission", () => {
           setImmediate(resolve);
         });
         expect(loadSessionEntry({ storePath, sessionKey })).toMatchObject(entry);
-        expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+        expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
         if (failed) {
           await admission;
           expect(failure).toMatchObject({
@@ -551,7 +554,7 @@ describe("reply turn recovery admission", () => {
         });
         expect(failure).toBeUndefined();
         expect(result).toBeUndefined();
-        expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+        expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
         if (outcome === "cancelled") {
           controller.abort();
         } else {

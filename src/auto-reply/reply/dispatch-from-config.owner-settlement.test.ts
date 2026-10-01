@@ -35,24 +35,23 @@ import {
   describe0BeforeEach0,
   dispatchReplyFromConfig,
   globalBeforeAll0,
-  replyRunRegistry,
   requireBlockReplyHandler,
   setNoAbort,
+  getSessionControllerOperation,
 } from "./dispatch-from-config.test-harness.js";
 import { createReplyDispatcher } from "./reply-dispatcher.js";
 import { resolveReplyOperationRunState } from "./reply-operation-run-state.js";
 import { readReplySourceInput } from "./reply-source-binding.js";
 import { buildTestCtx } from "./test-ctx.js";
 
-let listActiveReplyRunSessionKeys: typeof import("../../sessions/session-controller.registry.js").listActiveReplyRunSessionKeys;
+let listActiveReplyRunSessionKeys: typeof import("../../sessions/session-controller.js").listActiveReplyRunSessionKeys;
 let runAfterReplyOperationClear: typeof import("../../sessions/session-controller.js").runAfterReplyOperationClear;
 let resetReplyRunRegistry: typeof import("./reply-run-registry.test-support.js").testing.resetReplyRunRegistry;
 let resetInboundDedupe: typeof import("./inbound-dedupe.js").resetInboundDedupe;
 
 beforeAll(async () => {
   await globalBeforeAll0();
-  ({ listActiveReplyRunSessionKeys } =
-    await import("../../sessions/session-controller.registry.js"));
+  ({ listActiveReplyRunSessionKeys } = await import("../../sessions/session-controller.js"));
   ({ runAfterReplyOperationClear } = await import("../../sessions/session-controller.js"));
   ({ resetInboundDedupe } = await import("./inbound-dedupe.js"));
   const { testing } = await import("./reply-run-registry.test-support.js");
@@ -181,7 +180,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
       operation?.freezeAbort();
       await vi.advanceTimersByTimeAsync(60_000);
       // Expiry requests cleanup; it cannot settle this unresolved resolver.
-      expect(replyRunRegistry.get(sessionKey)).toBe(operation);
+      expect(getSessionControllerOperation(sessionKey)).toBe(operation);
       expect(settled).not.toHaveBeenCalled();
       expect(delivered).not.toHaveBeenCalled();
 
@@ -329,7 +328,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
       operation = opts?.replyOperation;
       signalResolverEntered();
       await resolverGate;
-      resumedResolverOwner = replyRunRegistry.get(sessionKey);
+      resumedResolverOwner = getSessionControllerOperation(sessionKey);
       await requireBlockReplyHandler(opts?.onBlockReply)({ text: "stale late block" });
       return { text: "stale late final" } satisfies ReplyPayload;
     });
@@ -371,7 +370,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
       expect(operation).toBeDefined();
       const result = await dispatch;
       expect(result.queuedFinal).toBe(false);
-      expect(replyRunRegistry.get(sessionKey)).toBe(operation);
+      expect(getSessionControllerOperation(sessionKey)).toBe(operation);
       expect(operation?.abortSignal.aborted).toBe(true);
       expect(mutationRan).toBe(false);
       expect(
@@ -382,7 +381,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
       await mutation;
 
       expect(resumedResolverOwner).toBe(operation);
-      expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+      expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
       expect(mutationRan).toBe(true);
       expect(dispatcher.sendBlockReply).not.toHaveBeenCalled();
       expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
@@ -693,7 +692,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
         let successorAdmission: Promise<void> | undefined;
         const abortController = new AbortController();
         hookMocks.runner.runReplyDispatch.mockImplementation(async (_event, contextValue) => {
-          operation = replyRunRegistry.get("agent:test:session");
+          operation = getSessionControllerOperation("agent:test:session");
           if (!operation) {
             throw new Error("expected dispatch reply operation");
           }
@@ -753,7 +752,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
 
           expect(operation).toBeDefined();
           expect(result.queuedFinal).toBe(!holdReceiptCallback);
-          expect(replyRunRegistry.get("agent:test:session")).toBeUndefined();
+          expect(getSessionControllerOperation("agent:test:session")).toBeUndefined();
           if (holdReceiptCallback) {
             const receipt = await dispatcher.waitForIdle();
             expect(receipt?.counts.block.delivered).toBe(1);
@@ -772,7 +771,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
           });
 
           expect(deliveryOrder).toEqual(completedOrder);
-          expect(replyRunRegistry.get("agent:test:session")).toBe(queuedOperation);
+          expect(getSessionControllerOperation("agent:test:session")).toBe(queuedOperation);
         } finally {
           releaseDelivery.resolve();
           dispatcher.markComplete();

@@ -4,8 +4,11 @@ import {
   resolveMainSessionAlias,
 } from "../../agents/tools/sessions-helpers.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { replyRunRegistry } from "../../sessions/session-controller.js";
-import { resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId } from "../../sessions/session-controller.queries.js";
+import {
+  getSessionControllerOperation,
+  captureCurrentReplyMessageInjectionTarget,
+} from "../../sessions/session-controller.js";
+import { resolveActiveSessionRunId } from "../../sessions/session-controller.queries.js";
 import {
   isAuthorizedTextSlashCommandTurn,
   isNativeCommandTurn,
@@ -84,10 +87,10 @@ export function resolveActiveExplicitSteerSessionKey(params: {
     return undefined;
   }
   for (const candidateKey of listSteerCandidateSessionKeys(sourceSessionKey)) {
-    const operation = replyRunRegistry.get(candidateKey);
+    const operation = getSessionControllerOperation(candidateKey);
     const hasActiveOwner = operation
-      ? replyRunRegistry.resolveCurrentMessageInjectionTarget(candidateKey) !== undefined
-      : resolveActiveEmbeddedRunSessionId(candidateKey) !== undefined;
+      ? captureCurrentReplyMessageInjectionTarget(candidateKey) !== undefined
+      : resolveActiveSessionRunId(candidateKey) !== undefined;
     if (hasActiveOwner) {
       return candidateKey;
     }

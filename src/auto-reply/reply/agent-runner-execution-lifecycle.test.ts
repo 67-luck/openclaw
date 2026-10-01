@@ -21,10 +21,10 @@ import { useBundledProviderPolicyArtifactsForTest } from "../../plugin-sdk/test-
 import {
   createReplyOperation,
   hasReplyOperationExecutionStarted,
-  replyRunRegistry,
   type ReplyOperation,
+  getSessionControllerOperation,
 } from "../../sessions/session-controller.js";
-import { isSessionRunActive as isEmbeddedAgentRunActive } from "../../sessions/session-controller.queries.js";
+import { isSessionRunActive } from "../../sessions/session-controller.queries.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { GetReplyOptions } from "../types.js";
 import {
@@ -131,7 +131,7 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
           compaction: { count: 1, durable: [fact] },
         });
         expect(onAgentRunTerminalOutcome).not.toHaveBeenCalled();
-        expect(isEmbeddedAgentRunActive(sessionId)).toBe(false);
+        expect(isSessionRunActive(sessionId)).toBe(false);
         const terminals = vi
           .mocked(emitAgentEvent)
           .mock.calls.map(([event]) => event)
@@ -565,7 +565,7 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
         };
         expect(replyOperation.abortSignal.aborted).toBe(true);
         expect(replyOperation.result).toEqual(expectedAbortResult);
-        expect(replyRunRegistry.get(replyOperation.key)).toBe(replyOperation);
+        expect(getSessionControllerOperation(replyOperation.key)).toBe(replyOperation);
         fallbackRelease.resolve();
 
         expect((await pending).outcome).toEqual({
@@ -574,7 +574,7 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
           ...(compactions > 0 ? { compaction: { count: compactions, durable: [] } } : {}),
         });
         expect(replyOperation.result).toEqual(expectedAbortResult);
-        expect(replyRunRegistry.get(replyOperation.key)).toBe(replyOperation);
+        expect(getSessionControllerOperation(replyOperation.key)).toBe(replyOperation);
         expect(state.runEmbeddedAgentMock).toHaveBeenCalledOnce();
         expect(state.recordMessageToolRunOutcomeMock).toHaveBeenCalledWith(
           expect.objectContaining({ outcome: "mute", runStatus: "aborted" }),
@@ -583,7 +583,7 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
         fallbackRelease.resolve();
         replyOperation.complete();
       }
-      expect(replyRunRegistry.get(replyOperation.key)).toBeUndefined();
+      expect(getSessionControllerOperation(replyOperation.key)).toBeUndefined();
     },
   );
 

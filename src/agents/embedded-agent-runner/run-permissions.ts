@@ -7,13 +7,13 @@ import {
   validateAgentRunDelegatedAuthority,
   type AgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
-import { resolveSessionRunProgressState as resolveEmbeddedAgentRunProgressState } from "../../sessions/session-controller.queries.js";
+import { resolveSessionRunProgressState } from "../../sessions/session-controller.queries.js";
 import { getActiveNativeAttempt } from "./run-state.js";
 import { withAuthorizedPermissionChange } from "./run/permission-change.js";
 
 /** Captures one exact live runtime; a later run must never inherit this update. */
 export function prepareEmbeddedRunPermissionChange(sessionId: string) {
-  if (!resolveEmbeddedAgentRunProgressState(sessionId)) {
+  if (!resolveSessionRunProgressState(sessionId)) {
     return { kind: "idle" as const };
   }
   const handle = getActiveNativeAttempt(sessionId);

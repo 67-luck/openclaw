@@ -5,9 +5,9 @@ import {
 
 const defaultScheduler = createSkillExperienceReviewScheduler({
   isSystemActive: async () => {
-    const { getActiveEmbeddedRunCount } =
-      await import("../../agents/embedded-agent-runner/active-run-projections.js");
-    return getActiveEmbeddedRunCount() > 0;
+    const { getActiveSessionRunCount } =
+      await import("../../sessions/session-controller.queries.js");
+    return getActiveSessionRunCount() > 0;
   },
   runReview: async (candidate) => {
     const { getRuntimeConfig } = await import("../../config/config.js");

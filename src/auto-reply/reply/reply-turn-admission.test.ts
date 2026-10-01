@@ -15,8 +15,8 @@ import {
 import {
   createReplyOperation,
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
-  replyRunRegistry,
   runAfterReplyOperationClear,
+  getSessionControllerOperation,
 } from "../../sessions/session-controller.js";
 import {
   interruptSessionControllerEffects,
@@ -790,12 +790,12 @@ describe("reply turn admission", () => {
       code: "aborted_for_restart",
     });
     expect(mutationRan).toBe(false);
-    expect(replyRunRegistry.get(sessionKey)).toBe(admission.operation);
+    expect(getSessionControllerOperation(sessionKey)).toBe(admission.operation);
 
     admission.operation.complete();
     await mutation;
     expect(mutationRan).toBe(true);
-    expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+    expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
   });
 
   it("excludes the initiating reply admission from an in-band lifecycle mutation", async () => {
@@ -1108,7 +1108,7 @@ describe("reply turn admission", () => {
 
       await vi.advanceTimersByTimeAsync(REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS);
       expect(settled).toBe(false);
-      expect(replyRunRegistry.get("agent:main:telegram:topic:fresh-visible")).toBe(active);
+      expect(getSessionControllerOperation("agent:main:telegram:topic:fresh-visible")).toBe(active);
 
       abortController.abort();
       await expect(result).resolves.toMatchObject({
@@ -1213,7 +1213,9 @@ describe("reply turn admission", () => {
           activeOperation: active,
         });
         expect(cancel).not.toHaveBeenCalled();
-        expect(replyRunRegistry.get(`agent:main:telegram:topic:stale-${kind}`)).toBe(active);
+        expect(getSessionControllerOperation(`agent:main:telegram:topic:stale-${kind}`)).toBe(
+          active,
+        );
         active.complete();
       } finally {
         await vi.runOnlyPendingTimersAsync();
@@ -1242,14 +1244,16 @@ describe("reply turn admission", () => {
       });
       await vi.advanceTimersByTimeAsync(SESSION_WATCHDOG_CLEANUP_MS);
       expect(admitted).toBe(false);
-      expect(replyRunRegistry.get("agent:main:telegram:topic:terminal-unreleased")).toBe(active);
+      expect(getSessionControllerOperation("agent:main:telegram:topic:terminal-unreleased")).toBe(
+        active,
+      );
       active.complete();
       const result = await admission;
 
       expect(active.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
-      expect(replyRunRegistry.get("agent:main:telegram:topic:terminal-unreleased")).not.toBe(
-        active,
-      );
+      expect(
+        getSessionControllerOperation("agent:main:telegram:topic:terminal-unreleased"),
+      ).not.toBe(active);
       expect(result.status).toBe("owned");
       if (result.status === "owned") {
         result.operation.complete();
@@ -1310,8 +1314,8 @@ describe("reply turn admission", () => {
     }
     expect(admission.operation).toBe(reservation);
     expect(reservation.key).toBe(targetSessionKey);
-    expect(replyRunRegistry.get(sourceSessionKey)).toBeUndefined();
-    expect(replyRunRegistry.get(targetSessionKey)).toBe(reservation);
+    expect(getSessionControllerOperation(sourceSessionKey)).toBeUndefined();
+    expect(getSessionControllerOperation(targetSessionKey)).toBe(reservation);
 
     // Target lifecycle interrupts must reach the adopted operation: reset or
     // delete on the target session interlocks with the continuation run.
@@ -1375,8 +1379,8 @@ describe("reply turn admission", () => {
     // The reservation stays source-keyed so the command turn's own delivery
     // lifecycle is unaffected; queue policy handles the busy target.
     expect(reservation.key).toBe(sourceSessionKey);
-    expect(replyRunRegistry.get(sourceSessionKey)).toBe(reservation);
-    expect(replyRunRegistry.get(targetSessionKey)).toBe(blocker);
+    expect(getSessionControllerOperation(sourceSessionKey)).toBe(reservation);
+    expect(getSessionControllerOperation(targetSessionKey)).toBe(blocker);
     expect(reservation.result).toBeNull();
 
     blocker.complete();

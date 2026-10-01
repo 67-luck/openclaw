@@ -7,7 +7,6 @@ import {
   getRuntimeAuthProfileStoreSnapshotsRevision,
   prepareRuntimeAuthProfileStoreSnapshots,
 } from "../agents/auth-profiles/runtime-snapshots.js";
-import * as activeRunProjections from "../agents/embedded-agent-runner/active-run-projections.js";
 import * as preparedModelRuntime from "../agents/prepared-model-runtime.js";
 import {
   clearRuntimeConfigSnapshot,
@@ -27,6 +26,7 @@ import {
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import { createEmptyRuntimeWebToolsMetadata } from "../secrets/runtime-fast-path.js";
 import { clearSecretsRuntimeSnapshot } from "../secrets/runtime.js";
+import * as sessionQueries from "../sessions/session-controller.queries.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -238,7 +238,7 @@ it("commits model-only role changes without retiring permitted models or origina
         model: "b",
       });
       assert(modelA && modelB);
-      vi.spyOn(activeRunProjections, "getActiveEmbeddedRunCount").mockReturnValue(2);
+      vi.spyOn(sessionQueries, "getActiveSessionRunCount").mockReturnValue(2);
       const listener = fixture.ref.current;
       assert(listener);
       const write = (revision: number) =>

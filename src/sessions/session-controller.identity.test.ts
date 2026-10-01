@@ -5,6 +5,12 @@ import { withSessionTurn } from "./session-controller.admission.js";
 import { ReplyRunAlreadyActiveError } from "./session-controller.contracts.js";
 import { resolveReplyRunForCurrentSessionId } from "./session-controller.identity.js";
 import {
+  resolveActiveReplyOperationForSessionId,
+  createReplyOperation,
+  getSessionControllerOperation,
+  waitForSessionRunIdle,
+} from "./session-controller.js";
+import {
   captureSessionTarget,
   getCurrentSessionControllerClaim,
   runSessionMutation,
@@ -24,16 +30,10 @@ import {
   updateSessionControllerSourcePolicy,
   tryClaimSessionControllerTask,
 } from "./session-controller.mailbox.js";
-import { createReplyOperation } from "./session-controller.operation.js";
 import { isSessionRunActive } from "./session-controller.queries.js";
-import {
-  replyRunRegistry,
-  resolveActiveReplyOperationForSessionId,
-} from "./session-controller.registry.js";
 import {
   findSessionControllerEntry,
   getSessionControllerEntryForOperation,
-  getSessionControllerOperation,
   sessionControllers,
 } from "./session-controller.state.js";
 
@@ -111,7 +111,7 @@ it("treats equal active identities in two stores as busy and mutates only the se
     `ambiguous session controller identity: sessionId=incarnation entryIds=${entryIds}`,
   );
   let idle = false;
-  const idleReceipt = replyRunRegistry.waitForIdle(key).then((result) => {
+  const idleReceipt = waitForSessionRunIdle(key).then((result) => {
     idle = result;
     return result;
   });

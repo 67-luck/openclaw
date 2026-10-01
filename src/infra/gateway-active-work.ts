@@ -15,7 +15,7 @@ import {
   getSessionMutationCount,
   getSessionControllerWorkCount,
 } from "../sessions/session-controller.lifecycle.js";
-import { getActiveSessionRunCount as getActiveEmbeddedRunCount } from "../sessions/session-controller.queries.js";
+import { getActiveSessionRunCount } from "../sessions/session-controller.queries.js";
 import { getActiveAgentRunContextCount } from "./agent-run-registry.js";
 import { readLifecycleWriteCustody } from "./lifecycle-write-custody.js";
 
@@ -95,7 +95,7 @@ export type GatewayActiveWorkInspectors = {
 const defaultInspectors: GatewayActiveWorkInspectors = {
   getQueueSize: getTotalQueueSize,
   getPendingReplies: getTotalPendingReplies,
-  getEmbeddedRuns: getActiveEmbeddedRunCount,
+  getEmbeddedRuns: getActiveSessionRunCount,
   getBackgroundExecSessions: getActiveBackgroundExecSessionCount,
   getCronRuns: () => Math.max(getActiveCronJobCount(), getSuspensionVisibleCronTaskRunCount()),
   getAgentRuns: getActiveAgentRunContextCount,

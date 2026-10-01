@@ -41,7 +41,6 @@ const queueEmbeddedAgentMessageWithOutcomeAsyncMock = vi.fn(
     gatewayHealth: "live",
   }),
 );
-const resolveEmbeddedSessionLaneMock = vi.fn();
 const waitForEmbeddedAgentRunEndMock = vi.fn();
 const enqueueFollowupRunMock = vi.fn();
 const parkedSteerAdmitMock = vi.fn(async () => "steer" as const);
@@ -127,12 +126,11 @@ vi.mock("../../infra/agent-run-registry.js", async () => {
 vi.mock("../../agents/embedded-agent.js", () => ({
   abortEmbeddedAgentRun: abortEmbeddedAgentRunMock,
   compactEmbeddedAgentSession: compactEmbeddedAgentSessionMock,
-  isEmbeddedAgentRunActive: isEmbeddedAgentRunActiveMock,
-  isEmbeddedAgentRunStreaming: isEmbeddedAgentRunStreamingMock,
+  isSessionRunActive: isEmbeddedAgentRunActiveMock,
+  isSessionNativeAttemptStreaming: isEmbeddedAgentRunStreamingMock,
   queueEmbeddedAgentMessageWithOutcomeAsync: queueEmbeddedAgentMessageWithOutcomeAsyncMock,
-  resolveEmbeddedSessionLane: resolveEmbeddedSessionLaneMock,
   runEmbeddedAgent: runEmbeddedAgentMock,
-  waitForEmbeddedAgentRunEnd: waitForEmbeddedAgentRunEndMock,
+  waitForSessionRunEnd: waitForEmbeddedAgentRunEndMock,
 }));
 
 vi.mock("../../agents/embedded-agent-runner/runs.js", () => ({
@@ -334,7 +332,6 @@ export function resetAgentRunnerMediaTestState() {
     reason: "not_streaming",
     gatewayHealth: "live",
   }));
-  resolveEmbeddedSessionLaneMock.mockReset();
   waitForEmbeddedAgentRunEndMock.mockReset();
   enqueueFollowupRunMock.mockReset();
   parkedSteerAdmitMock.mockReset();

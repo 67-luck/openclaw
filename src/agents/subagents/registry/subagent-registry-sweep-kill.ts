@@ -194,7 +194,7 @@ export async function reconcileDurableSubagentKillIntent(params: {
         };
         const hasLiveRunContext = Boolean(getAgentRunContext(params.runId));
         const active = killIntent.sessionId
-          ? runtime.isEmbeddedAgentRunActive(killIntent.sessionId, target)
+          ? runtime.isTargetSessionRunActive(killIntent.sessionId, target)
           : false;
         const stopped = cancelCapturedSessionControllerSource(capture, { assertCurrent });
         assertCurrent();

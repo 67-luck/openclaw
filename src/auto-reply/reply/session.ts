@@ -89,7 +89,7 @@ import {
   MODEL_SELECTION_LOCKED_RESET_MESSAGE,
   ModelSelectionLockedError,
 } from "../../sessions/model-overrides.js";
-import { replyRunRegistry } from "../../sessions/session-controller.js";
+import { getSessionControllerOperation } from "../../sessions/session-controller.js";
 import { recordSessionCreated } from "../../sessions/session-created.js";
 import { recordAcceptedSessionParticipantInput } from "../../sessions/session-participant-input-recording.js";
 import { prepareChannelParticipantObservation } from "../../sessions/session-participant-input.js";
@@ -764,7 +764,7 @@ async function initSessionStateAttemptLocked(
         (entryFreshness?.fresh ?? false) ||
         (softResetAllowed && canReuseExistingEntry)) &&
         !terminalMainTranscriptNewerThanRegistry));
-  const activeReplyOperation = replyRunRegistry.get(sessionKey);
+  const activeReplyOperation = getSessionControllerOperation(sessionKey);
   const deferImplicitRolloverForActiveRun =
     !resetTriggered &&
     !freshEntry &&

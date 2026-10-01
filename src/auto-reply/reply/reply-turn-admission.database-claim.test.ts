@@ -10,6 +10,8 @@ import {
   runSessionMutation,
   startSessionControllerInterruption,
 } from "../../sessions/session-controller.lifecycle.js";
+import * as controllerState from "../../sessions/session-controller.state.js";
+import * as controllerWait from "../../sessions/session-controller.wait.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
   closeOpenClawAgentDatabasesAsync,
@@ -95,7 +97,7 @@ it.each([
     }
     const snapshot = await load(...args);
     if (read === 1 && change.startsWith("later-")) {
-      expect(registry.replyRunRegistry.get(sessionKey)).toBeUndefined();
+      expect(registry.getSessionControllerOperation(sessionKey)).toBeUndefined();
       owner = await registerOwner();
     }
     if (read === 2) {
@@ -182,7 +184,7 @@ it.each([
     } else {
       await expect(pending).rejects.toMatchObject({ code: "SESSION_WORK_START_CHANGED" });
     }
-    expect(registry.replyRunRegistry.get(sessionKey)).toBeUndefined();
+    expect(registry.getSessionControllerOperation(sessionKey)).toBeUndefined();
   } finally {
     release.resolve();
     owner?.operation.complete();
@@ -247,7 +249,7 @@ it.each(
     const loaded = vi.spyOn(sessionEntries, "loadSessionEntryForAdmission");
     const waiting =
       wait === "active"
-        ? vi.spyOn(registry.replyRunRegistry, "waitForIdle")
+        ? vi.spyOn(controllerWait, "waitForSessionRunIdle")
         : wait === "delivery"
           ? vi.spyOn(registry, "waitForReplyRunFollowupAdmission")
           : loaded;
@@ -362,7 +364,7 @@ it("cancels an in-flight admission read when its lifecycle owner interrupts ingr
     await interrupted.released;
     await runSessionMutation({ ...target, run: async () => {} });
     expect(await pending).toMatchObject([{ status: "rejected", reason }]);
-    expect(registry.replyRunRegistry.get(sessionKey)).toBeUndefined();
+    expect(registry.getSessionControllerOperation(sessionKey)).toBeUndefined();
   } finally {
     upstream.abort();
     await pending;

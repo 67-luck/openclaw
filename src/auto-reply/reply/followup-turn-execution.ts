@@ -5,7 +5,7 @@ import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
   hasReplyOperationExecutionStarted,
-  replyRunRegistry,
+  bindSessionControllerSourceTurnId,
 } from "../../sessions/session-controller.js";
 import { isFastModeAutoProgressPayload } from "../reply-payload.js";
 import type { TemplateContext } from "../templating.js";
@@ -419,7 +419,7 @@ export async function executeFollowupTurn(params: {
         entry: turn.session.current(),
       });
       if (sourceTurnId) {
-        replyRunRegistry.bindSourceTurnId(turn.operation, sourceTurnId);
+        bindSessionControllerSourceTurnId(turn.operation, sourceTurnId);
         setChannelSourceTurnId(sessionCtx, sourceTurnId);
       }
       execution = await (recorder?.withPendingInput

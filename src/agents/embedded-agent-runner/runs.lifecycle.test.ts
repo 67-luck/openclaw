@@ -9,6 +9,7 @@ import { resetDiagnosticSessionStateForTest } from "../../logging/diagnostic-ses
 import { diagnosticLogger } from "../../logging/diagnostic.js";
 import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import { createReplyOperation } from "../../sessions/session-controller.js";
+import { waitForSessionRunEnd } from "../../sessions/session-controller.native-runtime.js";
 import {
   abortEmbeddedAgentRun,
   abortAndDrainEmbeddedAgentRun,
@@ -24,7 +25,6 @@ import {
   resolveActiveEmbeddedRunHandleSessionId,
   resolveActiveEmbeddedRunSessionIdBySessionFile as resolveActiveEmbeddedRunHandleSessionIdBySessionFile,
   updateActiveEmbeddedRunSnapshot,
-  waitForEmbeddedAgentRunEnd,
 } from "./runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
@@ -64,7 +64,7 @@ describe("embedded-agent runner run lifecycle", () => {
       expect(result).toEqual({ aborted: true, drained: false, forceCleared: false });
       expect(abortRun).toHaveBeenCalledTimes(1);
       expect(isEmbeddedAgentRunHandleActive("session-stuck")).toBe(true);
-      const settlement = waitForEmbeddedAgentRunEnd("session-stuck", null);
+      const settlement = waitForSessionRunEnd("session-stuck", null);
       clearActiveEmbeddedRun("session-stuck", handle);
       await expect(settlement).resolves.toBe(true);
       expect(isEmbeddedAgentRunHandleActive("session-stuck")).toBe(false);
@@ -81,7 +81,7 @@ describe("embedded-agent runner run lifecycle", () => {
       const handle = createRunHandle();
       setActiveEmbeddedRun("session-running", handle);
 
-      const waitPromise = waitForEmbeddedAgentRunEnd("session-running", MAX_TIMER_TIMEOUT_MS + 1);
+      const waitPromise = waitForSessionRunEnd("session-running", MAX_TIMER_TIMEOUT_MS + 1);
 
       expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), MAX_TIMER_TIMEOUT_MS);
       clearActiveEmbeddedRun("session-running", handle);
@@ -99,7 +99,7 @@ describe("embedded-agent runner run lifecycle", () => {
       setActiveEmbeddedRun("session-unbounded", handle);
       const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
 
-      const waitPromise = waitForEmbeddedAgentRunEnd("session-unbounded", null);
+      const waitPromise = waitForSessionRunEnd("session-unbounded", null);
 
       expect(setTimeoutSpy).not.toHaveBeenCalled();
       clearActiveEmbeddedRun("session-unbounded", handle);
@@ -117,7 +117,7 @@ describe("embedded-agent runner run lifecycle", () => {
       resetTriggered: false,
     });
 
-    const waitPromise = waitForEmbeddedAgentRunEnd("session-reply-wait", null);
+    const waitPromise = waitForSessionRunEnd("session-reply-wait", null);
     let settled = false;
     void waitPromise.then(() => {
       settled = true;
@@ -134,7 +134,7 @@ describe("embedded-agent runner run lifecycle", () => {
     const replacementHandle = createRunHandle();
     setActiveEmbeddedRun("session-replaced", firstHandle);
 
-    const waitPromise = waitForEmbeddedAgentRunEnd("session-replaced", null);
+    const waitPromise = waitForSessionRunEnd("session-replaced", null);
     clearActiveEmbeddedRun("session-replaced", firstHandle);
     setActiveEmbeddedRun("session-replaced", replacementHandle);
     await expect(waitPromise).resolves.toBe(true);

@@ -1,6 +1,9 @@
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import type { ReplyFollowupAdmissionBarrierTimeoutPolicy } from "../auto-reply/reply/reply-dispatcher.types.js";
+import { settlesWithin } from "../shared/settle-within.js";
+import type { ReplyOperation } from "./session-controller.contracts.js";
 import { REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS } from "./session-controller.contracts.js";
+import { resolveReplyRunForCurrentSessionId } from "./session-controller.identity.js";
 
 export function waitForReplyBarrierSettlement(
   barrier: PromiseLike<unknown>,
@@ -53,4 +56,32 @@ export function waitForReplyBarrierSettlement(
     }
     void Promise.resolve(barrier).then(finish, finish);
   });
+}
+
+export async function waitForReplyOperationOwnerSettlement(
+  operation: ReplyOperation,
+  timeoutMs: number,
+): Promise<boolean> {
+  return await settlesWithin(operation.ownerSettlement, resolveTimerTimeoutMs(timeoutMs, 100, 100));
+}
+
+export function waitForReplyRunEndBySessionId(
+  sessionId: string,
+  timeoutMs?: number | null,
+): Promise<boolean> {
+  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
+  if (resolution.kind === "none") {
+    return Promise.resolve(true);
+  }
+  const operations = resolution.kind === "one" ? [resolution.operation] : resolution.operations;
+  return Promise.all(
+    operations.map((operation) =>
+      timeoutMs === null
+        ? operation.ownerSettlement.then(() => true)
+        : waitForReplyOperationOwnerSettlement(
+            operation,
+            timeoutMs ?? REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
+          ),
+    ),
+  ).then((outcomes) => outcomes.every(Boolean));
 }

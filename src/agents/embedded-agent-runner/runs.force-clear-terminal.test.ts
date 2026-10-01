@@ -3,6 +3,7 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { testing as replyTesting } from "../../auto-reply/reply/reply-run-registry.test-support.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { withSessionTurn } from "../../sessions/session-controller.admission.js";
+import { waitForSessionRunEnd } from "../../sessions/session-controller.native-runtime.js";
 import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import { getSessionControllerOperation } from "../../sessions/session-controller.state.js";
 import { getActiveNativeAttempt } from "./run-state.js";
@@ -10,7 +11,6 @@ import {
   abortAndDrainEmbeddedAgentRun,
   setActiveEmbeddedRun,
   clearActiveEmbeddedRun,
-  waitForEmbeddedAgentRunEnd,
 } from "./runs.js";
 import { createEmbeddedRunHandle, testing } from "./runs.test-support.js";
 
@@ -49,7 +49,7 @@ describe("native watchdog cleanup retains actual writer custody", () => {
     const second = createEmbeddedRunHandle({ runId: "detached-second" });
     setActiveEmbeddedRun(sessionId, first);
     let settled = false;
-    const waiting = waitForEmbeddedAgentRunEnd(sessionId, null).then((ended) => {
+    const waiting = waitForSessionRunEnd(sessionId, null).then((ended) => {
       settled = true;
       return ended;
     });

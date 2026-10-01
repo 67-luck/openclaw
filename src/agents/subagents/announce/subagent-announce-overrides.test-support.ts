@@ -31,7 +31,7 @@ type OutputTestDeps = Pick<
 
 export type SubagentAnnounceDeliveryTestDeps = AnnounceTestDeps & {
   getRequesterSessionActivity: typeof deliveryRuntime.getSubagentRequesterSessionActivity;
-  isEmbeddedAgentRunActive: typeof sessionQueries.isSessionRunActive;
+  isSessionRunActive: typeof sessionQueries.isSessionRunActive;
   resolveRequesterSessionAbandonment: typeof deliveryRuntime.resolveSubagentRequesterSessionAbandonment;
   loadSessionEntry: typeof sessionAccessor.loadSessionEntryReadOnly;
   loadRequesterSessionEntry: typeof deliveryRuntime.loadRequesterSessionEntry;
@@ -198,11 +198,11 @@ function replaceOverrides(scope: Scope, overrides?: Overrides) {
       current.getRequesterSessionActivity,
     );
   }
-  if (current.isEmbeddedAgentRunActive) {
+  if (current.isSessionRunActive) {
     install(
       sessionQueries.isSessionRunActive,
       () => vi.spyOn(sessionQueries, "isSessionRunActive"),
-      current.isEmbeddedAgentRunActive,
+      current.isSessionRunActive,
     );
   }
   if (current.resolveRequesterSessionAbandonment) {

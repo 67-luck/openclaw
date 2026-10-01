@@ -11,7 +11,7 @@ import {
   listAgentRunsForSession,
 } from "../../infra/agent-run-registry.js";
 import { isSessionControllerWorkActive } from "../../sessions/session-controller.lifecycle.js";
-import { isSessionRunActive as isEmbeddedAgentRunActive } from "../../sessions/session-controller.queries.js";
+import { isSessionRunActive } from "../../sessions/session-controller.queries.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
 
@@ -63,7 +63,7 @@ export function validateSessionPatchSandboxChange(params: {
     : undefined;
   if (
     isSessionControllerWorkActive(params.storePath, params.lifecycleIdentities) ||
-    (sessionId && isEmbeddedAgentRunActive(sessionId)) ||
+    (sessionId && isSessionRunActive(sessionId)) ||
     listAgentRunsForSession({ sessionKey: params.sessionKey, sessionId }).some(({ runId }) =>
       hasAgentRunContextExecutionOwner(runId),
     ) ||

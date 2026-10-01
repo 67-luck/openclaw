@@ -29,7 +29,6 @@ import {
   firstMaintainParams,
   requireRecord,
 } from "./context-engine-maintenance.fixtures.test-support.js";
-import { resolveEmbeddedSessionLane as resolveSessionLane } from "./lanes.js";
 
 const rewriteTranscriptEntriesInSessionManagerMock = vi.fn((_params?: unknown) => ({
   changed: true,
@@ -347,7 +346,7 @@ describe("runContextEngineMaintenance", () => {
       try {
         resetCommandQueueStateForTest();
 
-        const sessionLane = resolveSessionLane(sessionKey);
+        const sessionLane = `test:foreground-turn:${sessionKey}`;
         foregroundTurn = enqueueCommandInLane(sessionLane, async () => {
           await releaseForeground.promise;
         });
@@ -1023,7 +1022,7 @@ describe("runContextEngineMaintenance", () => {
     });
   });
 
-  it("starts deferred maintenance while the foreground session lane stays busy", async () => {
+  it("starts deferred maintenance while the foreground turn stays busy", async () => {
     await withStateDirEnv("openclaw-turn-maintenance-", async () => {
       vi.useFakeTimers();
       const sessionKey = "agent:main:session-3";
@@ -1033,7 +1032,7 @@ describe("runContextEngineMaintenance", () => {
       try {
         resetCommandQueueStateForTest();
 
-        const sessionLane = resolveSessionLane(sessionKey);
+        const sessionLane = `test:foreground-turn:${sessionKey}`;
         const events: string[] = [];
         firstForeground = enqueueCommandInLane(sessionLane, async () => {
           events.push("foreground-1-start");
@@ -1101,7 +1100,7 @@ describe("runContextEngineMaintenance", () => {
       try {
         resetCommandQueueStateForTest();
 
-        const sessionLane = resolveSessionLane(sessionKey);
+        const sessionLane = `test:foreground-turn:${sessionKey}`;
         const events: string[] = [];
         const maintain = vi.fn(async (params?: unknown) => {
           events.push("maintenance-start");

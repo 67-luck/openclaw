@@ -27,9 +27,8 @@ const replyRuntimeMockState = vi.hoisted(() => ({
 vi.mock("../agents/embedded-agent.js", () => ({
   abortEmbeddedAgentRun: vi.fn().mockReturnValue(false),
   runEmbeddedAgent: (...args: unknown[]) => replyRuntimeMockState.mocks.runEmbeddedAgent(...args),
-  resolveEmbeddedSessionLane: (key: string) => `session:${key.trim() || "main"}`,
-  isEmbeddedAgentRunActive: vi.fn().mockReturnValue(false),
-  isEmbeddedAgentRunStreaming: vi.fn().mockReturnValue(false),
+  isSessionRunActive: vi.fn().mockReturnValue(false),
+  isSessionNativeAttemptStreaming: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock("../agents/model-catalog.runtime.js", () => ({
@@ -59,11 +58,10 @@ vi.mock("../plugins/runtime/runtime-web-channel-plugin.js", () => ({
 
 vi.mock("../agents/embedded-agent.runtime.js", () => ({
   abortEmbeddedAgentRun: vi.fn().mockReturnValue(false),
-  isEmbeddedAgentRunActive: vi.fn().mockReturnValue(false),
-  isEmbeddedAgentRunStreaming: vi.fn().mockReturnValue(false),
-  resolveActiveEmbeddedRunSessionId: vi.fn().mockReturnValue(undefined),
-  resolveEmbeddedSessionLane: (key: string) => `session:${key.trim() || "main"}`,
-  waitForEmbeddedAgentRunEnd: vi.fn(async () => undefined),
+  isSessionRunActive: vi.fn().mockReturnValue(false),
+  isSessionNativeAttemptStreaming: vi.fn().mockReturnValue(false),
+  resolveActiveSessionRunId: vi.fn().mockReturnValue(undefined),
+  waitForSessionRunEnd: vi.fn(async () => undefined),
 }));
 
 vi.mock("./reply/agent-runner.runtime.js", () => ({

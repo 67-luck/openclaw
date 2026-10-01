@@ -29,7 +29,10 @@ import {
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { initializeGlobalHookRunner } from "../../plugins/hook-runner-global.js";
-import { replyRunRegistry } from "../../sessions/session-controller.js";
+import {
+  isSessionRunActiveForKey,
+  captureCurrentReplyMessageInjectionTarget,
+} from "../../sessions/session-controller.js";
 import { captureSessionControllerSettlement } from "../../sessions/session-controller.lifecycle.js";
 import { bindSessionControllerSource } from "../../sessions/session-controller.mailbox.js";
 import {
@@ -272,10 +275,8 @@ describe("ordinary chat input admission", () => {
         }
       });
       try {
-        expect(replyRunRegistry.isActive(scope.sessionKey)).toBe(true);
-        expect(
-          replyRunRegistry.resolveCurrentMessageInjectionTarget(scope.sessionKey),
-        ).toBeUndefined();
+        expect(isSessionRunActiveForKey(scope.sessionKey)).toBe(true);
+        expect(captureCurrentReplyMessageInjectionTarget(scope.sessionKey)).toBeUndefined();
         await fixture.send(respond);
         expect(respond).toHaveBeenCalledWith(
           true,

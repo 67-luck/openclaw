@@ -1,10 +1,12 @@
 // Tests prepared reply queue state resolution before get-reply starts a run.
 import { describe, expect, it, vi } from "vitest";
-import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import {
   interruptReplyRunTarget,
-  replyRunRegistry,
-} from "../../sessions/session-controller.registry.js";
+  createReplyOperation,
+  isSessionRunActiveForKey,
+  captureCurrentSessionRunInterruptTarget,
+  resolveActiveSessionRunId,
+} from "../../sessions/session-controller.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolvePreparedReplyQueueState } from "./get-reply-run-queue.js";
 
@@ -97,7 +99,7 @@ describe("resolvePreparedReplyQueueState", () => {
     const refreshPreparedState = vi.fn(async () => {});
     try {
       operation.setPhase("running");
-      const target = replyRunRegistry.resolveCurrentInterruptTarget(operation.key);
+      const target = captureCurrentSessionRunInterruptTarget(operation.key);
       if (!target) {
         throw new Error("Missing interrupt owner");
       }
@@ -111,13 +113,13 @@ describe("resolvePreparedReplyQueueState", () => {
         },
         refreshPreparedState,
         resolveBusyState: () => ({
-          activeSessionId: replyRunRegistry.resolveSessionId(operation.key),
-          isActive: replyRunRegistry.isActive(operation.key),
+          activeSessionId: resolveActiveSessionRunId(operation.key),
+          isActive: isSessionRunActiveForKey(operation.key),
         }),
       });
       expect(operation.abortSignal.aborted).toBe(true);
       operation.completeWithAfterClearBarrier(delivery.promise);
-      expect(replyRunRegistry.isActive(operation.key)).toBe(false);
+      expect(isSessionRunActiveForKey(operation.key)).toBe(false);
       await vi.advanceTimersByTimeAsync(100);
       await expect(waiting).resolves.toMatchObject({ kind: "reply" });
       expect(refreshPreparedState).not.toHaveBeenCalled();

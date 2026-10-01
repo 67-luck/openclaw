@@ -4,7 +4,6 @@ import { useChatAbortRegistryFixture } from "./chat.abort-registry.test-support.
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { resolveEmbeddedSessionLane } from "../../agents/embedded-agent-runner/lanes.js";
 import {
   createQueueSettings,
   createQueueTestRun,
@@ -138,7 +137,7 @@ it("UI-style narrow Stop clears owned lane entries through their signals and pre
   const ownFollowup = followup("owned");
   const foreignFollowup = followup("foreign", "previous-incarnation");
   const queue = readQueue();
-  const lane = resolveEmbeddedSessionLane(key);
+  const lane = "test:sessions-abort-queue-authority";
   const entered = createDeferred();
   const release = createDeferred();
   const blocker = enqueueCommandInLane(lane, async () => {

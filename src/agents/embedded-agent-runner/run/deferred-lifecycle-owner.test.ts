@@ -6,7 +6,7 @@ import {
   markDiagnosticEmbeddedRunStarted,
   closeDiagnosticEmbeddedRunOwner,
 } from "../../../logging/diagnostic-run-activity.js";
-import { isSessionRunActive as isEmbeddedAgentRunActive } from "../../../sessions/session-controller.queries.js";
+import { isSessionRunActive } from "../../../sessions/session-controller.queries.js";
 import {
   isAgentRunRestartAbortReason,
   isAgentRunSupersededAbortReason,
@@ -123,11 +123,11 @@ describe("deferred logical-turn lifecycle", () => {
     manager.handoffToCli();
 
     expect(clearEmbedded).toHaveBeenCalledOnce();
-    expect(isEmbeddedAgentRunActive(sessionId)).toBe(true);
+    expect(isSessionRunActive(sessionId)).toBe(true);
     expect(abortEmbeddedAgentRun(sessionId)).toBe(true);
     expect(manager.signal.aborted).toBe(true);
     await manager.complete();
-    expect(isEmbeddedAgentRunActive(sessionId)).toBe(false);
+    expect(isSessionRunActive(sessionId)).toBe(false);
     expect(resolveReplyOperationAbortReason(undefined, manager.signal.reason)).toBe("user");
   });
 

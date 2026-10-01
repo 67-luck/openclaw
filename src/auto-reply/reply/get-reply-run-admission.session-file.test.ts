@@ -20,9 +20,8 @@ vi.mock("./get-reply-run-helpers.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./get-reply-run-helpers.js")>()),
   loadAgentRunnerRuntime: async () => ({ runReplyAgent: vi.fn() }),
   loadEmbeddedAgentRuntime: async () => ({
-    resolveActiveEmbeddedRunSessionId: () => undefined,
+    preemptAndDrainEmbeddedHeartbeatRun: async () => "not-heartbeat",
     resolveActiveEmbeddedRunSessionIdBySessionFile: () => undefined,
-    resolveEmbeddedSessionLane: () => undefined,
   }),
   loadSessionUpdatesRuntime: async () => ({
     ensureSkillSnapshot: async ({ sessionEntry }: { sessionEntry: SessionEntry }) => ({

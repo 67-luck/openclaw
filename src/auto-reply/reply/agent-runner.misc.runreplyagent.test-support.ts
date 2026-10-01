@@ -12,7 +12,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { resetDiagnosticEventsForTest } from "../../infra/diagnostic-events.js";
 import { resetSystemEventsForTest } from "../../infra/system-events.js";
 import { clearMemoryPluginState } from "../../plugins/memory-state.test-fixtures.js";
-import { isSessionRunActive as isEmbeddedAgentRunActive } from "../../sessions/session-controller.queries.js";
+import { isSessionRunActive } from "../../sessions/session-controller.queries.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
 import { testing as replyRunRegistryTesting } from "./reply-run-registry.test-support.js";
@@ -92,7 +92,7 @@ vi.mock("../../agents/embedded-agent.js", () => {
       abortEmbeddedAgentRunMock(sessionId);
       return abortEmbeddedAgentRun(sessionId);
     },
-    isEmbeddedAgentRunActive: (sessionId: string) => isEmbeddedAgentRunActive(sessionId),
+    isSessionRunActive: (sessionId: string) => isSessionRunActive(sessionId),
   };
 });
 
@@ -248,7 +248,7 @@ function setupAgentRunnerMocks(): void {
     reason: "test-preflight-disabled",
   });
   clearSessionQueuesMock.mockReset();
-  clearSessionQueuesMock.mockReturnValue({ followupCleared: 0, laneCleared: 0, keys: [] });
+  clearSessionQueuesMock.mockReturnValue({ followupCleared: 0, keys: [] });
   refreshQueuedFollowupSessionMock.mockReset();
   refreshQueuedFollowupSessionMock.mockResolvedValue(undefined);
   vi.mocked(enqueueFollowupRun).mockReset();

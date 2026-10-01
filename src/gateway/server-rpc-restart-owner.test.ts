@@ -6,7 +6,7 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import * as followupDelivery from "../auto-reply/reply/followup-delivery.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { replyRunRegistry } from "../sessions/session-controller.js";
+import { getSessionControllerOperation } from "../sessions/session-controller.js";
 import {
   captureGatewaySessionControllerWork,
   captureSessionControllerSettlement,
@@ -192,7 +192,7 @@ it(
         "RPC_OWNER_BEFORE_CLOSE",
         JSON.stringify({
           status: entry.status,
-          operation: replyRunRegistry.get(sessionKey)?.turnKind,
+          operation: getSessionControllerOperation(sessionKey)?.turnKind,
           activeChatRuns: context.rpcSources.size,
           queued: context.rpcSources.size,
           hostCaptured: captureGatewaySessionControllerWork(hostResolver).isActive(target),

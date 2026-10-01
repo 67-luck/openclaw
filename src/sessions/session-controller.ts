@@ -12,6 +12,7 @@ export type {
   ReplyTurnKind,
 } from "./session-controller.contracts.js";
 export {
+  captureCurrentReplyMessageInjectionTarget,
   captureReplyMessageInjectionTarget,
   beginReplyMessageInjectionTarget,
   finalizeReplyMessageInjectionAttempt,
@@ -21,23 +22,27 @@ export { createReplyOperation } from "./session-controller.operation.js";
 export {
   abortActiveReplyRuns,
   abortReplyRunBySessionId,
+  abortSessionRunByKey,
   clearReplyRunForResetBySessionId,
-  isReplyRunActiveForSessionId,
-  isReplyRunEvidenceStaleBySessionId,
+  captureCurrentSessionRunInterruptTarget,
   interruptReplyRunTarget,
-  listActiveReplyRunSessionKeys,
-  markReplyOperationGlobalLaneWaitProgress,
-  replyRunRegistry,
-  resolveActiveReplyOperationForSessionId,
-  resolveActiveReplyRunSessionId,
-  resolveActiveReplyRunThreadId,
   supersedeReplyRunByRunId,
+} from "./session-controller.stop-runtime.js";
+export {
+  isReplyRunEvidenceStaleBySessionId,
+  listActiveReplyRunSessionKeys,
+  resolveActiveReplyOperationForSessionId,
+  isSessionRunActive,
+  isSessionRunActiveForKey,
+  resolveActiveSessionRunId,
+  resolveActiveSessionRunThreadId,
+} from "./session-controller.queries.js";
+export {
   waitForReplyOperationOwnerSettlement,
   waitForReplyRunEndBySessionId,
-  waitForReplyRunFollowupAdmission,
-  waitForReplyRunSuccessorAdmission,
-} from "./session-controller.registry.js";
+} from "./session-controller.settlement.js";
 export {
+  getSessionControllerOperation,
   hasCommittedReplyOperationOutcome,
   hasReplyOperationExecutionStarted,
   isReplyRunAbortableForSignal,
@@ -47,3 +52,13 @@ export {
   runAfterReplyOperationClear,
   waitForReplyBarrierSettlement,
 } from "./session-controller.state.js";
+export {
+  bindSessionControllerSourceTurnId,
+  getSessionControllerSourceTurnId,
+} from "./session-controller.source-turn.js";
+export { markReplyOperationGlobalLaneWaitProgress } from "./session-controller.lifecycle-runtime.js";
+export {
+  waitForReplyRunFollowupAdmission,
+  waitForReplyRunSuccessorAdmission,
+  waitForSessionRunIdle,
+} from "./session-controller.wait.js";

@@ -6,7 +6,7 @@ import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth
 import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import { logVerbose } from "../../globals.js";
 import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../sessions/input-provenance.js";
-import { replyRunRegistry } from "../../sessions/session-controller.js";
+import { getSessionControllerOperation } from "../../sessions/session-controller.js";
 import { resolveFallbackTransition } from "../fallback-state.js";
 import { normalizeVerboseLevel } from "../thinking.js";
 import type { ReplyPayload } from "../types.js";
@@ -53,7 +53,7 @@ export async function accountAgentTurnCompaction(params: {
   if (!operation) {
     return undefined;
   }
-  const authorize = () => replyRunRegistry.get(operation.key) === operation;
+  const authorize = () => getSessionControllerOperation(operation.key) === operation;
   let count: number | undefined;
   for (const fact of params.compaction?.durable ?? []) {
     const persistedCount = await incrementCompactionCount({
@@ -103,7 +103,7 @@ export async function accountAgentTurn(context: AgentTurnAccountingContext) {
   };
   const operation = context.replyOperation;
   const authorize = latestCompaction
-    ? () => operation !== undefined && replyRunRegistry.get(operation.key) === operation
+    ? () => operation !== undefined && getSessionControllerOperation(operation.key) === operation
     : undefined;
 
   const runResult = execution.result;

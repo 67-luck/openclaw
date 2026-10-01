@@ -14,12 +14,15 @@ import {
 } from "./session-controller-model.test-support.js";
 import type { ReplyMessageInjectionAttempt } from "./session-controller.contracts.js";
 import {
+  createReplyOperation,
+  getSessionControllerOperation,
+  captureCurrentReplyMessageInjectionTarget,
+} from "./session-controller.js";
+import {
   beginSessionEffect,
   startSessionControllerInterruption,
 } from "./session-controller.lifecycle.js";
 import { beginReplyMessageInjectionTarget } from "./session-controller.message-injection.js";
-import { createReplyOperation } from "./session-controller.operation.js";
-import { replyRunRegistry } from "./session-controller.registry.js";
 
 /** Calls public owner operations, never the runtime reducer under test. */
 async function replay(events: readonly PilotEvent[], label: string) {
@@ -126,7 +129,7 @@ async function replay(events: readonly PilotEvent[], label: string) {
           writer = true;
           break;
         case "offer": {
-          const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(key);
+          const target = captureCurrentReplyMessageInjectionTarget(key);
           if (!target) {
             custody.set(event.input.id, "rejected");
             break;
@@ -168,7 +171,7 @@ async function replay(events: readonly PilotEvent[], label: string) {
       await Promise.resolve();
       model = expected.state;
       const context = label + " prefix=" + JSON.stringify(prefix);
-      expect(replyRunRegistry.get(key) === current.operation, context).toBe(model.slot);
+      expect(getSessionControllerOperation(key) === current.operation, context).toBe(model.slot);
       expect(current.operation.abortSignal.aborted, context).toBe(model.cancelled);
       expect(writer, context).toBe(model.writer);
       expect(effects.slice(beforeEffects), context).toEqual(

@@ -2,7 +2,10 @@ import { expect, it, vi, type Mock } from "vitest";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
-import { createReplyOperation, replyRunRegistry } from "../../sessions/session-controller.js";
+import {
+  createReplyOperation,
+  bindSessionControllerSourceTurnId,
+} from "../../sessions/session-controller.js";
 import * as controllerMailbox from "../../sessions/session-controller.mailbox.js";
 import type { TemplateContext } from "../templating.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
@@ -273,7 +276,7 @@ export function registerSteeringReceiptCases({
     });
     // The owning registry records the active source turn when the run admits
     // its delivery claim; this tombstone belongs to that exact source.
-    replyRunRegistry.bindSourceTurnId(active, "source-turn-1");
+    bindSessionControllerSourceTurnId(active, "source-turn-1");
     active.setPhase("running");
     state.queueEmbeddedAgentMessageMock.mockReturnValueOnce(true);
     const runState: ReplyOperationRunState = {};
@@ -320,7 +323,7 @@ export function registerSteeringReceiptCases({
     });
     // The active run owns a different source turn ("source-turn-2"); the
     // retained tombstone belongs to an unrelated earlier turn.
-    replyRunRegistry.bindSourceTurnId(active, "source-turn-2");
+    bindSessionControllerSourceTurnId(active, "source-turn-2");
     active.setPhase("running");
     state.queueEmbeddedAgentMessageMock.mockReturnValueOnce(true);
     const runState: ReplyOperationRunState = {};

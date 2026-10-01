@@ -155,9 +155,9 @@ vi.mock("../agents/embedded-agent-runner/runs.js", () => ({
     queueEmbeddedAgentMessageWithOutcomeAsyncMock(...args),
 }));
 
-vi.mock("../agents/embedded-agent-runner/active-run-projections.js", () => ({
-  resolveActiveEmbeddedRunSessionId: (...args: unknown[]) =>
-    resolveActiveEmbeddedRunSessionIdMock(...args),
+vi.mock("../sessions/session-controller.queries.js", async (importOriginal) => ({
+  ...(await importOriginal()),
+  resolveActiveSessionRunId: (...args: unknown[]) => resolveActiveEmbeddedRunSessionIdMock(...args),
 }));
 
 vi.mock("../agents/btw.js", () => ({

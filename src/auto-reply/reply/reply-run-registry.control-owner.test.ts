@@ -3,8 +3,10 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import {
   beginReplyMessageInjectionTarget,
   ReplyRunSuccessorAdmissionBlockedError,
-  replyRunRegistry,
   waitForReplyRunSuccessorAdmission,
+  createReplyOperation,
+  getSessionControllerOperation,
+  captureCurrentReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
 import { resolveActiveReplyRunOwnerForSignal } from "../../sessions/session-controller.state.js";
 import { SESSION_WATCHDOG_CLEANUP_MS } from "../../sessions/session-controller.watchdog-state.js";
@@ -12,7 +14,7 @@ import { createTestReplyOperation } from "./reply-run-registry.test-helpers.js";
 
 const sessionKey = "agent:main:voice-control";
 
-afterEach(() => replyRunRegistry.get(sessionKey)?.complete());
+afterEach(() => getSessionControllerOperation(sessionKey)?.complete());
 
 describe("reply run control ownership", () => {
   it.each([false, true])(
@@ -45,7 +47,7 @@ describe("reply run control ownership", () => {
           await expect(
             operation.watchdog.tick(Date.now() + SESSION_WATCHDOG_CLEANUP_MS),
           ).resolves.toMatchObject({ action: "blocked" });
-          expect(replyRunRegistry.get(sessionKey)).toBe(operation);
+          expect(getSessionControllerOperation(sessionKey)).toBe(operation);
         }
         await Promise.resolve();
         expect(started).not.toHaveBeenCalled();
@@ -92,7 +94,7 @@ describe("reply run control ownership", () => {
     "keeps a mismatched input out of a %s reply owner",
     async (terminalReplyExpectation) => {
       const queueMessage = vi.fn(async () => {});
-      const operation = replyRunRegistry.begin({
+      const operation = createReplyOperation({
         sessionKey,
         sessionId: "session-reply-expectation",
         resetTriggered: false,
@@ -104,7 +106,7 @@ describe("reply run control ownership", () => {
         queueMessage,
       });
       operation.setPhase("running");
-      const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key);
+      const target = captureCurrentReplyMessageInjectionTarget(operation.key);
       if (!target) {
         throw new Error("Expected a live message injection target");
       }
@@ -128,7 +130,7 @@ describe("reply run control ownership", () => {
     "fences retained controls after its %s changes",
     (field) => {
       const controller = new AbortController();
-      const operation = replyRunRegistry.begin({
+      const operation = createReplyOperation({
         sessionKey,
         sessionId: "original-session",
         resetTriggered: false,
@@ -151,7 +153,7 @@ describe("reply run control ownership", () => {
 
   it("controls a queued reply only through its admitted upstream signal", () => {
     const controller = new AbortController();
-    const operation = replyRunRegistry.begin({
+    const operation = createReplyOperation({
       sessionKey,
       sessionId: "queued-session",
       resetTriggered: false,
@@ -167,7 +169,7 @@ describe("reply run control ownership", () => {
 
   it("fences retained controls after same-session replacement", () => {
     const controller = new AbortController();
-    const operation = replyRunRegistry.begin({
+    const operation = createReplyOperation({
       sessionKey,
       sessionId: "same-session",
       resetTriggered: false,
@@ -175,7 +177,7 @@ describe("reply run control ownership", () => {
     });
     const owner = resolveActiveReplyRunOwnerForSignal(controller.signal);
     operation.complete();
-    const successor = replyRunRegistry.begin({
+    const successor = createReplyOperation({
       sessionKey,
       sessionId: "same-session",
       resetTriggered: false,

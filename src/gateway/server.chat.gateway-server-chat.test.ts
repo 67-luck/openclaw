@@ -27,7 +27,7 @@ import {
   resetGatewayWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
-import { replyRunRegistry } from "../sessions/session-controller.js";
+import { getSessionControllerOperation } from "../sessions/session-controller.js";
 import {
   beginSessionEffect,
   getSessionControllerWorkCount,
@@ -495,7 +495,7 @@ describe("gateway server chat", () => {
     await withMainSessionStore(async () => {
       await startInterruptibleChatRun("idem-chat-interrupt-throw-old");
 
-      const operation = replyRunRegistry.get("agent:main:main");
+      const operation = getSessionControllerOperation("agent:main:main");
       expect(operation).toBeDefined();
       operation?.attachBackend({
         kind: "embedded",

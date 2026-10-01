@@ -13,6 +13,8 @@ import {
   claimSessionControllerTask,
   releaseSessionControllerClaim,
 } from "../../sessions/session-controller.mailbox.js";
+import * as controllerState from "../../sessions/session-controller.state.js";
+import * as controllerWait from "../../sessions/session-controller.wait.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
 import { testing } from "./reply-run-registry.test-support.js";
 import { admitReplyTurn } from "./reply-turn-admission.js";
@@ -65,12 +67,12 @@ it.each(
     const owner = await admitOwner(ownerStore);
     const released = createDeferred();
     const entered = createDeferred();
-    const waitForIdle = registry.replyRunRegistry.waitForIdle.bind(registry.replyRunRegistry);
+    const waitForIdle = controllerWait.waitForSessionRunIdle;
     const waitForSuccessor = registry.waitForReplyRunSuccessorAdmission;
     const waitForFollowup = registry.waitForReplyRunFollowupAdmission;
     const waited =
       barrier === "active"
-        ? vi.spyOn(registry.replyRunRegistry, "waitForIdle").mockImplementation((...args) => {
+        ? vi.spyOn(controllerWait, "waitForSessionRunIdle").mockImplementation((...args) => {
             const pending = waitForIdle(...args);
             entered.resolve();
             return pending;
@@ -205,7 +207,7 @@ it.each([true, false])(
       }
       owner.complete();
       await Promise.resolve();
-      expect(registry.replyRunRegistry.get(sessionKey)).toBeUndefined();
+      expect(registry.getSessionControllerOperation(sessionKey)).toBeUndefined();
       expect(settled).toBe(false);
 
       releaseMaintenance.resolve();
@@ -241,7 +243,7 @@ it("rejects rotation recorded after the waited owner moves to another physical s
   seed(ownerStore);
   seed(adoptedStore);
   const owner = await admitOwner(ownerStore);
-  const waited = vi.spyOn(registry.replyRunRegistry, "waitForIdle");
+  const waited = vi.spyOn(controllerWait, "waitForSessionRunIdle");
   const pending = admitReplyTurn({
     sessionKey,
     sessionId,

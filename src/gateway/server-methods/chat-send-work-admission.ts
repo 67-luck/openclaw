@@ -2,7 +2,7 @@ import { hasPendingFollowupQueueWork } from "../../auto-reply/reply/queue/state.
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { retireProviderReviewAcknowledgment } from "../../sessions/provider-review.js";
-import { replyRunRegistry } from "../../sessions/session-controller.js";
+import { isSessionRunActiveForKey } from "../../sessions/session-controller.js";
 import {
   isCompetingSessionControllerWorkActive,
   type SessionEffectRef,
@@ -130,7 +130,7 @@ export function assertChatSendExclusiveAdmission(
   if (
     isCompetingSessionControllerWorkActive(storePath, [sessionKey, backingSessionId]) ||
     hasPendingFollowupQueueWork([sessionKey, backingSessionId, activeRunScopeKey]) ||
-    replyRunRegistry.isActive(activeRunScopeKey)
+    isSessionRunActiveForKey(activeRunScopeKey)
   ) {
     throw new Error(
       request.providerReviewAcknowledgment

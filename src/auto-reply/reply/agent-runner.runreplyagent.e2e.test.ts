@@ -48,7 +48,8 @@ import {
   clearReplyRunForResetBySessionId,
   createReplyOperation,
   type ReplyOperation,
-  replyRunRegistry,
+  getSessionControllerOperation,
+  captureCurrentReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import {
@@ -465,7 +466,7 @@ function createMinimalRun(params?: {
     },
   } as unknown as FollowupRun;
   parkedSteer.track(followupRun);
-  const activeOperation = replyRunRegistry.get(sessionKey);
+  const activeOperation = getSessionControllerOperation(sessionKey);
   if (activeOperation && params?.isActive && params.bindActiveAuthority !== false) {
     activeOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(followupRun));
   }
@@ -477,7 +478,7 @@ function createMinimalRun(params?: {
     opts,
     run: async () => {
       const runReplyAgent = await getRunReplyAgent();
-      const operation = replyRunRegistry.get(sessionKey);
+      const operation = getSessionControllerOperation(sessionKey);
       if (operation && params?.attachSteerBackend !== false) {
         operation.attachBackend({
           kind: "embedded",
@@ -796,8 +797,8 @@ describe("runReplyAgent active steering", () => {
       await createController(replacement, replacementEntry, "source-replacement").admitUserTurn(
         replacementRecorder,
       );
-      expect(replyRunRegistry.get("main")).toBe(replacement);
-      expect(replyRunRegistry.resolveCurrentMessageInjectionTarget("main")).toMatchObject({
+      expect(getSessionControllerOperation("main")).toBe(replacement);
+      expect(captureCurrentReplyMessageInjectionTarget("main")).toMatchObject({
         sourceTurnId: "source-replacement",
       });
     } finally {
@@ -965,7 +966,7 @@ describe("runReplyAgent active steering", () => {
         expect.objectContaining({ steeringMode: "all" }),
       );
       expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
-      expect(replyRunRegistry.get("main")).toBe(active);
+      expect(getSessionControllerOperation("main")).toBe(active);
     } finally {
       active.complete();
     }
@@ -1489,7 +1490,7 @@ describe("runReplyAgent active steering", () => {
       expect(activeAbortByUser).toHaveBeenCalledOnce();
       expect(active.abortByUser()).toBe(false);
       expect(successorAbortByUser).not.toHaveBeenCalled();
-      expect(replyRunRegistry.get("main")).toBe(successor);
+      expect(getSessionControllerOperation("main")).toBe(successor);
     } finally {
       successor.complete();
     }
@@ -2416,7 +2417,7 @@ describe("runReplyAgent pending final delivery capture", () => {
     const sessionKey = "agent:main:main";
     const { sessionEntry, sessionStore, storePath } = await makeSessionFixture({}, sessionKey);
     state.runEmbeddedAgentMock.mockImplementationOnce(async () => {
-      const operation = replyRunRegistry.get(sessionKey);
+      const operation = getSessionControllerOperation(sessionKey);
       if (!operation) {
         throw new Error("expected admitted reply operation");
       }
@@ -4417,11 +4418,11 @@ describe("runReplyAgent typing (heartbeat)", () => {
       await toolResultStarted.promise;
 
       await vi.advanceTimersByTimeAsync(elapsedMs);
-      expect(replyRunRegistry.get("main") !== undefined).toBe(owned);
+      expect(getSessionControllerOperation("main") !== undefined).toBe(owned);
 
       toolResultReleased.resolve();
       await followup;
-      expect(replyRunRegistry.get("main")).toBeUndefined();
+      expect(getSessionControllerOperation("main")).toBeUndefined();
     } finally {
       toolResultReleased.resolve();
       await followup;

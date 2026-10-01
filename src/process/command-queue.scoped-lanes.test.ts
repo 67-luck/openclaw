@@ -45,7 +45,7 @@ describe("scoped command lane lifecycle", () => {
     resetCommandQueueStateForTest();
   });
 
-  it.each(["session:", "nested:", "context-engine-turn-maintenance:"])(
+  it.each(["session:probe-", "nested:", "context-engine-turn-maintenance:"])(
     "retires ten independently completed %s lanes from the shared registry",
     async (prefix) => {
       const lanes = getCommandLaneRegistryForTest();
@@ -84,9 +84,9 @@ describe("scoped command lane lifecycle", () => {
     },
   );
 
-  it("keeps a session lane until its queued successor finishes", async () => {
+  it("keeps a setup-probe lane until its queued successor finishes", async () => {
     const lanes = getCommandLaneRegistryForTest();
-    const lane = "session:agent:main:autoqa-queued";
+    const lane = "session:probe-autoqa-queued";
     const firstGate = createDeferred();
     const secondGate = createDeferred();
 
@@ -162,7 +162,7 @@ describe("scoped command lane lifecycle", () => {
 
   it("preserves explicitly configured and paused dynamic lanes", async () => {
     const lanes = getCommandLaneRegistryForTest();
-    const configuredLane = "session:agent:main:autoqa-configured";
+    const configuredLane = "session:probe-autoqa-configured";
     const pausedLane = "nested:agent:main:autoqa-paused";
 
     setCommandLaneConcurrency(configuredLane, 2);
@@ -199,9 +199,9 @@ describe("scoped command lane lifecycle", () => {
     expect(lanes.has(configuredLane)).toBe(true);
   });
 
-  it("does not let pre-restart session completion retire a replacement-generation run", async () => {
+  it("does not let pre-restart probe completion retire a replacement-generation run", async () => {
     const lanes = getCommandLaneRegistryForTest();
-    const lane = "session:agent:main:autoqa-replacement";
+    const lane = "session:probe-autoqa-replacement";
     const staleGate = createDeferred();
     const replacementGate = createDeferred();
     const staleRun = enqueueCommandInLane(lane, async () => {
@@ -251,7 +251,7 @@ describe("scoped command lane lifecycle", () => {
 
   it("does not retire a newer lane state when stale work finishes", async () => {
     const lanes = getCommandLaneRegistryForTest();
-    const lane = "session:agent:main:autoqa-recreated-state";
+    const lane = "session:probe-autoqa-recreated-state";
     const staleGate = createDeferred();
     const staleRun = enqueueCommandInLane(lane, async () => {
       await staleGate.promise;
@@ -276,7 +276,7 @@ describe("scoped command lane lifecycle", () => {
 
   it("retires a scoped lane after its active task times out", async () => {
     const lanes = getCommandLaneRegistryForTest();
-    const lane = "session:agent:main:autoqa-timed-out";
+    const lane = "session:probe-autoqa-timed-out";
 
     vi.useFakeTimers();
     try {

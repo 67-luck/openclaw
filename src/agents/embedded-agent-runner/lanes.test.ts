@@ -1,4 +1,4 @@
-// Coverage for global and per-session command lane normalization.
+// Coverage for global command lane normalization.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { getCommandLaneDiagnostics } from "../../process/command-lane-diagnostics.js";
@@ -10,7 +10,7 @@ import {
 } from "../../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import { CommandLane } from "../../process/lanes.js";
-import { resolveGlobalLane, resolveEmbeddedSessionLane as resolveSessionLane } from "./lanes.js";
+import { resolveGlobalLane } from "./lanes.js";
 
 describe("resolveGlobalLane", () => {
   it("defaults to main lane when no lane is provided", () => {
@@ -228,28 +228,5 @@ describe("subagent session concurrency", () => {
       await Promise.allSettled([child]);
     }
     await expect(child).resolves.toBeUndefined();
-  });
-});
-
-describe("resolveSessionLane", () => {
-  it("defaults to main lane and prefixes with session:", () => {
-    for (const lane of ["", "  "]) {
-      expect(resolveSessionLane(lane)).toBe("session:main");
-    }
-  });
-
-  it("adds session: prefix if not present", () => {
-    for (const [lane, expected] of [
-      ["abc123", "session:abc123"],
-      [" xyz ", "session:xyz"],
-    ] as const) {
-      expect(resolveSessionLane(lane)).toBe(expected);
-    }
-  });
-
-  it("preserves existing session: prefix", () => {
-    for (const lane of ["session:abc", "session:main"]) {
-      expect(resolveSessionLane(lane)).toBe(lane);
-    }
   });
 });

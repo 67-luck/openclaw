@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { createMessageInjectionAuthority } from "../../auto-reply/reply/message-injection-authority.js";
 import {
@@ -31,12 +30,13 @@ import {
   abortReplyRunBySessionId,
   isReplyRunEvidenceStaleBySessionId,
   resolveActiveReplyOperationForSessionId,
-  resolveActiveReplyRunSessionId,
+  resolveActiveSessionRunId,
   resolveReplyBackendQueueMessageMismatch,
   supersedeReplyRunByRunId,
   type ReplyOperation,
   waitForReplyOperationOwnerSettlement,
 } from "../../sessions/session-controller.js";
+import { waitForSessionNativeAttemptEnd } from "../../sessions/session-controller.native-runtime.js";
 import {
   assertSessionControllerOperation,
   getAttachedBackend,
@@ -881,7 +881,7 @@ export async function preemptAndDrainEmbeddedHeartbeatRun(
   if (!handle?.preemptByVisibleTurn) {
     return "not-heartbeat";
   }
-  const drainPromise = waitForCurrentEmbeddedAgentRunEnd(sessionId, timeoutMs, handle);
+  const drainPromise = waitForSessionNativeAttemptEnd(sessionId, timeoutMs, handle);
   try {
     handle.preemptByVisibleTurn();
   } catch (err) {
@@ -990,18 +990,13 @@ export function isEmbeddedAgentRunHandleActive(sessionId: string): boolean {
   return active;
 }
 
-export function isEmbeddedAgentRunStreaming(sessionId: string): boolean {
-  const handle = getActiveNativeAttempt(sessionId);
-  return handle?.isStreaming() ?? false;
-}
-
 export function resolveActiveEmbeddedRunHandleSessionId(sessionKey: string): string | undefined {
   const normalizedSessionKey = sessionKey.trim();
   if (!normalizedSessionKey) {
     return undefined;
   }
   const operation = resolveActiveReplyOperationForSessionId(
-    resolveActiveReplyRunSessionId(normalizedSessionKey) ?? "",
+    resolveActiveSessionRunId(normalizedSessionKey) ?? "",
   );
   return operation && getActiveNativeAttempt(operation.sessionId) ? operation.sessionId : undefined;
 }
@@ -1147,60 +1142,6 @@ export function getActiveEmbeddedRunSnapshot(
   return ACTIVE_EMBEDDED_RUN_SNAPSHOTS.get(sessionId);
 }
 
-async function waitForCurrentEmbeddedAgentRunEnd(
-  sessionId: string,
-  timeoutMs: number | null,
-  handle: EmbeddedAgentQueueHandle,
-): Promise<boolean> {
-  const registration = getEmbeddedRunAttachment(handle);
-  if (!registration) {
-    return true;
-  }
-  const settled = registration.settlement.promise.then(() => true);
-  if (timeoutMs === null) {
-    return await settled;
-  }
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      settled,
-      new Promise<boolean>((resolve) => {
-        timer = setTimeout(
-          () => {
-            diag.warn(`wait timeout: sessionId=${sessionId} timeoutMs=${timeoutMs}`);
-            resolve(false);
-          },
-          resolveTimerTimeoutMs(timeoutMs, 100, 100),
-        );
-      }),
-    ]);
-  } finally {
-    if (timer) {
-      clearTimeout(timer);
-    }
-  }
-}
-
-export async function waitForEmbeddedAgentRunEnd(
-  sessionId: string,
-  timeoutMs: number | null = 15_000,
-): Promise<boolean> {
-  const handle = getActiveNativeAttempt(sessionId);
-  const operation = handle
-    ? getEmbeddedRunAttachment(handle)?.operation
-    : resolveActiveReplyOperationForSessionId(sessionId);
-  const nativeSettlement = handle
-    ? waitForCurrentEmbeddedAgentRunEnd(sessionId, timeoutMs, handle)
-    : Promise.resolve(true);
-  const ownerSettlement = operation
-    ? timeoutMs === null
-      ? operation.ownerSettlement.then(() => true)
-      : waitForReplyOperationOwnerSettlement(operation, timeoutMs)
-    : Promise.resolve(true);
-  const [nativeSettled, ownerSettled] = await Promise.all([nativeSettlement, ownerSettlement]);
-  return nativeSettled && ownerSettled;
-}
-
 export type AbortAndDrainEmbeddedAgentRunResult = {
   aborted: boolean;
   drained: boolean;
@@ -1220,9 +1161,7 @@ export async function abortAndDrainEmbeddedAgentRun(params: {
     ? getEmbeddedRunAttachment(handle)?.operation
     : resolveActiveReplyOperationForSessionId(params.sessionId);
   // Both receipts are captured before cancellation can reenter and install a successor.
-  const nativeSettlement = handle
-    ? waitForCurrentEmbeddedAgentRunEnd(params.sessionId, settleMs, handle)
-    : Promise.resolve(true);
+  const nativeSettlement = waitForSessionNativeAttemptEnd(params.sessionId, settleMs, handle);
   const ownerSettlement = operation
     ? waitForReplyOperationOwnerSettlement(operation, settleMs)
     : Promise.resolve(true);

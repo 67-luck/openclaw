@@ -34,7 +34,7 @@ const compactEmbeddedAgentSessionMock = vi.hoisted(() => vi.fn());
 vi.mock("./commands-compact.runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./commands-compact.runtime.js")>()),
   compactEmbeddedAgentSession: compactEmbeddedAgentSessionMock,
-  isEmbeddedAgentRunAbortableForCompaction: () => false,
+  isSessionRunCompactionBlocked: () => false,
 }));
 
 let registry: PluginRegistry;

@@ -11,7 +11,7 @@ import {
   captureReplyMessageInjectionTarget,
   finalizeReplyMessageInjectionAttempt,
   type ReplyOperation,
-  replyRunRegistry,
+  getSessionControllerOperation,
 } from "../../sessions/session-controller.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
@@ -109,7 +109,7 @@ export async function runActiveReplySteer(
   const scheduleParkedFallback = () => {
     const owner = followupRun.controllerInput
       ? followupRun.controllerInput.mailbox.owner.active
-      : replyRunRegistry.get(queueKey);
+      : getSessionControllerOperation(queueKey);
     if (owner) {
       scheduleFollowupDrainAfterReplyOperationClear({
         operation: owner,

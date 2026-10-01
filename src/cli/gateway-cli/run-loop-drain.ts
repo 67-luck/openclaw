@@ -118,7 +118,7 @@ function createGatewayDrainReporter(
   drainTimeoutMs: number | undefined,
   runtime: Pick<
     typeof import("./lifecycle.runtime.js"),
-    "listActiveEmbeddedRunSessionIds" | "getDiagnosticSessionActivitySnapshot"
+    "listActiveSessionRunIds" | "getDiagnosticSessionActivitySnapshot"
   >,
   logger: Pick<SubsystemLogger, "info" | "warn">,
   recordCounts: (counts: string) => void,
@@ -138,7 +138,7 @@ function createGatewayDrainReporter(
         const requestTimeoutMs = Math.max(
           0,
           ...runtime
-            .listActiveEmbeddedRunSessionIds()
+            .listActiveSessionRunIds()
             .map(
               (sessionId) =>
                 runtime.getDiagnosticSessionActivitySnapshot({ sessionId })

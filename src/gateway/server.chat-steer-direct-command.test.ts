@@ -23,7 +23,8 @@ import { getAgentRunContext } from "../infra/agent-run-registry.js";
 import { createDiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
 import { createDiagnosticEmbeddedRunOwner } from "../logging/diagnostic-run-activity.js";
 import { diagnosticLogger } from "../logging/diagnostic-runtime.js";
-import { replyRunRegistry } from "../sessions/session-controller.js";
+import { getSessionControllerOperation } from "../sessions/session-controller.js";
+import * as messageInjection from "../sessions/session-controller.message-injection.js";
 import {
   agentCommandMock,
   connectOk,
@@ -317,7 +318,7 @@ it.each([
         }),
       );
     }
-    const capture = vi.spyOn(replyRunRegistry, "resolveCurrentMessageInjectionTarget");
+    const capture = vi.spyOn(messageInjection, "captureCurrentReplyMessageInjectionTarget");
     const diagnostics = vi.spyOn(diagnosticLogger, "info");
     onTestFinished(() => diagnostics.mockRestore());
     try {
@@ -334,7 +335,7 @@ it.each([
       ]);
       const registration = getEmbeddedRunAttachment(handle);
       const facts = {
-        hasReplyOperation: replyRunRegistry.get(sessionKey) !== undefined,
+        hasReplyOperation: getSessionControllerOperation(sessionKey) !== undefined,
         authoritySource: registration?.toolAuthority?.source,
         hasOperatorAuthority:
           readAdmittedRunOperatorAuthority(attempt.admittedRunContext) !== undefined,

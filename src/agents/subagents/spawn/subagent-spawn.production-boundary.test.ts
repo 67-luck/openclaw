@@ -80,15 +80,15 @@ const runEmbeddedAgent = vi.hoisted(() =>
 );
 
 vi.mock("../../embedded-agent.js", async () => {
-  const { abortEmbeddedAgentRun, waitForEmbeddedAgentRunEnd } =
-    await import("../../embedded-agent-runner/runs.js");
-  const { isSessionRunActive: isEmbeddedAgentRunActive } =
-    await import("../../../sessions/session-controller.queries.js");
+  const { abortEmbeddedAgentRun } = await import("../../embedded-agent-runner/runs.js");
+  const { waitForSessionRunEnd } =
+    await import("../../../sessions/session-controller.native-runtime.js");
+  const { isSessionRunActive } = await import("../../../sessions/session-controller.queries.js");
   return {
     abortEmbeddedAgentRun,
-    isEmbeddedAgentRunActive,
+    isSessionRunActive,
     runEmbeddedAgent,
-    waitForEmbeddedAgentRunEnd,
+    waitForSessionRunEnd,
   };
 });
 

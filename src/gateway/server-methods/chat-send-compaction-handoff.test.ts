@@ -11,7 +11,10 @@ import {
   loadTranscriptEvents,
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
-import { replyRunRegistry, type ReplyOperation } from "../../sessions/session-controller.js";
+import {
+  type ReplyOperation,
+  getSessionControllerOperation,
+} from "../../sessions/session-controller.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createGatewayRequestContext } from "../server-request-context.js";
@@ -194,11 +197,11 @@ it.each([
           predecessor.abortForRestart();
         }
         if (scenario === "active-compaction") {
-          expect(replyRunRegistry.get(sessionKey)).toBe(predecessor);
+          expect(getSessionControllerOperation(sessionKey)).toBe(predecessor);
         } else {
           predecessor.complete();
           await predecessor.ownerSettlement;
-          expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+          expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
         }
         if (scenario === "cancelled") {
           owned.admission.activeRunAbort.controller.abort();
@@ -225,7 +228,7 @@ it.each([
           successor.updateSessionId(finalSessionId);
           successor.complete();
           await successor.ownerSettlement;
-          expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+          expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
           releaseRuntimePlugins.resolve();
         }
         await sharedDispatchSettled.promise;

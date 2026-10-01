@@ -1,8 +1,8 @@
 import { emitInternalDiagnosticEvent as emitDiagnosticEvent } from "../infra/diagnostic-events.js";
 import {
-  replyRunRegistry,
   resolveActiveReplyOperationForSessionId,
-} from "../sessions/session-controller.registry.js";
+  getSessionControllerOperation,
+} from "../sessions/session-controller.js";
 import type { SessionAttentionClassification } from "./diagnostic-session-attention.js";
 import type {
   StuckSessionRecoveryOutcome,
@@ -24,7 +24,7 @@ export function requestStuckSessionRecovery(params: RequestStuckSessionRecoveryP
   const operation =
     params.request.operation ??
     (params.request.sessionKey
-      ? replyRunRegistry.get(params.request.sessionKey)
+      ? getSessionControllerOperation(params.request.sessionKey)
       : params.request.sessionId
         ? resolveActiveReplyOperationForSessionId(params.request.sessionId)
         : undefined);

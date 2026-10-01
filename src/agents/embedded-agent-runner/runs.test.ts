@@ -8,11 +8,8 @@ import {
   resetDiagnosticSessionStateForTest,
 } from "../../logging/diagnostic-session-state.js";
 import { diagnosticLogger } from "../../logging/diagnostic.js";
-import {
-  createReplyOperation,
-  isReplyRunActiveForSessionId,
-} from "../../sessions/session-controller.js";
-import { isSessionRunCompactionBlocked as isEmbeddedAgentRunAbortableForCompaction } from "../../sessions/session-controller.queries.js";
+import { createReplyOperation, isSessionRunActive } from "../../sessions/session-controller.js";
+import { isSessionRunCompactionBlocked } from "../../sessions/session-controller.queries.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { prepareEmbeddedRunPermissionChange } from "./run-permissions.js";
 import { createEmbeddedRunPermissionChanges } from "./run/permission-change.js";
@@ -120,11 +117,11 @@ describe("embedded-agent runner run registry", () => {
       resetTriggered: false,
     });
 
-    expect(isEmbeddedAgentRunAbortableForCompaction("session-reply-run")).toBe(false);
+    expect(isSessionRunCompactionBlocked("session-reply-run")).toBe(false);
 
     operation.setPhase("running");
 
-    expect(isEmbeddedAgentRunAbortableForCompaction("session-reply-run")).toBe(true);
+    expect(isSessionRunCompactionBlocked("session-reply-run")).toBe(true);
   });
 
   it("aborts every active run in all mode", () => {
@@ -164,7 +161,7 @@ describe("embedded-agent runner run registry", () => {
 
     expect(abortEmbeddedAgentRun("session-finalizing")).toBe(false);
     expect(abortEmbeddedAgentRun(undefined, { mode: "all" })).toBe(false);
-    expect(isEmbeddedAgentRunAbortableForCompaction("session-finalizing")).toBe(true);
+    expect(isSessionRunCompactionBlocked("session-finalizing")).toBe(true);
     expect(isEmbeddedAgentRunHandleActive("session-finalizing")).toBe(true);
     expect(operation.result).toBeNull();
     expect(abort).not.toHaveBeenCalled();
@@ -197,7 +194,7 @@ describe("embedded-agent runner run registry", () => {
 
     expect(abortEmbeddedAgentRun(undefined, { mode: "all", reason: "restart" })).toBe(false);
     expect(isEmbeddedAgentRunHandleActive("session-restart-finalizing")).toBe(true);
-    expect(isReplyRunActiveForSessionId("session-restart-finalizing")).toBe(true);
+    expect(isSessionRunActive("session-restart-finalizing")).toBe(true);
     expect(operation.result).toBeNull();
     expect(abort).not.toHaveBeenCalled();
 
@@ -205,7 +202,7 @@ describe("embedded-agent runner run registry", () => {
     operation.detachBackend(replyBackend);
     operation.complete();
     expect(isEmbeddedAgentRunHandleActive("session-restart-finalizing")).toBe(false);
-    expect(isReplyRunActiveForSessionId("session-restart-finalizing")).toBe(false);
+    expect(isSessionRunActive("session-restart-finalizing")).toBe(false);
   });
 
   it("binds abortability to the owning run id", () => {

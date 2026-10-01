@@ -1,8 +1,8 @@
 import {
   beginReplyMessageInjectionTarget,
   createReplyOperation,
-  replyRunRegistry,
   resolveActiveReplyOperationForSessionId,
+  captureCurrentReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
 
 export function createTestReplyOperation(
@@ -22,9 +22,7 @@ export async function queueCurrentReplyRunMessage(
   options?: Parameters<typeof beginReplyMessageInjectionTarget>[2],
 ) {
   const operation = resolveActiveReplyOperationForSessionId(sessionId);
-  const target = operation
-    ? replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key)
-    : undefined;
+  const target = operation ? captureCurrentReplyMessageInjectionTarget(operation.key) : undefined;
   return target
     ? await queueReplyMessageInjectionTarget(target, text, options)
     : { status: "rejected" as const, reason: "injection_unavailable" as const };

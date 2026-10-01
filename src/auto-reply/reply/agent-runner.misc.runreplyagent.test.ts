@@ -40,7 +40,7 @@ import {
   withPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { GatewayDrainingError } from "../../process/command-queue.js";
-import { createReplyOperation, replyRunRegistry } from "../../sessions/session-controller.js";
+import * as sessionController from "../../sessions/session-controller.js";
 import { getReplyPayloadMetadata, type ReplyPayload } from "../reply-payload.js";
 import { normalizeVerboseLevel } from "../thinking.js";
 import type { VerboseLevel } from "../thinking.shared.js";
@@ -447,7 +447,7 @@ describe("runReplyAgent auto-compaction token update", () => {
         compactionCount: 0,
       };
       const prompt = "What is two plus two? Answer in one short sentence without tools.";
-      const operation = createReplyOperation({
+      const operation = sessionController.createReplyOperation({
         sessionKey,
         sessionId: "session",
         resetTriggered: false,
@@ -772,7 +772,7 @@ describe("runReplyAgent auto-compaction token update", () => {
 
     vi.mocked(scheduleFollowupDrain).mockImplementation((key) => {
       expect(key).toBe(sessionKey);
-      expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+      expect(sessionController.getSessionControllerOperation(sessionKey)).toBeUndefined();
     });
 
     const result = await createBaseRun({
@@ -845,7 +845,7 @@ describe("runReplyAgent auto-compaction token update", () => {
       updatedAt: Date.now(),
       totalTokens: 50_000,
     };
-    const replyOperation = createReplyOperation({
+    const replyOperation = sessionController.createReplyOperation({
       sessionKey,
       sessionId: sessionEntry.sessionId,
       resetTriggered: false,
@@ -858,7 +858,7 @@ describe("runReplyAgent auto-compaction token update", () => {
 
     vi.mocked(scheduleFollowupDrain).mockImplementation((key) => {
       expect(key).toBe(sessionKey);
-      expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+      expect(sessionController.getSessionControllerOperation(sessionKey)).toBeUndefined();
       deliveryOrder.push("followup");
     });
 
@@ -874,7 +874,7 @@ describe("runReplyAgent auto-compaction token update", () => {
     }).run();
 
     expectReplyText(result, "ok");
-    expect(replyRunRegistry.get(sessionKey)).toBe(replyOperation);
+    expect(sessionController.getSessionControllerOperation(sessionKey)).toBe(replyOperation);
     expect(replyOperation.result).toBeNull();
     expect(scheduleFollowupDrain).not.toHaveBeenCalled();
 
@@ -911,7 +911,7 @@ describe("runReplyAgent auto-compaction token update", () => {
         totalTokens: 50_000,
       };
       await seedSessionStore({ storePath, sessionKey, entry: sessionEntry });
-      const replyOperation = createReplyOperation({
+      const replyOperation = sessionController.createReplyOperation({
         sessionKey,
         sessionId: sessionEntry.sessionId,
         resetTriggered: false,

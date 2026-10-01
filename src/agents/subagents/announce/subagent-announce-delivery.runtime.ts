@@ -13,8 +13,8 @@ import {
   parseAgentSessionKey,
 } from "../../../routing/session-key.js";
 import {
-  resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId,
-  isSessionRunActive as isEmbeddedAgentRunActive,
+  resolveActiveSessionRunId,
+  isSessionRunActive,
 } from "../../../sessions/session-controller.queries.js";
 import type { EmbeddedAgentQueueMessageOptions } from "../../embedded-agent-runner/run-state.js";
 import {
@@ -117,12 +117,12 @@ export function getSubagentRequesterSessionActivity(
   // Unscoped active-run keys are ambiguous across agents. An explicit owner
   // must use its logical store entry instead of accepting another agent's run.
   const activeSessionId = parseAgentSessionKey(requesterSessionKey)
-    ? resolveActiveEmbeddedRunSessionId(requesterSessionKey)
+    ? resolveActiveSessionRunId(requesterSessionKey)
     : undefined;
   const sessionId = activeSessionId ?? storedSessionId;
   return {
     sessionId,
-    isActive: Boolean(sessionId && isEmbeddedAgentRunActive(sessionId)),
+    isActive: Boolean(sessionId && isSessionRunActive(sessionId)),
   };
 }
 

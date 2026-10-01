@@ -24,7 +24,7 @@ import {
 import { createDiagnosticMessageLifecycle } from "../../logging/message-lifecycle.js";
 import { stripLegacyMediaContextFields } from "../../media/media-facts.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
-import { replyRunRegistry } from "../../sessions/session-controller.js";
+import { getSessionControllerOperation } from "../../sessions/session-controller.js";
 import { resolveSessionDispatchKind } from "../../sessions/session-key-utils.js";
 import { prepareChannelParticipantObservation } from "../../sessions/session-participant-input.js";
 import { readAgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
@@ -305,7 +305,7 @@ export async function gatherDispatchRequest(
   const initialDispatchReplyOperation = sourceInput
     ? sourceInput.mailbox.owner.active
     : dispatchOperationSessionKey
-      ? replyRunRegistry.get(dispatchOperationSessionKey)
+      ? getSessionControllerOperation(dispatchOperationSessionKey)
       : undefined;
   if (
     params.replyOptions?.isHeartbeat === true &&

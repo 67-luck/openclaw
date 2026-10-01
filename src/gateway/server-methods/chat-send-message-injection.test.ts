@@ -13,9 +13,9 @@ import {
   beginReplyMessageInjectionTarget,
   createReplyOperation,
   finalizeReplyMessageInjectionAttempt,
-  replyRunRegistry,
   type ReplyMessageInjectionAttempt,
   type ReplyMessageInjectionTarget,
+  captureCurrentReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import {
@@ -502,7 +502,7 @@ describe("createChatSendMessageInjectionStarter", () => {
       },
     });
     const target = expectDefined(
-      replyRunRegistry.resolveCurrentMessageInjectionTarget(sessionKey),
+      captureCurrentReplyMessageInjectionTarget(sessionKey),
       "Expected the running test operation to accept steering",
     );
 

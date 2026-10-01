@@ -789,8 +789,6 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
   }));
 
   vi.doMock("./lanes.js", () => ({
-    resolveSessionLane: vi.fn(() => "test-session-lane"),
-    resolveEmbeddedSessionLane: vi.fn(() => "test-session-lane"),
     resolveGlobalLane: vi.fn(() => "test-global-lane"),
   }));
 

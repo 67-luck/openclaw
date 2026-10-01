@@ -87,7 +87,23 @@ export let tryDispatchAcpReplyHook: typeof import("../../plugin-sdk/acpx.js").tr
 
 export let createReplyOperation: typeof import("../../sessions/session-controller.js").createReplyOperation;
 
-export let replyRunRegistry: typeof import("../../sessions/session-controller.js").replyRunRegistry;
+export let getSessionControllerOperation: typeof import("../../sessions/session-controller.js").getSessionControllerOperation;
+
+export let isSessionRunActiveForKey: typeof import("../../sessions/session-controller.js").isSessionRunActiveForKey;
+
+export let bindSessionControllerSourceTurnId: typeof import("../../sessions/session-controller.js").bindSessionControllerSourceTurnId;
+
+export let getSessionControllerSourceTurnId: typeof import("../../sessions/session-controller.js").getSessionControllerSourceTurnId;
+
+export let captureCurrentReplyMessageInjectionTarget: typeof import("../../sessions/session-controller.js").captureCurrentReplyMessageInjectionTarget;
+
+export let captureCurrentSessionRunInterruptTarget: typeof import("../../sessions/session-controller.js").captureCurrentSessionRunInterruptTarget;
+
+export let abortSessionRunByKey: typeof import("../../sessions/session-controller.js").abortSessionRunByKey;
+
+export let waitForSessionRunIdle: typeof import("../../sessions/session-controller.js").waitForSessionRunIdle;
+
+export let resolveActiveSessionRunId: typeof import("../../sessions/session-controller.js").resolveActiveSessionRunId;
 
 let replyRunTesting: typeof import("./reply-run-registry.test-support.js").testing;
 
@@ -395,8 +411,18 @@ export const globalBeforeAll0 = async () => {
   ({ resetInboundDedupe } = await import("./inbound-dedupe.js"));
   // The broad facade imports the real manager outside this fixture's mocked dispatch boundary.
   ({ tryDispatchAcpReplyHook } = await import("../../plugin-sdk/acpx.js"));
-  ({ createReplyOperation, replyRunRegistry } =
-    await import("../../sessions/session-controller.js"));
+  ({
+    createReplyOperation,
+    getSessionControllerOperation,
+    isSessionRunActiveForKey,
+    bindSessionControllerSourceTurnId,
+    getSessionControllerSourceTurnId,
+    captureCurrentReplyMessageInjectionTarget,
+    captureCurrentSessionRunInterruptTarget,
+    abortSessionRunByKey,
+    waitForSessionRunIdle,
+    resolveActiveSessionRunId,
+  } = await import("../../sessions/session-controller.js"));
   ({ testing: replyRunTesting } = await import("./reply-run-registry.test-support.js"));
   ({ admitReplyTurn, runWithReplyOperationLifecycleAdmission } =
     await import("./reply-turn-admission.js"));

@@ -100,7 +100,7 @@ export function registerLateDescendantControlTests({
         });
       };
       setSubagentControlDepsForTest({
-        isEmbeddedAgentRunActive: () => true,
+        isTargetSessionRunActive: () => true,
         abortEmbeddedAgentRun: () => {
           if (phase === "admission drain") {
             expect(releaseSwarmRun(parent.runId)).toBe(true);
