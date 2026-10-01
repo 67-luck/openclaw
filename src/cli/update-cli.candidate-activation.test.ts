@@ -644,7 +644,8 @@ describe("update-cli", () => {
     const { nodeModules, entryPath } = await setupInstalledPackageAtNodeModules(
       path.join(tempDir, "lib", "node_modules"),
     );
-    const nodeRunner = path.join(tempDir, "bin", "node");
+    // Original-state capture executes the selected service runner before installation fails.
+    const nodeRunner = nodeExecutable;
     primeServiceCommand([nodeRunner, entryPath, "gateway", "run"], {
       OPENCLAW_STATE_DIR: profileStateDir(),
     });
@@ -669,10 +670,11 @@ describe("update-cli", () => {
     expect(defaultRuntime.exit).not.toHaveBeenCalled();
     expect(freshRestartCalls()).toEqual([]);
 
-    const packageInstallCallIndex = commandCalls().findIndex(
+    const packageInstallCall = commandCalls().find(
       ([argv]) => argv[0] === "npm" && argv[1] === "i" && argv[2] === "-g",
     );
-    expect(commandCalls()[packageInstallCallIndex]?.[0]).toContain("--prefix");
+    expect(packageInstallCall).toBeDefined();
+    expect(packageInstallCall?.[0]).toContain("--prefix");
   });
 
   it.each([
