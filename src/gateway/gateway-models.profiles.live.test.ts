@@ -4703,7 +4703,8 @@ function startOpenAIUltraWireCapture(upstreamBaseUrls: readonly string[]): OpenA
             // Queued diagnostics may outlive cleanup or a same-id replacement.
             const fence = getOwnedSessionTranscriptWriterFence();
             const runId = fence?.expectedWriterRunId;
-            const handle = runId ? ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(runId) : undefined;
+            const attachment = runId ? ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(runId) : undefined;
+            const handle = attachment?.handle;
             const diagnostic = handle?.diagnosticOwner;
             const context = runId ? getAgentRunContext(runId) : undefined;
             const authority = context?.delegatedAuthority;

@@ -170,9 +170,17 @@ export function createDeferredEmbeddedRunLifecycleManager(params: {
     );
   };
   let cliOwner: EmbeddedAgentQueueHandle | undefined;
+  let cliAttachment: ReturnType<typeof setActiveEmbeddedRun>;
   const clearCliOwner = () => {
     if (cliOwner) {
-      clearActiveEmbeddedRun(params.sessionId, cliOwner, params.sessionKey, params.sessionFile);
+      clearActiveEmbeddedRun(
+        params.sessionId,
+        cliOwner,
+        params.sessionKey,
+        params.sessionFile,
+        undefined,
+        cliAttachment,
+      );
     }
   };
   return {
@@ -218,7 +226,7 @@ export function createDeferredEmbeddedRunLifecycleManager(params: {
         cancel: abort,
         abort,
       };
-      setActiveEmbeddedRun(
+      cliAttachment = setActiveEmbeddedRun(
         params.sessionId,
         cliOwner,
         params.sessionKey,

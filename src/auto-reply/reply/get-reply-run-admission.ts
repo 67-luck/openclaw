@@ -133,7 +133,11 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     });
   }
   const capturedInterruptOperation = sourceInput?.mailbox.owner.active;
-  const capturedNativeAttempt = sourceInput?.mailbox.owner.nativeAttempt;
+  const capturedNativeAttachment = sourceInput?.mailbox.owner.attachment;
+  const capturedNativeAttempt =
+    capturedNativeAttachment && "handle" in capturedNativeAttachment
+      ? capturedNativeAttachment
+      : undefined;
   const activeRunInterruptTarget =
     prioritySource &&
     capturedInterruptOperation &&
@@ -372,11 +376,16 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
   const embeddedAgentRuntime = useFastReplyRuntime
     ? null
     : await traceRunPhase("reply.load_embedded_agent_runtime", () => loadEmbeddedAgentRuntime());
-  const resolveActiveEmbeddedSessionId = (sessionFile = preparedSessionState.sessionFile) =>
-    sourceInput
-      ? sourceInput.mailbox.owner.nativeAttempt?.operation.sessionId
-      : (embeddedAgentRuntime?.resolveActiveEmbeddedRunSessionId(sessionKey) ??
-        embeddedAgentRuntime?.resolveActiveEmbeddedRunSessionIdBySessionFile?.(sessionFile));
+  const resolveActiveEmbeddedSessionId = (sessionFile = preparedSessionState.sessionFile) => {
+    if (sourceInput) {
+      const attachment = sourceInput.mailbox.owner.attachment;
+      return attachment && "handle" in attachment ? attachment.operation.sessionId : undefined;
+    }
+    return (
+      embeddedAgentRuntime?.resolveActiveEmbeddedRunSessionId(sessionKey) ??
+      embeddedAgentRuntime?.resolveActiveEmbeddedRunSessionIdBySessionFile?.(sessionFile)
+    );
+  };
   const rawActiveSessionIdForInterrupt = resolveActiveEmbeddedSessionId();
   const shouldPreemptHeartbeat =
     !isRoomEvent && !context.isHeartbeat && rawActiveSessionIdForInterrupt !== undefined;
@@ -385,7 +394,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
         if (
           !shouldPreemptHeartbeat ||
           !capturedNativeAttempt?.handle.preemptByVisibleTurn ||
-          sourceInput.mailbox.owner.nativeAttempt !== capturedNativeAttempt ||
+          sourceInput.mailbox.owner.attachment !== capturedNativeAttachment ||
           sourceInput.mailbox.owner.active !== capturedNativeAttempt.operation
         ) {
           return "not-heartbeat";

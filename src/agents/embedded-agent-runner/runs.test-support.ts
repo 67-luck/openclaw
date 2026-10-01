@@ -10,8 +10,16 @@ const fixtureOperations = new Set<ReplyOperation>();
 export function registerTestEmbeddedRun(
   ...args: Parameters<typeof setActiveEmbeddedRun>
 ): ReplyOperation {
-  const [sessionId, handle, sessionKey, sessionFile, agentId, supplied] = args;
+  const [sessionId, handle, sessionKey, sessionFile, agentId, supplied, lifecycleGeneration] = args;
   let operation = supplied ?? resolveActiveReplyOperationForSessionId(sessionId);
+  if (
+    operation &&
+    (operation.result || operation.abortSignal.aborted) &&
+    fixtureOperations.delete(operation)
+  ) {
+    operation.complete();
+    operation = undefined;
+  }
   const created = !operation;
   if (!operation) {
     operation = createReplyOperation({
@@ -30,6 +38,7 @@ export function registerTestEmbeddedRun(
       sessionFile,
       agentId,
       operation,
+      lifecycleGeneration,
     );
     return operation;
   } finally {

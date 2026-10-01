@@ -1,3 +1,4 @@
+import type { EmbeddedRunAttachment } from "../agents/embedded-agent-runner/run-state.js";
 import type { ReplyOperation } from "./session-controller.contracts.js";
 import {
   getSessionControllerEntryForOperation,
@@ -5,25 +6,40 @@ import {
   resolveReplyRunForCurrentSessionId,
 } from "./session-controller.identity.js";
 export function resolveControllerNativeAttempt(sessionId: string) {
-  const operation = resolveReplyRunForCurrentSessionId(sessionId);
-  const attempt = operation && getSessionControllerEntryForOperation(operation).nativeAttempt;
-  return attempt?.operation === operation ? attempt?.handle : undefined;
+  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
+  if (resolution.kind !== "one") {
+    return undefined;
+  }
+  const attachment = getSessionControllerEntryForOperation(resolution.operation).attachment;
+  return attachment && "handle" in attachment && attachment.operation === resolution.operation
+    ? attachment.handle
+    : undefined;
 }
 
 export function attachControllerNativeAttempt(
   operation: ReplyOperation,
-  handle: import("../agents/embedded-agent-runner/run-state.js").EmbeddedAgentQueueHandle,
+  attachment: EmbeddedRunAttachment,
 ): void {
   assertSessionControllerOperation(operation);
-  getSessionControllerEntryForOperation(operation).nativeAttempt = { operation, handle };
+  if (attachment.operation !== operation) {
+    throw new Error("Native attachment does not match its controller operation");
+  }
+  getSessionControllerEntryForOperation(operation).attachment = attachment;
 }
 
 export function detachControllerNativeAttempt(
   operation: ReplyOperation,
-  handle: import("../agents/embedded-agent-runner/run-state.js").EmbeddedAgentQueueHandle,
+  attachment: EmbeddedRunAttachment,
 ): void {
   const entry = getSessionControllerEntryForOperation(operation);
-  if (entry?.nativeAttempt?.operation === operation && entry.nativeAttempt.handle === handle) {
-    entry.nativeAttempt = undefined;
+  if (entry.attachment === attachment) {
+    entry.attachment =
+      attachment.backend || attachment.projectSessionActive !== undefined
+        ? {
+            operation,
+            backend: attachment.backend,
+            projectSessionActive: attachment.projectSessionActive,
+          }
+        : undefined;
   }
 }

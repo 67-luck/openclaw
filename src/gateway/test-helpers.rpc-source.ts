@@ -11,22 +11,30 @@ import {
   releaseSessionControllerClaim,
 } from "../sessions/session-controller.mailbox.js";
 import { createReplyOperation } from "../sessions/session-controller.operation.js";
-import type { RpcSourceAdapter, RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
+import {
+  setRpcSourceProjectSessionActive,
+  type RpcSourceAdapter,
+  type RpcSourceRef,
+} from "../sessions/session-controller.rpc-sources.js";
 import { markReplyOperationExecutionStarted } from "../sessions/session-controller.state.js";
 
 /** Presentation fixtures retain real controller-owned inputs, never a second abort primitive. */
 export function createRpcSourceForTest(
-  metadata: Partial<RpcSourceAdapter> = {},
+  metadata: Partial<RpcSourceAdapter> & { projectSessionActive?: boolean } = {},
   options: {
     runId?: string;
     storeScope?: string;
     phase?: "preparing" | "waiting" | "consumed";
   } = {},
 ): RpcSourceRef {
+  const { projectSessionActive, ...adapterMetadata } = metadata;
   const adapter: RpcSourceAdapter = {
     sessionKey: "agent:main:fixture",
     sessionId: "fixture-session",
-    ...metadata,
+    ...adapterMetadata,
+    ...(projectSessionActive === false && adapterMetadata.registrationCleanupRequested === undefined
+      ? { registrationCleanupRequested: true }
+      : {}),
   };
   const target = captureSessionTarget({
     storeScope: options.storeScope ?? `/synthetic/rpc-source-fixture/${randomUUID()}/sessions`,
@@ -80,6 +88,9 @@ export async function claimRpcSourceForTest(ref: RpcSourceRef): Promise<() => vo
       target: ref.input.mailbox.owner.target,
     });
     markReplyOperationExecutionStarted(operation);
+    if (ref.adapter.registrationCleanupRequested === true) {
+      setRpcSourceProjectSessionActive(ref, false);
+    }
   });
   const release = () => {
     try {

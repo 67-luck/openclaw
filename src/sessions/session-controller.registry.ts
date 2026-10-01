@@ -9,6 +9,7 @@ import { markDiagnosticRunProgress } from "../logging/diagnostic-run-activity.js
 import { settlesWithin } from "../shared/settle-within.js";
 import {
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
+  ReplyRunAlreadyActiveError,
   replyRunInterruptTargetOperation,
   type ReplyOperation,
   type ReplyRunInterruptTarget,
@@ -28,13 +29,13 @@ import {
   getSessionControllerOperation,
   activeSessionOperations,
   sessionControllers,
-  findSessionControllerEntry,
+  findSessionControllerEntries,
   getSessionControllerEntryForOperation,
   isCurrentSessionControllerOperation,
   resolveReplyRunForCurrentSessionId,
-  resolveReplyRunWaitKey,
   type ReplyRunAdmissionSource,
   type ReplyRunWaiter,
+  type SessionControllerEntry,
 } from "./session-controller.state.js";
 import { captureSessionControllerStop, stopSession } from "./session-controller.stop.js";
 
@@ -61,9 +62,64 @@ export function markReplyOperationGlobalLaneWaitProgress(operation: ReplyOperati
   });
 }
 
+function waitForSessionControllerEntryIdle(
+  owner: SessionControllerEntry,
+  timeoutMs?: number | null,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (!owner.active) {
+    return Promise.resolve(true);
+  }
+  if (signal?.aborted) {
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    const waiters = owner.waiters;
+    let abortHandler: (() => void) | undefined;
+    let settled = false;
+    const waiter: ReplyRunWaiter = {
+      finish: (ended) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        waiters.delete(waiter);
+        pruneSessionControllerEntry(owner);
+        if (waiter.timer) {
+          clearTimeout(waiter.timer);
+        }
+        if (abortHandler) {
+          signal?.removeEventListener("abort", abortHandler);
+        }
+        resolve(ended);
+      },
+    };
+    if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs)) {
+      waiter.timer = setTimeout(
+        () => waiter.finish(false),
+        resolveTimerTimeoutMs(timeoutMs, 100, 100),
+      );
+    }
+    if (signal) {
+      abortHandler = () => waiter.finish(false);
+      signal.addEventListener("abort", abortHandler, { once: true });
+    }
+    waiters.add(waiter);
+    if (!owner.active) {
+      waiter.finish(true);
+    }
+  });
+}
+
 export function isReplyRunEvidenceStaleBySessionId(sessionId: string): boolean {
-  const operation = resolveReplyRunForCurrentSessionId(sessionId);
-  return operation ? isReplyRunEvidenceStale(operation) : false;
+  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
+  const operations =
+    resolution.kind === "none"
+      ? []
+      : resolution.kind === "one"
+        ? [resolution.operation]
+        : resolution.operations;
+  return operations.some(isReplyRunEvidenceStale);
 }
 
 export const replyRunRegistry: ReplyRunRegistry = {
@@ -82,7 +138,7 @@ export const replyRunRegistry: ReplyRunRegistry = {
     if (!normalizedSessionKey) {
       return false;
     }
-    return Boolean(getSessionControllerOperation(normalizedSessionKey));
+    return findSessionControllerEntries(normalizedSessionKey).some((entry) => entry.active);
   },
   bindSourceTurnId(operation, sourceTurnId) {
     // Durable admission can finish after reset has replaced this operation.
@@ -100,7 +156,8 @@ export const replyRunRegistry: ReplyRunRegistry = {
     if (!normalizedSessionKey) {
       return undefined;
     }
-    return findSessionControllerEntry(normalizedSessionKey)?.sourceTurnId;
+    const operation = getSessionControllerOperation(normalizedSessionKey);
+    return operation ? getSessionControllerEntryForOperation(operation).sourceTurnId : undefined;
   },
   resolveCurrentMessageInjectionTarget(sessionKey) {
     return captureReplyMessageInjectionTarget(this.get(sessionKey));
@@ -118,53 +175,18 @@ export const replyRunRegistry: ReplyRunRegistry = {
   },
   waitForIdle(sessionKey, timeoutMs, opts) {
     const normalizedSessionKey = normalizeOptionalString(sessionKey);
-    if (!normalizedSessionKey || !getSessionControllerOperation(normalizedSessionKey)) {
+    if (!normalizedSessionKey) {
       return Promise.resolve(true);
     }
-    if (opts?.signal?.aborted) {
-      return Promise.resolve(false);
+    const owners = findSessionControllerEntries(normalizedSessionKey).filter(
+      (entry) => entry.active,
+    );
+    if (owners.length === 0) {
+      return Promise.resolve(true);
     }
-    return new Promise((resolve) => {
-      const owner = findSessionControllerEntry(normalizedSessionKey);
-      if (!owner) {
-        resolve(true);
-        return;
-      }
-      const waiters = owner.waiters;
-      let abortHandler: (() => void) | undefined;
-      let settled = false;
-      const waiter: ReplyRunWaiter = {
-        finish: (ended) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          waiters.delete(waiter);
-          pruneSessionControllerEntry(owner);
-          if (waiter.timer) {
-            clearTimeout(waiter.timer);
-          }
-          if (abortHandler) {
-            opts?.signal?.removeEventListener("abort", abortHandler);
-          }
-          resolve(ended);
-        },
-      };
-      if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs)) {
-        waiter.timer = setTimeout(
-          () => waiter.finish(false),
-          resolveTimerTimeoutMs(timeoutMs, 100, 100),
-        );
-      }
-      if (opts?.signal) {
-        abortHandler = () => waiter.finish(false);
-        opts.signal.addEventListener("abort", abortHandler, { once: true });
-      }
-      waiters.add(waiter);
-      if (!getSessionControllerOperation(normalizedSessionKey)) {
-        waiter.finish(true);
-      }
-    });
+    return Promise.all(
+      owners.map((owner) => waitForSessionControllerEntryIdle(owner, timeoutMs, opts?.signal)),
+    ).then((outcomes) => outcomes.every(Boolean));
   },
   resolveSessionId(sessionKey) {
     const normalizedSessionKey = normalizeOptionalString(sessionKey);
@@ -221,25 +243,29 @@ export function resolveActiveReplyRunThreadId(sessionKey: string): string | numb
 }
 
 export function isReplyRunActiveForSessionId(sessionId: string): boolean {
-  return resolveReplyRunForCurrentSessionId(sessionId) !== undefined;
+  return resolveReplyRunForCurrentSessionId(sessionId).kind !== "none";
+}
+
+function resolveSingleReplyOperationForSessionId(sessionId: string): ReplyOperation | undefined {
+  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
+  if (resolution.kind === "ambiguous") {
+    throw new ReplyRunAlreadyActiveError(sessionId);
+  }
+  return resolution.kind === "one" ? resolution.operation : undefined;
 }
 
 export function abortReplyRunBySessionId(sessionId: string): boolean {
-  const operation = resolveReplyRunForCurrentSessionId(sessionId);
-  if (!operation) {
-    return false;
-  }
-  return operation.abortByUser();
+  return resolveSingleReplyOperationForSessionId(sessionId)?.abortByUser() ?? false;
 }
 
 export function resolveActiveReplyOperationForSessionId(
   sessionId: string,
 ): ReplyOperation | undefined {
-  return resolveReplyRunForCurrentSessionId(sessionId);
+  return resolveSingleReplyOperationForSessionId(sessionId);
 }
 
 export function clearReplyRunForResetBySessionId(sessionId: string): void {
-  const operation = resolveReplyRunForCurrentSessionId(sessionId);
+  const operation = resolveSingleReplyOperationForSessionId(sessionId);
   if (!operation || isReplyOperationPreBackendPhase(operation.phase)) {
     return;
   }
@@ -251,11 +277,21 @@ export function waitForReplyRunEndBySessionId(
   sessionId: string,
   timeoutMs?: number | null,
 ): Promise<boolean> {
-  const waitKey = resolveReplyRunWaitKey(sessionId);
-  if (!waitKey) {
+  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
+  if (resolution.kind === "none") {
     return Promise.resolve(true);
   }
-  return replyRunRegistry.waitForIdle(waitKey, timeoutMs);
+  const operations = resolution.kind === "one" ? [resolution.operation] : resolution.operations;
+  return Promise.all(
+    operations.map((operation) =>
+      timeoutMs === null
+        ? operation.ownerSettlement.then(() => true)
+        : waitForReplyOperationOwnerSettlement(
+            operation,
+            timeoutMs ?? REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
+          ),
+    ),
+  ).then((outcomes) => outcomes.every(Boolean));
 }
 
 async function waitForReplyRunAdmissionBarrier(params: {

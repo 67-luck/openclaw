@@ -13,7 +13,11 @@ import {
   retainQueuedAgentRunContext,
 } from "../../../infra/agent-run-registry.js";
 import { isBackgroundWorkLane } from "../../../process/background-work.js";
-import { enqueueCommandInLane, getCommandLaneSnapshot } from "../../../process/command-queue.js";
+import {
+  enqueueCommandInLane,
+  getCommandLaneSnapshot,
+  isCommandLaneTaskTimeoutError,
+} from "../../../process/command-queue.js";
 import type {
   CommandQueueEnqueueOptions,
   CommandQueueTaskDeadline,
@@ -460,7 +464,12 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
       () => pendingGlobalExecutions.delete(queuedRun),
       () => pendingGlobalExecutions.delete(queuedRun),
     );
-    return queuedRun.finally(finishGlobalLaneAdmission);
+    return queuedRun.finally(finishGlobalLaneAdmission).catch((error: unknown) => {
+      if (isCommandLaneTaskTimeoutError(error)) {
+        laneTaskAbortController.abort(error);
+      }
+      throw error;
+    });
   };
   const enqueueAdmittedSession = async <T>(
     task: () => Promise<T>,
@@ -499,6 +508,14 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
       if (!operation) {
         watchdog.start();
       }
+      // Sessionless execution has no controller attempt to publish semantic
+      // progress. Its explicit execution deadline remains the sole expiry owner.
+      const detachedExecutionWait = operation
+        ? undefined
+        : watchdog.beginWait({
+            kind: "runtime_owned",
+            isCurrent: () => executing && !abortSignal.aborted,
+          });
       const execution = watchdog.beginExecution(() => {
         if (
           ownedGlobalCapacityWaits > 0 ||
@@ -539,6 +556,7 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
         return await task();
       } finally {
         executing = false;
+        detachedExecutionWait?.close();
         execution.close();
         unsubscribe?.();
         abortSignal.removeEventListener("abort", abortExecution);

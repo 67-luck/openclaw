@@ -1,5 +1,5 @@
 import type { OpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
-import type { ReplyOperation } from "./session-controller.contracts.js";
+import type { ReplyBackendHandle, ReplyOperation } from "./session-controller.contracts.js";
 import type {
   SessionControllerLifecycle,
   SessionEffectRef,
@@ -35,6 +35,14 @@ export type ReplyOperationAdmission = {
   readonly databaseIdentity?: OpenClawAgentDatabaseIdentity;
 };
 
+/** The exact backend facts owned by one reply operation. Embedded attempts extend
+ * this object in place and the runner's run-id index points back to that record. */
+export type SessionControllerRunAttachment = {
+  readonly operation: ReplyOperation;
+  backend?: ReplyBackendHandle;
+  projectSessionActive?: boolean;
+};
+
 /** One retained scheduling owner per canonical key. Native attempts are subordinate
  * to active; waiters, fences and completion observations belong to this same entry.
  * Mailbox and mutation scheduling extend this entry, never a second keyed registry. */
@@ -47,11 +55,9 @@ export type SessionControllerEntry = {
   mailbox?: SessionControllerMailbox;
   lifecycle?: SessionControllerLifecycle;
   active?: ReplyOperation;
-  nativeAttempt?: {
-    operation: ReplyOperation;
-    projectSessionActive?: boolean;
-    handle: import("../agents/embedded-agent-runner/run-state.js").EmbeddedAgentQueueHandle;
-  };
+  attachment?:
+    | SessionControllerRunAttachment
+    | import("../agents/embedded-agent-runner/run-state.js").EmbeddedRunAttachment;
   sourceTurnId?: string;
   waiters: Set<ReplyRunWaiter>;
   followupBarrier?: ReplyRunAdmissionBarrier;

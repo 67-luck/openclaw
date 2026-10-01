@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ACTIVE_EMBEDDED_RUNS_BY_RUN_ID,
+  activeNativeAttempts,
   getActiveNativeAttempt,
   type EmbeddedAgentQueueHandle,
 } from "../agents/embedded-agent-runner/run-state.js";
@@ -8,6 +10,8 @@ import {
   clearActiveEmbeddedRun,
   isEmbeddedAgentRunAbortableForRunId,
   abortEmbeddedAgentRun,
+  isEmbeddedAgentRunStreaming,
+  resolveActiveEmbeddedRunOwnerByRunId,
   waitForEmbeddedAgentRunEnd,
 } from "../agents/embedded-agent-runner/runs.js";
 import { testing as nativeTesting } from "../agents/embedded-agent-runner/runs.test-support.js";
@@ -15,7 +19,11 @@ import { testing as controllerTesting } from "../auto-reply/reply/reply-run-regi
 import { createDeferredCore } from "../shared/deferred.js";
 import { withSessionTurn } from "./session-controller.admission.js";
 import type { ReplyBackendHandle, ReplyOperation } from "./session-controller.contracts.js";
-import { reserveSessionControllerSource } from "./session-controller.mailbox.js";
+import { captureSessionTarget } from "./session-controller.lifecycle.js";
+import {
+  reserveSessionControllerSource,
+  retireSessionControllerInput,
+} from "./session-controller.mailbox.js";
 import { createReplyOperation } from "./session-controller.operation.js";
 import {
   getActiveSessionRunCount,
@@ -23,7 +31,11 @@ import {
   resolveSessionRunProgressState,
 } from "./session-controller.queries.js";
 import { abortActiveReplyRuns } from "./session-controller.registry.js";
-import { getSessionControllerOperation } from "./session-controller.state.js";
+import {
+  getAttachedBackend,
+  getSessionControllerEntryForOperation,
+  getSessionControllerOperation,
+} from "./session-controller.state.js";
 
 function handle(runId: string): EmbeddedAgentQueueHandle & ReplyBackendHandle {
   return {
@@ -123,23 +135,131 @@ describe("controller/native admission boundary", () => {
 
   it("borrows one operation for retries and cannot let an old native detach retire its replacement", async () => {
     await withSessionTurn({ sessionKey, sessionId }, async (operation) => {
-      const first = handle("attempt-1");
-      const second = handle("attempt-2");
-      setActiveEmbeddedRun(sessionId, first, sessionKey, undefined, "main", operation);
+      const first = handle("reused-attempt");
+      const second = handle("reused-attempt");
+      const firstAttachment = setActiveEmbeddedRun(
+        sessionId,
+        first,
+        sessionKey,
+        undefined,
+        "main",
+        operation,
+      );
+      if (!firstAttachment) {
+        throw new Error("Missing first attachment");
+      }
+      expect(getSessionControllerEntryForOperation(operation!).attachment).toBe(firstAttachment);
+      expect(ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get("reused-attempt")).toBe(firstAttachment);
+      expect(getAttachedBackend(operation!)).toBe(first);
+      expect(isSessionRunActive(sessionId)).toBe(true);
+      expect(isEmbeddedAgentRunStreaming(sessionId)).toBe(true);
+      expect(resolveSessionRunProgressState(sessionId)).toBe("running");
+      expect(resolveActiveEmbeddedRunOwnerByRunId("reused-attempt")?.runId).toBe("reused-attempt");
+      let firstSettled = false;
+      void firstAttachment.settlement.promise.then(() => {
+        firstSettled = true;
+      });
+      let secondAttachment: ReturnType<typeof setActiveEmbeddedRun>;
       await withSessionTurn(
         { sessionKey, sessionId, replyOperation: operation },
         async (borrowed) => {
           expect(borrowed).toBe(operation);
-          setActiveEmbeddedRun(sessionId, second, sessionKey, undefined, "main", borrowed);
+          secondAttachment = setActiveEmbeddedRun(
+            sessionId,
+            second,
+            sessionKey,
+            undefined,
+            "main",
+            borrowed,
+          );
         },
       );
+      if (!secondAttachment) {
+        throw new Error("Missing replacement attachment");
+      }
+      expect(getSessionControllerEntryForOperation(operation!).attachment).toBe(secondAttachment);
+      expect(ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get("reused-attempt")).toBe(secondAttachment);
+      expect(getAttachedBackend(operation!)).toBe(second);
       clearActiveEmbeddedRun(sessionId, first);
+      await Promise.resolve();
+      expect(firstSettled).toBe(true);
       expect(getActiveNativeAttempt(sessionId)).toBe(second);
       expect(getSessionControllerOperation(sessionKey)).toBe(operation);
       expect(getActiveSessionRunCount()).toBe(1);
-      clearActiveEmbeddedRun(sessionId, second);
+      expect(isEmbeddedAgentRunStreaming(sessionId)).toBe(true);
+      expect(resolveSessionRunProgressState(sessionId)).toBe("running");
+      clearActiveEmbeddedRun(sessionId, second, undefined, undefined, undefined, secondAttachment);
     });
     expect(getActiveSessionRunCount()).toBe(0);
+    expect(isSessionRunActive(sessionId)).toBe(false);
+    expect(getActiveNativeAttempt(sessionId)).toBeUndefined();
+    expect(isEmbeddedAgentRunStreaming(sessionId)).toBe(false);
+    expect(resolveSessionRunProgressState(sessionId)).toBeUndefined();
+    expect(resolveActiveEmbeddedRunOwnerByRunId("reused-attempt")).toBeUndefined();
+  });
+
+  it("replaces the exact operation attachment when the session id is ambiguous", () => {
+    const targetA = captureSessionTarget({
+      storeScope: "/tmp/controller-native-a.sqlite",
+      sessionKey,
+      incarnation: sessionId,
+    });
+    const targetB = captureSessionTarget({
+      storeScope: "/tmp/controller-native-b.sqlite",
+      sessionKey,
+      incarnation: sessionId,
+    });
+    const operationA = createReplyOperation({
+      sessionKey,
+      sessionId,
+      target: targetA,
+      resetTriggered: false,
+    });
+    const operationB = createReplyOperation({
+      sessionKey,
+      sessionId,
+      target: targetB,
+      resetTriggered: false,
+    });
+    const first = handle("ambiguous-a");
+    const other = handle("ambiguous-b");
+    const replacement = handle("ambiguous-a");
+    const firstAttachment = setActiveEmbeddedRun(
+      sessionId,
+      first,
+      sessionKey,
+      undefined,
+      "main",
+      operationA,
+    );
+    setActiveEmbeddedRun(sessionId, other, sessionKey, undefined, "main", operationB);
+
+    const replacementAttachment = setActiveEmbeddedRun(
+      sessionId,
+      replacement,
+      sessionKey,
+      undefined,
+      "main",
+      operationA,
+    );
+
+    expect(replacementAttachment).not.toBe(firstAttachment);
+    expect(getSessionControllerEntryForOperation(operationA).attachment).toBe(
+      replacementAttachment,
+    );
+    expect(getSessionControllerEntryForOperation(operationB).attachment).toMatchObject({
+      handle: other,
+    });
+    clearActiveEmbeddedRun(sessionId, first);
+    expect(getSessionControllerEntryForOperation(operationA).attachment).toBe(
+      replacementAttachment,
+    );
+    expect(ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get("ambiguous-a")).toBe(replacementAttachment);
+
+    clearActiveEmbeddedRun(sessionId, replacement);
+    clearActiveEmbeddedRun(sessionId, other);
+    operationA.complete();
+    operationB.complete();
   });
 
   it("does not include a synchronously admitted replacement in an already captured restart sweep", () => {
@@ -204,6 +324,25 @@ describe("controller/native admission boundary", () => {
       expect(isSessionRunActive(sessionId)).toBe(false);
       expect(getActiveSessionRunCount()).toBe(0);
       clearActiveEmbeddedRun(sessionId, native);
+    });
+  });
+
+  it("hides detached attempts once a controller entry owns their session identity", async () => {
+    const native = handle("detached-shadowed");
+    await withSessionTurn({ sessionId, detached: true }, async () => {
+      const attachment = setActiveEmbeddedRun(sessionId, native);
+      const input = reserveSessionControllerSource(sessionKey, {
+        target: captureSessionTarget({
+          storeScope: "/stores/detached-shadow.sqlite",
+          sessionKey,
+          incarnation: sessionId,
+        }),
+        policy: { mode: "followup" },
+      });
+      expect(getActiveNativeAttempt(sessionId)).toBeUndefined();
+      expect([...activeNativeAttempts()]).not.toContainEqual([sessionId, native]);
+      clearActiveEmbeddedRun(sessionId, native, undefined, undefined, undefined, attachment);
+      retireSessionControllerInput(input);
     });
   });
 });

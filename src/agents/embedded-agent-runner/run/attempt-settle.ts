@@ -44,6 +44,7 @@ const FAILED_PROMPT_MEDIA_NOTE_TYPE = "openclaw.system-note";
 const FAILED_PROMPT_MEDIA_NOTE_SOURCE = "prompt-image-hydration";
 
 type StreamCleanupInput = {
+  attachment: PreparedStreamRuntime["stream"]["registration"];
   attempt: EmbeddedRunAttemptParams;
   clearAttemptTimeoutTimers: () => void;
   isProbeSession: boolean;
@@ -82,6 +83,8 @@ function cleanupEmbeddedAttemptStreamExecution(input: StreamCleanupInput): Error
           input.queueHandle,
           attempt.sessionKey,
           attempt.sessionFile,
+          undefined,
+          input.attachment,
         ),
     ]);
   }
@@ -386,6 +389,7 @@ export async function runEmbeddedAttemptSettledPhase(
     }
   } finally {
     cleanupError = cleanupEmbeddedAttemptStreamExecution({
+      attachment: preparedStreamRuntime.stream.registration,
       attempt,
       clearAttemptTimeoutTimers,
       isProbeSession,

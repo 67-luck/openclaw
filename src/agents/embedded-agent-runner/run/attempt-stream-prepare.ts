@@ -31,10 +31,9 @@ import type { ToolSearchCatalogToolExecutor } from "../../tool-search.js";
 import { isRunnerAbortError } from "../abort.js";
 import { log } from "../logger.js";
 import {
-  ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
+  getEmbeddedRunAttachment,
   getActiveNativeAttempt,
   ACTIVE_EMBEDDED_RUNS_BY_RUN_ID,
-  setActiveEmbeddedRunLifecycleGeneration,
 } from "../run-state.js";
 import {
   clearActiveEmbeddedRun,
@@ -379,6 +378,8 @@ function prepareStream(
         queueHandle,
         attempt.sessionKey,
         attempt.sessionFile,
+        undefined,
+        registration,
       );
     },
     enforceFinalTag: attempt.enforceFinalTag,
@@ -449,9 +450,9 @@ function prepareStream(
     registration?.toolAuthority?.assertActive();
     return (
       registration !== undefined &&
-      ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(queueHandle) === registration &&
+      getEmbeddedRunAttachment(queueHandle) === registration &&
       getActiveNativeAttempt(attempt.sessionId) === queueHandle &&
-      ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(attempt.runId) === queueHandle
+      ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(attempt.runId)?.handle === queueHandle
     );
   };
   const canInject = () => isSteeringAdmissionOpen() && hasCurrentRegistration();
@@ -549,7 +550,7 @@ function prepareStream(
           if (
             !admission.accepting ||
             input.runAbortController.signal.aborted ||
-            ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(attempt.runId) !== queueHandle
+            ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(attempt.runId)?.handle !== queueHandle
           ) {
             return false;
           }
@@ -586,11 +587,6 @@ function prepareStream(
     cancel: abortActiveRunExternally,
     abort: abortActiveRunExternally,
   };
-  attempt.replyOperation?.attachBackend(queueHandle);
-  setActiveEmbeddedRunLifecycleGeneration(
-    queueHandle,
-    attempt.lifecycleGeneration ?? captureAgentRunLifecycleGeneration(attempt.runId),
-  );
   setActiveEmbeddedRun(
     attempt.sessionId,
     queueHandle,
@@ -598,8 +594,9 @@ function prepareStream(
     attempt.sessionFile,
     input.hookAgentId,
     attempt.replyOperation,
+    attempt.lifecycleGeneration ?? captureAgentRunLifecycleGeneration(attempt.runId),
   );
-  const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(queueHandle);
+  const registration = getEmbeddedRunAttachment(queueHandle);
   if (attempt.deferTerminalLifecycle && attempt.onDeferredLifecycleOwner) {
     deferredLifecycleOwner = createEmbeddedAttemptDeferredLifecycleOwner({
       runId: attempt.runId,
@@ -609,7 +606,7 @@ function prepareStream(
       isCurrent: () =>
         registration?.delegatedAuthority !== undefined &&
         validateAgentRunDelegatedAuthority(registration.delegatedAuthority) &&
-        ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(queueHandle) === registration &&
+        getEmbeddedRunAttachment(queueHandle) === registration &&
         getActiveNativeAttempt(attempt.sessionId) === queueHandle,
       trajectoryRecorder: input.trajectoryRecorder ?? null,
       clearActiveRun: () => {
@@ -621,6 +618,8 @@ function prepareStream(
             queueHandle,
             attempt.sessionKey,
             attempt.sessionFile,
+            undefined,
+            registration,
           );
         }
       },
@@ -636,6 +635,7 @@ function prepareStream(
   return {
     subscription,
     queueHandle,
+    registration,
     deferredLifecycleOwner,
     toolSearchCatalogExecutor,
     getBeforeAgentFinalizeRevisionReason: () => beforeAgentFinalizeRevisionReason,

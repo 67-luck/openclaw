@@ -2,6 +2,7 @@ import { expect, vi } from "vitest";
 import { buildProjectedAgentRunIndex } from "../infra/agent-run-registry.js";
 import { tryClaimSessionControllerTask } from "../sessions/session-controller.mailbox.js";
 import { createReplyOperation } from "../sessions/session-controller.operation.js";
+import { setRpcSourceProjectSessionActive } from "../sessions/session-controller.rpc-sources.js";
 import { markReplyOperationExecutionStarted } from "../sessions/session-controller.state.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import type { SessionMessageSubscriberRegistry } from "./server-chat-state.js";
@@ -171,6 +172,7 @@ function createActiveRun(
       target: ref.input.mailbox.owner.target,
     });
     markReplyOperationExecutionStarted(operation);
+    setRpcSourceProjectSessionActive(ref, projectSessionActive);
   }
   return ref;
 }

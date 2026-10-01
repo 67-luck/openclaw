@@ -1,6 +1,6 @@
 import {
   getActiveNativeAttempt,
-  ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
+  getEmbeddedRunAttachment,
 } from "../../agents/embedded-agent-runner/run-state.js";
 import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import {
@@ -41,7 +41,7 @@ export function resolveOwnedActiveTalkRunTarget(params: {
       continue;
     }
     const handle = getActiveNativeAttempt(entry.adapter.sessionId);
-    const registration = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) : undefined;
+    const registration = handle ? getEmbeddedRunAttachment(handle) : undefined;
     const voiceBinding =
       params.scope.kind === "voice-session" ? resolveClientVoiceRunBinding(runId) : undefined;
     // Session RPCs can own a queued reply before its backend exists. Attached
@@ -91,7 +91,7 @@ export function resolveOwnedActiveTalkRunTarget(params: {
               ? replyOwner.sessionId === resolvedSessionId
               : handle !== undefined &&
                 getActiveNativeAttempt(resolvedSessionId) === handle &&
-                ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) === registration))) &&
+                getEmbeddedRunAttachment(handle) === registration))) &&
         entry.input.abortSignal === signal &&
         !signal.aborted &&
         entry.adapter.lifecycleGeneration === generation &&

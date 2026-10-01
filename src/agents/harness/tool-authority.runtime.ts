@@ -41,6 +41,7 @@ type ToolAuthorityAttempt = Pick<
   | "disableTools"
   | "runId"
   | "abortSignal"
+  | "sessionTarget"
   | "toolAuthorityFingerprint"
   | "userTurnTranscriptRecorder"
 > & { hostCapabilities?: AgentHarnessAttemptParamsV2["hostCapabilities"] };
@@ -64,9 +65,11 @@ export async function withPreparedEmbeddedRunToolAuthority<T, Attempt extends To
       sessionKey: attempt.sessionKey,
       sessionId: attempt.sessionId,
       agentId: attempt.agentId,
-      storePath: attempt.config
-        ? resolveSessionStorePathCore(attempt.config.session?.store, { agentId: attempt.agentId })
-        : undefined,
+      storePath:
+        attempt.sessionTarget?.storePath ??
+        (attempt.config
+          ? resolveSessionStorePathCore(attempt.config.session?.store, { agentId: attempt.agentId })
+          : undefined),
       replyOperation: internal.replyOperation,
       abortSignal: attempt.abortSignal,
       detached: internal.sessionPersistence === "detached",
@@ -109,16 +112,18 @@ async function withPreparedEmbeddedRunToolAuthorityOwned<T, Attempt extends Tool
       ? turn
       : undefined;
   const assertHostActive = attempt.hostCapabilities?.assertActive;
+  const operatorAuthority = readAdmittedRunOperatorAuthority(admitted);
   const input: ReplyToolAuthorityInput = {
     originatingChannel: attempt.messageChannel,
     toolsAllow: attempt.toolsAllow,
     disableTools: attempt.disableTools,
-    operatorAuthority: readAdmittedRunOperatorAuthority(admitted),
+    operatorAuthority,
     run: {
       ...attempt,
       model: attempt.modelId,
       runtimePolicySessionKey: attempt.sandboxSessionKey,
-      traceAuthorized: false,
+      traceAuthorized:
+        attempt.senderIsOwner === true || operatorAuthority?.scopes.includes("operator.admin"),
       spawnedBy: attempt.spawnedBy ?? undefined,
       senderId: attempt.senderId ?? undefined,
       senderName: attempt.senderName ?? undefined,

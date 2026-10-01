@@ -138,6 +138,7 @@ export async function runEmbeddedFallbackCandidate(
         groupSpace: normalizeOptionalString(turn.sessionCtx.GroupSpace),
         ...senderContext,
         ...runBaseParams,
+        sessionKey: turn.sessionKey,
         contextWindow: turn.getActiveSessionEntry()?.contextWindow,
         lane: params.runLane,
         provider: embeddedRunProvider,

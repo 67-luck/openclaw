@@ -235,7 +235,10 @@ export async function compactEmbeddedAgentSession(
           }
           // The native compactor borrows this exact turn; it must not overlap
           // an already attached writer in that turn.
-          if (operation && getSessionControllerEntryForOperation(operation).nativeAttempt) {
+          const attachment = operation
+            ? getSessionControllerEntryForOperation(operation).attachment
+            : undefined;
+          if (attachment && "handle" in attachment) {
             return {
               ok: false,
               compacted: false,
@@ -258,7 +261,7 @@ export async function compactEmbeddedAgentSession(
             cancel: (reason) => controller.abort(reason ?? "user_abort"),
           };
           const activeParams = { ...resolvedParams, abortSignal };
-          setActiveEmbeddedRun(
+          const embeddedAttachment = setActiveEmbeddedRun(
             resolvedParams.sessionId,
             handle,
             resolvedParams.sessionKey,
@@ -272,6 +275,8 @@ export async function compactEmbeddedAgentSession(
               handle,
               resolvedParams.sessionKey,
               resolvedParams.sessionFile,
+              undefined,
+              embeddedAttachment,
             ),
           );
           return await withQueuedCompactionCancellationResult(activeParams, () =>

@@ -35,7 +35,6 @@ import {
 } from "./session-controller.operation-admission.js";
 import { bindReplyOperationUpstreamAbort } from "./session-controller.operation-upstream.js";
 import {
-  attachedBackendByOperation,
   clearReplyRunState,
   evictReplyOperationByOperation,
   flushReplyOperationAfterClear,
@@ -510,14 +509,27 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       }
       recordActivity();
       toolAuthority.bindBackendFingerprint(handle.toolAuthorityFingerprint);
-      attachedBackendByOperation.set(operation, handle);
+      owner.attachment = {
+        operation,
+        backend: handle,
+        projectSessionActive:
+          owner.attachment?.operation === operation
+            ? owner.attachment.projectSessionActive
+            : undefined,
+      };
       if (controller.signal.aborted) {
         handle.cancel("superseded");
       }
     },
     detachBackend(handle) {
-      if (getAttachedBackend(operation) === handle) {
-        attachedBackendByOperation.delete(operation);
+      if (owner.active === operation && owner.attachment?.backend === handle) {
+        owner.attachment.backend = undefined;
+        if (
+          !("handle" in owner.attachment) &&
+          owner.attachment.projectSessionActive === undefined
+        ) {
+          owner.attachment = undefined;
+        }
       }
     },
     freezeAbort() {

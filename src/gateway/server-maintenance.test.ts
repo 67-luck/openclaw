@@ -902,7 +902,6 @@ describe("startGatewayMaintenanceTimers", () => {
     const { startGatewayMaintenanceTimers, deps } = await createTimedMaintenanceScenario();
     const runId = "run-wedged-terminal-pending";
     const wedgedRun = createActiveRun("main");
-    wedgedRun.adapter.projectSessionActive = false;
     wedgedRun.adapter.projectSessionTerminalPending = true;
     // Stamped by the synchronous lifecycle listener; the async clear was lost.
     wedgedRun.adapter.projectSessionTerminalObservedAt = Date.now() - 120_000;
@@ -937,7 +936,7 @@ describe("startGatewayMaintenanceTimers", () => {
     const { startGatewayMaintenanceTimers, deps } = await createTimedMaintenanceScenario();
     const runId = "run-terminal-persistence";
     const terminalRun = createActiveRun("main");
-    terminalRun.adapter.projectSessionActive = false;
+    terminalRun.adapter.registrationCleanupRequested = true;
     terminalRun.adapter.lifecycleGeneration = "generation-1";
     terminalRun.adapter.projectSessionTerminalObservedAt = Date.now() - 120_000;
     terminalRun.adapter.projectSessionTerminalPersistence = new Promise<void>(() => {});
@@ -968,7 +967,6 @@ describe("startGatewayMaintenanceTimers", () => {
     const { startGatewayMaintenanceTimers, deps } = await createTimedMaintenanceScenario();
     const runId = "run-terminal-persisted";
     const terminalRun = createActiveRun("main");
-    terminalRun.adapter.projectSessionActive = false;
     terminalRun.adapter.projectSessionTerminalPersisted = true;
     terminalRun.adapter.projectSessionTerminalObservedAt = Date.now() - 120_000;
     deps.rpcSources.set(runId, terminalRun);
@@ -986,7 +984,7 @@ describe("startGatewayMaintenanceTimers", () => {
     const source = createActiveRun("main");
     const publication = createDeferred();
     trackSessionControllerSourceWork(source.input, publication.promise);
-    source.adapter.projectSessionActive = false;
+    source.adapter.registrationCleanupRequested = true;
     source.adapter.projectSessionTerminalObservedAt = Date.now() - 120_000;
     deps.rpcSources.set("private-timeout", source);
     const timers = startGatewayMaintenanceTimers(deps);

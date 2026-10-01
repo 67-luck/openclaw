@@ -450,10 +450,13 @@ export function getDiagnosticSessionActivitySnapshot(
   params: { sessionId?: string; sessionKey?: string },
   now = Date.now(),
 ): DiagnosticSessionActivitySnapshot {
+  const sessionIdResolution = params.sessionId
+    ? resolveReplyRunForCurrentSessionId(params.sessionId)
+    : undefined;
   const operation = params.sessionKey
     ? getSessionControllerOperation(params.sessionKey)
-    : params.sessionId
-      ? resolveReplyRunForCurrentSessionId(params.sessionId)
+    : sessionIdResolution?.kind === "one"
+      ? sessionIdResolution.operation
       : undefined;
   if (operation) {
     return projectControllerDiagnosticActivity(operation.watchdog.snapshot(), now);

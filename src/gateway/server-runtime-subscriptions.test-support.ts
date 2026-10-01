@@ -17,6 +17,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitAgentAuditEvent, emitAgentEvent } from "../infra/agent-events.js";
 import type { SubsystemLogger } from "../logging/subsystem.js";
 import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
+import { getRpcSourceProjectSessionActive } from "../sessions/session-controller.rpc-sources.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { registerChatAbortController, type ChatAbortControllerEntry } from "./chat-abort.js";
 import {
@@ -91,7 +92,7 @@ export function registerSubscriptionChatRun(
 
 export function readLifecycleState(entry: ChatAbortControllerEntry) {
   return {
-    projectSessionActive: entry.adapter.projectSessionActive,
+    projectSessionActive: getRpcSourceProjectSessionActive(entry),
     projectSessionTerminalPending: entry.adapter.projectSessionTerminalPending,
     projectSessionTerminalObservedAt: entry.adapter.projectSessionTerminalObservedAt,
     projectSessionTerminalPersistence: entry.adapter.projectSessionTerminalPersistence,

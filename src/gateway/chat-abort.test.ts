@@ -16,10 +16,12 @@ import {
 } from "../sessions/session-controller.mailbox.js";
 import { createReplyOperation } from "../sessions/session-controller.operation.js";
 import {
+  getRpcSourceProjectSessionActive,
   getRpcSourceSignal,
   getRpcSourceStartedAt,
   isRpcSourceActive,
   requestRpcSourceCancellation,
+  setRpcSourceProjectSessionActive,
   type RpcSourceAdapter,
 } from "../sessions/session-controller.rpc-sources.js";
 import { markReplyOperationExecutionStarted } from "../sessions/session-controller.state.js";
@@ -260,7 +262,7 @@ describe("registerChatAbortController", () => {
     if (!registration.entry) {
       throw new Error("expected registered entry");
     }
-    registration.entry.adapter.projectSessionActive = false;
+    setRpcSourceProjectSessionActive(registration.entry, false);
     registration.entry.adapter.projectSessionTerminalPersistence = persistence;
 
     registration.cleanup();
@@ -354,11 +356,13 @@ describe("abortChatRunById", () => {
 
       expect(result).toEqual({ aborted: true });
       expect(entry.input.abortSignal.aborted).toBe(true);
-      expect(entry.adapter.projectSessionActive).toBe(false);
+      expect(getRpcSourceProjectSessionActive(entry)).toBe(false);
       expect(entry.adapter.registrationCleanupRequested).toBe(true);
       expect(entry.adapter.projectSessionTerminalPending).toBe(true);
       expect(entry.adapter.projectSessionTerminalObservedAt).toEqual(expect.any(Number));
       expect(ops.rpcSources.get(runId)).toBe(entry);
+      entry.input.claim?.operation?.complete();
+      expect(getRpcSourceProjectSessionActive(entry)).toBe(false);
 
       expect(abortChatRunById(ops, { runId, sessionKey, stopReason: "user" })).toEqual({
         aborted: false,
@@ -680,9 +684,11 @@ describe("resolveInFlightRunSnapshot", () => {
     const entry = await createActiveEntry(sessionKey, {
       agentId: opts?.agentId,
       controlUiVisible: opts?.controlUiVisible,
-      projectSessionActive: opts?.projectSessionActive,
       kind: opts?.kind,
     });
+    if (opts?.projectSessionActive !== undefined) {
+      setRpcSourceProjectSessionActive(entry, opts.projectSessionActive);
+    }
     if (opts?.aborted) {
       requestRpcSourceCancellation(entry);
     }
@@ -813,7 +819,7 @@ describe("resolveInFlightRunSnapshot", () => {
 
   it("treats an entry with undefined projectSessionActive as active (sessions.list contract)", async () => {
     const entry = await inFlightEntry("agent:main:s");
-    delete entry.adapter.projectSessionActive;
+    setRpcSourceProjectSessionActive(entry, undefined);
     expect(
       snap({
         rpcSources: new Map([["run", entry]]),

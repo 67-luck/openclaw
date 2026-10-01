@@ -85,7 +85,6 @@ export function resolveInFlightRunSnapshot(params: {
   for (const [runId, entry] of params.rpcSources) {
     if (
       !isRpcSourceActive(entry) ||
-      entry.adapter.projectSessionActive === false ||
       entry.adapter.controlUiVisible === false ||
       entry.input.abortSignal.aborted ||
       entry.adapter.kind === "agent"

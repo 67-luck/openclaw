@@ -37,7 +37,10 @@ import {
   isGatewayWorkAdmissionClosed,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
-import type { RpcSourceIndex } from "../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSourceProjectSessionActive,
+  type RpcSourceIndex,
+} from "../sessions/session-controller.rpc-sources.js";
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { registerSkillUsageTracking } from "../skills/workshop/curator.js";
 import { removeChatAbortControllerEntry, type RestartRecoveryCandidate } from "./chat-abort.js";
@@ -442,7 +445,7 @@ export function startGatewayMaintenanceTimers(params: {
         }
       }
       if (
-        adapter.projectSessionActive === false ||
+        getRpcSourceProjectSessionActive(entry) === false ||
         adapter.projectSessionTerminalPending === true
       ) {
         removeChatAbortControllerEntry(params.rpcSources, runId, entry);

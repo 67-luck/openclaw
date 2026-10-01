@@ -47,12 +47,17 @@ export function captureReplyMessageInjectionTarget(
   if (!operation || !backend) {
     return undefined;
   }
-  const sourceTurnId = getSessionControllerEntryForOperation(operation).sourceTurnId;
+  const entry = getSessionControllerEntryForOperation(operation);
+  const attachment = entry.attachment;
+  const projectToolAuthorityFingerprint =
+    attachment?.operation === operation && "toolAuthority" in attachment
+      ? attachment.toolAuthority?.project
+      : operation.projectToolAuthorityFingerprint;
+  const sourceTurnId = entry.sourceTurnId;
   return {
     [replyMessageInjectionTargetOwner]: {
       acceptParticipant: (overlay) => operation.personalToolParticipants?.accept(overlay),
-      projectToolAuthorityFingerprint: (overlay) =>
-        operation.projectToolAuthorityFingerprint(overlay),
+      projectToolAuthorityFingerprint: (overlay) => projectToolAuthorityFingerprint?.(overlay),
       resolve: (params) => resolveReplyMessageInjectionRejection({ ...params, operation }),
       recordAccepted: (options) => {
         operation.watchdog.progress("source_arrival");

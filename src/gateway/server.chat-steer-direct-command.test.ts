@@ -3,7 +3,7 @@ import { createAssistantMessageEventStream, type Model } from "openclaw/plugin-s
 import { expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { readAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
-import { ACTIVE_EMBEDDED_RUN_REGISTRATIONS } from "../agents/embedded-agent-runner/run-state.js";
+import { getEmbeddedRunAttachment } from "../agents/embedded-agent-runner/run-state.js";
 import { prepareEmbeddedAttemptStream } from "../agents/embedded-agent-runner/run/attempt-stream-prepare.js";
 import type {
   EmbeddedRunAttemptParams,
@@ -42,8 +42,8 @@ const runAttempt = vi.hoisted(() =>
   vi.fn<(params: EmbeddedRunAttemptParams) => Promise<EmbeddedRunAttemptResult>>(),
 );
 
-// The real harness selects the runtime and prepares its authority before this
-// model-execution boundary. The test never creates a reply operation or hash.
+// The real harness selects the runtime and binds its authority to the controller
+// operation before this model-execution boundary.
 vi.mock("../agents/embedded-agent-runner/run/attempt.js", () => ({
   runEmbeddedAttempt: runAttempt,
 }));
@@ -332,7 +332,7 @@ it.each([
           );
         }),
       ]);
-      const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+      const registration = getEmbeddedRunAttachment(handle);
       const facts = {
         hasReplyOperation: replyRunRegistry.get(sessionKey) !== undefined,
         authoritySource: registration?.toolAuthority?.source,
@@ -348,8 +348,8 @@ it.each([
         supportsTranscriptCommitWait: handle.supportsTranscriptCommitWait,
       };
       expect(facts).toEqual({
-        hasReplyOperation: false,
-        authoritySource: "attempt",
+        hasReplyOperation: true,
+        authoritySource: "reply",
         hasOperatorAuthority: source === "browser",
         ownsAdmittedInstance: true,
         hasDelegatedAuthority: true,

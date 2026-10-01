@@ -13,6 +13,7 @@ import {
   getAgentRunLifecycleGeneration,
   releaseAgentRunContext,
 } from "../infra/agent-run-registry.js";
+import { setRpcSourceProjectSessionActive } from "../sessions/session-controller.rpc-sources.js";
 import { readUserProfileIdentity, retainUserProfileCatalog } from "../state/user-profile-list.js";
 import { ensureProfileForEmail, linkEmail, setUserProfileRole } from "../state/user-profiles.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
@@ -410,7 +411,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
         replacement.adapter.sessionId =
           change === "session-key" ? "adopted-session" : entry.sessionId;
         replacement.adapter.agentId = query.agentId;
-        replacement.adapter.projectSessionActive = true;
+        setRpcSourceProjectSessionActive(replacement, true);
         replacement.adapter.controlUiVisible = true;
         for (const client of clients) {
           vi.mocked(client.socket).send.mockClear();
@@ -421,7 +422,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
           } else if (change === "session-key") {
             replacement.adapter.sessionKey = "agent:main:adopted-source";
           } else if (change === "terminal") {
-            replacement.adapter.projectSessionActive = false;
+            setRpcSourceProjectSessionActive(replacement, false);
           } else if (change === "visibility") {
             replacement.adapter.controlUiVisible = false;
           } else {

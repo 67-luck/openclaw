@@ -8,6 +8,7 @@ import {
   type SessionControllerSourceAdapter,
 } from "./session-controller.mailbox.js";
 import {
+  getSessionControllerEntryForOperation,
   hasReplyOperationExecutionStarted,
   isCurrentSessionControllerOperation,
 } from "./session-controller.state.js";
@@ -47,12 +48,6 @@ export type RpcSourceAdapter = SessionControllerSourceAdapter & {
    * not be projected into operator chat surfaces.
    */
   controlUiVisible?: boolean;
-  /**
-   * Controls only the sessions.list active-run projection. Terminal lifecycle
-   * clears this before chat.send settles, while the entry stays as the retry
-   * idempotency guard until normal cleanup removes it.
-   */
-  projectSessionActive?: boolean;
   /** True after the terminal session-store update has completed. */
   projectSessionTerminalPersisted?: boolean;
   /** A terminal lifecycle event was observed and is awaiting persistence. */
@@ -112,7 +107,47 @@ export function isRpcSourceExecuting(ref: RpcSourceRef | undefined): boolean {
 }
 
 export function isRpcSourceActive(ref: RpcSourceRef | undefined): boolean {
-  return isRpcSourceExecuting(ref) && ref?.adapter.projectSessionActive !== false;
+  return isRpcSourceExecuting(ref) && getRpcSourceProjectSessionActive(ref) !== false;
+}
+
+/** Reads the active-session presentation fact from the exact controller attachment. */
+export function getRpcSourceProjectSessionActive(
+  ref: RpcSourceRef | undefined,
+): boolean | undefined {
+  const terminalProjection =
+    ref &&
+    (ref.adapter.projectSessionTerminalPending === true ||
+      ref.adapter.projectSessionTerminalPersisted === true)
+      ? false
+      : undefined;
+  const operation = ref?.input.claim?.operation;
+  if (!operation) {
+    return (
+      terminalProjection ?? (ref?.adapter.registrationCleanupRequested === true ? false : undefined)
+    );
+  }
+  const attachment = getSessionControllerEntryForOperation(operation).attachment;
+  return attachment?.operation === operation ? attachment.projectSessionActive : terminalProjection;
+}
+
+/** Updates presentation on the exact operation attachment without creating a second owner. */
+export function setRpcSourceProjectSessionActive(
+  ref: RpcSourceRef,
+  active: boolean | undefined,
+): void {
+  const operation = ref.input.claim?.operation;
+  if (!operation) {
+    return;
+  }
+  const entry = getSessionControllerEntryForOperation(operation);
+  if (entry.active !== operation) {
+    return;
+  }
+  if (entry.attachment?.operation === operation) {
+    entry.attachment.projectSessionActive = active;
+    return;
+  }
+  entry.attachment = { operation, projectSessionActive: active };
 }
 
 export function getRpcSourceStartedAt(ref: RpcSourceRef): number | undefined {

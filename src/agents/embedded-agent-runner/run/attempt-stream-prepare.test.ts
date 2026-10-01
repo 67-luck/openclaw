@@ -37,7 +37,7 @@ import {
   streamMocks,
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
 import { SessionManager } from "../../sessions/session-manager.js";
-import { getActiveNativeAttempt, ACTIVE_EMBEDDED_RUN_REGISTRATIONS } from "../run-state.js";
+import { getActiveNativeAttempt, getEmbeddedRunAttachment } from "../run-state.js";
 
 type QuestionDispatcher = Extract<
   Parameters<typeof registerPendingAgentQuestion>[0]["gatewayCall"],
@@ -349,9 +349,7 @@ describe("prepareEmbeddedAttemptStream", () => {
                 accepted && route === "steering" ? ["redirect the original"] : [],
               );
               if (transition.startsWith("source-")) {
-                const authority = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(
-                  prepared.queueHandle,
-                )?.toolAuthority;
+                const authority = getEmbeddedRunAttachment(prepared.queueHandle)?.toolAuthority;
                 expect(authority).toBeDefined();
                 authority!.assertActive();
                 expect(getActiveNativeAttempt("session-output-schema")).toBe(prepared.queueHandle);
@@ -430,6 +428,7 @@ describe("prepareEmbeddedAttemptStream", () => {
         undefined,
         "main",
         operation,
+        expect.any(String),
       );
     } finally {
       operation.complete();

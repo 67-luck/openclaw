@@ -16,7 +16,10 @@ import {
 } from "../infra/agent-run-registry.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
-import { isRpcSourceQueued } from "../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSourceProjectSessionActive,
+  isRpcSourceQueued,
+} from "../sessions/session-controller.rpc-sources.js";
 import { isCurrentSessionControllerOperation } from "../sessions/session-controller.state.js";
 import {
   getOwedHarnessCompletionTask,
@@ -61,7 +64,7 @@ function hasLiveCompletionOwner(claim: HarnessCompletionRecovery, runId: string)
     admission.adapter.sessionId === claim.sessionId &&
     admission.adapter.agentId === claim.requesterAgentId &&
     admission.adapter.lifecycleGeneration === getAgentRunLifecycleGeneration() &&
-    admission.adapter.projectSessionActive === true &&
+    getRpcSourceProjectSessionActive(admission) === true &&
     !admission.adapter.registrationCleanupRequested &&
     !admission.input.abortSignal.aborted &&
     !admission.input.custody.cancellationRetired &&

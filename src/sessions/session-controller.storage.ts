@@ -1,5 +1,5 @@
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import type { ReplyOperation, ReplyBackendHandle } from "./session-controller.contracts.js";
+import type { ReplyOperation } from "./session-controller.contracts.js";
 import type {
   SessionControllerEntry,
   ReplyOperationAdmission,
@@ -12,7 +12,6 @@ const controllerState = resolveGlobalSingleton(Symbol.for("openclaw.sessionContr
   lifecycleAdmissionByOperation: new WeakMap<ReplyOperation, ReplyOperationAdmission>(),
   evictOperationByOperation: new WeakMap<ReplyOperation, () => void>(),
   executionStartedOperations: new WeakSet<ReplyOperation>(),
-  attachedBackendByOperation: new WeakMap<ReplyOperation, ReplyBackendHandle>(),
   operationsByUpstreamAbortSignal: new WeakMap<AbortSignal, ReplyOperation>(),
   producerCompletionByOperation: new WeakMap<ReplyOperation, Promise<void>>(),
   afterClearByOperation: new WeakMap<ReplyOperation, ReplyOperationAfterClear>(),
@@ -27,7 +26,6 @@ export const controllerEntryByOperation = controllerState.entryByOperation;
 export const lifecycleAdmissionByOperation = controllerState.lifecycleAdmissionByOperation;
 
 export const evictReplyOperationByOperation = controllerState.evictOperationByOperation;
-export const attachedBackendByOperation = controllerState.attachedBackendByOperation;
 export const executionStartedOperations = controllerState.executionStartedOperations;
 export const operationsByUpstreamAbortSignal = controllerState.operationsByUpstreamAbortSignal;
 export const producerCompletionByOperation = controllerState.producerCompletionByOperation;

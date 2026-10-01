@@ -1,5 +1,4 @@
 import type { WorkerLiveEventParams } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
-import { setActiveEmbeddedRunLifecycleGeneration } from "../../agents/embedded-agent-runner/run-state.js";
 import {
   clearActiveEmbeddedRun,
   setActiveEmbeddedRun,
@@ -165,15 +164,14 @@ export function createWorkerTurnRunOwner(params: {
     cancel,
     abort: cancel,
   } satisfies EmbeddedAgentQueueHandle;
-  setActiveEmbeddedRunLifecycleGeneration(handle, lifecycleGeneration);
-  turn.replyOperation?.attachBackend(handle);
-  setActiveEmbeddedRun(
+  const attachment = setActiveEmbeddedRun(
     claim.sessionId,
     handle,
     sessionKey,
     turn.sessionFile,
     turn.agentId,
     turn.replyOperation,
+    lifecycleGeneration,
   );
   if (!signal.aborted) {
     activeOwners.set(claim.sessionId, owner);
@@ -184,7 +182,14 @@ export function createWorkerTurnRunOwner(params: {
     signal,
     dispose: () => {
       turn.replyOperation?.detachBackend(handle);
-      clearActiveEmbeddedRun(claim.sessionId, handle, sessionKey, turn.sessionFile);
+      clearActiveEmbeddedRun(
+        claim.sessionId,
+        handle,
+        sessionKey,
+        turn.sessionFile,
+        undefined,
+        attachment,
+      );
     },
   };
 }

@@ -32,6 +32,7 @@ import {
   createSharedRunIntegrationSession,
   loadSharedRunIntegrationHarness,
 } from "./run.shared-integration-harness.test-support.js";
+import type { EmbeddedRunAttemptInternalParams } from "./run/internal-params.js";
 import type { EmbeddedRunAttemptParams } from "./run/types.js";
 
 let baseParams: Awaited<ReturnType<typeof createSharedRunIntegrationSession>>["runParams"];
@@ -278,7 +279,7 @@ describe("post-compaction loop guard wired into runEmbeddedAgent", () => {
     },
   );
 
-  it("releases the lane after a post-compaction abort when the backend ignores cancellation", async () => {
+  it("retains the lane after a post-compaction abort until the backend settles", async () => {
     vi.useFakeTimers();
     const ignoredAttempt = createDeferred<ReturnType<typeof makeAttemptResult>>();
     let run: ReturnType<typeof runEmbeddedAgent> | undefined;
@@ -335,9 +336,11 @@ describe("post-compaction loop guard wired into runEmbeddedAgent", () => {
       expect(attemptAborted).toBe(true);
       await vi.advanceTimersByTimeAsync(30_001);
 
-      expect(settled).toBe(true);
+      expect(settled).toBe(false);
       expect(pendingTasks.size, "backend still runs after the outer timeout").toBeGreaterThan(0);
-      await expect(run).rejects.toMatchObject({ name: "CommandLaneTaskTimeoutError" });
+      ignoredAttempt.resolve(session.makeAttemptResult());
+      await expect(run).rejects.toBeInstanceOf(PostCompactionLoopPersistedError);
+      expect(settled).toBe(true);
     } finally {
       ignoredAttempt.resolve(session.makeAttemptResult());
       await run?.catch(() => undefined);
@@ -413,16 +416,27 @@ describe("post-compaction loop guard wired into runEmbeddedAgent", () => {
     let run: ReturnType<typeof runEmbeddedAgent> | undefined;
     let publishDeadline: EmbeddedRunAttemptParams["onAttemptDeadlineChanged"];
     let attemptSignal: AbortSignal | undefined;
+    let replyOperation: EmbeddedRunAttemptInternalParams["replyOperation"];
     try {
       mockedRunEmbeddedAttempt.mockImplementationOnce(async (attemptParams: unknown) => {
-        const params = attemptParams as EmbeddedRunAttemptParams;
+        const params = attemptParams as EmbeddedRunAttemptInternalParams;
+        const operation = params.replyOperation;
+        if (!operation) {
+          throw new Error("Built-in attempt requires controller admission");
+        }
+        replyOperation = operation;
+        params.bindWatchdogAttempt?.(
+          operation.watchdog.attachAttempt({ assertCurrent: () => undefined }),
+        );
         publishDeadline = params.onAttemptDeadlineChanged;
         attemptSignal = params.abortSignal;
         // The legacy notification must not substitute a heartbeat for the owner's deadline.
         params.onAttemptTimeoutArmed?.();
         publishDeadline?.({ kind: "unlimited" });
         attemptStarted.resolve();
-        return await heldAttempt.promise;
+        const result = await heldAttempt.promise;
+        params.abortSignal?.throwIfAborted();
+        return result;
       });
 
       run = runEmbeddedAgent({
@@ -445,11 +459,19 @@ describe("post-compaction loop guard wired into runEmbeddedAgent", () => {
 
       publishDeadline?.({ kind: "bounded", deadlineAtMs: Date.now() + 10 });
       await vi.advanceTimersByTimeAsync(30_011);
-      expect(settled).toBe(true);
+      expect(replyOperation?.watchdog.snapshot().executionDeadlineAtMs).toBeLessThanOrEqual(
+        Date.now(),
+      );
+      await replyOperation?.watchdog.tick();
+      expect(settled).toBe(false);
       expect(pendingTasks.size, "backend still runs after the owner deadline").toBeGreaterThan(0);
+      heldAttempt.resolve(session.makeAttemptResult());
+      await expect(run).rejects.toMatchObject({
+        name: "AbortError",
+        message: "Reply operation stalled",
+      });
       expect(attemptSignal?.aborted).toBe(true);
-      expect(attemptSignal?.reason).toMatchObject({ name: "CommandLaneTaskTimeoutError" });
-      await expect(run).rejects.toMatchObject({ name: "CommandLaneTaskTimeoutError" });
+      expect(settled).toBe(true);
     } finally {
       heldAttempt.resolve(session.makeAttemptResult());
       await run?.catch(() => undefined);
@@ -457,7 +479,7 @@ describe("post-compaction loop guard wired into runEmbeddedAgent", () => {
     }
   });
 
-  it("releases a native lane when a timed-out attempt ignores cancellation", async () => {
+  it("retains a native lane after timeout until the attempt settles", async () => {
     vi.useFakeTimers();
     const heldAttempt = createDeferred<ReturnType<typeof makeAttemptResult>>();
     let run: ReturnType<typeof runEmbeddedAgent> | undefined;
@@ -494,9 +516,14 @@ describe("post-compaction loop guard wired into runEmbeddedAgent", () => {
       await attemptStarted;
       await vi.advanceTimersByTimeAsync(30_001);
 
-      expect(settled).toBe(true);
+      expect(settled).toBe(false);
       expect(pendingTasks.size, "backend still runs after the outer timeout").toBeGreaterThan(0);
-      await expect(run).rejects.toMatchObject({ name: "CommandLaneTaskTimeoutError" });
+      heldAttempt.resolve(session.makeAttemptResult());
+      await expect(run).rejects.toMatchObject({
+        name: "AbortError",
+        message: "Reply operation stalled",
+      });
+      expect(settled).toBe(true);
     } finally {
       heldAttempt.resolve(session.makeAttemptResult());
       await run?.catch(() => undefined);
@@ -504,7 +531,7 @@ describe("post-compaction loop guard wired into runEmbeddedAgent", () => {
     }
   });
 
-  it("releases a native lane when an explicit abort ignores cancellation", async () => {
+  it("retains a native lane after explicit abort until the attempt settles", async () => {
     vi.useFakeTimers();
     const heldAttempt = createDeferred<ReturnType<typeof makeAttemptResult>>();
     let run: ReturnType<typeof runEmbeddedAgent> | undefined;
@@ -541,9 +568,11 @@ describe("post-compaction loop guard wired into runEmbeddedAgent", () => {
       await attemptStarted;
       await vi.advanceTimersByTimeAsync(30_001);
 
-      expect(settled).toBe(true);
+      expect(settled).toBe(false);
       expect(pendingTasks.size, "backend still runs after the outer timeout").toBeGreaterThan(0);
-      await expect(run).rejects.toMatchObject({ name: "CommandLaneTaskTimeoutError" });
+      heldAttempt.resolve(session.makeAttemptResult());
+      await expect(run).rejects.toMatchObject({ name: "AbortError", message: "agent run aborted" });
+      expect(settled).toBe(true);
     } finally {
       heldAttempt.resolve(session.makeAttemptResult());
       await run?.catch(() => undefined);

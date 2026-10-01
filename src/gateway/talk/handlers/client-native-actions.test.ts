@@ -5,7 +5,7 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { extractText } from "../../../../ui/src/lib/chat/message-extract.ts";
 import * as admission from "../../../agents/admitted-run-context.js";
 import {
-  ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
+  getEmbeddedRunAttachment,
   getActiveNativeAttempt,
   ACTIVE_EMBEDDED_RUNS_BY_RUN_ID,
 } from "../../../agents/embedded-agent-runner/run-state.js";
@@ -500,7 +500,7 @@ describe("native Talk action ownership through public plugin registration", () =
                 ? requireString(await create(true), "voiceSessionId")
                 : undefined;
             const handle = getActiveNativeAttempt(activeRun.sessionId);
-            const registration = handle && ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+            const registration = handle && getEmbeddedRunAttachment(handle);
             const chatRegistration = rpcSources.get(activeRun.runId);
             if (!handle || !registration?.toolAuthority || !chatRegistration) {
               throw new Error("Expected the real admitted backend and control registration");
@@ -569,8 +569,8 @@ describe("native Talk action ownership through public plugin registration", () =
             expect(steering).toHaveBeenCalledOnce();
             expect(insertionsBeforeTransition).toBe(0);
             expect(getActiveNativeAttempt(activeRun.sessionId)).toBe(handle);
-            expect(ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(activeRun.runId)).toBe(handle);
-            expect(ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)).toBe(registration);
+            expect(ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(activeRun.runId)).toBe(registration);
+            expect(getEmbeddedRunAttachment(handle)).toBe(registration);
             expect(rpcSources.get(activeRun.runId)).toBe(chatRegistration);
             expect(() => registration.toolAuthority?.assertActive()).not.toThrow();
             expect(activeRun.abortSignal.aborted).toBe(false);

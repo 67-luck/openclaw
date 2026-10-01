@@ -590,6 +590,7 @@ export function activateCodexAttemptTurn(
     abort: () => abortExplicitly("aborted"),
   };
   const freezeRunTerminalOutcome = cancellation.freezeTerminalOutcome;
+  let activeRunAttachment: ReturnType<typeof setActiveEmbeddedRun> | undefined;
   // Return cleanup ownership before callbacks or backend publication can fail.
   const projectionReady = Promise.resolve().then(async () => {
     runAbortController.signal.addEventListener("abort", abortListener, { once: true });
@@ -637,8 +638,7 @@ export function activateCodexAttemptTurn(
             !runAbortController.signal.aborted,
         );
       }
-      params.replyOperation?.attachBackend(handle);
-      setActiveEmbeddedRun(
+      activeRunAttachment = setActiveEmbeddedRun(
         params.sessionId,
         handle,
         params.sessionKey,
@@ -679,6 +679,9 @@ export function activateCodexAttemptTurn(
     streamState,
     prepareReplyMedia,
     handle,
+    get activeRunAttachment() {
+      return activeRunAttachment;
+    },
     freezeRunTerminalOutcome,
     notifyUserMessagePersisted,
     abortListener,

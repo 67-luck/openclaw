@@ -27,6 +27,7 @@ import type {
 import {
   attachControllerNativeAttempt,
   detachControllerNativeAttempt,
+  hasSessionControllerIdentity,
   resolveControllerNativeAttempt,
   activeSessionOperations,
   resolveReplyRunForCurrentSessionId,
@@ -39,8 +40,11 @@ import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { OperationalRunInstanceRef } from "../admitted-run-context.js";
 import type { ReplyExpectation } from "../reply-completion.js";
 
+export const embeddedRunCleanupAttachment = Symbol("openclaw.embeddedRunCleanupAttachment");
+
 export type EmbeddedAgentQueueHandle = {
   kind?: "embedded";
+  [embeddedRunCleanupAttachment]?: ActiveEmbeddedRunAttachment;
   runId?: string;
   /** Exact process-local diagnostic lifecycle shared with this handle's model wrapper. */
   readonly diagnosticOwner?: DiagnosticEmbeddedRunOwner;
@@ -134,13 +138,14 @@ export type EmbeddedRunToolAuthorityBinding = (registration: {
 };
 
 export type EmbeddedRunRegistration = {
+  handle: EmbeddedAgentQueueHandle;
+  lifecycleGeneration: string;
   /** Resolves only when this exact native producer clears, including after replacement. */
   settlement: ReturnType<typeof createDeferredCore<void>>;
+  settled?: true;
   watchdogAttempt?: SessionControllerWatchdogAttempt;
   closeWatchdogWait?: () => void;
-  operation?: ReplyOperation;
-  backend?: ReplyBackendHandle;
-  /** Registration-owned presentation fact; retained cleanup must not reappear after context release. */
+  /** Controller-owned presentation fact; retained cleanup must not reappear after context release. */
   projectSessionActive?: boolean;
   toolAuthority?: ReturnType<EmbeddedRunToolAuthorityBinding>;
   operationalRunInstance?: OperationalRunInstanceRef;
@@ -151,6 +156,20 @@ export type EmbeddedRunRegistration = {
   humanInputWaits?: Set<() => boolean>;
   onHumanInputResolved?: () => void;
 };
+
+/** The controller's exact attachment for one scoped embedded attempt. */
+export type EmbeddedRunAttachment = EmbeddedRunRegistration & {
+  operation: ReplyOperation;
+  backend?: ReplyBackendHandle;
+};
+
+/** Sessionless attempts have native authority but no controller operation. */
+type DetachedEmbeddedRunAttachment = EmbeddedRunRegistration & {
+  operation?: undefined;
+  backend?: undefined;
+};
+
+export type ActiveEmbeddedRunAttachment = EmbeddedRunAttachment | DetachedEmbeddedRunAttachment;
 
 export type EmbeddedRunCompletionRegistration = {
   toolAuthority: NonNullable<EmbeddedRunRegistration["toolAuthority"]>;
@@ -179,13 +198,11 @@ const EMBEDDED_RUN_STATE_KEY = Symbol.for("openclaw.embeddedRunState");
 
 // Lazy imports and reloads in one Gateway process must retain the same run owners.
 const embeddedRunState = resolveGlobalSingleton(EMBEDDED_RUN_STATE_KEY, () => ({
-  detachedAttempts: new Set<EmbeddedAgentQueueHandle>(),
-  activeRunsByRunId: new Map<string, EmbeddedAgentQueueHandle>(),
-  activeRunRegistrations: new WeakMap<EmbeddedAgentQueueHandle, EmbeddedRunRegistration>(),
+  detachedAttempts: new Set<DetachedEmbeddedRunAttachment>(),
+  activeRunsByRunId: new Map<string, ActiveEmbeddedRunAttachment>(),
   // Talk prepares before registration; only the matching live run promotes this
   // one-shot final-delivery claim. Replacement or lifecycle rotation revokes it.
   completionClaims: new Map<string, EmbeddedRunCompletionClaim>(),
-  activeRunLifecycleGenerations: new WeakMap<EmbeddedAgentQueueHandle, string>(),
   retainedAbortabilityRunIds: new Set<string>(),
   snapshots: new Map<string, ActiveEmbeddedRunSnapshot>(),
   sessionIdsByFile: new Map<string, string>(),
@@ -199,71 +216,221 @@ const embeddedRunState = resolveGlobalSingleton(EMBEDDED_RUN_STATE_KEY, () => ({
 // Detached/sessionless attempts retain native authority without creating a session
 // scheduling identity. Scoped attempts exist only on their exact controller turn.
 const detachedAttempts = embeddedRunState.detachedAttempts;
+export function getControllerEmbeddedAttachment(
+  operation: ReplyOperation,
+): EmbeddedRunAttachment | undefined {
+  const attachment = getSessionControllerEntryForOperation(operation).attachment;
+  return attachment && "handle" in attachment && attachment.operation === operation
+    ? attachment
+    : undefined;
+}
+
+export function getEmbeddedRunAttachment(
+  handle: EmbeddedAgentQueueHandle,
+): ActiveEmbeddedRunAttachment | undefined {
+  const indexed = handle.runId ? ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(handle.runId) : undefined;
+  if (indexed?.handle === handle) {
+    return indexed;
+  }
+  for (const operation of activeSessionOperations()) {
+    const attachment = getControllerEmbeddedAttachment(operation);
+    if (attachment?.handle === handle) {
+      return attachment;
+    }
+  }
+  for (const attachment of detachedAttempts) {
+    if (attachment.handle === handle) {
+      return attachment;
+    }
+  }
+  return undefined;
+}
+
 export function getActiveNativeAttempt(sessionId: string): EmbeddedAgentQueueHandle | undefined {
   const scoped = resolveControllerNativeAttempt(sessionId);
-  if (scoped || resolveReplyRunForCurrentSessionId(sessionId)) {
+  if (
+    scoped ||
+    resolveReplyRunForCurrentSessionId(sessionId).kind !== "none" ||
+    hasSessionControllerIdentity(sessionId)
+  ) {
     return scoped;
   }
-  for (const handle of detachedAttempts) {
-    if (ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)?.sessionId === sessionId) {
-      return handle;
+  for (const attachment of detachedAttempts) {
+    if (attachment.sessionId === sessionId) {
+      return attachment.handle;
     }
   }
   return undefined;
 }
 export function* activeNativeAttempts(): IterableIterator<[string, EmbeddedAgentQueueHandle]> {
   for (const operation of activeSessionOperations()) {
-    const handle = resolveControllerNativeAttempt(operation.sessionId);
-    if (handle) {
-      yield [operation.sessionId, handle];
+    const attachment = getControllerEmbeddedAttachment(operation);
+    if (attachment) {
+      yield [operation.sessionId, attachment.handle];
     }
   }
-  for (const handle of detachedAttempts) {
-    const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
-    if (registration) {
-      yield [registration.sessionId, handle];
+  for (const attachment of detachedAttempts) {
+    if (!hasSessionControllerIdentity(attachment.sessionId)) {
+      yield [attachment.sessionId, attachment.handle];
     }
   }
 }
-export function attachNativeAttempt(
-  handle: EmbeddedAgentQueueHandle,
-  operation?: ReplyOperation,
-): void {
-  if (operation) {
-    attachControllerNativeAttempt(operation, handle);
+export function attachNativeAttempt(attachment: ActiveEmbeddedRunAttachment): void {
+  if (attachment.operation) {
+    attachControllerNativeAttempt(attachment.operation, attachment);
   } else {
-    detachedAttempts.add(handle);
+    detachedAttempts.add(attachment);
   }
 }
-export function detachNativeAttempt(handle: EmbeddedAgentQueueHandle): void {
-  const operation = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)?.operation;
-  if (operation) {
-    detachControllerNativeAttempt(operation, handle);
+export function detachNativeAttempt(attachment: ActiveEmbeddedRunAttachment): void {
+  if (attachment.operation) {
+    detachControllerNativeAttempt(attachment.operation, attachment);
   } else {
-    detachedAttempts.delete(handle);
+    detachedAttempts.delete(attachment);
   }
 }
 export const ACTIVE_EMBEDDED_RUNS_BY_RUN_ID =
   embeddedRunState.activeRunsByRunId ??
-  (embeddedRunState.activeRunsByRunId = new Map<string, EmbeddedAgentQueueHandle>());
-export const ACTIVE_EMBEDDED_RUN_REGISTRATIONS =
-  embeddedRunState.activeRunRegistrations ??
-  (embeddedRunState.activeRunRegistrations = new WeakMap<
-    EmbeddedAgentQueueHandle,
-    EmbeddedRunRegistration
-  >());
+  (embeddedRunState.activeRunsByRunId = new Map<string, ActiveEmbeddedRunAttachment>());
 export const EMBEDDED_RUN_COMPLETION_CLAIMS =
   embeddedRunState.completionClaims ??
   (embeddedRunState.completionClaims = new Map<string, EmbeddedRunCompletionClaim>());
 
+type RetainedPreCutoverRegistration = Omit<
+  EmbeddedRunRegistration,
+  "handle" | "lifecycleGeneration"
+> & {
+  operation?: ReplyOperation;
+  backend?: ReplyBackendHandle;
+};
+
+function isEmbeddedAgentQueueHandle(value: unknown): value is EmbeddedAgentQueueHandle {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "queueMessage" in value &&
+    typeof value.queueMessage === "function" &&
+    "abort" in value &&
+    typeof value.abort === "function"
+  );
+}
+
+function isRetainedPreCutoverRegistration(value: unknown): value is RetainedPreCutoverRegistration {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "sessionId" in value &&
+    typeof value.sessionId === "string" &&
+    "settlement" in value
+  );
+}
+
+/** Converts the one retained pre-cutover singleton shape, then removes its retired maps. */
+function migrateRetainedEmbeddedRunState(): void {
+  const retainedMaps = Object.entries(embeddedRunState).flatMap(([key, value]) =>
+    value instanceof WeakMap
+      ? [
+          {
+            key,
+            map: value as WeakMap<EmbeddedAgentQueueHandle, unknown>,
+          },
+        ]
+      : [],
+  );
+  const rawDetachedAttempts = embeddedRunState.detachedAttempts as Set<unknown>;
+  const rawRunsById = embeddedRunState.activeRunsByRunId as Map<string, unknown>;
+  const handles = new Set<EmbeddedAgentQueueHandle>();
+  for (const candidate of rawDetachedAttempts) {
+    if (isEmbeddedAgentQueueHandle(candidate)) {
+      handles.add(candidate);
+    }
+  }
+  for (const candidate of rawRunsById.values()) {
+    if (isEmbeddedAgentQueueHandle(candidate)) {
+      handles.add(candidate);
+    }
+  }
+  for (const operation of activeSessionOperations()) {
+    const entry = getSessionControllerEntryForOperation(operation);
+    for (const candidate of Object.values(entry)) {
+      if (
+        typeof candidate === "object" &&
+        candidate !== null &&
+        "operation" in candidate &&
+        candidate.operation === operation &&
+        "handle" in candidate &&
+        isEmbeddedAgentQueueHandle(candidate.handle)
+      ) {
+        handles.add(candidate.handle);
+      }
+    }
+  }
+  const retiredKeys = new Set<string>();
+  for (const handle of handles) {
+    let registration: RetainedPreCutoverRegistration | undefined;
+    let lifecycleGeneration: string | undefined;
+    for (const retained of retainedMaps) {
+      const value = retained.map.get(handle);
+      if (isRetainedPreCutoverRegistration(value)) {
+        registration = value;
+        retiredKeys.add(retained.key);
+      } else if (typeof value === "string") {
+        lifecycleGeneration = value;
+        retiredKeys.add(retained.key);
+      }
+    }
+    if (!registration || !lifecycleGeneration) {
+      continue;
+    }
+    const indexAttachment = (attachment: ActiveEmbeddedRunAttachment) => {
+      handle[embeddedRunCleanupAttachment] = attachment;
+      for (const [runId, candidate] of rawRunsById) {
+        if (candidate === handle) {
+          ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.set(runId, attachment);
+        }
+      }
+    };
+    const operation = registration.operation;
+    if (operation) {
+      const attachment: EmbeddedRunAttachment = {
+        ...registration,
+        handle,
+        lifecycleGeneration,
+        operation,
+      };
+      indexAttachment(attachment);
+      const entry = getSessionControllerEntryForOperation(operation);
+      if (entry.active === operation) {
+        attachControllerNativeAttempt(operation, attachment);
+      }
+    } else {
+      const { operation: _operation, backend: _backend, ...retained } = registration;
+      const attachment: DetachedEmbeddedRunAttachment = {
+        ...retained,
+        handle,
+        lifecycleGeneration,
+      };
+      indexAttachment(attachment);
+      rawDetachedAttempts.delete(handle);
+      detachedAttempts.add(attachment);
+    }
+  }
+  for (const key of retiredKeys) {
+    Reflect.deleteProperty(embeddedRunState, key);
+  }
+}
+
+migrateRetainedEmbeddedRunState();
+
 /** Identity-only dispatch must resolve the same participant owner as in-process tools. */
 export function captureActiveEmbeddedRunPersonalToolParticipants(identity: AgentRuntimeIdentity) {
   const instance = identity.operationalRunInstance;
-  const handle = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(instance.runId);
-  if (!handle) {
+  const attachment = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(instance.runId);
+  if (!attachment) {
     return undefined;
   }
-  const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+  const handle = attachment.handle;
+  const registration = attachment;
   const toolAuthority = registration?.toolAuthority;
   const delegatedAuthority = registration?.delegatedAuthority;
   const ownsRegistration = () =>
@@ -273,9 +440,9 @@ export function captureActiveEmbeddedRunPersonalToolParticipants(identity: Agent
     registration.sessionKey === identity.sessionKey &&
     registration.agentId === identity.agentId &&
     handle.runId === instance.runId &&
-    ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(instance.runId) === handle &&
+    ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(instance.runId) === attachment &&
     getActiveNativeAttempt(registration.sessionId) === handle &&
-    ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) === registration &&
+    getEmbeddedRunAttachment(handle) === registration &&
     registration.delegatedAuthority === delegatedAuthority &&
     registration.toolAuthority === toolAuthority;
   const assertCurrent = () => {
@@ -302,13 +469,12 @@ export function registerActiveEmbeddedRunHumanInputWait(
   authority: AgentRunDelegatedAuthority,
   isPending: () => boolean,
 ): ((resolved: boolean) => void) | undefined {
-  const handle = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(authority.operationalRunInstance.runId);
-  const registration = handle && ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+  const registration = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(authority.operationalRunInstance.runId);
+  const handle = registration?.handle;
   const isRegistered = () =>
     registration?.operation
-      ? getSessionControllerEntryForOperation(registration.operation).nativeAttempt?.handle ===
-        handle
-      : ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(authority.operationalRunInstance.runId) === handle;
+      ? getControllerEmbeddedAttachment(registration.operation) === registration
+      : ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(authority.operationalRunInstance.runId) === registration;
   if (
     !handle ||
     !registration ||
@@ -354,7 +520,7 @@ export function resolveActiveEmbeddedRunRecoveryBlocker(
   if (expectedHandle && handle !== expectedHandle) {
     return "stale_session_state";
   }
-  const registration = handle && ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+  const registration = handle && getEmbeddedRunAttachment(handle);
   const authority = registration?.delegatedAuthority;
   if (!handle || !authority) {
     return undefined;
@@ -382,22 +548,16 @@ export function resolveActiveEmbeddedRunRecoveryBlocker(
   // Runtime probes may synchronously replace a handle or close its admission.
   if (
     getActiveNativeAttempt(sessionId) !== handle ||
-    ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) !== registration
+    getEmbeddedRunAttachment(handle) !== registration
   ) {
     return "stale_session_state";
   }
   return ownsLiveness &&
-    ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(authority.operationalRunInstance.runId) === handle &&
+    ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(authority.operationalRunInstance.runId) === registration &&
     getActiveAgentRunDelegatedAuthority(authority.operationalRunInstance) === authority
     ? "runtime_owned_wait"
     : undefined;
 }
-const ACTIVE_EMBEDDED_RUN_LIFECYCLE_GENERATIONS =
-  embeddedRunState.activeRunLifecycleGenerations ??
-  (embeddedRunState.activeRunLifecycleGenerations = new WeakMap<
-    EmbeddedAgentQueueHandle,
-    string
-  >());
 export const RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS =
   embeddedRunState.retainedAbortabilityRunIds ??
   (embeddedRunState.retainedAbortabilityRunIds = new Set<string>());
@@ -425,21 +585,33 @@ export const EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS =
 
 function evictPriorLifecycleEmbeddedRuns(): void {
   const staleHandles = new Set<EmbeddedAgentQueueHandle>();
+  const controllerOwnedHandles = new Set<EmbeddedAgentQueueHandle>();
   for (const [sessionId, handle] of activeNativeAttempts()) {
-    const lifecycleGeneration = ACTIVE_EMBEDDED_RUN_LIFECYCLE_GENERATIONS.get(handle);
+    const attachment = getEmbeddedRunAttachment(handle);
+    const lifecycleGeneration = attachment?.lifecycleGeneration;
     if (lifecycleGeneration && isAgentEventLifecycleGenerationCurrent(lifecycleGeneration)) {
       continue;
     }
     handle.closeDiagnostics?.();
-    ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)?.humanInputWaits?.clear();
+    attachment?.humanInputWaits?.clear();
     staleHandles.add(handle);
+    if (
+      attachment?.operation &&
+      attachment.backend &&
+      getSessionControllerEntryForOperation(attachment.operation).active === attachment.operation &&
+      getAttachedBackend(attachment.operation) === attachment.backend
+    ) {
+      controllerOwnedHandles.add(handle);
+    }
     if (getActiveNativeAttempt(sessionId) === handle) {
-      detachNativeAttempt(handle);
+      if (attachment) {
+        detachNativeAttempt(attachment);
+      }
     }
     ACTIVE_EMBEDDED_RUN_SNAPSHOTS.delete(sessionId);
   }
-  for (const [runId, handle] of ACTIVE_EMBEDDED_RUNS_BY_RUN_ID) {
-    const lifecycleGeneration = ACTIVE_EMBEDDED_RUN_LIFECYCLE_GENERATIONS.get(handle);
+  for (const [runId, attachment] of ACTIVE_EMBEDDED_RUNS_BY_RUN_ID) {
+    const { handle, lifecycleGeneration } = attachment;
     if (lifecycleGeneration && isAgentEventLifecycleGenerationCurrent(lifecycleGeneration)) {
       continue;
     }
@@ -447,7 +619,7 @@ function evictPriorLifecycleEmbeddedRuns(): void {
     staleHandles.add(handle);
     // This index only gates the separately owned chat abort controller; absence
     // is abortable. Keeping it would let stale ownership influence new work.
-    if (ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(runId) === handle) {
+    if (ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(runId) === attachment) {
       ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.delete(runId);
       RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS.delete(runId);
     }
@@ -469,14 +641,7 @@ function evictPriorLifecycleEmbeddedRuns(): void {
   // Remove stale ownership first so synchronous abort callbacks may register a
   // replacement without the cleanup above erasing that current-generation run.
   for (const handle of staleHandles) {
-    const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
-    if (
-      registration?.operation &&
-      registration.backend &&
-      getSessionControllerEntryForOperation(registration.operation).active ===
-        registration.operation &&
-      getAttachedBackend(registration.operation) === registration.backend
-    ) {
+    if (controllerOwnedHandles.has(handle)) {
       // The controller cancels its exact attached backend. This adapter only
       // revokes native indexes; detached or superseded attempts still cancel here.
       continue;
@@ -493,17 +658,3 @@ function evictPriorLifecycleEmbeddedRuns(): void {
 }
 
 registerAgentEventLifecycleRotationHandler("embedded-agent-runs", evictPriorLifecycleEmbeddedRuns);
-
-export function setActiveEmbeddedRunLifecycleGeneration(
-  handle: EmbeddedAgentQueueHandle,
-  lifecycleGeneration: string,
-): string {
-  // A delayed re-registration must not transfer an old driver into the new
-  // Gateway lifecycle and suppress orphan recovery again.
-  const existingLifecycleGeneration = ACTIVE_EMBEDDED_RUN_LIFECYCLE_GENERATIONS.get(handle);
-  if (existingLifecycleGeneration !== undefined) {
-    return existingLifecycleGeneration;
-  }
-  ACTIVE_EMBEDDED_RUN_LIFECYCLE_GENERATIONS.set(handle, lifecycleGeneration);
-  return lifecycleGeneration;
-}

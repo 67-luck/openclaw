@@ -144,7 +144,10 @@ describe("direct embedded retry lifecycle", () => {
       expect(mockedSleep).toHaveBeenCalledWith(3_600_000, expect.any(AbortSignal));
       expect(waitSettled).toBe(false);
       await vi.advanceTimersByTimeAsync(60_001);
-      expect(await outcome).toMatchObject({ name: "CommandLaneTaskTimeoutError" });
+      expect(await outcome).toMatchObject({
+        name: "AbortError",
+        message: "Reply operation stalled",
+      });
       expect(caller.signal.aborted).toBe(false);
       expect(sleepSignal?.aborted).toBe(true);
       expect(waitSettled).toBe(true);

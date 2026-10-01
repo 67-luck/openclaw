@@ -26,9 +26,11 @@ import {
   type SessionControllerSourceAdapter,
 } from "../sessions/session-controller.mailbox.js";
 import {
+  getRpcSourceProjectSessionActive,
   getRpcSourceStartedAt,
   isRpcSourceExecuting,
   requestRpcSourceCancellation,
+  setRpcSourceProjectSessionActive,
   type RpcSourceAdapter,
 } from "../sessions/session-controller.rpc-sources.js";
 import { captureSessionControllerStop, stopSession } from "../sessions/session-controller.stop.js";
@@ -194,10 +196,9 @@ export function registerChatAbortController(params: {
     ownerDeviceId: params.ownerDeviceId,
     providerId: normalizeOptionalLowercaseString(params.providerId),
     authProviderId: normalizeOptionalLowercaseString(params.authProviderId),
-    controlUiVisible: params.controlUiVisible,
+    controlUiVisible: params.controlUiVisible ?? params.projectSessionActive,
     isAbortable: params.isAbortable,
     onRemoved: params.onRemoved,
-    projectSessionActive: params.projectSessionActive ?? true,
     kind: params.kind,
     turnKind: params.turnKind,
   };
@@ -501,10 +502,10 @@ export function abortChatRunById(
     params.presentation ?? captureChatRunAbortPresentation(ops, runId);
   const runProjection = ops.chatRunState.getOrCreate(runId);
   const previousMarker = runProjection.abortMarker;
+  const previousProjectSessionActive = getRpcSourceProjectSessionActive(active);
   const previous = {
     abortStopReason: active.adapter.abortStopReason,
     abortDiagnosticReason: active.adapter.abortDiagnosticReason,
-    projectSessionActive: active.adapter.projectSessionActive,
     projectSessionTerminalPending: active.adapter.projectSessionTerminalPending,
     projectSessionTerminalObservedAt: active.adapter.projectSessionTerminalObservedAt,
     registrationCleanupRequested: active.adapter.registrationCleanupRequested,
@@ -520,7 +521,7 @@ export function abortChatRunById(
   } catch {
     // Transcript handoff failure cannot prevent an already accepted cancellation.
   }
-  active.adapter.projectSessionActive = false;
+  setRpcSourceProjectSessionActive(active, false);
   // Reserve terminal ownership before abort listeners run; synchronous caller
   // cleanup must not erase the entry before Gateway observes the event below.
   if (!params.preserveTerminal) {
@@ -546,6 +547,7 @@ export function abortChatRunById(
         active.input.abortSignal.aborted);
     if (!cancelled) {
       Object.assign(active.adapter, previous);
+      setRpcSourceProjectSessionActive(active, previousProjectSessionActive);
       runProjection.abortMarker = previousMarker;
       throw error;
     }
@@ -553,6 +555,7 @@ export function abortChatRunById(
   }
   if (!cancelled) {
     Object.assign(active.adapter, previous);
+    setRpcSourceProjectSessionActive(active, previousProjectSessionActive);
     runProjection.abortMarker = previousMarker;
     return { aborted: false };
   }

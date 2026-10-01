@@ -29,7 +29,11 @@ import {
   onGatewaySuspendAdmissionChange,
   runWithRetainedGatewayRootWork,
 } from "../process/gateway-work-admission.js";
-import type { RpcSourceIndex, RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
+import {
+  setRpcSourceProjectSessionActive,
+  type RpcSourceIndex,
+  type RpcSourceRef,
+} from "../sessions/session-controller.rpc-sources.js";
 import {
   onSessionIdentityMutation,
   onSessionLifecycleEvent,
@@ -199,7 +203,7 @@ export function startGatewayEventSubscriptions(params: {
       if (!entry) {
         continue;
       }
-      entry.adapter.projectSessionActive = false;
+      setRpcSourceProjectSessionActive(entry, false);
       queueMicrotask(() => {
         const current = params.rpcSources.get(candidateRunId);
         if (

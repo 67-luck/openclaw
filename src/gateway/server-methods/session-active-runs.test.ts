@@ -51,7 +51,9 @@ afterEach(() => {
     release();
   }
 });
-async function activeSources(entries: Array<[string, Partial<RpcSourceAdapter>]>) {
+async function activeSources(
+  entries: Array<[string, Partial<RpcSourceAdapter> & { projectSessionActive?: boolean }]>,
+) {
   const refs = await Promise.all(
     entries.map(async ([runId, metadata]) => {
       const ref = createRpcSourceForTest(

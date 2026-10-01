@@ -1,6 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { diagnosticLogger } from "../logging/diagnostic-runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withSessionTurn } from "./session-controller.admission.js";
+import { ReplyRunAlreadyActiveError } from "./session-controller.contracts.js";
+import { resolveReplyRunForCurrentSessionId } from "./session-controller.identity.js";
 import {
   captureSessionTarget,
   getCurrentSessionControllerClaim,
@@ -21,6 +24,12 @@ import {
   updateSessionControllerSourcePolicy,
   tryClaimSessionControllerTask,
 } from "./session-controller.mailbox.js";
+import { createReplyOperation } from "./session-controller.operation.js";
+import { isSessionRunActive } from "./session-controller.queries.js";
+import {
+  replyRunRegistry,
+  resolveActiveReplyOperationForSessionId,
+} from "./session-controller.registry.js";
 import {
   findSessionControllerEntry,
   getSessionControllerEntryForOperation,
@@ -52,7 +61,7 @@ afterEach(async () => {
   await Promise.allSettled(receipts);
 });
 
-it("runs equal logical keys in two stores independently and mutates only the selected physical owner", async () => {
+it("treats equal active identities in two stores as busy and mutates only the selected owner", async () => {
   const a = target("/stores/a.sqlite");
   const b = target("/stores/b.sqlite");
   const enteredA = createDeferredCore();
@@ -81,7 +90,33 @@ it("runs equal logical keys in two stores independently and mutates only the sel
   expect(ownerA).toBeDefined();
   expect(ownerB).toBeDefined();
   expect(ownerA).not.toBe(ownerB);
-  expect(getSessionControllerOperation(key)).toBeUndefined();
+  using warning = vi.spyOn(diagnosticLogger, "warn").mockImplementation(() => undefined);
+  expect(resolveReplyRunForCurrentSessionId("incarnation")).toEqual({
+    kind: "ambiguous",
+    operations: [ownerA, ownerB],
+  });
+  expect(isSessionRunActive("incarnation")).toBe(true);
+  expect(() => resolveActiveReplyOperationForSessionId("incarnation")).toThrow(
+    ReplyRunAlreadyActiveError,
+  );
+  expect(() =>
+    createReplyOperation({ sessionKey: key, sessionId: "incarnation", resetTriggered: false }),
+  ).toThrow(ReplyRunAlreadyActiveError);
+  expect(() => getSessionControllerOperation(key)).toThrow(ReplyRunAlreadyActiveError);
+  const entryIds = [ownerA, ownerB]
+    .map((operation) => getSessionControllerEntryForOperation(operation!).id)
+    .toSorted()
+    .join(",");
+  expect(warning).toHaveBeenCalledWith(
+    `ambiguous session controller identity: sessionId=incarnation entryIds=${entryIds}`,
+  );
+  let idle = false;
+  const idleReceipt = replyRunRegistry.waitForIdle(key).then((result) => {
+    idle = result;
+    return result;
+  });
+  await Promise.resolve();
+  expect(idle).toBe(false);
   const preparation = createDeferredCore();
   const mutation = runSessionMutation({
     target: a,
@@ -97,9 +132,12 @@ it("runs equal logical keys in two stores independently and mutates only the sel
   await preparation.promise;
   doneA.resolve();
   await Promise.all([runA, mutation]);
+  await Promise.resolve();
+  expect(idle).toBe(false);
   expect(ownerB?.abortSignal.aborted).toBe(false);
   doneB.resolve();
   await runB;
+  await expect(idleReceipt).resolves.toBe(true);
 });
 
 it("aliases of one physical incarnation share the same selector", async () => {
@@ -346,6 +384,11 @@ it("rotates incarnation aliases while retaining exact late-writer lineage", asyn
       expect(owner.aliases.has("old-id")).toBe(true);
       expect(owner.aliases.has("new-id")).toBe(true);
       expect(operation.captureOwnedSessionIds()).toEqual(new Set(["old-id", "new-id"]));
+      expect(isSessionRunActive("old-id")).toBe(true);
+      expect(resolveReplyRunForCurrentSessionId("old-id")).toEqual({
+        kind: "one",
+        operation,
+      });
       expect(
         findSessionControllerEntry(
           "new-id",

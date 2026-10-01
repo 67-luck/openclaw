@@ -13,6 +13,7 @@ import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import { materializeProjectClone, refreshProjectClone } from "../../projects/project-clone.js";
 import { parseProjectGitUrl } from "../../projects/project-git-url.js";
 import { resolveProjectDirectory } from "../../projects/project-registry.js";
+import { getRpcSourceProjectSessionActive } from "../../sessions/session-controller.rpc-sources.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import { generateWorktreeSessionTitle } from "../dashboard-session-title.js";
 import { githubApiToken } from "../github-public-api.js";
@@ -199,7 +200,7 @@ export async function prepareSessionWorkspace(params: {
       activeRun.adapter.sessionId !== entry.sessionId ||
       entry.sessionId !== admission.admittedSessionId ||
       activeRun.adapter.lifecycleGeneration !== admission.lifecycleGeneration ||
-      activeRun.adapter.projectSessionActive === false ||
+      getRpcSourceProjectSessionActive(activeRun) === false ||
       activeRun.adapter.projectSessionTerminalPending === true ||
       activeRun.adapter.projectSessionTerminalPersisted === true ||
       !hasActiveAgentRuntimeAuthority(client, context)

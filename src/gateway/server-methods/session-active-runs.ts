@@ -13,6 +13,7 @@ import {
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { resolveSessionRunProgressState as resolveEmbeddedAgentSessionProgressState } from "../../sessions/session-controller.queries.js";
 import {
+  getRpcSourceProjectSessionActive,
   isRpcSourceActive,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
@@ -50,7 +51,7 @@ function collectTrackedActiveSessionRuns(
     const active = ref.adapter;
     const terminalPersistence =
       includeTerminalPersistence &&
-      active.projectSessionActive === false &&
+      getRpcSourceProjectSessionActive(ref) === false &&
       active.projectSessionTerminalPending === true;
     if ((isRpcSourceActive(ref) || terminalPersistence) && active.controlUiVisible !== false) {
       const sessionKey = active.sessionKey.trim();
@@ -255,14 +256,21 @@ export function resolveVisibleActiveSessionRunState(params: {
     ...(params.defaultAgentId ? { defaultAgentId: params.defaultAgentId } : {}),
     ...(params.projectedAgentRunIndex ? { index: params.projectedAgentRunIndex } : {}),
   });
-  const localOperation = sessionId ? resolveReplyRunForCurrentSessionId(sessionId) : undefined;
+  const localResolution = sessionId ? resolveReplyRunForCurrentSessionId(sessionId) : undefined;
+  const localOperations =
+    localResolution?.kind === "one"
+      ? [localResolution.operation]
+      : localResolution?.kind === "ambiguous"
+        ? localResolution.operations
+        : [];
   // RPC metadata is correlation for this very same logical owner, not another
   // liveness vote. Include hidden/queued refs in representation, not visibility.
   const representedLocally =
-    Boolean(localOperation) &&
-    [...(params.context.rpcSources?.values() ?? [])].some(
-      (ref) => ref.input.claim?.operation === localOperation,
-    );
+    localOperations.length > 0 &&
+    [...(params.context.rpcSources?.values() ?? [])].some((ref) => {
+      const operation = ref.input.claim?.operation;
+      return operation !== undefined && localOperations.includes(operation);
+    });
   const embeddedRunState =
     sessionId === undefined || representedLocally
       ? undefined

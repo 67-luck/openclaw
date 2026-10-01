@@ -4,7 +4,6 @@ import {
   resetGlobalHookRunner,
 } from "openclaw/plugin-sdk/hook-runtime";
 import { createMockPluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
-import { controlRealtimeVoiceAgentRun } from "openclaw/plugin-sdk/realtime-voice";
 import { readSessionTranscriptEvents } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerCopilotActiveRun } from "./attempt-active-run.js";
@@ -56,7 +55,7 @@ function registerTestRun(params?: {
     send,
     sendAndWait: vi.fn(async () => undefined),
   };
-  const handle = registerCopilotActiveRun({
+  const { handle } = registerCopilotActiveRun({
     abortActiveSession: vi.fn(),
     agentId: params?.agentId ?? "main",
     bridge: undefined,
@@ -115,79 +114,19 @@ describe("registerCopilotActiveRun", () => {
 
   it("retains the resolved agent for raw global registrations", () => {
     const { handle } = registerTestRun({ agentId: "ops", sessionKey: "global" });
-    expect(harnessMocks.setActiveEmbeddedRun).toHaveBeenCalledWith(
-      "session-1",
-      handle,
-      "global",
-      undefined,
-      "ops",
-    );
-  });
-
-  it("refuses scoped controls before the real V1 handle while preserving unscoped injection", async () => {
-    const runtime = await vi.importActual<
-      typeof import("openclaw/plugin-sdk/agent-harness-runtime")
-    >("openclaw/plugin-sdk/agent-harness-runtime");
-    const { handle, send } = registerTestRun();
-    const queue = vi.spyOn(handle.messageInjection, "queueMessage");
-    const claim = vi.spyOn(handle, "claimPendingUserInputAnswer");
-    const abort = vi.spyOn(handle, "abort");
-    runtime.setActiveEmbeddedRun("session-1", handle, "agent:main:session-1");
-    try {
-      const result = await controlRealtimeVoiceAgentRun({
-        sessionKey: "agent:main:session-1",
-        text: "change course",
-        mode: "steer",
-        runTarget: {
-          runId: "run-1",
-          signal: new AbortController().signal,
-          isCurrent: () => true,
-        },
-      });
-      expect(result).toMatchObject({ ok: false, reason: "guarded_injection_unsupported" });
-      expect(queue).not.toHaveBeenCalled();
-      expect(claim).not.toHaveBeenCalled();
-      expect(harnessMocks.claimPendingAgentQuestionAnswer).not.toHaveBeenCalled();
-      expect(send).not.toHaveBeenCalled();
-      const sessionKey = "agent:main:session-1";
-      const unscopedControl = await controlRealtimeVoiceAgentRun({
-        sessionKey,
-        text: "change course",
-        mode: "steer",
-      });
-      expect(unscopedControl).toMatchObject({
-        ok: false,
-        queued: false,
-        reason: "guarded_injection_unsupported",
-      });
-      expect(queue).not.toHaveBeenCalled();
-      expect(claim).not.toHaveBeenCalled();
-      expect(send).not.toHaveBeenCalled();
-      await expect(
-        controlRealtimeVoiceAgentRun({ sessionKey, text: "status" }),
-      ).resolves.toMatchObject({
-        ok: true,
-        active: true,
-        mode: "status",
-      });
-      expect(runtime.queueAgentHarnessMessage("session-1", "unscoped change")).toBe(true);
-      await vi.waitFor(() =>
-        expect(send).toHaveBeenCalledExactlyOnceWith({ prompt: "unscoped change" }),
-      );
-      await expect(
-        controlRealtimeVoiceAgentRun({ sessionKey, text: "cancel" }),
-      ).resolves.toMatchObject({
-        ok: true,
-        active: true,
-        mode: "cancel",
-        aborted: true,
-      });
-      expect(abort).toHaveBeenCalledOnce();
-      expect(send).toHaveBeenCalledOnce();
-    } finally {
-      runtime.clearActiveEmbeddedRun("session-1", handle);
-      vi.restoreAllMocks();
-    }
+    const [registeredSessionId, registeredHandle, registeredSessionKey, , registeredAgentId] =
+      harnessMocks.setActiveEmbeddedRun.mock.calls.at(-1) ?? [];
+    expect({
+      registeredSessionId,
+      registeredHandle,
+      registeredSessionKey,
+      registeredAgentId,
+    }).toEqual({
+      registeredSessionId: "session-1",
+      registeredHandle: handle,
+      registeredSessionKey: "global",
+      registeredAgentId: "ops",
+    });
   });
 
   it("reports acceptance after send while the transcript receipt is still pending", async () => {

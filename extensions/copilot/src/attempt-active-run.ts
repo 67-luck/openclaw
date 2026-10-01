@@ -148,7 +148,7 @@ export function registerCopilotActiveRun(params: {
       params.abortActiveSession();
     },
   };
-  setActiveEmbeddedRun(
+  const attachment = setActiveEmbeddedRun(
     params.input.sessionId,
     activeRunHandle,
     params.input.sessionKey,
@@ -156,8 +156,7 @@ export function registerCopilotActiveRun(params: {
     params.agentId,
     params.input.replyOperation,
   );
-  params.input.replyOperation?.attachBackend(activeRunHandle);
-  return activeRunHandle;
+  return { handle: activeRunHandle, attachment };
 }
 
 async function waitForPersistenceReceipt(

@@ -15,6 +15,7 @@ import {
 import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import type { SessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { captureSessionControllerSourceSettlement } from "../../sessions/session-controller.mailbox.js";
+import { getRpcSourceProjectSessionActive } from "../../sessions/session-controller.rpc-sources.js";
 import {
   captureSessionControllerStop,
   stopSession,
@@ -115,7 +116,7 @@ export function abortQueuedCollectorSession(
       !isChatAbortControllerEntryAbortable(parentRun) ||
       !parentRun.adapter.lifecycleGeneration ||
       !isAgentEventLifecycleGenerationCurrent(parentRun.adapter.lifecycleGeneration) ||
-      parentRun.adapter.projectSessionActive === false ||
+      getRpcSourceProjectSessionActive(parentRun) === false ||
       resolveSessionStoreKey({
         cfg,
         sessionKey: parentRun.adapter.sessionKey,

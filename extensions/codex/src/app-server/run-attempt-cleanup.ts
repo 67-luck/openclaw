@@ -237,7 +237,14 @@ export async function cleanupCodexAttempt(
       params.replyOperation?.detachBackend(handle),
     );
     await runCleanupStep("codex-active-run-clear", () => {
-      clearActiveEmbeddedRun(params.sessionId, handle, params.sessionKey, params.sessionFile);
+      clearActiveEmbeddedRun(
+        params.sessionId,
+        handle,
+        params.sessionKey,
+        params.sessionFile,
+        undefined,
+        activeTurn.activeRunAttachment,
+      );
     });
   }
   await state.abortCleanup;

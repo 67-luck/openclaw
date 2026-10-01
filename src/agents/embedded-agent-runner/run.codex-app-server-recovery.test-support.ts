@@ -362,68 +362,79 @@ describe("runEmbeddedAgent Codex app-server recovery", () => {
   });
 
   it("does not expose a cancelled replay-safe failure to outer model fallback", async () => {
-    const abortByUser = vi.fn(() => true);
-    const replyOperation = {
-      abortByUser,
-      markDeferredMaintenanceWaitEnded: vi.fn(),
-      markGlobalLaneWaitEnded: vi.fn(),
-      markWaitingForDeferredMaintenance: vi.fn(),
-      markWaitingForGlobalLane: vi.fn(),
-    } as unknown as NonNullable<Parameters<typeof runEmbeddedAgent>[0]["replyOperation"]>;
+    const { createReplyOperation } = await import("../../sessions/session-controller.js");
+    const replyOperation = createReplyOperation({
+      sessionKey: "agent:main:run-codex-cancel-before-model-fallback",
+      sessionId: "run-codex-cancel-before-model-fallback",
+      resetTriggered: false,
+    });
+    const abortByUser = vi.spyOn(replyOperation, "abortByUser");
     mockedRunEmbeddedAttempt.mockImplementationOnce(async (attemptParams) => {
       asAttemptParams(attemptParams).onAttemptAbort?.();
       return codexClientClosedAttempt();
     });
 
-    await expect(
-      runEmbeddedAgent({
-        ...createOverflowRunParams(state),
-        provider: "codex",
-        model: "gpt-5.5",
-        runId: "run-codex-cancel-before-model-fallback",
-        isFinalFallbackAttempt: false,
-        replyOperation,
-      }),
-    ).rejects.toMatchObject({
-      name: "AbortError",
-      message: "agent run aborted",
-    });
+    try {
+      await expect(
+        runEmbeddedAgent({
+          ...createOverflowRunParams(state),
+          sessionId: replyOperation.sessionId,
+          sessionKey: replyOperation.key,
+          provider: "codex",
+          model: "gpt-5.5",
+          runId: "run-codex-cancel-before-model-fallback",
+          isFinalFallbackAttempt: false,
+          replyOperation,
+        }),
+      ).rejects.toMatchObject({
+        name: "AbortError",
+        message: "agent run aborted",
+      });
 
-    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
-    expect(abortByUser).toHaveBeenCalledTimes(1);
+      expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+      expect(abortByUser).toHaveBeenCalledTimes(1);
+    } finally {
+      replyOperation.complete();
+    }
   });
 
   it("preserves upstream abort ownership during replay-safe finalization", async () => {
     const controller = new AbortController();
     const upstreamAbort = new Error("upstream cancelled");
-    const abortByUser = vi.fn(() => true);
-    const replyOperation = {
-      abortByUser,
-      markDeferredMaintenanceWaitEnded: vi.fn(),
-      markGlobalLaneWaitEnded: vi.fn(),
-      markWaitingForDeferredMaintenance: vi.fn(),
-      markWaitingForGlobalLane: vi.fn(),
-    } as unknown as NonNullable<Parameters<typeof runEmbeddedAgent>[0]["replyOperation"]>;
+    const { createReplyOperation } = await import("../../sessions/session-controller.js");
+    const replyOperation = createReplyOperation({
+      sessionKey: "agent:main:run-codex-upstream-cancel-before-model-fallback",
+      sessionId: "run-codex-upstream-cancel-before-model-fallback",
+      resetTriggered: false,
+      upstreamAbortSignal: controller.signal,
+    });
+    const abortByUser = vi.spyOn(replyOperation, "abortByUser");
     mockedRunEmbeddedAttempt.mockImplementationOnce(async (attemptParams) => {
       controller.abort(upstreamAbort);
       asAttemptParams(attemptParams).onAttemptAbort?.();
       return codexClientClosedAttempt();
     });
 
-    await expect(
-      runEmbeddedAgent({
-        ...createOverflowRunParams(state),
-        provider: "codex",
-        model: "gpt-5.5",
-        runId: "run-codex-upstream-cancel-before-model-fallback",
-        isFinalFallbackAttempt: false,
-        abortSignal: controller.signal,
-        replyOperation,
-      }),
-    ).rejects.toBe(upstreamAbort);
+    try {
+      await expect(
+        runEmbeddedAgent({
+          ...createOverflowRunParams(state),
+          sessionId: replyOperation.sessionId,
+          sessionKey: replyOperation.key,
+          provider: "codex",
+          model: "gpt-5.5",
+          runId: "run-codex-upstream-cancel-before-model-fallback",
+          isFinalFallbackAttempt: false,
+          abortSignal: controller.signal,
+          replyOperation,
+        }),
+      ).rejects.toBe(upstreamAbort);
 
-    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
-    expect(abortByUser).not.toHaveBeenCalled();
+      expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+      expect(abortByUser).not.toHaveBeenCalled();
+    } finally {
+      replyOperation.complete();
+    }
   });
 
   it("suppresses duplicate Codex prompt mirroring on retry", async () => {

@@ -18,7 +18,10 @@ import {
   replyRunRegistry,
   type ReplyOperation,
 } from "../../sessions/session-controller.js";
-import { isReplyRunEvidenceStale } from "../../sessions/session-controller.state.js";
+import {
+  assertSessionControllerOperation,
+  isReplyRunEvidenceStale,
+} from "../../sessions/session-controller.state.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import {
   prepareSystemAgentRunAdmission,
@@ -75,12 +78,34 @@ beforeEach(async () => {
   handle = backend;
   operation.attachBackend(backend);
   operation.setPhase("running");
+  const caller = createAdmittedGatewayToolCallerIdentity({
+    admittedRunContext: admitted,
+    agentId: "main",
+    sessionKey,
+  });
+  if (!caller) {
+    throw new Error("liveness fixture requires an admitted Gateway caller");
+  }
+  const watchdogAttempt = operation.watchdog.attachAttempt({
+    assertCurrent: () => assertSessionControllerOperation(operation),
+  });
   await withGatewayToolCallerIdentity(
-    createAdmittedGatewayToolCallerIdentity({
-      admittedRunContext: admitted,
-      agentId: "main",
-      sessionKey,
-    }),
+    {
+      ...caller,
+      watchdogAttempt,
+      embeddedRunToolAuthorityBinding: (registration) => ({
+        source: "reply",
+        operation,
+        watchdogAttempt,
+        project: () => undefined,
+        assertActive: () => {
+          assertSessionControllerOperation(operation);
+          if (registration.handle !== handle) {
+            throw new Error("liveness fixture handle changed");
+          }
+        },
+      }),
+    },
     () => setActiveEmbeddedRun(sessionId, handle, sessionKey),
   );
 });
@@ -111,11 +136,12 @@ describe("runtime-owned embedded liveness", () => {
       recoverStuckDiagnosticSession({
         sessionId,
         sessionKey,
+        operation,
         ageMs: RUN_STALE_TAKEOVER_MS + 1,
         queueDepth: 1,
         allowActiveAbort: true,
       }),
-    ).resolves.toMatchObject({ status: "skipped", reason: "runtime_owned_wait" });
+    ).resolves.toMatchObject({ status: "skipped", reason: "active_reply_work" });
     expect(abort).not.toHaveBeenCalled();
   });
 
@@ -142,7 +168,7 @@ describe("runtime-owned embedded liveness", () => {
 
       runtimeOwnsLiveness = false;
       await vi.advanceTimersByTimeAsync(30_000);
-      expect(recover).toHaveBeenCalled();
+      expect(recover).not.toHaveBeenCalled();
       expect(abort).toHaveBeenCalled();
     } finally {
       unsubscribe();
@@ -150,8 +176,26 @@ describe("runtime-owned embedded liveness", () => {
   });
 
   it("waits in bounded slices, then reclaims host-owned work without a millisecond spin", async () => {
-    await vi.advanceTimersByTimeAsync(RUN_STALE_TAKEOVER_MS + 1);
-    const waitForIdle = vi.spyOn(replyRunRegistry, "waitForIdle");
+    vi.advanceTimersByTime(RUN_STALE_TAKEOVER_MS + 1);
+    await Promise.resolve();
+    const waitForIdleImpl = replyRunRegistry.waitForIdle.bind(replyRunRegistry);
+    let resolveFirstWait!: () => void;
+    let resolveSecondWait!: () => void;
+    const firstWait = new Promise<void>((resolve) => {
+      resolveFirstWait = resolve;
+    });
+    const secondWait = new Promise<void>((resolve) => {
+      resolveSecondWait = resolve;
+    });
+    const waitForIdle = vi.spyOn(replyRunRegistry, "waitForIdle").mockImplementation((...args) => {
+      const result = waitForIdleImpl(...args);
+      if (waitForIdle.mock.calls.length === 1) {
+        resolveFirstWait();
+      } else if (waitForIdle.mock.calls.length === 2) {
+        resolveSecondWait();
+      }
+      return result;
+    });
     const callerAbort = new AbortController();
     let settled = false;
     const waiting = admitReplyTurn({
@@ -165,10 +209,12 @@ describe("runtime-owned embedded liveness", () => {
       return result;
     });
     try {
-      await vi.advanceTimersByTimeAsync(2 * REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS);
+      await firstWait;
+      vi.advanceTimersByTime(REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS);
+      await secondWait;
       expect(settled).toBe(false);
       expect(abort).not.toHaveBeenCalled();
-      expect(waitForIdle.mock.calls.length).toBeGreaterThan(0);
+      expect(waitForIdle.mock.calls.length).toBeGreaterThan(1);
       expect(
         waitForIdle.mock.calls.every(
           ([, timeoutMs]) => timeoutMs === REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
@@ -176,7 +222,7 @@ describe("runtime-owned embedded liveness", () => {
       ).toBe(true);
 
       runtimeOwnsLiveness = false;
-      await vi.advanceTimersByTimeAsync(REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS);
+      vi.advanceTimersByTime(1_000);
       const result = await waiting;
       expect(operation.result).toMatchObject({ kind: "failed", code: "run_stalled" });
       expect(result.status).toBe("owned");

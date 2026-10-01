@@ -25,10 +25,7 @@ import {
 } from "../../sessions/session-controller.queries.js";
 import { assertSessionControllerOperation } from "../../sessions/session-controller.state.js";
 import { withGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js";
-import {
-  setActiveEmbeddedRunLifecycleGeneration,
-  type EmbeddedAgentQueueHandle,
-} from "./run-state.js";
+import { type EmbeddedAgentQueueHandle } from "./run-state.js";
 import {
   isEmbeddedAgentRunAbortableForRunId,
   prepareEmbeddedAgentRunCompletionClaim,
@@ -216,7 +213,6 @@ describe("embedded run registry lifecycle generations", () => {
       queueMessage: staleQueueMessage,
       runId: "stale-run",
     });
-    setActiveEmbeddedRunLifecycleGeneration(staleHandle, priorLifecycleGeneration);
 
     rotateAgentEventLifecycleGeneration();
     const currentQueueMessage = vi.fn(async () => {});
@@ -237,6 +233,9 @@ describe("embedded run registry lifecycle generations", () => {
       staleHandle,
       "agent:main:stale",
       "/tmp/stale-session.jsonl",
+      undefined,
+      undefined,
+      priorLifecycleGeneration,
     );
     await expect(
       queueEmbeddedAgentMessageWithOutcomeAsync("shared-session", "still live"),
@@ -261,7 +260,6 @@ describe("embedded run registry lifecycle generations", () => {
       queueMessage: staleQueueMessage,
       runId: "stale-run",
     });
-    setActiveEmbeddedRunLifecycleGeneration(staleHandle, priorLifecycleGeneration);
 
     rotateAgentEventLifecycleGeneration();
     setActiveEmbeddedRun(
@@ -269,6 +267,9 @@ describe("embedded run registry lifecycle generations", () => {
       staleHandle,
       "agent:main:stale",
       "/tmp/stale-session.jsonl",
+      undefined,
+      undefined,
+      priorLifecycleGeneration,
     );
 
     await expect(
@@ -283,6 +284,26 @@ describe("embedded run registry lifecycle generations", () => {
       resolveActiveEmbeddedRunHandleSessionIdBySessionFile("/tmp/stale-session.jsonl"),
     ).toBeUndefined();
     expect(isEmbeddedAgentRunAbortableForRunId("stale-run")).toBe(true);
+  });
+
+  it("retains a handle's original lifecycle fence after eviction and clear", () => {
+    const abort = vi.fn();
+    const staleHandle = createRunHandle({
+      abort,
+      queueMessage: vi.fn(async () => {}),
+      runId: "cleared-stale-run",
+    });
+
+    setActiveEmbeddedRun("cleared-stale-session", staleHandle, "agent:main:cleared-stale");
+    rotateAgentEventLifecycleGeneration();
+    clearActiveEmbeddedRun("cleared-stale-session", staleHandle, "agent:main:cleared-stale");
+
+    setActiveEmbeddedRun("cleared-stale-session", staleHandle, "agent:main:cleared-stale");
+
+    expect(abort).toHaveBeenCalledTimes(2);
+    expect(abort).toHaveBeenNthCalledWith(1, "restart");
+    expect(abort).toHaveBeenNthCalledWith(2, "restart");
+    expect(listActiveEmbeddedRunSessionIds()).not.toContain("cleared-stale-session");
   });
 
   it("rejects a current-lifecycle handle after its diagnostic owner closes", () => {
@@ -313,13 +334,20 @@ describe("embedded run registry lifecycle generations", () => {
       queueMessage: vi.fn(async () => {}),
       runId: "stale-run",
     });
-    setActiveEmbeddedRunLifecycleGeneration(staleHandle, priorLifecycleGeneration);
 
     rotateAgentEventLifecycleGeneration();
 
-    expect(() => setActiveEmbeddedRun("stale-session", staleHandle, "agent:main:stale")).toThrow(
-      "stale abort failed",
-    );
+    expect(() =>
+      setActiveEmbeddedRun(
+        "stale-session",
+        staleHandle,
+        "agent:main:stale",
+        undefined,
+        undefined,
+        undefined,
+        priorLifecycleGeneration,
+      ),
+    ).toThrow("stale abort failed");
     expect(listActiveEmbeddedRunSessionIds()).not.toContain("stale-session");
   });
 

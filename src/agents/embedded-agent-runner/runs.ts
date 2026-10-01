@@ -53,8 +53,10 @@ import {
   activeNativeAttempts,
   attachNativeAttempt,
   detachNativeAttempt,
+  embeddedRunCleanupAttachment,
+  getControllerEmbeddedAttachment,
+  getEmbeddedRunAttachment,
   ACTIVE_EMBEDDED_RUNS_BY_RUN_ID,
-  ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
   ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE,
   ACTIVE_EMBEDDED_RUN_SNAPSHOTS,
   ABANDONED_EMBEDDED_RUNS_BY_SESSION_ID,
@@ -63,13 +65,13 @@ import {
   EMBEDDED_RUN_COMPLETION_CLAIMS,
   EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS,
   RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS,
-  setActiveEmbeddedRunLifecycleGeneration,
   type ActiveEmbeddedRunSnapshot,
   type AbandonedEmbeddedRun,
   type EmbeddedAgentQueueHandle,
   type EmbeddedAgentQueueMessageOptions,
   type EmbeddedRunCompletionClaim,
   type EmbeddedRunCompletionRegistration,
+  type ActiveEmbeddedRunAttachment,
   type EmbeddedRunRegistration,
   type EmbeddedAgentQueueFailureReason,
 } from "./run-state.js";
@@ -414,7 +416,7 @@ function resolveEmbeddedInjection(
   try {
     const guarded = handle.messageInjectionV2;
     if (guarded?.version === 2) {
-      const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+      const registration = getEmbeddedRunAttachment(handle);
       const operation = resolveActiveReplyOperationForSessionId(sessionId);
       const ownedOperation =
         operation && getAttachedBackend(operation) === handle ? operation : undefined;
@@ -425,7 +427,7 @@ function resolveEmbeddedInjection(
         registration?.toolAuthority?.assertActive();
         return (
           getActiveNativeAttempt(sessionId) === handle &&
-          ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) === registration &&
+          getEmbeddedRunAttachment(handle) === registration &&
           (!ownedOperation ||
             (resolveActiveReplyOperationForSessionId(sessionId) === ownedOperation &&
               getAttachedBackend(ownedOperation) === handle))
@@ -478,7 +480,7 @@ export function isEmbeddedAgentRunAbortableForRunId(runId: string): boolean {
   if (!normalizedRunId) {
     return true;
   }
-  const handle = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId);
+  const handle = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId)?.handle;
   return handle ? isEmbeddedRunHandleAbortable(normalizedRunId, handle) : true;
 }
 
@@ -488,7 +490,7 @@ export function supersedeEmbeddedAgentRunByRunId(runId: string, beforeCancel: ()
   if (!normalizedRunId) {
     return false;
   }
-  const handle = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId);
+  const handle = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId)?.handle;
   if (handle) {
     if (!isEmbeddedRunHandleSupersedable(normalizedRunId, handle)) {
       return false;
@@ -523,8 +525,8 @@ function clearEmbeddedRunAbortability(
   handle: EmbeddedAgentQueueHandle,
   opts?: { retainFinalizing?: boolean },
 ): void {
-  ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)?.humanInputWaits?.clear();
-  if (!handle.runId || ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(handle.runId) !== handle) {
+  getEmbeddedRunAttachment(handle)?.humanInputWaits?.clear();
+  if (!handle.runId || ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(handle.runId)?.handle !== handle) {
     return;
   }
   if (
@@ -555,7 +557,7 @@ export async function claimPendingEmbeddedAgentQuestionAnswer(
     return null;
   }
   const runId = handle.runId;
-  const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+  const registration = getEmbeddedRunAttachment(handle);
   const injection = resolveEmbeddedInjection(sessionId, handle);
   if (!injection?.claimPendingUserInputAnswer) {
     return null;
@@ -567,7 +569,7 @@ export async function claimPendingEmbeddedAgentQuestionAnswer(
   }
   if (
     getActiveNativeAttempt(sessionId) !== handle ||
-    ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) !== registration
+    getEmbeddedRunAttachment(handle) !== registration
   ) {
     return null;
   }
@@ -715,7 +717,7 @@ function prepareEmbeddedAgentQueueMessage(
     }
     return reject("no_active_run");
   }
-  const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+  const registration = getEmbeddedRunAttachment(handle);
   if (sourceCanInject && handle.messageInjectionV2?.version !== 2) {
     return reject("guarded_injection_unsupported");
   }
@@ -785,7 +787,7 @@ function prepareEmbeddedAgentQueueMessage(
   }
   if (
     getActiveNativeAttempt(sessionId) !== handle ||
-    ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) !== registration ||
+    getEmbeddedRunAttachment(handle) !== registration ||
     (ownedOperation &&
       (resolveActiveReplyOperationForSessionId(sessionId) !== ownedOperation ||
         getAttachedBackend(ownedOperation) !== handle))
@@ -820,7 +822,7 @@ export function abortEmbeddedAgentRun(
 ): boolean {
   if (typeof sessionId === "string" && sessionId.length > 0) {
     const handle = getActiveNativeAttempt(sessionId);
-    const operation = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)?.operation : undefined;
+    const operation = handle ? getEmbeddedRunAttachment(handle)?.operation : undefined;
     if (operation) {
       return operation.abortByUser();
     }
@@ -845,7 +847,7 @@ export function abortEmbeddedAgentRun(
     return false;
   }
   const detachedTargets = [...activeNativeAttempts()].filter(
-    ([, handle]) => !ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)?.operation,
+    ([, handle]) => !getEmbeddedRunAttachment(handle)?.operation,
   );
   const replyAborted = abortActiveReplyRuns({
     mode,
@@ -948,7 +950,7 @@ export function prepareEmbeddedAgentRunCompletionClaim(
       return undefined;
     }
     const handle = getActiveNativeAttempt(sessionId);
-    const registration = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) : undefined;
+    const registration = handle ? getEmbeddedRunAttachment(handle) : undefined;
     const toolAuthority = registration?.toolAuthority;
     if (
       !handle ||
@@ -966,7 +968,7 @@ export function prepareEmbeddedAgentRunCompletionClaim(
     }
     return EMBEDDED_RUN_COMPLETION_CLAIMS.get(sessionId) === claim &&
       getActiveNativeAttempt(sessionId) === handle &&
-      ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) === registration &&
+      getEmbeddedRunAttachment(handle) === registration &&
       isAgentEventLifecycleGenerationCurrent(claim.lifecycleGeneration)
       ? { toolAuthority }
       : undefined;
@@ -1035,7 +1037,7 @@ export type ActiveEmbeddedRunOwner = {
 };
 
 function projectActiveEmbeddedRunOwner(
-  registration: EmbeddedRunRegistration,
+  registration: ActiveEmbeddedRunAttachment,
   handle: EmbeddedAgentQueueHandle,
 ): ActiveEmbeddedRunOwner | undefined {
   const runId = handle.runId;
@@ -1045,8 +1047,8 @@ function projectActiveEmbeddedRunOwner(
   const stop = (): "aborted" | "finalizing" | "unchanged" => {
     if (
       getActiveNativeAttempt(registration.sessionId) !== handle ||
-      ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) !== registration ||
-      ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(runId) !== handle
+      getEmbeddedRunAttachment(handle) !== registration ||
+      ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(runId)?.handle !== handle
     ) {
       return "unchanged";
     }
@@ -1093,7 +1095,7 @@ export function resolveActiveEmbeddedRunOwner(
   sessionId: string,
 ): ActiveEmbeddedRunOwner | undefined {
   const handle = getActiveNativeAttempt(sessionId);
-  const registration = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) : undefined;
+  const registration = handle ? getEmbeddedRunAttachment(handle) : undefined;
   return handle && registration ? projectActiveEmbeddedRunOwner(registration, handle) : undefined;
 }
 
@@ -1101,11 +1103,13 @@ export function resolveActiveEmbeddedRunOwnerByRunId(
   runId: string,
 ): ActiveEmbeddedRunOwner | undefined {
   const normalizedRunId = runId.trim();
-  const handle = normalizedRunId ? ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId) : undefined;
+  const handle = normalizedRunId
+    ? ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId)?.handle
+    : undefined;
   if (!handle) {
     return undefined;
   }
-  const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+  const registration = getEmbeddedRunAttachment(handle);
   return registration && getActiveNativeAttempt(registration.sessionId) === handle
     ? projectActiveEmbeddedRunOwner(registration, handle)
     : undefined;
@@ -1113,8 +1117,10 @@ export function resolveActiveEmbeddedRunOwnerByRunId(
 
 export function isActiveEmbeddedRunId(runId: string): boolean {
   const normalizedRunId = runId.trim();
-  const handle = normalizedRunId ? ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId) : undefined;
-  const registration = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) : undefined;
+  const handle = normalizedRunId
+    ? ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId)?.handle
+    : undefined;
+  const registration = handle ? getEmbeddedRunAttachment(handle) : undefined;
   return Boolean(
     handle &&
     registration &&
@@ -1146,7 +1152,7 @@ async function waitForCurrentEmbeddedAgentRunEnd(
   timeoutMs: number | null,
   handle: EmbeddedAgentQueueHandle,
 ): Promise<boolean> {
-  const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+  const registration = getEmbeddedRunAttachment(handle);
   if (!registration) {
     return true;
   }
@@ -1181,7 +1187,7 @@ export async function waitForEmbeddedAgentRunEnd(
 ): Promise<boolean> {
   const handle = getActiveNativeAttempt(sessionId);
   const operation = handle
-    ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)?.operation
+    ? getEmbeddedRunAttachment(handle)?.operation
     : resolveActiveReplyOperationForSessionId(sessionId);
   const nativeSettlement = handle
     ? waitForCurrentEmbeddedAgentRunEnd(sessionId, timeoutMs, handle)
@@ -1211,7 +1217,7 @@ export async function abortAndDrainEmbeddedAgentRun(params: {
   const settleMs = params.settleMs ?? 15_000;
   const handle = getActiveNativeAttempt(params.sessionId);
   const operation = handle
-    ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)?.operation
+    ? getEmbeddedRunAttachment(handle)?.operation
     : resolveActiveReplyOperationForSessionId(params.sessionId);
   // Both receipts are captured before cancellation can reenter and install a successor.
   const nativeSettlement = handle
@@ -1242,7 +1248,7 @@ export async function abortAndDrainEmbeddedAgentRun(params: {
   // the raw backend finished. Keep native registration and session custody until it does.
   if (params.forceClear && handle) {
     const cleanup = EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS.get(handle);
-    if (cleanup && ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)?.operation === operation) {
+    if (cleanup && getEmbeddedRunAttachment(handle)?.operation === operation) {
       await cleanup();
     }
   }
@@ -1263,12 +1269,10 @@ export function setActiveEmbeddedRun(
   sessionFile?: string,
   agentId?: string,
   admittedOperation?: ReplyOperation,
+  lifecycleGeneration = getAgentEventLifecycleGeneration(),
 ) {
-  const currentLifecycleGeneration = getAgentEventLifecycleGeneration();
-  const incomingLifecycleGeneration = setActiveEmbeddedRunLifecycleGeneration(
-    handle,
-    currentLifecycleGeneration,
-  );
+  const incomingLifecycleGeneration =
+    handle[embeddedRunCleanupAttachment]?.lifecycleGeneration ?? lifecycleGeneration;
   // The immutable handle generation rejects delayed stale registration even
   // when rotation left no replacement owner in the session slot.
   if (!isAgentEventLifecycleGenerationCurrent(incomingLifecycleGeneration)) {
@@ -1323,14 +1327,17 @@ export function setActiveEmbeddedRun(
   } else if (sessionKey) {
     throw new Error("Native session registration requires controller turn admission");
   }
-  const previousHandle = getActiveNativeAttempt(sessionId);
-  const wasActive = previousHandle !== undefined;
-  if (previousHandle) {
-    ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(previousHandle)?.watchdogAttempt?.close();
-    ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(previousHandle)?.closeWatchdogWait?.();
+  const previousAttachment =
+    (operation ? getControllerEmbeddedAttachment(operation) : undefined) ??
+    (operation ? undefined : getActiveNativeAttempt(sessionId)?.[embeddedRunCleanupAttachment]);
+  const previousHandle = previousAttachment?.handle;
+  const wasActive = previousAttachment !== undefined;
+  if (previousAttachment && previousHandle) {
+    previousAttachment?.watchdogAttempt?.close();
+    previousAttachment?.closeWatchdogWait?.();
     previousHandle.closeDiagnostics?.();
-    detachNativeAttempt(previousHandle);
     clearEmbeddedRunAbortability(previousHandle, { retainFinalizing: true });
+    detachNativeAttempt(previousAttachment);
     EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS.delete(previousHandle);
   }
   try {
@@ -1359,15 +1366,18 @@ export function setActiveEmbeddedRun(
   const operationalRunInstance = caller?.operationalRunInstance;
   const runContext = handle.runId ? getAgentRunContext(handle.runId) : undefined;
   const watchdogAttempt = handle.diagnosticOwner?.watchdogAttempt ?? toolAuthority?.watchdogAttempt;
-  ACTIVE_EMBEDDED_RUN_REGISTRATIONS.set(handle, {
+  const registration: EmbeddedRunRegistration = {
+    handle,
+    lifecycleGeneration: incomingLifecycleGeneration,
     settlement: createDeferredCore(),
     watchdogAttempt,
-    operation,
-    backend: operation ? getAttachedBackend(operation) : undefined,
     projectSessionActive:
-      runContext?.lifecycleGeneration === incomingLifecycleGeneration
+      (operation
+        ? getSessionControllerEntryForOperation(operation).attachment?.projectSessionActive
+        : undefined) ??
+      (runContext?.lifecycleGeneration === incomingLifecycleGeneration
         ? runContext.projectSessionActive
-        : undefined,
+        : undefined),
     toolAuthority,
     operationalRunInstance,
     sessionId,
@@ -1393,17 +1403,25 @@ export function setActiveEmbeddedRun(
         reason: "human_input_resolved",
       });
     },
-  });
-  attachNativeAttempt(handle, operation);
+  };
+  let attachment: ActiveEmbeddedRunAttachment = registration;
+  if (operation) {
+    const controllerAttachment = getSessionControllerEntryForOperation(operation).attachment;
+    if (!controllerAttachment || controllerAttachment.operation !== operation) {
+      throw new Error("Native registration requires its controller backend attachment");
+    }
+    attachment = Object.assign(controllerAttachment, registration, { operation });
+  }
+  attachNativeAttempt(attachment);
+  handle[embeddedRunCleanupAttachment] = attachment;
   if (watchdogAttempt && handle.ownsLiveness) {
-    const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)!;
+    const registration = attachment;
     const wait = watchdogAttempt.beginWait({
       kind: "runtime_owned",
       isCurrent: () => {
         if (
-          ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) !== registration ||
-          (operation &&
-            getSessionControllerEntryForOperation(operation).nativeAttempt?.handle !== handle)
+          getEmbeddedRunAttachment(handle) !== registration ||
+          (operation && getSessionControllerEntryForOperation(operation).attachment !== attachment)
         ) {
           return false;
         }
@@ -1421,18 +1439,13 @@ export function setActiveEmbeddedRun(
     if (operation.phase === "queued") {
       operation.setPhase("running");
     }
-    const native = getSessionControllerEntryForOperation(operation).nativeAttempt;
-    if (native) {
-      native.projectSessionActive =
-        ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)?.projectSessionActive;
-    }
   }
   const forcedTerminalSettlement = resolveSessionPlacementForcedTerminalSettlement();
   if (forcedTerminalSettlement) {
     EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS.set(handle, forcedTerminalSettlement);
   }
   if (handle.runId) {
-    ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.set(handle.runId, handle);
+    ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.set(handle.runId, attachment);
   }
   clearActiveRunSessionIndex(ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE, sessionId);
   setActiveRunSessionFile(sessionFile, sessionId);
@@ -1468,6 +1481,7 @@ export function setActiveEmbeddedRun(
   } else if (completionClaim) {
     revokeCompletionClaim(sessionId);
   }
+  return attachment;
 }
 
 export function updateActiveEmbeddedRunSnapshot(
@@ -1486,26 +1500,25 @@ export function clearActiveEmbeddedRun(
   sessionKey?: string,
   sessionFile?: string,
   reason = "run_completed",
+  expectedAttachment?: ActiveEmbeddedRunAttachment,
 ) {
   const activeHandle = getActiveNativeAttempt(sessionId);
-  const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
-  if (!registration) {
+  const registration =
+    expectedAttachment ?? handle[embeddedRunCleanupAttachment] ?? getEmbeddedRunAttachment(handle);
+  if (!registration || registration.settled) {
     return;
   }
   registration.closeWatchdogWait?.();
-  registration?.watchdogAttempt?.close();
-  if (registration?.operation && registration.backend) {
-    registration.operation.detachBackend(registration.backend);
+  registration.watchdogAttempt?.close();
+  const operation = registration.operation;
+  const backend = registration.backend;
+  clearEmbeddedRunAbortability(handle, { retainFinalizing: true });
+  detachNativeAttempt(registration);
+  if (operation && backend) {
+    operation.detachBackend(backend);
   }
   if (activeHandle === handle) {
     handle.closeDiagnostics?.();
-    const operation = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)?.operation;
-    const backend = operation && getAttachedBackend(operation);
-    detachNativeAttempt(handle);
-    if (operation && backend) {
-      operation.detachBackend(backend);
-    }
-    clearEmbeddedRunAbortability(handle, { retainFinalizing: true });
     ACTIVE_EMBEDDED_RUN_SNAPSHOTS.delete(sessionId);
     clearActiveRunSessionIndex(ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE, sessionId);
     logSessionStateChange({
@@ -1524,13 +1537,11 @@ export function clearActiveEmbeddedRun(
       );
     }
   } else {
-    detachNativeAttempt(handle);
-    clearEmbeddedRunAbortability(handle, { retainFinalizing: true });
     diag.debug(`run clear skipped: sessionId=${sessionId} reason=handle_mismatch`);
   }
   EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS.delete(handle);
-  // Exact-handle waiters own teardown even after another run takes the session slot.
-  ACTIVE_EMBEDDED_RUN_REGISTRATIONS.delete(handle);
+  // Exact attachment waiters own teardown even after another run takes the session slot.
+  registration.settled = true;
   registration.settlement.resolve();
 }
 

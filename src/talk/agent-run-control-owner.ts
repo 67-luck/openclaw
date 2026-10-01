@@ -1,6 +1,6 @@
 import {
   getActiveNativeAttempt,
-  ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
+  getEmbeddedRunAttachment,
 } from "../agents/embedded-agent-runner/run-state.js";
 import type { ReplyToolAuthorityOverlay } from "../sessions/session-controller.contracts.js";
 import {
@@ -11,21 +11,24 @@ import {
 /** A session-wide request selects one existing owner; later work cannot inherit it. */
 export function captureRealtimeVoiceRunOwner(sessionId: string, sessionKey: string) {
   const handle = getActiveNativeAttempt(sessionId);
-  const registration = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) : undefined;
-  const operation = resolveReplyRunForCurrentSessionId(sessionId);
-  if (!handle && !operation) {
+  const registration = handle ? getEmbeddedRunAttachment(handle) : undefined;
+  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
+  const operation = resolution.kind === "one" ? resolution.operation : undefined;
+  if (!handle && resolution.kind !== "one") {
     return undefined;
   }
   const runId = handle?.runId;
   const handleFingerprint = handle?.toolAuthorityFingerprint;
   const fingerprint = handleFingerprint ?? operation?.toolAuthorityFingerprint;
   const isCurrent = () => {
+    const currentResolution = resolveReplyRunForCurrentSessionId(sessionId);
     if (
       operation &&
       (operation.result ||
         operation.key !== sessionKey ||
         operation.sessionId !== sessionId ||
-        resolveReplyRunForCurrentSessionId(sessionId) !== operation ||
+        currentResolution.kind !== "one" ||
+        currentResolution.operation !== operation ||
         (handle && getAttachedBackend(operation) !== handle))
     ) {
       return false;
@@ -33,7 +36,7 @@ export function captureRealtimeVoiceRunOwner(sessionId: string, sessionKey: stri
     if (
       handle &&
       (getActiveNativeAttempt(sessionId) !== handle ||
-        ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) !== registration ||
+        getEmbeddedRunAttachment(handle) !== registration ||
         (registration?.sessionKey !== undefined && registration.sessionKey !== sessionKey) ||
         handle.runId !== runId ||
         handle.toolAuthorityFingerprint !== handleFingerprint ||

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { isEmbeddedRunHandleCompacting } from "../agents/embedded-agent-runner/runs.probes.js";
 import type { ReplyFollowupAdmissionBarrierTimeoutPolicy } from "../auto-reply/reply/reply-dispatcher.types.js";
+import { diagnosticLogger as diag } from "../logging/diagnostic-runtime.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { evaluateTurnAdmission } from "./session-controller.admission-rule.js";
@@ -36,7 +37,6 @@ export {
   controllerEntryByOperation,
   lifecycleAdmissionByOperation,
   evictReplyOperationByOperation,
-  attachedBackendByOperation,
   operationsByUpstreamAbortSignal,
   producerCompletionByOperation,
 } from "./session-controller.storage.js";
@@ -54,11 +54,20 @@ export function findSessionControllerEntries(
   target?: SessionTarget,
 ): SessionControllerEntry[] {
   const aliases = target?.aliases ?? [key.trim()];
-  return [...controllerStorage.sessionControllers.values()].filter(
+  const matches = [...controllerStorage.sessionControllers.values()].filter(
     (entry) =>
       (!target || !entry.target || entry.target.storeScope === target.storeScope) &&
       aliases.some((alias) => entry.aliases.has(alias)),
   );
+  if (matches.length > 1) {
+    diag.warn(
+      `ambiguous session controller identity: sessionKey=${key.trim()} entryIds=${matches
+        .map((entry) => entry.id)
+        .toSorted()
+        .join(",")}`,
+    );
+  }
+  return matches;
 }
 export function findSessionControllerEntry(
   key: string,
@@ -69,6 +78,7 @@ export function findSessionControllerEntry(
   if (exact && exact.id !== exact.key && !target) {
     return exact;
   }
+  // Key-only lookup can overlap across stores while logical aliases and rekeys remain live.
   const matches = findSessionControllerEntries(key, target);
   return matches.length === 1 ? matches[0] : undefined;
 }
@@ -133,6 +143,9 @@ export function getSessionControllerEntry(
   }
   const matches = findSessionControllerEntries(canonicalKey, target);
   if (matches.length > 1) {
+    if (matches.some((entry) => entry.active)) {
+      throw new ReplyRunAlreadyActiveError(canonicalKey);
+    }
     throw new Error("Session controller identity requires a physical store scope");
   }
   let entry = matches[0];
@@ -154,6 +167,7 @@ export function getSessionControllerEntry(
 }
 export {
   getSessionControllerEntryForOperation,
+  hasSessionControllerIdentity,
   isCurrentSessionControllerOperation,
 } from "./session-controller.identity.js";
 /** Empty lifecycle entries do not retain historical session keys. Mailbox/mutation
@@ -161,7 +175,7 @@ export {
 export function pruneSessionControllerEntry(entry: SessionControllerEntry): void {
   if (
     !entry.active &&
-    !entry.nativeAttempt &&
+    !entry.attachment &&
     !entry.sourceTurnId &&
     !entry.waiters.size &&
     !entry.followupBarrier &&
@@ -179,7 +193,17 @@ export function getSessionControllerOperation(
   key: string,
   target?: SessionTarget,
 ): ReplyOperation | undefined {
-  return findSessionControllerEntry(key, target)?.active;
+  const exact = !target ? controllerStorage.sessionControllers.get(key) : undefined;
+  if (exact && exact.id !== exact.key) {
+    return exact.active;
+  }
+  const operations = findSessionControllerEntries(key, target).flatMap((entry) =>
+    entry.active ? [entry.active] : [],
+  );
+  if (operations.length > 1) {
+    throw new ReplyRunAlreadyActiveError(key);
+  }
+  return operations[0];
 }
 export function* activeSessionOperations(): IterableIterator<ReplyOperation> {
   for (const entry of controllerStorage.sessionControllers.values()) {
@@ -286,16 +310,6 @@ export function notifyReplyRunEnded(owner: string | SessionControllerEntry): voi
 }
 
 export { resolveReplyRunForCurrentSessionId } from "./session-controller.identity.js";
-export function resolveReplyRunWaitKey(sessionId: string): string | undefined {
-  const id = normalizeOptionalString(sessionId);
-  if (!id) {
-    return undefined;
-  }
-  const matches = [...controllerStorage.sessionControllers.values()].filter((entry) =>
-    entry.active?.hasOwnedSessionId(id),
-  );
-  return matches.length === 1 ? matches[0]?.id : undefined;
-}
 
 export function isReplyRunCompacting(operation: ReplyOperation): boolean {
   if (operation.phase === "preflight_compacting" || operation.phase === "memory_flushing") {
@@ -324,7 +338,10 @@ export function hasReplyOperationExecutionStarted(operation: ReplyOperation): bo
 // the target session.
 
 export function getAttachedBackend(operation: ReplyOperation): ReplyBackendHandle | undefined {
-  return controllerStorage.attachedBackendByOperation.get(operation);
+  const entry = controllerStorage.controllerEntryByOperation.get(operation);
+  return entry?.active === operation && entry.attachment?.operation === operation
+    ? entry.attachment.backend
+    : undefined;
 }
 
 // Committed output belongs to the bounded finalization owner. Stale recovery
@@ -687,8 +704,8 @@ export function clearReplyRunState(params: {
     );
   }
   entry.active = undefined;
-  if (entry.nativeAttempt?.operation === params.operation) {
-    entry.nativeAttempt = undefined;
+  if (entry.attachment?.operation === params.operation) {
+    entry.attachment = undefined;
   }
   entry.sourceTurnId = undefined;
   notifyReplyRunEnded(entry);

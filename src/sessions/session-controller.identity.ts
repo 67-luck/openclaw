@@ -1,4 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { diagnosticLogger as diag } from "../logging/diagnostic-runtime.js";
 import type { ReplyOperation } from "./session-controller.contracts.js";
 import type { SessionControllerEntry } from "./session-controller.state.types.js";
 import * as controllerStorage from "./session-controller.storage.js";
@@ -30,13 +31,43 @@ export function assertSessionControllerOperation(operation: ReplyOperation): voi
   }
 }
 
-export function resolveReplyRunForCurrentSessionId(sessionId: string): ReplyOperation | undefined {
+export type ReplyRunIdentityResolution =
+  | { kind: "none" }
+  | { kind: "one"; operation: ReplyOperation }
+  | { kind: "ambiguous"; operations: ReplyOperation[] };
+
+export function hasSessionControllerIdentity(sessionId: string): boolean {
+  const id = normalizeOptionalString(sessionId);
+  return Boolean(
+    id &&
+    [...controllerStorage.sessionControllers.values()].some(
+      (entry) => entry.aliases.has(id) || entry.active?.hasOwnedSessionId(id) === true,
+    ),
+  );
+}
+
+/** Session IDs can overlap across stores or reused incarnations. Key lookup can
+ * also overlap while logicalAliases, updateSessionKey moves, and updateSessionId
+ * lineage retain old and new identities. */
+export function resolveReplyRunForCurrentSessionId(sessionId: string): ReplyRunIdentityResolution {
   const id = normalizeOptionalString(sessionId);
   if (!id) {
-    return undefined;
+    return { kind: "none" };
   }
-  const matches = [...controllerStorage.sessionControllers.values()]
-    .flatMap((entry) => (entry.active ? [entry.active] : []))
-    .filter((operation) => operation.sessionId === id);
-  return matches.length === 1 ? matches[0] : undefined;
+  const matches = [...controllerStorage.sessionControllers.values()].filter(
+    (entry) => entry.active?.hasOwnedSessionId(id) === true,
+  );
+  if (matches.length === 0) {
+    return { kind: "none" };
+  }
+  if (matches.length === 1) {
+    return { kind: "one", operation: matches[0]!.active! };
+  }
+  diag.warn(
+    `ambiguous session controller identity: sessionId=${id} entryIds=${matches
+      .map((entry) => entry.id)
+      .toSorted()
+      .join(",")}`,
+  );
+  return { kind: "ambiguous", operations: matches.map((entry) => entry.active!) };
 }

@@ -16,7 +16,10 @@ import {
   retireSessionControllerSourceCancellation,
   retireSessionControllerInput,
 } from "../sessions/session-controller.mailbox.js";
-import { isRpcSourceQueued } from "../sessions/session-controller.rpc-sources.js";
+import {
+  isRpcSourceQueued,
+  setRpcSourceProjectSessionActive,
+} from "../sessions/session-controller.rpc-sources.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
@@ -268,7 +271,7 @@ describe("operator access cancellation", () => {
         };
         f.context.chatRunState.getOrCreate("terminal-run").buffer = "The already accepted result.";
         const terminalWrite = createDeferredCore();
-        guest.entry.adapter.projectSessionActive = false;
+        setRpcSourceProjectSessionActive(guest.entry, false);
         guest.entry.adapter.projectSessionTerminalPending = true;
         guest.entry.adapter.projectSessionTerminalObservedAt = Date.now();
         const persistence = terminalWrite.promise.then(() => {

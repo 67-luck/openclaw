@@ -84,7 +84,6 @@ import { withEnvAsync } from "../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { buildCurrentRunRestartRecoveryClaim } from "../agent-command-restart-recovery.js";
 import { deliverAgentCommandResult } from "../command/delivery.js";
-import { setActiveEmbeddedRunLifecycleGeneration } from "../embedded-agent-runner/run-state.js";
 import type { EmbeddedAgentQueueHandle } from "../embedded-agent-runner/runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
@@ -3331,16 +3330,31 @@ describe("main-session-restart-recovery", () => {
     });
     const priorLifecycleGeneration = getAgentEventLifecycleGeneration();
     const staleHandle = createHandle("stale-generation-run");
-    setActiveEmbeddedRunLifecycleGeneration(staleHandle, priorLifecycleGeneration);
     if (registrationOrder === "stale-first") {
-      setActiveEmbeddedRun(sessionId, staleHandle, sessionKey);
+      setActiveEmbeddedRun(
+        sessionId,
+        staleHandle,
+        sessionKey,
+        undefined,
+        undefined,
+        undefined,
+        priorLifecycleGeneration,
+      );
     }
 
     rotateAgentEventLifecycleGeneration();
     const currentHandle = createHandle("current-generation-run");
     setActiveEmbeddedRun(sessionId, currentHandle, sessionKey);
     if (registrationOrder === "current-first") {
-      setActiveEmbeddedRun(sessionId, staleHandle, sessionKey);
+      setActiveEmbeddedRun(
+        sessionId,
+        staleHandle,
+        sessionKey,
+        undefined,
+        undefined,
+        undefined,
+        priorLifecycleGeneration,
+      );
     }
 
     const recovery = scheduleRestartAbortedMainSessionRecovery({

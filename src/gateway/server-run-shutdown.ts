@@ -2,8 +2,12 @@ import { isAgentEventLifecycleGenerationCurrent } from "../infra/agent-events.js
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { hasGatewayContextOwner } from "../plugins/runtime/gateway-request-scope.js";
 import { sessionControllerMailboxes } from "../sessions/session-controller.mailbox.js";
-import type { RpcSourceIndex, RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
-import { isRpcSourceQueued } from "../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSourceProjectSessionActive,
+  isRpcSourceQueued,
+  type RpcSourceIndex,
+  type RpcSourceRef,
+} from "../sessions/session-controller.rpc-sources.js";
 import { activeSessionOperations } from "../sessions/session-controller.state.js";
 import { captureSessionControllerStop, stopSession } from "../sessions/session-controller.stop.js";
 import {
@@ -177,7 +181,7 @@ async function settleTerminalSessionPersistenceForRestart(
 ): Promise<void> {
   const pending = listUnabortedRuns(rpcSources).flatMap(([, entry]) => {
     const persistence = entry.adapter.projectSessionTerminalPersistence;
-    if (entry.adapter.projectSessionActive !== false || !persistence) {
+    if (getRpcSourceProjectSessionActive(entry) !== false || !persistence) {
       return [];
     }
     return [{ entry, persistence }];
@@ -374,7 +378,7 @@ export async function prepareGatewayRunShutdown(
           sessionKey: target.entry.adapter.sessionKey,
           expectedEntry: target.entry,
           presentation: target.presentation,
-          preserveTerminal: target.entry.adapter.projectSessionActive === false,
+          preserveTerminal: getRpcSourceProjectSessionActive(target.entry) === false,
           cancel,
           stopReason: params.restart ? "restart" : "rpc",
         }).aborted;
