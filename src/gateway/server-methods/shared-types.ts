@@ -275,6 +275,12 @@ type GatewayKernelContext = {
     agentIds: readonly string[],
   ) => Promise<PreparedGatewayModelCatalogReadResult[]>;
   readChatMetadata: (params: ChatMetadataReadParams) => Promise<ChatMetadataResult>;
+  readPreparedModelsList?: (
+    params: import("./models-list-context.js").PreparedModelsListRequest,
+  ) => Promise<
+    | import("../../../packages/gateway-protocol/src/schema/model-catalog.js").ModelsListResult
+    | undefined
+  >;
   readChatStartupProjection?: (
     params: ChatStartupProjectionReadParams,
   ) => Promise<ChatStartupProjectionResult | undefined>;
@@ -295,7 +301,10 @@ type GatewayKernelContext = {
     requestParams: unknown;
     connId?: string;
   }) => SessionMutationTarget[] | undefined;
-  enforceSharedGatewayAuthGenerationForConfigWrite?: (nextConfig: OpenClawConfig) => void;
+  enforceSharedGatewayAuthGenerationForConfigWrite?: (
+    nextConfig: OpenClawConfig,
+    previousConfig: OpenClawConfig,
+  ) => void;
   nodeRegistry: NodeRegistry;
   agentRunSeq: Map<string, number>;
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
@@ -518,6 +527,9 @@ export type GatewayRequestHandlerOptions = Omit<
 > & {
   params: Record<string, unknown>;
   sessionMutationAuthorization?: SessionMutationAuthorization;
+  markSessionSubscribePhase?: (
+    phase: import("../slow-request-diagnostics.js").SessionSubscribePhase,
+  ) => void;
   /** Host-prepared session resource authority; services explicitly retain their own borrow. */
   sessionAccessAuthority?: import("../session-access-authority.js").GatewaySessionAccessAuthority;
 };

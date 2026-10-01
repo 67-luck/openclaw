@@ -24,7 +24,7 @@ describe("heartbeat target policy", () => {
     resetPluginRuntimeStateForTest();
   });
 
-  it("does not replace an outbound-approved target without a session route", async () => {
+  it("rejects a directory recipient denied by outbound policy without a session route", async () => {
     const plugin: ChannelPlugin = createTestChannelPlugin({
       id: "external-channel",
       label: "External",
@@ -57,7 +57,7 @@ describe("heartbeat target policy", () => {
       },
     });
 
-    expect(resolved).toMatchObject({ channel: "external-channel", to: "approved-target" });
+    expect(resolved).toMatchObject({ channel: "none", reason: "no-target" });
   });
 
   it("rejects a native namespace inherited from the last heartbeat route", async () => {

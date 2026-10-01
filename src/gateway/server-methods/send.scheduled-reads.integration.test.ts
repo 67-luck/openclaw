@@ -183,7 +183,10 @@ async function createFixture(state: OpenClawTestState) {
     };
     const token = mintMessageActionTurnCapability({
       ...identity,
-      scheduled: { policy, assertCurrent: () => permission.signal.throwIfAborted() },
+      scheduled: {
+        policy,
+        assertCurrent: () => permission.signal.throwIfAborted(),
+      },
     });
     tokens.push(token);
     const messageActionContext = expectDefined(
@@ -414,18 +417,21 @@ describe("Gateway scheduled reads through an installed Discord plugin", () => {
 });
 
 describe("Gateway scheduled write accounts through an installed Discord plugin", () => {
-  it("rejects an inferred channel name before a scheduled provider mutation", async () => {
-    await withFixture(async (fixture) => {
-      const response = await fixture.invokeAction("delete", {
-        idempotencyKey: "scheduled-delete-inferred-channel-name",
-        channelId: "discord",
-        allowNativeChannelNamespace: false,
-      });
+  it.each([undefined, false])(
+    "rejects an inferred channel name before a scheduled provider mutation (provenance=%s)",
+    async (allowNativeChannelNamespace) => {
+      await withFixture(async (fixture) => {
+        const response = await fixture.invokeAction("delete", {
+          idempotencyKey: `scheduled-delete-inferred-channel-name-${String(allowNativeChannelNamespace)}`,
+          channelId: "discord",
+          allowNativeChannelNamespace,
+        });
 
-      expectDenied(response, "does not specify a destination");
-      expect(fixture.httpRequests.every((request) => request.method === "GET")).toBe(true);
-    });
-  });
+        expectDenied(response, "does not specify a destination");
+        expect(fixture.httpRequests.every((request) => request.method === "GET")).toBe(true);
+      });
+    },
+  );
 
   it.each([
     { action: "edit", method: "PATCH", path: messageWritePath },
