@@ -144,15 +144,16 @@ export function resolveTsdownDeclarationGeneratorInputs(rootDir: string, generat
             throw new Error(`Unowned import.meta directory in ${id}:${reference.line}`);
           }
         } else {
-          // The handoff config passes these files to the runtime compiler, not
-          // the declaration generator. Capture their bytes without interpreting
-          // staged runtime paths as files in the source checkout.
+          // Entrypoint registries and the handoff config pass these files to the
+          // runtime compiler, not the generator. Capture their bytes without
+          // interpreting runtime-only imports as generator dependencies.
           const targetIsCompilerSource =
-            id === "scripts/lib/managed-handoff-build-config.mts" &&
-            [
-              "../../src/shared/freebsd-process-identity.ts",
-              "../../src/infra/update-managed-service-handoff-native-loader.ts",
-            ].includes(reference.specifier);
+            id === "src/infra/runtime-process-entrypoints.ts" ||
+            (id === "scripts/lib/managed-handoff-build-config.mts" &&
+              [
+                "../../src/shared/freebsd-process-identity.ts",
+                "../../src/infra/update-managed-service-handoff-native-loader.ts",
+              ].includes(reference.specifier));
           visit(target, targetIsCompilerSource);
         }
         continue;

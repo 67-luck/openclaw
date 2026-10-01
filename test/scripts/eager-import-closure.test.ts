@@ -88,6 +88,7 @@ it("acquires and releases wrapper leases without the application command runtime
     "src/state/openclaw-state-lease-worker.ts",
     "src/state/openclaw-state-lease-heartbeat.worker.ts",
     "src/infra/sqlite-store.worker.ts",
+    "src/infra/sqlite-worker-transport.worker.ts",
     "src/infra/sqlite-readonly-location.worker.ts",
   ]);
   expect(existsSync(join(root, "src/state/openclaw-state-worker-runtime.ts"))).toBe(false);
