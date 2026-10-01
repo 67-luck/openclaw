@@ -7,9 +7,6 @@ import type {
   WorkspaceAttestation,
   WorkspaceAttestationInput,
 } from "../agents/workspace-state-store.kernel.js";
-import type { AuditEventListQuery, AuditEventListPage } from "../audit/audit-event-types.js";
-import type { AuditWriterOperations } from "../audit/audit-event-writer.types.js";
-import type { ChannelIngressWorkerOperations } from "../channels/message/ingress-queue.worker-contract.js";
 import type { ClawAddStateWorkerOperations } from "../claws/add-state-worker-contract.js";
 import type { ClawInstallSchemaVersionRow } from "../claws/provenance-runtime-read.kernel.js";
 import type { ConfigHealthPatch } from "../config/io.health-state.kernel.js";
