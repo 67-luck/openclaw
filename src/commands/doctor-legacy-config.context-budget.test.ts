@@ -234,9 +234,11 @@ describe("Ollama context-budget Doctor migrations", () => {
       num_ctx: 65536,
     });
     expect(res.config.models?.providers?.ollama?.params).toBeUndefined();
+    expect(res.config.agents?.defaults?.model).toEqual({ primary: "ollama/llama3.3" });
     expect(res.changes).toEqual([
       "models.providers.ollama.contextWindow → models.providers.ollama.models[0].contextWindow.",
       "Removed models.providers.ollama.contextWindow after baking it into explicit model entries.",
+      "Preserved the implicit primary model in agents.defaults.model.primary (ollama/llama3.3).",
       "Set models.providers.ollama.models[0].params.num_ctx to 65536 for native Ollama compatibility.",
     ]);
   });
@@ -289,8 +291,10 @@ describe("Ollama context-budget Doctor migrations", () => {
     expect(res.config.models?.providers?.ollama?.models?.[0]?.params).toEqual({
       num_ctx: 32768,
     });
+    expect(res.config.agents?.defaults?.model).toEqual({ primary: "ollama/llama3.3" });
     expect(res.changes).toEqual([
       "Removed models.providers.ollama.contextWindow after baking it into explicit model entries.",
+      "Preserved the implicit primary model in agents.defaults.model.primary (ollama/llama3.3).",
       "Set models.providers.ollama.models[0].params.num_ctx to 32768 for native Ollama compatibility.",
     ]);
   });
@@ -380,9 +384,11 @@ describe("Ollama context-budget Doctor migrations", () => {
     expect(res.config.models?.providers?.ollama?.models?.[0]?.params).toEqual({
       num_ctx: 65536,
     });
+    expect(res.config.agents?.defaults?.model).toEqual({ primary: "ollama/llama3.3" });
     expect(res.changes).toEqual([
       "models.providers.ollama.contextWindow → models.providers.ollama.models[0].contextWindow.",
       "Removed models.providers.ollama.contextWindow after baking it into explicit model entries.",
+      "Preserved the implicit primary model in agents.defaults.model.primary (ollama/llama3.3).",
       "Set models.providers.ollama.models[0].params.num_ctx to 65536 for native Ollama compatibility.",
     ]);
   });
@@ -425,8 +431,10 @@ describe("Ollama context-budget Doctor migrations", () => {
     expect(res.config.models?.providers?.ollama?.models).toEqual(
       input.models.providers.ollama.models,
     );
+    expect(res.config.agents?.defaults?.model).toEqual({ primary: "ollama/llama3.3" });
     expect(res.changes).toEqual([
       "Removed models.providers.ollama.contextWindow after baking it into explicit model entries.",
+      "Preserved the implicit primary model in agents.defaults.model.primary (ollama/llama3.3).",
     ]);
   });
 });
