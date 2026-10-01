@@ -87,8 +87,11 @@ describe("archive automation confirmation", () => {
       });
       const confirmed = confirmSessionArchive(options);
       if (changed) {
+        const { dialog, button } = await dialogButton("Cancel");
+        expect(dialog.textContent).toContain("Automation details could not be loaded");
+        expect(dialog.querySelectorAll(".confirm-dialog-item")).toHaveLength(0);
+        button.click();
         expect(await confirmed).toBe(false);
-        expect(document.querySelector("openclaw-modal-dialog")).toBeNull();
       } else {
         const { dialog, button } = await dialogButton("Archive and pause");
         expect(dialog.textContent).toContain("Daily check");
@@ -149,12 +152,19 @@ describe("archive automation confirmation", () => {
     expect(document.querySelector("openclaw-modal-dialog")).toBeNull();
   });
 
-  it("does not continue on inventory failure or show a false empty preview", async () => {
-    const { options, request } = setup();
-    request.mockRejectedValue(new Error("Inventory unavailable"));
-    expect(await confirmSessionArchive(options)).toBe(false);
-    expect(document.querySelector("openclaw-modal-dialog")).toBeNull();
-  });
+  it.each([false, true])(
+    "requires an explicit choice when inventory is unavailable (archive=%s)",
+    async (archive) => {
+      const { options, request } = setup();
+      request.mockRejectedValue(new Error("Inventory unavailable"));
+      const confirmed = confirmSessionArchive(options);
+      const { dialog, button } = await dialogButton(archive ? "Archive anyway" : "Cancel");
+      expect(dialog.textContent).toContain("Automation details could not be loaded");
+      expect(dialog.querySelectorAll(".confirm-dialog-item")).toHaveLength(0);
+      button.click();
+      expect(await confirmed).toBe(archive);
+    },
+  );
 
   it("archives without a dialog when the authoritative inventory is empty", async () => {
     const { options, request } = setup();

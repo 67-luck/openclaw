@@ -107,6 +107,35 @@ describe("Sessions archive outcome lifetime", () => {
     await archived;
     expect(fixture.patches()).toHaveLength(1);
   });
+  it("allows an informed archive when the automation inventory is unavailable", async () => {
+    const fixture = await setup();
+    const originalRequest = fixture.request.getMockImplementation()!;
+    fixture.request.mockImplementation(async (method, params) => {
+      if (method === "cron.list") {
+        throw new Error("Inventory unavailable");
+      }
+      return originalRequest(method, params);
+    });
+    fixture.pending.resolve({
+      ...result,
+      automationPause: { status: "failed", reason: "unavailable" },
+    });
+    const archived = fixture.page.archiveSessionWithUndo(row);
+    await vi.waitFor(() => expect(document.querySelector("openclaw-modal-dialog")).not.toBeNull());
+    const dialog = document.querySelector("openclaw-modal-dialog")!;
+    expect(dialog.textContent).toContain("Automation details could not be loaded");
+    expect(fixture.patches()).toHaveLength(0);
+    const confirm = [...dialog.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Archive anyway",
+    );
+    expect(confirm).toBeDefined();
+    confirm!.click();
+    await archived;
+    await fixture.toast.updateComplete;
+    expect(fixture.patches()).toHaveLength(1);
+    expect(fixture.toast.textContent).toContain("Automation pause incomplete");
+  });
+
   it.each([
     {
       pause: { status: "partial", pausedCount: 1, failedCount: 1 } as const,

@@ -1,4 +1,3 @@
-import { showToast } from "../lib/toast.ts";
 import {
   SESSIONS_PATCH_MANY_MAX_TARGETS,
   type SessionsPatchManyParams,
@@ -16,6 +15,7 @@ import { archiveAutomationPauseNotice } from "../lib/sessions/automation-pause.t
 import type { SessionPatchResult } from "../lib/sessions/patch.ts";
 import { resolveUiSessionRowAgentId } from "../lib/sessions/session-key.ts";
 import { requestSessionInvolvement } from "../lib/sessions/session-requests.ts";
+import { showToast } from "../lib/toast.ts";
 import type {
   SidebarRecentSession,
   SidebarSessionMutationResult,
@@ -288,7 +288,10 @@ export async function patchSession(
     agentId,
     ...(session.sessionId ? { expectedSessionId: session.sessionId } : {}),
   };
-  if ((typeof patch.archived === "boolean" || patch.snoozedUntil !== undefined) && !session.sessionId?.trim()) {
+  if (
+    (typeof patch.archived === "boolean" || patch.snoozedUntil !== undefined) &&
+    !session.sessionId?.trim()
+  ) {
     host.sessionData.publishSessionMutationError(
       scope,
       "Session lifecycle action requires a durable session identity.",
@@ -391,4 +394,3 @@ export function sessionUndoHost(
     },
   };
 }
-

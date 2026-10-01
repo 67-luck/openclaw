@@ -1038,7 +1038,10 @@ export const en: TranslationMap & {
     archiveAutomationsChanged:
       "The automation list changed. Try archiving again to review the current schedules.",
     archiveAutomationsLoadFailed:
-      "Could not check attached automations. The session was not archived. {error}",
+      "Automation details could not be loaded. You can still archive this session.",
+    archiveAutomationsUnknownPause:
+      "OpenClaw will try to pause attached automations and report any failures. Unarchiving will not resume them.",
+    archiveAnyway: "Archive anyway",
     archiveAndPause: "Archive and pause",
     automationPauseComplete: "Attached automations paused. Unarchiving will not resume them.",
     automationPauseIncomplete:

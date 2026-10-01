@@ -6,7 +6,6 @@ import { formatUiError } from "../lib/format-error.ts";
 import { formatCronSchedule } from "../lib/presenter.ts";
 import { readSessionMethodScopeAccess } from "../lib/session-method-access.ts";
 import type { SessionRequestClient } from "../lib/sessions/session-capability.ts";
-import { showToast } from "../lib/toast.ts";
 import { showConfirmDialog } from "./confirm-dialog.ts";
 
 type ArchiveTarget = Pick<GatewaySessionRow, "key" | "hasAutomation"> & { agentId?: string };
@@ -35,43 +34,51 @@ export async function confirmSessionArchive(options: {
       method: "cron.list",
       requiredScope: "operator.read",
     }).allowed;
-    // A session-only writer can archive without gaining access to the automation inventory.
-    for (const target of canRead ? targets : []) {
-      let offset = 0;
-      let revision: string | undefined;
-      for (;;) {
-        if (!isCurrent()) {
-          return false;
+    let inventoryFailure: { message: string } | undefined;
+    try {
+      // A session-only writer can archive without gaining access to the automation inventory.
+      for (const target of canRead ? targets : []) {
+        let offset = 0;
+        let revision: string | undefined;
+        for (;;) {
+          if (!isCurrent()) {
+            return false;
+          }
+          const page = readCanonicalCronJobsPage(
+            await options.client.request<CronJobsListResult<CronCompactJob>>("cron.list", {
+              sessionKey: target.key,
+              sessionAgentId: target.agentId,
+              includeDisabled: true,
+              compact: true,
+              limit: 200,
+              offset,
+              sortBy: "name",
+              sortDir: "asc",
+            }),
+            200,
+          );
+          if (!isCurrent()) {
+            return false;
+          }
+          assertCanonicalCronJobsCursor(page, offset);
+          if (revision !== undefined && page.snapshotRevision !== revision) {
+            throw new Error(t("sessionsView.archiveAutomationsChanged"));
+          }
+          revision = page.snapshotRevision;
+          for (const job of page.jobs) {
+            jobs.set(job.id, job);
+          }
+          if (!page.hasMore) {
+            break;
+          }
+          offset = page.nextOffset!;
         }
-        const page = readCanonicalCronJobsPage(
-          await options.client.request<CronJobsListResult<CronCompactJob>>("cron.list", {
-            sessionKey: target.key,
-            sessionAgentId: target.agentId,
-            includeDisabled: true,
-            compact: true,
-            limit: 200,
-            offset,
-            sortBy: "name",
-            sortDir: "asc",
-          }),
-          200,
-        );
-        if (!isCurrent()) {
-          return false;
-        }
-        assertCanonicalCronJobsCursor(page, offset);
-        if (revision !== undefined && page.snapshotRevision !== revision) {
-          throw new Error(t("sessionsView.archiveAutomationsChanged"));
-        }
-        revision = page.snapshotRevision;
-        for (const job of page.jobs) {
-          jobs.set(job.id, job);
-        }
-        if (!page.hasMore) {
-          break;
-        }
-        offset = page.nextOffset!;
       }
+    } catch (error) {
+      inventoryFailure = { message: formatUiError(error) };
+    }
+    if (!isCurrent()) {
+      return false;
     }
     const canPause = readSessionMethodScopeAccess(options.snapshot.hello?.auth, {
       method: "cron.update",
@@ -79,6 +86,7 @@ export async function confirmSessionArchive(options: {
     }).allowed;
     const enabled = [...jobs.values()].filter((job) => job.enabled).length;
     if (
+      !inventoryFailure &&
       jobs.size === 0 &&
       (canPause || (canRead && !targets.some((target) => target.hasAutomation)))
     ) {
@@ -91,43 +99,45 @@ export async function confirmSessionArchive(options: {
           : t("sessionsView.archiveAutomationsBatchTitle", {
               count: String(options.targets.length),
             }),
-      message: !canRead
-        ? `${t("sessionsView.archiveAutomationsDetailsUnavailable")}\n\n${t("sessionsView.archiveAutomationsNoPermission")}`
-        : !canPause
-          ? t("sessionsView.archiveAutomationsNoPermission")
-          : enabled > 0
-            ? t("sessionsView.archiveAutomationsDescription")
-            : t("sessionsView.archiveAutomationsAlreadyPaused"),
-      items: [...jobs.values()].map((job) => ({
-        title: job.displayName ?? job.name,
-        description: job.schedule
-          ? formatCronSchedule({ schedule: job.schedule })
-          : t(
-              job.scheduleKind === "stream"
-                ? "sessionsView.automationStreamSchedule"
-                : "sessionsView.automationExitSchedule",
+      message: inventoryFailure
+        ? `${t("sessionsView.archiveAutomationsLoadFailed")}\n\n${canPause ? t("sessionsView.archiveAutomationsUnknownPause") : t("sessionsView.archiveAutomationsNoPermission")}`
+        : !canRead
+          ? `${t("sessionsView.archiveAutomationsDetailsUnavailable")}\n\n${t("sessionsView.archiveAutomationsNoPermission")}`
+          : !canPause
+            ? t("sessionsView.archiveAutomationsNoPermission")
+            : enabled > 0
+              ? t("sessionsView.archiveAutomationsDescription")
+              : t("sessionsView.archiveAutomationsAlreadyPaused"),
+      details: inventoryFailure?.message,
+      items: inventoryFailure
+        ? undefined
+        : [...jobs.values()].map((job) => ({
+            title: job.displayName ?? job.name,
+            description: job.schedule
+              ? formatCronSchedule({ schedule: job.schedule })
+              : t(
+                  job.scheduleKind === "stream"
+                    ? "sessionsView.automationStreamSchedule"
+                    : "sessionsView.automationExitSchedule",
+                ),
+            status: t(
+              !job.enabled
+                ? "sessionsView.automationAlreadyPaused"
+                : canPause
+                  ? "sessionsView.automationWillPause"
+                  : "sessionsView.automationStaysEnabled",
             ),
-        status: t(
-          !job.enabled
-            ? "sessionsView.automationAlreadyPaused"
-            : canPause
-              ? "sessionsView.automationWillPause"
-              : "sessionsView.automationStaysEnabled",
-        ),
-      })),
+          })),
       confirmLabel: t(
-        canPause && enabled > 0 ? "sessionsView.archiveAndPause" : "sessionsView.archiveSession",
+        inventoryFailure
+          ? "sessionsView.archiveAnyway"
+          : canPause && enabled > 0
+            ? "sessionsView.archiveAndPause"
+            : "sessionsView.archiveSession",
       ),
       signal: options.signal,
     });
     return confirmed && isCurrent();
-  } catch (error) {
-    if (isCurrent()) {
-      showToast({
-        message: t("sessionsView.archiveAutomationsLoadFailed", { error: formatUiError(error) }),
-      });
-    }
-    return false;
   } finally {
     confirmationPending = false;
   }
