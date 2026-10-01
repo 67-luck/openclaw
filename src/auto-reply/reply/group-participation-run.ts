@@ -30,7 +30,7 @@ import type { ReplyOperation } from "./reply-run-registry.js";
 import { runWithReplyOperationLifecycleAdmission } from "./reply-turn-admission.js";
 
 type GroupParticipationMode = "ordinary" | "observe" | "engagement" | "opportunity";
-export type GroupParticipationSnapshot = {
+type GroupParticipationSnapshot = {
   revision: number;
   evidence: GroupParticipationEvidence;
   concerns: GroupParticipationConcern[];
