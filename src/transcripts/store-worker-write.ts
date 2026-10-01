@@ -17,7 +17,7 @@ import {
   updateMeetingTranscriptExportManifestInDatabase,
   writeMeetingTranscriptSessionInDatabase,
   writeMeetingTranscriptSummaryInDatabase,
-} from "./store-sqlite-write.js";
+} from "./store-sqlite-write.worker.js";
 import { appendMeetingTranscriptUtterance } from "./store-sqlite.js";
 
 type SessionIdentity = Pick<TranscriptSessionDescriptor, "sessionId" | "startedAt">;
