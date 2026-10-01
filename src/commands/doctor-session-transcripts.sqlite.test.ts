@@ -38,10 +38,14 @@ vi.mock("./doctor-session-incognito-key-repair.js", () => ({
   repairReservedIncognitoSessionKeys,
 }));
 
-vi.mock("./doctor-session-delivery-state.js", () => ({
-  repairCanonicalSessionDeliveryStates,
-  repairCanonicalSessionResolvedSkills,
-}));
+vi.mock("./doctor-session-delivery-state.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./doctor-session-delivery-state.js")>();
+  return {
+    ...actual,
+    repairCanonicalSessionDeliveryStates,
+    repairCanonicalSessionResolvedSkills,
+  };
+});
 
 vi.mock("./doctor-session-exec-policy.js", () => ({
   repairLegacySessionExecPolicy,
@@ -114,6 +118,7 @@ const preparedPostSessionPluginMigration: PreparedPostSessionPluginMigration = {
 
 describe("doctor session transcript repair", () => {
   let root: string;
+  const maintenanceAuthority = { assertCurrent() {} };
 
   beforeEach(async () => {
     note.mockClear();
@@ -158,7 +163,7 @@ describe("doctor session transcript repair", () => {
       .mockReset()
       .mockImplementation(
         async (params: { run: (authority: { assertCurrent(): void }) => unknown }) =>
-          await params.run({ assertCurrent() {} }),
+          await params.run(maintenanceAuthority),
       );
     root = await fs.realpath(
       await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-doctor-transcripts-")),
@@ -192,12 +197,10 @@ describe("doctor session transcript repair", () => {
       onChanges,
     });
 
-    expect(runDoctorSessionSqlite).toHaveBeenCalledWith({
-      allAgents: true,
-      cfg,
-      env,
-      mode: "import",
-    });
+    expect(runDoctorSessionSqlite).toHaveBeenCalledWith(
+      { allAgents: true, cfg, env, mode: "import" },
+      maintenanceAuthority,
+    );
     expect(migrateLegacyMainSessionKeys).toHaveBeenCalledWith({
       cfg,
       env,
@@ -465,12 +468,10 @@ describe("doctor session transcript repair", () => {
         ),
       );
 
-      expect(runDoctorSessionSqlite).toHaveBeenCalledWith({
-        allAgents: true,
-        cfg,
-        env,
-        mode: "dry-run",
-      });
+      expect(runDoctorSessionSqlite).toHaveBeenCalledWith(
+        { allAgents: true, cfg, env, mode: "dry-run" },
+        undefined,
+      );
       expect(migrateLegacyMainSessionKeys).toHaveBeenCalledWith({ cfg, env, mode: "detect" });
       expect(repairLegacySessionWorktreeWorkspaces).toHaveBeenCalledWith({
         apply: false,
