@@ -179,7 +179,7 @@ const SESSION_STOP_POLICY = {
     fireCommandHook: false,
   },
   restart: {
-    cancelQueued: false,
+    cancelQueued: true,
     stopChildren: false,
     recordMessageCutoff: false,
     fireCommandHook: false,
@@ -191,7 +191,7 @@ const SESSION_STOP_POLICY = {
     fireCommandHook: false,
   },
   "operator-revocation": {
-    cancelQueued: false,
+    cancelQueued: true,
     stopChildren: false,
     recordMessageCutoff: false,
     fireCommandHook: false,

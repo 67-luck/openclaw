@@ -352,9 +352,9 @@ export async function prepareGatewayRunShutdown(
       hasGatewayContextOwner(operation, params.resolveGatewayContext),
     ),
   });
-  const cancelCaptured = () =>
+  const cancelCaptured = (selection = capture) =>
     stopSession({
-      capture,
+      capture: selection,
       source: params.restart ? "restart" : "operator-revocation",
       onError: (_target, error) => {
         shutdownLog.warn(`failed to cancel captured source during shutdown: ${String(error)}`);
@@ -396,13 +396,23 @@ export async function prepareGatewayRunShutdown(
     cancelCaptured();
     return;
   }
+  // Freeze both subsets before queue abort listeners or recovery writes can change claims.
+  const queuedCapture = captureSessionControllerStop({ inputs: capture.queuedInputs });
+  const activeCapture = captureSessionControllerStop({
+    inputs: capture.activeInputs,
+    operations: capture.operations,
+  });
+  const abortedQueuedTurns = cancelCaptured(queuedCapture).queuedCancelled;
+  if (drainResult?.drained === false && abortedQueuedTurns > 0) {
+    shutdownLog.warn(`aborted ${abortedQueuedTurns} queued turn(s) during restart shutdown`);
+  }
   await markActiveRunsForRestartRecovery({
     ...params,
     capturedSources,
     capturedRecoveryCandidates,
     reason: "gateway restart shutdown",
   });
-  const abortedRuns = cancelCaptured().activeCancelled;
+  const abortedRuns = cancelCaptured(activeCapture).activeCancelled;
   if (drainResult?.drained) {
     shutdownLog.info(`restart reply drain completed after ${drainResult.elapsedMs}ms`);
   } else if (drainResult && abortedRuns > 0) {

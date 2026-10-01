@@ -2015,9 +2015,13 @@ describe("createGatewayCloseHandler", () => {
       ],
     ]);
     const controller = rpcSources.get("queued-1")!;
+    let queuedAbortedAtRecovery: boolean | undefined;
     const close = createGatewayCloseHandler(
       createGatewayCloseTestDeps({
         rpcSources,
+        markMainSessionsAbortedForRestart: async () => {
+          queuedAbortedAtRecovery = controller.input.abortSignal.aborted;
+        },
       }),
     );
 
@@ -2028,6 +2032,7 @@ describe("createGatewayCloseHandler", () => {
     });
 
     expect(result.warnings).toContain("restart-reply-drain");
+    expect(queuedAbortedAtRecovery).toBe(true);
     expect(controller.input.abortSignal.aborted).toBe(true);
     expect(controller.input.phase).toBe("consumed");
     expect(

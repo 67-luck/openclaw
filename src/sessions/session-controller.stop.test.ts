@@ -42,9 +42,9 @@ const policyCases = [
   ["client-session", true, true, false, true],
   ["client-run", true, true, false, true],
   ["interrupt", false, false, false, false],
-  ["restart", false, false, false, false],
+  ["restart", true, false, false, false],
   ["watchdog", false, false, false, false],
-  ["operator-revocation", false, false, false, false],
+  ["operator-revocation", true, false, false, false],
   ["supersede", false, false, false, false],
 ] as const satisfies ReadonlyArray<
   readonly [SessionStopSource, boolean, boolean, boolean, boolean]
