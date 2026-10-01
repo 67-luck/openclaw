@@ -13,8 +13,8 @@ export const PHASES = [
   "cut",
   "validate",
   "publish",
-  "sync-beta",
   "flip-github",
+  "sync-beta",
   "macos",
   "closeout",
 ] as const;
@@ -112,7 +112,7 @@ export function postState(phase: ReleasePhase): ReleaseState {
     probedAt: state.startedAt,
     parentSyncsBetaDistTag: false,
     parentSweepsStaleChildren: false,
-    parentApprovalReceipt: false,
+    childNpmPublishEnvironment: false,
   };
   return state;
 }
@@ -200,6 +200,7 @@ export const CANDIDATE_COMMAND =
   -f npm_dist_tag=latest \
   -f plugin_publish_scope=all-publishable \
   -f publish_openclaw_npm=true \
+  -f finalize_release_before_docker=true \
   -f wait_for_clawhub=true`.replaceAll("\\`", "`");
 
 export const publishParentRun = () => ({
@@ -228,12 +229,12 @@ export const publishChild = (
   display_title: name,
 });
 
-export function publishState(receipt = false): ReleaseState {
+export function publishState(npmPublishEnvironment = false): ReleaseState {
   const state = postState("publish");
   delete state.publish.publishRunId;
   delete state.publish.npmVisibleAt;
   if (state.capabilities) {
-    state.capabilities.parentApprovalReceipt = receipt;
+    state.capabilities.childNpmPublishEnvironment = npmPublishEnvironment;
   }
   return state;
 }
@@ -250,7 +251,7 @@ export function publishPreparation(createTag = false): FakeStep[] {
     ),
     ...(createTag
       ? [
-          step("git", ["tag", "-a", `v${RELEASE}`, CUT_SHA, "-m", `OpenClaw ${RELEASE}`]),
+          step("git", ["tag", "-s", `v${RELEASE}`, CUT_SHA, "-m", `OpenClaw ${RELEASE}`]),
           step("git", ["push", "origin", `refs/tags/v${RELEASE}`]),
         ]
       : []),

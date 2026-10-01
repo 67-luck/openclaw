@@ -3,12 +3,17 @@ import type { ConnectionOptions } from "node:tls";
 import { extractErrorCode } from "openclaw/plugin-sdk/error-runtime";
 import { readFileHandleBounded } from "openclaw/plugin-sdk/file-access-runtime";
 import { parseMediaContentLength } from "openclaw/plugin-sdk/media-runtime";
+import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import type { PinnedDispatcherPolicy } from "openclaw/plugin-sdk/ssrf-dispatcher";
 import {
   buildHostnameAllowlistPolicyFromSuffixAllowlist,
   fetchWithSsrFGuard,
 } from "openclaw/plugin-sdk/ssrf-runtime";
-import { asNullableObjectRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import {
+  asNullableObjectRecord,
+  isRecord,
+  normalizeOptionalString,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveUserPath } from "openclaw/plugin-sdk/text-utility-runtime";
 import type { ResolvedGoogleChatAccount } from "./accounts.js";
 import { MAX_GOOGLE_CHAT_SERVICE_ACCOUNT_FILE_BYTES } from "./google-auth-limits.js";
@@ -115,21 +120,13 @@ function resolveGoogleAuthTlsOptions(init: GoogleAuthTransportOptions, url: URL)
   return {};
 }
 
-function normalizeGoogleAuthProxyEnvValue(value: string | undefined): string | null | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
 function resolveGoogleAuthEnvProxyUrl(protocol: "http" | "https"): string | undefined {
   const httpProxy =
-    normalizeGoogleAuthProxyEnvValue(process.env.HTTP_PROXY) ??
-    normalizeGoogleAuthProxyEnvValue(process.env.http_proxy);
+    normalizeOptionalString(process.env.HTTP_PROXY) ??
+    normalizeOptionalString(process.env.http_proxy);
   const httpsProxy =
-    normalizeGoogleAuthProxyEnvValue(process.env.HTTPS_PROXY) ??
-    normalizeGoogleAuthProxyEnvValue(process.env.https_proxy);
+    normalizeOptionalString(process.env.HTTPS_PROXY) ??
+    normalizeOptionalString(process.env.https_proxy);
   if (protocol === "https") {
     return httpsProxy ?? httpProxy ?? undefined;
   }
@@ -177,14 +174,7 @@ function shouldBypassGoogleAuthProxy(url: URL, noProxy: ProxyRule[] = []): boole
 }
 
 function readGoogleAuthProxyUrl(value: unknown): string | undefined {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : undefined;
-  }
-  if (value instanceof URL) {
-    return value.toString();
-  }
-  return undefined;
+  return value instanceof URL ? value.toString() : normalizeOptionalString(value);
 }
 
 function readOptionalTrimmedString(
@@ -206,12 +196,11 @@ function readOptionalTrimmedString(
 }
 
 function readRequiredTrimmedString(record: Record<string, unknown>, fieldName: string): string {
-  return (
-    readOptionalTrimmedString(record, fieldName) ??
-    (() => {
-      throw new Error(`Google Chat service account is missing "${fieldName}"`);
-    })()
-  );
+  const value = readOptionalTrimmedString(record, fieldName);
+  if (value === undefined) {
+    throw new Error(`Google Chat service account is missing "${fieldName}"`);
+  }
+  return value;
 }
 
 function assertExactUrlField(
@@ -319,10 +308,10 @@ async function readCredentialsFile(filePath: string): Promise<Record<string, unk
       throw new Error("Invalid Google Chat service account JSON.");
     }
 
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (!isRecord(parsed)) {
       throw new Error("Google Chat service account file must contain a JSON object.");
     }
-    return parsed as Record<string, unknown>;
+    return parsed;
   } finally {
     await handle.close().catch(() => {});
   }
@@ -426,12 +415,9 @@ function createGoogleAuthFetch(): FetchLike {
         statusText: response.statusText,
       });
     } finally {
-      // The size guard can reject before the stream is touched, leaving an
-      // unread body. Start cancellation before release; awaiting it can
-      // deadlock when debug capture tees the stream.
-      if (!response.bodyUsed) {
-        void response.body?.cancel().catch(() => undefined);
-      }
+      // The reader releases its lock before cancellation. Capture tees can
+      // retain cancellation until dispatcher release, so do not await it.
+      void response.body?.cancel().catch(() => undefined);
       await release();
     }
   };
@@ -446,44 +432,16 @@ async function readGoogleAuthResponseBytes(response: Response): Promise<Uint8Arr
     }
   }
 
-  const reader = response.body?.getReader();
-  if (!reader) {
+  if (!response.body) {
     throw new Error(
       "Google auth response body stream unavailable; refusing to buffer unbounded response.",
     );
   }
 
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      if (!value) {
-        continue;
-      }
-      total += value.byteLength;
-      if (total > MAX_GOOGLE_AUTH_RESPONSE_BYTES) {
-        throw new Error(`Google auth response exceeds ${MAX_GOOGLE_AUTH_RESPONSE_BYTES} bytes.`);
-      }
-      chunks.push(value);
-    }
-  } finally {
-    // A capture tee can retain cancellation until the caller releases its request.
-    void reader.cancel().catch(() => undefined);
-    reader.releaseLock();
-  }
-
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
+  return await readResponseWithLimit(response, MAX_GOOGLE_AUTH_RESPONSE_BYTES, {
+    onOverflow: () =>
+      new Error(`Google auth response exceeds ${MAX_GOOGLE_AUTH_RESPONSE_BYTES} bytes.`),
+  });
 }
 
 export async function loadGoogleAuthRuntime(): Promise<GoogleAuthRuntime> {
