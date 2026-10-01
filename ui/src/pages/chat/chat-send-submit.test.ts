@@ -913,6 +913,52 @@ describe("handleSendChat session ownership", () => {
     },
   );
 
+  it("resumes a text send when reconnect overtakes its history preparation", async () => {
+    const oldHistory = createDeferred<ChatHistoryResult>();
+    const historyStarted = createDeferred();
+    const idle: ChatHistoryResult = {
+      messages: [],
+      sessionInfo: {
+        key: "agent:main",
+        sessionId: "idle-session",
+        kind: "direct",
+        hasActiveRun: false,
+        status: "done",
+      },
+    };
+    let historyReads = 0;
+    const host = makeChatHost({
+      chatMessage: "Send without refreshing",
+      requestHandlers: {
+        "chat.history": () => {
+          if (historyReads++ === 0) {
+            historyStarted.resolve();
+            return oldHistory.promise;
+          }
+          return idle;
+        },
+        "chat.send": { status: "started", messageSeq: 1 },
+      },
+    });
+    const loading = loadChatHistory(host);
+    await historyStarted.promise;
+    const sending = handleSendChat(host);
+    try {
+      expect(host.chatQueue).toMatchObject([{ text: "Send without refreshing", sendAttempts: 0 }]);
+      host.connectionEpoch += 1;
+      await loadChatHistory(host, { supersedeInFlight: true });
+      await resumeStoredChatOutboxes(host);
+      oldHistory.resolve(idle);
+      await loading;
+      await sending;
+      expect(findChatSendPayload(host)).toMatchObject({ message: "Send without refreshing" });
+    } finally {
+      oldHistory.resolve(idle);
+      await loading;
+      await sending;
+    }
+  });
+
   it("holds an offline queue through cold recovery and an awaited history read", async () => {
     const history = createDeferred<unknown>();
     let pending = false;

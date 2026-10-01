@@ -523,10 +523,8 @@ async function drainStoredChatOutbox(
         // Reselect immediately so the newly ordered head does not lose its wakeup.
         continue;
       }
-      // A later submission still owns its wakeup if this row became stale while waiting.
-      if (!pendingOptions?.pendingSettings && lane.freshAdmissions.size === 0) {
-        lane.rerun = false;
-      }
+      // The scheduler owns wakeups received during preparation or transport.
+      // A pending result must not consume a newer reconnect or session event.
       return "blocked";
     }
     if (result === "failed") {
@@ -601,7 +599,16 @@ export async function scheduleStoredChatOutboxDrain(
       lane.waitingForVisibleOwner = false;
       lane.owner = { host: lane.host, connectionEpoch: lane.host.connectionEpoch };
       await drainStoredChatOutbox(lane, scope, dependencies);
-    } while (lane.rerun);
+      // A pending send can install backoff after a wakeup or submission.
+      // Only a later explicit admission may override that newer retry timer.
+    } while (
+      lane.rerun &&
+      !consumeChatOutboxRetry(
+        lane.host,
+        key,
+        visibleSessionMatches(lane.host, scope.sessionKey, scope.agentId),
+      )
+    );
   })();
   try {
     await lane.promise;

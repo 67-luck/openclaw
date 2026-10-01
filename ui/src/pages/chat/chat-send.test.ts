@@ -3436,7 +3436,7 @@ describe("handleSendChat", () => {
     }
   });
 
-  it.each(["move", "remove", "edit"] as const)(
+  it.each(["move", "remove", "edit", "reconnect"] as const)(
     "honors a queue %s while attachment hydration is pending",
     async (action) => {
       const { attachments, dataUrls } = createDeliveryAttachmentBatch();
@@ -3459,6 +3459,7 @@ describe("handleSendChat", () => {
       const readStarted = createDeferred();
       const releaseRead = createDeferred();
       let drain: Promise<void> | undefined;
+      let reconnectDrain: Promise<void> | undefined;
       try {
         await handleSendChat(host);
         host.chatMessage = "text B";
@@ -3482,9 +3483,13 @@ describe("handleSendChat", () => {
           expect(moveQueuedChatMessage(host, second!.id, first!.id)).toBe("moved");
         } else if (action === "remove") {
           expect(removeQueuedMessage(host, first!.id)).toBe("removed");
-        } else {
+        } else if (action === "edit") {
           expect(beginQueuedMessageEdit(host, first!.id)).toBe("started");
           updateQueuedMessageEdit(host, "unfinished correction");
+        } else {
+          // Reconnect wakes the same client while its old payload read is still pending.
+          host.connectionEpoch += 1;
+          reconnectDrain = resumeStoredChatOutboxes(host);
         }
         const expected =
           action === "move"
@@ -3496,6 +3501,7 @@ describe("handleSendChat", () => {
         expect(requestCalls(request, "chat.send")).toHaveLength(0);
         releaseRead.resolve();
         await drain;
+        await reconnectDrain;
         if (action === "edit") {
           expect(requestCalls(request, "chat.send")).toHaveLength(0);
           expect(host.chatQueuedEdit?.draftText).toBe("unfinished correction");
@@ -3520,6 +3526,7 @@ describe("handleSendChat", () => {
       } finally {
         releaseRead.resolve();
         await drain;
+        await reconnectDrain;
         unsubscribe();
       }
     },
@@ -3739,53 +3746,59 @@ describe("handleSendChat", () => {
     );
   });
 
-  it("retries an explicitly retryable send rejection while still connected", async () => {
-    const sendRunIds: string[] = [];
-    let sendAttempts = 0;
+  it.each([false, true])(
+    "retries an explicitly retryable send rejection while still connected (earlier wake: %s)",
+    async (wakeBeforeRejection) => {
+      const sendRunIds: string[] = [];
+      let sendAttempts = 0;
 
-    const host = makeChatHost({
-      requestHandlers: {
-        "chat.history": idleChatHistory(),
-        "chat.send": (params: unknown) => {
-          const payload = requireRecord(params, "retryable send payload");
-          sendRunIds.push(String(payload.idempotencyKey));
-          sendAttempts += 1;
-          if (sendAttempts === 1) {
-            throw new GatewayRequestError({
-              code: "UNAVAILABLE",
-              message: "Gateway is temporarily busy",
-              retryable: true,
-              retryAfterMs: 100,
-            });
-          }
-          return { runId: payload.idempotencyKey, status: "started", messageSeq: 1 };
+      const host = makeChatHost({
+        requestHandlers: {
+          "chat.history": idleChatHistory(),
+          "chat.send": (params: unknown) => {
+            const payload = requireRecord(params, "retryable send payload");
+            sendRunIds.push(String(payload.idempotencyKey));
+            sendAttempts += 1;
+            if (sendAttempts === 1) {
+              if (wakeBeforeRejection) {
+                void resumeStoredChatOutboxes(host);
+              }
+              throw new GatewayRequestError({
+                code: "UNAVAILABLE",
+                message: "Gateway is temporarily busy",
+                retryable: true,
+                retryAfterMs: 100,
+              });
+            }
+            return { runId: payload.idempotencyKey, status: "started", messageSeq: 1 };
+          },
         },
-      },
-      chatMessage: "retry without disconnecting",
-    });
-
-    vi.useFakeTimers();
-    try {
-      await handleSendChat(host);
-
-      expect(host.connected).toBe(true);
-      expect(host.chatQueue[0]).toMatchObject({
-        sendAttempts: 0,
-        sendState: "waiting-reconnect",
+        chatMessage: "retry without disconnecting",
       });
-      expect(sendAttempts).toBe(1);
-      await vi.advanceTimersByTimeAsync(100);
-      // The retry timer only kicks off a fire-and-forget drain, so the resend
-      // lands after the tick returns. Wait for the outcome, not the tick.
-      await waitForFast(() => {
-        expect(sendAttempts).toBe(2);
-        expect(listStoredChatOutboxes(host)).toStrictEqual([]);
-      });
-      expect(sendRunIds[1]).toBe(sendRunIds[0]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+
+      vi.useFakeTimers();
+      try {
+        await handleSendChat(host);
+
+        expect(host.connected).toBe(true);
+        expect(host.chatQueue[0]).toMatchObject({
+          sendAttempts: 0,
+          sendState: "waiting-reconnect",
+        });
+        expect(sendAttempts).toBe(1);
+        await vi.advanceTimersByTimeAsync(100);
+        // The retry timer only kicks off a fire-and-forget drain, so the resend
+        // lands after the tick returns. Wait for the outcome, not the tick.
+        await waitForFast(() => {
+          expect(sendAttempts).toBe(2);
+          expect(listStoredChatOutboxes(host)).toStrictEqual([]);
+        });
+        expect(sendRunIds[1]).toBe(sendRunIds[0]);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("retries reconnect history after a retryable response without a socket close", async () => {
     const host = makeChatHost({
