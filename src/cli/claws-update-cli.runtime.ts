@@ -1,3 +1,4 @@
+import { clawPackageKey } from "../claws/application-provenance.js";
 import {
   ClawHubSourceError,
   readMatchingCachedClawHubSource,
@@ -9,6 +10,7 @@ import { preflightClawPackage } from "../claws/packages.js";
 import { readClawManifestFile } from "../claws/reader.js";
 import {
   CLAW_OUTPUT_STABILITY,
+  type ClawPackagePreflightResult,
   type ClawReadResult,
   type ClawSourceIdentity,
 } from "../claws/types.js";
@@ -31,6 +33,11 @@ import {
 import { waitUntilGatewayAgentAvailable } from "./claws-cli.gateway-readiness.js";
 import type { ClawsUpdateOptions } from "./claws-cli.js";
 import { resolveClawPluginInstallConsent } from "./claws-cli.plugin-consent.js";
+import {
+  consentToClawSkillWarnings,
+  logClawSkillWarnings,
+  updatePlanSkillWarnings,
+} from "./claws-cli.skill-consent.js";
 import { callGatewayFromCli } from "./gateway-rpc.js";
 import { resolvePluginBatchReload } from "./plugins-lifecycle-client.js";
 
@@ -184,6 +191,7 @@ export async function runClawsUpdateCommand(
     return;
   }
 
+  const preflights = new Map<string, ClawPackagePreflightResult>();
   const plan = await buildClawUpdatePlan({
     agentId: target,
     targetManifest: loaded.manifest,
@@ -192,12 +200,22 @@ export async function runClawsUpdateCommand(
     targetSource: loaded.source,
     config,
     sourceMcpServers: listedMcpServers.mcpServers,
-    packagePreflight: (pkg, workspace) => preflightClawPackage(pkg, workspace, { config }),
+    packagePreflight: async (pkg, workspace) => {
+      const preflight = await preflightClawPackage(pkg, workspace, { config });
+      preflights.set(clawPackageKey(pkg), preflight);
+      return preflight;
+    },
     diagnostics: loaded.diagnostics,
+  });
+  const skillWarnings = updatePlanSkillWarnings({
+    plan,
+    manifest: loaded.manifest,
+    profile: loaded.openClawProfile,
+    preflights,
   });
   if (opts.dryRun || plan.blockers.length > 0 || plan.actions.some((action) => action.blocked)) {
     if (opts.json) {
-      writeRuntimeJson(runtime, plan);
+      writeRuntimeJson(runtime, { ...plan, skillWarnings });
     } else {
       logClawExperimentalWarning(runtime);
       runtime.log(
@@ -205,12 +223,25 @@ export async function runClawsUpdateCommand(
       );
       runtime.log(`Plan integrity: ${plan.planIntegrity}`);
       logClawUpdatePlanSummary(plan, runtime);
+      logClawSkillWarnings(skillWarnings, runtime);
     }
     if (plan.blockers.length > 0 || plan.actions.some((action) => action.blocked)) {
       runtime.exit(1);
     }
     return;
   }
+
+  if (opts.planIntegrity !== plan.planIntegrity) {
+    const message = "The consented Claw plan no longer matches; run update --dry-run again.";
+    emitClawFailure(runtime, opts.json, message, {
+      schemaVersion: CLAW_UPDATE_RESULT_SCHEMA_VERSION,
+      stability: CLAW_OUTPUT_STABILITY,
+      status: "failed",
+      error: { code: "plan_integrity_mismatch", message },
+    });
+    return;
+  }
+  const skillConsent = consentToClawSkillWarnings(skillWarnings);
 
   try {
     const result = await withOpenClawStateLease(
@@ -237,6 +268,7 @@ export async function runClawsUpdateCommand(
             config,
             assertCurrent: () => lease.assertOwned(),
             pluginConsent: resolveClawPluginInstallConsent(runtime),
+            ...(skillConsent ? { skillConsent } : {}),
             reloadPlugins: await resolvePluginBatchReload(),
             sourceMcpServers: listedMcpServers.mcpServers,
             consentPlanIntegrity: opts.planIntegrity,
