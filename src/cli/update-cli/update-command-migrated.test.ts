@@ -59,6 +59,7 @@ import {
   continueMigratedUpdateInFreshProcess,
   inspectActivatedUpdateState,
 } from "./update-command-migrated.js";
+import { readMigratedUpdateRunRow } from "./update-command-migrated.test-support.js";
 import { taskRecovery } from "./update-command-post-update.test-support.js";
 import {
   UpdateCommandFailure,
@@ -254,14 +255,7 @@ it.each<{
     let candidateRow: unknown;
     const oldRuntimeOpens: string[] = [];
     const databasePath = path.join(env.OPENCLAW_STATE_DIR, "state", "openclaw.sqlite");
-    const readCandidateRow = () => {
-      const db = new DatabaseSync(databasePath, { readOnly: true });
-      try {
-        return db.prepare("SELECT * FROM update_runs WHERE run_id = ?").get(run.runId);
-      } finally {
-        db.close();
-      }
-    };
+    const readCandidateRow = () => readMigratedUpdateRunRow(databasePath, run.runId);
     if (completion) {
       // Keep the successful package owner's real completion; inject only the
       // ordinary error that the canonical completion policy must classify.
@@ -680,14 +674,7 @@ it.each([
     const control = path.join(stateDir, "executor-control");
     await fs.mkdir(control);
     vi.spyOn(temporaryState, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
-    const inspectTerminal = () => {
-      const inspected = new DatabaseSync(database.path, { readOnly: true });
-      try {
-        return inspected.prepare("SELECT * FROM update_runs WHERE run_id = ?").get(created.runId);
-      } finally {
-        inspected.close();
-      }
-    };
+    const inspectTerminal = () => readMigratedUpdateRunRow(database.path, created.runId);
     if (settlement === "scratch") {
       const remove = fs.rm;
       vi.spyOn(fs, "rm").mockImplementation(async (...args) => {

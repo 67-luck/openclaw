@@ -22,6 +22,7 @@ import { withEnvAsync } from "../../test-utils/env.js";
 import { createUpdateCommandExecutionGuards } from "./update-command-execution-guards.js";
 import type { MigratedUpdateFinalizationInput } from "./update-command-migrated-types.js";
 import { continueMigratedUpdateInFreshProcess } from "./update-command-migrated.js";
+import { readMigratedUpdateRunRow } from "./update-command-migrated.test-support.js";
 import {
   UpdateCommandFailure,
   UpdateCommandPendingRecoveryFailure,
@@ -174,16 +175,8 @@ it.each([
       const onResult = vi.fn();
       let terminalFromCandidate: unknown;
       let databaseCountAtTerminal = 0;
-      const inspectTerminal = () => {
-        const inspected = new DatabaseSync(resolveOpenClawStateSqlitePath(), {
-          readOnly: true,
-        });
-        try {
-          return inspected.prepare("SELECT * FROM update_runs WHERE run_id = ?").get(runId);
-        } finally {
-          inspected.close();
-        }
-      };
+      const inspectTerminal = () =>
+        readMigratedUpdateRunRow(resolveOpenClawStateSqlitePath(), runId);
       vi.mocked(runUtf8CommandWithTimeout).mockImplementationOnce(async (_argv, options) => {
         assert(typeof options === "object");
         expect(options.timeoutMs).toBe(activationTimeoutMs);
