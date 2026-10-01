@@ -68,6 +68,11 @@ export function continueStalledReplyTurn({
     );
     return true;
   }
+  // A source that declares no queued reply owner would drop the recovery's answer;
+  // leave the notice with the stalled turn's dispatch.
+  if (followupRun.queuedFollowupReplyDisposition?.kind === "drop") {
+    return false;
+  }
   const enqueued = enqueueFollowupRun(
     queueKey,
     buildStalledTurnRecoveryRun(followupRun),

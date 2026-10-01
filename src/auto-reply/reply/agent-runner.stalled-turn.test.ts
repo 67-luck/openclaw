@@ -462,6 +462,18 @@ describe("runReplyAgent stalled turn continuation", () => {
     },
   );
 
+  it("leaves the notice with a source that declares no queued reply owner", async () => {
+    const stalled = createStalledRun({
+      queuedFollowupReplyDisposition: { kind: "drop", reason: "source-unavailable" },
+    });
+    await stallBeforeOutput(stalled);
+
+    expect(stalled.runState.continueStalledTurn?.()).toBe(false);
+    expect(getFollowupQueueDepth(queueKey)).toBe(0);
+    await settleStalledOwner(stalled);
+    expect(drainedRuns).not.toHaveBeenCalled();
+  });
+
   it("does not arm a continuation for heartbeat turns", async () => {
     const stalled = createStalledRun({ isHeartbeat: true });
     await stallBeforeOutput(stalled);
