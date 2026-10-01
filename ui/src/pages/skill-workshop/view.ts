@@ -154,6 +154,7 @@ function renderLearning(props: SkillWorkshopViewProps) {
         control: html`<button
           type="button"
           class="btn oc-action"
+          aria-label=${t("skillWorkshop.learning.title")}
           ?disabled=${props.learningBusy || !learningAccess.allowed}
           title=${learningAccess.allowed ? nothing : learningAccess.reason}
           @click=${props.onLearn}
