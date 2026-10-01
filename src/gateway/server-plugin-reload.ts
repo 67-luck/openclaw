@@ -248,16 +248,16 @@ export async function reloadGatewayPlugins(
     }
     await params.checkpoint?.();
     assertCurrent();
-    // Reserve and gate new model runs atomically; admitted runs keep their callbacks until settled.
+    // Fence new retained work while the current generation stays fully serving during this wait.
     releaseResourceHandoff = reserveResourceHandoff(resourceHandoffIds);
+    replacement.setReloadStatus({ phase: "reloading", pluginIds: [...changedPluginIds] });
+    await drainRetainedWork(resourceHandoffIds, drainSignal, replacement.setReloadStatus);
+    assertCurrent();
     rollbackConfigEffects = params.prepareConfigEffects({
       pluginIds: changedPluginIds,
       channels: channelTargets,
     });
     phase = "drain";
-    replacement.setReloadStatus({ phase: "reloading", pluginIds: [...changedPluginIds] });
-    await drainRetainedWork(resourceHandoffIds, drainSignal, replacement.setReloadStatus);
-    assertCurrent();
     channels.pause();
     decisionReplacement = prepareDecisionProviderReload(previousRegistry, changedPluginIds);
     for (const sidecar of runtimeState.gatewayLifetimeSidecars.snapshot()) {

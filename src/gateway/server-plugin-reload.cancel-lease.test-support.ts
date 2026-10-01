@@ -33,12 +33,14 @@ export async function verifyCancelledDrainRollbackLease(
   });
   const instance = getPluginInstance(fixture.previousRegistry.plugins[0]!);
   assert(instance);
-  const releaseWork = instance.retainWork();
+  const consumer = instance.retainConsumer();
   const drainEntered = createDeferredCore();
   const waitForWork = instance.waitForRetainedWork.bind(instance);
   const observation = vi.spyOn(instance, "waitForRetainedWork").mockImplementation((...args) => {
     const pending = waitForWork(...args);
-    drainEntered.resolve();
+    if (args[1]) {
+      drainEntered.resolve();
+    }
     return pending;
   });
   let settled = false;
@@ -91,7 +93,7 @@ export async function verifyCancelledDrainRollbackLease(
     ).resolves.toBe("reacquired");
   } finally {
     finishRollback.resolve();
-    releaseWork();
+    consumer.release();
     await reloading;
     observation.mockRestore();
   }

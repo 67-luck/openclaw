@@ -327,15 +327,12 @@ async function verifySelfConsumerReload(
 }
 
 async function verifyOverlappingRetainedWork(createRecoveryFixture: RecoveryFixtureFactory) {
-  const reserved = createDeferredCore();
+  const prepareConfigEffects = vi.fn(() => async () => {});
   let registrations = 0;
   const disposed: number[] = [];
   const fixture = await createRecoveryFixture({
     abortOnCandidateStart: false,
-    prepareConfigEffects: () => {
-      reserved.resolve();
-      return async () => {};
-    },
+    prepareConfigEffects,
     register(api, owner) {
       if (owner !== "first") {
         return;
@@ -353,12 +350,15 @@ async function verifyOverlappingRetainedWork(createRecoveryFixture: RecoveryFixt
   const instance = getPluginInstance(record);
   assert(instance);
   const consumer = instance.retainConsumer();
+  const retainedDrainEntered = createDeferredCore();
   const consumerDrainEntered = createDeferredCore();
   const waitForWork = instance.waitForRetainedWork.bind(instance);
   const observation = vi.spyOn(instance, "waitForRetainedWork").mockImplementation((...args) => {
     const draining = waitForWork(...args);
     if (args[1]) {
       consumerDrainEntered.resolve();
+    } else {
+      retainedDrainEntered.resolve();
     }
     return draining;
   });
@@ -368,7 +368,8 @@ async function verifyOverlappingRetainedWork(createRecoveryFixture: RecoveryFixt
   void reloading.catch(() => {});
   try {
     // A refusal is observed immediately instead of waiting for a fixture timeout.
-    await Promise.race([reserved.promise, reloading]);
+    await Promise.race([retainedDrainEntered.promise, reloading]);
+    expect(prepareConfigEffects).not.toHaveBeenCalled();
     expect(fixture.firstStop).not.toHaveBeenCalled();
     expect(disposed).toEqual([]);
     expect(() => retainRuntimePluginWork([old])).toThrow("replacement is in progress");
@@ -377,6 +378,7 @@ async function verifyOverlappingRetainedWork(createRecoveryFixture: RecoveryFixt
     expect(fixture.candidates).toHaveLength(0);
     second();
     await Promise.race([consumerDrainEntered.promise, reloading]);
+    expect(prepareConfigEffects).toHaveBeenCalledOnce();
     expect(disposed).toEqual([]);
     consumer.release();
     const receipt = await reloading;
@@ -405,10 +407,13 @@ async function verifyExplicitDrainWait(
   outcome: "complete" | "cancel",
 ) {
   const controller = new AbortController();
+  const rollbackConfigEffects = vi.fn(async () => {});
+  const prepareConfigEffects = vi.fn(() => rollbackConfigEffects);
   const fixture = await createFixture({
     abortOnCandidateStart: false,
     waitForDrain: true,
     drainSignal: controller.signal,
+    prepareConfigEffects,
   });
   const instance = getPluginInstance(fixture.previousRegistry.plugins[0]!);
   assert(instance);
@@ -448,6 +453,9 @@ async function verifyExplicitDrainWait(
   try {
     await Promise.race([drainEntered.promise, reloading]);
     expect(fixture.owner.getReloadStatus()?.reason).toBeTruthy();
+    if (kind === "retained work") {
+      expect(prepareConfigEffects).not.toHaveBeenCalled();
+    }
     await vi.advanceTimersByTimeAsync(70_000);
     expect(settled).toBe(false);
     expect(fixture.candidates).toHaveLength(0);
@@ -458,17 +466,21 @@ async function verifyExplicitDrainWait(
       controller.abort(new Error("operator cancelled reload"));
       await vi.advanceTimersByTimeAsync(0);
       expect(settled).toBe(true);
-      expect(await reloading).toMatchObject({ details: { phase: "drain", committed: false } });
+      expect(await reloading).toMatchObject({
+        details: { phase: kind === "retained work" ? "prepare" : "drain", committed: false },
+      });
       expect(fixture.registryOwner.registry).toBe(fixture.previousRegistry);
       expect(instance.run(() => "still serving")).toBe("still serving");
       expect(instance.disposing).toBe(false);
       instance.retainWork()();
       expect(fixture.firstStop).not.toHaveBeenCalled();
-      expect(fixture.rollbackConfigEffects).toHaveBeenCalledOnce();
+      expect(rollbackConfigEffects).toHaveBeenCalledTimes(kind === "retained work" ? 0 : 1);
     } else {
       release();
       await call;
       expect(await reloading).toMatchObject({ runtime: { pluginIds: ["first"] } });
+      expect(prepareConfigEffects).toHaveBeenCalledOnce();
+      expect(rollbackConfigEffects).not.toHaveBeenCalled();
       expect(fixture.registryOwner.registry).not.toBe(fixture.previousRegistry);
       expect(fixture.candidates).toHaveLength(1);
       expect(instance.disposing).toBe(true);
