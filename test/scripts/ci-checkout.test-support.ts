@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fork, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -10,11 +10,6 @@ import {
   inspectManagedProcessGroup,
   terminateManagedChild,
 } from "../../scripts/lib/managed-child-process.mts";
-import { createDeferredCore as createDeferred } from "../../src/shared/deferred.ts";
-import {
-  fixtureReceiptClientSource,
-  openFixtureReceiptChannel,
-} from "../helpers/fixture-receipts.ts";
 
 type Step = { name?: string; run?: string; env?: Record<string, string | number> };
 const processRecord = z.object({
@@ -70,6 +65,7 @@ export function renderGitTestClock(
     realDrain?: boolean;
     virtualBackoff?: boolean;
     readyFetchClockAdvanceSeconds?: number;
+    cancelDuringCleanup?: boolean;
   } = {},
 ): string {
   // Change Python before shell quoting, so injected clock literals cannot alter
@@ -78,15 +74,40 @@ export function renderGitTestClock(
   if (embedded.test(source)) {
     return source.replace(embedded, (_match, prefix: string, body: string, suffix: string) => {
       const adjusted = renderGitTestClock(body.replaceAll("'\\''", "'"), options);
+      if (options.cancelDuringCleanup && !adjusted.includes("cleanup-cancelled.json")) {
+        throw new Error("Missing embedded Git owner cleanup cancellation boundary");
+      }
       return prefix + adjusted.replaceAll("'", "'\\''") + suffix;
     });
+  }
+  let cancellationSource = source;
+  if (options.cancelDuringCleanup && source.includes("def run_git(")) {
+    const boundary = "            group_signal(child.pid, signal.SIGTERM, deadline)";
+    if (source.split(boundary).length !== 2) {
+      throw new Error("Missing unique Git owner cleanup cancellation boundary");
+    }
+    // Only the selected actor arms this exact child. Keep the real signal,
+    // descendant drain, and owner's cancellation checkpoints intact.
+    cancellationSource = source.replace(
+      boundary,
+      `${boundary}
+            fixture_cancel = os.path.join(os.environ["TMPDIR"], f"cleanup-target-{child.pid}.json")
+            if os.path.exists(fixture_cancel):
+                os.unlink(fixture_cancel)
+                os.kill(os.getpid(), signal.SIGTERM)
+                with open(os.path.join(os.environ["TMPDIR"], "cleanup-cancelled.json"), "x") as receipt:
+                    json.dump(child.pid, receipt)`,
+    );
   }
   // Command deadlines and TERM grace are independent. Real-clock callers keep
   // real grace unless they explicitly opt into the fixture's immediate escalation.
   const clockSource =
     (options.realDrain ?? options.realClock)
-      ? source
-      : source.replace("kill_at = deadline - cleanup_seconds / 2", "kill_at = time.monotonic()");
+      ? cancellationSource
+      : cancellationSource.replace(
+          "kill_at = deadline - cleanup_seconds / 2",
+          "kill_at = time.monotonic()",
+        );
   // Keep the owner's cancellation checkpoints and requested backoff duration,
   // but advance its policy clock without sleeping. Cancellation proofs opt out.
   const backoffSource =
@@ -179,18 +200,10 @@ export async function withCiCheckoutFixture<T>(
   const artifacts = fileURLToPath(new URL("../../.artifacts/ci-checkout/", import.meta.url));
   mkdirSync(artifacts, { recursive: true });
   const root = realpathSync(mkdtempSync(path.join(artifacts, "checkout ")));
-  const receipts = await openFixtureReceiptChannel().catch((error: unknown) => {
-    rmSync(root, { recursive: true, force: true });
-    throw error;
-  });
   let supervisor: ChildProcess;
   try {
     mkdirSync(path.join(root, "workspace"));
     const env = { ...process.env, ...prepare(root) };
-    writeFileSync(
-      path.join(root, "publication-receipts.mjs"),
-      fixtureReceiptClientSource(receipts.endpoint) + "\nexport { sendReceipt };\n",
-    );
     supervisor = fork(ciCheckoutFixture, ["supervise", root, scenario], {
       detached: true,
       execArgv: [],
@@ -198,17 +211,6 @@ export async function withCiCheckoutFixture<T>(
       env,
     });
   } catch (error) {
-    try {
-      await receipts.close();
-    } catch (closeError) {
-      throw new AggregateError(
-        [error, closeError],
-        "Fixture setup and publication cleanup failed",
-        {
-          cause: closeError,
-        },
-      );
-    }
     rmSync(root, { recursive: true, force: true });
     throw error;
   }
@@ -221,90 +223,11 @@ export async function withCiCheckoutFixture<T>(
   });
   supervisor.stderr?.on("data", (data) => (stderr += String(data)));
   supervisor.on("error", (error) => (stderr += `${error}\n`));
-  const publicationFailure = createDeferred<never>();
-  let publicationClosing = false;
-  let publicationError: unknown;
-  // Receipts only wake this retained supervisor; it still owns the marker,
-  // child-lifetime and lease checks before cancellation can proceed.
-  const relay = (async () => {
-    for (let count = 1; ; count += 1) {
-      if (publicationClosing) {
-        return;
-      }
-      await receipts.waitFor(root, "fixture-publication", count);
-      if (
-        publicationClosing ||
-        !supervisor.connected ||
-        supervisor.exitCode !== null ||
-        supervisor.signalCode !== null
-      ) {
-        return;
-      }
-      await new Promise<void>((resolve, reject) => {
-        supervisor.send("fixture-publication", (error: Error | null) => {
-          if (error && supervisor.exitCode === null && supervisor.signalCode === null) {
-            reject(error);
-          } else {
-            resolve();
-          }
-        });
-      });
-    }
-  })().catch((error: unknown) => {
-    if (!publicationClosing) {
-      publicationError = error;
-      publicationFailure.reject(error);
-    }
-  });
-  let publicationClose: Promise<void> | undefined;
-  // The outer owner survives forced supervisor exit and joins both the relay
-  // and its receiver before a completed report can release the namespace.
-  const closePublication = () => {
-    publicationClosing = true;
-    publicationClose ??= (async () => {
-      const results = await Promise.allSettled([receipts.close(), relay]);
-      const errors = results.flatMap((result) =>
-        result.status === "rejected" ? [result.reason] : [],
-      );
-      if (publicationError) {
-        errors.unshift(publicationError);
-      }
-      if (errors.length) {
-        throw new AggregateError(errors, "Fixture publication cleanup failed");
-      }
-    })();
-    return publicationClose;
-  };
-  try {
-    return await finishCiCheckoutFixture(
-      supervisor,
-      root,
-      closed,
-      publicationFailure.promise,
-      inspect,
-      () => stderr,
-      closePublication,
-    );
-  } finally {
-    await closePublication();
-  }
-}
-
-async function finishCiCheckoutFixture<T>(
-  supervisor: ChildProcess,
-  root: string,
-  closed: Promise<CloseResult>,
-  publicationFailure: Promise<never>,
-  inspect: (report: Report, result: CloseResult, stderr: string, root: string) => T | Promise<T>,
-  readStderr: () => string,
-  closePublication: () => Promise<void>,
-): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   let report: Report | undefined;
   try {
     const completed = await Promise.race([
       closed,
-      publicationFailure,
       new Promise<never>((_, reject) => {
         timer = setTimeout(
           () => reject(new Error("Checkout supervisor did not close within 50000ms")),
@@ -313,7 +236,6 @@ async function finishCiCheckoutFixture<T>(
       }),
     ]);
     clearTimeout(timer);
-    const stderr = readStderr();
     let contents: string;
     try {
       contents = readFileSync(path.join(root, "report.json"), "utf8");
@@ -328,7 +250,6 @@ async function finishCiCheckoutFixture<T>(
   } finally {
     clearTimeout(timer);
     if (report) {
-      await closePublication();
       // A consumer assertion failure does not revoke the producer's release receipt.
       rmSync(root, { recursive: true, force: true });
     } else {
@@ -355,7 +276,6 @@ async function finishCiCheckoutFixture<T>(
         }
         await delay(Math.min(10, remaining));
       }
-      const stderr = readStderr();
       console.error(
         `Checkout fixture retained at ${root}; no completed report. ` +
           `Supervisor close: true; group extinction: ${groupDead()}. ` +
