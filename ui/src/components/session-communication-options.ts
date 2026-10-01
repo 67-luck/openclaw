@@ -171,7 +171,6 @@ export class SessionMenuCommunication {
           }`,
         ),
       )}
-      <div class="session-menu__info">${t("sessionsView.communication.helper")}</div>
     `;
   }
 

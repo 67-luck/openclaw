@@ -977,7 +977,6 @@ export const en: TranslationMap & {
       ask: "Ask",
       never: "Never",
       default: "default",
-      helper: "Replies and subagents still work",
       sendDescription:
         "Allow this session to initiate messages to other sessions. Ask requires human approval; Never blocks them.",
       receiveDescription:
