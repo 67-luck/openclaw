@@ -98,13 +98,47 @@ jobs:
           SKIP_TEAM_ID_CHECK: "1"
         run: |
           set -euo pipefail
+          # Queries diagnose the selected toolchain; their exit codes are evidence, not build gates.
+          record_toolchain() {
+            local status=0
+            printf '\n$'; printf ' %q' "$@"; printf '\n'
+            "$@" || status=$?
+            printf '[toolchain-query] exit_code=%s\n' "$status"
+          }
+          {
+            record_toolchain xcode-select -p
+            record_toolchain xcodebuild -version
+            record_toolchain xcrun swift --version
+            record_toolchain xcrun --sdk macosx --show-sdk-path
+            record_toolchain xcrun --sdk macosx --show-sdk-version
+            record_toolchain xcrun --sdk macosx --show-sdk-build-version
+            record_toolchain xcrun --sdk macosx --find metal
+            record_toolchain xcrun --sdk macosx metal --version
+            record_toolchain xcodebuild -showComponent MetalToolchain -json
+          } 2>&1 | tee "$RFC54_BENCH_ROOT/toolchain.log"
+
           export BUILD_ARCHS="$(uname -m)"
-          scripts/package-mac-app.sh
+          # pipefail preserves package failure while retaining the full compiler output.
+          scripts/package-mac-app.sh 2>&1 | tee "$RFC54_BENCH_ROOT/package.log"
 
       - name: Prove bundle replacement and rejection behavior
         run: >-
           scripts/bench-macos-sidecar/package-lifecycle.sh
           "$GITHUB_WORKSPACE/dist/OpenClawSidecarProof.app"
+
+      - name: Retain Metal compiler diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          count=0
+          for diagnostic in apps/macos-mlx-tts/.build/*/out/Intermediates.noindex/mlx-swift.build/Release/mlx-swift_Cmlx-*.build/Metal/*.dia; do
+            destination="$RFC54_BENCH_ROOT/metal-diagnostics/${diagnostic#apps/macos-mlx-tts/.build/}"
+            mkdir -p "$(dirname "$destination")"
+            cp "$diagnostic" "$destination"
+            count=$((count + 1))
+          done
+          printf 'Metal diagnostic files: %s\n' "$count"
 
       - name: Upload redacted proof records
         if: always()
@@ -113,5 +147,8 @@ jobs:
           name: macos-rust-sidecar-proof
           path: |
             ${{ env.RFC54_BENCH_ROOT }}/*.json
+            ${{ env.RFC54_BENCH_ROOT }}/toolchain.log
+            ${{ env.RFC54_BENCH_ROOT }}/package.log
+            ${{ env.RFC54_BENCH_ROOT }}/metal-diagnostics/
           if-no-files-found: warn
           retention-days: 14
