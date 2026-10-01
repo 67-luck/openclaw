@@ -43,18 +43,20 @@ struct AuthenticatedSidecarChannelTests {
         #expect(!channel.isRetired)
     }
 
-    @Test(arguments: [
-        Data(), Data([2]), Data([2] + Array(repeating: 0, count: 7)),
-        Data([2] + Array(repeating: 0, count: 8)),
-        Data([0, 0, 0, 0, 0, 0, 0, 0, 1]),
-        Data([5, 0, 0, 0, 0, 0, 0, 0, 1]),
-        Data([1, 0, 0, 0, 0, 0, 0, 0, 1, 255]),
-        Data([1, 0, 0, 0, 0, 0, 0, 0, 1, 0xED, 0xA0, 0x80]),
-        Data([3, 0, 0, 0, 0, 0, 0, 0, 1, 0]),
-        Data([4, 0, 0, 0, 0, 0, 0, 0, 1, 0]),
-    ])
-    func `malformed authenticated opaque records retire before delivery`(payload: Data) throws {
-        try Self.rejectRuntimePayload(payload, opaque: true)
+    private static let malformedOpaquePayloads: [[UInt8]] = [
+        [], [2], [2, 0, 0, 0, 0, 0, 0, 0],
+        [2, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 1],
+        [5, 0, 0, 0, 0, 0, 0, 0, 1],
+        [1, 0, 0, 0, 0, 0, 0, 0, 1, 255],
+        [1, 0, 0, 0, 0, 0, 0, 0, 1, 0xED, 0xA0, 0x80],
+        [3, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+        [4, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+    ]
+
+    @Test(arguments: Self.malformedOpaquePayloads)
+    func `malformed authenticated opaque records retire before delivery`(payload: [UInt8]) throws {
+        try Self.rejectRuntimePayload(Data(payload), opaque: true)
     }
 
     @Test(arguments: [
