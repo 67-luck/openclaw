@@ -39,10 +39,6 @@ import { persistInterruptedUpdateObservation } from "../infra/update-run-interru
 import { recordUpdateRunMutationInWorker } from "../infra/update-run-mutation.worker.js";
 import { reconcileUpdateRunCandidatesInWorker } from "../infra/update-run-reconciliation.worker.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import {
-  executeProjectRegistryCommand,
-  isProjectRegistryCommand,
-} from "../projects/project-registry.worker.js";
 import { writeSecretStoreEntryForConfigRefInDatabase } from "../secrets/store/secret-store-config-ref.kernel.js";
 import { purgeExpiredSecretStoreEntriesInDatabase } from "../secrets/store/secret-store-expiry.kernel.js";
 import { executeSessionStateCommand } from "../sessions/session-state-events.worker.js";
@@ -62,6 +58,7 @@ import {
   readSessionReceiptDeletionIdentitiesInDatabase,
 } from "./github-personal-publication-lifecycle.js";
 import type { OpenClawStateDatabase } from "./openclaw-state-db-contract.js";
+import type { ExistingOpenClawStateWriter } from "./openclaw-state-db-existing-write.js";
 import { assertOpenClawStateDatabaseOwner } from "./openclaw-state-db-maintenance.js";
 import {
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnly,
@@ -81,6 +78,8 @@ import { executeUserPreferenceCommand } from "./user-preferences.worker.js";
 
 const log = createSubsystemLogger("state/worker");
 
+export { openUpdateRunWriter } from "../infra/update-run-mutation.worker.js";
+
 export function prepareSharedStateCommand(type: PropertyKey): Promise<void> | undefined {
   return stateWorkerRegistry.prepare(type) ?? prepareCronStateWorkerCommand(type);
 }
@@ -89,6 +88,7 @@ export function executeSharedStateCommand(
   command: OpenClawStateWorkerRuntimeCommand,
   context: { databasePath: string },
   open: () => OpenClawStateDatabase,
+  updateRunWriter: () => ExistingOpenClawStateWriter,
 ): ReturnType<OpenClawStateWorkerBackend["execute"]> {
   // Dispatch preparation has loaded this module; do not open or observe token state.
   if (command.type === "deviceAuth.prepare") {
@@ -120,8 +120,11 @@ export function executeSharedStateCommand(
     return startWorkerPlacementDispatchInWorker(command.input, open());
   }
   if (command.type === "updateRuns.recordStep" || command.type === "updateRuns.recordPhase") {
-    return recordUpdateRunMutationInWorker(command, stateOptions(), (stage) =>
-      requestSqliteWorkerOperationAdmission({ stage, facts: undefined }),
+    return recordUpdateRunMutationInWorker(
+      command,
+      stateOptions(),
+      (stage) => requestSqliteWorkerOperationAdmission({ stage, facts: undefined }),
+      updateRunWriter(),
     );
   }
   if (command.type === "updateRuns.reconcile") {
@@ -182,6 +185,9 @@ export function executeSharedStateCommand(
         ) ?? { entry: null, expectedToken: null })
       : read(open().db);
   }
+  if (command.type === "tui.lastSession.clear") {
+    return clearRetiredTuiPointers(new Set(command.input.retiredSessionKeys), stateOptions(), open);
+  }
   const database = open();
   if (command.type === "githubPublication.prepareSessionReceiptDeletion") {
     return readSessionReceiptDeletionIdentitiesInDatabase(database, command.input);
@@ -231,13 +237,6 @@ export function executeSharedStateCommand(
   };
   if (command.type === "tui.lastSession.write") {
     return writeConfigMachineState(command.input.stateKey, command.input.sessionKey, writeOptions);
-  }
-  if (command.type === "tui.lastSession.clear") {
-    return clearRetiredTuiPointers(
-      command.input.stateKeys,
-      new Set(command.input.retiredSessionKeys),
-      writeOptions,
-    );
   }
   if (command.type === "sandboxRegistry.insertIfMissing") {
     return importSandboxRegistryRow(command.input, writeOptions);
@@ -321,9 +320,6 @@ export function executeSharedStateCommand(
       ({ db }) => recordBackupRunInDatabase(db, command.input),
       writeOptions,
     );
-  }
-  if (isProjectRegistryCommand(command)) {
-    return executeProjectRegistryCommand(command, writeOptions);
   }
   if (command.type === "config.health.patch") {
     const { configPath, patch, expected, updatedAtMs } = command.input;
