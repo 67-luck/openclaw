@@ -115,7 +115,7 @@ struct OpenClawStatusWidgetContent: View {
         Image(systemName: self.symbol)
             .font(OpenClawActivityType.symbol(size: 12, weight: .semibold))
             .foregroundStyle(.primary)
-            .frame(width: 14, height: 14)
+            .frame(width: 16, height: 14)
     }
 
     private var statusIndicators: some View {
