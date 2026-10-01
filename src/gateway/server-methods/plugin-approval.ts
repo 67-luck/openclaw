@@ -7,7 +7,6 @@ import {
   validatePluginApprovalRequestParams,
   validatePluginApprovalResolveParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { projectApprovalRequestForExternal } from "../../infra/approval-request-projection.js";
 import { sanitizeApprovalScope } from "../../infra/approval-scope.js";
 import type { ExecApprovalForwarder } from "../../infra/exec-approval-forwarder.js";
 import {
@@ -70,9 +69,6 @@ export function createPluginApprovalHandlers(
         ...(client?.authenticatedUserProfile ? { getCfg: context.getRuntimeConfig } : {}),
       });
       authority.assertCurrent();
-      for (const approval of approvals) {
-        approval.request = projectApprovalRequestForExternal(approval.request);
-      }
       respond(true, approvals, undefined);
     },
     "plugin.approval.request": async ({ params, client, respond, context }) => {

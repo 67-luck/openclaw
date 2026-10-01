@@ -808,7 +808,7 @@ describe("createPluginApprovalHandlers", () => {
   });
 
   describe("plugin.approval.resolve", () => {
-    it("omits the original message from list and resolved public routes", async () => {
+    it("preserves requester context in authorized lists and resolution events", async () => {
       const source = {
         channel: "slack",
         senderId: "U123",
@@ -839,10 +839,7 @@ describe("createPluginApprovalHandlers", () => {
         requireArray(responseCall(listOpts.respond).result, "list")[0],
         "approval",
       );
-      expect(requireRecord(listed.request, "request").approvalSource).toEqual({
-        channel: "slack",
-        senderId: "U123",
-      });
+      expect(requireRecord(listed.request, "request").approvalSource).toEqual(source);
       expect((await manager.getSnapshot(record.id))?.request.approvalSource).toEqual(source);
 
       const resolveOpts = createMockOptions(
@@ -851,15 +848,15 @@ describe("createPluginApprovalHandlers", () => {
         { context },
       );
       await invokeHandler(handlers, resolveOpts);
-      const publicEvent = expect.objectContaining({
+      const event = expect.objectContaining({
         request: expect.objectContaining({
-          approvalSource: { channel: "slack", senderId: "U123" },
+          approvalSource: source,
         }),
       });
-      expect(broadcastCall(resolveOpts).payload).toEqual(publicEvent);
-      expect(forwardResolved).toHaveBeenCalledWith(publicEvent);
-      expect(iosResolved).toHaveBeenCalledWith(publicEvent);
-      expect(webResolved).toHaveBeenCalledWith(publicEvent);
+      expect(broadcastCall(resolveOpts).payload).toEqual(event);
+      expect(forwardResolved).toHaveBeenCalledWith(event);
+      expect(iosResolved).toHaveBeenCalledWith(event);
+      expect(webResolved).toHaveBeenCalledWith(event);
     });
 
     it("rejects invalid decision", async () => {

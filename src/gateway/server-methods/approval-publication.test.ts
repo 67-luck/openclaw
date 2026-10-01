@@ -25,7 +25,7 @@ async function publishSystemAgentTerminal(status: "allowed" | "denied" | "expire
 }
 
 describe("publishAppliedApprovalResolution for OpenClaw changes", () => {
-  it("omits the requester message from plugin terminal broadcasts and delivery callbacks", async () => {
+  it("preserves requester context through plugin resolution publication", async () => {
     const source = {
       channel: "slack",
       senderId: "U123",
@@ -60,11 +60,10 @@ describe("publishAppliedApprovalResolution for OpenClaw changes", () => {
       pluginIosPushDelivery: { handleResolved: iosResolved },
     });
 
-    const publicSource = { channel: "slack", senderId: "U123" };
     expect(broadcast).toHaveBeenCalledWith(
       "plugin.approval.resolved",
       expect.objectContaining({
-        request: expect.objectContaining({ approvalSource: publicSource }),
+        request: expect.objectContaining({ approvalSource: source }),
       }),
       { dropIfSlow: true },
     );
@@ -74,13 +73,13 @@ describe("publishAppliedApprovalResolution for OpenClaw changes", () => {
     );
     expect(webExpired).toHaveBeenCalledWith(
       expect.objectContaining({
-        request: expect.objectContaining({ approvalSource: publicSource }),
+        request: expect.objectContaining({ approvalSource: source }),
       }),
     );
     for (const callback of [forwardResolved, iosResolved]) {
       expect(callback).toHaveBeenCalledWith(
         expect.objectContaining({
-          request: expect.objectContaining({ approvalSource: publicSource }),
+          request: expect.objectContaining({ approvalSource: source }),
         }),
       );
     }

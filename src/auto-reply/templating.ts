@@ -137,7 +137,7 @@ export type MsgContext = Partial<CanonicalInboundText> & {
    */
   RawBody?: string;
   /** Channel-owned display context for a later plugin approval, never approval authority. */
-  ApprovalSource?: PluginApprovalSource & { includeUserMessageExcerpt?: boolean };
+  ApprovalSource?: PluginApprovalSource;
   /**
    * Prefer for command detection; RawBody is treated as legacy alias.
    */

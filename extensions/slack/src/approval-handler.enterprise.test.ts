@@ -89,7 +89,6 @@ describe("Slack Enterprise Grid approval delivery", () => {
       channelId: "C123",
       messageTs: "1712345678.123456",
       teamId: "T123",
-      showMessageExcerpt: false,
     });
     expect(resolveClient).toHaveBeenCalledWith("T123");
     expect(sendMessageSlackMock).toHaveBeenCalledWith(

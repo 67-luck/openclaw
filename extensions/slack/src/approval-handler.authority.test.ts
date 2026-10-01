@@ -59,16 +59,9 @@ describe("Slack approval reviewer delivery authority", () => {
     { installation: "enterprise", change: "retained", nextApprover: REVIEWER, shouldPost: true },
     { installation: "workspace", change: "removed", nextApprover: OTHER, shouldPost: false },
     { installation: "workspace", change: "retained", nextApprover: REVIEWER, shouldPost: true },
-    {
-      installation: "workspace",
-      change: "removed after workspace switch",
-      nextApprover: OTHER,
-      shouldPost: false,
-      installationTeamId: "T22222222",
-    },
   ] as const)(
     "checks the $change reviewer on $installation delivery",
-    async ({ installation, nextApprover, shouldPost, ...testCase }) => {
+    async ({ installation, nextApprover, shouldPost }) => {
       for (const key of proxyEnvKeys) {
         vi.stubEnv(key, undefined);
       }
@@ -146,13 +139,6 @@ describe("Slack approval reviewer delivery authority", () => {
             const context = {
               app: { client, webClientOptions: { slackApiUrl: `${baseUrl}/api/` } },
               config: {},
-              installationIdentity:
-                installation === "enterprise"
-                  ? { kind: "enterprise", enterpriseId: "E11111111" }
-                  : {
-                      kind: "workspace",
-                      teamId: "installationTeamId" in testCase ? testCase.installationTeamId : TEAM,
-                    },
               resolveClient: () => client,
               ...(installation === "enterprise"
                 ? { enterprise: { enterpriseId: "E11111111" } }

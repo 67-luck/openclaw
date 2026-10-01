@@ -14,7 +14,7 @@ import {
   resolveApprovalRoutedElsewhereNoticeText,
 } from "./approval-native-route-notice.js";
 import { buildChannelApprovalNativeTargetKey } from "./approval-native-target-key.js";
-import { projectApprovalRouteRequest } from "./approval-request-projection.js";
+import { omitApprovalRequestMessage } from "./approval-request-projection.js";
 import type { ApprovalRequestChannelRouteClass, ChannelApprovalKind } from "./approval-types.js";
 import type { ExecApprovalRequest } from "./exec-approvals.js";
 import type { PluginApprovalRequest } from "./plugin-approvals.js";
@@ -532,7 +532,7 @@ function createApprovalNativeRouteReporterForState(
     if (state.closed || !registered || !params.handledKinds.has(payload.approvalKind)) {
       return;
     }
-    const request = projectApprovalRouteRequest(payload.request);
+    const request = omitApprovalRequestMessage(payload.request);
     const selection = resolveApprovalRouteSelection(state, { ...payload, request });
     if (!selection.verdicts.has(runtimeId)) {
       return;
@@ -566,8 +566,8 @@ function createApprovalNativeRouteReporterForState(
       if (state.closed || !params.handledKinds.has(payload.approvalKind)) {
         return { kind: "ineligible" };
       }
-      // Reviewer excerpts stay on the native delivery request, not shared route callbacks or state.
-      const request = projectApprovalRouteRequest(payload.request);
+      // Candidate route callbacks do not establish who will receive the approval.
+      const request = omitApprovalRequestMessage(payload.request);
       if (!registered) {
         try {
           return params.shouldHandle(request) ? { kind: "selected" } : { kind: "ineligible" };

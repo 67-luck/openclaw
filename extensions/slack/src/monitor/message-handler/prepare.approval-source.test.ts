@@ -42,6 +42,5 @@ it("records the admitted Slack sender and validated workspace for approval revie
     senderName: "Alice",
     workspaceId: "T123ENTERPRISE",
     conversationKind: "direct",
-    includeUserMessageExcerpt: true,
   });
 });

@@ -1551,7 +1551,6 @@ export async function prepareSlackMessage(params: {
       senderName,
       ...(workspaceId ? { workspaceId } : {}),
       conversationKind: chatType,
-      includeUserMessageExcerpt: true,
     };
   }
 

@@ -157,7 +157,7 @@ describe("handlePendingApprovalRequestWithDelivery", () => {
     await request;
   });
 
-  it("keeps the original message on native delivery while omitting it from public request routes", async (test) => {
+  it("preserves requester context through approval delivery", async (test) => {
     const fixture = createDeliveryFixture(test, approvalDeliveryCallers[1]);
     (fixture.record.request as PluginApprovalRequestPayload).approvalSource = {
       channel: "slack",
@@ -172,37 +172,41 @@ describe("handlePendingApprovalRequestWithDelivery", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
 
-    const publicSource = { channel: "slack", senderId: "U123" };
+    const source = {
+      channel: "slack",
+      senderId: "U123",
+      userMessageExcerpt: "private original message",
+    };
     expect(fixture.context.approvalEvents?.publishRequested).toHaveBeenCalledWith(
       "plugin",
       expect.objectContaining({
         request: expect.objectContaining({
-          approvalSource: { ...publicSource, userMessageExcerpt: "private original message" },
+          approvalSource: source,
         }),
       }),
     );
     expect(fixture.context.broadcastToConnIds).toHaveBeenCalledWith(
       "plugin.approval.requested",
       expect.objectContaining({
-        request: expect.objectContaining({ approvalSource: publicSource }),
+        request: expect.objectContaining({ approvalSource: source }),
       }),
       new Set(),
       { dropIfSlow: true },
     );
     expect(forwardRequest).toHaveBeenCalledWith(
       expect.objectContaining({
-        request: expect.objectContaining({ approvalSource: publicSource }),
+        request: expect.objectContaining({ approvalSource: source }),
       }),
     );
     expect(handleRequested).toHaveBeenCalledWith(
       expect.objectContaining({
-        request: expect.objectContaining({ approvalSource: publicSource }),
+        request: expect.objectContaining({ approvalSource: source }),
       }),
       { isTargetVisible: expect.any(Function) },
     );
     expect(fixture.webPush).toHaveBeenCalledWith(
       expect.objectContaining({
-        request: expect.objectContaining({ approvalSource: publicSource }),
+        request: expect.objectContaining({ approvalSource: source }),
       }),
     );
     fixture.settle();

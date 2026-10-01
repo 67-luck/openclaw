@@ -57,7 +57,7 @@ export function capturePluginApprovalSource(params: {
   ) {
     return undefined;
   }
-  const rawBody = source.includeUserMessageExcerpt ? context.RawBody : undefined;
+  const rawBody = context.RawBody;
   const sanitized = rawBody ? sanitizeExecApprovalWarningTextWithStatus(rawBody) : undefined;
   const displayText = sanitized && !sanitized.oversized ? sanitized.text.trim() : "";
   const userMessageExcerpt =

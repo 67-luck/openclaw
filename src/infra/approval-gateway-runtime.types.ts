@@ -13,8 +13,6 @@ export type GatewayApprovalResolved =
 
 export type GatewayApprovalEventSubscriber = {
   eventKinds: ReadonlySet<ChannelApprovalKind>;
-  channel?: string;
-  accountId?: string | null;
   shouldHandle: (request: GatewayApprovalRequest) => boolean;
   onRequested: (request: GatewayApprovalRequest) => void;
   onResolved: (resolved: GatewayApprovalResolved) => void;

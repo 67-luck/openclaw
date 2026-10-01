@@ -404,59 +404,49 @@ describe("createExecApprovalChannelRuntime", () => {
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
-  it("uses the private native plugin replay when the public list follows", async () => {
-    const privateRequest = createPluginReplayRequest("plugin:private-replay");
-    privateRequest.request.approvalSource = {
-      channel: "slack",
-      senderId: "U123",
+  it("replays requester context from the approval list and retains it for resolution", async () => {
+    const approval = createPluginReplayRequest("plugin:context-replay");
+    approval.request.approvalSource = {
+      channel: "telegram",
+      senderId: "123",
       userMessageExcerpt: "original message",
     };
-    privateRequest.expiresAtMs = Date.now() + 60_000;
-    const nativeRequest = { ...privateRequest, approvalKind: "plugin" as const };
-    const publicRequest = {
-      ...nativeRequest,
-      request: {
-        ...privateRequest.request,
-        approvalSource: { channel: "slack", senderId: "U123" },
-      },
-    };
-    const request = vi.fn(async (method: string) =>
-      method === "plugin.approval.list" ? [publicRequest] : { ok: true },
-    );
-    const shouldHandle = vi.fn(() => true);
-    const deliverRequested = vi.fn(async () => [{ id: privateRequest.id }]);
+    approval.expiresAtMs = Date.now() + 60_000;
+    const delivered = createDeferred<PluginApprovalRequest>();
+    const finalized = createDeferred<PluginApprovalRequest>();
     const gatewayRuntime: GatewayNativeApprovalRuntime = {
-      request: request as GatewayNativeApprovalRuntime["request"],
+      request: vi.fn(async (method: string) =>
+        method === "plugin.approval.list" ? [approval] : { ok: true },
+      ) as GatewayNativeApprovalRuntime["request"],
       requestRoute: vi.fn(),
       routeCoordinator: {} as never,
-      subscribe: (subscriber) => {
-        if (subscriber.shouldHandle(publicRequest)) {
-          subscriber.onRequested(nativeRequest);
-        }
-        return vi.fn();
-      },
+      subscribe: () => vi.fn(),
     };
     const runtime = withGatewayNativeApprovalRuntime(gatewayRuntime, () =>
       createRuntime<PluginApprovalRequest, PluginApprovalResolved>({
         eventKinds: ["plugin"],
-        channel: "slack",
-        accountId: "work",
-        shouldHandle,
-        deliverRequested,
+        finalizeResolved: async ({ request }) => {
+          finalized.resolve(request);
+        },
+        deliverRequested: async (request) => {
+          delivered.resolve(request);
+          return [{ id: request.id }];
+        },
       }),
     );
-
-    await runtime.start();
-    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("plugin.approval.list", {}));
-    expect(deliverRequested).toHaveBeenCalledTimes(1);
-    expect(deliverRequested).toHaveBeenCalledWith(
-      expect.objectContaining({
-        request: expect.objectContaining({
-          approvalSource: expect.objectContaining({ userMessageExcerpt: "original message" }),
-        }),
-      }),
-    );
-    await runtime.stop();
+    try {
+      await runtime.start();
+      expect(await delivered.promise).toMatchObject(approval);
+      await runtime.handleResolved({
+        id: approval.id,
+        decision: "deny",
+        ts: 3,
+        request: { ...approval.request, approvalSource: { channel: "telegram", senderId: "123" } },
+      });
+      expect(await finalized.promise).toMatchObject(approval);
+    } finally {
+      await runtime.stop();
+    }
   });
 
   it("rejects write RPCs before they reach the approvals-only gateway client", async () => {

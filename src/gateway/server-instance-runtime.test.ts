@@ -50,173 +50,66 @@ function createRegistry(handlers: GatewayRequestHandlers) {
 }
 
 describe("createGatewayInstanceRuntime", () => {
-  it("replays pending plugin context only to its Slack account", () => {
-    const context = createContext();
-    const request: PluginApprovalRequest = {
-      approvalKind: "plugin",
-      id: "plugin:replay-private",
-      request: {
-        title: "Sensitive action",
-        description: "Needs approval",
-        turnSourceChannel: "slack",
-        turnSourceAccountId: "work",
-        approvalSource: {
-          channel: "slack",
-          senderId: "U123",
-          userMessageExcerpt: "private original message",
-        },
-      },
-      createdAtMs: Date.now(),
-      expiresAtMs: Date.now() + 60_000,
-    };
-    context.pluginApprovalManager = {
-      listLocalPendingRecords: () => [request],
-    } as unknown as NonNullable<GatewayRequestContext["pluginApprovalManager"]>;
-    const runtime = createGatewayInstanceRuntime({
-      getContext: () => context,
-      getMethodRegistry: () => createRegistry({}),
-      isDispatchAvailable: () => true,
-    });
-    const subscribe = (channel: string, accountId: string) => {
-      const shouldHandle = vi.fn(() => true);
-      const onRequested = vi.fn();
-      runtime.nativeApprovals.subscribe({
-        eventKinds: new Set(["plugin"]),
-        channel,
-        accountId,
-        shouldHandle,
-        onRequested,
-        onResolved: vi.fn(),
-      });
-      return { shouldHandle, onRequested };
-    };
-    const owner = subscribe("slack", "work");
-    const otherAccount = subscribe("slack", "personal");
-    const otherChannel = subscribe("matrix", "work");
-
-    for (const recipient of [owner, otherAccount, otherChannel]) {
-      expect(recipient.shouldHandle).toHaveBeenCalledWith(
-        expect.objectContaining({
-          request: expect.objectContaining({
-            approvalSource: { channel: "slack", senderId: "U123" },
-          }),
-        }),
-      );
-    }
-    expect(owner.onRequested).toHaveBeenCalledWith(request);
-    for (const recipient of [otherAccount, otherChannel]) {
-      expect(recipient.onRequested).toHaveBeenCalledWith(
-        expect.objectContaining({
-          request: expect.objectContaining({
-            approvalSource: { channel: "slack", senderId: "U123" },
-          }),
-        }),
-      );
-    }
-    runtime.close();
-  });
-
-  it("keeps a requester excerpt inside the matching Slack native approval runtime", () => {
+  it("keeps requester context on selected native delivery, outside shared routing callbacks", () => {
     const runtime = createGatewayInstanceRuntime({
       getContext: createContext,
       getMethodRegistry: () => createRegistry({}),
       isDispatchAvailable: () => true,
     });
-    const source = {
-      channel: "slack",
-      senderId: "U123",
-      userMessageExcerpt: "private original message",
-    };
     const request: PluginApprovalRequest = {
       approvalKind: "plugin",
-      id: "plugin:private",
+      id: "plugin:context",
       request: {
         title: "Sensitive action",
         description: "Needs approval",
-        turnSourceChannel: "slack",
-        turnSourceAccountId: "work",
-        approvalSource: source,
+        approvalSource: {
+          channel: "telegram",
+          senderId: "123",
+          userMessageExcerpt: "original message",
+        },
       },
       createdAtMs: 1,
       expiresAtMs: 2,
     };
-    const recipients = [
-      { channel: "slack", accountId: "work" },
-      { channel: "slack", accountId: "personal" },
-      { channel: "matrix", accountId: "work" },
-      { channel: "slack", accountId: "default" },
-    ].map(({ channel, accountId }) => {
-      const shouldHandle = vi.fn(() => true);
-      const onRequested = vi.fn();
-      const onResolved = vi.fn();
-      runtime.nativeApprovals.subscribe({
-        eventKinds: new Set(["plugin"]),
-        channel,
-        accountId,
-        shouldHandle,
-        onRequested,
-        onResolved,
-      });
-      return { shouldHandle, onRequested, onResolved };
+    const onRequested = vi.fn();
+    const onResolved = vi.fn();
+    const shouldHandle = vi.fn(() => true);
+    const declined = {
+      shouldHandle: vi.fn(() => false),
+      onRequested: vi.fn(),
+      onResolved: vi.fn(),
+    };
+    runtime.nativeApprovals.subscribe({
+      eventKinds: new Set(["plugin"]),
+      shouldHandle,
+      onRequested,
+      onResolved,
     });
-
-    expect(runtime.approvalEvents.publishRequested("plugin", request)).toBe(4);
-    for (const recipient of recipients) {
-      expect(recipient.shouldHandle).toHaveBeenCalledWith(
-        expect.objectContaining({
-          request: expect.objectContaining({
-            approvalSource: { channel: "slack", senderId: "U123" },
-          }),
-        }),
-      );
-    }
-    expect(recipients[0]?.onRequested).toHaveBeenCalledWith(request);
-    for (const recipient of recipients.slice(1)) {
-      expect(recipient.onRequested).toHaveBeenCalledWith(
-        expect.objectContaining({
-          request: expect.objectContaining({
-            approvalSource: { channel: "slack", senderId: "U123" },
-          }),
-        }),
-      );
-    }
-
-    for (const recipient of recipients) {
-      recipient.onRequested.mockClear();
-    }
-    const defaultRequest: PluginApprovalRequest = {
+    runtime.nativeApprovals.subscribe({ eventKinds: new Set(["plugin"]), ...declined });
+    const routingRequest = {
       ...request,
-      id: "plugin:default",
-      request: { ...request.request, turnSourceAccountId: null },
+      request: { ...request.request, approvalSource: { channel: "telegram", senderId: "123" } },
     };
-    expect(runtime.approvalEvents.publishRequested("plugin", defaultRequest)).toBe(4);
-    const publicDefaultRequest = {
-      ...defaultRequest,
-      request: {
-        ...defaultRequest.request,
-        approvalSource: { channel: "slack", senderId: "U123" },
-      },
-    };
-    for (const recipient of recipients) {
-      expect(recipient.onRequested).toHaveBeenCalledWith(publicDefaultRequest);
+    try {
+      expect(runtime.approvalEvents.publishRequested("plugin", request)).toBe(1);
+      expect(shouldHandle).toHaveBeenCalledExactlyOnceWith(routingRequest);
+      expect(declined.shouldHandle).toHaveBeenCalledExactlyOnceWith(routingRequest);
+      expect(declined.onRequested).not.toHaveBeenCalled();
+      expect(onRequested).toHaveBeenCalledExactlyOnceWith(request);
+      const resolved = {
+        id: request.id,
+        decision: "deny" as const,
+        ts: 3,
+        request: request.request,
+      };
+      runtime.approvalEvents.publishResolved("plugin", resolved);
+      const routingResolved = { ...resolved, request: routingRequest.request };
+      expect(onResolved).toHaveBeenCalledExactlyOnceWith(routingResolved);
+      expect(declined.onResolved).toHaveBeenCalledExactlyOnceWith(routingResolved);
+      expect(request.request.approvalSource?.userMessageExcerpt).toBe("original message");
+    } finally {
+      runtime.close();
     }
-
-    runtime.approvalEvents.publishResolved("plugin", {
-      id: request.id,
-      decision: "deny",
-      ts: 3,
-      request: request.request,
-    });
-    for (const recipient of recipients) {
-      expect(recipient.onResolved).toHaveBeenCalledWith(
-        expect.objectContaining({
-          request: expect.objectContaining({
-            approvalSource: { channel: "slack", senderId: "U123" },
-          }),
-        }),
-      );
-    }
-    runtime.close();
   });
 
   it.each([false, true])(

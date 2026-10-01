@@ -149,7 +149,6 @@ describe("Telegram prompt composition", () => {
         conversationKind: "direct",
       },
     });
-    expect(context?.ctxPayload.ApprovalSource).not.toHaveProperty("includeUserMessageExcerpt");
   });
 
   it.each([

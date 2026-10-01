@@ -535,7 +535,7 @@ describe("slackApprovalNativeRuntime", () => {
     ]);
   });
 
-  it("shows the original message only on the approver DM card and its updates", async () => {
+  it("shows original messages from any source only on approver DM cards and updates", async () => {
     const cfg = {
       channels: {
         slack: {
@@ -543,6 +543,13 @@ describe("slackApprovalNativeRuntime", () => {
           appToken: "xapp-approval-card",
           allowFrom: ["U123"],
           execApprovals: { enabled: true, target: "dm" },
+        },
+      },
+      approvals: {
+        plugin: {
+          enabled: true,
+          mode: "targets",
+          targets: [{ channel: "slack", accountId: "default", to: "user:U123" }],
         },
       },
     } as never;
@@ -579,7 +586,7 @@ describe("slackApprovalNativeRuntime", () => {
       request: {
         ...SCREEN_SHARE_REQUEST.request,
         turnSourceChannel: "slack",
-        turnSourceAccountId: "default",
+        turnSourceAccountId: "requester-account",
         approvalSource,
       },
     };
@@ -590,19 +597,23 @@ describe("slackApprovalNativeRuntime", () => {
     const context = {
       app: { client: { token: "xoxb-approval-card" } },
       config: {},
-      installationIdentity: { kind: "workspace", teamId: "T123ABC45" },
       readConfig: () => cfg,
       assertCurrent: () => {},
     };
     const deliver = async (
       surface: "origin" | "approver-dm",
-      deliveryContext: Record<string, unknown> = context,
+      source: PluginApprovalPendingView["approvalSource"] = approvalSource,
     ) => {
+      const sourceRequest = {
+        ...request,
+        request: { ...request.request, turnSourceChannel: source?.channel, approvalSource: source },
+      };
+      const sourceView = { ...view, approvalSource: source };
       const entry = await slackApprovalNativeRuntime.transport.deliverPending({
         ...APPROVAL_CONTEXT,
         cfg,
-        context: deliveryContext,
-        request,
+        context,
+        request: sourceRequest,
         approvalKind: "plugin",
         plannedTarget: {
           surface,
@@ -611,7 +622,7 @@ describe("slackApprovalNativeRuntime", () => {
         },
         preparedTarget: { to: surface === "origin" ? "channel:C123" : "user:U123" },
         pendingPayload: payload,
-        view,
+        view: sourceView,
       });
       if (!entry) {
         throw new Error("Expected delivered Slack approval entry");
@@ -621,18 +632,24 @@ describe("slackApprovalNativeRuntime", () => {
         string,
         { blocks: unknown },
       ];
-      return { entry, payload: { text, blocks: options.blocks } as SlackPayload };
+      return {
+        entry,
+        request: sourceRequest,
+        view: sourceView,
+        payload: { text, blocks: options.blocks } as SlackPayload,
+      };
     };
     const origin = await deliver("origin");
     const reviewer = await deliver("approver-dm");
-    const switchedWorkspace = await deliver("approver-dm", {
-      ...context,
-      installationIdentity: { kind: "workspace", teamId: "TOTHER" },
+    const otherSource = await deliver("approver-dm", {
+      channel: "telegram",
+      senderId: "987654",
+      userMessageExcerpt: excerpt,
     });
     expect(origin.payload.text).not.toContain(excerpt);
     expect(JSON.stringify(origin.payload.blocks)).not.toContain(excerpt);
-    expect(switchedWorkspace.entry.showMessageExcerpt).toBe(false);
-    expect(JSON.stringify(switchedWorkspace.payload)).not.toContain(excerpt);
+    expect(JSON.stringify(otherSource.payload.blocks)).toContain(excerpt);
+    expect(otherSource.payload.text).toContain("*Source:* telegram");
     expect(reviewer.payload.text).toContain(
       "*Original message (excerpt)*\n```\nPlease render &lt;@U999OTHER&gt; &amp; show the *diff*.\n```",
     );
@@ -641,28 +658,28 @@ describe("slackApprovalNativeRuntime", () => {
     ).find((block) => block.text?.type === "plain_text");
     expect(excerptBlock?.text?.text).toBe(`Original message (excerpt)\n${excerpt}`);
 
-    for (const delivered of [origin, reviewer, switchedWorkspace]) {
+    for (const delivered of [origin, reviewer, otherSource]) {
       const resolved = await slackApprovalNativeRuntime.presentation.buildResolvedResult({
         ...APPROVAL_CONTEXT,
-        request,
+        request: delivered.request,
         resolved: { id: request.id, decision: "deny", ts: 1 },
-        view: { ...view, phase: "resolved", decision: "deny", resolvedBy: "U123" },
+        view: { ...delivered.view, phase: "resolved", decision: "deny", resolvedBy: "U123" },
         entry: delivered.entry,
       });
       const expired = await slackApprovalNativeRuntime.presentation.buildExpiredResult({
         ...APPROVAL_CONTEXT,
-        request,
-        view: { ...view, phase: "expired" },
+        request: delivered.request,
+        view: { ...delivered.view, phase: "expired" },
         entry: delivered.entry,
       });
       for (const result of [resolved, expired]) {
         expect(result.kind).toBe("update");
         if (result.kind === "update") {
           expect(result.payload.text.includes("*Original message (excerpt)*")).toBe(
-            delivered === reviewer,
+            delivered !== origin,
           );
           expect(JSON.stringify(result.payload.blocks).includes(excerpt)).toBe(
-            delivered === reviewer,
+            delivered !== origin,
           );
         }
       }

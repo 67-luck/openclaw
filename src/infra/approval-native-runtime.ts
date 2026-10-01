@@ -233,8 +233,6 @@ export function createChannelNativeApprovalRuntime<
     clientDisplayName: adapter.clientDisplayName,
     cfg: adapter.cfg,
     gatewayUrl: adapter.gatewayUrl,
-    channel: adapter.channel,
-    accountId: adapter.accountId,
     eventKinds: adapter.eventKinds,
     isConfigured: adapter.isConfigured,
     shouldHandle: (request) => {
