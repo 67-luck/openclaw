@@ -5,7 +5,9 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
+import { databaseVerifyHostRuntimeEntrypoint } from "../state/openclaw-database-verify-runtime.test-support.js";
 import { withTempDir } from "../test-utils/temp-dir.js";
+import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
 import {
   resolveRuntimeWorkerArgv,
   resolveRuntimeWorkerThreadExecArgv,
@@ -16,6 +18,53 @@ import {
 const requireFromHere = createRequire(import.meta.url);
 
 describe("resolveRuntimeWorkerUrl", () => {
+  it.each([
+    {
+      entry: runtimeProcessEntrypoints.sqliteTransport,
+      sourceWorkerName: "sqlite-worker-transport.worker",
+      distWorkerPath: "infra/sqlite-worker-transport.worker.js",
+      owner: "infra",
+    },
+    {
+      entry: runtimeProcessEntrypoints.codeModeNode,
+      sourceWorkerName: "../agents/code-mode-node.worker",
+      distWorkerPath: "agents/code-mode-node.worker.js",
+      owner: "infra",
+    },
+    {
+      entry: databaseVerifyHostRuntimeEntrypoint,
+      sourceWorkerName: "openclaw-database-verify-host.test-support",
+      distWorkerPath: "state/openclaw-database-verify-host.test-support.js",
+      owner: "state",
+    },
+  ])(
+    "preserves source and packaged locations for $distWorkerPath",
+    ({ entry, sourceWorkerName, distWorkerPath, owner }) => {
+      expect(entry).toMatchObject({ sourceWorkerName, distWorkerPath });
+      const root = path.resolve("worker fixture root");
+      for (const extension of ["ts", "mts", "cts", "js", "mjs"]) {
+        const currentModuleUrl = pathToFileURL(
+          path.join(root, "src", owner, `registry.${extension}`),
+        ).href;
+        expect(fileURLToPath(resolveRuntimeWorkerUrl({ ...entry, currentModuleUrl }))).toBe(
+          path.resolve(root, "src", owner, `${sourceWorkerName}.${extension}`),
+        );
+      }
+      for (const location of ["dist/infra/registry.js", "dist/registry-hashed.mjs"]) {
+        const currentModuleUrl = pathToFileURL(path.join(root, location)).href;
+        expect(fileURLToPath(resolveRuntimeWorkerUrl({ ...entry, currentModuleUrl }))).toBe(
+          path.join(root, "dist", distWorkerPath),
+        );
+        const installedRoot = path.join(root, "installed");
+        expect(
+          fileURLToPath(
+            resolveRuntimeWorkerUrl({ ...entry, currentModuleUrl, root: installedRoot }),
+          ),
+        ).toBe(path.join(installedRoot, "dist", distWorkerPath));
+      }
+    },
+  );
+
   it("resolves source siblings and stable packaged worker paths", () => {
     const root = path.resolve("worker-fixture-root");
     expect(
@@ -194,10 +243,12 @@ describe("resolveRuntimeProcessEntrypointUrl", () => {
         resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.githubExec),
       );
       const sqliteUrl = resolveRuntimeProcessEntrypointUrl("sqliteReadOnly");
+      const transportUrl = resolveRuntimeProcessEntrypointUrl("sqliteTransport");
       const sealedUrl = new URL("file:///worker-bundle/github-exec-launcher.mjs");
       registerSealedRuntimeProcessEntrypoint("githubExec", sealedUrl);
       expect(resolveRuntimeProcessEntrypointUrl("githubExec")).toEqual(sealedUrl);
       expect(resolveRuntimeProcessEntrypointUrl("sqliteReadOnly")).toEqual(sqliteUrl);
+      expect(resolveRuntimeProcessEntrypointUrl("sqliteTransport")).toEqual(transportUrl);
     } finally {
       vi.resetModules();
     }

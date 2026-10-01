@@ -72,6 +72,27 @@ function createUiFixture() {
 }
 
 describe("Crabbox PR-derived gate plan", () => {
+  it.each([
+    { child: "transport.worker.ts", declaration: "runtime-registry.ts" },
+    { child: "verify-host.test-support.ts", declaration: "verify-runtime.test-support.ts" },
+  ])(
+    "follows the consumed source URL for $child without executing it",
+    ({ child, declaration }) => {
+      const root = "src/infra/";
+      const cwd = createTrackedFixture({
+        [`${root}${child}`]: 'throw new Error("Executable child must not run in the planner");\n',
+        [`${root}${declaration}`]:
+          'import path from "node:path"; import { fileURLToPath } from "node:url";\n' +
+          `const source = new URL("./${child}", import.meta.url);\n` +
+          'export const entry = { sourceWorkerName: path.basename(fileURLToPath(source), ".ts") };\n',
+        [`${root}launcher.ts`]: `export { entry } from "./${declaration}";\n`,
+        [`${root}launcher.test.ts`]: 'import { entry } from "./launcher.js"; void entry;\n',
+        [`${root}unrelated.test.ts`]: "export {};\n",
+      });
+      expect(planFixture(cwd, [`${root}${child}`]).targets).toEqual([`${root}launcher.test.ts`]);
+    },
+  );
+
   it("selects the isolated child fixture's owning test without evaluating the fixture", () => {
     const helper = "src/config/sessions/readonly-close.test-support.ts";
     const owner = "src/config/sessions/readonly.worker.test.ts";
