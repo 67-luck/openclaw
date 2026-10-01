@@ -241,7 +241,7 @@ describe("transcript capture ownership", () => {
           entered.resolve();
           await release.promise;
         }
-        return originalWrite(session, condition);
+        await originalWrite(session, condition);
       },
     );
     const start = h.execute(

@@ -34,7 +34,6 @@ import {
 } from "./agent-dir-registry.js";
 import { overlayExternalAuthProfiles } from "./auth-profiles/external-auth-runtime.js";
 import { listExternalCliSyncProviderIds } from "./auth-profiles/external-cli-sync.js";
-import { reloadSharedAuthStoreOwnership } from "./auth-profiles/path-resolve.js";
 import { resolveAuthStorePathForDisplay } from "./auth-profiles/paths.js";
 import { mergeRuntimeExternalProfileReferences } from "./auth-profiles/runtime-external-profile-references.js";
 import { replaceRuntimeAuthProfileStoreSnapshots } from "./auth-profiles/runtime-snapshots.js";
@@ -84,9 +83,6 @@ function refreshAuthStore(params: {
   providerIds?: readonly string[];
   pluginGeneration: PreparedModelRuntimePluginGeneration;
 }) {
-  // A reused worker can predate first-login relocation. Refresh the committed owner before
-  // reading durable profiles; transferred persisted credentials cannot replace that read.
-  reloadSharedAuthStoreOwnership(params.env);
   const durable = preserveResolvedSecretBackedCredentials({
     next: loadAuthProfileStoreWithoutExternalProfiles(params.agentDir, {
       allowKeychainPrompt: false,

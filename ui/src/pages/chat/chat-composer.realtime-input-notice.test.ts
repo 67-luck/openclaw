@@ -1,11 +1,8 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { t } from "../../i18n/index.ts";
-import { resetChatViewState } from "./chat-view-state.ts";
 import { renderChatView } from "./chat-view.test-helpers.ts";
-
-afterEach(() => resetChatViewState());
 
 it("keeps recovered microphone input-loss guidance visible while listening", () => {
   const onDismissRealtimeTalkInputNotice = vi.fn();

@@ -9,10 +9,7 @@ import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.j
 import { registerPreparedModelRuntimePublicationListener } from "../../agents/prepared-model-runtime.publication-events.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { disconnectGatewayClient, startGatewayWithClient } from "../test-helpers.e2e.js";
-import {
-  observeCatalogWorkerTasks,
-  waitForCatalogPublication,
-} from "./models-auth-catalog.test-support.js";
+import { observeCatalogWorkerTasks } from "./models-auth-catalog.test-support.js";
 
 it.for([0, 7_000])(
   "models.authLogin publishes account rows to passive models.list (endpoint delay %i ms)",
@@ -156,14 +153,6 @@ it.for([0, 7_000])(
           };
         };
         expect((await list()).ids).not.toContain("account-exclusive");
-        // Startup readiness precedes background catalog completion; exclude that work from login.
-        expect(
-          await waitForCatalogPublication({
-            signal,
-            read: async () => catalogWork.read().pendingTasks,
-            ready: (pending) => pending === 0,
-          }),
-        ).toBe(0);
         const beforeLoginWork = catalogWork.read();
         await client.request("models.authLogin", {
           sessionId: "fixture-login",
