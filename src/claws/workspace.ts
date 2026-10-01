@@ -311,6 +311,24 @@ export function readAllClawWorkspaceFiles(
   );
 }
 
+export function readClawOrphanWorkspaceInDatabase(
+  db: DatabaseSync,
+  agentId: string,
+): Pick<PersistedClawWorkspaceFile, "workspace" | "updatedAtMs"> | undefined {
+  const row = executeSqliteQueryTakeFirstSync(
+    db,
+    getNodeSqliteKysely<WorkspaceDatabase>(db)
+      .selectFrom("claw_workspace_files")
+      .select(["workspace", "updated_at_ms"])
+      .where("agent_id", "=", agentId)
+      .orderBy("target_path")
+      .limit(1),
+  );
+  return row
+    ? { workspace: row.workspace, updatedAtMs: sqliteNumber(row.updated_at_ms) }
+    : undefined;
+}
+
 export async function createClawWorkspaceFiles(
   plan: ClawAddPlan,
   options: OpenClawStateDatabaseOptions & { nowMs?: number } = {},

@@ -314,7 +314,10 @@ export async function collectClawStateHealthFindings(
   }
   let database: OpenClawStateDatabase | undefined;
   try {
-    database = await openExistingOpenClawStateDatabaseReadOnly(options);
+    database = await openExistingOpenClawStateDatabaseReadOnly({
+      ...options,
+      requireCanonicalSchema: true,
+    });
     if (!database) {
       return [];
     }

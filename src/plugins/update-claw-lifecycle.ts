@@ -50,7 +50,6 @@ export async function runPluginUpdateWithClawHubLease<T>(params: {
         });
         return await params.run();
       },
-      { required: true },
     );
   } catch (error) {
     return {

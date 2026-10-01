@@ -2881,7 +2881,7 @@ INSERT INTO device_identities VALUES (
     expect(reopened.db.prepare(metadataSql).get()).toEqual(metadata);
   });
 
-  it("repairs same-version Claw bootstrap columns before runtime schema validation", () => {
+  it("repairs same-version Claw bootstrap columns and an index before runtime schema validation", () => {
     const stateDir = createTempStateDir();
     const env = { OPENCLAW_STATE_DIR: stateDir };
     const shippedSchema = openMaterializedCurrentStateDatabase(stateDir);
@@ -2889,6 +2889,7 @@ INSERT INTO device_identities VALUES (
       shippedSchema.exec(`
         ALTER TABLE claw_installs DROP COLUMN bootstrap_source_path;
         ALTER TABLE claw_installs DROP COLUMN bootstrap_content_digest;
+        DROP INDEX idx_task_runs_status;
       `);
       expect(readSqliteNumberPragma(shippedSchema, "user_version")).toBe(
         OPENCLAW_STATE_SCHEMA_VERSION,
