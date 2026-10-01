@@ -53,10 +53,11 @@ export function buildStalledTurnRecoveryRun(base: FollowupRun): FollowupRun {
       source?.kind === "deliver"
         ? { kind: "deliver", deliver: source.deliver.createSourceRetry?.() ?? source.deliver }
         : source,
-    // Personal skill authoring is bound to the stalled run's admission and
-    // refuses a replacement run. Without the grant the Workshop tool would fall
-    // back to the wider shared namespace, so that recovery answers without tools.
-    ...(base.run.skillLibraryAuthoring ? { disableTools: true } : {}),
+    // Library authoring is bound to the stalled run's admission and refuses a
+    // replacement run. A workspace-target grant already wraps the agent's
+    // Workshop, which the recovery keeps; a personal-only grant would fall back
+    // to that wider namespace, so that recovery answers without tools.
+    ...(base.run.skillLibraryAuthoring?.defaultTarget === "personal" ? { disableTools: true } : {}),
     run: {
       ...base.run,
       suppressNextUserMessagePersistence: true,

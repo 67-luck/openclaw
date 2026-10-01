@@ -431,19 +431,28 @@ describe("runReplyAgent stalled turn continuation", () => {
     );
   });
 
-  it("recovers a personal-authoring turn without tools instead of widening Workshop access", async () => {
-    const stalled = createStalledRun({
-      skillLibraryAuthoring: { target: "personal" } as FollowupRun["run"]["skillLibraryAuthoring"],
-    });
-    await stallBeforeOutput(stalled);
+  it.each([
+    { defaultTarget: "personal", disableTools: true },
+    { defaultTarget: "workspace", disableTools: undefined },
+  ] as const)(
+    "keeps a $defaultTarget-target recovery inside its Workshop namespace",
+    async ({ defaultTarget, disableTools }) => {
+      const stalled = createStalledRun({
+        skillLibraryAuthoring: {
+          target: "personal",
+          defaultTarget,
+        } as FollowupRun["run"]["skillLibraryAuthoring"],
+      });
+      await stallBeforeOutput(stalled);
 
-    expect(stalled.runState.continueStalledTurn?.()).toBe(true);
-    await settleStalledOwner(stalled);
-    await vi.waitFor(() => expect(drainedRuns).toHaveBeenCalledOnce());
-    const recovery = drainedRuns.mock.calls[0]?.[0];
-    expect(recovery?.run.skillLibraryAuthoring).toBeUndefined();
-    expect(recovery?.disableTools).toBe(true);
-  });
+      expect(stalled.runState.continueStalledTurn?.()).toBe(true);
+      await settleStalledOwner(stalled);
+      await vi.waitFor(() => expect(drainedRuns).toHaveBeenCalledOnce());
+      const recovery = drainedRuns.mock.calls[0]?.[0];
+      expect(recovery?.run.skillLibraryAuthoring).toBeUndefined();
+      expect(recovery?.disableTools).toBe(disableTools);
+    },
+  );
 
   it("leaves the notice with a group-thread participant whose source declares no reply owner", async () => {
     const stalled = createStalledRun({
