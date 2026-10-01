@@ -8,8 +8,10 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../config/runtime-snapshot.js";
-import { testing as execApprovalsStoreTesting } from "../infra/exec-approvals-store.test-support.js";
-import { saveExecApprovals } from "../infra/exec-approvals.js";
+import {
+  saveExecApprovals,
+  testing as execApprovalsStoreTesting,
+} from "../infra/exec-approvals-store.test-support.js";
 import { clearExecutablePathCache } from "../infra/executable-path.js";
 import { NODE_WORKER_PRIVATE_COMMANDS } from "../infra/node-commands.js";
 import * as pathEnv from "../infra/path-env.js";
