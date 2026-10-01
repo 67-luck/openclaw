@@ -1517,7 +1517,9 @@ describe("package-mac-app plist stamping", () => {
       ),
     );
 
-    expect(buildLoop).toContain('--product openclaw-mac --build-path "$BUILD_PATH" --arch "$arch"');
+    expect(buildLoop).toContain(
+      '--product openclaw-mac --build-path "$BUILD_PATH" --cache-path "$BUILD_PATH/cache" --arch "$arch"',
+    );
     expect(cliCopy).toContain(
       'cp "$(mac_cli_bin_for_arch "$PRIMARY_ARCH")" "$APP_ROOT/Contents/MacOS/openclaw-mac"',
     );
@@ -1653,6 +1655,8 @@ describe("package-mac-app plist stamping", () => {
       "openclaw-mlx-tts",
       "--build-path",
       path.join(helperBuildRoot, arch),
+      "--cache-path",
+      path.join(helperBuildRoot, arch, "cache"),
       "--arch",
       arch,
       "--jobs",
@@ -2304,7 +2308,7 @@ try {
 
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(invocations, "utf8")).toBe(
-      `package --scratch-path ${root}/apps/macos/.build/arm64 resolve --force-resolved-versions\n`,
+      `package --scratch-path ${root}/apps/macos/.build/arm64 --cache-path ${root}/apps/macos/.build/arm64/cache resolve --force-resolved-versions\n`,
     );
   });
 
@@ -2506,7 +2510,7 @@ ${mounts === "failed" ? "exit 1" : mounts === "mounted" ? `printf '/dev/disk9 on
     expect(verifier).toContain('"fsck", "--full", "--strict"');
     expect(verifier).toContain('"cat-file", object_type');
     expect(readFileSync(swiftScriptPath, "utf8")).toContain(
-      'swift package --scratch-path "$build_path" edit Peekaboo --path "$PEEKABOO_SNAPSHOT_MOUNT"',
+      'swift package --scratch-path "$build_path" --cache-path "$build_path/cache" edit Peekaboo --path "$PEEKABOO_SNAPSHOT_MOUNT"',
     );
     const mismatched = runRealCompiledPeekabooHarness("none", "e".repeat(40));
     expect(mismatched.status).toBe(1);

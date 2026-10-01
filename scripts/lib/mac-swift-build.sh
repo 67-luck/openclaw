@@ -33,6 +33,7 @@ build_mlx_tts_helper() {
     -c "$BUILD_CONFIG" \
     --product "$MLX_TTS_HELPER_PRODUCT" \
     --build-path "$(helper_build_path_for_arch "$arch")" \
+    --cache-path "$(helper_build_path_for_arch "$arch")/cache" \
     --arch "$arch" \
     --jobs "$SWIFT_BUILD_JOBS" \
     "$@"
@@ -251,12 +252,12 @@ prepare_swift_package_root() {
 
 clear_peekaboo_edit() {
   local build_path="$1"
-  swift package --scratch-path "$build_path" unedit --force Peekaboo >/dev/null 2>&1 || true
+  swift package --scratch-path "$build_path" --cache-path "$build_path/cache" unedit --force Peekaboo >/dev/null 2>&1 || true
 }
 
 edit_peekaboo_from_snapshot() {
   local build_path="$1"
-  swift package --scratch-path "$build_path" edit Peekaboo --path "$PEEKABOO_SNAPSHOT_MOUNT"
+  swift package --scratch-path "$build_path" --cache-path "$build_path/cache" edit Peekaboo --path "$PEEKABOO_SNAPSHOT_MOUNT"
 }
 
 verify_snapshot_swift_lock() {
@@ -490,17 +491,19 @@ build_swift_architecture() {
   prepare_swift_package_root
   cd "$SWIFT_PACKAGE_ROOT"
   BUILD_PATH="$(build_path_for_arch "$arch")"
+  # SwiftPM downloads binary artifacts without a cross-process cache lock. Keep every
+  # package/build operation inside this architecture's existing build lock.
   echo "📦 Resolving Swift packages [$arch]"
   # The reused scratch path still records local packages under the previous run's
   # package root. A full resolve (any resolve with Peekaboo edited, or a stale
   # originHash) drops pins it cannot reach and floats them, e.g. swift-cmark via
   # OpenClawKit. Lock-file mode rebinds local packages, checks out exactly the
   # committed pins and returns an interrupted run's edited Peekaboo to its pin.
-  run_with_locked_swift_packages swift package --scratch-path "$BUILD_PATH" resolve --force-resolved-versions
+  run_with_locked_swift_packages swift package --scratch-path "$BUILD_PATH" --cache-path "$BUILD_PATH/cache" resolve --force-resolved-versions
   echo "🔒 Freezing authenticated Peekaboo sources in a read-only snapshot [$arch]"
   create_verified_peekaboo_snapshot "$BUILD_PATH" "$PEEKABOO_LOCKED_SOURCE_COMMIT"
   edit_peekaboo_from_snapshot "$BUILD_PATH"
-  swift package --scratch-path "$BUILD_PATH" resolve
+  swift package --scratch-path "$BUILD_PATH" --cache-path "$BUILD_PATH/cache" resolve
   verify_snapshot_swift_lock
   patch_swiftpm_resource_lookups "$BUILD_PATH"
   # Mixed deployment targets can coalesce incompatible Swift async bodies and frame descriptors
@@ -520,10 +523,10 @@ with open(output, "w") as destination:
 PY
   echo "🔨 Building $PRODUCT ($BUILD_CONFIG) [$arch]"
   verify_snapshot_swift_lock
-  swift build -c "$BUILD_CONFIG" --jobs "$SWIFT_BUILD_JOBS" --product "$PRODUCT" --build-path "$BUILD_PATH" --arch "$arch" --toolset "$SWIFT_WORK_ROOT/destination-toolset.json" -Xlinker -rpath -Xlinker @executable_path/../Frameworks
+  swift build -c "$BUILD_CONFIG" --jobs "$SWIFT_BUILD_JOBS" --product "$PRODUCT" --build-path "$BUILD_PATH" --cache-path "$BUILD_PATH/cache" --arch "$arch" --toolset "$SWIFT_WORK_ROOT/destination-toolset.json" -Xlinker -rpath -Xlinker @executable_path/../Frameworks
   verify_snapshot_swift_lock
   echo "🔨 Building openclaw-mac ($BUILD_CONFIG) [$arch]"
-  swift build -c "$BUILD_CONFIG" --jobs "$SWIFT_BUILD_JOBS" --product openclaw-mac --build-path "$BUILD_PATH" --arch "$arch" --toolset "$SWIFT_WORK_ROOT/destination-toolset.json" -Xlinker -rpath -Xlinker @executable_path/../Frameworks
+  swift build -c "$BUILD_CONFIG" --jobs "$SWIFT_BUILD_JOBS" --product openclaw-mac --build-path "$BUILD_PATH" --cache-path "$BUILD_PATH/cache" --arch "$arch" --toolset "$SWIFT_WORK_ROOT/destination-toolset.json" -Xlinker -rpath -Xlinker @executable_path/../Frameworks
   verify_snapshot_swift_lock
   arch_peekaboo_commit="$(compiled_peekaboo_commit "$PEEKABOO_SNAPSHOT_MOUNT" "$PEEKABOO_LOCKED_SOURCE_COMMIT")"
   printf '%s\n' "$arch_peekaboo_commit" > "$SWIFT_WORK_ROOT/peekaboo-commit"
