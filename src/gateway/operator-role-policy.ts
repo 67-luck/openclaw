@@ -134,6 +134,7 @@ export function resolveOperatorRolePolicyForProfile(
   }
   const authority = source?.internal?.operatorRunAuthority;
   let role: string | null = null;
+  let roleProfileId = profileId;
   if (profileId && authority) {
     assertAdmittedRunOperatorAuthority(authority);
     authority.assertCurrent();
@@ -150,10 +151,10 @@ export function resolveOperatorRolePolicyForProfile(
     ) {
       throw new Error("Operator profile authority was not prepared");
     }
-    profileId = profile.profileId;
+    roleProfileId = profile.profileId;
     role = profile.assignedRole;
   }
-  return resolveOperatorRolePolicyForAssignment(profileId, role, cfg);
+  return resolveOperatorRolePolicyForAssignment(roleProfileId, role, cfg);
 }
 
 /** Transaction and retained identity owners supply the current assignment. */

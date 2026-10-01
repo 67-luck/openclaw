@@ -28,6 +28,7 @@ export type AgentTurnPrincipal = Pick<
   GatewayClient,
   | "authenticatedUserId"
   | "authenticatedUserProfile"
+  | "preparedProfileIdentity"
   | "connId"
   | "connect"
   | "internal"

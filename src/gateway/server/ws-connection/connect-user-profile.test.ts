@@ -7,12 +7,18 @@ import { awaitGateBeforeSettlement, createDeferred } from "../../../../test/help
 import { setRuntimeConfigSnapshot } from "../../../config/runtime-snapshot.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import * as profileReader from "../../../state/user-profile-list.js";
-import { linkEmail, setUserProfileRole } from "../../../state/user-profile-writes.worker.js";
+import {
+  linkEmail,
+  setDisplayName,
+  setUserProfileRole,
+} from "../../../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
+import { captureAgentTurnPrincipal } from "../../agent-turn/principal.js";
 import { captureGatewayAuthPolicy } from "../../auth-policy.js";
 import { cfg } from "../../github-user-identity.oidc.test-support.js";
 import { prepareGatewayLocalUserIngress } from "../../local-user-ingress.js";
+import { authorizeGatewaySessionCreation } from "../../operator-role-policy.js";
 import { GatewayConnectionWork } from "../../server-connection-work.js";
 import { createContext } from "../../server-plugin-in-process-dispatch.test-support.js";
 import { GatewayClientRegistry } from "../client-registry.js";
@@ -205,9 +211,10 @@ describe("WebSocket profile identity ownership", () => {
     });
   });
 
-  it("replaces the socket lease with a merge-aware identity and releases it on close without host SQL", async () => {
+  it("preserves the socket lease across refresh, replaces it on merge, and releases it without host SQL", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const source = ensureProfileForEmail("ada@example.test");
+      setUserProfileRole(source.id, "maintainer");
       const target = ensureProfileForEmail("target@example.test");
       const connectionState = connection(source.id);
       const admitted = await connectionState.admit();
@@ -216,6 +223,14 @@ describe("WebSocket profile identity ownership", () => {
       }
       connectionState.lifecycle.retain(admitted.prepared);
       const client = connectionState.bind(admitted.prepared);
+      const principal = captureAgentTurnPrincipal(client);
+      const authorize = () =>
+        authorizeGatewaySessionCreation({ cfg, client: principal, agentId: "main" });
+      expect(authorize()).toBeUndefined();
+      setDisplayName(source.id, "Updated display");
+      await connectionState.lifecycle.attach(source.id, ingress);
+      expect(authorize()).toBeUndefined();
+      expect(client.authenticatedUserProfile?.displayName).toBe("Updated display");
       linkEmail("ada@example.test", target.id);
       const native = vi.spyOn(DatabaseSync.prototype, "prepare");
       try {
@@ -245,7 +260,7 @@ describe("WebSocket profile identity ownership", () => {
         const connectionState = connection(source.id);
         const acquired =
           createDeferred<Awaited<ReturnType<typeof profileReader.prepareUserProfileIdentity>>>();
-        const resume = createDeferred<void>();
+        const resume = createDeferred();
         const prepare = profileReader.prepareUserProfileIdentity;
         vi.spyOn(profileReader, "prepareUserProfileIdentity").mockImplementationOnce(
           async (...args) => {

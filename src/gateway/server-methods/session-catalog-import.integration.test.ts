@@ -17,6 +17,7 @@ import { withPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gate
 import type { SessionCatalogProvider } from "../../plugins/session-catalog.js";
 import { listSessionStateEventsSince } from "../../sessions/session-state-events.js";
 import { readSessionUpstreamLink } from "../../sessions/session-upstream-links.js";
+import { prepareUserProfileIdentity } from "../../state/user-profile-list.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { prepareGatewayRecipientProfile } from "../expected-profile.js";
@@ -49,10 +50,17 @@ async function withCatalog(
   const previousRegistry = getActivePluginRegistry() ?? createEmptyPluginRegistry();
   const fixture = await createCatalog(restricted);
   try {
+    for (const client of [fixture.client, fixture.other]) {
+      client.preparedProfileIdentity = await prepareUserProfileIdentity(
+        client.authenticatedUserProfile!.profileId,
+      );
+    }
     await state.writeConfig(fixture.config);
     setRuntimeConfigSnapshot(fixture.config);
     await run(fixture);
   } finally {
+    fixture.client.preparedProfileIdentity?.release();
+    fixture.other.preparedProfileIdentity?.release();
     vi.restoreAllMocks();
     fixture.projection.dispose();
     setActivePluginRegistry(previousRegistry);

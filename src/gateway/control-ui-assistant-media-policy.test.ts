@@ -396,7 +396,7 @@ describe("assistant image session policy", () => {
         };
         const profile = ensureProfileForEmail("media-role-reader@example.test");
         const identity = await prepareUserProfileIdentity(profile.id);
-        using _identity = { [Symbol.dispose]: identity.release };
+        using _ = { [Symbol.dispose]: identity.release };
         const source = path.join(project, "image.png");
         await fs.writeFile(source, PNG);
         entry.visibility = visibility;
@@ -494,7 +494,7 @@ describe("assistant image session policy", () => {
         };
         const profile = ensureProfileForEmail("media-reader@example.test");
         const identity = await prepareUserProfileIdentity(profile.id);
-        using _identity = { [Symbol.dispose]: identity.release };
+        using _ = { [Symbol.dispose]: identity.release };
         state.auth.mockResolvedValue({
           authMethod: "trusted-proxy",
           operatorScopes: ["operator.read"],
@@ -549,7 +549,7 @@ describe("assistant image session policy", () => {
         };
         const profile = ensureProfileForEmail("yielding-media-reader@example.test");
         const identity = await prepareUserProfileIdentity(profile.id);
-        using _identity = { [Symbol.dispose]: identity.release };
+        using _ = { [Symbol.dispose]: identity.release };
         let current = true;
         state.auth.mockResolvedValue({
           authMethod: "trusted-proxy",

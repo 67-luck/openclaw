@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { PreparedUserProfileIdentity } from "../../state/user-profiles.types.js";
 import {
   prepareGitHubPublicationOptionsRead,
   preparePersonalGitHubSessionAction,
@@ -25,15 +26,18 @@ vi.mock("../session-sharing.js", () => ({
 }));
 
 function createRequest() {
+  const preparedProfileIdentity: PreparedUserProfileIdentity = {
+    retain: () => ({ ...preparedProfileIdentity, release: vi.fn() }),
+    readCurrentProfile: () => ({ profileId: "profile-cache-test", assignedRole: null }),
+    readCurrentDisplay: vi.fn(),
+    readCurrentFacts: vi.fn(),
+    captureCurrentEmailBindingIds: () => [],
+    emailBindingIds: [],
+    release: vi.fn(),
+  };
   const client: GatewayClient = {
     connId: "github-cache-client",
-    preparedProfileIdentity: {
-      readCurrentProfile: () => ({ profileId: "profile-cache-test", assignedRole: null }),
-      readCurrentDisplay: vi.fn(),
-      readCurrentFacts: vi.fn(),
-      emailBindingIds: [],
-      release: vi.fn(),
-    },
+    preparedProfileIdentity,
     authenticatedUserProfile: {
       profileId: "profile-cache-test",
       displayName: null,

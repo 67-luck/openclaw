@@ -196,6 +196,7 @@ type InvokeGatewayToolParams = {
   agentThreadId?: string;
   authenticatedUserProfile?: GatewayClient["authenticatedUserProfile"];
   preparedProfileIdentity?: GatewayClient["preparedProfileIdentity"];
+  operatorRunAuthority?: NonNullable<GatewayClient["internal"]>["operatorRunAuthority"];
   /** Host-minted authority from the calling connection; never derived from wire params. */
   operatorRoleActor?: NonNullable<GatewayClient["internal"]>["operatorRoleActor"];
   operatorScopes?: readonly string[];
@@ -293,6 +294,7 @@ async function invokeGatewayToolWithSignal(
   // HTTP and RPC auth boundaries supply authority independently of profile attribution.
   const client = createSyntheticPluginRuntimeClient({
     preparedProfileIdentity: params.preparedProfileIdentity,
+    operatorRunAuthority: params.operatorRunAuthority,
     ...(authenticatedUserProfile ? { authenticatedUserProfile } : {}),
     operatorRoleActor: params.operatorRoleActor,
     scopes: params.senderIsOwner ? [ADMIN_SCOPE] : [...(params.operatorScopes ?? [])],
@@ -436,6 +438,7 @@ async function invokeGatewayToolWithSignal(
     const result = await withOperatorToolGatewayAuthority(
       {
         authenticatedUserProfile,
+        operatorRunAuthority: params.operatorRunAuthority,
         operatorRoleActor: params.operatorRoleActor,
         scopes: client.connect.scopes ?? [],
         assertCurrent: assertInvocationCurrent,

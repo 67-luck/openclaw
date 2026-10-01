@@ -30,6 +30,7 @@ import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { setControlUiPluginAuthCookie } from "../control-ui-plugin-auth-cookie.js";
 import { createTestApprovalManager } from "../exec-approval-manager.test-support.js";
+import { createGatewayRequest } from "../hooks-test-helpers.js";
 import {
   authorizeControlUiPluginCookieRequest,
   resolveControlUiPluginAuthCookieGeneration,
@@ -460,17 +461,14 @@ async function withCookieSessionReader(
             ],
             { getGatewayRequestContext: () => context },
           ).handler;
-          const req = {
-            method: "GET",
-            url: SECURE_HOOK_PATH,
-            headers: { cookie },
-          } as IncomingMessage;
-          const authorized = authorizeControlUiPluginCookieRequest(req, {
+          const req = createGatewayRequest({ path: SECURE_HOOK_PATH, headers: { cookie } });
+          const response = makeMockHttpResponse();
+          const authorized = await authorizeControlUiPluginCookieRequest(req, {
             requestPath: SECURE_HOOK_PATH,
             authGeneration: "http-generation",
+            res: response.res,
           });
           expect(authorized).not.toBeNull();
-          const response = makeMockHttpResponse();
           expect(
             await handler(req, response.res, undefined, {
               gatewayAuthSatisfied: true,
@@ -478,6 +476,8 @@ async function withCookieSessionReader(
               gatewayRequestOperatorScopes: authorized!.operatorScopes,
             }),
           ).toBe(true);
+          response.res.end();
+          req.destroy();
           return { statusCode: response.res.statusCode, result };
         };
         const dispatch = async (method: SessionReadMethod, key?: string) => {

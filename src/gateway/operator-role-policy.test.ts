@@ -91,7 +91,9 @@ async function identifiedClient(profileId: string): Promise<GatewayClient> {
 }
 
 afterEach(() => {
-  for (const release of profileReleases.splice(0)) release();
+  for (const release of profileReleases.splice(0)) {
+    release();
+  }
   closeOpenClawStateDatabaseForTest();
 });
 
@@ -685,7 +687,7 @@ describe("operator role policy", () => {
       using source = await prepareOperatorRoleSource(cfg, profile.id);
       const currentRole = () => resolveOperatorRolePolicyForProfile(profile.id, cfg, source);
       expect(currentRole()).toEqual(cfg.gateway?.roles?.definitions.maintainer);
-      const resume = createDeferred<void>();
+      const resume = createDeferred();
       const pendingRole = (async () => {
         await resume.promise;
         return currentRole();

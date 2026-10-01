@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { expect, it, vi } from "vitest";
@@ -5,17 +6,31 @@ import { observeHostDataSql } from "../../test/helpers/sqlite-statement-executio
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
+  createPluginRegistryFixture,
+  registerVirtualTestPlugin,
+} from "../plugin-sdk/test-helpers/contracts-testkit.js";
+import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
+import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
 } from "../plugins/runtime/gateway-request-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { requireOpenClawStateDatabaseIdentity } from "../state/openclaw-state-db-cache.js";
+import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import * as profileReader from "../state/user-profile-list.js";
 import { setCanonicalUserProfileRole } from "../state/user-profile-writes.js";
 import { linkEmail, setUserProfileRole } from "../state/user-profile-writes.worker.js";
+import { selectProfileDisplayEntries } from "../state/user-profiles-internal.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { captureAgentTurnPrincipal } from "./agent-turn/principal.js";
+import {
+  acceptGatewayDeviceSourceAuthority,
+  captureGatewayDeviceRevocation,
+} from "./device-revocation.js";
+import { prepareHttpProfile } from "./http-auth-user-profile.js";
 import { createGatewayMethodRegistry } from "./methods/registry.js";
+import { hasCurrentGatewayOperatorAccess } from "./operator-access-policy.js";
 import {
   invalidateOperatorRolePolicy,
   publishOperatorRoleConfigChange,
@@ -30,6 +45,143 @@ import {
   createContext,
   createOperatorClient,
 } from "./server-plugin-in-process-dispatch.test-support.js";
+import { makeMockHttpResponse } from "./test-http-response.js";
+
+it.each(["role revocation", "profile deletion"] as const)(
+  "retains accepted profile authority after HTTP completion and request release until %s",
+  async (revocation) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const profile = ensureProfileForEmail("accepted-profile@example.test");
+      const other = ensureProfileForEmail("unrelated-profile@example.test");
+      setUserProfileRole(profile.id, "reader");
+      const cfg: OpenClawConfig = {
+        gateway: {
+          roles: {
+            definitions: {
+              reader: {
+                scopes: ["operator.read"],
+                agents: [],
+                sessions: { others: "none" },
+                accessPolicyPlugin: "accepted-profile",
+              },
+              denied: { scopes: [], agents: [], sessions: { others: "none" } },
+            },
+          },
+        },
+      };
+      const { registry } = createPluginRegistryFixture(cfg);
+      const grant = new AbortController();
+      registerVirtualTestPlugin({
+        registry,
+        config: cfg,
+        id: "accepted-profile",
+        name: "Accepted profile access",
+        register(api) {
+          api.registerGatewayAccessPolicy({
+            authorize: () => ({
+              signal: grant.signal,
+              assertCurrent: () => grant.signal.throwIfAborted(),
+            }),
+          });
+        },
+      });
+      setActivePluginRegistry(registry.registry);
+      const { res } = makeMockHttpResponse();
+      const context = createContext();
+      context.getRuntimeConfig = () => cfg;
+      const otherIdentity = await profileReader.prepareUserProfileIdentity(other.id);
+      const sql = observeHostDataSql();
+      let request: ReturnType<typeof captureGatewayDeviceRevocation> | undefined;
+      let run: Awaited<ReturnType<typeof captureGatewayOperatorRunAuthority>>;
+      try {
+        const assertTransportCurrent = () => {
+          if (res.writableEnded || res.destroyed) {
+            throw new Error("HTTP request completed");
+          }
+        };
+        const admitted = await prepareHttpProfile(profile.id, assertTransportCurrent, cfg, res);
+        const access = expectDefined(admitted.operatorAccessAuthority, "HTTP access authority");
+        const identity = expectDefined(admitted.preparedProfileIdentity, "HTTP profile identity");
+        request = captureGatewayDeviceRevocation(
+          context,
+          { role: "operator" },
+          () => !res.writableEnded && !res.destroyed,
+          undefined,
+          {
+            isCurrent: () => hasCurrentGatewayOperatorAccess(access),
+            subscribe(onRevoked) {
+              access.signal.addEventListener("abort", onRevoked, { once: true });
+              return () => access.signal.removeEventListener("abort", onRevoked);
+            },
+          },
+        );
+        const client = createOperatorClient({ profileId: profile.id, scopes: ["operator.read"] });
+        client.internal = { operatorAccessAuthority: access };
+        run = expectDefined(
+          await captureGatewayOperatorRunAuthority({
+            client,
+            context,
+            hasCurrentClientAuthority: request.isCurrent,
+          }),
+          "accepted run",
+        );
+        expect(acceptGatewayDeviceSourceAuthority(request.isCurrent)).toBe(true);
+        const finished = once(res, "finish");
+        res.end();
+        await finished;
+        expect(assertTransportCurrent).toThrow("HTTP request completed");
+        expect(identity.readCurrentProfile).toThrow();
+        request.release();
+        expect(request.isCurrent()).toBe(true);
+        expect(access.assertCurrent).not.toThrow();
+        expect(run.authority.assertCurrent).not.toThrow();
+        expect(run.authority.signal?.aborted).toBe(false);
+        for (const call of sql.calls) {
+          expect(call).not.toHaveBeenCalled();
+        }
+        sql.restore();
+
+        if (revocation === "role revocation") {
+          await setCanonicalUserProfileRole(profile.id, "denied");
+        } else {
+          // No profile-delete API exists: publish the committed native fixture change
+          // through the same catalog owner as worker receipts, without retiring the store.
+          const deleted = runOpenClawStateWriteTransaction((database) => {
+            const before = selectProfileDisplayEntries(database.db, [profile.id]);
+            const publication = profileReader.retainUserProfileMutationPublication(
+              requireOpenClawStateDatabaseIdentity(database),
+              before,
+            );
+            database.db.prepare("DELETE FROM user_profiles WHERE id = ?").run(profile.id);
+            const after = new Map(selectProfileDisplayEntries(database.db, [profile.id]));
+            return { publication, after };
+          });
+          try {
+            expect(deleted.after.has(profile.id)).toBe(false);
+            deleted.publication.reconcile([[profile.id, deleted.after.get(profile.id)]]);
+          } finally {
+            deleted.publication.release();
+          }
+        }
+
+        expect(grant.signal.aborted).toBe(false);
+        expect(otherIdentity.readCurrentProfile).not.toThrow();
+        expect(access.signal.aborted).toBe(true);
+        expect(access.assertCurrent).toThrow();
+        expect(request.isCurrent()).toBe(false);
+        expect(run.authority.signal?.aborted).toBe(true);
+        expect(run.authority.assertCurrent).toThrow();
+      } finally {
+        sql.restore();
+        run?.release();
+        request?.release();
+        otherIdentity.release();
+        res.destroy();
+        resetPluginRuntimeStateForTest();
+      }
+    });
+  },
+);
 
 it("preserves the live operator source through principal capture without trusting copied labels", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {

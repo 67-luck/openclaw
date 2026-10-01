@@ -25,6 +25,7 @@ import {
   type SessionCatalogProvider,
 } from "../../plugins/session-catalog.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { prepareUserProfileIdentity } from "../../state/user-profile-list.js";
 import { linkEmail } from "../../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -41,10 +42,17 @@ async function withCatalog(
     let fixture: Awaited<ReturnType<typeof createCatalog>> | undefined;
     try {
       fixture = await createCatalog();
+      for (const client of [fixture.owner, fixture.foreignOwner]) {
+        client.preparedProfileIdentity = await prepareUserProfileIdentity(
+          client.authenticatedUserProfile!.profileId,
+        );
+      }
       // Deferred providers must not race the response budget while privacy writes settle.
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       await run(fixture);
     } finally {
+      fixture?.owner.preparedProfileIdentity?.release();
+      fixture?.foreignOwner.preparedProfileIdentity?.release();
       fixture?.projection.dispose();
       setActivePluginRegistry(previousRegistry);
       vi.useRealTimers();

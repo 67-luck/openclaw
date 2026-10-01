@@ -61,14 +61,21 @@ async function authenticate(
   cfg: OpenClawConfig = {},
   user?: string,
 ) {
-  setRuntimeConfigSnapshot(cfg);
   authorize.mockResolvedValueOnce({ ok: true, method, ...(user ? { user } : {}) });
-  return checkGatewayHttpRequestAuth({
-    req,
-    auth: { mode: "none", allowTailscale: false },
-    cfg,
-    getRuntimeConfig: () => cfg,
-  });
+  const { res } = makeMockHttpResponse();
+  try {
+    return await checkGatewayHttpRequestAuth({
+      req: res.req,
+      res,
+      auth: { mode: "none", allowTailscale: false },
+      cfg,
+      getRuntimeConfig: () => cfg,
+    });
+  } finally {
+    const closed = once(res, "close");
+    res.destroy();
+    await closed;
+  }
 }
 
 async function admitResponse(response: ReturnType<typeof makeMockHttpResponse>, email: string) {

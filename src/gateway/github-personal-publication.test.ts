@@ -436,10 +436,14 @@ describe("personal publication authority and recovery", () => {
       ),
     ).toThrow("not found");
     const count = commands.length;
+    client.preparedProfileIdentity!.release();
     await closeStateDatabaseForTest();
     coordinator = createTestGitHubPublicationCoordinator({
       placements: createWorkerSessionPlacementStore({ database: openOpenClawStateDatabase() }),
     });
+    client.preparedProfileIdentity = await prepareUserProfileIdentity(owner);
+    onTestFinished(client.preparedProfileIdentity.release);
+    action = preparePersonalGitHubSessionAction({ client, context }, { sessionKey: SESSION_KEY });
     await expect(coordinator.requestPersonalForSession(request(), action)).resolves.toEqual(result);
     expect(commands).toHaveLength(count);
     expect(openOpenClawStateDatabase().db.prepare("PRAGMA integrity_check").get()).toEqual({
@@ -682,6 +686,7 @@ describe("personal publication authority and recovery", () => {
       publisher: { source: "personal", ...account },
     });
     const count = commands.length;
+    client.preparedProfileIdentity!.release();
     await closeStateDatabaseForTest();
     placements = createWorkerSessionPlacementStore({ database: openOpenClawStateDatabase() });
     coordinator = createTestGitHubPublicationCoordinator({ placements });
@@ -707,6 +712,7 @@ describe("personal publication authority and recovery", () => {
       },
     });
     const ownProfile = client.authenticatedUserProfile!;
+    client.preparedProfileIdentity!.release();
     client.authenticatedUserProfile = { ...ownProfile, profileId: otherOwner };
     client.preparedProfileIdentity = await prepareUserProfileIdentity(otherOwner);
     onTestFinished(client.preparedProfileIdentity.release);
@@ -732,6 +738,7 @@ describe("personal publication authority and recovery", () => {
       )[0],
     ).toBe(false);
     expect((await rpc("sessions.github.publish", request()))[0]).toBe(false);
+    client.preparedProfileIdentity.release();
     client.authenticatedUserProfile = ownProfile;
     client.preparedProfileIdentity = await prepareUserProfileIdentity(owner);
     onTestFinished(client.preparedProfileIdentity.release);

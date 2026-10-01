@@ -4,8 +4,8 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resetGatewayWorkAdmission } from "../../process/gateway-work-admission.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import {
+  prepareUserProfileIdentity,
   readUserProfileIdentity,
-  retainUserProfileCatalog,
 } from "../../state/user-profile-list.js";
 import { setUserProfileRole } from "../../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail, getUserProfileListItem } from "../../state/user-profiles.js";
@@ -73,13 +73,14 @@ function roleConfig(): OpenClawConfig {
   };
 }
 
-function profileClient(
+async function profileClient(
   profileId: string,
   connId: string,
   close: ReturnType<typeof vi.fn>,
-): GatewayWsClient {
+): Promise<GatewayWsClient> {
   return {
     ...createOperatorWsClient({ connId, socket: { close } }),
+    preparedProfileIdentity: await prepareUserProfileIdentity(profileId),
     authenticatedUserProfile: {
       profileId,
       displayName: null,
@@ -97,21 +98,22 @@ it.each(["failed delivery", "self downgrade"] as const)(
       layout: "state-only",
       prefix: "users-role-delivery-",
     });
-    let release = () => {};
+    let client: GatewayWsClient | undefined;
+    let targetClient: GatewayWsClient | undefined;
     try {
       const requester = ensureProfileForEmail("administrator@example.test");
       setUserProfileRole(requester.id, "administrator");
       const target = ensureProfileForEmail("reader@example.test");
       setUserProfileRole(target.id, "administrator");
       const changed = scenario === "self downgrade" ? requester : target;
-      expect(resolveOperatorRolePolicyForProfile(changed.id, roleConfig())?.scopes).toEqual([
-        "operator.admin",
-      ]);
-      release = retainUserProfileCatalog();
       const clientClose = vi.fn();
       const targetClose = vi.fn();
-      const client = profileClient(requester.id, "role-requester", clientClose);
-      const targetClient = profileClient(target.id, "role-target", targetClose);
+      client = await profileClient(requester.id, "role-requester", clientClose);
+      targetClient = await profileClient(target.id, "role-target", targetClose);
+      const changedClient = scenario === "self downgrade" ? client : targetClient;
+      expect(
+        resolveOperatorRolePolicyForProfile(changed.id, roleConfig(), changedClient)?.scopes,
+      ).toEqual(["operator.admin"]);
       const clients = new GatewayClientRegistry([client, targetClient]);
       const owner = createGatewayRequestContext(makeContextParams({ clients }));
       const context = createDirectChatContext({
@@ -146,9 +148,9 @@ it.each(["failed delivery", "self downgrade"] as const)(
       );
       expect(getUserProfileListItem(changed.id).role).toBe("reader");
       expect(readUserProfileIdentity(changed.id)?.role).toBe("reader");
-      expect(resolveOperatorRolePolicyForProfile(changed.id, roleConfig())?.scopes).toEqual([
-        "operator.read",
-      ]);
+      expect(
+        resolveOperatorRolePolicyForProfile(changed.id, roleConfig(), changedClient)?.scopes,
+      ).toEqual(["operator.read"]);
       expect(harness.send).toHaveBeenCalledWith(
         expect.objectContaining({
           id: "role-delivery",
@@ -171,7 +173,8 @@ it.each(["failed delivery", "self downgrade"] as const)(
       expect(scenario === "self downgrade" ? clientClose : targetClose).toHaveBeenCalledOnce();
       expect(scenario === "self downgrade" ? targetClose : clientClose).not.toHaveBeenCalled();
     } finally {
-      release();
+      client?.preparedProfileIdentity?.release();
+      targetClient?.preparedProfileIdentity?.release();
       await state.cleanup();
     }
   },

@@ -75,9 +75,10 @@ function clientFor(profileId: string, scopes = ["operator.admin"]): GatewayClien
   } as GatewayClient;
 }
 
-function gateway() {
+async function gateway() {
   const admin = ensureProfileForEmail("admin@example.test");
   setUserProfileRole(admin.id, "admin");
+  const preparedProfileIdentity = await prepareUserProfileIdentity(admin.id);
   const context = {
     getRuntimeConfig: () => cfg,
     logGateway: { warn: vi.fn() },
@@ -91,6 +92,9 @@ function gateway() {
     client = clientFor(admin.id),
     expectedProfileId = client.authenticatedUserProfile?.profileId,
   ) => {
+    if (client.authenticatedUserProfile?.profileId === admin.id) {
+      client.preparedProfileIdentity = preparedProfileIdentity;
+    }
     const respond = vi.fn<RespondFn>();
     await handleGatewayRequest({
       req: { type: "req", id: method, method, params, expectedProfileId },
@@ -104,11 +108,20 @@ function gateway() {
   };
   return {
     admin,
+    preparedProfileIdentity,
+    [Symbol.dispose]: preparedProfileIdentity.release,
     context,
     dispatch,
     merge: (sourceProfileId: string, targetProfileId: string) =>
       dispatch("users.merge", { sourceProfileId, targetProfileId }),
   };
+}
+
+async function prepareRoleSource(profileId: string) {
+  const preparedProfileIdentity = await prepareUserProfileIdentity(profileId, {
+    resolveAliases: true,
+  });
+  return { preparedProfileIdentity, [Symbol.dispose]: preparedProfileIdentity.release };
 }
 
 function storedRedirect(profileId: string) {
@@ -124,7 +137,7 @@ function storedRedirect(profileId: string) {
 
 it("merges an email-less person through admin RPC without main-thread SQL and retires captured authority", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const rpc = gateway();
+    using rpc = await gateway();
     const providerIdentity = { login: "duplicate@github", name: "Duplicate" };
     const source = ensureProfileForTailscaleIdentity(providerIdentity);
     const target = ensureProfileForEmail("survivor@example.test");
@@ -195,7 +208,15 @@ it("merges an email-less person through admin RPC without main-thread SQL and re
       ]);
       expect(() => captured.readCurrentProfile()).toThrow();
       expect(() => selected?.assertCurrent()).toThrow();
-      const stale = await rpc.dispatch("users.prefs.get", {}, clientFor(source.id));
+      using staleSource = await prepareRoleSource(source.id);
+      const stale = await rpc.dispatch(
+        "users.prefs.get",
+        {},
+        {
+          ...clientFor(source.id),
+          preparedProfileIdentity: staleSource.preparedProfileIdentity,
+        },
+      );
       expect(stale[0]).toBe(false);
       expect(stale[2]?.details).toMatchObject({ reason: "EXPECTED_PROFILE_MISMATCH" });
       expect(rpc.context.refreshConnectedUserProfile).toHaveBeenCalledWith(
@@ -210,9 +231,9 @@ it("merges an email-less person through admin RPC without main-thread SQL and re
   });
 });
 
-it("flattens source cohorts, invalidates their cached roles, and rejects redirects and descendant cycles", async () => {
+it("flattens source cohorts, updates their current roles, and rejects redirects and descendant cycles", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const rpc = gateway();
+    using rpc = await gateway();
     const ancestor = ensureProfileForEmail("ancestor@example.test");
     const source = ensureProfileForEmail("duplicate@example.test");
     const target = ensureProfileForEmail("survivor@example.test");
@@ -221,16 +242,25 @@ it("flattens source cohorts, invalidates their cached roles, and rejects redirec
     setUserProfileRole(target.id, "member");
     expect((await rpc.merge(ancestor.id, source.id))[0]).toBe(true);
     for (const id of [ancestor.id, source.id]) {
-      expect(resolveOperatorRolePolicyForProfile(id, cfg)?.scopes).toEqual(["operator.admin"]);
+      using profile = await prepareRoleSource(id);
+      expect(resolveOperatorRolePolicyForProfile(id, cfg, profile)?.scopes).toEqual([
+        "operator.admin",
+      ]);
     }
-    expect(resolveOperatorRolePolicyForProfile(target.id, cfg)?.scopes).toEqual(["operator.read"]);
+    using targetProfile = await prepareRoleSource(target.id);
+    expect(resolveOperatorRolePolicyForProfile(target.id, cfg, targetProfile)?.scopes).toEqual([
+      "operator.read",
+    ]);
     rpc.context.disconnectClientsForUserProfile.mockClear();
     const merged = await rpc.merge(source.id, target.id);
     expect(merged[0], JSON.stringify(merged[2])).toBe(true);
     expect(merged[1]).toMatchObject({ movedAliasKinds: ["email"] });
     for (const id of [ancestor.id, source.id]) {
       expect(storedRedirect(id)).toBe(target.id);
-      expect(resolveOperatorRolePolicyForProfile(id, cfg)?.scopes).toEqual(["operator.read"]);
+      using profile = await prepareRoleSource(id);
+      expect(resolveOperatorRolePolicyForProfile(id, cfg, profile)?.scopes).toEqual([
+        "operator.read",
+      ]);
     }
     expect(rpc.context.disconnectClientsForUserProfile.mock.calls.flat()).toEqual(
       expect.arrayContaining([ancestor.id, source.id, target.id]),
@@ -262,7 +292,7 @@ it("flattens source cohorts, invalidates their cached roles, and rejects redirec
 
 it("rejects invalid pairs and both direct and redirected shared-owner identities without merging", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const rpc = gateway();
+    using rpc = await gateway();
     const owner = ensureGatewayOwnerProfile(null);
     const source = ensureProfileForEmail("duplicate@example.test");
     const ownerAlias = ensureProfileForEmail("legacy-owner-alias@example.test");
@@ -311,11 +341,12 @@ it("rejects invalid pairs and both direct and redirected shared-owner identities
 
 it("delivers the merge response before closing the initiating administrator's retired connection", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const rpc = gateway();
+    using rpc = await gateway();
     const target = ensureProfileForEmail("survivor@example.test");
     const events: string[] = [];
     const client = {
       ...clientFor(rpc.admin.id),
+      preparedProfileIdentity: rpc.preparedProfileIdentity,
       socket: { close: vi.fn(() => events.push("close")) },
     };
     const respond = vi.fn<RespondFn>(() => events.push("response"));
@@ -354,7 +385,7 @@ it("delivers the merge response before closing the initiating administrator's re
 
 it("runs users merge CLI arguments through the registered RPC and emits its survivor result", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const rpc = gateway();
+    using rpc = await gateway();
     const source = ensureProfileForTailscaleIdentity({ login: "cli-duplicate@github" });
     const target = ensureProfileForEmail("cli-survivor@example.test");
     callGatewayFromCli.mockImplementation(async (method, _options, params, rpcOptions) => {

@@ -33,34 +33,50 @@ const state = vi.hoisted(() => ({
   rootCalls: 0,
   beforeRoot: undefined as (() => Promise<void>) | undefined,
 }));
+function retainProfileIdentity(profileId: string): PreparedUserProfileIdentity {
+  state.profileHolds += 1;
+  let active = true;
+  const readCurrentProfile = () => {
+    if (!active) {
+      throw new Error("Profile preparation was released");
+    }
+    return { profileId, assignedRole: state.role };
+  };
+  return {
+    retain: () => {
+      readCurrentProfile();
+      return retainProfileIdentity(profileId);
+    },
+    readCurrentProfile,
+    readCurrentDisplay: () => ({
+      id: readCurrentProfile().profileId,
+      displayName: null,
+      hasAvatar: false,
+      avatarRevision: "0",
+      updatedAt: 0,
+    }),
+    captureCurrentEmailBindingIds: () => [],
+    emailBindingIds: [],
+    readCurrentFacts: () => ({
+      profile: { ...readCurrentProfile(), emails: [] },
+      aliases: new Set([profileId]),
+    }),
+    release: () => {
+      if (active) {
+        active = false;
+        state.profileHolds -= 1;
+      }
+    },
+  };
+}
 vi.mock("../../state/user-profile-list.js", () => ({
   hasMultipleSessionSharingIdentities: () => state.multipleProfiles,
   readResidentUserProfileId: (id: string) => (id === "alice-alias" ? state.canonical : id),
   readUserProfileIdentity: (id: string) => ({ profileId: id, role: state.role }),
   prepareUserProfileIdentity: async (profileId: string): Promise<PreparedUserProfileIdentity> => {
-    state.profileHolds += 1;
-    let active = true;
-    const readCurrentProfile = () => {
-      if (!active) {
-        throw new Error("Profile preparation was released");
-      }
-      return { profileId, assignedRole: state.role };
-    };
+    const identity = retainProfileIdentity(profileId);
     await state.profileReady?.();
-    return {
-      readCurrentProfile,
-      emailBindingIds: [],
-      readCurrentFacts: () => ({
-        profile: { ...readCurrentProfile(), emails: [] },
-        aliases: new Set([profileId]),
-      }),
-      release: () => {
-        if (active) {
-          active = false;
-          state.profileHolds -= 1;
-        }
-      },
-    };
+    return identity;
   },
 }));
 vi.mock("../../agents/workspace-access.js", () => ({

@@ -65,7 +65,11 @@ import {
 } from "../sessions/session-lifecycle-admission.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
-import { prepareSessionCreationAuthority } from "./operator-role-policy.js";
+import {
+  prepareSessionCreationAuthority,
+  prepareOperatorRoleSource,
+  resolveCreatorSandbox,
+} from "./operator-role-policy.js";
 import { ADMIN_SCOPE } from "./operator-scopes.js";
 import {
   prepareSessionCreateFilesystemRoot,
@@ -79,7 +83,7 @@ import { existingSessionSelectionWouldChange } from "./session-create-existing-s
 import { buildForkedGatewaySessionEntry } from "./session-create-fork-entry.js";
 import {
   prepareSessionCreateParent,
-  prepareSessionCreateInheritance,
+  resolveSessionCreateInheritance,
   resolveSessionCreateSpawnPolicy,
 } from "./session-create-inheritance.js";
 import { buildDashboardSessionKey, resolveSessionCreateTargetKey } from "./session-create-key.js";
@@ -592,12 +596,11 @@ export async function createGatewaySession(
 
     // The locked parent owns delegated isolation, including signed remote callers whose
     // transport context carries only agent identity and cannot carry creator authority.
-    using inheritance = await prepareSessionCreateInheritance({
-      cfg: params.cfg,
+    const { creation, ownerAssignment: inheritedSpawnOwner } = resolveSessionCreateInheritance({
       creation: params.creation,
       parent: currentParentSessionEntry,
     });
-    const { creation, ownerAssignment: inheritedSpawnOwner } = inheritance;
+    using creatorRoles = await prepareOperatorRoleSource(params.cfg, creation?.actor);
     params.commitGuard?.();
     const target = creationTarget;
     const targetRead = readSessionCreateTarget(
@@ -612,7 +615,8 @@ export async function createGatewaySession(
     }
     const currentTargetEntry = targetRead.value;
     // Delegated isolation survives changes to the creator's current role.
-    const creationSandbox = inheritance.resolveSandbox();
+    const creationSandbox =
+      creation?.sandbox ?? resolveCreatorSandbox(params.cfg, creation, creatorRoles);
     const sandboxRequired =
       currentTargetEntry?.sandbox === "required" || creationSandbox === "required";
     const forkWorkspace =
@@ -711,11 +715,9 @@ export async function createGatewaySession(
       async ({ existingEntry, targetEntry, labelInUse }) => {
         // This callback owns generated and explicit keys alike; no existing row
         // is the canonical signal that this request will actually create one.
-        if (!existingEntry) {
-          const creationError = requesterRoles.authorize(target.agentId);
-          if (creationError) {
-            return { ok: false, error: creationError };
-          }
+        const creationError = existingEntry ? undefined : requesterRoles.authorize(target.agentId);
+        if (creationError) {
+          return { ok: false, error: creationError };
         }
         if (
           isAgentHarnessSessionKey(target.canonicalKey) &&
@@ -845,9 +847,7 @@ export async function createGatewaySession(
         }
         const execNode = normalizeOptionalString(params.execNode);
         const execCwd = normalizeOptionalString(params.execCwd);
-        const initialAgentHarnessId = params.initialEntry
-          ? normalizeOptionalString(params.initialEntry.agentHarnessId)
-          : undefined;
+        const initialAgentHarnessId = normalizeOptionalString(params.initialEntry?.agentHarnessId);
         // Initializers compare their callback snapshot with the stored row during finalization.
         // Normalize before both so persistence cannot make this creation look like external drift.
         const initialColor = params.initialEntry?.color

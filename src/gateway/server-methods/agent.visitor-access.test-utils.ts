@@ -97,6 +97,8 @@ describe("visitor access admitted caller", () => {
           (await ensureCanonicalUserProfileForEmail("source@example.test")).id,
           scenario === "writer" ? "writer" : "admin",
         );
+        const preparedProfileIdentity = await prepareUserProfileIdentity(profile.id);
+        using _ = { [Symbol.dispose]: preparedProfileIdentity.release };
         const provider = createAccessPolicyTransport();
         vi.stubGlobal("fetch", provider.fetcher);
         let gateway: Awaited<ReturnType<typeof startVisitorGateway>> | undefined;
@@ -106,6 +108,7 @@ describe("visitor access admitted caller", () => {
         const connection = new AbortController();
         const client: GatewayClient = {
           ...operatorWriteCliClient([scenario === "writer" ? WRITE_SCOPE : ADMIN_SCOPE]),
+          preparedProfileIdentity,
           connectionSignal: connection.signal,
           invalidated: false,
           authenticatedUserId: "source@example.test",
@@ -279,6 +282,7 @@ describe("visitor access admitted caller", () => {
             respond: (ok, payload, error) => {
               replies.push({ ok, payload, error });
               if (isRecord(payload) && payload.status === "accepted") {
+                preparedProfileIdentity.release();
                 caller.release();
                 connection.abort();
               }
@@ -412,7 +416,7 @@ describe("visitor access admitted caller", () => {
       try {
         for (const profile of [unassigned, staff, owner]) {
           const identity = await prepareUserProfileIdentity(profile.id);
-          using _identity = { [Symbol.dispose]: identity.release };
+          using _ = { [Symbol.dispose]: identity.release };
           expect(resolveGatewayOperatorAccessAuthority(identity, config)).toBeNull();
         }
         const existing = createVisitorGrantStore(state.env);
@@ -467,13 +471,16 @@ describe("visitor access admitted caller", () => {
         );
         expect(reopenedGrants).toHaveLength(2);
         const unassignedIdentity = await prepareUserProfileIdentity(unassigned.id);
-        using _unassignedIdentity = { [Symbol.dispose]: unassignedIdentity.release };
-        expect(() =>
-          resolveGatewayOperatorAccessAuthority(unassignedIdentity, restrictedConfig),
-        ).toThrow(GatewayOperatorAccessDeniedError);
+        try {
+          expect(() =>
+            resolveGatewayOperatorAccessAuthority(unassignedIdentity, restrictedConfig),
+          ).toThrow(GatewayOperatorAccessDeniedError);
+        } finally {
+          unassignedIdentity.release();
+        }
         for (const profile of [staff, owner]) {
           const identity = await prepareUserProfileIdentity(profile.id);
-          using _identity = { [Symbol.dispose]: identity.release };
+          using _ = { [Symbol.dispose]: identity.release };
           expect(resolveGatewayOperatorAccessAuthority(identity, restrictedConfig)).toBeNull();
         }
         const reopenedOwner = getUserProfileListItem(owner.id);
@@ -573,7 +580,7 @@ describe("visitor access admitted caller", () => {
           mocks.loadConfigReturn = repairedConfig;
           for (const profile of [staff, owner]) {
             const identity = await prepareUserProfileIdentity(profile.id);
-            using _identity = { [Symbol.dispose]: identity.release };
+            using _ = { [Symbol.dispose]: identity.release };
             expect(resolveGatewayOperatorAccessAuthority(identity, repairedConfig)).toBeNull();
           }
           const { text: renewal } = await invoke("visitor_invite", {
@@ -593,10 +600,13 @@ describe("visitor access admitted caller", () => {
             (await ensureCanonicalUserProfileForEmail(freshEmail)).id,
           );
           const freshIdentity = await prepareUserProfileIdentity(fresh.id);
-          using _freshIdentity = { [Symbol.dispose]: freshIdentity.release };
-          expect(() =>
-            resolveGatewayOperatorAccessAuthority(freshIdentity, repairedConfig),
-          ).toThrow(GatewayOperatorAccessDeniedError);
+          try {
+            expect(() =>
+              resolveGatewayOperatorAccessAuthority(freshIdentity, repairedConfig),
+            ).toThrow(GatewayOperatorAccessDeniedError);
+          } finally {
+            freshIdentity.release();
+          }
           expect((await invoke("visitor_invite", { email: freshEmail })).text).toContain(
             "restricted guest",
           );
@@ -607,7 +617,7 @@ describe("visitor access admitted caller", () => {
             [fresh, freshGrantId],
           ] as const) {
             const identity = await prepareUserProfileIdentity(profile.id);
-            using _identity = { [Symbol.dispose]: identity.release };
+            using _ = { [Symbol.dispose]: identity.release };
             const access = expectDefined(
               resolveGatewayOperatorAccessAuthority(identity, repairedConfig),
               "registered Visitor access missing",
@@ -667,8 +677,11 @@ describe("visitor access admitted caller", () => {
           );
           expect(getUserProfileListItem(staffId)).toEqual(staff);
           const staffIdentity = await prepareUserProfileIdentity(staffId);
-          using _staffIdentity = { [Symbol.dispose]: staffIdentity.release };
-          expect(resolveGatewayOperatorAccessAuthority(staffIdentity, repairedConfig)).toBeNull();
+          try {
+            expect(resolveGatewayOperatorAccessAuthority(staffIdentity, repairedConfig)).toBeNull();
+          } finally {
+            staffIdentity.release();
+          }
         } finally {
           caller.release();
           connection.abort();

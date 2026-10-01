@@ -88,7 +88,9 @@ async function withRoleConfig(run: () => Promise<void>) {
 
 describe("Control UI plugin auth cookie profile binding", () => {
   afterEach(() => {
-    for (const res of responses.splice(0)) res.destroy();
+    for (const res of responses.splice(0)) {
+      res.destroy();
+    }
     resetPluginRuntimeStateForTest();
   });
 

@@ -58,6 +58,7 @@ export const toolsInvokeHandlers: GatewayRequestHandlers = {
       input: params,
       authenticatedUserProfile: client?.authenticatedUserProfile,
       preparedProfileIdentity: client?.preparedProfileIdentity,
+      operatorRunAuthority: client?.internal?.operatorRunAuthority,
       operatorRoleActor: client?.internal?.operatorRoleActor,
       operatorScopes: client?.connect.scopes,
       senderIsOwner: client?.connect?.scopes?.includes("operator.admin"),

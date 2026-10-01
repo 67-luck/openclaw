@@ -1,8 +1,8 @@
-// HTTP authorization utility tests protect gateway request authorization,
-// declared operator scopes, origin handling, and failure response routing.
+import { once } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import type { PreparedUserProfileIdentity } from "../state/user-profiles.types.js";
 import { makeMockHttpResponse } from "./test-http-response.js";
 
 vi.mock("./auth.js", () => ({
@@ -42,7 +42,7 @@ const { authorizeHttpGatewayConnect } = await import("./auth.js");
 const { getRuntimeConfig } = await import("../config/io.js");
 const { sendGatewayAuthFailure } = await import("./http-common.js");
 const profileWrites = await import("../state/user-profile-writes.js");
-const profileAuthority = await import("../state/user-channel-identity-operations.js");
+const profileReader = await import("../state/user-profile-list.js");
 const operatorRoles = await import("./operator-role-policy.js");
 const githubIdentity = await import("./github-user-identity.js");
 const { resolveControlUiPluginAuthCookieGeneration } = await import("./http-auth-plugin-cookie.js");
@@ -58,6 +58,50 @@ const ownerProfile = {
 
 function createReq(headers: Record<string, string> = {}): IncomingMessage {
   return { headers } as IncomingMessage;
+}
+
+const responses = new Set<ServerResponse>();
+
+function createResponse(): ServerResponse {
+  const { res } = makeMockHttpResponse();
+  responses.add(res);
+  return res;
+}
+
+function createProfileIdentity(
+  display: ReturnType<PreparedUserProfileIdentity["readCurrentDisplay"]>,
+  aliases = [display.id],
+): PreparedUserProfileIdentity {
+  let active = true;
+  const readCurrentProfile = () => {
+    if (!active) {
+      throw new Error("Profile identity was released");
+    }
+    return { profileId: display.id, assignedRole: null };
+  };
+  return {
+    readCurrentProfile,
+    readCurrentDisplay: () => {
+      readCurrentProfile();
+      return display;
+    },
+    readCurrentFacts: () => ({
+      profile: { ...readCurrentProfile(), emails: [] },
+      aliases: new Set(aliases),
+    }),
+    emailBindingIds: [],
+    captureCurrentEmailBindingIds: () => {
+      readCurrentProfile();
+      return [];
+    },
+    retain: () => {
+      readCurrentProfile();
+      return createProfileIdentity(display, aliases);
+    },
+    release: () => {
+      active = false;
+    },
+  };
 }
 
 describe("authorizeGatewayHttpRequestOrReply", () => {
@@ -80,24 +124,31 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
       createdAt: 1,
       updatedAt: ownerProfile.updatedAt,
     });
-    vi.spyOn(profileAuthority, "prepareUserProfileRoleAuthority").mockImplementation(
-      async (profileId) => ({
-        profileId,
-        role: null,
-        aliases: [profileId],
-        isCurrent: () => true,
-        display: {
-          id: profileId,
-          displayName: profileId === ownerProfile.profileId ? ownerProfile.displayName : "Guest",
-          avatarRevision: "2",
-          hasAvatar: false,
-        },
+    vi.spyOn(profileReader, "prepareUserProfileIdentity").mockImplementation(async (profileId) =>
+      createProfileIdentity({
+        id: profileId,
+        displayName: profileId === ownerProfile.profileId ? ownerProfile.displayName : "Guest",
+        avatarRevision: "2",
+        hasAvatar: false,
+        updatedAt: 2,
       }),
     );
     vi.spyOn(githubIdentity, "createAuthenticatedGitHubIdentitySync").mockReturnValue(undefined);
   });
 
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(async () => {
+    await Promise.all(
+      [...responses].map(async (res) => {
+        if (!res.destroyed) {
+          const closed = once(res, "close");
+          res.destroy();
+          await closed;
+        }
+      }),
+    );
+    responses.clear();
+    vi.restoreAllMocks();
+  });
 
   it.each(["token", "password"] as const)(
     "marks %s-authenticated requests as untrusted for declared HTTP scopes",
@@ -110,7 +161,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
       await expect(
         authorizeGatewayHttpRequestOrReply({
           req: createReq({ authorization: "Bearer secret" }),
-          res: {} as ServerResponse,
+          res: createResponse(),
           auth: { mode: "trusted-proxy", allowTailscale: false, token: "secret" },
           trustedProxies: ["127.0.0.1"],
         }),
@@ -120,6 +171,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
         revalidate: expect.any(Function),
         authMethod: method,
         trustDeclaredOperatorScopes: false,
+        preparedProfileIdentity: expect.objectContaining({
+          readCurrentProfile: expect.any(Function),
+        }),
         authenticatedUserProfile: ownerProfile,
         operatorRoleActor: { kind: "system" },
       });
@@ -192,7 +246,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
     async ({ configSource, outcome }) => {
       const started = createDeferred();
       const release = createDeferred();
-      const response = { destroyed: false };
+      const response = createResponse();
       const originalConfig = getRuntimeConfig();
       let currentConfig =
         configSource === "gateway"
@@ -240,7 +294,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           ? { cfg: currentConfig, getRuntimeConfig: () => currentConfig }
           : {}),
         req: createReq(),
-        res: response as ServerResponse,
+        res: response,
         auth: {
           mode: "trusted-proxy",
           allowTailscale: false,
@@ -263,9 +317,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           }),
         ]);
         expect(completed).toBe(false);
-        expect(profileAuthority.prepareUserProfileRoleAuthority).not.toHaveBeenCalled();
+        expect(profileReader.prepareUserProfileIdentity).not.toHaveBeenCalled();
         if (outcome === "disconnected") {
-          response.destroyed = true;
+          response.destroy();
         }
         if (outcome === "policy-changed") {
           setCurrentConfig({
@@ -315,7 +369,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           }
         } else {
           expect(result).toBeNull();
-          expect(profileAuthority.prepareUserProfileRoleAuthority).not.toHaveBeenCalled();
+          expect(profileReader.prepareUserProfileIdentity).not.toHaveBeenCalled();
         }
       } finally {
         release.resolve();
@@ -352,7 +406,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
         await expect(
           authorizeGatewayHttpRequestOrReply({
             req: createReq({ authorization: "Bearer upstream-idp-token" }),
-            res: {} as ServerResponse,
+            res: createResponse(),
             auth: {
               mode: "trusted-proxy",
               allowTailscale: false,
@@ -367,6 +421,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           user: "guest@example.test",
           trustDeclaredOperatorScopes: true,
           operatorAccessAuthority: null,
+          preparedProfileIdentity: expect.objectContaining({
+            readCurrentProfile: expect.any(Function),
+          }),
           authenticatedUserProfile: {
             profileId: "profile-guest",
             displayName: "Guest",
@@ -414,7 +471,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
         method: "trusted-proxy",
         user: "guest@example.test",
       });
-      const response = {} as ServerResponse;
+      const response = createResponse();
 
       try {
         const result = await authorizeGatewayHttpRequestOrReply({
@@ -454,18 +511,18 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
   it("uses the verified GitHub profile before dispatching a request without roles", async () => {
     const sync = vi.fn().mockResolvedValue({ profileId: "profile-github", updatedAt: 3 });
     vi.mocked(githubIdentity.createAuthenticatedGitHubIdentitySync).mockReturnValue(sync);
-    vi.mocked(profileAuthority.prepareUserProfileRoleAuthority).mockResolvedValue({
-      profileId: "profile-github-canonical",
-      role: null,
-      aliases: ["profile-github", "profile-github-canonical"],
-      isCurrent: () => true,
-      display: {
-        id: "profile-github-canonical",
-        displayName: "GitHub User",
-        avatarRevision: "3",
-        hasAvatar: true,
-      },
-    });
+    vi.mocked(profileReader.prepareUserProfileIdentity).mockResolvedValue(
+      createProfileIdentity(
+        {
+          id: "profile-github-canonical",
+          displayName: "GitHub User",
+          avatarRevision: "3",
+          hasAvatar: true,
+          updatedAt: 3,
+        },
+        ["profile-github", "profile-github-canonical"],
+      ),
+    );
     vi.mocked(authorizeHttpGatewayConnect).mockResolvedValue({
       ok: true,
       method: "trusted-proxy",
@@ -475,7 +532,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
     await expect(
       authorizeGatewayHttpRequestOrReply({
         req: createReq(),
-        res: {} as ServerResponse,
+        res: createResponse(),
         auth: {
           mode: "trusted-proxy",
           allowTailscale: false,
@@ -490,6 +547,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
       user: "guest@example.test",
       trustDeclaredOperatorScopes: true,
       operatorAccessAuthority: null,
+      preparedProfileIdentity: expect.objectContaining({
+        readCurrentProfile: expect.any(Function),
+      }),
       authenticatedUserProfile: {
         profileId: "profile-github-canonical",
         displayName: "GitHub User",
@@ -520,7 +580,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
       ok: true,
       method: "device-token",
     });
-    const response = {} as ServerResponse;
+    const response = createResponse();
 
     try {
       await expect(
@@ -559,7 +619,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
         },
       });
       vi.mocked(authorizeHttpGatewayConnect).mockResolvedValue({ ok: true, method });
-      const response = {} as ServerResponse;
+      const response = createResponse();
 
       try {
         await expect(
@@ -602,7 +662,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
       await expect(
         authorizeGatewayHttpRequestOrReply({
           req: createReq({ authorization: "Bearer shared-secret" }),
-          res: {} as ServerResponse,
+          res: createResponse(),
           auth: { mode: "token", allowTailscale: false, token: "shared-secret" },
         }),
       ).resolves.toEqual({
@@ -611,6 +671,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
         revalidate: expect.any(Function),
         authMethod: "token",
         trustDeclaredOperatorScopes: false,
+        preparedProfileIdentity: expect.objectContaining({
+          readCurrentProfile: expect.any(Function),
+        }),
         authenticatedUserProfile: ownerProfile,
         operatorRoleActor: { kind: "system" },
       });
@@ -634,7 +697,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
         origin: "https://evil.example",
         "sec-fetch-site": "cross-site",
       }),
-      res: {} as ServerResponse,
+      res: createResponse(),
       auth: {
         mode: "trusted-proxy",
         allowTailscale: false,
@@ -657,7 +720,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
   });
 
   it("replies with auth failure and returns null when auth fails", async () => {
-    const res = {} as ServerResponse;
+    const res = createResponse();
     vi.mocked(authorizeHttpGatewayConnect).mockResolvedValue({
       ok: false,
       reason: "unauthorized",

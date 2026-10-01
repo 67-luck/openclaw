@@ -9,6 +9,7 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveUserChannelIdentity } from "../state/user-channel-identities.js";
+import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import {
   ensureGatewayOwnerProfile,
@@ -16,6 +17,7 @@ import {
   getUserProfileListItem,
   resolveUserProfileId,
 } from "../state/user-profiles.js";
+import type { PreparedUserProfileIdentity } from "../state/user-profiles.types.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { handleGatewayRequest } from "./server-methods.js";
 
@@ -25,6 +27,7 @@ async function dispatch(
   params: unknown,
   scopes: string[],
   profileId: string,
+  preparedProfileIdentity: PreparedUserProfileIdentity,
   expectedProfileId?: string,
   cfg: OpenClawConfig = {},
 ) {
@@ -40,6 +43,7 @@ async function dispatch(
     respond,
     client: {
       connId: "channel-identity-test",
+      preparedProfileIdentity,
       authenticatedUserId: "admin@example.test",
       authenticatedUserProfile: { profileId, displayName: "Admin", hasAvatar: false, updatedAt: 1 },
       connect: {
@@ -72,6 +76,8 @@ it.each(["person", "shared owner"] as const)(
       if (kind === "person") {
         setUserProfileRole(admin.id, "admin");
       }
+      const preparedProfileIdentity = await prepareUserProfileIdentity(admin.id);
+      using _ = { [Symbol.dispose]: preparedProfileIdentity.release };
       const cfg: OpenClawConfig = {
         gateway: {
           roles: {
@@ -87,7 +93,7 @@ it.each(["person", "shared owner"] as const)(
       const roleAssignment = { profileId: person.id, role: "admin" };
       const emailLink = { email: "secondary@example.test", targetProfileId: person.id };
       const request = (method: string, params: unknown, scopes = ["operator.admin"]) =>
-        dispatch(method, params, scopes, admin.id, admin.id, cfg);
+        dispatch(method, params, scopes, admin.id, preparedProfileIdentity, admin.id, cfg);
       for (const [method, params] of [
         ["users.linkChannelIdentity", link],
         ["users.listChannelIdentities", { profileId: person.id }],
@@ -133,8 +139,16 @@ it("rejects malformed or conflicting assignments without changing the saved bind
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const admin = ensureProfileForEmail("admin@example.test");
     const other = ensureProfileForEmail("other@example.test");
+    const preparedProfileIdentity = await prepareUserProfileIdentity(admin.id);
+    using _ = { [Symbol.dispose]: preparedProfileIdentity.release };
     const link = { profileId: admin.id, identity };
-    await dispatch("users.linkChannelIdentity", link, ["operator.admin"], admin.id);
+    await dispatch(
+      "users.linkChannelIdentity",
+      link,
+      ["operator.admin"],
+      admin.id,
+      preparedProfileIdentity,
+    );
     for (const params of [
       { ...link, identity: { ...identity, senderId: " " } },
       { ...link, unexpected: true },
@@ -145,6 +159,7 @@ it("rejects malformed or conflicting assignments without changing the saved bind
         params,
         ["operator.admin"],
         admin.id,
+        preparedProfileIdentity,
       );
       expect(denied?.[0]).toBe(false);
       expect(denied?.[2]).toMatchObject({ code: "INVALID_REQUEST" });

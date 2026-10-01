@@ -91,9 +91,11 @@ export function createGatewayConnectProfileLifecycle(
       const registered = client;
       assertCurrent();
       const prepared = await resolveAuthenticatedProfile(profileId, assertCurrent);
-      using _pending = {
+      using _ = {
         [Symbol.dispose]: () => {
-          if (retained !== prepared) prepared.identity.release();
+          if (retained !== prepared) {
+            prepared.identity.release();
+          }
         },
       };
       assertCurrent();
@@ -104,7 +106,21 @@ export function createGatewayConnectProfileLifecycle(
         throw new Error("Gateway profile changed before attachment");
       }
       const { profile } = prepared;
-      release();
+      let previousIdentity = retained?.identity;
+      try {
+        if (previousIdentity?.readCurrentProfile().profileId !== profile.profileId) {
+          previousIdentity = undefined;
+        }
+      } catch {
+        previousIdentity = undefined;
+      }
+      // Same-person refreshes must not retire identity borrowed by in-flight requests.
+      if (previousIdentity) {
+        prepared.identity.release();
+        prepared.identity = previousIdentity;
+      } else {
+        release();
+      }
       retained = prepared;
       registered.preparedProfileIdentity = prepared.identity;
       registered.preparedRecipientProfileId = undefined;

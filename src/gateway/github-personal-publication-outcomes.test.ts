@@ -116,7 +116,7 @@ describe("personal publication definitive outcomes", () => {
 
   it("does not resume shared GitHub writes after the RPC request loses write permission", async () => {
     const identity = await prepareUserProfileIdentity(fixture.owner);
-    using _identity = { [Symbol.dispose]: identity.release };
+    using _ = { [Symbol.dispose]: identity.release };
     fixture.client.internal = {
       ...fixture.client.internal,
       operatorAccessAuthority: resolveGatewayOperatorAccessAuthority(identity, fixture.config),

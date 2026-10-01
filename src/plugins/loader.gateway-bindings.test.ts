@@ -10,8 +10,9 @@ import {
   resolveGatewayOperatorAccessAuthority,
 } from "../gateway/operator-access-policy.js";
 import { resetPluginStateStoreForTests } from "../plugin-state/plugin-state-store.js";
+import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
-import { ensureProfileForEmail } from "../state/user-profiles.js";
+import { ensureGatewayOwnerProfile, ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createLazyPluginRuntime } from "./loader-module-runtime.js";
 import {
@@ -270,6 +271,19 @@ it.each([
     const unbound = ensureProfileForEmail("loader-unbound@example.test");
     setUserProfileRole(staff.id, "staff");
     setUserProfileRole(unbound.id, "unbound");
+    ensureGatewayOwnerProfile(null);
+    const [visitorIdentity, staffIdentity, unboundIdentity, ownerIdentity] = await Promise.all([
+      prepareUserProfileIdentity(visitor.id),
+      prepareUserProfileIdentity(staff.id),
+      prepareUserProfileIdentity(unbound.id),
+      prepareUserProfileIdentity(GATEWAY_OWNER_PROFILE_ID),
+    ]);
+    using _ = {
+      [Symbol.dispose]: () =>
+        [visitorIdentity, staffIdentity, unboundIdentity, ownerIdentity].forEach((identity) =>
+          identity.release(),
+        ),
+    };
     let registry: Awaited<ReturnType<typeof loadAndActivateRootPluginRegistry>> | undefined;
     process.on(optionalCheckEvent, optionalChecks);
     try {
@@ -310,7 +324,7 @@ it.each([
       );
       if (state === "loaded") {
         const authority = expectDefined(
-          resolveGatewayOperatorAccessAuthority(visitor.id, config),
+          resolveGatewayOperatorAccessAuthority(visitorIdentity, config),
           "loaded required access policy authority",
         );
         expect(authority.assertCurrent).not.toThrow();
@@ -320,21 +334,21 @@ it.each([
           gateway: { roles: { ...config.gateway.roles, default: "staff" } },
         };
         for (const unboundConfig of [staffDefault, { ...config, gateway: {} }]) {
-          expect(resolveGatewayOperatorAccessAuthority(visitor.id, unboundConfig)).toBeNull();
-          expect(resolveGatewayOperatorAccessAuthority(staff.id, unboundConfig)).toBeNull();
+          expect(resolveGatewayOperatorAccessAuthority(visitorIdentity, unboundConfig)).toBeNull();
+          expect(resolveGatewayOperatorAccessAuthority(staffIdentity, unboundConfig)).toBeNull();
         }
       } else {
-        expect(() => resolveGatewayOperatorAccessAuthority(visitor.id, config)).toThrow(
+        expect(() => resolveGatewayOperatorAccessAuthority(visitorIdentity, config)).toThrow(
           GatewayOperatorAccessDeniedError,
         );
         expect(optionalChecks).not.toHaveBeenCalled();
       }
-      expect(resolveGatewayOperatorAccessAuthority(staff.id, config)).toBeNull();
-      expect(resolveGatewayOperatorAccessAuthority(unbound.id, config)).toBeNull();
+      expect(resolveGatewayOperatorAccessAuthority(staffIdentity, config)).toBeNull();
+      expect(resolveGatewayOperatorAccessAuthority(unboundIdentity, config)).toBeNull();
       expect(optionalChecks).toHaveBeenCalledWith(staff.id, false);
       expect(optionalChecks).toHaveBeenCalledWith(unbound.id, false);
       optionalChecks.mockClear();
-      expect(resolveGatewayOperatorAccessAuthority(GATEWAY_OWNER_PROFILE_ID, config)).toBeNull();
+      expect(resolveGatewayOperatorAccessAuthority(ownerIdentity, config)).toBeNull();
       expect(optionalChecks).not.toHaveBeenCalled();
     } finally {
       process.off(optionalCheckEvent, optionalChecks);

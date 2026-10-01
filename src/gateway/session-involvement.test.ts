@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { loadSessionEntry, replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
 import { projectPublicSessionEntry } from "../config/sessions/session-entry-projection.js";
-import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db.js";
 import { linkEmail } from "../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { readMentionStoreSnapshot } from "./mention-inbox-store.js";
 import {
   SESSION_KEY,
@@ -87,10 +87,10 @@ describe("personal session involvement", () => {
       await f.setSession({ displayName: "Existing session", label: "keep-label", pinnedAt: 12345 });
       const existing = loadSessionEntry(scope)!;
       expect(existing).not.toHaveProperty("profileInvolvement");
-      const reopen = () => {
+      const reopen = async () => {
         f.dispose();
-        closeOpenClawAgentDatabasesForTest();
-        closeOpenClawStateDatabaseForTest();
+        await closeOpenClawAgentDatabasesAsync();
+        await closeStateDatabaseForTest();
         return f.openInbox("cold-reopen");
       };
       let inbox = await reopen();

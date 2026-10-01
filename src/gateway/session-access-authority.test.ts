@@ -20,6 +20,7 @@ import {
   resolveOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
 import * as profileReader from "../state/user-profile-list.js";
+import type { PreparedUserProfileIdentity } from "../state/user-profiles.types.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createPluginGatewayMethodDescriptor } from "./methods/descriptor.js";
 import { createGatewayMethodRegistry } from "./methods/registry.js";
@@ -132,6 +133,40 @@ function fixture(scopes = ["operator.write"], creator = "someone-else") {
   };
 }
 
+function retainProfileIdentity(profileId: string): PreparedUserProfileIdentity {
+  const lease = {};
+  mocks.profileLeases.add(lease);
+  const readCurrentProfile = () => {
+    if (!mocks.profileLeases.has(lease)) {
+      throw new Error("Prepared profile lease was released");
+    }
+    return { profileId, assignedRole: null };
+  };
+  return {
+    retain: () => {
+      readCurrentProfile();
+      return retainProfileIdentity(profileId);
+    },
+    readCurrentProfile,
+    readCurrentDisplay: () => ({
+      id: profileId,
+      displayName: null,
+      hasAvatar: false,
+      avatarRevision: "0",
+      updatedAt: 0,
+    }),
+    captureCurrentEmailBindingIds: () => [],
+    emailBindingIds: [],
+    readCurrentFacts: () => ({
+      profile: { ...readCurrentProfile(), emails: [] },
+      aliases: new Set([profileId]),
+    }),
+    release: () => {
+      mocks.profileLeases.delete(lease);
+    },
+  };
+}
+
 beforeEach(() => {
   mocks.profileCurrent = true;
   mocks.toolAllowed = true;
@@ -139,35 +174,9 @@ beforeEach(() => {
   mocks.sandboxed = false;
   mocks.ambient = undefined;
   mocks.assertAmbient.mockReset();
-  mocks.prepareIdentity.mockReset().mockImplementation(async (profileId) => {
-    const lease = {};
-    mocks.profileLeases.add(lease);
-    const readCurrentProfile = () => {
-      if (!mocks.profileLeases.has(lease)) {
-        throw new Error("Prepared profile lease was released");
-      }
-      return { profileId, assignedRole: null };
-    };
-    return {
-      readCurrentProfile,
-      readCurrentDisplay: () => ({
-        id: profileId,
-        displayName: null,
-        hasAvatar: false,
-        avatarRevision: "0",
-        updatedAt: 0,
-      }),
-      captureCurrentEmailBindingIds: () => [],
-      emailBindingIds: [],
-      readCurrentFacts: () => ({
-        profile: { ...readCurrentProfile(), emails: [] },
-        aliases: new Set([profileId]),
-      }),
-      release: () => {
-        mocks.profileLeases.delete(lease);
-      },
-    };
-  });
+  mocks.prepareIdentity
+    .mockReset()
+    .mockImplementation(async (profileId) => retainProfileIdentity(profileId));
   vi.spyOn(profileReader, "prepareUserProfileIdentity").mockImplementation(mocks.prepareIdentity);
   mocks.prepare.mockReset().mockImplementation(async () => ({
     profileId: "alice",

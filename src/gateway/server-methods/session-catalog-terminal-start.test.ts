@@ -5,8 +5,12 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { SessionCatalogProvider } from "../../plugins/session-catalog.js";
+import { prepareUserProfileIdentity } from "../../state/user-profile-list.js";
+import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withEnvAsync } from "../../test-utils/env.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { catalogStartHandler } from "./session-catalog-terminal-start.js";
+import type { GatewayClient } from "./types.js";
 
 function provider(overrides: Partial<SessionCatalogProvider> = {}): SessionCatalogProvider {
   return {
@@ -28,6 +32,7 @@ function startCall(
   config: Record<string, unknown> = {},
   client?: {
     authenticatedUserProfile?: { profileId: string };
+    preparedProfileIdentity?: GatewayClient["preparedProfileIdentity"];
     connect?: { scopes?: string[] };
     connId?: string;
   },
@@ -50,6 +55,7 @@ async function call(
   config: Record<string, unknown> = {},
   client?: {
     authenticatedUserProfile?: { profileId: string };
+    preparedProfileIdentity?: GatewayClient["preparedProfileIdentity"];
     connect?: { scopes?: string[] };
     connId?: string;
   },
@@ -139,39 +145,48 @@ describe("sessions.catalog.startTerminal", () => {
   });
 
   it("rejects terminal start before resolving a disallowed agent's provider target", async () => {
-    const startTerminalSession = vi.fn();
-    activeProvider = provider({ startTerminalSession });
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const profile = ensureProfileForEmail("terminal-guest@example.test");
+      const preparedProfileIdentity = await prepareUserProfileIdentity(profile.id);
+      using _ = { [Symbol.dispose]: preparedProfileIdentity.release };
+      const startTerminalSession = vi.fn();
+      activeProvider = provider({ startTerminalSession });
 
-    const respond = await call(
-      { catalogId: "codex", agentId: "main", cwd: process.cwd() },
-      {
-        gateway: {
-          cliAgents: { enabled: true },
-          roles: {
-            default: "guest",
-            definitions: {
-              guest: {
-                sessions: { others: "view" },
-                agents: ["research"],
-                scopes: ["operator.read", "operator.write"],
+      const respond = await call(
+        { catalogId: "codex", agentId: "main", cwd: process.cwd() },
+        {
+          gateway: {
+            cliAgents: { enabled: true },
+            roles: {
+              default: "guest",
+              definitions: {
+                guest: {
+                  sessions: { others: "view" },
+                  agents: ["research"],
+                  scopes: ["operator.read", "operator.write"],
+                },
               },
             },
           },
         },
-      },
-      { authenticatedUserProfile: { profileId: "profile-terminal-guest" }, connId: "conn-1" },
-      { isTerminalEnabled: () => true, terminalSessions: {} },
-    );
+        {
+          authenticatedUserProfile: { profileId: profile.id },
+          preparedProfileIdentity,
+          connId: "conn-1",
+        },
+        { isTerminalEnabled: () => true, terminalSessions: {} },
+      );
 
-    expect(startTerminalSession).not.toHaveBeenCalled();
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({
-        code: ErrorCodes.FORBIDDEN,
-        message: expect.stringContaining('cannot create sessions for agent "main"'),
-      }),
-    );
+      expect(startTerminalSession).not.toHaveBeenCalled();
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          code: ErrorCodes.FORBIDDEN,
+          message: expect.stringContaining('cannot create sessions for agent "main"'),
+        }),
+      );
+    });
   });
 
   it("rechecks local cwd after the provider plan resolves", async () => {

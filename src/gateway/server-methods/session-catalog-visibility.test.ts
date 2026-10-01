@@ -9,6 +9,7 @@ import type { SessionCatalogProvider } from "../../plugins/session-catalog.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { bindSessionRowProjection } from "../session-row-projection-access.js";
 import { createSessionRowProjectionFixture } from "../session-row-projection.test-support.js";
+import type { GatewayClient } from "./types.js";
 
 type TestPluginRegistry = Omit<PluginRegistry, "sessionCatalogs"> & {
   sessionCatalogs: Array<{ provider: SessionCatalogProvider }>;
@@ -17,6 +18,7 @@ type TestClient = {
   connect: { scopes: string[] };
   connId?: string;
   authenticatedUserProfile?: { profileId: string };
+  preparedProfileIdentity?: GatewayClient["preparedProfileIdentity"];
 };
 
 const hoisted = vi.hoisted(() => ({
@@ -54,7 +56,19 @@ afterEach(() => {
 });
 
 function client(profileId: string, scopes = ["operator.read", "operator.write"]): TestClient {
-  return { connect: { scopes }, authenticatedUserProfile: { profileId } };
+  return {
+    connect: { scopes },
+    authenticatedUserProfile: { profileId },
+    preparedProfileIdentity: {
+      readCurrentProfile: () => ({ profileId, assignedRole: null }),
+      readCurrentFacts: vi.fn(),
+      readCurrentDisplay: vi.fn(),
+      captureCurrentEmailBindingIds: () => [],
+      emailBindingIds: [],
+      retain: vi.fn(),
+      release: vi.fn(),
+    },
+  };
 }
 
 function unprofiledClient(scopes = ["operator.read", "operator.write"]): TestClient {

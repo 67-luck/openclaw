@@ -29,7 +29,9 @@ const listUserModelAccounts = vi.hoisted(() => vi.fn());
 const readUserModelAccountSummary = vi.hoisted(() => vi.fn());
 const isUserModelAuthProfileOwner = vi.hoisted(() => vi.fn());
 const readUserModelAuthProfile = vi.hoisted(() => vi.fn());
-const setUserProfileAuthLink = vi.hoisted(() => vi.fn());
+const setUserProfileAuthLink = vi.hoisted(() =>
+  vi.fn<typeof import("../../state/user-model-accounts.js").setUserProfileAuthLink>(),
+);
 const clearUserProfileAuthLink = vi.hoisted(() => vi.fn());
 const ensureAuthProfileStoreWithoutExternalProfiles = vi.hoisted(() => vi.fn());
 const registerSecretValueForRedaction = vi.hoisted(() => vi.fn());
@@ -117,6 +119,15 @@ function createClient(profileId = "profile-1", scopes = ["operator.write"]): Tes
     connId: `connection-${clients.size + 1}`,
     invalidated: false,
     authenticatedUserProfile: { profileId, displayName: "Ada", hasAvatar: false, updatedAt: 1 },
+    preparedProfileIdentity: {
+      readCurrentProfile: () => ({ profileId, assignedRole: null }),
+      readCurrentFacts: vi.fn(),
+      readCurrentDisplay: vi.fn(),
+      captureCurrentEmailBindingIds: () => [],
+      emailBindingIds: [],
+      retain: vi.fn(),
+      release: vi.fn(),
+    },
     connect: {
       role: "operator",
       scopes,
@@ -213,6 +224,7 @@ async function status(flow: UsersAuthConnectStartResult, profileId = "profile-1"
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  runAuth.mockReset();
   broadcast.mockReset();
   config = {};
   clients = new Set();
@@ -239,23 +251,14 @@ beforeEach(async () => {
         return links;
       },
     );
-  setUserProfileAuthLink
-    .mockReset()
-    .mockImplementation(
-      (params: {
-        profileId: string;
-        provider: string;
-        authProfileId: string;
-        assertCurrent?: () => void;
-      }) => {
-        params.assertCurrent?.();
-        const links = [
-          { provider: params.provider, authProfileId: params.authProfileId, updatedAt: 2 },
-        ];
-        linksByOwner.set(params.profileId, links);
-        return links;
-      },
-    );
+  setUserProfileAuthLink.mockReset().mockImplementation((params) => {
+    params.assertCurrent?.();
+    const links = [
+      { provider: params.provider, authProfileId: params.authProfileId, updatedAt: 2 },
+    ];
+    linksByOwner.set(params.profileId, links);
+    return links;
+  });
   resolveUserProfileId.mockImplementation((id: string) => id);
   prepareUserProfileSelectionAuthority.mockImplementation(async (reference: string) => {
     const profileId = resolveUserProfileId(reference);
