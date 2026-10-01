@@ -210,8 +210,8 @@ export async function mirror(params: {
           }
           continue;
         }
-        // Capture the prepared draft above, but do not expose private assistant rows
-        // through durable history or transcript updates before their owner accepts them.
+        // Suppressed room-event assistant text does not belong in the transcript
+        // or its update stream. Tool-call pairs retain their ordinary history.
         // Source roles, not hook replacements, determine this persistence restriction.
         if (
           ownsRun &&

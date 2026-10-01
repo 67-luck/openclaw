@@ -60,7 +60,8 @@ that default.
 
 ## Decision assistance
 
-This Labs entry enables supported automatic Decision consumers. With a configured
+This Labs entry opts into current and future automatic Decision consumers. No
+separate feature opt-ins are required. With a configured
 Decision model, [group participation](/concepts/decision-models#group-participation)
 uses it in embedded harnesses when mention gating is disabled. The switch does
 not select a provider, provision credentials, or download models.

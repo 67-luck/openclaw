@@ -130,9 +130,9 @@ Final payloads are assembled from assistant text (plus optional reasoning), inli
 
 The host decides whether an input requires a visible reply. Direct requests and
 accepted group/channel requests require an answer by default. Embedded harnesses
-with a configured [Decision Model](/concepts/decision-models#group-participation)
-and mention gating disabled keep invitations required and prepare unsolicited
-contributions privately as optional work. Ordinary group behavior permits
+with Decision assistance enabled and a configured [Decision Model](/concepts/decision-models#group-participation)
+and mention gating disabled decide participation before generation. Positive
+assessments use the ordinary reply path; negative assessments skip generation. Ordinary group behavior permits
 unaddressed requests to finish silently when the operator allows the
 [silence policy](/concepts/messages#silent-replies); mentions and authorized
 commands still require a response. Ambient room events and internal helper turns

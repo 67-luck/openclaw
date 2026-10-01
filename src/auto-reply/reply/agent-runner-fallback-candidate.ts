@@ -258,6 +258,7 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
         );
         try {
           const common = {
+            ...runOptions,
             preparedRunAdmission: params.preparedRunAdmission,
             messageActionTurnCapability,
             turn,
@@ -270,16 +271,10 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
             runId: params.runId,
             runAbortSignal: params.runAbortSignal,
             runLane,
-            isFallbackRetry: runOptions.isFallbackRetry,
-            isFinalFallbackAttempt: runOptions?.isFinalFallbackAttempt,
             suppressQueuedUserPersistenceForCandidate:
               (turn.followupRun.run.suppressNextUserMessagePersistence ?? false) ||
               queuedUserMessagePersistedAcrossFallback,
             userTurnTranscriptRecorder,
-            contextEngineLogicalTurnLease: runOptions.contextEngineLogicalTurnLease,
-            onContextEngineTurnCandidate: runOptions.onContextEngineTurnCandidate,
-            assistantErrorTranscript: runOptions.assistantErrorTranscript,
-            authProfileFailurePolicy: runOptions.authProfileFailurePolicy,
             notifyUserMessagePersisted: () => {
               queuedUserMessagePersistedAcrossFallback = true;
             },
@@ -302,7 +297,6 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
             const candidate = await runCliFallbackCandidate({
               ...common,
               cliExecutionProvider: runtime.cliExecutionProvider,
-              classifyResult: runOptions.classifyResult,
               lifecycleGeneration: params.state.lifecycleGeneration,
             });
             params.state.bootstrapPromptWarningSignaturesSeen =
@@ -313,12 +307,10 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
             ...common,
             effectiveRun: params.effectiveRun,
             directBlockDeliveries: params.directBlockDeliveries,
-            sessionRuntimeOverride: runtime.sessionRuntimeOverride,
             getLifecycleGeneration: () => params.state.lifecycleGeneration,
             onLifecycleGeneration: (generation) => {
               params.state.lifecycleGeneration = generation;
             },
-            allowTransientCooldownProbe: runOptions?.allowTransientCooldownProbe,
             notifyUserAboutCompaction: params.notifyUserAboutCompaction,
             messageToolDeliveryState,
             onCompactionFacts: ({ accounting, postCompactionModelAttempted }) => {

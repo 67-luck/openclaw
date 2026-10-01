@@ -138,11 +138,11 @@ For direct chats and any other source event, `messages.visibleReplies: "message_
 Accepted group/channel requests require a reply by default. With
 [Decision assistance](/concepts/experimental-features#decision-assistance) enabled,
 a configured [Decision Model](/concepts/decision-models#group-participation), and
-mention gating disabled, embedded harnesses distinguish invited requests from opportunities to
-contribute. Invited replies keep the existing behavior. Unsolicited contributions
-use read tools privately and send a reviewed, useful final answer automatically.
-Chatter and contributions that provide no useful answer stay silent. Generic CLI
-backends and turns whose Decision Model is unavailable keep ordinary behavior.
+mention gating disabled, embedded harnesses decide whether to reply before
+starting generation. Invitations and useful opportunities use ordinary tools,
+streaming, and delivery; chatter can be recorded without starting an agent run.
+Generated replies are not sent through a separate Decision Model review. Generic
+CLI backends and turns whose Decision Model is unavailable keep ordinary behavior.
 
 For ordinary behavior, selective silence for unaddressed requests requires
 `agents.defaults.silentReply.group: "allow"` or the appropriate

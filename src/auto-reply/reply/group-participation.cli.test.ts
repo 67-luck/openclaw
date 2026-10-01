@@ -2,7 +2,9 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { FailoverError } from "../../agents/failover-error.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
+import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { createTestRegistry } from "../../test-utils/channel-plugins.js";
+import { readGroupParticipationEvidence } from "./group-participation-context.js";
 import {
   readGroupParticipationInputs,
   recordGroupParticipationInput,
@@ -152,67 +154,79 @@ it.each(["opt-out", "model-removal"])(
   },
 );
 
-it("restores a required reply when consent is withdrawn after observation assessment", async () => {
-  fixture.config.agents!.defaults!.model = { primary: "test-provider/test-model" };
-  setRuntimeConfigSnapshot(fixture.config);
-  models.decision.mockImplementation(async (batch) => judgment(batch, { attention: "none" }));
-  models.embedded.mockResolvedValue({
-    payloads: [{ text: "Ordinary reply after late opt-out." }],
-    meta: { durationMs: 1 },
-  });
-  try {
-    const reply = await fixture.reply("Bob, which port?", "late-opt-out", "-10112", {
+it.each(["none", "engagement", "opportunity"] as const)(
+  "restores a required reply when consent is withdrawn after %s assessment",
+  async (attention) => {
+    fixture.config.agents!.defaults!.model = { primary: "test-provider/test-model" };
+    setRuntimeConfigSnapshot(fixture.config);
+    models.decision.mockImplementation(async (batch) => judgment(batch, { attention }));
+    models.embedded.mockResolvedValue({
+      payloads: [{ text: "Ordinary reply after late opt-out." }],
+      meta: { durationMs: 1 },
+    });
+    try {
+      const reply = await fixture.reply(
+        "Bob, which port?",
+        `late-opt-out-${attention}`,
+        `-10112-${attention}`,
+        {
+          onRunVerbosityResolved: () => {
+            const next = structuredClone(fixture.config);
+            next.agents!.defaults!.experimental = { decisionAssistance: false };
+            setRuntimeConfigSnapshot(next, fixture.config);
+          },
+        },
+      );
+      expect(Array.isArray(reply) ? reply : [reply]).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ text: "Ordinary reply after late opt-out." }),
+        ]),
+      );
+      expect(models.decision).toHaveBeenCalledTimes(1);
+      expect(models.embedded).toHaveBeenCalledTimes(1);
+      expect(models.embedded.mock.calls[0]?.[0].terminalReplyExpectation).toBe("required");
+    } finally {
+      setRuntimeConfigSnapshot(fixture.config);
+    }
+  },
+);
+
+it.each(["none", "engagement", "opportunity"] as const)(
+  "reassesses %s when accepted group input changes before execution",
+  async (attention) => {
+    fixture.config.agents!.defaults!.model = { primary: "test-provider/test-model" };
+    models.decision.mockImplementationOnce(async (batch) => judgment(batch, { attention }));
+    models.decision.mockImplementation(async (batch) => judgment(batch, { attention: "none" }));
+    models.embedded.mockResolvedValue({
+      payloads: [{ text: "Must not bypass assessment." }],
+      meta: { durationMs: 1 },
+    });
+    const groupId = `-10113-${attention}`;
+    const reply = await fixture.reply("Chatter", "observed-source", groupId, {
       onRunVerbosityResolved: () => {
-        const next = structuredClone(fixture.config);
-        next.agents!.defaults!.experimental = { decisionAssistance: false };
-        setRuntimeConfigSnapshot(next, fixture.config);
+        const operation = replyRunRegistry.get("agent:main:telegram:group:" + groupId);
+        if (!operation) {
+          throw new Error("The admitted reply owner is missing");
+        }
+        const source = readGroupParticipationInputs(operation).sources[0];
+        if (!source) {
+          throw new Error("The admitted group source is missing");
+        }
+        // Use the accepted-input owner seam before persistence, without another concurrent reply writer.
+        recordGroupParticipationInput(operation, {
+          userTurnTranscriptRecorder: source.recorder,
+          messageId: "accepted-later-source",
+          run: { messageProvider: "telegram" },
+        });
       },
     });
-    expect(Array.isArray(reply) ? reply : [reply]).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ text: "Ordinary reply after late opt-out." }),
-      ]),
-    );
-    expect(models.decision).toHaveBeenCalledTimes(1);
-    expect(models.embedded).toHaveBeenCalledTimes(1);
-    expect(models.embedded.mock.calls[0]?.[0].terminalReplyExpectation).toBe("required");
-  } finally {
-    setRuntimeConfigSnapshot(fixture.config);
-  }
-});
-
-it("reassesses an observed turn when accepted group input changes before source persistence", async () => {
-  fixture.config.agents!.defaults!.model = { primary: "test-provider/test-model" };
-  models.decision.mockImplementation(async (batch) => judgment(batch, { attention: "none" }));
-  models.embedded.mockResolvedValue({
-    payloads: [{ text: "Must not bypass assessment." }],
-    meta: { durationMs: 1 },
-  });
-  const groupId = "-10113";
-  const reply = await fixture.reply("Chatter", "observed-source", groupId, {
-    onRunVerbosityResolved: () => {
-      const operation = replyRunRegistry.get("agent:main:telegram:group:" + groupId);
-      if (!operation) {
-        throw new Error("The admitted reply owner is missing");
-      }
-      const source = readGroupParticipationInputs(operation).sources[0];
-      if (!source) {
-        throw new Error("The admitted group source is missing");
-      }
-      // Use the accepted-input owner seam before persistence, without another concurrent reply writer.
-      recordGroupParticipationInput(operation, {
-        userTurnTranscriptRecorder: source.recorder,
-        messageId: "accepted-later-source",
-        run: { messageProvider: "telegram" },
-      });
-    },
-  });
-  expect((Array.isArray(reply) ? reply : [reply]).map((payload) => payload?.text)).toEqual([
-    "NO_REPLY",
-  ]);
-  expect(models.decision).toHaveBeenCalledTimes(2);
-  expect(models.embedded).not.toHaveBeenCalled();
-});
+    expect((Array.isArray(reply) ? reply : [reply]).map((payload) => payload?.text)).toEqual([
+      "NO_REPLY",
+    ]);
+    expect(models.decision).toHaveBeenCalledTimes(2);
+    expect(models.embedded).not.toHaveBeenCalled();
+  },
+);
 
 it("keeps ambient room events on their message-tool path without participation evaluation", async () => {
   fixture.config.agents!.defaults!.model = { primary: "test-provider/test-model" };
@@ -238,7 +252,6 @@ it("keeps ambient room events on their message-tool path without participation e
   });
   expect(params?.disableMessageTool).not.toBe(true);
   expect(params?.permissionMode).not.toBe("read-only");
-  expect(params?.reviewSettledDraft).toBeUndefined();
 });
 
 it("keeps explicit native group commands on the ordinary reply path", async () => {
@@ -277,7 +290,7 @@ it("keeps a selected generic CLI turn ordinary without a participation decision"
   expect(models.cli.mock.calls[0]?.[0]).toMatchObject({ terminalReplyExpectation: "required" });
 });
 
-it("restores ordinary policy before a private embedded attempt falls back to CLI", async () => {
+it("preserves ordinary policy when an admitted embedded reply falls back to CLI", async () => {
   fixture.config.agents!.defaults!.model = {
     primary: "test-provider/test-model",
     fallbacks: ["fixture-cli/test-model"],
@@ -300,9 +313,9 @@ it("restores ordinary policy before a private embedded attempt falls back to CLI
   expect(reply).toMatchObject({ text: "Ordinary fallback reply." });
   expect(models.embedded).toHaveBeenCalledTimes(1);
   expect(models.embedded.mock.calls[0]?.[0]).toMatchObject({
-    permissionMode: "read-only",
-    terminalReplyExpectation: "optional",
+    terminalReplyExpectation: "required",
   });
+  expect(models.embedded.mock.calls[0]?.[0].permissionMode).not.toBe("read-only");
   expect(models.cli).toHaveBeenCalledTimes(1);
   expect(models.cli.mock.calls[0]?.[0]).toMatchObject({
     terminalReplyExpectation: "required",
@@ -329,7 +342,67 @@ it("keeps ordinary behavior when the initial Decision Model is unavailable", asy
   expect(models.embedded.mock.calls[0]?.[0]).toMatchObject({
     terminalReplyExpectation: "required",
   });
-  expect(models.embedded.mock.calls[0]?.[0].reviewSettledDraft).toBeUndefined();
   expect(models.embedded.mock.calls[0]?.[0].permissionMode).not.toBe("read-only");
   expect(models.cli).not.toHaveBeenCalled();
+});
+
+it("does not classify a textless source as a negative attention judgment", async () => {
+  const recorder = createUserTurnTranscriptRecorder({ input: {}, target: () => undefined });
+  vi.spyOn(recorder, "resolveMessage").mockResolvedValue({
+    role: "user",
+    content: [{ type: "image", data: "image-data", mimeType: "image/png" }],
+    timestamp: 1,
+  });
+  expect(
+    await readGroupParticipationEvidence({
+      agentId: "main",
+      target: {
+        agentId: "main",
+        sessionId: "media-only",
+        sessionKey: "agent:main:telegram:group:-10115",
+        storePath: fixture.storePath,
+      },
+      recorder,
+      signal: new AbortController().signal,
+    }),
+  ).toBeUndefined();
+});
+
+it("uses ordinary generation when newly adopted media cannot be assessed", async () => {
+  fixture.config.agents!.defaults!.model = { primary: "test-provider/test-model" };
+  models.decision.mockImplementation(async (batch) => judgment(batch, { attention: "none" }));
+  models.embedded.mockResolvedValue({
+    payloads: [{ text: "Ordinary media reply." }],
+    meta: { durationMs: 1 },
+  });
+  const groupId = "-10114";
+  const recorder = createUserTurnTranscriptRecorder({ input: {}, target: () => undefined });
+  vi.spyOn(recorder, "resolveMessage").mockResolvedValue({
+    role: "user",
+    content: [{ type: "image", data: "image-data", mimeType: "image/png" }],
+    timestamp: 1,
+  });
+  const reply = await fixture.reply("Chatter", "before-media", groupId, {
+    onRunVerbosityResolved: () => {
+      const operation = replyRunRegistry.get("agent:main:telegram:group:" + groupId);
+      if (!operation) {
+        throw new Error("The admitted reply owner is missing");
+      }
+      recordGroupParticipationInput(
+        operation,
+        {
+          userTurnTranscriptRecorder: recorder,
+          messageId: "adopted-media",
+          run: { messageProvider: "telegram" },
+        },
+        "steer",
+      );
+    },
+  });
+  expect(Array.isArray(reply) ? reply : [reply]).toEqual(
+    expect.arrayContaining([expect.objectContaining({ text: "Ordinary media reply." })]),
+  );
+  expect(models.decision).toHaveBeenCalledTimes(1);
+  expect(models.embedded).toHaveBeenCalledTimes(1);
+  expect(models.embedded.mock.calls[0]?.[0].terminalReplyExpectation).toBe("required");
 });

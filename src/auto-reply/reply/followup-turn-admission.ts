@@ -347,7 +347,7 @@ export async function admitFollowupTurn(params: {
     let compactionNoticeGenerationInvalidated = false;
     const notifyPreflightCompaction =
       turn.sendPolicy === "allow" &&
-      !participation?.isPrivate &&
+      !participation?.isObserving &&
       queued.currentInboundEventKind !== "room_event" &&
       shouldNotifyUserAboutCompaction(config)
         ? async (phase: CompactionNoticePhase, text?: string) => {

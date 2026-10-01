@@ -15772,6 +15772,8 @@ public struct SessionRow: Codable, Sendable {
     public let archivereason: AnyCodable?
     public let pinned: Bool?
     public let pinnedat: Double?
+    public let snoozeduntil: Double?
+    public let snoozedat: Double?
     public let unread: Bool?
     public let lastreadat: Double?
     public let markedunreadat: Double?
@@ -15867,6 +15869,8 @@ public struct SessionRow: Codable, Sendable {
         archivereason: AnyCodable? = nil,
         pinned: Bool? = nil,
         pinnedat: Double? = nil,
+        snoozeduntil: Double? = nil,
+        snoozedat: Double? = nil,
         unread: Bool? = nil,
         lastreadat: Double? = nil,
         markedunreadat: Double? = nil,
@@ -15961,6 +15965,8 @@ public struct SessionRow: Codable, Sendable {
         self.archivereason = archivereason
         self.pinned = pinned
         self.pinnedat = pinnedat
+        self.snoozeduntil = snoozeduntil
+        self.snoozedat = snoozedat
         self.unread = unread
         self.lastreadat = lastreadat
         self.markedunreadat = markedunreadat
@@ -16057,6 +16063,8 @@ public struct SessionRow: Codable, Sendable {
         case archivereason = "archiveReason"
         case pinned
         case pinnedat = "pinnedAt"
+        case snoozeduntil = "snoozedUntil"
+        case snoozedat = "snoozedAt"
         case unread
         case lastreadat = "lastReadAt"
         case markedunreadat = "markedUnreadAt"
@@ -16768,6 +16776,70 @@ public struct SessionsCatalogContinueResult: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case sessionkey = "sessionKey"
+    }
+}
+
+public struct SessionsCatalogImportParams: Codable, Sendable {
+    public let catalogid: String
+    public let hostid: String
+    public let threadid: String
+    public let agentid: String?
+    public let sourcehomeid: String?
+    public let displayname: String?
+
+    public init(
+        catalogid: String,
+        hostid: String,
+        threadid: String,
+        agentid: String? = nil,
+        sourcehomeid: String? = nil,
+        displayname: String? = nil)
+    {
+        self.catalogid = catalogid
+        self.hostid = hostid
+        self.threadid = threadid
+        self.agentid = agentid
+        self.sourcehomeid = sourcehomeid
+        self.displayname = displayname
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case catalogid = "catalogId"
+        case hostid = "hostId"
+        case threadid = "threadId"
+        case agentid = "agentId"
+        case sourcehomeid = "sourceHomeId"
+        case displayname = "displayName"
+    }
+}
+
+public struct SessionsCatalogImportResult: Codable, Sendable {
+    public let sessionkey: String
+    public let importeditems: Int
+    public let totalitems: Int
+    public let complete: Bool
+    public let created: Bool
+
+    public init(
+        sessionkey: String,
+        importeditems: Int,
+        totalitems: Int,
+        complete: Bool,
+        created: Bool)
+    {
+        self.sessionkey = sessionkey
+        self.importeditems = importeditems
+        self.totalitems = totalitems
+        self.complete = complete
+        self.created = created
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionkey = "sessionKey"
+        case importeditems = "importedItems"
+        case totalitems = "totalItems"
+        case complete
+        case created
     }
 }
 
@@ -18230,6 +18302,7 @@ public struct SessionsPatchMutation: Codable, Sendable {
     public let ttlminutes: Int?
     public let archived: Bool?
     public let pinned: Bool?
+    public let snoozeduntil: AnyCodable?
     public let unread: Bool?
     public let contextwindow: AnyCodable?
     public let thinkinglevel: AnyCodable?
@@ -18269,6 +18342,7 @@ public struct SessionsPatchMutation: Codable, Sendable {
         ttlminutes: Int? = nil,
         archived: Bool? = nil,
         pinned: Bool? = nil,
+        snoozeduntil: AnyCodable? = nil,
         unread: Bool? = nil,
         contextwindow: AnyCodable? = nil,
         thinkinglevel: AnyCodable? = nil,
@@ -18307,6 +18381,7 @@ public struct SessionsPatchMutation: Codable, Sendable {
         self.ttlminutes = ttlminutes
         self.archived = archived
         self.pinned = pinned
+        self.snoozeduntil = snoozeduntil
         self.unread = unread
         self.contextwindow = contextwindow
         self.thinkinglevel = thinkinglevel
@@ -18347,6 +18422,7 @@ public struct SessionsPatchMutation: Codable, Sendable {
         case ttlminutes = "ttlMinutes"
         case archived
         case pinned
+        case snoozeduntil = "snoozedUntil"
         case unread
         case contextwindow = "contextWindow"
         case thinkinglevel = "thinkingLevel"
@@ -18397,6 +18473,7 @@ public struct SessionsPatchParams: Codable, Sendable {
     public let ttlminutes: Int?
     public let archived: Bool?
     public let pinned: Bool?
+    public let snoozeduntil: AnyCodable?
     public let unread: Bool?
     public let contextwindow: AnyCodable?
     public let thinkinglevel: AnyCodable?
@@ -18445,6 +18522,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         ttlminutes: Int? = nil,
         archived: Bool? = nil,
         pinned: Bool? = nil,
+        snoozeduntil: AnyCodable? = nil,
         unread: Bool? = nil,
         contextwindow: AnyCodable? = nil,
         thinkinglevel: AnyCodable? = nil,
@@ -18492,6 +18570,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         self.ttlminutes = ttlminutes
         self.archived = archived
         self.pinned = pinned
+        self.snoozeduntil = snoozeduntil
         self.unread = unread
         self.contextwindow = contextwindow
         self.thinkinglevel = thinkinglevel
@@ -18541,6 +18620,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         case ttlminutes = "ttlMinutes"
         case archived
         case pinned
+        case snoozeduntil = "snoozedUntil"
         case unread
         case contextwindow = "contextWindow"
         case thinkinglevel = "thinkingLevel"

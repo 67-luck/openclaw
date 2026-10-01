@@ -10,8 +10,6 @@ import { withOwnedSessionTranscriptWrites } from "../../../config/sessions/trans
 import type { OpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { createTestAdmittedRunContext } from "../../admitted-run-context.test-support.js";
 import { SessionManager } from "../../sessions/session-manager.js";
-import { makeAttemptResult } from "../run.overflow-compaction.fixture.js";
-import type { completeEmbeddedAttemptResult } from "./attempt-result.js";
 import type { runEmbeddedAttemptSettledPhase } from "./attempt-settle.js";
 import { createEmbeddedAttemptTranscriptLifecycle } from "./attempt-transcript-lifecycle.js";
 
@@ -21,7 +19,7 @@ export function createFixture(mocks: {
   runPrompt: Mock;
   settleStream: Mock;
   completeAfterTurn: Mock;
-  completeResult: Mock<typeof completeEmbeddedAttemptResult>;
+  completeResult: Mock;
   clearActiveEmbeddedRun: Mock;
 }) {
   const order: string[] = [];
@@ -120,10 +118,7 @@ export function createFixture(mocks: {
     terminal: { kind: "ok" },
     trajectoryEndRecorded: false,
   };
-  const result = makeAttemptResult({
-    sessionIdUsed: "settled-session",
-    assistantTexts: ["done"],
-  });
+  const result = { messages: [{ role: "assistant", content: "done" }] };
   const preparedStreamRuntime = {
     abortable: (promise: Promise<unknown>) => promise,
     cache: {},
@@ -284,7 +279,6 @@ export function createFixture(mocks: {
   mocks.completeAfterTurn.mockResolvedValue(undefined);
   mocks.completeResult.mockImplementation(() => {
     order.push("result");
-    result.terminal = state.terminal;
     return result;
   });
   mocks.clearActiveEmbeddedRun.mockImplementation(() => order.push("clear-active-run"));

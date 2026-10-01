@@ -1,10 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { completeEmbeddedAttemptResult } from "./attempt-result.js";
 
 const mocks = vi.hoisted(() => ({
   clearActiveEmbeddedRun: vi.fn(),
   completeAfterTurn: vi.fn(),
-  completeResult: vi.fn<typeof completeEmbeddedAttemptResult>(),
+  completeResult: vi.fn(),
   logDebug: vi.fn(),
   logError: vi.fn(),
   logWarn: vi.fn(),
@@ -32,7 +31,6 @@ vi.mock("./attempt-stream-settle.js", () => ({
 import { makeUserMessage } from "../../../../test/helpers/user-message.js";
 import { createSubscribedSessionHarness } from "../../embedded-agent-subscribe.e2e-harness.js";
 import { SessionManager } from "../../sessions/index.js";
-import { makeAttemptResult } from "../run.overflow-compaction.fixture.js";
 import { runEmbeddedAttemptSettledPhase } from "./attempt-settle.js";
 
 type SettledInput = Parameters<typeof runEmbeddedAttemptSettledPhase>[0];
@@ -231,12 +229,12 @@ function createFixture(overrides: FixtureOverrides = {}) {
     promptCache: undefined,
   });
   mocks.completeAfterTurn.mockResolvedValue(undefined);
-  mocks.completeResult.mockImplementation((settledInput, _settled, prompt) =>
-    makeAttemptResult({
-      terminal: settledInput.state.terminal,
-      sessionIdUsed: prompt.sessionIdUsed,
-      sessionFileUsed: prompt.sessionFileUsed,
-    }),
+  mocks.completeResult.mockImplementation(
+    (
+      _input,
+      _settled,
+      prompt: Parameters<typeof import("./attempt-result.js").completeEmbeddedAttemptResult>[2],
+    ) => ({ sessionIdUsed: prompt.sessionIdUsed, sessionFileUsed: prompt.sessionFileUsed }),
   );
   mocks.clearActiveEmbeddedRun.mockReturnValue(undefined);
 
@@ -427,7 +425,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
       fixture.order.push("settled-published", "after-turn");
     });
 
-    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toMatchObject({
+    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toEqual({
       sessionIdUsed: "settled-session",
       sessionFileUsed: "initial.jsonl",
     });
@@ -477,7 +475,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
       await vi.advanceTimersByTimeAsync(119_999);
       expect(mocks.settleStream).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
-      await expect(finalize).resolves.toMatchObject({
+      await expect(finalize).resolves.toEqual({
         sessionIdUsed: "session-1",
         sessionFileUsed: "initial.jsonl",
       });
@@ -511,7 +509,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
     });
     mocks.completeAfterTurn.mockResolvedValue(undefined);
 
-    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toMatchObject({
+    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toEqual({
       sessionIdUsed: "session-1",
       sessionFileUsed: "initial.jsonl",
     });
@@ -543,7 +541,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
     });
     mocks.completeAfterTurn.mockResolvedValue(undefined);
 
-    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toMatchObject({
+    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toEqual({
       sessionIdUsed: "session-1",
       sessionFileUsed: "initial.jsonl",
     });
@@ -623,7 +621,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
     });
     fixture.state.terminal = { kind: "timeout", phase: "prompt", source: "run_budget" };
 
-    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toMatchObject({
+    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toEqual({
       sessionIdUsed: "session-1",
       sessionFileUsed: "initial.jsonl",
     });
@@ -656,7 +654,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
     });
     fixture.state.terminal = { kind: "timeout", phase: "prompt", source: "run_budget" };
 
-    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toMatchObject({
+    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toEqual({
       sessionIdUsed: "session-1",
       sessionFileUsed: "initial.jsonl",
     });
@@ -693,7 +691,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
     });
     fixture.state.terminal = { kind: "timeout", phase: "prompt", source: "run_budget" };
 
-    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toMatchObject({
+    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toEqual({
       sessionIdUsed: "session-1",
       sessionFileUsed: "initial.jsonl",
     });
@@ -766,7 +764,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
           ).unref?.();
         }),
       ]),
-    ).resolves.toMatchObject({
+    ).resolves.toEqual({
       sessionIdUsed: "session-1",
       sessionFileUsed: "initial.jsonl",
     });
@@ -816,7 +814,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
     // Release the join gate so the bounded re-drain can complete too.
     releaseJoin();
 
-    await expect(settlePromise).resolves.toMatchObject({
+    await expect(settlePromise).resolves.toEqual({
       sessionIdUsed: "session-1",
       sessionFileUsed: "initial.jsonl",
     });
@@ -839,7 +837,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
     const fixture = createFixture({ runAbortController: abortController });
     fixture.state.terminal = { kind: "aborted", source: "external" };
 
-    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toMatchObject({
+    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toEqual({
       sessionIdUsed: "session-1",
       sessionFileUsed: "initial.jsonl",
     });

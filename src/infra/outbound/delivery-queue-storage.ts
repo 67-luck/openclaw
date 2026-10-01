@@ -112,7 +112,6 @@ function createQueuedDelivery(
     to: params.to,
     accountId: params.accountId,
     queuePolicy: params.queuePolicy,
-    recoveryMode: params.recoveryMode,
     requireUnknownSendReconciliation: params.requireUnknownSendReconciliation,
     ...(params.initialProducerClaim ??
       (params.requiresProducerClaim === true ? { requiresProducerClaim: true } : {})),

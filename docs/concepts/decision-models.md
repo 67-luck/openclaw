@@ -47,23 +47,25 @@ These rules also apply after an upgrade when Decision assistance is already
 enabled: eligible groups can stay silent instead of replying to every admitted
 message.
 
-Invited requests use the existing permissions, tools, streaming, and delivery
-policy. For an unsolicited contribution, the agent investigates privately with
-permitted read tools. It sends only a supported, useful contribution after the
-Decision Model reviews the actual draft. Clarification-only replies, empty lookup
-reports, and promises to investigate stay silent. New accepted messages require
-the agent to update its draft before another review.
+The Decision Model evaluates the conversation before reply generation. If it
+finds an invitation or a useful opportunity to contribute, the agent runs through
+the ordinary reply path with its existing permissions, tools, streaming, reply
+obligation, and delivery policy. Otherwise, the message is recorded without
+starting a primary agent run. There is no post-generation draft review or revision
+loop. New accepted input invalidates a pending assessment before it is applied.
 
-No additional participation setting is needed. If the Decision Model is
-unavailable, the turn resumes its ordinary behavior with the original permissions
-and delivery policy, using the work already completed. Cancellation ends the turn.
+No additional participation setting is needed. Decision assistance is the Labs
+opt-in for current and future Decision Model features, including participation
+for installations where the flag is already enabled. If the Decision Model is
+unavailable, the turn uses ordinary reply behavior. Cancellation ends the turn.
 
-Evaluations include bounded recent group history and reply references; draft
-reviews also include the proposed contribution and completed lookup results.
-Hosted providers receive this evidence and charge for evaluations under their
-normal usage terms. Attention and draft review each have a maximum 30-second
-budget, bounded further by the turn timeout. Turning assistance off stops new
-evaluations and discards pending judgments, restoring ordinary reply behavior.
+Evaluations include bounded recent group history and reply references, not a
+newly generated reply or its tool results. Hosted providers receive this evidence
+and charge for evaluations under their normal usage terms. The preflight has a
+maximum 30-second budget, bounded further by the turn timeout. Turning assistance
+off stops new evaluations and discards pending judgments, restoring ordinary
+reply behavior. Once generation is admitted, ordinary turn authority and
+cancellation govern execution and delivery.
 
 ## Choose a provider and model
 

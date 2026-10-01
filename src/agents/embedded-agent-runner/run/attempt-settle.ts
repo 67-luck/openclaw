@@ -24,7 +24,6 @@ import {
 import { log } from "../logger.js";
 import { clearActiveEmbeddedRun } from "../runs.js";
 import { joinWithRunLivenessDeadline, RUN_LIVENESS_JOIN_TIMEOUT_MS } from "./abortable.js";
-import { captureEmbeddedAttemptContinuation } from "./attempt-continuation.js";
 import type { EmbeddedAttemptExecutionPhaseInput } from "./attempt-execution-types.js";
 import { completeEmbeddedAttemptAfterTurn } from "./attempt-finalize.js";
 import {
@@ -148,7 +147,6 @@ export async function runEmbeddedAttemptSettledPhase(
       error !== null && error !== undefined ? { error, source: source ?? "prompt" } : null,
     );
   };
-  const continuation = captureEmbeddedAttemptContinuation(attempt, activeSession);
 
   try {
     const { promptStartedAt, transcriptLeafId } = await runEmbeddedAttemptPromptPhase(
@@ -387,7 +385,6 @@ export async function runEmbeddedAttemptSettledPhase(
       }
     }
   } finally {
-    continuation.close();
     cleanupError = cleanupEmbeddedAttemptStreamExecution({
       attempt,
       clearAttemptTimeoutTimers,
@@ -411,14 +408,6 @@ export async function runEmbeddedAttemptSettledPhase(
     messagesSnapshot,
     ...(beforeAgentFinalizeRevisionReason ? { beforeAgentFinalizeRevisionReason } : {}),
   });
-  if (result.terminal.kind === "ok") {
-    const messages = continuation.read();
-    if (messages) {
-      result.continuationMessages = messages;
-      result.continuationHistoryPrefix = continuation.historyPrefix;
-      result.pluginRuntimeRefreshMessages = messages;
-    }
-  }
   state.trajectoryEndRecorded = true;
   return result;
 }

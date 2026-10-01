@@ -1,9 +1,8 @@
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { loadSessionEntry, loadTranscriptEvents } from "../../config/sessions/session-accessor.js";
 import { isIndexedSessionEntry } from "../../config/sessions/session-entry-codec.js";
-import type { DecisionBatch, DecisionOutcome } from "../../decisions/types.js";
+import type { DecisionOutcome } from "../../decisions/types.js";
 import { extractTextFromChatContent } from "../../shared/chat-content.js";
-import { createDeferredCore } from "../../shared/deferred.js";
 import type { ReplyPayload } from "../types.js";
 import { judgment } from "./group-participation.decision.test-support.js";
 import { createGroupReplyFixture } from "./group-participation.reply.test-support.js";
@@ -15,12 +14,6 @@ vi.mock("../../decisions/runtime.js", () => ({ evaluateDecision: decision }));
 
 const answer = (content: string) => ({ delta: { role: "assistant", content } });
 const unavailable: DecisionOutcome = { status: "unavailable", reason: "overloaded" };
-const useful = {
-  attention: "opportunity",
-  fit: "applicable",
-  effect: "substantive",
-  coverage: "complete",
-};
 function texts(reply: ReplyPayload | ReplyPayload[] | undefined) {
   return (Array.isArray(reply) ? reply : reply ? [reply] : []).map((payload) => payload.text);
 }
@@ -91,10 +84,11 @@ it("streams invited replies and observes chatter without starting a primary run"
   ).toBe(true);
 });
 
-it("uses read tools privately and judges the actual lookup and contribution", async () => {
+it("runs an opportunity through ordinary tools, streaming and delivery without draft review", async () => {
   const previousTyping = fixture.typing();
   const previousPartials = fixture.partials.length;
   const previousRequests = fixture.requests.length;
+  const previousSent = fixture.sent.length;
   fixture.respond(
     {
       delta: {
@@ -112,120 +106,56 @@ it("uses read tools privately and judges the actual lookup and contribution", as
     },
     answer("The published TLS port is 443."),
   );
-  let reviewed: DecisionBatch | undefined;
-  decision.mockImplementation(async (batch, options) => {
-    if (options.purpose === "group.participation.publication") {
-      reviewed = batch;
-    }
-    return judgment(batch, useful);
-  });
+  decision.mockImplementation(async (batch) => judgment(batch, { attention: "opportunity" }));
   const delivered = await fixture.dispatch(
     "Bob, do you know the published TLS port?",
     "opportunity-source",
     "-10002",
   );
   expect(delivered.queuedFinal).toBe(true);
-  expect(fixture.sent).toEqual(["The published TLS port is 443."]);
-  expect(reviewed?.state).toMatchObject({
-    contribution: {
-      draft: [{ text: "The published TLS port is 443.", media: [] }],
-      completedLookups: [
-        {
-          tool: "read",
-          error: false,
-          result: expect.stringContaining("The published TLS port is 443."),
-        },
-      ],
-    },
-  });
+  expect(fixture.sent.slice(previousSent)).toEqual(["The published TLS port is 443."]);
+  expect(decision).toHaveBeenCalledTimes(1);
+  expect(decision.mock.calls[0]?.[1].purpose).toBe("group.participation.attention");
   expect(fixture.requests).toHaveLength(previousRequests + 2);
-  expect(fixture.requests[previousRequests]).not.toMatchObject({
+  expect(fixture.requests[previousRequests]).toMatchObject({
     tools: expect.arrayContaining([
       expect.objectContaining({ function: expect.objectContaining({ name: "exec" }) }),
     ]),
   });
-  expect(fixture.typing()).toBe(previousTyping);
-  expect(fixture.partials).toHaveLength(previousPartials);
+  expect(fixture.typing()).toBeGreaterThan(previousTyping);
+  expect(fixture.partials.slice(previousPartials).join("")).toContain(
+    "The published TLS port is 443.",
+  );
 });
 
-it("withholds clarification-only unsolicited replies", async () => {
-  const previousTyping = fixture.typing();
-  const previousPartials = fixture.partials.length;
-  fixture.respond(answer("I couldn't find it. Can you send the report?"));
-  decision.mockImplementation(async (batch) =>
-    judgment(batch, { ...useful, effect: "missing_input_or_limitation" }),
-  );
+it("does not editorially withhold or regenerate an admitted answer", async () => {
+  const previousRequests = fixture.requests.length;
+  fixture.respond(answer("Can you send the report?"));
+  decision.mockImplementation(async (batch) => judgment(batch, { attention: "opportunity" }));
   expect(
-    texts(await fixture.reply("Bob, is the report available?", "limitation-source", "-10003")),
-  ).toEqual([]);
-  expect(fixture.typing()).toBe(previousTyping);
-  expect(fixture.partials).toHaveLength(previousPartials);
+    texts(await fixture.reply("Bob, is the report available?", "clarification-source", "-10003")),
+  ).toContain("Can you send the report?");
+  expect(decision).toHaveBeenCalledTimes(1);
+  expect(fixture.requests).toHaveLength(previousRequests + 1);
 
-  // A later explicit invitation must not replay the withheld draft as an answer.
-  const sessionKey = "agent:main:telegram:group:-10003";
-  const entry = loadSessionEntry({ storePath: fixture.storePath, sessionKey });
-  if (!entry) {
-    throw new Error("The private turn did not create its session");
-  }
-  const events = await loadTranscriptEvents({
-    agentId: "main",
-    sessionId: entry.sessionId,
-    sessionKey,
-    storePath: fixture.storePath,
-  });
-  expect(JSON.stringify(events)).not.toContain("Can you send the report?");
+  // Generated replies use ordinary history, just like directly invited answers.
   const nextRequest = fixture.requests.length;
   fixture.respond(answer("I can check the new report."));
-  expect(
-    texts(await fixture.reply("Please check now.", "later-invitation", "-10003", undefined, true)),
-  ).toContain("I can check the new report.");
-  expect(JSON.stringify(fixture.requests[nextRequest])).not.toContain("Can you send the report?");
+  await fixture.reply("Please check now.", "later-invitation", "-10003", undefined, true);
+  expect(JSON.stringify(fixture.requests[nextRequest])).toContain("Can you send the report?");
 });
 
-it("revises a partly useful contribution and reviews the complete replacement", async () => {
-  fixture.respond(
-    answer("Use TLS port 443. Disable certificate checks."),
-    answer("Use TLS port 443."),
-  );
-  const drafts: unknown[] = [];
-  decision.mockImplementation(async (batch, options) => {
-    if (options.purpose === "group.participation.publication") {
-      drafts.push(batch.state);
-    }
-    return judgment(batch, { ...useful, coverage: drafts.length === 1 ? "partial" : "complete" });
-  });
-  expect(
-    texts(await fixture.reply("Bob, what is the TLS port?", "revision-source", "-10007")),
-  ).toEqual(["Use TLS port 443."]);
-  expect(drafts).toHaveLength(2);
-  expect(drafts[0]).toMatchObject({
-    contribution: { draft: [{ text: "Use TLS port 443. Disable certificate checks." }] },
-  });
-  expect(drafts[1]).toMatchObject({ contribution: { draft: [{ text: "Use TLS port 443." }] } });
-
-  const nextRequest = fixture.requests.length;
-  fixture.respond(answer("Yes, TLS port 443."));
-  await fixture.reply("Is that still correct?", "after-revision", "-10007", undefined, true);
-  const replay = JSON.stringify(fixture.requests[nextRequest]);
-  expect(replay).toContain("Use TLS port 443.");
-  expect(replay).not.toContain("Disable certificate checks.");
-});
-
-it("restores ordinary streaming and tools when the publication decision is unavailable", async () => {
+it("uses ordinary streaming and tools when the preflight decision is unavailable", async () => {
   const previousRequests = fixture.requests.length;
   const previousPartials = fixture.partials.length;
-  fixture.respond(
-    answer("Private provisional answer."),
-    answer("Ordinary answer after the outage."),
-  );
-  decision.mockImplementation(async (batch, options) =>
-    options.purpose === "group.participation.publication" ? unavailable : judgment(batch, useful),
-  );
+  fixture.respond(answer("Ordinary answer after the outage."));
+  decision.mockResolvedValue(unavailable);
   expect(
     texts(await fixture.reply("Bob, which port should I use?", "outage-source", "-10004")),
   ).toContain("Ordinary answer after the outage.");
-  expect(fixture.requests).toHaveLength(previousRequests + 2);
-  expect(fixture.requests[previousRequests + 1]).toMatchObject({
+  expect(decision).toHaveBeenCalledTimes(1);
+  expect(fixture.requests).toHaveLength(previousRequests + 1);
+  expect(fixture.requests[previousRequests]).toMatchObject({
     tools: expect.arrayContaining([
       expect.objectContaining({ function: expect.objectContaining({ name: "exec" }) }),
     ]),
@@ -233,88 +163,4 @@ it("restores ordinary streaming and tools when the publication decision is unava
   expect(fixture.partials.slice(previousPartials).join("")).toContain(
     "Ordinary answer after the outage.",
   );
-  expect(fixture.partials.slice(previousPartials).join("")).not.toContain(
-    "Private provisional answer.",
-  );
-});
-
-it("incorporates an accepted human answer before publishing and keeps completed lookup evidence", async () => {
-  const previousRequests = fixture.requests.length;
-  const previousTyping = fixture.typing();
-  const reviewing = createDeferredCore();
-  const releaseReview = createDeferredCore();
-  const queuedSettled = createDeferredCore();
-  let answered = false;
-  let deferred = false;
-  fixture.respond(
-    {
-      delta: {
-        role: "assistant",
-        tool_calls: [
-          {
-            index: 0,
-            id: "late-read-port",
-            type: "function",
-            function: { name: "read", arguments: JSON.stringify({ path: fixture.lookupPath }) },
-          },
-        ],
-      },
-      stop: "tool_calls",
-    },
-    {
-      ...answer("The published TLS port is 443."),
-      beforeResponse: async () => {
-        reviewing.resolve();
-        await releaseReview.promise;
-      },
-    },
-    answer("NO_REPLY"),
-  );
-  decision.mockImplementation(async (batch) => {
-    return judgment(
-      batch,
-      answered ? { ...useful, attention: "none", fit: "inapplicable", coverage: "none" } : useful,
-    );
-  });
-  const pending = fixture.reply(
-    "Bob, do you know the published TLS port?",
-    "late-source",
-    "-10005",
-  );
-  await reviewing.promise;
-  try {
-    answered = true;
-    await fixture.reply(
-      "Bob answered: the TLS port is 443; this is resolved.",
-      "human-answer",
-      "-10005",
-      {
-        turnAdoptionLifecycle: {
-          admission: "cancel-only",
-          onDeferred: () => {
-            deferred = true;
-            return true;
-          },
-          onAdopted: () => {},
-          onSettled: () => queuedSettled.resolve(),
-        },
-      },
-    );
-    expect(deferred).toBe(true);
-  } finally {
-    releaseReview.resolve();
-  }
-  expect(texts(await pending)).toEqual([]);
-  await queuedSettled.promise;
-  expect(fixture.requests).toHaveLength(previousRequests + 3);
-  expect(JSON.stringify(fixture.requests.at(-1))).toContain("Bob answered: the TLS port is 443");
-  expect(fixture.requests.at(-1)).toMatchObject({
-    messages: expect.arrayContaining([
-      expect.objectContaining({
-        role: "tool",
-        content: expect.stringContaining("The published TLS port is 443."),
-      }),
-    ]),
-  });
-  expect(fixture.typing()).toBe(previousTyping);
 });

@@ -98,7 +98,7 @@ export async function executeFollowupTurn(params: {
   const progressAllowed = () =>
     turn.sendPolicy === "allow" &&
     !roomEvent &&
-    !readGroupParticipationRun(turn.operation)?.isPrivate;
+    !readGroupParticipationRun(turn.operation)?.isObserving;
   const currentVerboseLevel = (): VerboseLevel => {
     if (turn.queued.run.verboseLevelOverride !== undefined) {
       return turn.queued.run.verboseLevelOverride;
@@ -418,7 +418,7 @@ export async function executeFollowupTurn(params: {
         setChannelSourceTurnId(sessionCtx, sourceTurnId);
       }
       execution = await withBeforeAgentReplyObserver(
-        { shouldDispatch: () => !readGroupParticipationRun(turn.operation)?.isPrivate },
+        { shouldDispatch: () => !readGroupParticipationRun(turn.operation)?.isObserving },
         () => (recorder?.withPendingInput ? recorder.withPendingInput(execute) : execute()),
       );
     } catch (error) {

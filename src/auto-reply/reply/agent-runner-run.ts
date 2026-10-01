@@ -671,7 +671,7 @@ export async function runReplyAgent(
       followupRun.replyOperationRunStates,
       replyOperation,
     );
-    if (readGroupParticipationRun(replyOperation)?.isPrivate) {
+    if (readGroupParticipationRun(replyOperation)?.isObserving) {
       if (!replyOperation.result) {
         replyOperation.fail("run_failed", error);
       }

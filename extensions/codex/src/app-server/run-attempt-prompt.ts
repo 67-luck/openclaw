@@ -14,7 +14,6 @@ import {
   resolveCodexDeliveryHintPreservedInputRange,
   resolveContextEngineBootstrapProjectionDecision,
 } from "./attempt-context.js";
-import { readCodexContinuationMessages } from "./attempt-continuation.js";
 import { isNonEmptyString } from "./attempt-workspace-context.js";
 import {
   CODEX_TURN_START_TEXT_INPUT_MAX_CHARS,
@@ -55,6 +54,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     baseDeveloperInstructions,
     buildOpenClawPromptContext,
     skillsInstructions,
+    refreshableInstructions,
     promptState,
     codexContextProjectionMaxChars,
     codexContinuityProjectionMaxChars,
@@ -125,7 +125,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     (await params.userTurnTranscriptRecorder?.resolveMessage());
   assertProjectionCurrent();
   // A refreshed native thread receives the original admitted user as historical context.
-  const currentUserTurnIdempotencyKey = readCodexContinuationMessages(params)
+  const currentUserTurnIdempotencyKey = params.pluginRuntimeRefreshMessages
     ? undefined
     : admittedMessage?.idempotencyKey;
   const prepareFileContext: NonNullable<
@@ -165,7 +165,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       prompt: params.prompt,
       maxRenderedContextChars: codexContinuityProjectionMaxChars,
       toolPayloadMode:
-        readCodexContinuationMessages(params) || preserveForkedToolResults ? "preserve" : "elide",
+        params.pluginRuntimeRefreshMessages || preserveForkedToolResults ? "preserve" : "elide",
       prepareFileContext,
       currentUserTurnIdempotencyKey,
     });
@@ -203,7 +203,6 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
         degradedReason: usesSupervisionConnection ? undefined : params.degradedReason,
         runtimeContext: buildActiveContextEngineRuntimeContext(),
         transcriptReadFence: params.userTurnTranscriptRecorder?.getAdmissionReceipt(),
-        currentTurnMessages: readCodexContinuationMessages(params),
         prompt: params.prompt,
       });
       if (!assembled) {
@@ -231,7 +230,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
         maxRenderedContextChars: codexContextProjectionMaxChars,
         toolPayloadMode:
           contextEngineProjection ||
-          readCodexContinuationMessages(params) ||
+          params.pluginRuntimeRefreshMessages ||
           preserveForkedToolResults
             ? "preserve"
             : "elide",
@@ -270,7 +269,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     } catch (assembleErr) {
       if (
         assembleErr instanceof CodexContextAttachmentError ||
-        readCodexContinuationMessages(params)
+        params.pluginRuntimeRefreshMessages
       ) {
         throw assembleErr;
       }
@@ -289,7 +288,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
   const buildPromptFromCurrentInputs = () =>
     resolveAgentHarnessBeforePromptBuildResult({
       currentUserMessage:
-        admittedMessage ?? (readCodexContinuationMessages(params) ? "" : params.prompt),
+        admittedMessage ?? (params.pluginRuntimeRefreshMessages ? "" : params.prompt),
       prompt: prependCurrentInboundContext(promptState.promptText, params.currentInboundContext),
       developerInstructions: {
         build: ({ hasToolRestrictions }) => {
@@ -444,20 +443,19 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
   };
   let parentLocalEgress = false;
   const parentLocalContext = {
-    turnScopedDeveloperInstructions: workspaceBootstrapContext.turnScopedDeveloperInstructions,
-    memoryCollaborationInstructions: workspaceBootstrapContext.memoryCollaborationInstructions,
+    personaInstructions: workspaceBootstrapContext.personaInstructions,
+    memoryInstructions: workspaceBootstrapContext.memoryInstructions,
   };
   // Observability view of the whole developer surface the model sees (reports,
   // trajectory, size estimates). The lifecycle receives the generic policy and the
-  // skill catalog separately; joining them here must never feed thread requests.
+  // refreshable instructions separately; joining them here must never feed thread requests.
   const buildRenderedCodexDeveloperInstructions = () =>
     joinPresentSections(
       turnState.promptBuild.developerInstructions,
-      parentLocalEgress ? undefined : skillsInstructions,
+      parentLocalEgress ? undefined : refreshableInstructions,
       (parentLocalEgress
         ? buildCodexParentLocalInstructions(params, { ...parentLocalContext, skillsInstructions })
-        : buildTurnCollaborationMode(params, parentLocalContext).settings.developer_instructions) ??
-        undefined,
+        : buildTurnCollaborationMode(params).settings.developer_instructions) ?? undefined,
     );
   const rebuildCodexPromptBuildFromCurrentProjection = async () => {
     turnState.promptBuild = await buildPromptFromCurrentInputs();
@@ -546,7 +544,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
             (message.role === "assistant" &&
               message.content.some((part) => part.type === "text" && part.text.trim())))),
     );
-    if (activeContextEngine || (!hasContinuity && !readCodexContinuationMessages(params)?.length)) {
+    if (activeContextEngine || (!hasContinuity && !params.pluginRuntimeRefreshMessages?.length)) {
       return false;
     }
     if (action === "resumed" && promptState.precomputedStaleBindingContinuityProjectionApplied) {
@@ -626,6 +624,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       developerInstructions: buildRenderedCodexDeveloperInstructions(),
       workspaceBootstrapContext,
       omitWorkspaceReferences,
+      parentLocalEgress,
       skillsPrompt: skillsInstructions ? (params.skillsSnapshot?.prompt ?? "") : "",
       tools: toolBridge.availableSpecs,
     });

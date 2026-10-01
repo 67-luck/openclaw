@@ -73,11 +73,16 @@ export async function readGroupParticipationEvidence(params: {
   acceptedInputs?: readonly GroupParticipationInput[];
   adoptedRecorders?: ReadonlySet<UserTurnTranscriptRecorder>;
   signal: AbortSignal;
-}): Promise<GroupParticipationEvidence> {
+}): Promise<GroupParticipationEvidence | undefined> {
   const current =
     params.recorder.getPersistedMessage?.() ?? (await params.recorder.resolveMessage());
   if (!current) {
     throw new Error("Group participation requires its source message");
+  }
+  // An unprojectable source is not a negative judgment: the ordinary agent
+  // must handle media or other input that this text-only assessment cannot see.
+  if (!projectMessage(params.sourceMessageId ?? "current-source", current)) {
+    return undefined;
   }
   const context = await readSessionTranscriptModelContextAsync(
     params.target,
@@ -108,11 +113,17 @@ export async function readGroupParticipationEvidence(params: {
     const message =
       input.recorder.getPersistedMessage?.() ?? (await input.recorder.resolveMessage());
     if (!message) {
+      if (params.adoptedRecorders?.has(input.recorder)) {
+        return undefined;
+      }
       continue;
     }
     const entryId = input.recorder.getAdmissionReceipt()?.entryId ?? input.sourceMessageId;
     const source = projectMessage(entryId ?? `accepted-input-${index}`, message);
     if (!source) {
+      if (params.adoptedRecorders?.has(input.recorder)) {
+        return undefined;
+      }
       continue;
     }
     source.message.admission = params.adoptedRecorders?.has(input.recorder) ? "current" : "queued";

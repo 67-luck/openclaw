@@ -230,7 +230,7 @@ async function executeAgentTurnInternalLoop(
     if (params.replyOperation) {
       markReplyOperationExecutionStarted(params.replyOperation);
     }
-    if (!readGroupParticipationRun(params.replyOperation)?.isPrivate) {
+    if (!readGroupParticipationRun(params.replyOperation)?.isObserving) {
       params.opts?.onAgentRunStart?.(runId, admittedRunContext.current?.executionIdentityToken);
     }
   };
@@ -246,7 +246,7 @@ async function executeAgentTurnInternalLoop(
     const startupPhase = resolveRunStartupPhase(info.phase);
     if (startupPhase && startupPhase !== lastRunStartupPhase) {
       lastRunStartupPhase = startupPhase;
-      if (!readGroupParticipationRun(params.replyOperation)?.isPrivate) {
+      if (!readGroupParticipationRun(params.replyOperation)?.isObserving) {
         emitAgentRunStatusEvent({ runId, phase: startupPhase });
       }
     }
@@ -263,7 +263,7 @@ async function executeAgentTurnInternalLoop(
       return;
     }
     notifyAgentRunStart();
-    if (readGroupParticipationRun(params.replyOperation)?.isPrivate) {
+    if (readGroupParticipationRun(params.replyOperation)?.isObserving) {
       return;
     }
     void (

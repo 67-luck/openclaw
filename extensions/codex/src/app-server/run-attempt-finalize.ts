@@ -5,7 +5,6 @@ import {
   runAgentHarnessLlmOutputHook,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { appendSessionYieldContext } from "openclaw/plugin-sdk/session-transcript-runtime";
-import { readCodexContinuationMessages } from "./attempt-continuation.js";
 import { classifyCodexModelCallFailureKind } from "./attempt-diagnostics.js";
 import {
   buildCodexAppServerPromptTimeoutOutcome,
@@ -644,26 +643,21 @@ export async function finalizeCodexAttempt(
         yielded: finalPromptError ? undefined : toolState.yieldDetected,
       }),
     });
-    // Host-persisted input is absent from the native snapshot. Carry it only
-    // on the first handoff; later handoffs retain the existing prefix.
-    const continuationMessages =
-      turnSucceeded &&
-      (params.captureContinuationMessages || params.pluginRuntimeRefreshPending?.())
-        ? params.suppressNextUserMessagePersistence && !readCodexContinuationMessages(params)
-          ? [
-              params.userTurnTranscriptRecorder?.getPersistedMessage?.() ??
-                buildCodexUserPromptMessage(params),
-              ...result.messagesSnapshot,
-            ]
-          : result.messagesSnapshot
-        : undefined;
     // Preserve the exact result identity carrying host-issued TTS delivery provenance.
     const finalizedResult: EmbeddedRunAttemptResult = Object.assign(result, {
       ...(runtimeModelSelection ? { runtimeModelSelection } : {}),
-      ...(continuationMessages
+      ...(turnSucceeded && params.pluginRuntimeRefreshPending?.()
         ? {
-            continuationMessages,
-            pluginRuntimeRefreshMessages: continuationMessages,
+            // Host-persisted input is absent from the native snapshot. The first
+            // handoff carries it once; later handoffs retain that existing prefix.
+            pluginRuntimeRefreshMessages:
+              params.suppressNextUserMessagePersistence && !params.pluginRuntimeRefreshMessages
+                ? [
+                    params.userTurnTranscriptRecorder?.getPersistedMessage?.() ??
+                      buildCodexUserPromptMessage(params),
+                    ...result.messagesSnapshot,
+                  ]
+                : result.messagesSnapshot,
           }
         : {}),
       ...(toolState.yieldAcknowledgment

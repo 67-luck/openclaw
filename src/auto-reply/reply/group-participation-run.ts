@@ -28,7 +28,6 @@ import {
 import { resolveReplyOperationAbortReason } from "./reply-operation-abort.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 import { runWithReplyOperationLifecycleAdmission } from "./reply-turn-admission.js";
-import { readSourceReplyDeliveryRuntime } from "./source-reply-delivery-runtime.js";
 
 type GroupParticipationMode = "ordinary" | "observe" | "engagement" | "opportunity";
 export type GroupParticipationSnapshot = {
@@ -50,7 +49,6 @@ function createGroupParticipationRun(params: {
   const { operation, target } = params;
   const run = params.run();
   const originalExpectation = run.run.terminalReplyExpectation;
-  const originalDeliveryMode = run.run.sourceReplyDeliveryMode ?? "automatic";
   let mode: GroupParticipationMode = "ordinary";
   let snapshot: GroupParticipationSnapshot | undefined;
   let live = true;
@@ -104,8 +102,7 @@ function createGroupParticipationRun(params: {
   };
   const applyExpectation = () => {
     const current = params.run();
-    current.run.terminalReplyExpectation =
-      mode === "observe" || mode === "opportunity" ? "optional" : originalExpectation;
+    current.run.terminalReplyExpectation = mode === "observe" ? "optional" : originalExpectation;
     for (const state of current.replyOperationRunStates ?? []) {
       state.replyCompletion = resolveReplyCompletion(
         current.run.terminalReplyExpectation ?? "required",
@@ -114,17 +111,15 @@ function createGroupParticipationRun(params: {
     }
   };
   const restoreOrdinaryBehavior = async () => {
-    const current = params.run().run;
-    readSourceReplyDeliveryRuntime(current)?.applyPreparedMode(current, originalDeliveryMode);
     ordinaryRestoration ??= params.onOrdinaryBehavior?.();
     await ordinaryRestoration;
     assertCurrent();
   };
   const useOrdinaryBehavior = async () => {
-    const wasPrivate = mode === "observe" || mode === "opportunity";
+    const wasObserving = mode === "observe";
     mode = "ordinary";
     applyExpectation();
-    if (wasPrivate || ordinaryRestoration) {
+    if (wasObserving || ordinaryRestoration) {
       await restoreOrdinaryBehavior();
     }
   };
@@ -153,6 +148,10 @@ function createGroupParticipationRun(params: {
       if (selection !== currentSelection()) {
         continue;
       }
+      if (!evidence) {
+        await useOrdinaryBehavior();
+        return undefined;
+      }
       const remaining = deadline - performance.now();
       if (remaining <= 0) {
         await useOrdinaryBehavior();
@@ -174,7 +173,7 @@ function createGroupParticipationRun(params: {
         continue;
       }
       snapshot = { revision: inputs.revision, evidence, concerns: attention.concerns };
-      const wasPrivate = mode === "observe" || mode === "opportunity";
+      const wasObserving = mode === "observe";
       mode = attention.concerns.some(
         (item) =>
           item.reason === "engagement" &&
@@ -187,7 +186,7 @@ function createGroupParticipationRun(params: {
           ? "opportunity"
           : "observe";
       applyExpectation();
-      if (mode === "engagement" && wasPrivate) {
+      if (mode !== "observe" && wasObserving) {
         await restoreOrdinaryBehavior();
       }
       return snapshot;
@@ -204,33 +203,12 @@ function createGroupParticipationRun(params: {
     get snapshot() {
       return snapshot;
     },
-    get isPrivate() {
-      return mode === "observe" || mode === "opportunity";
+    get isObserving() {
+      return mode === "observe";
     },
-    get ordinaryReplyExpectation() {
-      return originalExpectation;
-    },
-    runtime,
-    timeoutMs,
     refresh,
     useOrdinaryBehavior,
     isCurrent,
-    publicationAuthority: (revision: number) => {
-      assertCurrent();
-      if (!isCurrent(revision)) {
-        return undefined;
-      }
-      const approvedSelection = selection;
-      return {
-        recoveryMode: "reconcile-only" as const,
-        assertCurrent: () => {
-          assertCurrent();
-          if (approvedSelection !== selection || !isCurrent(revision)) {
-            throw new Error("The group participation approval is no longer current");
-          }
-        },
-      };
-    },
   };
 }
 

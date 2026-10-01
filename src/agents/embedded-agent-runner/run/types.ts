@@ -237,12 +237,6 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   /** Registers the exact attempt owner able to stop before another model request. */
   registerPluginRuntimeRefreshConsumer?: (isCurrent: () => boolean) => void;
   /** Completed native attempt results excluded by the original admission read fence. */
-  continuationMessages?: AgentMessage[];
-  /** Pre-prompt history retained separately when no transcript admission fence exists. */
-  continuationHistoryPrefix?: AgentMessage[];
-  /** Return current-turn evidence after settlement for a host-owned continuation. */
-  captureContinuationMessages?: true;
-  /** Compatible plugin-refresh name for continuationMessages. */
   pluginRuntimeRefreshMessages?: AgentMessage[];
   /** Run-owned permission changes survive native attempt replacement, never user cancellation. */
   permissionChange?: {
@@ -356,11 +350,6 @@ export type EmbeddedRunAttemptResult = {
   /** Saved retry.provider.maxRetryDelayMs from the same owner; 0 disables the cap. */
   providerRetryMaxDelayMs?: number;
   messagesSnapshot: AgentMessage[];
-  /** Completed attempt evidence carried into the next attempt of this logical turn. */
-  continuationMessages?: AgentMessage[];
-  /** Pre-prompt history retained separately when no transcript admission fence exists. */
-  continuationHistoryPrefix?: AgentMessage[];
-  /** Compatible plugin-refresh name for continuationMessages. */
   pluginRuntimeRefreshMessages?: AgentMessage[];
   /** Owner-eligible settled finalization, with frozen evidence or an unavailable projection. */
   settledTurnFinalizationContext?:

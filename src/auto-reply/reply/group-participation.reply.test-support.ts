@@ -212,6 +212,17 @@ export async function createGroupReplyFixture() {
           cfg: config,
           ctx: context(body, messageId, groupId),
           dispatcher,
+          replyOptions: {
+            onPartialReply: (payload) => {
+              if (payload.text) {
+                partials.push(payload.text);
+              }
+            },
+            onReplyStart: () => {
+              typing++;
+            },
+            typingKeepalive: false,
+          },
         });
       } finally {
         dispatcher.markComplete();

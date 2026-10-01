@@ -1,14 +1,22 @@
 import type { AgentTurnParams } from "./agent-runner-execution.types.js";
 import { readGroupParticipationRun } from "./group-participation-run.js";
 
-/** Commit observed input and refresh its assessment before the caller accepts silence. */
+/** Refresh participation before generation, committing input when observing instead. */
 export async function prepareGroupParticipationObservation(params: AgentTurnParams) {
   const participation = readGroupParticipationRun(params.replyOperation);
-  if (participation?.mode !== "observe") {
+  if (!participation || participation.mode === "ordinary") {
     return undefined;
   }
+  // Positive decisions also expire when the accepted conversation or config changes.
+  const assessedRevision = participation.snapshot?.revision;
+  if (assessedRevision === undefined || !participation.isCurrent(assessedRevision)) {
+    await participation.refresh();
+  }
+  if (!participation.isObserving) {
+    return participation;
+  }
   const recorder = params.followupRun.userTurnTranscriptRecorder;
-  if (recorder && !recorder.hasPersisted()) {
+  if (participation.isObserving && recorder && !recorder.hasPersisted()) {
     const persisted = await recorder.persistApproved({
       expectedSessionId: params.followupRun.run.sessionId,
       ...(params.sessionKey

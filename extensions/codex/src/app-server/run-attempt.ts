@@ -130,7 +130,6 @@ export async function runCodexAppServerAttempt(
               ),
             });
             delete finalizedResult.pluginRuntimeRefreshMessages;
-            delete finalizedResult.continuationMessages;
             delete finalizedResult.settledTurnFinalizationContext;
           }
           // Cleanup retires the execution lease; only then can device loss no longer

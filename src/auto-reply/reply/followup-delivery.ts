@@ -36,7 +36,6 @@ import { appendUsageLine, resolveResponseUsageLine } from "./agent-runner-usage-
 import { resolveFollowupDeliveryPayloads } from "./followup-delivery-payloads.js";
 import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./followup-turn-admission.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
-import { readGroupParticipationRun } from "./group-participation-run.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { warnPrivateMessageToolFinal } from "./private-message-tool-final.js";
 import { enqueueFollowupRun, resolveQueueSettings, type FollowupRun } from "./queue.js";
@@ -171,18 +170,6 @@ export async function resolveFollowupDeliveryDecision(params: {
         markPostCompactionModelFailurePayload(postCompactionModelFailure, payload),
       ),
     );
-  if (readGroupParticipationRun(turn.operation)?.isPrivate) {
-    const payloads = resolveFollowupDeliveryPayloads({
-      ...deliveryContext,
-      payloads:
-        accounting?.payloadArray.filter(
-          (payload) => getReplyPayloadMetadata(payload)?.publicationAuthority !== undefined,
-        ) ?? [],
-    });
-    return payloads.length > 0
-      ? { kind: "deliver", payloads }
-      : { kind: "suppress", reason: "silent" };
-  }
   if (execution.outcome.kind === "rejected") {
     if (!isInteractive) {
       return { kind: "suppress", reason: "silent" };

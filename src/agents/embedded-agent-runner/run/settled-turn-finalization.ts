@@ -457,11 +457,6 @@ function buildSettledTurnFinalizationAttemptResult(input: {
   runtimePlan?: EmbeddedRunAttemptParams["runtimePlan"];
 }): EmbeddedRunAttemptWithReceiptEvidence {
   const { result, settledAttempt } = input;
-  const previousMessages =
-    settledAttempt.continuationMessages ?? settledAttempt.pluginRuntimeRefreshMessages;
-  const continuationMessages = previousMessages
-    ? [...previousMessages, result.assistant]
-    : undefined;
   const authoredText = resolveFinalAssistantVisibleText(result.assistant) ?? "";
   const text =
     input.outcome === "empty"
@@ -489,10 +484,6 @@ function buildSettledTurnFinalizationAttemptResult(input: {
     finalPromptText: input.prompt,
     ...copyAttemptDeliveryState(settledAttempt),
     messagesSnapshot: [...settledAttempt.messagesSnapshot, result.assistant],
-    continuationHistoryPrefix: settledAttempt.continuationHistoryPrefix,
-    ...(continuationMessages
-      ? { continuationMessages, pluginRuntimeRefreshMessages: continuationMessages }
-      : {}),
     assistantTexts: [text],
     assistantTranscriptOwned: result.assistantTranscriptOwned,
     assistantTranscriptIdempotencyKey: result.assistantTranscriptIdempotencyKey,
