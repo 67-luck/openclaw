@@ -432,7 +432,7 @@ export async function uninstallPluginWithPolicy(
         params.deferRuntime?.record({ operation: "uninstall", pluginId, write: committed });
         const warnings = [
           ...(!cli
-            ? collectClawPluginUninstallWarnings({
+            ? await collectClawPluginUninstallWarnings({
                 pluginId,
                 installRecord: installRecords[pluginId],
                 env,
@@ -497,7 +497,7 @@ export async function uninstallPluginWithPolicy(
       return await withClawPackageLifecycleLease(
         { kind: "plugin", source: "clawhub", ref: packageName },
         uninstall,
-        { ...(cli ? {} : { env }), required: true },
+        cli ? undefined : { env },
       );
     },
   );

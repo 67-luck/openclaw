@@ -5,6 +5,7 @@ import { ok } from "@openclaw/normalization-core/result";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { SqliteWorkerError } from "../infra/sqlite-worker-contract.js";
 import { PluginRuntimeApplicationError } from "../plugins/lifecycle.js";
 import { applyClawHubSkillUninstall } from "../skills/lifecycle/clawhub-uninstall.js";
 import { digestClawHubSkillTree } from "../skills/lifecycle/skill-tree-digest.js";
@@ -50,10 +51,21 @@ function installedPlugin() {
   };
 }
 
+function packageLeaseScope(
+  assertOwned: () => void = () => {},
+): NonNullable<PackageRemovalDeps["withPackageLease"]> {
+  return async (_artifact, operation) =>
+    operation({
+      signal: new AbortController().signal,
+      assertOwned,
+      assertOwnedInTransaction: assertOwned,
+    });
+}
+
 function packageRefStore(...initial: PersistedClawPackageRef[]) {
   let refs = initial;
   return {
-    acquirePackageLease: vi.fn(() => ({ heartbeat: vi.fn(), release: vi.fn() })),
+    withPackageLease: packageLeaseScope(),
     readPackageRefs: vi.fn(() => refs),
     readInstallRecords: vi.fn(() => []),
     claimPackageRef: vi.fn(
@@ -120,6 +132,98 @@ async function trackedQualifiedSkillFixture() {
 }
 
 describe("Claw package removal", () => {
+  it.each(["initial claim", "completion claim", "compensation claim"] as const)(
+    "keeps an unknown %s terminal without replaying the write",
+    async (phase) => {
+      const ref = packageRef();
+      const store = packageRefStore(ref);
+      const unknown = new SqliteWorkerError("Package claim outcome is unknown", "outcome-unknown");
+      const cleanupError = new Error("Plugin cleanup failed");
+      const claimPackageRef = vi.fn<NonNullable<PackageRemovalDeps["claimPackageRef"]>>(
+        (claimedRef, status) => {
+          if (phase === "initial claim" || claimPackageRef.mock.calls.length === 2) {
+            throw unknown;
+          }
+          return store.claimPackageRef(claimedRef, status);
+        },
+      );
+      const uninstallPlugin = vi.fn<NonNullable<PackageRemovalDeps["uninstallPlugin"]>>(
+        async () => {
+          if (phase === "compensation claim") {
+            throw cleanupError;
+          }
+          return ok({
+            pluginId: "audit",
+            requestedPluginId: "audit",
+            pluginIds: ["audit"],
+            removed: [],
+            warnings: [],
+          });
+        },
+      );
+      const pending = applyClawPackageRemovals(
+        [
+          {
+            packageRef: ref,
+            workspace: install.workspace,
+            action: "uninstall",
+            affectedClawAgentIds: [],
+            pluginId: "audit",
+          },
+        ],
+        {
+          deps: {
+            ...store,
+            claimPackageRef,
+            resolvePlugin: vi.fn(async () => installedPlugin()),
+            uninstallPlugin,
+          },
+        },
+      );
+      if (phase === "compensation claim") {
+        await expect(pending).rejects.toMatchObject({ errors: [cleanupError, unknown] });
+      } else {
+        await expect(pending).rejects.toBe(unknown);
+      }
+      expect(claimPackageRef).toHaveBeenCalledTimes(phase === "initial claim" ? 1 : 2);
+      expect(uninstallPlugin).toHaveBeenCalledTimes(phase === "initial claim" ? 0 : 1);
+    },
+  );
+
+  it.each([false, true])(
+    "keeps late unknown worker settlement terminal (aggregate: %s)",
+    async (aggregate) => {
+      const ref = packageRef();
+      const store = packageRefStore(ref);
+      const unknown = new SqliteWorkerError("Package claim outcome is unknown", "outcome-unknown");
+      const failure = aggregate ? new AggregateError([unknown], "Lease cleanup failed") : unknown;
+      await expect(
+        applyClawPackageRemovals(
+          [
+            {
+              packageRef: ref,
+              workspace: install.workspace,
+              action: "retain",
+              reason: "Package is independently owned outside this Claw.",
+              affectedClawAgentIds: [],
+            },
+          ],
+          {
+            deps: {
+              ...store,
+              withPackageLease: async (artifact, operation, options) => {
+                await packageLeaseScope()(artifact, operation, options);
+                throw failure;
+              },
+            },
+          },
+        ),
+      ).rejects.toBe(failure);
+      expect(store.claimPackageRef).toHaveBeenCalledOnce();
+      expect(store.readPackageRefs()[0]?.status).toBe("pending");
+    },
+  );
+
   it.each(["lease lost during resolution", "uninstall failed"])(
     "keeps mutation and compensation with their current package owner: %s",
     async (failure) => {
@@ -159,7 +263,7 @@ describe("Claw package removal", () => {
           {
             deps: {
               ...store,
-              acquirePackageLease: vi.fn(() => ({ heartbeat, release: vi.fn() })),
+              withPackageLease: packageLeaseScope(heartbeat),
               uninstallPlugin,
               resolvePlugin: vi.fn(async () => {
                 leaseLost = failure === "lease lost during resolution";
@@ -408,7 +512,7 @@ describe("Claw package removal", () => {
       expect.objectContaining({ ref: "audit" }),
       "complete",
       expect.objectContaining({
-        lease: { assertCurrent: expect.any(Function), release: expect.any(Function) },
+        lease: expect.objectContaining({ assertOwned: expect.any(Function) }),
       }),
     );
   });
@@ -721,13 +825,10 @@ describe("Claw package removal", () => {
         },
         deps: {
           ...store,
-          acquirePackageLease: () => ({
-            heartbeat() {
-              if (!packageOwned) {
-                throw new Error("Package lease superseded.");
-              }
-            },
-            release() {},
+          withPackageLease: packageLeaseScope(() => {
+            if (!packageOwned) {
+              throw new Error("Package lease superseded.");
+            }
           }),
           uninstallSkill: async (plan, options) => {
             const pending = applyClawHubSkillUninstall(plan, {
@@ -856,7 +957,7 @@ describe("Claw package removal", () => {
     await expect(
       applyClawPackageRemovals(decisions, {
         deps: {
-          acquirePackageLease: vi.fn(() => ({ heartbeat: vi.fn(), release: vi.fn() })),
+          withPackageLease: packageLeaseScope(),
           readPackageRefs: vi.fn(() => refs),
           claimPackageRef,
         },

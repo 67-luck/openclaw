@@ -262,6 +262,7 @@ export async function withClawAgentConfigRemoval<T>(
             updateClawInstallRecordStatus(params.agentId, "partial", {
               ...stateOptions,
               database,
+              deletionOperation: deletion,
             });
           }, stateOptions);
         }
