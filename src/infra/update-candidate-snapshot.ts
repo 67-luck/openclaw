@@ -244,6 +244,7 @@ export async function prepareUpdateCandidateStateSnapshot(params: {
   pluginCodeLinks: UpdateCandidatePluginCodeLink[];
   snapshotCapacity: UpdateSnapshotCapacity;
   snapshotDiagnostics: string[];
+  snapshotWarnings: string[];
   cleanupDirectories: string[];
 }> {
   let { capacity } = await measureInitialUpdateSnapshotState(params);
@@ -314,7 +315,10 @@ export async function prepareUpdateCandidateStateSnapshot(params: {
           [
             params.nodeRunner ?? process.execPath,
             ...resolveRuntimeWorkerArgv(
-              resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.updateCandidateState),
+              resolveRuntimeWorkerUrl({
+                ...runtimeProcessEntrypoints.updateCandidateState,
+                root: params.candidateRoot,
+              }),
               params.nodeRunner,
             ),
           ],
@@ -404,6 +408,13 @@ export async function prepareUpdateCandidateStateSnapshot(params: {
         : [],
       snapshotCapacity: { ...capacity, selection: { ...selectedRoot, directory } },
       snapshotDiagnostics,
+      snapshotWarnings: inventory.warnings.map((warning) =>
+        redactSupportString(
+          warning,
+          { env: params.env, stateDir: params.stateDir },
+          { maxLength: UPDATE_RUN_TEXT_LIMIT },
+        ),
+      ),
       cleanupDirectories: cleanupDirectories(),
     };
   } catch (error) {

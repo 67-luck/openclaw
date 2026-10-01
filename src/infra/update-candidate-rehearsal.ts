@@ -36,6 +36,7 @@ export type UpdateCandidateRehearsal = {
   port: number;
   snapshotCapacity: UpdateSnapshotCapacity;
   snapshotDiagnostics?: string[];
+  snapshotWarnings?: string[];
   cleanupDirectories: string[];
   pluginCodeLinks?: UpdateCandidatePluginCodeLink[];
   cleanup: (assertDirectoryCurrent?: (directory: string) => void) => Promise<void>;
@@ -197,6 +198,7 @@ export async function prepareUpdateCandidateRehearsal(params: {
     pluginCodeLinks,
     snapshotCapacity,
     snapshotDiagnostics,
+    snapshotWarnings,
     cleanupDirectories,
   } = await prepareUpdateCandidateStateSnapshot({
     ...params,
@@ -246,6 +248,7 @@ export async function prepareUpdateCandidateRehearsal(params: {
       port,
       snapshotCapacity,
       snapshotDiagnostics,
+      snapshotWarnings,
       cleanupDirectories,
       pluginCodeLinks,
       cleanup,
