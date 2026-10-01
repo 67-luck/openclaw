@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -9,7 +9,12 @@ import { note } from "../../packages/terminal-core/src/note.js";
 import { listAgentEntries } from "../agents/agent-scope-config.js";
 import { AUTH_STORE_VERSION } from "../agents/auth-profiles/constants.js";
 import {
+  applyLegacyAuthStore,
+  coerceLegacyAuthStore,
+  coerceLegacyAuthProfileStore,
   coerceLegacyFlatCredential,
+  normalizeLegacyAuthProfileFields,
+  parseLegacyCredentialEntry,
   hasUsableAuthProfileCredential,
 } from "../agents/auth-profiles/legacy-flat-credential.js";
 import {
@@ -28,23 +33,25 @@ import {
   resolveSharedAuthStorePath,
 } from "../agents/auth-profiles/path-resolve.js";
 import {
-  applyLegacyAuthStore,
-  coerceLegacyAuthStore,
-  coercePersistedAuthProfileStore,
   loadPersistedAuthProfileStore,
   loadPersistedSharedAuthProfileStore,
-  parseLegacyCredentialEntry,
 } from "../agents/auth-profiles/persisted.js";
 import { clearRuntimeAuthProfileStoreSnapshots } from "../agents/auth-profiles/runtime-snapshots.js";
 import { resolveSharedMainAuthAgentDir } from "../agents/auth-profiles/shared-main-dir.js";
+import {
+  inspectAuthProfileJsonCell,
+  readAuthProfileJsonCellText,
+} from "../agents/auth-profiles/sqlite-json.js";
 import {
   inspectPersistedAuthProfileStateRaw,
   inspectPersistedAuthProfileStoreRaw,
   inspectPersistedSharedAuthProfileStateRaw,
   inspectPersistedSharedAuthProfileStoreRaw,
+  readAuthProfileStateJsonTextReadOnly,
   readPersistedAuthProfileStateRaw,
   readPersistedAuthProfileStoreRaw,
   readPersistedSharedAuthProfileStateRaw,
+  readPersistedSharedAuthProfileStoreRaw,
   resolveAuthProfileDatabasePath,
   runAuthProfileWriteTransaction,
   writePersistedAuthProfileStateRaw,
@@ -66,8 +73,17 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { coerceSecretRef } from "../config/types.secrets.js";
 import { loadJsonFileThroughSymlink } from "../infra/json-file.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
+import { createVerifiedSqliteSnapshot } from "../infra/sqlite-snapshot.js";
+import {
+  assertExistingDatabaseIdentity,
+  readDatabasePathIdentitySync,
+  type DatabasePathIdentity,
+} from "../infra/sqlite-worker-identity.js";
 import { readLegacyMigrationReceipt } from "../infra/state-migrations.receipts.js";
 import { rewritePluginAuthProfileRefs } from "../plugins/auth-profile-config-refs.js";
+import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
+import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
+import { requireOpenClawStateDatabaseIdentity } from "../state/openclaw-state-db-cache.js";
 import type { OpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { renameUserProfileAuthLinks } from "../state/user-model-accounts.js";
 import { shortenHomePath } from "../utils.js";
@@ -293,29 +309,6 @@ function hasAuthProfileState(state: AuthProfileState): boolean {
   return Boolean(state.order || state.lastGood || state.usageStats);
 }
 
-function normalizeLegacyApiKeyAliasesForImport(raw: unknown): void {
-  if (!isRecord(raw) || !isRecord(raw.profiles)) {
-    return;
-  }
-  for (const profile of Object.values(raw.profiles)) {
-    if (!isRecord(profile)) {
-      continue;
-    }
-    const type = readNonEmptyString(profile.type) ?? readNonEmptyString(profile.mode);
-    if (type !== "api_key") {
-      continue;
-    }
-    const hasCanonicalCredential =
-      readNonEmptyString(profile.key) !== undefined ||
-      coerceSecretRef(profile.key) !== null ||
-      coerceSecretRef(profile.keyRef) !== null;
-    if (hasCanonicalCredential || profile["api_key"] === undefined) {
-      continue;
-    }
-    profile.key = profile["api_key"];
-  }
-}
-
 function collectAuthProfileStateProfileIds(state: AuthProfileState): string[] {
   return [
     ...new Set([
@@ -428,7 +421,7 @@ function coerceLegacyConfigAuthProfileStore(cfg: OpenClawConfig): AuthProfileSto
     }
     store.profiles[profileId] = next;
   }
-  const canonicalStore = coercePersistedAuthProfileStore(store);
+  const canonicalStore = coerceLegacyAuthProfileStore(store);
   return canonicalStore && Object.keys(canonicalStore.profiles).length > 0 ? canonicalStore : null;
 }
 
@@ -713,8 +706,8 @@ export async function maybeMigrateAuthProfileJsonStoresToSqlite(params: {
       return false;
     }
     const raw = parseAuthProfileMigrationSource(receipt);
-    normalizeLegacyApiKeyAliasesForImport(raw);
-    const imported = coercePersistedAuthProfileStore(raw) ?? coerceLegacyFlatAuthProfileStore(raw);
+    normalizeLegacyAuthProfileFields(raw);
+    const imported = coerceLegacyAuthProfileStore(raw) ?? coerceLegacyFlatAuthProfileStore(raw);
     if (!imported || !Object.values(imported.profiles).some(hasUsableAuthProfileCredential)) {
       return false;
     }
@@ -833,11 +826,25 @@ export async function maybeMigrateAuthProfileJsonStoresToSqlite(params: {
     }
   }
 
-  // Config, credential import, and session repair must share one collision
-  // decision; archived legacy JSON cannot recreate it after migration.
-  const openAIProfileIdMap =
+  // Validate the same collision decision before either source family can lose its old IDs.
+  const requestedProfileIdMap =
     params.openAICodexAuthProfileIdMap ??
     collectOpenAICodexAuthProfileStoreIdMap({ cfg: params.cfg, env });
+  const repairedFields = await maybeRepairLegacyAuthProfileStores({
+    cfg: params.cfg,
+    env,
+    profileIdMap: requestedProfileIdMap,
+    renameProfileIds: false,
+  });
+  result.changes.push(...repairedFields.changes);
+  warnings.push(...repairedFields.warnings);
+  const openAIProfileIdMap = repairedFields.profileIdMap;
+  for (const [from, to] of requestedProfileIdMap) {
+    if (openAIProfileIdMap.get(from) !== to) {
+      blockedProfileIds.add(from);
+      blockedProfileIds.add(to);
+    }
+  }
   for (const candidate of detected) {
     const configOwnerCandidate = isDefaultAgentCandidate(candidate, params.cfg, env);
     const candidateProfileIds = new Set<string>();
@@ -924,9 +931,9 @@ export async function maybeMigrateAuthProfileJsonStoresToSqlite(params: {
           awsSdkMarkers.map((profile) => profile.profileId),
         );
       }
-      normalizeLegacyApiKeyAliasesForImport(rawStore);
+      normalizeLegacyAuthProfileFields(rawStore);
       const maybeCanonicalStore =
-        coercePersistedAuthProfileStore(rawStore) ??
+        coerceLegacyAuthProfileStore(rawStore) ??
         coerceLegacyFlatAuthProfileStore(rawStore) ??
         null;
       const canonicalStore = hasImportableAuthProfileStore(maybeCanonicalStore)
@@ -1717,29 +1724,47 @@ function canonicalizeLegacyAuthRotationState(
 }
 
 /** Normalize already-SQLite stores under their current owners after legacy import. */
-export function maybeRepairLegacyAuthProfileStores(params: {
+export async function maybeRepairLegacyAuthProfileStores(params: {
   cfg: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
   profileIdMap: ReadonlyMap<string, string>;
-}): {
+  renameProfileIds?: boolean;
+}): Promise<{
   changes: string[];
   warnings: string[];
   profileIdMap: ReadonlyMap<string, string>;
-} {
+}> {
   const env = params.env ?? process.env;
   const warnings: string[] = [];
+  let incompleteCensus = false;
   const candidates = listAuthProfileRepairCandidates(params.cfg, env, (pathname) => {
+    incompleteCensus = true;
     warnings.push(
       `Skipped auth-profile alias migration because ${shortenHomePath(pathname)} is unavailable.`,
     );
   });
+  const stores: AuthAliasStoreSnapshot[] = [];
   const planned: Array<{
     databasePath: string;
+    identity: DatabasePathIdentity;
+    canRenameAliases: boolean;
+    canReadRotationState: boolean;
     agentDir?: string;
     store: unknown;
     state: unknown;
+    unreadableStateJson?: string;
   }> = [];
   for (const [databasePath, agentDir] of listAuthProfileMigrationTargets(candidates, env)) {
+    let identity: DatabasePathIdentity;
+    try {
+      identity = readDatabasePathIdentitySync(databasePath);
+    } catch {
+      incompleteCensus = true;
+      warnings.push(
+        `Skipped auth-profile alias migration because ${shortenHomePath(databasePath)} is unavailable.`,
+      );
+      continue;
+    }
     const store = agentDir
       ? inspectPersistedAuthProfileStoreRaw(agentDir)
       : inspectPersistedSharedAuthProfileStoreRaw(env);
@@ -1748,32 +1773,105 @@ export function maybeRepairLegacyAuthProfileStores(params: {
       : inspectPersistedSharedAuthProfileStateRaw(env);
     if (
       store.status === "unreadable" ||
-      state.status === "unreadable" ||
       (agentDir !== undefined && inspectAuthDatabaseFiles(agentDir) === "unreadable") ||
-      (store.status === "readable" && !isReadableAuthAliasStore(store.raw)) ||
-      (state.status === "readable" && !isReadableAuthAliasState(state.raw))
+      (store.status === "readable" && (!isRecord(store.raw) || !isRecord(store.raw.profiles)))
     ) {
+      incompleteCensus = true;
       warnings.push(
         `Skipped auth-profile alias migration because ${shortenHomePath(databasePath)} is unreadable or invalid.`,
       );
       continue;
     }
-    if (store.status === "readable" || state.status === "readable") {
+    stores.push({ databasePath, store: store.status === "readable" ? store.raw : null });
+    if (
+      store.status === "readable" ||
+      state.status === "readable" ||
+      state.status === "unreadable"
+    ) {
+      assertExistingDatabaseIdentity(databasePath, identity.key, identity.birthtime);
+      const canReadRotationState =
+        state.status === "missing" ||
+        (state.status === "readable" && isReadableAuthAliasState(state.raw));
+      const canRenameAliases =
+        (store.status !== "readable" || isReadableAuthAliasStore(store.raw)) &&
+        canReadRotationState;
+      if (!canRenameAliases) {
+        warnings.push(
+          `Skipped auth-profile alias renames because ${shortenHomePath(databasePath)} is unreadable or invalid; supported credential fields can still be repaired.`,
+        );
+      }
+      const unreadableStateJson =
+        state.status === "unreadable"
+          ? readAuthProfileStateJsonTextReadOnly({
+              path: databasePath,
+              kind:
+                agentDir === undefined &&
+                resolveSharedAuthStoreOwnership(env).location === "state-db"
+                  ? "shared-state"
+                  : "agent",
+              env,
+            })
+          : undefined;
+      assertExistingDatabaseIdentity(databasePath, identity.key, identity.birthtime);
+      if (state.status === "unreadable" && unreadableStateJson === undefined) {
+        incompleteCensus = true;
+        warnings.push(
+          `Skipped auth-profile field repair because ${shortenHomePath(databasePath)} has no stable rotation-state source.`,
+        );
+        continue;
+      }
       planned.push({
         databasePath,
+        identity,
+        canRenameAliases,
+        canReadRotationState,
         agentDir,
         store: store.status === "readable" ? store.raw : null,
         state: state.status === "readable" ? state.raw : null,
+        ...(unreadableStateJson !== undefined ? { unreadableStateJson } : {}),
       });
     }
   }
+  const profileIdMap = new Map(incompleteCensus ? [] : params.profileIdMap);
+  if (incompleteCensus && params.profileIdMap.size > 0) {
+    warnings.push(
+      "Deferred auth profile aliases because an owner could not be inspected; repair that owner and rerun Doctor.",
+    );
+  }
+  for (const target of planned) {
+    if (target.canRenameAliases) {
+      continue;
+    }
+    const profiles =
+      isRecord(target.store) && isRecord(target.store.profiles) ? target.store.profiles : {};
+    const references = new Set([
+      ...Object.keys(profiles),
+      ...collectRawAuthRotationProfileIds(target.store),
+      ...collectRawAuthRotationProfileIds(target.state),
+    ]);
+    for (const [from, to] of profileIdMap) {
+      if (!target.canReadRotationState || references.has(from) || references.has(to)) {
+        profileIdMap.delete(from);
+        warnings.push(
+          `Deferred auth profile alias ${from} because ${shortenHomePath(target.databasePath)} cannot safely rename its credential owner.`,
+        );
+      }
+    }
+  }
+  const recovery = recoverAuthAliasMigration({
+    stores,
+    env,
+    archivedMappings: recoverArchivedAuthProfileMappings({ candidates, env }),
+  });
+  const migrationMap = params.renameProfileIds === false ? new Map<string, string>() : profileIdMap;
   const unresolvedProfileIds = new Set(
     Object.entries(params.cfg.auth?.profiles ?? {})
       .filter(
         ([id, profile]) =>
-          !params.profileIdMap.has(id) &&
+          !profileIdMap.has(id) &&
           (isLegacyAuthProfileId(id) ||
-            canonicalLegacyAuthProvider(profile.provider) !== profile.provider),
+            (typeof profile.provider === "string" &&
+              canonicalLegacyAuthProvider(profile.provider) !== profile.provider)),
       )
       .map(([id]) => id),
   );
@@ -1782,7 +1880,7 @@ export function maybeRepairLegacyAuthProfileStores(params: {
       ...collectRawAuthRotationProfileIds(target.store),
       ...collectRawAuthRotationProfileIds(target.state),
     ]) {
-      if (isLegacyAuthProfileId(id) && !params.profileIdMap.has(id)) {
+      if (isLegacyAuthProfileId(id) && !profileIdMap.has(id)) {
         unresolvedProfileIds.add(id);
       }
     }
@@ -1795,7 +1893,7 @@ export function maybeRepairLegacyAuthProfileStores(params: {
           ? profile.provider.trim().toLowerCase()
           : undefined;
       if (
-        !params.profileIdMap.has(profileId) &&
+        !profileIdMap.has(profileId) &&
         (isLegacyAuthProfileId(profileId) ||
           (provider !== undefined && canonicalLegacyAuthProvider(provider) !== provider))
       ) {
@@ -1808,9 +1906,6 @@ export function maybeRepairLegacyAuthProfileStores(params: {
       `Kept auth profile ${profileId} unchanged because its provider realm or identity is unresolved.`,
     );
   }
-  if (params.profileIdMap.size === 0) {
-    return { changes: [], warnings, profileIdMap: params.profileIdMap };
-  }
   for (const target of planned) {
     const profiles =
       isRecord(target.store) && isRecord(target.store.profiles) ? target.store.profiles : {};
@@ -1819,26 +1914,24 @@ export function maybeRepairLegacyAuthProfileStores(params: {
       ...collectRawAuthRotationProfileIds(target.store),
       ...collectRawAuthRotationProfileIds(target.state),
     ]);
-    for (const [from, to] of params.profileIdMap) {
-      if (from !== to && occupied.has(from) && occupied.has(to)) {
+    for (const [from, to] of profileIdMap) {
+      if (
+        from !== to &&
+        occupied.has(to) &&
+        (occupied.has(from) || recovery.recovered.get(from) !== to)
+      ) {
         return {
           changes: [],
           warnings: [
             ...warnings,
-            `Skipped stale auth-profile alias mapping for ${from}; the target is occupied.`,
+            `Deferred stale auth profile alias ${from}; the target is occupied.`,
           ],
           profileIdMap: new Map(),
         };
       }
     }
   }
-
-  const recovery = recoverAuthAliasMigration({
-    stores: planned,
-    env,
-    archivedMappings: recoverArchivedAuthProfileMappings({ candidates, env }),
-  });
-  for (const from of params.profileIdMap.keys()) {
+  for (const from of profileIdMap.keys()) {
     if (recovery.blocked.has(from)) {
       return {
         changes: [],
@@ -1853,30 +1946,130 @@ export function maybeRepairLegacyAuthProfileStores(params: {
   const migrated = planned.map((target) => {
     const migratedStore = structuredClone(target.store);
     const migratedState = structuredClone(target.state);
-    canonicalizeLegacyAuthStore(migratedStore, migratedState, params.profileIdMap);
+    if (target.canRenameAliases) {
+      canonicalizeLegacyAuthStore(migratedStore, migratedState, migrationMap);
+    }
+    normalizeLegacyAuthProfileFields(migratedStore);
     return Object.assign(target, { migratedStore, migratedState });
   });
+  const changed = migrated.filter(
+    (target) =>
+      !isDeepStrictEqual(target.store, target.migratedStore) ||
+      !isDeepStrictEqual(target.state, target.migratedState),
+  );
+  if (changed.length === 0 && migrationMap.size === 0) {
+    return { changes: [], warnings, profileIdMap };
+  }
+  const maintenance = getOpenClawDatabaseMaintenanceScope();
+  const assertTargetCurrent = (
+    target: (typeof migrated)[number],
+    database?: AuthProfileDatabase,
+  ) => {
+    maintenance?.assertOwnerCurrent();
+    assertExistingDatabaseIdentity(
+      target.databasePath,
+      target.identity.key,
+      target.identity.birthtime,
+    );
+    if (database) {
+      const native =
+        "agentId" in database ? readOpenClawAgentDatabaseIdentity(database) : undefined;
+      const identity = native
+        ? { key: `file:${String(native.identity)}`, birthtime: native.birthtime }
+        : requireOpenClawStateDatabaseIdentity(database);
+      if (identity.key !== target.identity.key) {
+        throw new Error("Auth profile database generation changed after backup; retry Doctor.");
+      }
+      assertExistingDatabaseIdentity(database.path, identity.key, identity.birthtime);
+    }
+  };
+  const changes: string[] = [];
+  const backupId = randomUUID();
+  for (const target of changed) {
+    assertTargetCurrent(target);
+    const kind =
+      target.agentDir === undefined && resolveSharedAuthStoreOwnership(env).location === "state-db"
+        ? "shared-state"
+        : "agent";
+    const backup = await createVerifiedSqliteSnapshot({
+      sourcePath: target.databasePath,
+      targetPath: `${target.databasePath}.auth-profile-migration-${backupId}.bak`,
+      preserveRowIds: true,
+      beforePublish: () => assertTargetCurrent(target),
+      validate: (database) => {
+        for (const field of ["store", "state"] as const) {
+          if (field === "state" && target.unreadableStateJson !== undefined) {
+            if (
+              readAuthProfileJsonCellText(database, "state", kind) !== target.unreadableStateJson
+            ) {
+              throw new Error(
+                "Auth profile backup differs from the planned rotation-state source; retry Doctor.",
+              );
+            }
+            continue;
+          }
+          const row = inspectAuthProfileJsonCell(database, field, kind);
+          if (
+            row.status === "unreadable" ||
+            !isDeepStrictEqual(row.status === "readable" ? row.raw : null, target[field])
+          ) {
+            throw new Error("Auth profile backup differs from the planned source; retry Doctor.");
+          }
+        }
+      },
+    });
+    assertTargetCurrent(target);
+    changes.push(`Saved auth profile migration backup: ${shortenHomePath(backup.path)}.`);
+  }
+  const assertSourceCurrent = (
+    target: (typeof migrated)[number],
+    database: AuthProfileDatabase,
+  ) => {
+    assertTargetCurrent(target, database);
+    if (
+      target.unreadableStateJson !== undefined &&
+      readAuthProfileJsonCellText(
+        database.db,
+        "state",
+        "agentId" in database ? "agent" : "shared-state",
+      ) !== target.unreadableStateJson
+    ) {
+      throw new Error("Auth profile rotation-state source changed during migration; retry Doctor.");
+    }
+    if (
+      !isDeepStrictEqual(
+        readPersistedAuthProfileStoreRaw(target.agentDir, database),
+        target.store,
+      ) ||
+      !isDeepStrictEqual(readPersistedAuthProfileStateRaw(target.agentDir, database), target.state)
+    ) {
+      throw new Error("auth profile store or rotation state changed during alias migration");
+    }
+  };
+  // Receipt preimages are checked under their owners before being recorded.
+  // Keep the receipt durable before independently committed database rewrites.
+  for (const target of migrated) {
+    runAuthProfileWriteTransaction(
+      target.agentDir,
+      (database) => assertSourceCurrent(target, database),
+      { env },
+    );
+  }
+  maintenance?.assertOwnerCurrent();
   const receiptSha256 = recordAuthAliasMigration({
-    profileIdMap: params.profileIdMap,
+    profileIdMap: migrationMap,
     stores: migrated,
     env,
+    normalizeCredentialFields: true,
   });
   const locked: Array<{ database: AuthProfileDatabase; target: (typeof migrated)[number] }> = [];
-  const changes: string[] = [];
   const migrate = (index: number, sharedDatabase?: OpenClawStateDatabase): void => {
     const nextTarget = migrated[index];
     if (nextTarget) {
       runAuthProfileWriteTransaction(
         nextTarget.agentDir,
         (database) => {
-          const store = readPersistedAuthProfileStoreRaw(nextTarget.agentDir, database);
-          const state = readPersistedAuthProfileStateRaw(nextTarget.agentDir, database);
-          if (
-            !isDeepStrictEqual(store, nextTarget.store) ||
-            !isDeepStrictEqual(state, nextTarget.state)
-          ) {
-            throw new Error("auth profile store or rotation state changed during alias migration");
-          }
+          assertSourceCurrent(nextTarget, database);
           locked.push({ database, target: nextTarget });
           migrate(index + 1, sharedDatabase);
         },
@@ -1884,8 +2077,9 @@ export function maybeRepairLegacyAuthProfileStores(params: {
       );
       return;
     }
+    maintenance?.assertOwnerCurrent();
     // Every participating owner is locked and revalidated before the first write.
-    const renamedLinks = renameUserProfileAuthLinks(params.profileIdMap, {
+    const renamedLinks = renameUserProfileAuthLinks(migrationMap, {
       env,
       database: sharedDatabase,
     });
@@ -1916,7 +2110,7 @@ export function maybeRepairLegacyAuthProfileStores(params: {
   if (changes.length > 0) {
     clearRuntimeAuthProfileStoreSnapshots();
   }
-  return { changes, warnings, profileIdMap: params.profileIdMap };
+  return { changes, warnings, profileIdMap };
 }
 
 function recoverArchivedAuthProfileMappings(params: {
@@ -1933,10 +2127,10 @@ function recoverArchivedAuthProfileMappings(params: {
     (archive) => archive.kind === "auth-profiles" || archive.kind === "legacy-auth",
   );
   for (const candidate of params.candidates) {
-    const canonicalProfiles = (
+    const canonicalProfiles = coerceLegacyAuthProfileStore(
       candidate.agentDir
-        ? loadPersistedAuthProfileStore(candidate.agentDir)
-        : loadPersistedSharedAuthProfileStore(params.env)
+        ? readPersistedAuthProfileStoreRaw(candidate.agentDir)
+        : readPersistedSharedAuthProfileStoreRaw(params.env),
     )?.profiles;
     if (!canonicalProfiles) {
       continue;
@@ -1983,7 +2177,7 @@ function recoverArchivedAuthProfileMappings(params: {
         }
         const archivedStore = JSON.parse(sourceBytes.toString("utf8")) as unknown;
         const sourceStore =
-          coercePersistedAuthProfileStore(archivedStore) ??
+          coerceLegacyAuthProfileStore(archivedStore) ??
           coerceLegacyFlatAuthProfileStore(archivedStore);
         if (!sourceStore) {
           continue;

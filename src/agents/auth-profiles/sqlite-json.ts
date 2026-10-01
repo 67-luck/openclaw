@@ -75,6 +75,35 @@ function inspectAuthProfileTable(
   return schemaObject.type === "table" ? null : { status: "unreadable" };
 }
 
+/** Read admitted auth cells without discarding malformed JSON needed for migration backups. */
+export function readAuthProfileJsonCellText(
+  db: DatabaseSync,
+  target: "store" | "state",
+  databaseKind: "agent" | "shared-state",
+): string | undefined {
+  if (databaseKind === "shared-state") {
+    return readSharedAuthKvCell(
+      db,
+      target === "store" ? SHARED_STORE_STATE_KEY : SHARED_STATE_STATE_KEY,
+    );
+  }
+  return target === "store"
+    ? executeSqliteQueryTakeFirstSync(
+        db,
+        getAgentAuthProfileKysely(db)
+          .selectFrom("auth_profile_store")
+          .select("store_json")
+          .where("store_key", "=", PRIMARY_ROW_KEY),
+      )?.store_json
+    : executeSqliteQueryTakeFirstSync(
+        db,
+        getAgentAuthProfileKysely(db)
+          .selectFrom("auth_profile_state")
+          .select("state_json")
+          .where("state_key", "=", PRIMARY_ROW_KEY),
+      )?.state_json;
+}
+
 export function inspectAuthProfileJsonCell(
   db: DatabaseSync,
   target: "store" | "state",
@@ -84,40 +113,9 @@ export function inspectAuthProfileJsonCell(
   if (tableInspection) {
     return tableInspection;
   }
-  let raw: string;
-  if (databaseKind === "shared-state") {
-    const cell = readSharedAuthKvCell(
-      db,
-      target === "store" ? SHARED_STORE_STATE_KEY : SHARED_STATE_STATE_KEY,
-    );
-    if (cell === undefined) {
-      return { status: "missing", reason: "row" };
-    }
-    raw = cell;
-  } else if (target === "store") {
-    const row = executeSqliteQueryTakeFirstSync(
-      db,
-      getAgentAuthProfileKysely(db)
-        .selectFrom("auth_profile_store")
-        .select("store_json")
-        .where("store_key", "=", PRIMARY_ROW_KEY),
-    );
-    if (!row) {
-      return { status: "missing", reason: "row" };
-    }
-    raw = row.store_json;
-  } else {
-    const row = executeSqliteQueryTakeFirstSync(
-      db,
-      getAgentAuthProfileKysely(db)
-        .selectFrom("auth_profile_state")
-        .select("state_json")
-        .where("state_key", "=", PRIMARY_ROW_KEY),
-    );
-    if (!row) {
-      return { status: "missing", reason: "row" };
-    }
-    raw = row.state_json;
+  const raw = readAuthProfileJsonCellText(db, target, databaseKind);
+  if (raw === undefined) {
+    return { status: "missing", reason: "row" };
   }
   try {
     return { status: "readable", raw: JSON.parse(raw) as unknown };

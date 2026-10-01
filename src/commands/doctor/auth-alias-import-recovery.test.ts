@@ -20,7 +20,59 @@ import {
   collectOpenAICodexAuthProfileStoreIdMap,
   maybeMigrateAuthProfileJsonStoresToSqlite,
 } from "../doctor-auth-flat-profiles.js";
+import { repairAuthProfileMigration } from "./auth-profile-repair.js";
 import { runDoctorRepairSequence } from "./repair-sequencing.js";
+
+it("defers a stale supplied alias when its JSON destination is already occupied", async () => {
+  await withOpenClawTestState(
+    { label: "alias-stale-json-destination", layout: "home" },
+    async (fixture) => {
+      const from = "claude-cli:work";
+      const to = "anthropic:work";
+      const cfg: OpenClawConfig = {
+        plugins: { enabled: false },
+        auth: { profiles: { [from]: { provider: "claude-cli", mode: "api_key" } } },
+      };
+      runAuthProfileWriteTransaction(
+        undefined,
+        (database) => {
+          writePersistedAuthProfileStoreRaw(
+            {
+              version: 1,
+              profiles: {
+                [to]: { type: "api_key", provider: "anthropic", key: "synthetic-existing-account" },
+              },
+            },
+            undefined,
+            database,
+          );
+        },
+        { env: fixture.env },
+      );
+      await fixture.writeJson("agents/main/agent/auth-profiles.json", {
+        version: 1,
+        profiles: {
+          [from]: { type: "api_key", provider: "claude-cli", key: "synthetic-imported-account" },
+        },
+      });
+      const repaired = await repairAuthProfileMigration({
+        cfg,
+        env: fixture.env,
+        prompter: { shouldRepair: true, confirmAutoFix: async () => true },
+        profileIdMap: new Map([[from, to]]),
+      });
+      expect(repaired.profileIdMap.size).toBe(0);
+      expect(repaired.config.auth).toEqual(cfg.auth);
+      expect(readPersistedSharedAuthProfileStoreRaw(fixture.env)).toMatchObject({
+        profiles: {
+          [from]: { key: "synthetic-imported-account" },
+          [to]: { key: "synthetic-existing-account" },
+        },
+      });
+      expect(repaired.warnings.join("\n")).toContain("Deferred stale auth profile alias");
+    },
+  );
+});
 
 it("keeps an old selection unresolved when its source ID is recreated", async () => {
   await withOpenClawTestState({ label: "alias-recreated", layout: "home" }, async (fixture) => {
