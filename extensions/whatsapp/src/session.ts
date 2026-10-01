@@ -249,7 +249,9 @@ async function createWaSocketInternal(
   // Interactive login observes Baileys' deferred writes even when no setup
   // authority guard is needed; otherwise a socket can open before persistence fails.
   const observesCredentialPersistence = Boolean(
-    opts.onCredentialPersistenceError || opts.onCredentialPersistenceTask,
+    opts.beforeCredentialPersistence ||
+    opts.onCredentialPersistenceError ||
+    opts.onCredentialPersistenceTask,
   );
   const signalKeys: SignalKeyStore = observesCredentialPersistence
     ? {
@@ -349,7 +351,6 @@ async function createWaSocketInternal(
         safeSaveCreds({
           authDir,
           saveCreds,
-          logger: sessionLogger,
           beforeCredentialPersistence: opts.beforeCredentialPersistence,
         }),
       (err) => {

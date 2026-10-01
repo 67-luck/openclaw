@@ -13,11 +13,8 @@ import {
 } from "openclaw/plugin-sdk/runtime-env";
 import { resolveWhatsAppAccount } from "./accounts.js";
 import { getActiveWebListener } from "./active-listener.js";
-import {
-  closeWaSocket,
-  waitForWhatsAppLoginResult,
-  WHATSAPP_LOGGED_OUT_QR_MESSAGE,
-} from "./connection-controller.js";
+import { closeWaSocket, WHATSAPP_LOGGED_OUT_QR_MESSAGE } from "./connection-controller.js";
+import { waitForWhatsAppLoginResult } from "./login-result.js";
 import { renderQrPngDataUrl } from "./qr-image.js";
 import {
   createWaSocket,
