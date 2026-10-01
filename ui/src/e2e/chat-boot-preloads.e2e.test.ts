@@ -20,9 +20,17 @@ suite.define(() => {
           const source = await response.text();
           expect(source).toContain('<template data-openclaw-route-preloads="chat">');
           const html = selectControlUiRoutePreloads(source, "chat");
-          const head = html.split("</head>")[0];
+          const headEnd = html.indexOf("</head>");
+          if (headEnd < 0) {
+            throw new Error("Built Control UI document has no head");
+          }
+          const head = html.slice(0, headEnd);
           for (const match of head.matchAll(/<(?:script|link)\b[^>]*(?:src|href)="([^"]+\.js)"/g)) {
-            const url = new URL(match[1], route.request().url());
+            const href = match[1];
+            if (href === undefined) {
+              throw new Error("Built JavaScript preload has no asset URL");
+            }
+            const url = new URL(href, route.request().url());
             if (url.origin === new URL(suite.server.baseUrl).origin) {
               preloaded.add(url.pathname.slice(url.pathname.indexOf("/assets/")));
             }

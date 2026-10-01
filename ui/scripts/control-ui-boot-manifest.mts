@@ -182,7 +182,7 @@ async function main(): Promise<void> {
           enforce: "post",
           async transform(code, id) {
             if (!/\bimport\s*\(/.test(code)) {
-              return;
+              return undefined;
             }
             const imports: Array<{ start: number; end: number; source: string }> = [];
             const visit = (node: unknown): void => {
