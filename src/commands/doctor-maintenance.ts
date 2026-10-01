@@ -382,7 +382,10 @@ export async function beginDoctorMaintenance(
     throw refusal;
   };
   // Admission can stop the service before returning a maintenance handle.
-  const exit = holdDoctorMaintenanceExit();
+  const exit = holdDoctorMaintenanceExit((message) => {
+    warnings.push(message);
+    params.runtime.error(message);
+  });
   const state = createDoctorMaintenanceState({
     params,
     env,
@@ -588,7 +591,7 @@ export async function beginDoctorMaintenance(
     get databaseWrites() {
       return state.receipt;
     },
-    run: <T>(operation: () => T) => state.resources!.run(operation),
+    run: <T>(operation: () => T) => state.run(operation),
     releaseState: () => settle(releaseState),
     async release() {
       if (this !== maintenance) {
