@@ -178,6 +178,54 @@ describe("bundled plugin assets", () => {
     });
   });
 
+  it("defers only selected isolated hooks and keeps standalone and Docker asset preparation", async () => {
+    await withPluginAssetFixture(async (rootDir) => {
+      fs.writeFileSync(path.join(rootDir, "package.json"), '{"name":"openclaw","version":"1.0.0"}');
+      for (const id of ["isolated", "unselected", "untracked"]) {
+        const directory = path.join(rootDir, "extensions", id);
+        fs.mkdirSync(directory);
+        fs.writeFileSync(
+          path.join(directory, "package.json"),
+          JSON.stringify({
+            name: `@fixture/${id}`,
+            openclaw: {
+              extensions: ["./index.ts"],
+              build: { bundledDist: false },
+              release: { publishToNpm: true },
+              assetScripts: { build: "node build.mjs" },
+            },
+          }),
+        );
+        // Directory IDs own isolation even when a manifest advertises another alias.
+        fs.writeFileSync(
+          path.join(directory, "openclaw.plugin.json"),
+          JSON.stringify({ id: `${id}-alias` }),
+        );
+        fs.writeFileSync(path.join(directory, "index.ts"), "export {};\n");
+      }
+      execFileSync("git", ["init", "--quiet"], { cwd: rootDir });
+      execFileSync(
+        "git",
+        ["add", "extensions/canvas", "extensions/isolated", "extensions/unselected"],
+        { cwd: rootDir },
+      );
+      vi.stubEnv("OPENCLAW_BUNDLED_PLUGIN_BUILD_IDS", "canvas,isolated");
+      vi.stubEnv("OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS", undefined);
+      try {
+        const readIds = async (deferIsolated = false) =>
+          (await readBundledPluginAssetHooks({ phase: "build", rootDir, deferIsolated })).map(
+            ({ pluginDir }) => path.basename(pluginDir),
+          );
+        expect(await readIds(true)).toEqual(["canvas", "unselected", "untracked"]);
+        expect(await readIds()).toEqual(["canvas", "isolated", "unselected", "untracked"]);
+        vi.stubEnv("OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS", "isolated");
+        expect(await readIds(true)).toEqual(["canvas", "isolated", "unselected", "untracked"]);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+  });
+
   it("bounds stalled asset hooks and reports the affected plugin safely", async () => {
     await withPluginAssetFixture(async (rootDir) => {
       const pluginDir = path.join(rootDir, "extensions", "canvas");
@@ -281,6 +329,14 @@ describe("bundled plugin assets", () => {
     expect(() =>
       parseBundledPluginAssetArgs(["--phase", "build", "--check", "--plugin=canvas"]),
     ).toThrow("--check cannot be combined with --plugin filters");
+    for (const args of [
+      ["--phase", "build", "--check", "--defer-isolated"],
+      ["--phase", "copy", "--defer-isolated"],
+    ]) {
+      expect(() => parseBundledPluginAssetArgs(args)).toThrow(
+        "--defer-isolated requires --phase build without --check",
+      );
+    }
   });
 
   it("reports declared generated outputs that differ from the committed bytes", async () => {

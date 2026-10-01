@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 // Discovers and runs bundled plugin package asset hooks.
+import { collectSourceCheckoutPluginBuildEntries } from "./lib/bundled-plugin-build-entries.mjs";
 import { runManagedCommand } from "./lib/managed-child-process.mts";
 import { assertRealOutputRoot } from "./lib/output-root-guard.mjs";
 import { isRecord } from "./lib/record-shared.mjs";
@@ -21,6 +22,7 @@ type AssetOptions = {
   plugins?: string[];
   rootDir?: string;
   timeoutMs?: number;
+  deferIsolated?: boolean;
 };
 
 function isAssetPhase(value: unknown): value is AssetPhase {
@@ -91,8 +93,20 @@ export async function readBundledPluginAssetHooks(options: AssetOptions = {}) {
   if (!isAssetPhase(phase)) {
     throw new Error(`Unsupported bundled plugin asset phase: ${String(phase)}`);
   }
+  if (options.deferIsolated && phase !== "build") {
+    throw new Error("--defer-isolated requires --phase build");
+  }
 
   const pluginFilters = new Set((options.plugins ?? []).filter(Boolean));
+  // Their package builders generate and validate assets after compiling the
+  // isolated graph. Keep all other hooks, including untracked source packages.
+  const deferredPluginIds = new Set(
+    options.deferIsolated
+      ? collectSourceCheckoutPluginBuildEntries({ cwd: repoRoot })
+          .filter(({ isolated }) => isolated)
+          .map(({ id }) => id)
+      : [],
+  );
   const extensionsDir = path.join(repoRoot, "extensions");
   let entries;
   try {
@@ -103,7 +117,7 @@ export async function readBundledPluginAssetHooks(options: AssetOptions = {}) {
 
   const hooks = [];
   for (const entry of entries) {
-    if (!entry.isDirectory()) {
+    if (!entry.isDirectory() || deferredPluginIds.has(entry.name)) {
       continue;
     }
     const pluginDir = path.join(extensionsDir, entry.name);
@@ -218,6 +232,7 @@ export function parseBundledPluginAssetArgs(argv: string[]) {
   const plugins: string[] = [];
   let phase: string | null = null;
   let check = false;
+  let deferIsolated = false;
 
   while (args.length > 0) {
     const arg = args.shift();
@@ -244,6 +259,10 @@ export function parseBundledPluginAssetArgs(argv: string[]) {
       check = true;
       continue;
     }
+    if (arg === "--defer-isolated") {
+      deferIsolated = true;
+      continue;
+    }
     throw new Error(`Unknown bundled plugin asset argument: ${String(arg)}`);
   }
 
@@ -258,8 +277,11 @@ export function parseBundledPluginAssetArgs(argv: string[]) {
   if (check && plugins.length > 0) {
     throw new Error("--check cannot be combined with --plugin filters");
   }
+  if (deferIsolated && (check || phase !== "build")) {
+    throw new Error("--defer-isolated requires --phase build without --check");
+  }
 
-  return { check, phase, plugins };
+  return { check, phase, plugins, ...(deferIsolated ? { deferIsolated } : {}) };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
