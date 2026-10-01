@@ -63,9 +63,12 @@ schemas so the provider's prompt cache applies. Model fallbacks are disabled. It
 runs on the embedded OpenClaw harness under a private session that never
 appears in your transcript.
 
-Only `skill_workshop` executes. Any other tool call gets a normal result such as
-`exec is not available in this background run. Use skill_workshop instead; do
-not retry exec.` That result is not a failure. The review must `view` a skill
+The review can look things up with `read`, `ls`, `view_image`, `web_search`,
+`web_fetch`, `sessions_history`, `sessions_search`, `memory_search`, and
+`memory_get`; `skill_workshop` is the only tool that changes anything. Tools that
+act, such as `exec`, `write`, or `message`, return a normal result such as
+`exec is not available in this background run.` That result is not a failure,
+and the review never re-runs your task. The review must `view` a skill
 before it patches, writes, or archives it, and an archive needs `absorbed_into`
 or `reason`.
 

@@ -6,12 +6,26 @@ import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admissi
 
 const reviews = createBackgroundWorkOwner({ owner: "core:skill-workshop", maxConcurrent: 1 });
 
-/** Only skill_workshop executes in a background Workshop run; other calls get a redirect. */
-const SKILL_WORKSHOP_REVIEW_TOOLS = ["skill_workshop"] as const;
+/**
+ * A background review can look things up but changes nothing outside learned skills: it runs
+ * unattended on conversation content, so it must never re-run the task or touch other files.
+ */
+const SKILL_WORKSHOP_REVIEW_TOOLS = [
+  "skill_workshop",
+  "read",
+  "ls",
+  "view_image",
+  "web_search",
+  "web_fetch",
+  "sessions_history",
+  "sessions_search",
+  "memory_search",
+  "memory_get",
+] as const;
 
 /**
- * The background Workshop review run: the openclaw harness on a locked model, executing
- * only skill_workshop behind the review guard, crediting changes to the reviewed session.
+ * The background Workshop review run: the openclaw harness on a locked model, crediting
+ * changes to the reviewed session.
  */
 export async function runSkillWorkshopReview(
   params: RunEmbeddedAgentParams & {

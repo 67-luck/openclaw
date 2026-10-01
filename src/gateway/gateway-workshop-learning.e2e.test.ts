@@ -233,8 +233,8 @@ describe("Gateway automatic Workshop learning", () => {
               args: { id: "skill_workshop", args },
             });
             reviewActions = [
-              // Gated: answers with a redirect instead of failing the review.
-              { name: "read", args: { path: outsideFile } },
+              // Acting tools are gated: they answer with a redirect instead of failing the review.
+              { name: "write", args: { path: outsideFile, content: "overwritten by review\n" } },
               workshopCall({ action: "view", name: "map-publication" }),
               workshopCall({
                 action: "patch",
@@ -361,7 +361,7 @@ describe("Gateway automatic Workshop learning", () => {
               (item) => item.type === "function_call_output",
             );
             expect(outsideResult?.output).toContain(
-              "read is not available in this background run. Use skill_workshop instead; do not retry read.",
+              "write is not available in this background run.",
             );
             expect(outside).toBe(outsideContent);
             for (const reviewRequest of reviewRequests) {
