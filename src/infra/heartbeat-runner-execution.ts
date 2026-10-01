@@ -476,7 +476,8 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
     const isolatedStorePath = preflight.session.storePath;
     // The follow-up still needs the legacy row's explicit base binding for its original queue.
     const staleIsolatedSessionKey =
-      heartbeatRunPrompt.hasExecCompletion && heartbeatRunPrompt.hasCronEvents
+      preflight.deferredEventEntries.length > 0 ||
+      (heartbeatRunPrompt.hasExecCompletion && heartbeatRunPrompt.hasCronEvents)
         ? undefined
         : resolveStaleHeartbeatIsolatedSessionKey({
             sessionKey,

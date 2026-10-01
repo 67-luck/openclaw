@@ -34,6 +34,8 @@ export type SystemEvent = {
   contextKey?: string | null;
   deliveryContext?: DeliveryContext;
   sessionStorePath?: string | null;
+  /** An attempted delivery needs reconciliation; unrelated wakes must not replay it. */
+  deliveryHeld?: true;
 };
 
 const MAX_EVENTS = 20;
@@ -279,12 +281,52 @@ export function consumeSelectedSystemEventEntries(
   return removed;
 }
 
+/** Returns selected occurrences that still belong to this exact queue without consuming them. */
+export function selectQueuedSystemEventEntries(
+  sessionKey: string,
+  selectedEntries: readonly SystemEvent[],
+): SystemEvent[] {
+  const entry = getSessionQueue(sessionKey);
+  if (!entry || entry.queue.length === 0 || selectedEntries.length === 0) {
+    return [];
+  }
+  const selected: SystemEvent[] = [];
+  for (const candidate of selectedEntries) {
+    const queued = entry.queue.find((event) => matchesConsumedSystemEvent(event, candidate));
+    if (queued) {
+      selected.push(cloneSystemEvent(queued));
+    }
+  }
+  return selected;
+}
+
 export function drainSystemEvents(sessionKey: string): string[] {
   return drainSystemEventsWith(sessionKey, (event) => event.text);
 }
 
 export function peekSystemEventEntries(sessionKey: string): SystemEvent[] {
   return getSessionQueue(sessionKey)?.queue.map(cloneSystemEvent) ?? [];
+}
+
+/** Pending model turns exclude occurrences already handed to delivery/recovery custody. */
+export function peekDeliverableSystemEventEntries(sessionKey: string): SystemEvent[] {
+  return peekSystemEventEntries(sessionKey).filter((event) => !event.deliveryHeld);
+}
+
+/** Hold exact attempted occurrences without acknowledging or removing their queue ownership. */
+export function holdSystemEventDelivery(
+  sessionKey: string,
+  attemptedEntries: readonly SystemEvent[],
+): void {
+  const entry = getSessionQueue(sessionKey);
+  if (!entry) {
+    return;
+  }
+  for (const event of entry.queue) {
+    if (attemptedEntries.some((attempted) => matchesConsumedSystemEvent(event, attempted))) {
+      event.deliveryHeld = true;
+    }
+  }
 }
 
 export function peekSystemEvents(sessionKey: string): string[] {

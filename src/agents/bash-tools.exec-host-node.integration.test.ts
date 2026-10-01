@@ -206,6 +206,24 @@ it("preserves the terminal fallback for a legacy node without result-first suppo
   });
 });
 
+it("preserves the terminal fallback for a non-Telegram result-first node", async () => {
+  const sessionKey = "agent:main:webchat:node-proof";
+  await executeNodeHostCommand({
+    ...request,
+    sessionKey,
+    turnSourceChannel: "webchat",
+    turnSourceTo: "dashboard:node-proof",
+  });
+
+  const finished = nodeEvents.find((event) => event.event === "exec.finished");
+  expect(JSON.parse(finished?.payloadJSON ?? "{}")).toMatchObject({
+    sessionKey,
+    suppressNotifyOnExit: false,
+    notifyOnExit: true,
+    invokeResultSentFirst: true,
+  });
+});
+
 it.each([
   { host: "gateway", surface: "subagent" },
   { host: "node", surface: "dashboard" },

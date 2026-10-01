@@ -123,7 +123,9 @@ Proactive heartbeat behavior is opt-in:
   night-time pings in your configured local timezone (see
   [Timezone](/concepts/timezone)).
 
-Heartbeat can react to completion events from background execution.
+Heartbeat can react to completion events from background execution. Queued events with different delivery routes run in separate turns, including different accounts or topics. Identical completion text does not suppress a different completion occurrence.
+
+If a completion send is unconfirmed, its occurrence stays queued but is held out of later model turns so unrelated wakes cannot regenerate and resend it. Other routes can continue. Once a send enters the durable delivery queue, that queue owns transport retries. Use `process poll` to collect an exec result, and verify whether a message arrived before manually resending an ambiguous delivery.
 
 If you want a heartbeat to do something very specific (e.g. "check Gmail PubSub stats" or "verify gateway health"), set `agents.defaults.heartbeat.prompt` (or `agents.entries.*.heartbeat.prompt`) to a custom body (sent verbatim).
 

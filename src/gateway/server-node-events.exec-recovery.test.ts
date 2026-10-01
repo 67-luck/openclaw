@@ -170,6 +170,37 @@ describe("result-first node exec completion", () => {
     );
   });
 
+  it.each([false, true])(
+    "preserves a non-Telegram terminal fallback with invokeResultReceived=%s",
+    async (invokeResultReceived) => {
+      const sessionKey = "agent:main:webchat:node-proof";
+      const runId = invokeResultReceived
+        ? "run-webchat-result-received"
+        : "run-webchat-result-lost";
+      await handleNodeEvent(
+        buildCtx(() => ({ invokeResultReceived })),
+        "node-1",
+        nodeEvent("exec.finished", {
+          sessionKey,
+          runId,
+          exitCode: 0,
+          output: "webchat fallback",
+          suppressNotifyOnExit: false,
+          invokeResultSentFirst: true,
+        }),
+        { connId: "conn-1" },
+      );
+
+      expect(enqueueSystemEventMock).toHaveBeenCalledExactlyOnceWith(
+        `Exec finished (node=node-1 id=${runId}, code 0)\nwebchat fallback`,
+        { sessionKey, contextKey: `exec:${runId}` },
+      );
+      expect(requestHeartbeatMock).toHaveBeenCalledExactlyOnceWith(
+        execEventHeartbeatOptions(sessionKey),
+      );
+    },
+  );
+
   it.each([
     ["matching recovery", true, "work", "work", true],
     ["route replaced by another account", true, "work", "personal", false],

@@ -4,6 +4,7 @@
  * and `node.invoke system.run` execution for host=node calls.
  */
 import { randomUUID } from "node:crypto";
+import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { APPROVALS_SCOPE, WRITE_SCOPE } from "../gateway/operator-scopes.js";
 import {
   type ExecSecurity,
@@ -623,7 +624,9 @@ export async function executeNodeHostCommand(
     approvalDecision: inlineApprovalSource ? null : inlineApprovalDecision,
     approvalSource: inlineApprovalSource,
     runId: inlineApprovalId,
-    suppressNotifyOnExit: target.supportsResultFirstCompletion,
+    suppressNotifyOnExit:
+      target.supportsResultFirstCompletion &&
+      normalizeLowercaseStringOrEmpty(params.turnSourceChannel) === "telegram",
     notifyOnExit: params.notifyOnExit,
     systemRunPlan: prepared.plan,
   });

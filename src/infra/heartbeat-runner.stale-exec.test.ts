@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getReplySystemEventContext } from "../auto-reply/reply/system-event-session-key.js";
 import { resetConfigRuntimeState, type OpenClawConfig } from "../config/config.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
@@ -172,6 +173,22 @@ describe("stale exec heartbeat wakes", () => {
       expect((await run()).status).toBe("ran");
       expect(replySpy).toHaveBeenCalledOnce();
       expect(peekSystemEvents(sessionKey)).toEqual([]);
+    }),
+  );
+
+  it(
+    "processes a coalesced notification after its exec occurrence was polled",
+    heartbeatCase(async ({ sessionKey, replySpy, run }) => {
+      const marker = "COALESCED_NOTIFICATION";
+      enqueueSystemEvent(marker, { sessionKey, contextKey: "notification:coalesced" });
+      replySpy.mockImplementation(async (_ctx, options) => {
+        expect(getReplySystemEventContext(options)?.events?.map((event) => event.text)).toContain(
+          marker,
+        );
+        return { text: "HEARTBEAT_OK" };
+      });
+      expect((await run()).status).toBe("ran");
+      expect(replySpy).toHaveBeenCalledOnce();
     }),
   );
 

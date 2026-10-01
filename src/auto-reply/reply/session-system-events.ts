@@ -15,11 +15,14 @@ import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.j
 import {
   consumeSelectedSystemEventEntries,
   peekSystemEventEntries,
+  selectQueuedSystemEventEntries,
   type SystemEvent,
 } from "../../infra/system-events.js";
+import { channelRouteDedupeKey } from "../../plugin-sdk/channel-route.js";
 import { SESSION_CREATED_NOTICE_CONTEXT_PREFIX } from "../../sessions/session-state-event-kinds.js";
 import { acknowledgeSessionStateNotices } from "../../sessions/session-state-events.js";
 import { decodeSessionStateNoticeContextKey } from "../../sessions/session-state-notices.js";
+import type { DeliveryContext } from "../../utils/delivery-context.shared.js";
 
 function compactSystemEvent(event: SystemEvent): string | null {
   const trimmed = event.text.trim();
@@ -85,6 +88,24 @@ function formatSystemEventTimestamp(ts: number, cfg: OpenClawConfig) {
   );
 }
 
+export function consumePreparedSystemEventEntries(params: {
+  agentId: string;
+  sessionKey: string;
+  events: readonly SystemEvent[];
+}): SystemEvent[] {
+  const queueKey = resolveSystemEventQueueKey(params.sessionKey, params.agentId);
+  const consumed = consumeSelectedSystemEventEntries(queueKey, params.events);
+  const sessionStateTargets = consumed
+    .map((event) =>
+      event.contextKey ? decodeSessionStateNoticeContextKey(event.contextKey) : undefined,
+    )
+    .filter((target): target is string => target !== undefined);
+  if (sessionStateTargets.length > 0) {
+    acknowledgeSessionStateNotices(params.sessionKey, sessionStateTargets);
+  }
+  return consumed;
+}
+
 /** Drain queued system events, format as `System:` lines, return the block text (or undefined). */
 export async function drainFormattedSystemEvents(params: {
   cfg: OpenClawConfig;
@@ -93,25 +114,36 @@ export async function drainFormattedSystemEvents(params: {
   isMainSession: boolean;
   isNewSession: boolean;
   events?: readonly SystemEvent[];
+  consume?: boolean;
+  deliveryContext?: DeliveryContext;
 }): Promise<string | undefined> {
   const systemLines: string[] = [];
   const queueKey = resolveSystemEventQueueKey(params.sessionKey, params.agentId);
   // Exec completions have a dedicated heartbeat prompt; leave those entries queued
   // so the heartbeat path can consume and deliver them.
-  const queued = consumeSelectedSystemEventEntries(
-    queueKey,
-    (params.events ?? peekSystemEventEntries(queueKey)).filter(
-      (event) => !isExecCompletionEvent(event.text),
-    ),
-  );
-  const sessionStateTargets = queued
-    .map((event) =>
-      event.contextKey ? decodeSessionStateNoticeContextKey(event.contextKey) : undefined,
-    )
-    .filter((target): target is string => target !== undefined);
-  if (sessionStateTargets.length > 0) {
-    acknowledgeSessionStateNotices(params.sessionKey, sessionStateTargets);
-  }
+  const requested = params.events ?? peekSystemEventEntries(queueKey);
+  const requestedRouteKey = params.deliveryContext
+    ? channelRouteDedupeKey(params.deliveryContext)
+    : undefined;
+  const selected = requested
+    .filter((event) => !event.deliveryHeld && !isExecCompletionEvent(event.text))
+    .filter((event) => {
+      if (params.events || !event.deliveryContext) {
+        return true;
+      }
+      return (
+        requestedRouteKey !== undefined &&
+        channelRouteDedupeKey(event.deliveryContext) === requestedRouteKey
+      );
+    });
+  const queued =
+    params.consume === false
+      ? selectQueuedSystemEventEntries(queueKey, selected)
+      : consumePreparedSystemEventEntries({
+          agentId: params.agentId,
+          sessionKey: params.sessionKey,
+          events: selected,
+        });
   for (const event of queued) {
     const compacted = compactSystemEvent(event);
     if (!compacted) {

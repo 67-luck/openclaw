@@ -1,9 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
-import { drainFormattedSystemEvents } from "../auto-reply/reply/session-system-events.js";
 import { getReplySystemEventContext } from "../auto-reply/reply/system-event-session-key.js";
-import type { OpenClawConfig } from "../config/config.js";
 import { resolveMainSessionKey } from "../config/sessions/main-session.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { loadExactSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
@@ -21,6 +19,7 @@ import { CommandLane } from "../process/lanes.js";
 import { racePromiseWithAbortSignal } from "./abort-signal.js";
 import type { HeartbeatConfig } from "./heartbeat-config.js";
 import { runHeartbeatOnce, startHeartbeatRunner } from "./heartbeat-runner.js";
+import { formatQueuedEvents } from "./heartbeat-runner.system-events.test-support.js";
 import {
   type HeartbeatReplySpy,
   type HeartbeatReplyContext,
@@ -125,26 +124,6 @@ function routingFixture(
       deps: { getReplyFromConfig: replySpy, telegram: sendTelegram, ...opts.deps },
     });
   return { cfg, storePath, replySpy, baseKey, isolatedKey, sendTelegram, run };
-}
-
-function formatQueuedEvents(
-  cfg: OpenClawConfig,
-  ctx: Parameters<HeartbeatReplySpy>[0],
-  options: Parameters<HeartbeatReplySpy>[1],
-) {
-  const event = getReplySystemEventContext(options);
-  const sessionKey = event?.sessionKey ?? ctx.SessionKey;
-  if (!sessionKey) {
-    throw new Error("Expected the selected event queue");
-  }
-  return drainFormattedSystemEvents({
-    cfg,
-    agentId: "main",
-    sessionKey,
-    isMainSession: false,
-    isNewSession: false,
-    events: event?.events ?? [],
-  });
 }
 
 describe("Heartbeat event routing", () => {
@@ -298,16 +277,26 @@ describe("Heartbeat event routing", () => {
       const readEntry = (sessionKey: string) =>
         loadExactSessionEntryReadOnly({ storePath, agentId: "ops", sessionKey })?.entry;
       expect(readEntry(baseKey)?.sessionId).toBe("base-conversation");
-      enqueueSystemEvent("Exec completed (legacy, code 0) :: ready", { sessionKey: queueKey });
+      enqueueSystemEvent("Exec completed (legacy, code 0) :: ready", {
+        sessionKey: queueKey,
+        deliveryContext: { channel: "telegram", to: "-100155462274", threadId: 47 },
+      });
       enqueueSystemEvent("Reminder: Legacy queue work", {
         sessionKey: queueKey,
         contextKey: "cron:legacy",
+        deliveryContext: { channel: "telegram", to: "-100155462274", threadId: 99 },
       });
       enqueueSystemEvent("Unrelated base event", { sessionKey: baseKey });
       const sendTelegram = vi.fn().mockResolvedValue({ messageId: "delivered" });
-      replySpy.mockImplementation(async (ctx) => ({
-        text: ctx.InternalTurnSource === "exec" ? "Command completed" : "Reminder handled",
-      }));
+      let bindingAtExec: string | undefined;
+      replySpy.mockImplementation(async (ctx) => {
+        if (ctx.InternalTurnSource === "exec") {
+          bindingAtExec = readEntry(queueKey)?.heartbeatIsolatedBaseSessionKey;
+        }
+        return {
+          text: ctx.InternalTurnSource === "exec" ? "Command completed" : "Reminder handled",
+        };
+      });
       const followup = createDeferred<Awaited<ReturnType<typeof runHeartbeatOnce>>>();
       const runner = startHeartbeatRunner({
         cfg,
@@ -317,7 +306,7 @@ describe("Heartbeat event routing", () => {
             cfg,
             deps: { getReplyFromConfig: replySpy, telegram: sendTelegram },
           });
-          if (opts.source === "cron") {
+          if (opts.source !== "exec-event") {
             followup.resolve(run);
           }
           return run;
@@ -333,7 +322,8 @@ describe("Heartbeat event routing", () => {
           sessionKey: queueKey,
           coalesceMs: 0,
         });
-        // The exec wake settles before its separately scheduled cron follow-up.
+        expect(bindingAtExec).toBe(baseKey);
+        // The exec wake settles before its separately scheduled route follow-up.
         await expect(racePromiseWithAbortSignal(followup.promise, signal)).resolves.toMatchObject({
           status: "ran",
         });
@@ -359,6 +349,7 @@ describe("Heartbeat event routing", () => {
     { name: "legacy isolated", queue: "legacy", dedicated: "none", busy: false },
     { name: "shared", queue: "shared", dedicated: "none", busy: false },
     { name: "excluded base", queue: "base", dedicated: "none", busy: false },
+    { name: "excluded base exec same-route", queue: "base", dedicated: "exec", busy: false },
     { name: "legacy exec and cron", queue: "legacy", dedicated: "exec", busy: false },
     { name: "busy legacy", queue: "legacy", dedicated: "none", busy: true },
   ])("preserves generic wake queue ownership for $name", async ({ queue, dedicated, busy }) => {
@@ -382,7 +373,12 @@ describe("Heartbeat event routing", () => {
       const completion = "Exec completed (queue-report, code 0) :: report is ready";
       const reminder = "Reminder: review the scheduled report";
       if (dedicated === "exec") {
-        enqueueSystemEvent(completion, { sessionKey: queueKey });
+        enqueueSystemEvent(completion, {
+          sessionKey: queueKey,
+          ...(queue === "base"
+            ? { deliveryContext: { channel: "telegram", to: "-100999999999", threadId: 42 } }
+            : {}),
+        });
         enqueueSystemEvent(reminder, { sessionKey: queueKey, contextKey: "cron:queue-report" });
       }
       enqueueSystemEvent(generic, {
@@ -441,7 +437,9 @@ describe("Heartbeat event routing", () => {
       if (queue === "base") {
         expectTelegramSend(sendTelegram, { to: "-100155462274", text: "Restart complete" });
         expect(formatted ?? "").not.toContain(generic);
-        expect(peekSystemEvents(queueKey)).toEqual(queuedBefore);
+        expect(peekSystemEvents(queueKey)).toEqual(
+          dedicated === "exec" ? [reminder, generic] : queuedBefore,
+        );
       } else {
         expect(formatted).toContain(generic);
         expect(formatted).not.toContain(completion);
@@ -551,7 +549,12 @@ describe("Heartbeat event routing", () => {
         lastThreadId: 2175,
       });
 
-      replySpy.mockResolvedValue({ text: reply });
+      let projectedSystemEvents: string[] = [];
+      replySpy.mockImplementation(async (_ctx, options) => {
+        projectedSystemEvents =
+          getReplySystemEventContext(options)?.events?.map((event) => event.text) ?? [];
+        return { text: reply };
+      });
       enqueueSystemEvent(`Exec completed (review-run, code 0)${output ? ` :: ${output}` : ""}`, {
         sessionKey,
         deliveryContext: {
@@ -580,6 +583,7 @@ describe("Heartbeat event routing", () => {
         expect(getFirstReplyContext(replySpy).Body).toContain("no command output was found");
         expect(sendTelegram).not.toHaveBeenCalled();
       }
+      expect(projectedSystemEvents).not.toContain("Node connected");
       expect(peekSystemEvents(sessionKey)).toEqual(["Node connected"]);
     }, false);
   });
@@ -604,9 +608,7 @@ describe("Heartbeat event routing", () => {
         });
       enqueueCompletion("work-report", "work", 47);
       enqueueCompletion("personal-report", "personal", 99);
-      replySpy
-        .mockResolvedValueOnce({ text: "The work report is ready." })
-        .mockResolvedValueOnce({ text: "The personal report is ready." });
+      replySpy.mockResolvedValue({ text: "Done." });
 
       const followup = createDeferred<Awaited<ReturnType<typeof runHeartbeatOnce>>>();
       let runCount = 0;
@@ -641,12 +643,12 @@ describe("Heartbeat event routing", () => {
         expect(sendTelegram).toHaveBeenCalledTimes(2);
         expect(mockCallAt(sendTelegram, 0, "work Telegram send")).toMatchObject([
           "telegram:-1003774691294:topic:47",
-          "The work report is ready.",
+          "Done.",
           { messageThreadId: 47, accountId: "work" },
         ]);
         expect(mockCallAt(sendTelegram, 1, "personal Telegram send")).toMatchObject([
           "telegram:-1003774691294:topic:99",
-          "The personal report is ready.",
+          "Done.",
           { messageThreadId: 99, accountId: "personal" },
         ]);
         expect(peekSystemEvents(sessionKey)).toEqual([]);
@@ -901,7 +903,7 @@ describe("Heartbeat cron and exec event ownership", () => {
       expect(peekSystemEvents(f.sessionKey)).toEqual(["Node connected"]);
     });
   });
-  it("ignores an acknowledged exec wake without consuming unrelated events", async () => {
+  it("processes coalesced generic work without replaying an acknowledged exec", async () => {
     await withHeartbeat(async (f) => {
       const completion = enqueueSystemEventEntry(
         "Exec completed (abc12345, code 0) :: deploy succeeded",
@@ -912,13 +914,16 @@ describe("Heartbeat cron and exec event ownership", () => {
       }
       expect(consumeSelectedSystemEventEntries(f.sessionKey, [completion])).toHaveLength(1);
       f.enqueue("Node connected");
-      expect(await f.run({ reason: "exec-event" })).toEqual({
-        status: "skipped",
-        reason: "no-pending-event",
+      f.replySpy.mockImplementation(async (ctx, options) => {
+        expect(ctx.InternalTurnSource).toBe("heartbeat");
+        expect(ctx.Body).not.toContain("deploy succeeded");
+        expect(await formatQueuedEvents(f.cfg, ctx, options)).toContain("Node connected");
+        return { text: "HEARTBEAT_OK" };
       });
-      expect(f.replySpy).not.toHaveBeenCalled();
+      expect((await f.run({ reason: "exec-event" })).status).toBe("ran");
+      expect(f.replySpy).toHaveBeenCalledOnce();
       expect(f.sendTelegram).not.toHaveBeenCalled();
-      expect(peekSystemEvents(f.sessionKey)).toEqual(["Node connected"]);
+      expect(peekSystemEvents(f.sessionKey)).toEqual([]);
     });
   });
   it.each([false, true])(

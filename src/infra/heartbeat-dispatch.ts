@@ -24,6 +24,7 @@ import {
 } from "../auto-reply/reply/reply-operation-run-state.js";
 import { resolveMessagingToolPayloadDedupe } from "../auto-reply/reply/reply-payloads-dedupe.js";
 import { resolveResponsePrefixTemplate } from "../auto-reply/reply/response-prefix-template.js";
+import { consumePreparedSystemEventEntries } from "../auto-reply/reply/session-system-events.js";
 import { resolveSourceReplyDeliveryMode } from "../auto-reply/reply/source-reply-delivery-mode.js";
 import { HEARTBEAT_TOKEN } from "../auto-reply/tokens.js";
 import { sendDurableMessageBatchCore } from "../channels/message/runtime.js";
@@ -69,9 +70,10 @@ import {
 import { buildOutboundSessionContext } from "./outbound/session-context.js";
 import { resolveSystemEventQueueKey, withSystemEventOwner } from "./system-event-ownership.js";
 import {
-  consumeSelectedSystemEventEntries,
   enqueueSystemEvent,
-  peekSystemEventEntries,
+  holdSystemEventDelivery,
+  peekDeliverableSystemEventEntries,
+  selectQueuedSystemEventEntries,
 } from "./system-events.js";
 
 type HeartbeatDispatch = {
@@ -273,27 +275,69 @@ async function prepareHeartbeatDispatchReply(
       await suppressPendingFinalDelivery(reply, { preserveActivity: true });
     }
   }
-  const finish = (event: Parameters<typeof emitHeartbeatEvent>[0], consume = true) => {
+  const finish = (
+    event: Parameters<typeof emitHeartbeatEvent>[0],
+    consume = true,
+    holdDelivery = false,
+  ) => {
     emitHeartbeatEvent({
       ...event,
       ...(committed.matchingRoute && event.silent === true ? { silent: false } : {}),
       durationMs: Date.now() - startedAt,
       accountId: delivery.accountId,
     });
-    if (consume && preflight.shouldInspectPendingEvents) {
+    if (preflight.shouldInspectPendingEvents) {
       const queueKey = resolveSystemEventQueueKey(sessionKey, agentId);
-      consumeSelectedSystemEventEntries(queueKey, prepared.inspectedSystemEventsToConsume);
-      if (peekSystemEventEntries(queueKey).some((entry) => isExecCompletionEvent(entry.text))) {
+      if (consume) {
+        consumePreparedSystemEventEntries({
+          agentId,
+          sessionKey,
+          events: prepared.inspectedSystemEventsToConsume,
+        });
+      } else if (holdDelivery) {
+        // Cron reminders retain their documented retry behavior. Only exec completions
+        // and routed generic occurrences transfer to held delivery custody.
+        holdSystemEventDelivery(queueKey, [
+          ...prepared.inspectedSystemEventsToConsume.filter((entry) =>
+            isExecCompletionEvent(entry.text),
+          ),
+          ...(prepared.retainGenericEventsUntilDelivery ? prepared.genericEvents : []),
+        ]);
+      }
+      const remainingEntries = peekDeliverableSystemEventEntries(queueKey);
+      // A cron occurrence retains its existing retry owner. Do not turn a deferred
+      // route into an immediate replay while the selected group is still deliverable.
+      const selectedStillDeliverable = selectQueuedSystemEventEntries(
+        queueKey,
+        prepared.inspectedSystemEventsToConsume,
+      ).some((entry) => !entry.deliveryHeld);
+      const mayAdvanceRoute = (consume || holdDelivery) && !selectedStillDeliverable;
+      const hasPendingExec =
+        mayAdvanceRoute && remainingEntries.some((entry) => isExecCompletionEvent(entry.text));
+      const hasDeferredRoute = selectQueuedSystemEventEntries(
+        queueKey,
+        prepared.deferredSystemEvents,
+      ).some((entry) => !entry.deliveryHeld);
+      if (hasPendingExec) {
         requestHeartbeat({
           source: "exec-event",
+          intent: "event",
+          reason: "exec-event",
+          agentId,
+          sessionKey,
+          coalesceMs: 0,
+        });
+      } else if (mayAdvanceRoute && hasDeferredRoute) {
+        requestHeartbeat({
+          source: "hook",
           intent: "immediate",
-          reason: "exec-event:pending-route",
+          reason: "hook:pending-route",
           agentId,
           sessionKey,
           coalesceMs: 0,
         });
       }
-      if (prepared.hasExecCompletion && prepared.hasCronEvents) {
+      if ((consume || holdDelivery) && prepared.hasExecCompletion && prepared.hasCronEvents) {
         // Coalesced waiters share this turn, but exec and cron retain separate prompt/delivery policy.
         requestHeartbeat({
           source: "cron",
@@ -371,13 +415,16 @@ async function prepareHeartbeatDispatchReply(
       return {};
     }
     if (runState.backgroundWorkStarted) {
-      finish({
-        status: "skipped",
-        reason: "background-work",
-        message: "Heartbeat started background work; completion is tracked separately.",
-        channel,
-        silent: true,
-      });
+      finish(
+        {
+          status: "skipped",
+          reason: "background-work",
+          message: "Heartbeat started background work; completion is tracked separately.",
+          channel,
+          silent: true,
+        },
+        false,
+      );
       return {};
     }
     const event = {
@@ -413,12 +460,20 @@ async function prepareHeartbeatDispatchReply(
             if (policy.deliveryError) {
               log.warn(`heartbeat: HEARTBEAT_OK delivery failed: ${policy.deliveryError}`);
             }
-            finish({ ...event, silent: result !== "delivered" });
+            finish(
+              { ...event, silent: result !== "delivered" },
+              !prepared.retainGenericEventsUntilDelivery || result === "delivered",
+              result !== "delivered",
+            );
           },
         };
       }
     }
-    finish({ ...event, silent: true });
+    finish(
+      { ...event, silent: true },
+      !prepared.retainGenericEventsUntilDelivery,
+      prepared.retainGenericEventsUntilDelivery,
+    );
     return {};
   }
   const stateEntry = prepared.policySessionEntry;
@@ -439,6 +494,8 @@ async function prepareHeartbeatDispatchReply(
     const previousAt = stateEntry?.lastHeartbeatSentAt;
     if (
       !prepared.internalProjection &&
+      !prepared.hasExecCompletion &&
+      !prepared.retainGenericEventsUntilDelivery &&
       !outcome.mediaUrls.length &&
       !outcome.hasStructuredReplyContent &&
       stateEntry?.lastHeartbeatText?.trim() &&
@@ -449,7 +506,10 @@ async function prepareHeartbeatDispatchReply(
     ) {
       await restoreActivity();
       await suppressSelected();
-      finish({ status: "skipped", reason: "duplicate", preview, hasMedia: false, channel });
+      finish(
+        { status: "skipped", reason: "duplicate", preview, hasMedia: false, channel },
+        !prepared.retainGenericEventsUntilDelivery,
+      );
       return {};
     }
   }
@@ -475,7 +535,8 @@ async function prepareHeartbeatDispatchReply(
                 ? resolveIndicatorType("sent")
                 : undefined,
           },
-      !failed,
+      !failed && !prepared.retainGenericEventsUntilDelivery,
+      !failed && prepared.retainGenericEventsUntilDelivery,
     );
     return {};
   }
@@ -561,6 +622,7 @@ async function prepareHeartbeatDispatchReply(
               ...(normalized.silent === true ? { silent: true } : {}),
             },
         sent && !failed,
+        !sent && !failed,
       );
       if (policy.deliveryError && !failed) {
         policy.result = { status: "failed", reason: policy.deliveryError };
