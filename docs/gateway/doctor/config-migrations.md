@@ -9,6 +9,22 @@ read_when:
 Checks 0-2 cover config normalization and the legacy config key migrations,
 plus how doctor publishes shared-state schema during an update.
 
+## Retention policy
+
+The current migration cutoff is July 1, 2026. Doctor may retire a format only when
+its last writer shipped before that date. Publication dates, including extended-stable
+releases, determine retention; the version's month alone does not. Formats that
+July-and-later releases can still write keep their migrations. Retired inputs stay
+untouched and require an intermediate release before retrying the upgrade.
+
+OAuth credential sidecars under `credentials/auth-profiles/` are retired. Their
+last writer shipped in `2026.5.16-beta.3` on May 16, 2026; `2026.5.16-beta.4`
+removed that writer. Doctor detects these files without reading credentials or
+accessing encryption keys. Upgrade through `2026.9.7` and run
+`openclaw doctor --fix` on the original host before retrying. The supported
+`auth.json`, `auth-profiles.json`, SQLite credential, and migration-recovery
+contracts remain unchanged.
+
 ## Channel ownership during an update
 
 When Doctor migrates a legacy `agents.list` roster without a `default: true` marker
