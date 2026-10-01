@@ -239,7 +239,24 @@ function resolveGitHubPublicationWorkspaceOwner(
   return { kind: "repository" as const, loaded, workspace };
 }
 
-export async function prepareGitHubPublicationWorkspaceOwner(params: PublicationSessionIdentity) {
+type GitHubPublicationWorkspace = ReturnType<typeof resolveGitHubPublicationWorkspaceOwner>;
+type GitHubPublicationWorkspaceOwner = {
+  initial: GitHubPublicationWorkspace;
+  read: () => Promise<GitHubPublicationWorkspace>;
+  current: () => GitHubPublicationWorkspace;
+};
+
+export function prepareGitHubPublicationWorkspaceOwner(
+  params: PublicationSessionIdentity,
+): Promise<GitHubPublicationWorkspaceOwner>;
+export function prepareGitHubPublicationWorkspaceOwner(
+  params: PublicationSessionIdentity,
+  options: { allowMissingWorkspace: true },
+): Promise<GitHubPublicationWorkspaceOwner | undefined>;
+export async function prepareGitHubPublicationWorkspaceOwner(
+  params: PublicationSessionIdentity,
+  options?: { allowMissingWorkspace: true },
+) {
   const context = captureOpenClawStateWorkerContext();
   const loaded = requirePublicationSessionOwner(
     params,
@@ -252,6 +269,9 @@ export async function prepareGitHubPublicationWorkspaceOwner(params: Publication
   );
   context.admission.assertCurrent();
   const workspaceId = loaded.entry.repositoryWorkspaceId;
+  if (options?.allowMissingWorkspace && !workspaceId && !loaded.entry.worktree) {
+    return undefined;
+  }
   const identity = { ...params, lifecycleRevision: loaded.entry.lifecycleRevision ?? null };
   const readWorktree = preparePublicationWorktreeRead(loaded, context);
   const prepared = workspaceId
