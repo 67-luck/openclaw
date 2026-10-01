@@ -1,5 +1,6 @@
 // Paired reconnect observations retain their admitting grant and connection lifetime.
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement } from "../../../../test/helpers/promise.js";
 import * as devicePairing from "../../../infra/device-pairing.js";
 import type { GatewayWsClient } from "../ws-types.js";
 import {
@@ -65,6 +66,135 @@ beforeEach(() => {
 const connectTrustedProxyUser = createTrustedProxyUserConnector(loadConfigMock);
 
 describe("paired reconnect metadata", () => {
+  it.each(["first pairing", "role upgrade", "scope reapproval"] as const)(
+    "retains the original observation after external approval during %s",
+    async (kind) => {
+      await withGatewayTestState({ label: "gateway-approved-metadata" }, async () => {
+        const connId = `approved-metadata-${kind}`;
+        const client = { id: "openclaw-control-ui", mode: "ui" } as const;
+        const scopes = kind === "scope reapproval" ? ["operator.read"] : [];
+        const { device, pairing } = createPairedGatewayConnectDevice(connId, client, scopes);
+        const previousRole = kind === "role upgrade" ? "node" : "operator";
+        const previous: devicePairing.PairedDevice = {
+          ...pairing,
+          role: previousRole,
+          scopes: [],
+          displayName: "Previous desktop",
+          remoteIp: "198.51.100.10",
+          lastSeenAtMs: 1,
+          lastSeenReason: "previous connection",
+          tokens: {
+            [previousRole]: {
+              token: "synthetic-previous-token",
+              role: previousRole,
+              scopes: [],
+              createdAtMs: 1,
+            },
+          },
+        };
+        // Another legitimate approval does not have this connection's access observation.
+        const approved: devicePairing.PairedDevice = {
+          ...(kind === "first pairing" ? pairing : previous),
+          role: "operator",
+          roles: previousRole === "node" ? ["node", "operator"] : ["operator"],
+          scopes,
+          approvedAtMs: 2,
+          approvedVia: "owner",
+          tokens: {
+            ...(kind === "first pairing" ? {} : previous.tokens),
+            operator: { ...pairing.tokens!.operator!, token: "synthetic-approved-token", scopes },
+          },
+        };
+        let currentPairing = kind === "first pairing" ? null : previous;
+        const observedAt = Date.now();
+        const now = vi.spyOn(Date, "now").mockReturnValue(observedAt);
+        const requested = createGatewayHarnessGate();
+        const approval = createGatewayHarnessGate();
+        const paired = vi
+          .spyOn(devicePairing, "getPairedDevice")
+          .mockImplementation(async () => currentPairing);
+        const request = vi
+          .spyOn(devicePairing, "requestDevicePairing")
+          .mockImplementation(async (req) => {
+            requested.resolve();
+            await approval.promise;
+            return {
+              status: "pending",
+              request: { ...req, requestId: "approved-request", ts: observedAt },
+              expiresAtMs: observedAt + 60_000,
+              created: true,
+            };
+          });
+        const list = vi
+          .spyOn(devicePairing, "listDevicePairing")
+          .mockResolvedValue({ pending: [], paired: [approved] });
+        let refreshed = false;
+        const update = vi
+          .spyOn(devicePairing, "updatePairedDeviceMetadata")
+          .mockImplementation(async (_id, _patch, _baseDir, options) => {
+            options?.assertCurrent();
+            refreshed = true;
+            return true;
+          });
+        const harness = connectTrustedProxyUser(
+          connId,
+          { displayName: "Current desktop" },
+          scopes,
+          undefined,
+          device,
+        );
+        try {
+          await awaitGateBeforeSettlement(
+            requested.promise,
+            harness.whenAttached,
+            "Connection completed without requesting pairing approval",
+          );
+          currentPairing = approved;
+          now.mockReturnValue(observedAt + 1_000);
+          approval.resolve();
+          await harness.runWhenIdle();
+          expect(harness.socketSend).toHaveBeenCalledOnce();
+          expect(JSON.parse(harness.socketSend.mock.calls[0]![0])).toMatchObject({
+            ok: true,
+            payload: { type: "hello-ok", auth: { role: "operator", scopes } },
+          });
+          expect(request).toHaveBeenCalledOnce();
+          expect(update).toHaveBeenCalledExactlyOnceWith(
+            device.id,
+            {
+              displayName: "Current desktop",
+              remoteIp: "203.0.113.10",
+              lastSeenAtMs: observedAt,
+              lastSeenReason: "connect",
+            },
+            undefined,
+            expect.objectContaining({
+              expectedPairing: {
+                publicKey: approved.publicKey,
+                createdAtMs: approved.createdAtMs,
+                approvedAtMs: approved.approvedAtMs,
+                grant: { role: "operator", token: approved.tokens!.operator!.token },
+              },
+              assertCurrent: expect.any(Function),
+            }),
+          );
+          expect(refreshed).toBe(true);
+        } finally {
+          approval.resolve();
+          try {
+            await harness.runWhenIdle();
+          } finally {
+            update.mockRestore();
+            list.mockRestore();
+            request.mockRestore();
+            paired.mockRestore();
+            now.mockRestore();
+          }
+        }
+      });
+    },
+  );
+
   it.each([
     ...(["trusted-proxy", "device-token", "token", "none"] as const).flatMap((authMethod) =>
       [false, true].map((closed) => ({ authMethod, closed, missingToken: false })),

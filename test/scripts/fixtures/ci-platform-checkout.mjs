@@ -421,6 +421,11 @@ function holdLease() {
   // Watch the owned root before rereading: replacing or retiring the lease
   // must wake actors immediately, including a change during registration.
   fs.watch(root, checkLease);
+  // The supervisor also wakes its retained child over IPC; filesystem event
+  // delivery is not the authority to keep a retired fixture actor alive.
+  process.on("message", (message) => {
+    if (message === "fixture-publication") checkLease();
+  });
   setTimeout(checkLease, Math.max(0, deadline - Date.now()));
   checkLease();
   return deadline;
@@ -781,13 +786,23 @@ async function command() {
         publish(`cleanup-target-${attempt}.json`, attempt);
       }
     }
-    const child = launch("child", attempt);
+    // Fault scenarios keep transport and fault-site trees; the no-fault publisher
+    // case covers every command. Repeating metadata trees spends the watchdog on
+    // unrelated startup before the fault and its recovery can be observed.
     if (
-      !(await waitForReady(() => fs.existsSync(path.join(root, `ready-${attempt}.json`)), child))
+      !options.publisher ||
+      !(options.gitFault || options.gitFaults?.length) ||
+      commandResult ||
+      ["fetch", "ls-remote", "push"].includes(operation)
     ) {
-      throw new Error(
-        `Git fixture child exited before readiness (${child.exitCode ?? child.signalCode})`,
-      );
+      const child = launch("child", attempt);
+      if (
+        !(await waitForReady(() => fs.existsSync(path.join(root, `ready-${attempt}.json`)), child))
+      ) {
+        throw new Error(
+          `Git fixture child exited before readiness (${child.exitCode ?? child.signalCode})`,
+        );
+      }
     }
     if (scenario.startsWith("cancel-") || commandResult?.code === "cancel") {
       const owned = await liveRecords();
@@ -1202,6 +1217,9 @@ async function supervise() {
         : undefined;
       try {
         fs.rmSync(lease, { force: true });
+        if (sentinel?.connected) {
+          sentinel.send("fixture-publication", () => {});
+        }
         sentinel?.kill("SIGKILL");
         if (shell && shell.exitCode === null && shell.signalCode === null) {
           // Only this fixture's still-owned detached shell group may be signaled.

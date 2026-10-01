@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 // Select an owned snapshot or native reader while retaining snapshot cleanup.
 import fs, { type BigIntStats } from "node:fs";
+import path from "node:path";
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import { createRetainedOperation, type RetainedOperation } from "./retained-operation.js";
 import { prepareSqliteSnapshotFromLiveOwner } from "./sqlite-live-snapshot.js";
@@ -63,7 +64,7 @@ export async function prepareSqliteReadOnlyLocation(
 }
 
 export function startSqliteReadOnlyLocationAsync(
-  pathname: string,
+  inputPathname: string,
   options: {
     preserveSourceArtifacts?: boolean;
     signal?: AbortSignal;
@@ -72,6 +73,7 @@ export function startSqliteReadOnlyLocationAsync(
 ): RetainedSqliteSnapshotPreparation {
   const signal = resolveSqliteInspectionSignal(options.signal);
   signal?.throwIfAborted();
+  const pathname = path.resolve(inputPathname);
   const preserveSourceArtifacts = options.preserveSourceArtifacts === true;
   const expectedSourceIdentity =
     options.expectedSourceIdentity === undefined
@@ -249,9 +251,17 @@ function prepareWorkerSnapshot(
 
 export function prepareSqliteReadOnlyLocationSync(
   pathname: string,
-): PreparedSqliteReadOnlyLocation {
+  captureContentVersion = false,
+): PreparedSqliteReadOnlyLocation & { contentVersion?: string } {
   const stagingRoot = createSqliteSnapshotStagingDirectorySync();
   try {
+    if (captureContentVersion) {
+      const snapshot = runSqliteReadOnlyWorkerSync(pathname, stagingRoot, "sync-versioned");
+      return {
+        ...adoptPreparedLocation(snapshot.location, stagingRoot),
+        contentVersion: snapshot.contentVersion || undefined,
+      };
+    }
     return adoptPreparedLocation(runSqliteReadOnlyWorkerSync(pathname, stagingRoot), stagingRoot);
   } catch (error) {
     if (!removeTempDirectory(stagingRoot)) {

@@ -178,8 +178,8 @@ describe.skipIf(process.platform === "win32")("survivor first-hop observation", 
 const workshopIndex = "idx_skill_workshop_collection_reviews_workspace_time";
 
 function workshopFixture() {
-  // Keep the complete actionable warning inside Doctor's existing 500-character IPC bound.
-  const root = tempDirs.make("ws-");
+  // Nested runner TMPDIR paths must not consume Doctor's 500-character warning bound.
+  const root = tempDirs.make("ws-", process.platform === "win32" ? undefined : "/tmp");
   const state = join(root, "state");
   const artifacts = join(root, "artifacts");
   const packageRoot = join(root, "installed");

@@ -157,6 +157,10 @@ if (process.argv[2] === "supervise") {
   };
 }
 if (process.argv[2] === "sentinel") {
+  // Retirement must reread the lease even when filesystem notifications are lost.
+  const watch = fs.watch;
+  fs.watch = (filename, ...args) => watch(filename, ...args.map(arg =>
+    filename === root && typeof arg === "function" ? () => {} : arg));
   const read = fs.readFileSync;
   fs.readFileSync = (filename, ...args) => {
     try {
@@ -927,6 +931,9 @@ process.exitCode = 1;
       if (fault === "census") {
         expect(evidence.closedBeforeCensus).toBe(true);
         expect(evidence.pids).toHaveLength(3);
+        expect(evidence.failure).toContain(
+          "injected final census failure after direct child close",
+        );
         expect(stderr).toContain("injected final census failure after direct child close");
         expect(existsSync(path.join(evidence.root, "report.json"))).toBe(false);
       } else if (fault === "timeout") {

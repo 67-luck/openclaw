@@ -728,31 +728,52 @@ describe("oxlint config", () => {
         fs.readFileSync(path.join(root, owner, "tsconfig.json"), "utf8"),
       ]),
     );
-    const lint = () =>
-      spawnSync(
-        process.execPath,
-        [
-          path.resolve("node_modules/oxlint/bin/oxlint"),
-          "--type-aware",
-          "--threads=1",
-          "--format=json",
-          ...selected,
-        ],
-        {
-          cwd: root,
-          encoding: "utf8",
-          timeout: 30_000,
-          env: {
-            ...process.env,
-            OXC_LOG: "debug",
-            GOMAXPROCS: "2",
-            OXLINT_TSGOLINT_PATH: path.resolve(
-              "node_modules/.bin",
-              process.platform === "win32" ? "tsgolint.CMD" : "tsgolint",
-            ),
-          },
-        },
-      );
+    const lint = () => {
+      const stdout = path.join(root, "lint.stdout");
+      const stderr = path.join(root, "lint.stderr");
+      // The complete diagnostic and discovery reports together exceed spawnSync's
+      // pipe buffer. Keep both in this fixture's lifecycle without truncation.
+      const out = fs.openSync(stdout, "w");
+      try {
+        const err = fs.openSync(stderr, "w");
+        try {
+          const result = spawnSync(
+            process.execPath,
+            [
+              path.resolve("node_modules/oxlint/bin/oxlint"),
+              "--type-aware",
+              "--threads=1",
+              "--format=json",
+              ...selected,
+            ],
+            {
+              cwd: root,
+              encoding: "utf8",
+              timeout: 30_000,
+              stdio: ["pipe", out, err],
+              env: {
+                ...process.env,
+                OXC_LOG: "debug",
+                GOMAXPROCS: "2",
+                OXLINT_TSGOLINT_PATH: path.resolve(
+                  "node_modules/.bin",
+                  process.platform === "win32" ? "tsgolint.CMD" : "tsgolint",
+                ),
+              },
+            },
+          );
+          return {
+            ...result,
+            stdout: fs.readFileSync(stdout, "utf8"),
+            stderr: fs.readFileSync(stderr, "utf8"),
+          };
+        } finally {
+          fs.closeSync(err);
+        }
+      } finally {
+        fs.closeSync(out);
+      }
+    };
     const narrowed = lint();
     // Recreate the single broad owner with the same ambient contract.
     for (const owner of sourceProjectOwners) {
@@ -1380,6 +1401,8 @@ describe("oxlint config", () => {
 
   it("keeps native cap scopes and correctness while warning on untouched local line debt", () => {
     const root = fs.realpathSync(createTempDir("openclaw-oxlint-ci-limits-"));
+    // Keep transient-config ownership inside this synthetic checkout.
+    fs.mkdirSync(path.join(root, ".git"));
     const config = readJson(".oxlintrc.json") as OxlintConfig;
     fs.writeFileSync(
       path.join(root, ".oxlintrc.json"),
@@ -1545,6 +1568,7 @@ describe("oxlint config", () => {
 
   it("matches changed paths literally and keeps inherited config limits strict", () => {
     const root = fs.realpathSync(createTempDir("openclaw-oxlint-changed-paths-"));
+    fs.mkdirSync(path.join(root, ".git"));
     const config = { categories: { correctness: "off" }, rules: { "max-lines": ["error", 2] } };
     fs.writeFileSync(path.join(root, ".oxlintrc.json"), JSON.stringify(config));
     fs.symlinkSync(path.resolve("node_modules"), path.join(root, "node_modules"), "junction");
@@ -1616,6 +1640,7 @@ describe("oxlint config", () => {
 
   it("preserves native config validation locally and in Actions", () => {
     const root = fs.realpathSync(createTempDir("openclaw-oxlint-invalid-limit-"));
+    fs.mkdirSync(path.join(root, ".git"));
     fs.symlinkSync(path.resolve("node_modules"), path.join(root, "node_modules"), "junction");
     fs.writeFileSync(path.join(root, "fixture.ts"), "console.log(1);\n");
     const invalidConfigs = [

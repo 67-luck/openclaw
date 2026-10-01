@@ -192,6 +192,7 @@ export function createTrustedProxyUserConnector(
 export function createPairedGatewayConnectDevice(
   connId: string,
   client: Pick<ConnectParams["client"], "id" | "mode">,
+  scopes: string[] = [],
 ) {
   const identity = generateStoredDeviceIdentity();
   const publicKey = publicKeyRawBase64UrlFromPem(identity.publicKeyPem);
@@ -209,7 +210,7 @@ export function createPairedGatewayConnectDevice(
         clientId: client.id,
         clientMode: client.mode,
         role: "operator",
-        scopes: [],
+        scopes,
         signedAtMs: signedAt,
         nonce,
       }),
@@ -220,11 +221,11 @@ export function createPairedGatewayConnectDevice(
     publicKey,
     platform: "test",
     role: "operator",
-    scopes: [],
+    scopes,
     createdAtMs: 1,
     approvedAtMs: 1,
     tokens: {
-      operator: { token: "synthetic-paired-token", role: "operator", scopes: [], createdAtMs: 1 },
+      operator: { token: "synthetic-paired-token", role: "operator", scopes, createdAtMs: 1 },
     },
   };
   return { device, pairing };

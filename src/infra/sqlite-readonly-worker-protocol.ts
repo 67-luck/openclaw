@@ -10,6 +10,7 @@ export const SQLITE_READONLY_WORKER_MAX_BUFFER = 1024 * 1024;
 export type SqliteReadOnlyWorkerMode =
   | "sync"
   | "content-version"
+  | "sync-versioned"
   | "async"
   | "consolidated"
   | "reclaim"
@@ -27,9 +28,12 @@ export function isSqliteSnapshotStagingMode(mode: unknown): boolean {
   );
 }
 
+export type SqliteVersionedSnapshot = { location: string; contentVersion: string };
+
 export type SqliteReadOnlyWorkerResult =
   | { ok: true; location: string }
   | { ok: true; contentVersion: string }
+  | { ok: true; snapshot: SqliteVersionedSnapshot }
   | { ok: true; warnings: string[] }
   | { ok: false; message: string };
 
@@ -64,6 +68,7 @@ export function sqliteReadOnlyWorkerRequestArgs(
   options: SqliteReadOnlyWorkerOptions,
 ): string[] {
   const args = [options.mode, path.resolve(pathname)];
+  const stagingRoot = options.stagingRoot && path.resolve(options.stagingRoot);
   const expected =
     options.mode === "auth-profile-rows" ? undefined : options.expectedSourceIdentity;
   if (expected !== undefined) {
@@ -72,15 +77,19 @@ export function sqliteReadOnlyWorkerRequestArgs(
         "SQLite source identity is supported only for artifact-preserving sync copies",
       );
     }
-    args.push(options.stagingRoot ?? "", JSON.stringify(readDatabaseFileIdentity(expected)));
-  } else if (options.stagingRoot) {
-    args.push(options.stagingRoot);
+    args.push(stagingRoot ?? "", JSON.stringify(readDatabaseFileIdentity(expected)));
+  } else if (stagingRoot) {
+    args.push(stagingRoot);
   }
   return args;
 }
 
 export type SqliteReadOnlyWorkerOutput = { failure?: string; stderr: string; stdout: string };
-export type SqliteReadOnlyWorkerValue = string | string[] | SqliteAuthProfileRows;
+export type SqliteReadOnlyWorkerValue =
+  | string
+  | string[]
+  | SqliteAuthProfileRows
+  | SqliteVersionedSnapshot;
 export const SQLITE_READONLY_STDERR_TAIL_CHARS = 4_000;
 
 export function isSqliteReadOnlyWorkerResult(value: unknown): value is SqliteReadOnlyWorkerResult {
@@ -96,6 +105,16 @@ export function isSqliteReadOnlyWorkerResult(value: unknown): value is SqliteRea
       "contentVersion" in value &&
       typeof value.contentVersion === "string" &&
       /^(?:[a-f0-9]{64})?$/.test(value.contentVersion)) ||
+    (value.ok === true &&
+      "snapshot" in value &&
+      value.snapshot !== null &&
+      typeof value.snapshot === "object" &&
+      Object.keys(value.snapshot).length === 2 &&
+      "location" in value.snapshot &&
+      typeof value.snapshot.location === "string" &&
+      "contentVersion" in value.snapshot &&
+      typeof value.snapshot.contentVersion === "string" &&
+      /^(?:[a-f0-9]{64})?$/.test(value.snapshot.contentVersion)) ||
     (value.ok === true &&
       "warnings" in value &&
       Array.isArray(value.warnings) &&
@@ -135,6 +154,10 @@ export function readSqliteReadOnlyWorkerValue(
   params: SqliteReadOnlyWorkerOutput,
   mode: "sync" | "async" | "consolidated" | "content-version",
 ): string;
+export function readSqliteReadOnlyWorkerValue(
+  params: SqliteReadOnlyWorkerOutput,
+  mode: "sync-versioned",
+): SqliteVersionedSnapshot;
 export function readSqliteReadOnlyWorkerValue(
   params: SqliteReadOnlyWorkerOutput,
   mode: "reclaim",
@@ -189,6 +212,9 @@ export function readSqliteReadOnlyWorkerValue(
     "location" in result
   ) {
     return result.location;
+  }
+  if (mode === "sync-versioned" && "snapshot" in result) {
+    return result.snapshot;
   }
   if (mode === "content-version" && "contentVersion" in result) {
     return result.contentVersion;

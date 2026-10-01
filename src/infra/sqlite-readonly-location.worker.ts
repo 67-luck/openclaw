@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
@@ -33,6 +34,7 @@ import {
   reclaimAbandonedSqliteSnapshots,
   reconcileSqliteSnapshotRetirement,
 } from "./sqlite-snapshot-staging.js";
+import { readSqliteSourceContentVersionInProcess } from "./sqlite-source-revision.js";
 import type { SqliteStagingToken } from "./sqlite-staging-token.js";
 import {
   assertExistingDatabaseIdentity,
@@ -50,6 +52,7 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
   const stagingRoot = args[2] || undefined;
   if (
     (mode !== "sync" &&
+      mode !== "sync-versioned" &&
       mode !== "async" &&
       mode !== "consolidated" &&
       mode !== "reclaim" &&
@@ -139,7 +142,7 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
       prepared = await createOnlineReadOnlyBackup(pathname, stagingRoot);
     } else {
       prepared =
-        mode === "sync"
+        mode === "sync" || mode === "sync-versioned"
           ? prepareSqliteReadOnlyLocationSyncInProcess(
               pathname,
               stagingRoot,
@@ -147,8 +150,18 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
             )
           : await prepareSqliteReadOnlyLocationInProcess(pathname, stagingRoot);
     }
+    // Observe fresh source bytes while the private copy still has child custody.
+    // Parent-owned staging also covers a failed observation or terminated child.
+    const contentVersion =
+      mode === "sync-versioned"
+        ? statSync(pathname, { throwIfNoEntry: false })
+          ? (readSqliteSourceContentVersionInProcess(pathname) ?? "")
+          : ""
+        : undefined;
     releaseSnapshotTempDirectory(prepared.cleanupRoot ?? path.dirname(prepared.location));
-    return { ok: true, location: prepared.location };
+    return contentVersion === undefined
+      ? { ok: true, location: prepared.location }
+      : { ok: true, snapshot: { location: prepared.location, contentVersion } };
   } catch (error) {
     const contention = error instanceof SqliteSourceChangedError || isSqliteLockError(error);
     const allocationRefused =

@@ -101,6 +101,12 @@ export function refreshGatewayConnectProfile(params: {
   const { context, authResult, client, lifecycle, prepareIngress } = params;
   const { runDetachedConnectWork } = context;
   const { logGateway, connId } = context.handler;
+  const adoptProfileAvatar = async (profileId: string, profilePic: string) => {
+    const updated = await adoptTailscaleProfileAvatar(profileId, profilePic);
+    if (updated.avatarMime) {
+      await lifecycle.attach(updated.id, updated.updatedAt, prepareIngress);
+    }
+  };
   if (client.authenticatedGitHubIdentitySync) {
     runDetachedConnectWork(
       async () => {
@@ -109,10 +115,7 @@ export function refreshGatewayConnectProfile(params: {
         const profilePic = authResult.tailscaleIdentity?.profilePic;
         if (!profile?.hasAvatar && profilePic) {
           try {
-            const updated = await adoptTailscaleProfileAvatar(result.profileId, profilePic);
-            if (updated.avatarMime) {
-              await lifecycle.attach(updated.id, updated.updatedAt, prepareIngress);
-            }
+            await adoptProfileAvatar(result.profileId, profilePic);
           } catch (error) {
             logGateway.warn(
               `Tailscale avatar adoption failed conn=${connId}: ${formatForLog(error)}`,
@@ -135,13 +138,7 @@ export function refreshGatewayConnectProfile(params: {
     tailscaleProfilePic
   ) {
     runDetachedConnectWork(
-      async () => {
-        const updated = await adoptTailscaleProfileAvatar(tailscaleProfileId, tailscaleProfilePic);
-        if (!updated.avatarMime) {
-          return;
-        }
-        await lifecycle.attach(updated.id, updated.updatedAt, prepareIngress);
-      },
+      () => adoptProfileAvatar(tailscaleProfileId, tailscaleProfilePic),
       (error) =>
         logGateway.warn(`Tailscale avatar adoption failed conn=${connId}: ${formatForLog(error)}`),
     );

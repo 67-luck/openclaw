@@ -3,6 +3,7 @@ import { chmodSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { withTempDir } from "../../src/test-utils/temp-dir.js";
+import { createIndependentPrFixtureEnv } from "./pr-wrapper.test-support.js";
 
 export const sha = "a".repeat(40);
 
@@ -70,7 +71,7 @@ if (process.argv[1] === ${JSON.stringify(fileURLToPath(new URL("../../scripts/wa
           {
             encoding: "utf8",
             env: {
-              ...process.env,
+              ...createIndependentPrFixtureEnv(),
               ...envOverrides,
               NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(clockPath).href}`,
               PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,

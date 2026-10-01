@@ -75,6 +75,8 @@ function fixtureDocument(themeMode: "dark" | "light"): string {
 
 type WrapSample = {
   readonly columnWidth: number;
+  readonly naturalWidth: number;
+  readonly scrollWidth: number;
   readonly fragments: number;
   readonly labelFragments: number;
   readonly labelStartsMarkLine: boolean;
@@ -105,6 +107,7 @@ async function probeWrap(
         for (const id of ids) {
           const column = resolve(`#column-${id}`);
           const link = resolve(`#${id}`);
+          const naturalWidth = link.getBoundingClientRect().width;
           const collected: WrapSample[] = [];
           for (let columnWidth = 200; columnWidth <= 900; columnWidth += 4) {
             column.style.width = `${columnWidth}px`;
@@ -123,6 +126,8 @@ async function probeWrap(
             labelRange.selectNodeContents(link);
             collected.push({
               columnWidth,
+              naturalWidth,
+              scrollWidth: column.scrollWidth,
               fragments: link.getClientRects().length,
               labelFragments: labelRange.getClientRects().length,
               labelStartsMarkLine: Math.abs(labelStart.top - linkStart.top) < 2,
@@ -176,7 +181,12 @@ describeGitHubLinkPresentation("chat GitHub link presentation", () => {
         expect({ id, stranded }).toEqual({ id, stranded: [] });
         if (kind) {
           expect(
-            collected.filter((sample) => sample.fragments !== 1 || sample.labelFragments !== 1),
+            collected.filter(
+              (sample) =>
+                sample.fragments !== 1 ||
+                sample.scrollWidth > sample.columnWidth ||
+                (sample.naturalWidth <= sample.columnWidth && sample.labelFragments !== 1),
+            ),
           ).toEqual([]);
         }
       }

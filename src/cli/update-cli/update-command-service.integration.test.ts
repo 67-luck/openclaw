@@ -116,6 +116,11 @@ vi.mock("../../daemon/launchd-system.js", async (importOriginal) => ({
 }));
 vi.mock("../../infra/restart-stale-pids.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../infra/restart-stale-pids.js")>()),
+  // Simulated service platforms must not read the host's native ancestry.
+  inspectSelfAndAncestorPidsSync: () => ({
+    pids: new Set([process.pid, process.ppid, 1]),
+    complete: true,
+  }),
   cleanStaleGatewayProcessesSync: () => [],
   terminateStaleGatewayPids: mocks.terminateStale,
 }));
@@ -127,6 +132,18 @@ vi.mock("../../gateway/call.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../gateway/call.js")>()),
   callGateway: mocks.call,
 }));
+vi.mock("../../gateway/local-http-probe.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../gateway/local-http-probe.js")>();
+  return {
+    ...actual,
+    createConfiguredGatewayLocalProbe: (
+      config: Parameters<typeof actual.createConfiguredGatewayLocalProbe>[0],
+    ) => ({
+      ...actual.createConfiguredGatewayLocalProbe(config),
+      requestHttp: async () => null,
+    }),
+  };
+});
 
 vi.mock("../../daemon/systemd.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../daemon/systemd.js")>()),

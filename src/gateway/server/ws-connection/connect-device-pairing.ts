@@ -15,6 +15,7 @@ import {
   approveBootstrapDevicePairing,
   approveDevicePairing,
 } from "../../../infra/device-pairing-approval.js";
+import type { PairedDeviceMetadataPatch } from "../../../infra/device-pairing-core.types.js";
 import {
   getPairedDevice,
   hasEffectivePairedDeviceRole,
@@ -154,6 +155,8 @@ export async function authorizeGatewayConnectDevice(
       lastSeenAtMs: Date.now(),
       lastSeenReason: "connect",
     };
+    let metadataPatch: Partial<PairedDeviceMetadataPatch> | undefined = clientAccessMetadata;
+    let admittedPairedDevice: Awaited<ReturnType<typeof getPairedDevice>>;
     const requirePairing = async (
       reason: ConnectPairingRequiredReason,
       existingPairedDevice: Awaited<ReturnType<typeof getPairedDevice>> | null = null,
@@ -208,6 +211,7 @@ export async function authorizeGatewayConnectDevice(
             ),
           );
           connectParams.scopes = scopes;
+          admittedPairedDevice = livePaired;
           return true;
         }
       }
@@ -462,11 +466,15 @@ export async function authorizeGatewayConnectDevice(
       }
       pairedClientId = livePaired?.clientId;
       pairedBrowserOrigin = livePaired?.browserOrigin;
+      // A concurrent approval replaces the pre-plan row. Bind its observation
+      // to the exact row that authorized continuation, without another read.
+      admittedPairedDevice = livePaired;
       return true;
     };
 
     const paired = await getPairedDevice(device.id);
     const isPaired = paired?.publicKey === devicePublicKey;
+    admittedPairedDevice = isPaired ? paired : null;
     if (
       state.startupPending &&
       !isStartupNodeBootstrapConnect(connectParams) &&
@@ -479,23 +487,9 @@ export async function authorizeGatewayConnectDevice(
       skipLocalBackendSelfPairing || controlUiPairingKind === "auth-none";
     if (hasPairingPolicyExemption) {
       if (isPaired) {
-        // Local scope policy stays independent of the row's scope cap, but
-        // device-token observations still depend on their live paired grant.
         pairedClientId = paired.clientId;
         pairedBrowserOrigin = paired.browserOrigin;
         hasServerApprovedDeviceTokenBaseline = true;
-        const grant =
-          authMethod === "device-token" && hasEffectivePairedDeviceRole(paired, role)
-            ? paired.tokens?.[role]
-            : undefined;
-        if (authMethod !== "device-token" || grant) {
-          pairedDeviceMetadata = {
-            createdAtMs: paired.createdAtMs,
-            approvedAtMs: paired.approvedAtMs,
-            ...(grant ? { grant: { role, token: grant.token } } : {}),
-            patch: clientAccessMetadata,
-          };
-        }
       } else if (
         controlUiPairingKind === "auth-none" ||
         (skipLocalBackendSelfPairing && authMethod !== "device-token")
@@ -524,14 +518,22 @@ export async function authorizeGatewayConnectDevice(
         return undefined;
       }
       handoffBootstrapProfile = existingDevice.handoffBootstrapProfile;
-      // Role upgrades already record access metadata in their approval transaction.
-      const pairedGrant = paired.tokens?.[role];
-      if (existingDevice.metadata && pairedGrant) {
+      metadataPatch = existingDevice.metadata;
+    }
+    if (admittedPairedDevice && metadataPatch) {
+      // Local shared-auth exemptions do not depend on a paired role grant;
+      // ordinary and device-token admissions retain that grant through commit.
+      const bindPairedGrant = !hasPairingPolicyExemption || authMethod === "device-token";
+      const grant =
+        bindPairedGrant && hasEffectivePairedDeviceRole(admittedPairedDevice, role)
+          ? admittedPairedDevice.tokens?.[role]
+          : undefined;
+      if (!bindPairedGrant || grant) {
         pairedDeviceMetadata = {
-          createdAtMs: paired.createdAtMs,
-          approvedAtMs: paired.approvedAtMs,
-          grant: { role, token: pairedGrant.token },
-          patch: existingDevice.metadata,
+          createdAtMs: admittedPairedDevice.createdAtMs,
+          approvedAtMs: admittedPairedDevice.approvedAtMs,
+          ...(grant ? { grant: { role, token: grant.token } } : {}),
+          patch: metadataPatch,
         };
       }
     }
