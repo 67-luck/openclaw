@@ -6,6 +6,7 @@ import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 import { readSessionArchiveContentSync } from "../config/sessions/archive-compression.js";
 import { resolveSqliteTranscriptArchiveDirectory } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { reconcileSessionTranscriptIndexInTransaction } from "../config/sessions/session-transcript-index.js";
+import { beginAgentDeletionJournal } from "../state/agent-deletion-journal.js";
 import {
   AGENT_DATABASE_MAINTENANCE_LEASE,
   assertAgentDatabaseMaintenanceAuthority,
@@ -822,7 +823,7 @@ describe("historical transcript directive migration", () => {
     releaseOpenClawAgentDatabaseLease(competingLeaseId as string, { env });
   });
 
-  it("preserves a published archive when maintenance expires before rename", async () => {
+  async function expectArchivePreserved(interruption: "lease" | "deletion") {
     const stateDir = makeTempDir(tempDirs, "transcript-directive-expired-archive-");
     const env = { OPENCLAW_STATE_DIR: stateDir };
     const opened = openOpenClawAgentDatabase({ agentId: "main", env });
@@ -883,19 +884,36 @@ describe("historical transcript directive migration", () => {
     const authority = vi
       .spyOn(agentDatabaseLease, "assertAgentDatabaseMaintenanceAuthority")
       .mockImplementation(() => {
-        if (!competingLeaseId && new Error().stack?.includes("beforeRename")) {
-          openOpenClawStateDatabase({ env })
-            .db.prepare("UPDATE state_leases SET expires_at = ? WHERE scope = ? AND lease_key = ?")
-            .run(
-              Date.now() - 1,
-              AGENT_DATABASE_MAINTENANCE_LEASE.scope,
-              AGENT_DATABASE_MAINTENANCE_LEASE.key,
+        if (new Error().stack?.includes("beforeRename")) {
+          if (interruption === "deletion") {
+            beginAgentDeletionJournal(
+              {
+                agentId: "main",
+                operationId: "retained-before-archive-rename",
+                agentDir: path.dirname(opened.path),
+                workspaceDir: path.join(stateDir, "workspace-main"),
+                sessionsDir: path.join(stateDir, "agents", "main", "sessions"),
+                databasePaths: [opened.path],
+                deleteFiles: false,
+              },
+              { env },
             );
-          competingLeaseId = claimOpenClawAgentDatabaseLease({
-            agentId: "competitor",
-            path: path.join(stateDir, "competitor.sqlite"),
-            env,
-          });
+          } else {
+            openOpenClawStateDatabase({ env })
+              .db.prepare(
+                "UPDATE state_leases SET expires_at = ? WHERE scope = ? AND lease_key = ?",
+              )
+              .run(
+                Date.now() - 1,
+                AGENT_DATABASE_MAINTENANCE_LEASE.scope,
+                AGENT_DATABASE_MAINTENANCE_LEASE.key,
+              );
+            competingLeaseId = claimOpenClawAgentDatabaseLease({
+              agentId: "competitor",
+              path: path.join(stateDir, "competitor.sqlite"),
+              env,
+            });
+          }
         }
         originalAssert();
       });
@@ -904,20 +922,76 @@ describe("historical transcript directive migration", () => {
       authority.mockRestore();
     });
 
-    expect(result.warnings.length).toBeGreaterThanOrEqual(1);
-    expect(
-      result.warnings.every(
-        (warning) => warning.includes("maintenance lease") && warning.includes("was lost"),
-      ),
-    ).toBe(true);
-    expect(competingLeaseId).toBeDefined();
+    expect(result.warnings).toEqual(
+      interruption === "deletion"
+        ? []
+        : expect.arrayContaining([expect.stringMatching(/maintenance lease.*was lost/u)]),
+    );
+    if (interruption === "deletion") {
+      expect((result.notices ?? []).join("\n")).toContain("deletion of agent main is pending");
+    }
     expect(fs.readFileSync(archivePath)).toEqual(archiveBytes);
     expect(readMigrationCursor(opened.path)).toEqual({
       generation: "",
       phase: "archives",
       sessionId: "",
     });
-    releaseOpenClawAgentDatabaseLease(competingLeaseId as string, { env });
+    if (competingLeaseId) {
+      releaseOpenClawAgentDatabaseLease(competingLeaseId, { env });
+    }
+  }
+
+  it.each(["lease", "deletion"] as const)(
+    "preserves a published archive when %s interrupts before rename",
+    expectArchivePreserved,
+  );
+  it("stops resumed transcript writes when agent deletion begins between batches", async () => {
+    const stateDir = makeTempDir(tempDirs, "transcript-directive-retained-resume-");
+    const env = { OPENCLAW_STATE_DIR: stateDir };
+    const agentId = "main";
+    const opened = openOpenClawAgentDatabase({ agentId, env });
+    for (let index = 0; index <= 32; index += 1) {
+      insertSession(opened.db, {
+        events: [
+          messageEvent({
+            content: [{ type: "text", text: "[[reply_to_current]] Migrating" }],
+            id: `assistant-retained-${index}`,
+            role: "assistant",
+            timestamp: index + 1,
+          }),
+        ],
+        generation: "before",
+        sessionId: `session-${String(index).padStart(2, "0")}`,
+      });
+    }
+    const finalSessionId = "session-32";
+    const finalEventJson = readEventJson(opened.path, finalSessionId, 0);
+    closeOpenClawAgentDatabasesForTest();
+    const operationId = "retained-during-transcript-resume";
+    vi.spyOn(globalThis, "setImmediate").mockImplementationOnce((callback) => {
+      beginAgentDeletionJournal(
+        {
+          agentId,
+          operationId,
+          agentDir: path.dirname(opened.path),
+          workspaceDir: path.join(stateDir, "workspace-main"),
+          sessionsDir: path.join(stateDir, "agents", agentId, "sessions"),
+          databasePaths: [opened.path],
+          deleteFiles: false,
+        },
+        { env },
+      );
+      callback();
+      return 0 as unknown as NodeJS.Immediate;
+    });
+    const result = await migrateHistoricalTranscriptDirectives({ env });
+    expect(result.warnings).toEqual([]);
+    expect((result.notices ?? []).join("\n")).toContain(`deletion of agent ${agentId} is pending`);
+    expect(readEventJson(opened.path, finalSessionId, 0)).toBe(finalEventJson);
+    expect(readMigrationCursor(opened.path)).toEqual({
+      phase: "transcripts",
+      sessionId: "session-31",
+    });
   });
 
   it("renews maintenance beyond its original lifetime and fences writers through final mutation", async () => {
